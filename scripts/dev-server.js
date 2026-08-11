@@ -69,6 +69,11 @@ app.all('/api/timesheet-job-costcodes', require('../api/timesheet-job-costcodes'
 app.all('/api/timesheet-supervisors',   require('../api/timesheet-supervisors'));
 app.all('/api/timesheet-audit-log',     require('../api/timesheet-audit-log'));
 
+/** Fuel submissions — field fuel entry + Fuel Admin review */
+app.all('/api/fuel-submissions', require('../api/fuel-submissions'));
+app.all('/api/fuel-employees',   require('../api/fuel-employees'));
+app.all('/api/fuel-audit-log',   require('../api/fuel-audit-log'));
+
 /** Company board */
 app.all('/api/board', require('../api/board'));
 

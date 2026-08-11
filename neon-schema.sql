@@ -1058,6 +1058,82 @@ CREATE INDEX IF NOT EXISTS idx_ts_audit_company    ON timesheet_audit_log(compan
 CREATE INDEX IF NOT EXISTS idx_ts_audit_entry      ON timesheet_audit_log(entry_id, created_at DESC);
 
 -- ─────────────────────────────────────────────────
+-- FUEL SUBMISSIONS
+-- One row per fill-up, reported from the field on fuel.html and reviewed
+-- in Fuel Admin (fuel-admin.html). Same two-sided shape as
+-- timesheet_entries → payroll: users holding divisionRoles.fuel own the
+-- create/edit path for their own rows up through 'submitted', and from
+-- there only divisionRoles.fuel_admin may edit or approve.
+--
+-- Every reported field is nullable except work_date. That is deliberate:
+-- the FORM requires all thirteen, and the API enforces all thirteen at
+-- SUBMIT, but a draft is explicitly a half-finished thing — a worker who
+-- walks away mid-entry should keep what they typed rather than be refused
+-- by a NOT NULL. Nothing incomplete can reach Fuel Admin, because nothing
+-- reaches Fuel Admin without passing through submit.
+--
+-- The two meter readings are the exception worth naming: 0 is a REAL
+-- answer there ("0 if not Force Fuel"), not an empty one, so nothing in
+-- this system may treat 0 as missing.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_submissions (
+    id                  BIGSERIAL PRIMARY KEY,
+    company_code        TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id             INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username            TEXT          NOT NULL,
+    status              TEXT          NOT NULL DEFAULT 'draft'
+                                       CHECK (status IN ('draft','submitted','approved')),
+
+    work_date           DATE          NOT NULL,
+    employee_username   TEXT,
+    fuel_card           TEXT,
+    fuel_type           TEXT,
+    gallons             NUMERIC(10,2),
+    mileage             NUMERIC(12,1),
+    truck_number        INTEGER,
+    beginning_meter     NUMERIC(12,1),
+    ending_meter        NUMERIC(12,1),
+    fueling_site        TEXT,
+    city_fueled         TEXT,
+    state               TEXT,
+    tank_number         INTEGER,
+
+    submitted_at        TIMESTAMPTZ,
+    approved_at         TIMESTAMPTZ,
+    approved_by_user_id INTEGER,
+    approved_by_name    TEXT,
+
+    created_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fuel_company_user_date ON fuel_submissions(company_code, user_id, work_date DESC);
+CREATE INDEX IF NOT EXISTS idx_fuel_company_status    ON fuel_submissions(company_code, status, work_date DESC);
+CREATE INDEX IF NOT EXISTS idx_fuel_company_employee  ON fuel_submissions(company_code, employee_username, work_date DESC);
+
+-- ─────────────────────────────────────────────────
+-- FUEL AUDIT LOG
+-- One row per state-changing action on fuel_submissions. Same shape and
+-- same purpose as timesheet_audit_log: what changed, who changed it, and
+-- the full post-change snapshot, so an approved fill-up can always be
+-- traced back to what the field originally reported.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_audit_log (
+    id            BIGSERIAL PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    entry_id      BIGINT        NOT NULL,
+    action        TEXT          NOT NULL CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','UNAPPROVE','ADMIN_EDIT','DELETE')),
+    user_id       INTEGER,
+    username      TEXT,
+    changes       JSONB,
+    snapshot      JSONB,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fuel_audit_company ON fuel_audit_log(company_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fuel_audit_entry   ON fuel_audit_log(entry_id, created_at DESC);
+
+-- ─────────────────────────────────────────────────
 -- REPORT RECIPIENT GROUPS
 -- Saved email distribution lists for the "Email Report" button on
 -- the Executive, Turf, and Paving reports. Company-scoped (visible

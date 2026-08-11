@@ -1024,14 +1024,12 @@
       },
       // Fuel is the same two-sided shape as Timesheet → Payroll: the field
       // fills in Fuel Submissions, and what they send lands in Fuel Admin.
-      // built:false until the two pages ship — the tile shows "Coming Soon"
-      // meanwhile, so the permission can be granted ahead of the pages.
       fuel: {
         name:  'Fuel Submissions',
         desc:  'Mobile fuel entry for the field. Submissions feed the Fuel Admin review queue.',
         color: '#f59e0b',
         href:  'fuel.html',
-        built: false,
+        built: true,
         icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="3" y="3" width="10" height="18" rx="1.5"/>
                   <line x1="3" y1="9" x2="13" y2="9"/>
@@ -1043,7 +1041,7 @@
         desc:  'Review, edit, and approve field fuel submissions, and report on fuel use across the divisions.',
         color: '#fb7185',
         href:  'fuel-admin.html',
-        built: false,
+        built: true,
         icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#fb7185" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="3" y="4" width="18" height="16" rx="2"/>
                   <line x1="3" y1="9" x2="21" y2="9"/>

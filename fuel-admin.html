@@ -1,0 +1,1366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fb7185' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='16' rx='2'/><line x1='3' y1='9' x2='21' y2='9'/></svg>" />
+  <title>Fuel Admin — Fuel Review</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #14141d;
+      --surface2:  #1c1c28;
+      --border:    #2a2a3a;
+      --accent:    #fb7185;
+      --accent-d:  #e11d48;
+      --text:      #e8e8ee;
+      --muted:     #888;
+      --red:       #ef4444;
+      --yellow:    #eab308;
+      --green:     #22c55e;
+      --blue:      #60a5fa;
+      --amber:     #f59e0b;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      font-size: 14px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.875rem 1.5rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      font-size: 0.68rem;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .header-right { display: flex; align-items: center; gap: 0.85rem; }
+    .user-chip { font-size: 0.78rem; color: var(--muted); }
+    .user-chip strong { color: var(--text); font-weight: 600; }
+    .top-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.45rem 0.85rem;
+      border-radius: 5px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .top-btn:hover { color: var(--text); border-color: #555; }
+
+    main {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 1.25rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    /* ── Stat strip ── */
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.85rem; }
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .stat-label {
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+    .stat.submitted .stat-value { color: var(--blue);  }
+    .stat.approved  .stat-value { color: var(--green); }
+    .stat.gallons   .stat-value { color: var(--amber); }
+
+    /* ── Filter bar ── */
+    .filters {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem 1rem;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr) auto;
+      gap: 0.7rem;
+      align-items: end;
+    }
+    .filter-field { display: flex; flex-direction: column; gap: 0.25rem; }
+    .filter-field label {
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .filter-field select,
+    .filter-field input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.65rem;
+      border-radius: 5px;
+      font-size: 0.85rem;
+      font-family: inherit;
+      outline: none;
+    }
+    .filter-field select:focus,
+    .filter-field input:focus { border-color: var(--accent); }
+    .filter-actions { display: flex; gap: 0.5rem; }
+    .btn-filter {
+      padding: 0.55rem 1.1rem;
+      background: var(--accent);
+      color: #3f0a17;
+      font-weight: 700;
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .btn-filter:hover { background: var(--accent-d); color: #fff; }
+    .btn-clear {
+      padding: 0.55rem 1rem;
+      background: none;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .btn-clear:hover { color: var(--text); border-color: #555; }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 0.4rem;
+      border-bottom: 1px solid var(--border);
+      padding: 0 0.5rem;
+      overflow-x: auto;
+      flex-wrap: nowrap;
+    }
+    .tab {
+      flex-shrink: 0;
+      padding: 0.7rem 1.25rem 0.85rem;
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab.approved.active { color: var(--green); border-bottom-color: var(--green); }
+    .tab.auditlog.active { color: var(--yellow); border-bottom-color: var(--yellow); }
+    .tab-count {
+      display: inline-block;
+      font-size: 0.7rem;
+      background: var(--surface2);
+      color: var(--text);
+      padding: 0.12rem 0.5rem;
+      border-radius: 10px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      min-width: 22px;
+      text-align: center;
+    }
+    .tab.active .tab-count { background: var(--accent); color: #3f0a17; }
+    .tab.approved.active .tab-count { background: var(--green); color: #052; }
+
+    /* ── Bulk bar ── */
+    .bulk {
+      display: none;
+      align-items: center;
+      gap: 0.85rem;
+      background: var(--surface2);
+      border: 1px solid rgba(251,113,133,0.35);
+      border-radius: 8px;
+      padding: 0.65rem 1rem;
+    }
+    .bulk.open { display: flex; }
+    .bulk-count { font-size: 0.85rem; color: var(--text); font-weight: 600; }
+    .bulk-spacer { flex: 1; }
+    .btn-approve {
+      padding: 0.45rem 1rem;
+      background: var(--green);
+      color: #052;
+      font-weight: 700;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .btn-approve:hover { filter: brightness(1.1); }
+    .btn-approve:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-approve.alt {
+      background: transparent;
+      color: var(--green);
+      border: 1px solid rgba(34,197,94,0.5);
+    }
+    .btn-approve.alt:hover:not(:disabled) {
+      background: rgba(34,197,94,0.08);
+      border-color: var(--green);
+    }
+
+    /* ── Table ── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+    thead th {
+      text-align: left;
+      padding: 0.6rem 0.85rem;
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      background: var(--surface2);
+    }
+    tbody td {
+      padding: 0.65rem 0.85rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      vertical-align: middle;
+    }
+    /* Denser than the default so all sixteen columns fit a laptop without a
+       horizontal scroll bar. Scoped to .table-wrap so the audit log keeps its
+       own sizing. */
+    .table-wrap table    { font-size: 0.78rem; }
+    .table-wrap thead th { padding: 0.5rem 0.4rem; font-size: 0.58rem; letter-spacing: 0.03em; }
+    .table-wrap tbody td { padding: 0.45rem 0.4rem; }
+    .table-wrap thead th.th-wrap { white-space: normal; line-height: 1.15; }
+    tbody tr:hover { background: rgba(255,255,255,0.015); }
+    tbody tr.selected { background: rgba(251,113,133,0.06); }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    th.num { text-align: right; }
+    .td-narrow { width: 40px; text-align: center; }
+    .td-actions { text-align: right; white-space: nowrap; }
+    .empty-row td { text-align: center; padding: 2rem 1rem; color: var(--muted); }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      font-size: 0.56rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.42rem;
+      border-radius: 4px;
+    }
+    .badge-draft     { background: rgba(136,136,136,0.15); color: var(--muted); }
+    .badge-submitted { background: rgba(96,165,250,0.15); color: var(--blue); }
+    .badge-approved  { background: rgba(34,197,94,0.15);  color: var(--green); }
+    .status-meta {
+      font-size: 0.56rem;
+      color: var(--muted);
+      line-height: 1.4;
+      margin-top: 0.3rem;
+    }
+    .status-meta strong { color: var(--text); font-weight: 600; }
+
+    /* ── Meter-order flag ──
+       Ending below beginning on a Force Fuel entry. Never blocks the approval:
+       a meter can genuinely roll over or be replaced, and refusing the entry
+       would send a real fill-up back to a driver who reported it correctly.
+       Flagged, not refused — the office decides. */
+    .meter-flag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      margin-left: 0.4rem;
+      padding: 0.12rem 0.42rem;
+      font-size: 0.6rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #7c2d12;
+      background: #fb923c;
+      border-radius: 999px;
+      cursor: help;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+    tbody tr.row-meter-flag        { background: rgba(251,146,60,0.10); }
+    tbody tr.row-meter-flag:hover  { background: rgba(251,146,60,0.16); }
+    tbody tr.row-meter-flag > td:first-child { box-shadow: inset 3px 0 0 0 #fb923c; }
+    .flag-banner {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0 0 0.4rem;
+      padding: 0.6rem 0.9rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #fdba74;
+      background: rgba(251,146,60,0.12);
+      border: 1px solid rgba(251,146,60,0.45);
+      border-left: 4px solid #fb923c;
+      border-radius: 8px;
+    }
+    /* An author `display` value overrides the `hidden` attribute's UA
+       display:none, so re-assert it or an empty banner shows. */
+    .flag-banner[hidden] { display: none; }
+    .flag-banner strong { color: #fb923c; }
+
+    /* ── Row action buttons ── */
+    .row-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.24rem 0.48rem;
+      border-radius: 4px;
+      font-size: 0.66rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-left: 0.22rem;
+    }
+    .row-btn.edit:hover     { color: var(--accent); border-color: var(--accent); }
+    .row-btn.approve        { color: var(--green); border-color: rgba(34,197,94,0.35); }
+    .row-btn.approve:hover  { background: rgba(34,197,94,0.08); }
+    .row-btn.undo:hover     { color: var(--yellow); border-color: var(--yellow); }
+    .row-btn.delete         { color: var(--red); border-color: rgba(239,68,68,0.3); }
+    .row-btn.delete:hover   { background: rgba(239,68,68,0.08); }
+
+    /* Clickable employee name in a row — one-click filter */
+    .emp-chip {
+      background: none;
+      border: 1px dashed rgba(251,113,133,0.25);
+      color: var(--text);
+      padding: 0.16rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.76rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .emp-chip:hover { color: var(--accent); border-color: var(--accent); border-style: solid; }
+
+    /* ── Audit log ── */
+    .audit-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    .audit-act {
+      display: inline-block;
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 0.18rem 0.45rem;
+      border-radius: 4px;
+      background: var(--surface2);
+      color: var(--muted);
+    }
+    .audit-act.APPROVE    { background: rgba(34,197,94,0.15);  color: var(--green); }
+    .audit-act.UNAPPROVE  { background: rgba(234,179,8,0.15);  color: var(--yellow); }
+    .audit-act.SUBMIT     { background: rgba(96,165,250,0.15); color: var(--blue); }
+    .audit-act.ADMIN_EDIT { background: rgba(251,113,133,0.15);color: var(--accent); }
+    .audit-act.DELETE     { background: rgba(239,68,68,0.15);  color: var(--red); }
+
+    /* ── Modal ── */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 100%;
+      max-width: 720px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.85rem;
+    }
+    .modal-title { font-size: 0.95rem; font-weight: 700; color: var(--text); }
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 1.3rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0.2rem 0.4rem;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; }
+    .modal-grid .full { grid-column: 1 / -1; }
+    .modal label {
+      display: block;
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 0.3rem;
+      font-weight: 600;
+    }
+    .modal label .note { text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .modal input, .modal select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.55rem 0.7rem;
+      border-radius: 5px;
+      font-size: 0.88rem;
+      font-family: inherit;
+      outline: none;
+    }
+    .modal input:focus, .modal select:focus { border-color: var(--accent); }
+    .modal input.bad, .modal select.bad { border-color: var(--red); }
+    .modal-footer {
+      display: flex;
+      gap: 0.6rem;
+      justify-content: flex-end;
+      border-top: 1px solid var(--border);
+      padding-top: 1rem;
+    }
+    .btn-save {
+      padding: 0.6rem 1.4rem;
+      background: var(--accent);
+      color: #3f0a17;
+      font-weight: 700;
+      font-size: 0.78rem;
+      letter-spacing: 0.05em;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .btn-save:hover { background: var(--accent-d); color: #fff; }
+    .btn-cancel {
+      padding: 0.6rem 1.2rem;
+      background: none;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.78rem;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .btn-cancel:hover { color: var(--text); border-color: #555; }
+    .modal-msg { font-size: 0.82rem; min-height: 1.2em; }
+    .modal-msg.error   { color: var(--red); }
+    .modal-msg.success { color: var(--green); }
+
+    /* ── No-access screen ── */
+    .no-access { max-width: 460px; margin: 5rem auto; padding: 2rem 1.25rem; text-align: center; }
+    .no-access h2 { font-size: 1.3rem; margin-bottom: 0.6rem; }
+    .no-access p  { font-size: 0.9rem; color: var(--muted); margin-bottom: 1.5rem; }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 900px) {
+      .stats   { grid-template-columns: repeat(2, 1fr); }
+      .filters { grid-template-columns: 1fr 1fr; }
+      .filter-actions { grid-column: 1 / -1; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">Fuel Admin · Fuel Review</div>
+    <div class="header-right">
+      <div class="user-chip" id="userChip"></div>
+      <button class="top-btn" onclick="goToDivisions()">Divisions</button>
+      <button class="top-btn" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <div id="noAccess" class="no-access hidden">
+    <h2>No Fuel Admin Access</h2>
+    <p>Your account doesn't have permission to review fuel submissions. Ask a company admin to grant you Fuel Admin access.</p>
+    <button class="top-btn" onclick="goToDivisions()">Back to Divisions</button>
+  </div>
+
+  <main id="mainContent">
+
+    <!-- ── Stats ── -->
+    <div class="stats">
+      <div class="stat submitted">
+        <div class="stat-label">Awaiting Review</div>
+        <div class="stat-value" id="stat-submitted">0</div>
+      </div>
+      <div class="stat approved">
+        <div class="stat-label">Approved (in range)</div>
+        <div class="stat-value" id="stat-approved">0</div>
+      </div>
+      <div class="stat gallons">
+        <div class="stat-label">Gallons (approved)</div>
+        <div class="stat-value" id="stat-gallons">0.00</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Gallons (all shown)</div>
+        <div class="stat-value" id="stat-gallons-all">0.00</div>
+      </div>
+    </div>
+
+    <!-- ── Filters ── -->
+    <div class="filters">
+      <div class="filter-field">
+        <label for="flt-from">From</label>
+        <input type="date" id="flt-from" />
+      </div>
+      <div class="filter-field">
+        <label for="flt-to">To</label>
+        <input type="date" id="flt-to" />
+      </div>
+      <div class="filter-field">
+        <label for="flt-employee">Employee</label>
+        <select id="flt-employee"><option value="">All</option></select>
+      </div>
+      <div class="filter-field">
+        <label for="flt-card">Fuel Card</label>
+        <select id="flt-card"><option value="">All</option></select>
+      </div>
+      <div class="filter-field">
+        <label for="flt-type">Fuel Type</label>
+        <select id="flt-type"><option value="">All</option></select>
+      </div>
+      <div class="filter-actions">
+        <button class="btn-clear"  onclick="clearFilters()">Reset</button>
+        <button class="btn-filter" onclick="applyFilters()">Apply</button>
+      </div>
+    </div>
+
+    <!-- ── Tabs ── -->
+    <div class="tabs">
+      <button class="tab active" data-tab="pending" onclick="switchTab('pending')">
+        Pending Review <span class="tab-count" id="tab-pending-count">0</span>
+      </button>
+      <button class="tab approved" data-tab="approved" onclick="switchTab('approved')">
+        Approved <span class="tab-count" id="tab-approved-count">0</span>
+      </button>
+      <button class="tab auditlog" data-tab="auditlog" onclick="switchTab('auditlog')">
+        Audit Log
+      </button>
+    </div>
+
+    <!-- ── Bulk bar ── -->
+    <div class="bulk" id="bulkBar">
+      <div class="bulk-count" id="bulkCount">0 selected</div>
+      <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
+      <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
+      <div class="bulk-spacer"></div>
+      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
+    </div>
+
+    <!-- ── Audit log container ── -->
+    <div id="auditLogWrap" style="display:none"></div>
+
+    <!-- ── Table ── -->
+    <div class="table-wrap" id="tableWrap">
+      <div id="flagBanner" class="flag-banner" hidden></div>
+      <table>
+        <thead>
+          <tr>
+            <th class="td-narrow"><input type="checkbox" id="selectAll" onchange="toggleAll()" /></th>
+            <th>Employee</th>
+            <th>Date</th>
+            <th class="num">Truck</th>
+            <th>Fuel Type</th>
+            <th>Fuel Card</th>
+            <th class="num">Gallons</th>
+            <th class="num">Mileage</th>
+            <th class="num th-wrap">Begin Meter</th>
+            <th class="num th-wrap">End Meter</th>
+            <th>Fueling Site</th>
+            <th>City</th>
+            <th>State</th>
+            <th class="num">Tank</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rowsBody">
+          <tr class="empty-row"><td colspan="16">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </main>
+
+  <!-- ── Edit modal ── -->
+  <div class="modal-backdrop" id="editBackdrop">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title" id="editTitle">Edit Fuel Entry</div>
+        <button class="modal-close" onclick="closeEdit()">&#10005;</button>
+      </div>
+      <div class="modal-grid">
+        <div>
+          <label for="e-date">Date</label>
+          <input type="date" id="e-date" />
+        </div>
+        <div>
+          <label for="e-employee">Employee</label>
+          <select id="e-employee"></select>
+        </div>
+        <div>
+          <label for="e-fuel-card">Fuel Card Used</label>
+          <select id="e-fuel-card"></select>
+        </div>
+        <div>
+          <label for="e-fuel-type">Fuel Type</label>
+          <select id="e-fuel-type"></select>
+        </div>
+        <div>
+          <label for="e-gallons">Gallons</label>
+          <input type="number" id="e-gallons" min="0" step="0.01" />
+        </div>
+        <div>
+          <label for="e-mileage">Mileage</label>
+          <input type="number" id="e-mileage" min="0" step="0.1" />
+        </div>
+        <div>
+          <label for="e-truck-number">Truck Number</label>
+          <input type="number" id="e-truck-number" min="0" step="1" />
+        </div>
+        <div>
+          <label for="e-tank-number">Tank Number</label>
+          <input type="number" id="e-tank-number" min="0" step="1" />
+        </div>
+        <div>
+          <label for="e-beginning-meter">Beginning Meter <span class="note">(0 if not Force Fuel)</span></label>
+          <input type="number" id="e-beginning-meter" min="0" step="0.1" />
+        </div>
+        <div>
+          <label for="e-ending-meter">Ending Meter <span class="note">(0 if not Force Fuel)</span></label>
+          <input type="number" id="e-ending-meter" min="0" step="0.1" />
+        </div>
+        <div class="full">
+          <label for="e-fueling-site">Fueling Site</label>
+          <input type="text" id="e-fueling-site" maxlength="200" />
+        </div>
+        <div>
+          <label for="e-city">City Fueled</label>
+          <input type="text" id="e-city" maxlength="120" />
+        </div>
+        <div>
+          <label for="e-state">State</label>
+          <select id="e-state"></select>
+        </div>
+      </div>
+      <div class="modal-msg" id="editMsg"></div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeEdit()">Cancel</button>
+        <button class="btn-save" id="editSaveBtn" onclick="saveEdit()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── Auth + access guard ────────────────────────────────────────────────
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) window.location.replace('index.html');
+
+    const isPlatformAdmin  = Boolean(user && user.isPlatformAdmin);
+    const allowedDivisions = Array.isArray(user && user.allowedDivisions) ? user.allowedDivisions : [];
+    const hasFuelAdmin     = isPlatformAdmin || allowedDivisions.includes('fuel_admin');
+
+    if (!hasFuelAdmin) {
+      document.getElementById('mainContent').classList.add('hidden');
+      document.getElementById('noAccess').classList.remove('hidden');
+    } else {
+      document.getElementById('userChip').innerHTML = `<strong>${escapeHtml(user.username)}</strong>`;
+      queueMicrotask(init);
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+    function escAttr(s) {
+      return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+    }
+    // Values that go into an onclick="…('…')" attribute have to survive both
+    // the HTML attribute and the JS string literal inside it.
+    function escJsAttr(s) {
+      return String(s == null ? '' : s)
+        .replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+
+    // ── Option lists ───────────────────────────────────────────────────────
+    // Copies of api/lib/fuel-options.js, which is canonical — this is a static
+    // page with no build step. scripts/test-fuel-submissions.js reads these
+    // back out and fails if they have drifted from the server's copy.
+    const FUEL_CARDS = ['Guttman', 'Satterlee', 'Wex', 'Bulk Fuel – No card'];
+    const FUEL_TYPES = ['Diesel', 'Off Road Diesel', 'On Road', 'Gas'];
+    const US_STATES = [
+      { code: 'AL', name: 'Alabama' },        { code: 'AK', name: 'Alaska' },
+      { code: 'AZ', name: 'Arizona' },        { code: 'AR', name: 'Arkansas' },
+      { code: 'CA', name: 'California' },     { code: 'CO', name: 'Colorado' },
+      { code: 'CT', name: 'Connecticut' },    { code: 'DE', name: 'Delaware' },
+      { code: 'DC', name: 'District of Columbia' },
+      { code: 'FL', name: 'Florida' },        { code: 'GA', name: 'Georgia' },
+      { code: 'HI', name: 'Hawaii' },         { code: 'ID', name: 'Idaho' },
+      { code: 'IL', name: 'Illinois' },       { code: 'IN', name: 'Indiana' },
+      { code: 'IA', name: 'Iowa' },           { code: 'KS', name: 'Kansas' },
+      { code: 'KY', name: 'Kentucky' },       { code: 'LA', name: 'Louisiana' },
+      { code: 'ME', name: 'Maine' },          { code: 'MD', name: 'Maryland' },
+      { code: 'MA', name: 'Massachusetts' },  { code: 'MI', name: 'Michigan' },
+      { code: 'MN', name: 'Minnesota' },      { code: 'MS', name: 'Mississippi' },
+      { code: 'MO', name: 'Missouri' },       { code: 'MT', name: 'Montana' },
+      { code: 'NE', name: 'Nebraska' },       { code: 'NV', name: 'Nevada' },
+      { code: 'NH', name: 'New Hampshire' },  { code: 'NJ', name: 'New Jersey' },
+      { code: 'NM', name: 'New Mexico' },     { code: 'NY', name: 'New York' },
+      { code: 'NC', name: 'North Carolina' }, { code: 'ND', name: 'North Dakota' },
+      { code: 'OH', name: 'Ohio' },           { code: 'OK', name: 'Oklahoma' },
+      { code: 'OR', name: 'Oregon' },         { code: 'PA', name: 'Pennsylvania' },
+      { code: 'RI', name: 'Rhode Island' },   { code: 'SC', name: 'South Carolina' },
+      { code: 'SD', name: 'South Dakota' },   { code: 'TN', name: 'Tennessee' },
+      { code: 'TX', name: 'Texas' },          { code: 'UT', name: 'Utah' },
+      { code: 'VT', name: 'Vermont' },        { code: 'VA', name: 'Virginia' },
+      { code: 'WA', name: 'Washington' },     { code: 'WV', name: 'West Virginia' },
+      { code: 'WI', name: 'Wisconsin' },      { code: 'WY', name: 'Wyoming' },
+    ];
+
+    // The thirteen reported fields, in form order. Drives the edit modal, the
+    // completeness check and the CSV, so a field can never be added to one and
+    // forgotten in the others.
+    const FIELDS = [
+      { key: 'work_date',         id: 'e-date',            label: 'Date' },
+      { key: 'employee_username', id: 'e-employee',        label: 'Employee' },
+      { key: 'fuel_card',         id: 'e-fuel-card',       label: 'Fuel Card Used' },
+      { key: 'fuel_type',         id: 'e-fuel-type',       label: 'Fuel Type' },
+      { key: 'gallons',           id: 'e-gallons',         label: 'Gallons' },
+      { key: 'mileage',           id: 'e-mileage',         label: 'Mileage' },
+      { key: 'truck_number',      id: 'e-truck-number',    label: 'Truck Number' },
+      { key: 'beginning_meter',   id: 'e-beginning-meter', label: 'Beginning Meter Reading' },
+      { key: 'ending_meter',      id: 'e-ending-meter',    label: 'Ending Meter Reading' },
+      { key: 'fueling_site',      id: 'e-fueling-site',    label: 'Fueling Site' },
+      { key: 'city_fueled',       id: 'e-city',            label: 'City Fueled' },
+      { key: 'state',             id: 'e-state',           label: 'State' },
+      { key: 'tank_number',       id: 'e-tank-number',     label: 'Tank Number' },
+    ];
+
+    function el(id) { return document.getElementById(id); }
+    function val(id) { const e = el(id); return e ? e.value : ''; }
+
+    // ── State ──────────────────────────────────────────────────────────────
+    let allEntries   = [];   // everything the last fetch returned
+    let shownEntries = [];   // what the active tab is rendering
+    let employees    = [];
+    let selected     = new Set();
+    let activeTab    = 'pending';
+    let editingId    = null;
+
+    async function init() {
+      // Default range: this month to date. Wide enough to be useful on the
+      // first load, narrow enough that the grid isn't the whole year.
+      const now = new Date();
+      el('flt-from').value = ymd(new Date(now.getFullYear(), now.getMonth(), 1));
+      el('flt-to').value   = ymd(now);
+
+      el('flt-card').innerHTML = '<option value="">All</option>' +
+        FUEL_CARDS.map(c => `<option value="${escAttr(c)}">${escapeHtml(c)}</option>`).join('');
+      el('flt-type').innerHTML = '<option value="">All</option>' +
+        FUEL_TYPES.map(t => `<option value="${escAttr(t)}">${escapeHtml(t)}</option>`).join('');
+
+      renderModalOptions();
+      await loadEmployees();
+      await applyFilters();
+    }
+
+    function renderModalOptions() {
+      el('e-fuel-card').innerHTML = '<option value="">— pick —</option>' +
+        FUEL_CARDS.map(c => `<option value="${escAttr(c)}">${escapeHtml(c)}</option>`).join('');
+      el('e-fuel-type').innerHTML = '<option value="">— pick —</option>' +
+        FUEL_TYPES.map(t => `<option value="${escAttr(t)}">${escapeHtml(t)}</option>`).join('');
+      el('e-state').innerHTML = '<option value="">— pick —</option>' +
+        US_STATES.map(s => `<option value="${s.code}">${escapeHtml(s.name)}</option>`).join('');
+    }
+
+    async function loadEmployees() {
+      try {
+        const res  = await fetch('/api/fuel-employees', { headers: authHeaders() });
+        const data = await res.json();
+        employees = Array.isArray(data.employees) ? data.employees : [];
+      } catch { employees = []; }
+      const opts = employees.map(e => `<option value="${escAttr(e.username)}">${escapeHtml(e.username)}</option>`).join('');
+      el('flt-employee').innerHTML = '<option value="">All</option>' + opts;
+      el('e-employee').innerHTML   = '<option value="">— pick —</option>' + opts;
+    }
+
+    function ymd(d) {
+      const y  = d.getFullYear();
+      const m  = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    }
+
+    function authHeaders(json) {
+      const h = { Authorization: `Bearer ${token}` };
+      if (json) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    // ── Tabs ───────────────────────────────────────────────────────────────
+    function switchTab(tab) {
+      activeTab = tab;
+      document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+      const isAudit = tab === 'auditlog';
+      el('tableWrap').style.display     = isAudit ? 'none' : '';
+      el('auditLogWrap').style.display  = isAudit ? '' : 'none';
+      el('bulkBar').classList.toggle('open', !isAudit);
+      if (isAudit) { loadAuditLog(); return; }
+      // Selections belong to the tab they were made on — carrying them across
+      // would let "Approve Selected" act on rows that are no longer on screen.
+      selected.clear();
+      renderRows();
+    }
+
+    // ── Load + filter ──────────────────────────────────────────────────────
+    async function applyFilters() {
+      const body = el('rowsBody');
+      body.innerHTML = '<tr class="empty-row"><td colspan="16">Loading…</td></tr>';
+
+      const params = new URLSearchParams();
+      params.set('scope', 'all');
+      // Drafts belong to the person still filling them in — the office reviews
+      // what has been sent, so the queue never shows someone's unfinished work.
+      params.set('status', 'submitted_approved');
+      if (val('flt-from'))     params.set('from', val('flt-from'));
+      if (val('flt-to'))       params.set('to', val('flt-to'));
+      if (val('flt-employee')) params.set('employee', val('flt-employee'));
+      if (val('flt-card'))     params.set('fuel_card', val('flt-card'));
+      if (val('flt-type'))     params.set('fuel_type', val('flt-type'));
+
+      try {
+        const res  = await fetch('/api/fuel-submissions?' + params.toString(), { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        allEntries = Array.isArray(data.entries) ? data.entries : [];
+      } catch (err) {
+        allEntries = [];
+        body.innerHTML = `<tr class="empty-row"><td colspan="16">Couldn't load submissions — ${escapeHtml(err.message)}</td></tr>`;
+        renderStats();
+        return;
+      }
+      selected.clear();
+      renderStats();
+      renderRows();
+      if (activeTab === 'auditlog') loadAuditLog();
+    }
+
+    function clearFilters() {
+      const now = new Date();
+      el('flt-from').value = ymd(new Date(now.getFullYear(), now.getMonth(), 1));
+      el('flt-to').value   = ymd(now);
+      el('flt-employee').value = '';
+      el('flt-card').value     = '';
+      el('flt-type').value     = '';
+      applyFilters();
+    }
+
+    function filterByEmployee(name) {
+      el('flt-employee').value = name || '';
+      applyFilters();
+    }
+
+    function renderStats() {
+      const submitted = allEntries.filter(e => e.status === 'submitted');
+      const approved  = allEntries.filter(e => e.status === 'approved');
+      el('stat-submitted').textContent = submitted.length;
+      el('stat-approved').textContent  = approved.length;
+      el('stat-gallons').textContent     = sumGallons(approved).toFixed(2);
+      el('stat-gallons-all').textContent = sumGallons(allEntries).toFixed(2);
+      el('tab-pending-count').textContent  = submitted.length;
+      el('tab-approved-count').textContent = approved.length;
+    }
+
+    function sumGallons(list) {
+      return list.reduce((s, e) => s + (Number(e.gallons) || 0), 0);
+    }
+
+    // ── Rows ───────────────────────────────────────────────────────────────
+    // A Force Fuel entry whose ending meter reads below its beginning one.
+    // Both being 0 is the documented "not Force Fuel" answer and is not a
+    // flag; nor is a missing reading, which the status workflow already
+    // refuses to let through.
+    function meterFlagged(e) {
+      const b = e.beginning_meter, x = e.ending_meter;
+      if (b == null || x == null) return false;
+      if (b === 0 && x === 0)     return false;
+      return Number(x) < Number(b);
+    }
+
+    function renderRows() {
+      const body = el('rowsBody');
+      const wanted = activeTab === 'approved' ? 'approved' : 'submitted';
+      shownEntries = allEntries.filter(e => e.status === wanted);
+
+      const flagged = shownEntries.filter(meterFlagged);
+      const banner  = el('flagBanner');
+      if (flagged.length) {
+        banner.hidden = false;
+        banner.innerHTML = `<strong>${flagged.length}</strong> entr${flagged.length === 1 ? 'y reads' : 'ies read'} `
+          + 'an ending meter below the beginning one. Worth a look before approving — a rolled-over or replaced meter is legitimate.';
+      } else {
+        banner.hidden = true;
+        banner.innerHTML = '';
+      }
+
+      if (!shownEntries.length) {
+        body.innerHTML = `<tr class="empty-row"><td colspan="16">No ${wanted} fuel entries in this range.</td></tr>`;
+        el('selectAll').checked = false;
+        updateBulk();
+        return;
+      }
+
+      body.innerHTML = shownEntries.map(e => {
+        const flag = meterFlagged(e);
+        const isSel = selected.has(e.id);
+        return `
+          <tr class="${isSel ? 'selected' : ''} ${flag ? 'row-meter-flag' : ''}">
+            <td class="td-narrow">
+              <input type="checkbox" ${isSel ? 'checked' : ''} onchange="toggleRow('${escJsAttr(e.id)}')" />
+            </td>
+            <td>
+              <button class="emp-chip" onclick="filterByEmployee('${escJsAttr(e.employee_username || '')}')"
+                title="Filter to this employee">${escapeHtml(e.employee_username || '—')}</button>
+              ${e.username && e.username !== e.employee_username
+                ? `<div class="status-meta">sent by <strong>${escapeHtml(e.username)}</strong></div>` : ''}
+            </td>
+            <td>${prettyDate(e.work_date)}</td>
+            <td class="num">${e.truck_number != null ? e.truck_number : '—'}</td>
+            <td>${escapeHtml(e.fuel_type || '—')}</td>
+            <td>${escapeHtml(e.fuel_card || '—')}</td>
+            <td class="num">${num(e.gallons, 2)}</td>
+            <td class="num">${num(e.mileage, 1)}</td>
+            <td class="num">${num(e.beginning_meter, 1)}</td>
+            <td class="num">${num(e.ending_meter, 1)}${flag
+              ? `<span class="meter-flag" title="Ending meter (${num(e.ending_meter, 1)}) is below the beginning meter (${num(e.beginning_meter, 1)}).">meter</span>`
+              : ''}</td>
+            <td>${escapeHtml(e.fueling_site || '—')}</td>
+            <td>${escapeHtml(e.city_fueled || '—')}</td>
+            <td>${escapeHtml(e.state || '—')}</td>
+            <td class="num">${e.tank_number != null ? e.tank_number : '—'}</td>
+            <td>
+              <span class="badge badge-${e.status}">${e.status}</span>
+              ${statusMetaHtml(e)}
+            </td>
+            <td class="td-actions">
+              <button class="row-btn edit" onclick="openEdit('${escJsAttr(e.id)}')">Edit</button>
+              ${e.status === 'submitted'
+                ? `<button class="row-btn approve" onclick="approveOne('${escJsAttr(e.id)}')">Approve</button>`
+                : `<button class="row-btn undo" onclick="unapproveOne('${escJsAttr(e.id)}')">Un-approve</button>`}
+              <button class="row-btn delete" onclick="deleteEntry('${escJsAttr(e.id)}')">Delete</button>
+            </td>
+          </tr>`;
+      }).join('');
+
+      el('selectAll').checked = shownEntries.length > 0 && shownEntries.every(e => selected.has(e.id));
+      updateBulk();
+    }
+
+    // A number the field actually reported, or an em dash. 0 is a reported
+    // value — both meters are documented "0 if not Force Fuel" — so only null
+    // reads as nothing.
+    function num(v, dp) {
+      if (v == null) return '—';
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(dp) : '—';
+    }
+
+    function prettyDate(s) {
+      if (!s) return '—';
+      const d = new Date(s + 'T00:00:00');
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' });
+    }
+
+    function fmtTs(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+
+    function statusMetaHtml(e) {
+      const bits = [];
+      const sub = fmtTs(e.submitted_at);
+      const app = fmtTs(e.approved_at);
+      if (sub) bits.push(`Sent ${sub}`);
+      if (e.status === 'approved' && app) bits.push(`OK'd ${app} by <strong>${escapeHtml(e.approved_by_name || '—')}</strong>`);
+      return bits.length ? `<div class="status-meta">${bits.join('<br />')}</div>` : '';
+    }
+
+    // ── Selection ──────────────────────────────────────────────────────────
+    function toggleRow(id) {
+      if (selected.has(id)) selected.delete(id); else selected.add(id);
+      renderRows();
+    }
+
+    function toggleAll() {
+      const on = el('selectAll').checked;
+      // Only the rows actually on screen. Selecting "all" while a filter is
+      // applied must not quietly pick up everything the filter excluded.
+      for (const e of shownEntries) {
+        if (on) selected.add(e.id); else selected.delete(e.id);
+      }
+      renderRows();
+    }
+
+    function updateBulk() {
+      const n = shownEntries.filter(e => selected.has(e.id)).length;
+      el('bulkCount').textContent = `${n} selected`;
+      const submittedShown = shownEntries.filter(e => e.status === 'submitted');
+      el('approveSelectedBtn').disabled = n === 0 || activeTab !== 'pending';
+      el('approveAllBtn').disabled      = submittedShown.length === 0 || activeTab !== 'pending';
+    }
+
+    // ── Approve / un-approve / delete ──────────────────────────────────────
+    // Every write goes through here so one in flight can't be raced by a
+    // second click on another button.
+    let writing = false;
+    function beginWrite() { if (writing) return false; writing = true; return true; }
+    function endWrite()   { writing = false; }
+
+    async function postAction(id, action) {
+      const res = await fetch(`/api/fuel-submissions?action=${action}&id=${encodeURIComponent(id)}`, {
+        method: 'POST', headers: authHeaders(),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || `${action} failed`);
+      return j.entry;
+    }
+
+    // Fold a server-returned row back into the cache so the grid reflects the
+    // change without a full refetch losing the reviewer's scroll position.
+    function applyUpdate(updated) {
+      if (!updated) return;
+      const i = allEntries.findIndex(e => e.id === updated.id);
+      if (i >= 0) allEntries[i] = updated;
+      renderStats();
+      renderRows();
+    }
+
+    async function approveOne(id) {
+      if (!beginWrite()) return;
+      try {
+        applyUpdate(await postAction(id, 'approve'));
+        selected.delete(id);
+        renderRows();
+      } catch (err) {
+        alert(err.message);
+      } finally { endWrite(); }
+    }
+
+    async function unapproveOne(id) {
+      if (!confirm('Un-approve this fuel entry? It goes back to Pending Review.')) return;
+      if (!beginWrite()) return;
+      try {
+        applyUpdate(await postAction(id, 'unapprove'));
+      } catch (err) {
+        alert(err.message);
+      } finally { endWrite(); }
+    }
+
+    function bulkApprove() {
+      const ids = shownEntries.filter(e => selected.has(e.id) && e.status === 'submitted').map(e => e.id);
+      if (!ids.length) return;
+      if (!confirm(`Approve ${ids.length} fuel entr${ids.length === 1 ? 'y' : 'ies'}?`)) return;
+      runApprovals(ids);
+    }
+
+    function approveAllSubmitted() {
+      const ids = shownEntries.filter(e => e.status === 'submitted').map(e => e.id);
+      if (!ids.length) return;
+      if (!confirm(`Approve all ${ids.length} submitted fuel entr${ids.length === 1 ? 'y' : 'ies'} in this range?`)) return;
+      runApprovals(ids);
+    }
+
+    // One at a time, and a failure never stops the rest: the ones that went
+    // through stay approved and are named out of the failures, so a retry
+    // covers only what is actually left.
+    async function runApprovals(ids) {
+      if (!beginWrite()) return;
+      const failures = [];
+      try {
+        for (const id of ids) {
+          try {
+            const updated = await postAction(id, 'approve');
+            const i = allEntries.findIndex(e => e.id === updated.id);
+            if (i >= 0) allEntries[i] = updated;
+            selected.delete(id);
+          } catch (err) {
+            const e = allEntries.find(x => x.id === id);
+            failures.push(`${e ? (e.employee_username || 'entry') : 'entry'} ${e ? prettyDate(e.work_date) : id}: ${err.message}`);
+          }
+        }
+      } finally {
+        endWrite();
+        renderStats();
+        renderRows();
+      }
+      if (failures.length) {
+        alert(`${ids.length - failures.length} of ${ids.length} approved.\n\nNot approved:\n${failures.join('\n')}`);
+      }
+    }
+
+    async function deleteEntry(id) {
+      const e = allEntries.find(x => x.id === id);
+      const who = e ? `${e.employee_username || 'this entry'} — ${prettyDate(e.work_date)}` : 'this entry';
+      if (!confirm(`Delete ${who}? This cannot be undone.`)) return;
+      if (!beginWrite()) return;
+      try {
+        const res = await fetch('/api/fuel-submissions?id=' + encodeURIComponent(id), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        allEntries = allEntries.filter(x => x.id !== id);
+        selected.delete(id);
+        renderStats();
+        renderRows();
+      } catch (err) {
+        alert(err.message);
+      } finally { endWrite(); }
+    }
+
+    // ── Edit modal ─────────────────────────────────────────────────────────
+    function openEdit(id) {
+      const e = allEntries.find(x => x.id === id);
+      if (!e) return;
+      editingId = id;
+      el('editTitle').textContent =
+        `Edit — ${e.employee_username || 'entry'} · ${prettyDate(e.work_date)}`;
+      for (const f of FIELDS) {
+        const node = el(f.id);
+        if (!node) continue;
+        node.classList.remove('bad');
+        const v = e[f.key];
+        node.value = (v == null) ? '' : String(v);
+      }
+      // A username no longer in the company would blank the picker and quietly
+      // rewrite who fuelled on the next save. Keep it as its own option.
+      const empSel = el('e-employee');
+      if (e.employee_username && ![...empSel.options].some(o => o.value === e.employee_username)) {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = e.employee_username;
+        opt.selected = true;
+        empSel.appendChild(opt);
+      }
+      el('editMsg').textContent = '';
+      el('editMsg').className = 'modal-msg';
+      el('editBackdrop').classList.add('open');
+    }
+
+    function closeEdit() {
+      el('editBackdrop').classList.remove('open');
+      editingId = null;
+    }
+
+    document.getElementById('editBackdrop').addEventListener('click', function (ev) {
+      if (ev.target === this) closeEdit();
+    });
+
+    async function saveEdit() {
+      if (!editingId) return;
+      const msg = el('editMsg');
+      msg.className = 'modal-msg';
+
+      // An entry past draft may not be left incomplete — the server refuses it
+      // too, but saying so here names the field instead of the row.
+      const empty = FIELDS.filter(f => val(f.id) === '');
+      for (const f of FIELDS) {
+        const node = el(f.id);
+        if (node) node.classList.toggle('bad', empty.includes(f));
+      }
+      if (empty.length) {
+        msg.textContent = `Every field is required — still empty: ${empty.map(f => f.label).join(', ')}.`;
+        msg.classList.add('error');
+        return;
+      }
+
+      const data = {};
+      for (const f of FIELDS) data[f.key] = val(f.id);
+
+      const btn = el('editSaveBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/fuel-submissions?id=' + encodeURIComponent(editingId), {
+          method: 'PUT', headers: authHeaders(true), body: JSON.stringify(data),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        applyUpdate(j.entry);
+        closeEdit();
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.classList.add('error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ── Audit log ──────────────────────────────────────────────────────────
+    async function loadAuditLog() {
+      const wrap = el('auditLogWrap');
+      wrap.innerHTML = '<div class="audit-wrap"><table><tbody><tr class="empty-row"><td>Loading…</td></tr></tbody></table></div>';
+      const params = new URLSearchParams();
+      if (val('flt-from')) params.set('from', val('flt-from'));
+      if (val('flt-to'))   params.set('to', val('flt-to'));
+      try {
+        const res  = await fetch('/api/fuel-audit-log?' + params.toString(), { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        renderAuditLog(Array.isArray(data.events) ? data.events : []);
+      } catch (err) {
+        wrap.innerHTML = `<div class="audit-wrap"><table><tbody><tr class="empty-row"><td>Couldn't load the audit log — ${escapeHtml(err.message)}</td></tr></tbody></table></div>`;
+      }
+    }
+
+    function renderAuditLog(events) {
+      const wrap = el('auditLogWrap');
+      if (!events.length) {
+        wrap.innerHTML = '<div class="audit-wrap"><table><tbody><tr class="empty-row"><td>No activity in this date range.</td></tr></tbody></table></div>';
+        return;
+      }
+      wrap.innerHTML = `
+        <div class="audit-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>By</th>
+                <th>Entry</th>
+                <th>Employee</th>
+                <th>Date</th>
+                <th class="num">Gallons</th>
+                <th>What it looked like</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${events.map(ev => {
+                const s = ev.snapshot || {};
+                const where = [s.fueling_site, [s.city_fueled, s.state].filter(Boolean).join(', ')]
+                  .filter(Boolean).join(' · ');
+                const what = [
+                  s.truck_number != null ? `Truck ${s.truck_number}` : '',
+                  s.fuel_type || '', s.fuel_card || '',
+                ].filter(Boolean).join(' · ');
+                return `
+                  <tr>
+                    <td>${escapeHtml(fmtTs(ev.created_at))}</td>
+                    <td><span class="audit-act ${escAttr(ev.action)}">${escapeHtml(ev.action)}</span></td>
+                    <td>${escapeHtml(ev.username || '—')}</td>
+                    <td>#${escapeHtml(String(ev.entry_id))}</td>
+                    <td>${escapeHtml(s.employee_username || '—')}</td>
+                    <td>${s.work_date ? prettyDate(s.work_date) : '—'}</td>
+                    <td class="num">${num(s.gallons, 2)}</td>
+                    <td>${escapeHtml([what, where].filter(Boolean).join(' — ')) || '—'}</td>
+                  </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    // ── CSV export ─────────────────────────────────────────────────────────
+    function csvEscape(v) {
+      const s = v == null ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    }
+
+    function exportCsv() {
+      if (!shownEntries.length) { alert('Nothing to export in this tab.'); return; }
+      const header = ['Date','Employee','Fuel Card','Fuel Type','Gallons','Mileage','Truck Number',
+                      'Beginning Meter','Ending Meter','Fueling Site','City Fueled','State','Tank Number',
+                      'Status','Submitted','Approved','Approved By','Submitted By'];
+      const lines = [header.map(csvEscape).join(',')];
+      for (const e of shownEntries) {
+        lines.push([
+          e.work_date, e.employee_username, e.fuel_card, e.fuel_type,
+          e.gallons, e.mileage, e.truck_number,
+          e.beginning_meter, e.ending_meter,
+          e.fueling_site, e.city_fueled, e.state, e.tank_number,
+          e.status, e.submitted_at || '', e.approved_at || '', e.approved_by_name || '', e.username || '',
+        ].map(csvEscape).join(','));
+      }
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = `fuel-${activeTab}-${val('flt-from') || 'start'}-to-${val('flt-to') || 'end'}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function goToDivisions() { window.location.replace('divisions.html'); }
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+  </script>
+</body>
+</html>
