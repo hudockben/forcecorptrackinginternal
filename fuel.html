@@ -163,6 +163,25 @@
     }
     .field-note.auto { color: var(--accent); }
 
+    /* Gallons is the answer to the two readings above it, so it is given the
+       weight of one: a bigger figure than an ordinary field, in a block that
+       sits slightly proud of the form rather than in the run of questions. */
+    .gallons-row {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.8rem 0.85rem;
+      gap: 0.45rem;
+    }
+    .gallons-row input {
+      font-size: 1.35rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    /* The card the row sits on is already surface2, so the read-only fill
+       from the rule above would leave the box invisible against it. */
+    .gallons-row input[readonly] { background: var(--bg); }
+
     /* ── Action buttons ── */
     .btn-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
     .btn {
@@ -314,20 +333,13 @@
 
       <div class="row-2">
         <div class="row">
-          <label for="f-gallons">Gallons</label>
-          <input type="number" id="f-gallons" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
-                 oninput="onGallonsTyped()" />
-        </div>
-        <div class="row">
           <label for="f-mileage">Mileage</label>
           <input type="number" id="f-mileage" inputmode="decimal" min="0" step="0.1" placeholder="0" />
         </div>
-      </div>
-      <div class="field-note" id="gallonsNote"></div>
-
-      <div class="row">
-        <label for="f-truck-number">Truck Number</label>
-        <input type="number" id="f-truck-number" inputmode="numeric" min="0" step="1" placeholder="0" />
+        <div class="row">
+          <label for="f-truck-number">Truck Number</label>
+          <input type="number" id="f-truck-number" inputmode="numeric" min="0" step="1" placeholder="0" />
+        </div>
       </div>
 
       <div class="row">
@@ -341,11 +353,18 @@
         <input type="number" id="f-ending-meter" inputmode="decimal" min="0" step="0.1" placeholder="0"
                oninput="updateGallons()" onchange="updateGallons()" />
       </div>
-      <!-- The gallons box sits above the meters that feed it, so the driver
-           filling these in is looking at the wrong part of the screen to see
-           it change. Saying the new figure here puts the confirmation where
-           their eyes already are. -->
-      <div class="field-note" id="meterNote"></div>
+
+      <!-- Gallons comes straight after the two readings it is worked out
+           from, so the number appears directly under the boxes that changed
+           it. It was above them, which meant a driver entering meter readings
+           watched a figure update off the top of their screen — and read as a
+           question whose answer was three fields further down. -->
+      <div class="row gallons-row" id="gallonsRow">
+        <label for="f-gallons">Gallons</label>
+        <input type="number" id="f-gallons" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+               oninput="onGallonsTyped()" />
+        <div class="field-note" id="gallonsNote"></div>
+      </div>
 
       <div class="row">
         <label for="f-fueling-site">Fueling Site</label>
@@ -481,11 +500,11 @@
       { key: 'employee_username', id: 'f-employee',         label: 'Employee' },
       { key: 'fuel_card',         id: 'f-fuel-card',        label: 'Fuel Card Used' },
       { key: 'fuel_type',         id: 'f-fuel-type',        label: 'Fuel Type' },
-      { key: 'gallons',           id: 'f-gallons',          label: 'Gallons' },
       { key: 'mileage',           id: 'f-mileage',          label: 'Mileage' },
       { key: 'truck_number',      id: 'f-truck-number',     label: 'Truck Number' },
       { key: 'beginning_meter',   id: 'f-beginning-meter',  label: 'Beginning Meter Reading' },
       { key: 'ending_meter',      id: 'f-ending-meter',     label: 'Ending Meter Reading' },
+      { key: 'gallons',           id: 'f-gallons',          label: 'Gallons' },
       { key: 'fueling_site',      id: 'f-fueling-site',     label: 'Fueling Site' },
       { key: 'city_fueled',       id: 'f-city',             label: 'City Fueled' },
       { key: 'state',             id: 'f-state',            label: 'State' },
@@ -541,23 +560,22 @@
 
     // Point the gallons box at whichever source currently owns it, and say
     // which one that is. Runs on every meter keystroke and after anything
-    // that fills the form (loading a draft, resetting it).
+    // that fills the form (loading a draft, resetting it). The box sits
+    // directly beneath the two readings, so the figure and the note both land
+    // where the driver is already looking.
     function updateGallons() {
       const b    = numOrNull(val('f-beginning-meter'));
       const e    = numOrNull(val('f-ending-meter'));
       const auto = gallonsFromMeters(b, e);
       const box  = el('f-gallons');
       const note = el('gallonsNote');
-      const mnote = el('meterNote');
 
       if (auto != null) {
         box.readOnly = true;
         box.value    = auto.toFixed(2);
         box.classList.remove('bad');
         note.className   = 'field-note auto';
-        note.textContent = `Calculated from the tank meter — ${e} minus ${b}. Change a meter reading to change it.`;
-        mnote.className   = 'field-note auto';
-        mnote.textContent = `Gallons above: ${auto.toFixed(2)}.`;
+        note.textContent = `Calculated from the tank meter — ${e} minus ${b}. Change a reading above to change it.`;
         return;
       }
 
@@ -568,8 +586,6 @@
         box.value    = manualGallons;
       }
       note.className = 'field-note';
-      mnote.className = 'field-note';
-      mnote.textContent = '';
 
       if (b != null && e != null && e < b) {
         // The meter rolled over or was replaced. The difference is negative

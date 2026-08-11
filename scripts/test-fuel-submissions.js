@@ -248,6 +248,12 @@ function parseTests() {
   assert('Employee comes before Fuel Card', miss.indexOf('Employee') < miss.indexOf('Fuel Card Used'));
   assert('Tank Number comes last',          miss[miss.length - 1] === 'Tank Number');
   assert('Date is not listed (it is set)',  !miss.includes('Date'));
+  // Gallons is worked out from the two readings, so it is asked for after
+  // them — on the form and in the list of what is still missing.
+  assert('Gallons comes after both meter readings',
+    miss.indexOf('Gallons') > miss.indexOf('Ending Meter Reading') &&
+    miss.indexOf('Ending Meter Reading') > miss.indexOf('Beginning Meter Reading'),
+    miss.join(', '));
 }
 
 // ── 3. Request routing and scope ────────────────────────────────────────────
@@ -562,7 +568,6 @@ function pageTests() {
       'f-beginning-meter': { value: '' },
       'f-ending-meter':    { value: '' },
       'gallonsNote':       { className: '', textContent: '' },
-      'meterNote':         { className: '', textContent: '' },
     };
     const form = new Function('nodes', `
       let manualGallons = '';
@@ -594,8 +599,10 @@ function pageTests() {
     form.updateGallons();
     assert('real readings take the box over', gal.readOnly === true);
     assert('and put the meter figure in it', gal.value === '84.50', gal.value);
-    assert('the note beside the meters confirms it', /84\.50/.test(nodes.meterNote.textContent),
-      nodes.meterNote.textContent);
+    assert('the note shows the arithmetic', /1284\.5 minus 1200/.test(nodes.gallonsNote.textContent),
+      nodes.gallonsNote.textContent);
+    assert('and points at the readings above it', /above/.test(nodes.gallonsNote.textContent),
+      nodes.gallonsNote.textContent);
 
     // A keystroke that lands while the tank owns the box is not theirs to
     // keep — remembering it would resurrect a metered figure as "manual".
@@ -616,7 +623,8 @@ function pageTests() {
     assert('a backwards meter leaves gallons typeable', gal.readOnly === false);
     assert('and names the reason', /below the beginning/.test(nodes.gallonsNote.textContent),
       nodes.gallonsNote.textContent);
-    assert('and clears the stale meter note', nodes.meterNote.textContent === '');
+    assert('and the note stops claiming it was calculated',
+      !nodes.gallonsNote.className.includes('auto'), nodes.gallonsNote.className);
   }
 
   console.log('\n[fuel-admin.html — the meter flag]');

@@ -979,21 +979,12 @@
           <select id="e-fuel-type"></select>
         </div>
         <div>
-          <label for="e-gallons">Gallons</label>
-          <input type="number" id="e-gallons" min="0" step="0.01" oninput="onGallonsTyped()" />
-          <div class="field-note" id="e-gallons-note"></div>
-        </div>
-        <div>
           <label for="e-mileage">Mileage</label>
           <input type="number" id="e-mileage" min="0" step="0.1" />
         </div>
         <div>
           <label for="e-truck-number">Truck Number</label>
           <input type="number" id="e-truck-number" min="0" step="1" />
-        </div>
-        <div>
-          <label for="e-tank-number">Tank Number</label>
-          <input type="number" id="e-tank-number" min="0" step="1" />
         </div>
         <div>
           <label for="e-beginning-meter">Beginning Meter <span class="note">(0 if not Force Fuel)</span></label>
@@ -1004,6 +995,17 @@
           <label for="e-ending-meter">Ending Meter <span class="note">(0 if not Force Fuel)</span></label>
           <input type="number" id="e-ending-meter" min="0" step="0.1"
                  oninput="updateGallons()" onchange="updateGallons()" />
+        </div>
+        <!-- Directly under the readings it comes from, same as the field
+             form — a reviewer correcting a meter sees the gallons move. -->
+        <div>
+          <label for="e-gallons">Gallons</label>
+          <input type="number" id="e-gallons" min="0" step="0.01" oninput="onGallonsTyped()" />
+          <div class="field-note" id="e-gallons-note"></div>
+        </div>
+        <div>
+          <label for="e-tank-number">Tank Number</label>
+          <input type="number" id="e-tank-number" min="0" step="1" />
         </div>
         <div class="full">
           <label for="e-fueling-site">Fueling Site</label>
@@ -1103,11 +1105,11 @@
       { key: 'employee_username', id: 'e-employee',        label: 'Employee' },
       { key: 'fuel_card',         id: 'e-fuel-card',       label: 'Fuel Card Used' },
       { key: 'fuel_type',         id: 'e-fuel-type',       label: 'Fuel Type' },
-      { key: 'gallons',           id: 'e-gallons',         label: 'Gallons' },
       { key: 'mileage',           id: 'e-mileage',         label: 'Mileage' },
       { key: 'truck_number',      id: 'e-truck-number',    label: 'Truck Number' },
       { key: 'beginning_meter',   id: 'e-beginning-meter', label: 'Beginning Meter Reading' },
       { key: 'ending_meter',      id: 'e-ending-meter',    label: 'Ending Meter Reading' },
+      { key: 'gallons',           id: 'e-gallons',         label: 'Gallons' },
       { key: 'fueling_site',      id: 'e-fueling-site',    label: 'Fueling Site' },
       { key: 'city_fueled',       id: 'e-city',            label: 'City Fueled' },
       { key: 'state',             id: 'e-state',           label: 'State' },

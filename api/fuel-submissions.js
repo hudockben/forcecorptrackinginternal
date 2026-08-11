@@ -53,16 +53,19 @@ const { FUEL_CARDS, FUEL_TYPES, US_STATE_CODES } = require('./lib/fuel-options')
 // them. Submit requires every one; a draft may hold any subset. The order is
 // what drives the "missing fields" message, so it reads top-to-bottom the same
 // way the form does rather than in whatever order an object happened to be in.
+// Gallons sits after the two meter readings because that is where it comes
+// from — see gallonsFromMeters. Asking for it before them read as a question
+// on a form whose answer was three fields further down.
 const REPORTED_FIELDS = [
   ['work_date',         'Date'],
   ['employee_username', 'Employee'],
   ['fuel_card',         'Fuel Card Used'],
   ['fuel_type',         'Fuel Type'],
-  ['gallons',           'Gallons'],
   ['mileage',           'Mileage'],
   ['truck_number',      'Truck Number'],
   ['beginning_meter',   'Beginning Meter Reading'],
   ['ending_meter',      'Ending Meter Reading'],
+  ['gallons',           'Gallons'],
   ['fueling_site',      'Fueling Site'],
   ['city_fueled',       'City Fueled'],
   ['state',             'State'],
