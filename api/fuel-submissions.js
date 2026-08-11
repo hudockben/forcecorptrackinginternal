@@ -37,6 +37,8 @@
  *   - status transitions (clients cannot set status directly)
  *   - user_id / username / company_code (taken from the JWT, never the body)
  *   - approved_at / approved_by (stamped here, never sent)
+ *   - gallons, whenever the tank meter readings describe a fill
+ *     (see gallonsFromMeters)
  *
  * Approval is a status flip and nothing more: fuel does not inject rows into
  * any division's cost tracking. If that changes, approve/unapprove are where
@@ -135,6 +137,37 @@ function parseIntField(v, label, { max = 2147483647 } = {}) {
 }
 
 /**
+ * Gallons off the tank meter, or null when the readings don't describe a
+ * pumped quantity.
+ *
+ * On a Force Fuel tank the meter IS the gallons counter, so the difference
+ * between the two readings is the fill — the driver should not be retyping a
+ * number the tank already told them. Everything else falls back to what they
+ * reported, and the single `end > begin` condition covers all three of those
+ * cases without needing to know which one it is looking at:
+ *
+ *   0 and 0        a card purchase, no tank meter involved — the receipt is
+ *                  the only source for gallons, so keep what was typed
+ *   end < begin    the meter rolled over or was replaced; the difference is
+ *                  meaningless (and negative), so keep what was typed
+ *   end === begin  nothing was pumped, which on a real fill-up means a
+ *                  mistyped reading — computing 0 would bury that, so keep
+ *                  what was typed and let the meter flag in Fuel Admin show
+ *
+ * Derived here rather than trusted from the body for the same reason
+ * computed_hours is on a timesheet: two numbers that are supposed to agree
+ * will eventually stop agreeing, and the audit trail should not have to
+ * guess which one was right.
+ */
+function gallonsFromMeters(begin, end) {
+  if (begin == null || end == null) return null;
+  const b = Number(begin), e = Number(end);
+  if (!Number.isFinite(b) || !Number.isFinite(e)) return null;
+  if (e <= b) return null;
+  return Math.round((e - b) * 100) / 100;
+}
+
+/**
  * Turn a request body into the column set, or into an error.
  *
  * Absent and invalid are handled differently on purpose. A missing field
@@ -191,6 +224,13 @@ function normalizeBody(body) {
     if (r.error) return { error: r.error };
     out[key] = r.value;
   }
+
+  // The tank meter wins over anything the body says gallons were. Both pages
+  // compute the same figure and show it read-only, so a body that disagrees
+  // is a stale client or a hand-made request — neither is a reason to store a
+  // gallons figure the meter readings on the same row contradict.
+  const metered = gallonsFromMeters(out.beginning_meter, out.ending_meter);
+  if (metered != null) out.gallons = metered;
 
   return {
     data: {
@@ -612,4 +652,4 @@ module.exports = async (req, res) => {
 
 // Internal helpers exposed for unit testing only. Not part of the HTTP
 // contract — do not depend on these from other endpoints.
-module.exports._test = { normalizeBody, missingFields, isBlank, dbToEntry, REPORTED_FIELDS };
+module.exports._test = { normalizeBody, missingFields, isBlank, dbToEntry, gallonsFromMeters, REPORTED_FIELDS };

@@ -144,6 +144,25 @@
        the form never keeps shouting about something already put right. */
     input.bad, select.bad { border-color: var(--red); }
 
+    /* A box the form fills in for you. Reads as an answer rather than as a
+       question — flat, in the accent colour, and visibly not typeable, so
+       nobody stands at a pump trying to correct a number the tank supplied. */
+    input[readonly] {
+      background: var(--surface2);
+      color: var(--accent);
+      font-weight: 700;
+      border-style: dashed;
+    }
+    /* Says where the gallons figure came from. It changes as the meters are
+       filled in, which is the only signal that the box above stopped being
+       something to type in. */
+    .field-note {
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .field-note.auto { color: var(--accent); }
+
     /* ── Action buttons ── */
     .btn-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
     .btn {
@@ -296,13 +315,15 @@
       <div class="row-2">
         <div class="row">
           <label for="f-gallons">Gallons</label>
-          <input type="number" id="f-gallons" inputmode="decimal" min="0" step="0.01" placeholder="0.00" />
+          <input type="number" id="f-gallons" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+                 oninput="onGallonsTyped()" />
         </div>
         <div class="row">
           <label for="f-mileage">Mileage</label>
           <input type="number" id="f-mileage" inputmode="decimal" min="0" step="0.1" placeholder="0" />
         </div>
       </div>
+      <div class="field-note" id="gallonsNote"></div>
 
       <div class="row">
         <label for="f-truck-number">Truck Number</label>
@@ -311,13 +332,20 @@
 
       <div class="row">
         <label for="f-beginning-meter">Beginning Meter Reading <span class="note">(0 if not Force Fuel)</span></label>
-        <input type="number" id="f-beginning-meter" inputmode="decimal" min="0" step="0.1" placeholder="0" />
+        <input type="number" id="f-beginning-meter" inputmode="decimal" min="0" step="0.1" placeholder="0"
+               oninput="updateGallons()" onchange="updateGallons()" />
       </div>
 
       <div class="row">
         <label for="f-ending-meter">Ending Meter Reading <span class="note">(0 if not Force Fuel)</span></label>
-        <input type="number" id="f-ending-meter" inputmode="decimal" min="0" step="0.1" placeholder="0" />
+        <input type="number" id="f-ending-meter" inputmode="decimal" min="0" step="0.1" placeholder="0"
+               oninput="updateGallons()" onchange="updateGallons()" />
       </div>
+      <!-- The gallons box sits above the meters that feed it, so the driver
+           filling these in is looking at the wrong part of the screen to see
+           it change. Saying the new figure here puts the confirmation where
+           their eyes already are. -->
+      <div class="field-note" id="meterNote"></div>
 
       <div class="row">
         <label for="f-fueling-site">Fueling Site</label>
@@ -471,6 +499,90 @@
     let employees    = [];
     let entriesCache = [];
     let editingId    = null;    // id of the draft row this form is sitting on
+    // The last gallons figure the driver typed by hand. Kept so that filling
+    // in the meters — which takes the box over — and then clearing them again
+    // gives them their number back instead of a blank.
+    let manualGallons = '';
+
+    // ── Gallons off the meter ──────────────────────────────────────────────
+    // Copy of gallonsFromMeters() in api/fuel-submissions.js, which is
+    // canonical and recomputes this on every write.
+    // scripts/test-fuel-submissions.js runs both against the same table of
+    // readings and fails if they disagree — a page that computed a different
+    // figure from the server would show the driver one number and store
+    // another.
+    //
+    // On a Force Fuel tank the meter IS the gallons counter, so the
+    // difference between the readings is the fill. Everything else — a card
+    // purchase with both meters at 0, a rolled-over meter reading lower than
+    // it started, two identical readings — returns null and leaves gallons as
+    // something to type in.
+    function gallonsFromMeters(begin, end) {
+      if (begin == null || end == null) return null;
+      const b = Number(begin), e = Number(end);
+      if (!Number.isFinite(b) || !Number.isFinite(e)) return null;
+      if (e <= b) return null;
+      return Math.round((e - b) * 100) / 100;
+    }
+
+    function numOrNull(raw) {
+      if (raw === '' || raw == null) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    // Called on every keystroke in the gallons box — but only while it is
+    // still a box to type in. Once the meters have taken it over its value is
+    // the tank's, not the driver's, and remembering it as manual would put a
+    // metered figure back on screen the moment they cleared the meters.
+    function onGallonsTyped() {
+      if (!el('f-gallons').readOnly) manualGallons = val('f-gallons');
+    }
+
+    // Point the gallons box at whichever source currently owns it, and say
+    // which one that is. Runs on every meter keystroke and after anything
+    // that fills the form (loading a draft, resetting it).
+    function updateGallons() {
+      const b    = numOrNull(val('f-beginning-meter'));
+      const e    = numOrNull(val('f-ending-meter'));
+      const auto = gallonsFromMeters(b, e);
+      const box  = el('f-gallons');
+      const note = el('gallonsNote');
+      const mnote = el('meterNote');
+
+      if (auto != null) {
+        box.readOnly = true;
+        box.value    = auto.toFixed(2);
+        box.classList.remove('bad');
+        note.className   = 'field-note auto';
+        note.textContent = `Calculated from the tank meter — ${e} minus ${b}. Change a meter reading to change it.`;
+        mnote.className   = 'field-note auto';
+        mnote.textContent = `Gallons above: ${auto.toFixed(2)}.`;
+        return;
+      }
+
+      // Handing the box back. Restore whatever the driver last typed rather
+      // than leaving the tank's last figure sitting there looking typed-in.
+      if (box.readOnly) {
+        box.readOnly = false;
+        box.value    = manualGallons;
+      }
+      note.className = 'field-note';
+      mnote.className = 'field-note';
+      mnote.textContent = '';
+
+      if (b != null && e != null && e < b) {
+        // The meter rolled over or was replaced. The difference is negative
+        // and means nothing, so the driver has to say what actually went in.
+        note.textContent = 'The ending meter is below the beginning one, so gallons can’t be calculated — type them in.';
+      } else if (b === 0 && e === 0) {
+        note.textContent = 'Not a Force Fuel tank (both meters read 0) — type the gallons from the receipt.';
+      } else if (b != null && e != null && e === b) {
+        note.textContent = 'Both meter readings are the same, so nothing was pumped — check the readings, or type the gallons in.';
+      } else {
+        note.textContent = 'Filled in from the tank meter once both readings are entered.';
+      }
+    }
 
     async function init() {
       el('f-date').value = todayStr();
@@ -484,6 +596,7 @@
         node.addEventListener('input',  clear);
         node.addEventListener('change', clear);
       }
+      updateGallons();
       await Promise.all([loadEmployees(), loadEntries()]);
     }
 
@@ -728,6 +841,13 @@
         empSel.appendChild(opt);
       }
 
+      // Only a gallons figure the driver typed counts as theirs to get back.
+      // Seeding this from a metered row would hand them the tank's number as
+      // if they had typed it the moment they cleared a meter reading.
+      const metered = gallonsFromMeters(numOrNull(val('f-beginning-meter')), numOrNull(val('f-ending-meter')));
+      manualGallons = metered == null ? val('f-gallons') : '';
+      updateGallons();
+
       markEmpty([]);
       markAsDraft();
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -744,6 +864,8 @@
       document.getElementById('formBadge').style.display = 'none';
       document.getElementById('row-delete').style.display = 'none';
       for (const f of FIELDS) { const node = el(f.id); if (node) node.value = ''; }
+      manualGallons = '';
+      updateGallons();
       markEmpty([]);
       el('f-date').value = todayStr();
       const mine = employees.find(e => (e.username || '').toLowerCase() === String(user.username || '').toLowerCase());

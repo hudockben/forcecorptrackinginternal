@@ -1075,6 +1075,14 @@ CREATE INDEX IF NOT EXISTS idx_ts_audit_entry      ON timesheet_audit_log(entry_
 -- The two meter readings are the exception worth naming: 0 is a REAL
 -- answer there ("0 if not Force Fuel"), not an empty one, so nothing in
 -- this system may treat 0 as missing.
+--
+-- gallons is DERIVED whenever the meters describe a fill (ending above
+-- beginning) — on a Force Fuel tank the meter is the gallons counter, so
+-- the difference is the fill and the API recomputes it on every write.
+-- It stays a reported value for a card purchase (meters at 0) and for a
+-- rolled-over meter, where the difference means nothing. Stored rather
+-- than computed on read so a later correction to a meter reading cannot
+-- silently restate what an already-approved row was approved for.
 -- ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS fuel_submissions (
     id                  BIGSERIAL PRIMARY KEY,

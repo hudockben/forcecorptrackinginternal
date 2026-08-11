@@ -61,7 +61,7 @@ Module._load = function (request) {
 };
 
 const handler = require(path.resolve(__dirname, '..', 'api', 'fuel-submissions.js'));
-const { normalizeBody, missingFields, isBlank, REPORTED_FIELDS } = handler._test;
+const { normalizeBody, missingFields, isBlank, gallonsFromMeters, REPORTED_FIELDS } = handler._test;
 const OPTIONS = require(path.resolve(__dirname, '..', 'api', 'lib', 'fuel-options.js'));
 
 let passed = 0, failed = 0;
@@ -133,6 +133,79 @@ function zeroTests() {
     const { data } = normalizeBody(Object.assign({}, FULL, { ending_meter: '' }));
     assert('an EMPTY meter is missing', missingFields(data).includes('Ending Meter Reading'));
     assert('and nothing else is', missingFields(data).length === 1, JSON.stringify(missingFields(data)));
+  }
+}
+
+// ── 1b. Gallons off the tank meter ──────────────────────────────────────────
+// The table every copy of the rule is measured against — the server's and the
+// one in each page. Kept as data so pageTests() can run the pages' copies
+// through exactly the same cases.
+const METER_CASES = [
+  // [begin, end, expected gallons or null, what it is]
+  [0,      0,      null,  'a card purchase — both meters read 0'],
+  [1200,   1284.5, 84.5,  'an ordinary Force Fuel fill'],
+  [1200,   1200,   null,  'identical readings — nothing pumped'],
+  [1200,   1100,   null,  'a rolled-over or replaced meter'],
+  [0,      84.5,   84.5,  'a tank whose meter starts at 0'],
+  [null,   1284.5, null,  'no beginning reading yet'],
+  [1200,   null,   null,  'no ending reading yet'],
+  [null,   null,   null,  'neither reading yet'],
+  [1200.4, 1200.7, 0.3,   'a fraction of a gallon, rounded to 2dp'],
+];
+
+function meterTests() {
+  console.log('\n[Gallons off the tank meter]');
+  for (const [b, e, want, what] of METER_CASES) {
+    const got = gallonsFromMeters(b, e);
+    assert(`${what} → ${want === null ? 'reported' : want}`, got === want, `got ${got}`);
+  }
+
+  console.log('\n[…and normalizeBody applies it]');
+  {
+    // The driver's own figure loses to the tank. Both pages show the metered
+    // number read-only, so a body that says otherwise is stale or hand-made.
+    const { data } = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '1200', ending_meter: '1284.5', gallons: '10',
+    }));
+    assert('a metered fill overrides the gallons in the body', data.gallons === 84.5,
+      String(data.gallons));
+  }
+  {
+    const { data } = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '1200', ending_meter: '1284.5', gallons: '',
+    }));
+    assert('and fills gallons in when the body sent none', data.gallons === 84.5, String(data.gallons));
+    assert('so the row is complete without a typed gallons figure',
+      missingFields(data).length === 0, JSON.stringify(missingFields(data)));
+  }
+  {
+    // The case that makes this rule conditional rather than absolute: a card
+    // purchase has no tank meter, so the receipt is the only source there is.
+    const { data } = normalizeBody(Object.assign({}, FULL, { gallons: '41.2' }));
+    assert('a card purchase (0/0) keeps the reported gallons', data.gallons === 41.2,
+      String(data.gallons));
+  }
+  {
+    const { data } = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '1200', ending_meter: '1100', gallons: '41.2',
+    }));
+    assert('a rolled-over meter keeps the reported gallons', data.gallons === 41.2,
+      String(data.gallons));
+  }
+  {
+    const { data } = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '1200', ending_meter: '1200', gallons: '41.2',
+    }));
+    assert('identical readings keep the reported gallons', data.gallons === 41.2,
+      String(data.gallons));
+  }
+  {
+    // A meter fill with no gallons typed and no meters either is still just
+    // an incomplete draft — the rule must not invent a figure.
+    const { data } = normalizeBody({ work_date: '2026-08-11' });
+    assert('no meters and no gallons leaves gallons null', data.gallons === null);
+    assert('and Gallons is still listed as missing',
+      missingFields(data).includes('Gallons'));
   }
 }
 
@@ -440,6 +513,19 @@ function pageTests() {
     const serverKeys = REPORTED_FIELDS.map(([k]) => k).join(',');
     assert(`${file}: FIELDS matches the server's REPORTED_FIELDS, in order`,
       pageKeys === serverKeys, `${pageKeys}\n      vs ${serverKeys}`);
+
+    // Both pages show the driver a gallons figure that the server then
+    // recomputes on write. If a page's copy of the rule disagrees by so much
+    // as an edge case, it shows one number and stores another — and the one
+    // on screen is the one somebody signed off on.
+    const pageGallons = new Function(`
+      ${liftFn(src, 'gallonsFromMeters', file)}
+      return gallonsFromMeters;
+    `)();
+    const mismatches = METER_CASES.filter(([b, e, want]) => pageGallons(b, e) !== want);
+    assert(`${file}: gallonsFromMeters agrees with the server on all ${METER_CASES.length} cases`,
+      mismatches.length === 0,
+      mismatches.map(([b, e, want]) => `(${b},${e}) page=${pageGallons(b, e)} server=${want}`).join('; '));
   }
 
   console.log('\n[fuel.html — the form agrees that 0 is filled in]');
@@ -467,6 +553,72 @@ function pageTests() {
       JSON.stringify(out.map(f => f.label)));
   }
 
+  console.log('\n[fuel.html — the gallons box changes hands cleanly]');
+  {
+    const src = read('fuel.html');
+    // Enough of a DOM for the three nodes updateGallons() touches.
+    const nodes = {
+      'f-gallons':         { value: '', readOnly: false, classList: { remove() {}, add() {}, toggle() {} } },
+      'f-beginning-meter': { value: '' },
+      'f-ending-meter':    { value: '' },
+      'gallonsNote':       { className: '', textContent: '' },
+      'meterNote':         { className: '', textContent: '' },
+    };
+    const form = new Function('nodes', `
+      let manualGallons = '';
+      function el(id)  { return nodes[id]; }
+      function val(id) { const e = nodes[id]; return e ? e.value : ''; }
+      ${liftFn(src, 'gallonsFromMeters', 'fuel.html')}
+      ${liftFn(src, 'numOrNull',         'fuel.html')}
+      ${liftFn(src, 'onGallonsTyped',    'fuel.html')}
+      ${liftFn(src, 'updateGallons',     'fuel.html')}
+      return { updateGallons, onGallonsTyped, manual: () => manualGallons };
+    `)(nodes);
+    const gal = nodes['f-gallons'];
+
+    form.updateGallons();
+    assert('an empty form leaves gallons typeable', gal.readOnly === false);
+    assert('and says where the figure will come from', /tank meter/.test(nodes.gallonsNote.textContent));
+
+    // A card purchase: the driver types the receipt figure.
+    gal.value = '41.2'; form.onGallonsTyped();
+    nodes['f-beginning-meter'].value = '0';
+    nodes['f-ending-meter'].value    = '0';
+    form.updateGallons();
+    assert('0/0 keeps the typed figure', gal.value === '41.2' && gal.readOnly === false);
+    assert('and explains why it is not calculated', /not a force fuel/i.test(nodes.gallonsNote.textContent));
+
+    // …then they realise it was a tank fill and enter the real readings.
+    nodes['f-beginning-meter'].value = '1200';
+    nodes['f-ending-meter'].value    = '1284.5';
+    form.updateGallons();
+    assert('real readings take the box over', gal.readOnly === true);
+    assert('and put the meter figure in it', gal.value === '84.50', gal.value);
+    assert('the note beside the meters confirms it', /84\.50/.test(nodes.meterNote.textContent),
+      nodes.meterNote.textContent);
+
+    // A keystroke that lands while the tank owns the box is not theirs to
+    // keep — remembering it would resurrect a metered figure as "manual".
+    form.onGallonsTyped();
+    assert('a metered figure is not remembered as hand-typed', form.manual() === '41.2', form.manual());
+
+    // Cleared back to a card purchase: they get their own number back.
+    nodes['f-beginning-meter'].value = '0';
+    nodes['f-ending-meter'].value    = '0';
+    form.updateGallons();
+    assert('clearing the meters hands the box back', gal.readOnly === false);
+    assert('with what the driver actually typed', gal.value === '41.2', gal.value);
+
+    // A meter that reads backwards has to be typed in, and say so.
+    nodes['f-beginning-meter'].value = '1200';
+    nodes['f-ending-meter'].value    = '1100';
+    form.updateGallons();
+    assert('a backwards meter leaves gallons typeable', gal.readOnly === false);
+    assert('and names the reason', /below the beginning/.test(nodes.gallonsNote.textContent),
+      nodes.gallonsNote.textContent);
+    assert('and clears the stale meter note', nodes.meterNote.textContent === '');
+  }
+
   console.log('\n[fuel-admin.html — the meter flag]');
   {
     const src = read('fuel-admin.html');
@@ -492,6 +644,7 @@ function pageTests() {
 // ── Run ─────────────────────────────────────────────────────────────────────
 (async () => {
   zeroTests();
+  meterTests();
   parseTests();
   await scopeTests();
   await submitTests();

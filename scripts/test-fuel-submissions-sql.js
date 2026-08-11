@@ -155,6 +155,44 @@ async function run() {
   assert('the truck number is an integer', e0.truck_number === 412, String(e0.truck_number));
   assert('the submitter is taken from the token, not the body', e0.username === 'strickallen');
 
+  console.log('\n[gallons off the tank meter]');
+  {
+    // FILL is a card purchase — meters at 0 — so the receipt figure stands.
+    assert('a card purchase keeps the reported gallons', e0.gallons === 84.5, String(e0.gallons));
+
+    // A Force Fuel tank fill. The gallons in the body are deliberately wrong;
+    // the meter is what the row must end up carrying.
+    const tank = await call('POST', {}, Object.assign({}, FILL, {
+      work_date: '2026-08-02', truck_number: '9',
+      beginning_meter: '18240.5', ending_meter: '18325', gallons: '10',
+    }), FIELD);
+    assert('a tank fill computes gallons from the readings', tank.body.entry.gallons === 84.5,
+      String(tank.body.entry.gallons));
+    assert('and the readings themselves are stored as given',
+      tank.body.entry.beginning_meter === 18240.5 && tank.body.entry.ending_meter === 18325,
+      `${tank.body.entry.beginning_meter} / ${tank.body.entry.ending_meter}`);
+
+    // No gallons typed at all — the meter is enough to make the row complete.
+    const noGallons = await call('POST', {}, Object.assign({}, FILL, {
+      work_date: '2026-08-03', truck_number: '10',
+      beginning_meter: '100', ending_meter: '160', gallons: '',
+    }), FIELD);
+    assert('a tank fill needs no typed gallons at all', noGallons.body.entry.gallons === 60,
+      String(noGallons.body.entry.gallons));
+    const noGallonsSubmit = await call('POST', { action: 'submit', id: noGallons.body.entry.id }, null, FIELD);
+    assert('and submits without one', noGallonsSubmit.statusCode === 200,
+      JSON.stringify(noGallonsSubmit.body));
+
+    // A rolled-over meter: the difference is meaningless, so the driver's
+    // figure stands and Fuel Admin flags the row for a look.
+    const rolled = await call('POST', {}, Object.assign({}, FILL, {
+      work_date: '2026-08-04', truck_number: '11',
+      beginning_meter: '99000', ending_meter: '120', gallons: '41.2',
+    }), FIELD);
+    assert('a rolled-over meter keeps the reported gallons', rolled.body.entry.gallons === 41.2,
+      String(rolled.body.entry.gallons));
+  }
+
   console.log('\n[a draft may be incomplete]');
   const partial = await call('POST', {}, { work_date: '2026-07-30' }, FIELD);
   assert('a bare date saves as a draft', partial.statusCode === 200 && partial.body.ok,
@@ -216,12 +254,27 @@ async function run() {
     Object.assign({}, FILL, { city_fueled: '' }), ADMIN);
   assert('an admin cannot blank a field on a submitted entry', blanked.statusCode === 400);
 
-  const edited = await call('PUT', { id },
-    Object.assign({}, FILL, { gallons: '90.25', beginning_meter: '1200.5', ending_meter: '1208' }), ADMIN);
-  assert('an admin can correct the figures', edited.statusCode === 200, JSON.stringify(edited.body));
+  // Still a card purchase (meters 0/0), so gallons remain the reviewer's to
+  // correct — this is the fuel-card figure being reconciled to a statement.
+  const edited = await call('PUT', { id }, Object.assign({}, FILL, { gallons: '90.25' }), ADMIN);
+  assert('an admin can correct a reported gallons figure', edited.statusCode === 200,
+    JSON.stringify(edited.body));
   assert('and the correction is stored', edited.body.entry.gallons === 90.25);
+
+  // Turn the same row into a tank fill. The meters now own gallons, so the
+  // 90.25 in the body loses to them — otherwise the row would carry a gallons
+  // figure its own meter readings contradict.
+  const metered = await call('PUT', { id },
+    Object.assign({}, FILL, { gallons: '90.25', beginning_meter: '1200.5', ending_meter: '1208' }), ADMIN);
+  assert('setting real meter readings recomputes gallons', metered.body.entry.gallons === 7.5,
+    String(metered.body.entry.gallons));
   assert('a real meter reading round-trips with its decimal',
-    edited.body.entry.beginning_meter === 1200.5, String(edited.body.entry.beginning_meter));
+    metered.body.entry.beginning_meter === 1200.5, String(metered.body.entry.beginning_meter));
+
+  // …and putting it back to 0/0 hands gallons back to whatever is reported.
+  const backToCard = await call('PUT', { id }, Object.assign({}, FILL, { gallons: '90.25' }), ADMIN);
+  assert('clearing the meters returns gallons to the reported figure',
+    backToCard.body.entry.gallons === 90.25, String(backToCard.body.entry.gallons));
 
   const fieldEdit = await call('PUT', { id }, FILL, FIELD);
   assert('the driver can no longer edit it', fieldEdit.statusCode === 403);
@@ -296,9 +349,15 @@ async function run() {
   console.log('\n[audit trail]');
   {
     const actions = await auditActions(id);
+    // Runs of the same action are collapsed: the shape of the life cycle is
+    // what is being pinned, not how many corrections the edit section above
+    // happens to make.
+    const shape = actions.filter((a, i) => a !== actions[i - 1]);
     assert('every transition was recorded, in order',
-      actions.join(',') === 'INSERT,SUBMIT,APPROVE,UNAPPROVE,ADMIN_EDIT,DELETE',
+      shape.join(',') === 'INSERT,SUBMIT,APPROVE,UNAPPROVE,ADMIN_EDIT,DELETE',
       actions.join(','));
+    assert('each admin correction left its own entry',
+      actions.filter(a => a === 'ADMIN_EDIT').length === 3, actions.join(','));
     const snap = await client.query(
       `SELECT snapshot FROM fuel_audit_log WHERE entry_id = $1 AND action = 'DELETE'`, [id]);
     assert('the delete kept a snapshot of what was removed',

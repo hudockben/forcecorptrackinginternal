@@ -469,6 +469,33 @@
     }
     .modal input:focus, .modal select:focus { border-color: var(--accent); }
     .modal input.bad, .modal select.bad { border-color: var(--red); }
+    /* A box the meters fill in. Same treatment as the field form so the two
+       read alike: visibly not typeable, and coloured as an answer. */
+    .modal input[readonly] {
+      background: var(--surface2);
+      color: var(--amber);
+      font-weight: 700;
+      border-style: dashed;
+    }
+    .field-note { font-size: 0.72rem; color: var(--muted); line-height: 1.4; margin-top: 0.3rem; }
+    .field-note.auto { color: var(--amber); }
+
+    /* Marks a gallons figure the tank meter produced rather than one somebody
+       typed. The office reconciles against fuel-card statements, so which of
+       the two a number came from is worth being able to see at a glance. */
+    .auto-chip {
+      display: inline-block;
+      margin-left: 0.3rem;
+      font-size: 0.52rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      background: rgba(245,158,11,0.16);
+      color: var(--amber);
+      cursor: help;
+    }
     .modal-footer {
       display: flex;
       gap: 0.6rem;
@@ -667,7 +694,8 @@
         </div>
         <div>
           <label for="e-gallons">Gallons</label>
-          <input type="number" id="e-gallons" min="0" step="0.01" />
+          <input type="number" id="e-gallons" min="0" step="0.01" oninput="onGallonsTyped()" />
+          <div class="field-note" id="e-gallons-note"></div>
         </div>
         <div>
           <label for="e-mileage">Mileage</label>
@@ -683,11 +711,13 @@
         </div>
         <div>
           <label for="e-beginning-meter">Beginning Meter <span class="note">(0 if not Force Fuel)</span></label>
-          <input type="number" id="e-beginning-meter" min="0" step="0.1" />
+          <input type="number" id="e-beginning-meter" min="0" step="0.1"
+                 oninput="updateGallons()" onchange="updateGallons()" />
         </div>
         <div>
           <label for="e-ending-meter">Ending Meter <span class="note">(0 if not Force Fuel)</span></label>
-          <input type="number" id="e-ending-meter" min="0" step="0.1" />
+          <input type="number" id="e-ending-meter" min="0" step="0.1"
+                 oninput="updateGallons()" onchange="updateGallons()" />
         </div>
         <div class="full">
           <label for="e-fueling-site">Fueling Site</label>
@@ -808,6 +838,72 @@
     let selected     = new Set();
     let activeTab    = 'pending';
     let editingId    = null;
+    // The last gallons figure typed by hand in the edit modal, so correcting
+    // the meters and then clearing them again gives that number back rather
+    // than a blank. Reset each time the modal opens.
+    let manualGallons = '';
+
+    // ── Gallons off the meter ──────────────────────────────────────────────
+    // Copy of gallonsFromMeters() in api/fuel-submissions.js, which is
+    // canonical and recomputes this on every write.
+    // scripts/test-fuel-submissions.js runs both against the same table of
+    // readings and fails if they disagree.
+    //
+    // On a Force Fuel tank the meter IS the gallons counter, so the
+    // difference between the readings is the fill. A card purchase (both
+    // meters 0), a rolled-over meter, or two identical readings all return
+    // null and leave gallons as a reported figure.
+    function gallonsFromMeters(begin, end) {
+      if (begin == null || end == null) return null;
+      const b = Number(begin), e = Number(end);
+      if (!Number.isFinite(b) || !Number.isFinite(e)) return null;
+      if (e <= b) return null;
+      return Math.round((e - b) * 100) / 100;
+    }
+
+    function numOrNull(raw) {
+      if (raw === '' || raw == null) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function onGallonsTyped() {
+      if (!el('e-gallons').readOnly) manualGallons = val('e-gallons');
+    }
+
+    // Point the modal's gallons box at whichever source owns it, and say
+    // which. The server applies the same rule on save, so a reviewer never
+    // saves a gallons figure the meters on the same row contradict.
+    function updateGallons() {
+      const b    = numOrNull(val('e-beginning-meter'));
+      const e    = numOrNull(val('e-ending-meter'));
+      const auto = gallonsFromMeters(b, e);
+      const box  = el('e-gallons');
+      const note = el('e-gallons-note');
+
+      if (auto != null) {
+        box.readOnly = true;
+        box.value    = auto.toFixed(2);
+        box.classList.remove('bad');
+        note.className   = 'field-note auto';
+        note.textContent = `From the meter — ${e} − ${b}.`;
+        return;
+      }
+      if (box.readOnly) {
+        box.readOnly = false;
+        box.value    = manualGallons;
+      }
+      note.className = 'field-note';
+      if (b != null && e != null && e < b) {
+        note.textContent = 'Meter reads backwards — gallons as reported.';
+      } else if (b === 0 && e === 0) {
+        note.textContent = 'Not Force Fuel — gallons as reported.';
+      } else if (b != null && e != null && e === b) {
+        note.textContent = 'Readings are identical — gallons as reported.';
+      } else {
+        note.textContent = 'Fills in from the meter once both readings are set.';
+      }
+    }
 
     async function init() {
       // Default range: this month to date. Wide enough to be useful on the
@@ -942,6 +1038,12 @@
     // Both being 0 is the documented "not Force Fuel" answer and is not a
     // flag; nor is a missing reading, which the status workflow already
     // refuses to let through.
+    // The gallons this row's meters account for, or null when the readings
+    // don't describe a fill and the figure was reported by hand instead.
+    function meteredGallons(e) {
+      return gallonsFromMeters(e.beginning_meter, e.ending_meter);
+    }
+
     function meterFlagged(e) {
       const b = e.beginning_meter, x = e.ending_meter;
       if (b == null || x == null) return false;
@@ -990,7 +1092,9 @@
             <td class="num">${e.truck_number != null ? e.truck_number : '—'}</td>
             <td>${escapeHtml(e.fuel_type || '—')}</td>
             <td>${escapeHtml(e.fuel_card || '—')}</td>
-            <td class="num">${num(e.gallons, 2)}</td>
+            <td class="num">${num(e.gallons, 2)}${meteredGallons(e) != null
+              ? '<span class="auto-chip" title="Calculated from the tank meter readings, not typed in.">auto</span>'
+              : ''}</td>
             <td class="num">${num(e.mileage, 1)}</td>
             <td class="num">${num(e.beginning_meter, 1)}</td>
             <td class="num">${num(e.ending_meter, 1)}${flag
@@ -1205,6 +1309,12 @@
         opt.selected = true;
         empSel.appendChild(opt);
       }
+      // Only a hand-typed gallons figure is the reviewer's to get back — see
+      // the note on manualGallons.
+      const metered = gallonsFromMeters(numOrNull(val('e-beginning-meter')), numOrNull(val('e-ending-meter')));
+      manualGallons = metered == null ? val('e-gallons') : '';
+      updateGallons();
+
       el('editMsg').textContent = '';
       el('editMsg').className = 'modal-msg';
       el('editBackdrop').classList.add('open');
@@ -1330,14 +1440,19 @@
 
     function exportCsv() {
       if (!shownEntries.length) { alert('Nothing to export in this tab.'); return; }
-      const header = ['Date','Employee','Fuel Card','Fuel Type','Gallons','Mileage','Truck Number',
+      const header = ['Date','Employee','Fuel Card','Fuel Type','Gallons','Gallons From','Mileage','Truck Number',
                       'Beginning Meter','Ending Meter','Fueling Site','City Fueled','State','Tank Number',
                       'Status','Submitted','Approved','Approved By','Submitted By'];
       const lines = [header.map(csvEscape).join(',')];
       for (const e of shownEntries) {
         lines.push([
           e.work_date, e.employee_username, e.fuel_card, e.fuel_type,
-          e.gallons, e.mileage, e.truck_number,
+          // Which of the two produced the figure beside it — the office
+          // reconciles metered fills against the tank and the rest against
+          // card statements, and a spreadsheet can't tell them apart on its
+          // own.
+          e.gallons, meteredGallons(e) != null ? 'meter' : 'reported',
+          e.mileage, e.truck_number,
           e.beginning_meter, e.ending_meter,
           e.fueling_site, e.city_fueled, e.state, e.tank_number,
           e.status, e.submitted_at || '', e.approved_at || '', e.approved_by_name || '', e.username || '',
