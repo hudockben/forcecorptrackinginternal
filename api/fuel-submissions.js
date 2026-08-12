@@ -10,6 +10,7 @@
  *            ?from=YYYY-MM-DD&to=YYYY-MM-DD
  *            ?employee=<username>   filter by who fueled
  *            ?fuel_card=X  ?fuel_type=X
+ *            ?balance=pending|balanced|issue
  *            ?user_id=N    (admin only — one named submitter)
  *            ?scope=all    (admin only — every user in the company)
  *
@@ -28,7 +29,20 @@
  *
  *   POST   /api/fuel-submissions?action=approve&id=N  — submitted → approved
  *   POST   /api/fuel-submissions?action=unapprove&id=N — approved → submitted
- *     Fuel-Admin only.
+ *     Fuel-Admin only. Un-approving also returns the entry to 'pending'
+ *     balance — the verdict went with the approval it was reached about.
+ *
+ *   POST   /api/fuel-submissions?action=balance       — the SECOND review
+ *     Body: { ids: [...], balance_status, balance_note }
+ *     Fuel-Admin only, approved entries only. Bulk: a statement that agrees
+ *     clears every fill-up for that truck at once.
+ *
+ * There are two independent reviews here and they are not the same job.
+ * `status` is the daily one: a manager checks what the field sent and
+ * approves it. `balance_status` is the monthly one: whoever reconciles
+ * against the Guttman and Wex statements marks each approved fill-up
+ * 'balanced' once it is accounted for, or 'issue' when it isn't. Every
+ * approved entry starts 'pending', which is where most of a month sits.
  *
  *   DELETE /api/fuel-submissions?id=N
  *     Field user → own drafts only. Fuel Admin → any row, at any status.
@@ -73,6 +87,14 @@ const REPORTED_FIELDS = [
 ];
 
 const VALID_STATUSES = ['draft', 'submitted', 'approved'];
+
+// The second review. status says whether the office has approved what the
+// field sent; balance_status says whether the month's reconciler has
+// accounted for it against a fuel account. They move independently — most of
+// a month sits approved-but-pending, which a single status column could not
+// express.
+const VALID_BALANCE = ['pending', 'balanced', 'issue'];
+const MAX_BALANCE_IDS = 1000;
 
 function safeDate(v) {
   if (!v) return null;
@@ -295,6 +317,10 @@ function dbToEntry(r) {
     city_fueled:        r.city_fueled,
     state:              r.state,
     tank_number:        r.tank_number == null ? null : Number(r.tank_number),
+    balance_status:     r.balance_status || 'pending',
+    balance_note:       r.balance_note || null,
+    balanced_at:        r.balanced_at || null,
+    balanced_by_name:   r.balanced_by_name || null,
     submitted_at:       r.submitted_at || null,
     approved_at:        r.approved_at  || null,
     approved_by_name:   r.approved_by_name || null,
@@ -357,6 +383,7 @@ module.exports = async (req, res) => {
       const empF  = safeStr(q.employee, 200) || '';
       const cardF = FUEL_CARDS.includes(q.fuel_card) ? q.fuel_card : '';
       const typeF = FUEL_TYPES.includes(q.fuel_type) ? q.fuel_type : '';
+      const balF  = VALID_BALANCE.includes(q.balance) ? q.balance : '';
 
       // Whose rows come back. The default is ALWAYS the caller's own — a
       // company-wide read is an explicit opt-in, never something a request
@@ -388,6 +415,7 @@ module.exports = async (req, res) => {
             AND (${empF}  = '' OR employee_username = ${empF})
             AND (${cardF} = '' OR fuel_card = ${cardF})
             AND (${typeF} = '' OR fuel_type = ${typeF})
+            AND (${balF}  = '' OR balance_status = ${balF})
           ORDER BY work_date DESC, created_at DESC
         `;
       } else {
@@ -400,6 +428,7 @@ module.exports = async (req, res) => {
             AND (${empF}  = '' OR employee_username = ${empF})
             AND (${cardF} = '' OR fuel_card = ${cardF})
             AND (${typeF} = '' OR fuel_type = ${typeF})
+            AND (${balF}  = '' OR balance_status = ${balF})
           ORDER BY work_date DESC, created_at DESC
         `;
       }
@@ -552,10 +581,16 @@ module.exports = async (req, res) => {
         return res.status(409).json({ error: `Only approved entries can be un-approved — this one is ${existing.status}` });
       }
 
+      // Un-approving sends the entry back a stage, so the balancing verdict
+      // that was reached about it goes too. A row marked 'balanced' while
+      // sitting unapproved would read as accounted-for on a figure the
+      // office has withdrawn.
       const [updated] = await sql`
         UPDATE fuel_submissions
         SET status = 'submitted', approved_at = NULL,
             approved_by_user_id = NULL, approved_by_name = NULL,
+            balance_status = 'pending', balance_note = NULL,
+            balanced_at = NULL, balanced_by_user_id = NULL, balanced_by_name = NULL,
             updated_at = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -563,6 +598,83 @@ module.exports = async (req, res) => {
       const entry = dbToEntry(updated);
       await writeAudit(sql, companyCode, payload, id, 'UNAPPROVE', null, entry);
       return res.json({ ok: true, entry });
+    }
+
+    // ── POST ?action=balance — the second review (Fuel Admin) ─────────────
+    // Body: { ids: [...], balance_status, balance_note }
+    //
+    // Bulk by design. The month is reconciled an account at a time, and a
+    // statement that agrees clears every fill-up for that truck at once —
+    // ticking forty rows one by one is the work this exists to remove.
+    if (req.method === 'POST' && q.action === 'balance') {
+      if (!canAdmin) return res.status(403).json({ error: 'Fuel Admin access is required' });
+
+      const b = req.body || {};
+      const status = String(b.balance_status || '');
+      if (!VALID_BALANCE.includes(status)) {
+        return res.status(400).json({ error: `balance_status must be one of: ${VALID_BALANCE.join(', ')}` });
+      }
+      const rawIds = Array.isArray(b.ids) ? b.ids : [];
+      const ids = [...new Set(rawIds.map(safeInt).filter(n => n != null))];
+      if (!ids.length)                  return res.status(400).json({ error: 'No entries were selected.' });
+      if (ids.length > MAX_BALANCE_IDS) return res.status(400).json({ error: `That is more than ${MAX_BALANCE_IDS} entries at once.` });
+
+      // A note belongs to an issue. Carrying one onto a balanced row would
+      // leave the reason it was once a problem attached to a figure that is
+      // no longer one.
+      const note = status === 'issue' ? safeStr(b.balance_note, 500) : null;
+      // 'pending' is the un-doing of a verdict, so it clears who reached it.
+      const stamp = status !== 'pending';
+
+      // Balancing is the stage AFTER approval, so only approved rows are
+      // eligible. Marking a submitted entry balanced would account for fuel
+      // the office has not agreed to yet.
+      // Bound as one comma-separated string and split in SQL rather than as a
+      // JS array: some neon-serverless paths mis-bind an array parameter for
+      // ANY() and the query hangs rather than failing. Every element has been
+      // through safeInt, so the string is digits and commas.
+      const idCsv = ids.join(',');
+      const rows = await sql`
+        SELECT * FROM fuel_submissions
+        WHERE company_code = ${companyCode}
+          AND id = ANY(string_to_array(${idCsv}, ',')::bigint[])
+          AND status = 'approved'
+      `;
+      if (!rows.length) {
+        return res.status(409).json({
+          error: 'None of those entries are approved yet — balancing comes after the daily review.',
+          updated: 0,
+        });
+      }
+
+      const eligible = rows.map(r => Number(r.id));
+      const updated = await sql`
+        UPDATE fuel_submissions
+        SET balance_status      = ${status},
+            balance_note        = ${note},
+            balanced_at         = CASE WHEN ${stamp}::boolean THEN NOW() ELSE NULL END,
+            balanced_by_user_id = ${stamp ? userId : null},
+            balanced_by_name    = ${stamp ? payload.username : null},
+            updated_at          = NOW()
+        WHERE company_code = ${companyCode}
+          AND id = ANY(string_to_array(${eligible.join(',')}, ',')::bigint[])
+          AND status = 'approved'
+        RETURNING *
+      `;
+
+      for (const row of updated) {
+        await writeAudit(sql, companyCode, payload, row.id, 'BALANCE',
+          { balance_status: status, balance_note: note }, dbToEntry(row));
+      }
+
+      return res.json({
+        ok: true,
+        updated: updated.length,
+        // Named rather than counted so the page can say WHICH entries it
+        // couldn't touch instead of a silent shortfall in the total.
+        skipped: ids.filter(id => !eligible.includes(id)).map(String),
+        entries: updated.map(dbToEntry),
+      });
     }
 
     // ── PUT — edit ────────────────────────────────────────────────────────

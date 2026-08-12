@@ -74,7 +74,7 @@
     }
 
     /* ── Stat strip ── */
-    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.85rem; }
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.85rem; }
     .stat {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -99,6 +99,8 @@
     .stat.submitted .stat-value { color: var(--blue);  }
     .stat.approved  .stat-value { color: var(--green); }
     .stat.gallons   .stat-value { color: var(--amber); }
+    .stat.balance   .stat-value { color: #a78bfa; }
+    .stat.issues    .stat-value { color: var(--red); }
 
     /* ── Filter bar ── */
     .filters {
@@ -191,6 +193,43 @@
     .tab.auditlog.active { color: var(--yellow); border-bottom-color: var(--yellow); }
     .tab.reports.active  { color: var(--blue);  border-bottom-color: var(--blue); }
     .tab.vehicles.active { color: var(--amber); border-bottom-color: var(--amber); }
+    .tab.balancing.active { color: #a78bfa; border-bottom-color: #a78bfa; }
+    .tab.balancing.active .tab-count { background: #a78bfa; color: #1e1b4b; }
+
+    /* ── Balance status ──
+       Purple throughout, so the second review never reads as the first:
+       green already means approved and blue means submitted. */
+    .bal-pill {
+      display: inline-block;
+      font-size: 0.56rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.42rem;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .bal-pending  { background: rgba(136,136,136,0.15); color: var(--muted); }
+    .bal-balanced { background: rgba(167,139,250,0.18); color: #a78bfa; }
+    .bal-issue    { background: rgba(239,68,68,0.15);   color: var(--red); }
+    tbody tr.row-issue > td:first-child { box-shadow: inset 3px 0 0 0 var(--red); }
+    .bal-meta { font-size: 0.56rem; color: var(--muted); line-height: 1.4; margin-top: 0.25rem; }
+    .balance-bar { border-color: rgba(167,139,250,0.35); }
+    .btn-issue {
+      padding: 0.45rem 1rem;
+      background: transparent;
+      color: var(--red);
+      border: 1px solid rgba(239,68,68,0.5);
+      font-weight: 700;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .btn-issue:hover:not(:disabled) { background: rgba(239,68,68,0.08); }
+    .btn-issue:disabled { opacity: 0.4; cursor: not-allowed; }
+    .balance-bar .filter-field label { margin-bottom: 0.15rem; }
     .tab-count {
       display: inline-block;
       font-size: 0.7rem;
@@ -364,6 +403,8 @@
     .row-btn.approve        { color: var(--green); border-color: rgba(34,197,94,0.35); }
     .row-btn.approve:hover  { background: rgba(34,197,94,0.08); }
     .row-btn.undo:hover     { color: var(--yellow); border-color: var(--yellow); }
+    .row-btn.balanced       { color: #a78bfa; border-color: rgba(167,139,250,0.35); }
+    .row-btn.balanced:hover { background: rgba(167,139,250,0.1); }
     .row-btn.delete         { color: var(--red); border-color: rgba(239,68,68,0.3); }
     .row-btn.delete:hover   { background: rgba(239,68,68,0.08); }
 
@@ -946,9 +987,13 @@
         <div class="stat-label">Gallons (approved)</div>
         <div class="stat-value" id="stat-gallons">0.00</div>
       </div>
-      <div class="stat">
-        <div class="stat-label">Gallons (all shown)</div>
-        <div class="stat-value" id="stat-gallons-all">0.00</div>
+      <div class="stat balance">
+        <div class="stat-label">Still to Balance</div>
+        <div class="stat-value" id="stat-pending-balance">0</div>
+      </div>
+      <div class="stat issues">
+        <div class="stat-label">Balance Issues</div>
+        <div class="stat-value" id="stat-issues">0</div>
       </div>
     </div>
 
@@ -988,6 +1033,9 @@
       <button class="tab approved" data-tab="approved" onclick="switchTab('approved')">
         Approved <span class="tab-count" id="tab-approved-count">0</span>
       </button>
+      <button class="tab balancing" data-tab="balancing" onclick="switchTab('balancing')">
+        Balancing <span class="tab-count" id="tab-balancing-count">0</span>
+      </button>
       <button class="tab reports" data-tab="reports" onclick="switchTab('reports')">
         Reports
       </button>
@@ -1004,6 +1052,29 @@
       <div class="bulk-count" id="bulkCount">0 selected</div>
       <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
       <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
+      <div class="bulk-spacer"></div>
+      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
+    </div>
+
+    <!-- ── Balancing bar ──
+         The second review's own controls. Kept apart from the approval bar
+         above because they are a different manager's job on a different
+         cadence, and an "Approve" button sitting beside "Mark Balanced" is
+         an invitation to do the wrong one. -->
+    <div class="bulk balance-bar" id="balanceBar">
+      <div class="filter-field" style="min-width:150px">
+        <label for="flt-balance">Showing</label>
+        <select id="flt-balance" onchange="renderRows()">
+          <option value="pending">Pending — still to balance</option>
+          <option value="issue">Issues</option>
+          <option value="balanced">Balanced</option>
+          <option value="">All approved</option>
+        </select>
+      </div>
+      <div class="bulk-count" id="balanceCount">0 selected</div>
+      <button class="btn-approve alt" id="markBalancedBtn" onclick="bulkBalance('balanced')">Mark Balanced</button>
+      <button class="btn-issue"       id="markIssueBtn"    onclick="bulkBalance('issue')">Flag Issue</button>
+      <button class="btn-clear"       id="markPendingBtn"  onclick="bulkBalance('pending')">Back to Pending</button>
       <div class="bulk-spacer"></div>
       <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
     </div>
@@ -1183,12 +1254,13 @@
             <th>City</th>
             <th>State</th>
             <th class="num">Tank</th>
+            <th>Balance</th>
             <th>Status</th>
             <th></th>
           </tr>
         </thead>
         <tbody id="rowsBody">
-          <tr class="empty-row"><td colspan="16">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="17">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1496,7 +1568,7 @@
     // ── Tabs ───────────────────────────────────────────────────────────────
     // The two that render the submissions grid. Everything else swaps the
     // grid out for its own panel.
-    const GRID_TABS = ['pending', 'approved'];
+    const GRID_TABS = ['pending', 'approved', 'balancing'];
 
     function switchTab(tab) {
       activeTab = tab;
@@ -1508,7 +1580,11 @@
       el('reportRanges').style.display = tab === 'reports'   ? '' : 'none';
       el('matchWrap').style.display    = tab === 'reports'   ? '' : 'none';
       el('vehiclesWrap').style.display = tab === 'vehicles'  ? '' : 'none';
-      el('bulkBar').classList.toggle('open', isGrid);
+      // Approval controls and balancing controls never share a bar: they are
+      // two managers' jobs on two cadences, and an Approve button beside Mark
+      // Balanced is an invitation to press the wrong one.
+      el('bulkBar').classList.toggle('open', isGrid && tab !== 'balancing');
+      el('balanceBar').classList.toggle('open', tab === 'balancing');
 
       if (tab === 'auditlog') { loadAuditLog(); return; }
       if (tab === 'reports')  { loadReport();   return; }
@@ -1523,7 +1599,7 @@
     // ── Load + filter ──────────────────────────────────────────────────────
     async function applyFilters() {
       const body = el('rowsBody');
-      body.innerHTML = '<tr class="empty-row"><td colspan="16">Loading…</td></tr>';
+      body.innerHTML = '<tr class="empty-row"><td colspan="17">Loading…</td></tr>';
 
       const params = new URLSearchParams();
       params.set('scope', 'all');
@@ -1543,7 +1619,7 @@
         allEntries = Array.isArray(data.entries) ? data.entries : [];
       } catch (err) {
         allEntries = [];
-        body.innerHTML = `<tr class="empty-row"><td colspan="16">Couldn't load submissions — ${escapeHtml(err.message)}</td></tr>`;
+        body.innerHTML = `<tr class="empty-row"><td colspan="17">Couldn't load submissions — ${escapeHtml(err.message)}</td></tr>`;
         renderStats();
         return;
       }
@@ -1574,12 +1650,32 @@
     function renderStats() {
       const submitted = allEntries.filter(e => e.status === 'submitted');
       const approved  = allEntries.filter(e => e.status === 'approved');
+      // Only approved entries have a balance state to be in — the second
+      // review starts where the first one finishes.
+      const pendingBal = approved.filter(e => (e.balance_status || 'pending') === 'pending');
+      const issues     = approved.filter(e => e.balance_status === 'issue');
       el('stat-submitted').textContent = submitted.length;
       el('stat-approved').textContent  = approved.length;
-      el('stat-gallons').textContent     = sumGallons(approved).toFixed(2);
-      el('stat-gallons-all').textContent = sumGallons(allEntries).toFixed(2);
-      el('tab-pending-count').textContent  = submitted.length;
-      el('tab-approved-count').textContent = approved.length;
+      el('stat-gallons').textContent   = sumGallons(approved).toFixed(2);
+      el('stat-pending-balance').textContent = pendingBal.length;
+      el('stat-issues').textContent          = issues.length;
+      el('tab-pending-count').textContent   = submitted.length;
+      el('tab-approved-count').textContent  = approved.length;
+      el('tab-balancing-count').textContent = pendingBal.length + issues.length;
+    }
+
+    function balanceOf(e) { return e && e.balance_status ? e.balance_status : 'pending'; }
+
+    function balancePillHtml(e) {
+      if (e.status !== 'approved') return '<span class="bal-pill bal-pending">—</span>';
+      const b = balanceOf(e);
+      const label = { pending: 'pending', balanced: 'balanced', issue: 'issue' }[b] || b;
+      const who = (b !== 'pending' && e.balanced_by_name)
+        ? `<div class="bal-meta">${escapeHtml(b === 'issue' ? 'flagged' : 'by')} ${escapeHtml(e.balanced_by_name)}${
+             e.balanced_at ? ` · ${escapeHtml(fmtTs(e.balanced_at))}` : ''}</div>` : '';
+      const note = (b === 'issue' && e.balance_note)
+        ? `<div class="bal-meta" title="${escAttr(e.balance_note)}">${escapeHtml(e.balance_note.slice(0, 60))}</div>` : '';
+      return `<span class="bal-pill bal-${b}">${label}</span>${who}${note}`;
     }
 
     function sumGallons(list) {
@@ -1606,8 +1702,17 @@
 
     function renderRows() {
       const body = el('rowsBody');
-      const wanted = activeTab === 'approved' ? 'approved' : 'submitted';
-      shownEntries = allEntries.filter(e => e.status === wanted);
+      const balancing = activeTab === 'balancing';
+      // Balancing works the approved pile only — the second review starts
+      // where the first one finishes — and defaults to what is still to do.
+      if (balancing) {
+        const bal = val('flt-balance');
+        shownEntries = allEntries.filter(e =>
+          e.status === 'approved' && (!bal || balanceOf(e) === bal));
+      } else {
+        const wanted = activeTab === 'approved' ? 'approved' : 'submitted';
+        shownEntries = allEntries.filter(e => e.status === wanted);
+      }
 
       const flagged = shownEntries.filter(meterFlagged);
       const banner  = el('flagBanner');
@@ -1621,7 +1726,10 @@
       }
 
       if (!shownEntries.length) {
-        body.innerHTML = `<tr class="empty-row"><td colspan="16">No ${wanted} fuel entries in this range.</td></tr>`;
+        const what = balancing
+          ? `${val('flt-balance') ? val('flt-balance') : 'approved'} fuel entries to balance`
+          : `${activeTab === 'approved' ? 'approved' : 'submitted'} fuel entries`;
+        body.innerHTML = `<tr class="empty-row"><td colspan="17">No ${escapeHtml(what)} in this range.</td></tr>`;
         el('selectAll').checked = false;
         updateBulk();
         return;
@@ -1631,7 +1739,8 @@
         const flag = meterFlagged(e);
         const isSel = selected.has(e.id);
         return `
-          <tr class="${isSel ? 'selected' : ''} ${flag ? 'row-meter-flag' : ''}">
+          <tr class="${isSel ? 'selected' : ''} ${flag ? 'row-meter-flag' : ''} ${
+            e.status === 'approved' && balanceOf(e) === 'issue' ? 'row-issue' : ''}">
             <td class="td-narrow">
               <input type="checkbox" ${isSel ? 'checked' : ''} onchange="toggleRow('${escJsAttr(e.id)}')" />
             </td>
@@ -1657,16 +1766,26 @@
             <td>${escapeHtml(e.city_fueled || '—')}</td>
             <td>${escapeHtml(e.state || '—')}</td>
             <td class="num">${e.tank_number != null ? e.tank_number : '—'}</td>
+            <td>${balancePillHtml(e)}</td>
             <td>
               <span class="badge badge-${e.status}">${e.status}</span>
               ${statusMetaHtml(e)}
             </td>
             <td class="td-actions">
               <button class="row-btn edit" onclick="openEdit('${escJsAttr(e.id)}')">Edit</button>
-              ${e.status === 'submitted'
-                ? `<button class="row-btn approve" onclick="approveOne('${escJsAttr(e.id)}')">Approve</button>`
-                : `<button class="row-btn undo" onclick="unapproveOne('${escJsAttr(e.id)}')">Un-approve</button>`}
-              <button class="row-btn delete" onclick="deleteEntry('${escJsAttr(e.id)}')">Delete</button>
+              ${balancing ? `
+                ${balanceOf(e) !== 'balanced'
+                  ? `<button class="row-btn balanced" onclick="balanceOne('${escJsAttr(e.id)}','balanced')">Balanced</button>` : ''}
+                ${balanceOf(e) !== 'issue'
+                  ? `<button class="row-btn delete" onclick="balanceOne('${escJsAttr(e.id)}','issue')">Issue</button>` : ''}
+                ${balanceOf(e) !== 'pending'
+                  ? `<button class="row-btn undo" onclick="balanceOne('${escJsAttr(e.id)}','pending')">Undo</button>` : ''}
+              ` : `
+                ${e.status === 'submitted'
+                  ? `<button class="row-btn approve" onclick="approveOne('${escJsAttr(e.id)}')">Approve</button>`
+                  : `<button class="row-btn undo" onclick="unapproveOne('${escJsAttr(e.id)}')">Un-approve</button>`}
+                <button class="row-btn delete" onclick="deleteEntry('${escJsAttr(e.id)}')">Delete</button>
+              `}
             </td>
           </tr>`;
       }).join('');
@@ -1724,10 +1843,80 @@
 
     function updateBulk() {
       const n = shownEntries.filter(e => selected.has(e.id)).length;
-      el('bulkCount').textContent = `${n} selected`;
+      el('bulkCount').textContent    = `${n} selected`;
+      el('balanceCount').textContent = `${n} selected`;
       const submittedShown = shownEntries.filter(e => e.status === 'submitted');
       el('approveSelectedBtn').disabled = n === 0 || activeTab !== 'pending';
       el('approveAllBtn').disabled      = submittedShown.length === 0 || activeTab !== 'pending';
+      for (const id of ['markBalancedBtn', 'markIssueBtn', 'markPendingBtn']) {
+        el(id).disabled = n === 0 || activeTab !== 'balancing';
+      }
+    }
+
+    // ── The second review ──────────────────────────────────────────────────
+    // Marking is bulk by nature: a statement line that agrees clears every
+    // fill-up behind it at once, and ticking forty rows one at a time is the
+    // work this exists to remove. The single-row buttons are the same call
+    // with one id.
+    async function setBalance(ids, status, note, quiet) {
+      if (!ids.length) return null;
+      const res = await fetch('/api/fuel-submissions?action=balance', {
+        method: 'POST', headers: authHeaders(true),
+        body: JSON.stringify({ ids, balance_status: status, balance_note: note || '' }),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Could not save');
+      // Fold the server's rows back in so the grid and the stats move without
+      // a refetch losing the reviewer's place in a long month.
+      for (const updated of (j.entries || [])) {
+        const i = allEntries.findIndex(e => e.id === updated.id);
+        if (i >= 0) allEntries[i] = updated;
+      }
+      renderStats();
+      renderRows();
+      if (!quiet && j.skipped && j.skipped.length) {
+        alert(`${j.updated} marked. ${j.skipped.length} left alone — balancing only applies to entries the daily review has already approved.`);
+      }
+      return j;
+    }
+
+    async function balanceOne(id, status) {
+      let note = '';
+      if (status === 'issue') {
+        note = prompt('What is the issue? (optional — it shows on the row and in the audit log)') || '';
+      }
+      if (!beginWrite()) return;
+      try {
+        await setBalance([id], status, note);
+      } catch (err) {
+        alert(err.message);
+      } finally { endWrite(); }
+    }
+
+    async function bulkBalance(status) {
+      const ids = shownEntries.filter(e => selected.has(e.id)).map(e => e.id);
+      if (!ids.length) return;
+      const verb = { balanced: 'Mark balanced', issue: 'Flag as an issue', pending: 'Put back to pending' }[status];
+      if (!confirm(`${verb}: ${ids.length} fuel entr${ids.length === 1 ? 'y' : 'ies'}?`)) return;
+      let note = '';
+      if (status === 'issue') {
+        note = prompt(`What is the issue with ${ids.length === 1 ? 'this entry' : 'these entries'}? (optional)`) || '';
+      }
+      if (!beginWrite()) return;
+      try {
+        const j = await setBalance(ids, status, note);
+        // The rows just left the view they were selected in, so the selection
+        // has to go with them — otherwise the next bulk press acts on entries
+        // that are no longer on screen.
+        for (const id of ids) selected.delete(id);
+        renderRows();
+        if (j && !j.skipped.length) {
+          // Nothing to say when it all went through; the rows moving IS the
+          // confirmation.
+        }
+      } catch (err) {
+        alert(err.message);
+      } finally { endWrite(); }
     }
 
     // ── Approve / un-approve / delete ──────────────────────────────────────
@@ -3360,6 +3549,22 @@
             reported but not billed on this account — usually a truck number typed wrong, or fuel put on a different card. ` : ''}
         </div>
 
+        ${r.historical ? '' : `
+        <div class="save-bar">
+          <span class="qr-label">Carry through to the entries:</span>
+          <button class="btn-approve alt" onclick="balanceFromMatch('agreed')">
+            Mark ${r.matched} agreeing truck${r.matched === 1 ? "'s fills" : "s' fills"} balanced
+          </button>
+          <button class="btn-issue" onclick="balanceFromMatch('off')">
+            Flag ${r.variances.length + r.notOnStatement.length} unmatched truck${r.variances.length + r.notOnStatement.length === 1 ? "'s fills" : "s' fills"}
+          </button>
+        </div>
+        <div class="match-note" style="margin-top:0.3rem">
+          This is the point of the match: a truck whose statement agrees needs every one of its fill-ups
+          ticked off, and doing that by hand is the afternoon this replaces. Only approved entries move —
+          anything still awaiting the daily review is left alone and counted back to you.
+        </div>`}
+
         <div class="save-bar">
           <input type="text" id="mt-note" maxlength="500"
                  value="${escAttr((r.savedMeta && r.savedMeta.source_note) || '')}"
@@ -3374,6 +3579,53 @@
           Save it to tick trucks off one at a time, note what each turned out to be, and have this month
           count towards the repeat-offender history.
         </div>`}`;
+    }
+
+    /**
+     * Carry a match's verdicts down onto the fill-ups behind them.
+     *
+     * The match works in truck-months; the balance state lives on individual
+     * entries, because that is the grain the office needs to be able to say
+     * "this specific fill-up is the one nobody can account for". Fanning one
+     * out to the other is the step that would otherwise be done by hand,
+     * forty rows at a time, from a printout.
+     */
+    async function balanceFromMatch(which) {
+      const r = matchResult;
+      if (!r || !reportModel) return;
+
+      const wanted = which === 'agreed'
+        ? new Set(r.rows.filter(x => x.verdict === 'match').map(x => Number(x.truck)))
+        // 'not-in-ours' is deliberately absent: there are no entries behind a
+        // truck we never reported, so there is nothing to mark.
+        : new Set(r.rows.filter(x => x.verdict === 'variance' || x.verdict === 'not-on-statement')
+                        .map(x => Number(x.truck)));
+      if (!wanted.size) { alert('Nothing in that group on this match.'); return; }
+
+      const ids = reportModel.rows
+        .filter(e => e.status === 'approved'
+          && e.truck_number != null && wanted.has(Number(e.truck_number))
+          && (!r.card || (e.fuel_card || '') === r.card))
+        .map(e => e.id);
+      if (!ids.length) { alert('No approved fuel entries behind those trucks in this range.'); return; }
+
+      const label = which === 'agreed' ? 'balanced' : 'as issues';
+      if (!confirm(`Mark ${ids.length} fuel entr${ids.length === 1 ? 'y' : 'ies'} across `
+        + `${wanted.size} truck${wanted.size === 1 ? '' : 's'} ${label}?`)) return;
+
+      const note = which === 'agreed' ? '' :
+        `Did not match the ${r.card || 'account'} statement for `
+        + `${reportModel.from} → ${reportModel.to}`;
+
+      try {
+        const j = await setBalance(ids, which === 'agreed' ? 'balanced' : 'issue', note, true);
+        // The grid these entries live in is a different tab, so the moving
+        // rows aren't visible from here — say what happened instead.
+        alert(`${j.updated} entr${j.updated === 1 ? 'y' : 'ies'} marked${
+          j.skipped.length ? `. ${j.skipped.length} left alone — not approved yet.` : '.'}`);
+      } catch (err) {
+        alert(err.message);
+      }
     }
 
     function exportMatchCsv() {
@@ -3489,7 +3741,8 @@
       if (!shownEntries.length) { alert('Nothing to export in this tab.'); return; }
       const header = ['Date','Employee','Fuel Card','Fuel Type','Gallons','Gallons From','Mileage','Truck Number',
                       'Beginning Meter','Ending Meter','Fueling Site','City Fueled','State','Tank Number',
-                      'Status','Submitted','Approved','Approved By','Submitted By'];
+                      'Status','Balance','Balance Note','Balanced By','Balanced At',
+                      'Submitted','Approved','Approved By','Submitted By'];
       const lines = [header.map(csvEscape).join(',')];
       for (const e of shownEntries) {
         lines.push([
@@ -3502,7 +3755,10 @@
           e.mileage, e.truck_number,
           e.beginning_meter, e.ending_meter,
           e.fueling_site, e.city_fueled, e.state, e.tank_number,
-          e.status, e.submitted_at || '', e.approved_at || '', e.approved_by_name || '', e.username || '',
+          e.status,
+          e.status === 'approved' ? balanceOf(e) : '',
+          e.balance_note || '', e.balanced_by_name || '', e.balanced_at || '',
+          e.submitted_at || '', e.approved_at || '', e.approved_by_name || '', e.username || '',
         ].map(csvEscape).join(','));
       }
       downloadCsv(lines.join('\n'), `fuel-${activeTab}-${val('flt-from') || 'start'}-to-${val('flt-to') || 'end'}.csv`);

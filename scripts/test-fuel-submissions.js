@@ -326,6 +326,16 @@ async function action(method, query, body, row, auth = FIELD) {
     if (q.startsWith('SELECT b.id, b.status FROM fuel_submissions a')) {
       return Promise.resolve([]);           // no duplicate
     }
+    // The balance branch, matched BEFORE the generic UPDATE below — that one
+    // starts with the same six words and would otherwise answer for it,
+    // handing back a row on which nothing had changed.
+    if (q.startsWith('SELECT * FROM fuel_submissions WHERE company_code')) {
+      return Promise.resolve(row && row.status === 'approved' ? [row] : []);
+    }
+    if (q.startsWith('UPDATE fuel_submissions SET balance_status')) {
+      const [status, note] = values;
+      return Promise.resolve([Object.assign({}, row, { balance_status: status, balance_note: note })]);
+    }
     if (q.startsWith('UPDATE fuel_submissions')) {
       // Echo the row back with whatever status the statement set, the way
       // RETURNING * would.
@@ -380,6 +390,95 @@ async function submitTests() {
   {
     const { res } = await action('POST', { action: 'submit' }, null, rowFrom());
     assert('submit with no id is a 400', res.statusCode === 400);
+  }
+}
+
+async function balanceTests() {
+  console.log('\n[POST ?action=balance — the second review]');
+  const approved = () => Object.assign(rowFrom(), { id: 1, status: 'approved' });
+
+  {
+    const { res } = await action('POST', { action: 'balance' },
+      { ids: ['1'], balance_status: 'balanced' }, approved(), FIELD);
+    assert('a field user cannot balance', res.statusCode === 403);
+  }
+  {
+    const { res } = await action('POST', { action: 'balance' },
+      { ids: ['1'], balance_status: 'sorted' }, approved(), ADMIN);
+    assert('an invented balance status is refused', res.statusCode === 400);
+  }
+  {
+    const { res } = await action('POST', { action: 'balance' },
+      { ids: [], balance_status: 'balanced' }, approved(), ADMIN);
+    assert('balancing nothing is refused', res.statusCode === 400);
+  }
+  {
+    const { res, seen } = await action('POST', { action: 'balance' },
+      { ids: ['1', '2', '2'], balance_status: 'balanced' }, approved(), ADMIN);
+    assert('an admin can balance', res.statusCode === 200 && res.body.ok, JSON.stringify(res.body));
+    const sel = seen.find(s => s.startsWith('SELECT * FROM fuel_submissions WHERE company_code'));
+    // Balancing is the stage AFTER approval. Marking a submitted entry
+    // balanced would account for fuel the office has not agreed to yet.
+    assert('only approved entries are eligible', /status = 'approved'/.test(sel), sel);
+    // Some neon-serverless paths mis-bind a JS array for ANY() and hang, so
+    // the ids cross as one string and are split in SQL.
+    assert('ids cross as a string, not a bound array',
+      /string_to_array/.test(sel), sel);
+  }
+  {
+    const { seen } = await action('POST', { action: 'balance' },
+      { ids: ['1'], balance_status: 'balanced', balance_note: 'looks fine' }, approved(), ADMIN);
+    const upd = seen.find(s => s.startsWith('UPDATE fuel_submissions SET balance_status'));
+    assert('a balanced row is stamped with who and when',
+      /balanced_at = CASE WHEN \?::boolean THEN NOW\(\)/.test(upd), upd.slice(0, 160));
+  }
+  {
+    // A note explains an issue. Carried onto a balanced row it would leave
+    // the reason something was once a problem attached to a figure that
+    // isn't one any more.
+    const { res } = await action('POST', { action: 'balance' },
+      { ids: ['1'], balance_status: 'balanced', balance_note: 'was short 4 gal' }, approved(), ADMIN);
+    assert('a note is dropped when the verdict is not an issue',
+      res.body.entries[0].balance_note === null, String(res.body.entries[0].balance_note));
+  }
+  {
+    const { res } = await action('POST', { action: 'balance' },
+      { ids: ['1'], balance_status: 'issue', balance_note: 'not on the Guttman statement' },
+      approved(), ADMIN);
+    assert('an issue keeps its note',
+      res.body.entries[0].balance_note === 'not on the Guttman statement',
+      String(res.body.entries[0].balance_note));
+  }
+  {
+    const row = Object.assign(rowFrom(), { id: 1, status: 'submitted' });
+    const { res } = await action('POST', { action: 'balance' },
+      { ids: ['1'], balance_status: 'balanced' }, row, ADMIN);
+    assert('an entry still awaiting the daily review cannot be balanced',
+      res.statusCode === 409, JSON.stringify(res.body));
+  }
+
+  console.log('\n[un-approving takes the balance verdict with it]');
+  {
+    const row = Object.assign(rowFrom(), {
+      id: 1, status: 'approved', balance_status: 'balanced', balanced_by_name: 'office',
+    });
+    const { seen } = await action('POST', { action: 'unapprove', id: '1' }, null, row, ADMIN);
+    const upd = seen.find(s => s.startsWith('UPDATE fuel_submissions SET status = \'submitted\''));
+    // A row left reading 'balanced' while unapproved says the office has
+    // accounted for a figure it has just withdrawn.
+    assert('it is returned to pending', /balance_status = 'pending'/.test(upd), upd.slice(0, 200));
+    assert('and who balanced it is cleared', /balanced_by_name = NULL/.test(upd), upd.slice(0, 260));
+  }
+
+  console.log('\n[the list can be filtered by it]');
+  {
+    const { listQuery } = await get({ scope: 'all', balance: 'pending' }, ADMIN);
+    assert('?balance=pending reaches the SQL', /balance_status/.test(listQuery.sql), listQuery.sql);
+  }
+  {
+    const { listQuery } = await get({ scope: 'all', balance: 'sorted' }, ADMIN);
+    assert('and a junk value filters nothing rather than erroring',
+      listQuery != null, 'no list query ran');
   }
 }
 
@@ -657,6 +756,7 @@ function pageTests() {
   await scopeTests();
   await submitTests();
   await adminTests();
+  await balanceTests();
   pageTests();
 
   console.log('\n────────────────────────────────────────');

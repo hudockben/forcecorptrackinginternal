@@ -1092,6 +1092,23 @@ CREATE TABLE IF NOT EXISTS fuel_submissions (
     status              TEXT          NOT NULL DEFAULT 'draft'
                                        CHECK (status IN ('draft','submitted','approved')),
 
+    -- Where this fill-up has got to in the SECOND review. status is the
+    -- approval workflow — draft, submitted, approved — run daily by the
+    -- manager checking what the field sent. balance_status is a separate
+    -- axis, run monthly by whoever reconciles against the fuel accounts:
+    -- every approved fill-up starts 'pending' and becomes 'balanced' when it
+    -- has been accounted for on a statement, or 'issue' when it hasn't.
+    --
+    -- Deliberately NOT a fourth value of status. A fill-up is approved OR
+    -- not, and separately balanced OR not; folding them into one column
+    -- would make "approved but not yet balanced" unsayable, which is the
+    -- state most of a month sits in.
+    balance_status      TEXT          NOT NULL DEFAULT 'pending',
+    balance_note        TEXT,
+    balanced_at         TIMESTAMPTZ,
+    balanced_by_user_id INTEGER,
+    balanced_by_name    TEXT,
+
     work_date           DATE          NOT NULL,
     employee_username   TEXT,
     fuel_card           TEXT,
@@ -1119,6 +1136,27 @@ CREATE INDEX IF NOT EXISTS idx_fuel_company_user_date ON fuel_submissions(compan
 CREATE INDEX IF NOT EXISTS idx_fuel_company_status    ON fuel_submissions(company_code, status, work_date DESC);
 CREATE INDEX IF NOT EXISTS idx_fuel_company_employee  ON fuel_submissions(company_code, employee_username, work_date DESC);
 
+-- Balancing columns (added after initial release). Idempotent so existing
+-- deployments pick them up the next time run-schema executes. Every fill-up
+-- already in the table becomes 'pending', which is the truthful answer for
+-- work that predates anyone balancing it.
+--
+-- The CHECK is added by name rather than inline on the column above so that
+-- the drop-then-add pair below stays idempotent — an inline check would be
+-- auto-named and this would leave a second, identical constraint beside it.
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balance_status      TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balance_note        TEXT;
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balanced_at         TIMESTAMPTZ;
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balanced_by_user_id INTEGER;
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balanced_by_name    TEXT;
+
+ALTER TABLE fuel_submissions DROP CONSTRAINT IF EXISTS fuel_balance_status_check;
+ALTER TABLE fuel_submissions ADD  CONSTRAINT fuel_balance_status_check
+  CHECK (balance_status IN ('pending','balanced','issue'));
+
+CREATE INDEX IF NOT EXISTS idx_fuel_company_balance
+  ON fuel_submissions(company_code, balance_status, work_date DESC);
+
 -- ─────────────────────────────────────────────────
 -- FUEL AUDIT LOG
 -- One row per state-changing action on fuel_submissions. Same shape and
@@ -1130,13 +1168,19 @@ CREATE TABLE IF NOT EXISTS fuel_audit_log (
     id            BIGSERIAL PRIMARY KEY,
     company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
     entry_id      BIGINT        NOT NULL,
-    action        TEXT          NOT NULL CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','UNAPPROVE','ADMIN_EDIT','DELETE')),
+    action        TEXT          NOT NULL,
     user_id       INTEGER,
     username      TEXT,
     changes       JSONB,
     snapshot      JSONB,
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
+
+-- Named rather than inline so adding an action later is a drop-and-add pair
+-- that stays idempotent. BALANCE arrived with the second review stage.
+ALTER TABLE fuel_audit_log DROP CONSTRAINT IF EXISTS fuel_audit_log_action_check;
+ALTER TABLE fuel_audit_log ADD  CONSTRAINT fuel_audit_log_action_check
+  CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','UNAPPROVE','ADMIN_EDIT','DELETE','BALANCE'));
 
 CREATE INDEX IF NOT EXISTS idx_fuel_audit_company ON fuel_audit_log(company_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fuel_audit_entry   ON fuel_audit_log(entry_id, created_at DESC);
