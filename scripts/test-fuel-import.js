@@ -74,10 +74,10 @@ const SRC = fs.readFileSync(path.resolve(__dirname, '..', 'fuel-admin.html'), 'u
 
 const CONSTS = ['FUEL_CARDS', 'FUEL_TYPES', 'US_STATES', 'FIELDS',
                 'STATEMENT_COLUMNS', 'IMPORT_COLUMNS', 'CARD_ALIASES', 'TYPE_ALIASES',
-                'NOT_ANSWERED', 'MAX_METER_FILL'];
+                'NOT_ANSWERED', 'MAX_METER_FILL', 'MIN_FUEL_YEAR', 'MAX_FUEL_YEAR'];
 const FNS = ['gallonsFromMeters', 'delimiterFor', 'excelSerialToYmd', 'detectColumns',
              'optKey', 'matchOption', 'editDistance', 'readOption', 'importState', 'validYmd', 'importDate', 'importNumber',
-             'importInt', 'colLetter', 'splitDelimitedLine', 'parseDelimited', 'pickHeaderRow',
+             'importInt', 'plausibleYear', 'colLetter', 'splitDelimitedLine', 'parseDelimited', 'pickHeaderRow',
              'readImportGrid', 'buildImportRows'];
 
 const page = new Function(`
@@ -152,6 +152,20 @@ function dateTests() {
 
   assert('an empty cell is no date', importDate('') === null);
   assert('a word is no date',        importDate('n/a') === null);
+  // A real calendar day that is not a fuel date. The preview names the year
+  // rather than calling the cell unreadable — it read fine, and the fix is
+  // one character on a row that is otherwise good.
+  assert('0226 is a real day and still not a fuel date',
+    importDate('0226-05-04') === '0226-05-04' && page.plausibleYear('0226-05-04') === false,
+    `${importDate('0226-05-04')} / ${page.plausibleYear('0226-05-04')}`);
+  assert('and so is 3026', page.plausibleYear('3026-05-04') === false);
+  assert('2026 is fine',   page.plausibleYear('2026-05-04') === true);
+  // Date.UTC maps 0-99 onto 1900-1999, so the round-trip has to be told the
+  // year or it refuses 0001 for a reason that is not about the date.
+  assert('0001 is a real day too, read exactly',
+    importDate('0001-01-01') === '0001-01-01', String(importDate('0001-01-01')));
+  assert('and the leap-year check survives that', importDate('2024-02-29') === '2024-02-29');
+  assert('…in both directions',                   importDate('2026-02-29') === null);
   // Shaped like a date without being one. Left to the DATE column this is a
   // driver error that takes the rest of the batch with it.
   assert('the 30th of February is refused', importDate('2026-02-30') === null);

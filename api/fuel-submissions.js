@@ -146,11 +146,33 @@ function safeDate(v) {
   // surfaces as a 500 with a driver's error message rather than something
   // the office can act on, and on the import path takes the rest of the
   // batch down with it.
+  //
+  // Date.UTC maps a year of 0–99 onto 1900–1999, so the round-trip has to be
+  // told the year separately. Left to it, this refuses 0001 for a reason
+  // that has nothing to do with the date and says nothing about 0226.
   const [y, m, d] = s.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
+  const dt = new Date(Date.UTC(2000, m - 1, d));
+  dt.setUTCFullYear(y);
   const real = dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === m && dt.getUTCDate() === d;
   return real ? s : null;
 }
+
+/**
+ * The window a fuel date can fall in.
+ *
+ * A real calendar day is not the same as a day this can be about. Every
+ * mistyped year lands on one: 0226 for 2026, 3026 for 2026, 9999 from a
+ * spreadsheet's own end-of-range filler. Each is a perfectly good date and
+ * each stores a fill-up that then appears in no month anybody will ever run —
+ * so the month it belonged to comes up short by exactly those gallons, with
+ * nothing anywhere saying why.
+ *
+ * Checked where a WORK date is validated rather than inside safeDate, which
+ * also reads rows back out: an entry that predates this rule still has to be
+ * displayable, or it becomes unfindable as well as wrong.
+ */
+const MIN_FUEL_YEAR = 2000;
+const MAX_FUEL_YEAR = 2100;
 
 function safeInt(v) {
   if (v == null || v === '') return null;
@@ -173,7 +195,13 @@ function isBlank(v) {
 
 function safeStr(v, max) {
   if (isBlank(v)) return null;
-  const s = String(v).trim();
+  // A NUL is the one character JSONB refuses outright, and the import sends a
+  // whole batch through jsonb_to_recordset as a single value — so one of these
+  // in one cell of one row takes five hundred rows down with it, under
+  // "Database error". A spreadsheet should never carry one; files that have
+  // been through the wrong export twice sometimes do.
+  const s = String(v).replace(/\u0000/g, '').trim();
+  if (!s) return null;
   return max ? s.slice(0, max) : s;
 }
 
@@ -269,6 +297,10 @@ function normalizeBody(body) {
 
   const work_date = safeDate(b.work_date);
   if (!work_date) return { error: 'A valid date is required.' };
+  const year = Number(work_date.slice(0, 4));
+  if (year < MIN_FUEL_YEAR || year > MAX_FUEL_YEAR) {
+    return { error: `${work_date} is not a date this can be about — check the year.` };
+  }
 
   const fuel_card = safeStr(b.fuel_card, 100);
   if (fuel_card && !FUEL_CARDS.includes(fuel_card)) {
@@ -318,8 +350,15 @@ function normalizeBody(body) {
   // has been right and the readings wrong, every time — so the reported one
   // stands, and Fuel Admin flags the row so the readings get corrected rather
   // than the gallons quietly restated.
+  // A reported ZERO counts as nothing reported here, and only here. Zero is a
+  // real answer everywhere else on this form — it is what the meters are
+  // asked for when the truck isn't on Force Fuel — but no fill-up ever put
+  // zero gallons in a tank, so a 0 against readings that describe a real fill
+  // is an empty column, not a contradiction of them. Left out, a sheet whose
+  // gallons column is 0 stores 0 and throws the meter reading away.
+  const reportedNothing = out.gallons == null || Number(out.gallons) === 0;
   const metered = gallonsFromMeters(out.beginning_meter, out.ending_meter);
-  if (metered != null && (out.gallons == null || metersAgree(metered, out.gallons))) {
+  if (metered != null && (reportedNothing || metersAgree(metered, out.gallons))) {
     out.gallons = metered;
   }
 
@@ -750,8 +789,16 @@ module.exports = async (req, res) => {
       if (!VALID_BALANCE.includes(status)) {
         return res.status(400).json({ error: `balance_status must be one of: ${VALID_BALANCE.join(', ')}` });
       }
+      // Digits only, rather than safeInt. parseInt is lenient by design and
+      // reads "1; DROP TABLE fuel_submissions" as the number 1 — nothing
+      // unsafe reaches the database either way, the ids are bound as a
+      // parameter, but it would quietly mark a DIFFERENT fill-up balanced
+      // than the one asked for. An id nobody can read is not an id.
       const rawIds = Array.isArray(b.ids) ? b.ids : [];
-      const ids = [...new Set(rawIds.map(safeInt).filter(n => n != null))];
+      const ids = [...new Set(rawIds
+        .filter(x => /^\d+$/.test(String(x == null ? '' : x).trim()))
+        .map(safeInt)
+        .filter(n => n != null))];
       if (!ids.length)                  return res.status(400).json({ error: 'No entries were selected.' });
       if (ids.length > MAX_BALANCE_IDS) return res.status(400).json({ error: `That is more than ${MAX_BALANCE_IDS} entries at once.` });
 

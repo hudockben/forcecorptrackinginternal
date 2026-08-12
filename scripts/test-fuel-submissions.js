@@ -199,6 +199,25 @@ function meterTests() {
     assert('with no reported figure the tank is the only source',
       blank.gallons === 84.5, String(blank.gallons));
 
+    // A reported ZERO is nothing reported, here and only here. Zero is a real
+    // answer everywhere else on this form, but no fill-up ever put zero
+    // gallons in a tank — so against readings that describe a real fill it is
+    // an empty column rather than a contradiction. Treated as a contradiction
+    // it keeps the 0 and throws the meter away, which is what a sheet with a
+    // zeroed gallons column would have imported as.
+    const zeroed = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '1200', ending_meter: '1284.5', gallons: '0',
+    })).data;
+    assert('a reported 0 does not beat readings that describe a real fill',
+      zeroed.gallons === 84.5, String(zeroed.gallons));
+    // …and where the readings describe nothing either, the 0 stands and gets
+    // flagged in Fuel Admin rather than being invented away.
+    const bothZero = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '0', ending_meter: '0', gallons: '0',
+    })).data;
+    assert('but with no fill on the meter either, the 0 stands',
+      bothZero.gallons === 0, String(bothZero.gallons));
+
     // The one that started all this. Left alone it stores 460,206 gallons and
     // the month it lands in cannot be balanced against anything.
     const typo = normalizeBody(Object.assign({}, FULL, {
@@ -871,6 +890,38 @@ function pageTests() {
       meterFlagged({ beginning_meter: 1200, ending_meter: 0 }) === true);
     assert('a missing reading is not flagged (the workflow catches that)',
       meterFlagged({ beginning_meter: null, ending_meter: 5 }) === false);
+  }
+
+  console.log('\n[a real calendar day is not a day this can be about]');
+  {
+    // Every one of these is a valid date and none of them is a fuel date.
+    // Stored, each puts a fill-up in a month nobody will ever run — so the
+    // month it belonged to comes up short by exactly those gallons, and
+    // nothing anywhere says why.
+    for (const [d, why] of [
+      ['0226-05-04', 'a transposed 2026'],
+      ['3026-05-04', 'a mistyped 2026'],
+      ['9999-12-31', "a spreadsheet's own end-of-range filler"],
+      ['1999-12-31', 'before any of this existed'],
+    ]) {
+      const { error } = normalizeBody(Object.assign({}, FULL, { work_date: d }));
+      assert(`${d} is refused — ${why}`, !!error && /year/.test(error), error || 'accepted');
+    }
+    for (const d of ['2000-01-01', '2026-05-04', '2100-12-31']) {
+      const { error } = normalizeBody(Object.assign({}, FULL, { work_date: d }));
+      assert(`${d} is a date this can be about`, !error, error);
+    }
+    // The round-trip that decides whether a day is real has to be told the
+    // year: Date.UTC maps 0–99 onto 1900–1999, which refused 0001 for a
+    // reason that had nothing to do with the date and said nothing about
+    // 0226. Both are refused now, and for the right reason.
+    const { error: e1 } = normalizeBody(Object.assign({}, FULL, { work_date: '0001-01-01' }));
+    assert('0001-01-01 is refused on its year, not by accident', /year/.test(e1 || ''), e1);
+    // …and the leap-year check still holds through the same round-trip.
+    assert('29 February 2024 is a real day',
+      !normalizeBody(Object.assign({}, FULL, { work_date: '2024-02-29' })).error);
+    assert('29 February 2026 is not',
+      !!normalizeBody(Object.assign({}, FULL, { work_date: '2026-02-29' })).error);
   }
 
   console.log('\n[fuel-admin.html — an entry that bought no fuel]');
