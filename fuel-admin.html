@@ -682,6 +682,36 @@
     .ifta-yes { color: var(--green); font-weight: 700; }
     .ifta-no  { color: var(--muted); }
 
+    /* IFTA standing, beside the truck number it belongs to. Green matches the
+       Vehicles tab, which is where the flag is set, so the two read as the
+       same fact rather than two unrelated ones. Sized like the `auto` chip:
+       this sits in a numeric column that has to stay scannable. */
+    .ifta-chip {
+      display: inline-block;
+      margin-left: 0.3rem;
+      font-size: 0.52rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      background: rgba(34,197,94,0.16);
+      color: var(--green);
+      cursor: help;
+      vertical-align: middle;
+    }
+    /* IFTA-qualified with no sticker number — the filing needs one, and this
+       is where whoever files it is actually looking. */
+    .ifta-chip.none { background: rgba(251,146,60,0.18); color: #fb923c; }
+    /* A truck the roster has never heard of. Muted, because it is the absence
+       of an answer rather than a bad one — but present, because without it a
+       missing badge could equally mean "off-road, correctly not IFTA". */
+    .ifta-chip.unknown {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: #555;
+      font-weight: 700;
+    }
+
     /* ── Vehicle × month table ── */
     .rep-block th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
     .rep-block th.sortable:hover { color: var(--text); }
@@ -1666,6 +1696,49 @@
 
     function balanceOf(e) { return e && e.balance_status ? e.balance_status : 'pending'; }
 
+    /**
+     * What the vehicle roster says about the truck on this entry.
+     *
+     *   'ifta'        IFTA-qualified, sticker on file
+     *   'no-sticker'  IFTA-qualified but no sticker number — the filing needs one
+     *   'not-ifta'    on the roster, deliberately not IFTA (off-road equipment)
+     *   'unknown'     no truck number, or a number the roster has never heard of
+     *
+     * Told apart because a missing badge would otherwise be ambiguous: an
+     * off-road machine and a truck nobody has added to the roster yet would
+     * look identical, and only one of them is fine.
+     */
+    function iftaStateFor(fleet, truckNumber) {
+      if (truckNumber == null) return 'unknown';
+      const v = fleet.get(String(truckNumber));
+      if (!v)      return 'unknown';
+      if (!v.ifta) return 'not-ifta';
+      return v.ifta_sticker ? 'ifta' : 'no-sticker';
+    }
+
+    function iftaChipHtml(fleet, e) {
+      // With no roster loaded at all, every truck would read as unknown —
+      // which says nothing about the trucks and everything about the fetch.
+      // Better to show no badge than to mark the whole fleet unrecognised.
+      if (!vehicles.length) return '';
+      const state = iftaStateFor(fleet, e.truck_number);
+      const v = e.truck_number != null ? fleet.get(String(e.truck_number)) : null;
+      const what = v ? [v.model_year, v.make].filter(Boolean).join(' ') : '';
+      if (state === 'ifta') {
+        return `<span class="ifta-chip" title="Truck ${e.truck_number} is IFTA-qualified${
+          what ? ` · ${escAttr(what)}` : ''} · sticker ${escAttr(v.ifta_sticker)}">IFTA</span>`;
+      }
+      if (state === 'no-sticker') {
+        return `<span class="ifta-chip none" title="Truck ${e.truck_number} is IFTA-qualified but has no sticker number on the Vehicles tab — the filing needs one.">IFTA?</span>`;
+      }
+      if (state === 'unknown') {
+        return `<span class="ifta-chip unknown" title="${e.truck_number == null
+          ? 'No truck number on this entry, so it cannot be matched to a vehicle.'
+          : `Truck ${e.truck_number} isn't on the Vehicles tab, so whether it is IFTA-qualified isn't known.`}">?</span>`;
+      }
+      return '';   // on the roster and deliberately not IFTA — nothing to say
+    }
+
     function balancePillHtml(e) {
       if (e.status !== 'approved') return '<span class="bal-pill bal-pending">—</span>';
       const b = balanceOf(e);
@@ -1735,6 +1808,10 @@
         return;
       }
 
+      // Built once per render rather than per row — the roster is small but
+      // rebuilding a Map inside the loop makes this quadratic in fleet size.
+      const fleet = vehicleIndex();
+
       body.innerHTML = shownEntries.map(e => {
         const flag = meterFlagged(e);
         const isSel = selected.has(e.id);
@@ -1751,7 +1828,7 @@
                 ? `<div class="status-meta">sent by <strong>${escapeHtml(e.username)}</strong></div>` : ''}
             </td>
             <td>${prettyDate(e.work_date)}</td>
-            <td class="num">${e.truck_number != null ? e.truck_number : '—'}</td>
+            <td class="num">${e.truck_number != null ? e.truck_number : '—'}${iftaChipHtml(fleet, e)}</td>
             <td>${escapeHtml(e.fuel_type || '—')}</td>
             <td>${escapeHtml(e.fuel_card || '—')}</td>
             <td class="num">${num(e.gallons, 2)}${meteredGallons(e) != null
@@ -3966,9 +4043,11 @@
       if (!shownEntries.length) { alert('Nothing to export in this tab.'); return; }
       const header = ['Date','Employee','Fuel Card','Fuel Type','Gallons','Gallons From','Mileage','Truck Number',
                       'Beginning Meter','Ending Meter','Fueling Site','City Fueled','State','Tank Number',
+                      'IFTA','IFTA Sticker',
                       'Status','Balance','Balance Note','Balanced By','Balanced At',
                       'Submitted','Approved','Approved By','Submitted By'];
       const lines = [header.map(csvEscape).join(',')];
+      const csvFleet = vehicleIndex();
       for (const e of shownEntries) {
         lines.push([
           e.work_date, e.employee_username, e.fuel_card, e.fuel_type,
@@ -3980,6 +4059,10 @@
           e.mileage, e.truck_number,
           e.beginning_meter, e.ending_meter,
           e.fueling_site, e.city_fueled, e.state, e.tank_number,
+          // Straight off the roster, so a spreadsheet built for a filing
+          // carries the same answer the screen gave.
+          (() => { const v = csvFleet.get(String(e.truck_number)); return v ? (v.ifta ? 'Yes' : 'No') : ''; })(),
+          (() => { const v = csvFleet.get(String(e.truck_number)); return v && v.ifta_sticker ? v.ifta_sticker : ''; })(),
           e.status,
           e.status === 'approved' ? balanceOf(e) : '',
           e.balance_note || '', e.balanced_by_name || '', e.balanced_at || '',

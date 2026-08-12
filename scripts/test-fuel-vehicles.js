@@ -764,6 +764,95 @@ function statementTests() {
   }
 }
 
+// ── 5. The IFTA badge on the submissions grid ───────────────────────────────
+function iftaBadgeTests() {
+  console.log('\n[IFTA standing on a fuel entry]');
+  const file = 'fuel-admin.html';
+  const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+
+  const ROSTER = [
+    { id: '1', truck_number: 635, vin: '1M2AX07C6GM030635', model_year: 2016, make: 'Mack',
+      ifta: true,  ifta_sticker: '4118811', active: true },
+    { id: '2', truck_number: 77,  vin: 'CAT0D6TXYZ12345', model_year: 2015, make: 'Caterpillar',
+      ifta: false, ifta_sticker: null, active: true },
+    { id: '3', truck_number: 900, vin: null, model_year: null, make: null,
+      ifta: true,  ifta_sticker: null, active: true },
+  ];
+
+  const fns = new Function('VEHICLES', `
+    const vehicles = VEHICLES;
+    ${liftFn(src, 'vehicleIndex',  file)}
+    ${liftFn(src, 'iftaStateFor',  file)}
+    return { vehicleIndex, iftaStateFor };
+  `)(ROSTER);
+  const fleet = fns.vehicleIndex();
+
+  assert('a rostered IFTA truck reads as IFTA',
+    fns.iftaStateFor(fleet, 635) === 'ifta', fns.iftaStateFor(fleet, 635));
+  // Off-road equipment is deliberately not IFTA. Telling it apart from a
+  // truck nobody has added yet is the whole reason this returns four values
+  // rather than a boolean — one of those is fine and the other needs doing.
+  assert('off-road equipment reads as deliberately not IFTA',
+    fns.iftaStateFor(fleet, 77) === 'not-ifta', fns.iftaStateFor(fleet, 77));
+  assert('an IFTA truck with no sticker is called out separately',
+    fns.iftaStateFor(fleet, 900) === 'no-sticker', fns.iftaStateFor(fleet, 900));
+  assert('a truck the roster has never heard of is unknown, not "no"',
+    fns.iftaStateFor(fleet, 12345) === 'unknown', fns.iftaStateFor(fleet, 12345));
+  assert('and so is an entry with no truck number at all',
+    fns.iftaStateFor(fleet, null) === 'unknown', fns.iftaStateFor(fleet, null));
+
+  console.log('\n[…and it reaches the export]');
+  // Run the real exportCsv. The header and the row are two separate literals
+  // in that function, so a column added to one and not the other silently
+  // shifts every field after it — checked by running it rather than by
+  // counting commas.
+  const ENTRIES = [
+    entry({ work_date: '2026-08-12', truck_number: 635, fuel_card: 'Bulk Fuel – No card',
+            fuel_type: 'On Road', gallons: 55, mileage: 369898, beginning_meter: 3996.3,
+            ending_meter: 4051.3, fueling_site: 'Shop', city_fueled: 'Indiana', state: 'PA',
+            tank_number: 5179, employee_username: 'hudockben', username: 'hudockben' }),
+    entry({ work_date: '2026-08-12', truck_number: 77, gallons: 20 }),
+    entry({ work_date: '2026-08-12', truck_number: 4242, gallons: 10 }),
+  ];
+
+  let captured = null;
+  new Function('ENTRIES', 'VEHICLES', 'capture', `
+    const shownEntries = ENTRIES;
+    const vehicles = VEHICLES;
+    const activeTab = 'approved';
+    function val() { return ''; }
+    function alert(m) { throw new Error('alert: ' + m); }
+    function downloadCsv(text, name) { capture(text, name); }
+    ${liftFn(src, 'csvEscape',          file)}
+    ${liftFn(src, 'gallonsFromMeters',  file)}
+    ${liftFn(src, 'meteredGallons',     file)}
+    ${liftFn(src, 'balanceOf',          file)}
+    ${liftFn(src, 'vehicleIndex',       file)}
+    ${liftFn(src, 'exportCsv',          file)}
+    return exportCsv;
+  `)(ENTRIES, ROSTER, (text, name) => { captured = { text, name }; })();
+
+  const rows = captured.text.split('\n');
+  const header = rows[0].split(',');
+  assert('every row has exactly as many fields as the header',
+    rows.slice(1).every(r => r.split(',').length === header.length),
+    rows.map(r => r.split(',').length).join(','));
+
+  const iftaCol = header.indexOf('IFTA');
+  const stickCol = header.indexOf('IFTA Sticker');
+  assert('the header carries IFTA and its sticker', iftaCol > 0 && stickCol === iftaCol + 1,
+    header.join('|'));
+  const cells = rows.slice(1).map(r => r.split(','));
+  assert('the IFTA truck exports Yes with its sticker',
+    cells[0][iftaCol] === 'Yes' && cells[0][stickCol] === '4118811',
+    `${cells[0][iftaCol]} / ${cells[0][stickCol]}`);
+  assert('the off-road machine exports No', cells[1][iftaCol] === 'No', cells[1][iftaCol]);
+  // Blank, not "No": the roster has no opinion about a truck it has never
+  // seen, and exporting one would put a fabricated answer into a filing.
+  assert('and a truck not on the roster exports blank rather than No',
+    cells[2][iftaCol] === '', `"${cells[2][iftaCol]}"`);
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 (async () => {
   normalizeTests();
@@ -771,6 +860,7 @@ function statementTests() {
   reportTests();
   vehicleMonthTests();
   statementTests();
+  iftaBadgeTests();
 
   console.log('\n────────────────────────────────────────');
   console.log(`  ${passed} passed, ${failed} failed`);
