@@ -4185,6 +4185,81 @@
       return list.includes(alias) ? alias : null;
     }
 
+    // Levenshtein, for one purpose: "Guttmman" is Guttman with a finger held
+    // down. Only ever applied to a whole cell against a whole option name.
+    function editDistance(a, b) {
+      if (a === b) return 0;
+      if (!a.length || !b.length) return Math.max(a.length, b.length);
+      let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+      for (let i = 1; i <= a.length; i++) {
+        const row = [i];
+        for (let j = 1; j <= b.length; j++) {
+          row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        prev = row;
+      }
+      return prev[b.length];
+    }
+
+    /**
+     * The option a cell means, and how that was decided.
+     *
+     * Three stages, and the last two only run because the field writes these
+     * in longhand: "5340 WEX CARD", "Arron Todds wex card", "used 2760
+     * Guttman", "Guttmman". Each is unmistakable to a person and none of them
+     * is one of the four names.
+     *
+     *   named    the cell IS the option, give or take case and punctuation
+     *   spelt    exactly ONE option is named somewhere inside it — two or
+     *            more and it is refused, because "bulk fuel, Guttman was
+     *            down" is not a decision anything here can make
+     *   near     one letter out of a name long enough for that to be a typo
+     *            rather than a coincidence
+     *
+     * `how` comes back so the page can show every row read this way before a
+     * single one is written. A fill-up filed under the wrong account is a
+     * month that stops balancing for a reason nobody can see, so this is
+     * never allowed to be quiet.
+     */
+    function readOption(v, list, aliases) {
+      const named = matchOption(v, list, aliases);
+      if (named) return { value: named, how: 'named' };
+
+      const k = optKey(v);
+      if (!k) return { value: null, how: null };
+
+      // Every spelling that resolves to an option, longest first so a short
+      // one cannot claim a cell the longer one also matches.
+      const candidates = list.map(x => [optKey(x), x])
+        .concat(Object.entries(aliases).filter(([, to]) => list.includes(to)))
+        .sort((a, b) => b[0].length - a[0].length);
+
+      const found = new Set();
+      for (const [key, option] of candidates) if (key && k.includes(key)) found.add(option);
+
+      // One option's name inside another's is not two answers. "Dyed off road
+      // diesel" names Diesel and Off Road Diesel, and the more specific one is
+      // what it means — Off Road Diesel IS a diesel. Two names where neither
+      // contains the other stay ambiguous: Guttman and Bulk Fuel in the same
+      // cell is a sentence, not a choice.
+      const names = [...found];
+      const winners = names.filter(a =>
+        !names.some(b => b !== a && optKey(b).includes(optKey(a))));
+
+      if (winners.length === 1) return { value: winners[0], how: 'spelt' };
+      if (winners.length > 1)   return { value: null, how: 'ambiguous' };
+
+      // A name short enough that one letter's difference is as likely to be a
+      // different word is left alone — "wex" is three characters, and half the
+      // alphabet is one edit away from it.
+      for (const [key, option] of candidates) {
+        if (key.length >= 6 && Math.abs(key.length - k.length) <= 2 && editDistance(k, key) <= 1) {
+          return { value: option, how: 'near' };
+        }
+      }
+      return { value: null, how: null };
+    }
+
     function importState(v) {
       const s = String(v == null ? '' : v).trim();
       if (!s) return null;
@@ -4411,7 +4486,7 @@
      */
     function buildImportRows(grid, map, defaults, ctx) {
       const empByKey = new Map((ctx.employees || []).map(u => [optKey(u), u]));
-      const ready = [], problems = [], fromText = [];
+      const ready = [], problems = [], fromText = [], readAs = [];
       const defaulted = {}, notAnswered = {}, unknownEmployees = new Map();
       let blank = 0;
 
@@ -4463,11 +4538,23 @@
           else unknownEmployees.set(entry.employee_username, (unknownEmployees.get(entry.employee_username) || 0) + 1);
         }
 
-        entry.fuel_card = matchOption(v.fuel_card, FUEL_CARDS, CARD_ALIASES);
-        if (!entry.fuel_card) why.push(v.fuel_card ? `"${v.fuel_card}" is not one of the fuel cards` : 'no fuel card');
-
-        entry.fuel_type = matchOption(v.fuel_type, FUEL_TYPES, TYPE_ALIASES);
-        if (!entry.fuel_type) why.push(v.fuel_type ? `"${v.fuel_type}" is not one of the fuel types` : 'no fuel type');
+        for (const [key, list, aliases, label] of [
+          ['fuel_card', FUEL_CARDS, CARD_ALIASES, 'fuel cards'],
+          ['fuel_type', FUEL_TYPES, TYPE_ALIASES, 'fuel types'],
+        ]) {
+          const r = readOption(v[key], list, aliases);
+          entry[key] = r.value;
+          if (r.value == null) {
+            why.push(!v[key] ? `no ${label.replace(/s$/, '')}`
+              : r.how === 'ambiguous' ? `"${v[key]}" names more than one of the ${label}`
+              : `"${v[key]}" is not one of the ${label}`);
+          } else if (r.how !== 'named') {
+            // Written in longhand and read anyway. Reported per distinct
+            // spelling so the office sees "5340 WEX CARD → Wex (3 rows)"
+            // before any of it is written, not a total that came out right.
+            readAs.push({ from: v[key], to: r.value, how: r.how });
+          }
+        }
 
         entry.state = importState(v.state);
         if (!entry.state) why.push(v.state ? `"${v.state}" is not a state` : 'no state');
@@ -4505,8 +4592,18 @@
         ready.push({ line, entry });
       });
 
+      // Folded to one line per distinct spelling. Ten rows written eight
+      // different ways is eight things to check, not ten.
+      const spellings = new Map();
+      for (const r of readAs) {
+        const k = `${r.from} ${r.to}`;
+        if (spellings.has(k)) spellings.get(k).count++;
+        else spellings.set(k, { from: r.from, to: r.to, how: r.how, count: 1 });
+      }
+
       return {
         ready, problems, defaulted, blank, notAnswered, fromText,
+        readAs: [...spellings.values()].sort((a, b) => b.count - a.count),
         unknownEmployees: [...unknownEmployees].map(([name, count]) => ({ name, count })),
       };
     }
@@ -4681,6 +4778,23 @@
                               on ${n} row${n === 1 ? '' : 's'}`).join(', ')}.
         </div>` : '';
 
+      // Cards and fuel types written in longhand. Shown before anything is
+      // written, because a fill-up filed under the wrong account is a month
+      // that stops balancing for a reason nobody can see.
+      const readAsNote = (built.readAs && built.readAs.length) ? `
+        <div class="imp-note imp-flag">
+          <strong>${built.readAs.reduce((n, r) => n + r.count, 0)}</strong> row${
+            built.readAs.reduce((n, r) => n + r.count, 0) === 1 ? '' : 's'} name a card or fuel type in
+          longhand. Check these before importing:
+          <div style="margin-top:0.35rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.72rem">
+            ${built.readAs.slice(0, 20).map(r =>
+              `<div>“${escapeHtml(r.from)}” → <strong>${escapeHtml(r.to)}</strong>` +
+              ` <span style="opacity:0.7">${r.count} row${r.count === 1 ? '' : 's'}` +
+              `${r.how === 'near' ? ', read as a misspelling' : ''}</span></div>`).join('')}
+            ${built.readAs.length > 20 ? `<div>…and ${built.readAs.length - 20} more spellings.</div>` : ''}
+          </div>
+        </div>` : '';
+
       const unknownNote = built.unknownEmployees.length ? `
         <div class="imp-note imp-flag">
           <strong>${built.unknownEmployees.length}</strong> name${built.unknownEmployees.length === 1 ? '' : 's'}
@@ -4726,6 +4840,7 @@
             ${built.blank ? ` ${built.blank} blank row${built.blank === 1 ? '' : 's'} ignored.` : ''}
           </div>
           ${defaultedNote}
+          ${readAsNote}
           ${unknownNote}
           ${sample.length ? `
           <div class="imp-head" style="margin-top:0.9rem">The first ${sample.length} as they will be stored</div>

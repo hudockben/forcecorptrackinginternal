@@ -76,7 +76,7 @@ const CONSTS = ['FUEL_CARDS', 'FUEL_TYPES', 'US_STATES', 'FIELDS',
                 'STATEMENT_COLUMNS', 'IMPORT_COLUMNS', 'CARD_ALIASES', 'TYPE_ALIASES',
                 'NOT_ANSWERED', 'MAX_METER_FILL'];
 const FNS = ['gallonsFromMeters', 'delimiterFor', 'excelSerialToYmd', 'detectColumns',
-             'optKey', 'matchOption', 'importState', 'validYmd', 'importDate', 'importNumber',
+             'optKey', 'matchOption', 'editDistance', 'readOption', 'importState', 'validYmd', 'importDate', 'importNumber',
              'importInt', 'colLetter', 'splitDelimitedLine', 'parseDelimited', 'pickHeaderRow',
              'readImportGrid', 'buildImportRows'];
 
@@ -230,6 +230,70 @@ function realCellTests() {
   // something a preview should do.
   assert('and both are reported as read out of text', desc.fromText.length === 2,
     JSON.stringify(desc.fromText));
+}
+
+function longhandTests() {
+  console.log('\n[a card written in longhand]');
+  const { readOption } = page;
+  const card = v => readOption(v, FUEL_CARDS, CARD_ALIASES);
+
+  // Every spelling that actually appears in four thousand form responses.
+  // Each is unmistakable to a person and none of them is one of the four
+  // names, so before this they were ten rows the office had to go and fix.
+  for (const [written, want] of [
+    ['5340 WEX CARD',        'Wex'],
+    ['5340 wex card',        'Wex'],
+    ['5340 WEX',             'Wex'],
+    ['Wex from truck2913',   'Wex'],
+    ['Wex card from 0634',   'Wex'],
+    ['Arron Todds wex card', 'Wex'],
+    ['used 2760 Guttman',    'Guttman'],
+  ]) {
+    const r = card(written);
+    assert(`"${written}" → ${want}`, r.value === want && r.how === 'spelt', `${r.value} (${r.how})`);
+  }
+  // A finger held down on one key.
+  assert('"Guttmman" is Guttman misspelt',
+    card('Guttmman').value === 'Guttman' && card('Guttmman').how === 'near', JSON.stringify(card('Guttmman')));
+
+  console.log('\n[…and where it refuses to guess]');
+  // The safety property the whole thing rests on: a cell naming TWO of the
+  // options is not a decision anything here can make. Filing a fill-up under
+  // the wrong account is a month that stops balancing invisibly.
+  assert('a cell naming two cards is refused, not resolved to the first',
+    card('Bulk fuel, Guttman was down').value === null
+    && card('Bulk fuel, Guttman was down').how === 'ambiguous',
+    JSON.stringify(card('Bulk fuel, Guttman was down')));
+  assert('and so is an explicit either/or', card('Wex or Guttman').value === null);
+  assert('a card number on its own says nothing', card('5340').value === null);
+  assert('nor does an unrelated word', card('shop').value === null);
+  assert('an empty cell is still empty', card('').value === null);
+  // "wex" is three characters; half the alphabet is one edit away from it.
+  // Only names long enough for a typo to be a typo get the near pass.
+  assert('a three-letter name is never fuzzy-matched', card('hex').value === null, JSON.stringify(card('hex')));
+  // One letter off a known spelling still resolves — "Guttmmann" is one edit
+  // from the alias "Guttmann", which is itself Guttman. Two edits from
+  // anything is a different word.
+  assert('nor is a two-letter difference on a long one', card('Guxxman').value === null,
+    JSON.stringify(card('Guxxman')));
+
+  console.log('\n[the same reading applies to fuel types]');
+  const type = v => readOption(v, FUEL_TYPES, TYPE_ALIASES);
+  assert('an exact type is still named', type('Diesel').how === 'named');
+  assert('"ULS Diesel" is Diesel', type('ULS Diesel').value === 'Diesel', JSON.stringify(type('ULS Diesel')));
+  // "Off Road Diesel" contains "Diesel", so the longest candidate has to win
+  // or every off-road fill files itself as on-road.
+  assert('"Off Road Diesel" is not read as plain Diesel',
+    type('Off Road Diesel').value === 'Off Road Diesel', JSON.stringify(type('Off Road Diesel')));
+  // Both names are in that cell, and one contains the other — the specific
+  // one is what it means. Off Road Diesel IS a diesel.
+  assert('and neither is "dyed off road diesel"',
+    type('dyed off road diesel').value === 'Off Road Diesel', JSON.stringify(type('dyed off road diesel')));
+  // …but two names where neither contains the other stay refused. That is the
+  // property the whole longhand pass rests on.
+  assert('two unrelated options in one cell are still refused',
+    card('Bulk Fuel or Wex').value === null && card('Bulk Fuel or Wex').how === 'ambiguous',
+    JSON.stringify(card('Bulk Fuel or Wex')));
 }
 
 function nameTests() {
@@ -577,6 +641,7 @@ colLetterTests();
 dateTests();
 numberTests();
 realCellTests();
+longhandTests();
 nameTests();
 optionTests();
 detectTests();
