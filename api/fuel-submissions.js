@@ -173,7 +173,13 @@ function isBlank(v) {
 
 function safeStr(v, max) {
   if (isBlank(v)) return null;
-  const s = String(v).trim();
+  // A NUL is the one character JSONB refuses outright, and the import sends a
+  // whole batch through jsonb_to_recordset as a single value — so one of these
+  // in one cell of one row takes five hundred rows down with it, under
+  // "Database error". A spreadsheet should never carry one; files that have
+  // been through the wrong export twice sometimes do.
+  const s = String(v).replace(/\u0000/g, '').trim();
+  if (!s) return null;
   return max ? s.slice(0, max) : s;
 }
 
@@ -318,8 +324,15 @@ function normalizeBody(body) {
   // has been right and the readings wrong, every time — so the reported one
   // stands, and Fuel Admin flags the row so the readings get corrected rather
   // than the gallons quietly restated.
+  // A reported ZERO counts as nothing reported here, and only here. Zero is a
+  // real answer everywhere else on this form — it is what the meters are
+  // asked for when the truck isn't on Force Fuel — but no fill-up ever put
+  // zero gallons in a tank, so a 0 against readings that describe a real fill
+  // is an empty column, not a contradiction of them. Left out, a sheet whose
+  // gallons column is 0 stores 0 and throws the meter reading away.
+  const reportedNothing = out.gallons == null || Number(out.gallons) === 0;
   const metered = gallonsFromMeters(out.beginning_meter, out.ending_meter);
-  if (metered != null && (out.gallons == null || metersAgree(metered, out.gallons))) {
+  if (metered != null && (reportedNothing || metersAgree(metered, out.gallons))) {
     out.gallons = metered;
   }
 
@@ -750,8 +763,16 @@ module.exports = async (req, res) => {
       if (!VALID_BALANCE.includes(status)) {
         return res.status(400).json({ error: `balance_status must be one of: ${VALID_BALANCE.join(', ')}` });
       }
+      // Digits only, rather than safeInt. parseInt is lenient by design and
+      // reads "1; DROP TABLE fuel_submissions" as the number 1 — nothing
+      // unsafe reaches the database either way, the ids are bound as a
+      // parameter, but it would quietly mark a DIFFERENT fill-up balanced
+      // than the one asked for. An id nobody can read is not an id.
       const rawIds = Array.isArray(b.ids) ? b.ids : [];
-      const ids = [...new Set(rawIds.map(safeInt).filter(n => n != null))];
+      const ids = [...new Set(rawIds
+        .filter(x => /^\d+$/.test(String(x == null ? '' : x).trim()))
+        .map(safeInt)
+        .filter(n => n != null))];
       if (!ids.length)                  return res.status(400).json({ error: 'No entries were selected.' });
       if (ids.length > MAX_BALANCE_IDS) return res.status(400).json({ error: `That is more than ${MAX_BALANCE_IDS} entries at once.` });
 

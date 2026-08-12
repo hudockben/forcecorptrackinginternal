@@ -199,6 +199,25 @@ function meterTests() {
     assert('with no reported figure the tank is the only source',
       blank.gallons === 84.5, String(blank.gallons));
 
+    // A reported ZERO is nothing reported, here and only here. Zero is a real
+    // answer everywhere else on this form, but no fill-up ever put zero
+    // gallons in a tank — so against readings that describe a real fill it is
+    // an empty column rather than a contradiction. Treated as a contradiction
+    // it keeps the 0 and throws the meter away, which is what a sheet with a
+    // zeroed gallons column would have imported as.
+    const zeroed = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '1200', ending_meter: '1284.5', gallons: '0',
+    })).data;
+    assert('a reported 0 does not beat readings that describe a real fill',
+      zeroed.gallons === 84.5, String(zeroed.gallons));
+    // …and where the readings describe nothing either, the 0 stands and gets
+    // flagged in Fuel Admin rather than being invented away.
+    const bothZero = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '0', ending_meter: '0', gallons: '0',
+    })).data;
+    assert('but with no fill on the meter either, the 0 stands',
+      bothZero.gallons === 0, String(bothZero.gallons));
+
     // The one that started all this. Left alone it stores 460,206 gallons and
     // the month it lands in cannot be balanced against anything.
     const typo = normalizeBody(Object.assign({}, FULL, {
