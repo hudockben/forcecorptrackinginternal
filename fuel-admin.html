@@ -795,7 +795,9 @@
     .imp-good { border-left: 3px solid var(--green); padding-left: 0.65rem; }
     .imp-good strong { color: var(--green); }
     .imp-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap; }
-    .imp-missing select { border-color: rgba(251,146,60,0.5); }
+    .imp-missing select,
+    .imp-missing input  { border-color: rgba(251,146,60,0.5); }
+    .imp-missing label  { color: #fb923c; }
     .imp-problems {
       max-height: 260px;
       overflow-y: auto;
@@ -1233,7 +1235,12 @@
       <div class="veh-form">
         <div>
           <label for="v-truck">Truck Number</label>
-          <input type="number" id="v-truck" min="0" step="1" placeholder="412" />
+          <!-- Text rather than number, deliberately. An account writes this
+               truck as PT4336, and typing that into a number field drops the
+               letters as they are pressed and leaves nothing — the field
+               looks broken and never says why. Taken as typed and answered
+               below, where "PT4336 is truck 4336" can actually be said. -->
+          <input type="text" id="v-truck" inputmode="numeric" maxlength="10" placeholder="4336" />
         </div>
         <div style="grid-column:span 2">
           <label for="v-vin">VIN</label>
@@ -1261,8 +1268,10 @@
           <div style="font-size:0.62rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:0.5rem">
             What each fuel account calls this vehicle
             <span style="text-transform:none;letter-spacing:0;font-weight:400">
-              — Guttman's export says 5894 where you say 635, and nothing in the file joins the two.
-              Fill this in once and the monthly match finds it from then on.</span>
+              — usually not needed. A statement id is matched on the number inside it, so Guttman's
+              <em>PT4336</em> and Wex's <em>PT 4805</em> already find trucks 4336 and 4805. Fill this
+              in only where an account calls a vehicle something its number is not in — and what you
+              put here always wins.</span>
           </div>
           <div id="v-account-fields" style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.7rem"></div>
         </div>
@@ -2537,9 +2546,25 @@
       msg.className = 'veh-msg full';
       const truck = el('v-truck');
       truck.classList.remove('bad');
-      if (val('v-truck') === '') {
+      const typed = val('v-truck').trim();
+      if (typed === '') {
         truck.classList.add('bad');
         msg.textContent = 'A truck number is required — it is what ties fuel entries to this vehicle.';
+        msg.classList.add('error');
+        return;
+      }
+      // An account's own id typed where the truck number goes. Say which part
+      // of it is the truck rather than refusing the whole thing: the two
+      // numbers are the same number, and this is the one place somebody is
+      // guaranteed to be looking at both.
+      if (!/^\d+$/.test(typed)) {
+        const digits = (typed.match(/\d+/g) || []).sort((a, b) => b.length - a.length)[0];
+        truck.classList.add('bad');
+        msg.textContent = digits
+          ? `A truck number is digits only — ${typed} is truck ${Number(digits)}. `
+            + `Put ${typed} in the account's own box below if you want it recorded, though the match `
+            + `finds it from the number anyway.`
+          : `A truck number is digits only.`;
         msg.classList.add('error');
         return;
       }
@@ -4459,20 +4484,23 @@
               </div>`).join('')}
           </div>
         </div>
-        ${missing.length ? `
         <div class="imp-sec">
-          <div class="imp-head">Not in the file
-            <span>— give a value to use for every row, or leave it blank and those rows will be listed as problems.</span></div>
+          <div class="imp-head">Fill in what the file doesn't say
+            <span>— used wherever a row is blank. ${missing.length
+              ? `The ${missing.length} marked in orange ${missing.length === 1 ? 'has' : 'have'} no column at all;
+                 leave one empty and its rows are listed as problems rather than guessed at.`
+              : 'Every field has a column, so these only cover the odd empty cell.'}</span></div>
           <div class="imp-grid">
-            ${missing.map(f => `
-              <div class="filter-field">
+            ${FIELDS.map(f => `
+              <div class="filter-field ${importMap[f.key] ? '' : 'imp-missing'}">
                 <label for="impdef-${escAttr(f.key)}">${escapeHtml(f.label)}</label>
                 <input type="text" id="impdef-${escAttr(f.key)}"
+                       placeholder="${importMap[f.key] ? 'only where blank' : 'no column — needed'}"
                        value="${escAttr(importDefaults[f.key] == null ? '' : importDefaults[f.key])}"
                        oninput="setImportDefault('${escJsAttr(f.key)}', this.value)" />
               </div>`).join('')}
           </div>
-        </div>` : ''}`;
+        </div>`;
       renderImportPreview();
     }
 
