@@ -74,6 +74,7 @@ app.all('/api/fuel-submissions', require('../api/fuel-submissions'));
 app.all('/api/fuel-employees',   require('../api/fuel-employees'));
 app.all('/api/fuel-audit-log',   require('../api/fuel-audit-log'));
 app.all('/api/fuel-vehicles',    require('../api/fuel-vehicles'));
+app.all('/api/fuel-statement-matches', require('../api/fuel-statement-matches'));
 
 /** Company board */
 app.all('/api/board', require('../api/board'));

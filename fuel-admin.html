@@ -74,7 +74,7 @@
     }
 
     /* ── Stat strip ── */
-    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.85rem; }
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.85rem; }
     .stat {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -99,6 +99,8 @@
     .stat.submitted .stat-value { color: var(--blue);  }
     .stat.approved  .stat-value { color: var(--green); }
     .stat.gallons   .stat-value { color: var(--amber); }
+    .stat.balance   .stat-value { color: #a78bfa; }
+    .stat.issues    .stat-value { color: var(--red); }
 
     /* ── Filter bar ── */
     .filters {
@@ -191,6 +193,43 @@
     .tab.auditlog.active { color: var(--yellow); border-bottom-color: var(--yellow); }
     .tab.reports.active  { color: var(--blue);  border-bottom-color: var(--blue); }
     .tab.vehicles.active { color: var(--amber); border-bottom-color: var(--amber); }
+    .tab.balancing.active { color: #a78bfa; border-bottom-color: #a78bfa; }
+    .tab.balancing.active .tab-count { background: #a78bfa; color: #1e1b4b; }
+
+    /* ── Balance status ──
+       Purple throughout, so the second review never reads as the first:
+       green already means approved and blue means submitted. */
+    .bal-pill {
+      display: inline-block;
+      font-size: 0.56rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.18rem 0.42rem;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .bal-pending  { background: rgba(136,136,136,0.15); color: var(--muted); }
+    .bal-balanced { background: rgba(167,139,250,0.18); color: #a78bfa; }
+    .bal-issue    { background: rgba(239,68,68,0.15);   color: var(--red); }
+    tbody tr.row-issue > td:first-child { box-shadow: inset 3px 0 0 0 var(--red); }
+    .bal-meta { font-size: 0.56rem; color: var(--muted); line-height: 1.4; margin-top: 0.25rem; }
+    .balance-bar { border-color: rgba(167,139,250,0.35); }
+    .btn-issue {
+      padding: 0.45rem 1rem;
+      background: transparent;
+      color: var(--red);
+      border: 1px solid rgba(239,68,68,0.5);
+      font-weight: 700;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .btn-issue:hover:not(:disabled) { background: rgba(239,68,68,0.08); }
+    .btn-issue:disabled { opacity: 0.4; cursor: not-allowed; }
+    .balance-bar .filter-field label { margin-bottom: 0.15rem; }
     .tab-count {
       display: inline-block;
       font-size: 0.7rem;
@@ -364,6 +403,8 @@
     .row-btn.approve        { color: var(--green); border-color: rgba(34,197,94,0.35); }
     .row-btn.approve:hover  { background: rgba(34,197,94,0.08); }
     .row-btn.undo:hover     { color: var(--yellow); border-color: var(--yellow); }
+    .row-btn.balanced       { color: #a78bfa; border-color: rgba(167,139,250,0.35); }
+    .row-btn.balanced:hover { background: rgba(167,139,250,0.1); }
     .row-btn.delete         { color: var(--red); border-color: rgba(239,68,68,0.3); }
     .row-btn.delete:hover   { background: rgba(239,68,68,0.08); }
 
@@ -641,6 +682,191 @@
     .ifta-yes { color: var(--green); font-weight: 700; }
     .ifta-no  { color: var(--muted); }
 
+    /* ── Vehicle × month table ── */
+    .rep-block th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    .rep-block th.sortable:hover { color: var(--text); }
+    .rep-block th.sorted { color: var(--accent); }
+    .vm-table tbody tr.vm-row { cursor: pointer; }
+    .vm-table tbody tr.vm-row:hover td { background: rgba(255,255,255,0.03); }
+    .vm-table tbody tr.vm-row.open td { background: rgba(251,113,133,0.06); }
+    .vm-caret { color: var(--muted); width: 22px; text-align: center; }
+    .vm-table tbody tr.vm-row.open .vm-caret { color: var(--accent); }
+    /* A zero in a card column is noise — every truck is absent from most
+       accounts. A middot says "nothing here" without competing with the
+       figures that are actually being checked. */
+    .vm-table td.nil { color: #444; }
+    .vm-table td.has-gal { color: var(--text); font-weight: 600; }
+    .vm-detail > td { background: var(--bg); padding: 0.85rem 1rem !important; }
+    .vm-detail-head {
+      font-size: 0.74rem;
+      color: var(--muted);
+      margin-bottom: 0.55rem;
+      letter-spacing: 0.02em;
+    }
+    .vm-fills { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+    .vm-fills thead th {
+      padding: 0.35rem 0.5rem;
+      font-size: 0.56rem;
+      background: transparent;
+      border-bottom: 1px solid var(--border);
+    }
+    .vm-fills tbody td {
+      padding: 0.4rem 0.5rem;
+      border-bottom: 1px solid rgba(42,42,58,0.5);
+    }
+
+    /* ── Statement match ── */
+    .match-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 0.7rem;
+      align-items: end;
+      margin-bottom: 0.7rem;
+    }
+    @media (max-width: 900px) { .match-controls { grid-template-columns: 1fr; } }
+    #mt-paste {
+      width: 100%;
+      min-height: 120px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.6rem 0.7rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem;
+      line-height: 1.5;
+      outline: none;
+      resize: vertical;
+    }
+    #mt-paste:focus { border-color: var(--accent); }
+    .match-summary {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.7rem;
+      margin: 0.85rem 0;
+    }
+    @media (max-width: 900px) { .match-summary { grid-template-columns: repeat(2, 1fr); } }
+    .match-tile {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.75rem;
+    }
+    .match-tile .k {
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .match-tile .v {
+      font-size: 1.25rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.15rem;
+    }
+    .match-tile.ok    .v { color: var(--green); }
+    .match-tile.off   .v { color: #fb923c; }
+    .match-tile.miss  .v { color: var(--red); }
+    .row-ok   td.verdict { color: var(--green); }
+    .row-off  td.verdict { color: #fb923c; font-weight: 700; }
+    .row-miss td.verdict { color: var(--red); font-weight: 700; }
+    tr.row-off > td:first-child  { box-shadow: inset 3px 0 0 0 #fb923c; }
+    tr.row-miss > td:first-child { box-shadow: inset 3px 0 0 0 var(--red); }
+    .match-note {
+      font-size: 0.74rem;
+      color: var(--muted);
+      line-height: 1.5;
+      margin-top: 0.5rem;
+    }
+    .match-file {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      margin-bottom: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .file-btn {
+      display: inline-block;
+      padding: 0.45rem 0.9rem;
+      background: none;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      border-radius: 5px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .file-btn:hover { color: var(--text); border-color: #555; }
+    .file-btn input { display: none; }
+
+    /* The bar that turns a match into a record. Sits under the table because
+       it is the last thing done, not the first. */
+    .save-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-top: 0.85rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    .save-bar input[type=text] {
+      flex: 1;
+      min-width: 200px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.45rem 0.6rem;
+      border-radius: 5px;
+      font-size: 0.82rem;
+      font-family: inherit;
+      outline: none;
+    }
+    .save-bar input[type=text]:focus { border-color: var(--accent); }
+    .saved-flag {
+      font-size: 0.72rem;
+      color: var(--green);
+      font-weight: 600;
+    }
+
+    /* A truck ticked off during the month's reconciliation. Dimmed rather
+       than hidden — it still has to add up at the bottom. */
+    tr.line-resolved td { opacity: 0.5; }
+    tr.line-resolved td.verdict { text-decoration: line-through; }
+    .tick { width: 15px; height: 15px; cursor: pointer; accent-color: var(--green); }
+    .line-note {
+      width: 100%;
+      background: transparent;
+      border: 1px solid transparent;
+      border-bottom: 1px dashed var(--border);
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-family: inherit;
+      padding: 0.15rem 0.25rem;
+      outline: none;
+    }
+    .line-note:focus { border-color: var(--accent); color: var(--text); background: var(--bg); }
+
+    /* ── Saved matches list ── */
+    .saved-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.6rem 0.2rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      font-size: 0.82rem;
+    }
+    @media (max-width: 900px) { .saved-row { grid-template-columns: 1fr auto; } }
+    .saved-row .who { font-size: 0.7rem; color: var(--muted); }
+    .saved-row .diff { font-variant-numeric: tabular-nums; font-weight: 700; }
+    .saved-row .diff.ok  { color: var(--green); }
+    .saved-row .diff.off { color: #fb923c; }
+    .saved-row.current { background: rgba(251,113,133,0.07); }
+
     /* ── Vehicles tab ── */
     .veh-form {
       background: var(--surface);
@@ -761,9 +987,13 @@
         <div class="stat-label">Gallons (approved)</div>
         <div class="stat-value" id="stat-gallons">0.00</div>
       </div>
-      <div class="stat">
-        <div class="stat-label">Gallons (all shown)</div>
-        <div class="stat-value" id="stat-gallons-all">0.00</div>
+      <div class="stat balance">
+        <div class="stat-label">Still to Balance</div>
+        <div class="stat-value" id="stat-pending-balance">0</div>
+      </div>
+      <div class="stat issues">
+        <div class="stat-label">Balance Issues</div>
+        <div class="stat-value" id="stat-issues">0</div>
       </div>
     </div>
 
@@ -803,6 +1033,9 @@
       <button class="tab approved" data-tab="approved" onclick="switchTab('approved')">
         Approved <span class="tab-count" id="tab-approved-count">0</span>
       </button>
+      <button class="tab balancing" data-tab="balancing" onclick="switchTab('balancing')">
+        Balancing <span class="tab-count" id="tab-balancing-count">0</span>
+      </button>
       <button class="tab reports" data-tab="reports" onclick="switchTab('reports')">
         Reports
       </button>
@@ -819,6 +1052,29 @@
       <div class="bulk-count" id="bulkCount">0 selected</div>
       <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
       <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
+      <div class="bulk-spacer"></div>
+      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
+    </div>
+
+    <!-- ── Balancing bar ──
+         The second review's own controls. Kept apart from the approval bar
+         above because they are a different manager's job on a different
+         cadence, and an "Approve" button sitting beside "Mark Balanced" is
+         an invitation to do the wrong one. -->
+    <div class="bulk balance-bar" id="balanceBar">
+      <div class="filter-field" style="min-width:150px">
+        <label for="flt-balance">Showing</label>
+        <select id="flt-balance" onchange="renderRows()">
+          <option value="pending">Pending — still to balance</option>
+          <option value="issue">Issues</option>
+          <option value="balanced">Balanced</option>
+          <option value="">All approved</option>
+        </select>
+      </div>
+      <div class="bulk-count" id="balanceCount">0 selected</div>
+      <button class="btn-approve alt" id="markBalancedBtn" onclick="bulkBalance('balanced')">Mark Balanced</button>
+      <button class="btn-issue"       id="markIssueBtn"    onclick="bulkBalance('issue')">Flag Issue</button>
+      <button class="btn-clear"       id="markPendingBtn"  onclick="bulkBalance('pending')">Back to Pending</button>
       <div class="bulk-spacer"></div>
       <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
     </div>
@@ -844,6 +1100,62 @@
 
     <!-- ── Report container (Reports tab) ── -->
     <div id="reportWrap" style="display:none"></div>
+
+    <!-- ── Statement match (Reports tab) ──
+         Deliberately static markup with only its RESULTS re-rendered: the
+         textarea holds a pasted statement, and rebuilding the block around it
+         on every sort of the table above would throw that away. -->
+    <div id="matchWrap" style="display:none">
+      <div class="rep-block">
+        <div class="rep-title">Match a Fuel Account Statement</div>
+        <div class="rep-sub">
+          Paste a Guttman or Wex statement and this lines it up against what the field reported,
+          truck by truck, over the date range above. Transaction-level exports are fine — lines for
+          the same truck are added together. One line per row: the truck number and the gallons
+          figure, separated by tabs, commas or spaces. Anything else on the line is ignored.
+        </div>
+        <div class="match-controls">
+          <div class="filter-field">
+            <label for="mt-card">Account</label>
+            <select id="mt-card"></select>
+          </div>
+          <div class="filter-field">
+            <label for="mt-gallons-col">Which number is the gallons</label>
+            <select id="mt-gallons-col">
+              <option value="last">The last number on the line</option>
+              <option value="1">The 1st number after the truck</option>
+              <option value="2">The 2nd number after the truck</option>
+              <option value="3">The 3rd number after the truck</option>
+            </select>
+          </div>
+          <div class="filter-actions">
+            <button class="btn-filter" onclick="runStatementMatch()">Match</button>
+            <button class="btn-clear"  onclick="clearStatementMatch()">Clear</button>
+          </div>
+        </div>
+        <div class="match-file">
+          <label class="file-btn">
+            Choose a CSV…
+            <input type="file" id="mt-file" accept=".csv,.tsv,.txt,text/csv,text/plain"
+                   onchange="loadStatementFile(event)" />
+          </label>
+          <span id="mt-file-name" class="match-note" style="margin:0">…or paste the statement below.</span>
+        </div>
+        <textarea id="mt-paste" spellcheck="false"
+          placeholder="412&#9;320.50&#10;412&#9;180.00&#10;77&#9;95.25&#10;&#10;…or paste the whole statement export, headers and all."></textarea>
+        <div id="matchResults"></div>
+      </div>
+
+      <div class="rep-block">
+        <div class="rep-title">Saved Matches</div>
+        <div class="rep-sub">
+          Every month that has been reconciled and kept. Open one to pick up where it was left,
+          or to see what a truck was doing three statements ago. Re-matching a month you have
+          already saved replaces it — the ticks and notes come across.
+        </div>
+        <div id="savedMatches"></div>
+      </div>
+    </div>
 
     <!-- ── Vehicles container (Vehicles tab) ── -->
     <div id="vehiclesWrap" style="display:none">
@@ -942,12 +1254,13 @@
             <th>City</th>
             <th>State</th>
             <th class="num">Tank</th>
+            <th>Balance</th>
             <th>Status</th>
             <th></th>
           </tr>
         </thead>
         <tbody id="rowsBody">
-          <tr class="empty-row"><td colspan="16">Loading…</td></tr>
+          <tr class="empty-row"><td colspan="17">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1204,6 +1517,12 @@
         FUEL_CARDS.map(c => `<option value="${escAttr(c)}">${escapeHtml(c)}</option>`).join('');
       el('flt-type').innerHTML = '<option value="">All</option>' +
         FUEL_TYPES.map(t => `<option value="${escAttr(t)}">${escapeHtml(t)}</option>`).join('');
+      // The statement match runs against one account at a time — Guttman and
+      // Wex lead because those are the two that get balanced.
+      el('mt-card').innerHTML = CARD_COLUMN_ORDER
+        .filter(c => c !== '(none)')
+        .map(c => `<option value="${escAttr(c)}">${escapeHtml(c)}</option>`).join('') +
+        '<option value="">All accounts together</option>';
 
       renderModalOptions();
       resetVehicleForm();
@@ -1249,7 +1568,7 @@
     // ── Tabs ───────────────────────────────────────────────────────────────
     // The two that render the submissions grid. Everything else swaps the
     // grid out for its own panel.
-    const GRID_TABS = ['pending', 'approved'];
+    const GRID_TABS = ['pending', 'approved', 'balancing'];
 
     function switchTab(tab) {
       activeTab = tab;
@@ -1259,8 +1578,13 @@
       el('auditLogWrap').style.display = tab === 'auditlog'  ? '' : 'none';
       el('reportWrap').style.display   = tab === 'reports'   ? '' : 'none';
       el('reportRanges').style.display = tab === 'reports'   ? '' : 'none';
+      el('matchWrap').style.display    = tab === 'reports'   ? '' : 'none';
       el('vehiclesWrap').style.display = tab === 'vehicles'  ? '' : 'none';
-      el('bulkBar').classList.toggle('open', isGrid);
+      // Approval controls and balancing controls never share a bar: they are
+      // two managers' jobs on two cadences, and an Approve button beside Mark
+      // Balanced is an invitation to press the wrong one.
+      el('bulkBar').classList.toggle('open', isGrid && tab !== 'balancing');
+      el('balanceBar').classList.toggle('open', tab === 'balancing');
 
       if (tab === 'auditlog') { loadAuditLog(); return; }
       if (tab === 'reports')  { loadReport();   return; }
@@ -1275,7 +1599,7 @@
     // ── Load + filter ──────────────────────────────────────────────────────
     async function applyFilters() {
       const body = el('rowsBody');
-      body.innerHTML = '<tr class="empty-row"><td colspan="16">Loading…</td></tr>';
+      body.innerHTML = '<tr class="empty-row"><td colspan="17">Loading…</td></tr>';
 
       const params = new URLSearchParams();
       params.set('scope', 'all');
@@ -1295,7 +1619,7 @@
         allEntries = Array.isArray(data.entries) ? data.entries : [];
       } catch (err) {
         allEntries = [];
-        body.innerHTML = `<tr class="empty-row"><td colspan="16">Couldn't load submissions — ${escapeHtml(err.message)}</td></tr>`;
+        body.innerHTML = `<tr class="empty-row"><td colspan="17">Couldn't load submissions — ${escapeHtml(err.message)}</td></tr>`;
         renderStats();
         return;
       }
@@ -1326,12 +1650,32 @@
     function renderStats() {
       const submitted = allEntries.filter(e => e.status === 'submitted');
       const approved  = allEntries.filter(e => e.status === 'approved');
+      // Only approved entries have a balance state to be in — the second
+      // review starts where the first one finishes.
+      const pendingBal = approved.filter(e => (e.balance_status || 'pending') === 'pending');
+      const issues     = approved.filter(e => e.balance_status === 'issue');
       el('stat-submitted').textContent = submitted.length;
       el('stat-approved').textContent  = approved.length;
-      el('stat-gallons').textContent     = sumGallons(approved).toFixed(2);
-      el('stat-gallons-all').textContent = sumGallons(allEntries).toFixed(2);
-      el('tab-pending-count').textContent  = submitted.length;
-      el('tab-approved-count').textContent = approved.length;
+      el('stat-gallons').textContent   = sumGallons(approved).toFixed(2);
+      el('stat-pending-balance').textContent = pendingBal.length;
+      el('stat-issues').textContent          = issues.length;
+      el('tab-pending-count').textContent   = submitted.length;
+      el('tab-approved-count').textContent  = approved.length;
+      el('tab-balancing-count').textContent = pendingBal.length + issues.length;
+    }
+
+    function balanceOf(e) { return e && e.balance_status ? e.balance_status : 'pending'; }
+
+    function balancePillHtml(e) {
+      if (e.status !== 'approved') return '<span class="bal-pill bal-pending">—</span>';
+      const b = balanceOf(e);
+      const label = { pending: 'pending', balanced: 'balanced', issue: 'issue' }[b] || b;
+      const who = (b !== 'pending' && e.balanced_by_name)
+        ? `<div class="bal-meta">${escapeHtml(b === 'issue' ? 'flagged' : 'by')} ${escapeHtml(e.balanced_by_name)}${
+             e.balanced_at ? ` · ${escapeHtml(fmtTs(e.balanced_at))}` : ''}</div>` : '';
+      const note = (b === 'issue' && e.balance_note)
+        ? `<div class="bal-meta" title="${escAttr(e.balance_note)}">${escapeHtml(e.balance_note.slice(0, 60))}</div>` : '';
+      return `<span class="bal-pill bal-${b}">${label}</span>${who}${note}`;
     }
 
     function sumGallons(list) {
@@ -1358,8 +1702,17 @@
 
     function renderRows() {
       const body = el('rowsBody');
-      const wanted = activeTab === 'approved' ? 'approved' : 'submitted';
-      shownEntries = allEntries.filter(e => e.status === wanted);
+      const balancing = activeTab === 'balancing';
+      // Balancing works the approved pile only — the second review starts
+      // where the first one finishes — and defaults to what is still to do.
+      if (balancing) {
+        const bal = val('flt-balance');
+        shownEntries = allEntries.filter(e =>
+          e.status === 'approved' && (!bal || balanceOf(e) === bal));
+      } else {
+        const wanted = activeTab === 'approved' ? 'approved' : 'submitted';
+        shownEntries = allEntries.filter(e => e.status === wanted);
+      }
 
       const flagged = shownEntries.filter(meterFlagged);
       const banner  = el('flagBanner');
@@ -1373,7 +1726,10 @@
       }
 
       if (!shownEntries.length) {
-        body.innerHTML = `<tr class="empty-row"><td colspan="16">No ${wanted} fuel entries in this range.</td></tr>`;
+        const what = balancing
+          ? `${val('flt-balance') ? val('flt-balance') : 'approved'} fuel entries to balance`
+          : `${activeTab === 'approved' ? 'approved' : 'submitted'} fuel entries`;
+        body.innerHTML = `<tr class="empty-row"><td colspan="17">No ${escapeHtml(what)} in this range.</td></tr>`;
         el('selectAll').checked = false;
         updateBulk();
         return;
@@ -1383,7 +1739,8 @@
         const flag = meterFlagged(e);
         const isSel = selected.has(e.id);
         return `
-          <tr class="${isSel ? 'selected' : ''} ${flag ? 'row-meter-flag' : ''}">
+          <tr class="${isSel ? 'selected' : ''} ${flag ? 'row-meter-flag' : ''} ${
+            e.status === 'approved' && balanceOf(e) === 'issue' ? 'row-issue' : ''}">
             <td class="td-narrow">
               <input type="checkbox" ${isSel ? 'checked' : ''} onchange="toggleRow('${escJsAttr(e.id)}')" />
             </td>
@@ -1409,16 +1766,26 @@
             <td>${escapeHtml(e.city_fueled || '—')}</td>
             <td>${escapeHtml(e.state || '—')}</td>
             <td class="num">${e.tank_number != null ? e.tank_number : '—'}</td>
+            <td>${balancePillHtml(e)}</td>
             <td>
               <span class="badge badge-${e.status}">${e.status}</span>
               ${statusMetaHtml(e)}
             </td>
             <td class="td-actions">
               <button class="row-btn edit" onclick="openEdit('${escJsAttr(e.id)}')">Edit</button>
-              ${e.status === 'submitted'
-                ? `<button class="row-btn approve" onclick="approveOne('${escJsAttr(e.id)}')">Approve</button>`
-                : `<button class="row-btn undo" onclick="unapproveOne('${escJsAttr(e.id)}')">Un-approve</button>`}
-              <button class="row-btn delete" onclick="deleteEntry('${escJsAttr(e.id)}')">Delete</button>
+              ${balancing ? `
+                ${balanceOf(e) !== 'balanced'
+                  ? `<button class="row-btn balanced" onclick="balanceOne('${escJsAttr(e.id)}','balanced')">Balanced</button>` : ''}
+                ${balanceOf(e) !== 'issue'
+                  ? `<button class="row-btn delete" onclick="balanceOne('${escJsAttr(e.id)}','issue')">Issue</button>` : ''}
+                ${balanceOf(e) !== 'pending'
+                  ? `<button class="row-btn undo" onclick="balanceOne('${escJsAttr(e.id)}','pending')">Undo</button>` : ''}
+              ` : `
+                ${e.status === 'submitted'
+                  ? `<button class="row-btn approve" onclick="approveOne('${escJsAttr(e.id)}')">Approve</button>`
+                  : `<button class="row-btn undo" onclick="unapproveOne('${escJsAttr(e.id)}')">Un-approve</button>`}
+                <button class="row-btn delete" onclick="deleteEntry('${escJsAttr(e.id)}')">Delete</button>
+              `}
             </td>
           </tr>`;
       }).join('');
@@ -1476,10 +1843,118 @@
 
     function updateBulk() {
       const n = shownEntries.filter(e => selected.has(e.id)).length;
-      el('bulkCount').textContent = `${n} selected`;
+      el('bulkCount').textContent    = `${n} selected`;
+      el('balanceCount').textContent = `${n} selected`;
       const submittedShown = shownEntries.filter(e => e.status === 'submitted');
       el('approveSelectedBtn').disabled = n === 0 || activeTab !== 'pending';
       el('approveAllBtn').disabled      = submittedShown.length === 0 || activeTab !== 'pending';
+      for (const id of ['markBalancedBtn', 'markIssueBtn', 'markPendingBtn']) {
+        el(id).disabled = n === 0 || activeTab !== 'balancing';
+      }
+    }
+
+    // ── The second review ──────────────────────────────────────────────────
+    // Marking is bulk by nature: a statement line that agrees clears every
+    // fill-up behind it at once, and ticking forty rows one at a time is the
+    // work this exists to remove. The single-row buttons are the same call
+    // with one id.
+    // The server takes 1000 ids at a time. A fifty-truck fleet at twenty fills
+    // a truck puts a whole month past that, and "select all → Mark Balanced"
+    // would come back as a flat refusal with no way forward short of the user
+    // guessing that a narrower date range is the answer. Split here instead.
+    const BALANCE_CHUNK = 500;
+
+    async function setBalance(ids, status, note, quiet) {
+      if (!ids.length) return null;
+      const result = { ok: true, updated: 0, skipped: [], entries: [] };
+
+      // Fold whatever came back into the grid. Called before rethrowing as
+      // well as on the way out: batches that already committed are balanced
+      // in the database whether or not a later one failed, and leaving the
+      // page showing all of them as pending invites the whole run being
+      // pressed again over rows that were already done.
+      const foldIn = () => {
+        for (const updated of result.entries) {
+          const i = allEntries.findIndex(e => e.id === updated.id);
+          if (i >= 0) allEntries[i] = updated;
+        }
+        renderStats();
+        renderRows();
+      };
+
+      for (let i = 0; i < ids.length; i += BALANCE_CHUNK) {
+        const batch = ids.slice(i, i + BALANCE_CHUNK);
+        let res, j;
+        try {
+          res = await fetch('/api/fuel-submissions?action=balance', {
+            method: 'POST', headers: authHeaders(true),
+            body: JSON.stringify({ ids: batch, balance_status: status, balance_note: note || '' }),
+          });
+          j = await res.json();
+        } catch (err) {
+          foldIn();
+          throw new Error(`${err.message} — ${result.updated} of ${ids.length} were marked before this failed.`);
+        }
+        // A batch where every entry was unapproved answers 409. That is a
+        // fact about those rows, not a failure of the run — the rest still
+        // have to go through, and they get counted as skipped below.
+        if (res.status === 409 && j && j.updated === 0) {
+          result.skipped.push(...batch.map(String));
+          continue;
+        }
+        if (!res.ok || !j.ok) {
+          foldIn();
+          throw new Error(`${j.error || 'Could not save'} — ${result.updated} of ${ids.length} were marked before this failed.`);
+        }
+        result.updated += j.updated;
+        result.skipped.push(...(j.skipped || []));
+        result.entries.push(...(j.entries || []));
+      }
+
+      foldIn();
+      if (!quiet && result.skipped.length) {
+        alert(`${result.updated} marked. ${result.skipped.length} left alone — balancing only applies to entries the daily review has already approved.`);
+      }
+      return result;
+    }
+
+    async function balanceOne(id, status) {
+      let note = '';
+      if (status === 'issue') {
+        note = prompt('What is the issue? (optional — it shows on the row and in the audit log)') || '';
+      }
+      if (!beginWrite()) return;
+      try {
+        await setBalance([id], status, note);
+      } catch (err) {
+        alert(err.message);
+      } finally { endWrite(); }
+    }
+
+    async function bulkBalance(status) {
+      const ids = shownEntries.filter(e => selected.has(e.id)).map(e => e.id);
+      if (!ids.length) return;
+      const verb = { balanced: 'Mark balanced', issue: 'Flag as an issue', pending: 'Put back to pending' }[status];
+      if (!confirm(`${verb}: ${ids.length} fuel entr${ids.length === 1 ? 'y' : 'ies'}?`)) return;
+      let note = '';
+      if (status === 'issue') {
+        note = prompt(`What is the issue with ${ids.length === 1 ? 'this entry' : 'these entries'}? (optional)`) || '';
+      }
+      if (!beginWrite()) return;
+      try {
+        const j = await setBalance(ids, status, note);
+        // The rows just left the view they were selected in, so the selection
+        // has to go with them — otherwise the next bulk press acts on entries
+        // that are no longer on screen.
+        for (const id of ids) selected.delete(id);
+        renderRows();
+        if (j && !j.skipped.length) {
+          // Nothing to say when it all went through; the rows moving IS the
+          // confirmation.
+        }
+      } catch (err) {
+        alert(err.message);
+      } finally { endWrite(); }
     }
 
     // ── Approve / un-approve / delete ──────────────────────────────────────
@@ -1925,6 +2400,93 @@
     function n2(v) { return (Number(v) || 0).toFixed(2); }
     function n1(v) { return (Number(v) || 0).toFixed(1); }
 
+    // "YYYY-MM" off a work_date, read as written. Parsing it into a Date
+    // first would put an entry dated the 1st into the previous month for
+    // anyone west of Greenwich — the whole point of this key is which
+    // statement the fill-up belongs on.
+    function monthOf(workDate) {
+      const s = String(workDate || '');
+      return /^\d{4}-\d{2}/.test(s) ? s.slice(0, 7) : '(no date)';
+    }
+
+    // Every calendar month a stored period touches, as "YYYY-MM". A saved
+    // record has no entries to derive this from — only its two dates.
+    function monthsBetween(start, end) {
+      if (!/^\d{4}-\d{2}/.test(String(start || '')) || !/^\d{4}-\d{2}/.test(String(end || ''))) return [];
+      const out = [];
+      let [y, m] = start.slice(0, 7).split('-').map(Number);
+      const last = end.slice(0, 7);
+      // Bounded independently of the loop condition: a stored period is at
+      // most a year or two, and a bad pair of dates must not spin here.
+      for (let guard = 0; guard < 240; guard++) {
+        const key = `${y}-${String(m).padStart(2, '0')}`;
+        out.push(key);
+        if (key >= last) break;
+        m++; if (m > 12) { m = 1; y++; }
+      }
+      return out;
+    }
+
+    function monthLabel(key) {
+      if (!/^\d{4}-\d{2}$/.test(key)) return key;
+      const [y, mo] = key.split('-').map(Number);
+      return new Date(y, mo - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+    }
+
+    // The two accounts the month is balanced against come first; the rest
+    // follow the order the field form offers them.
+    const CARD_COLUMN_ORDER = ['Guttman', 'Wex']
+      .concat(FUEL_CARDS.filter(c => c !== 'Guttman' && c !== 'Wex'))
+      .concat(['(none)']);
+
+    // How the vehicle-by-month table is sorted, and which of its rows are
+    // open. Held outside the render so re-sorting or opening a row doesn't
+    // lose the other.
+    let vmSort = { col: 'truck', dir: 1 };
+    const vmOpen = new Set();
+
+    function sortVehicleMonth(col) {
+      if (vmSort.col === col) vmSort.dir = -vmSort.dir;
+      // Numbers are most useful biggest-first on the first click; a truck
+      // number or a month is most useful in its own order.
+      else vmSort = { col, dir: (col === 'truck' || col === 'month') ? 1 : -1 };
+      renderReport();
+    }
+
+    function toggleVehicleMonth(key) {
+      if (vmOpen.has(key)) vmOpen.delete(key); else vmOpen.add(key);
+      renderReport();
+    }
+
+    function vehicleMonthRows(m) {
+      const rows = [...m.byVehicleMonth.values()];
+      const dir  = vmSort.dir;
+      rows.sort((a, b) => {
+        let d = 0;
+        switch (vmSort.col) {
+          case 'truck':
+            // A fill-up with no truck number can't be balanced against
+            // anything, so it sits at the bottom whichever way this sorts.
+            if (a.truck == null && b.truck == null) d = 0;
+            else if (a.truck == null) return 1;
+            else if (b.truck == null) return -1;
+            else d = a.truck - b.truck;
+            break;
+          case 'month':   d = String(a.month).localeCompare(String(b.month)); break;
+          case 'gallons': d = a.gallons - b.gallons; break;
+          case 'entries': d = a.entries - b.entries; break;
+          default:
+            // A card column.
+            d = (a.byCard.get(vmSort.col) || 0) - (b.byCard.get(vmSort.col) || 0);
+        }
+        if (d !== 0) return d * dir;
+        // Ties settle on truck then month so the table never reorders itself
+        // between two renders of the same data.
+        return (a.truck || 0) - (b.truck || 0) || String(a.month).localeCompare(String(b.month));
+      });
+      return rows;
+    }
+
     function setReportRange(kind) {
       const now = new Date();
       const y   = now.getFullYear();
@@ -1964,6 +2526,11 @@
       if (val('flt-card'))     params.set('fuel_card', val('flt-card'));
       if (val('flt-type'))     params.set('fuel_type', val('flt-type'));
 
+      // Everything a match's verdicts depend on. Compared rather than assumed
+      // so that re-entering the tab with the same settings leaves an open
+      // reconciliation alone.
+      const rangeKey = params.toString();
+
       let entries = [];
       try {
         const res  = await fetch('/api/fuel-submissions?' + params.toString(), { headers: authHeaders() });
@@ -1976,7 +2543,33 @@
       }
       if (!vehicles.length) await loadVehicles();
       reportModel = buildReportModel(entries, vehicles);
+      reportModel.builtFor = rangeKey;
+
+      // A freshly-computed match belongs to the range it was computed
+      // against. Leaving it on screen over a rebuilt model leaves its
+      // verdicts pointing at entries they were never about — and "Mark the
+      // agreeing trucks balanced" reads the CURRENT model, so July's verdicts
+      // would be pressed onto June's fill-ups with nothing on screen
+      // suggesting anything was wrong.
+      //
+      // Only when the parameters ACTUALLY changed, though. loadReport runs on
+      // every visit to the Reports tab, so discarding unconditionally meant
+      // stepping away to look at an entry and back destroyed a half-worked
+      // reconciliation and blamed a date-range change that never happened.
+      // A historical match is a self-contained record and is never discarded.
+      if (matchResult && !matchResult.historical && matchResult.builtFor !== rangeKey) {
+        matchResult = null;
+        el('matchResults').innerHTML =
+          '<div class="rep-empty">The date range changed — press Match again to line the statement up against it.</div>';
+        renderSavedMatches();
+      }
+
       renderReport();
+      // Both read from saved matches rather than from this range, so they are
+      // fetched alongside rather than blocking the report on them. refreshHistory
+      // re-renders when it lands.
+      loadSavedMatches();
+      if (!offenderHistory) refreshHistory();
     }
 
     /**
@@ -1997,8 +2590,18 @@
         from: val('flt-from'), to: val('flt-to'),
         status: val('rep-status') || 'approved',
         count: entries.length,
+        rows: entries,
         gallons: 0, iftaGallons: 0, nonIftaGallons: 0, unmatchedGallons: 0,
         byState: new Map(), byVehicle: new Map(), byCard: new Map(), byType: new Map(),
+        // The unit the office actually balances in: one truck, one month.
+        // Keyed "<truck>|<YYYY-MM>", carrying a per-card split because
+        // Guttman and Wex are reconciled against separate statements.
+        byVehicleMonth: new Map(),
+        cardsPresent: [],
+        // Which months the range actually caught. A statement covers one, so
+        // the match warns rather than quietly comparing a month's billing
+        // against a quarter of fuel.
+        months: [...new Set(entries.map(e => monthOf(e.work_date)))].sort(),
         tanks: new Map(),
         meterFlagged: [],
         exceptions: [],
@@ -2019,25 +2622,47 @@
         m.byState.set(st, sRow);
 
         const tKey = e.truck_number != null ? String(e.truck_number) : '(none)';
+        // Whole-range totals per truck. Only the exception checks read this
+        // now — the table it used to feed was replaced by byVehicleMonth,
+        // which carries the states, fuel types and odometer span it used to
+        // accumulate here for nobody.
         const vRow = m.byVehicle.get(tKey) || {
-          key: tKey, truck: e.truck_number, vehicle: v || null,
-          entries: 0, gallons: 0, states: new Set(), types: new Set(),
-          minMileage: null, maxMileage: null,
+          key: tKey, truck: e.truck_number, vehicle: v || null, entries: 0, gallons: 0,
         };
         vRow.entries++; vRow.gallons += g;
-        if (e.state)     vRow.states.add(e.state);
-        if (e.fuel_type) vRow.types.add(e.fuel_type);
-        const mi = Number(e.mileage);
-        if (Number.isFinite(mi)) {
-          if (vRow.minMileage == null || mi < vRow.minMileage) vRow.minMileage = mi;
-          if (vRow.maxMileage == null || mi > vRow.maxMileage) vRow.maxMileage = mi;
-        }
         m.byVehicle.set(tKey, vRow);
+        const mi = Number(e.mileage);
 
         const card = e.fuel_card || '(none)';
         const cRow = m.byCard.get(card) || { key: card, entries: 0, gallons: 0 };
         cRow.entries++; cRow.gallons += g;
         m.byCard.set(card, cRow);
+
+        // Truck × month, split by card. The whole balancing job is comparing
+        // one of these cells against one line of a Guttman or Wex statement,
+        // so the report is built in that shape rather than leaving the office
+        // to re-derive it from a single gallons total.
+        const month = monthOf(e.work_date);
+        const vmKey = `${tKey}|${month}`;
+        const vmRow = m.byVehicleMonth.get(vmKey) || {
+          key: vmKey, truck: e.truck_number, month, vehicle: v || null,
+          entries: 0, gallons: 0, byCard: new Map(),
+          states: new Set(), types: new Set(),
+          minMileage: null, maxMileage: null,
+          fills: [],
+        };
+        vmRow.entries++; vmRow.gallons += g;
+        vmRow.byCard.set(card, (vmRow.byCard.get(card) || 0) + g);
+        if (e.state)     vmRow.states.add(e.state);
+        if (e.fuel_type) vmRow.types.add(e.fuel_type);
+        if (Number.isFinite(mi)) {
+          if (vmRow.minMileage == null || mi < vmRow.minMileage) vmRow.minMileage = mi;
+          if (vmRow.maxMileage == null || mi > vmRow.maxMileage) vmRow.maxMileage = mi;
+        }
+        // Kept so a cell that doesn't agree with the statement can be opened
+        // to the fill-ups behind it without another round trip.
+        vmRow.fills.push(e);
+        m.byVehicleMonth.set(vmKey, vmRow);
 
         const type = e.fuel_type || '(none)';
         const fRow = m.byType.get(type) || { key: type, entries: 0, gallons: 0 };
@@ -2060,6 +2685,14 @@
           m.tanks.set(key, t);
         }
       }
+
+      // The card columns the vehicle-by-month table gets. Guttman and Wex
+      // lead because those are the two statements the month is balanced
+      // against; the rest follow in the order the form offers them, so the
+      // columns don't reshuffle from one month to the next.
+      const seen = new Set(m.byCard.keys());
+      m.cardsPresent = CARD_COLUMN_ORDER.filter(c => seen.has(c))
+        .concat([...seen].filter(c => !CARD_COLUMN_ORDER.includes(c)).sort());
 
       // A tank meter runs forward without resetting, so the fills recorded
       // against it should account for the whole distance it travelled. What
@@ -2117,6 +2750,147 @@
       return [...map.values()].sort((a, b) => b.gallons - a.gallons);
     }
 
+    /**
+     * Vehicle × month, split by fuel account — the table the month is
+     * balanced from.
+     *
+     * A Guttman statement and a Wex statement each list a truck number and a
+     * gallons figure for the month, so those are the two things a row here
+     * has to put side by side without any arithmetic in between. A single
+     * gallons total per truck would leave the office re-deriving the split by
+     * hand, which is the work this is supposed to remove.
+     *
+     * Every row opens onto the fill-ups behind it, because the moment a cell
+     * doesn't agree with a statement the next question is always which fill-up
+     * is wrong, and that answer should not be another screen away.
+     */
+    function vehicleMonthBlockHtml(m) {
+      const rows  = vehicleMonthRows(m);
+      const cards = m.cardsPresent;
+      const arrow = col => vmSort.col === col ? (vmSort.dir > 0 ? ' ▲' : ' ▼') : '';
+      const th = (col, label, cls) =>
+        `<th class="sortable ${cls || ''}${vmSort.col === col ? ' sorted' : ''}"
+             onclick="sortVehicleMonth('${escJsAttr(col)}')"
+             title="Sort by ${escAttr(label)}">${escapeHtml(label)}${arrow(col)}</th>`;
+
+      // Column totals, so the foot of each card column is the figure to check
+      // against that account's statement total for the range.
+      const cardTotals = new Map();
+      for (const r of rows) {
+        for (const [c, g] of r.byCard) cardTotals.set(c, (cardTotals.get(c) || 0) + g);
+      }
+
+      const colCount = 4 + cards.length + 3;
+
+      return `
+        <div class="rep-block">
+          <div class="rep-title">By Vehicle &amp; Month</div>
+          <div class="rep-sub">
+            One row per truck per month, which is the unit a fuel account statement is read in.
+            Each account has its own column — compare the Guttman and Wex columns straight against
+            those statements. Click a heading to sort, click a row to open the fill-ups behind it.
+            Odometer span is the highest mileage reported in the month minus the lowest: it comes off
+            the fill-ups, not a trip log, so it under-counts any distance driven between the last fill
+            of one month and the first of the next.
+          </div>
+          <table class="vm-table">
+            <thead>
+              <tr>
+                <th style="width:22px"></th>
+                ${th('truck', 'Truck', 'num')}
+                ${th('month', 'Month')}
+                <th>Vehicle</th>
+                ${cards.map(c => th(c, c, 'num')).join('')}
+                ${th('gallons', 'Total Gallons', 'num')}
+                ${th('entries', 'Fill-ups', 'num')}
+                <th class="num">Odometer Span</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(r => {
+                const v    = r.vehicle;
+                const open = vmOpen.has(r.key);
+                const span = (r.minMileage != null && r.maxMileage != null)
+                  ? n1(r.maxMileage - r.minMileage) : '—';
+                return `
+                <tr class="vm-row ${open ? 'open' : ''} ${v ? '' : 'exception'}" onclick="toggleVehicleMonth('${escJsAttr(r.key)}')">
+                  <td class="vm-caret">${open ? '▾' : '▸'}</td>
+                  <td class="num" style="font-weight:700">${r.truck != null ? r.truck : '—'}</td>
+                  <td>${escapeHtml(monthLabel(r.month))}</td>
+                  <td>${v
+                        ? escapeHtml([v.model_year, v.make].filter(Boolean).join(' ') || v.vin || '—')
+                        : '<span class="off">not on the vehicle list</span>'}</td>
+                  ${cards.map(c => {
+                    const g = r.byCard.get(c);
+                    return `<td class="num ${g ? 'has-gal' : 'nil'}">${g ? n2(g) : '·'}</td>`;
+                  }).join('')}
+                  <td class="num" style="font-weight:700">${n2(r.gallons)}</td>
+                  <td class="num">${r.entries}</td>
+                  <td class="num">${span}</td>
+                </tr>
+                ${open ? `
+                <tr class="vm-detail">
+                  <td colspan="${colCount}">
+                    ${vehicleMonthDetailHtml(r)}
+                  </td>
+                </tr>` : ''}`;
+              }).join('')}
+              <tr class="total">
+                <td></td>
+                <td colspan="3">Total — ${rows.length} truck-month${rows.length === 1 ? '' : 's'}</td>
+                ${cards.map(c => `<td class="num">${n2(cardTotals.get(c) || 0)}</td>`).join('')}
+                <td class="num">${n2(m.gallons)}</td>
+                <td class="num">${m.count}</td>
+                <td class="num"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    // The fill-ups behind one truck-month, oldest first — the order a
+    // statement lists them in, so the two can be read side by side.
+    function vehicleMonthDetailHtml(r) {
+      const fills = [...r.fills].sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
+      const v = r.vehicle;
+      const head = v
+        ? `Truck ${r.truck} · ${escapeHtml([v.model_year, v.make].filter(Boolean).join(' ') || '—')}`
+          + (v.vin ? ` · VIN ${escapeHtml(v.vin)}` : '')
+          + (v.ifta ? ` · IFTA ${escapeHtml(v.ifta_sticker || '(no sticker)')}` : ' · not IFTA')
+        : `Truck ${r.truck != null ? r.truck : '—'} — not on the vehicle list, so nothing is known about it`;
+      return `
+        <div class="vm-detail-head">${head}</div>
+        <table class="vm-fills">
+          <thead>
+            <tr>
+              <th>Date</th><th>Employee</th><th>Account</th><th>Fuel</th>
+              <th class="num">Gallons</th><th class="num">Mileage</th>
+              <th>Site</th><th>City / State</th><th class="num">Tank</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${fills.map(e => `
+              <tr>
+                <td>${prettyDate(e.work_date)}</td>
+                <td>${escapeHtml(e.employee_username || '—')}</td>
+                <td>${escapeHtml(e.fuel_card || '—')}</td>
+                <td>${escapeHtml(e.fuel_type || '—')}</td>
+                <td class="num" style="font-weight:700">${num(e.gallons, 2)}${
+                  gallonsFromMeters(e.beginning_meter, e.ending_meter) != null
+                    ? '<span class="auto-chip" title="Calculated from the tank meter readings.">auto</span>' : ''}</td>
+                <td class="num">${num(e.mileage, 1)}</td>
+                <td>${escapeHtml(e.fueling_site || '—')}</td>
+                <td>${escapeHtml([e.city_fueled, e.state].filter(Boolean).join(', ') || '—')}</td>
+                <td class="num">${e.tank_number != null ? e.tank_number : '—'}</td>
+                <td><span class="badge badge-${e.status}">${e.status}</span></td>
+                <td class="td-actions">
+                  <button class="row-btn edit" onclick="event.stopPropagation(); openEdit('${escJsAttr(e.id)}')">Edit</button>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
     function renderReport() {
       const m = reportModel;
       const wrap = el('reportWrap');
@@ -2140,11 +2914,6 @@
       }
 
       const stateRows = [...m.byState.values()].sort((a, b) => String(a.key).localeCompare(String(b.key)));
-      const vehRows   = [...m.byVehicle.values()].sort((a, b) => {
-        if (a.truck == null) return 1;
-        if (b.truck == null) return -1;
-        return a.truck - b.truck;
-      });
       const tankRows  = [...m.tanks.values()].sort((a, b) => a.tank - b.tank);
 
       wrap.innerHTML = `
@@ -2204,46 +2973,9 @@
             </table>
           </div>
 
-          <div class="rep-block">
-            <div class="rep-title">By Vehicle</div>
-            <div class="rep-sub">Odometer span is the highest mileage reported in this range minus the lowest — it comes off the fill-ups, not a trip log, so it under-counts any distance driven between the last fill of one month and the first of the next.</div>
-            <table>
-              <thead>
-                <tr>
-                  <th class="num">Truck</th><th>VIN</th><th>Year / Make</th>
-                  <th>IFTA</th><th>Sticker</th>
-                  <th class="num">Fill-ups</th><th class="num">Gallons</th>
-                  <th class="num">Odometer Span</th><th>States</th><th>Fuel</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${vehRows.map(r => {
-                  const v = r.vehicle;
-                  const span = (r.minMileage != null && r.maxMileage != null)
-                    ? n1(r.maxMileage - r.minMileage) : '—';
-                  return `
-                  <tr class="${v ? '' : 'exception'}">
-                    <td class="num" style="font-weight:700">${r.truck != null ? r.truck : '—'}</td>
-                    <td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.72rem">${escapeHtml(v && v.vin ? v.vin : '—')}</td>
-                    <td>${v ? escapeHtml([v.model_year, v.make].filter(Boolean).join(' ')) || '—' : '<span class="off">not on the vehicle list</span>'}</td>
-                    <td class="${v && v.ifta ? 'ifta-yes' : 'ifta-no'}">${v ? (v.ifta ? 'Yes' : 'No') : '—'}</td>
-                    <td>${escapeHtml(v && v.ifta_sticker ? v.ifta_sticker : '—')}</td>
-                    <td class="num">${r.entries}</td>
-                    <td class="num">${n2(r.gallons)}</td>
-                    <td class="num">${span}</td>
-                    <td>${escapeHtml([...r.states].sort().join(', ')) || '—'}</td>
-                    <td>${escapeHtml([...r.types].sort().join(', ')) || '—'}</td>
-                  </tr>`;
-                }).join('')}
-                <tr class="total">
-                  <td colspan="5">Total</td>
-                  <td class="num">${m.count}</td>
-                  <td class="num">${n2(m.gallons)}</td>
-                  <td class="num"></td><td></td><td></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          ${vehicleMonthBlockHtml(m)}
+
+          ${repeatOffenderBlockHtml()}
 
           <div class="rep-block">
             <div class="rep-title">Tank Balance</div>
@@ -2304,6 +3036,846 @@
         </div>`;
     }
 
+    // ── Statement match ────────────────────────────────────────────────────
+    // The balancing job itself: our gallons for a truck in a month against the
+    // account's, one line each, difference in between.
+    let matchResult = null;
+
+    // Every truck number this company knows about — off the roster and off
+    // the fuel entries themselves, because a truck can be reported against
+    // before anyone adds it to the roster. Used to pick the truck number out
+    // of a statement line rather than guessing at column positions: a line
+    // reading "07/15/2026, 412, 84.50" has three numbers on it, and only one
+    // of them is a truck we have ever seen.
+    function knownTruckNumbers() {
+      const s = new Set();
+      for (const v of vehicles) if (v.truck_number != null) s.add(Number(v.truck_number));
+      if (reportModel) {
+        for (const e of reportModel.rows) if (e.truck_number != null) s.add(Number(e.truck_number));
+      }
+      return s;
+    }
+
+    /**
+     * Read a pasted statement into { truck → gallons }.
+     *
+     * Statements arrive in whatever shape the account's export happens to
+     * produce, so this reads them by content rather than by column: pull every
+     * number off the line, take the one we recognise as a truck, and take the
+     * gallons from what is left by the rule the user picked. Lines with no
+     * numbers on them — headers, page furniture, a total at the bottom — are
+     * counted and reported rather than silently dropped, because a statement
+     * that half-parsed is worse than one that didn't.
+     */
+    // A cell that is nothing but a summing label. Checked per CELL and by
+    // exact match, because the label is not reliably the first thing on the
+    // line: statements put it in a later column, quote it, and pluralise it,
+    // and a guard anchored to the start of the raw line catches none of those.
+    // Getting this wrong is silent — the total's figure is added to whichever
+    // truck number happens to share the line, and the row looks ordinary.
+    //
+    // Exact match on the whole cell rather than a prefix so a merchant column
+    // reading "TOTAL PETROLEUM #123" is still data. A station named exactly
+    // "Total" is the one false positive left, and that line is REPORTED as
+    // skipped rather than silently dropped, which is the right way round: a
+    // skipped real line is visible, a swallowed total is not.
+    const TOTAL_LABEL = /^(grand\s+|report\s+|page\s+|running\s+|sub[\s-]*)?(total|totals|sum|subtotal|balance|summary)$/i;
+    function isTotalLabel(cell) {
+      return TOTAL_LABEL.test(String(cell).replace(/["']/g, '').replace(/[:.]+$/, '').trim());
+    }
+
+    // Which character separates the columns. Decided per line and once,
+    // because "412<tab>1,234.50" is a TWO-column row whose second value
+    // carries a thousands separator — splitting it on commas as well turns
+    // 1,234.50 into 234.50 and under-reports the truck by a thousand gallons,
+    // with the line still counted as read.
+    function delimiterFor(line) {
+      if (line.includes('\t')) return '\t';
+      if (line.includes(';'))  return ';';
+      if (line.includes('|'))  return '|';
+      if (line.includes(','))  return ',';
+      return null;
+    }
+
+    function parseStatement(text, gallonsPick, knownTrucks) {
+      const byTruck  = new Map();
+      const skipped  = [];
+      let lines = 0;
+
+      for (const raw of String(text || '').split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) continue;
+        lines++;
+
+        // A comma inside quotes is a thousands separator, not a column break.
+        const flat = line.replace(/"([^"]*)"/g, (_, inner) => inner.replace(/,/g, ''));
+
+        const delim = delimiterFor(flat);
+        let cells = delim
+          ? flat.split(delim).map(c => c.trim()).filter(c => c !== '')
+          : flat.split(/\s+/).filter(Boolean);
+        if (cells.length < 2) cells = flat.split(/\s+/).filter(Boolean);
+
+        if (cells.some(isTotalLabel)) { skipped.push(line); continue; }
+
+        const nums = [];
+        for (const c of cells) {
+          // Strip what a money or gallons column carries: currency, a trailing
+          // unit, and — only when the comma is NOT this line's separator — a
+          // thousands separator.
+          let cleaned = c.replace(/[$\s]/g, '').replace(/(gal|gals|gallons)$/i, '');
+          if (delim !== ',') cleaned = cleaned.replace(/,/g, '');
+          if (/^-?\d+(\.\d+)?$/.test(cleaned)) nums.push(Number(cleaned));
+        }
+        if (!nums.length) { skipped.push(line); continue; }
+
+        // The truck: one we recognise, or failing that the first whole number
+        // on the line. Recognising it first is what makes a date column
+        // harmless.
+        //
+        // The fallback is capped at what the truck_number column can hold. A
+        // fuel-card number is thirteen to nineteen digits and would otherwise
+        // be taken for a truck on a statement whose real truck isn't on the
+        // roster yet — and then fail the INSERT with "integer out of range",
+        // after the save has already cleared the previous lines.
+        // A truck we recognise can be any size the column holds. A number we
+        // are only GUESSING at is capped at six digits, because the things
+        // that get guessed at wrongly are all longer than that: a date
+        // exported as 20260715, an invoice number, a fuel-card number. Left
+        // uncapped, a line reading "20260715,999,84.50" for a truck not yet
+        // on the roster files the fill under truck 20,260,715 and then
+        // reports TWO findings — that truck as unbilled and truck 999 as
+        // having no entry — from one real fill-up.
+        const MAX_GUESSED_TRUCK = 999999;
+        let truckIdx = nums.findIndex(n => Number.isInteger(n) && knownTrucks.has(n));
+        if (truckIdx < 0) {
+          truckIdx = nums.findIndex(n => Number.isInteger(n) && n >= 0 && n <= MAX_GUESSED_TRUCK);
+        }
+        if (truckIdx < 0) { skipped.push(line); continue; }
+        const truck = nums[truckIdx];
+
+        // The picker says "the Nth number AFTER the truck", so it counts from
+        // after the truck. Counting through a list that still held the
+        // numbers before it made "the 1st number after the truck" return the
+        // first number on the line — on a statement with a leading invoice
+        // column, a truck credited with 55,012 gallons.
+        const before = nums.slice(0, truckIdx);
+        const after  = nums.slice(truckIdx + 1);
+        let gallons;
+        if (gallonsPick === 'last') {
+          // "The last number on the line" — falling back to what precedes the
+          // truck only when nothing follows it.
+          const pool = after.length ? after : before;
+          gallons = pool.length ? pool[pool.length - 1] : undefined;
+        } else {
+          gallons = after[Number(gallonsPick) - 1];
+        }
+        if (gallons == null || !Number.isFinite(gallons)) { skipped.push(line); continue; }
+
+        byTruck.set(truck, Math.round(((byTruck.get(truck) || 0) + gallons) * 100) / 100);
+      }
+
+      return { byTruck, skipped, lines };
+    }
+
+    /**
+     * Our gallons against theirs, per truck.
+     *
+     * Three outcomes matter and they are kept apart: a figure that agrees, a
+     * figure that doesn't, and a truck that only one side has heard of. The
+     * last is the one worth surfacing loudest — a truck on the statement with
+     * no fuel entry behind it is fuel nobody reported, and a truck we reported
+     * that the account has never billed is usually a wrong truck number.
+     */
+    function matchStatement(model, card, statement) {
+      const ours = new Map();
+      const fills = new Map();
+      // Approved fuel only, whatever the report is set to show.
+      //
+      // The Reports tab can include entries still awaiting the daily review,
+      // and counting those here would let a truck be declared to agree partly
+      // on fuel the office has not accepted. Marking it balanced afterwards
+      // only ever touches the approved rows, so the two would disagree about
+      // what had just been signed off. Excluded and counted, not silently
+      // dropped — see notApproved below.
+      let notApproved = 0, notApprovedGallons = 0;
+      let noTruck = 0, noTruckGallons = 0;
+      for (const e of model.rows) {
+        if (card && (e.fuel_card || '') !== card) continue;
+        if (e.status !== 'approved') {
+          notApproved++;
+          notApprovedGallons += Number(e.gallons) || 0;
+          continue;
+        }
+        // Approved fuel with no truck number on it cannot be lined up against
+        // a statement that identifies vehicles by number — but it is real
+        // fuel, and dropping it out of the total unremarked makes the account
+        // look like it is over-billing by exactly that much. Counted and said
+        // out loud instead.
+        if (e.truck_number == null) {
+          noTruck++;
+          noTruckGallons += Number(e.gallons) || 0;
+          continue;
+        }
+        const t = Number(e.truck_number);
+        ours.set(t, Math.round(((ours.get(t) || 0) + (Number(e.gallons) || 0)) * 100) / 100);
+        fills.set(t, (fills.get(t) || 0) + 1);
+      }
+
+      const trucks = new Set([...ours.keys(), ...statement.byTruck.keys()]);
+      const rows = [];
+      for (const t of trucks) {
+        const o = ours.has(t) ? ours.get(t) : null;
+        const s = statement.byTruck.has(t) ? statement.byTruck.get(t) : null;
+        let verdict;
+        if (o == null)      verdict = 'not-in-ours';
+        else if (s == null) verdict = 'not-on-statement';
+        // A hundredth of a gallon is rounding, not a discrepancy.
+        else if (Math.abs(o - s) < 0.005) verdict = 'match';
+        else verdict = 'variance';
+        rows.push({
+          truck: t, ours: o, statement: s,
+          difference: (o != null && s != null) ? Math.round((o - s) * 100) / 100 : null,
+          fills: fills.get(t) || 0,
+          verdict,
+        });
+      }
+
+      // Worst first: what needs doing should not have to be scrolled to.
+      const rank = { variance: 0, 'not-in-ours': 1, 'not-on-statement': 2, match: 3 };
+      rows.sort((a, b) => (rank[a.verdict] - rank[b.verdict])
+        || (Math.abs(b.difference || 0) - Math.abs(a.difference || 0))
+        || (a.truck - b.truck));
+
+      return {
+        card, rows,
+        oursTotal:      [...ours.values()].reduce((a, b) => a + b, 0),
+        statementTotal: [...statement.byTruck.values()].reduce((a, b) => a + b, 0),
+        matched:        rows.filter(r => r.verdict === 'match').length,
+        variances:      rows.filter(r => r.verdict === 'variance'),
+        notInOurs:      rows.filter(r => r.verdict === 'not-in-ours'),
+        notOnStatement: rows.filter(r => r.verdict === 'not-on-statement'),
+        skipped: statement.skipped,
+        lines: statement.lines,
+        notApproved,
+        notApprovedGallons: Math.round(notApprovedGallons * 100) / 100,
+        noTruck,
+        noTruckGallons: Math.round(noTruckGallons * 100) / 100,
+      };
+    }
+
+    function runStatementMatch() {
+      const out = el('matchResults');
+      if (!reportModel) {
+        out.innerHTML = '<div class="rep-empty">Build a report first — the match runs against the range above.</div>';
+        return;
+      }
+      const text = val('mt-paste');
+      if (!text.trim()) {
+        out.innerHTML = '<div class="rep-empty">Paste a statement above, then press Match.</div>';
+        return;
+      }
+      const parsed = parseStatement(text, val('mt-gallons-col'), knownTruckNumbers());
+      if (!parsed.byTruck.size) {
+        out.innerHTML = `<div class="rep-empty">Couldn't read a truck number and a gallons figure off any of those
+          ${parsed.lines} line${parsed.lines === 1 ? '' : 's'}. Check that each row has the truck number and the
+          gallons on it, and try a different answer to "which number is the gallons".</div>`;
+        return;
+      }
+      matchResult = matchStatement(reportModel, val('mt-card'), parsed);
+      // Pinned to the range this was computed against, so re-saving sends the
+      // period it actually covers rather than whatever the Reports tab has
+      // moved on to since.
+      matchResult.periodStart = reportModel.from;
+      matchResult.periodEnd   = reportModel.to;
+      matchResult.builtFor    = reportModel.builtFor;
+      // Its own copy of which months the entries actually spanned, so the
+      // warning above it keeps describing this match rather than whatever the
+      // Reports tab is set to by the time anyone reads it.
+      matchResult.months      = reportModel.months;
+      renderStatementMatch();
+    }
+
+    function clearStatementMatch() {
+      el('mt-paste').value = '';
+      el('mt-file').value = '';
+      el('mt-file-name').textContent = '…or paste the statement below.';
+      el('matchResults').innerHTML = '';
+      matchResult = null;
+      renderSavedMatches();
+    }
+
+    // Tomorrow's export is a download, not something anyone wants to open and
+    // copy out of. Read straight into the same box the paste goes into, so
+    // there is one parser and one preview rather than two paths that can
+    // disagree about what a line means.
+    function loadStatementFile(ev) {
+      const file = ev && ev.target && ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const label = el('mt-file-name');
+      // A statement is text. A spreadsheet saved as .xlsx is a zip, and
+      // reading it as text produces line noise that parses into nonsense
+      // truck numbers — say so instead.
+      if (/\.(xlsx|xls|numbers|pdf)$/i.test(file.name)) {
+        label.textContent = `${file.name} isn't a text file — export it as CSV and try again.`;
+        el('mt-file').value = '';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        el('mt-paste').value = String(reader.result || '');
+        const lines = el('mt-paste').value.split(/\r?\n/).filter(l => l.trim()).length;
+        label.textContent = `${file.name} — ${lines} line${lines === 1 ? '' : 's'}. Press Match.`;
+      };
+      reader.onerror = () => { label.textContent = `Couldn't read ${file.name}.`; };
+      reader.readAsText(file);
+    }
+
+    // ── Saved matches ──────────────────────────────────────────────────────
+    let savedMatches = [];
+
+    async function loadSavedMatches() {
+      try {
+        const res  = await fetch('/api/fuel-statement-matches?limit=100', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        savedMatches = Array.isArray(data.matches) ? data.matches : [];
+      } catch (err) {
+        savedMatches = [];
+        el('savedMatches').innerHTML = `<div class="rep-empty">Couldn't load saved matches — ${escapeHtml(err.message)}</div>`;
+        return;
+      }
+      renderSavedMatches();
+    }
+
+    function renderSavedMatches() {
+      const wrap = el('savedMatches');
+      if (!wrap) return;
+      if (!savedMatches.length) {
+        wrap.innerHTML = '<div class="rep-empty">Nothing saved yet. Run a match above and press Save.</div>';
+        return;
+      }
+      const openId = matchResult && matchResult.savedId;
+      wrap.innerHTML = savedMatches.map(s => {
+        const outstanding = s.variance_count + s.not_in_ours_count + s.not_on_statement_count;
+        const balanced = Math.abs(Number(s.difference) || 0) < 0.005 && outstanding === 0;
+        return `
+        <div class="saved-row ${String(s.id) === String(openId) ? 'current' : ''}">
+          <div>
+            <strong>${escapeHtml(s.account || 'All accounts')}</strong> ·
+            ${escapeHtml(s.period_month ? monthLabel(s.period_month) : `${s.period_start} → ${s.period_end}`)}
+            <div class="who">
+              ${s.truck_count} truck${s.truck_count === 1 ? '' : 's'} ·
+              ${s.matched_count} agreed${outstanding ? ` · ${outstanding} to look at` : ''} ·
+              saved ${escapeHtml(fmtTs(s.updated_at || s.created_at))}${s.created_by_name ? ` by ${escapeHtml(s.created_by_name)}` : ''}
+              ${s.source_note ? ` · ${escapeHtml(s.source_note)}` : ''}
+            </div>
+          </div>
+          <div class="diff ${balanced ? 'ok' : 'off'}">${Number(s.difference) > 0 ? '+' : ''}${n2(s.difference)}</div>
+          <button class="qr-btn" onclick="openSavedMatch('${escJsAttr(s.id)}')">Open</button>
+          <button class="row-btn delete" onclick="deleteSavedMatch('${escJsAttr(s.id)}')">Delete</button>
+        </div>`;
+      }).join('');
+    }
+
+    async function saveMatch() {
+      const r = matchResult;
+      if (!r) return;
+      // The period this match is FOR, which is not necessarily the one the
+      // Reports tab is showing. A match opened out of history carries April's
+      // figures; re-saving it while the range reads July would write April's
+      // lines under a July period, miss the unique index entirely, and leave
+      // both months feeding the repeat-offender rollup.
+      const periodStart = r.periodStart || (r.savedMeta && r.savedMeta.period_start);
+      const periodEnd   = r.periodEnd   || (r.savedMeta && r.savedMeta.period_end);
+      if (!periodStart || !periodEnd) {
+        alert("This match has no period attached — press Match again before saving it.");
+        return;
+      }
+      const btn = el('mt-save');
+      const note = val('mt-note');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch('/api/fuel-statement-matches', {
+          method: 'POST', headers: authHeaders(true),
+          body: JSON.stringify({
+            account:         r.card,
+            period_start:    periodStart,
+            period_end:      periodEnd,
+            ours_total:      r.oursTotal,
+            statement_total: r.statementTotal,
+            difference:      r.oursTotal - r.statementTotal,
+            source_note:     note,
+            lines: r.rows.map(x => ({
+              truck_number: x.truck, ours: x.ours, statement: x.statement,
+              difference: x.difference, fills: x.fills, verdict: x.verdict,
+            })),
+          }),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        adoptSavedMatch(j.match, j.lines, j.carried_over);
+        await Promise.all([loadSavedMatches(), refreshHistory()]);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        if (el('mt-save')) el('mt-save').disabled = false;
+      }
+    }
+
+    // Fold a saved record back into the on-screen match so each row knows its
+    // line id — which is what lets a truck be ticked off without re-saving
+    // the whole month.
+    function adoptSavedMatch(match, lines, carriedOver) {
+      const byTruck = new Map();
+      for (const l of lines) byTruck.set(String(l.truck_number), l);
+      for (const row of matchResult.rows) {
+        const l = byTruck.get(String(row.truck));
+        if (!l) continue;
+        row.lineId     = l.id;
+        row.resolved   = l.resolved;
+        row.note       = l.resolution_note || '';
+        row.resolvedBy = l.resolved_by_name || '';
+        row.resolvedAt = l.resolved_at || null;
+      }
+      matchResult.savedId   = match.id;
+      matchResult.savedMeta = match;
+      matchResult.carriedOver = carriedOver || 0;
+      renderStatementMatch();
+    }
+
+    async function openSavedMatch(id) {
+      try {
+        const res  = await fetch('/api/fuel-statement-matches?id=' + encodeURIComponent(id), { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const m = data.match;
+        const lines = data.lines || [];
+        // Built from the stored record, not re-derived from today's fuel
+        // entries: this is what the statement said when it was reconciled,
+        // and rebuilding it from entries that have since been corrected
+        // would quietly rewrite what was signed off.
+        const rows = lines.map(l => ({
+          truck: l.truck_number, ours: l.ours, statement: l.statement,
+          difference: l.difference, fills: l.fills, verdict: l.verdict,
+          lineId: l.id, resolved: l.resolved, note: l.resolution_note || '',
+          resolvedBy: l.resolved_by_name || '', resolvedAt: l.resolved_at || null,
+        }));
+        matchResult = {
+          card: m.account,
+          rows,
+          oursTotal:      Number(m.ours_total) || 0,
+          statementTotal: Number(m.statement_total) || 0,
+          matched:        m.matched_count,
+          // Derived from `rows`, the same way matchStatement builds them.
+          // Filtering `lines` here instead gave these three a different shape
+          // to the freshly-matched case — DB rows carrying truck_number where
+          // the others carry truck — which nothing reads today and everything
+          // added later would.
+          variances:      rows.filter(x => x.verdict === 'variance'),
+          notInOurs:      rows.filter(x => x.verdict === 'not-in-ours'),
+          notOnStatement: rows.filter(x => x.verdict === 'not-on-statement'),
+          skipped: [], lines: 0,
+          savedId: m.id, savedMeta: m, historical: true,
+          periodStart: m.period_start, periodEnd: m.period_end,
+          // Off the stored period, not the live report — this record has its
+          // own span and the warning above it has to describe that one.
+          months: monthsBetween(m.period_start, m.period_end),
+        };
+        el('mt-card').value = m.account || '';
+        renderStatementMatch();
+        renderSavedMatches();
+        el('matchResults').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function deleteSavedMatch(id) {
+      const s = savedMatches.find(x => String(x.id) === String(id));
+      if (!confirm(`Delete the saved match for ${s ? (s.account || 'all accounts') : 'this account'}`
+        + `${s && s.period_month ? ` — ${monthLabel(s.period_month)}` : ''}?\n\n`
+        + 'Its ticks and notes go with it, and the truck stops counting it in the repeat-offender history.')) return;
+      try {
+        const res = await fetch('/api/fuel-statement-matches?id=' + encodeURIComponent(id), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        if (matchResult && String(matchResult.savedId) === String(id)) {
+          matchResult = null;
+          el('matchResults').innerHTML = '';
+        }
+        await Promise.all([loadSavedMatches(), refreshHistory()]);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function patchLine(lineId, body) {
+      const res = await fetch('/api/fuel-statement-matches?line_id=' + encodeURIComponent(lineId), {
+        method: 'PATCH', headers: authHeaders(true), body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+      return j.line;
+    }
+
+    async function toggleLineResolved(lineId, checked) {
+      const row = matchResult && matchResult.rows.find(r => String(r.lineId) === String(lineId));
+      if (row) row.resolved = checked;          // optimistic — the tick is the feedback
+      try {
+        const line = await patchLine(lineId, { resolved: checked });
+        if (row) {
+          row.resolvedBy = line.resolved_by_name || '';
+          row.resolvedAt = line.resolved_at || null;
+        }
+        renderStatementMatch();
+        refreshHistory();
+      } catch (err) {
+        if (row) row.resolved = !checked;
+        renderStatementMatch();
+        alert(err.message);
+      }
+    }
+
+    async function saveLineNote(lineId, note) {
+      const row = matchResult && matchResult.rows.find(r => String(r.lineId) === String(lineId));
+      if (row && (row.note || '') === note) return;   // nothing changed on blur
+      try {
+        const line = await patchLine(lineId, { resolution_note: note });
+        if (row) row.note = line.resolution_note || '';
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    // ── Repeat offenders ───────────────────────────────────────────────────
+    // A truck that is off one month is a mistake. A truck that is off every
+    // month is a standing problem — a driver on the wrong card, a number
+    // typed wrong every time, fuel going somewhere else. It only becomes
+    // visible once the months are kept.
+    let offenderHistory = null;
+
+    async function refreshHistory() {
+      try {
+        const res  = await fetch('/api/fuel-statement-matches?action=history&months=12', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        offenderHistory = data;
+      } catch {
+        offenderHistory = null;
+      }
+      if (activeTab === 'reports' && reportModel) renderReport();
+    }
+
+    function repeatOffenders() {
+      if (!offenderHistory || !Array.isArray(offenderHistory.trucks)) return [];
+      return offenderHistory.trucks
+        .map(t => Object.assign({}, t, {
+          off: t.variances + t.missing,
+          outstanding: Math.max(0, t.variances + t.missing - t.resolved),
+        }))
+        // Twice is the threshold. Once is a mistake; the second time is what
+        // makes it a pattern, and waiting for a third means a quarter of fuel
+        // has gone somewhere before anyone says so.
+        .filter(t => t.off >= 2);
+    }
+
+    function repeatOffenderBlockHtml() {
+      const h = offenderHistory;
+      if (!h || !Array.isArray(h.trucks) || !h.trucks.length) {
+        return `
+          <div class="rep-block">
+            <div class="rep-title">Repeat Offenders</div>
+            <div class="rep-sub">Nothing to compare yet — save a couple of monthly matches below and a truck that
+              comes up short every month will show here rather than looking like a run of one-offs.</div>
+          </div>`;
+      }
+      const rows = repeatOffenders();
+      if (!rows.length) {
+        return `
+          <div class="rep-block">
+            <div class="rep-title" style="color:var(--green)">No repeat offenders</div>
+            <div class="rep-sub">Across the last ${h.months} months of saved matches, no truck has been off in
+              more than one of them.</div>
+          </div>`;
+      }
+      return `
+        <div class="rep-block">
+          <div class="rep-title" style="color:#fb923c">Repeat Offenders — ${rows.length} truck${rows.length === 1 ? '' : 's'}</div>
+          <div class="rep-sub">
+            Off in two or more of the last ${h.months} months of saved matches. One month off is a mistake;
+            the same truck every month is usually a standing cause — fuel on a card nobody assigned it,
+            a truck number typed wrong at the pump, or fills that never get reported at all.
+            Net is ours minus the statement added up: consistently negative means the account bills more
+            than the field reports.
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th class="num">Truck</th><th class="num">Months</th><th class="num">Agreed</th>
+                <th class="num">Off</th><th class="num">Still open</th>
+                <th class="num">Net Gallons</th><th class="num">Total Swing</th>
+                <th>Last Reconciled</th><th>Last Agreed</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(t => `
+                <tr class="exception">
+                  <td class="num" style="font-weight:700">${t.truck_number}</td>
+                  <td class="num">${t.periods}</td>
+                  <td class="num">${t.agreed}</td>
+                  <td class="num off">${t.off}</td>
+                  <td class="num ${t.outstanding ? 'off' : ''}">${t.outstanding || '—'}</td>
+                  <td class="num">${t.net > 0 ? '+' : ''}${n2(t.net)}</td>
+                  <td class="num">${n2(t.abs_total)}</td>
+                  <td>${t.last_seen ? escapeHtml(t.last_seen) : '—'}</td>
+                  <td>${t.last_ok ? escapeHtml(t.last_ok) : '<span class="off">never</span>'}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    function renderStatementMatch() {
+      const r = matchResult;
+      const out = el('matchResults');
+      if (!r) { out.innerHTML = ''; return; }
+
+      const diffTotal = Math.round((r.oursTotal - r.statementTotal) * 100) / 100;
+      const balanced  = Math.abs(diffTotal) < 0.005;
+      const label = v => ({
+        match: 'agrees', variance: 'off',
+        'not-in-ours': 'no fuel entry', 'not-on-statement': 'not billed',
+      })[v] || v;
+      const cls = v => ({
+        match: 'row-ok', variance: 'row-off',
+        'not-in-ours': 'row-miss', 'not-on-statement': 'row-miss',
+      })[v] || '';
+
+      // The single mistake that makes every line of this table wrong at once:
+      // a one-month statement matched against a range that isn't one month.
+      // Nothing about the output would look broken — every truck would simply
+      // read as a variance, in the direction of us having bought more.
+      // The match's own months. Reading the live report's meant a saved
+      // single-month record was warned about a quarter it had nothing to do
+      // with, and a saved multi-month one got no warning at all.
+      // '(no date)' is a bucket, not a month — counting it made a genuinely
+      // single-month range look like two and told the reconciler not to trust
+      // figures that were correct.
+      const months = ((r.months || (reportModel && reportModel.months) || [])
+        .filter(x => /^\d{4}-\d{2}$/.test(x)));
+      const spanWarning = months.length > 1
+        ? `<div class="flag-banner">Careful — this range covers
+             <strong>${escapeHtml(months.map(monthLabel).join(', '))}</strong>, and a statement is usually
+             one month. Set the range above to a single month before reading anything into these figures.</div>`
+        : '';
+
+      // Once a match is saved, each row carries its own id and can be ticked
+      // off on its own. Before that there is nowhere to put the tick, so the
+      // columns stay off rather than showing controls that quietly do nothing.
+      const saved = Boolean(r.savedId);
+      const outstanding = r.rows.filter(x => x.verdict !== 'match' && !x.resolved).length;
+
+      const savedHeader = saved ? `
+        <div class="match-note" style="margin:0 0 0.6rem">
+          <span class="saved-flag">Saved</span> —
+          ${escapeHtml(r.savedMeta && r.savedMeta.period_month
+            ? monthLabel(r.savedMeta.period_month)
+            : `${(r.savedMeta && r.savedMeta.period_start) || ''} → ${(r.savedMeta && r.savedMeta.period_end) || ''}`)}
+          ${r.savedMeta && r.savedMeta.created_by_name ? `· kept by ${escapeHtml(r.savedMeta.created_by_name)}` : ''}
+          ${r.savedMeta ? `· ${escapeHtml(fmtTs(r.savedMeta.updated_at || r.savedMeta.created_at))}` : ''}
+          ${r.carriedOver ? `· ${r.carriedOver} tick${r.carriedOver === 1 ? '' : 's'} carried over from the previous save` : ''}
+          ${r.historical ? '· this is the record as it was reconciled, not a fresh comparison' : ''}
+        </div>` : '';
+
+      // Fuel the daily review hasn't reached yet is deliberately not counted,
+      // so a truck reading "agrees" means it agrees on approved fuel alone.
+      // Said out loud, because otherwise the difference looks like the account
+      // over-billing when it is really work still sitting in the other tab.
+      const pendingWarning = (!r.historical && r.notApproved)
+        ? `<div class="flag-banner"><strong>${r.notApproved}</strong> fill-up${r.notApproved === 1 ? '' : 's'}
+             totalling <strong>${n2(r.notApprovedGallons)}</strong> gal on this account are still awaiting the
+             daily review, and are not counted below. Approve them first if they belong on this statement.</div>`
+        : '';
+
+      out.innerHTML = `
+        ${spanWarning}
+        ${pendingWarning}
+        ${savedHeader}
+        <div class="match-summary">
+          <div class="match-tile ${balanced ? 'ok' : 'off'}">
+            <div class="k">${escapeHtml(r.card || 'All accounts')} — difference</div>
+            <div class="v">${diffTotal > 0 ? '+' : ''}${n2(diffTotal)}</div>
+          </div>
+          <div class="match-tile"><div class="k">We reported</div><div class="v">${n2(r.oursTotal)}</div></div>
+          <div class="match-tile"><div class="k">Statement says</div><div class="v">${n2(r.statementTotal)}</div></div>
+          <div class="match-tile ${outstanding ? 'off' : 'ok'}">
+            <div class="k">${saved ? 'Still to chase' : 'Trucks to look at'}</div>
+            <div class="v">${outstanding}</div>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              ${saved ? '<th class="td-narrow" title="Tick a truck off once it has been chased down">✓</th>' : ''}
+              <th class="num">Truck</th>
+              <th class="num">We reported</th>
+              <th class="num">Statement</th>
+              <th class="num">Difference</th>
+              <th class="num">Fill-ups</th>
+              <th>Verdict</th>
+              ${saved ? '<th>What it was</th>' : ''}
+            </tr>
+          </thead>
+          <tbody>
+            ${r.rows.map(row => `
+              <tr class="${cls(row.verdict)} ${row.resolved ? 'line-resolved' : ''}">
+                ${saved ? `<td class="td-narrow">${row.lineId
+                    ? `<input type="checkbox" class="tick" ${row.resolved ? 'checked' : ''}
+                              onchange="toggleLineResolved('${escJsAttr(row.lineId)}', this.checked)" />`
+                    : ''}</td>` : ''}
+                <td class="num" style="font-weight:700">${row.truck}</td>
+                <td class="num">${row.ours != null ? n2(row.ours) : '—'}</td>
+                <td class="num">${row.statement != null ? n2(row.statement) : '—'}</td>
+                <td class="num verdict">${row.difference != null
+                    ? (row.difference > 0 ? '+' : '') + n2(row.difference) : '—'}</td>
+                <td class="num">${row.fills || '—'}</td>
+                <td class="verdict">${label(row.verdict)}</td>
+                ${saved ? `<td>${row.lineId
+                    ? `<input type="text" class="line-note" maxlength="500"
+                              value="${escAttr(row.note || '')}"
+                              placeholder="${row.verdict === 'match' ? '' : 'what it turned out to be…'}"
+                              onblur="saveLineNote('${escJsAttr(row.lineId)}', this.value)" />
+                       ${row.resolved && row.resolvedBy
+                         ? `<div class="bal-meta">chased down by ${escapeHtml(row.resolvedBy)}${
+                              row.resolvedAt ? ` · ${escapeHtml(fmtTs(row.resolvedAt))}` : ''}</div>` : ''}`
+                    : ''}</td>` : ''}
+              </tr>`).join('')}
+          </tbody>
+        </table>
+
+        <div class="match-note">
+          ${r.historical ? '' : `Read ${r.lines} line${r.lines === 1 ? '' : 's'}${r.skipped.length
+            ? `, ${r.skipped.length} of which had no truck number and gallons figure on them
+               (headers and totals usually don't — first was “${escapeHtml(r.skipped[0].slice(0, 60))}”)`
+            : ''}. `}
+          <strong>${r.matched}</strong> truck${r.matched === 1 ? '' : 's'} agree.
+          ${r.variances.length ? `<strong>${r.variances.length}</strong> differ — open that truck's row in
+            <em>By Vehicle &amp; Month</em> above to see the fill-ups behind the figure. ` : ''}
+          ${r.notInOurs.length ? `<strong>${r.notInOurs.length}</strong> ${r.notInOurs.length === 1 ? 'is' : 'are'} on the
+            statement with no fuel entry behind ${r.notInOurs.length === 1 ? 'it' : 'them'} — fuel nobody reported. ` : ''}
+          ${r.notOnStatement.length ? `<strong>${r.notOnStatement.length}</strong> ${r.notOnStatement.length === 1 ? 'was' : 'were'}
+            reported but not billed on this account — usually a truck number typed wrong, or fuel put on a different card. ` : ''}
+        </div>
+
+        ${r.historical ? '' : `
+        <div class="save-bar">
+          <span class="qr-label">Carry through to the entries:</span>
+          <button class="btn-approve alt" onclick="balanceFromMatch('agreed')">
+            Mark ${r.matched} agreeing truck${r.matched === 1 ? "'s fills" : "s' fills"} balanced
+          </button>
+          <button class="btn-issue" onclick="balanceFromMatch('off')">
+            Flag ${r.variances.length + r.notOnStatement.length} unmatched truck${r.variances.length + r.notOnStatement.length === 1 ? "'s fills" : "s' fills"}
+          </button>
+        </div>
+        <div class="match-note" style="margin-top:0.3rem">
+          This is the point of the match: a truck whose statement agrees needs every one of its fill-ups
+          ticked off, and doing that by hand is the afternoon this replaces. Only approved entries move —
+          anything still awaiting the daily review is left alone and counted back to you.
+        </div>`}
+
+        <div class="save-bar">
+          <input type="text" id="mt-note" maxlength="500"
+                 value="${escAttr((r.savedMeta && r.savedMeta.source_note) || '')}"
+                 placeholder="Note for this month — which file this came from, anything to remember" />
+          <button class="btn-filter" id="mt-save" onclick="saveMatch()">
+            ${saved ? 'Re-save this match' : 'Save this match'}
+          </button>
+          <button class="qr-btn" onclick="exportMatchCsv()">Export CSV</button>
+        </div>
+        ${saved ? '' : `
+        <div class="match-note" style="margin-top:0.4rem">
+          Save it to tick trucks off one at a time, note what each turned out to be, and have this month
+          count towards the repeat-offender history.
+        </div>`}`;
+    }
+
+    /**
+     * Carry a match's verdicts down onto the fill-ups behind them.
+     *
+     * The match works in truck-months; the balance state lives on individual
+     * entries, because that is the grain the office needs to be able to say
+     * "this specific fill-up is the one nobody can account for". Fanning one
+     * out to the other is the step that would otherwise be done by hand,
+     * forty rows at a time, from a printout.
+     */
+    async function balanceFromMatch(which) {
+      const r = matchResult;
+      if (!r || !reportModel) return;
+
+      const wanted = which === 'agreed'
+        ? new Set(r.rows.filter(x => x.verdict === 'match').map(x => Number(x.truck)))
+        // 'not-in-ours' is deliberately absent: there are no entries behind a
+        // truck we never reported, so there is nothing to mark.
+        : new Set(r.rows.filter(x => x.verdict === 'variance' || x.verdict === 'not-on-statement')
+                        .map(x => Number(x.truck)));
+      if (!wanted.size) { alert('Nothing in that group on this match.'); return; }
+
+      const ids = reportModel.rows
+        .filter(e => e.status === 'approved'
+          && e.truck_number != null && wanted.has(Number(e.truck_number))
+          && (!r.card || (e.fuel_card || '') === r.card))
+        .map(e => e.id);
+      if (!ids.length) { alert('No approved fuel entries behind those trucks in this range.'); return; }
+
+      const label = which === 'agreed' ? 'balanced' : 'as issues';
+      if (!confirm(`Mark ${ids.length} fuel entr${ids.length === 1 ? 'y' : 'ies'} across `
+        + `${wanted.size} truck${wanted.size === 1 ? '' : 's'} ${label}?`)) return;
+
+      const note = which === 'agreed' ? '' :
+        `Did not match the ${r.card || 'account'} statement for `
+        + `${reportModel.from} → ${reportModel.to}`;
+
+      try {
+        const j = await setBalance(ids, which === 'agreed' ? 'balanced' : 'issue', note, true);
+        // The grid these entries live in is a different tab, so the moving
+        // rows aren't visible from here — say what happened instead.
+        alert(`${j.updated} entr${j.updated === 1 ? 'y' : 'ies'} marked${
+          j.skipped.length ? `. ${j.skipped.length} left alone — not approved yet.` : '.'}`);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    function exportMatchCsv() {
+      const r = matchResult;
+      if (!r) return;
+      const rows = [];
+      const push = (...cells) => rows.push(cells.map(csvEscape).join(','));
+      push('Fuel Account Match');
+      push('Account', r.card || 'All accounts');
+      // The match's own period, for the same reason saveMatch pins it: a
+      // historical record exported under whatever range the tab happens to
+      // show is a file that misstates its own contents.
+      push('Range', `${r.periodStart || 'start'} to ${r.periodEnd || 'today'}`);
+      push('We reported', n2(r.oursTotal));
+      push('Statement says', n2(r.statementTotal));
+      push('Difference', n2(r.oursTotal - r.statementTotal));
+      push('');
+      push('Truck', 'We reported', 'Statement', 'Difference', 'Fill-ups', 'Verdict');
+      for (const row of r.rows) {
+        push(row.truck,
+             row.ours != null ? n2(row.ours) : '',
+             row.statement != null ? n2(row.statement) : '',
+             row.difference != null ? n2(row.difference) : '',
+             row.fills || '', row.verdict);
+      }
+      downloadCsv(rows.join('\n'), `fuel-match-${(r.card || 'all').replace(/[^\w]+/g, '-').toLowerCase()}.csv`);
+    }
+
     // One file, every section, blank line between each — the shape a
     // spreadsheet opens cleanly and an auditor can read top to bottom.
     function exportReportCsv() {
@@ -2330,24 +3902,25 @@
       push('Total', m.count, n2(m.gallons), n2(m.iftaGallons));
       push('');
 
-      push('By Vehicle');
-      push('Truck', 'VIN', 'Year', 'Make', 'IFTA', 'IFTA Sticker',
-           'Fill-ups', 'Gallons', 'Odometer Span', 'States', 'Fuel Types', 'On Vehicle List');
-      const vehRows = [...m.byVehicle.values()].sort((a, b) => {
-        if (a.truck == null) return 1;
-        if (b.truck == null) return -1;
-        return a.truck - b.truck;
-      });
-      for (const r of vehRows) {
+      // One row per truck per month with a column per account — the sheet the
+      // office works the statements against, exported in the same shape it is
+      // read on screen so a column can be pasted straight beside a statement.
+      push('By Vehicle & Month');
+      push('Truck', 'Month', 'VIN', 'Year', 'Make', 'IFTA', 'IFTA Sticker',
+           ...m.cardsPresent, 'Total Gallons', 'Fill-ups', 'Odometer Span',
+           'States', 'Fuel Types', 'On Vehicle List');
+      for (const r of vehicleMonthRows(m)) {
         const v = r.vehicle;
         push(
           r.truck != null ? r.truck : '',
+          r.month,
           v && v.vin ? v.vin : '',
           v && v.model_year != null ? v.model_year : '',
           v && v.make ? v.make : '',
           v ? (v.ifta ? 'Yes' : 'No') : '',
           v && v.ifta_sticker ? v.ifta_sticker : '',
-          r.entries, n2(r.gallons),
+          ...m.cardsPresent.map(c => r.byCard.has(c) ? n2(r.byCard.get(c)) : ''),
+          n2(r.gallons), r.entries,
           (r.minMileage != null && r.maxMileage != null) ? n1(r.maxMileage - r.minMileage) : '',
           [...r.states].sort().join(' '),
           [...r.types].sort().join(' '),
@@ -2393,7 +3966,8 @@
       if (!shownEntries.length) { alert('Nothing to export in this tab.'); return; }
       const header = ['Date','Employee','Fuel Card','Fuel Type','Gallons','Gallons From','Mileage','Truck Number',
                       'Beginning Meter','Ending Meter','Fueling Site','City Fueled','State','Tank Number',
-                      'Status','Submitted','Approved','Approved By','Submitted By'];
+                      'Status','Balance','Balance Note','Balanced By','Balanced At',
+                      'Submitted','Approved','Approved By','Submitted By'];
       const lines = [header.map(csvEscape).join(',')];
       for (const e of shownEntries) {
         lines.push([
@@ -2406,7 +3980,10 @@
           e.mileage, e.truck_number,
           e.beginning_meter, e.ending_meter,
           e.fueling_site, e.city_fueled, e.state, e.tank_number,
-          e.status, e.submitted_at || '', e.approved_at || '', e.approved_by_name || '', e.username || '',
+          e.status,
+          e.status === 'approved' ? balanceOf(e) : '',
+          e.balance_note || '', e.balanced_by_name || '', e.balanced_at || '',
+          e.submitted_at || '', e.approved_at || '', e.approved_by_name || '', e.username || '',
         ].map(csvEscape).join(','));
       }
       downloadCsv(lines.join('\n'), `fuel-${activeTab}-${val('flt-from') || 'start'}-to-${val('flt-to') || 'end'}.csv`);

@@ -1092,6 +1092,23 @@ CREATE TABLE IF NOT EXISTS fuel_submissions (
     status              TEXT          NOT NULL DEFAULT 'draft'
                                        CHECK (status IN ('draft','submitted','approved')),
 
+    -- Where this fill-up has got to in the SECOND review. status is the
+    -- approval workflow — draft, submitted, approved — run daily by the
+    -- manager checking what the field sent. balance_status is a separate
+    -- axis, run monthly by whoever reconciles against the fuel accounts:
+    -- every approved fill-up starts 'pending' and becomes 'balanced' when it
+    -- has been accounted for on a statement, or 'issue' when it hasn't.
+    --
+    -- Deliberately NOT a fourth value of status. A fill-up is approved OR
+    -- not, and separately balanced OR not; folding them into one column
+    -- would make "approved but not yet balanced" unsayable, which is the
+    -- state most of a month sits in.
+    balance_status      TEXT          NOT NULL DEFAULT 'pending',
+    balance_note        TEXT,
+    balanced_at         TIMESTAMPTZ,
+    balanced_by_user_id INTEGER,
+    balanced_by_name    TEXT,
+
     work_date           DATE          NOT NULL,
     employee_username   TEXT,
     fuel_card           TEXT,
@@ -1119,6 +1136,27 @@ CREATE INDEX IF NOT EXISTS idx_fuel_company_user_date ON fuel_submissions(compan
 CREATE INDEX IF NOT EXISTS idx_fuel_company_status    ON fuel_submissions(company_code, status, work_date DESC);
 CREATE INDEX IF NOT EXISTS idx_fuel_company_employee  ON fuel_submissions(company_code, employee_username, work_date DESC);
 
+-- Balancing columns (added after initial release). Idempotent so existing
+-- deployments pick them up the next time run-schema executes. Every fill-up
+-- already in the table becomes 'pending', which is the truthful answer for
+-- work that predates anyone balancing it.
+--
+-- The CHECK is added by name rather than inline on the column above so that
+-- the drop-then-add pair below stays idempotent — an inline check would be
+-- auto-named and this would leave a second, identical constraint beside it.
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balance_status      TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balance_note        TEXT;
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balanced_at         TIMESTAMPTZ;
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balanced_by_user_id INTEGER;
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS balanced_by_name    TEXT;
+
+ALTER TABLE fuel_submissions DROP CONSTRAINT IF EXISTS fuel_balance_status_check;
+ALTER TABLE fuel_submissions ADD  CONSTRAINT fuel_balance_status_check
+  CHECK (balance_status IN ('pending','balanced','issue'));
+
+CREATE INDEX IF NOT EXISTS idx_fuel_company_balance
+  ON fuel_submissions(company_code, balance_status, work_date DESC);
+
 -- ─────────────────────────────────────────────────
 -- FUEL AUDIT LOG
 -- One row per state-changing action on fuel_submissions. Same shape and
@@ -1130,13 +1168,19 @@ CREATE TABLE IF NOT EXISTS fuel_audit_log (
     id            BIGSERIAL PRIMARY KEY,
     company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
     entry_id      BIGINT        NOT NULL,
-    action        TEXT          NOT NULL CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','UNAPPROVE','ADMIN_EDIT','DELETE')),
+    action        TEXT          NOT NULL,
     user_id       INTEGER,
     username      TEXT,
     changes       JSONB,
     snapshot      JSONB,
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
+
+-- Named rather than inline so adding an action later is a drop-and-add pair
+-- that stays idempotent. BALANCE arrived with the second review stage.
+ALTER TABLE fuel_audit_log DROP CONSTRAINT IF EXISTS fuel_audit_log_action_check;
+ALTER TABLE fuel_audit_log ADD  CONSTRAINT fuel_audit_log_action_check
+  CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','UNAPPROVE','ADMIN_EDIT','DELETE','BALANCE'));
 
 CREATE INDEX IF NOT EXISTS idx_fuel_audit_company ON fuel_audit_log(company_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fuel_audit_entry   ON fuel_audit_log(entry_id, created_at DESC);
@@ -1178,6 +1222,129 @@ CREATE TABLE IF NOT EXISTS fuel_vehicles (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fuel_vehicle_truck
   ON fuel_vehicles(company_code, truck_number);
+
+-- ─────────────────────────────────────────────────
+-- FUEL STATEMENT MATCHES
+-- One saved reconciliation: an account's statement for a period, lined up
+-- against what the field reported. Saving it turns the match from a
+-- throwaway screen into a record — a half-worked month can be picked back
+-- up, and a truck that comes up short every month stops looking like
+-- twelve unrelated one-offs.
+--
+-- Unique per company, account and period: re-running a month REPLACES its
+-- saved match rather than stacking a second one beside it, because two
+-- saved matches for one month would each look authoritative.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_statement_matches (
+    id                     BIGSERIAL PRIMARY KEY,
+    company_code           TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    account                TEXT        NOT NULL,
+    period_start           DATE        NOT NULL,
+    period_end             DATE        NOT NULL,
+    period_month           TEXT,
+    ours_total             NUMERIC(12,2),
+    statement_total        NUMERIC(12,2),
+    difference             NUMERIC(12,2),
+    truck_count            INTEGER,
+    matched_count          INTEGER,
+    variance_count         INTEGER,
+    not_in_ours_count      INTEGER,
+    not_on_statement_count INTEGER,
+    source_note            TEXT,
+    created_by_user_id     INTEGER,
+    created_by_name        TEXT,
+    updated_by_user_id     INTEGER,
+    updated_by_name        TEXT,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Who last re-matched a month, kept apart from who first reconciled it.
+-- Overwriting created_by on a re-save destroyed the record of the person
+-- who actually signed the month off — the same mistake the line-level
+-- resolved_by is careful not to make.
+ALTER TABLE fuel_statement_matches ADD COLUMN IF NOT EXISTS updated_by_user_id INTEGER;
+ALTER TABLE fuel_statement_matches ADD COLUMN IF NOT EXISTS updated_by_name    TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fuel_match_period
+  ON fuel_statement_matches(company_code, account, period_start, period_end);
+CREATE INDEX IF NOT EXISTS idx_fuel_match_company
+  ON fuel_statement_matches(company_code, period_end DESC);
+
+-- ─────────────────────────────────────────────────
+-- FUEL STATEMENT LINES
+-- One truck within a saved match. Kept as rows rather than a blob on the
+-- match because the whole point of saving is the question "how has THIS
+-- truck behaved over the last few months", and that is a GROUP BY over
+-- this table rather than a scan of every stored document.
+--
+-- resolved / resolution_note are what let a month be worked through over
+-- more than one sitting: a truck that has been chased down stays ticked,
+-- and survives the month being re-matched after the underlying entries
+-- are corrected.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_statement_lines (
+    id              BIGSERIAL PRIMARY KEY,
+    match_id        BIGINT      NOT NULL REFERENCES fuel_statement_matches(id) ON DELETE CASCADE,
+    company_code    TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    truck_number    INTEGER,
+    ours            NUMERIC(12,2),
+    statement       NUMERIC(12,2),
+    difference      NUMERIC(12,2),
+    fills           INTEGER,
+    verdict         TEXT        NOT NULL
+                                CHECK (verdict IN ('match','variance','not-in-ours','not-on-statement')),
+    resolved        BOOLEAN     NOT NULL DEFAULT FALSE,
+    resolution_note TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fuel_line_match ON fuel_statement_lines(match_id);
+CREATE INDEX IF NOT EXISTS idx_fuel_line_truck ON fuel_statement_lines(company_code, truck_number);
+
+-- Who ticked a truck off, and when. Added after the first release of the
+-- balancing work: a tick is a claim that somebody chased a discrepancy
+-- down, and a claim with no name on it is worth less than one with.
+ALTER TABLE fuel_statement_lines ADD COLUMN IF NOT EXISTS resolved_by_user_id INTEGER;
+ALTER TABLE fuel_statement_lines ADD COLUMN IF NOT EXISTS resolved_by_name    TEXT;
+ALTER TABLE fuel_statement_lines ADD COLUMN IF NOT EXISTS resolved_at         TIMESTAMPTZ;
+
+-- ─────────────────────────────────────────────────
+-- FUEL MATCH AUDIT LOG
+-- One row per state change to a saved reconciliation. Separate from
+-- fuel_audit_log because that table is keyed on a fuel_submissions id and
+-- this one is keyed on a match — the two describe different objects and
+-- sharing a column would mean neither could be joined.
+--
+-- match_id carries no foreign key ON PURPOSE. The single most important
+-- thing this records is a match being DELETED, and a cascade would remove
+-- that record along with the match it describes.
+--
+-- The period is denormalised onto each row for the same reason: after a
+-- deletion there is nothing left to join to, and "somebody removed a saved
+-- match" is useless without knowing which month went with it.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_match_audit_log (
+    id            BIGSERIAL   PRIMARY KEY,
+    company_code  TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    match_id      BIGINT      NOT NULL,
+    account       TEXT,
+    period_start  DATE,
+    period_end    DATE,
+    action        TEXT        NOT NULL,
+    user_id       INTEGER,
+    username      TEXT,
+    changes       JSONB,
+    snapshot      JSONB,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE fuel_match_audit_log DROP CONSTRAINT IF EXISTS fuel_match_audit_action_check;
+ALTER TABLE fuel_match_audit_log ADD  CONSTRAINT fuel_match_audit_action_check
+  CHECK (action IN ('SAVE','RESAVE','TICK','DELETE'));
+
+CREATE INDEX IF NOT EXISTS idx_fuel_match_audit_company ON fuel_match_audit_log(company_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fuel_match_audit_match   ON fuel_match_audit_log(match_id, created_at DESC);
 
 -- ─────────────────────────────────────────────────
 -- REPORT RECIPIENT GROUPS

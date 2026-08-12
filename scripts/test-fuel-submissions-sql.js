@@ -249,6 +249,122 @@ async function run() {
     unapproved.body.entry.approved_at === null && unapproved.body.entry.approved_by_name === null,
     JSON.stringify(unapproved.body.entry));
 
+  console.log('\n[the second review — balancing]');
+  {
+    // Two more approved fill-ups so the bulk path is exercised with something
+    // to bulk over.
+    const extra = [];
+    for (const [d, truck] of [['2026-07-11', 412], ['2026-07-12', 412]]) {
+      const c = await call('POST', {}, Object.assign({}, FILL, { work_date: d, truck_number: String(truck) }), FIELD);
+      await call('POST', { action: 'submit', id: c.body.entry.id }, null, FIELD);
+      await call('POST', { action: 'approve', id: c.body.entry.id }, null, ADMIN);
+      extra.push(c.body.entry.id);
+    }
+
+    const fresh = await call('GET', { scope: 'all', status: 'approved' }, null, ADMIN);
+    assert('an approved entry starts out pending',
+      fresh.body.entries.every(e => e.balance_status === 'pending'),
+      JSON.stringify(fresh.body.entries.map(e => e.balance_status)));
+
+    const asField = await call('POST', { action: 'balance' },
+      { ids: extra, balance_status: 'balanced' }, FIELD);
+    assert('a driver cannot balance', asField.statusCode === 403);
+
+    const marked = await call('POST', { action: 'balance' },
+      { ids: extra, balance_status: 'balanced' }, ADMIN);
+    assert('an admin balances both at once', marked.body.updated === 2, String(marked.body.updated));
+    assert('and each is stamped with who and when',
+      marked.body.entries.every(e => e.balanced_by_name === 'office' && e.balanced_at),
+      JSON.stringify(marked.body.entries.map(e => [e.balanced_by_name, e.balanced_at])));
+
+    const issue = await call('POST', { action: 'balance' },
+      { ids: [extra[0]], balance_status: 'issue', balance_note: 'not on the Guttman statement' }, ADMIN);
+    assert('a fill-up can be flagged instead', issue.body.entries[0].balance_status === 'issue');
+    assert('with the reason kept', issue.body.entries[0].balance_note === 'not on the Guttman statement');
+
+    const backToPending = await call('POST', { action: 'balance' },
+      { ids: [extra[0]], balance_status: 'pending' }, ADMIN);
+    assert('and put back to pending', backToPending.body.entries[0].balance_status === 'pending');
+    assert('which clears who reached the verdict',
+      backToPending.body.entries[0].balanced_by_name === null &&
+      backToPending.body.entries[0].balanced_at === null,
+      JSON.stringify(backToPending.body.entries[0]));
+
+    // Balancing is the stage after approval — a fill-up the office has not
+    // agreed to yet cannot be accounted for on a statement.
+    const draft = await call('POST', {}, Object.assign({}, FILL, { work_date: '2026-07-13', truck_number: '5' }), FIELD);
+    const tooEarly = await call('POST', { action: 'balance' },
+      { ids: [draft.body.entry.id], balance_status: 'balanced' }, ADMIN);
+    assert('an unapproved entry cannot be balanced', tooEarly.statusCode === 409, JSON.stringify(tooEarly.body));
+
+    const mixed = await call('POST', { action: 'balance' },
+      { ids: [extra[1], draft.body.entry.id], balance_status: 'balanced' }, ADMIN);
+    assert('a mixed batch takes the approved ones', mixed.body.updated === 1, String(mixed.body.updated));
+    assert('and names the ones it left alone',
+      mixed.body.skipped.length === 1 && String(mixed.body.skipped[0]) === String(draft.body.entry.id),
+      JSON.stringify(mixed.body.skipped));
+
+    const filtered = await call('GET', { scope: 'all', status: 'approved', balance: 'balanced' }, null, ADMIN);
+    assert('the list can be filtered to what is balanced',
+      filtered.body.entries.length === 1 && filtered.body.entries[0].id === extra[1],
+      JSON.stringify(filtered.body.entries.map(e => [e.id, e.balance_status])));
+
+    const stillPending = await call('GET', { scope: 'all', status: 'approved', balance: 'pending' }, null, ADMIN);
+    assert('and to what is still to do',
+      stillPending.body.entries.every(e => e.balance_status === 'pending'),
+      JSON.stringify(stillPending.body.entries.map(e => e.balance_status)));
+
+    // Un-approving withdraws the figure, so the verdict reached about it has
+    // to go too — otherwise a row reads as accounted-for while unapproved.
+    await call('POST', { action: 'unapprove', id: extra[1] }, null, ADMIN);
+    const afterUnapprove = await call('GET', { scope: 'all', status: 'submitted' }, null, ADMIN);
+    const back = afterUnapprove.body.entries.find(e => e.id === extra[1]);
+    assert('un-approving returns it to pending', back.balance_status === 'pending', back.balance_status);
+    assert('and clears who balanced it',
+      back.balanced_by_name === null && back.balanced_at === null, JSON.stringify(back));
+
+    const acts = await auditActions(extra[0]);
+    assert('every balancing decision is in the audit log',
+      acts.filter(a => a === 'BALANCE').length === 3, acts.join(','));
+
+    // Correcting the figure a reconciliation was signed off on un-signs it —
+    // the same rule un-approving follows, and this workflow expects entries
+    // to be corrected after a match.
+    //
+    // On its own entry, not one of the two above: those have been through
+    // un-approve by this point, and balancing a submitted row is refused, so
+    // the edit would be testing an entry that was never balanced at all.
+    const EDIT_FILL = Object.assign({}, FILL, { work_date: '2026-07-14', truck_number: '88' });
+    const made = await call('POST', {}, EDIT_FILL, FIELD);
+    const toEdit = made.body.entry.id;
+    await call('POST', { action: 'submit', id: toEdit }, null, FIELD);
+    await call('POST', { action: 'approve', id: toEdit }, null, ADMIN);
+    const balanced = await call('POST', { action: 'balance' },
+      { ids: [toEdit], balance_status: 'balanced' }, ADMIN);
+    assert('the entry under test is balanced to begin with',
+      balanced.body.updated === 1, JSON.stringify(balanced.body));
+
+    const spellingFix = await call('PUT', { id: toEdit },
+      Object.assign({}, EDIT_FILL, { city_fueled: 'Punxsutawny' }), ADMIN);
+    assert('correcting a spelling leaves the balance alone',
+      spellingFix.body.entry.balance_status === 'balanced', spellingFix.body.entry.balance_status);
+    assert('and leaves who balanced it in place',
+      spellingFix.body.entry.balanced_by_name === 'office', String(spellingFix.body.entry.balanced_by_name));
+
+    const figureFix = await call('PUT', { id: toEdit },
+      Object.assign({}, EDIT_FILL, { city_fueled: 'Punxsutawny', gallons: '120' }), ADMIN);
+    assert('but correcting the gallons puts it back to pending',
+      figureFix.body.entry.balance_status === 'pending', figureFix.body.entry.balance_status);
+    assert('and clears who had balanced it',
+      figureFix.body.entry.balanced_by_name === null && figureFix.body.entry.balanced_at === null,
+      JSON.stringify(figureFix.body.entry));
+    await call('DELETE', { id: toEdit }, null, ADMIN);
+
+    // Clean up so the scoping counts further down aren't thrown by these.
+    for (const id of extra) await call('DELETE', { id }, null, ADMIN);
+    await call('DELETE', { id: draft.body.entry.id }, null, ADMIN);
+  }
+
   console.log('\n[admin edit]');
   const blanked = await call('PUT', { id },
     Object.assign({}, FILL, { city_fueled: '' }), ADMIN);
