@@ -738,6 +738,93 @@
       line-height: 1.5;
       margin-top: 0.5rem;
     }
+    .match-file {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      margin-bottom: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .file-btn {
+      display: inline-block;
+      padding: 0.45rem 0.9rem;
+      background: none;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      border-radius: 5px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .file-btn:hover { color: var(--text); border-color: #555; }
+    .file-btn input { display: none; }
+
+    /* The bar that turns a match into a record. Sits under the table because
+       it is the last thing done, not the first. */
+    .save-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-top: 0.85rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    .save-bar input[type=text] {
+      flex: 1;
+      min-width: 200px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.45rem 0.6rem;
+      border-radius: 5px;
+      font-size: 0.82rem;
+      font-family: inherit;
+      outline: none;
+    }
+    .save-bar input[type=text]:focus { border-color: var(--accent); }
+    .saved-flag {
+      font-size: 0.72rem;
+      color: var(--green);
+      font-weight: 600;
+    }
+
+    /* A truck ticked off during the month's reconciliation. Dimmed rather
+       than hidden — it still has to add up at the bottom. */
+    tr.line-resolved td { opacity: 0.5; }
+    tr.line-resolved td.verdict { text-decoration: line-through; }
+    .tick { width: 15px; height: 15px; cursor: pointer; accent-color: var(--green); }
+    .line-note {
+      width: 100%;
+      background: transparent;
+      border: 1px solid transparent;
+      border-bottom: 1px dashed var(--border);
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-family: inherit;
+      padding: 0.15rem 0.25rem;
+      outline: none;
+    }
+    .line-note:focus { border-color: var(--accent); color: var(--text); background: var(--bg); }
+
+    /* ── Saved matches list ── */
+    .saved-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.6rem 0.2rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      font-size: 0.82rem;
+    }
+    @media (max-width: 900px) { .saved-row { grid-template-columns: 1fr auto; } }
+    .saved-row .who { font-size: 0.7rem; color: var(--muted); }
+    .saved-row .diff { font-variant-numeric: tabular-nums; font-weight: 700; }
+    .saved-row .diff.ok  { color: var(--green); }
+    .saved-row .diff.off { color: #fb923c; }
+    .saved-row.current { background: rgba(251,113,133,0.07); }
 
     /* ── Vehicles tab ── */
     .veh-form {
@@ -975,9 +1062,27 @@
             <button class="btn-clear"  onclick="clearStatementMatch()">Clear</button>
           </div>
         </div>
+        <div class="match-file">
+          <label class="file-btn">
+            Choose a CSV…
+            <input type="file" id="mt-file" accept=".csv,.tsv,.txt,text/csv,text/plain"
+                   onchange="loadStatementFile(event)" />
+          </label>
+          <span id="mt-file-name" class="match-note" style="margin:0">…or paste the statement below.</span>
+        </div>
         <textarea id="mt-paste" spellcheck="false"
           placeholder="412&#9;320.50&#10;412&#9;180.00&#10;77&#9;95.25&#10;&#10;…or paste the whole statement export, headers and all."></textarea>
         <div id="matchResults"></div>
+      </div>
+
+      <div class="rep-block">
+        <div class="rep-title">Saved Matches</div>
+        <div class="rep-sub">
+          Every month that has been reconciled and kept. Open one to pick up where it was left,
+          or to see what a truck was doing three statements ago. Re-matching a month you have
+          already saved replaces it — the ticks and notes come across.
+        </div>
+        <div id="savedMatches"></div>
       </div>
     </div>
 
@@ -2189,6 +2294,11 @@
       if (!vehicles.length) await loadVehicles();
       reportModel = buildReportModel(entries, vehicles);
       renderReport();
+      // Both read from saved matches rather than from this range, so they are
+      // fetched alongside rather than blocking the report on them. refreshHistory
+      // re-renders when it lands.
+      loadSavedMatches();
+      if (!offenderHistory) refreshHistory();
     }
 
     /**
@@ -2598,6 +2708,8 @@
 
           ${vehicleMonthBlockHtml(m)}
 
+          ${repeatOffenderBlockHtml()}
+
           <div class="rep-block">
             <div class="rep-title">Tank Balance</div>
             <div class="rep-sub">Bulk tanks only — a card purchase never touched one. The meter runs forward without resetting, so the fills recorded against a tank should account for the whole distance its meter moved. What's left over came out of the tank with no entry behind it.</div>
@@ -2824,8 +2936,316 @@
 
     function clearStatementMatch() {
       el('mt-paste').value = '';
+      el('mt-file').value = '';
+      el('mt-file-name').textContent = '…or paste the statement below.';
       el('matchResults').innerHTML = '';
       matchResult = null;
+      renderSavedMatches();
+    }
+
+    // Tomorrow's export is a download, not something anyone wants to open and
+    // copy out of. Read straight into the same box the paste goes into, so
+    // there is one parser and one preview rather than two paths that can
+    // disagree about what a line means.
+    function loadStatementFile(ev) {
+      const file = ev && ev.target && ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const label = el('mt-file-name');
+      // A statement is text. A spreadsheet saved as .xlsx is a zip, and
+      // reading it as text produces line noise that parses into nonsense
+      // truck numbers — say so instead.
+      if (/\.(xlsx|xls|numbers|pdf)$/i.test(file.name)) {
+        label.textContent = `${file.name} isn't a text file — export it as CSV and try again.`;
+        el('mt-file').value = '';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        el('mt-paste').value = String(reader.result || '');
+        const lines = el('mt-paste').value.split(/\r?\n/).filter(l => l.trim()).length;
+        label.textContent = `${file.name} — ${lines} line${lines === 1 ? '' : 's'}. Press Match.`;
+      };
+      reader.onerror = () => { label.textContent = `Couldn't read ${file.name}.`; };
+      reader.readAsText(file);
+    }
+
+    // ── Saved matches ──────────────────────────────────────────────────────
+    let savedMatches = [];
+
+    async function loadSavedMatches() {
+      try {
+        const res  = await fetch('/api/fuel-statement-matches?limit=100', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        savedMatches = Array.isArray(data.matches) ? data.matches : [];
+      } catch (err) {
+        savedMatches = [];
+        el('savedMatches').innerHTML = `<div class="rep-empty">Couldn't load saved matches — ${escapeHtml(err.message)}</div>`;
+        return;
+      }
+      renderSavedMatches();
+    }
+
+    function renderSavedMatches() {
+      const wrap = el('savedMatches');
+      if (!wrap) return;
+      if (!savedMatches.length) {
+        wrap.innerHTML = '<div class="rep-empty">Nothing saved yet. Run a match above and press Save.</div>';
+        return;
+      }
+      const openId = matchResult && matchResult.savedId;
+      wrap.innerHTML = savedMatches.map(s => {
+        const outstanding = s.variance_count + s.not_in_ours_count + s.not_on_statement_count;
+        const balanced = Math.abs(Number(s.difference) || 0) < 0.005 && outstanding === 0;
+        return `
+        <div class="saved-row ${String(s.id) === String(openId) ? 'current' : ''}">
+          <div>
+            <strong>${escapeHtml(s.account || 'All accounts')}</strong> ·
+            ${escapeHtml(s.period_month ? monthLabel(s.period_month) : `${s.period_start} → ${s.period_end}`)}
+            <div class="who">
+              ${s.truck_count} truck${s.truck_count === 1 ? '' : 's'} ·
+              ${s.matched_count} agreed${outstanding ? ` · ${outstanding} to look at` : ''} ·
+              saved ${escapeHtml(fmtTs(s.updated_at || s.created_at))}${s.created_by_name ? ` by ${escapeHtml(s.created_by_name)}` : ''}
+              ${s.source_note ? ` · ${escapeHtml(s.source_note)}` : ''}
+            </div>
+          </div>
+          <div class="diff ${balanced ? 'ok' : 'off'}">${Number(s.difference) > 0 ? '+' : ''}${n2(s.difference)}</div>
+          <button class="qr-btn" onclick="openSavedMatch('${escJsAttr(s.id)}')">Open</button>
+          <button class="row-btn delete" onclick="deleteSavedMatch('${escJsAttr(s.id)}')">Delete</button>
+        </div>`;
+      }).join('');
+    }
+
+    async function saveMatch() {
+      const r = matchResult;
+      if (!r || !reportModel) return;
+      const btn = el('mt-save');
+      const note = val('mt-note');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch('/api/fuel-statement-matches', {
+          method: 'POST', headers: authHeaders(true),
+          body: JSON.stringify({
+            account:         r.card,
+            period_start:    reportModel.from,
+            period_end:      reportModel.to,
+            ours_total:      r.oursTotal,
+            statement_total: r.statementTotal,
+            difference:      r.oursTotal - r.statementTotal,
+            source_note:     note,
+            lines: r.rows.map(x => ({
+              truck_number: x.truck, ours: x.ours, statement: x.statement,
+              difference: x.difference, fills: x.fills, verdict: x.verdict,
+            })),
+          }),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        adoptSavedMatch(j.match, j.lines, j.carried_over);
+        await Promise.all([loadSavedMatches(), refreshHistory()]);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        if (el('mt-save')) el('mt-save').disabled = false;
+      }
+    }
+
+    // Fold a saved record back into the on-screen match so each row knows its
+    // line id — which is what lets a truck be ticked off without re-saving
+    // the whole month.
+    function adoptSavedMatch(match, lines, carriedOver) {
+      const byTruck = new Map();
+      for (const l of lines) byTruck.set(String(l.truck_number), l);
+      for (const row of matchResult.rows) {
+        const l = byTruck.get(String(row.truck));
+        if (!l) continue;
+        row.lineId  = l.id;
+        row.resolved = l.resolved;
+        row.note     = l.resolution_note || '';
+      }
+      matchResult.savedId   = match.id;
+      matchResult.savedMeta = match;
+      matchResult.carriedOver = carriedOver || 0;
+      renderStatementMatch();
+    }
+
+    async function openSavedMatch(id) {
+      try {
+        const res  = await fetch('/api/fuel-statement-matches?id=' + encodeURIComponent(id), { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const m = data.match;
+        const lines = data.lines || [];
+        // Built from the stored record, not re-derived from today's fuel
+        // entries: this is what the statement said when it was reconciled,
+        // and rebuilding it from entries that have since been corrected
+        // would quietly rewrite what was signed off.
+        matchResult = {
+          card: m.account,
+          rows: lines.map(l => ({
+            truck: l.truck_number, ours: l.ours, statement: l.statement,
+            difference: l.difference, fills: l.fills, verdict: l.verdict,
+            lineId: l.id, resolved: l.resolved, note: l.resolution_note || '',
+          })),
+          oursTotal:      Number(m.ours_total) || 0,
+          statementTotal: Number(m.statement_total) || 0,
+          matched:        m.matched_count,
+          variances:       lines.filter(l => l.verdict === 'variance'),
+          notInOurs:       lines.filter(l => l.verdict === 'not-in-ours'),
+          notOnStatement:  lines.filter(l => l.verdict === 'not-on-statement'),
+          skipped: [], lines: 0,
+          savedId: m.id, savedMeta: m, historical: true,
+        };
+        el('mt-card').value = m.account || '';
+        renderStatementMatch();
+        renderSavedMatches();
+        el('matchResults').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function deleteSavedMatch(id) {
+      const s = savedMatches.find(x => String(x.id) === String(id));
+      if (!confirm(`Delete the saved match for ${s ? (s.account || 'all accounts') : 'this account'}`
+        + `${s && s.period_month ? ` — ${monthLabel(s.period_month)}` : ''}?\n\n`
+        + 'Its ticks and notes go with it, and the truck stops counting it in the repeat-offender history.')) return;
+      try {
+        const res = await fetch('/api/fuel-statement-matches?id=' + encodeURIComponent(id), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        if (matchResult && String(matchResult.savedId) === String(id)) {
+          matchResult = null;
+          el('matchResults').innerHTML = '';
+        }
+        await Promise.all([loadSavedMatches(), refreshHistory()]);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function patchLine(lineId, body) {
+      const res = await fetch('/api/fuel-statement-matches?line_id=' + encodeURIComponent(lineId), {
+        method: 'PATCH', headers: authHeaders(true), body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+      return j.line;
+    }
+
+    async function toggleLineResolved(lineId, checked) {
+      const row = matchResult && matchResult.rows.find(r => String(r.lineId) === String(lineId));
+      if (row) row.resolved = checked;          // optimistic — the tick is the feedback
+      try {
+        await patchLine(lineId, { resolved: checked });
+        renderStatementMatch();
+        refreshHistory();
+      } catch (err) {
+        if (row) row.resolved = !checked;
+        renderStatementMatch();
+        alert(err.message);
+      }
+    }
+
+    async function saveLineNote(lineId, note) {
+      const row = matchResult && matchResult.rows.find(r => String(r.lineId) === String(lineId));
+      if (row && (row.note || '') === note) return;   // nothing changed on blur
+      try {
+        const line = await patchLine(lineId, { resolution_note: note });
+        if (row) row.note = line.resolution_note || '';
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    // ── Repeat offenders ───────────────────────────────────────────────────
+    // A truck that is off one month is a mistake. A truck that is off every
+    // month is a standing problem — a driver on the wrong card, a number
+    // typed wrong every time, fuel going somewhere else. It only becomes
+    // visible once the months are kept.
+    let offenderHistory = null;
+
+    async function refreshHistory() {
+      try {
+        const res  = await fetch('/api/fuel-statement-matches?action=history&months=12', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        offenderHistory = data;
+      } catch {
+        offenderHistory = null;
+      }
+      if (activeTab === 'reports' && reportModel) renderReport();
+    }
+
+    function repeatOffenders() {
+      if (!offenderHistory || !Array.isArray(offenderHistory.trucks)) return [];
+      return offenderHistory.trucks
+        .map(t => Object.assign({}, t, {
+          off: t.variances + t.missing,
+          outstanding: Math.max(0, t.variances + t.missing - t.resolved),
+        }))
+        // Twice is the threshold. Once is a mistake; the second time is what
+        // makes it a pattern, and waiting for a third means a quarter of fuel
+        // has gone somewhere before anyone says so.
+        .filter(t => t.off >= 2);
+    }
+
+    function repeatOffenderBlockHtml() {
+      const h = offenderHistory;
+      if (!h || !Array.isArray(h.trucks) || !h.trucks.length) {
+        return `
+          <div class="rep-block">
+            <div class="rep-title">Repeat Offenders</div>
+            <div class="rep-sub">Nothing to compare yet — save a couple of monthly matches below and a truck that
+              comes up short every month will show here rather than looking like a run of one-offs.</div>
+          </div>`;
+      }
+      const rows = repeatOffenders();
+      if (!rows.length) {
+        return `
+          <div class="rep-block">
+            <div class="rep-title" style="color:var(--green)">No repeat offenders</div>
+            <div class="rep-sub">Across the last ${h.months} months of saved matches, no truck has been off in
+              more than one of them.</div>
+          </div>`;
+      }
+      return `
+        <div class="rep-block">
+          <div class="rep-title" style="color:#fb923c">Repeat Offenders — ${rows.length} truck${rows.length === 1 ? '' : 's'}</div>
+          <div class="rep-sub">
+            Off in two or more of the last ${h.months} months of saved matches. One month off is a mistake;
+            the same truck every month is usually a standing cause — fuel on a card nobody assigned it,
+            a truck number typed wrong at the pump, or fills that never get reported at all.
+            Net is ours minus the statement added up: consistently negative means the account bills more
+            than the field reports.
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th class="num">Truck</th><th class="num">Months</th><th class="num">Agreed</th>
+                <th class="num">Off</th><th class="num">Still open</th>
+                <th class="num">Net Gallons</th><th class="num">Total Swing</th>
+                <th>Last Reconciled</th><th>Last Agreed</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(t => `
+                <tr class="exception">
+                  <td class="num" style="font-weight:700">${t.truck_number}</td>
+                  <td class="num">${t.periods}</td>
+                  <td class="num">${t.agreed}</td>
+                  <td class="num off">${t.off}</td>
+                  <td class="num ${t.outstanding ? 'off' : ''}">${t.outstanding || '—'}</td>
+                  <td class="num">${t.net > 0 ? '+' : ''}${n2(t.net)}</td>
+                  <td class="num">${n2(t.abs_total)}</td>
+                  <td>${t.last_seen ? escapeHtml(t.last_seen) : '—'}</td>
+                  <td>${t.last_ok ? escapeHtml(t.last_ok) : '<span class="off">never</span>'}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
     }
 
     function renderStatementMatch() {
@@ -2855,8 +3275,27 @@
              one month. Set the range above to a single month before reading anything into these figures.</div>`
         : '';
 
+      // Once a match is saved, each row carries its own id and can be ticked
+      // off on its own. Before that there is nowhere to put the tick, so the
+      // columns stay off rather than showing controls that quietly do nothing.
+      const saved = Boolean(r.savedId);
+      const outstanding = r.rows.filter(x => x.verdict !== 'match' && !x.resolved).length;
+
+      const savedHeader = saved ? `
+        <div class="match-note" style="margin:0 0 0.6rem">
+          <span class="saved-flag">Saved</span> —
+          ${escapeHtml(r.savedMeta && r.savedMeta.period_month
+            ? monthLabel(r.savedMeta.period_month)
+            : `${(r.savedMeta && r.savedMeta.period_start) || ''} → ${(r.savedMeta && r.savedMeta.period_end) || ''}`)}
+          ${r.savedMeta && r.savedMeta.created_by_name ? `· kept by ${escapeHtml(r.savedMeta.created_by_name)}` : ''}
+          ${r.savedMeta ? `· ${escapeHtml(fmtTs(r.savedMeta.updated_at || r.savedMeta.created_at))}` : ''}
+          ${r.carriedOver ? `· ${r.carriedOver} tick${r.carriedOver === 1 ? '' : 's'} carried over from the previous save` : ''}
+          ${r.historical ? '· this is the record as it was reconciled, not a fresh comparison' : ''}
+        </div>` : '';
+
       out.innerHTML = `
         ${spanWarning}
+        ${savedHeader}
         <div class="match-summary">
           <div class="match-tile ${balanced ? 'ok' : 'off'}">
             <div class="k">${escapeHtml(r.card || 'All accounts')} — difference</div>
@@ -2864,26 +3303,32 @@
           </div>
           <div class="match-tile"><div class="k">We reported</div><div class="v">${n2(r.oursTotal)}</div></div>
           <div class="match-tile"><div class="k">Statement says</div><div class="v">${n2(r.statementTotal)}</div></div>
-          <div class="match-tile ${r.variances.length || r.notInOurs.length || r.notOnStatement.length ? 'off' : 'ok'}">
-            <div class="k">Trucks to look at</div>
-            <div class="v">${r.variances.length + r.notInOurs.length + r.notOnStatement.length}</div>
+          <div class="match-tile ${outstanding ? 'off' : 'ok'}">
+            <div class="k">${saved ? 'Still to chase' : 'Trucks to look at'}</div>
+            <div class="v">${outstanding}</div>
           </div>
         </div>
 
         <table>
           <thead>
             <tr>
+              ${saved ? '<th class="td-narrow" title="Tick a truck off once it has been chased down">✓</th>' : ''}
               <th class="num">Truck</th>
               <th class="num">We reported</th>
               <th class="num">Statement</th>
               <th class="num">Difference</th>
               <th class="num">Fill-ups</th>
               <th>Verdict</th>
+              ${saved ? '<th>What it was</th>' : ''}
             </tr>
           </thead>
           <tbody>
             ${r.rows.map(row => `
-              <tr class="${cls(row.verdict)}">
+              <tr class="${cls(row.verdict)} ${row.resolved ? 'line-resolved' : ''}">
+                ${saved ? `<td class="td-narrow">${row.lineId
+                    ? `<input type="checkbox" class="tick" ${row.resolved ? 'checked' : ''}
+                              onchange="toggleLineResolved('${escJsAttr(row.lineId)}', this.checked)" />`
+                    : ''}</td>` : ''}
                 <td class="num" style="font-weight:700">${row.truck}</td>
                 <td class="num">${row.ours != null ? n2(row.ours) : '—'}</td>
                 <td class="num">${row.statement != null ? n2(row.statement) : '—'}</td>
@@ -2891,15 +3336,21 @@
                     ? (row.difference > 0 ? '+' : '') + n2(row.difference) : '—'}</td>
                 <td class="num">${row.fills || '—'}</td>
                 <td class="verdict">${label(row.verdict)}</td>
+                ${saved ? `<td>${row.lineId
+                    ? `<input type="text" class="line-note" maxlength="500"
+                              value="${escAttr(row.note || '')}"
+                              placeholder="${row.verdict === 'match' ? '' : 'what it turned out to be…'}"
+                              onblur="saveLineNote('${escJsAttr(row.lineId)}', this.value)" />`
+                    : ''}</td>` : ''}
               </tr>`).join('')}
           </tbody>
         </table>
 
         <div class="match-note">
-          Read ${r.lines} line${r.lines === 1 ? '' : 's'}${r.skipped.length
+          ${r.historical ? '' : `Read ${r.lines} line${r.lines === 1 ? '' : 's'}${r.skipped.length
             ? `, ${r.skipped.length} of which had no truck number and gallons figure on them
                (headers and totals usually don't — first was “${escapeHtml(r.skipped[0].slice(0, 60))}”)`
-            : ''}.
+            : ''}. `}
           <strong>${r.matched}</strong> truck${r.matched === 1 ? '' : 's'} agree.
           ${r.variances.length ? `<strong>${r.variances.length}</strong> differ — open that truck's row in
             <em>By Vehicle &amp; Month</em> above to see the fill-ups behind the figure. ` : ''}
@@ -2907,8 +3358,22 @@
             statement with no fuel entry behind ${r.notInOurs.length === 1 ? 'it' : 'them'} — fuel nobody reported. ` : ''}
           ${r.notOnStatement.length ? `<strong>${r.notOnStatement.length}</strong> ${r.notOnStatement.length === 1 ? 'was' : 'were'}
             reported but not billed on this account — usually a truck number typed wrong, or fuel put on a different card. ` : ''}
-          <button class="qr-btn" style="margin-top:0.5rem" onclick="exportMatchCsv()">Export this match</button>
-        </div>`;
+        </div>
+
+        <div class="save-bar">
+          <input type="text" id="mt-note" maxlength="500"
+                 value="${escAttr((r.savedMeta && r.savedMeta.source_note) || '')}"
+                 placeholder="Note for this month — which file this came from, anything to remember" />
+          <button class="btn-filter" id="mt-save" onclick="saveMatch()">
+            ${saved ? 'Re-save this match' : 'Save this match'}
+          </button>
+          <button class="qr-btn" onclick="exportMatchCsv()">Export CSV</button>
+        </div>
+        ${saved ? '' : `
+        <div class="match-note" style="margin-top:0.4rem">
+          Save it to tick trucks off one at a time, note what each turned out to be, and have this month
+          count towards the repeat-offender history.
+        </div>`}`;
     }
 
     function exportMatchCsv() {

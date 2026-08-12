@@ -1180,6 +1180,76 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_fuel_vehicle_truck
   ON fuel_vehicles(company_code, truck_number);
 
 -- ─────────────────────────────────────────────────
+-- FUEL STATEMENT MATCHES
+-- One saved reconciliation: an account's statement for a period, lined up
+-- against what the field reported. Saving it turns the match from a
+-- throwaway screen into a record — a half-worked month can be picked back
+-- up, and a truck that comes up short every month stops looking like
+-- twelve unrelated one-offs.
+--
+-- Unique per company, account and period: re-running a month REPLACES its
+-- saved match rather than stacking a second one beside it, because two
+-- saved matches for one month would each look authoritative.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_statement_matches (
+    id                     BIGSERIAL PRIMARY KEY,
+    company_code           TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    account                TEXT        NOT NULL,
+    period_start           DATE        NOT NULL,
+    period_end             DATE        NOT NULL,
+    period_month           TEXT,
+    ours_total             NUMERIC(12,2),
+    statement_total        NUMERIC(12,2),
+    difference             NUMERIC(12,2),
+    truck_count            INTEGER,
+    matched_count          INTEGER,
+    variance_count         INTEGER,
+    not_in_ours_count      INTEGER,
+    not_on_statement_count INTEGER,
+    source_note            TEXT,
+    created_by_user_id     INTEGER,
+    created_by_name        TEXT,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fuel_match_period
+  ON fuel_statement_matches(company_code, account, period_start, period_end);
+CREATE INDEX IF NOT EXISTS idx_fuel_match_company
+  ON fuel_statement_matches(company_code, period_end DESC);
+
+-- ─────────────────────────────────────────────────
+-- FUEL STATEMENT LINES
+-- One truck within a saved match. Kept as rows rather than a blob on the
+-- match because the whole point of saving is the question "how has THIS
+-- truck behaved over the last few months", and that is a GROUP BY over
+-- this table rather than a scan of every stored document.
+--
+-- resolved / resolution_note are what let a month be worked through over
+-- more than one sitting: a truck that has been chased down stays ticked,
+-- and survives the month being re-matched after the underlying entries
+-- are corrected.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_statement_lines (
+    id              BIGSERIAL PRIMARY KEY,
+    match_id        BIGINT      NOT NULL REFERENCES fuel_statement_matches(id) ON DELETE CASCADE,
+    company_code    TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    truck_number    INTEGER,
+    ours            NUMERIC(12,2),
+    statement       NUMERIC(12,2),
+    difference      NUMERIC(12,2),
+    fills           INTEGER,
+    verdict         TEXT        NOT NULL
+                                CHECK (verdict IN ('match','variance','not-in-ours','not-on-statement')),
+    resolved        BOOLEAN     NOT NULL DEFAULT FALSE,
+    resolution_note TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fuel_line_match ON fuel_statement_lines(match_id);
+CREATE INDEX IF NOT EXISTS idx_fuel_line_truck ON fuel_statement_lines(company_code, truck_number);
+
+-- ─────────────────────────────────────────────────
 -- REPORT RECIPIENT GROUPS
 -- Saved email distribution lists for the "Email Report" button on
 -- the Executive, Turf, and Paving reports. Company-scoped (visible
