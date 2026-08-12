@@ -1293,6 +1293,50 @@ CREATE TABLE IF NOT EXISTS fuel_statement_lines (
 CREATE INDEX IF NOT EXISTS idx_fuel_line_match ON fuel_statement_lines(match_id);
 CREATE INDEX IF NOT EXISTS idx_fuel_line_truck ON fuel_statement_lines(company_code, truck_number);
 
+-- Who ticked a truck off, and when. Added after the first release of the
+-- balancing work: a tick is a claim that somebody chased a discrepancy
+-- down, and a claim with no name on it is worth less than one with.
+ALTER TABLE fuel_statement_lines ADD COLUMN IF NOT EXISTS resolved_by_user_id INTEGER;
+ALTER TABLE fuel_statement_lines ADD COLUMN IF NOT EXISTS resolved_by_name    TEXT;
+ALTER TABLE fuel_statement_lines ADD COLUMN IF NOT EXISTS resolved_at         TIMESTAMPTZ;
+
+-- ─────────────────────────────────────────────────
+-- FUEL MATCH AUDIT LOG
+-- One row per state change to a saved reconciliation. Separate from
+-- fuel_audit_log because that table is keyed on a fuel_submissions id and
+-- this one is keyed on a match — the two describe different objects and
+-- sharing a column would mean neither could be joined.
+--
+-- match_id carries no foreign key ON PURPOSE. The single most important
+-- thing this records is a match being DELETED, and a cascade would remove
+-- that record along with the match it describes.
+--
+-- The period is denormalised onto each row for the same reason: after a
+-- deletion there is nothing left to join to, and "somebody removed a saved
+-- match" is useless without knowing which month went with it.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS fuel_match_audit_log (
+    id            BIGSERIAL   PRIMARY KEY,
+    company_code  TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    match_id      BIGINT      NOT NULL,
+    account       TEXT,
+    period_start  DATE,
+    period_end    DATE,
+    action        TEXT        NOT NULL,
+    user_id       INTEGER,
+    username      TEXT,
+    changes       JSONB,
+    snapshot      JSONB,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE fuel_match_audit_log DROP CONSTRAINT IF EXISTS fuel_match_audit_action_check;
+ALTER TABLE fuel_match_audit_log ADD  CONSTRAINT fuel_match_audit_action_check
+  CHECK (action IN ('SAVE','RESAVE','TICK','DELETE'));
+
+CREATE INDEX IF NOT EXISTS idx_fuel_match_audit_company ON fuel_match_audit_log(company_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fuel_match_audit_match   ON fuel_match_audit_log(match_id, created_at DESC);
+
 -- ─────────────────────────────────────────────────
 -- REPORT RECIPIENT GROUPS
 -- Saved email distribution lists for the "Email Report" button on

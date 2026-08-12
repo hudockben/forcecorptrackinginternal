@@ -123,17 +123,45 @@ function dbToMatch(r) {
 function dbToLine(r) {
   if (!r) return null;
   return {
-    id:              String(r.id),
-    match_id:        String(r.match_id),
-    truck_number:    r.truck_number == null ? null : Number(r.truck_number),
-    ours:            r.ours       == null ? null : Number(r.ours),
-    statement:       r.statement  == null ? null : Number(r.statement),
-    difference:      r.difference == null ? null : Number(r.difference),
-    fills:           Number(r.fills || 0),
-    verdict:         r.verdict,
-    resolved:        r.resolved === true,
-    resolution_note: r.resolution_note || null,
+    id:               String(r.id),
+    match_id:         String(r.match_id),
+    truck_number:     r.truck_number == null ? null : Number(r.truck_number),
+    ours:             r.ours       == null ? null : Number(r.ours),
+    statement:        r.statement  == null ? null : Number(r.statement),
+    difference:       r.difference == null ? null : Number(r.difference),
+    fills:            Number(r.fills || 0),
+    verdict:          r.verdict,
+    resolved:         r.resolved === true,
+    resolution_note:  r.resolution_note || null,
+    resolved_by_name: r.resolved_by_name || null,
+    resolved_at:      r.resolved_at || null,
   };
+}
+
+/**
+ * Record a change to a saved reconciliation.
+ *
+ * Never fails the caller's write: an unrecorded save is a smaller problem
+ * than a refused one, the same trade fuel-submissions.js makes. The period is
+ * copied onto the row rather than left to a join, because the change most
+ * worth recording is a deletion and after one there is nothing to join to.
+ */
+async function writeMatchAudit(sql, companyCode, payload, match, action, changes, snapshot) {
+  try {
+    await sql`
+      INSERT INTO fuel_match_audit_log
+        (company_code, match_id, account, period_start, period_end,
+         action, user_id, username, changes, snapshot)
+      VALUES
+        (${companyCode}, ${match.id}, ${match.account},
+         ${safeDate(match.period_start)}, ${safeDate(match.period_end)},
+         ${action}, ${payload?.userId || null}, ${payload?.username || null},
+         ${changes ? JSON.stringify(changes) : null}::jsonb,
+         ${snapshot ? JSON.stringify(snapshot) : null}::jsonb)
+    `;
+  } catch (err) {
+    console.error('[fuel-statement-matches] audit write failed (non-fatal):', err.message);
+  }
 }
 
 /**
@@ -318,6 +346,16 @@ module.exports = async (req, res) => {
       const { data, error } = normalizeMatch(req.body || {});
       if (error) return res.status(400).json({ error });
 
+      // Asked before the upsert, because afterwards there is no way to tell
+      // a first save from a replacement — and "this month was reconciled
+      // again" is a different event from "this month was reconciled".
+      const [already] = await sql`
+        SELECT id FROM fuel_statement_matches
+        WHERE company_code = ${companyCode} AND account = ${data.account}
+          AND period_start = ${data.period_start} AND period_end = ${data.period_end}
+        LIMIT 1
+      `;
+
       const [saved] = await sql`
         INSERT INTO fuel_statement_matches (
           company_code, account, period_start, period_end, period_month,
@@ -352,14 +390,22 @@ module.exports = async (req, res) => {
       // while chasing the others down — which is exactly the work saving the
       // match exists to protect.
       const prior = await sql`
-        SELECT truck_number, resolved, resolution_note
+        SELECT truck_number, resolved, resolution_note, resolved_by_user_id, resolved_by_name, resolved_at
         FROM   fuel_statement_lines
         WHERE  match_id = ${saved.id} AND company_code = ${companyCode}
       `;
       const carried = new Map();
       for (const p of prior) {
         if (p.truck_number != null && (p.resolved === true || p.resolution_note)) {
-          carried.set(Number(p.truck_number), { resolved: p.resolved === true, note: p.resolution_note || null });
+          carried.set(Number(p.truck_number), {
+            resolved: p.resolved === true,
+            note:     p.resolution_note || null,
+            // Who did the chasing comes across too. Keeping the tick but
+            // dropping the name would leave the work credited to nobody.
+            byId:     p.resolved_by_user_id || null,
+            byName:   p.resolved_by_name || null,
+            at:       p.resolved_at || null,
+          });
         }
       }
 
@@ -393,18 +439,23 @@ module.exports = async (req, res) => {
           verdict:      l.verdict,
           resolved:     keep ? keep.resolved : false,
           note:         keep ? keep.note : null,
+          by_id:        keep ? keep.byId : null,
+          by_name:      keep ? keep.byName : null,
+          at:           keep && keep.at ? new Date(keep.at).toISOString() : null,
         };
       });
 
       await sql`
         INSERT INTO fuel_statement_lines
           (match_id, company_code, truck_number, ours, statement, difference, fills, verdict,
-           resolved, resolution_note)
+           resolved, resolution_note, resolved_by_user_id, resolved_by_name, resolved_at)
         SELECT ${saved.id}, ${companyCode}, x.truck_number, x.ours, x.statement,
-               x.difference, x.fills, x.verdict, x.resolved, x.note
+               x.difference, x.fills, x.verdict, x.resolved, x.note,
+               x.by_id, x.by_name, x.at
         FROM jsonb_to_recordset(${JSON.stringify(linePayload)}::jsonb)
           AS x(truck_number INTEGER, ours NUMERIC, statement NUMERIC, difference NUMERIC,
-                fills INTEGER, verdict TEXT, resolved BOOLEAN, note TEXT)
+                fills INTEGER, verdict TEXT, resolved BOOLEAN, note TEXT,
+                by_id INTEGER, by_name TEXT, at TIMESTAMPTZ)
       `;
 
       const lines = await sql`
@@ -416,9 +467,14 @@ module.exports = async (req, res) => {
           ABS(COALESCE(difference, 0)) DESC,
           truck_number ASC
       `;
+      const match = dbToMatch(saved);
+      await writeMatchAudit(sql, companyCode, payload, saved, already ? 'RESAVE' : 'SAVE',
+        { truck_count: data.truck_count, carried_over: carried.size, source_note: data.source_note },
+        match);
+
       return res.json({
         ok: true,
-        match: dbToMatch(saved),
+        match,
         lines: lines.map(dbToLine),
         carried_over: carried.size,
       });
@@ -439,13 +495,31 @@ module.exports = async (req, res) => {
         ? safeStr(b.resolution_note, 500)
         : existing.resolution_note;
 
+      const nowResolved = resolved == null ? existing.resolved === true : resolved;
+      // A tick is a claim that somebody chased a discrepancy down, so it
+      // carries their name. Un-ticking clears it rather than leaving the last
+      // person who ticked it attached to a line that is open again.
       const [updated] = await sql`
         UPDATE fuel_statement_lines
-        SET resolved        = ${resolved == null ? existing.resolved === true : resolved},
-            resolution_note = ${note}
+        SET resolved            = ${nowResolved},
+            resolution_note     = ${note},
+            resolved_by_user_id = ${nowResolved ? (payload.userId || null) : null},
+            resolved_by_name    = ${nowResolved ? (payload.username || null) : null},
+            resolved_at         = CASE WHEN ${nowResolved}::boolean THEN NOW() ELSE NULL END
         WHERE id = ${lineId} AND company_code = ${companyCode}
         RETURNING *
       `;
+
+      const [parent] = await sql`
+        SELECT id, account, period_start, period_end FROM fuel_statement_matches
+        WHERE id = ${updated.match_id} AND company_code = ${companyCode}
+      `;
+      if (parent) {
+        await writeMatchAudit(sql, companyCode, payload, parent, 'TICK',
+          { truck_number: updated.truck_number == null ? null : Number(updated.truck_number),
+            resolved: nowResolved, resolution_note: note },
+          dbToLine(updated));
+      }
       return res.json({ ok: true, line: dbToLine(updated) });
     }
 
@@ -457,8 +531,23 @@ module.exports = async (req, res) => {
         SELECT * FROM fuel_statement_matches WHERE id = ${id} AND company_code = ${companyCode}
       `;
       if (!existing) return res.status(404).json({ error: 'Saved match not found' });
+
+      // The ticks and notes are about to go with it, so they are captured
+      // first. This is the one change here that cannot be undone, and a
+      // month silently leaving the repeat-offender history is exactly the
+      // kind of thing an audit trail exists to answer for.
+      const doomed = await sql`
+        SELECT * FROM fuel_statement_lines
+        WHERE match_id = ${id} AND company_code = ${companyCode}
+      `;
+      const worked = doomed.filter(l => l.resolved === true || l.resolution_note);
+
       // Lines go with it via ON DELETE CASCADE.
       await sql`DELETE FROM fuel_statement_matches WHERE id = ${id} AND company_code = ${companyCode}`;
+      await writeMatchAudit(sql, companyCode, payload, existing, 'DELETE',
+        { line_count: doomed.length, resolved_lines: worked.length },
+        { match: dbToMatch(existing), worked_lines: worked.map(dbToLine) });
+
       return res.json({ ok: true, match: dbToMatch(existing) });
     }
 

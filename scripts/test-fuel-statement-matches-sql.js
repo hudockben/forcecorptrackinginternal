@@ -109,7 +109,7 @@ function monthBack(n) {
 
 async function seed() {
   const q = (t, v) => client.query(t, v);
-  await q(`TRUNCATE fuel_statement_lines, fuel_statement_matches RESTART IDENTITY CASCADE`);
+  await q(`TRUNCATE fuel_statement_lines, fuel_statement_matches, fuel_match_audit_log RESTART IDENTITY CASCADE`);
   await q(`INSERT INTO companies (code, name) VALUES ('FCT','Force Corp') ON CONFLICT (code) DO NOTHING`);
   await q(`DELETE FROM users WHERE id = 42`);
   await q(`INSERT INTO users (id, company_code, username, password_hash, role)
@@ -164,6 +164,20 @@ async function run() {
   });
   assert('a line can be ticked', ticked.statusCode === 200 && ticked.body.line.resolved === true);
   assert('with a note', /wrong card/.test(ticked.body.line.resolution_note || ''));
+  assert('and the name of whoever chased it down',
+    ticked.body.line.resolved_by_name === 'office' && Boolean(ticked.body.line.resolved_at),
+    JSON.stringify(ticked.body.line));
+  {
+    // Un-ticking must not leave the last person who ticked it attached to a
+    // line that is open again.
+    const untick = await call('PATCH', { line_id: line412.id }, { resolved: false });
+    assert('un-ticking clears who ticked it',
+      untick.body.line.resolved_by_name === null && untick.body.line.resolved_at === null,
+      JSON.stringify(untick.body.line));
+    await call('PATCH', { line_id: line412.id }, {
+      resolved: true, resolution_note: 'driver used the wrong card on the 14th',
+    });
+  }
 
   console.log('\n[re-save the same month]');
   const again = await call('POST', {}, saveBody(jul, 'Guttman', [
@@ -192,6 +206,9 @@ async function run() {
     assert('with its note intact', l.resolved === true && /wrong card/.test(l.resolution_note || ''),
       JSON.stringify(l));
     assert('and the corrected verdict applied over the top', l.verdict === 'match', l.verdict);
+    // Keeping the tick but dropping the name would credit the work to nobody.
+    assert('and whoever did the chasing comes across too',
+      l.resolved_by_name === 'office' && Boolean(l.resolved_at), JSON.stringify(l));
   }
   assert('the note on the match itself is updated too',
     again.body.match.source_note === 'guttman-july-v2.csv', String(again.body.match.source_note));
@@ -279,6 +296,31 @@ async function run() {
     assert('the history drops that month too', a412.periods === 3, String(a412.periods));
     assert('and last agreed falls back to the month before',
       a412.last_ok === apr.end, `${a412.last_ok} vs ${apr.end}`);
+
+    // The deletion is the one change here that cannot be undone, and it is
+    // what quietly removes a truck from the repeat-offender history.
+    const { rows: trail } = await client.query(
+      `SELECT action, account, period_start, period_end, username, changes, snapshot
+       FROM fuel_match_audit_log WHERE match_id = $1 ORDER BY id ASC`, [matchId]);
+    // Ticked three times (on, off, on again) before the month was re-matched.
+    const actions = trail.map(t => t.action);
+    assert('the whole life of the match is on record',
+      actions.join(',') === 'SAVE,TICK,TICK,TICK,RESAVE,DELETE', actions.join(','));
+    const del = trail[trail.length - 1];
+    assert('the deletion names who did it', del.username === 'office', String(del.username));
+    // match_id carries no foreign key on purpose: a cascade would delete the
+    // record of the deletion along with the match it describes. The rows are
+    // being read here AFTER the match was deleted, so their surviving at all
+    // is the assertion.
+    const { rows: matchGone } = await client.query(
+      `SELECT COUNT(*)::int AS n FROM fuel_statement_matches WHERE id = $1`, [matchId]);
+    assert('and the trail outlives the match it describes',
+      matchGone[0].n === 0 && trail.length === 6,
+      `${matchGone[0].n} matches, ${trail.length} audit rows`);
+    assert('with the period on the row, since nothing is left to join to',
+      ymd(new Date(del.period_start)) === jul.start, String(del.period_start));
+    assert('and the work that went with it kept in the snapshot',
+      /wrong card/.test(JSON.stringify(del.snapshot)), JSON.stringify(del.changes));
   }
 
   console.log('\n────────────────────────────────────────');

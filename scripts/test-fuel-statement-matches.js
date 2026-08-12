@@ -170,9 +170,12 @@ async function call(method, query, body, auth = ADMIN, tables = {}) {
     if (/^SELECT \* FROM fuel_statement_matches/.test(q))   return Promise.resolve(tables.matches || []);
     if (/^SELECT \* FROM fuel_statement_lines/.test(q))     return Promise.resolve(tables.lines || []);
     if (/^SELECT truck_number, resolved/.test(q))           return Promise.resolve(tables.prior || []);
+    if (/^SELECT id FROM fuel_statement_matches/.test(q))   return Promise.resolve(tables.already || []);
+    if (/^SELECT id, account, period_start/.test(q))        return Promise.resolve(tables.matches || []);
     if (/^INSERT INTO fuel_statement_matches/.test(q))      return Promise.resolve([tables.saved || { id: 1 }]);
     if (/^INSERT INTO fuel_statement_lines/.test(q))        return Promise.resolve([]);
-    if (/^UPDATE fuel_statement_lines/.test(q))             return Promise.resolve([tables.updatedLine || { id: 9, verdict: 'variance' }]);
+    if (/^INSERT INTO fuel_match_audit_log/.test(q))        return Promise.resolve([]);
+    if (/^UPDATE fuel_statement_lines/.test(q))             return Promise.resolve([tables.updatedLine || { id: 9, match_id: 1, verdict: 'variance' }]);
     if (/^DELETE/.test(q))                                  return Promise.resolve([]);
     return Promise.resolve([]);
   };
@@ -291,6 +294,63 @@ async function routingTests() {
       t.truck_number === 412 && t.periods === 4 && t.variances === 3 && t.resolved === 1,
       JSON.stringify(t));
     assert('and the dates are plain YYYY-MM-DD', t.last_seen === '2026-07-31' && t.last_ok === '2026-04-30');
+  }
+
+  console.log('\n[Audit trail]');
+  // fuel_audit_log is keyed on a fuel_submissions id, so a reconciliation
+  // cannot go in it. Without a trail of its own, deleting a signed-off month
+  // took a truck out of the repeat-offender history with nothing left to say
+  // who did it or what the month had held.
+  {
+    const { seen } = await call('POST', {}, SAVE, ADMIN, { already: [] });
+    const audit = seen.find(s => /^INSERT INTO fuel_match_audit_log/.test(s.q));
+    assert('a first save is recorded', audit != null && audit.values.includes('SAVE'),
+      audit ? JSON.stringify(audit.values) : 'no audit row');
+  }
+  {
+    const { seen } = await call('POST', {}, SAVE, ADMIN, { already: [{ id: 1 }] });
+    const audit = seen.find(s => /^INSERT INTO fuel_match_audit_log/.test(s.q));
+    // "Reconciled again" is a different event from "reconciled", and after
+    // the upsert there is no way to tell them apart.
+    assert('a replacement is recorded as one', audit.values.includes('RESAVE'),
+      JSON.stringify(audit.values));
+  }
+  {
+    const { seen } = await call('PATCH', { line_id: '9' }, { resolved: true }, ADMIN, {
+      lines: [{ id: 9, match_id: 1, resolved: false }],
+      updatedLine: { id: 9, match_id: 1, truck_number: 412, verdict: 'variance', resolved: true },
+      matches: [{ id: 1, account: 'Guttman', period_start: '2026-07-01', period_end: '2026-07-31' }],
+    });
+    const upd = seen.find(s => /^UPDATE fuel_statement_lines/.test(s.q));
+    assert('a tick carries the name of whoever made it',
+      /resolved_by_name = \?/.test(upd.q) && upd.values.includes('office'), upd.q.slice(0, 200));
+    assert('and un-ticking would clear it rather than leave them attached',
+      /resolved_at = CASE WHEN \?::boolean THEN NOW\(\) ELSE NULL END/.test(upd.q), upd.q.slice(0, 260));
+    const audit = seen.find(s => /^INSERT INTO fuel_match_audit_log/.test(s.q));
+    assert('and the tick itself is recorded', audit != null && audit.values.includes('TICK'),
+      audit ? JSON.stringify(audit.values) : 'no audit row');
+  }
+  {
+    const { seen } = await call('DELETE', { id: '1' }, null, ADMIN, {
+      matches: [{ id: 1, account: 'Guttman', period_start: '2026-07-01', period_end: '2026-07-31' }],
+      lines: [{ id: 9, match_id: 1, truck_number: 412, verdict: 'variance',
+                resolved: true, resolution_note: 'driver used the wrong card' }],
+    });
+    const audit = seen.find(s => /^INSERT INTO fuel_match_audit_log/.test(s.q));
+    assert('a deletion is recorded', audit != null && audit.values.includes('DELETE'),
+      audit ? JSON.stringify(audit.values) : 'no audit row');
+    // The ticks are gone the instant the cascade runs, so they have to be
+    // read before the delete, not after.
+    assert('the work that went with it is captured first',
+      seen.findIndex(s => /^SELECT \* FROM fuel_statement_lines/.test(s.q)) <
+      seen.findIndex(s => /^DELETE FROM fuel_statement_matches/.test(s.q)));
+    assert('and the notes are kept in the snapshot',
+      /driver used the wrong card/.test(JSON.stringify(audit.values)), JSON.stringify(audit.values));
+    // match_id carries no foreign key on purpose — a cascade would delete
+    // the record of the deletion.
+    assert('the period is copied onto the row, since nothing is left to join to',
+      audit.values.includes('2026-07-01') && audit.values.includes('2026-07-31'),
+      JSON.stringify(audit.values));
   }
 
   console.log('\n[Read back]');

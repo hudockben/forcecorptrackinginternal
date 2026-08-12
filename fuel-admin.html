@@ -3352,9 +3352,11 @@
       for (const row of matchResult.rows) {
         const l = byTruck.get(String(row.truck));
         if (!l) continue;
-        row.lineId  = l.id;
-        row.resolved = l.resolved;
-        row.note     = l.resolution_note || '';
+        row.lineId     = l.id;
+        row.resolved   = l.resolved;
+        row.note       = l.resolution_note || '';
+        row.resolvedBy = l.resolved_by_name || '';
+        row.resolvedAt = l.resolved_at || null;
       }
       matchResult.savedId   = match.id;
       matchResult.savedMeta = match;
@@ -3377,6 +3379,7 @@
           truck: l.truck_number, ours: l.ours, statement: l.statement,
           difference: l.difference, fills: l.fills, verdict: l.verdict,
           lineId: l.id, resolved: l.resolved, note: l.resolution_note || '',
+          resolvedBy: l.resolved_by_name || '', resolvedAt: l.resolved_at || null,
         }));
         matchResult = {
           card: m.account,
@@ -3439,7 +3442,11 @@
       const row = matchResult && matchResult.rows.find(r => String(r.lineId) === String(lineId));
       if (row) row.resolved = checked;          // optimistic — the tick is the feedback
       try {
-        await patchLine(lineId, { resolved: checked });
+        const line = await patchLine(lineId, { resolved: checked });
+        if (row) {
+          row.resolvedBy = line.resolved_by_name || '';
+          row.resolvedAt = line.resolved_at || null;
+        }
         renderStatementMatch();
         refreshHistory();
       } catch (err) {
@@ -3651,7 +3658,10 @@
                     ? `<input type="text" class="line-note" maxlength="500"
                               value="${escAttr(row.note || '')}"
                               placeholder="${row.verdict === 'match' ? '' : 'what it turned out to be…'}"
-                              onblur="saveLineNote('${escJsAttr(row.lineId)}', this.value)" />`
+                              onblur="saveLineNote('${escJsAttr(row.lineId)}', this.value)" />
+                       ${row.resolved && row.resolvedBy
+                         ? `<div class="bal-meta">chased down by ${escapeHtml(row.resolvedBy)}${
+                              row.resolvedAt ? ` · ${escapeHtml(fmtTs(row.resolvedAt))}` : ''}</div>` : ''}`
                     : ''}</td>` : ''}
               </tr>`).join('')}
           </tbody>
