@@ -3275,19 +3275,42 @@
      */
     function resolveStatementRefs(byRef, account, fleet) {
       const mapped = new Map();
+      // Last four of the VIN → truck. A tail two vehicles share resolves to
+      // nothing rather than to the first of them: an ambiguous match here
+      // moves a month of fuel onto a truck that never burned it, and being
+      // told to assign it by hand is the better outcome.
+      const byVinTail = new Map();
       for (const v of fleet.values()) {
         const ref = v.account_refs && v.account_refs[account];
         if (ref) mapped.set(refKey(ref), v.truck_number);
+        const tail = vinTail(v.vin);
+        if (tail) byVinTail.set(tail, byVinTail.has(tail) ? null : v.truck_number);
       }
 
       const byTruck = new Map();
       const unmapped = [];
+      const how = new Map();
       for (const [ref, agg] of byRef) {
         const key = refKey(ref);
         let truck = mapped.has(key) ? mapped.get(key) : null;
+        let rule = truck == null ? null : 'recorded';
+        // Three rules, most trustworthy first. The recorded id is somebody's
+        // decision and always wins; the other two are the yard's own
+        // convention — a truck number IS the last four of its VIN, and the
+        // accounts write that number with their fleet prefix in front. Both
+        // still have to land on a truck that is ON THE ROSTER, so neither can
+        // invent a vehicle out of a number that happens to look right.
         if (truck == null) {
-          const asNumber = /^\d+$/.test(key) ? Number(key) : null;
-          if (asNumber != null && fleet.has(String(asNumber))) truck = asNumber;
+          const digits = refDigits(key);
+          if (digits) {
+            const asNumber = Number(digits);
+            if (Number.isFinite(asNumber) && fleet.has(String(asNumber))) {
+              truck = asNumber; rule = 'number';
+            } else {
+              const hit = byVinTail.get(digits.padStart(4, '0').slice(-4));
+              if (hit != null) { truck = hit; rule = 'vin'; }
+            }
+          }
         }
         if (truck == null) {
           const top = m => [...(m || new Map())].sort((a, b) => b[1] - a[1]).map(([k]) => k);
@@ -3309,9 +3332,16 @@
         prev.fills  += agg.fills;
         if (!prev.refs.includes(ref)) prev.refs.push(ref);
         byTruck.set(truck, prev);
+        // Which rule placed it, so a match reached by convention is never
+        // mistaken for one somebody recorded on purpose.
+        if (!how.has(truck)) how.set(truck, new Set());
+        how.get(truck).add(rule);
       }
       unmapped.sort((a, b) => b.gallons - a.gallons);
-      return { byTruck, unmapped };
+
+      const counts = { recorded: 0, number: 0, vin: 0 };
+      for (const rules of how.values()) for (const rule of rules) counts[rule]++;
+      return { byTruck, unmapped, how, counts };
     }
 
     // Sum a statement's rows by the id the account used, keeping the detail
@@ -3629,6 +3659,29 @@
       return String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
     }
 
+    /**
+     * The number inside an account's vehicle id.
+     *
+     * Truck numbers here are the last four of the VIN, and both accounts
+     * write that number with their own fleet prefix in front of it: Guttman's
+     * PT4336 and Wex's "PT 4805" are trucks 4336 and 4805. The longest run of
+     * digits is taken because the prefix is the FLEET's, never the truck's.
+     */
+    function refDigits(ref) {
+      const runs = String(ref == null ? '' : ref).match(/\d+/g);
+      if (!runs || !runs.length) return null;
+      return runs.slice().sort((a, b) => b.length - a.length)[0];
+    }
+
+    // The last four of a VIN, which is what a truck number is made of. Only
+    // four digits count: a VIN ending in a letter is not a truck number, and
+    // treating it as one would match on three digits and a coincidence.
+    function vinTail(vin) {
+      const s = String(vin == null ? '' : vin).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const tail = s.slice(-4);
+      return /^\d{4}$/.test(tail) ? tail : null;
+    }
+
     function parseStatement(text, gallonsPick, knownTrucks) {
       const byTruck  = new Map();
       const skipped  = [];
@@ -3815,7 +3868,7 @@
       // account's own vehicle ids.
       if (loadedWorkbook) {
         const agg = aggregateByRef(loadedWorkbook.rows);
-        const { byTruck, unmapped } = resolveStatementRefs(agg.byRef, account, vehicleIndex());
+        const { byTruck, unmapped, how, counts } = resolveStatementRefs(agg.byRef, account, vehicleIndex());
         matchResult = matchStatement(reportModel, account, {
           byTruck,
           skipped: loadedWorkbook.dropped.map(d => `${d.ref || '(no vehicle)'} — ${d.why}`),
@@ -3830,7 +3883,16 @@
         matchResult.statementIfta    = agg.iftaGallons;
         matchResult.statementNonIfta = agg.nonIftaGallons;
         matchResult.byProduct        = agg.byProduct;
-        matchResult.refsFor          = new Map([...byTruck].map(([t, v]) => [t, v.refs.join(', ')]));
+        matchResult.matchedBy        = counts;
+        // How each truck came to be matched, shown under its statement id.
+        // "5894 · by truck number" and "5894 · recorded" are the same total
+        // reached two different ways, and only one of them is somebody's
+        // decision — which is exactly what to check first if it looks wrong.
+        const RULE_LABEL = { recorded: 'recorded id', number: 'by truck number', vin: 'by VIN' };
+        matchResult.refsFor          = new Map([...byTruck].map(([t, v]) => {
+          const rules = [...(how.get(t) || [])].map(x => RULE_LABEL[x] || x).join(', ');
+          return [t, v.refs.join(', ') + (rules ? ` · ${rules}` : '')];
+        }));
         renderStatementMatch();
         return;
       }
@@ -5035,6 +5097,22 @@
       // the difference below is missing exactly that much.
       const unmapped = r.unmapped || [];
       const unmappedGal = unmapped.reduce((n, u) => n + u.gallons, 0);
+
+      // What matched without anyone recording anything, and on what basis.
+      // Shown rather than assumed: these two rules read a truck number out of
+      // the yard's own convention, and the office should be able to see how
+      // many of a month's trucks were placed that way before trusting the
+      // difference underneath it.
+      const by = r.matchedBy || null;
+      const autoNote = (by && (by.number || by.vin)) ? `
+        <div class="match-note">
+          ${by.recorded ? `<strong>${by.recorded}</strong> truck${by.recorded === 1 ? '' : 's'} matched on an id
+            recorded under <em>Vehicles</em>. ` : ''}
+          ${by.number ? `<strong>${by.number}</strong> matched because the id IS the truck number. ` : ''}
+          ${by.vin ? `<strong>${by.vin}</strong> matched on the last four of the VIN. ` : ''}
+          Nothing was placed on a truck that isn't on the roster — record an id under <em>Vehicles</em>
+          to override any of it.
+        </div>` : '';
       const unmappedWarning = unmapped.length ? `
         <div class="flag-banner" style="display:block">
           <div><strong>${unmapped.length}</strong> vehicle${unmapped.length === 1 ? '' : 's'} on this statement
@@ -5085,6 +5163,7 @@
         ${spanWarning}
         ${pendingWarning}
         ${unmappedWarning}
+        ${autoNote}
         ${savedHeader}
         <div class="match-summary">
           <div class="match-tile ${balanced ? 'ok' : 'off'}">

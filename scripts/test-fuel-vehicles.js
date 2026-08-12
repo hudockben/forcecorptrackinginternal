@@ -885,9 +885,11 @@ function statementTests2() {
     ${liftFn(src, 'readStatementRows',  file)}
     ${liftFn(src, 'refKey',             file)}
     ${liftFn(src, 'aggregateByRef',     file)}
+    ${liftFn(src, 'refDigits',          file)}
+    ${liftFn(src, 'vinTail',            file)}
     ${liftFn(src, 'resolveStatementRefs', file)}
     return { excelSerialToYmd, detectColumns, readStatementRows, refKey,
-             aggregateByRef, resolveStatementRefs };
+             aggregateByRef, resolveStatementRefs, refDigits, vinTail };
   `)();
 
   console.log('\n  columns, by heading rather than position');
@@ -988,6 +990,98 @@ function statementTests2() {
     assert('an aggregate with no hints on it still resolves',
       wex.unmapped.every(u => Array.isArray(u.drivers) && u.odoLow === null),
       JSON.stringify(wex.unmapped));
+  }
+
+  console.log('\n  the yard numbers its trucks by the last four of the VIN');
+  {
+    // Both accounts write that same number with their own fleet prefix in
+    // front of it. Guttman's PT4336 and Wex's "PT 4805" are trucks 4336 and
+    // 4805 — the prefix belongs to the fleet, never to the truck.
+    assert('the digits come out of a prefixed id', api.refDigits('PT4336') === '4336');
+    assert('and out of a spaced one',              api.refDigits('PT 4805') === '4805');
+    assert('a leading zero is kept',               api.refDigits('0392') === '0392');
+    assert('the longest run wins over a stray short one',
+      api.refDigits('TK2 6410') === '6410', api.refDigits('TK2 6410'));
+    assert('an id with no digits at all yields none', api.refDigits('SPARE') === null);
+
+    assert('the last four of a VIN', api.vinTail('1FUJGLDR8CSBP2458') === '2458');
+    // A VIN ending in a letter is not a truck number, and matching on the
+    // three digits before it would be a coincidence dressed up as a rule.
+    assert('a VIN ending in a letter is not a truck number',
+      api.vinTail('1FUJGLDR8CSBP245X') === null, String(api.vinTail('1FUJGLDR8CSBP245X')));
+  }
+
+  console.log('\n  matching without anyone having recorded anything');
+  {
+    const fleet = new Map([
+      ['4336', { truck_number: 4336, vin: '1FUJGLDR8CSBP4336', account_refs: {} }],
+      ['4805', { truck_number: 4805, vin: null,                account_refs: {} }],
+      ['392',  { truck_number: 392,  vin: null,                account_refs: {} }],
+      ['2458', { truck_number: 2458, vin: '1FUJGLDR8CSBP2458', account_refs: {} }],
+      ['700',  { truck_number: 700,  vin: '1XKAD49X7YJ840700', account_refs: { Guttman: '9911' } }],
+    ]);
+    const byRef = new Map([
+      ['PT4336',  { gallons: 97.31,  fills: 5 }],
+      ['PT 4805', { gallons: 162.48, fills: 7 }],
+      ['0392',    { gallons: 37.65,  fills: 3 }],
+      ['2458',    { gallons: 138.70, fills: 5 }],
+      ['9911',    { gallons: 10,     fills: 1 }],
+      ['SPARE',   { gallons: 5,      fills: 1 }],
+    ]);
+    const out = api.resolveStatementRefs(byRef, 'Guttman', fleet);
+
+    assert('a prefixed id lands on the truck its digits name',
+      out.byTruck.get(4336).gallons === 97.31, JSON.stringify([...out.byTruck]));
+    assert('and a spaced one does too',
+      out.byTruck.get(4805).gallons === 162.48, JSON.stringify([...out.byTruck]));
+    // truck_number is an INTEGER, so the roster holds 392 where the statement
+    // writes 0392. Comparing the two as text would never match.
+    assert("a leading zero doesn't stop it — the roster holds an integer",
+      out.byTruck.get(392).gallons === 37.65, JSON.stringify([...out.byTruck]));
+    assert('a bare number still works as it always did',
+      out.byTruck.get(2458).gallons === 138.70);
+    assert('a recorded id still wins', out.byTruck.get(700).gallons === 10);
+    assert('and something with no number in it is still reported, not guessed',
+      out.unmapped.length === 1 && out.unmapped[0].ref === 'SPARE', JSON.stringify(out.unmapped));
+
+    // Which rule placed each truck, so a match reached by convention is never
+    // mistaken for one somebody decided on.
+    assert('each match says how it was reached',
+      [...out.how.get(4336)][0] === 'number' && [...out.how.get(700)][0] === 'recorded',
+      JSON.stringify([...out.how].map(([t, s]) => [t, [...s]])));
+    assert('and they are counted for the summary',
+      out.counts.recorded === 1 && out.counts.number === 4, JSON.stringify(out.counts));
+  }
+
+  console.log('\n  and where it refuses to');
+  {
+    // The VIN rule only fires when the digits are not a truck number in their
+    // own right — an account id that happens to end in another truck's VIN
+    // must not out-rank the truck actually numbered that.
+    const fleet = new Map([
+      ['81', { truck_number: 81, vin: '1FUJGLDR8CSBP6410', account_refs: {} }],
+    ]);
+    const out = api.resolveStatementRefs(new Map([['TK 6410', { gallons: 41.28, fills: 2 }]]), 'Wex', fleet);
+    assert('the VIN places a truck whose number the id does not name',
+      out.byTruck.get(81).gallons === 41.28, JSON.stringify([...out.byTruck]));
+    assert('and it says so', [...out.how.get(81)][0] === 'vin', JSON.stringify([...out.how]));
+
+    // Two vehicles whose VINs end the same way. Picking either would move a
+    // month of fuel onto a truck that never burned it; being told to assign
+    // it by hand is the better outcome.
+    const twins = new Map([
+      ['10', { truck_number: 10, vin: '1FUJGLDR8CSBP6410', account_refs: {} }],
+      ['20', { truck_number: 20, vin: '1XKAD49X7YJ846410', account_refs: {} }],
+    ]);
+    const amb = api.resolveStatementRefs(new Map([['TK 6410', { gallons: 41.28, fills: 2 }]]), 'Wex', twins);
+    assert('an ambiguous VIN tail resolves to nothing rather than to the first of them',
+      amb.byTruck.size === 0 && amb.unmapped.length === 1, JSON.stringify([...amb.byTruck]));
+
+    // The whole point of the roster guard: a number that looks like a truck
+    // number but is not one of YOUR trucks cannot invent a vehicle.
+    const none = api.resolveStatementRefs(new Map([['PT9999', { gallons: 5, fills: 1 }]]), 'Wex', new Map());
+    assert('a number that is not on the roster stays unmapped',
+      none.unmapped.length === 1, JSON.stringify(none.unmapped));
   }
 
   console.log('\n  what the statement knows about a vehicle it cannot place');
