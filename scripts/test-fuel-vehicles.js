@@ -853,6 +853,137 @@ function iftaBadgeTests() {
     cells[2][iftaCol] === '', `"${cells[2][iftaCol]}"`);
 }
 
+// ── 6. Reading a fuel-account workbook ──────────────────────────────────────
+// Header rows copied verbatim from the real May 2026 exports. The two
+// accounts agree on nothing — different column names, different column
+// positions, different date encodings, different ways of writing the same
+// vehicle — so anything that reads one by position reads the other wrong.
+const GUTTMAN_HEADER = {
+  A:'Status', B:'Account number', C:'Account name', D:'Fleet id', E:'Fleet name',
+  F:'Driver ID', G:'Driver ID Description', H:'Card description', I:'Card number',
+  J:'Vehicle Number', K:'Department', L:'Site Id', M:'Site description',
+  T:'Transaction odometer', U:'Transaction date', V:'Transaction posted date',
+  W:'Transaction amount', X:'Transaction quantity', Y:'Transaction id',
+  Z:'Product category', AA:'Product number', AB:'Product description', AC:'Transaction type',
+};
+const WEX_HEADER = {
+  A:'Transaction Date', B:'Transaction Time', C:'Post Date', D:'Account Number',
+  E:'Account Name', F:'Card Number', G:'Trans ID', H:'Emboss Line 2',
+  I:'Custom Vehicle/Asset ID', J:'Units', K:'Unit of Measure', L:'Unit Cost',
+  M:'Total Fuel Cost', AF:'Product', AG:'Product Description', AI:'Merchant (Brand)',
+  AJ:'Merchant Name', AP:'Current Odometer', AW:'VIN',
+};
+
+function statementTests2() {
+  console.log('\n[Reading a fuel-account export]');
+  const file = 'fuel-admin.html';
+  const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const api = new Function(`
+    ${liftFn(src, 'excelSerialToYmd', file)}
+    ${liftConst(src, 'STATEMENT_COLUMNS', file)}
+    ${liftFn(src, 'detectColumns',      file)}
+    ${liftFn(src, 'readStatementRows',  file)}
+    ${liftFn(src, 'refKey',             file)}
+    ${liftFn(src, 'aggregateByRef',     file)}
+    ${liftFn(src, 'resolveStatementRefs', file)}
+    return { excelSerialToYmd, detectColumns, readStatementRows, refKey,
+             aggregateByRef, resolveStatementRefs };
+  `)();
+
+  console.log('\n  columns, by heading rather than position');
+  {
+    const g = api.detectColumns(GUTTMAN_HEADER).found;
+    assert('Guttman: vehicle, gallons and date are found',
+      g.vehicle === 'J' && g.gallons === 'X' && g.date === 'U', JSON.stringify(g));
+    assert('and so are the rows it wants excluded',
+      g.status === 'A' && g.category === 'Z', JSON.stringify(g));
+    const w = api.detectColumns(WEX_HEADER).found;
+    // Same three fields, none of them in the same place.
+    assert('Wex: the same three, in different columns',
+      w.vehicle === 'I' && w.gallons === 'J' && w.date === 'A', JSON.stringify(w));
+    // "Product" sits before "Product Description" in the sheet, so a
+    // column-order scan reads the fuel as "UNL" where the office says
+    // "Unleaded Regular".
+    assert('the more specific heading wins over the broader one',
+      w.product === 'AG', String(w.product));
+    assert("and Wex's Units column is not confused with Unit Cost",
+      w.gallons === 'J', String(w.gallons));
+  }
+
+  console.log('\n  dates');
+  // Wex writes Excel serials, Guttman writes text. Both have to land on a day.
+  // 46171.2625 is the first transaction in the real Wex export; cross-checked
+  // against Python's date arithmetic rather than taken from the same code
+  // being tested.
+  assert('an Excel serial becomes the day it means',
+    api.excelSerialToYmd(46171.2625) === '2026-05-29', String(api.excelSerialToYmd(46171.2625)));
+  assert('and the time of day does not push it to the next one',
+    api.excelSerialToYmd(46169.337) === '2026-05-27', String(api.excelSerialToYmd(46169.337)));
+  assert('and nonsense does not become a date',
+    api.excelSerialToYmd('later') === null, String(api.excelSerialToYmd('later')));
+
+  console.log('\n  rows the account says are not a fuel purchase');
+  {
+    const rows = [GUTTMAN_HEADER,
+      { A:'POSTED',   J:'5894', U:'2026-05-29 15:25:00.0', X:'21.731', Z:'FUEL', AB:'ULS Diesel', AF:'Non IFTA' },
+      { A:'POSTED',   J:'5894', U:'2026-05-27 05:36:00.0', X:'4.006',  Z:'FUEL', AB:'Unleaded E10 Reg' },
+      // Both of the real file's excluded rows: declined, and non-fuel, with
+      // no quantity at all.
+      { A:'DECLINED', J:'2458', U:'2026-05-29 05:13:26.0', X:'',       Z:'NON-FUEL', AB:'Regular' },
+    ];
+    const read = api.readStatementRows(rows);
+    assert('a declined row is dropped', read.rows.length === 2, String(read.rows.length));
+    assert('and reported rather than silently ignored',
+      read.dropped.length === 1 && /DECLINED/.test(read.dropped[0].why), JSON.stringify(read.dropped));
+    const agg = api.aggregateByRef(read.rows);
+    assert('the surviving gallons are summed per vehicle',
+      agg.byRef.get('5894').gallons === 25.74, String(agg.byRef.get('5894').gallons));
+    // Asked for by the office: balance the whole account, show the split.
+    assert('and the IFTA split is carried alongside, not filtered out',
+      agg.iftaGallons === 4.01 && agg.nonIftaGallons === 21.73,
+      `${agg.iftaGallons} / ${agg.nonIftaGallons}`);
+  }
+
+  console.log('\n  the accounts do not spell a vehicle consistently');
+  // One Wex export writes the same pickup three ways.
+  assert('spacing and dashes are ignored when matching',
+    api.refKey('PT 2458') === api.refKey('PT-2458') && api.refKey('PT-2458') === api.refKey('pt2458'),
+    api.refKey('PT 2458'));
+
+  console.log('\n  account ids resolved to trucks');
+  {
+    const fleet = new Map([
+      ['635',  { truck_number: 635,  account_refs: { Guttman: '5894' } }],
+      ['4805', { truck_number: 4805, account_refs: { Wex: 'PT-4805' } }],
+      ['2913', { truck_number: 2913, account_refs: {} }],
+    ]);
+    const byRef = new Map([
+      ['5894',    { gallons: 179.85, fills: 10 }],
+      ['PT 4805', { gallons: 162.48, fills: 7  }],
+      ['2913',    { gallons: 164.46, fills: 6  }],
+      ['PT8248',  { gallons: 51.27,  fills: 2  }],
+    ]);
+    const wex = api.resolveStatementRefs(byRef, 'Wex', fleet);
+    assert('a recorded id maps to its truck whatever the spacing',
+      wex.byTruck.get(4805).gallons === 162.48, JSON.stringify([...wex.byTruck]));
+    // An id that IS a truck number needs no setup at all.
+    assert('an id that is already a truck number needs no mapping',
+      wex.byTruck.get(2913).gallons === 164.46, JSON.stringify([...wex.byTruck]));
+    // 5894 is Guttman's name for truck 635 — it must NOT resolve on a Wex run.
+    assert("another account's id does not resolve on this one",
+      !wex.byTruck.has(635), JSON.stringify([...wex.byTruck]));
+    assert('and unrecognised ids are reported with their gallons, not guessed at',
+      wex.unmapped.map(u => u.ref).sort().join(',') === '5894,PT8248',
+      JSON.stringify(wex.unmapped));
+    assert('worst first, so the biggest gap is the first thing read',
+      wex.unmapped[0].ref === '5894', wex.unmapped[0].ref);
+
+    const gutt = api.resolveStatementRefs(byRef, 'Guttman', fleet);
+    assert('the same statement resolves differently for another account',
+      gutt.byTruck.get(635).gallons === 179.85, JSON.stringify([...gutt.byTruck]));
+  }
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 (async () => {
   normalizeTests();
@@ -861,6 +992,7 @@ function iftaBadgeTests() {
   vehicleMonthTests();
   statementTests();
   iftaBadgeTests();
+  statementTests2();
 
   console.log('\n────────────────────────────────────────');
   console.log(`  ${passed} passed, ${failed} failed`);

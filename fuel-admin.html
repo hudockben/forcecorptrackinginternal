@@ -1216,6 +1216,15 @@
           <label for="v-sticker">IFTA Sticker Number</label>
           <input type="text" id="v-sticker" maxlength="60" placeholder="Tick IFTA first" disabled />
         </div>
+        <div class="full" id="v-account-refs" style="border-top:1px solid var(--border);padding-top:0.7rem">
+          <div style="font-size:0.62rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:0.5rem">
+            What each fuel account calls this vehicle
+            <span style="text-transform:none;letter-spacing:0;font-weight:400">
+              — Guttman's export says 5894 where you say 635, and nothing in the file joins the two.
+              Fill this in once and the monthly match finds it from then on.</span>
+          </div>
+          <div id="v-account-fields" style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.7rem"></div>
+        </div>
         <div style="grid-column:span 2">
           <label for="v-notes">Notes <span style="text-transform:none;font-weight:400">(optional)</span></label>
           <input type="text" id="v-notes" maxlength="500" placeholder="" />
@@ -1249,13 +1258,14 @@
               <th>Make</th>
               <th>IFTA</th>
               <th>Sticker</th>
+              <th>Account IDs</th>
               <th>Notes</th>
               <th>Status</th>
               <th></th>
             </tr>
           </thead>
           <tbody id="vehicleBody">
-            <tr class="empty-row"><td colspan="9">Loading…</td></tr>
+            <tr class="empty-row"><td colspan="10">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -2312,7 +2322,7 @@
       } catch (err) {
         vehicles = [];
         const body = el('vehicleBody');
-        if (body) body.innerHTML = `<tr class="empty-row"><td colspan="9">Couldn't load the vehicle list — ${escapeHtml(err.message)}</td></tr>`;
+        if (body) body.innerHTML = `<tr class="empty-row"><td colspan="10">Couldn't load the vehicle list — ${escapeHtml(err.message)}</td></tr>`;
         return;
       }
       renderVehicles();
@@ -2326,7 +2336,7 @@
       el('tab-vehicles-count').textContent = vehicles.filter(v => v.active).length;
 
       if (!list.length) {
-        body.innerHTML = `<tr class="empty-row"><td colspan="9">${
+        body.innerHTML = `<tr class="empty-row"><td colspan="10">${
           vehicles.length ? 'No trucks in service — tick "Show retired trucks" to see the rest.'
                           : 'No trucks yet. Add one above so fuel entries can be matched to a vehicle.'
         }</td></tr>`;
@@ -2345,6 +2355,11 @@
                     ? escapeHtml(v.ifta_sticker)
                     : '<span class="meter-flag" title="An IFTA vehicle with no sticker number will show up in the report exceptions.">missing</span>')
                 : '—'}</td>
+          <td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.72rem">${
+            Object.keys(v.account_refs || {}).length
+              ? Object.entries(v.account_refs).map(([a, ref]) =>
+                  `${escapeHtml(a.slice(0, 4))}&nbsp;${escapeHtml(ref)}`).join('<br />')
+              : '<span style="color:#555">—</span>'}</td>
           <td>${escapeHtml(v.notes || '—')}</td>
           <td>${v.active
                 ? '<span class="badge badge-approved">in service</span>'
@@ -2367,8 +2382,29 @@
       if (!on) { s.value = ''; s.classList.remove('bad'); }
     }
 
+    function renderAccountRefFields(refs) {
+      el('v-account-fields').innerHTML = STATEMENT_ACCOUNTS.map(a => `
+        <div>
+          <label for="v-ref-${escAttr(a)}">${escapeHtml(a)} vehicle id</label>
+          <input type="text" id="v-ref-${escAttr(a)}" maxlength="60"
+                 value="${escAttr((refs && refs[a]) || '')}"
+                 placeholder="as ${escapeHtml(a)} writes it" />
+        </div>`).join('');
+    }
+
+    function readAccountRefFields() {
+      const out = {};
+      for (const a of STATEMENT_ACCOUNTS) {
+        const node = el(`v-ref-${a}`);
+        const v = node ? node.value.trim() : '';
+        if (v) out[a] = v;
+      }
+      return out;
+    }
+
     function resetVehicleForm() {
       editingVehicleId = null;
+      renderAccountRefFields({});
       for (const id of ['v-truck', 'v-vin', 'v-year', 'v-make', 'v-sticker', 'v-notes']) {
         const n = el(id);
         if (n) { n.value = ''; n.classList.remove('bad'); }
@@ -2395,6 +2431,7 @@
       onIftaToggle();
       el('v-sticker').value = v.ifta_sticker || '';
       el('v-notes').value   = v.notes || '';
+      renderAccountRefFields(v.account_refs || {});
       el('v-active').checked = v.active !== false;
       el('v-save').textContent = `Save Truck ${v.truck_number}`;
       el('v-cancel').style.display = '';
@@ -2424,6 +2461,7 @@
         ifta_sticker: val('v-sticker'),
         active:       el('v-active').checked,
         notes:        val('v-notes'),
+        account_refs: readAccountRefFields(),
       };
       if (editingVehicleId) body.id = editingVehicleId;
 
@@ -2512,6 +2550,11 @@
 
     // The two accounts the month is balanced against come first; the rest
     // follow the order the field form offers them.
+    // The accounts that send a statement. Bulk fuel comes out of a tank we
+    // meter ourselves, so there is nothing to reconcile it against and no id
+    // for it to have.
+    const STATEMENT_ACCOUNTS = FUEL_CARDS.filter(c => !/bulk/i.test(c));
+
     const CARD_COLUMN_ORDER = ['Guttman', 'Wex']
       .concat(FUEL_CARDS.filter(c => c !== 'Guttman' && c !== 'Wex'))
       .concat(['(none)']);
@@ -3124,6 +3167,71 @@
     // of a statement line rather than guessing at column positions: a line
     // reading "07/15/2026, 412, 84.50" has three numbers on it, and only one
     // of them is a truck we have ever seen.
+    /**
+     * Turn an account's own vehicle ids into truck numbers.
+     *
+     * Guttman's export says 5894, Wex's says PT 4805, and a fuel entry says
+     * truck 635. Nothing in either file joins those — Wex ships its VIN column
+     * blank — so the correspondence is recorded once per vehicle on the
+     * roster, and this applies it.
+     *
+     * Two fallbacks, in order, so a fleet that happens to agree needs no setup
+     * at all: an id already recorded for this account wins; failing that, an
+     * id that IS a truck number on the roster is taken at face value. Anything
+     * left is reported with its gallons rather than guessed at — a wrong guess
+     * here moves fuel onto a truck that never burned it.
+     */
+    function resolveStatementRefs(byRef, account, fleet) {
+      const mapped = new Map();
+      for (const v of fleet.values()) {
+        const ref = v.account_refs && v.account_refs[account];
+        if (ref) mapped.set(refKey(ref), v.truck_number);
+      }
+
+      const byTruck = new Map();
+      const unmapped = [];
+      for (const [ref, agg] of byRef) {
+        const key = refKey(ref);
+        let truck = mapped.has(key) ? mapped.get(key) : null;
+        if (truck == null) {
+          const asNumber = /^\d+$/.test(key) ? Number(key) : null;
+          if (asNumber != null && fleet.has(String(asNumber))) truck = asNumber;
+        }
+        if (truck == null) { unmapped.push({ ref, gallons: agg.gallons, fills: agg.fills }); continue; }
+        const prev = byTruck.get(truck) || { gallons: 0, fills: 0, refs: [] };
+        prev.gallons = Math.round((prev.gallons + agg.gallons) * 100) / 100;
+        prev.fills  += agg.fills;
+        if (!prev.refs.includes(ref)) prev.refs.push(ref);
+        byTruck.set(truck, prev);
+      }
+      unmapped.sort((a, b) => b.gallons - a.gallons);
+      return { byTruck, unmapped };
+    }
+
+    // Sum a statement's rows by the id the account used, keeping the detail
+    // the office asked to see alongside rather than instead of the total.
+    function aggregateByRef(rows) {
+      const byRef = new Map();
+      let iftaGallons = 0, nonIftaGallons = 0;
+      const byProduct = new Map();
+      for (const r of rows) {
+        const agg = byRef.get(r.ref) || { gallons: 0, fills: 0 };
+        agg.gallons = Math.round((agg.gallons + r.gallons) * 100) / 100;
+        agg.fills++;
+        byRef.set(r.ref, agg);
+        if (r.nonIfta) nonIftaGallons += r.gallons; else iftaGallons += r.gallons;
+        if (r.product) {
+          byProduct.set(r.product, Math.round(((byProduct.get(r.product) || 0) + r.gallons) * 100) / 100);
+        }
+      }
+      return {
+        byRef,
+        iftaGallons:    Math.round(iftaGallons * 100) / 100,
+        nonIftaGallons: Math.round(nonIftaGallons * 100) / 100,
+        byProduct,
+      };
+    }
+
     function knownTruckNumbers() {
       const s = new Set();
       for (const v of vehicles) if (v.truck_number != null) s.add(Number(v.truck_number));
@@ -3172,6 +3280,226 @@
       if (line.includes('|'))  return '|';
       if (line.includes(','))  return ',';
       return null;
+    }
+
+    // ── Reading a workbook ─────────────────────────────────────────────────
+    // An .xlsx is a zip of XML. Both accounts export one, and asking the
+    // office to re-save each as CSV every month is a step that exists only
+    // because the software couldn't be bothered — so the file goes in as it
+    // comes out of their system.
+    //
+    // No library: the pages here have no build step, and a CDN script is a
+    // dependency on someone else's uptime for a monthly reconciliation. The
+    // browser already has the two hard parts — DecompressionStream inflates,
+    // DOMParser reads the XML.
+
+    async function inflateRaw(bytes) {
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    /**
+     * The named files out of a zip, as Uint8Arrays.
+     *
+     * Read through the central directory at the end rather than by walking
+     * local headers front-to-back: a local header may declare its sizes in a
+     * trailing data descriptor instead of up front, and there is no way to
+     * know how far to skip without having already inflated the entry.
+     */
+    async function readZip(buf, wanted) {
+      const dv = new DataView(buf);
+      let eocd = -1;
+      for (let i = buf.byteLength - 22; i >= 0 && i > buf.byteLength - 22 - 65536; i--) {
+        if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+      }
+      if (eocd < 0) throw new Error('That file is not a workbook.');
+
+      const count = dv.getUint16(eocd + 10, true);
+      let off = dv.getUint32(eocd + 16, true);
+      const out = {};
+      for (let n = 0; n < count; n++) {
+        if (dv.getUint32(off, true) !== 0x02014b50) break;
+        const method   = dv.getUint16(off + 10, true);
+        const compSize = dv.getUint32(off + 20, true);
+        const nameLen  = dv.getUint16(off + 28, true);
+        const extraLen = dv.getUint16(off + 30, true);
+        const cmtLen   = dv.getUint16(off + 32, true);
+        const localOff = dv.getUint32(off + 42, true);
+        const name = new TextDecoder().decode(new Uint8Array(buf, off + 46, nameLen));
+        off += 46 + nameLen + extraLen + cmtLen;
+        if (!wanted(name)) continue;
+
+        // The local header repeats the name and extra fields at its own
+        // lengths, which are NOT always the central directory's.
+        const lNameLen  = dv.getUint16(localOff + 26, true);
+        const lExtraLen = dv.getUint16(localOff + 28, true);
+        const start = localOff + 30 + lNameLen + lExtraLen;
+        const raw = new Uint8Array(buf, start, compSize);
+        out[name] = method === 0 ? raw : await inflateRaw(raw);
+      }
+      return out;
+    }
+
+    // Excel counts days from 1899-12-30 (the 1900 leap-year bug baked in).
+    // Wex exports its dates this way; Guttman exports text. Both land here.
+    function excelSerialToYmd(n) {
+      const days = Math.floor(Number(n));
+      if (!Number.isFinite(days) || days < 1 || days > 200000) return null;
+      const d = new Date(Date.UTC(1899, 11, 30) + days * 86400000);
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    }
+
+    function colOf(ref) { return String(ref || '').replace(/[0-9]/g, ''); }
+
+    /**
+     * First worksheet of a workbook, as an array of { COLUMN: value } rows.
+     *
+     * Shared strings are a separate part of the file — a cell of type "s"
+     * holds an index into it, so a sheet read without them is a grid of
+     * numbers where every label should be.
+     */
+    async function readWorkbook(buf) {
+      const files = await readZip(buf, n =>
+        n === 'xl/sharedStrings.xml' || /^xl\/worksheets\/sheet1\.xml$/.test(n));
+      const sheetXml = files['xl/worksheets/sheet1.xml'];
+      if (!sheetXml) throw new Error("Couldn't find a worksheet in that file.");
+
+      const dec = new TextDecoder();
+      const parser = new DOMParser();
+
+      let shared = [];
+      if (files['xl/sharedStrings.xml']) {
+        const sdoc = parser.parseFromString(dec.decode(files['xl/sharedStrings.xml']), 'application/xml');
+        shared = [...sdoc.getElementsByTagName('si')].map(si =>
+          [...si.getElementsByTagName('t')].map(t => t.textContent || '').join(''));
+      }
+
+      const doc = parser.parseFromString(dec.decode(sheetXml), 'application/xml');
+      const rows = [];
+      for (const row of doc.getElementsByTagName('row')) {
+        const cells = {};
+        for (const c of row.getElementsByTagName('c')) {
+          const t = c.getAttribute('t');
+          let value = '';
+          if (t === 'inlineStr') {
+            value = [...c.getElementsByTagName('t')].map(x => x.textContent || '').join('');
+          } else {
+            const v = c.getElementsByTagName('v')[0];
+            value = v ? (v.textContent || '') : '';
+            if (t === 's' && value !== '') value = shared[Number(value)] ?? '';
+          }
+          cells[colOf(c.getAttribute('r'))] = value;
+        }
+        rows.push(cells);
+      }
+      return rows;
+    }
+
+    // ── What the columns mean ──────────────────────────────────────────────
+    // Found by HEADER NAME rather than position. Guttman puts the vehicle in
+    // column J and Wex in column I, and both will move them the first time
+    // either changes its export. The names are what the office recognises,
+    // and they are what these look for.
+    const STATEMENT_COLUMNS = {
+      vehicle: [/^vehicle number$/i, /^custom vehicle\/asset id$/i, /vehicle.*(id|number|no)/i, /asset id/i, /^unit( number| no)?$/i],
+      gallons: [/^transaction quantity$/i, /^units$/i, /^quantity$/i, /^gallons$/i, /^qty$/i],
+      date:    [/^transaction date$/i, /^trans date$/i, /^date$/i, /^posting date$/i],
+      status:  [/^status$/i],
+      category:[/^product category$/i],
+      product: [/^product description$/i, /^product$/i],
+      ifta:    [/non.?ifta/i],
+      site:    [/^site description$/i, /^merchant name$/i, /^merchant \(brand\)$/i],
+      card:    [/^card number$/i, /^card description$/i],
+    };
+
+    /**
+     * Match each field to a column, most specific heading first.
+     *
+     * Driven by the PATTERNS rather than by the sheet's column order. Walking
+     * the columns instead lets a broad heading claim a field before a better
+     * one is reached: Wex ships "Product" in AF and "Product Description" in
+     * AG, so column-first reads the fuel as "UNL" where the office would say
+     * "Unleaded Regular".
+     *
+     * A column can only answer for one field, so "Product category" cannot
+     * also become the product once it has been claimed as the category.
+     */
+    function detectColumns(headerRow) {
+      const labels = {};
+      for (const [col, raw] of Object.entries(headerRow || {})) {
+        const label = String(raw || '').trim();
+        if (label) labels[col] = label;
+      }
+      const cols = Object.keys(labels);
+      const found = {}, taken = new Set();
+      for (const [field, patterns] of Object.entries(STATEMENT_COLUMNS)) {
+        for (const p of patterns) {
+          const hit = cols.find(c => !taken.has(c) && p.test(labels[c]));
+          if (hit) { found[field] = hit; taken.add(hit); break; }
+        }
+      }
+      return { found, labels };
+    }
+
+    /**
+     * A workbook's rows reduced to what a reconciliation needs.
+     *
+     * Rows the account itself says are not a fuel purchase are dropped and
+     * counted, never silently: Guttman ships DECLINED rows with a blank
+     * quantity, and a NON-FUEL category for the same. Counting those as zero
+     * would be harmless; counting them as fills would not, and either way the
+     * office should be able to see that the file had 75 rows and 73 of them
+     * were fuel.
+     */
+    function readStatementRows(rows) {
+      if (!rows.length) return { error: 'That file has no rows in it.' };
+      const { found, labels } = detectColumns(rows[0]);
+      if (!found.vehicle) {
+        return { error: `Couldn't find a vehicle column. The headings read: ${
+          Object.values(labels).slice(0, 12).join(', ')}` };
+      }
+      if (!found.gallons) {
+        return { error: `Couldn't find a gallons column. The headings read: ${
+          Object.values(labels).slice(0, 12).join(', ')}` };
+      }
+
+      const out = [], dropped = [];
+      for (const r of rows.slice(1)) {
+        const ref = String(r[found.vehicle] ?? '').trim();
+        const rawQty = String(r[found.gallons] ?? '').replace(/[$,\s]/g, '');
+        const gallons = rawQty === '' ? null : Number(rawQty);
+        const status  = found.status   ? String(r[found.status] ?? '').trim()   : '';
+        const cat     = found.category ? String(r[found.category] ?? '').trim() : '';
+
+        if (!ref && gallons == null) continue;                      // trailing blank row
+        if (status && !/^posted$/i.test(status)) { dropped.push({ ref, why: status }); continue; }
+        if (cat && !/^fuel$/i.test(cat))         { dropped.push({ ref, why: cat });    continue; }
+        if (gallons == null || !Number.isFinite(gallons)) { dropped.push({ ref, why: 'no quantity' }); continue; }
+
+        let date = found.date ? String(r[found.date] ?? '').trim() : '';
+        if (/^\d+(\.\d+)?$/.test(date)) date = excelSerialToYmd(date) || date;
+        else if (date) date = (date.match(/\d{4}-\d{2}-\d{2}/) || [date.slice(0, 10)])[0];
+
+        out.push({
+          ref, gallons, date,
+          product: found.product ? String(r[found.product] ?? '').trim() : '',
+          // Both accounts mark this in a trailing column with no header of
+          // their own, so it is read wherever it landed rather than assumed.
+          nonIfta: found.ifta
+            ? /non.?ifta/i.test(String(r[found.ifta] ?? ''))
+            : Object.values(r).some(v => /^non\s*ifta$/i.test(String(v || '').trim())),
+          site: found.site ? String(r[found.site] ?? '').trim() : '',
+        });
+      }
+      return { rows: out, dropped, columns: found, labels };
+    }
+
+    // The accounts are not consistent with themselves: one Wex export writes
+    // the same pickup as "PT 2458", "PT-2458" and "PT4750". Matching strips
+    // everything that isn't a letter or a digit and upper-cases the rest, so
+    // all three land on the same key — while the roster keeps what was typed.
+    function refKey(v) {
+      return String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
     }
 
     function parseStatement(text, gallonsPick, knownTrucks) {
@@ -3299,11 +3627,16 @@
         fills.set(t, (fills.get(t) || 0) + 1);
       }
 
-      const trucks = new Set([...ours.keys(), ...statement.byTruck.keys()]);
+      const stmt = statement.byTruck instanceof Map ? statement.byTruck : new Map();
+      const stmtGallons = t => {
+        const v = stmt.get(t);
+        return v == null ? null : (typeof v === 'object' ? v.gallons : v);
+      };
+      const trucks = new Set([...ours.keys(), ...stmt.keys()]);
       const rows = [];
       for (const t of trucks) {
         const o = ours.has(t) ? ours.get(t) : null;
-        const s = statement.byTruck.has(t) ? statement.byTruck.get(t) : null;
+        const s = stmtGallons(t);
         let verdict;
         if (o == null)      verdict = 'not-in-ours';
         else if (s == null) verdict = 'not-on-statement';
@@ -3327,7 +3660,7 @@
       return {
         card, rows,
         oursTotal:      [...ours.values()].reduce((a, b) => a + b, 0),
-        statementTotal: [...statement.byTruck.values()].reduce((a, b) => a + b, 0),
+        statementTotal: [...stmt.keys()].reduce((a, t) => a + (stmtGallons(t) || 0), 0),
         matched:        rows.filter(r => r.verdict === 'match').length,
         variances:      rows.filter(r => r.verdict === 'variance'),
         notInOurs:      rows.filter(r => r.verdict === 'not-in-ours'),
@@ -3347,9 +3680,36 @@
         out.innerHTML = '<div class="rep-empty">Build a report first — the match runs against the range above.</div>';
         return;
       }
+      const account = val('mt-card');
       const text = val('mt-paste');
+
+      // A workbook already knows which column is which, so it skips the
+      // number-guessing the paste path has to do and goes straight to the
+      // account's own vehicle ids.
+      if (loadedWorkbook) {
+        const agg = aggregateByRef(loadedWorkbook.rows);
+        const { byTruck, unmapped } = resolveStatementRefs(agg.byRef, account, vehicleIndex());
+        matchResult = matchStatement(reportModel, account, {
+          byTruck,
+          skipped: loadedWorkbook.dropped.map(d => `${d.ref || '(no vehicle)'} — ${d.why}`),
+          lines: loadedWorkbook.rows.length + loadedWorkbook.dropped.length,
+        });
+        matchResult.periodStart = reportModel.from;
+        matchResult.periodEnd   = reportModel.to;
+        matchResult.builtFor    = reportModel.builtFor;
+        matchResult.months      = reportModel.months;
+        matchResult.source      = loadedWorkbook.name;
+        matchResult.unmapped    = unmapped;
+        matchResult.statementIfta    = agg.iftaGallons;
+        matchResult.statementNonIfta = agg.nonIftaGallons;
+        matchResult.byProduct        = agg.byProduct;
+        matchResult.refsFor          = new Map([...byTruck].map(([t, v]) => [t, v.refs.join(', ')]));
+        renderStatementMatch();
+        return;
+      }
+
       if (!text.trim()) {
-        out.innerHTML = '<div class="rep-empty">Paste a statement above, then press Match.</div>';
+        out.innerHTML = '<div class="rep-empty">Choose a statement file or paste one above, then press Match.</div>';
         return;
       }
       const parsed = parseStatement(text, val('mt-gallons-col'), knownTruckNumbers());
@@ -3376,6 +3736,7 @@
     function clearStatementMatch() {
       el('mt-paste').value = '';
       el('mt-file').value = '';
+      loadedWorkbook = null;
       el('mt-file-name').textContent = '…or paste the statement below.';
       el('matchResults').innerHTML = '';
       matchResult = null;
@@ -3386,26 +3747,49 @@
     // copy out of. Read straight into the same box the paste goes into, so
     // there is one parser and one preview rather than two paths that can
     // disagree about what a line means.
-    function loadStatementFile(ev) {
+    // A workbook that has been read and understood, waiting for Match. Held
+    // rather than flattened into the textarea: the sheet carries a date, a
+    // product and an IFTA marker per row, and turning it back into two columns
+    // of text would throw all of that away on the way in.
+    let loadedWorkbook = null;
+
+    async function loadStatementFile(ev) {
       const file = ev && ev.target && ev.target.files && ev.target.files[0];
       if (!file) return;
       const label = el('mt-file-name');
-      // A statement is text. A spreadsheet saved as .xlsx is a zip, and
-      // reading it as text produces line noise that parses into nonsense
-      // truck numbers — say so instead.
-      if (/\.(xlsx|xls|numbers|pdf)$/i.test(file.name)) {
-        label.textContent = `${file.name} isn't a text file — export it as CSV and try again.`;
-        el('mt-file').value = '';
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        el('mt-paste').value = String(reader.result || '');
-        const lines = el('mt-paste').value.split(/\r?\n/).filter(l => l.trim()).length;
+      loadedWorkbook = null;
+      label.textContent = `Reading ${file.name}…`;
+
+      try {
+        if (/\.xlsx$/i.test(file.name)) {
+          if (typeof DecompressionStream === 'undefined') {
+            throw new Error('This browser cannot open .xlsx files — save the statement as CSV instead.');
+          }
+          const rows = await readWorkbook(await file.arrayBuffer());
+          const read = readStatementRows(rows);
+          if (read.error) throw new Error(read.error);
+          if (!read.rows.length) throw new Error('No fuel transactions in that file.');
+
+          loadedWorkbook = Object.assign(read, { name: file.name });
+          el('mt-paste').value = '';
+          const gal = read.rows.reduce((n, r) => n + r.gallons, 0);
+          label.innerHTML = `<strong>${escapeHtml(file.name)}</strong> — ${read.rows.length} fuel `
+            + `transaction${read.rows.length === 1 ? '' : 's'}, ${n2(gal)} gal`
+            + (read.dropped.length ? `, ${read.dropped.length} row${read.dropped.length === 1 ? '' : 's'} skipped `
+                 + `(${escapeHtml([...new Set(read.dropped.map(d => d.why))].slice(0, 3).join(', '))})` : '')
+            + '. Press Match.';
+          return;
+        }
+
+        // Anything else is read as text and goes through the paste path.
+        const text = await file.text();
+        el('mt-paste').value = text;
+        const lines = text.split(/\r?\n/).filter(l => l.trim()).length;
         label.textContent = `${file.name} — ${lines} line${lines === 1 ? '' : 's'}. Press Match.`;
-      };
-      reader.onerror = () => { label.textContent = `Couldn't read ${file.name}.`; };
-      reader.readAsText(file);
+      } catch (err) {
+        label.textContent = `Couldn't read ${file.name}: ${err.message}`;
+        el('mt-file').value = '';
+      }
     }
 
     // ── Saved matches ──────────────────────────────────────────────────────
@@ -3777,9 +4161,51 @@
              daily review, and are not counted below. Approve them first if they belong on this statement.</div>`
         : '';
 
+      // Vehicle ids the account billed that no truck on the roster claims.
+      // Loudest thing on the page when it happens: every one of these is
+      // fuel that cannot be attributed at all, and until they are assigned
+      // the difference below is missing exactly that much.
+      const unmapped = r.unmapped || [];
+      const unmappedGal = unmapped.reduce((n, u) => n + u.gallons, 0);
+      const unmappedWarning = unmapped.length ? `
+        <div class="flag-banner" style="display:block">
+          <div><strong>${unmapped.length}</strong> vehicle${unmapped.length === 1 ? '' : 's'} on this statement
+            ${unmapped.length === 1 ? "isn't" : "aren't"} on the roster — <strong>${n2(unmappedGal)}</strong> gal
+            that can't be attributed to a truck. ${escapeHtml(r.card || 'The account')} names vehicles its own way;
+            put its id on the matching truck under <em>Vehicles</em> and it will match from then on.</div>
+          <table style="margin-top:0.6rem">
+            <thead><tr><th>${escapeHtml(r.card || 'Account')} vehicle</th><th class="num">Gallons</th><th class="num">Fills</th><th></th></tr></thead>
+            <tbody>
+              ${unmapped.slice(0, 40).map(u => `
+                <tr>
+                  <td class="name" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(u.ref)}</td>
+                  <td class="num">${n2(u.gallons)}</td>
+                  <td class="num">${u.fills}</td>
+                  <td class="td-actions">
+                    <button class="row-btn edit" onclick="assignRefToTruck('${escJsAttr(r.card)}','${escJsAttr(u.ref)}')">Assign to a truck…</button>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+          ${unmapped.length > 40 ? `<div class="match-note">…and ${unmapped.length - 40} more.</div>` : ''}
+        </div>` : '';
+
+      // What the account itself says the fuel was. Shown beside the balance
+      // rather than filtered out of it, so the month still ties to the
+      // statement total while the filing split stays visible.
+      const splitPanel = (r.statementIfta != null || (r.byProduct && r.byProduct.size)) ? `
+        <div class="match-note" style="margin-top:0.6rem">
+          <strong>On the statement:</strong>
+          ${r.statementIfta != null ? `${n2(r.statementIfta)} gal IFTA · ${n2(r.statementNonIfta)} gal marked Non-IFTA` : ''}
+          ${r.byProduct && r.byProduct.size
+            ? ` · ${[...r.byProduct].sort((a, b) => b[1] - a[1])
+                  .map(([p, g]) => `${escapeHtml(p)} ${n2(g)}`).join(' · ')}` : ''}
+        </div>` : '';
+
       out.innerHTML = `
         ${spanWarning}
         ${pendingWarning}
+        ${unmappedWarning}
         ${savedHeader}
         <div class="match-summary">
           <div class="match-tile ${balanced ? 'ok' : 'off'}">
@@ -3814,7 +4240,10 @@
                     ? `<input type="checkbox" class="tick" ${row.resolved ? 'checked' : ''}
                               onchange="toggleLineResolved('${escJsAttr(row.lineId)}', this.checked)" />`
                     : ''}</td>` : ''}
-                <td class="num" style="font-weight:700">${row.truck}</td>
+                <td class="num" style="font-weight:700">${row.truck}${
+                  r.refsFor && r.refsFor.get(row.truck)
+                    ? `<div class="bal-meta" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${
+                        escapeHtml(r.refsFor.get(row.truck))}</div>` : ''}</td>
                 <td class="num">${row.ours != null ? n2(row.ours) : '—'}</td>
                 <td class="num">${row.statement != null ? n2(row.statement) : '—'}</td>
                 <td class="num verdict">${row.difference != null
@@ -3835,6 +4264,7 @@
         </table>
 
         <div class="match-note">
+          ${r.source ? `From <strong>${escapeHtml(r.source)}</strong>. ` : ''}
           ${r.historical ? '' : `Read ${r.lines} line${r.lines === 1 ? '' : 's'}${r.skipped.length
             ? `, ${r.skipped.length} of which had no truck number and gallons figure on them
                (headers and totals usually don't — first was “${escapeHtml(r.skipped[0].slice(0, 60))}”)`
@@ -3846,6 +4276,7 @@
             statement with no fuel entry behind ${r.notInOurs.length === 1 ? 'it' : 'them'} — fuel nobody reported. ` : ''}
           ${r.notOnStatement.length ? `<strong>${r.notOnStatement.length}</strong> ${r.notOnStatement.length === 1 ? 'was' : 'were'}
             reported but not billed on this account — usually a truck number typed wrong, or fuel put on a different card. ` : ''}
+          ${splitPanel}
         </div>
 
         ${r.historical ? '' : `
@@ -3922,6 +4353,51 @@
         // rows aren't visible from here — say what happened instead.
         alert(`${j.updated} entr${j.updated === 1 ? 'y' : 'ies'} marked${
           j.skipped.length ? `. ${j.skipped.length} left alone — not approved yet.` : '.'}`);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    /**
+     * Put an account's vehicle id onto a truck without leaving the match.
+     *
+     * The alternative is writing the id down, switching tabs, finding the
+     * truck, typing it in, coming back and re-matching — forty times on the
+     * first run. Asked for by truck number because that is what the office
+     * has in front of them; the id itself came off the statement.
+     */
+    async function assignRefToTruck(account, ref) {
+      const answer = prompt(
+        `${account} calls this vehicle "${ref}".\n\nWhich of your truck numbers is it?`, '');
+      if (answer == null) return;
+      const truck = parseInt(String(answer).replace(/[^0-9]/g, ''), 10);
+      if (!Number.isFinite(truck)) { alert('That is not a truck number.'); return; }
+
+      const v = vehicles.find(x => Number(x.truck_number) === truck);
+      if (!v) {
+        alert(`Truck ${truck} isn't on the roster. Add it under Vehicles first, then assign this id to it.`);
+        return;
+      }
+      const refs = Object.assign({}, v.account_refs || {});
+      if (refs[account] && refKey(refs[account]) !== refKey(ref)
+        && !confirm(`Truck ${truck} is already down as "${refs[account]}" on ${account}. Replace it with "${ref}"?`)) return;
+      refs[account] = ref;
+
+      try {
+        const res = await fetch('/api/fuel-vehicles', {
+          method: 'POST', headers: authHeaders(true),
+          body: JSON.stringify({
+            id: v.id, truck_number: v.truck_number, vin: v.vin, model_year: v.model_year,
+            make: v.make, ifta: v.ifta, ifta_sticker: v.ifta_sticker, active: v.active,
+            notes: v.notes, account_refs: refs,
+          }),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        await loadVehicles();
+        // Re-run so the gallons move out of the unmapped list and onto the
+        // truck — the point of assigning it was to see that happen.
+        runStatementMatch();
       } catch (err) {
         alert(err.message);
       }

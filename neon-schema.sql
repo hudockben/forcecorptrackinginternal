@@ -1223,6 +1223,20 @@ CREATE TABLE IF NOT EXISTS fuel_vehicles (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fuel_vehicle_truck
   ON fuel_vehicles(company_code, truck_number);
 
+-- What each fuel account calls this vehicle, as {"Guttman":"5894","Wex":"PT 4805"}.
+--
+-- The accounts name vehicles in their own namespaces: an entry says truck 635,
+-- Guttman's export says 5894, Wex's says PT 4805, and nothing in either file
+-- joins them — Wex's VIN column ships blank. So the correspondence has to be
+-- recorded once per vehicle, and this is where.
+--
+-- Deliberately keyed on the ACCOUNT rather than on a card number. A card gets
+-- moved between vehicles; the vehicle the account has on file does not change
+-- when it does. Mapping the card instead would silently re-attribute every
+-- fill the moment one was swapped, which is the discrepancy this is supposed
+-- to catch rather than absorb.
+ALTER TABLE fuel_vehicles ADD COLUMN IF NOT EXISTS account_refs JSONB;
+
 -- ─────────────────────────────────────────────────
 -- FUEL STATEMENT MATCHES
 -- One saved reconciliation: an account's statement for a period, lined up
