@@ -4795,6 +4795,16 @@
           </div>
         </div>` : '';
 
+      // Numbers taken out of a description. Shown for the same reason as the
+      // longhand cards: reinterpreting a fleet of equipment is not something
+      // a preview should do quietly.
+      const fromTextNote = (built.fromText && built.fromText.length) ? `
+        <div class="imp-note imp-flag">
+          <strong>${built.fromText.length}</strong> value${built.fromText.length === 1 ? '' : 's'} read out of
+          a description: ${escapeHtml(built.fromText.slice(0, 12).join('; '))}${
+            built.fromText.length > 12 ? `, and ${built.fromText.length - 12} more` : ''}.
+        </div>` : '';
+
       const unknownNote = built.unknownEmployees.length ? `
         <div class="imp-note imp-flag">
           <strong>${built.unknownEmployees.length}</strong> name${built.unknownEmployees.length === 1 ? '' : 's'}
@@ -4841,6 +4851,7 @@
           </div>
           ${defaultedNote}
           ${readAsNote}
+          ${fromTextNote}
           ${unknownNote}
           ${sample.length ? `
           <div class="imp-head" style="margin-top:0.9rem">The first ${sample.length} as they will be stored</div>
