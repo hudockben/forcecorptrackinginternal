@@ -981,6 +981,56 @@ function statementTests2() {
     const gutt = api.resolveStatementRefs(byRef, 'Guttman', fleet);
     assert('the same statement resolves differently for another account',
       gutt.byTruck.get(635).gallons === 179.85, JSON.stringify([...gutt.byTruck]));
+
+    // An aggregate built before the hint fields existed — a saved match being
+    // re-resolved, or the pasted-text path — must not blow up the banner that
+    // now reads them.
+    assert('an aggregate with no hints on it still resolves',
+      wex.unmapped.every(u => Array.isArray(u.drivers) && u.odoLow === null),
+      JSON.stringify(wex.unmapped));
+  }
+
+  console.log('\n  what the statement knows about a vehicle it cannot place');
+  {
+    // The first time an account is matched, none of its ids mean anything —
+    // Guttman calls a truck 5894 and the yard calls it something else. What
+    // makes the row identifiable is the driver whose name keeps appearing on
+    // it, and that is sitting in the file already.
+    const g = api.detectColumns(GUTTMAN_HEADER).found;
+    assert('the driver column is found on the Guttman export', g.driver === 'G', String(g.driver));
+    assert('and the odometer', g.odometer === 'T', String(g.odometer));
+    const w = api.detectColumns(WEX_HEADER).found;
+    assert('Wex has no driver column, and none is invented', w.driver === undefined, String(w.driver));
+    assert('but it does have an odometer', w.odometer === 'AP', String(w.odometer));
+    // Reading a driver column must not cost the columns that were already
+    // being found — a new pattern claiming one of them would change what a
+    // month totals to.
+    assert('and nothing else moved', g.vehicle === 'J' && g.gallons === 'X' && g.card === 'I',
+      JSON.stringify(g));
+
+    const rows = [GUTTMAN_HEADER,
+      { A:'POSTED', J:'5894', G:'KEN STEWART',  T:'3902',  U:'2026-05-01 08:00:00.0', X:'20.0', Z:'FUEL', AB:'ULS Diesel' },
+      { A:'POSTED', J:'5894', G:'KEN STEWART',  T:'32668', U:'2026-05-20 08:00:00.0', X:'21.0', Z:'FUEL', AB:'ULS Diesel' },
+      { A:'POSTED', J:'5023', G:'Phil Rodgers', T:'226544',U:'2026-05-02 08:00:00.0', X:'10.0', Z:'FUEL', AB:'Unleaded E10 Reg' },
+      { A:'POSTED', J:'5023', G:'CORY ADAMS',   T:'264178',U:'2026-05-22 08:00:00.0', X:'11.0', Z:'FUEL', AB:'Unleaded E10 Reg' },
+    ];
+    const agg = api.aggregateByRef(api.readStatementRows(rows).rows);
+    const out = api.resolveStatementRefs(agg.byRef, 'Guttman', new Map());
+    const by = Object.fromEntries(out.unmapped.map(u => [u.ref, u]));
+
+    assert('the driver comes through on an unplaced vehicle',
+      by['5894'].drivers.join(',') === 'KEN STEWART', JSON.stringify(by['5894'].drivers));
+    // A shared vehicle shows everyone, most frequent first — one name would
+    // read as certainty the file does not support.
+    assert('a shared vehicle names everyone who used it',
+      by['5023'].drivers.length === 2, JSON.stringify(by['5023'].drivers));
+    assert('the fuel it takes comes through — a diesel truck is not the gas pickup',
+      by['5894'].product === 'ULS Diesel', by['5894'].product);
+    // Second-best identifier when two vehicles share a driver: a 264,000-mile
+    // vehicle is not the 32,000-mile one.
+    assert('and the odometer range it ran through',
+      by['5023'].odoLow === 226544 && by['5023'].odoHigh === 264178,
+      `${by['5023'].odoLow}–${by['5023'].odoHigh}`);
   }
 }
 

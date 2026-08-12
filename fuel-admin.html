@@ -3289,7 +3289,21 @@
           const asNumber = /^\d+$/.test(key) ? Number(key) : null;
           if (asNumber != null && fleet.has(String(asNumber))) truck = asNumber;
         }
-        if (truck == null) { unmapped.push({ ref, gallons: agg.gallons, fills: agg.fills }); continue; }
+        if (truck == null) {
+          const top = m => [...(m || new Map())].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+          unmapped.push({
+            ref, gallons: agg.gallons, fills: agg.fills,
+            // Everything the file knows that might say which truck this is.
+            // Not a guess at the answer — the office recognises its own
+            // drivers and its own diesel trucks, and this is the difference
+            // between seventeen bare numbers and seventeen it can place.
+            drivers: top(agg.drivers).slice(0, 3),
+            product: top(agg.products)[0] || '',
+            odoLow:  agg.odo && agg.odo.length ? Math.min(...agg.odo) : null,
+            odoHigh: agg.odo && agg.odo.length ? Math.max(...agg.odo) : null,
+          });
+          continue;
+        }
         const prev = byTruck.get(truck) || { gallons: 0, fills: 0, refs: [] };
         prev.gallons = Math.round((prev.gallons + agg.gallons) * 100) / 100;
         prev.fills  += agg.fills;
@@ -3307,9 +3321,15 @@
       let iftaGallons = 0, nonIftaGallons = 0;
       const byProduct = new Map();
       for (const r of rows) {
-        const agg = byRef.get(r.ref) || { gallons: 0, fills: 0 };
+        const agg = byRef.get(r.ref) || { gallons: 0, fills: 0, drivers: new Map(), products: new Map(), odo: [] };
         agg.gallons = Math.round((agg.gallons + r.gallons) * 100) / 100;
         agg.fills++;
+        // Kept per vehicle rather than per line: what identifies an unknown id
+        // is the name that keeps coming up on it, not the name on any one
+        // fill-up. A shared truck shows both, most frequent first.
+        if (r.driver)  agg.drivers.set(r.driver, (agg.drivers.get(r.driver) || 0) + 1);
+        if (r.product) agg.products.set(r.product, (agg.products.get(r.product) || 0) + 1);
+        if (Number.isFinite(r.odometer) && r.odometer > 100) agg.odo.push(r.odometer);
         byRef.set(r.ref, agg);
         if (r.nonIfta) nonIftaGallons += r.gallons; else iftaGallons += r.gallons;
         if (r.product) {
@@ -3502,6 +3522,15 @@
       ifta:    [/non.?ifta/i],
       site:    [/^site description$/i, /^merchant name$/i, /^merchant \(brand\)$/i],
       card:    [/^card number$/i, /^card description$/i],
+      // Who was holding the card. Read for one reason: the first time an
+      // account is matched, none of its vehicle ids mean anything to anyone —
+      // Guttman calls a truck 5894 and the yard calls it something else. The
+      // driver's name is the thing that makes the row identifiable, and it is
+      // sitting in the file already.
+      driver:  [/^driver id description$/i, /^driver name$/i, /^driver$/i],
+      // The reading on the pump. Second-best identifier when two vehicles
+      // share a driver: a 268,000-mile truck is not the 21,000-mile pickup.
+      odometer:[/^transaction odometer$/i, /^current odometer$/i, /^odometer$/i],
     };
 
     /**
@@ -3585,6 +3614,8 @@
             ? /non.?ifta/i.test(String(r[found.ifta] ?? ''))
             : Object.values(r).some(v => /^non\s*ifta$/i.test(String(v || '').trim())),
           site: found.site ? String(r[found.site] ?? '').trim() : '',
+          driver: found.driver ? String(r[found.driver] ?? '').trim() : '',
+          odometer: found.odometer ? Number(String(r[found.odometer] ?? '').replace(/[,\s]/g, '')) : NaN,
         });
       }
       return { rows: out, dropped, columns: found, labels };
@@ -5009,15 +5040,26 @@
           <div><strong>${unmapped.length}</strong> vehicle${unmapped.length === 1 ? '' : 's'} on this statement
             ${unmapped.length === 1 ? "isn't" : "aren't"} on the roster — <strong>${n2(unmappedGal)}</strong> gal
             that can't be attributed to a truck. ${escapeHtml(r.card || 'The account')} names vehicles its own way;
-            put its id on the matching truck under <em>Vehicles</em> and it will match from then on.</div>
+            put its id on the matching truck under <em>Vehicles</em> and it will match from then on.
+            ${unmapped.some(u => (u.drivers || []).length)
+              ? 'The last three columns are what the statement itself says about each one.' : ''}</div>
           <table style="margin-top:0.6rem">
-            <thead><tr><th>${escapeHtml(r.card || 'Account')} vehicle</th><th class="num">Gallons</th><th class="num">Fills</th><th></th></tr></thead>
+            <thead><tr>
+              <th>${escapeHtml(r.card || 'Account')} vehicle</th>
+              <th class="num">Gallons</th><th class="num">Fills</th>
+              <th>Used by</th><th>Fuel</th><th class="num">Odometer</th><th></th>
+            </tr></thead>
             <tbody>
               ${unmapped.slice(0, 40).map(u => `
                 <tr>
                   <td class="name" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(u.ref)}</td>
                   <td class="num">${n2(u.gallons)}</td>
                   <td class="num">${u.fills}</td>
+                  <td>${escapeHtml((u.drivers || []).join(', ')) || '—'}</td>
+                  <td>${escapeHtml(u.product || '—')}</td>
+                  <td class="num">${u.odoLow == null ? '—'
+                    : (u.odoLow === u.odoHigh ? u.odoLow.toLocaleString()
+                       : `${u.odoLow.toLocaleString()}–${u.odoHigh.toLocaleString()}`)}</td>
                   <td class="td-actions">
                     <button class="row-btn edit" onclick="assignRefToTruck('${escJsAttr(r.card)}','${escJsAttr(u.ref)}')">Assign to a truck…</button>
                   </td>
