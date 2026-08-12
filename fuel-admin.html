@@ -4185,6 +4185,14 @@
       } catch (err) {
         label.textContent = `Couldn't read ${file.name}: ${err.message}`;
         el('mt-file').value = '';
+        // The text in the box came from this file, so take it back out with
+        // it. Left there it is re-read on every press of Match — the panel
+        // repeats the same refusal and looks stuck rather than ready for the
+        // right file. A block somebody TYPED is never touched: it only gets
+        // cleared here because it was put there a few lines above.
+        el('mt-paste').value = '';
+        el('matchResults').innerHTML = '';
+        matchResult = null;
       }
     }
 
