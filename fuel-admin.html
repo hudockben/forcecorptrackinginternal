@@ -4005,6 +4005,36 @@
         out.innerHTML = '<div class="rep-empty">Choose a statement file or paste one above, then press Match.</div>';
         return;
       }
+
+      // The same reading the file path does, for a block that was pasted
+      // rather than chosen. Without it the line parser has a go at anything,
+      // and it will find a truck number and a gallons figure in a file that
+      // has neither.
+      const byHeading = statementFromText(text);
+      if (byHeading && byHeading.error) {
+        out.innerHTML = `<div class="rep-empty">${escapeHtml(byHeading.error)}</div>`;
+        return;
+      }
+      if (byHeading) {
+        const agg = aggregateByRef(byHeading.rows);
+        const { byTruck, unmapped, how, counts } = resolveStatementRefs(agg.byRef, account, vehicleIndex());
+        matchResult = matchStatement(reportModel, account, {
+          byTruck,
+          skipped: byHeading.dropped.map(d => `${d.ref || '(no vehicle)'} — ${d.why}`),
+          lines: byHeading.rows.length + byHeading.dropped.length,
+        });
+        Object.assign(matchResult, {
+          periodStart: reportModel.from, periodEnd: reportModel.to,
+          builtFor: reportModel.builtFor, months: reportModel.months,
+          unmapped, matchedBy: counts,
+          statementIfta: agg.iftaGallons, statementNonIfta: agg.nonIftaGallons,
+          byProduct: agg.byProduct,
+          refsFor: new Map([...byTruck].map(([t, v]) => [t, v.refs.join(', ')])),
+        });
+        renderStatementMatch();
+        return;
+      }
+
       const parsed = parseStatement(text, val('mt-gallons-col'), knownTruckNumbers());
       if (!parsed.byTruck.size) {
         out.innerHTML = `<div class="rep-empty">Couldn't read a truck number and a gallons figure off any of those
@@ -4071,6 +4101,40 @@
     // of text would throw all of that away on the way in.
     let loadedWorkbook = null;
 
+    /**
+     * A delimited block, read the way a workbook is where it can be.
+     *
+     * Returns { rows … } when it has headings a statement can be read from,
+     * { error } when it is recognisably the WRONG file, and null when it is
+     * a bare block of numbers for the line parser to have a go at.
+     *
+     * The middle case is the one that earns its place. A statement saved as
+     * CSV and the fuel tickets exported as CSV are both "a CSV with a truck
+     * number and a gallons figure on every line", and the line parser reads
+     * either of them without complaint — it found a tank number of 5179 and
+     * called it five thousand gallons for truck 18. The headings say plainly
+     * which file this is, so they are read before anything else happens.
+     */
+    function statementFromText(text) {
+      const grid = parseDelimited(text);
+      if (grid.length < 2) return null;
+
+      // Fuel-ticket columns: Fuel Card Used, Beginning Meter Reading, Tank
+      // Number. No fuel account has ever billed a Beginning Meter Reading.
+      const asTickets = detectColumns(grid[0], IMPORT_COLUMNS).found;
+      const ticketish = ['fuel_card', 'beginning_meter', 'ending_meter', 'tank_number', 'fueling_site']
+        .filter(k => asTickets[k]).length;
+      if (ticketish >= 3) {
+        return { error: 'That looks like the fuel tickets file, not an account statement — it has '
+          + 'columns no fuel account bills, like meter readings and a fuel card. Load it on the Import '
+          + 'tab instead; this panel wants the file that comes out of Guttman or Wex.' };
+      }
+
+      const read = readStatementRows(grid);
+      if (read.error || !read.rows.length) return null;   // let the line parser try
+      return read;
+    }
+
     async function loadStatementFile(ev) {
       const file = ev && ev.target && ev.target.files && ev.target.files[0];
       if (!file) return;
@@ -4101,9 +4165,21 @@
           return;
         }
 
-        // Anything else is read as text and goes through the paste path.
+        // Anything else is delimited text. Read by its headings where it has
+        // usable ones — a statement saved as CSV is still a statement — and
+        // refused outright where the headings say it is a different file.
         const text = await file.text();
         el('mt-paste').value = text;
+        const read = statementFromText(text);
+        if (read && read.error) throw new Error(read.error);
+        if (read) {
+          loadedWorkbook = Object.assign(read, { name: file.name });
+          showGallonsPicker(false);
+          const gal = read.rows.reduce((n, r) => n + r.gallons, 0);
+          label.innerHTML = `<strong>${escapeHtml(file.name)}</strong> — ${read.rows.length} fuel `
+            + `transaction${read.rows.length === 1 ? '' : 's'}, ${n2(gal)} gal, read by its headings. Press Match.`;
+          return;
+        }
         const lines = text.split(/\r?\n/).filter(l => l.trim()).length;
         label.textContent = `${file.name} — ${lines} line${lines === 1 ? '' : 's'}. Press Match.`;
       } catch (err) {

@@ -886,12 +886,18 @@ function statementTests2() {
     ${liftFn(src, 'detectColumns',      file)}
     ${liftFn(src, 'readStatementRows',  file)}
     ${liftFn(src, 'refKey',             file)}
+    ${liftConst(src, 'IMPORT_COLUMNS',  file)}
+    ${liftFn(src, 'delimiterFor',       file)}
+    ${liftFn(src, 'colLetter',          file)}
+    ${liftFn(src, 'splitDelimitedLine', file)}
+    ${liftFn(src, 'parseDelimited',     file)}
+    ${liftFn(src, 'statementFromText',  file)}
     ${liftFn(src, 'aggregateByRef',     file)}
     ${liftFn(src, 'refDigits',          file)}
     ${liftFn(src, 'vinTail',            file)}
     ${liftFn(src, 'resolveStatementRefs', file)}
     return { excelSerialToYmd, detectColumns, readStatementRows, refKey,
-             aggregateByRef, resolveStatementRefs, refDigits, vinTail };
+             aggregateByRef, resolveStatementRefs, refDigits, vinTail, statementFromText };
   `)();
 
   console.log('\n  columns, by heading rather than position');
@@ -1084,6 +1090,50 @@ function statementTests2() {
     const none = api.resolveStatementRefs(new Map([['PT9999', { gallons: 5, fills: 1 }]]), 'Wex', new Map());
     assert('a number that is not on the roster stays unmapped',
       none.unmapped.length === 1, JSON.stringify(none.unmapped));
+  }
+
+  console.log('\n  a delimited block, and whether it is a statement at all');
+  {
+    const csv = rows => rows.map(r => r.join(',')).join('\n');
+
+    // A statement saved as CSV is still a statement, and reading it by its
+    // headings is the difference between 1510 gallons and whatever the line
+    // parser makes of a row with twelve numbers on it.
+    const asCsv = csv([
+      ['Status', 'Vehicle Number', 'Transaction date', 'Transaction quantity', 'Product category'],
+      ['POSTED', '5894', '2026-05-01 08:00:00.0', '24.221', 'FUEL'],
+      ['POSTED', '5894', '2026-05-14 08:00:00.0', '21.731', 'FUEL'],
+      ['DECLINED', '2458', '2026-05-29 05:13:26.0', '', 'NON-FUEL'],
+    ]);
+    const stmt = api.statementFromText(asCsv);
+    assert('a statement in CSV is read by its headings',
+      stmt && !stmt.error && stmt.rows.length === 2, JSON.stringify(stmt && (stmt.error || stmt.rows.length)));
+    assert('and its declined line is still dropped', stmt.dropped.length === 1);
+
+    // The one this exists for. Both files are "a CSV with a truck number and
+    // a gallons figure on every line", and the line parser reads either
+    // without complaint — it took a tank number of 5179 for five thousand
+    // gallons and billed it to truck 18.
+    const tickets = csv([
+      ['Timestamp', 'Date', 'First Name', 'Last Name', 'Fuel Card Used', 'Fuel Type', 'Gallons',
+       'Mileage', 'Truck Number', 'Beginning Meter Reading', 'Ending Meter Reading',
+       'Fueling Site', 'Tank Number', 'State', 'City Fueled'],
+      ['2026-05-01', '2026-05-01', 'Ted', 'DeValerio', 'Guttman', 'Gas', '30.0',
+       '82438.0', '2458', '0.0', '0.0', 'Sheetz', '5.0', 'PA', 'Sidman'],
+    ]);
+    const wrong = api.statementFromText(tickets);
+    assert('the fuel tickets file is recognised and refused',
+      wrong && wrong.error && /Import tab/.test(wrong.error), JSON.stringify(wrong));
+    assert('and it says which columns gave it away',
+      /meter readings|fuel card/i.test(wrong.error), wrong.error);
+
+    // A bare block of numbers has no headings to read, so the line parser
+    // still has to get its turn — that is the paste this panel was built for.
+    assert('a headerless block falls through to the line parser',
+      api.statementFromText('412\t320.50\n412\t180.00\n77\t95.25') === null);
+    assert('and so does something with headings that mean nothing here',
+      api.statementFromText('alpha,beta\n1,2\n3,4') === null);
+    assert('one line on its own is not a grid', api.statementFromText('412 320.50') === null);
   }
 
   console.log('\n  what the statement knows about a vehicle it cannot place');
