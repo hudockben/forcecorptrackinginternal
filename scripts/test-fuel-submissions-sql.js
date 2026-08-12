@@ -160,17 +160,32 @@ async function run() {
     // FILL is a card purchase — meters at 0 — so the receipt figure stands.
     assert('a card purchase keeps the reported gallons', e0.gallons === 84.5, String(e0.gallons));
 
-    // A Force Fuel tank fill. The gallons in the body are deliberately wrong;
-    // the meter is what the row must end up carrying.
+    // A Force Fuel tank fill whose reported figure AGREES with the readings —
+    // which is every form submission, since the page derives one from the
+    // other. The meter's own precision wins.
     const tank = await call('POST', {}, Object.assign({}, FILL, {
       work_date: '2026-08-02', truck_number: '9',
-      beginning_meter: '18240.5', ending_meter: '18325', gallons: '10',
+      beginning_meter: '18240.5', ending_meter: '18325', gallons: '84',
     }), FIELD);
     assert('a tank fill computes gallons from the readings', tank.body.entry.gallons === 84.5,
       String(tank.body.entry.gallons));
     assert('and the readings themselves are stored as given',
       tank.body.entry.beginning_meter === 18240.5 && tank.body.entry.ending_meter === 18325,
       `${tank.body.entry.beginning_meter} / ${tank.body.entry.ending_meter}`);
+
+    // And one where they do NOT agree. This is a fill-up recorded somewhere
+    // else, where the two numbers were typed independently — the reported one
+    // stands, because a mistyped meter reading is far commoner than a
+    // mistyped receipt, and Fuel Admin flags the row rather than the server
+    // quietly restating the gallons.
+    const argued = await call('POST', {}, Object.assign({}, FILL, {
+      work_date: '2026-08-04', truck_number: '11',
+      beginning_meter: '52028.1', ending_meter: '53083.1', gallons: '55',
+    }), FIELD);
+    assert('a reading that contradicts the receipt does not overwrite it',
+      argued.body.entry.gallons === 55, String(argued.body.entry.gallons));
+    assert('and both numbers are kept, so the row can be put right',
+      argued.body.entry.beginning_meter === 52028.1 && argued.body.entry.ending_meter === 53083.1);
 
     // No gallons typed at all — the meter is enough to make the row complete.
     const noGallons = await call('POST', {}, Object.assign({}, FILL, {
@@ -377,11 +392,10 @@ async function run() {
     JSON.stringify(edited.body));
   assert('and the correction is stored', edited.body.entry.gallons === 90.25);
 
-  // Turn the same row into a tank fill. The meters now own gallons, so the
-  // 90.25 in the body loses to them — otherwise the row would carry a gallons
-  // figure its own meter readings contradict.
+  // Turn the same row into a tank fill. The readings and the figure agree, so
+  // the meter's precision owns gallons.
   const metered = await call('PUT', { id },
-    Object.assign({}, FILL, { gallons: '90.25', beginning_meter: '1200.5', ending_meter: '1208' }), ADMIN);
+    Object.assign({}, FILL, { gallons: '7', beginning_meter: '1200.5', ending_meter: '1208' }), ADMIN);
   assert('setting real meter readings recomputes gallons', metered.body.entry.gallons === 7.5,
     String(metered.body.entry.gallons));
   assert('a real meter reading round-trips with its decimal',

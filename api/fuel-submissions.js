@@ -112,6 +112,20 @@ const MAX_BALANCE_IDS = 1000;
 const IMPORT_STATUSES = ['submitted', 'approved'];
 const MAX_IMPORT_ROWS = 500;
 
+/**
+ * The largest difference between two tank meter readings that can be a fill.
+ *
+ * Not a policy — a fact about the fleet. Across four thousand reported
+ * fill-ups the largest figure anyone has ever typed is 197 gallons, and the
+ * median is 47. A meter span above this is a digit typed wrong, and it is
+ * always the same shape: a fill of 55 recorded as 1055, or 20.2 as 2020.2.
+ *
+ * Left unchecked the difference REPLACES the driver's figure, so one keystroke
+ * turns a 55-gallon fill into four hundred and sixty thousand — and the month
+ * it lands in cannot be balanced against anything.
+ */
+const MAX_METER_FILL = 500;
+
 function safeDate(v) {
   if (!v) return null;
   // A DATE column comes back from the driver as a Date at LOCAL midnight, so
@@ -203,6 +217,9 @@ function parseIntField(v, label, { max = 2147483647 } = {}) {
  *   end === begin  nothing was pumped, which on a real fill-up means a
  *                  mistyped reading — computing 0 would bury that, so keep
  *                  what was typed and let the meter flag in Fuel Admin show
+ *   e - b > MAX    a mistyped reading, for the same reason as the two above:
+ *                  a difference of four hundred thousand gallons is not a
+ *                  fill. See MAX_METER_FILL.
  *
  * Derived here rather than trusted from the body for the same reason
  * computed_hours is on a timesheet: two numbers that are supposed to agree
@@ -214,7 +231,23 @@ function gallonsFromMeters(begin, end) {
   const b = Number(begin), e = Number(end);
   if (!Number.isFinite(b) || !Number.isFinite(e)) return null;
   if (e <= b) return null;
+  if (e - b > MAX_METER_FILL) return null;
   return Math.round((e - b) * 100) / 100;
+}
+
+/**
+ * Do a metered figure and a reported one describe the same fill?
+ *
+ * Two gallons or five per cent, whichever is wider — room for a pump and a
+ * tank meter disagreeing about the last splash, and nothing like enough for
+ * a digit typed wrong. Every real disagreement seen in four thousand entries
+ * has been a round hundred or thousand out, never a rounding.
+ */
+function metersAgree(metered, reported) {
+  if (metered == null || reported == null) return false;
+  const m = Number(metered), r = Number(reported);
+  if (!Number.isFinite(m) || !Number.isFinite(r)) return false;
+  return Math.abs(m - r) <= Math.max(2, Math.abs(r) * 0.05);
 }
 
 /**
@@ -275,12 +308,20 @@ function normalizeBody(body) {
     out[key] = r.value;
   }
 
-  // The tank meter wins over anything the body says gallons were. Both pages
-  // compute the same figure and show it read-only, so a body that disagrees
-  // is a stale client or a hand-made request — neither is a reason to store a
-  // gallons figure the meter readings on the same row contradict.
+  // The tank meter wins over anything the body says gallons were — but only
+  // where the two are describing the same fill.
+  //
+  // Both pages derive the figure from the readings and show it, so a form
+  // submission agrees by construction. A body that DISAGREES is a fill-up
+  // recorded somewhere else, where the two numbers were typed independently
+  // and either can be wrong. In four thousand of those the reported figure
+  // has been right and the readings wrong, every time — so the reported one
+  // stands, and Fuel Admin flags the row so the readings get corrected rather
+  // than the gallons quietly restated.
   const metered = gallonsFromMeters(out.beginning_meter, out.ending_meter);
-  if (metered != null) out.gallons = metered;
+  if (metered != null && (out.gallons == null || metersAgree(metered, out.gallons))) {
+    out.gallons = metered;
+  }
 
   return {
     data: {

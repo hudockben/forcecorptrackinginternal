@@ -1594,11 +1594,20 @@
     // difference between the readings is the fill. A card purchase (both
     // meters 0), a rolled-over meter, or two identical readings all return
     // null and leave gallons as a reported figure.
+    // The largest difference between two tank meter readings that can be a
+    // fill. Not a policy — a fact about the fleet: across four thousand
+    // reported fill-ups the largest figure anyone has ever typed is 197
+    // gallons and the median is 47. A span above this is a digit typed wrong,
+    // and it is always the same shape — a fill of 55 recorded as 1055.
+    // Kept in step with api/fuel-submissions.js, which is the one that counts.
+    const MAX_METER_FILL = 500;
+
     function gallonsFromMeters(begin, end) {
       if (begin == null || end == null) return null;
       const b = Number(begin), e = Number(end);
       if (!Number.isFinite(b) || !Number.isFinite(e)) return null;
       if (e <= b) return null;
+      if (e - b > MAX_METER_FILL) return null;
       return Math.round((e - b) * 100) / 100;
     }
 
@@ -1903,6 +1912,30 @@
       return Number(e.gallons) === 0;
     }
 
+    /**
+     * The tank meter and the gallons on the row disagree.
+     *
+     * Nothing is lost when they do — the readings and the figure are both
+     * stored, and the server keeps the reported one. But somebody has to
+     * decide which is right, and only the row itself says so: a fill of 55
+     * whose readings span 1055 is a digit typed wrong in the ending meter,
+     * and the entry is fine once it is corrected.
+     *
+     * Not the same as a span too wide to be a fill at all — that one never
+     * produces a figure, so there is nothing to disagree with. It shows up
+     * here too, as a metered value of null against a real one.
+     */
+    function meterDisputed(e) {
+      if (!e || e.gallons == null) return false;
+      const b = e.beginning_meter, x = e.ending_meter;
+      if (b == null || x == null) return false;
+      if (Number(b) === 0 && Number(x) === 0) return false;
+      if (Number(x) <= Number(b)) return false;       // meterFlagged's job
+      const metered = gallonsFromMeters(b, x);
+      if (metered == null) return true;               // too wide to be a fill
+      return Math.abs(metered - Number(e.gallons)) > Math.max(2, Math.abs(Number(e.gallons)) * 0.05);
+    }
+
     function renderRows() {
       const body = el('rowsBody');
       const balancing = activeTab === 'balancing';
@@ -1930,6 +1963,13 @@
           + '0 gallons. Nothing was bought, so nothing balances against it — and the truck comes up short by whatever '
           + 'the receipt actually said.</div>');
       }
+      const disputed = shownEntries.filter(meterDisputed);
+      if (disputed.length) {
+        notes.push(`<div><strong>${disputed.length}</strong> entr${disputed.length === 1 ? 'y has' : 'ies have'} `
+          + 'meter readings that do not span the gallons reported. The gallons stand — a mistyped reading is far '
+          + 'commoner than a mistyped receipt — but the readings need correcting before the tank itself can be '
+          + 'reconciled.</div>');
+      }
       banner.hidden = notes.length === 0;
       banner.innerHTML = notes.join('');
 
@@ -1951,7 +1991,7 @@
         const flag = meterFlagged(e);
         const isSel = selected.has(e.id);
         return `
-          <tr class="${isSel ? 'selected' : ''} ${flag || zeroGallons(e) ? 'row-meter-flag' : ''} ${
+          <tr class="${isSel ? 'selected' : ''} ${flag || zeroGallons(e) || meterDisputed(e) ? 'row-meter-flag' : ''} ${
             e.status === 'approved' && balanceOf(e) === 'issue' ? 'row-issue' : ''}">
             <td class="td-narrow">
               <input type="checkbox" ${isSel ? 'checked' : ''} onchange="toggleRow('${escJsAttr(e.id)}')" />
@@ -1975,6 +2015,8 @@
             <td class="num">${num(e.beginning_meter, 1)}</td>
             <td class="num">${num(e.ending_meter, 1)}${flag
               ? `<span class="meter-flag" title="Ending meter (${num(e.ending_meter, 1)}) is below the beginning meter (${num(e.beginning_meter, 1)}).">meter</span>`
+              : meterDisputed(e)
+              ? `<span class="meter-flag" title="These readings span ${num(Number(e.ending_meter) - Number(e.beginning_meter), 1)} gallons, but ${num(e.gallons, 2)} was reported. A digit in one of the readings is usually the culprit.">spans ${num(Number(e.ending_meter) - Number(e.beginning_meter), 1)}</span>`
               : ''}</td>
             <td>${escapeHtml(e.fueling_site || '—')}</td>
             <td>${escapeHtml(e.city_fueled || '—')}</td>
@@ -3871,8 +3913,13 @@
         let verdict;
         if (o == null)      verdict = 'not-in-ours';
         else if (s == null) verdict = 'not-on-statement';
-        // A hundredth of a gallon is rounding, not a discrepancy.
-        else if (Math.abs(o - s) < 0.005) verdict = 'match';
+        // Rounding, not a discrepancy — and it accumulates. Gallons are
+        // stored to two decimals and the accounts bill to three, so every
+        // fill-up can sit half a hundredth either side of what was pumped and
+        // a truck with four of them can be two hundredths out with nothing
+        // wrong anywhere. A flat hundredth called that a variance and sent
+        // somebody looking for a penny of diesel.
+        else if (Math.abs(o - s) < 0.005 * (1 + (fills.get(t) || 0))) verdict = 'match';
         else verdict = 'variance';
         rows.push({
           truck: t, ours: o, statement: s,
@@ -4087,8 +4134,12 @@
                           /^vehicle\s*(number|no\.?|#)?$/i, /truck\s*(number|no\.?|#)/i,
                           /vehicle\s*(number|no\.?|#)/i],
       gallons:           [/^gallons?$/i, /^gals?\.?$/i, /^quantity$/i, /^units$/i, /^qty$/i, /\bgallons?\b/i],
-      employee_username: [/^employee(\s*(name|username))?$/i, /^driver(\s*name)?$/i, /^operator$/i,
-                          /\bemployee\b/i, /\bdriver\b/i],
+      // "First Name + Last Name" is the joined column readImportGrid builds
+      // when a form export splits a person across two — first, so it wins over
+      // either half on its own.
+      employee_username: [/^first\s*name\s*\+\s*last\s*name$/i, /^employee(\s*(name|username))?$/i,
+                          /^driver(\s*name)?$/i, /^operator$/i, /^full\s*name$/i,
+                          /\bemployee\b/i, /\bdriver\b/i, /^first\s*name$/i, /^name$/i],
       fuel_card:         [/^fuel\s*card(\s*used)?$/i, /^card(\s*used)?$/i, /^vendor$/i, /^account$/i, /fuel\s*card/i],
       fuel_type:         [/^fuel\s*type$/i, /^type\s*of\s*fuel$/i, /^product(\s*description)?$/i, /fuel\s*type/i],
       // Beginning before ending, and both anchored on the word that separates
@@ -4181,14 +4232,52 @@
       return null;
     }
 
+    /**
+     * A cell that declines to answer rather than answering.
+     *
+     * "N/A" in a tank number column means the same thing the form means by
+     * "0 if not Force Fuel" — this vehicle hasn't got one. Read as a value it
+     * is a hard error on a row that is otherwise perfectly good; read as an
+     * empty cell it falls through to whatever was set as the default, and is
+     * counted there like any other blank.
+     */
+    const NOT_ANSWERED = /^(n\.?\/?a\.?|none|null|nil|-{1,3}|\.|\?)$/i;
+
     // Spreadsheets carry $ signs, thousands separators and stray spaces in
-    // number columns. Returned as a string of digits so the caller can still
-    // tell "0" from "".
+    // number columns. Returns a number so the caller can still tell 0 from
+    // absent — null is absent, 0 is zero.
     function importNumber(v) {
-      const s = String(v == null ? '' : v).replace(/[$,\s]/g, '').trim();
+      let s = String(v == null ? '' : v).replace(/[$,\s]/g, '').trim();
       if (s === '') return null;
+      // A cell of nothing but the letter O, in a column of numbers, is a zero
+      // typed off by one key. Nothing else it could be — and left alone it
+      // fails a row whose meter reading is the documented 0.
+      if (/^[Oo]+$/.test(s)) s = s.replace(/[Oo]/g, '0');
       const n = Number(s);
       return Number.isFinite(n) ? n : null;
+    }
+
+    /**
+     * A whole number out of a cell, or why not.
+     *
+     * Falls back to the digits inside a description, because that is what the
+     * cell means: "908 loader" is machine 908 and "Pump 16" is tank 16. The
+     * longest run wins — the same rule an account's vehicle id is read by —
+     * and every row read this way is counted so the preview can say so rather
+     * than quietly reinterpreting a fleet of equipment.
+     */
+    function importInt(v) {
+      const s = String(v == null ? '' : v).trim();
+      if (s === '') return { value: null };
+      const n = importNumber(s);
+      if (n != null) {
+        if (!Number.isInteger(n)) return { error: 'not a whole number' };
+        if (n < 0)                return { error: 'negative' };
+        return { value: n };
+      }
+      const runs = s.match(/\d+/g);
+      if (!runs) return { error: 'no number in it' };
+      return { value: Number(runs.slice().sort((a, b) => b.length - a.length)[0]), fromText: true };
     }
 
     // ── Reading the file into a grid ───────────────────────────────────────
@@ -4271,8 +4360,37 @@
         const first = Object.values(rows[0] || {}).filter(Boolean).slice(0, 10).join(', ');
         return { error: `Couldn't find a heading row. The top row reads: ${first || '(empty)'}` };
       }
-      const { found, labels } = detectColumns(rows[index], IMPORT_COLUMNS);
+      const header = rows[index];
       const data = rows.slice(index + 1);
+      const labels = {};
+      for (const [col, raw] of Object.entries(header || {})) {
+        const label = String(raw || '').trim();
+        if (label) labels[col] = label;
+      }
+
+      /**
+       * A form export writes a person as two columns, and Employee is one
+       * field. Rather than making somebody edit the sheet, join the pair into
+       * a column of its own and offer it in the dropdown like any other — it
+       * can be chosen, or ignored in favour of either half.
+       *
+       * Written into the rows as a real column so everything downstream stays
+       * blind to where it came from.
+       */
+      const findCol = re => Object.keys(labels).find(c => re.test(labels[c]));
+      const firstCol = findCol(/^first\s*name$/i);
+      const lastCol  = findCol(/^last\s*name$/i);
+      if (firstCol && lastCol) {
+        const joined = `${firstCol}+${lastCol}`;
+        for (const r of data) {
+          r[joined] = [r[firstCol], r[lastCol]].map(x => String(x == null ? '' : x).trim())
+            .filter(Boolean).join(' ');
+        }
+        header[joined] = `${labels[firstCol]} + ${labels[lastCol]}`;
+        labels[joined] = header[joined];
+      }
+
+      const { found } = detectColumns(header, IMPORT_COLUMNS);
       return {
         labels, found,
         cols: Object.keys(labels),
@@ -4293,8 +4411,8 @@
      */
     function buildImportRows(grid, map, defaults, ctx) {
       const empByKey = new Map((ctx.employees || []).map(u => [optKey(u), u]));
-      const ready = [], problems = [];
-      const defaulted = {}, unknownEmployees = new Map();
+      const ready = [], problems = [], fromText = [];
+      const defaulted = {}, notAnswered = {}, unknownEmployees = new Map();
       let blank = 0;
 
       grid.rows.forEach((raw, i) => {
@@ -4302,7 +4420,13 @@
         const cellOf = key => {
           const col = map[key];
           const cell = col ? raw[col] : undefined;
-          return (cell == null) ? '' : String(cell).trim();
+          if (cell == null) return '';
+          const s = String(cell).trim();
+          // "N/A" is a cell declining to answer, which is a blank with an
+          // opinion. Counted separately from a truly empty one so a column
+          // that is mostly N/A can be seen for what it is.
+          if (NOT_ANSWERED.test(s)) { notAnswered[key] = (notAnswered[key] || 0) + 1; return ''; }
+          return s;
         };
 
         // A row with nothing on it is the blank line under the data, not a
@@ -4357,11 +4481,11 @@
         }
 
         for (const [key, label] of [['truck_number', 'truck number'], ['tank_number', 'tank number']]) {
-          const n = importNumber(v[key]);
-          if (n == null)              { why.push(v[key] ? `couldn't read ${label} "${v[key]}"` : `no ${label}`); entry[key] = null; continue; }
-          if (!Number.isInteger(n))   { why.push(`${label} "${v[key]}" is not a whole number`); entry[key] = null; continue; }
-          if (n < 0)                  { why.push(`${label} is negative`); entry[key] = null; continue; }
-          entry[key] = n;
+          const r = importInt(v[key]);
+          if (r.error)         { why.push(`${label} "${v[key]}" is ${r.error}`); entry[key] = null; continue; }
+          if (r.value == null) { why.push(`no ${label}`); entry[key] = null; continue; }
+          if (r.fromText) fromText.push(`${label} ${r.value} from "${v[key]}"`);
+          entry[key] = r.value;
         }
 
         entry.fueling_site = v.fueling_site || null;
@@ -4382,7 +4506,7 @@
       });
 
       return {
-        ready, problems, defaulted, blank,
+        ready, problems, defaulted, blank, notAnswered, fromText,
         unknownEmployees: [...unknownEmployees].map(([name, count]) => ({ name, count })),
       };
     }

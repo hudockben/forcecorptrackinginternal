@@ -253,17 +253,32 @@ async function run() {
   console.log('\n[gallons off the tank meter]');
   {
     const res = await call('POST', { action: 'import' }, {
-      rows: [row({
-        work_date: '2026-07-10', truck_number: 88, fuel_card: 'Bulk Fuel – No card',
-        beginning_meter: 18240.5, ending_meter: 18325, gallons: 10,
-      })],
+      rows: [
+        row({
+          work_date: '2026-07-10', truck_number: 88, fuel_card: 'Bulk Fuel – No card',
+          beginning_meter: 18240.5, ending_meter: 18325, gallons: 84,
+        }),
+        // The shape four thousand real responses actually take when they go
+        // wrong: a 55-gallon fill whose ending reading is a thousand out.
+        row({
+          work_date: '2026-07-11', truck_number: 89, fuel_card: 'Bulk Fuel – No card',
+          beginning_meter: 52028.1, ending_meter: 53083.1, gallons: 55,
+        }),
+      ],
       status: 'approved',
     }, ADMIN);
-    // Same rule as everywhere else: the tank meter wins over the typed
-    // figure, so an import cannot store a gallons number the readings on its
-    // own row contradict.
-    assert('the meter wins over the column', res.body.entries[0].gallons === 84.5,
-      String(res.body.entries[0].gallons));
+    const byTruck = Object.fromEntries(res.body.entries.map(e => [e.truck_number, e]));
+    // Where the two describe the same fill, the meter's precision wins.
+    assert('the meter refines a figure that agrees with it', byTruck[88].gallons === 84.5,
+      String(byTruck[88].gallons));
+    // Where they contradict each other, the receipt stands. Importing is
+    // exactly where the two were typed independently, so this is the case that
+    // matters most — the alternative is storing 1055 gallons and losing the
+    // month it lands in.
+    assert('and a reading that contradicts it does not overwrite it', byTruck[89].gallons === 55,
+      String(byTruck[89].gallons));
+    assert('with the readings kept as reported, so the row can be corrected',
+      byTruck[89].beginning_meter === 52028.1 && byTruck[89].ending_meter === 53083.1);
   }
 
   // ── 7. Awaiting review rather than approved ──────────────────────────────

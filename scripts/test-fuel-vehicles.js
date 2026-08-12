@@ -217,6 +217,7 @@ function loadReportFns(filters) {
     let vmSort = { col: 'truck', dir: 1 };
     ${liftConst(src, 'FUEL_CARDS',        file)}
     ${liftConst(src, 'CARD_COLUMN_ORDER', file)}
+    ${liftConst(src, 'MAX_METER_FILL', file)}
     ${liftFn(src, 'gallonsFromMeters',  file)}
     ${liftFn(src, 'meterFlagged',       file)}
     ${liftFn(src, 'n2',                 file)}
@@ -824,6 +825,7 @@ function iftaBadgeTests() {
     function alert(m) { throw new Error('alert: ' + m); }
     function downloadCsv(text, name) { capture(text, name); }
     ${liftFn(src, 'csvEscape',          file)}
+    ${liftConst(src, 'MAX_METER_FILL', file)}
     ${liftFn(src, 'gallonsFromMeters',  file)}
     ${liftFn(src, 'meteredGallons',     file)}
     ${liftFn(src, 'balanceOf',          file)}

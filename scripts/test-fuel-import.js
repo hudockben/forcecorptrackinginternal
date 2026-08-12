@@ -73,10 +73,11 @@ function liftFn(src, name) {
 const SRC = fs.readFileSync(path.resolve(__dirname, '..', 'fuel-admin.html'), 'utf8');
 
 const CONSTS = ['FUEL_CARDS', 'FUEL_TYPES', 'US_STATES', 'FIELDS',
-                'STATEMENT_COLUMNS', 'IMPORT_COLUMNS', 'CARD_ALIASES', 'TYPE_ALIASES'];
+                'STATEMENT_COLUMNS', 'IMPORT_COLUMNS', 'CARD_ALIASES', 'TYPE_ALIASES',
+                'NOT_ANSWERED', 'MAX_METER_FILL'];
 const FNS = ['gallonsFromMeters', 'delimiterFor', 'excelSerialToYmd', 'detectColumns',
              'optKey', 'matchOption', 'importState', 'validYmd', 'importDate', 'importNumber',
-             'colLetter', 'splitDelimitedLine', 'parseDelimited', 'pickHeaderRow',
+             'importInt', 'colLetter', 'splitDelimitedLine', 'parseDelimited', 'pickHeaderRow',
              'readImportGrid', 'buildImportRows'];
 
 const page = new Function(`
@@ -171,6 +172,90 @@ function numberTests() {
   assert('zero is zero, not empty', importNumber('0') === 0);
   assert('an empty cell is null',   importNumber('') === null);
   assert('a word is null',          importNumber('none') === null);
+}
+
+// ── Real-world cells, taken from four thousand form responses ──────────────
+function realCellTests() {
+  console.log('\n[cells that decline to answer]');
+  const { buildImportRows: build } = page;
+  const header = { A: 'Date', B: 'Employee', C: 'Truck #', D: 'Fuel Card Used', E: 'Fuel Type',
+                   F: 'Gallons', G: 'Mileage', H: 'Begin Meter', I: 'End Meter',
+                   J: 'Site', K: 'City', L: 'State', M: 'Tank Number' };
+  const map = detectColumns(header, IMPORT_COLUMNS).found;
+  const grid = { labels: header, cols: Object.keys(header), headerLine: 1, firstDataLine: 2, rows: [
+    { A: '5/4/2026', B: 'jsmith', C: '635', D: 'Guttman', E: 'Diesel', F: '84.5',
+      G: 'N/A', H: '0', I: '0', J: 'Yard', K: 'DuBois', L: 'PA', M: 'Na' },
+  ] };
+
+  // "N/A" in a tank number column means what the form means by "0 if not
+  // Force Fuel". Read as a value it fails an otherwise perfect row.
+  const bare = build(grid, map, {}, { employees: [] });
+  assert('N/A is read as unanswered, not as an error',
+    bare.problems.length === 1 && !/couldn't read/.test(bare.problems[0].why.join(' ')),
+    JSON.stringify(bare.problems));
+  const filled = build(grid, map, { tank_number: '0', mileage: '0' }, { employees: [] });
+  assert('so a default answers it', filled.ready.length === 1, JSON.stringify(filled.problems));
+  assert('and it is counted apart from a truly empty cell',
+    filled.notAnswered.tank_number === 1 && filled.notAnswered.mileage === 1,
+    JSON.stringify(filled.notAnswered));
+
+  console.log('\n[a zero typed off by one key]');
+  // A cell of nothing but the letter O, in a column of numbers. Three rows in
+  // the real file, each one otherwise perfect.
+  const oh = build(Object.assign({}, grid, { rows: [
+    Object.assign({}, grid.rows[0], { H: 'O', I: 'O', G: '100', M: '1' }),
+  ] }), map, {}, { employees: [] });
+  assert('the letter O in a meter column is a zero',
+    oh.ready.length === 1 && oh.ready[0].entry.beginning_meter === 0 && oh.ready[0].entry.ending_meter === 0,
+    JSON.stringify(oh.problems));
+
+  console.log('\n[a number inside a description]');
+  assert('"908 loader" is machine 908', page.importInt('908 loader').value === 908);
+  assert('"Pump 16" is tank 16',        page.importInt('Pump 16').value === 16);
+  assert('"315 Ex" is 315',             page.importInt('315 Ex').value === 315);
+  assert('and it says it came out of text', page.importInt('908 loader').fromText === true);
+  assert('a plain number does not',     page.importInt('635').fromText === undefined);
+  assert('"5179.0" is 5179',            page.importInt('5179.0').value === 5179);
+  assert('a fraction is still refused', page.importInt('63.5').error === 'not a whole number');
+  assert('text with no number in it is refused', page.importInt('loader').error === 'no number in it');
+  assert('an empty cell is not an error', page.importInt('').value === null);
+
+  const desc = build(Object.assign({}, grid, { rows: [
+    Object.assign({}, grid.rows[0], { C: '908 loader', M: 'Pump 16', G: '100' }),
+  ] }), map, {}, { employees: [] });
+  assert('a row of them reads', desc.ready.length === 1, JSON.stringify(desc.problems));
+  assert('onto the right numbers',
+    desc.ready[0].entry.truck_number === 908 && desc.ready[0].entry.tank_number === 16);
+  // Counted and shown — reinterpreting a fleet of equipment quietly is not
+  // something a preview should do.
+  assert('and both are reported as read out of text', desc.fromText.length === 2,
+    JSON.stringify(desc.fromText));
+}
+
+function nameTests() {
+  console.log('\n[a person split across two columns]');
+  // What a form export does. Employee is one field, so the pair is offered as
+  // one column rather than making somebody edit the sheet first.
+  const rows = [
+    { A: 'Date', B: 'First Name', C: 'Last Name', D: 'Truck #', E: 'Gallons' },
+    { A: '5/4/2026', B: 'Morgan', C: 'Wylie', D: '635', E: '29.16' },
+    { A: '5/5/2026', B: 'Cher',   C: '',      D: '636', E: '30' },
+  ];
+  const grid = readImportGrid(rows);
+  assert('the joined column is offered', grid.cols.includes('B+C'), JSON.stringify(grid.cols));
+  assert('labelled as both halves', grid.labels['B+C'] === 'First Name + Last Name', grid.labels['B+C']);
+  assert('and Employee is detected onto it', grid.found.employee_username === 'B+C',
+    grid.found.employee_username);
+  assert('the two halves are still selectable on their own',
+    grid.cols.includes('B') && grid.cols.includes('C'));
+
+  const out = buildImportRows(grid, { employee_username: 'B+C' }, {}, { employees: [] });
+  const names = grid.rows.map(r => r['B+C']);
+  assert('the names are joined', names[0] === 'Morgan Wylie', names[0]);
+  // A missing half must not leave a trailing space, or the same person
+  // becomes two employees in every report.
+  assert('and a missing half leaves no stray space', names[1] === 'Cher', JSON.stringify(names[1]));
+  assert('the rows still build', out.problems.length === 2, String(out.problems.length));
 }
 
 function optionTests() {
@@ -491,6 +576,8 @@ splitTests();
 colLetterTests();
 dateTests();
 numberTests();
+realCellTests();
+nameTests();
 optionTests();
 detectTests();
 headerRowTests();

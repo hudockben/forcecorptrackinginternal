@@ -151,6 +151,14 @@ const METER_CASES = [
   [1200,   null,   null,  'no ending reading yet'],
   [null,   null,   null,  'neither reading yet'],
   [1200.4, 1200.7, 0.3,   'a fraction of a gallon, rounded to 2dp'],
+  // A span no fill-up can be. The largest figure anyone has ever typed on
+  // this form is 197 gallons and the median is 47; a difference of half a
+  // million is a digit typed wrong in one of the readings, and letting it
+  // through REPLACES the driver's correct figure with it.
+  [51074,  511280, null,  'a mistyped ending meter — half a million gallons'],
+  [52028.1, 53083.1, null, 'the usual shape of it: a 55-gallon fill typed 1000 out'],
+  [1200,   1700,   500,   'five hundred gallons is still allowed through'],
+  [1200,   1700.1, null,  'and a hair over it is not'],
 ];
 
 function meterTests() {
@@ -162,13 +170,42 @@ function meterTests() {
 
   console.log('\n[…and normalizeBody applies it]');
   {
-    // The driver's own figure loses to the tank. Both pages show the metered
-    // number read-only, so a body that says otherwise is stale or hand-made.
-    const { data } = normalizeBody(Object.assign({}, FULL, {
+    // Where the two describe the same fill, the tank wins — both pages derive
+    // the figure from the readings, so a form submission agrees by
+    // construction and small drift is the pump against the meter.
+    const near = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '1200', ending_meter: '1284.5', gallons: '84',
+    })).data;
+    assert('a metered fill overrides a reported one that agrees with it',
+      near.gallons === 84.5, String(near.gallons));
+
+    // Where they do NOT, the reported figure stands. A fill-up recorded
+    // somewhere else has the two typed independently, and in four thousand of
+    // those the readings have been the wrong one every time. Nothing is lost
+    // either way — both are stored, and Fuel Admin flags the row.
+    const apart = normalizeBody(Object.assign({}, FULL, {
       beginning_meter: '1200', ending_meter: '1284.5', gallons: '10',
-    }));
-    assert('a metered fill overrides the gallons in the body', data.gallons === 84.5,
-      String(data.gallons));
+    })).data;
+    assert('a metered fill that contradicts the reported one does NOT overwrite it',
+      apart.gallons === 10, String(apart.gallons));
+    assert('and the readings are kept as given, so the row can be corrected',
+      apart.beginning_meter === 1200 && apart.ending_meter === 1284.5);
+
+    // Nothing reported at all is the Force Fuel case the derivation exists
+    // for: the tank is the only thing that knows.
+    const blank = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '1200', ending_meter: '1284.5', gallons: '',
+    })).data;
+    assert('with no reported figure the tank is the only source',
+      blank.gallons === 84.5, String(blank.gallons));
+
+    // The one that started all this. Left alone it stores 460,206 gallons and
+    // the month it lands in cannot be balanced against anything.
+    const typo = normalizeBody(Object.assign({}, FULL, {
+      beginning_meter: '51074', ending_meter: '511280', gallons: '54',
+    })).data;
+    assert('a mistyped reading cannot replace the figure on the receipt',
+      typo.gallons === 54, String(typo.gallons));
   }
   {
     const { data } = normalizeBody(Object.assign({}, FULL, {
@@ -711,6 +748,7 @@ function pageTests() {
     // as an edge case, it shows one number and stores another — and the one
     // on screen is the one somebody signed off on.
     const pageGallons = new Function(`
+      const MAX_METER_FILL = ${liftConst(src, 'MAX_METER_FILL', file)};
       ${liftFn(src, 'gallonsFromMeters', file)}
       return gallonsFromMeters;
     `)();
@@ -759,6 +797,7 @@ function pageTests() {
       let manualGallons = '';
       function el(id)  { return nodes[id]; }
       function val(id) { const e = nodes[id]; return e ? e.value : ''; }
+      const MAX_METER_FILL = ${liftConst(src, 'MAX_METER_FILL', 'fuel.html')};
       ${liftFn(src, 'gallonsFromMeters', 'fuel.html')}
       ${liftFn(src, 'numOrNull',         'fuel.html')}
       ${liftFn(src, 'onGallonsTyped',    'fuel.html')}
