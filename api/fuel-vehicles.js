@@ -27,6 +27,7 @@
 
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('./lib/auth');
+const { FUEL_CARDS } = require('./lib/fuel-options');
 
 function safeInt(v) {
   if (v == null || v === '') return null;
@@ -57,11 +58,34 @@ function normalizeVin(v) {
   return s ? s.toUpperCase().replace(/\s+/g, '') : null;
 }
 
+/**
+ * What each fuel account calls this vehicle: { "Guttman": "5894", … }.
+ *
+ * Stored as the office typed it and normalised only when matching, because
+ * the accounts are not consistent with themselves — one Wex export writes the
+ * same pickup as "PT 2458", "PT-2458" and "PT4750". Normalising on the way in
+ * would throw away what the statement actually said, which is the thing
+ * somebody comparing the two by eye needs to see.
+ */
+function normalizeAccountRefs(v, allowed) {
+  if (v == null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) return null;
+  const out = {};
+  for (const [account, ref] of Object.entries(v)) {
+    if (!allowed.includes(account)) continue;
+    const s = safeStr(ref, 60);
+    if (s) out[account] = s;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function dbToVehicle(r) {
   if (!r) return null;
   return {
     id:           String(r.id),
     truck_number: r.truck_number == null ? null : Number(r.truck_number),
+    account_refs: (r.account_refs && typeof r.account_refs === 'object' && !Array.isArray(r.account_refs))
+      ? r.account_refs : {},
     vin:          r.vin || null,
     model_year:   r.model_year == null ? null : Number(r.model_year),
     make:         r.make || null,
@@ -108,6 +132,7 @@ function normalizeVehicle(body) {
       model_year,
       make:         safeStr(b.make, 80),
       ifta,
+      account_refs: normalizeAccountRefs(b.account_refs, FUEL_CARDS),
       // A sticker number on a vehicle that isn't IFTA-qualified is a leftover
       // from before the box was unticked, and it would show up in the report's
       // exception list forever. Cleared with the flag it belongs to.
@@ -180,6 +205,7 @@ module.exports = async (req, res) => {
             make         = ${data.make},
             ifta         = ${data.ifta},
             ifta_sticker = ${data.ifta_sticker},
+            account_refs = ${data.account_refs ? JSON.stringify(data.account_refs) : null}::jsonb,
             active       = ${data.active},
             notes        = ${data.notes},
             updated_at   = NOW()
@@ -194,10 +220,12 @@ module.exports = async (req, res) => {
       // adding the same truck at once still end up with one row.
       const [saved] = await sql`
         INSERT INTO fuel_vehicles
-          (company_code, truck_number, vin, model_year, make, ifta, ifta_sticker, active, notes)
+          (company_code, truck_number, vin, model_year, make, ifta, ifta_sticker, active, notes,
+           account_refs)
         VALUES
           (${companyCode}, ${data.truck_number}, ${data.vin}, ${data.model_year}, ${data.make},
-           ${data.ifta}, ${data.ifta_sticker}, ${data.active}, ${data.notes})
+           ${data.ifta}, ${data.ifta_sticker}, ${data.active}, ${data.notes},
+           ${data.account_refs ? JSON.stringify(data.account_refs) : null}::jsonb)
         ON CONFLICT (company_code, truck_number) DO UPDATE SET
           vin          = EXCLUDED.vin,
           model_year   = EXCLUDED.model_year,
@@ -206,6 +234,7 @@ module.exports = async (req, res) => {
           ifta_sticker = EXCLUDED.ifta_sticker,
           active       = EXCLUDED.active,
           notes        = EXCLUDED.notes,
+          account_refs = EXCLUDED.account_refs,
           updated_at   = NOW()
         RETURNING *
       `;
@@ -236,4 +265,4 @@ module.exports = async (req, res) => {
   }
 };
 
-module.exports._test = { normalizeVehicle, normalizeVin, dbToVehicle };
+module.exports._test = { normalizeVehicle, normalizeVin, normalizeAccountRefs, dbToVehicle };

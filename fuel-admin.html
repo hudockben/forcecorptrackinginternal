@@ -74,7 +74,7 @@
     }
 
     /* ── Stat strip ── */
-    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.85rem; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 0.85rem; }
     .stat {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -370,8 +370,9 @@
     tbody tr.row-meter-flag > td:first-child { box-shadow: inset 3px 0 0 0 #fb923c; }
     .flag-banner {
       display: flex;
-      align-items: center;
-      gap: 0.5rem;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.35rem;
       margin: 0 0 0.4rem;
       padding: 0.6rem 0.9rem;
       font-size: 0.82rem;
@@ -443,6 +444,9 @@
     .audit-act.SUBMIT     { background: rgba(96,165,250,0.15); color: var(--blue); }
     .audit-act.ADMIN_EDIT { background: rgba(251,113,133,0.15);color: var(--accent); }
     .audit-act.DELETE     { background: rgba(239,68,68,0.15);  color: var(--red); }
+    .audit-act.BALANCE    { background: rgba(167,139,250,0.18);color: #a78bfa; }
+    .audit-act.IMPORT     { background: rgba(56,189,248,0.15); color: #38bdf8; }
+    .audit-act.IMPORT_UNDO{ background: rgba(239,68,68,0.15);  color: var(--red); }
 
     /* ── Modal ── */
     .modal-backdrop {
@@ -682,6 +686,36 @@
     .ifta-yes { color: var(--green); font-weight: 700; }
     .ifta-no  { color: var(--muted); }
 
+    /* IFTA standing, beside the truck number it belongs to. Green matches the
+       Vehicles tab, which is where the flag is set, so the two read as the
+       same fact rather than two unrelated ones. Sized like the `auto` chip:
+       this sits in a numeric column that has to stay scannable. */
+    .ifta-chip {
+      display: inline-block;
+      margin-left: 0.3rem;
+      font-size: 0.52rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      background: rgba(34,197,94,0.16);
+      color: var(--green);
+      cursor: help;
+      vertical-align: middle;
+    }
+    /* IFTA-qualified with no sticker number — the filing needs one, and this
+       is where whoever files it is actually looking. */
+    .ifta-chip.none { background: rgba(251,146,60,0.18); color: #fb923c; }
+    /* A truck the roster has never heard of. Muted, because it is the absence
+       of an answer rather than a bad one — but present, because without it a
+       missing badge could equally mean "off-road, correctly not IFTA". */
+    .ifta-chip.unknown {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: #555;
+      font-weight: 700;
+    }
+
     /* ── Vehicle × month table ── */
     .rep-block th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
     .rep-block th.sortable:hover { color: var(--text); }
@@ -724,7 +758,7 @@
       margin-bottom: 0.7rem;
     }
     @media (max-width: 900px) { .match-controls { grid-template-columns: 1fr; } }
-    #mt-paste {
+    #mt-paste, #imp-paste {
       width: 100%;
       min-height: 120px;
       background: var(--bg);
@@ -738,7 +772,42 @@
       outline: none;
       resize: vertical;
     }
-    #mt-paste:focus { border-color: var(--accent); }
+    #mt-paste:focus, #imp-paste:focus { border-color: var(--accent); }
+
+    /* ── Import ── */
+    .tab.importing.active { color: #38bdf8; border-bottom-color: #38bdf8; }
+    .imp-sec  { margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px solid var(--border); }
+    .imp-head {
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+      margin-bottom: 0.6rem;
+    }
+    .imp-head span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .imp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.7rem; }
+    .imp-note { font-size: 0.74rem; color: var(--muted); line-height: 1.5; margin: 0.55rem 0; }
+    .imp-note strong { color: var(--text); font-weight: 600; }
+    .imp-flag { border-left: 3px solid #fb923c; padding-left: 0.65rem; }
+    .imp-flag strong { color: #fb923c; }
+    .imp-bad  { border-left: 3px solid var(--red); padding-left: 0.65rem; }
+    .imp-bad strong  { color: var(--red); }
+    .imp-good { border-left: 3px solid var(--green); padding-left: 0.65rem; }
+    .imp-good strong { color: var(--green); }
+    .imp-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap; }
+    .imp-missing select,
+    .imp-missing input  { border-color: rgba(251,146,60,0.5); }
+    .imp-missing label  { color: #fb923c; }
+    .imp-problems {
+      max-height: 260px;
+      overflow-y: auto;
+      font-size: 0.75rem;
+      line-height: 1.6;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .imp-problems div { color: var(--muted); }
+    .imp-problems b { color: var(--text); font-weight: 600; }
     .match-summary {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -975,15 +1044,15 @@
 
     <!-- ── Stats ── -->
     <div class="stats">
-      <div class="stat submitted">
+      <div class="stat submitted" id="stat-card-submitted">
         <div class="stat-label">Awaiting Review</div>
         <div class="stat-value" id="stat-submitted">0</div>
       </div>
-      <div class="stat approved">
+      <div class="stat approved" id="stat-card-approved">
         <div class="stat-label">Approved (in range)</div>
         <div class="stat-value" id="stat-approved">0</div>
       </div>
-      <div class="stat gallons">
+      <div class="stat gallons" id="stat-card-gallons">
         <div class="stat-label">Gallons (approved)</div>
         <div class="stat-value" id="stat-gallons">0.00</div>
       </div>
@@ -1007,15 +1076,15 @@
         <label for="flt-to">To</label>
         <input type="date" id="flt-to" />
       </div>
-      <div class="filter-field">
+      <div class="filter-field" id="fltf-employee">
         <label for="flt-employee">Employee</label>
         <select id="flt-employee"><option value="">All</option></select>
       </div>
-      <div class="filter-field">
+      <div class="filter-field" id="fltf-card">
         <label for="flt-card">Fuel Card</label>
         <select id="flt-card"><option value="">All</option></select>
       </div>
-      <div class="filter-field">
+      <div class="filter-field" id="fltf-type">
         <label for="flt-type">Fuel Type</label>
         <select id="flt-type"><option value="">All</option></select>
       </div>
@@ -1042,44 +1111,15 @@
       <button class="tab vehicles" data-tab="vehicles" onclick="switchTab('vehicles')">
         Vehicles <span class="tab-count" id="tab-vehicles-count">0</span>
       </button>
+      <button class="tab importing" data-tab="import" onclick="switchTab('import')">
+        Import
+      </button>
       <button class="tab auditlog" data-tab="auditlog" onclick="switchTab('auditlog')">
         Audit Log
       </button>
     </div>
 
-    <!-- ── Bulk bar ── -->
-    <div class="bulk" id="bulkBar">
-      <div class="bulk-count" id="bulkCount">0 selected</div>
-      <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
-      <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
-      <div class="bulk-spacer"></div>
-      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
-    </div>
-
-    <!-- ── Balancing bar ──
-         The second review's own controls. Kept apart from the approval bar
-         above because they are a different manager's job on a different
-         cadence, and an "Approve" button sitting beside "Mark Balanced" is
-         an invitation to do the wrong one. -->
-    <div class="bulk balance-bar" id="balanceBar">
-      <div class="filter-field" style="min-width:150px">
-        <label for="flt-balance">Showing</label>
-        <select id="flt-balance" onchange="renderRows()">
-          <option value="pending">Pending — still to balance</option>
-          <option value="issue">Issues</option>
-          <option value="balanced">Balanced</option>
-          <option value="">All approved</option>
-        </select>
-      </div>
-      <div class="bulk-count" id="balanceCount">0 selected</div>
-      <button class="btn-approve alt" id="markBalancedBtn" onclick="bulkBalance('balanced')">Mark Balanced</button>
-      <button class="btn-issue"       id="markIssueBtn"    onclick="bulkBalance('issue')">Flag Issue</button>
-      <button class="btn-clear"       id="markPendingBtn"  onclick="bulkBalance('pending')">Back to Pending</button>
-      <div class="bulk-spacer"></div>
-      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
-    </div>
-
-    <!-- ── Reports tab: month picker + what the report counts ── -->
+    <!-- ── Month picker — Balancing and Reports both work a month at a time ── -->
     <div class="quick-ranges" id="reportRanges" style="display:none">
       <span class="qr-label">Month:</span>
       <button class="qr-btn" onclick="setReportRange('this_month')">This Month</button>
@@ -1089,19 +1129,22 @@
       <button class="qr-btn" onclick="setReportRange('last_quarter')">Last Quarter</button>
       <button class="qr-btn" onclick="setReportRange('ytd')">Year to Date</button>
       <div class="qr-spacer"></div>
-      <span class="qr-label">Counts:</span>
-      <select class="qr-select" id="rep-status" onchange="loadReport()">
-        <option value="approved">Approved only</option>
-        <option value="submitted_approved">Approved + awaiting review</option>
-      </select>
-      <button class="qr-btn" onclick="exportReportCsv()">Export CSV</button>
-      <button class="qr-btn" onclick="window.print()">Print</button>
+      <!-- Reports only. Balancing has its own Export CSV on the bar below —
+           two buttons of the same name on one screen, exporting different
+           things, is a coin toss. And a match only ever counts approved fuel,
+           so a control that says otherwise beside it would be lying. -->
+      <span id="repOnlyControls" style="display:contents">
+        <span class="qr-label">Counts:</span>
+        <select class="qr-select" id="rep-status" onchange="loadReport()">
+          <option value="approved">Approved only</option>
+          <option value="submitted_approved">Approved + awaiting review</option>
+        </select>
+        <button class="qr-btn" onclick="exportReportCsv()">Export CSV</button>
+        <button class="qr-btn" onclick="window.print()">Print</button>
+      </span>
     </div>
 
-    <!-- ── Report container (Reports tab) ── -->
-    <div id="reportWrap" style="display:none"></div>
-
-    <!-- ── Statement match (Reports tab) ──
+    <!-- ── Statement match (Balancing tab) ──
          Deliberately static markup with only its RESULTS re-rendered: the
          textarea holds a pasted statement, and rebuilding the block around it
          on every sort of the table above would throw that away. -->
@@ -1109,17 +1152,16 @@
       <div class="rep-block">
         <div class="rep-title">Match a Fuel Account Statement</div>
         <div class="rep-sub">
-          Paste a Guttman or Wex statement and this lines it up against what the field reported,
-          truck by truck, over the date range above. Transaction-level exports are fine — lines for
-          the same truck are added together. One line per row: the truck number and the gallons
-          figure, separated by tabs, commas or spaces. Anything else on the line is ignored.
+          Pick the account, drop in the month's export — the <code>.xlsx</code> straight off their
+          site, no editing — and this lines it up truck by truck against what the field reported over
+          the range above. CSV and pasted text work too.
         </div>
         <div class="match-controls">
           <div class="filter-field">
             <label for="mt-card">Account</label>
             <select id="mt-card"></select>
           </div>
-          <div class="filter-field">
+          <div class="filter-field" id="mt-galcol-field">
             <label for="mt-gallons-col">Which number is the gallons</label>
             <select id="mt-gallons-col">
               <option value="last">The last number on the line</option>
@@ -1135,13 +1177,14 @@
         </div>
         <div class="match-file">
           <label class="file-btn">
-            Choose a CSV…
-            <input type="file" id="mt-file" accept=".csv,.tsv,.txt,text/csv,text/plain"
+            Choose a statement file…
+            <input type="file" id="mt-file"
+                   accept=".xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain"
                    onchange="loadStatementFile(event)" />
           </label>
-          <span id="mt-file-name" class="match-note" style="margin:0">…or paste the statement below.</span>
+          <span id="mt-file-name" class="match-note" style="margin:0">Guttman or Wex .xlsx, or a CSV — …or paste the statement below.</span>
         </div>
-        <textarea id="mt-paste" spellcheck="false"
+        <textarea id="mt-paste" spellcheck="false" oninput="statementPasteChanged()"
           placeholder="412&#9;320.50&#10;412&#9;180.00&#10;77&#9;95.25&#10;&#10;…or paste the whole statement export, headers and all."></textarea>
         <div id="matchResults"></div>
       </div>
@@ -1162,7 +1205,12 @@
       <div class="veh-form">
         <div>
           <label for="v-truck">Truck Number</label>
-          <input type="number" id="v-truck" min="0" step="1" placeholder="412" />
+          <!-- Text rather than number, deliberately. An account writes this
+               truck as PT4336, and typing that into a number field drops the
+               letters as they are pressed and leaves nothing — the field
+               looks broken and never says why. Taken as typed and answered
+               below, where "PT4336 is truck 4336" can actually be said. -->
+          <input type="text" id="v-truck" inputmode="numeric" maxlength="10" placeholder="4336" />
         </div>
         <div style="grid-column:span 2">
           <label for="v-vin">VIN</label>
@@ -1185,6 +1233,17 @@
         <div style="grid-column:span 2">
           <label for="v-sticker">IFTA Sticker Number</label>
           <input type="text" id="v-sticker" maxlength="60" placeholder="Tick IFTA first" disabled />
+        </div>
+        <div class="full" id="v-account-refs" style="border-top:1px solid var(--border);padding-top:0.7rem">
+          <div style="font-size:0.62rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:0.5rem">
+            What each fuel account calls this vehicle
+            <span style="text-transform:none;letter-spacing:0;font-weight:400">
+              — usually not needed. A statement id is matched on the number inside it, so Guttman's
+              <em>PT4336</em> and Wex's <em>PT 4805</em> already find trucks 4336 and 4805. Fill this
+              in only where an account calls a vehicle something its number is not in — and what you
+              put here always wins.</span>
+          </div>
+          <div id="v-account-fields" style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.7rem"></div>
         </div>
         <div style="grid-column:span 2">
           <label for="v-notes">Notes <span style="text-transform:none;font-weight:400">(optional)</span></label>
@@ -1219,20 +1278,105 @@
               <th>Make</th>
               <th>IFTA</th>
               <th>Sticker</th>
+              <th>Account IDs</th>
               <th>Notes</th>
               <th>Status</th>
               <th></th>
             </tr>
           </thead>
           <tbody id="vehicleBody">
-            <tr class="empty-row"><td colspan="9">Loading…</td></tr>
+            <tr class="empty-row"><td colspan="10">Loading…</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
+    <!-- ── Report container (Reports tab) ── -->
+    <div id="reportWrap" style="display:none"></div>
+
+    <!-- ── Import container (Import tab) ──
+         Static markup with only its RESULTS re-rendered, for the same reason
+         the match panel is: the textarea holds a pasted month, and rebuilding
+         the block around it would throw that away. -->
+    <div id="importWrap" style="display:none">
+      <div class="rep-block">
+        <div class="rep-title">Load a Month of Fuel Entries</div>
+        <div class="rep-sub">
+          For fuel that was written down somewhere else before this form existed. Drop in a
+          spreadsheet — <code>.xlsx</code> (its first sheet), CSV, or a pasted block with its
+          headings — and this reads the columns, shows you exactly what it made of every row, and
+          lets you fix the mapping before anything is written. Nothing is saved until you press
+          Import, and a whole load can be taken back out afterwards.
+        </div>
+        <div class="match-file">
+          <label class="file-btn">
+            Choose a file…
+            <input type="file" id="imp-file"
+                   accept=".xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain"
+                   onchange="loadImportFile(event)" />
+          </label>
+          <span id="imp-file-name" class="match-note" style="margin:0">…or paste the rows below, headings and all.</span>
+          <div class="filter-field" style="min-width:230px;margin-left:auto">
+            <label for="imp-status">Bring them in as</label>
+            <select id="imp-status" onchange="renderImportPreview()">
+              <option value="approved">Approved — ready to balance</option>
+              <option value="submitted">Awaiting daily review</option>
+            </select>
+          </div>
+          <button class="btn-clear" onclick="clearImport()">Clear</button>
+        </div>
+        <textarea id="imp-paste" spellcheck="false" oninput="onImportPaste()"
+          placeholder="Date&#9;Employee&#9;Truck&#9;Gallons&#9;…&#10;5/4/2026&#9;jsmith&#9;635&#9;84.2&#9;…&#10;&#10;Paste the sheet with its heading row — the headings are how the columns are found."></textarea>
+        <div id="imp-map"></div>
+        <div id="imp-preview"></div>
+      </div>
+
+      <div class="rep-block">
+        <div class="rep-title">Past Imports</div>
+        <div class="rep-sub">
+          Every load that is still in the table, newest first. Undo takes a whole batch back out —
+          the way to correct a wrong file without hunting its rows down one at a time among the
+          entries the field really did send. Fill-ups that have since been balanced are left where
+          they are.
+        </div>
+        <div id="imp-history"></div>
+      </div>
+    </div>
+
     <!-- ── Audit log container ── -->
     <div id="auditLogWrap" style="display:none"></div>
+
+    <!-- ── Bulk bar ── -->
+    <div class="bulk" id="bulkBar">
+      <div class="bulk-count" id="bulkCount">0 selected</div>
+      <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
+      <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
+      <div class="bulk-spacer"></div>
+      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
+    </div>
+
+    <!-- ── Balancing bar ──
+         The second review's own controls. Kept apart from the approval bar
+         above because they are a different manager's job on a different
+         cadence, and an "Approve" button sitting beside "Mark Balanced" is
+         an invitation to do the wrong one. -->
+    <div class="bulk balance-bar" id="balanceBar">
+      <div class="filter-field" style="min-width:150px">
+        <label for="flt-balance">Showing</label>
+        <select id="flt-balance" onchange="renderRows()">
+          <option value="pending">Pending — still to balance</option>
+          <option value="issue">Issues</option>
+          <option value="balanced">Balanced</option>
+          <option value="">All approved</option>
+        </select>
+      </div>
+      <div class="bulk-count" id="balanceCount">0 selected</div>
+      <button class="btn-approve alt" id="markBalancedBtn" onclick="bulkBalance('balanced')">Mark Balanced</button>
+      <button class="btn-issue"       id="markIssueBtn"    onclick="bulkBalance('issue')">Flag Issue</button>
+      <button class="btn-clear"       id="markPendingBtn"  onclick="bulkBalance('pending')">Back to Pending</button>
+      <div class="bulk-spacer"></div>
+      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
+    </div>
 
     <!-- ── Table ── -->
     <div class="table-wrap" id="tableWrap">
@@ -1454,11 +1598,20 @@
     // difference between the readings is the fill. A card purchase (both
     // meters 0), a rolled-over meter, or two identical readings all return
     // null and leave gallons as a reported figure.
+    // The largest difference between two tank meter readings that can be a
+    // fill. Not a policy — a fact about the fleet: across four thousand
+    // reported fill-ups the largest figure anyone has ever typed is 197
+    // gallons and the median is 47. A span above this is a digit typed wrong,
+    // and it is always the same shape — a fill of 55 recorded as 1055.
+    // Kept in step with api/fuel-submissions.js, which is the one that counts.
+    const MAX_METER_FILL = 500;
+
     function gallonsFromMeters(begin, end) {
       if (begin == null || end == null) return null;
       const b = Number(begin), e = Number(end);
       if (!Number.isFinite(b) || !Number.isFinite(e)) return null;
       if (e <= b) return null;
+      if (e - b > MAX_METER_FILL) return null;
       return Math.round((e - b) * 100) / 100;
     }
 
@@ -1570,6 +1723,17 @@
     // grid out for its own panel.
     const GRID_TABS = ['pending', 'approved', 'balancing'];
 
+    // What the top strip carries that Balancing has no use for.
+    //
+    // "Awaiting Review" and the approved counts belong to the daily review a
+    // tab away; the two that matter here are how much is still to balance and
+    // how much is flagged. The three filters go because the only thing that
+    // scopes a reconciliation is the month — everything else narrows it
+    // silently.
+    const BALANCE_HIDDEN_TILES   = ['stat-card-submitted', 'stat-card-approved'];
+    const BALANCE_HIDDEN_FILTERS = ['flt-employee', 'flt-card', 'flt-type'];
+    const FILTER_FIELD_OF = { 'flt-employee': 'fltf-employee', 'flt-card': 'fltf-card', 'flt-type': 'fltf-type' };
+
     function switchTab(tab) {
       activeTab = tab;
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
@@ -1577,9 +1741,24 @@
       el('tableWrap').style.display    = isGrid              ? '' : 'none';
       el('auditLogWrap').style.display = tab === 'auditlog'  ? '' : 'none';
       el('reportWrap').style.display   = tab === 'reports'   ? '' : 'none';
-      el('reportRanges').style.display = tab === 'reports'   ? '' : 'none';
-      el('matchWrap').style.display    = tab === 'reports'   ? '' : 'none';
       el('vehiclesWrap').style.display = tab === 'vehicles'  ? '' : 'none';
+      el('importWrap').style.display   = tab === 'import'    ? '' : 'none';
+      // The statement match lives with Balancing, because lining a month up
+      // against an account IS the balancing. It used to sit at the foot of
+      // Reports under everything else, which is a long way to scroll for the
+      // thing somebody opened the page to do.
+      el('matchWrap').style.display    = tab === 'balancing' ? '' : 'none';
+      // Both tabs work a month at a time, so both get the month picker.
+      el('reportRanges').style.display = (tab === 'reports' || tab === 'balancing') ? '' : 'none';
+      el('repOnlyControls').style.display = tab === 'reports' ? 'contents' : 'none';
+      // Trim the top strip to what this tab is for.
+      const balancing = tab === 'balancing';
+      for (const id of BALANCE_HIDDEN_TILES) {
+        const n = el(id); if (n) n.style.display = balancing ? 'none' : '';
+      }
+      for (const id of BALANCE_HIDDEN_FILTERS) {
+        const n = el(FILTER_FIELD_OF[id]); if (n) n.style.display = balancing ? 'none' : '';
+      }
       // Approval controls and balancing controls never share a bar: they are
       // two managers' jobs on two cadences, and an Approve button beside Mark
       // Balanced is an invitation to press the wrong one.
@@ -1589,11 +1768,29 @@
       if (tab === 'auditlog') { loadAuditLog(); return; }
       if (tab === 'reports')  { loadReport();   return; }
       if (tab === 'vehicles') { renderVehicles(); return; }
+      if (tab === 'import')   { loadImportHistory(); return; }
 
       // Selections belong to the tab they were made on — carrying them across
       // would let "Approve Selected" act on rows that are no longer on screen.
       selected.clear();
       renderRows();
+
+      // The match needs the same model the report is built from. Kicked off
+      // after the grid so the entries are on screen while it loads, and it
+      // leaves an open reconciliation alone unless the range actually moved.
+      //
+      // A filter left on from another tab is the reason this is not just a
+      // reload. Balancing is the whole fleet's month against one account, and
+      // the account is picked in the panel below — an employee or card filter
+      // carried over from the Approved tab would quietly leave fill-ups out of
+      // "we reported" and there is nothing in a difference of 300 gallons that
+      // says a filter did it. Cleared rather than ignored, so what is on
+      // screen is what was counted.
+      if (tab === 'balancing') {
+        const carried = BALANCE_HIDDEN_FILTERS.filter(id => val(id));
+        if (carried.length) { carried.forEach(id => { el(id).value = ''; }); applyFilters(); }
+        else loadReport();
+      }
     }
 
     // ── Load + filter ──────────────────────────────────────────────────────
@@ -1629,7 +1826,7 @@
       // The filter bar drives every tab, so Apply has to refresh whichever
       // one is actually on screen — not just the grid behind it.
       if (activeTab === 'auditlog') loadAuditLog();
-      if (activeTab === 'reports')  loadReport();
+      if (activeTab === 'reports' || activeTab === 'balancing') loadReport();
     }
 
     function clearFilters() {
@@ -1666,6 +1863,49 @@
 
     function balanceOf(e) { return e && e.balance_status ? e.balance_status : 'pending'; }
 
+    /**
+     * What the vehicle roster says about the truck on this entry.
+     *
+     *   'ifta'        IFTA-qualified, sticker on file
+     *   'no-sticker'  IFTA-qualified but no sticker number — the filing needs one
+     *   'not-ifta'    on the roster, deliberately not IFTA (off-road equipment)
+     *   'unknown'     no truck number, or a number the roster has never heard of
+     *
+     * Told apart because a missing badge would otherwise be ambiguous: an
+     * off-road machine and a truck nobody has added to the roster yet would
+     * look identical, and only one of them is fine.
+     */
+    function iftaStateFor(fleet, truckNumber) {
+      if (truckNumber == null) return 'unknown';
+      const v = fleet.get(String(truckNumber));
+      if (!v)      return 'unknown';
+      if (!v.ifta) return 'not-ifta';
+      return v.ifta_sticker ? 'ifta' : 'no-sticker';
+    }
+
+    function iftaChipHtml(fleet, e) {
+      // With no roster loaded at all, every truck would read as unknown —
+      // which says nothing about the trucks and everything about the fetch.
+      // Better to show no badge than to mark the whole fleet unrecognised.
+      if (!vehicles.length) return '';
+      const state = iftaStateFor(fleet, e.truck_number);
+      const v = e.truck_number != null ? fleet.get(String(e.truck_number)) : null;
+      const what = v ? [v.model_year, v.make].filter(Boolean).join(' ') : '';
+      if (state === 'ifta') {
+        return `<span class="ifta-chip" title="Truck ${e.truck_number} is IFTA-qualified${
+          what ? ` · ${escAttr(what)}` : ''} · sticker ${escAttr(v.ifta_sticker)}">IFTA</span>`;
+      }
+      if (state === 'no-sticker') {
+        return `<span class="ifta-chip none" title="Truck ${e.truck_number} is IFTA-qualified but has no sticker number on the Vehicles tab — the filing needs one.">IFTA?</span>`;
+      }
+      if (state === 'unknown') {
+        return `<span class="ifta-chip unknown" title="${e.truck_number == null
+          ? 'No truck number on this entry, so it cannot be matched to a vehicle.'
+          : `Truck ${e.truck_number} isn't on the Vehicles tab, so whether it is IFTA-qualified isn't known.`}">?</span>`;
+      }
+      return '';   // on the roster and deliberately not IFTA — nothing to say
+    }
+
     function balancePillHtml(e) {
       if (e.status !== 'approved') return '<span class="bal-pill bal-pending">—</span>';
       const b = balanceOf(e);
@@ -1700,6 +1940,48 @@
       return Number(x) < Number(b);
     }
 
+    /**
+     * A fill-up that bought no fuel.
+     *
+     * 0 is a real answer everywhere else on this form — both meters are
+     * documented as "0 if not Force Fuel", and the completeness check is
+     * built around never reading one as blank. Gallons inherits that, so an
+     * entry recording nothing passes the daily review without a word and
+     * comes back weeks later as a variance against a statement that says the
+     * truck bought forty gallons.
+     *
+     * Flagged rather than refused: the reviewer is looking at the row and the
+     * receipt, and is better placed to say which it is than a rule here.
+     */
+    function zeroGallons(e) {
+      if (!e || e.gallons == null) return false;
+      return Number(e.gallons) === 0;
+    }
+
+    /**
+     * The tank meter and the gallons on the row disagree.
+     *
+     * Nothing is lost when they do — the readings and the figure are both
+     * stored, and the server keeps the reported one. But somebody has to
+     * decide which is right, and only the row itself says so: a fill of 55
+     * whose readings span 1055 is a digit typed wrong in the ending meter,
+     * and the entry is fine once it is corrected.
+     *
+     * Not the same as a span too wide to be a fill at all — that one never
+     * produces a figure, so there is nothing to disagree with. It shows up
+     * here too, as a metered value of null against a real one.
+     */
+    function meterDisputed(e) {
+      if (!e || e.gallons == null) return false;
+      const b = e.beginning_meter, x = e.ending_meter;
+      if (b == null || x == null) return false;
+      if (Number(b) === 0 && Number(x) === 0) return false;
+      if (Number(x) <= Number(b)) return false;       // meterFlagged's job
+      const metered = gallonsFromMeters(b, x);
+      if (metered == null) return true;               // too wide to be a fill
+      return Math.abs(metered - Number(e.gallons)) > Math.max(2, Math.abs(Number(e.gallons)) * 0.05);
+    }
+
     function renderRows() {
       const body = el('rowsBody');
       const balancing = activeTab === 'balancing';
@@ -1715,15 +1997,27 @@
       }
 
       const flagged = shownEntries.filter(meterFlagged);
+      const zeroed  = shownEntries.filter(zeroGallons);
       const banner  = el('flagBanner');
+      const notes = [];
       if (flagged.length) {
-        banner.hidden = false;
-        banner.innerHTML = `<strong>${flagged.length}</strong> entr${flagged.length === 1 ? 'y reads' : 'ies read'} `
-          + 'an ending meter below the beginning one. Worth a look before approving — a rolled-over or replaced meter is legitimate.';
-      } else {
-        banner.hidden = true;
-        banner.innerHTML = '';
+        notes.push(`<div><strong>${flagged.length}</strong> entr${flagged.length === 1 ? 'y reads' : 'ies read'} `
+          + 'an ending meter below the beginning one. Worth a look before approving — a rolled-over or replaced meter is legitimate.</div>');
       }
+      if (zeroed.length) {
+        notes.push(`<div><strong>${zeroed.length}</strong> entr${zeroed.length === 1 ? 'y records' : 'ies record'} `
+          + '0 gallons. Nothing was bought, so nothing balances against it — and the truck comes up short by whatever '
+          + 'the receipt actually said.</div>');
+      }
+      const disputed = shownEntries.filter(meterDisputed);
+      if (disputed.length) {
+        notes.push(`<div><strong>${disputed.length}</strong> entr${disputed.length === 1 ? 'y has' : 'ies have'} `
+          + 'meter readings that do not span the gallons reported. The gallons stand — a mistyped reading is far '
+          + 'commoner than a mistyped receipt — but the readings need correcting before the tank itself can be '
+          + 'reconciled.</div>');
+      }
+      banner.hidden = notes.length === 0;
+      banner.innerHTML = notes.join('');
 
       if (!shownEntries.length) {
         const what = balancing
@@ -1735,11 +2029,15 @@
         return;
       }
 
+      // Built once per render rather than per row — the roster is small but
+      // rebuilding a Map inside the loop makes this quadratic in fleet size.
+      const fleet = vehicleIndex();
+
       body.innerHTML = shownEntries.map(e => {
         const flag = meterFlagged(e);
         const isSel = selected.has(e.id);
         return `
-          <tr class="${isSel ? 'selected' : ''} ${flag ? 'row-meter-flag' : ''} ${
+          <tr class="${isSel ? 'selected' : ''} ${flag || zeroGallons(e) || meterDisputed(e) ? 'row-meter-flag' : ''} ${
             e.status === 'approved' && balanceOf(e) === 'issue' ? 'row-issue' : ''}">
             <td class="td-narrow">
               <input type="checkbox" ${isSel ? 'checked' : ''} onchange="toggleRow('${escJsAttr(e.id)}')" />
@@ -1751,16 +2049,20 @@
                 ? `<div class="status-meta">sent by <strong>${escapeHtml(e.username)}</strong></div>` : ''}
             </td>
             <td>${prettyDate(e.work_date)}</td>
-            <td class="num">${e.truck_number != null ? e.truck_number : '—'}</td>
+            <td class="num">${e.truck_number != null ? e.truck_number : '—'}${iftaChipHtml(fleet, e)}</td>
             <td>${escapeHtml(e.fuel_type || '—')}</td>
             <td>${escapeHtml(e.fuel_card || '—')}</td>
             <td class="num">${num(e.gallons, 2)}${meteredGallons(e) != null
               ? '<span class="auto-chip" title="Calculated from the tank meter readings, not typed in.">auto</span>'
+              : ''}${zeroGallons(e)
+              ? '<span class="meter-flag" title="This entry records no fuel at all. Nothing on a statement can balance against 0 gallons.">0 gal</span>'
               : ''}</td>
             <td class="num">${num(e.mileage, 1)}</td>
             <td class="num">${num(e.beginning_meter, 1)}</td>
             <td class="num">${num(e.ending_meter, 1)}${flag
               ? `<span class="meter-flag" title="Ending meter (${num(e.ending_meter, 1)}) is below the beginning meter (${num(e.beginning_meter, 1)}).">meter</span>`
+              : meterDisputed(e)
+              ? `<span class="meter-flag" title="These readings span ${num(Number(e.ending_meter) - Number(e.beginning_meter), 1)} gallons, but ${num(e.gallons, 2)} was reported. A digit in one of the readings is usually the culprit.">spans ${num(Number(e.ending_meter) - Number(e.beginning_meter), 1)}</span>`
               : ''}</td>
             <td>${escapeHtml(e.fueling_site || '—')}</td>
             <td>${escapeHtml(e.city_fueled || '—')}</td>
@@ -2235,7 +2537,7 @@
       } catch (err) {
         vehicles = [];
         const body = el('vehicleBody');
-        if (body) body.innerHTML = `<tr class="empty-row"><td colspan="9">Couldn't load the vehicle list — ${escapeHtml(err.message)}</td></tr>`;
+        if (body) body.innerHTML = `<tr class="empty-row"><td colspan="10">Couldn't load the vehicle list — ${escapeHtml(err.message)}</td></tr>`;
         return;
       }
       renderVehicles();
@@ -2249,7 +2551,7 @@
       el('tab-vehicles-count').textContent = vehicles.filter(v => v.active).length;
 
       if (!list.length) {
-        body.innerHTML = `<tr class="empty-row"><td colspan="9">${
+        body.innerHTML = `<tr class="empty-row"><td colspan="10">${
           vehicles.length ? 'No trucks in service — tick "Show retired trucks" to see the rest.'
                           : 'No trucks yet. Add one above so fuel entries can be matched to a vehicle.'
         }</td></tr>`;
@@ -2268,6 +2570,11 @@
                     ? escapeHtml(v.ifta_sticker)
                     : '<span class="meter-flag" title="An IFTA vehicle with no sticker number will show up in the report exceptions.">missing</span>')
                 : '—'}</td>
+          <td style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.72rem">${
+            Object.keys(v.account_refs || {}).length
+              ? Object.entries(v.account_refs).map(([a, ref]) =>
+                  `${escapeHtml(a.slice(0, 4))}&nbsp;${escapeHtml(ref)}`).join('<br />')
+              : '<span style="color:#555">—</span>'}</td>
           <td>${escapeHtml(v.notes || '—')}</td>
           <td>${v.active
                 ? '<span class="badge badge-approved">in service</span>'
@@ -2290,8 +2597,29 @@
       if (!on) { s.value = ''; s.classList.remove('bad'); }
     }
 
+    function renderAccountRefFields(refs) {
+      el('v-account-fields').innerHTML = STATEMENT_ACCOUNTS.map(a => `
+        <div>
+          <label for="v-ref-${escAttr(a)}">${escapeHtml(a)} vehicle id</label>
+          <input type="text" id="v-ref-${escAttr(a)}" maxlength="60"
+                 value="${escAttr((refs && refs[a]) || '')}"
+                 placeholder="as ${escapeHtml(a)} writes it" />
+        </div>`).join('');
+    }
+
+    function readAccountRefFields() {
+      const out = {};
+      for (const a of STATEMENT_ACCOUNTS) {
+        const node = el(`v-ref-${a}`);
+        const v = node ? node.value.trim() : '';
+        if (v) out[a] = v;
+      }
+      return out;
+    }
+
     function resetVehicleForm() {
       editingVehicleId = null;
+      renderAccountRefFields({});
       for (const id of ['v-truck', 'v-vin', 'v-year', 'v-make', 'v-sticker', 'v-notes']) {
         const n = el(id);
         if (n) { n.value = ''; n.classList.remove('bad'); }
@@ -2318,6 +2646,7 @@
       onIftaToggle();
       el('v-sticker').value = v.ifta_sticker || '';
       el('v-notes').value   = v.notes || '';
+      renderAccountRefFields(v.account_refs || {});
       el('v-active').checked = v.active !== false;
       el('v-save').textContent = `Save Truck ${v.truck_number}`;
       el('v-cancel').style.display = '';
@@ -2331,9 +2660,25 @@
       msg.className = 'veh-msg full';
       const truck = el('v-truck');
       truck.classList.remove('bad');
-      if (val('v-truck') === '') {
+      const typed = val('v-truck').trim();
+      if (typed === '') {
         truck.classList.add('bad');
         msg.textContent = 'A truck number is required — it is what ties fuel entries to this vehicle.';
+        msg.classList.add('error');
+        return;
+      }
+      // An account's own id typed where the truck number goes. Say which part
+      // of it is the truck rather than refusing the whole thing: the two
+      // numbers are the same number, and this is the one place somebody is
+      // guaranteed to be looking at both.
+      if (!/^\d+$/.test(typed)) {
+        const digits = (typed.match(/\d+/g) || []).sort((a, b) => b.length - a.length)[0];
+        truck.classList.add('bad');
+        msg.textContent = digits
+          ? `A truck number is digits only — ${typed} is truck ${Number(digits)}. `
+            + `Put ${typed} in the account's own box below if you want it recorded, though the match `
+            + `finds it from the number anyway.`
+          : `A truck number is digits only.`;
         msg.classList.add('error');
         return;
       }
@@ -2347,6 +2692,7 @@
         ifta_sticker: val('v-sticker'),
         active:       el('v-active').checked,
         notes:        val('v-notes'),
+        account_refs: readAccountRefFields(),
       };
       if (editingVehicleId) body.id = editingVehicleId;
 
@@ -2435,6 +2781,11 @@
 
     // The two accounts the month is balanced against come first; the rest
     // follow the order the field form offers them.
+    // The accounts that send a statement. Bulk fuel comes out of a tank we
+    // meter ourselves, so there is nothing to reconcile it against and no id
+    // for it to have.
+    const STATEMENT_ACCOUNTS = FUEL_CARDS.filter(c => !/bulk/i.test(c));
+
     const CARD_COLUMN_ORDER = ['Guttman', 'Wex']
       .concat(FUEL_CARDS.filter(c => c !== 'Guttman' && c !== 'Wex'))
       .concat(['(none)']);
@@ -2930,25 +3281,7 @@
             <div class="stat"><div class="stat-label">Non-IFTA Gallons</div><div class="stat-value">${n2(m.nonIftaGallons)}</div></div>
           </div>
 
-          ${m.exceptions.length ? `
-          <div class="rep-block">
-            <div class="rep-title" style="color:#fb923c">Before this month goes out — ${m.exceptions.length} to settle</div>
-            <div class="rep-sub">Everything here either can't be attributed to a vehicle or doesn't add up. None of it blocks the report; all of it changes the figures if left.</div>
-            <table>
-              <thead><tr><th>What</th><th>Why it matters</th></tr></thead>
-              <tbody>
-                ${m.exceptions.map(x => `
-                  <tr class="exception">
-                    <td class="name">${escapeHtml(x.kind)}</td>
-                    <td>${escapeHtml(x.detail)}</td>
-                  </tr>`).join('')}
-              </tbody>
-            </table>
-          </div>` : `
-          <div class="rep-block">
-            <div class="rep-title" style="color:var(--green)">Nothing outstanding</div>
-            <div class="rep-sub">Every fill-up matches a vehicle, every IFTA truck has a sticker number, and every tank meter accounts for the fuel reported against it.</div>
-          </div>`}
+          ${vehicleMonthBlockHtml(m)}
 
           <div class="rep-block">
             <div class="rep-title">Gallons by State</div>
@@ -2973,7 +3306,26 @@
             </table>
           </div>
 
-          ${vehicleMonthBlockHtml(m)}
+          ${m.exceptions.length ? `
+          <div class="rep-block">
+            <div class="rep-title" style="color:#fb923c">Before this month goes out — ${m.exceptions.length} to settle</div>
+            <div class="rep-sub">Everything here either can't be attributed to a vehicle or doesn't add up. None of it blocks the report; all of it changes the figures if left.</div>
+            <table>
+              <thead><tr><th>What</th><th>Why it matters</th></tr></thead>
+              <tbody>
+                ${m.exceptions.map(x => `
+                  <tr class="exception">
+                    <td class="name">${escapeHtml(x.kind)}</td>
+                    <td>${escapeHtml(x.detail)}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>` : `
+          <div class="rep-block">
+            <div class="rep-title" style="color:var(--green)">Nothing outstanding</div>
+            <div class="rep-sub">Every fill-up matches a vehicle, every IFTA truck has a sticker number, and every tank meter accounts for the fuel reported against it.</div>
+          </div>`}
+
 
           ${repeatOffenderBlockHtml()}
 
@@ -3047,6 +3399,121 @@
     // of a statement line rather than guessing at column positions: a line
     // reading "07/15/2026, 412, 84.50" has three numbers on it, and only one
     // of them is a truck we have ever seen.
+    /**
+     * Turn an account's own vehicle ids into truck numbers.
+     *
+     * Guttman's export says 5894, Wex's says PT 4805, and a fuel entry says
+     * truck 635. Nothing in either file joins those — Wex ships its VIN column
+     * blank — so the correspondence is recorded once per vehicle on the
+     * roster, and this applies it.
+     *
+     * Two fallbacks, in order, so a fleet that happens to agree needs no setup
+     * at all: an id already recorded for this account wins; failing that, an
+     * id that IS a truck number on the roster is taken at face value. Anything
+     * left is reported with its gallons rather than guessed at — a wrong guess
+     * here moves fuel onto a truck that never burned it.
+     */
+    function resolveStatementRefs(byRef, account, fleet) {
+      const mapped = new Map();
+      // Last four of the VIN → truck. A tail two vehicles share resolves to
+      // nothing rather than to the first of them: an ambiguous match here
+      // moves a month of fuel onto a truck that never burned it, and being
+      // told to assign it by hand is the better outcome.
+      const byVinTail = new Map();
+      for (const v of fleet.values()) {
+        const ref = v.account_refs && v.account_refs[account];
+        if (ref) mapped.set(refKey(ref), v.truck_number);
+        const tail = vinTail(v.vin);
+        if (tail) byVinTail.set(tail, byVinTail.has(tail) ? null : v.truck_number);
+      }
+
+      const byTruck = new Map();
+      const unmapped = [];
+      const how = new Map();
+      for (const [ref, agg] of byRef) {
+        const key = refKey(ref);
+        let truck = mapped.has(key) ? mapped.get(key) : null;
+        let rule = truck == null ? null : 'recorded';
+        // Three rules, most trustworthy first. The recorded id is somebody's
+        // decision and always wins; the other two are the yard's own
+        // convention — a truck number IS the last four of its VIN, and the
+        // accounts write that number with their fleet prefix in front. Both
+        // still have to land on a truck that is ON THE ROSTER, so neither can
+        // invent a vehicle out of a number that happens to look right.
+        if (truck == null) {
+          const digits = refDigits(key);
+          if (digits) {
+            const asNumber = Number(digits);
+            if (Number.isFinite(asNumber) && fleet.has(String(asNumber))) {
+              truck = asNumber; rule = 'number';
+            } else {
+              const hit = byVinTail.get(digits.padStart(4, '0').slice(-4));
+              if (hit != null) { truck = hit; rule = 'vin'; }
+            }
+          }
+        }
+        if (truck == null) {
+          const top = m => [...(m || new Map())].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+          unmapped.push({
+            ref, gallons: agg.gallons, fills: agg.fills,
+            // Everything the file knows that might say which truck this is.
+            // Not a guess at the answer — the office recognises its own
+            // drivers and its own diesel trucks, and this is the difference
+            // between seventeen bare numbers and seventeen it can place.
+            drivers: top(agg.drivers).slice(0, 3),
+            product: top(agg.products)[0] || '',
+            odoLow:  agg.odo && agg.odo.length ? Math.min(...agg.odo) : null,
+            odoHigh: agg.odo && agg.odo.length ? Math.max(...agg.odo) : null,
+          });
+          continue;
+        }
+        const prev = byTruck.get(truck) || { gallons: 0, fills: 0, refs: [] };
+        prev.gallons = Math.round((prev.gallons + agg.gallons) * 100) / 100;
+        prev.fills  += agg.fills;
+        if (!prev.refs.includes(ref)) prev.refs.push(ref);
+        byTruck.set(truck, prev);
+        // Which rule placed it, so a match reached by convention is never
+        // mistaken for one somebody recorded on purpose.
+        if (!how.has(truck)) how.set(truck, new Set());
+        how.get(truck).add(rule);
+      }
+      unmapped.sort((a, b) => b.gallons - a.gallons);
+
+      const counts = { recorded: 0, number: 0, vin: 0 };
+      for (const rules of how.values()) for (const rule of rules) counts[rule]++;
+      return { byTruck, unmapped, how, counts };
+    }
+
+    // Sum a statement's rows by the id the account used, keeping the detail
+    // the office asked to see alongside rather than instead of the total.
+    function aggregateByRef(rows) {
+      const byRef = new Map();
+      let iftaGallons = 0, nonIftaGallons = 0;
+      const byProduct = new Map();
+      for (const r of rows) {
+        const agg = byRef.get(r.ref) || { gallons: 0, fills: 0, drivers: new Map(), products: new Map(), odo: [] };
+        agg.gallons = Math.round((agg.gallons + r.gallons) * 100) / 100;
+        agg.fills++;
+        // Kept per vehicle rather than per line: what identifies an unknown id
+        // is the name that keeps coming up on it, not the name on any one
+        // fill-up. A shared truck shows both, most frequent first.
+        if (r.driver)  agg.drivers.set(r.driver, (agg.drivers.get(r.driver) || 0) + 1);
+        if (r.product) agg.products.set(r.product, (agg.products.get(r.product) || 0) + 1);
+        if (Number.isFinite(r.odometer) && r.odometer > 100) agg.odo.push(r.odometer);
+        byRef.set(r.ref, agg);
+        if (r.nonIfta) nonIftaGallons += r.gallons; else iftaGallons += r.gallons;
+        if (r.product) {
+          byProduct.set(r.product, Math.round(((byProduct.get(r.product) || 0) + r.gallons) * 100) / 100);
+        }
+      }
+      return {
+        byRef,
+        iftaGallons:    Math.round(iftaGallons * 100) / 100,
+        nonIftaGallons: Math.round(nonIftaGallons * 100) / 100,
+        byProduct,
+      };
+    }
+
     function knownTruckNumbers() {
       const s = new Set();
       for (const v of vehicles) if (v.truck_number != null) s.add(Number(v.truck_number));
@@ -3095,6 +3562,264 @@
       if (line.includes('|'))  return '|';
       if (line.includes(','))  return ',';
       return null;
+    }
+
+    // ── Reading a workbook ─────────────────────────────────────────────────
+    // An .xlsx is a zip of XML. Both accounts export one, and asking the
+    // office to re-save each as CSV every month is a step that exists only
+    // because the software couldn't be bothered — so the file goes in as it
+    // comes out of their system.
+    //
+    // No library: the pages here have no build step, and a CDN script is a
+    // dependency on someone else's uptime for a monthly reconciliation. The
+    // browser already has the two hard parts — DecompressionStream inflates,
+    // DOMParser reads the XML.
+
+    async function inflateRaw(bytes) {
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    /**
+     * The named files out of a zip, as Uint8Arrays.
+     *
+     * Read through the central directory at the end rather than by walking
+     * local headers front-to-back: a local header may declare its sizes in a
+     * trailing data descriptor instead of up front, and there is no way to
+     * know how far to skip without having already inflated the entry.
+     */
+    async function readZip(buf, wanted) {
+      const dv = new DataView(buf);
+      let eocd = -1;
+      for (let i = buf.byteLength - 22; i >= 0 && i > buf.byteLength - 22 - 65536; i--) {
+        if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+      }
+      if (eocd < 0) throw new Error('That file is not a workbook.');
+
+      const count = dv.getUint16(eocd + 10, true);
+      let off = dv.getUint32(eocd + 16, true);
+      const out = {};
+      for (let n = 0; n < count; n++) {
+        if (dv.getUint32(off, true) !== 0x02014b50) break;
+        const method   = dv.getUint16(off + 10, true);
+        const compSize = dv.getUint32(off + 20, true);
+        const nameLen  = dv.getUint16(off + 28, true);
+        const extraLen = dv.getUint16(off + 30, true);
+        const cmtLen   = dv.getUint16(off + 32, true);
+        const localOff = dv.getUint32(off + 42, true);
+        const name = new TextDecoder().decode(new Uint8Array(buf, off + 46, nameLen));
+        off += 46 + nameLen + extraLen + cmtLen;
+        if (!wanted(name)) continue;
+
+        // The local header repeats the name and extra fields at its own
+        // lengths, which are NOT always the central directory's.
+        const lNameLen  = dv.getUint16(localOff + 26, true);
+        const lExtraLen = dv.getUint16(localOff + 28, true);
+        const start = localOff + 30 + lNameLen + lExtraLen;
+        const raw = new Uint8Array(buf, start, compSize);
+        out[name] = method === 0 ? raw : await inflateRaw(raw);
+      }
+      return out;
+    }
+
+    // Excel counts days from 1899-12-30 (the 1900 leap-year bug baked in).
+    // Wex exports its dates this way; Guttman exports text. Both land here.
+    function excelSerialToYmd(n) {
+      const days = Math.floor(Number(n));
+      if (!Number.isFinite(days) || days < 1 || days > 200000) return null;
+      const d = new Date(Date.UTC(1899, 11, 30) + days * 86400000);
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    }
+
+    function colOf(ref) { return String(ref || '').replace(/[0-9]/g, ''); }
+
+    /**
+     * First worksheet of a workbook, as an array of { COLUMN: value } rows.
+     *
+     * Shared strings are a separate part of the file — a cell of type "s"
+     * holds an index into it, so a sheet read without them is a grid of
+     * numbers where every label should be.
+     */
+    async function readWorkbook(buf) {
+      const files = await readZip(buf, n =>
+        n === 'xl/sharedStrings.xml' || /^xl\/worksheets\/sheet1\.xml$/.test(n));
+      const sheetXml = files['xl/worksheets/sheet1.xml'];
+      if (!sheetXml) throw new Error("Couldn't find a worksheet in that file.");
+
+      const dec = new TextDecoder();
+      const parser = new DOMParser();
+
+      let shared = [];
+      if (files['xl/sharedStrings.xml']) {
+        const sdoc = parser.parseFromString(dec.decode(files['xl/sharedStrings.xml']), 'application/xml');
+        shared = [...sdoc.getElementsByTagName('si')].map(si =>
+          [...si.getElementsByTagName('t')].map(t => t.textContent || '').join(''));
+      }
+
+      const doc = parser.parseFromString(dec.decode(sheetXml), 'application/xml');
+      const rows = [];
+      for (const row of doc.getElementsByTagName('row')) {
+        const cells = {};
+        for (const c of row.getElementsByTagName('c')) {
+          const t = c.getAttribute('t');
+          let value = '';
+          if (t === 'inlineStr') {
+            value = [...c.getElementsByTagName('t')].map(x => x.textContent || '').join('');
+          } else {
+            const v = c.getElementsByTagName('v')[0];
+            value = v ? (v.textContent || '') : '';
+            if (t === 's' && value !== '') value = shared[Number(value)] ?? '';
+          }
+          cells[colOf(c.getAttribute('r'))] = value;
+        }
+        rows.push(cells);
+      }
+      return rows;
+    }
+
+    // ── What the columns mean ──────────────────────────────────────────────
+    // Found by HEADER NAME rather than position. Guttman puts the vehicle in
+    // column J and Wex in column I, and both will move them the first time
+    // either changes its export. The names are what the office recognises,
+    // and they are what these look for.
+    const STATEMENT_COLUMNS = {
+      vehicle: [/^vehicle number$/i, /^custom vehicle\/asset id$/i, /vehicle.*(id|number|no)/i, /asset id/i, /^unit( number| no)?$/i],
+      gallons: [/^transaction quantity$/i, /^units$/i, /^quantity$/i, /^gallons$/i, /^qty$/i],
+      date:    [/^transaction date$/i, /^trans date$/i, /^date$/i, /^posting date$/i],
+      status:  [/^status$/i],
+      category:[/^product category$/i],
+      product: [/^product description$/i, /^product$/i],
+      ifta:    [/non.?ifta/i],
+      site:    [/^site description$/i, /^merchant name$/i, /^merchant \(brand\)$/i],
+      card:    [/^card number$/i, /^card description$/i],
+      // Who was holding the card. Read for one reason: the first time an
+      // account is matched, none of its vehicle ids mean anything to anyone —
+      // Guttman calls a truck 5894 and the yard calls it something else. The
+      // driver's name is the thing that makes the row identifiable, and it is
+      // sitting in the file already.
+      driver:  [/^driver id description$/i, /^driver name$/i, /^driver$/i],
+      // The reading on the pump. Second-best identifier when two vehicles
+      // share a driver: a 268,000-mile truck is not the 21,000-mile pickup.
+      odometer:[/^transaction odometer$/i, /^current odometer$/i, /^odometer$/i],
+    };
+
+    /**
+     * Match each field to a column, most specific heading first.
+     *
+     * Driven by the PATTERNS rather than by the sheet's column order. Walking
+     * the columns instead lets a broad heading claim a field before a better
+     * one is reached: Wex ships "Product" in AF and "Product Description" in
+     * AG, so column-first reads the fuel as "UNL" where the office would say
+     * "Unleaded Regular".
+     *
+     * A column can only answer for one field, so "Product category" cannot
+     * also become the product once it has been claimed as the category.
+     *
+     * Takes the spec so the entry importer can reuse it: the algorithm is
+     * about headings, not about statements, and a second copy of it would be
+     * a second place for the pattern-first rule above to be forgotten.
+     */
+    function detectColumns(headerRow, spec) {
+      const labels = {};
+      for (const [col, raw] of Object.entries(headerRow || {})) {
+        const label = String(raw || '').trim();
+        if (label) labels[col] = label;
+      }
+      const cols = Object.keys(labels);
+      const found = {}, taken = new Set();
+      for (const [field, patterns] of Object.entries(spec || STATEMENT_COLUMNS)) {
+        for (const p of patterns) {
+          const hit = cols.find(c => !taken.has(c) && p.test(labels[c]));
+          if (hit) { found[field] = hit; taken.add(hit); break; }
+        }
+      }
+      return { found, labels };
+    }
+
+    /**
+     * A workbook's rows reduced to what a reconciliation needs.
+     *
+     * Rows the account itself says are not a fuel purchase are dropped and
+     * counted, never silently: Guttman ships DECLINED rows with a blank
+     * quantity, and a NON-FUEL category for the same. Counting those as zero
+     * would be harmless; counting them as fills would not, and either way the
+     * office should be able to see that the file had 75 rows and 73 of them
+     * were fuel.
+     */
+    function readStatementRows(rows) {
+      if (!rows.length) return { error: 'That file has no rows in it.' };
+      const { found, labels } = detectColumns(rows[0]);
+      if (!found.vehicle) {
+        return { error: `Couldn't find a vehicle column. The headings read: ${
+          Object.values(labels).slice(0, 12).join(', ')}` };
+      }
+      if (!found.gallons) {
+        return { error: `Couldn't find a gallons column. The headings read: ${
+          Object.values(labels).slice(0, 12).join(', ')}` };
+      }
+
+      const out = [], dropped = [];
+      for (const r of rows.slice(1)) {
+        const ref = String(r[found.vehicle] ?? '').trim();
+        const rawQty = String(r[found.gallons] ?? '').replace(/[$,\s]/g, '');
+        const gallons = rawQty === '' ? null : Number(rawQty);
+        const status  = found.status   ? String(r[found.status] ?? '').trim()   : '';
+        const cat     = found.category ? String(r[found.category] ?? '').trim() : '';
+
+        if (!ref && gallons == null) continue;                      // trailing blank row
+        if (status && !/^posted$/i.test(status)) { dropped.push({ ref, why: status }); continue; }
+        if (cat && !/^fuel$/i.test(cat))         { dropped.push({ ref, why: cat });    continue; }
+        if (gallons == null || !Number.isFinite(gallons)) { dropped.push({ ref, why: 'no quantity' }); continue; }
+
+        let date = found.date ? String(r[found.date] ?? '').trim() : '';
+        if (/^\d+(\.\d+)?$/.test(date)) date = excelSerialToYmd(date) || date;
+        else if (date) date = (date.match(/\d{4}-\d{2}-\d{2}/) || [date.slice(0, 10)])[0];
+
+        out.push({
+          ref, gallons, date,
+          product: found.product ? String(r[found.product] ?? '').trim() : '',
+          // Both accounts mark this in a trailing column with no header of
+          // their own, so it is read wherever it landed rather than assumed.
+          nonIfta: found.ifta
+            ? /non.?ifta/i.test(String(r[found.ifta] ?? ''))
+            : Object.values(r).some(v => /^non\s*ifta$/i.test(String(v || '').trim())),
+          site: found.site ? String(r[found.site] ?? '').trim() : '',
+          driver: found.driver ? String(r[found.driver] ?? '').trim() : '',
+          odometer: found.odometer ? Number(String(r[found.odometer] ?? '').replace(/[,\s]/g, '')) : NaN,
+        });
+      }
+      return { rows: out, dropped, columns: found, labels };
+    }
+
+    // The accounts are not consistent with themselves: one Wex export writes
+    // the same pickup as "PT 2458", "PT-2458" and "PT4750". Matching strips
+    // everything that isn't a letter or a digit and upper-cases the rest, so
+    // all three land on the same key — while the roster keeps what was typed.
+    function refKey(v) {
+      return String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+
+    /**
+     * The number inside an account's vehicle id.
+     *
+     * Truck numbers here are the last four of the VIN, and both accounts
+     * write that number with their own fleet prefix in front of it: Guttman's
+     * PT4336 and Wex's "PT 4805" are trucks 4336 and 4805. The longest run of
+     * digits is taken because the prefix is the FLEET's, never the truck's.
+     */
+    function refDigits(ref) {
+      const runs = String(ref == null ? '' : ref).match(/\d+/g);
+      if (!runs || !runs.length) return null;
+      return runs.slice().sort((a, b) => b.length - a.length)[0];
+    }
+
+    // The last four of a VIN, which is what a truck number is made of. Only
+    // four digits count: a VIN ending in a letter is not a truck number, and
+    // treating it as one would match on three digits and a coincidence.
+    function vinTail(vin) {
+      const s = String(vin == null ? '' : vin).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const tail = s.slice(-4);
+      return /^\d{4}$/.test(tail) ? tail : null;
     }
 
     function parseStatement(text, gallonsPick, knownTrucks) {
@@ -3222,16 +3947,26 @@
         fills.set(t, (fills.get(t) || 0) + 1);
       }
 
-      const trucks = new Set([...ours.keys(), ...statement.byTruck.keys()]);
+      const stmt = statement.byTruck instanceof Map ? statement.byTruck : new Map();
+      const stmtGallons = t => {
+        const v = stmt.get(t);
+        return v == null ? null : (typeof v === 'object' ? v.gallons : v);
+      };
+      const trucks = new Set([...ours.keys(), ...stmt.keys()]);
       const rows = [];
       for (const t of trucks) {
         const o = ours.has(t) ? ours.get(t) : null;
-        const s = statement.byTruck.has(t) ? statement.byTruck.get(t) : null;
+        const s = stmtGallons(t);
         let verdict;
         if (o == null)      verdict = 'not-in-ours';
         else if (s == null) verdict = 'not-on-statement';
-        // A hundredth of a gallon is rounding, not a discrepancy.
-        else if (Math.abs(o - s) < 0.005) verdict = 'match';
+        // Rounding, not a discrepancy — and it accumulates. Gallons are
+        // stored to two decimals and the accounts bill to three, so every
+        // fill-up can sit half a hundredth either side of what was pumped and
+        // a truck with four of them can be two hundredths out with nothing
+        // wrong anywhere. A flat hundredth called that a variance and sent
+        // somebody looking for a penny of diesel.
+        else if (Math.abs(o - s) < 0.005 * (1 + (fills.get(t) || 0))) verdict = 'match';
         else verdict = 'variance';
         rows.push({
           truck: t, ours: o, statement: s,
@@ -3250,7 +3985,7 @@
       return {
         card, rows,
         oursTotal:      [...ours.values()].reduce((a, b) => a + b, 0),
-        statementTotal: [...statement.byTruck.values()].reduce((a, b) => a + b, 0),
+        statementTotal: [...stmt.keys()].reduce((a, t) => a + (stmtGallons(t) || 0), 0),
         matched:        rows.filter(r => r.verdict === 'match').length,
         variances:      rows.filter(r => r.verdict === 'variance'),
         notInOurs:      rows.filter(r => r.verdict === 'not-in-ours'),
@@ -3270,11 +4005,83 @@
         out.innerHTML = '<div class="rep-empty">Build a report first — the match runs against the range above.</div>';
         return;
       }
+      const account = val('mt-card');
       const text = val('mt-paste');
-      if (!text.trim()) {
-        out.innerHTML = '<div class="rep-empty">Paste a statement above, then press Match.</div>';
+
+      // A workbook already knows which column is which, so it skips the
+      // number-guessing the paste path has to do and goes straight to the
+      // account's own vehicle ids.
+      if (loadedWorkbook) {
+        const agg = aggregateByRef(loadedWorkbook.rows);
+        const { byTruck, unmapped, how, counts } = resolveStatementRefs(agg.byRef, account, vehicleIndex());
+        matchResult = matchStatement(reportModel, account, {
+          byTruck,
+          skipped: loadedWorkbook.dropped.map(d => `${d.ref || '(no vehicle)'} — ${d.why}`),
+          lines: loadedWorkbook.rows.length + loadedWorkbook.dropped.length,
+        });
+        matchResult.periodStart = reportModel.from;
+        matchResult.periodEnd   = reportModel.to;
+        matchResult.builtFor    = reportModel.builtFor;
+        matchResult.months      = reportModel.months;
+        matchResult.source      = loadedWorkbook.name;
+        matchResult.unmapped    = unmapped;
+        // The days the statement itself covers, so a range that doesn't
+        // contain them can be pointed at rather than left to be inferred from
+        // a table where every row disagrees.
+        const days = loadedWorkbook.rows.map(x => x.date).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+        matchResult.statementFrom    = days[0] || null;
+        matchResult.statementTo      = days[days.length - 1] || null;
+        matchResult.statementIfta    = agg.iftaGallons;
+        matchResult.statementNonIfta = agg.nonIftaGallons;
+        matchResult.byProduct        = agg.byProduct;
+        matchResult.matchedBy        = counts;
+        // How each truck came to be matched, shown under its statement id.
+        // "5894 · by truck number" and "5894 · recorded" are the same total
+        // reached two different ways, and only one of them is somebody's
+        // decision — which is exactly what to check first if it looks wrong.
+        const RULE_LABEL = { recorded: 'recorded id', number: 'by truck number', vin: 'by VIN' };
+        matchResult.refsFor          = new Map([...byTruck].map(([t, v]) => {
+          const rules = [...(how.get(t) || [])].map(x => RULE_LABEL[x] || x).join(', ');
+          return [t, v.refs.join(', ') + (rules ? ` · ${rules}` : '')];
+        }));
+        renderStatementMatch();
         return;
       }
+
+      if (!text.trim()) {
+        out.innerHTML = '<div class="rep-empty">Choose a statement file or paste one above, then press Match.</div>';
+        return;
+      }
+
+      // The same reading the file path does, for a block that was pasted
+      // rather than chosen. Without it the line parser has a go at anything,
+      // and it will find a truck number and a gallons figure in a file that
+      // has neither.
+      const byHeading = statementFromText(text);
+      if (byHeading && byHeading.error) {
+        out.innerHTML = `<div class="rep-empty">${escapeHtml(byHeading.error)}</div>`;
+        return;
+      }
+      if (byHeading) {
+        const agg = aggregateByRef(byHeading.rows);
+        const { byTruck, unmapped, how, counts } = resolveStatementRefs(agg.byRef, account, vehicleIndex());
+        matchResult = matchStatement(reportModel, account, {
+          byTruck,
+          skipped: byHeading.dropped.map(d => `${d.ref || '(no vehicle)'} — ${d.why}`),
+          lines: byHeading.rows.length + byHeading.dropped.length,
+        });
+        Object.assign(matchResult, {
+          periodStart: reportModel.from, periodEnd: reportModel.to,
+          builtFor: reportModel.builtFor, months: reportModel.months,
+          unmapped, matchedBy: counts,
+          statementIfta: agg.iftaGallons, statementNonIfta: agg.nonIftaGallons,
+          byProduct: agg.byProduct,
+          refsFor: new Map([...byTruck].map(([t, v]) => [t, v.refs.join(', ')])),
+        });
+        renderStatementMatch();
+        return;
+      }
+
       const parsed = parseStatement(text, val('mt-gallons-col'), knownTruckNumbers());
       if (!parsed.byTruck.size) {
         out.innerHTML = `<div class="rep-empty">Couldn't read a truck number and a gallons figure off any of those
@@ -3296,10 +4103,41 @@
       renderStatementMatch();
     }
 
+    const FILE_HINT = 'Guttman or Wex .xlsx, or a CSV — …or paste the statement below.';
+
+    // The gallons picker only exists because a pasted line is ambiguous about
+    // which of its numbers is the fuel. A workbook has named columns, so the
+    // question has already been answered and leaving the control up invites
+    // somebody to change it and wonder why nothing moved.
+    function showGallonsPicker(show) {
+      const f = el('mt-galcol-field');
+      if (f) f.style.display = show ? '' : 'none';
+      // The paste box goes with it. Once a file has been read there is
+      // nothing to type, and a box of sample numbers sitting under a loaded
+      // statement reads like data that is about to be matched.
+      const p = el('mt-paste');
+      if (p) p.style.display = show ? '' : 'none';
+    }
+
+    // Typing into the box after a workbook has been read means the workbook is
+    // not what they want matched any more. Without this the file quietly wins
+    // and the paste is matched against nothing — the same numbers come back and
+    // it looks like the edit did nothing.
+    function statementPasteChanged() {
+      if (!loadedWorkbook) return;
+      if (!val('mt-paste').trim()) return;
+      loadedWorkbook = null;
+      el('mt-file').value = '';
+      showGallonsPicker(true);
+      el('mt-file-name').textContent = FILE_HINT;
+    }
+
     function clearStatementMatch() {
       el('mt-paste').value = '';
       el('mt-file').value = '';
-      el('mt-file-name').textContent = '…or paste the statement below.';
+      loadedWorkbook = null;
+      showGallonsPicker(true);
+      el('mt-file-name').textContent = FILE_HINT;
       el('matchResults').innerHTML = '';
       matchResult = null;
       renderSavedMatches();
@@ -3309,26 +4147,1025 @@
     // copy out of. Read straight into the same box the paste goes into, so
     // there is one parser and one preview rather than two paths that can
     // disagree about what a line means.
-    function loadStatementFile(ev) {
+    // A workbook that has been read and understood, waiting for Match. Held
+    // rather than flattened into the textarea: the sheet carries a date, a
+    // product and an IFTA marker per row, and turning it back into two columns
+    // of text would throw all of that away on the way in.
+    let loadedWorkbook = null;
+
+    /**
+     * A delimited block, read the way a workbook is where it can be.
+     *
+     * Returns { rows … } when it has headings a statement can be read from,
+     * { error } when it is recognisably the WRONG file, and null when it is
+     * a bare block of numbers for the line parser to have a go at.
+     *
+     * The middle case is the one that earns its place. A statement saved as
+     * CSV and the fuel tickets exported as CSV are both "a CSV with a truck
+     * number and a gallons figure on every line", and the line parser reads
+     * either of them without complaint — it found a tank number of 5179 and
+     * called it five thousand gallons for truck 18. The headings say plainly
+     * which file this is, so they are read before anything else happens.
+     */
+    function statementFromText(text) {
+      const grid = parseDelimited(text);
+      if (grid.length < 2) return null;
+
+      // Fuel-ticket columns: Fuel Card Used, Beginning Meter Reading, Tank
+      // Number. No fuel account has ever billed a Beginning Meter Reading.
+      const asTickets = detectColumns(grid[0], IMPORT_COLUMNS).found;
+      const ticketish = ['fuel_card', 'beginning_meter', 'ending_meter', 'tank_number', 'fueling_site']
+        .filter(k => asTickets[k]).length;
+      if (ticketish >= 3) {
+        return { error: 'That looks like the fuel tickets file, not an account statement — it has '
+          + 'columns no fuel account bills, like meter readings and a fuel card. Load it on the Import '
+          + 'tab instead; this panel wants the file that comes out of Guttman or Wex.' };
+      }
+
+      const read = readStatementRows(grid);
+      if (read.error || !read.rows.length) return null;   // let the line parser try
+      return read;
+    }
+
+    async function loadStatementFile(ev) {
       const file = ev && ev.target && ev.target.files && ev.target.files[0];
       if (!file) return;
       const label = el('mt-file-name');
-      // A statement is text. A spreadsheet saved as .xlsx is a zip, and
-      // reading it as text produces line noise that parses into nonsense
-      // truck numbers — say so instead.
-      if (/\.(xlsx|xls|numbers|pdf)$/i.test(file.name)) {
-        label.textContent = `${file.name} isn't a text file — export it as CSV and try again.`;
+      loadedWorkbook = null;
+      showGallonsPicker(true);
+      label.textContent = `Reading ${file.name}…`;
+
+      try {
+        if (/\.xlsx$/i.test(file.name)) {
+          if (typeof DecompressionStream === 'undefined') {
+            throw new Error('This browser cannot open .xlsx files — save the statement as CSV instead.');
+          }
+          const rows = await readWorkbook(await file.arrayBuffer());
+          const read = readStatementRows(rows);
+          if (read.error) throw new Error(read.error);
+          if (!read.rows.length) throw new Error('No fuel transactions in that file.');
+
+          loadedWorkbook = Object.assign(read, { name: file.name });
+          el('mt-paste').value = '';
+          showGallonsPicker(false);
+          const gal = read.rows.reduce((n, r) => n + r.gallons, 0);
+          label.innerHTML = `<strong>${escapeHtml(file.name)}</strong> — ${read.rows.length} fuel `
+            + `transaction${read.rows.length === 1 ? '' : 's'}, ${n2(gal)} gal`
+            + (read.dropped.length ? `, ${read.dropped.length} row${read.dropped.length === 1 ? '' : 's'} skipped `
+                 + `(${escapeHtml([...new Set(read.dropped.map(d => d.why))].slice(0, 3).join(', '))})` : '')
+            + '. Press Match.';
+          return;
+        }
+
+        // Anything else is delimited text. Read by its headings where it has
+        // usable ones — a statement saved as CSV is still a statement — and
+        // refused outright where the headings say it is a different file.
+        const text = await file.text();
+        el('mt-paste').value = text;
+        const read = statementFromText(text);
+        if (read && read.error) throw new Error(read.error);
+        if (read) {
+          loadedWorkbook = Object.assign(read, { name: file.name });
+          showGallonsPicker(false);
+          const gal = read.rows.reduce((n, r) => n + r.gallons, 0);
+          label.innerHTML = `<strong>${escapeHtml(file.name)}</strong> — ${read.rows.length} fuel `
+            + `transaction${read.rows.length === 1 ? '' : 's'}, ${n2(gal)} gal, read by its headings. Press Match.`;
+          return;
+        }
+        const lines = text.split(/\r?\n/).filter(l => l.trim()).length;
+        label.textContent = `${file.name} — ${lines} line${lines === 1 ? '' : 's'}. Press Match.`;
+      } catch (err) {
+        label.textContent = `Couldn't read ${file.name}: ${err.message}`;
         el('mt-file').value = '';
+        // The text in the box came from this file, so take it back out with
+        // it. Left there it is re-read on every press of Match — the panel
+        // repeats the same refusal and looks stuck rather than ready for the
+        // right file. A block somebody TYPED is never touched: it only gets
+        // cleared here because it was put there a few lines above.
+        el('mt-paste').value = '';
+        el('matchResults').innerHTML = '';
+        matchResult = null;
+      }
+    }
+
+    // ══ Importing a month of fuel entries ═══════════════════════════════════
+    // A backfill loader, not a second way to file fuel. Every row it produces
+    // is the same thirteen fields the form asks for and goes through the same
+    // server-side normalizeBody, so an imported entry cannot be anything the
+    // field could not have submitted.
+    //
+    // The design rule throughout: NOTHING is guessed silently. A column the
+    // headings didn't identify gets a dropdown, a field the file doesn't have
+    // at all gets a value you supply for every row, and every row that can't
+    // be read is listed by its line number with the reason. What gets written
+    // is only ever what was on screen when Import was pressed.
+
+    const IMPORT_COLUMNS = {
+      // Order matters as much as the patterns do: detectColumns lets each
+      // field claim a column before the next one looks, so the fields whose
+      // headings are least ambiguous go first and the loose fallbacks at the
+      // end of each list can only take what nothing else wanted.
+      work_date:         [/^(work\s*)?date$/i, /^fuel(ing|ed)?\s*date$/i, /^trans(action)?\s*date$/i, /\bdate\b/i],
+      truck_number:      [/^truck\s*(number|no\.?|#)?$/i, /^unit\s*(number|no\.?|#)?$/i,
+                          /^vehicle\s*(number|no\.?|#)?$/i, /truck\s*(number|no\.?|#)/i,
+                          /vehicle\s*(number|no\.?|#)/i],
+      gallons:           [/^gallons?$/i, /^gals?\.?$/i, /^quantity$/i, /^units$/i, /^qty$/i, /\bgallons?\b/i],
+      // "First Name + Last Name" is the joined column readImportGrid builds
+      // when a form export splits a person across two — first, so it wins over
+      // either half on its own.
+      employee_username: [/^first\s*name\s*\+\s*last\s*name$/i, /^employee(\s*(name|username))?$/i,
+                          /^driver(\s*name)?$/i, /^operator$/i, /^full\s*name$/i,
+                          /\bemployee\b/i, /\bdriver\b/i, /^first\s*name$/i, /^name$/i],
+      fuel_card:         [/^fuel\s*card(\s*used)?$/i, /^card(\s*used)?$/i, /^vendor$/i, /^account$/i, /fuel\s*card/i],
+      fuel_type:         [/^fuel\s*type$/i, /^type\s*of\s*fuel$/i, /^product(\s*description)?$/i, /fuel\s*type/i],
+      // Beginning before ending, and both anchored on the word that separates
+      // them — a pattern loose enough to match "meter" alone would take
+      // whichever of the two columns came first and be wrong half the time.
+      beginning_meter:   [/^beginning\s*meter(\s*reading)?$/i, /^begin(ning)?\s*meter/i, /^start(ing)?\s*meter/i,
+                          /^meter\s*(start|begin)/i, /begin.*meter/i, /start.*meter/i],
+      ending_meter:      [/^ending\s*meter(\s*reading)?$/i, /^end(ing)?\s*meter/i, /^finish(ing)?\s*meter/i,
+                          /^meter\s*(end|finish)/i, /end.*meter/i],
+      mileage:           [/^mileage$/i, /^miles$/i, /^odometer$/i, /^odo\.?$/i, /\bmileage\b/i, /\bodometer\b/i],
+      tank_number:       [/^tank\s*(number|no\.?|#)?$/i, /\btank\b/i],
+      fueling_site:      [/^fuel(ing)?\s*site$/i, /^site(\s*name|\s*description)?$/i, /^station$/i,
+                          /^location$/i, /^merchant/i, /\bsite\b/i],
+      city_fueled:       [/^city(\s*fueled)?$/i, /^town$/i, /\bcity\b/i],
+      state:             [/^state$/i, /^st\.?$/i, /\bstate\b/i],
+    };
+
+    // What the office is likely to have written where one of the four cards
+    // or four fuel types belongs. Deliberately short: an alias that guesses
+    // wrong files a fill-up under the wrong account and the month stops
+    // balancing for a reason nobody can see. Anything not here is reported
+    // and the file gets fixed, which is the honest outcome.
+    const CARD_ALIASES = {
+      bulk: 'Bulk Fuel – No card', bulkfuel: 'Bulk Fuel – No card',
+      nocard: 'Bulk Fuel – No card', none: 'Bulk Fuel – No card',
+      guttmann: 'Guttman', wexinc: 'Wex', wexfleet: 'Wex',
+    };
+    const TYPE_ALIASES = {
+      offroad: 'Off Road Diesel', dyeddiesel: 'Off Road Diesel', reddiesel: 'Off Road Diesel',
+      onroaddiesel: 'On Road',
+      gasoline: 'Gas', unleaded: 'Gas', unl: 'Gas',
+      dsl: 'Diesel',
+    };
+
+    function optKey(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+    function matchOption(v, list, aliases) {
+      const k = optKey(v);
+      if (!k) return null;
+      const exact = list.find(x => optKey(x) === k);
+      if (exact) return exact;
+      const alias = aliases[k];
+      return list.includes(alias) ? alias : null;
+    }
+
+    // Levenshtein, for one purpose: "Guttmman" is Guttman with a finger held
+    // down. Only ever applied to a whole cell against a whole option name.
+    function editDistance(a, b) {
+      if (a === b) return 0;
+      if (!a.length || !b.length) return Math.max(a.length, b.length);
+      let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+      for (let i = 1; i <= a.length; i++) {
+        const row = [i];
+        for (let j = 1; j <= b.length; j++) {
+          row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        prev = row;
+      }
+      return prev[b.length];
+    }
+
+    /**
+     * The option a cell means, and how that was decided.
+     *
+     * Three stages, and the last two only run because the field writes these
+     * in longhand: "5340 WEX CARD", "Arron Todds wex card", "used 2760
+     * Guttman", "Guttmman". Each is unmistakable to a person and none of them
+     * is one of the four names.
+     *
+     *   named    the cell IS the option, give or take case and punctuation
+     *   spelt    exactly ONE option is named somewhere inside it — two or
+     *            more and it is refused, because "bulk fuel, Guttman was
+     *            down" is not a decision anything here can make
+     *   near     one letter out of a name long enough for that to be a typo
+     *            rather than a coincidence
+     *
+     * `how` comes back so the page can show every row read this way before a
+     * single one is written. A fill-up filed under the wrong account is a
+     * month that stops balancing for a reason nobody can see, so this is
+     * never allowed to be quiet.
+     */
+    function readOption(v, list, aliases) {
+      const named = matchOption(v, list, aliases);
+      if (named) return { value: named, how: 'named' };
+
+      const k = optKey(v);
+      if (!k) return { value: null, how: null };
+
+      // Every spelling that resolves to an option, longest first so a short
+      // one cannot claim a cell the longer one also matches.
+      const candidates = list.map(x => [optKey(x), x])
+        .concat(Object.entries(aliases).filter(([, to]) => list.includes(to)))
+        .sort((a, b) => b[0].length - a[0].length);
+
+      const found = new Set();
+      for (const [key, option] of candidates) if (key && k.includes(key)) found.add(option);
+
+      // One option's name inside another's is not two answers. "Dyed off road
+      // diesel" names Diesel and Off Road Diesel, and the more specific one is
+      // what it means — Off Road Diesel IS a diesel. Two names where neither
+      // contains the other stay ambiguous: Guttman and Bulk Fuel in the same
+      // cell is a sentence, not a choice.
+      const names = [...found];
+      const winners = names.filter(a =>
+        !names.some(b => b !== a && optKey(b).includes(optKey(a))));
+
+      if (winners.length === 1) return { value: winners[0], how: 'spelt' };
+      if (winners.length > 1)   return { value: null, how: 'ambiguous' };
+
+      // A name short enough that one letter's difference is as likely to be a
+      // different word is left alone — "wex" is three characters, and half the
+      // alphabet is one edit away from it.
+      for (const [key, option] of candidates) {
+        if (key.length >= 6 && Math.abs(key.length - k.length) <= 2 && editDistance(k, key) <= 1) {
+          return { value: option, how: 'near' };
+        }
+      }
+      return { value: null, how: null };
+    }
+
+    function importState(v) {
+      const s = String(v == null ? '' : v).trim();
+      if (!s) return null;
+      const up = s.toUpperCase();
+      if (US_STATES.some(x => x.code === up)) return up;
+      const hit = US_STATES.find(x => optKey(x.name) === optKey(s));
+      return hit ? hit.code : null;
+    }
+
+    // A real calendar day, not just four-two-two digits. Postgres would
+    // refuse the 30th of February with a 500 rather than a message anyone
+    // could act on, and a month whose import half-failed on the server is
+    // much worse to unpick than one that never left the page.
+    function validYmd(s) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s || '')) return null;
+      const [y, m, d] = s.split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      return (dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === m && dt.getUTCDate() === d) ? s : null;
+    }
+
+    /**
+     * A date cell, however the spreadsheet felt like writing it.
+     *
+     * Order is load-bearing. An 8-digit run is 20260504, not Excel serial
+     * 20,260,504 — no workbook holds a date 55,000 years out, and reading it
+     * as one would file May's fuel in the year 57460 without a word.
+     */
+    function importDate(v) {
+      const s = String(v == null ? '' : v).trim();
+      if (!s) return null;
+      const p2 = n => String(n).padStart(2, '0');
+
+      let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+      if (m) return validYmd(`${m[1]}-${p2(m[2])}-${p2(m[3])}`);
+
+      if (/^\d{8}$/.test(s)) return validYmd(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`);
+      if (/^\d+(\.\d+)?$/.test(s)) return validYmd(excelSerialToYmd(s) || '');
+
+      // US order, which is what every one of these sheets is written in.
+      m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})$/);
+      if (m) {
+        const yr = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+        return validYmd(`${yr}-${p2(m[1])}-${p2(m[2])}`);
+      }
+      return null;
+    }
+
+    /**
+     * A cell that declines to answer rather than answering.
+     *
+     * "N/A" in a tank number column means the same thing the form means by
+     * "0 if not Force Fuel" — this vehicle hasn't got one. Read as a value it
+     * is a hard error on a row that is otherwise perfectly good; read as an
+     * empty cell it falls through to whatever was set as the default, and is
+     * counted there like any other blank.
+     */
+    const NOT_ANSWERED = /^(n\.?\/?a\.?|none|null|nil|-{1,3}|\.|\?)$/i;
+
+    // Spreadsheets carry $ signs, thousands separators and stray spaces in
+    // number columns. Returns a number so the caller can still tell 0 from
+    // absent — null is absent, 0 is zero.
+    function importNumber(v) {
+      let s = String(v == null ? '' : v).replace(/[$,\s]/g, '').trim();
+      if (s === '') return null;
+      // A cell of nothing but the letter O, in a column of numbers, is a zero
+      // typed off by one key. Nothing else it could be — and left alone it
+      // fails a row whose meter reading is the documented 0.
+      if (/^[Oo]+$/.test(s)) s = s.replace(/[Oo]/g, '0');
+      const n = Number(s);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    /**
+     * A whole number out of a cell, or why not.
+     *
+     * Falls back to the digits inside a description, because that is what the
+     * cell means: "908 loader" is machine 908 and "Pump 16" is tank 16. The
+     * longest run wins — the same rule an account's vehicle id is read by —
+     * and every row read this way is counted so the preview can say so rather
+     * than quietly reinterpreting a fleet of equipment.
+     */
+    function importInt(v) {
+      const s = String(v == null ? '' : v).trim();
+      if (s === '') return { value: null };
+      const n = importNumber(s);
+      if (n != null) {
+        if (!Number.isInteger(n)) return { error: 'not a whole number' };
+        if (n < 0)                return { error: 'negative' };
+        return { value: n };
+      }
+      const runs = s.match(/\d+/g);
+      if (!runs) return { error: 'no number in it' };
+      return { value: Number(runs.slice().sort((a, b) => b.length - a.length)[0]), fromText: true };
+    }
+
+    // ── Reading the file into a grid ───────────────────────────────────────
+
+    function colLetter(i) {
+      let s = '';
+      for (let n = i; ; n = Math.floor(n / 26) - 1) {
+        s = String.fromCharCode(65 + (n % 26)) + s;
+        if (n < 26) break;
+      }
+      return s;
+    }
+
+    /**
+     * One delimited line into its cells, respecting quotes.
+     *
+     * A quoted cell is how a spreadsheet writes "Smith, John" or a site name
+     * with a comma in it, and splitting on the delimiter alone turns one such
+     * row into two half-rows that both fail to read. Embedded NEWLINES inside
+     * a quoted cell are not handled — they cannot survive a paste box
+     * intact anyway, and the .xlsx path doesn't come through here.
+     */
+    function splitDelimitedLine(line, d) {
+      const out = [];
+      let cur = '', quoted = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quoted) {
+          if (ch === '"') {
+            if (line[i + 1] === '"') { cur += '"'; i++; }
+            else quoted = false;
+          } else cur += ch;
+        } else if (ch === '"') quoted = true;
+        else if (ch === d)    { out.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      out.push(cur);
+      return out;
+    }
+
+    // Pasted text into the same { COLUMN: value } shape readWorkbook returns,
+    // so everything downstream is blind to which of the two it came from.
+    function parseDelimited(text) {
+      const lines = String(text || '').split(/\r?\n/).filter(l => l.trim() !== '');
+      if (!lines.length) return [];
+      const d = delimiterFor(lines[0]) || '\t';
+      return lines.map(line => {
+        const row = {};
+        splitDelimitedLine(line, d).forEach((c, i) => { row[colLetter(i)] = c.trim(); });
+        return row;
+      });
+    }
+
+    /**
+     * Which row is the headings.
+     *
+     * Not always the first: a sheet somebody printed once carries a title, a
+     * date range and a blank line above the real header. Scored by how many
+     * of the thirteen fields each candidate row can name, because that is the
+     * only thing that makes a row a header rather than data.
+     */
+    function pickHeaderRow(rows) {
+      let index = -1, score = 0;
+      for (let i = 0; i < Math.min(rows.length, 8); i++) {
+        const n = Object.keys(detectColumns(rows[i], IMPORT_COLUMNS).found).length;
+        if (n > score) { score = n; index = i; }
+      }
+      return { index, score };
+    }
+
+    /**
+     * A parsed file: its headings, its data rows, and the mapping detected.
+     * `firstDataLine` is the spreadsheet line number of rows[0] so every
+     * problem can be reported against the line the office would scroll to.
+     */
+    function readImportGrid(rows) {
+      if (!rows.length) return { error: 'There are no rows in that.' };
+      const { index, score } = pickHeaderRow(rows);
+      if (index < 0 || score < 2) {
+        const first = Object.values(rows[0] || {}).filter(Boolean).slice(0, 10).join(', ');
+        return { error: `Couldn't find a heading row. The top row reads: ${first || '(empty)'}` };
+      }
+      const header = rows[index];
+      const data = rows.slice(index + 1);
+      const labels = {};
+      for (const [col, raw] of Object.entries(header || {})) {
+        const label = String(raw || '').trim();
+        if (label) labels[col] = label;
+      }
+
+      /**
+       * A form export writes a person as two columns, and Employee is one
+       * field. Rather than making somebody edit the sheet, join the pair into
+       * a column of its own and offer it in the dropdown like any other — it
+       * can be chosen, or ignored in favour of either half.
+       *
+       * Written into the rows as a real column so everything downstream stays
+       * blind to where it came from.
+       */
+      const findCol = re => Object.keys(labels).find(c => re.test(labels[c]));
+      const firstCol = findCol(/^first\s*name$/i);
+      const lastCol  = findCol(/^last\s*name$/i);
+      if (firstCol && lastCol) {
+        const joined = `${firstCol}+${lastCol}`;
+        for (const r of data) {
+          r[joined] = [r[firstCol], r[lastCol]].map(x => String(x == null ? '' : x).trim())
+            .filter(Boolean).join(' ');
+        }
+        header[joined] = `${labels[firstCol]} + ${labels[lastCol]}`;
+        labels[joined] = header[joined];
+      }
+
+      const { found } = detectColumns(header, IMPORT_COLUMNS);
+      return {
+        labels, found,
+        cols: Object.keys(labels),
+        rows: data,
+        headerLine: index + 1,
+        firstDataLine: index + 2,
+      };
+    }
+
+    /**
+     * Grid + mapping + defaults → entries ready to POST, and everything that
+     * stopped a row from being one.
+     *
+     * A blank cell falls back to the field's default when one has been given.
+     * That is what makes a sheet with no Tank Number column importable at
+     * all — but the count is reported, so "0 used for 137 rows" is on screen
+     * rather than inferred from a total that came out right.
+     */
+    function buildImportRows(grid, map, defaults, ctx) {
+      const empByKey = new Map((ctx.employees || []).map(u => [optKey(u), u]));
+      const ready = [], problems = [], fromText = [], readAs = [];
+      const defaulted = {}, notAnswered = {}, unknownEmployees = new Map();
+      let blank = 0;
+
+      grid.rows.forEach((raw, i) => {
+        const line = grid.firstDataLine + i;
+        const cellOf = key => {
+          const col = map[key];
+          const cell = col ? raw[col] : undefined;
+          if (cell == null) return '';
+          const s = String(cell).trim();
+          // "N/A" is a cell declining to answer, which is a blank with an
+          // opinion. Counted separately from a truly empty one so a column
+          // that is mostly N/A can be seen for what it is.
+          if (NOT_ANSWERED.test(s)) { notAnswered[key] = (notAnswered[key] || 0) + 1; return ''; }
+          return s;
+        };
+
+        // A row with nothing on it is the blank line under the data, not a
+        // problem to report thirteen times. Judged on the FILE's cells, before
+        // defaults are applied — once a default is set for so much as the tank
+        // number, every trailing blank row stops looking blank and the list of
+        // problems fills up with rows that aren't there.
+        if (FIELDS.every(f => cellOf(f.key) === '')) { blank++; return; }
+
+        const v = {}, usedDefault = {};
+        for (const f of FIELDS) {
+          const cell = cellOf(f.key);
+          if (cell === '') {
+            const d = defaults[f.key];
+            if (d != null && String(d).trim() !== '') { v[f.key] = String(d).trim(); usedDefault[f.key] = true; }
+            else v[f.key] = '';
+          } else v[f.key] = cell;
+        }
+
+        const why = [];
+        const entry = {};
+
+        entry.work_date = importDate(v.work_date);
+        if (!entry.work_date) why.push(v.work_date ? `couldn't read the date "${v.work_date}"` : 'no date');
+
+        entry.employee_username = v.employee_username || null;
+        if (!entry.employee_username) why.push('no employee');
+        else {
+          const known = empByKey.get(optKey(entry.employee_username));
+          // Spelling is taken from the roster when it matches at all, so
+          // "JSmith" and "jsmith" don't become two employees in every filter
+          // and report from here on.
+          if (known) entry.employee_username = known;
+          else unknownEmployees.set(entry.employee_username, (unknownEmployees.get(entry.employee_username) || 0) + 1);
+        }
+
+        for (const [key, list, aliases, label] of [
+          ['fuel_card', FUEL_CARDS, CARD_ALIASES, 'fuel cards'],
+          ['fuel_type', FUEL_TYPES, TYPE_ALIASES, 'fuel types'],
+        ]) {
+          const r = readOption(v[key], list, aliases);
+          entry[key] = r.value;
+          if (r.value == null) {
+            why.push(!v[key] ? `no ${label.replace(/s$/, '')}`
+              : r.how === 'ambiguous' ? `"${v[key]}" names more than one of the ${label}`
+              : `"${v[key]}" is not one of the ${label}`);
+          } else if (r.how !== 'named') {
+            // Written in longhand and read anyway. Reported per distinct
+            // spelling so the office sees "5340 WEX CARD → Wex (3 rows)"
+            // before any of it is written, not a total that came out right.
+            readAs.push({ from: v[key], to: r.value, how: r.how });
+          }
+        }
+
+        entry.state = importState(v.state);
+        if (!entry.state) why.push(v.state ? `"${v.state}" is not a state` : 'no state');
+
+        for (const [key, label] of [['gallons', 'gallons'], ['mileage', 'mileage'],
+                                    ['beginning_meter', 'beginning meter'], ['ending_meter', 'ending meter']]) {
+          const n = importNumber(v[key]);
+          if (n == null)  { why.push(v[key] ? `couldn't read ${label} "${v[key]}"` : `no ${label}`); entry[key] = null; continue; }
+          if (n < 0)      { why.push(`${label} is negative`); entry[key] = null; continue; }
+          entry[key] = Math.round(n * 100) / 100;
+        }
+
+        for (const [key, label] of [['truck_number', 'truck number'], ['tank_number', 'tank number']]) {
+          const r = importInt(v[key]);
+          if (r.error)         { why.push(`${label} "${v[key]}" is ${r.error}`); entry[key] = null; continue; }
+          if (r.value == null) { why.push(`no ${label}`); entry[key] = null; continue; }
+          if (r.fromText) fromText.push(`${label} ${r.value} from "${v[key]}"`);
+          entry[key] = r.value;
+        }
+
+        entry.fueling_site = v.fueling_site || null;
+        if (!entry.fueling_site) why.push('no fueling site');
+        entry.city_fueled = v.city_fueled || null;
+        if (!entry.city_fueled) why.push('no city');
+
+        if (why.length) { problems.push({ line, why }); return; }
+
+        // The same rule the form and the server both apply, run here too so
+        // the gallons on the preview is the gallons that gets stored rather
+        // than a figure the server quietly replaces after the fact.
+        const metered = gallonsFromMeters(entry.beginning_meter, entry.ending_meter);
+        if (metered != null) entry.gallons = metered;
+
+        for (const f of FIELDS) if (usedDefault[f.key]) defaulted[f.key] = (defaulted[f.key] || 0) + 1;
+        ready.push({ line, entry });
+      });
+
+      // Folded to one line per distinct spelling. Ten rows written eight
+      // different ways is eight things to check, not ten.
+      const spellings = new Map();
+      for (const r of readAs) {
+        const k = `${r.from} ${r.to}`;
+        if (spellings.has(k)) spellings.get(k).count++;
+        else spellings.set(k, { from: r.from, to: r.to, how: r.how, count: 1 });
+      }
+
+      return {
+        ready, problems, defaulted, blank, notAnswered, fromText,
+        readAs: [...spellings.values()].sort((a, b) => b.count - a.count),
+        unknownEmployees: [...unknownEmployees].map(([name, count]) => ({ name, count })),
+      };
+    }
+
+    // ── The Import tab ─────────────────────────────────────────────────────
+    let importGrid     = null;   // the parsed file
+    let importMap      = {};     // field key → column letter ('' = not in the file)
+    let importDefaults = {};     // field key → value to use for every row
+    let importBuilt    = null;   // last buildImportRows result
+    let importing      = false;
+
+    const IMPORT_CHUNK = 200;
+
+    // What a field is worth defaulting to when the sheet has no column for
+    // it. Only the three the form itself already answers with a zero — the
+    // meters are documented on the form as "0 if not Force Fuel", and a fuel
+    // log kept in a spreadsheet almost never has a tank column at all.
+    const IMPORT_DEFAULT_HINTS = { beginning_meter: '0', ending_meter: '0', tank_number: '0' };
+
+    function clearImport() {
+      importGrid = null; importMap = {}; importDefaults = {}; importBuilt = null;
+      el('imp-paste').value = '';
+      el('imp-file').value  = '';
+      el('imp-file-name').textContent = '…or paste the rows below, headings and all.';
+      el('imp-map').innerHTML = '';
+      el('imp-preview').innerHTML = '';
+    }
+
+    async function loadImportFile(ev) {
+      const file = ev && ev.target && ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const label = el('imp-file-name');
+      label.textContent = `Reading ${file.name}…`;
+      try {
+        let rows;
+        if (/\.xlsx$/i.test(file.name)) {
+          if (typeof DecompressionStream === 'undefined') {
+            throw new Error('This browser cannot open .xlsx files — save the sheet as CSV instead.');
+          }
+          rows = await readWorkbook(await file.arrayBuffer());
+          el('imp-paste').value = '';
+        } else {
+          const text = await file.text();
+          el('imp-paste').value = text;
+          rows = parseDelimited(text);
+        }
+        useImportRows(rows, file.name);
+      } catch (err) {
+        label.textContent = `Couldn't read ${file.name}: ${err.message}`;
+        el('imp-file').value = '';
+        importGrid = null;
+        el('imp-map').innerHTML = '';
+        el('imp-preview').innerHTML = '';
+      }
+    }
+
+    function onImportPaste() {
+      const text = val('imp-paste');
+      // Typing replaces whatever file was loaded, for the same reason the
+      // statement panel does it: leaving the file in charge means the edit
+      // appears to do nothing.
+      el('imp-file').value = '';
+      if (!text.trim()) { clearImport(); return; }
+      useImportRows(parseDelimited(text), null);
+    }
+
+    function useImportRows(rows, name) {
+      const grid = readImportGrid(rows);
+      const label = el('imp-file-name');
+      if (grid.error) {
+        importGrid = null;
+        el('imp-map').innerHTML = '';
+        el('imp-preview').innerHTML = `<div class="imp-note imp-bad"><strong>${escapeHtml(grid.error)}</strong></div>`;
+        label.textContent = name ? `${name} — couldn't read it.` : '…or paste the rows below, headings and all.';
         return;
       }
-      const reader = new FileReader();
-      reader.onload = () => {
-        el('mt-paste').value = String(reader.result || '');
-        const lines = el('mt-paste').value.split(/\r?\n/).filter(l => l.trim()).length;
-        label.textContent = `${file.name} — ${lines} line${lines === 1 ? '' : 's'}. Press Match.`;
-      };
-      reader.onerror = () => { label.textContent = `Couldn't read ${file.name}.`; };
-      reader.readAsText(file);
+      importGrid = grid;
+      importMap = {};
+      importDefaults = {};
+      for (const f of FIELDS) {
+        importMap[f.key] = grid.found[f.key] || '';
+        if (!importMap[f.key] && IMPORT_DEFAULT_HINTS[f.key] != null) {
+          importDefaults[f.key] = IMPORT_DEFAULT_HINTS[f.key];
+        }
+      }
+      label.innerHTML = name
+        ? `<strong>${escapeHtml(name)}</strong> — ${grid.rows.length} row${grid.rows.length === 1 ? '' : 's'} under the headings on line ${grid.headerLine}.`
+        : `${grid.rows.length} row${grid.rows.length === 1 ? '' : 's'} under the headings on line ${grid.headerLine}.`;
+      renderImportMapping();
+    }
+
+    function setImportMap(key, col) {
+      importMap[key] = col;
+      // A field that has just lost its column needs somewhere to get a value
+      // from, so the defaults section has to be redrawn beside it.
+      if (!col && importDefaults[key] == null && IMPORT_DEFAULT_HINTS[key] != null) {
+        importDefaults[key] = IMPORT_DEFAULT_HINTS[key];
+      }
+      renderImportMapping();
+    }
+
+    function setImportDefault(key, value) {
+      importDefaults[key] = value;
+      // Deliberately does NOT redraw the mapping block — this fires on every
+      // keystroke, and rebuilding the input being typed into takes the cursor
+      // with it.
+      renderImportPreview();
+    }
+
+    function renderImportMapping() {
+      const wrap = el('imp-map');
+      if (!importGrid) { wrap.innerHTML = ''; return; }
+      const options = col => ['<option value="">— not in the file —</option>']
+        .concat(importGrid.cols.map(c =>
+          `<option value="${escAttr(c)}"${c === col ? ' selected' : ''}>${escapeHtml(importGrid.labels[c])}</option>`))
+        .join('');
+
+      const missing = FIELDS.filter(f => !importMap[f.key]);
+
+      wrap.innerHTML = `
+        <div class="imp-sec">
+          <div class="imp-head">Which column is which
+            <span>— found by heading. Change any that landed wrong.</span></div>
+          <div class="imp-grid">
+            ${FIELDS.map(f => `
+              <div class="filter-field ${importMap[f.key] ? '' : 'imp-missing'}">
+                <label for="impmap-${escAttr(f.key)}">${escapeHtml(f.label)}</label>
+                <select id="impmap-${escAttr(f.key)}" onchange="setImportMap('${escJsAttr(f.key)}', this.value)">
+                  ${options(importMap[f.key])}
+                </select>
+              </div>`).join('')}
+          </div>
+        </div>
+        <div class="imp-sec">
+          <div class="imp-head">Fill in what the file doesn't say
+            <span>— used wherever a row is blank. ${missing.length
+              ? `The ${missing.length} marked in orange ${missing.length === 1 ? 'has' : 'have'} no column at all;
+                 leave one empty and its rows are listed as problems rather than guessed at.`
+              : 'Every field has a column, so these only cover the odd empty cell.'}</span></div>
+          <div class="imp-grid">
+            ${FIELDS.map(f => `
+              <div class="filter-field ${importMap[f.key] ? '' : 'imp-missing'}">
+                <label for="impdef-${escAttr(f.key)}">${escapeHtml(f.label)}</label>
+                <input type="text" id="impdef-${escAttr(f.key)}"
+                       placeholder="${importMap[f.key] ? 'only where blank' : 'no column — needed'}"
+                       value="${escAttr(importDefaults[f.key] == null ? '' : importDefaults[f.key])}"
+                       oninput="setImportDefault('${escJsAttr(f.key)}', this.value)" />
+              </div>`).join('')}
+          </div>
+        </div>`;
+      renderImportPreview();
+    }
+
+    function renderImportPreview() {
+      const wrap = el('imp-preview');
+      if (!wrap) return;
+      if (!importGrid) { wrap.innerHTML = ''; importBuilt = null; return; }
+
+      const built = buildImportRows(importGrid, importMap, importDefaults, { employees: employees.map(e => e.username) });
+      importBuilt = built;
+
+      const gal = built.ready.reduce((n, r) => n + (r.entry.gallons || 0), 0);
+      const dates = built.ready.map(r => r.entry.work_date).sort();
+      const trucks = new Set(built.ready.map(r => r.entry.truck_number));
+      const status = val('imp-status') === 'submitted' ? 'awaiting review' : 'approved';
+
+      const defaultedNote = Object.entries(built.defaulted).length ? `
+        <div class="imp-note imp-flag">
+          Filled in from the boxes above:
+          ${Object.entries(built.defaulted)
+            .map(([k, n]) => `<strong>${escapeHtml((FIELDS.find(f => f.key === k) || {}).label || k)}</strong>
+                              on ${n} row${n === 1 ? '' : 's'}`).join(', ')}.
+        </div>` : '';
+
+      // Cards and fuel types written in longhand. Shown before anything is
+      // written, because a fill-up filed under the wrong account is a month
+      // that stops balancing for a reason nobody can see.
+      const readAsNote = (built.readAs && built.readAs.length) ? `
+        <div class="imp-note imp-flag">
+          <strong>${built.readAs.reduce((n, r) => n + r.count, 0)}</strong> row${
+            built.readAs.reduce((n, r) => n + r.count, 0) === 1 ? '' : 's'} name a card or fuel type in
+          longhand. Check these before importing:
+          <div style="margin-top:0.35rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.72rem">
+            ${built.readAs.slice(0, 20).map(r =>
+              `<div>“${escapeHtml(r.from)}” → <strong>${escapeHtml(r.to)}</strong>` +
+              ` <span style="opacity:0.7">${r.count} row${r.count === 1 ? '' : 's'}` +
+              `${r.how === 'near' ? ', read as a misspelling' : ''}</span></div>`).join('')}
+            ${built.readAs.length > 20 ? `<div>…and ${built.readAs.length - 20} more spellings.</div>` : ''}
+          </div>
+        </div>` : '';
+
+      // Numbers taken out of a description. Shown for the same reason as the
+      // longhand cards: reinterpreting a fleet of equipment is not something
+      // a preview should do quietly.
+      const fromTextNote = (built.fromText && built.fromText.length) ? `
+        <div class="imp-note imp-flag">
+          <strong>${built.fromText.length}</strong> value${built.fromText.length === 1 ? '' : 's'} read out of
+          a description: ${escapeHtml(built.fromText.slice(0, 12).join('; '))}${
+            built.fromText.length > 12 ? `, and ${built.fromText.length - 12} more` : ''}.
+        </div>` : '';
+
+      const unknownNote = built.unknownEmployees.length ? `
+        <div class="imp-note imp-flag">
+          <strong>${built.unknownEmployees.length}</strong> name${built.unknownEmployees.length === 1 ? '' : 's'}
+          in the file ${built.unknownEmployees.length === 1 ? 'is' : 'are'} not on the employee list —
+          ${built.unknownEmployees.slice(0, 8).map(u => `${escapeHtml(u.name)} (${u.count})`).join(', ')}${
+            built.unknownEmployees.length > 8 ? `, and ${built.unknownEmployees.length - 8} more` : ''}.
+          They import as typed, but the employee filter and the by-employee report won't find them
+          under the roster's spelling.
+        </div>` : '';
+
+      const problemNote = built.problems.length ? `
+        <div class="imp-sec">
+          <div class="imp-head">Rows that can't be imported
+            <span>— ${built.problems.length} of ${built.problems.length + built.ready.length}. Fix the file, or map the column above.</span></div>
+          <div class="imp-problems">
+            ${built.problems.slice(0, 200).map(p =>
+              `<div><b>Line ${p.line}</b> — ${escapeHtml(p.why.join('; '))}</div>`).join('')}
+            ${built.problems.length > 200 ? `<div>…and ${built.problems.length - 200} more.</div>` : ''}
+          </div>
+        </div>` : '';
+
+      const sample = built.ready.slice(0, 8);
+
+      wrap.innerHTML = `
+        <div class="imp-sec">
+          <div class="imp-head">What will be written</div>
+          <div class="match-summary">
+            <div class="match-tile ${built.ready.length ? 'ok' : 'miss'}">
+              <div class="k">Entries</div><div class="v">${built.ready.length}</div>
+            </div>
+            <div class="match-tile"><div class="k">Gallons</div><div class="v">${n2(gal)}</div></div>
+            <div class="match-tile"><div class="k">Trucks</div><div class="v">${trucks.size}</div></div>
+            <div class="match-tile ${built.problems.length ? 'off' : ''}">
+              <div class="k">Problems</div><div class="v">${built.problems.length}</div>
+            </div>
+          </div>
+          <div class="imp-note">
+            ${built.ready.length
+              ? `Dated <strong>${escapeHtml(prettyDate(dates[0]))}</strong> to
+                 <strong>${escapeHtml(prettyDate(dates[dates.length - 1]))}</strong>,
+                 coming in as <strong>${escapeHtml(status)}</strong>.`
+              : 'Nothing here can be imported yet.'}
+            ${built.blank ? ` ${built.blank} blank row${built.blank === 1 ? '' : 's'} ignored.` : ''}
+          </div>
+          ${defaultedNote}
+          ${readAsNote}
+          ${fromTextNote}
+          ${unknownNote}
+          ${sample.length ? `
+          <div class="imp-head" style="margin-top:0.9rem">The first ${sample.length} as they will be stored</div>
+          <div class="table-wrap" style="margin:0">
+            <table>
+              <thead><tr>
+                <th>Line</th><th>Employee</th><th>Date</th><th class="num">Truck</th>
+                <th>Fuel Type</th><th>Fuel Card</th><th class="num">Gallons</th>
+                <th class="num">Mileage</th><th class="num">Begin</th><th class="num">End</th>
+                <th>Site</th><th>City</th><th>State</th><th class="num">Tank</th>
+              </tr></thead>
+              <tbody>
+                ${sample.map(r => `
+                  <tr>
+                    <td>${r.line}</td>
+                    <td>${escapeHtml(r.entry.employee_username)}</td>
+                    <td>${escapeHtml(prettyDate(r.entry.work_date))}</td>
+                    <td class="num">${r.entry.truck_number}</td>
+                    <td>${escapeHtml(r.entry.fuel_type)}</td>
+                    <td>${escapeHtml(r.entry.fuel_card)}</td>
+                    <td class="num">${n2(r.entry.gallons)}</td>
+                    <td class="num">${n1(r.entry.mileage)}</td>
+                    <td class="num">${n1(r.entry.beginning_meter)}</td>
+                    <td class="num">${n1(r.entry.ending_meter)}</td>
+                    <td>${escapeHtml(r.entry.fueling_site)}</td>
+                    <td>${escapeHtml(r.entry.city_fueled)}</td>
+                    <td>${escapeHtml(r.entry.state)}</td>
+                    <td class="num">${r.entry.tank_number}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>` : ''}
+          ${problemNote}
+          <div class="imp-actions">
+            <button class="btn-filter" id="imp-go" onclick="runImport()"${built.ready.length && !importing ? '' : ' disabled'}>
+              Import ${built.ready.length} ${built.ready.length === 1 ? 'Entry' : 'Entries'}
+            </button>
+            <span class="match-note" style="margin:0" id="imp-msg"></span>
+          </div>
+        </div>`;
+    }
+
+    /**
+     * Write the batch.
+     *
+     * Chunked, and every chunk carries the SAME batch id: a load that stops
+     * halfway through — a dropped connection, a closed laptop — is still one
+     * undoable thing rather than an unknown number of rows nobody can find
+     * again. The server skips anything it already has, so pressing Import
+     * again after a failure resumes instead of doubling what landed.
+     */
+    async function runImport() {
+      if (importing || !importBuilt || !importBuilt.ready.length) return;
+      const rows   = importBuilt.ready.map(r => r.entry);
+      const lines  = importBuilt.ready.map(r => r.line);
+      const status = val('imp-status') === 'submitted' ? 'submitted' : 'approved';
+      const batch  = `imp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+      importing = true;
+      const btn = el('imp-go'), msg = el('imp-msg');
+      if (btn) btn.disabled = true;
+
+      let created = 0;
+      const duplicates = [], rejected = [];
+      try {
+        for (let i = 0; i < rows.length; i += IMPORT_CHUNK) {
+          const slice = rows.slice(i, i + IMPORT_CHUNK);
+          if (msg) msg.textContent = `Writing ${i + 1}–${i + slice.length} of ${rows.length}…`;
+          const res  = await fetch('/api/fuel-submissions?action=import', {
+            method: 'POST',
+            headers: authHeaders(true),
+            body: JSON.stringify({ rows: slice, status, batch }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          created += data.created || 0;
+          // The server indexes into the chunk it was sent, so the offset has
+          // to go back on before a line number means anything.
+          for (const d of (data.duplicates || [])) duplicates.push({ ...d, line: lines[i + d.index] });
+          for (const r of (data.rejected   || [])) rejected.push({ ...r,   line: lines[i + r.index] });
+        }
+      } catch (err) {
+        importing = false;
+        // Redraw FIRST — it replaces the panel wholesale, so a message put
+        // there before it would be wiped by the very call that re-enables the
+        // button, and the load would look like it had simply stopped.
+        renderImportPreview();
+        el('imp-preview').insertAdjacentHTML('beforeend', `
+          <div class="imp-note imp-bad"><strong>Stopped after ${created} entr${created === 1 ? 'y' : 'ies'}</strong>
+          — ${escapeHtml(err.message)}. Nothing already written was lost; press Import again to carry on
+          from where it stopped.</div>`);
+        return;
+      }
+
+      importing = false;
+      // Move the grid's date filter onto what was just loaded. Without it the
+      // entries land outside the range the page is showing and the import
+      // reads as having done nothing.
+      const span = importBuilt.ready.map(r => r.entry.work_date).sort();
+      el('flt-from').value = span[0];
+      el('flt-to').value   = span[span.length - 1];
+      clearImport();
+      el('imp-preview').innerHTML = `
+        <div class="imp-sec">
+          <div class="imp-note imp-good">
+            <strong>${created} entr${created === 1 ? 'y' : 'ies'} imported</strong>
+            as ${escapeHtml(status === 'submitted' ? 'awaiting review' : 'approved')}.
+          </div>
+          ${duplicates.length ? `
+            <div class="imp-note imp-flag">
+              <strong>${duplicates.length}</strong> already had a matching entry — same date, employee,
+              truck, card and gallons — so ${duplicates.length === 1 ? 'it was' : 'they were'} left alone:
+              ${duplicates.slice(0, 12).map(d =>
+                `line ${d.line} (truck ${d.truck_number}, ${escapeHtml(String(d.work_date))})`).join(', ')}${
+                duplicates.length > 12 ? `, and ${duplicates.length - 12} more` : ''}.
+            </div>` : ''}
+          ${rejected.length ? `
+            <div class="imp-note imp-bad">
+              <strong>${rejected.length}</strong> refused by the server:
+              ${rejected.slice(0, 8).map(r => `line ${r.line} — ${escapeHtml(r.error)}`).join('; ')}.
+            </div>` : ''}
+          <div class="imp-note">The date filter above has been moved onto the days that were loaded,
+            so the grid tabs are showing them. Undo the whole load from Past Imports below, or open the
+            <a href="#" onclick="switchTab('reports');return false" style="color:var(--accent)">Reports</a>
+            tab to match it against a statement.</div>
+        </div>`;
+
+      await Promise.all([loadImportHistory(), applyFilters()]);
+    }
+
+    // ── Past imports ───────────────────────────────────────────────────────
+    async function loadImportHistory() {
+      const wrap = el('imp-history');
+      if (!wrap) return;
+      try {
+        const res  = await fetch('/api/fuel-submissions?action=imports', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const list = Array.isArray(data.imports) ? data.imports : [];
+        if (!list.length) {
+          wrap.innerHTML = '<div class="rep-empty">Nothing has been imported yet.</div>';
+          return;
+        }
+        wrap.innerHTML = list.map(b => `
+          <div class="saved-row">
+            <div>
+              <strong>${b.entries} entr${b.entries === 1 ? 'y' : 'ies'}</strong> ·
+              ${escapeHtml(prettyDate(b.from_date))} → ${escapeHtml(prettyDate(b.to_date))}
+              <div class="who">
+                loaded by ${escapeHtml(b.username || '—')} ${escapeHtml(fmtTs(b.created_at))}
+                ${b.balanced ? ` · ${b.balanced} already balanced` : ''}
+              </div>
+            </div>
+            <button class="row-btn delete" onclick="undoImport('${escJsAttr(b.batch)}', ${b.entries})">Undo</button>
+          </div>`).join('');
+      } catch (err) {
+        wrap.innerHTML = `<div class="rep-empty">Couldn't load past imports — ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function undoImport(batch, count) {
+      if (!confirm(`Delete the ${count} entr${count === 1 ? 'y' : 'ies'} this import added? Any that have already been balanced are kept.`)) return;
+      try {
+        const res  = await fetch('/api/fuel-submissions?action=undo_import', {
+          method: 'POST', headers: authHeaders(true), body: JSON.stringify({ batch }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        el('imp-preview').innerHTML = `
+          <div class="imp-sec"><div class="imp-note imp-good">
+            <strong>${data.deleted} entr${data.deleted === 1 ? 'y' : 'ies'} removed.</strong>
+            ${data.kept ? ` ${data.kept} kept — already balanced.` : ''}
+          </div></div>`;
+      } catch (err) {
+        el('imp-preview').innerHTML =
+          `<div class="imp-sec"><div class="imp-note imp-bad"><strong>${escapeHtml(err.message)}</strong></div></div>`;
+      }
+      await Promise.all([loadImportHistory(), applyFilters()]);
     }
 
     // ── Saved matches ──────────────────────────────────────────────────────
@@ -3690,6 +5527,49 @@
           ${r.historical ? '· this is the record as it was reconciled, not a fresh comparison' : ''}
         </div>` : '';
 
+      /**
+       * Nothing on one side is anything on the other.
+       *
+       * A month with real problems has SOME trucks agreeing. Zero agreement
+       * with both lists full is not a month of mistakes — it is two sets that
+       * were never about the same fuel, and the table says that sixteen times
+       * over in red without ever saying it once. Which of the three causes it
+       * is can mostly be worked out from what is already here, so it is,
+       * rather than being left as a list of things to go and check.
+       */
+      const noOverlap = !r.historical && r.matched === 0 && r.notInOurs.length > 0;
+      // Nothing at all on our side is its own case, and the commonest one on
+      // a first run. Folding it in with "the trucks don't line up" would send
+      // somebody looking for a numbering problem in an empty table.
+      const nothingOurs = noOverlap && r.notOnStatement.length === 0;
+      const rangeMisses = r.statementFrom && r.periodStart && r.periodEnd
+        && (r.statementTo < r.periodStart || r.statementFrom > r.periodEnd);
+      const overlapWarning = noOverlap ? `
+        <div class="flag-banner" style="display:block">
+          <div>${nothingOurs
+            ? `<strong>There are no fuel entries here to compare against.</strong>
+               The statement bills ${r.notInOurs.length} truck${r.notInOurs.length === 1 ? '' : 's'},
+               and nothing has been entered and approved for any of them in this range — so every figure
+               below is the statement talking to itself.`
+            : `<strong>These two sides don't overlap at all.</strong>
+               Not one of the ${r.notInOurs.length} truck${r.notInOurs.length === 1 ? '' : 's'} this statement
+               bills has a fuel entry behind it, and not one of the ${r.notOnStatement.length}
+               truck${r.notOnStatement.length === 1 ? '' : 's'} that does was billed on this account. A month
+               with real problems still has most of its trucks agreeing — this is something else.`}</div>
+          <div style="margin-top:0.4rem">${rangeMisses
+            ? `The statement covers <strong>${escapeHtml(prettyDate(r.statementFrom))} – ${escapeHtml(prettyDate(r.statementTo))}</strong>,
+               which is outside the range this report was built for
+               (${escapeHtml(prettyDate(r.periodStart))} – ${escapeHtml(prettyDate(r.periodEnd))}).
+               Set the range to the statement's month and build the report again.`
+            : nothingOurs
+              ? `The range does cover the statement's days, so the fuel simply hasn't been entered yet.
+                 The <em>Import</em> tab loads a month in one go; entries also have to be approved before
+                 balancing counts them.`
+              : `The range does cover the statement's days, so the fuel it bills simply hasn't been entered
+                 under these truck numbers. Either those fill-ups were never recorded, or they went in under
+                 different numbers — the <em>Import</em> tab loads a month in one go.`}</div>
+        </div>` : '';
+
       // Fuel the daily review hasn't reached yet is deliberately not counted,
       // so a truck reading "agrees" means it agrees on approved fuel alone.
       // Said out loud, because otherwise the difference looks like the account
@@ -3700,9 +5580,89 @@
              daily review, and are not counted below. Approve them first if they belong on this statement.</div>`
         : '';
 
+      // Vehicle ids the account billed that no truck on the roster claims.
+      // Loudest thing on the page when it happens: every one of these is
+      // fuel that cannot be attributed at all, and until they are assigned
+      // the difference below is missing exactly that much.
+      const unmapped = r.unmapped || [];
+      const unmappedGal = unmapped.reduce((n, u) => n + u.gallons, 0);
+
+      // What matched without anyone recording anything, and on what basis.
+      // Shown rather than assumed: these two rules read a truck number out of
+      // the yard's own convention, and the office should be able to see how
+      // many of a month's trucks were placed that way before trusting the
+      // difference underneath it.
+      const by = r.matchedBy || null;
+      const autoNote = (by && (by.number || by.vin)) ? `
+        <div class="match-note">
+          ${by.recorded ? `<strong>${by.recorded}</strong> truck${by.recorded === 1 ? '' : 's'} matched on an id
+            recorded under <em>Vehicles</em>. ` : ''}
+          ${by.number ? `<strong>${by.number}</strong> matched because the id IS the truck number. ` : ''}
+          ${by.vin ? `<strong>${by.vin}</strong> matched on the last four of the VIN. ` : ''}
+          Nothing was placed on a truck that isn't on the roster — record an id under <em>Vehicles</em>
+          to override any of it.
+        </div>` : '';
+      const unmappedWarning = unmapped.length ? `
+        <div class="flag-banner" style="display:block">
+          <div><strong>${unmapped.length}</strong> vehicle${unmapped.length === 1 ? '' : 's'} on this statement
+            ${unmapped.length === 1 ? "isn't" : "aren't"} on the roster — <strong>${n2(unmappedGal)}</strong> gal
+            that can't be attributed to a truck. ${escapeHtml(r.card || 'The account')} names vehicles its own way;
+            put its id on the matching truck under <em>Vehicles</em> and it will match from then on.
+            ${unmapped.some(u => (u.drivers || []).length)
+              ? 'The last three columns are what the statement itself says about each one.' : ''}</div>
+          <table style="margin-top:0.6rem">
+            <thead><tr>
+              <th>${escapeHtml(r.card || 'Account')} vehicle</th>
+              <th class="num">Gallons</th><th class="num">Fills</th>
+              <th>Used by</th><th>Fuel</th><th class="num">Odometer</th><th></th>
+            </tr></thead>
+            <tbody>
+              ${unmapped.slice(0, 40).map(u => `
+                <tr>
+                  <td class="name" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${escapeHtml(u.ref)}</td>
+                  <td class="num">${n2(u.gallons)}</td>
+                  <td class="num">${u.fills}</td>
+                  <td>${escapeHtml((u.drivers || []).join(', ')) || '—'}</td>
+                  <td>${escapeHtml(u.product || '—')}</td>
+                  <td class="num">${u.odoLow == null ? '—'
+                    : (u.odoLow === u.odoHigh ? u.odoLow.toLocaleString()
+                       : `${u.odoLow.toLocaleString()}–${u.odoHigh.toLocaleString()}`)}</td>
+                  <td class="td-actions">
+                    ${Number.isFinite(Number(refDigits(refKey(u.ref))))
+                      ? `<button class="row-btn approve" onclick="addTruckForRef('${escJsAttr(r.card)}','${escJsAttr(u.ref)}')"
+                           title="The number inside this id is the truck number — put it on the roster.">Add truck ${Number(refDigits(refKey(u.ref)))}</button>` : ''}
+                    <button class="row-btn edit" onclick="assignRefToTruck('${escJsAttr(r.card)}','${escJsAttr(u.ref)}')">Assign to a truck…</button>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+          ${unmapped.length > 40 ? `<div class="match-note">…and ${unmapped.length - 40} more.</div>` : ''}
+          ${unmapped.filter(u => Number.isFinite(Number(refDigits(refKey(u.ref))))).length > 1 ? `
+            <div style="margin-top:0.6rem">
+              <button class="row-btn approve" onclick="addAllTrucksFromRefs('${escJsAttr(r.card)}')">
+                Add all ${unmapped.filter(u => Number.isFinite(Number(refDigits(refKey(u.ref))))).length} to the roster
+              </button>
+            </div>` : ''}
+        </div>` : '';
+
+      // What the account itself says the fuel was. Shown beside the balance
+      // rather than filtered out of it, so the month still ties to the
+      // statement total while the filing split stays visible.
+      const splitPanel = (r.statementIfta != null || (r.byProduct && r.byProduct.size)) ? `
+        <div class="match-note" style="margin-top:0.6rem">
+          <strong>On the statement:</strong>
+          ${r.statementIfta != null ? `${n2(r.statementIfta)} gal IFTA · ${n2(r.statementNonIfta)} gal marked Non-IFTA` : ''}
+          ${r.byProduct && r.byProduct.size
+            ? ` · ${[...r.byProduct].sort((a, b) => b[1] - a[1])
+                  .map(([p, g]) => `${escapeHtml(p)} ${n2(g)}`).join(' · ')}` : ''}
+        </div>` : '';
+
       out.innerHTML = `
         ${spanWarning}
+        ${overlapWarning}
         ${pendingWarning}
+        ${unmappedWarning}
+        ${autoNote}
         ${savedHeader}
         <div class="match-summary">
           <div class="match-tile ${balanced ? 'ok' : 'off'}">
@@ -3737,7 +5697,10 @@
                     ? `<input type="checkbox" class="tick" ${row.resolved ? 'checked' : ''}
                               onchange="toggleLineResolved('${escJsAttr(row.lineId)}', this.checked)" />`
                     : ''}</td>` : ''}
-                <td class="num" style="font-weight:700">${row.truck}</td>
+                <td class="num" style="font-weight:700">${row.truck}${
+                  r.refsFor && r.refsFor.get(row.truck)
+                    ? `<div class="bal-meta" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${
+                        escapeHtml(r.refsFor.get(row.truck))}</div>` : ''}</td>
                 <td class="num">${row.ours != null ? n2(row.ours) : '—'}</td>
                 <td class="num">${row.statement != null ? n2(row.statement) : '—'}</td>
                 <td class="num verdict">${row.difference != null
@@ -3758,6 +5721,7 @@
         </table>
 
         <div class="match-note">
+          ${r.source ? `From <strong>${escapeHtml(r.source)}</strong>. ` : ''}
           ${r.historical ? '' : `Read ${r.lines} line${r.lines === 1 ? '' : 's'}${r.skipped.length
             ? `, ${r.skipped.length} of which had no truck number and gallons figure on them
                (headers and totals usually don't — first was “${escapeHtml(r.skipped[0].slice(0, 60))}”)`
@@ -3769,6 +5733,7 @@
             statement with no fuel entry behind ${r.notInOurs.length === 1 ? 'it' : 'them'} — fuel nobody reported. ` : ''}
           ${r.notOnStatement.length ? `<strong>${r.notOnStatement.length}</strong> ${r.notOnStatement.length === 1 ? 'was' : 'were'}
             reported but not billed on this account — usually a truck number typed wrong, or fuel put on a different card. ` : ''}
+          ${splitPanel}
         </div>
 
         ${r.historical ? '' : `
@@ -3845,6 +5810,126 @@
         // rows aren't visible from here — say what happened instead.
         alert(`${j.updated} entr${j.updated === 1 ? 'y' : 'ies'} marked${
           j.skipped.length ? `. ${j.skipped.length} left alone — not approved yet.` : '.'}`);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    /**
+     * Put an account's vehicle id onto a truck without leaving the match.
+     *
+     * The alternative is writing the id down, switching tabs, finding the
+     * truck, typing it in, coming back and re-matching — forty times on the
+     * first run. Asked for by truck number because that is what the office
+     * has in front of them; the id itself came off the statement.
+     */
+    /**
+     * Put the truck an account's id names onto the roster.
+     *
+     * Both accounts write a truck number with their own fleet prefix on it,
+     * so "PT 1152" is truck 1152 and the panel already knows that — it is how
+     * the id would have matched if the truck had been on the list. Telling
+     * somebody to go to Vehicles, type that same number, come back and match
+     * again is a round trip over a number already on screen.
+     *
+     * Creates the truck where it is missing; where it EXISTS but is not being
+     * found, records the id against it instead. The distinction matters: the
+     * create path goes through an upsert on truck number, so posting a bare
+     * row for a truck that is already there would blank its VIN, make and
+     * IFTA standing.
+     */
+    async function addTruckFromRef(account, ref, silent) {
+      const digits = refDigits(refKey(ref));
+      const truck = digits == null ? NaN : Number(digits);
+      if (!Number.isFinite(truck)) {
+        if (!silent) alert(`There is no number in "${ref}" to make a truck number out of.`);
+        return false;
+      }
+      const existing = vehicles.find(x => Number(x.truck_number) === truck);
+      if (!silent && !confirm(existing
+        ? `Truck ${truck} is already on the roster. Record "${ref}" as what ${account} calls it?`
+        : `Add truck ${truck} to the roster? ${account} bills it as "${ref}".`)) return false;
+
+      const body = existing
+        ? {
+            id: existing.id, truck_number: existing.truck_number, vin: existing.vin,
+            model_year: existing.model_year, make: existing.make, ifta: existing.ifta,
+            ifta_sticker: existing.ifta_sticker, active: existing.active, notes: existing.notes,
+            account_refs: Object.assign({}, existing.account_refs || {}, { [account]: ref }),
+          }
+        : { truck_number: truck, active: true };
+
+      const res = await fetch('/api/fuel-vehicles', {
+        method: 'POST', headers: authHeaders(true), body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+      return true;
+    }
+
+    async function addTruckForRef(account, ref) {
+      try {
+        if (!await addTruckFromRef(account, ref)) return;
+        await loadVehicles();
+        runStatementMatch();
+      } catch (err) { alert(err.message); }
+    }
+
+    // The same thing for the whole banner. A first run against an account
+    // lists every vehicle it bills — seventeen, on the Guttman export — and
+    // confirming them one at a time is the afternoon this panel exists to
+    // remove. Named in full in the confirm, so it is still a decision.
+    async function addAllTrucksFromRefs(account) {
+      const refs = (matchResult && matchResult.unmapped || [])
+        .map(u => ({ ref: u.ref, truck: Number(refDigits(refKey(u.ref))) }))
+        .filter(x => Number.isFinite(x.truck));
+      if (!refs.length) return;
+      if (!confirm(`Add ${refs.length} truck${refs.length === 1 ? '' : 's'} to the roster?\n\n`
+        + refs.map(x => `  ${x.ref}  →  truck ${x.truck}`).join('\n')
+        + `\n\nTruck number only — VIN, make and IFTA can be filled in later.`)) return;
+
+      const failed = [];
+      for (const x of refs) {
+        try { await addTruckFromRef(account, x.ref, true); }
+        catch (err) { failed.push(`${x.ref}: ${err.message}`); }
+      }
+      await loadVehicles();
+      runStatementMatch();
+      if (failed.length) alert(`Some could not be added:\n\n${failed.join('\n')}`);
+    }
+
+    async function assignRefToTruck(account, ref) {
+      const answer = prompt(
+        `${account} calls this vehicle "${ref}".\n\nWhich of your truck numbers is it?`, '');
+      if (answer == null) return;
+      const truck = parseInt(String(answer).replace(/[^0-9]/g, ''), 10);
+      if (!Number.isFinite(truck)) { alert('That is not a truck number.'); return; }
+
+      const v = vehicles.find(x => Number(x.truck_number) === truck);
+      if (!v) {
+        alert(`Truck ${truck} isn't on the roster. Add it under Vehicles first, then assign this id to it.`);
+        return;
+      }
+      const refs = Object.assign({}, v.account_refs || {});
+      if (refs[account] && refKey(refs[account]) !== refKey(ref)
+        && !confirm(`Truck ${truck} is already down as "${refs[account]}" on ${account}. Replace it with "${ref}"?`)) return;
+      refs[account] = ref;
+
+      try {
+        const res = await fetch('/api/fuel-vehicles', {
+          method: 'POST', headers: authHeaders(true),
+          body: JSON.stringify({
+            id: v.id, truck_number: v.truck_number, vin: v.vin, model_year: v.model_year,
+            make: v.make, ifta: v.ifta, ifta_sticker: v.ifta_sticker, active: v.active,
+            notes: v.notes, account_refs: refs,
+          }),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        await loadVehicles();
+        // Re-run so the gallons move out of the unmapped list and onto the
+        // truck — the point of assigning it was to see that happen.
+        runStatementMatch();
       } catch (err) {
         alert(err.message);
       }
@@ -3966,9 +6051,11 @@
       if (!shownEntries.length) { alert('Nothing to export in this tab.'); return; }
       const header = ['Date','Employee','Fuel Card','Fuel Type','Gallons','Gallons From','Mileage','Truck Number',
                       'Beginning Meter','Ending Meter','Fueling Site','City Fueled','State','Tank Number',
+                      'IFTA','IFTA Sticker',
                       'Status','Balance','Balance Note','Balanced By','Balanced At',
                       'Submitted','Approved','Approved By','Submitted By'];
       const lines = [header.map(csvEscape).join(',')];
+      const csvFleet = vehicleIndex();
       for (const e of shownEntries) {
         lines.push([
           e.work_date, e.employee_username, e.fuel_card, e.fuel_type,
@@ -3980,6 +6067,10 @@
           e.mileage, e.truck_number,
           e.beginning_meter, e.ending_meter,
           e.fueling_site, e.city_fueled, e.state, e.tank_number,
+          // Straight off the roster, so a spreadsheet built for a filing
+          // carries the same answer the screen gave.
+          (() => { const v = csvFleet.get(String(e.truck_number)); return v ? (v.ifta ? 'Yes' : 'No') : ''; })(),
+          (() => { const v = csvFleet.get(String(e.truck_number)); return v && v.ifta_sticker ? v.ifta_sticker : ''; })(),
           e.status,
           e.status === 'approved' ? balanceOf(e) : '',
           e.balance_note || '', e.balanced_by_name || '', e.balanced_at || '',

@@ -217,6 +217,7 @@ function loadReportFns(filters) {
     let vmSort = { col: 'truck', dir: 1 };
     ${liftConst(src, 'FUEL_CARDS',        file)}
     ${liftConst(src, 'CARD_COLUMN_ORDER', file)}
+    ${liftConst(src, 'MAX_METER_FILL', file)}
     ${liftFn(src, 'gallonsFromMeters',  file)}
     ${liftFn(src, 'meterFlagged',       file)}
     ${liftFn(src, 'n2',                 file)}
@@ -764,6 +765,421 @@ function statementTests() {
   }
 }
 
+// ── 5. The IFTA badge on the submissions grid ───────────────────────────────
+function iftaBadgeTests() {
+  console.log('\n[IFTA standing on a fuel entry]');
+  const file = 'fuel-admin.html';
+  const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+
+  const ROSTER = [
+    { id: '1', truck_number: 635, vin: '1M2AX07C6GM030635', model_year: 2016, make: 'Mack',
+      ifta: true,  ifta_sticker: '4118811', active: true },
+    { id: '2', truck_number: 77,  vin: 'CAT0D6TXYZ12345', model_year: 2015, make: 'Caterpillar',
+      ifta: false, ifta_sticker: null, active: true },
+    { id: '3', truck_number: 900, vin: null, model_year: null, make: null,
+      ifta: true,  ifta_sticker: null, active: true },
+  ];
+
+  const fns = new Function('VEHICLES', `
+    const vehicles = VEHICLES;
+    ${liftFn(src, 'vehicleIndex',  file)}
+    ${liftFn(src, 'iftaStateFor',  file)}
+    return { vehicleIndex, iftaStateFor };
+  `)(ROSTER);
+  const fleet = fns.vehicleIndex();
+
+  assert('a rostered IFTA truck reads as IFTA',
+    fns.iftaStateFor(fleet, 635) === 'ifta', fns.iftaStateFor(fleet, 635));
+  // Off-road equipment is deliberately not IFTA. Telling it apart from a
+  // truck nobody has added yet is the whole reason this returns four values
+  // rather than a boolean — one of those is fine and the other needs doing.
+  assert('off-road equipment reads as deliberately not IFTA',
+    fns.iftaStateFor(fleet, 77) === 'not-ifta', fns.iftaStateFor(fleet, 77));
+  assert('an IFTA truck with no sticker is called out separately',
+    fns.iftaStateFor(fleet, 900) === 'no-sticker', fns.iftaStateFor(fleet, 900));
+  assert('a truck the roster has never heard of is unknown, not "no"',
+    fns.iftaStateFor(fleet, 12345) === 'unknown', fns.iftaStateFor(fleet, 12345));
+  assert('and so is an entry with no truck number at all',
+    fns.iftaStateFor(fleet, null) === 'unknown', fns.iftaStateFor(fleet, null));
+
+  console.log('\n[…and it reaches the export]');
+  // Run the real exportCsv. The header and the row are two separate literals
+  // in that function, so a column added to one and not the other silently
+  // shifts every field after it — checked by running it rather than by
+  // counting commas.
+  const ENTRIES = [
+    entry({ work_date: '2026-08-12', truck_number: 635, fuel_card: 'Bulk Fuel – No card',
+            fuel_type: 'On Road', gallons: 55, mileage: 369898, beginning_meter: 3996.3,
+            ending_meter: 4051.3, fueling_site: 'Shop', city_fueled: 'Indiana', state: 'PA',
+            tank_number: 5179, employee_username: 'hudockben', username: 'hudockben' }),
+    entry({ work_date: '2026-08-12', truck_number: 77, gallons: 20 }),
+    entry({ work_date: '2026-08-12', truck_number: 4242, gallons: 10 }),
+  ];
+
+  let captured = null;
+  new Function('ENTRIES', 'VEHICLES', 'capture', `
+    const shownEntries = ENTRIES;
+    const vehicles = VEHICLES;
+    const activeTab = 'approved';
+    function val() { return ''; }
+    function alert(m) { throw new Error('alert: ' + m); }
+    function downloadCsv(text, name) { capture(text, name); }
+    ${liftFn(src, 'csvEscape',          file)}
+    ${liftConst(src, 'MAX_METER_FILL', file)}
+    ${liftFn(src, 'gallonsFromMeters',  file)}
+    ${liftFn(src, 'meteredGallons',     file)}
+    ${liftFn(src, 'balanceOf',          file)}
+    ${liftFn(src, 'vehicleIndex',       file)}
+    ${liftFn(src, 'exportCsv',          file)}
+    return exportCsv;
+  `)(ENTRIES, ROSTER, (text, name) => { captured = { text, name }; })();
+
+  const rows = captured.text.split('\n');
+  const header = rows[0].split(',');
+  assert('every row has exactly as many fields as the header',
+    rows.slice(1).every(r => r.split(',').length === header.length),
+    rows.map(r => r.split(',').length).join(','));
+
+  const iftaCol = header.indexOf('IFTA');
+  const stickCol = header.indexOf('IFTA Sticker');
+  assert('the header carries IFTA and its sticker', iftaCol > 0 && stickCol === iftaCol + 1,
+    header.join('|'));
+  const cells = rows.slice(1).map(r => r.split(','));
+  assert('the IFTA truck exports Yes with its sticker',
+    cells[0][iftaCol] === 'Yes' && cells[0][stickCol] === '4118811',
+    `${cells[0][iftaCol]} / ${cells[0][stickCol]}`);
+  assert('the off-road machine exports No', cells[1][iftaCol] === 'No', cells[1][iftaCol]);
+  // Blank, not "No": the roster has no opinion about a truck it has never
+  // seen, and exporting one would put a fabricated answer into a filing.
+  assert('and a truck not on the roster exports blank rather than No',
+    cells[2][iftaCol] === '', `"${cells[2][iftaCol]}"`);
+}
+
+// ── 6. Reading a fuel-account workbook ──────────────────────────────────────
+// Header rows copied verbatim from the real May 2026 exports. The two
+// accounts agree on nothing — different column names, different column
+// positions, different date encodings, different ways of writing the same
+// vehicle — so anything that reads one by position reads the other wrong.
+const GUTTMAN_HEADER = {
+  A:'Status', B:'Account number', C:'Account name', D:'Fleet id', E:'Fleet name',
+  F:'Driver ID', G:'Driver ID Description', H:'Card description', I:'Card number',
+  J:'Vehicle Number', K:'Department', L:'Site Id', M:'Site description',
+  T:'Transaction odometer', U:'Transaction date', V:'Transaction posted date',
+  W:'Transaction amount', X:'Transaction quantity', Y:'Transaction id',
+  Z:'Product category', AA:'Product number', AB:'Product description', AC:'Transaction type',
+};
+const WEX_HEADER = {
+  A:'Transaction Date', B:'Transaction Time', C:'Post Date', D:'Account Number',
+  E:'Account Name', F:'Card Number', G:'Trans ID', H:'Emboss Line 2',
+  I:'Custom Vehicle/Asset ID', J:'Units', K:'Unit of Measure', L:'Unit Cost',
+  M:'Total Fuel Cost', AF:'Product', AG:'Product Description', AI:'Merchant (Brand)',
+  AJ:'Merchant Name', AP:'Current Odometer', AW:'VIN',
+};
+
+function statementTests2() {
+  console.log('\n[Reading a fuel-account export]');
+  const file = 'fuel-admin.html';
+  const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const api = new Function(`
+    ${liftFn(src, 'excelSerialToYmd', file)}
+    ${liftConst(src, 'STATEMENT_COLUMNS', file)}
+    ${liftFn(src, 'detectColumns',      file)}
+    ${liftFn(src, 'readStatementRows',  file)}
+    ${liftFn(src, 'refKey',             file)}
+    ${liftConst(src, 'IMPORT_COLUMNS',  file)}
+    ${liftFn(src, 'delimiterFor',       file)}
+    ${liftFn(src, 'colLetter',          file)}
+    ${liftFn(src, 'splitDelimitedLine', file)}
+    ${liftFn(src, 'parseDelimited',     file)}
+    ${liftFn(src, 'statementFromText',  file)}
+    ${liftFn(src, 'aggregateByRef',     file)}
+    ${liftFn(src, 'refDigits',          file)}
+    ${liftFn(src, 'vinTail',            file)}
+    ${liftFn(src, 'resolveStatementRefs', file)}
+    return { excelSerialToYmd, detectColumns, readStatementRows, refKey,
+             aggregateByRef, resolveStatementRefs, refDigits, vinTail, statementFromText };
+  `)();
+
+  console.log('\n  columns, by heading rather than position');
+  {
+    const g = api.detectColumns(GUTTMAN_HEADER).found;
+    assert('Guttman: vehicle, gallons and date are found',
+      g.vehicle === 'J' && g.gallons === 'X' && g.date === 'U', JSON.stringify(g));
+    assert('and so are the rows it wants excluded',
+      g.status === 'A' && g.category === 'Z', JSON.stringify(g));
+    const w = api.detectColumns(WEX_HEADER).found;
+    // Same three fields, none of them in the same place.
+    assert('Wex: the same three, in different columns',
+      w.vehicle === 'I' && w.gallons === 'J' && w.date === 'A', JSON.stringify(w));
+    // "Product" sits before "Product Description" in the sheet, so a
+    // column-order scan reads the fuel as "UNL" where the office says
+    // "Unleaded Regular".
+    assert('the more specific heading wins over the broader one',
+      w.product === 'AG', String(w.product));
+    assert("and Wex's Units column is not confused with Unit Cost",
+      w.gallons === 'J', String(w.gallons));
+  }
+
+  console.log('\n  dates');
+  // Wex writes Excel serials, Guttman writes text. Both have to land on a day.
+  // 46171.2625 is the first transaction in the real Wex export; cross-checked
+  // against Python's date arithmetic rather than taken from the same code
+  // being tested.
+  assert('an Excel serial becomes the day it means',
+    api.excelSerialToYmd(46171.2625) === '2026-05-29', String(api.excelSerialToYmd(46171.2625)));
+  assert('and the time of day does not push it to the next one',
+    api.excelSerialToYmd(46169.337) === '2026-05-27', String(api.excelSerialToYmd(46169.337)));
+  assert('and nonsense does not become a date',
+    api.excelSerialToYmd('later') === null, String(api.excelSerialToYmd('later')));
+
+  console.log('\n  rows the account says are not a fuel purchase');
+  {
+    const rows = [GUTTMAN_HEADER,
+      { A:'POSTED',   J:'5894', U:'2026-05-29 15:25:00.0', X:'21.731', Z:'FUEL', AB:'ULS Diesel', AF:'Non IFTA' },
+      { A:'POSTED',   J:'5894', U:'2026-05-27 05:36:00.0', X:'4.006',  Z:'FUEL', AB:'Unleaded E10 Reg' },
+      // Both of the real file's excluded rows: declined, and non-fuel, with
+      // no quantity at all.
+      { A:'DECLINED', J:'2458', U:'2026-05-29 05:13:26.0', X:'',       Z:'NON-FUEL', AB:'Regular' },
+    ];
+    const read = api.readStatementRows(rows);
+    assert('a declined row is dropped', read.rows.length === 2, String(read.rows.length));
+    assert('and reported rather than silently ignored',
+      read.dropped.length === 1 && /DECLINED/.test(read.dropped[0].why), JSON.stringify(read.dropped));
+    const agg = api.aggregateByRef(read.rows);
+    assert('the surviving gallons are summed per vehicle',
+      agg.byRef.get('5894').gallons === 25.74, String(agg.byRef.get('5894').gallons));
+    // Asked for by the office: balance the whole account, show the split.
+    assert('and the IFTA split is carried alongside, not filtered out',
+      agg.iftaGallons === 4.01 && agg.nonIftaGallons === 21.73,
+      `${agg.iftaGallons} / ${agg.nonIftaGallons}`);
+  }
+
+  console.log('\n  the accounts do not spell a vehicle consistently');
+  // One Wex export writes the same pickup three ways.
+  assert('spacing and dashes are ignored when matching',
+    api.refKey('PT 2458') === api.refKey('PT-2458') && api.refKey('PT-2458') === api.refKey('pt2458'),
+    api.refKey('PT 2458'));
+
+  console.log('\n  account ids resolved to trucks');
+  {
+    const fleet = new Map([
+      ['635',  { truck_number: 635,  account_refs: { Guttman: '5894' } }],
+      ['4805', { truck_number: 4805, account_refs: { Wex: 'PT-4805' } }],
+      ['2913', { truck_number: 2913, account_refs: {} }],
+    ]);
+    const byRef = new Map([
+      ['5894',    { gallons: 179.85, fills: 10 }],
+      ['PT 4805', { gallons: 162.48, fills: 7  }],
+      ['2913',    { gallons: 164.46, fills: 6  }],
+      ['PT8248',  { gallons: 51.27,  fills: 2  }],
+    ]);
+    const wex = api.resolveStatementRefs(byRef, 'Wex', fleet);
+    assert('a recorded id maps to its truck whatever the spacing',
+      wex.byTruck.get(4805).gallons === 162.48, JSON.stringify([...wex.byTruck]));
+    // An id that IS a truck number needs no setup at all.
+    assert('an id that is already a truck number needs no mapping',
+      wex.byTruck.get(2913).gallons === 164.46, JSON.stringify([...wex.byTruck]));
+    // 5894 is Guttman's name for truck 635 — it must NOT resolve on a Wex run.
+    assert("another account's id does not resolve on this one",
+      !wex.byTruck.has(635), JSON.stringify([...wex.byTruck]));
+    assert('and unrecognised ids are reported with their gallons, not guessed at',
+      wex.unmapped.map(u => u.ref).sort().join(',') === '5894,PT8248',
+      JSON.stringify(wex.unmapped));
+    assert('worst first, so the biggest gap is the first thing read',
+      wex.unmapped[0].ref === '5894', wex.unmapped[0].ref);
+
+    const gutt = api.resolveStatementRefs(byRef, 'Guttman', fleet);
+    assert('the same statement resolves differently for another account',
+      gutt.byTruck.get(635).gallons === 179.85, JSON.stringify([...gutt.byTruck]));
+
+    // An aggregate built before the hint fields existed — a saved match being
+    // re-resolved, or the pasted-text path — must not blow up the banner that
+    // now reads them.
+    assert('an aggregate with no hints on it still resolves',
+      wex.unmapped.every(u => Array.isArray(u.drivers) && u.odoLow === null),
+      JSON.stringify(wex.unmapped));
+  }
+
+  console.log('\n  the yard numbers its trucks by the last four of the VIN');
+  {
+    // Both accounts write that same number with their own fleet prefix in
+    // front of it. Guttman's PT4336 and Wex's "PT 4805" are trucks 4336 and
+    // 4805 — the prefix belongs to the fleet, never to the truck.
+    assert('the digits come out of a prefixed id', api.refDigits('PT4336') === '4336');
+    assert('and out of a spaced one',              api.refDigits('PT 4805') === '4805');
+    assert('a leading zero is kept',               api.refDigits('0392') === '0392');
+    assert('the longest run wins over a stray short one',
+      api.refDigits('TK2 6410') === '6410', api.refDigits('TK2 6410'));
+    assert('an id with no digits at all yields none', api.refDigits('SPARE') === null);
+
+    assert('the last four of a VIN', api.vinTail('1FUJGLDR8CSBP2458') === '2458');
+    // A VIN ending in a letter is not a truck number, and matching on the
+    // three digits before it would be a coincidence dressed up as a rule.
+    assert('a VIN ending in a letter is not a truck number',
+      api.vinTail('1FUJGLDR8CSBP245X') === null, String(api.vinTail('1FUJGLDR8CSBP245X')));
+  }
+
+  console.log('\n  matching without anyone having recorded anything');
+  {
+    const fleet = new Map([
+      ['4336', { truck_number: 4336, vin: '1FUJGLDR8CSBP4336', account_refs: {} }],
+      ['4805', { truck_number: 4805, vin: null,                account_refs: {} }],
+      ['392',  { truck_number: 392,  vin: null,                account_refs: {} }],
+      ['2458', { truck_number: 2458, vin: '1FUJGLDR8CSBP2458', account_refs: {} }],
+      ['700',  { truck_number: 700,  vin: '1XKAD49X7YJ840700', account_refs: { Guttman: '9911' } }],
+    ]);
+    const byRef = new Map([
+      ['PT4336',  { gallons: 97.31,  fills: 5 }],
+      ['PT 4805', { gallons: 162.48, fills: 7 }],
+      ['0392',    { gallons: 37.65,  fills: 3 }],
+      ['2458',    { gallons: 138.70, fills: 5 }],
+      ['9911',    { gallons: 10,     fills: 1 }],
+      ['SPARE',   { gallons: 5,      fills: 1 }],
+    ]);
+    const out = api.resolveStatementRefs(byRef, 'Guttman', fleet);
+
+    assert('a prefixed id lands on the truck its digits name',
+      out.byTruck.get(4336).gallons === 97.31, JSON.stringify([...out.byTruck]));
+    assert('and a spaced one does too',
+      out.byTruck.get(4805).gallons === 162.48, JSON.stringify([...out.byTruck]));
+    // truck_number is an INTEGER, so the roster holds 392 where the statement
+    // writes 0392. Comparing the two as text would never match.
+    assert("a leading zero doesn't stop it — the roster holds an integer",
+      out.byTruck.get(392).gallons === 37.65, JSON.stringify([...out.byTruck]));
+    assert('a bare number still works as it always did',
+      out.byTruck.get(2458).gallons === 138.70);
+    assert('a recorded id still wins', out.byTruck.get(700).gallons === 10);
+    assert('and something with no number in it is still reported, not guessed',
+      out.unmapped.length === 1 && out.unmapped[0].ref === 'SPARE', JSON.stringify(out.unmapped));
+
+    // Which rule placed each truck, so a match reached by convention is never
+    // mistaken for one somebody decided on.
+    assert('each match says how it was reached',
+      [...out.how.get(4336)][0] === 'number' && [...out.how.get(700)][0] === 'recorded',
+      JSON.stringify([...out.how].map(([t, s]) => [t, [...s]])));
+    assert('and they are counted for the summary',
+      out.counts.recorded === 1 && out.counts.number === 4, JSON.stringify(out.counts));
+  }
+
+  console.log('\n  and where it refuses to');
+  {
+    // The VIN rule only fires when the digits are not a truck number in their
+    // own right — an account id that happens to end in another truck's VIN
+    // must not out-rank the truck actually numbered that.
+    const fleet = new Map([
+      ['81', { truck_number: 81, vin: '1FUJGLDR8CSBP6410', account_refs: {} }],
+    ]);
+    const out = api.resolveStatementRefs(new Map([['TK 6410', { gallons: 41.28, fills: 2 }]]), 'Wex', fleet);
+    assert('the VIN places a truck whose number the id does not name',
+      out.byTruck.get(81).gallons === 41.28, JSON.stringify([...out.byTruck]));
+    assert('and it says so', [...out.how.get(81)][0] === 'vin', JSON.stringify([...out.how]));
+
+    // Two vehicles whose VINs end the same way. Picking either would move a
+    // month of fuel onto a truck that never burned it; being told to assign
+    // it by hand is the better outcome.
+    const twins = new Map([
+      ['10', { truck_number: 10, vin: '1FUJGLDR8CSBP6410', account_refs: {} }],
+      ['20', { truck_number: 20, vin: '1XKAD49X7YJ846410', account_refs: {} }],
+    ]);
+    const amb = api.resolveStatementRefs(new Map([['TK 6410', { gallons: 41.28, fills: 2 }]]), 'Wex', twins);
+    assert('an ambiguous VIN tail resolves to nothing rather than to the first of them',
+      amb.byTruck.size === 0 && amb.unmapped.length === 1, JSON.stringify([...amb.byTruck]));
+
+    // The whole point of the roster guard: a number that looks like a truck
+    // number but is not one of YOUR trucks cannot invent a vehicle.
+    const none = api.resolveStatementRefs(new Map([['PT9999', { gallons: 5, fills: 1 }]]), 'Wex', new Map());
+    assert('a number that is not on the roster stays unmapped',
+      none.unmapped.length === 1, JSON.stringify(none.unmapped));
+  }
+
+  console.log('\n  a delimited block, and whether it is a statement at all');
+  {
+    const csv = rows => rows.map(r => r.join(',')).join('\n');
+
+    // A statement saved as CSV is still a statement, and reading it by its
+    // headings is the difference between 1510 gallons and whatever the line
+    // parser makes of a row with twelve numbers on it.
+    const asCsv = csv([
+      ['Status', 'Vehicle Number', 'Transaction date', 'Transaction quantity', 'Product category'],
+      ['POSTED', '5894', '2026-05-01 08:00:00.0', '24.221', 'FUEL'],
+      ['POSTED', '5894', '2026-05-14 08:00:00.0', '21.731', 'FUEL'],
+      ['DECLINED', '2458', '2026-05-29 05:13:26.0', '', 'NON-FUEL'],
+    ]);
+    const stmt = api.statementFromText(asCsv);
+    assert('a statement in CSV is read by its headings',
+      stmt && !stmt.error && stmt.rows.length === 2, JSON.stringify(stmt && (stmt.error || stmt.rows.length)));
+    assert('and its declined line is still dropped', stmt.dropped.length === 1);
+
+    // The one this exists for. Both files are "a CSV with a truck number and
+    // a gallons figure on every line", and the line parser reads either
+    // without complaint — it took a tank number of 5179 for five thousand
+    // gallons and billed it to truck 18.
+    const tickets = csv([
+      ['Timestamp', 'Date', 'First Name', 'Last Name', 'Fuel Card Used', 'Fuel Type', 'Gallons',
+       'Mileage', 'Truck Number', 'Beginning Meter Reading', 'Ending Meter Reading',
+       'Fueling Site', 'Tank Number', 'State', 'City Fueled'],
+      ['2026-05-01', '2026-05-01', 'Ted', 'DeValerio', 'Guttman', 'Gas', '30.0',
+       '82438.0', '2458', '0.0', '0.0', 'Sheetz', '5.0', 'PA', 'Sidman'],
+    ]);
+    const wrong = api.statementFromText(tickets);
+    assert('the fuel tickets file is recognised and refused',
+      wrong && wrong.error && /Import tab/.test(wrong.error), JSON.stringify(wrong));
+    assert('and it says which columns gave it away',
+      /meter readings|fuel card/i.test(wrong.error), wrong.error);
+
+    // A bare block of numbers has no headings to read, so the line parser
+    // still has to get its turn — that is the paste this panel was built for.
+    assert('a headerless block falls through to the line parser',
+      api.statementFromText('412\t320.50\n412\t180.00\n77\t95.25') === null);
+    assert('and so does something with headings that mean nothing here',
+      api.statementFromText('alpha,beta\n1,2\n3,4') === null);
+    assert('one line on its own is not a grid', api.statementFromText('412 320.50') === null);
+  }
+
+  console.log('\n  what the statement knows about a vehicle it cannot place');
+  {
+    // The first time an account is matched, none of its ids mean anything —
+    // Guttman calls a truck 5894 and the yard calls it something else. What
+    // makes the row identifiable is the driver whose name keeps appearing on
+    // it, and that is sitting in the file already.
+    const g = api.detectColumns(GUTTMAN_HEADER).found;
+    assert('the driver column is found on the Guttman export', g.driver === 'G', String(g.driver));
+    assert('and the odometer', g.odometer === 'T', String(g.odometer));
+    const w = api.detectColumns(WEX_HEADER).found;
+    assert('Wex has no driver column, and none is invented', w.driver === undefined, String(w.driver));
+    assert('but it does have an odometer', w.odometer === 'AP', String(w.odometer));
+    // Reading a driver column must not cost the columns that were already
+    // being found — a new pattern claiming one of them would change what a
+    // month totals to.
+    assert('and nothing else moved', g.vehicle === 'J' && g.gallons === 'X' && g.card === 'I',
+      JSON.stringify(g));
+
+    const rows = [GUTTMAN_HEADER,
+      { A:'POSTED', J:'5894', G:'KEN STEWART',  T:'3902',  U:'2026-05-01 08:00:00.0', X:'20.0', Z:'FUEL', AB:'ULS Diesel' },
+      { A:'POSTED', J:'5894', G:'KEN STEWART',  T:'32668', U:'2026-05-20 08:00:00.0', X:'21.0', Z:'FUEL', AB:'ULS Diesel' },
+      { A:'POSTED', J:'5023', G:'Phil Rodgers', T:'226544',U:'2026-05-02 08:00:00.0', X:'10.0', Z:'FUEL', AB:'Unleaded E10 Reg' },
+      { A:'POSTED', J:'5023', G:'CORY ADAMS',   T:'264178',U:'2026-05-22 08:00:00.0', X:'11.0', Z:'FUEL', AB:'Unleaded E10 Reg' },
+    ];
+    const agg = api.aggregateByRef(api.readStatementRows(rows).rows);
+    const out = api.resolveStatementRefs(agg.byRef, 'Guttman', new Map());
+    const by = Object.fromEntries(out.unmapped.map(u => [u.ref, u]));
+
+    assert('the driver comes through on an unplaced vehicle',
+      by['5894'].drivers.join(',') === 'KEN STEWART', JSON.stringify(by['5894'].drivers));
+    // A shared vehicle shows everyone, most frequent first — one name would
+    // read as certainty the file does not support.
+    assert('a shared vehicle names everyone who used it',
+      by['5023'].drivers.length === 2, JSON.stringify(by['5023'].drivers));
+    assert('the fuel it takes comes through — a diesel truck is not the gas pickup',
+      by['5894'].product === 'ULS Diesel', by['5894'].product);
+    // Second-best identifier when two vehicles share a driver: a 264,000-mile
+    // vehicle is not the 32,000-mile one.
+    assert('and the odometer range it ran through',
+      by['5023'].odoLow === 226544 && by['5023'].odoHigh === 264178,
+      `${by['5023'].odoLow}–${by['5023'].odoHigh}`);
+  }
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 (async () => {
   normalizeTests();
@@ -771,6 +1187,8 @@ function statementTests() {
   reportTests();
   vehicleMonthTests();
   statementTests();
+  iftaBadgeTests();
+  statementTests2();
 
   console.log('\n────────────────────────────────────────');
   console.log(`  ${passed} passed, ${failed} failed`);

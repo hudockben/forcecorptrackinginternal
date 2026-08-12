@@ -1157,6 +1157,20 @@ ALTER TABLE fuel_submissions ADD  CONSTRAINT fuel_balance_status_check
 CREATE INDEX IF NOT EXISTS idx_fuel_company_balance
   ON fuel_submissions(company_code, balance_status, work_date DESC);
 
+-- Which import run put this row here. NULL for everything the field crew
+-- typed in, which is the normal case and stays the normal case — this exists
+-- for backfill: a month already recorded in a spreadsheet before the form
+-- existed, loaded in one go rather than re-keyed a fill-up at a time.
+--
+-- Stamped so an import is UNDOABLE. Without it, discovering the wrong file
+-- was loaded means finding two hundred rows by hand among the ones the field
+-- really did send, and telling them apart by eye afterwards is exactly the
+-- kind of judgement nobody should have to make about fuel records.
+ALTER TABLE fuel_submissions ADD COLUMN IF NOT EXISTS import_batch TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_fuel_company_import
+  ON fuel_submissions(company_code, import_batch) WHERE import_batch IS NOT NULL;
+
 -- ─────────────────────────────────────────────────
 -- FUEL AUDIT LOG
 -- One row per state-changing action on fuel_submissions. Same shape and
@@ -1177,10 +1191,12 @@ CREATE TABLE IF NOT EXISTS fuel_audit_log (
 );
 
 -- Named rather than inline so adding an action later is a drop-and-add pair
--- that stays idempotent. BALANCE arrived with the second review stage.
+-- that stays idempotent. BALANCE arrived with the second review stage;
+-- IMPORT and IMPORT_UNDO with the backfill loader.
 ALTER TABLE fuel_audit_log DROP CONSTRAINT IF EXISTS fuel_audit_log_action_check;
 ALTER TABLE fuel_audit_log ADD  CONSTRAINT fuel_audit_log_action_check
-  CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','UNAPPROVE','ADMIN_EDIT','DELETE','BALANCE'));
+  CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','UNAPPROVE','ADMIN_EDIT','DELETE','BALANCE',
+                    'IMPORT','IMPORT_UNDO'));
 
 CREATE INDEX IF NOT EXISTS idx_fuel_audit_company ON fuel_audit_log(company_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fuel_audit_entry   ON fuel_audit_log(entry_id, created_at DESC);
@@ -1222,6 +1238,20 @@ CREATE TABLE IF NOT EXISTS fuel_vehicles (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fuel_vehicle_truck
   ON fuel_vehicles(company_code, truck_number);
+
+-- What each fuel account calls this vehicle, as {"Guttman":"5894","Wex":"PT 4805"}.
+--
+-- The accounts name vehicles in their own namespaces: an entry says truck 635,
+-- Guttman's export says 5894, Wex's says PT 4805, and nothing in either file
+-- joins them — Wex's VIN column ships blank. So the correspondence has to be
+-- recorded once per vehicle, and this is where.
+--
+-- Deliberately keyed on the ACCOUNT rather than on a card number. A card gets
+-- moved between vehicles; the vehicle the account has on file does not change
+-- when it does. Mapping the card instead would silently re-attribute every
+-- fill the moment one was swapped, which is the discrepancy this is supposed
+-- to catch rather than absorb.
+ALTER TABLE fuel_vehicles ADD COLUMN IF NOT EXISTS account_refs JSONB;
 
 -- ─────────────────────────────────────────────────
 -- FUEL STATEMENT MATCHES

@@ -44,6 +44,15 @@
  * 'balanced' once it is accounted for, or 'issue' when it isn't. Every
  * approved entry starts 'pending', which is where most of a month sits.
  *
+ *   POST   /api/fuel-submissions?action=import       — backfill
+ *     Body: { rows: [...], status: 'approved'|'submitted', batch }
+ *     Fuel-Admin only. For a month recorded somewhere else before this form
+ *     existed. Every row must be as complete as a submitted one, and a row
+ *     that already exists is skipped and named rather than doubled.
+ *
+ *   POST   /api/fuel-submissions?action=undo_import  — take one back out
+ *     Body: { batch }   Fuel-Admin only. Leaves balanced entries alone.
+ *
  *   DELETE /api/fuel-submissions?id=N
  *     Field user → own drafts only. Fuel Admin → any row, at any status.
  *
@@ -96,6 +105,27 @@ const VALID_STATUSES = ['draft', 'submitted', 'approved'];
 const VALID_BALANCE = ['pending', 'balanced', 'issue'];
 const MAX_BALANCE_IDS = 1000;
 
+// Backfill. An import lands rows at 'submitted' or 'approved' — never
+// 'draft', because a draft belongs to the person still filling it in and
+// these have no such person: the fill-up happened, was written down
+// somewhere else, and is being put where it belongs after the fact.
+const IMPORT_STATUSES = ['submitted', 'approved'];
+const MAX_IMPORT_ROWS = 500;
+
+/**
+ * The largest difference between two tank meter readings that can be a fill.
+ *
+ * Not a policy — a fact about the fleet. Across four thousand reported
+ * fill-ups the largest figure anyone has ever typed is 197 gallons, and the
+ * median is 47. A meter span above this is a digit typed wrong, and it is
+ * always the same shape: a fill of 55 recorded as 1055, or 20.2 as 2020.2.
+ *
+ * Left unchecked the difference REPLACES the driver's figure, so one keystroke
+ * turns a 55-gallon fill into four hundred and sixty thousand — and the month
+ * it lands in cannot be balanced against anything.
+ */
+const MAX_METER_FILL = 500;
+
 function safeDate(v) {
   if (!v) return null;
   // A DATE column comes back from the driver as a Date at LOCAL midnight, so
@@ -110,7 +140,16 @@ function safeDate(v) {
     return `${y}-${mo}-${d}`;
   }
   const s = String(v).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  // Shaped like a date is not the same as being one. The 30th of February
+  // gets past the pattern and is refused by the DATE column instead — which
+  // surfaces as a 500 with a driver's error message rather than something
+  // the office can act on, and on the import path takes the rest of the
+  // batch down with it.
+  const [y, m, d] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const real = dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === m && dt.getUTCDate() === d;
+  return real ? s : null;
 }
 
 function safeInt(v) {
@@ -178,6 +217,9 @@ function parseIntField(v, label, { max = 2147483647 } = {}) {
  *   end === begin  nothing was pumped, which on a real fill-up means a
  *                  mistyped reading — computing 0 would bury that, so keep
  *                  what was typed and let the meter flag in Fuel Admin show
+ *   e - b > MAX    a mistyped reading, for the same reason as the two above:
+ *                  a difference of four hundred thousand gallons is not a
+ *                  fill. See MAX_METER_FILL.
  *
  * Derived here rather than trusted from the body for the same reason
  * computed_hours is on a timesheet: two numbers that are supposed to agree
@@ -189,7 +231,23 @@ function gallonsFromMeters(begin, end) {
   const b = Number(begin), e = Number(end);
   if (!Number.isFinite(b) || !Number.isFinite(e)) return null;
   if (e <= b) return null;
+  if (e - b > MAX_METER_FILL) return null;
   return Math.round((e - b) * 100) / 100;
+}
+
+/**
+ * Do a metered figure and a reported one describe the same fill?
+ *
+ * Two gallons or five per cent, whichever is wider — room for a pump and a
+ * tank meter disagreeing about the last splash, and nothing like enough for
+ * a digit typed wrong. Every real disagreement seen in four thousand entries
+ * has been a round hundred or thousand out, never a rounding.
+ */
+function metersAgree(metered, reported) {
+  if (metered == null || reported == null) return false;
+  const m = Number(metered), r = Number(reported);
+  if (!Number.isFinite(m) || !Number.isFinite(r)) return false;
+  return Math.abs(m - r) <= Math.max(2, Math.abs(r) * 0.05);
 }
 
 /**
@@ -250,12 +308,20 @@ function normalizeBody(body) {
     out[key] = r.value;
   }
 
-  // The tank meter wins over anything the body says gallons were. Both pages
-  // compute the same figure and show it read-only, so a body that disagrees
-  // is a stale client or a hand-made request — neither is a reason to store a
-  // gallons figure the meter readings on the same row contradict.
+  // The tank meter wins over anything the body says gallons were — but only
+  // where the two are describing the same fill.
+  //
+  // Both pages derive the figure from the readings and show it, so a form
+  // submission agrees by construction. A body that DISAGREES is a fill-up
+  // recorded somewhere else, where the two numbers were typed independently
+  // and either can be wrong. In four thousand of those the reported figure
+  // has been right and the readings wrong, every time — so the reported one
+  // stands, and Fuel Admin flags the row so the readings get corrected rather
+  // than the gallons quietly restated.
   const metered = gallonsFromMeters(out.beginning_meter, out.ending_meter);
-  if (metered != null) out.gallons = metered;
+  if (metered != null && (out.gallons == null || metersAgree(metered, out.gallons))) {
+    out.gallons = metered;
+  }
 
   return {
     data: {
@@ -294,6 +360,41 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// An import batch id. Generated by the page so every chunk of one file shares
+// one, which is what makes the whole load undoable as a unit. Constrained
+// because it comes off the wire and is compared against stored rows.
+function safeBatch(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  // Refused rather than truncated, which is what a length cap would do here.
+  // Two ids sharing their first 64 characters would fold into one batch, and
+  // undoing either would take both loads out.
+  return s && s.length <= 64 && /^[A-Za-z0-9_.-]+$/.test(s) ? s : null;
+}
+
+/**
+ * What makes two fuel entries the same fill-up.
+ *
+ * The same five fields the submit path already refuses a second copy of:
+ * date, who fueled, truck, card, gallons. Everything else on the row can
+ * differ between two records of one purchase — the site typed two ways, a
+ * mileage read a mile apart — without them being two purchases.
+ *
+ * Used twice on the import path, and it has to give the same answer for a
+ * row off the wire and a row out of the database, which is why both sides go
+ * through the same coercions rather than being compared as they arrive.
+ */
+function importKey(r) {
+  const o = r || {};
+  return [
+    safeDate(o.work_date) || '',
+    String(o.employee_username == null ? '' : o.employee_username).trim(),
+    String(o.fuel_card == null ? '' : o.fuel_card).trim(),
+    o.truck_number == null ? '' : Number(o.truck_number),
+    o.gallons == null ? '' : Number(o.gallons),
+  ].join('|');
+}
+
 // NUMERIC columns arrive from the driver as strings. Hand the client numbers
 // so it never has to guess whether "0" means zero or means empty — the whole
 // meter-reading rule depends on that staying unambiguous all the way out.
@@ -317,6 +418,7 @@ function dbToEntry(r) {
     city_fueled:        r.city_fueled,
     state:              r.state,
     tank_number:        r.tank_number == null ? null : Number(r.tank_number),
+    import_batch:       r.import_batch || null,
     balance_status:     r.balance_status || 'pending',
     balance_note:       r.balance_note || null,
     balanced_at:        r.balanced_at || null,
@@ -368,6 +470,40 @@ module.exports = async (req, res) => {
   const q   = req.query || {};
 
   try {
+    // ── GET ?action=imports — what has been loaded, newest first ──────────
+    // Grouped in SQL rather than by pulling every imported row back and
+    // folding it here: this is the list a batch gets undone from, and it has
+    // to stay cheap enough to load every time the tab is opened, months
+    // after the imports it lists.
+    if (req.method === 'GET' && q.action === 'imports') {
+      if (!canAdmin) return res.status(403).json({ error: 'Fuel Admin access is required' });
+      const rows = await sql`
+        SELECT import_batch AS batch,
+               COUNT(*)::int                                            AS entries,
+               COUNT(*) FILTER (WHERE balance_status <> 'pending')::int AS balanced,
+               MIN(work_date)  AS from_date,
+               MAX(work_date)  AS to_date,
+               MIN(created_at) AS created_at,
+               MIN(username)   AS username
+        FROM fuel_submissions
+        WHERE company_code = ${companyCode} AND import_batch IS NOT NULL
+        GROUP BY import_batch
+        ORDER BY MIN(created_at) DESC
+        LIMIT 50
+      `;
+      return res.json({
+        imports: rows.map(r => ({
+          batch:      r.batch,
+          entries:    Number(r.entries),
+          balanced:   Number(r.balanced),
+          from_date:  safeDate(r.from_date),
+          to_date:    safeDate(r.to_date),
+          created_at: r.created_at || null,
+          username:   r.username || null,
+        })),
+      });
+    }
+
     // ── GET (list) ────────────────────────────────────────────────────────
     if (req.method === 'GET') {
       // Status accepts one value, the combined sentinel "submitted_approved"
@@ -694,6 +830,228 @@ module.exports = async (req, res) => {
       });
     }
 
+    // ── POST ?action=import — backfill a month (Fuel Admin) ───────────────
+    // Body: { rows: [...], status: 'approved'|'submitted', batch }
+    //
+    // For fuel that was recorded somewhere else before this form existed —
+    // a month kept in a spreadsheet, loaded in one go. Every row goes through
+    // the SAME normalizeBody the field form's writes do, and must be as
+    // complete as a submitted entry: an import is not a back door to a row
+    // that could not have been submitted from the page.
+    //
+    // Rows are attributed two ways at once, and both matter. user_id and
+    // username are the admin who loaded the file — they are who to ask about
+    // it. employee_username is who actually fueled, off the file, which is
+    // what every report and filter reads.
+    if (req.method === 'POST' && q.action === 'import') {
+      if (!canAdmin) return res.status(403).json({ error: 'Fuel Admin access is required to import entries' });
+
+      const b = req.body || {};
+      const status = String(b.status || 'approved');
+      if (!IMPORT_STATUSES.includes(status)) {
+        return res.status(400).json({ error: `status must be one of: ${IMPORT_STATUSES.join(', ')}` });
+      }
+      const rows = Array.isArray(b.rows) ? b.rows : [];
+      if (!rows.length)                  return res.status(400).json({ error: 'There are no rows to import.' });
+      if (rows.length > MAX_IMPORT_ROWS) return res.status(400).json({ error: `That is more than ${MAX_IMPORT_ROWS} rows in one request.` });
+
+      // A batch id that was sent but doesn't pass is refused rather than
+      // replaced with a generated one. Substituting silently would give each
+      // chunk of one file a different batch, and the load would stop being
+      // one undoable thing at exactly the moment somebody needed it to be.
+      if (b.batch != null && b.batch !== '' && !safeBatch(b.batch)) {
+        return res.status(400).json({ error: 'batch may only contain letters, digits, dot, dash and underscore.' });
+      }
+      const batch = safeBatch(b.batch)
+        || `imp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+      // Validate everything first, and keep each row's position in the file
+      // so the page can point at the line rather than at a count.
+      const rejected = [];
+      const candidates = [];
+      const seen = new Map();
+      rows.forEach((raw, index) => {
+        const { data, error } = normalizeBody(raw);
+        if (error) { rejected.push({ index, error }); return; }
+        const missing = missingFields(data);
+        if (missing.length) {
+          rejected.push({ index, error: `Missing: ${missing.join(', ')}.` });
+          return;
+        }
+        // Two identical rows inside one file. The submit path already treats
+        // this as a mistake rather than as two fills, and an import that
+        // quietly doubled a truck's month would be found — if at all — as an
+        // unexplained variance against the statement weeks later.
+        const key = importKey(data);
+        if (seen.has(key)) {
+          rejected.push({
+            index, duplicate_of_row: seen.get(key) + 1,
+            error: `Same date, employee, truck, card and gallons as row ${seen.get(key) + 1} of this file.`,
+          });
+          return;
+        }
+        seen.set(key, index);
+        candidates.push({ index, key, data });
+      });
+
+      if (!candidates.length) {
+        return res.status(400).json({
+          error: 'None of those rows could be imported.',
+          batch, created: 0, entries: [], rejected, duplicates: [],
+        });
+      }
+
+      // One statement for the whole batch. The NOT EXISTS is what makes a
+      // re-run safe: loading the same file twice — after a dropped
+      // connection, or because nobody was sure the first one landed — adds
+      // nothing the second time. It cannot see the rows this same statement
+      // is inserting, which is why the within-file pass above exists too.
+      const approving = status === 'approved';
+      const payloadRows = candidates.map(c => c.data);
+      const inserted = await sql`
+        INSERT INTO fuel_submissions (
+          company_code, user_id, username, status, work_date,
+          employee_username, fuel_card, fuel_type, gallons, mileage,
+          truck_number, beginning_meter, ending_meter,
+          fueling_site, city_fueled, state, tank_number,
+          submitted_at, approved_at, approved_by_user_id, approved_by_name,
+          import_batch
+        )
+        SELECT ${companyCode}, ${userId}, ${payload.username}, ${status}, x.work_date,
+               x.employee_username, x.fuel_card, x.fuel_type, x.gallons, x.mileage,
+               x.truck_number, x.beginning_meter, x.ending_meter,
+               x.fueling_site, x.city_fueled, x.state, x.tank_number,
+               NOW(),
+               CASE WHEN ${approving}::boolean THEN NOW() ELSE NULL END,
+               ${approving ? userId : null}, ${approving ? payload.username : null},
+               ${batch}
+        FROM jsonb_to_recordset(${JSON.stringify(payloadRows)}::jsonb) AS x(
+          work_date DATE, employee_username TEXT, fuel_card TEXT, fuel_type TEXT,
+          gallons NUMERIC, mileage NUMERIC, truck_number INTEGER,
+          beginning_meter NUMERIC, ending_meter NUMERIC,
+          fueling_site TEXT, city_fueled TEXT, state TEXT, tank_number INTEGER
+        )
+        WHERE NOT EXISTS (
+          SELECT 1 FROM fuel_submissions f
+          WHERE f.company_code      = ${companyCode}
+            AND f.work_date         = x.work_date
+            AND f.employee_username IS NOT DISTINCT FROM x.employee_username
+            AND f.truck_number      IS NOT DISTINCT FROM x.truck_number
+            AND f.gallons           IS NOT DISTINCT FROM x.gallons
+            AND f.fuel_card         IS NOT DISTINCT FROM x.fuel_card
+            AND (f.status = 'submitted' OR f.status = 'approved')
+        )
+        RETURNING *
+      `;
+
+      const entries = inserted.map(dbToEntry);
+      // Which candidates did NOT come back. Derived from what the statement
+      // actually wrote rather than from a count, so a row held back by the
+      // duplicate check is named — the office needs to know WHICH fill-up it
+      // already had, not that the total came up short by three.
+      const wrote = new Set(entries.map(importKey));
+      const duplicates = candidates
+        .filter(c => !wrote.has(c.key))
+        .map(c => ({
+          index: c.index,
+          work_date:    c.data.work_date,
+          truck_number: c.data.truck_number,
+          gallons:      c.data.gallons,
+          fuel_card:    c.data.fuel_card,
+        }));
+
+      if (entries.length) {
+        // After the insert has committed, and in one statement — a loop here
+        // is a round trip per row on the one path built for hundreds at a
+        // time, and a timeout partway would report failure for entries that
+        // are already in the table.
+        const auditRows = entries.map(e => ({
+          entry_id: e.id,
+          changes:  { import_batch: batch, status },
+          snapshot: e,
+        }));
+        try {
+          await sql`
+            INSERT INTO fuel_audit_log
+              (company_code, entry_id, action, user_id, username, changes, snapshot)
+            SELECT ${companyCode}, x.entry_id, 'IMPORT', ${userId || null}, ${payload.username || null},
+                   x.changes, x.snapshot
+            FROM jsonb_to_recordset(${JSON.stringify(auditRows)}::jsonb)
+              AS x(entry_id BIGINT, changes JSONB, snapshot JSONB)
+          `;
+        } catch (err) {
+          console.error('[fuel-submissions] import audit write failed (non-fatal):', err.message);
+        }
+      }
+
+      return res.json({
+        ok: true, batch, status,
+        created: entries.length,
+        entries, duplicates, rejected,
+      });
+    }
+
+    // ── POST ?action=undo_import — take a whole load back out ──────────────
+    // Body: { batch }
+    //
+    // The other half of importing several hundred rows at once. Finding them
+    // again by hand among what the field really did send is not something
+    // anyone should have to do to correct a wrong file.
+    //
+    // Entries that have since been BALANCED are left alone and reported. A
+    // verdict was reached about those against a real statement, and quietly
+    // deleting accounted-for fuel is a worse outcome than an undo that
+    // doesn't finish the job and says so.
+    if (req.method === 'POST' && q.action === 'undo_import') {
+      if (!canAdmin) return res.status(403).json({ error: 'Fuel Admin access is required' });
+
+      const batch = safeBatch((req.body && req.body.batch) || q.batch);
+      if (!batch) return res.status(400).json({ error: 'batch is required' });
+
+      const removed = await sql`
+        DELETE FROM fuel_submissions
+        WHERE company_code = ${companyCode}
+          AND import_batch = ${batch}
+          AND balance_status = 'pending'
+        RETURNING *
+      `;
+      const [{ kept }] = await sql`
+        SELECT COUNT(*)::int AS kept FROM fuel_submissions
+        WHERE company_code = ${companyCode}
+          AND import_batch = ${batch}
+          AND balance_status <> 'pending'
+      `;
+
+      if (!removed.length) {
+        return res.status(kept ? 409 : 404).json({
+          error: kept
+            ? `All ${kept} of those entries have been balanced — undo would delete fuel that has already been accounted for. Set them back to pending first.`
+            : 'That import is not here — it may already have been undone.',
+          deleted: 0, kept,
+        });
+      }
+
+      const auditRows = removed.map(r => ({
+        entry_id: String(r.id),
+        changes:  { import_batch: batch },
+        snapshot: dbToEntry(r),
+      }));
+      try {
+        await sql`
+          INSERT INTO fuel_audit_log
+            (company_code, entry_id, action, user_id, username, changes, snapshot)
+          SELECT ${companyCode}, x.entry_id, 'IMPORT_UNDO', ${userId || null}, ${payload.username || null},
+                 x.changes, x.snapshot
+          FROM jsonb_to_recordset(${JSON.stringify(auditRows)}::jsonb)
+            AS x(entry_id BIGINT, changes JSONB, snapshot JSONB)
+        `;
+      } catch (err) {
+        console.error('[fuel-submissions] undo audit write failed (non-fatal):', err.message);
+      }
+
+      return res.json({ ok: true, batch, deleted: removed.length, kept });
+    }
+
     // ── PUT — edit ────────────────────────────────────────────────────────
     if (req.method === 'PUT') {
       const id = safeInt(q.id);
@@ -818,4 +1176,7 @@ module.exports = async (req, res) => {
 
 // Internal helpers exposed for unit testing only. Not part of the HTTP
 // contract — do not depend on these from other endpoints.
-module.exports._test = { normalizeBody, missingFields, isBlank, dbToEntry, gallonsFromMeters, REPORTED_FIELDS };
+module.exports._test = {
+  normalizeBody, missingFields, isBlank, dbToEntry, gallonsFromMeters,
+  importKey, safeBatch, REPORTED_FIELDS, MAX_IMPORT_ROWS,
+};
