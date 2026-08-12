@@ -1139,17 +1139,18 @@
       <div class="rep-block">
         <div class="rep-title">Match a Fuel Account Statement</div>
         <div class="rep-sub">
-          Paste a Guttman or Wex statement and this lines it up against what the field reported,
-          truck by truck, over the date range above. Transaction-level exports are fine — lines for
-          the same truck are added together. One line per row: the truck number and the gallons
-          figure, separated by tabs, commas or spaces. Anything else on the line is ignored.
+          Pick the account, choose the monthly export you pulled out of Guttman or Wex — the
+          <code>.xlsx</code> straight from their site, no editing — and this lines it up against what
+          the field reported, truck by truck, over the date range above. It reads the columns itself
+          and adds up every transaction per vehicle. A CSV, a TSV or a pasted block works too; for
+          those, one line per row with the truck number and the gallons figure on it.
         </div>
         <div class="match-controls">
           <div class="filter-field">
             <label for="mt-card">Account</label>
             <select id="mt-card"></select>
           </div>
-          <div class="filter-field">
+          <div class="filter-field" id="mt-galcol-field">
             <label for="mt-gallons-col">Which number is the gallons</label>
             <select id="mt-gallons-col">
               <option value="last">The last number on the line</option>
@@ -1165,13 +1166,14 @@
         </div>
         <div class="match-file">
           <label class="file-btn">
-            Choose a CSV…
-            <input type="file" id="mt-file" accept=".csv,.tsv,.txt,text/csv,text/plain"
+            Choose a statement file…
+            <input type="file" id="mt-file"
+                   accept=".xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain"
                    onchange="loadStatementFile(event)" />
           </label>
-          <span id="mt-file-name" class="match-note" style="margin:0">…or paste the statement below.</span>
+          <span id="mt-file-name" class="match-note" style="margin:0">Guttman or Wex .xlsx, or a CSV — …or paste the statement below.</span>
         </div>
-        <textarea id="mt-paste" spellcheck="false"
+        <textarea id="mt-paste" spellcheck="false" oninput="statementPasteChanged()"
           placeholder="412&#9;320.50&#10;412&#9;180.00&#10;77&#9;95.25&#10;&#10;…or paste the whole statement export, headers and all."></textarea>
         <div id="matchResults"></div>
       </div>
@@ -3733,11 +3735,36 @@
       renderStatementMatch();
     }
 
+    const FILE_HINT = 'Guttman or Wex .xlsx, or a CSV — …or paste the statement below.';
+
+    // The gallons picker only exists because a pasted line is ambiguous about
+    // which of its numbers is the fuel. A workbook has named columns, so the
+    // question has already been answered and leaving the control up invites
+    // somebody to change it and wonder why nothing moved.
+    function showGallonsPicker(show) {
+      const f = el('mt-galcol-field');
+      if (f) f.style.display = show ? '' : 'none';
+    }
+
+    // Typing into the box after a workbook has been read means the workbook is
+    // not what they want matched any more. Without this the file quietly wins
+    // and the paste is matched against nothing — the same numbers come back and
+    // it looks like the edit did nothing.
+    function statementPasteChanged() {
+      if (!loadedWorkbook) return;
+      if (!val('mt-paste').trim()) return;
+      loadedWorkbook = null;
+      el('mt-file').value = '';
+      showGallonsPicker(true);
+      el('mt-file-name').textContent = FILE_HINT;
+    }
+
     function clearStatementMatch() {
       el('mt-paste').value = '';
       el('mt-file').value = '';
       loadedWorkbook = null;
-      el('mt-file-name').textContent = '…or paste the statement below.';
+      showGallonsPicker(true);
+      el('mt-file-name').textContent = FILE_HINT;
       el('matchResults').innerHTML = '';
       matchResult = null;
       renderSavedMatches();
@@ -3758,6 +3785,7 @@
       if (!file) return;
       const label = el('mt-file-name');
       loadedWorkbook = null;
+      showGallonsPicker(true);
       label.textContent = `Reading ${file.name}…`;
 
       try {
@@ -3772,6 +3800,7 @@
 
           loadedWorkbook = Object.assign(read, { name: file.name });
           el('mt-paste').value = '';
+          showGallonsPicker(false);
           const gal = read.rows.reduce((n, r) => n + r.gallons, 0);
           label.innerHTML = `<strong>${escapeHtml(file.name)}</strong> — ${read.rows.length} fuel `
             + `transaction${read.rows.length === 1 ? '' : 's'}, ${n2(gal)} gal`
