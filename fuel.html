@@ -604,6 +604,13 @@
         note.textContent = 'Not a Force Fuel tank (both meters read 0) — type the gallons from the receipt.';
       } else if (b != null && e != null && e === b) {
         note.textContent = 'Both meter readings are the same, so nothing was pumped — check the readings, or type the gallons in.';
+      } else if (b != null && e != null && e - b > MAX_METER_FILL) {
+        // A digit typed wrong, every time this has happened. Said plainly
+        // here rather than left to the office weeks later, because the driver
+        // is the only person who can still see the pump.
+        note.className   = 'field-note auto';
+        note.textContent = `Those readings are ${Math.round(e - b).toLocaleString()} gallons apart, which is too big for one fill — `
+          + 'check for a digit typed wrong. Type the gallons off the receipt for now; they will be kept as you enter them.';
       } else {
         note.textContent = 'Filled in from the tank meter once both readings are entered.';
       }
