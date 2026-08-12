@@ -3931,6 +3931,12 @@
         matchResult.months      = reportModel.months;
         matchResult.source      = loadedWorkbook.name;
         matchResult.unmapped    = unmapped;
+        // The days the statement itself covers, so a range that doesn't
+        // contain them can be pointed at rather than left to be inferred from
+        // a table where every row disagrees.
+        const days = loadedWorkbook.rows.map(x => x.date).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+        matchResult.statementFrom    = days[0] || null;
+        matchResult.statementTo      = days[days.length - 1] || null;
         matchResult.statementIfta    = agg.iftaGallons;
         matchResult.statementNonIfta = agg.nonIftaGallons;
         matchResult.byProduct        = agg.byProduct;
@@ -5135,6 +5141,49 @@
           ${r.historical ? '· this is the record as it was reconciled, not a fresh comparison' : ''}
         </div>` : '';
 
+      /**
+       * Nothing on one side is anything on the other.
+       *
+       * A month with real problems has SOME trucks agreeing. Zero agreement
+       * with both lists full is not a month of mistakes — it is two sets that
+       * were never about the same fuel, and the table says that sixteen times
+       * over in red without ever saying it once. Which of the three causes it
+       * is can mostly be worked out from what is already here, so it is,
+       * rather than being left as a list of things to go and check.
+       */
+      const noOverlap = !r.historical && r.matched === 0 && r.notInOurs.length > 0;
+      // Nothing at all on our side is its own case, and the commonest one on
+      // a first run. Folding it in with "the trucks don't line up" would send
+      // somebody looking for a numbering problem in an empty table.
+      const nothingOurs = noOverlap && r.notOnStatement.length === 0;
+      const rangeMisses = r.statementFrom && r.periodStart && r.periodEnd
+        && (r.statementTo < r.periodStart || r.statementFrom > r.periodEnd);
+      const overlapWarning = noOverlap ? `
+        <div class="flag-banner" style="display:block">
+          <div>${nothingOurs
+            ? `<strong>There are no fuel entries here to compare against.</strong>
+               The statement bills ${r.notInOurs.length} truck${r.notInOurs.length === 1 ? '' : 's'},
+               and nothing has been entered and approved for any of them in this range — so every figure
+               below is the statement talking to itself.`
+            : `<strong>These two sides don't overlap at all.</strong>
+               Not one of the ${r.notInOurs.length} truck${r.notInOurs.length === 1 ? '' : 's'} this statement
+               bills has a fuel entry behind it, and not one of the ${r.notOnStatement.length}
+               truck${r.notOnStatement.length === 1 ? '' : 's'} that does was billed on this account. A month
+               with real problems still has most of its trucks agreeing — this is something else.`}</div>
+          <div style="margin-top:0.4rem">${rangeMisses
+            ? `The statement covers <strong>${escapeHtml(prettyDate(r.statementFrom))} – ${escapeHtml(prettyDate(r.statementTo))}</strong>,
+               which is outside the range this report was built for
+               (${escapeHtml(prettyDate(r.periodStart))} – ${escapeHtml(prettyDate(r.periodEnd))}).
+               Set the range to the statement's month and build the report again.`
+            : nothingOurs
+              ? `The range does cover the statement's days, so the fuel simply hasn't been entered yet.
+                 The <em>Import</em> tab loads a month in one go; entries also have to be approved before
+                 balancing counts them.`
+              : `The range does cover the statement's days, so the fuel it bills simply hasn't been entered
+                 under these truck numbers. Either those fill-ups were never recorded, or they went in under
+                 different numbers — the <em>Import</em> tab loads a month in one go.`}</div>
+        </div>` : '';
+
       // Fuel the daily review hasn't reached yet is deliberately not counted,
       // so a truck reading "agrees" means it agrees on approved fuel alone.
       // Said out loud, because otherwise the difference looks like the account
@@ -5215,6 +5264,7 @@
 
       out.innerHTML = `
         ${spanWarning}
+        ${overlapWarning}
         ${pendingWarning}
         ${unmappedWarning}
         ${autoNote}
