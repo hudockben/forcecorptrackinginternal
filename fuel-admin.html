@@ -1119,39 +1119,7 @@
       </button>
     </div>
 
-    <!-- ── Bulk bar ── -->
-    <div class="bulk" id="bulkBar">
-      <div class="bulk-count" id="bulkCount">0 selected</div>
-      <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
-      <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
-      <div class="bulk-spacer"></div>
-      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
-    </div>
-
-    <!-- ── Balancing bar ──
-         The second review's own controls. Kept apart from the approval bar
-         above because they are a different manager's job on a different
-         cadence, and an "Approve" button sitting beside "Mark Balanced" is
-         an invitation to do the wrong one. -->
-    <div class="bulk balance-bar" id="balanceBar">
-      <div class="filter-field" style="min-width:150px">
-        <label for="flt-balance">Showing</label>
-        <select id="flt-balance" onchange="renderRows()">
-          <option value="pending">Pending — still to balance</option>
-          <option value="issue">Issues</option>
-          <option value="balanced">Balanced</option>
-          <option value="">All approved</option>
-        </select>
-      </div>
-      <div class="bulk-count" id="balanceCount">0 selected</div>
-      <button class="btn-approve alt" id="markBalancedBtn" onclick="bulkBalance('balanced')">Mark Balanced</button>
-      <button class="btn-issue"       id="markIssueBtn"    onclick="bulkBalance('issue')">Flag Issue</button>
-      <button class="btn-clear"       id="markPendingBtn"  onclick="bulkBalance('pending')">Back to Pending</button>
-      <div class="bulk-spacer"></div>
-      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
-    </div>
-
-    <!-- ── Reports tab: month picker + what the report counts ── -->
+    <!-- ── Month picker — Balancing and Reports both work a month at a time ── -->
     <div class="quick-ranges" id="reportRanges" style="display:none">
       <span class="qr-label">Month:</span>
       <button class="qr-btn" onclick="setReportRange('this_month')">This Month</button>
@@ -1161,19 +1129,22 @@
       <button class="qr-btn" onclick="setReportRange('last_quarter')">Last Quarter</button>
       <button class="qr-btn" onclick="setReportRange('ytd')">Year to Date</button>
       <div class="qr-spacer"></div>
-      <span class="qr-label">Counts:</span>
-      <select class="qr-select" id="rep-status" onchange="loadReport()">
-        <option value="approved">Approved only</option>
-        <option value="submitted_approved">Approved + awaiting review</option>
-      </select>
-      <button class="qr-btn" onclick="exportReportCsv()">Export CSV</button>
-      <button class="qr-btn" onclick="window.print()">Print</button>
+      <!-- Reports only. Balancing has its own Export CSV on the bar below —
+           two buttons of the same name on one screen, exporting different
+           things, is a coin toss. And a match only ever counts approved fuel,
+           so a control that says otherwise beside it would be lying. -->
+      <span id="repOnlyControls" style="display:contents">
+        <span class="qr-label">Counts:</span>
+        <select class="qr-select" id="rep-status" onchange="loadReport()">
+          <option value="approved">Approved only</option>
+          <option value="submitted_approved">Approved + awaiting review</option>
+        </select>
+        <button class="qr-btn" onclick="exportReportCsv()">Export CSV</button>
+        <button class="qr-btn" onclick="window.print()">Print</button>
+      </span>
     </div>
 
-    <!-- ── Report container (Reports tab) ── -->
-    <div id="reportWrap" style="display:none"></div>
-
-    <!-- ── Statement match (Reports tab) ──
+    <!-- ── Statement match (Balancing tab) ──
          Deliberately static markup with only its RESULTS re-rendered: the
          textarea holds a pasted statement, and rebuilding the block around it
          on every sort of the table above would throw that away. -->
@@ -1181,11 +1152,9 @@
       <div class="rep-block">
         <div class="rep-title">Match a Fuel Account Statement</div>
         <div class="rep-sub">
-          Pick the account, choose the monthly export you pulled out of Guttman or Wex — the
-          <code>.xlsx</code> straight from their site, no editing — and this lines it up against what
-          the field reported, truck by truck, over the date range above. It reads the columns itself
-          and adds up every transaction per vehicle. A CSV, a TSV or a pasted block works too; for
-          those, one line per row with the truck number and the gallons figure on it.
+          Pick the account, drop in the month's export — the <code>.xlsx</code> straight off their
+          site, no editing — and this lines it up truck by truck against what the field reported over
+          the range above. CSV and pasted text work too.
         </div>
         <div class="match-controls">
           <div class="filter-field">
@@ -1322,6 +1291,9 @@
       </div>
     </div>
 
+    <!-- ── Report container (Reports tab) ── -->
+    <div id="reportWrap" style="display:none"></div>
+
     <!-- ── Import container (Import tab) ──
          Static markup with only its RESULTS re-rendered, for the same reason
          the match panel is: the textarea holds a pasted month, and rebuilding
@@ -1373,6 +1345,38 @@
 
     <!-- ── Audit log container ── -->
     <div id="auditLogWrap" style="display:none"></div>
+
+    <!-- ── Bulk bar ── -->
+    <div class="bulk" id="bulkBar">
+      <div class="bulk-count" id="bulkCount">0 selected</div>
+      <button class="btn-approve alt" id="approveSelectedBtn" onclick="bulkApprove()">Approve Selected</button>
+      <button class="btn-approve"     id="approveAllBtn"      onclick="approveAllSubmitted()">Approve All Submitted</button>
+      <div class="bulk-spacer"></div>
+      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
+    </div>
+
+    <!-- ── Balancing bar ──
+         The second review's own controls. Kept apart from the approval bar
+         above because they are a different manager's job on a different
+         cadence, and an "Approve" button sitting beside "Mark Balanced" is
+         an invitation to do the wrong one. -->
+    <div class="bulk balance-bar" id="balanceBar">
+      <div class="filter-field" style="min-width:150px">
+        <label for="flt-balance">Showing</label>
+        <select id="flt-balance" onchange="renderRows()">
+          <option value="pending">Pending — still to balance</option>
+          <option value="issue">Issues</option>
+          <option value="balanced">Balanced</option>
+          <option value="">All approved</option>
+        </select>
+      </div>
+      <div class="bulk-count" id="balanceCount">0 selected</div>
+      <button class="btn-approve alt" id="markBalancedBtn" onclick="bulkBalance('balanced')">Mark Balanced</button>
+      <button class="btn-issue"       id="markIssueBtn"    onclick="bulkBalance('issue')">Flag Issue</button>
+      <button class="btn-clear"       id="markPendingBtn"  onclick="bulkBalance('pending')">Back to Pending</button>
+      <div class="bulk-spacer"></div>
+      <button class="btn-clear" onclick="exportCsv()">Export CSV</button>
+    </div>
 
     <!-- ── Table ── -->
     <div class="table-wrap" id="tableWrap">
@@ -1726,10 +1730,16 @@
       el('tableWrap').style.display    = isGrid              ? '' : 'none';
       el('auditLogWrap').style.display = tab === 'auditlog'  ? '' : 'none';
       el('reportWrap').style.display   = tab === 'reports'   ? '' : 'none';
-      el('reportRanges').style.display = tab === 'reports'   ? '' : 'none';
-      el('matchWrap').style.display    = tab === 'reports'   ? '' : 'none';
       el('vehiclesWrap').style.display = tab === 'vehicles'  ? '' : 'none';
       el('importWrap').style.display   = tab === 'import'    ? '' : 'none';
+      // The statement match lives with Balancing, because lining a month up
+      // against an account IS the balancing. It used to sit at the foot of
+      // Reports under everything else, which is a long way to scroll for the
+      // thing somebody opened the page to do.
+      el('matchWrap').style.display    = tab === 'balancing' ? '' : 'none';
+      // Both tabs work a month at a time, so both get the month picker.
+      el('reportRanges').style.display = (tab === 'reports' || tab === 'balancing') ? '' : 'none';
+      el('repOnlyControls').style.display = tab === 'reports' ? 'contents' : 'none';
       // Approval controls and balancing controls never share a bar: they are
       // two managers' jobs on two cadences, and an Approve button beside Mark
       // Balanced is an invitation to press the wrong one.
@@ -1745,6 +1755,11 @@
       // would let "Approve Selected" act on rows that are no longer on screen.
       selected.clear();
       renderRows();
+
+      // The match needs the same model the report is built from. Kicked off
+      // after the grid so the entries are on screen while it loads, and it
+      // leaves an open reconciliation alone unless the range actually moved.
+      if (tab === 'balancing') loadReport();
     }
 
     // ── Load + filter ──────────────────────────────────────────────────────
@@ -1780,7 +1795,7 @@
       // The filter bar drives every tab, so Apply has to refresh whichever
       // one is actually on screen — not just the grid behind it.
       if (activeTab === 'auditlog') loadAuditLog();
-      if (activeTab === 'reports')  loadReport();
+      if (activeTab === 'reports' || activeTab === 'balancing') loadReport();
     }
 
     function clearFilters() {
@@ -3235,25 +3250,7 @@
             <div class="stat"><div class="stat-label">Non-IFTA Gallons</div><div class="stat-value">${n2(m.nonIftaGallons)}</div></div>
           </div>
 
-          ${m.exceptions.length ? `
-          <div class="rep-block">
-            <div class="rep-title" style="color:#fb923c">Before this month goes out — ${m.exceptions.length} to settle</div>
-            <div class="rep-sub">Everything here either can't be attributed to a vehicle or doesn't add up. None of it blocks the report; all of it changes the figures if left.</div>
-            <table>
-              <thead><tr><th>What</th><th>Why it matters</th></tr></thead>
-              <tbody>
-                ${m.exceptions.map(x => `
-                  <tr class="exception">
-                    <td class="name">${escapeHtml(x.kind)}</td>
-                    <td>${escapeHtml(x.detail)}</td>
-                  </tr>`).join('')}
-              </tbody>
-            </table>
-          </div>` : `
-          <div class="rep-block">
-            <div class="rep-title" style="color:var(--green)">Nothing outstanding</div>
-            <div class="rep-sub">Every fill-up matches a vehicle, every IFTA truck has a sticker number, and every tank meter accounts for the fuel reported against it.</div>
-          </div>`}
+          ${vehicleMonthBlockHtml(m)}
 
           <div class="rep-block">
             <div class="rep-title">Gallons by State</div>
@@ -3278,7 +3275,26 @@
             </table>
           </div>
 
-          ${vehicleMonthBlockHtml(m)}
+          ${m.exceptions.length ? `
+          <div class="rep-block">
+            <div class="rep-title" style="color:#fb923c">Before this month goes out — ${m.exceptions.length} to settle</div>
+            <div class="rep-sub">Everything here either can't be attributed to a vehicle or doesn't add up. None of it blocks the report; all of it changes the figures if left.</div>
+            <table>
+              <thead><tr><th>What</th><th>Why it matters</th></tr></thead>
+              <tbody>
+                ${m.exceptions.map(x => `
+                  <tr class="exception">
+                    <td class="name">${escapeHtml(x.kind)}</td>
+                    <td>${escapeHtml(x.detail)}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>` : `
+          <div class="rep-block">
+            <div class="rep-title" style="color:var(--green)">Nothing outstanding</div>
+            <div class="rep-sub">Every fill-up matches a vehicle, every IFTA truck has a sticker number, and every tank meter accounts for the fuel reported against it.</div>
+          </div>`}
+
 
           ${repeatOffenderBlockHtml()}
 
@@ -4065,6 +4081,11 @@
     function showGallonsPicker(show) {
       const f = el('mt-galcol-field');
       if (f) f.style.display = show ? '' : 'none';
+      // The paste box goes with it. Once a file has been read there is
+      // nothing to type, and a box of sample numbers sitting under a loaded
+      // statement reads like data that is about to be matched.
+      const p = el('mt-paste');
+      if (p) p.style.display = show ? '' : 'none';
     }
 
     // Typing into the box after a workbook has been read means the workbook is
