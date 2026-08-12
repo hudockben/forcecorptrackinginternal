@@ -146,11 +146,33 @@ function safeDate(v) {
   // surfaces as a 500 with a driver's error message rather than something
   // the office can act on, and on the import path takes the rest of the
   // batch down with it.
+  //
+  // Date.UTC maps a year of 0–99 onto 1900–1999, so the round-trip has to be
+  // told the year separately. Left to it, this refuses 0001 for a reason
+  // that has nothing to do with the date and says nothing about 0226.
   const [y, m, d] = s.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
+  const dt = new Date(Date.UTC(2000, m - 1, d));
+  dt.setUTCFullYear(y);
   const real = dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === m && dt.getUTCDate() === d;
   return real ? s : null;
 }
+
+/**
+ * The window a fuel date can fall in.
+ *
+ * A real calendar day is not the same as a day this can be about. Every
+ * mistyped year lands on one: 0226 for 2026, 3026 for 2026, 9999 from a
+ * spreadsheet's own end-of-range filler. Each is a perfectly good date and
+ * each stores a fill-up that then appears in no month anybody will ever run —
+ * so the month it belonged to comes up short by exactly those gallons, with
+ * nothing anywhere saying why.
+ *
+ * Checked where a WORK date is validated rather than inside safeDate, which
+ * also reads rows back out: an entry that predates this rule still has to be
+ * displayable, or it becomes unfindable as well as wrong.
+ */
+const MIN_FUEL_YEAR = 2000;
+const MAX_FUEL_YEAR = 2100;
 
 function safeInt(v) {
   if (v == null || v === '') return null;
@@ -275,6 +297,10 @@ function normalizeBody(body) {
 
   const work_date = safeDate(b.work_date);
   if (!work_date) return { error: 'A valid date is required.' };
+  const year = Number(work_date.slice(0, 4));
+  if (year < MIN_FUEL_YEAR || year > MAX_FUEL_YEAR) {
+    return { error: `${work_date} is not a date this can be about — check the year.` };
+  }
 
   const fuel_card = safeStr(b.fuel_card, 100);
   if (fuel_card && !FUEL_CARDS.includes(fuel_card)) {

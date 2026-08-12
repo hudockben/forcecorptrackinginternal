@@ -892,6 +892,38 @@ function pageTests() {
       meterFlagged({ beginning_meter: null, ending_meter: 5 }) === false);
   }
 
+  console.log('\n[a real calendar day is not a day this can be about]');
+  {
+    // Every one of these is a valid date and none of them is a fuel date.
+    // Stored, each puts a fill-up in a month nobody will ever run — so the
+    // month it belonged to comes up short by exactly those gallons, and
+    // nothing anywhere says why.
+    for (const [d, why] of [
+      ['0226-05-04', 'a transposed 2026'],
+      ['3026-05-04', 'a mistyped 2026'],
+      ['9999-12-31', "a spreadsheet's own end-of-range filler"],
+      ['1999-12-31', 'before any of this existed'],
+    ]) {
+      const { error } = normalizeBody(Object.assign({}, FULL, { work_date: d }));
+      assert(`${d} is refused — ${why}`, !!error && /year/.test(error), error || 'accepted');
+    }
+    for (const d of ['2000-01-01', '2026-05-04', '2100-12-31']) {
+      const { error } = normalizeBody(Object.assign({}, FULL, { work_date: d }));
+      assert(`${d} is a date this can be about`, !error, error);
+    }
+    // The round-trip that decides whether a day is real has to be told the
+    // year: Date.UTC maps 0–99 onto 1900–1999, which refused 0001 for a
+    // reason that had nothing to do with the date and said nothing about
+    // 0226. Both are refused now, and for the right reason.
+    const { error: e1 } = normalizeBody(Object.assign({}, FULL, { work_date: '0001-01-01' }));
+    assert('0001-01-01 is refused on its year, not by accident', /year/.test(e1 || ''), e1);
+    // …and the leap-year check still holds through the same round-trip.
+    assert('29 February 2024 is a real day',
+      !normalizeBody(Object.assign({}, FULL, { work_date: '2024-02-29' })).error);
+    assert('29 February 2026 is not',
+      !!normalizeBody(Object.assign({}, FULL, { work_date: '2026-02-29' })).error);
+  }
+
   console.log('\n[fuel-admin.html — an entry that bought no fuel]');
   {
     const src = read('fuel-admin.html');

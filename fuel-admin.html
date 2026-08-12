@@ -4409,11 +4409,34 @@
     // refuse the 30th of February with a 500 rather than a message anyone
     // could act on, and a month whose import half-failed on the server is
     // much worse to unpick than one that never left the page.
+    // Date.UTC maps a year of 0–99 onto 1900–1999, so the round-trip has to be
+    // told the year separately or it refuses 0001 for a reason that has
+    // nothing to do with the date, and says nothing at all about 0226.
     function validYmd(s) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(s || '')) return null;
       const [y, m, d] = s.split('-').map(Number);
-      const dt = new Date(Date.UTC(y, m - 1, d));
+      const dt = new Date(Date.UTC(2000, m - 1, d));
+      dt.setUTCFullYear(y);
       return (dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === m && dt.getUTCDate() === d) ? s : null;
+    }
+
+    /**
+     * The window a fuel date can fall in. Kept in step with
+     * api/fuel-submissions.js, which is the one that counts.
+     *
+     * A real calendar day is not the same as a day this can be about, and
+     * every mistyped year lands on one — 0226 for 2026, 3026 for 2026, 9999
+     * from a spreadsheet's own filler. Each stores a fill-up that appears in
+     * no month anybody will run, so the month it belonged to comes up short
+     * by exactly those gallons with nothing saying why.
+     */
+    const MIN_FUEL_YEAR = 2000;
+    const MAX_FUEL_YEAR = 2100;
+
+    function plausibleYear(ymd) {
+      if (!ymd) return false;
+      const y = Number(String(ymd).slice(0, 4));
+      return y >= MIN_FUEL_YEAR && y <= MAX_FUEL_YEAR;
     }
 
     /**
@@ -4661,7 +4684,15 @@
         const entry = {};
 
         entry.work_date = importDate(v.work_date);
-        if (!entry.work_date) why.push(v.work_date ? `couldn't read the date "${v.work_date}"` : 'no date');
+        if (!entry.work_date) {
+          why.push(!v.work_date ? 'no date' : `couldn't read the date "${v.work_date}"`);
+        } else if (!plausibleYear(entry.work_date)) {
+          // Read perfectly well and still wrong. Named as a year problem
+          // rather than an unreadable cell, because the fix is one character
+          // and the row is otherwise fine.
+          why.push(`the year in "${v.work_date}" reads as ${entry.work_date.slice(0, 4)} — check it`);
+          entry.work_date = null;
+        }
 
         entry.employee_username = v.employee_username || null;
         if (!entry.employee_username) why.push('no employee');
