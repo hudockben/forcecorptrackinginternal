@@ -327,6 +327,39 @@ async function run() {
     assert('every balancing decision is in the audit log',
       acts.filter(a => a === 'BALANCE').length === 3, acts.join(','));
 
+    // Correcting the figure a reconciliation was signed off on un-signs it —
+    // the same rule un-approving follows, and this workflow expects entries
+    // to be corrected after a match.
+    //
+    // On its own entry, not one of the two above: those have been through
+    // un-approve by this point, and balancing a submitted row is refused, so
+    // the edit would be testing an entry that was never balanced at all.
+    const EDIT_FILL = Object.assign({}, FILL, { work_date: '2026-07-14', truck_number: '88' });
+    const made = await call('POST', {}, EDIT_FILL, FIELD);
+    const toEdit = made.body.entry.id;
+    await call('POST', { action: 'submit', id: toEdit }, null, FIELD);
+    await call('POST', { action: 'approve', id: toEdit }, null, ADMIN);
+    const balanced = await call('POST', { action: 'balance' },
+      { ids: [toEdit], balance_status: 'balanced' }, ADMIN);
+    assert('the entry under test is balanced to begin with',
+      balanced.body.updated === 1, JSON.stringify(balanced.body));
+
+    const spellingFix = await call('PUT', { id: toEdit },
+      Object.assign({}, EDIT_FILL, { city_fueled: 'Punxsutawny' }), ADMIN);
+    assert('correcting a spelling leaves the balance alone',
+      spellingFix.body.entry.balance_status === 'balanced', spellingFix.body.entry.balance_status);
+    assert('and leaves who balanced it in place',
+      spellingFix.body.entry.balanced_by_name === 'office', String(spellingFix.body.entry.balanced_by_name));
+
+    const figureFix = await call('PUT', { id: toEdit },
+      Object.assign({}, EDIT_FILL, { city_fueled: 'Punxsutawny', gallons: '120' }), ADMIN);
+    assert('but correcting the gallons puts it back to pending',
+      figureFix.body.entry.balance_status === 'pending', figureFix.body.entry.balance_status);
+    assert('and clears who had balanced it',
+      figureFix.body.entry.balanced_by_name === null && figureFix.body.entry.balanced_at === null,
+      JSON.stringify(figureFix.body.entry));
+    await call('DELETE', { id: toEdit }, null, ADMIN);
+
     // Clean up so the scoping counts further down aren't thrown by these.
     for (const id of extra) await call('DELETE', { id }, null, ADMIN);
     await call('DELETE', { id: draft.body.entry.id }, null, ADMIN);

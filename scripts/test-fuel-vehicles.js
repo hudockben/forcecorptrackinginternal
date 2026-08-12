@@ -224,6 +224,9 @@ function loadReportFns(filters) {
     ${liftFn(src, 'monthOf',            file)}
     ${liftFn(src, 'buildReportModel',   file)}
     ${liftFn(src, 'vehicleMonthRows',   file)}
+    ${liftConst(src, 'TOTAL_LABEL',     file)}
+    ${liftFn(src, 'isTotalLabel',       file)}
+    ${liftFn(src, 'delimiterFor',       file)}
     ${liftFn(src, 'parseStatement',     file)}
     ${liftFn(src, 'matchStatement',     file)}
     return {
@@ -531,11 +534,34 @@ function statementTests() {
     // The one line that must never be read as data: a total whose figure
     // happens to be a truck number we recognise would otherwise land on that
     // truck and double it, and the row would look entirely ordinary.
-    const r = P('412,84.50\nTotal,412.00');
-    assert('a total line is not mistaken for a truck',
-      r.byTruck.size === 1 && r.byTruck.get(412) === 84.5, JSON.stringify([...r.byTruck]));
-    const g = P('412,84.50\nGrand Total,412.00');
-    assert('nor is a grand total', g.byTruck.get(412) === 84.5, JSON.stringify([...g.byTruck]));
+    //
+    // Every shape below was found slipping past a guard anchored to the start
+    // of the raw line — statements pluralise the label, quote it, and put it
+    // in a later column, and none of those start with "total".
+    const totals = [
+      ['Total,412.00',                    'a plain total'],
+      ['Grand Total,412.00',              'a grand total'],
+      ['Totals,412,1523.40',              'a pluralised label'],
+      ['"Total","412","1523.40"',         'a quoted label — the line starts with a quote'],
+      [',,,Total,412,1523.40',            'a label in a later column'],
+      ['GRAND TOTAL\t412\t1523.40',       'shouted, and tab separated'],
+      ['Subtotal;412;1523.40',            'a subtotal, semicolon separated'],
+      ['Report Total,412,1523.40',        'a report total'],
+      ['Total:,412,1523.40',              'a label with a trailing colon'],
+    ];
+    for (const [line, what] of totals) {
+      const r = P('412,84.50\n' + line);
+      assert(`${what} is not mistaken for a truck`,
+        r.byTruck.size === 1 && r.byTruck.get(412) === 84.5,
+        JSON.stringify([...r.byTruck]));
+    }
+    // …and the cost of guarding this way: a fuel station actually named
+    // "Total" would be skipped. Only an EXACT cell match counts, so a
+    // merchant column keeps working, which is the case that would really
+    // happen.
+    const merchant = P('412,TOTAL PETROLEUM #123,90.00');
+    assert('a merchant whose name merely contains "total" is still data',
+      merchant.byTruck.get(412) === 90, JSON.stringify([...merchant.byTruck]));
   }
   {
     // Gallons then dollars. "Last number" gets it wrong, which is exactly why
@@ -549,6 +575,40 @@ function statementTests() {
     const r = P('412,"1,234.50"');
     assert('a quoted thousands separator survives the split',
       r.byTruck.get(412) === 1234.5, String(r.byTruck.get(412)));
+  }
+  {
+    // A tab-separated export never quotes anything, so the comma in its
+    // gallons column is a thousands separator and nothing else. Splitting on
+    // commas as well turned 1,234.50 into 234.50 — the truck under-reported
+    // by exactly a thousand gallons, with the line counted as read.
+    const tsv = P('412\t1,234.50');
+    assert('an unquoted thousands separator survives a tab-separated line',
+      tsv.byTruck.get(412) === 1234.5, String(tsv.byTruck.get(412)));
+    const semi = P('412;1,234.50');
+    assert('and a semicolon-separated one', semi.byTruck.get(412) === 1234.5,
+      String(semi.byTruck.get(412)));
+    const pipe = P('412|1,234.50');
+    assert('and a pipe-separated one', pipe.byTruck.get(412) === 1234.5,
+      String(pipe.byTruck.get(412)));
+    // On a comma-separated line an unquoted thousands separator is genuinely
+    // ambiguous — "412,500" is either truck 412 taking 500 gallons or a
+    // single figure — so the comma stays a column break there.
+    const csv = P('412,500');
+    assert('a comma-separated line still treats the comma as a column break',
+      csv.byTruck.get(412) === 500, String(csv.byTruck.get(412)));
+  }
+  {
+    // A fuel-card number is thirteen to nineteen digits. Taken for a truck it
+    // overflows the INTEGER column and fails the INSERT — after the save has
+    // cleared the previous lines.
+    const r = P('7001234567890,500,84.50');
+    assert('a card number is not taken for a truck number',
+      r.byTruck.has(500) && !r.byTruck.has(7001234567890),
+      JSON.stringify([...r.byTruck]));
+    const only = P('7001234567890,84.50');
+    assert('and a line offering nothing else is skipped, not stored',
+      only.byTruck.size === 0 && only.skipped.length === 1,
+      JSON.stringify([...only.byTruck]));
   }
   {
     const r = P('412,$312.45\n77,84.5 gal');
@@ -618,6 +678,27 @@ function statementTests() {
       fns.parseStatement('412,200', 'last', known));
     assert('narrowed to July, the same statement balances',
       julyOnly.rows.find(x => x.truck === 412).verdict === 'match');
+  }
+  {
+    // Fuel the daily review hasn't reached is not the office's yet. Counting
+    // it here would let a truck be declared to agree partly on gallons nobody
+    // has accepted — and marking it balanced afterwards only ever touches the
+    // approved rows, so the sign-off and the figure behind it would disagree.
+    const withPending = FLEET_ENTRIES.concat([
+      entry({ work_date: '2026-07-28', truck_number: 412, fuel_card: 'Guttman',
+              gallons: 50, status: 'submitted' }),
+    ]);
+    const m2 = fns.buildReportModel(withPending, FLEET);
+    const r  = fns.matchStatement(m2, 'Guttman', fns.parseStatement('412,300', 'last', known));
+    assert('an entry awaiting the daily review is left out of the comparison',
+      r.rows.find(x => x.truck === 412).verdict === 'match',
+      JSON.stringify(r.rows.find(x => x.truck === 412)));
+    assert('and is counted so the page can say so',
+      r.notApproved === 1 && r.notApprovedGallons === 50,
+      JSON.stringify([r.notApproved, r.notApprovedGallons]));
+    assert('the fill-up count covers approved fills only',
+      r.rows.find(x => x.truck === 412).fills === 3,
+      String(r.rows.find(x => x.truck === 412).fills));
   }
   {
     // The account filter has to bite, or a Wex statement gets matched against

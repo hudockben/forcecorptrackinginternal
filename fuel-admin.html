@@ -1858,26 +1858,48 @@
     // fill-up behind it at once, and ticking forty rows one at a time is the
     // work this exists to remove. The single-row buttons are the same call
     // with one id.
+    // The server takes 1000 ids at a time. A fifty-truck fleet at twenty fills
+    // a truck puts a whole month past that, and "select all → Mark Balanced"
+    // would come back as a flat refusal with no way forward short of the user
+    // guessing that a narrower date range is the answer. Split here instead.
+    const BALANCE_CHUNK = 500;
+
     async function setBalance(ids, status, note, quiet) {
       if (!ids.length) return null;
-      const res = await fetch('/api/fuel-submissions?action=balance', {
-        method: 'POST', headers: authHeaders(true),
-        body: JSON.stringify({ ids, balance_status: status, balance_note: note || '' }),
-      });
-      const j = await res.json();
-      if (!res.ok || !j.ok) throw new Error(j.error || 'Could not save');
+      const result = { ok: true, updated: 0, skipped: [], entries: [] };
+
+      for (let i = 0; i < ids.length; i += BALANCE_CHUNK) {
+        const batch = ids.slice(i, i + BALANCE_CHUNK);
+        const res = await fetch('/api/fuel-submissions?action=balance', {
+          method: 'POST', headers: authHeaders(true),
+          body: JSON.stringify({ ids: batch, balance_status: status, balance_note: note || '' }),
+        });
+        const j = await res.json();
+        // A batch where every entry was unapproved answers 409. That is a
+        // fact about those rows, not a failure of the run — the rest still
+        // have to go through, and they get counted as skipped below.
+        if (res.status === 409 && j && j.updated === 0) {
+          result.skipped.push(...batch.map(String));
+          continue;
+        }
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Could not save');
+        result.updated += j.updated;
+        result.skipped.push(...(j.skipped || []));
+        result.entries.push(...(j.entries || []));
+      }
+
       // Fold the server's rows back in so the grid and the stats move without
       // a refetch losing the reviewer's place in a long month.
-      for (const updated of (j.entries || [])) {
+      for (const updated of result.entries) {
         const i = allEntries.findIndex(e => e.id === updated.id);
         if (i >= 0) allEntries[i] = updated;
       }
       renderStats();
       renderRows();
-      if (!quiet && j.skipped && j.skipped.length) {
-        alert(`${j.updated} marked. ${j.skipped.length} left alone — balancing only applies to entries the daily review has already approved.`);
+      if (!quiet && result.skipped.length) {
+        alert(`${result.updated} marked. ${result.skipped.length} left alone — balancing only applies to entries the daily review has already approved.`);
       }
-      return j;
+      return result;
     }
 
     async function balanceOne(id, status) {
@@ -2482,6 +2504,20 @@
       }
       if (!vehicles.length) await loadVehicles();
       reportModel = buildReportModel(entries, vehicles);
+
+      // A match belongs to the range it was computed against. Leaving it on
+      // screen over a rebuilt model leaves its verdicts pointing at entries
+      // they were never about — and "Mark the agreeing trucks balanced" reads
+      // the CURRENT model, so July's verdicts would be pressed onto June's
+      // fill-ups with nothing on screen suggesting anything was wrong. The
+      // pasted text is kept so Match is one press away.
+      if (matchResult) {
+        matchResult = null;
+        el('matchResults').innerHTML =
+          '<div class="rep-empty">The date range changed — press Match again to line the statement up against it.</div>';
+        renderSavedMatches();
+      }
+
       renderReport();
       // Both read from saved matches rather than from this range, so they are
       // fetched alongside rather than blocking the report on them. refreshHistory
@@ -2989,6 +3025,36 @@
      * counted and reported rather than silently dropped, because a statement
      * that half-parsed is worse than one that didn't.
      */
+    // A cell that is nothing but a summing label. Checked per CELL and by
+    // exact match, because the label is not reliably the first thing on the
+    // line: statements put it in a later column, quote it, and pluralise it,
+    // and a guard anchored to the start of the raw line catches none of those.
+    // Getting this wrong is silent — the total's figure is added to whichever
+    // truck number happens to share the line, and the row looks ordinary.
+    //
+    // Exact match on the whole cell rather than a prefix so a merchant column
+    // reading "TOTAL PETROLEUM #123" is still data. A station named exactly
+    // "Total" is the one false positive left, and that line is REPORTED as
+    // skipped rather than silently dropped, which is the right way round: a
+    // skipped real line is visible, a swallowed total is not.
+    const TOTAL_LABEL = /^(grand\s+|report\s+|page\s+|running\s+|sub[\s-]*)?(total|totals|sum|subtotal|balance|summary)$/i;
+    function isTotalLabel(cell) {
+      return TOTAL_LABEL.test(String(cell).replace(/["']/g, '').replace(/[:.]+$/, '').trim());
+    }
+
+    // Which character separates the columns. Decided per line and once,
+    // because "412<tab>1,234.50" is a TWO-column row whose second value
+    // carries a thousands separator — splitting it on commas as well turns
+    // 1,234.50 into 234.50 and under-reports the truck by a thousand gallons,
+    // with the line still counted as read.
+    function delimiterFor(line) {
+      if (line.includes('\t')) return '\t';
+      if (line.includes(';'))  return ';';
+      if (line.includes('|'))  return '|';
+      if (line.includes(','))  return ',';
+      return null;
+    }
+
     function parseStatement(text, gallonsPick, knownTrucks) {
       const byTruck  = new Map();
       const skipped  = [];
@@ -2999,25 +3065,24 @@
         if (!line) continue;
         lines++;
 
-        // The total at the foot of a statement is the one line that must not
-        // be read as data. "Total, 412.00" would otherwise land on truck 412
-        // — a number we recognise — and quietly double it.
-        if (/^\s*(grand\s+)?(total|subtotal|sum|balance)\b/i.test(line)) { skipped.push(line); continue; }
-
-        // A comma inside quotes is a thousands separator, not a column break —
-        // "1,234.50" is one number and splitting it produces two wrong ones.
+        // A comma inside quotes is a thousands separator, not a column break.
         const flat = line.replace(/"([^"]*)"/g, (_, inner) => inner.replace(/,/g, ''));
 
-        // Tabs, commas, semicolons and pipes are separators; failing those,
-        // fall back to whitespace so a plain two-column paste still reads.
-        let cells = flat.split(/\t|,|;|\|/).map(c => c.trim()).filter(c => c !== '');
+        const delim = delimiterFor(flat);
+        let cells = delim
+          ? flat.split(delim).map(c => c.trim()).filter(c => c !== '')
+          : flat.split(/\s+/).filter(Boolean);
         if (cells.length < 2) cells = flat.split(/\s+/).filter(Boolean);
+
+        if (cells.some(isTotalLabel)) { skipped.push(line); continue; }
 
         const nums = [];
         for (const c of cells) {
-          // Strip the things a money or gallons column carries: currency,
-          // thousands separators, a trailing unit.
-          const cleaned = c.replace(/[$,\s]/g, '').replace(/(gal|gals|gallons)$/i, '');
+          // Strip what a money or gallons column carries: currency, a trailing
+          // unit, and — only when the comma is NOT this line's separator — a
+          // thousands separator.
+          let cleaned = c.replace(/[$\s]/g, '').replace(/(gal|gals|gallons)$/i, '');
+          if (delim !== ',') cleaned = cleaned.replace(/,/g, '');
           if (/^-?\d+(\.\d+)?$/.test(cleaned)) nums.push(Number(cleaned));
         }
         if (!nums.length) { skipped.push(line); continue; }
@@ -3025,8 +3090,15 @@
         // The truck: one we recognise, or failing that the first whole number
         // on the line. Recognising it first is what makes a date column
         // harmless.
+        //
+        // The fallback is capped at what the truck_number column can hold. A
+        // fuel-card number is thirteen to nineteen digits and would otherwise
+        // be taken for a truck on a statement whose real truck isn't on the
+        // roster yet — and then fail the INSERT with "integer out of range",
+        // after the save has already cleared the previous lines.
+        const PLAUSIBLE_TRUCK = n => Number.isInteger(n) && n >= 0 && n <= 2147483647;
         let truckIdx = nums.findIndex(n => Number.isInteger(n) && knownTrucks.has(n));
-        if (truckIdx < 0) truckIdx = nums.findIndex(n => Number.isInteger(n) && n >= 0);
+        if (truckIdx < 0) truckIdx = nums.findIndex(PLAUSIBLE_TRUCK);
         if (truckIdx < 0) { skipped.push(line); continue; }
         const truck = nums[truckIdx];
 
@@ -3054,9 +3126,23 @@
     function matchStatement(model, card, statement) {
       const ours = new Map();
       const fills = new Map();
+      // Approved fuel only, whatever the report is set to show.
+      //
+      // The Reports tab can include entries still awaiting the daily review,
+      // and counting those here would let a truck be declared to agree partly
+      // on fuel the office has not accepted. Marking it balanced afterwards
+      // only ever touches the approved rows, so the two would disagree about
+      // what had just been signed off. Excluded and counted, not silently
+      // dropped — see notApproved below.
+      let notApproved = 0, notApprovedGallons = 0;
       for (const e of model.rows) {
         if (card && (e.fuel_card || '') !== card) continue;
         if (e.truck_number == null) continue;
+        if (e.status !== 'approved') {
+          notApproved++;
+          notApprovedGallons += Number(e.gallons) || 0;
+          continue;
+        }
         const t = Number(e.truck_number);
         ours.set(t, Math.round(((ours.get(t) || 0) + (Number(e.gallons) || 0)) * 100) / 100);
         fills.set(t, (fills.get(t) || 0) + 1);
@@ -3098,6 +3184,8 @@
         notOnStatement: rows.filter(r => r.verdict === 'not-on-statement'),
         skipped: statement.skipped,
         lines: statement.lines,
+        notApproved,
+        notApprovedGallons: Math.round(notApprovedGallons * 100) / 100,
       };
     }
 
@@ -3120,6 +3208,11 @@
         return;
       }
       matchResult = matchStatement(reportModel, val('mt-card'), parsed);
+      // Pinned to the range this was computed against, so re-saving sends the
+      // period it actually covers rather than whatever the Reports tab has
+      // moved on to since.
+      matchResult.periodStart = reportModel.from;
+      matchResult.periodEnd   = reportModel.to;
       renderStatementMatch();
     }
 
@@ -3207,7 +3300,18 @@
 
     async function saveMatch() {
       const r = matchResult;
-      if (!r || !reportModel) return;
+      if (!r) return;
+      // The period this match is FOR, which is not necessarily the one the
+      // Reports tab is showing. A match opened out of history carries April's
+      // figures; re-saving it while the range reads July would write April's
+      // lines under a July period, miss the unique index entirely, and leave
+      // both months feeding the repeat-offender rollup.
+      const periodStart = r.periodStart || (r.savedMeta && r.savedMeta.period_start);
+      const periodEnd   = r.periodEnd   || (r.savedMeta && r.savedMeta.period_end);
+      if (!periodStart || !periodEnd) {
+        alert("This match has no period attached — press Match again before saving it.");
+        return;
+      }
       const btn = el('mt-save');
       const note = val('mt-note');
       if (btn) btn.disabled = true;
@@ -3216,8 +3320,8 @@
           method: 'POST', headers: authHeaders(true),
           body: JSON.stringify({
             account:         r.card,
-            period_start:    reportModel.from,
-            period_end:      reportModel.to,
+            period_start:    periodStart,
+            period_end:      periodEnd,
             ours_total:      r.oursTotal,
             statement_total: r.statementTotal,
             difference:      r.oursTotal - r.statementTotal,
@@ -3269,21 +3373,28 @@
         // entries: this is what the statement said when it was reconciled,
         // and rebuilding it from entries that have since been corrected
         // would quietly rewrite what was signed off.
+        const rows = lines.map(l => ({
+          truck: l.truck_number, ours: l.ours, statement: l.statement,
+          difference: l.difference, fills: l.fills, verdict: l.verdict,
+          lineId: l.id, resolved: l.resolved, note: l.resolution_note || '',
+        }));
         matchResult = {
           card: m.account,
-          rows: lines.map(l => ({
-            truck: l.truck_number, ours: l.ours, statement: l.statement,
-            difference: l.difference, fills: l.fills, verdict: l.verdict,
-            lineId: l.id, resolved: l.resolved, note: l.resolution_note || '',
-          })),
+          rows,
           oursTotal:      Number(m.ours_total) || 0,
           statementTotal: Number(m.statement_total) || 0,
           matched:        m.matched_count,
-          variances:       lines.filter(l => l.verdict === 'variance'),
-          notInOurs:       lines.filter(l => l.verdict === 'not-in-ours'),
-          notOnStatement:  lines.filter(l => l.verdict === 'not-on-statement'),
+          // Derived from `rows`, the same way matchStatement builds them.
+          // Filtering `lines` here instead gave these three a different shape
+          // to the freshly-matched case — DB rows carrying truck_number where
+          // the others carry truck — which nothing reads today and everything
+          // added later would.
+          variances:      rows.filter(x => x.verdict === 'variance'),
+          notInOurs:      rows.filter(x => x.verdict === 'not-in-ours'),
+          notOnStatement: rows.filter(x => x.verdict === 'not-on-statement'),
           skipped: [], lines: 0,
           savedId: m.id, savedMeta: m, historical: true,
+          periodStart: m.period_start, periodEnd: m.period_end,
         };
         el('mt-card').value = m.account || '';
         renderStatementMatch();
@@ -3482,8 +3593,19 @@
           ${r.historical ? '· this is the record as it was reconciled, not a fresh comparison' : ''}
         </div>` : '';
 
+      // Fuel the daily review hasn't reached yet is deliberately not counted,
+      // so a truck reading "agrees" means it agrees on approved fuel alone.
+      // Said out loud, because otherwise the difference looks like the account
+      // over-billing when it is really work still sitting in the other tab.
+      const pendingWarning = (!r.historical && r.notApproved)
+        ? `<div class="flag-banner"><strong>${r.notApproved}</strong> fill-up${r.notApproved === 1 ? '' : 's'}
+             totalling <strong>${n2(r.notApprovedGallons)}</strong> gal on this account are still awaiting the
+             daily review, and are not counted below. Approve them first if they belong on this statement.</div>`
+        : '';
+
       out.innerHTML = `
         ${spanWarning}
+        ${pendingWarning}
         ${savedHeader}
         <div class="match-summary">
           <div class="match-tile ${balanced ? 'ok' : 'off'}">

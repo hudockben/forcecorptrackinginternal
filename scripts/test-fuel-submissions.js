@@ -314,12 +314,19 @@ async function scopeTests() {
 
 // ── 4. Submit ───────────────────────────────────────────────────────────────
 // Drive one action through the handler against a stubbed row.
+// The bound values of each recorded statement, by the same index as `seen`.
+// Some rules are enforced by a flag computed in JS and bound into a CASE, so
+// the SQL text alone can't tell you whether they fired.
+let seenValues = [];
+
 async function action(method, query, body, row, auth = FIELD) {
   NEXT_AUTH = auth;
   const seen = [];
+  seenValues = [];
   CURRENT_SQL = (strings, ...values) => {
     const q = strings.join('?').replace(/\s+/g, ' ').trim();
     seen.push(q);
+    seenValues.push(values);
     if (q.startsWith('SELECT * FROM fuel_submissions WHERE id')) {
       return Promise.resolve(row ? [row] : []);
     }
@@ -329,11 +336,12 @@ async function action(method, query, body, row, auth = FIELD) {
     // The balance branch, matched BEFORE the generic UPDATE below — that one
     // starts with the same six words and would otherwise answer for it,
     // handing back a row on which nothing had changed.
-    if (q.startsWith('SELECT * FROM fuel_submissions WHERE company_code')) {
-      return Promise.resolve(row && row.status === 'approved' ? [row] : []);
-    }
     if (q.startsWith('UPDATE fuel_submissions SET balance_status')) {
       const [status, note] = values;
+      // Mirrors the statement's own `AND status = 'approved'`. A mock that
+      // returned the row regardless would let the eligibility rule be
+      // deleted from the handler without a single test noticing.
+      if (!row || row.status !== 'approved') return Promise.resolve([]);
       return Promise.resolve([Object.assign({}, row, { balance_status: status, balance_note: note })]);
     }
     if (q.startsWith('UPDATE fuel_submissions')) {
@@ -416,14 +424,14 @@ async function balanceTests() {
     const { res, seen } = await action('POST', { action: 'balance' },
       { ids: ['1', '2', '2'], balance_status: 'balanced' }, approved(), ADMIN);
     assert('an admin can balance', res.statusCode === 200 && res.body.ok, JSON.stringify(res.body));
-    const sel = seen.find(s => s.startsWith('SELECT * FROM fuel_submissions WHERE company_code'));
+    const upd = seen.find(s => s.startsWith('UPDATE fuel_submissions SET balance_status'));
     // Balancing is the stage AFTER approval. Marking a submitted entry
     // balanced would account for fuel the office has not agreed to yet.
-    assert('only approved entries are eligible', /status = 'approved'/.test(sel), sel);
+    assert('only approved entries are eligible', /status = 'approved'/.test(upd), upd);
     // Some neon-serverless paths mis-bind a JS array for ANY() and hang, so
     // the ids cross as one string and are split in SQL.
     assert('ids cross as a string, not a bound array',
-      /string_to_array/.test(sel), sel);
+      /string_to_array/.test(upd), upd);
   }
   {
     const { seen } = await action('POST', { action: 'balance' },
@@ -431,6 +439,19 @@ async function balanceTests() {
     const upd = seen.find(s => s.startsWith('UPDATE fuel_submissions SET balance_status'));
     assert('a balanced row is stamped with who and when',
       /balanced_at = CASE WHEN \?::boolean THEN NOW\(\)/.test(upd), upd.slice(0, 160));
+    // One audit statement, not one per entry. This runs AFTER the update has
+    // committed, on the path built for clearing a whole month from a single
+    // statement match — a loop there times out and reports failure for work
+    // that already succeeded.
+    const audits = seen.filter(s => s.startsWith('INSERT INTO fuel_audit_log'));
+    assert('the audit rows go in one statement', audits.length === 1, String(audits.length));
+    assert('expanded by the database from one JSON parameter',
+      /jsonb_to_recordset/.test(audits[0]), audits[0].slice(0, 140));
+    // Selecting the eligible rows and then updating them separately reports
+    // on a world that was true a round trip ago.
+    assert('and eligibility is read off the update itself, not a prior select',
+      !seen.some(s => s.startsWith('SELECT * FROM fuel_submissions WHERE company_code')),
+      seen.join(' | ').slice(0, 200));
   }
   {
     // A note explains an issue. Carried onto a balanced row it would leave
@@ -455,6 +476,72 @@ async function balanceTests() {
       { ids: ['1'], balance_status: 'balanced' }, row, ADMIN);
     assert('an entry still awaiting the daily review cannot be balanced',
       res.statusCode === 409, JSON.stringify(res.body));
+  }
+
+  console.log('\n[correcting a balanced entry un-signs it]');
+  {
+    // The same invariant un-approving enforces: a row cannot go on reading
+    // "balanced by office" once the figure the office balanced has changed
+    // underneath it — and this workflow expects entries to be corrected after
+    // a match, so it is the ordinary case.
+    const row = Object.assign(rowFrom(), {
+      id: 1, status: 'approved', balance_status: 'balanced', balanced_by_name: 'office',
+    });
+    const { seen } = await action('PUT', { id: '1' },
+      Object.assign({}, FULL, { gallons: '120' }), row, ADMIN);
+    const upd = seen.find(s => s.startsWith('UPDATE fuel_submissions SET work_date'));
+    assert('changing the gallons resets the balance',
+      /balance_status = CASE WHEN \?::boolean THEN 'pending'/.test(upd), upd.slice(0, 400));
+    // The flag is computed in JS and bound; true here means "reset".
+    const idx = seen.indexOf(upd);
+    assert('and the reset flag is set', seenValues[idx].includes(true), JSON.stringify(seenValues[idx]));
+  }
+  {
+    // Fixing a misspelt city has nothing to do with whether the gallons were
+    // accounted for. Throwing the verdict away for it would make the
+    // reconciler redo a month's work over a typo.
+    const row = Object.assign(rowFrom(), {
+      id: 1, status: 'approved', balance_status: 'balanced', balanced_by_name: 'office',
+    });
+    const { seen } = await action('PUT', { id: '1' },
+      Object.assign({}, FULL, { city_fueled: 'Punxsutawny' }), row, ADMIN);
+    const idx = seen.findIndex(s => s.startsWith('UPDATE fuel_submissions SET work_date'));
+    assert('but correcting a spelling does not', !seenValues[idx].includes(true),
+      JSON.stringify(seenValues[idx]));
+  }
+  {
+    const row = Object.assign(rowFrom(), { id: 1, status: 'approved', balance_status: 'pending' });
+    const { seen } = await action('PUT', { id: '1' },
+      Object.assign({}, FULL, { gallons: '120' }), row, ADMIN);
+    const idx = seen.findIndex(s => s.startsWith('UPDATE fuel_submissions SET work_date'));
+    assert('an entry nobody has balanced yet needs no reset',
+      !seenValues[idx].includes(true), JSON.stringify(seenValues[idx]));
+  }
+  {
+    // NUMERIC arrives from the driver as a string, so the two sides have to
+    // be normalised before comparison — and normalising with `Number(v) || v`
+    // reads a zero as unchanged, which is the same falsy-zero trap the meter
+    // readings already sprung once.
+    const row = Object.assign(rowFrom({ gallons: '0' }), {
+      id: 1, status: 'approved', balance_status: 'balanced', balanced_by_name: 'office',
+      gallons: '0.00',            // as PostgreSQL hands NUMERIC back
+    });
+    const { seen } = await action('PUT', { id: '1' },
+      Object.assign({}, FULL, { gallons: '0' }), row, ADMIN);
+    const idx = seen.findIndex(s => s.startsWith('UPDATE fuel_submissions SET work_date'));
+    assert('a zero that did not change is recognised as unchanged',
+      !seenValues[idx].includes(true), JSON.stringify(seenValues[idx]));
+  }
+  {
+    const row = Object.assign(rowFrom(), {
+      id: 1, status: 'approved', balance_status: 'balanced', balanced_by_name: 'office',
+      truck_number: 0,
+    });
+    const { seen } = await action('PUT', { id: '1' },
+      Object.assign({}, FULL, { truck_number: '412' }), row, ADMIN);
+    const idx = seen.findIndex(s => s.startsWith('UPDATE fuel_submissions SET work_date'));
+    assert('and a truck numbered 0 moving to 412 IS a change',
+      seenValues[idx].includes(true), JSON.stringify(seenValues[idx]));
   }
 
   console.log('\n[un-approving takes the balance verdict with it]');

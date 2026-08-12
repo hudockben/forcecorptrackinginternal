@@ -165,8 +165,18 @@ function normalizeMatch(body) {
     if (!VALID_VERDICTS.includes(verdict)) {
       return { error: `"${verdict}" is not a verdict this can store.` };
     }
+    // truck_number is INTEGER. A fuel-card number read off a statement as a
+    // truck is thirteen digits and would fail the INSERT with "integer out of
+    // range" — after the save has already cleared the previous lines, taking
+    // the reconciliation and its ticks with it. Refused up front instead, and
+    // named, so the answer is "that column isn't a truck number" rather than
+    // a 500.
+    const truck = safeInt(l.truck_number);
+    if (truck != null && (truck < 0 || truck > 2147483647)) {
+      return { error: `"${l.truck_number}" is not a truck number — check which column the statement identifies vehicles in.` };
+    }
     lines.push({
-      truck_number: safeInt(l.truck_number),
+      truck_number: truck,
       ours:         safeNum(l.ours),
       statement:    safeNum(l.statement),
       difference:   safeNum(l.difference),
@@ -219,8 +229,9 @@ module.exports = async (req, res) => {
       let months = safeInt(q.months);
       if (months == null || months < 1) months = 12;
       if (months > 60) months = 60;
-      const acct = q.account == null ? '' : String(q.account).slice(0, 100);
-      const filterAcct = acct !== '' ? acct : '';
+      // Trimmed on the way in because it is trimmed on the way out — a filter
+      // of " Guttman" would otherwise match nothing that was ever saved.
+      const acct = q.account == null ? '' : String(q.account).trim().slice(0, 100);
 
       // Counted over SAVED matches only. A month nobody reconciled says
       // nothing about a truck either way, and treating it as a clean month
@@ -241,7 +252,7 @@ module.exports = async (req, res) => {
         WHERE  l.company_code = ${companyCode}
           AND  l.truck_number IS NOT NULL
           AND  m.period_end >= (CURRENT_DATE - (${months} || ' months')::interval)
-          AND  (${filterAcct} = '' OR m.account = ${filterAcct})
+          AND  (${acct} = '' OR m.account = ${acct})
         GROUP  BY l.truck_number
         ORDER  BY (COUNT(*) FILTER (WHERE l.verdict <> 'match' AND NOT l.resolved)) DESC,
                   COALESCE(SUM(ABS(l.difference)), 0) DESC,
@@ -291,7 +302,7 @@ module.exports = async (req, res) => {
       let limit = safeInt(q.limit) || 50;
       if (limit > 200) limit = 200;
       if (limit < 1)   limit = 1;
-      const acct = q.account == null ? '' : String(q.account).slice(0, 100);
+      const acct = q.account == null ? '' : String(q.account).trim().slice(0, 100);
       const rows = await sql`
         SELECT * FROM fuel_statement_matches
         WHERE company_code = ${companyCode}
@@ -354,18 +365,47 @@ module.exports = async (req, res) => {
 
       await sql`DELETE FROM fuel_statement_lines WHERE match_id = ${saved.id} AND company_code = ${companyCode}`;
 
-      for (const l of data.lines) {
+      // Every line in ONE statement, not one round trip each.
+      //
+      // This sits immediately after a DELETE that has already removed the
+      // previous lines, so the window between the two is the window in which
+      // a saved reconciliation does not exist. A per-line loop makes that
+      // window as long as the fleet: 200 trucks is 200 sequential HTTP round
+      // trips through the serverless driver, and a function killed partway
+      // leaves a match header claiming N trucks over a partial set of lines —
+      // with the carried-over ticks gone, which is the work this feature
+      // exists to protect.
+      //
+      // Passed as one JSON parameter and expanded by the database rather than
+      // as bound arrays: the array-binding path is the one this codebase has
+      // already been bitten by (see the ANY() note in fuel-submissions.js).
+      // NOT named `payload` — that is the JWT, referenced a few lines above
+      // in the same block, and shadowing it here is a temporal-dead-zone
+      // error that only fires on the save path.
+      const linePayload = data.lines.map(l => {
         const keep = l.truck_number != null ? carried.get(l.truck_number) : null;
-        await sql`
-          INSERT INTO fuel_statement_lines
-            (match_id, company_code, truck_number, ours, statement, difference, fills, verdict,
-             resolved, resolution_note)
-          VALUES
-            (${saved.id}, ${companyCode}, ${l.truck_number}, ${l.ours}, ${l.statement},
-             ${l.difference}, ${l.fills}, ${l.verdict},
-             ${keep ? keep.resolved : false}, ${keep ? keep.note : null})
-        `;
-      }
+        return {
+          truck_number: l.truck_number,
+          ours:         l.ours,
+          statement:    l.statement,
+          difference:   l.difference,
+          fills:        l.fills,
+          verdict:      l.verdict,
+          resolved:     keep ? keep.resolved : false,
+          note:         keep ? keep.note : null,
+        };
+      });
+
+      await sql`
+        INSERT INTO fuel_statement_lines
+          (match_id, company_code, truck_number, ours, statement, difference, fills, verdict,
+           resolved, resolution_note)
+        SELECT ${saved.id}, ${companyCode}, x.truck_number, x.ours, x.statement,
+               x.difference, x.fills, x.verdict, x.resolved, x.note
+        FROM jsonb_to_recordset(${JSON.stringify(linePayload)}::jsonb)
+          AS x(truck_number INTEGER, ours NUMERIC, statement NUMERIC, difference NUMERIC,
+                fills INTEGER, verdict TEXT, resolved BOOLEAN, note TEXT)
+      `;
 
       const lines = await sql`
         SELECT * FROM fuel_statement_lines

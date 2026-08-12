@@ -633,21 +633,13 @@ module.exports = async (req, res) => {
       // JS array: some neon-serverless paths mis-bind an array parameter for
       // ANY() and the query hangs rather than failing. Every element has been
       // through safeInt, so the string is digits and commas.
+      //
+      // One statement, and `skipped` is derived from what it actually wrote.
+      // Selecting the eligible rows first and then updating them separately
+      // reports on a world that was true a round trip ago: an un-approve
+      // landing in between leaves an entry counted as updated when nothing
+      // was written to it.
       const idCsv = ids.join(',');
-      const rows = await sql`
-        SELECT * FROM fuel_submissions
-        WHERE company_code = ${companyCode}
-          AND id = ANY(string_to_array(${idCsv}, ',')::bigint[])
-          AND status = 'approved'
-      `;
-      if (!rows.length) {
-        return res.status(409).json({
-          error: 'None of those entries are approved yet — balancing comes after the daily review.',
-          updated: 0,
-        });
-      }
-
-      const eligible = rows.map(r => Number(r.id));
       const updated = await sql`
         UPDATE fuel_submissions
         SET balance_status      = ${status},
@@ -657,22 +649,47 @@ module.exports = async (req, res) => {
             balanced_by_name    = ${stamp ? payload.username : null},
             updated_at          = NOW()
         WHERE company_code = ${companyCode}
-          AND id = ANY(string_to_array(${eligible.join(',')}, ',')::bigint[])
+          AND id = ANY(string_to_array(${idCsv}, ',')::bigint[])
           AND status = 'approved'
         RETURNING *
       `;
-
-      for (const row of updated) {
-        await writeAudit(sql, companyCode, payload, row.id, 'BALANCE',
-          { balance_status: status, balance_note: note }, dbToEntry(row));
+      if (!updated.length) {
+        return res.status(409).json({
+          error: 'None of those entries are approved yet — balancing comes after the daily review.',
+          updated: 0,
+        });
       }
 
+      // The audit rows in one statement too. A loop here is one round trip per
+      // entry on the exact path the feature is built around — a month of six
+      // hundred fill-ups cleared from a single statement match — and it runs
+      // AFTER the update has committed, so a timeout would report failure for
+      // work that had already succeeded.
+      const auditRows = updated.map(row => ({
+        entry_id: String(row.id),
+        changes:  { balance_status: status, balance_note: note },
+        snapshot: dbToEntry(row),
+      }));
+      try {
+        await sql`
+          INSERT INTO fuel_audit_log
+            (company_code, entry_id, action, user_id, username, changes, snapshot)
+          SELECT ${companyCode}, x.entry_id, 'BALANCE', ${userId || null}, ${payload.username || null},
+                 x.changes, x.snapshot
+          FROM jsonb_to_recordset(${JSON.stringify(auditRows)}::jsonb)
+            AS x(entry_id BIGINT, changes JSONB, snapshot JSONB)
+        `;
+      } catch (err) {
+        console.error('[fuel-submissions] balance audit write failed (non-fatal):', err.message);
+      }
+
+      const wrote = new Set(updated.map(r => Number(r.id)));
       return res.json({
         ok: true,
         updated: updated.length,
         // Named rather than counted so the page can say WHICH entries it
         // couldn't touch instead of a silent shortfall in the total.
-        skipped: ids.filter(id => !eligible.includes(id)).map(String),
+        skipped: ids.filter(id => !wrote.has(id)).map(String),
         entries: updated.map(dbToEntry),
       });
     }
@@ -711,6 +728,35 @@ module.exports = async (req, res) => {
         }
       }
 
+      // Correcting a figure a reconciliation was signed off on un-signs it.
+      // The same invariant un-approving enforces: a row cannot go on reading
+      // 'balanced by office' once the number the office balanced has changed
+      // underneath it — and this workflow expects entries to be corrected
+      // after a match, so it is the normal case rather than a corner one.
+      //
+      // Only the four fields a statement is matched on count. Fixing a
+      // misspelt city has nothing to do with whether the gallons were
+      // accounted for, and throwing the verdict away for it would make the
+      // reconciler redo work over a typo.
+      const BALANCE_KEYS = ['work_date', 'gallons', 'truck_number', 'fuel_card'];
+      // NUMERIC comes back from the driver as a string and a DATE as a Date,
+      // so both sides have to be brought to one form before they can be
+      // compared. Written out rather than as `Number(v) || v`, which reads a
+      // truck numbered 0 or a zero-gallon correction as unchanged — the
+      // falsy-zero trap this whole feature has already been bitten by once.
+      const norm = (k, v) => {
+        if (v == null) return null;
+        if (k === 'work_date') return safeDate(v);
+        if (k === 'gallons' || k === 'truck_number') {
+          const n = Number(v);
+          return Number.isFinite(n) ? String(n) : String(v);
+        }
+        return String(v);
+      };
+      const wasBalanced  = (existing.balance_status || 'pending') !== 'pending';
+      const figureMoved  = BALANCE_KEYS.some(k => norm(k, existing[k]) !== norm(k, data[k]));
+      const resetBalance = wasBalanced && figureMoved;
+
       const [updated] = await sql`
         UPDATE fuel_submissions SET
           work_date         = ${data.work_date},
@@ -726,6 +772,11 @@ module.exports = async (req, res) => {
           city_fueled       = ${data.city_fueled},
           state             = ${data.state},
           tank_number       = ${data.tank_number},
+          balance_status      = CASE WHEN ${resetBalance}::boolean THEN 'pending' ELSE balance_status END,
+          balance_note        = CASE WHEN ${resetBalance}::boolean THEN NULL ELSE balance_note END,
+          balanced_at         = CASE WHEN ${resetBalance}::boolean THEN NULL ELSE balanced_at END,
+          balanced_by_user_id = CASE WHEN ${resetBalance}::boolean THEN NULL ELSE balanced_by_user_id END,
+          balanced_by_name    = CASE WHEN ${resetBalance}::boolean THEN NULL ELSE balanced_by_name END,
           updated_at        = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *

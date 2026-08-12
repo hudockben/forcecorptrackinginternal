@@ -123,6 +123,32 @@ function normalizeTests() {
     const { data } = normalizeMatch(Object.assign({}, SAVE, { ours_total: '378.005' }));
     assert('totals round to the hundredth', data.ours_total === 378.01, String(data.ours_total));
   }
+  {
+    // truck_number is INTEGER. A fuel-card number read off a statement as a
+    // truck is thirteen digits, and letting it through means the INSERT dies
+    // with "integer out of range" AFTER the save has cleared the previous
+    // lines — taking the reconciliation and its ticks with it.
+    const { error } = normalizeMatch(Object.assign({}, SAVE, {
+      lines: [{ truck_number: 7001234567890, ours: 1, statement: 1, difference: 0, fills: 1, verdict: 'match' }],
+    }));
+    assert('a card-sized truck number is refused before it reaches the insert', error != null, String(error));
+    assert('and the message points at the column rather than the number',
+      /which column/.test(error || ''), String(error));
+  }
+  {
+    const { data } = normalizeMatch(Object.assign({}, SAVE, {
+      lines: [{ truck_number: 2147483647, ours: 1, statement: 1, difference: 0, fills: 1, verdict: 'match' }],
+    }));
+    assert('the largest number the column can hold is still a truck',
+      data && data.lines[0].truck_number === 2147483647);
+  }
+  {
+    // A truck the statement has never billed carries no number at all.
+    const { data } = normalizeMatch(Object.assign({}, SAVE, {
+      lines: [{ truck_number: null, ours: 1, statement: null, difference: null, fills: 1, verdict: 'not-on-statement' }],
+    }));
+    assert('and a line with no truck number is still storable', data && data.lines[0].truck_number === null);
+  }
 }
 
 // ── 3. Routing and access ───────────────────────────────────────────────────
@@ -174,8 +200,17 @@ async function routingTests() {
     assert('a re-save replaces the month rather than stacking beside it',
       /ON CONFLICT \(company_code, account, period_start, period_end\) DO UPDATE/.test(ins.q),
       ins.q.slice(0, 140));
-    assert('one line is written per truck',
-      seen.filter(s => /^INSERT INTO fuel_statement_lines/.test(s.q)).length === 4);
+    // One statement, not one per truck. The insert follows a DELETE that has
+    // already removed the previous lines, so the gap between them is the
+    // window in which a saved reconciliation does not exist — a per-line loop
+    // makes that window as long as the fleet, and a serverless function killed
+    // partway through leaves a match header over a partial set of lines.
+    const lineInserts = seen.filter(s => /^INSERT INTO fuel_statement_lines/.test(s.q));
+    assert('every line goes in one statement', lineInserts.length === 1, String(lineInserts.length));
+    assert('expanded by the database from one JSON parameter, not bound arrays',
+      /jsonb_to_recordset/.test(lineInserts[0].q), lineInserts[0].q.slice(0, 140));
+    assert('carrying all four trucks',
+      JSON.parse(lineInserts[0].values.find(v => typeof v === 'string' && v.startsWith('['))).length === 4);
     assert('and the old lines are cleared first',
       seen.findIndex(s => /^DELETE FROM fuel_statement_lines/.test(s.q)) <
       seen.findIndex(s => /^INSERT INTO fuel_statement_lines/.test(s.q)));
@@ -190,15 +225,14 @@ async function routingTests() {
       ],
     });
     assert('ticks are carried across a re-save', res.body.carried_over === 1, String(res.body.carried_over));
-    const lineInserts = seen.filter(s => /^INSERT INTO fuel_statement_lines/.test(s.q));
-    const t412 = lineInserts.find(s => s.values[2] === 412);
+    const ins  = seen.find(s => /^INSERT INTO fuel_statement_lines/.test(s.q));
+    const rows = JSON.parse(ins.values.find(v => typeof v === 'string' && v.startsWith('[')));
+    const t412 = rows.find(r => r.truck_number === 412);
     assert('and land on the right truck',
-      t412.values.includes(true) && t412.values.includes('driver used the wrong card'),
-      JSON.stringify(t412.values));
-    const t77 = lineInserts.find(s => s.values[2] === 77);
+      t412.resolved === true && t412.note === 'driver used the wrong card', JSON.stringify(t412));
+    const t77 = rows.find(r => r.truck_number === 77);
     assert('a truck that was never ticked stays untouched',
-      t77.values.includes(false) && !t77.values.includes('driver used the wrong card'),
-      JSON.stringify(t77.values));
+      t77.resolved === false && t77.note === null, JSON.stringify(t77));
   }
 
   console.log('\n[Tick a line]');
