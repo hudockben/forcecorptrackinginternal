@@ -443,6 +443,9 @@
     .audit-act.SUBMIT     { background: rgba(96,165,250,0.15); color: var(--blue); }
     .audit-act.ADMIN_EDIT { background: rgba(251,113,133,0.15);color: var(--accent); }
     .audit-act.DELETE     { background: rgba(239,68,68,0.15);  color: var(--red); }
+    .audit-act.BALANCE    { background: rgba(167,139,250,0.18);color: #a78bfa; }
+    .audit-act.IMPORT     { background: rgba(56,189,248,0.15); color: #38bdf8; }
+    .audit-act.IMPORT_UNDO{ background: rgba(239,68,68,0.15);  color: var(--red); }
 
     /* ── Modal ── */
     .modal-backdrop {
@@ -754,7 +757,7 @@
       margin-bottom: 0.7rem;
     }
     @media (max-width: 900px) { .match-controls { grid-template-columns: 1fr; } }
-    #mt-paste {
+    #mt-paste, #imp-paste {
       width: 100%;
       min-height: 120px;
       background: var(--bg);
@@ -768,7 +771,40 @@
       outline: none;
       resize: vertical;
     }
-    #mt-paste:focus { border-color: var(--accent); }
+    #mt-paste:focus, #imp-paste:focus { border-color: var(--accent); }
+
+    /* ── Import ── */
+    .tab.importing.active { color: #38bdf8; border-bottom-color: #38bdf8; }
+    .imp-sec  { margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px solid var(--border); }
+    .imp-head {
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+      margin-bottom: 0.6rem;
+    }
+    .imp-head span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .imp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.7rem; }
+    .imp-note { font-size: 0.74rem; color: var(--muted); line-height: 1.5; margin: 0.55rem 0; }
+    .imp-note strong { color: var(--text); font-weight: 600; }
+    .imp-flag { border-left: 3px solid #fb923c; padding-left: 0.65rem; }
+    .imp-flag strong { color: #fb923c; }
+    .imp-bad  { border-left: 3px solid var(--red); padding-left: 0.65rem; }
+    .imp-bad strong  { color: var(--red); }
+    .imp-good { border-left: 3px solid var(--green); padding-left: 0.65rem; }
+    .imp-good strong { color: var(--green); }
+    .imp-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap; }
+    .imp-missing select { border-color: rgba(251,146,60,0.5); }
+    .imp-problems {
+      max-height: 260px;
+      overflow-y: auto;
+      font-size: 0.75rem;
+      line-height: 1.6;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .imp-problems div { color: var(--muted); }
+    .imp-problems b { color: var(--text); font-weight: 600; }
     .match-summary {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -1072,6 +1108,9 @@
       <button class="tab vehicles" data-tab="vehicles" onclick="switchTab('vehicles')">
         Vehicles <span class="tab-count" id="tab-vehicles-count">0</span>
       </button>
+      <button class="tab importing" data-tab="import" onclick="switchTab('import')">
+        Import
+      </button>
       <button class="tab auditlog" data-tab="auditlog" onclick="switchTab('auditlog')">
         Audit Log
       </button>
@@ -1270,6 +1309,55 @@
             <tr class="empty-row"><td colspan="10">Loading…</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ── Import container (Import tab) ──
+         Static markup with only its RESULTS re-rendered, for the same reason
+         the match panel is: the textarea holds a pasted month, and rebuilding
+         the block around it would throw that away. -->
+    <div id="importWrap" style="display:none">
+      <div class="rep-block">
+        <div class="rep-title">Load a Month of Fuel Entries</div>
+        <div class="rep-sub">
+          For fuel that was written down somewhere else before this form existed. Drop in a
+          spreadsheet — <code>.xlsx</code> (its first sheet), CSV, or a pasted block with its
+          headings — and this reads the columns, shows you exactly what it made of every row, and
+          lets you fix the mapping before anything is written. Nothing is saved until you press
+          Import, and a whole load can be taken back out afterwards.
+        </div>
+        <div class="match-file">
+          <label class="file-btn">
+            Choose a file…
+            <input type="file" id="imp-file"
+                   accept=".xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain"
+                   onchange="loadImportFile(event)" />
+          </label>
+          <span id="imp-file-name" class="match-note" style="margin:0">…or paste the rows below, headings and all.</span>
+          <div class="filter-field" style="min-width:230px;margin-left:auto">
+            <label for="imp-status">Bring them in as</label>
+            <select id="imp-status" onchange="renderImportPreview()">
+              <option value="approved">Approved — ready to balance</option>
+              <option value="submitted">Awaiting daily review</option>
+            </select>
+          </div>
+          <button class="btn-clear" onclick="clearImport()">Clear</button>
+        </div>
+        <textarea id="imp-paste" spellcheck="false" oninput="onImportPaste()"
+          placeholder="Date&#9;Employee&#9;Truck&#9;Gallons&#9;…&#10;5/4/2026&#9;jsmith&#9;635&#9;84.2&#9;…&#10;&#10;Paste the sheet with its heading row — the headings are how the columns are found."></textarea>
+        <div id="imp-map"></div>
+        <div id="imp-preview"></div>
+      </div>
+
+      <div class="rep-block">
+        <div class="rep-title">Past Imports</div>
+        <div class="rep-sub">
+          Every load that is still in the table, newest first. Undo takes a whole batch back out —
+          the way to correct a wrong file without hunting its rows down one at a time among the
+          entries the field really did send. Fill-ups that have since been balanced are left where
+          they are.
+        </div>
+        <div id="imp-history"></div>
       </div>
     </div>
 
@@ -1622,6 +1710,7 @@
       el('reportRanges').style.display = tab === 'reports'   ? '' : 'none';
       el('matchWrap').style.display    = tab === 'reports'   ? '' : 'none';
       el('vehiclesWrap').style.display = tab === 'vehicles'  ? '' : 'none';
+      el('importWrap').style.display   = tab === 'import'    ? '' : 'none';
       // Approval controls and balancing controls never share a bar: they are
       // two managers' jobs on two cadences, and an Approve button beside Mark
       // Balanced is an invitation to press the wrong one.
@@ -1631,6 +1720,7 @@
       if (tab === 'auditlog') { loadAuditLog(); return; }
       if (tab === 'reports')  { loadReport();   return; }
       if (tab === 'vehicles') { renderVehicles(); return; }
+      if (tab === 'import')   { loadImportHistory(); return; }
 
       // Selections belong to the tab they were made on — carrying them across
       // would let "Approve Selected" act on rows that are no longer on screen.
@@ -3425,8 +3515,12 @@
      *
      * A column can only answer for one field, so "Product category" cannot
      * also become the product once it has been claimed as the category.
+     *
+     * Takes the spec so the entry importer can reuse it: the algorithm is
+     * about headings, not about statements, and a second copy of it would be
+     * a second place for the pattern-first rule above to be forgotten.
      */
-    function detectColumns(headerRow) {
+    function detectColumns(headerRow, spec) {
       const labels = {};
       for (const [col, raw] of Object.entries(headerRow || {})) {
         const label = String(raw || '').trim();
@@ -3434,7 +3528,7 @@
       }
       const cols = Object.keys(labels);
       const found = {}, taken = new Set();
-      for (const [field, patterns] of Object.entries(STATEMENT_COLUMNS)) {
+      for (const [field, patterns] of Object.entries(spec || STATEMENT_COLUMNS)) {
         for (const p of patterns) {
           const hit = cols.find(c => !taken.has(c) && p.test(labels[c]));
           if (hit) { found[field] = hit; taken.add(hit); break; }
@@ -3819,6 +3913,720 @@
         label.textContent = `Couldn't read ${file.name}: ${err.message}`;
         el('mt-file').value = '';
       }
+    }
+
+    // ══ Importing a month of fuel entries ═══════════════════════════════════
+    // A backfill loader, not a second way to file fuel. Every row it produces
+    // is the same thirteen fields the form asks for and goes through the same
+    // server-side normalizeBody, so an imported entry cannot be anything the
+    // field could not have submitted.
+    //
+    // The design rule throughout: NOTHING is guessed silently. A column the
+    // headings didn't identify gets a dropdown, a field the file doesn't have
+    // at all gets a value you supply for every row, and every row that can't
+    // be read is listed by its line number with the reason. What gets written
+    // is only ever what was on screen when Import was pressed.
+
+    const IMPORT_COLUMNS = {
+      // Order matters as much as the patterns do: detectColumns lets each
+      // field claim a column before the next one looks, so the fields whose
+      // headings are least ambiguous go first and the loose fallbacks at the
+      // end of each list can only take what nothing else wanted.
+      work_date:         [/^(work\s*)?date$/i, /^fuel(ing|ed)?\s*date$/i, /^trans(action)?\s*date$/i, /\bdate\b/i],
+      truck_number:      [/^truck\s*(number|no\.?|#)?$/i, /^unit\s*(number|no\.?|#)?$/i,
+                          /^vehicle\s*(number|no\.?|#)?$/i, /truck\s*(number|no\.?|#)/i,
+                          /vehicle\s*(number|no\.?|#)/i],
+      gallons:           [/^gallons?$/i, /^gals?\.?$/i, /^quantity$/i, /^units$/i, /^qty$/i, /\bgallons?\b/i],
+      employee_username: [/^employee(\s*(name|username))?$/i, /^driver(\s*name)?$/i, /^operator$/i,
+                          /\bemployee\b/i, /\bdriver\b/i],
+      fuel_card:         [/^fuel\s*card(\s*used)?$/i, /^card(\s*used)?$/i, /^vendor$/i, /^account$/i, /fuel\s*card/i],
+      fuel_type:         [/^fuel\s*type$/i, /^type\s*of\s*fuel$/i, /^product(\s*description)?$/i, /fuel\s*type/i],
+      // Beginning before ending, and both anchored on the word that separates
+      // them — a pattern loose enough to match "meter" alone would take
+      // whichever of the two columns came first and be wrong half the time.
+      beginning_meter:   [/^beginning\s*meter(\s*reading)?$/i, /^begin(ning)?\s*meter/i, /^start(ing)?\s*meter/i,
+                          /^meter\s*(start|begin)/i, /begin.*meter/i, /start.*meter/i],
+      ending_meter:      [/^ending\s*meter(\s*reading)?$/i, /^end(ing)?\s*meter/i, /^finish(ing)?\s*meter/i,
+                          /^meter\s*(end|finish)/i, /end.*meter/i],
+      mileage:           [/^mileage$/i, /^miles$/i, /^odometer$/i, /^odo\.?$/i, /\bmileage\b/i, /\bodometer\b/i],
+      tank_number:       [/^tank\s*(number|no\.?|#)?$/i, /\btank\b/i],
+      fueling_site:      [/^fuel(ing)?\s*site$/i, /^site(\s*name|\s*description)?$/i, /^station$/i,
+                          /^location$/i, /^merchant/i, /\bsite\b/i],
+      city_fueled:       [/^city(\s*fueled)?$/i, /^town$/i, /\bcity\b/i],
+      state:             [/^state$/i, /^st\.?$/i, /\bstate\b/i],
+    };
+
+    // What the office is likely to have written where one of the four cards
+    // or four fuel types belongs. Deliberately short: an alias that guesses
+    // wrong files a fill-up under the wrong account and the month stops
+    // balancing for a reason nobody can see. Anything not here is reported
+    // and the file gets fixed, which is the honest outcome.
+    const CARD_ALIASES = {
+      bulk: 'Bulk Fuel – No card', bulkfuel: 'Bulk Fuel – No card',
+      nocard: 'Bulk Fuel – No card', none: 'Bulk Fuel – No card',
+      guttmann: 'Guttman', wexinc: 'Wex', wexfleet: 'Wex',
+    };
+    const TYPE_ALIASES = {
+      offroad: 'Off Road Diesel', dyeddiesel: 'Off Road Diesel', reddiesel: 'Off Road Diesel',
+      onroaddiesel: 'On Road',
+      gasoline: 'Gas', unleaded: 'Gas', unl: 'Gas',
+      dsl: 'Diesel',
+    };
+
+    function optKey(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+    function matchOption(v, list, aliases) {
+      const k = optKey(v);
+      if (!k) return null;
+      const exact = list.find(x => optKey(x) === k);
+      if (exact) return exact;
+      const alias = aliases[k];
+      return list.includes(alias) ? alias : null;
+    }
+
+    function importState(v) {
+      const s = String(v == null ? '' : v).trim();
+      if (!s) return null;
+      const up = s.toUpperCase();
+      if (US_STATES.some(x => x.code === up)) return up;
+      const hit = US_STATES.find(x => optKey(x.name) === optKey(s));
+      return hit ? hit.code : null;
+    }
+
+    // A real calendar day, not just four-two-two digits. Postgres would
+    // refuse the 30th of February with a 500 rather than a message anyone
+    // could act on, and a month whose import half-failed on the server is
+    // much worse to unpick than one that never left the page.
+    function validYmd(s) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s || '')) return null;
+      const [y, m, d] = s.split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      return (dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === m && dt.getUTCDate() === d) ? s : null;
+    }
+
+    /**
+     * A date cell, however the spreadsheet felt like writing it.
+     *
+     * Order is load-bearing. An 8-digit run is 20260504, not Excel serial
+     * 20,260,504 — no workbook holds a date 55,000 years out, and reading it
+     * as one would file May's fuel in the year 57460 without a word.
+     */
+    function importDate(v) {
+      const s = String(v == null ? '' : v).trim();
+      if (!s) return null;
+      const p2 = n => String(n).padStart(2, '0');
+
+      let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+      if (m) return validYmd(`${m[1]}-${p2(m[2])}-${p2(m[3])}`);
+
+      if (/^\d{8}$/.test(s)) return validYmd(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`);
+      if (/^\d+(\.\d+)?$/.test(s)) return validYmd(excelSerialToYmd(s) || '');
+
+      // US order, which is what every one of these sheets is written in.
+      m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})$/);
+      if (m) {
+        const yr = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+        return validYmd(`${yr}-${p2(m[1])}-${p2(m[2])}`);
+      }
+      return null;
+    }
+
+    // Spreadsheets carry $ signs, thousands separators and stray spaces in
+    // number columns. Returned as a string of digits so the caller can still
+    // tell "0" from "".
+    function importNumber(v) {
+      const s = String(v == null ? '' : v).replace(/[$,\s]/g, '').trim();
+      if (s === '') return null;
+      const n = Number(s);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    // ── Reading the file into a grid ───────────────────────────────────────
+
+    function colLetter(i) {
+      let s = '';
+      for (let n = i; ; n = Math.floor(n / 26) - 1) {
+        s = String.fromCharCode(65 + (n % 26)) + s;
+        if (n < 26) break;
+      }
+      return s;
+    }
+
+    /**
+     * One delimited line into its cells, respecting quotes.
+     *
+     * A quoted cell is how a spreadsheet writes "Smith, John" or a site name
+     * with a comma in it, and splitting on the delimiter alone turns one such
+     * row into two half-rows that both fail to read. Embedded NEWLINES inside
+     * a quoted cell are not handled — they cannot survive a paste box
+     * intact anyway, and the .xlsx path doesn't come through here.
+     */
+    function splitDelimitedLine(line, d) {
+      const out = [];
+      let cur = '', quoted = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quoted) {
+          if (ch === '"') {
+            if (line[i + 1] === '"') { cur += '"'; i++; }
+            else quoted = false;
+          } else cur += ch;
+        } else if (ch === '"') quoted = true;
+        else if (ch === d)    { out.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      out.push(cur);
+      return out;
+    }
+
+    // Pasted text into the same { COLUMN: value } shape readWorkbook returns,
+    // so everything downstream is blind to which of the two it came from.
+    function parseDelimited(text) {
+      const lines = String(text || '').split(/\r?\n/).filter(l => l.trim() !== '');
+      if (!lines.length) return [];
+      const d = delimiterFor(lines[0]) || '\t';
+      return lines.map(line => {
+        const row = {};
+        splitDelimitedLine(line, d).forEach((c, i) => { row[colLetter(i)] = c.trim(); });
+        return row;
+      });
+    }
+
+    /**
+     * Which row is the headings.
+     *
+     * Not always the first: a sheet somebody printed once carries a title, a
+     * date range and a blank line above the real header. Scored by how many
+     * of the thirteen fields each candidate row can name, because that is the
+     * only thing that makes a row a header rather than data.
+     */
+    function pickHeaderRow(rows) {
+      let index = -1, score = 0;
+      for (let i = 0; i < Math.min(rows.length, 8); i++) {
+        const n = Object.keys(detectColumns(rows[i], IMPORT_COLUMNS).found).length;
+        if (n > score) { score = n; index = i; }
+      }
+      return { index, score };
+    }
+
+    /**
+     * A parsed file: its headings, its data rows, and the mapping detected.
+     * `firstDataLine` is the spreadsheet line number of rows[0] so every
+     * problem can be reported against the line the office would scroll to.
+     */
+    function readImportGrid(rows) {
+      if (!rows.length) return { error: 'There are no rows in that.' };
+      const { index, score } = pickHeaderRow(rows);
+      if (index < 0 || score < 2) {
+        const first = Object.values(rows[0] || {}).filter(Boolean).slice(0, 10).join(', ');
+        return { error: `Couldn't find a heading row. The top row reads: ${first || '(empty)'}` };
+      }
+      const { found, labels } = detectColumns(rows[index], IMPORT_COLUMNS);
+      const data = rows.slice(index + 1);
+      return {
+        labels, found,
+        cols: Object.keys(labels),
+        rows: data,
+        headerLine: index + 1,
+        firstDataLine: index + 2,
+      };
+    }
+
+    /**
+     * Grid + mapping + defaults → entries ready to POST, and everything that
+     * stopped a row from being one.
+     *
+     * A blank cell falls back to the field's default when one has been given.
+     * That is what makes a sheet with no Tank Number column importable at
+     * all — but the count is reported, so "0 used for 137 rows" is on screen
+     * rather than inferred from a total that came out right.
+     */
+    function buildImportRows(grid, map, defaults, ctx) {
+      const empByKey = new Map((ctx.employees || []).map(u => [optKey(u), u]));
+      const ready = [], problems = [];
+      const defaulted = {}, unknownEmployees = new Map();
+      let blank = 0;
+
+      grid.rows.forEach((raw, i) => {
+        const line = grid.firstDataLine + i;
+        const cellOf = key => {
+          const col = map[key];
+          const cell = col ? raw[col] : undefined;
+          return (cell == null) ? '' : String(cell).trim();
+        };
+
+        // A row with nothing on it is the blank line under the data, not a
+        // problem to report thirteen times. Judged on the FILE's cells, before
+        // defaults are applied — once a default is set for so much as the tank
+        // number, every trailing blank row stops looking blank and the list of
+        // problems fills up with rows that aren't there.
+        if (FIELDS.every(f => cellOf(f.key) === '')) { blank++; return; }
+
+        const v = {}, usedDefault = {};
+        for (const f of FIELDS) {
+          const cell = cellOf(f.key);
+          if (cell === '') {
+            const d = defaults[f.key];
+            if (d != null && String(d).trim() !== '') { v[f.key] = String(d).trim(); usedDefault[f.key] = true; }
+            else v[f.key] = '';
+          } else v[f.key] = cell;
+        }
+
+        const why = [];
+        const entry = {};
+
+        entry.work_date = importDate(v.work_date);
+        if (!entry.work_date) why.push(v.work_date ? `couldn't read the date "${v.work_date}"` : 'no date');
+
+        entry.employee_username = v.employee_username || null;
+        if (!entry.employee_username) why.push('no employee');
+        else {
+          const known = empByKey.get(optKey(entry.employee_username));
+          // Spelling is taken from the roster when it matches at all, so
+          // "JSmith" and "jsmith" don't become two employees in every filter
+          // and report from here on.
+          if (known) entry.employee_username = known;
+          else unknownEmployees.set(entry.employee_username, (unknownEmployees.get(entry.employee_username) || 0) + 1);
+        }
+
+        entry.fuel_card = matchOption(v.fuel_card, FUEL_CARDS, CARD_ALIASES);
+        if (!entry.fuel_card) why.push(v.fuel_card ? `"${v.fuel_card}" is not one of the fuel cards` : 'no fuel card');
+
+        entry.fuel_type = matchOption(v.fuel_type, FUEL_TYPES, TYPE_ALIASES);
+        if (!entry.fuel_type) why.push(v.fuel_type ? `"${v.fuel_type}" is not one of the fuel types` : 'no fuel type');
+
+        entry.state = importState(v.state);
+        if (!entry.state) why.push(v.state ? `"${v.state}" is not a state` : 'no state');
+
+        for (const [key, label] of [['gallons', 'gallons'], ['mileage', 'mileage'],
+                                    ['beginning_meter', 'beginning meter'], ['ending_meter', 'ending meter']]) {
+          const n = importNumber(v[key]);
+          if (n == null)  { why.push(v[key] ? `couldn't read ${label} "${v[key]}"` : `no ${label}`); entry[key] = null; continue; }
+          if (n < 0)      { why.push(`${label} is negative`); entry[key] = null; continue; }
+          entry[key] = Math.round(n * 100) / 100;
+        }
+
+        for (const [key, label] of [['truck_number', 'truck number'], ['tank_number', 'tank number']]) {
+          const n = importNumber(v[key]);
+          if (n == null)              { why.push(v[key] ? `couldn't read ${label} "${v[key]}"` : `no ${label}`); entry[key] = null; continue; }
+          if (!Number.isInteger(n))   { why.push(`${label} "${v[key]}" is not a whole number`); entry[key] = null; continue; }
+          if (n < 0)                  { why.push(`${label} is negative`); entry[key] = null; continue; }
+          entry[key] = n;
+        }
+
+        entry.fueling_site = v.fueling_site || null;
+        if (!entry.fueling_site) why.push('no fueling site');
+        entry.city_fueled = v.city_fueled || null;
+        if (!entry.city_fueled) why.push('no city');
+
+        if (why.length) { problems.push({ line, why }); return; }
+
+        // The same rule the form and the server both apply, run here too so
+        // the gallons on the preview is the gallons that gets stored rather
+        // than a figure the server quietly replaces after the fact.
+        const metered = gallonsFromMeters(entry.beginning_meter, entry.ending_meter);
+        if (metered != null) entry.gallons = metered;
+
+        for (const f of FIELDS) if (usedDefault[f.key]) defaulted[f.key] = (defaulted[f.key] || 0) + 1;
+        ready.push({ line, entry });
+      });
+
+      return {
+        ready, problems, defaulted, blank,
+        unknownEmployees: [...unknownEmployees].map(([name, count]) => ({ name, count })),
+      };
+    }
+
+    // ── The Import tab ─────────────────────────────────────────────────────
+    let importGrid     = null;   // the parsed file
+    let importMap      = {};     // field key → column letter ('' = not in the file)
+    let importDefaults = {};     // field key → value to use for every row
+    let importBuilt    = null;   // last buildImportRows result
+    let importing      = false;
+
+    const IMPORT_CHUNK = 200;
+
+    // What a field is worth defaulting to when the sheet has no column for
+    // it. Only the three the form itself already answers with a zero — the
+    // meters are documented on the form as "0 if not Force Fuel", and a fuel
+    // log kept in a spreadsheet almost never has a tank column at all.
+    const IMPORT_DEFAULT_HINTS = { beginning_meter: '0', ending_meter: '0', tank_number: '0' };
+
+    function clearImport() {
+      importGrid = null; importMap = {}; importDefaults = {}; importBuilt = null;
+      el('imp-paste').value = '';
+      el('imp-file').value  = '';
+      el('imp-file-name').textContent = '…or paste the rows below, headings and all.';
+      el('imp-map').innerHTML = '';
+      el('imp-preview').innerHTML = '';
+    }
+
+    async function loadImportFile(ev) {
+      const file = ev && ev.target && ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const label = el('imp-file-name');
+      label.textContent = `Reading ${file.name}…`;
+      try {
+        let rows;
+        if (/\.xlsx$/i.test(file.name)) {
+          if (typeof DecompressionStream === 'undefined') {
+            throw new Error('This browser cannot open .xlsx files — save the sheet as CSV instead.');
+          }
+          rows = await readWorkbook(await file.arrayBuffer());
+          el('imp-paste').value = '';
+        } else {
+          const text = await file.text();
+          el('imp-paste').value = text;
+          rows = parseDelimited(text);
+        }
+        useImportRows(rows, file.name);
+      } catch (err) {
+        label.textContent = `Couldn't read ${file.name}: ${err.message}`;
+        el('imp-file').value = '';
+        importGrid = null;
+        el('imp-map').innerHTML = '';
+        el('imp-preview').innerHTML = '';
+      }
+    }
+
+    function onImportPaste() {
+      const text = val('imp-paste');
+      // Typing replaces whatever file was loaded, for the same reason the
+      // statement panel does it: leaving the file in charge means the edit
+      // appears to do nothing.
+      el('imp-file').value = '';
+      if (!text.trim()) { clearImport(); return; }
+      useImportRows(parseDelimited(text), null);
+    }
+
+    function useImportRows(rows, name) {
+      const grid = readImportGrid(rows);
+      const label = el('imp-file-name');
+      if (grid.error) {
+        importGrid = null;
+        el('imp-map').innerHTML = '';
+        el('imp-preview').innerHTML = `<div class="imp-note imp-bad"><strong>${escapeHtml(grid.error)}</strong></div>`;
+        label.textContent = name ? `${name} — couldn't read it.` : '…or paste the rows below, headings and all.';
+        return;
+      }
+      importGrid = grid;
+      importMap = {};
+      importDefaults = {};
+      for (const f of FIELDS) {
+        importMap[f.key] = grid.found[f.key] || '';
+        if (!importMap[f.key] && IMPORT_DEFAULT_HINTS[f.key] != null) {
+          importDefaults[f.key] = IMPORT_DEFAULT_HINTS[f.key];
+        }
+      }
+      label.innerHTML = name
+        ? `<strong>${escapeHtml(name)}</strong> — ${grid.rows.length} row${grid.rows.length === 1 ? '' : 's'} under the headings on line ${grid.headerLine}.`
+        : `${grid.rows.length} row${grid.rows.length === 1 ? '' : 's'} under the headings on line ${grid.headerLine}.`;
+      renderImportMapping();
+    }
+
+    function setImportMap(key, col) {
+      importMap[key] = col;
+      // A field that has just lost its column needs somewhere to get a value
+      // from, so the defaults section has to be redrawn beside it.
+      if (!col && importDefaults[key] == null && IMPORT_DEFAULT_HINTS[key] != null) {
+        importDefaults[key] = IMPORT_DEFAULT_HINTS[key];
+      }
+      renderImportMapping();
+    }
+
+    function setImportDefault(key, value) {
+      importDefaults[key] = value;
+      // Deliberately does NOT redraw the mapping block — this fires on every
+      // keystroke, and rebuilding the input being typed into takes the cursor
+      // with it.
+      renderImportPreview();
+    }
+
+    function renderImportMapping() {
+      const wrap = el('imp-map');
+      if (!importGrid) { wrap.innerHTML = ''; return; }
+      const options = col => ['<option value="">— not in the file —</option>']
+        .concat(importGrid.cols.map(c =>
+          `<option value="${escAttr(c)}"${c === col ? ' selected' : ''}>${escapeHtml(importGrid.labels[c])}</option>`))
+        .join('');
+
+      const missing = FIELDS.filter(f => !importMap[f.key]);
+
+      wrap.innerHTML = `
+        <div class="imp-sec">
+          <div class="imp-head">Which column is which
+            <span>— found by heading. Change any that landed wrong.</span></div>
+          <div class="imp-grid">
+            ${FIELDS.map(f => `
+              <div class="filter-field ${importMap[f.key] ? '' : 'imp-missing'}">
+                <label for="impmap-${escAttr(f.key)}">${escapeHtml(f.label)}</label>
+                <select id="impmap-${escAttr(f.key)}" onchange="setImportMap('${escJsAttr(f.key)}', this.value)">
+                  ${options(importMap[f.key])}
+                </select>
+              </div>`).join('')}
+          </div>
+        </div>
+        ${missing.length ? `
+        <div class="imp-sec">
+          <div class="imp-head">Not in the file
+            <span>— give a value to use for every row, or leave it blank and those rows will be listed as problems.</span></div>
+          <div class="imp-grid">
+            ${missing.map(f => `
+              <div class="filter-field">
+                <label for="impdef-${escAttr(f.key)}">${escapeHtml(f.label)}</label>
+                <input type="text" id="impdef-${escAttr(f.key)}"
+                       value="${escAttr(importDefaults[f.key] == null ? '' : importDefaults[f.key])}"
+                       oninput="setImportDefault('${escJsAttr(f.key)}', this.value)" />
+              </div>`).join('')}
+          </div>
+        </div>` : ''}`;
+      renderImportPreview();
+    }
+
+    function renderImportPreview() {
+      const wrap = el('imp-preview');
+      if (!wrap) return;
+      if (!importGrid) { wrap.innerHTML = ''; importBuilt = null; return; }
+
+      const built = buildImportRows(importGrid, importMap, importDefaults, { employees: employees.map(e => e.username) });
+      importBuilt = built;
+
+      const gal = built.ready.reduce((n, r) => n + (r.entry.gallons || 0), 0);
+      const dates = built.ready.map(r => r.entry.work_date).sort();
+      const trucks = new Set(built.ready.map(r => r.entry.truck_number));
+      const status = val('imp-status') === 'submitted' ? 'awaiting review' : 'approved';
+
+      const defaultedNote = Object.entries(built.defaulted).length ? `
+        <div class="imp-note imp-flag">
+          Filled in from the boxes above:
+          ${Object.entries(built.defaulted)
+            .map(([k, n]) => `<strong>${escapeHtml((FIELDS.find(f => f.key === k) || {}).label || k)}</strong>
+                              on ${n} row${n === 1 ? '' : 's'}`).join(', ')}.
+        </div>` : '';
+
+      const unknownNote = built.unknownEmployees.length ? `
+        <div class="imp-note imp-flag">
+          <strong>${built.unknownEmployees.length}</strong> name${built.unknownEmployees.length === 1 ? '' : 's'}
+          in the file ${built.unknownEmployees.length === 1 ? 'is' : 'are'} not on the employee list —
+          ${built.unknownEmployees.slice(0, 8).map(u => `${escapeHtml(u.name)} (${u.count})`).join(', ')}${
+            built.unknownEmployees.length > 8 ? `, and ${built.unknownEmployees.length - 8} more` : ''}.
+          They import as typed, but the employee filter and the by-employee report won't find them
+          under the roster's spelling.
+        </div>` : '';
+
+      const problemNote = built.problems.length ? `
+        <div class="imp-sec">
+          <div class="imp-head">Rows that can't be imported
+            <span>— ${built.problems.length} of ${built.problems.length + built.ready.length}. Fix the file, or map the column above.</span></div>
+          <div class="imp-problems">
+            ${built.problems.slice(0, 200).map(p =>
+              `<div><b>Line ${p.line}</b> — ${escapeHtml(p.why.join('; '))}</div>`).join('')}
+            ${built.problems.length > 200 ? `<div>…and ${built.problems.length - 200} more.</div>` : ''}
+          </div>
+        </div>` : '';
+
+      const sample = built.ready.slice(0, 8);
+
+      wrap.innerHTML = `
+        <div class="imp-sec">
+          <div class="imp-head">What will be written</div>
+          <div class="match-summary">
+            <div class="match-tile ${built.ready.length ? 'ok' : 'miss'}">
+              <div class="k">Entries</div><div class="v">${built.ready.length}</div>
+            </div>
+            <div class="match-tile"><div class="k">Gallons</div><div class="v">${n2(gal)}</div></div>
+            <div class="match-tile"><div class="k">Trucks</div><div class="v">${trucks.size}</div></div>
+            <div class="match-tile ${built.problems.length ? 'off' : ''}">
+              <div class="k">Problems</div><div class="v">${built.problems.length}</div>
+            </div>
+          </div>
+          <div class="imp-note">
+            ${built.ready.length
+              ? `Dated <strong>${escapeHtml(prettyDate(dates[0]))}</strong> to
+                 <strong>${escapeHtml(prettyDate(dates[dates.length - 1]))}</strong>,
+                 coming in as <strong>${escapeHtml(status)}</strong>.`
+              : 'Nothing here can be imported yet.'}
+            ${built.blank ? ` ${built.blank} blank row${built.blank === 1 ? '' : 's'} ignored.` : ''}
+          </div>
+          ${defaultedNote}
+          ${unknownNote}
+          ${sample.length ? `
+          <div class="imp-head" style="margin-top:0.9rem">The first ${sample.length} as they will be stored</div>
+          <div class="table-wrap" style="margin:0">
+            <table>
+              <thead><tr>
+                <th>Line</th><th>Employee</th><th>Date</th><th class="num">Truck</th>
+                <th>Fuel Type</th><th>Fuel Card</th><th class="num">Gallons</th>
+                <th class="num">Mileage</th><th class="num">Begin</th><th class="num">End</th>
+                <th>Site</th><th>City</th><th>State</th><th class="num">Tank</th>
+              </tr></thead>
+              <tbody>
+                ${sample.map(r => `
+                  <tr>
+                    <td>${r.line}</td>
+                    <td>${escapeHtml(r.entry.employee_username)}</td>
+                    <td>${escapeHtml(prettyDate(r.entry.work_date))}</td>
+                    <td class="num">${r.entry.truck_number}</td>
+                    <td>${escapeHtml(r.entry.fuel_type)}</td>
+                    <td>${escapeHtml(r.entry.fuel_card)}</td>
+                    <td class="num">${n2(r.entry.gallons)}</td>
+                    <td class="num">${n1(r.entry.mileage)}</td>
+                    <td class="num">${n1(r.entry.beginning_meter)}</td>
+                    <td class="num">${n1(r.entry.ending_meter)}</td>
+                    <td>${escapeHtml(r.entry.fueling_site)}</td>
+                    <td>${escapeHtml(r.entry.city_fueled)}</td>
+                    <td>${escapeHtml(r.entry.state)}</td>
+                    <td class="num">${r.entry.tank_number}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>` : ''}
+          ${problemNote}
+          <div class="imp-actions">
+            <button class="btn-filter" id="imp-go" onclick="runImport()"${built.ready.length && !importing ? '' : ' disabled'}>
+              Import ${built.ready.length} ${built.ready.length === 1 ? 'Entry' : 'Entries'}
+            </button>
+            <span class="match-note" style="margin:0" id="imp-msg"></span>
+          </div>
+        </div>`;
+    }
+
+    /**
+     * Write the batch.
+     *
+     * Chunked, and every chunk carries the SAME batch id: a load that stops
+     * halfway through — a dropped connection, a closed laptop — is still one
+     * undoable thing rather than an unknown number of rows nobody can find
+     * again. The server skips anything it already has, so pressing Import
+     * again after a failure resumes instead of doubling what landed.
+     */
+    async function runImport() {
+      if (importing || !importBuilt || !importBuilt.ready.length) return;
+      const rows   = importBuilt.ready.map(r => r.entry);
+      const lines  = importBuilt.ready.map(r => r.line);
+      const status = val('imp-status') === 'submitted' ? 'submitted' : 'approved';
+      const batch  = `imp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+      importing = true;
+      const btn = el('imp-go'), msg = el('imp-msg');
+      if (btn) btn.disabled = true;
+
+      let created = 0;
+      const duplicates = [], rejected = [];
+      try {
+        for (let i = 0; i < rows.length; i += IMPORT_CHUNK) {
+          const slice = rows.slice(i, i + IMPORT_CHUNK);
+          if (msg) msg.textContent = `Writing ${i + 1}–${i + slice.length} of ${rows.length}…`;
+          const res  = await fetch('/api/fuel-submissions?action=import', {
+            method: 'POST',
+            headers: authHeaders(true),
+            body: JSON.stringify({ rows: slice, status, batch }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          created += data.created || 0;
+          // The server indexes into the chunk it was sent, so the offset has
+          // to go back on before a line number means anything.
+          for (const d of (data.duplicates || [])) duplicates.push({ ...d, line: lines[i + d.index] });
+          for (const r of (data.rejected   || [])) rejected.push({ ...r,   line: lines[i + r.index] });
+        }
+      } catch (err) {
+        importing = false;
+        // Redraw FIRST — it replaces the panel wholesale, so a message put
+        // there before it would be wiped by the very call that re-enables the
+        // button, and the load would look like it had simply stopped.
+        renderImportPreview();
+        el('imp-preview').insertAdjacentHTML('beforeend', `
+          <div class="imp-note imp-bad"><strong>Stopped after ${created} entr${created === 1 ? 'y' : 'ies'}</strong>
+          — ${escapeHtml(err.message)}. Nothing already written was lost; press Import again to carry on
+          from where it stopped.</div>`);
+        return;
+      }
+
+      importing = false;
+      // Move the grid's date filter onto what was just loaded. Without it the
+      // entries land outside the range the page is showing and the import
+      // reads as having done nothing.
+      const span = importBuilt.ready.map(r => r.entry.work_date).sort();
+      el('flt-from').value = span[0];
+      el('flt-to').value   = span[span.length - 1];
+      clearImport();
+      el('imp-preview').innerHTML = `
+        <div class="imp-sec">
+          <div class="imp-note imp-good">
+            <strong>${created} entr${created === 1 ? 'y' : 'ies'} imported</strong>
+            as ${escapeHtml(status === 'submitted' ? 'awaiting review' : 'approved')}.
+          </div>
+          ${duplicates.length ? `
+            <div class="imp-note imp-flag">
+              <strong>${duplicates.length}</strong> already had a matching entry — same date, employee,
+              truck, card and gallons — so ${duplicates.length === 1 ? 'it was' : 'they were'} left alone:
+              ${duplicates.slice(0, 12).map(d =>
+                `line ${d.line} (truck ${d.truck_number}, ${escapeHtml(String(d.work_date))})`).join(', ')}${
+                duplicates.length > 12 ? `, and ${duplicates.length - 12} more` : ''}.
+            </div>` : ''}
+          ${rejected.length ? `
+            <div class="imp-note imp-bad">
+              <strong>${rejected.length}</strong> refused by the server:
+              ${rejected.slice(0, 8).map(r => `line ${r.line} — ${escapeHtml(r.error)}`).join('; ')}.
+            </div>` : ''}
+          <div class="imp-note">The date filter above has been moved onto the days that were loaded,
+            so the grid tabs are showing them. Undo the whole load from Past Imports below, or open the
+            <a href="#" onclick="switchTab('reports');return false" style="color:var(--accent)">Reports</a>
+            tab to match it against a statement.</div>
+        </div>`;
+
+      await Promise.all([loadImportHistory(), applyFilters()]);
+    }
+
+    // ── Past imports ───────────────────────────────────────────────────────
+    async function loadImportHistory() {
+      const wrap = el('imp-history');
+      if (!wrap) return;
+      try {
+        const res  = await fetch('/api/fuel-submissions?action=imports', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const list = Array.isArray(data.imports) ? data.imports : [];
+        if (!list.length) {
+          wrap.innerHTML = '<div class="rep-empty">Nothing has been imported yet.</div>';
+          return;
+        }
+        wrap.innerHTML = list.map(b => `
+          <div class="saved-row">
+            <div>
+              <strong>${b.entries} entr${b.entries === 1 ? 'y' : 'ies'}</strong> ·
+              ${escapeHtml(prettyDate(b.from_date))} → ${escapeHtml(prettyDate(b.to_date))}
+              <div class="who">
+                loaded by ${escapeHtml(b.username || '—')} ${escapeHtml(fmtTs(b.created_at))}
+                ${b.balanced ? ` · ${b.balanced} already balanced` : ''}
+              </div>
+            </div>
+            <button class="row-btn delete" onclick="undoImport('${escJsAttr(b.batch)}', ${b.entries})">Undo</button>
+          </div>`).join('');
+      } catch (err) {
+        wrap.innerHTML = `<div class="rep-empty">Couldn't load past imports — ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function undoImport(batch, count) {
+      if (!confirm(`Delete the ${count} entr${count === 1 ? 'y' : 'ies'} this import added? Any that have already been balanced are kept.`)) return;
+      try {
+        const res  = await fetch('/api/fuel-submissions?action=undo_import', {
+          method: 'POST', headers: authHeaders(true), body: JSON.stringify({ batch }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        el('imp-preview').innerHTML = `
+          <div class="imp-sec"><div class="imp-note imp-good">
+            <strong>${data.deleted} entr${data.deleted === 1 ? 'y' : 'ies'} removed.</strong>
+            ${data.kept ? ` ${data.kept} kept — already balanced.` : ''}
+          </div></div>`;
+      } catch (err) {
+        el('imp-preview').innerHTML =
+          `<div class="imp-sec"><div class="imp-note imp-bad"><strong>${escapeHtml(err.message)}</strong></div></div>`;
+      }
+      await Promise.all([loadImportHistory(), applyFilters()]);
     }
 
     // ── Saved matches ──────────────────────────────────────────────────────
