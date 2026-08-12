@@ -5576,12 +5576,21 @@
                     : (u.odoLow === u.odoHigh ? u.odoLow.toLocaleString()
                        : `${u.odoLow.toLocaleString()}–${u.odoHigh.toLocaleString()}`)}</td>
                   <td class="td-actions">
+                    ${Number.isFinite(Number(refDigits(refKey(u.ref))))
+                      ? `<button class="row-btn approve" onclick="addTruckForRef('${escJsAttr(r.card)}','${escJsAttr(u.ref)}')"
+                           title="The number inside this id is the truck number — put it on the roster.">Add truck ${Number(refDigits(refKey(u.ref)))}</button>` : ''}
                     <button class="row-btn edit" onclick="assignRefToTruck('${escJsAttr(r.card)}','${escJsAttr(u.ref)}')">Assign to a truck…</button>
                   </td>
                 </tr>`).join('')}
             </tbody>
           </table>
           ${unmapped.length > 40 ? `<div class="match-note">…and ${unmapped.length - 40} more.</div>` : ''}
+          ${unmapped.filter(u => Number.isFinite(Number(refDigits(refKey(u.ref))))).length > 1 ? `
+            <div style="margin-top:0.6rem">
+              <button class="row-btn approve" onclick="addAllTrucksFromRefs('${escJsAttr(r.card)}')">
+                Add all ${unmapped.filter(u => Number.isFinite(Number(refDigits(refKey(u.ref))))).length} to the roster
+              </button>
+            </div>` : ''}
         </div>` : '';
 
       // What the account itself says the fuel was. Shown beside the balance
@@ -5762,6 +5771,81 @@
      * first run. Asked for by truck number because that is what the office
      * has in front of them; the id itself came off the statement.
      */
+    /**
+     * Put the truck an account's id names onto the roster.
+     *
+     * Both accounts write a truck number with their own fleet prefix on it,
+     * so "PT 1152" is truck 1152 and the panel already knows that — it is how
+     * the id would have matched if the truck had been on the list. Telling
+     * somebody to go to Vehicles, type that same number, come back and match
+     * again is a round trip over a number already on screen.
+     *
+     * Creates the truck where it is missing; where it EXISTS but is not being
+     * found, records the id against it instead. The distinction matters: the
+     * create path goes through an upsert on truck number, so posting a bare
+     * row for a truck that is already there would blank its VIN, make and
+     * IFTA standing.
+     */
+    async function addTruckFromRef(account, ref, silent) {
+      const digits = refDigits(refKey(ref));
+      const truck = digits == null ? NaN : Number(digits);
+      if (!Number.isFinite(truck)) {
+        if (!silent) alert(`There is no number in "${ref}" to make a truck number out of.`);
+        return false;
+      }
+      const existing = vehicles.find(x => Number(x.truck_number) === truck);
+      if (!silent && !confirm(existing
+        ? `Truck ${truck} is already on the roster. Record "${ref}" as what ${account} calls it?`
+        : `Add truck ${truck} to the roster? ${account} bills it as "${ref}".`)) return false;
+
+      const body = existing
+        ? {
+            id: existing.id, truck_number: existing.truck_number, vin: existing.vin,
+            model_year: existing.model_year, make: existing.make, ifta: existing.ifta,
+            ifta_sticker: existing.ifta_sticker, active: existing.active, notes: existing.notes,
+            account_refs: Object.assign({}, existing.account_refs || {}, { [account]: ref }),
+          }
+        : { truck_number: truck, active: true };
+
+      const res = await fetch('/api/fuel-vehicles', {
+        method: 'POST', headers: authHeaders(true), body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+      return true;
+    }
+
+    async function addTruckForRef(account, ref) {
+      try {
+        if (!await addTruckFromRef(account, ref)) return;
+        await loadVehicles();
+        runStatementMatch();
+      } catch (err) { alert(err.message); }
+    }
+
+    // The same thing for the whole banner. A first run against an account
+    // lists every vehicle it bills — seventeen, on the Guttman export — and
+    // confirming them one at a time is the afternoon this panel exists to
+    // remove. Named in full in the confirm, so it is still a decision.
+    async function addAllTrucksFromRefs(account) {
+      const refs = (matchResult && matchResult.unmapped || [])
+        .map(u => ({ ref: u.ref, truck: Number(refDigits(refKey(u.ref))) }))
+        .filter(x => Number.isFinite(x.truck));
+      if (!refs.length) return;
+      if (!confirm(`Add ${refs.length} truck${refs.length === 1 ? '' : 's'} to the roster?\n\n`
+        + refs.map(x => `  ${x.ref}  →  truck ${x.truck}`).join('\n')
+        + `\n\nTruck number only — VIN, make and IFTA can be filled in later.`)) return;
+
+      const failed = [];
+      for (const x of refs) {
+        try { await addTruckFromRef(account, x.ref, true); }
+        catch (err) { failed.push(`${x.ref}: ${err.message}`); }
+      }
+      await loadVehicles();
+      runStatementMatch();
+      if (failed.length) alert(`Some could not be added:\n\n${failed.join('\n')}`);
+    }
+
     async function assignRefToTruck(account, ref) {
       const answer = prompt(
         `${account} calls this vehicle "${ref}".\n\nWhich of your truck numbers is it?`, '');
