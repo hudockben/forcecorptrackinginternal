@@ -42,6 +42,12 @@ const { requireAuth, hasDivisionAccess } = require('./lib/auth');
 const VALID_VERDICTS = ['match', 'variance', 'not-in-ours', 'not-on-statement'];
 const MAX_LINES = 2000;
 
+// What the columns behind this actually hold. Checked in JS because the
+// alternative is finding out from PostgreSQL halfway through a save that has
+// already deleted the rows it was replacing.
+const MAX_INT4          = 2147483647;
+const MAX_NUMERIC_12_2  = 1e10;        // NUMERIC(12,2) tops out at 9999999999.99
+
 function safeInt(v) {
   if (v == null || v === '') return null;
   const n = parseInt(v, 10);
@@ -115,6 +121,7 @@ function dbToMatch(r) {
     not_on_statement_count: Number(r.not_on_statement_count || 0),
     source_note:            r.source_note || null,
     created_by_name:        r.created_by_name || null,
+    updated_by_name:        r.updated_by_name || null,
     created_at:             r.created_at || null,
     updated_at:             r.updated_at || null,
   };
@@ -200,15 +207,35 @@ function normalizeMatch(body) {
     // named, so the answer is "that column isn't a truck number" rather than
     // a 500.
     const truck = safeInt(l.truck_number);
-    if (truck != null && (truck < 0 || truck > 2147483647)) {
+    if (truck != null && (truck < 0 || truck > MAX_INT4)) {
       return { error: `"${l.truck_number}" is not a truck number — check which column the statement identifies vehicles in.` };
+    }
+    // The gallons columns are NUMERIC(12,2) and fills is INTEGER, and every
+    // one of them is fed by a parsed statement column. A misparse — a
+    // thirteen-digit card number landing in the gallons slot — reaches the
+    // same destructive failure the truck_number guard was added for: the
+    // header upserts, the DELETE clears the old lines, and then the INSERT
+    // dies out of range with the month's ticks and notes gone. Bounded here,
+    // where the answer can still be "that column isn't gallons".
+    const figures = { ours: l.ours, statement: l.statement, difference: l.difference };
+    const parsed = {};
+    for (const [key, raw] of Object.entries(figures)) {
+      const n = safeNum(raw);
+      if (n != null && Math.abs(n) >= MAX_NUMERIC_12_2) {
+        return { error: `"${raw}" is too large to be a gallons figure — check which column the statement reports gallons in.` };
+      }
+      parsed[key] = n;
+    }
+    const fills = safeInt(l.fills) || 0;
+    if (fills < 0 || fills > MAX_INT4) {
+      return { error: `"${l.fills}" is not a number of fill-ups.` };
     }
     lines.push({
       truck_number: truck,
-      ours:         safeNum(l.ours),
-      statement:    safeNum(l.statement),
-      difference:   safeNum(l.difference),
-      fills:        safeInt(l.fills) || 0,
+      ours:         parsed.ours,
+      statement:    parsed.statement,
+      difference:   parsed.difference,
+      fills,
       verdict,
     });
   }
@@ -361,12 +388,14 @@ module.exports = async (req, res) => {
           company_code, account, period_start, period_end, period_month,
           ours_total, statement_total, difference, truck_count,
           matched_count, variance_count, not_in_ours_count, not_on_statement_count,
-          source_note, created_by_user_id, created_by_name
+          source_note, created_by_user_id, created_by_name,
+          updated_by_user_id, updated_by_name
         ) VALUES (
           ${companyCode}, ${data.account}, ${data.period_start}, ${data.period_end}, ${data.period_month},
           ${data.ours_total}, ${data.statement_total}, ${data.difference}, ${data.truck_count},
           ${data.matched_count}, ${data.variance_count}, ${data.not_in_ours_count}, ${data.not_on_statement_count},
-          ${data.source_note}, ${payload.userId || null}, ${payload.username || null}
+          ${data.source_note}, ${payload.userId || null}, ${payload.username || null},
+          ${payload.userId || null}, ${payload.username || null}
         )
         ON CONFLICT (company_code, account, period_start, period_end) DO UPDATE SET
           period_month           = EXCLUDED.period_month,
@@ -379,8 +408,11 @@ module.exports = async (req, res) => {
           not_in_ours_count      = EXCLUDED.not_in_ours_count,
           not_on_statement_count = EXCLUDED.not_on_statement_count,
           source_note            = EXCLUDED.source_note,
-          created_by_user_id     = EXCLUDED.created_by_user_id,
-          created_by_name        = EXCLUDED.created_by_name,
+          -- created_by_* deliberately NOT touched: it names whoever first
+          -- reconciled this month, and a re-save by someone else must not
+          -- rewrite that. Who did the re-save goes in its own pair.
+          updated_by_user_id     = EXCLUDED.updated_by_user_id,
+          updated_by_name        = EXCLUDED.updated_by_name,
           updated_at             = NOW()
         RETURNING *
       `;

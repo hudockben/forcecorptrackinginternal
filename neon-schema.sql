@@ -1253,9 +1253,18 @@ CREATE TABLE IF NOT EXISTS fuel_statement_matches (
     source_note            TEXT,
     created_by_user_id     INTEGER,
     created_by_name        TEXT,
+    updated_by_user_id     INTEGER,
+    updated_by_name        TEXT,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Who last re-matched a month, kept apart from who first reconciled it.
+-- Overwriting created_by on a re-save destroyed the record of the person
+-- who actually signed the month off — the same mistake the line-level
+-- resolved_by is careful not to make.
+ALTER TABLE fuel_statement_matches ADD COLUMN IF NOT EXISTS updated_by_user_id INTEGER;
+ALTER TABLE fuel_statement_matches ADD COLUMN IF NOT EXISTS updated_by_name    TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fuel_match_period
   ON fuel_statement_matches(company_code, account, period_start, period_end);

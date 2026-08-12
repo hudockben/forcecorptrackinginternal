@@ -293,12 +293,20 @@ function reportTests() {
 
   console.log('\n  by vehicle');
   {
+    // byVehicle carries whole-range totals and nothing else — the states,
+    // fuel types and odometer span it used to accumulate belong to the
+    // by-month table that replaced its report block, and are asserted there.
     const r = m.byVehicle.get('412');
     assert('truck 412 is matched to its vehicle', r.vehicle && r.vehicle.vin === '1FUJGLDR8CSBP1234');
     assert('with both of its fills',             r.entries === 2 && r.gallons === 150);
-    assert('the odometer span is max minus min', r.maxMileage - r.minMileage === 500);
-    assert('and it lists every state it fuelled in',
-      [...r.states].sort().join(',') === 'OH,PA', [...r.states].join(','));
+    assert('and carries nothing the report no longer reads',
+      r.states === undefined && r.types === undefined && r.maxMileage === undefined,
+      JSON.stringify(Object.keys(r)));
+
+    const vm = m.byVehicleMonth.get('412|2026-07');
+    assert('the by-month row has the odometer span', vm.maxMileage - vm.minMileage === 500);
+    assert('and lists every state it fuelled in',
+      [...vm.states].sort().join(',') === 'OH,PA', [...vm.states].join(','));
   }
   {
     const r = m.byVehicle.get('999');
@@ -572,6 +580,35 @@ function statementTests() {
       P(line, '1').byTruck.get(412) === 84.5, String(P(line, '1').byTruck.get(412)));
   }
   {
+    // The picker says "the Nth number AFTER the truck". Counting through a
+    // list that still held the numbers before it meant a leading invoice
+    // column WAS the answer to "the 1st number after the truck" — truck 412
+    // credited with 55,012 gallons off a line that says 84.50.
+    const line = '55012,412,3.99,84.50';
+    assert('a leading invoice column is not "the 1st number after the truck"',
+      P(line, '1').byTruck.get(412) === 3.99, String(P(line, '1').byTruck.get(412)));
+    assert('the 2nd after the truck is the one after that',
+      P(line, '2').byTruck.get(412) === 84.5, String(P(line, '2').byTruck.get(412)));
+    assert('and the last number on the line is still the last',
+      P(line).byTruck.get(412) === 84.5, String(P(line).byTruck.get(412)));
+  }
+  {
+    // A number we only GUESSED at is capped at six digits. The things that
+    // get guessed at wrongly — a date exported as 20260715, an invoice, a
+    // card number — are all longer, and each one invents two findings from
+    // one real fill-up: a phantom truck unbilled, and the real truck missing.
+    const dated = P('20260715,999,84.50');
+    assert('a numeric date column is not taken for a truck',
+      dated.byTruck.get(999) === 84.5 && !dated.byTruck.has(20260715),
+      JSON.stringify([...dated.byTruck]));
+    // A truck already on the roster is recognised whatever its size, so the
+    // cap only ever applies to a guess.
+    // Called directly rather than through P(), which pins the known set.
+    const bigKnown = fns.parseStatement('9000001\t84.50', 'last', new Set([9000001]));
+    assert('but a rostered truck above the cap is still recognised',
+      bigKnown.byTruck.get(9000001) === 84.5, JSON.stringify([...bigKnown.byTruck]));
+  }
+  {
     const r = P('412,"1,234.50"');
     assert('a quoted thousands separator survives the split',
       r.byTruck.get(412) === 1234.5, String(r.byTruck.get(412)));
@@ -699,6 +736,22 @@ function statementTests() {
     assert('the fill-up count covers approved fills only',
       r.rows.find(x => x.truck === 412).fills === 3,
       String(r.rows.find(x => x.truck === 412).fills));
+  }
+  {
+    // Approved fuel with no truck number can't be lined up against a
+    // statement that identifies vehicles by number — but it IS real fuel, and
+    // dropping it out of the total unremarked makes the account look like it
+    // over-billed by exactly that much.
+    const withBlank = FLEET_ENTRIES.concat([
+      entry({ work_date: '2026-07-26', truck_number: null, fuel_card: 'Guttman', gallons: 60 }),
+    ]);
+    const m3 = fns.buildReportModel(withBlank, FLEET);
+    const r  = fns.matchStatement(m3, 'Guttman', fns.parseStatement('412,300', 'last', known));
+    assert('a blank truck number does not quietly leave the total',
+      r.noTruck === 1 && r.noTruckGallons === 60, JSON.stringify([r.noTruck, r.noTruckGallons]));
+    assert('and is not miscounted as awaiting approval', r.notApproved === 0, String(r.notApproved));
+    assert('while the trucks that do have numbers still balance',
+      r.rows.find(x => x.truck === 412).verdict === 'match');
   }
   {
     // The account filter has to bite, or a Wex statement gets matched against

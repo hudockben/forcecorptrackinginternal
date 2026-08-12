@@ -1868,13 +1868,33 @@
       if (!ids.length) return null;
       const result = { ok: true, updated: 0, skipped: [], entries: [] };
 
+      // Fold whatever came back into the grid. Called before rethrowing as
+      // well as on the way out: batches that already committed are balanced
+      // in the database whether or not a later one failed, and leaving the
+      // page showing all of them as pending invites the whole run being
+      // pressed again over rows that were already done.
+      const foldIn = () => {
+        for (const updated of result.entries) {
+          const i = allEntries.findIndex(e => e.id === updated.id);
+          if (i >= 0) allEntries[i] = updated;
+        }
+        renderStats();
+        renderRows();
+      };
+
       for (let i = 0; i < ids.length; i += BALANCE_CHUNK) {
         const batch = ids.slice(i, i + BALANCE_CHUNK);
-        const res = await fetch('/api/fuel-submissions?action=balance', {
-          method: 'POST', headers: authHeaders(true),
-          body: JSON.stringify({ ids: batch, balance_status: status, balance_note: note || '' }),
-        });
-        const j = await res.json();
+        let res, j;
+        try {
+          res = await fetch('/api/fuel-submissions?action=balance', {
+            method: 'POST', headers: authHeaders(true),
+            body: JSON.stringify({ ids: batch, balance_status: status, balance_note: note || '' }),
+          });
+          j = await res.json();
+        } catch (err) {
+          foldIn();
+          throw new Error(`${err.message} — ${result.updated} of ${ids.length} were marked before this failed.`);
+        }
         // A batch where every entry was unapproved answers 409. That is a
         // fact about those rows, not a failure of the run — the rest still
         // have to go through, and they get counted as skipped below.
@@ -1882,20 +1902,16 @@
           result.skipped.push(...batch.map(String));
           continue;
         }
-        if (!res.ok || !j.ok) throw new Error(j.error || 'Could not save');
+        if (!res.ok || !j.ok) {
+          foldIn();
+          throw new Error(`${j.error || 'Could not save'} — ${result.updated} of ${ids.length} were marked before this failed.`);
+        }
         result.updated += j.updated;
         result.skipped.push(...(j.skipped || []));
         result.entries.push(...(j.entries || []));
       }
 
-      // Fold the server's rows back in so the grid and the stats move without
-      // a refetch losing the reviewer's place in a long month.
-      for (const updated of result.entries) {
-        const i = allEntries.findIndex(e => e.id === updated.id);
-        if (i >= 0) allEntries[i] = updated;
-      }
-      renderStats();
-      renderRows();
+      foldIn();
       if (!quiet && result.skipped.length) {
         alert(`${result.updated} marked. ${result.skipped.length} left alone — balancing only applies to entries the daily review has already approved.`);
       }
@@ -2393,6 +2409,24 @@
       return /^\d{4}-\d{2}/.test(s) ? s.slice(0, 7) : '(no date)';
     }
 
+    // Every calendar month a stored period touches, as "YYYY-MM". A saved
+    // record has no entries to derive this from — only its two dates.
+    function monthsBetween(start, end) {
+      if (!/^\d{4}-\d{2}/.test(String(start || '')) || !/^\d{4}-\d{2}/.test(String(end || ''))) return [];
+      const out = [];
+      let [y, m] = start.slice(0, 7).split('-').map(Number);
+      const last = end.slice(0, 7);
+      // Bounded independently of the loop condition: a stored period is at
+      // most a year or two, and a bad pair of dates must not spin here.
+      for (let guard = 0; guard < 240; guard++) {
+        const key = `${y}-${String(m).padStart(2, '0')}`;
+        out.push(key);
+        if (key >= last) break;
+        m++; if (m > 12) { m = 1; y++; }
+      }
+      return out;
+    }
+
     function monthLabel(key) {
       if (!/^\d{4}-\d{2}$/.test(key)) return key;
       const [y, mo] = key.split('-').map(Number);
@@ -2492,6 +2526,11 @@
       if (val('flt-card'))     params.set('fuel_card', val('flt-card'));
       if (val('flt-type'))     params.set('fuel_type', val('flt-type'));
 
+      // Everything a match's verdicts depend on. Compared rather than assumed
+      // so that re-entering the tab with the same settings leaves an open
+      // reconciliation alone.
+      const rangeKey = params.toString();
+
       let entries = [];
       try {
         const res  = await fetch('/api/fuel-submissions?' + params.toString(), { headers: authHeaders() });
@@ -2504,14 +2543,21 @@
       }
       if (!vehicles.length) await loadVehicles();
       reportModel = buildReportModel(entries, vehicles);
+      reportModel.builtFor = rangeKey;
 
-      // A match belongs to the range it was computed against. Leaving it on
-      // screen over a rebuilt model leaves its verdicts pointing at entries
-      // they were never about — and "Mark the agreeing trucks balanced" reads
-      // the CURRENT model, so July's verdicts would be pressed onto June's
-      // fill-ups with nothing on screen suggesting anything was wrong. The
-      // pasted text is kept so Match is one press away.
-      if (matchResult) {
+      // A freshly-computed match belongs to the range it was computed
+      // against. Leaving it on screen over a rebuilt model leaves its
+      // verdicts pointing at entries they were never about — and "Mark the
+      // agreeing trucks balanced" reads the CURRENT model, so July's verdicts
+      // would be pressed onto June's fill-ups with nothing on screen
+      // suggesting anything was wrong.
+      //
+      // Only when the parameters ACTUALLY changed, though. loadReport runs on
+      // every visit to the Reports tab, so discarding unconditionally meant
+      // stepping away to look at an entry and back destroyed a half-worked
+      // reconciliation and blamed a date-range change that never happened.
+      // A historical match is a self-contained record and is never discarded.
+      if (matchResult && !matchResult.historical && matchResult.builtFor !== rangeKey) {
         matchResult = null;
         el('matchResults').innerHTML =
           '<div class="rep-empty">The date range changed — press Match again to line the statement up against it.</div>';
@@ -2576,20 +2622,16 @@
         m.byState.set(st, sRow);
 
         const tKey = e.truck_number != null ? String(e.truck_number) : '(none)';
+        // Whole-range totals per truck. Only the exception checks read this
+        // now — the table it used to feed was replaced by byVehicleMonth,
+        // which carries the states, fuel types and odometer span it used to
+        // accumulate here for nobody.
         const vRow = m.byVehicle.get(tKey) || {
-          key: tKey, truck: e.truck_number, vehicle: v || null,
-          entries: 0, gallons: 0, states: new Set(), types: new Set(),
-          minMileage: null, maxMileage: null,
+          key: tKey, truck: e.truck_number, vehicle: v || null, entries: 0, gallons: 0,
         };
         vRow.entries++; vRow.gallons += g;
-        if (e.state)     vRow.states.add(e.state);
-        if (e.fuel_type) vRow.types.add(e.fuel_type);
-        const mi = Number(e.mileage);
-        if (Number.isFinite(mi)) {
-          if (vRow.minMileage == null || mi < vRow.minMileage) vRow.minMileage = mi;
-          if (vRow.maxMileage == null || mi > vRow.maxMileage) vRow.maxMileage = mi;
-        }
         m.byVehicle.set(tKey, vRow);
+        const mi = Number(e.mileage);
 
         const card = e.fuel_card || '(none)';
         const cRow = m.byCard.get(card) || { key: card, entries: 0, gallons: 0 };
@@ -3096,16 +3138,38 @@
         // be taken for a truck on a statement whose real truck isn't on the
         // roster yet — and then fail the INSERT with "integer out of range",
         // after the save has already cleared the previous lines.
-        const PLAUSIBLE_TRUCK = n => Number.isInteger(n) && n >= 0 && n <= 2147483647;
+        // A truck we recognise can be any size the column holds. A number we
+        // are only GUESSING at is capped at six digits, because the things
+        // that get guessed at wrongly are all longer than that: a date
+        // exported as 20260715, an invoice number, a fuel-card number. Left
+        // uncapped, a line reading "20260715,999,84.50" for a truck not yet
+        // on the roster files the fill under truck 20,260,715 and then
+        // reports TWO findings — that truck as unbilled and truck 999 as
+        // having no entry — from one real fill-up.
+        const MAX_GUESSED_TRUCK = 999999;
         let truckIdx = nums.findIndex(n => Number.isInteger(n) && knownTrucks.has(n));
-        if (truckIdx < 0) truckIdx = nums.findIndex(PLAUSIBLE_TRUCK);
+        if (truckIdx < 0) {
+          truckIdx = nums.findIndex(n => Number.isInteger(n) && n >= 0 && n <= MAX_GUESSED_TRUCK);
+        }
         if (truckIdx < 0) { skipped.push(line); continue; }
         const truck = nums[truckIdx];
 
-        const rest = nums.slice(0, truckIdx).concat(nums.slice(truckIdx + 1));
+        // The picker says "the Nth number AFTER the truck", so it counts from
+        // after the truck. Counting through a list that still held the
+        // numbers before it made "the 1st number after the truck" return the
+        // first number on the line — on a statement with a leading invoice
+        // column, a truck credited with 55,012 gallons.
+        const before = nums.slice(0, truckIdx);
+        const after  = nums.slice(truckIdx + 1);
         let gallons;
-        if (gallonsPick === 'last') gallons = rest.length ? rest[rest.length - 1] : undefined;
-        else                        gallons = rest[Number(gallonsPick) - 1];
+        if (gallonsPick === 'last') {
+          // "The last number on the line" — falling back to what precedes the
+          // truck only when nothing follows it.
+          const pool = after.length ? after : before;
+          gallons = pool.length ? pool[pool.length - 1] : undefined;
+        } else {
+          gallons = after[Number(gallonsPick) - 1];
+        }
         if (gallons == null || !Number.isFinite(gallons)) { skipped.push(line); continue; }
 
         byTruck.set(truck, Math.round(((byTruck.get(truck) || 0) + gallons) * 100) / 100);
@@ -3135,12 +3199,22 @@
       // what had just been signed off. Excluded and counted, not silently
       // dropped — see notApproved below.
       let notApproved = 0, notApprovedGallons = 0;
+      let noTruck = 0, noTruckGallons = 0;
       for (const e of model.rows) {
         if (card && (e.fuel_card || '') !== card) continue;
-        if (e.truck_number == null) continue;
         if (e.status !== 'approved') {
           notApproved++;
           notApprovedGallons += Number(e.gallons) || 0;
+          continue;
+        }
+        // Approved fuel with no truck number on it cannot be lined up against
+        // a statement that identifies vehicles by number — but it is real
+        // fuel, and dropping it out of the total unremarked makes the account
+        // look like it is over-billing by exactly that much. Counted and said
+        // out loud instead.
+        if (e.truck_number == null) {
+          noTruck++;
+          noTruckGallons += Number(e.gallons) || 0;
           continue;
         }
         const t = Number(e.truck_number);
@@ -3173,12 +3247,11 @@
         || (Math.abs(b.difference || 0) - Math.abs(a.difference || 0))
         || (a.truck - b.truck));
 
-      const sum = (f) => rows.filter(f).reduce((n, r) => n + 1, 0);
       return {
         card, rows,
         oursTotal:      [...ours.values()].reduce((a, b) => a + b, 0),
         statementTotal: [...statement.byTruck.values()].reduce((a, b) => a + b, 0),
-        matched:        sum(r => r.verdict === 'match'),
+        matched:        rows.filter(r => r.verdict === 'match').length,
         variances:      rows.filter(r => r.verdict === 'variance'),
         notInOurs:      rows.filter(r => r.verdict === 'not-in-ours'),
         notOnStatement: rows.filter(r => r.verdict === 'not-on-statement'),
@@ -3186,6 +3259,8 @@
         lines: statement.lines,
         notApproved,
         notApprovedGallons: Math.round(notApprovedGallons * 100) / 100,
+        noTruck,
+        noTruckGallons: Math.round(noTruckGallons * 100) / 100,
       };
     }
 
@@ -3213,6 +3288,11 @@
       // moved on to since.
       matchResult.periodStart = reportModel.from;
       matchResult.periodEnd   = reportModel.to;
+      matchResult.builtFor    = reportModel.builtFor;
+      // Its own copy of which months the entries actually spanned, so the
+      // warning above it keeps describing this match rather than whatever the
+      // Reports tab is set to by the time anyone reads it.
+      matchResult.months      = reportModel.months;
       renderStatementMatch();
     }
 
@@ -3398,6 +3478,9 @@
           skipped: [], lines: 0,
           savedId: m.id, savedMeta: m, historical: true,
           periodStart: m.period_start, periodEnd: m.period_end,
+          // Off the stored period, not the live report — this record has its
+          // own span and the warning above it has to describe that one.
+          months: monthsBetween(m.period_start, m.period_end),
         };
         el('mt-card').value = m.account || '';
         renderStatementMatch();
@@ -3575,7 +3658,14 @@
       // a one-month statement matched against a range that isn't one month.
       // Nothing about the output would look broken — every truck would simply
       // read as a variance, in the direction of us having bought more.
-      const months = (reportModel && reportModel.months) || [];
+      // The match's own months. Reading the live report's meant a saved
+      // single-month record was warned about a quarter it had nothing to do
+      // with, and a saved multi-month one got no warning at all.
+      // '(no date)' is a bucket, not a month — counting it made a genuinely
+      // single-month range look like two and told the reconciler not to trust
+      // figures that were correct.
+      const months = ((r.months || (reportModel && reportModel.months) || [])
+        .filter(x => /^\d{4}-\d{2}$/.test(x)));
       const spanWarning = months.length > 1
         ? `<div class="flag-banner">Careful — this range covers
              <strong>${escapeHtml(months.map(monthLabel).join(', '))}</strong>, and a statement is usually
@@ -3767,7 +3857,10 @@
       const push = (...cells) => rows.push(cells.map(csvEscape).join(','));
       push('Fuel Account Match');
       push('Account', r.card || 'All accounts');
-      push('Range', `${(reportModel && reportModel.from) || 'start'} to ${(reportModel && reportModel.to) || 'today'}`);
+      // The match's own period, for the same reason saveMatch pins it: a
+      // historical record exported under whatever range the tab happens to
+      // show is a file that misstates its own contents.
+      push('Range', `${r.periodStart || 'start'} to ${r.periodEnd || 'today'}`);
       push('We reported', n2(r.oursTotal));
       push('Statement says', n2(r.statementTotal));
       push('Difference', n2(r.oursTotal - r.statementTotal));

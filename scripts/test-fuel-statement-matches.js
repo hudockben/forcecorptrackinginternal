@@ -149,6 +149,29 @@ function normalizeTests() {
     }));
     assert('and a line with no truck number is still storable', data && data.lines[0].truck_number === null);
   }
+  {
+    // Every one of these columns is fed by a parsed statement column, and a
+    // misparse reaches the same destructive failure the truck_number guard
+    // was added for: the header upserts, the DELETE clears the old lines, and
+    // the INSERT then dies out of range with the month's ticks gone.
+    for (const field of ['ours', 'statement', 'difference']) {
+      const line = { truck_number: 412, ours: 1, statement: 1, difference: 0, fills: 1, verdict: 'match' };
+      line[field] = 7001234567890;
+      const { error } = normalizeMatch(Object.assign({}, SAVE, { lines: [line] }));
+      assert(`a card-sized figure in ${field} is refused before the insert`, error != null, String(error));
+      assert(`and the ${field} message points at the column`,
+        /which column/.test(error || ''), String(error));
+    }
+    const big = normalizeMatch(Object.assign({}, SAVE, {
+      lines: [{ truck_number: 412, ours: 9999999999.99, statement: 1, difference: 0, fills: 1, verdict: 'match' }],
+    }));
+    assert('the largest figure the column can hold is still accepted',
+      big.data && big.data.lines[0].ours === 9999999999.99, JSON.stringify(big.error));
+    const fills = normalizeMatch(Object.assign({}, SAVE, {
+      lines: [{ truck_number: 412, ours: 1, statement: 1, difference: 0, fills: 9e15, verdict: 'match' }],
+    }));
+    assert('and an impossible fill-up count is refused too', fills.error != null, String(fills.error));
+  }
 }
 
 // ── 3. Routing and access ───────────────────────────────────────────────────
@@ -314,6 +337,15 @@ async function routingTests() {
     // the upsert there is no way to tell them apart.
     assert('a replacement is recorded as one', audit.values.includes('RESAVE'),
       JSON.stringify(audit.values));
+    // Whoever first reconciled the month keeps the credit for it. Letting the
+    // upsert overwrite created_by meant a colleague correcting one entry
+    // three weeks later became, everywhere the row is read, the person who
+    // signed the month off.
+    const ins = seen.find(s => /^INSERT INTO fuel_statement_matches/.test(s.q));
+    assert('a re-save does not overwrite who first reconciled it',
+      !/created_by_user_id\s*=\s*EXCLUDED/.test(ins.q), ins.q.slice(-400));
+    assert('and records who did the re-saving separately',
+      /updated_by_name\s*=\s*EXCLUDED\.updated_by_name/.test(ins.q), ins.q.slice(-400));
   }
   {
     const { seen } = await call('PATCH', { line_id: '9' }, { resolved: true }, ADMIN, {
