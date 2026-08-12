@@ -370,8 +370,9 @@
     tbody tr.row-meter-flag > td:first-child { box-shadow: inset 3px 0 0 0 #fb923c; }
     .flag-banner {
       display: flex;
-      align-items: center;
-      gap: 0.5rem;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.35rem;
       margin: 0 0 0.4rem;
       padding: 0.6rem 0.9rem;
       font-size: 0.82rem;
@@ -1884,6 +1885,24 @@
       return Number(x) < Number(b);
     }
 
+    /**
+     * A fill-up that bought no fuel.
+     *
+     * 0 is a real answer everywhere else on this form — both meters are
+     * documented as "0 if not Force Fuel", and the completeness check is
+     * built around never reading one as blank. Gallons inherits that, so an
+     * entry recording nothing passes the daily review without a word and
+     * comes back weeks later as a variance against a statement that says the
+     * truck bought forty gallons.
+     *
+     * Flagged rather than refused: the reviewer is looking at the row and the
+     * receipt, and is better placed to say which it is than a rule here.
+     */
+    function zeroGallons(e) {
+      if (!e || e.gallons == null) return false;
+      return Number(e.gallons) === 0;
+    }
+
     function renderRows() {
       const body = el('rowsBody');
       const balancing = activeTab === 'balancing';
@@ -1899,15 +1918,20 @@
       }
 
       const flagged = shownEntries.filter(meterFlagged);
+      const zeroed  = shownEntries.filter(zeroGallons);
       const banner  = el('flagBanner');
+      const notes = [];
       if (flagged.length) {
-        banner.hidden = false;
-        banner.innerHTML = `<strong>${flagged.length}</strong> entr${flagged.length === 1 ? 'y reads' : 'ies read'} `
-          + 'an ending meter below the beginning one. Worth a look before approving — a rolled-over or replaced meter is legitimate.';
-      } else {
-        banner.hidden = true;
-        banner.innerHTML = '';
+        notes.push(`<div><strong>${flagged.length}</strong> entr${flagged.length === 1 ? 'y reads' : 'ies read'} `
+          + 'an ending meter below the beginning one. Worth a look before approving — a rolled-over or replaced meter is legitimate.</div>');
       }
+      if (zeroed.length) {
+        notes.push(`<div><strong>${zeroed.length}</strong> entr${zeroed.length === 1 ? 'y records' : 'ies record'} `
+          + '0 gallons. Nothing was bought, so nothing balances against it — and the truck comes up short by whatever '
+          + 'the receipt actually said.</div>');
+      }
+      banner.hidden = notes.length === 0;
+      banner.innerHTML = notes.join('');
 
       if (!shownEntries.length) {
         const what = balancing
@@ -1927,7 +1951,7 @@
         const flag = meterFlagged(e);
         const isSel = selected.has(e.id);
         return `
-          <tr class="${isSel ? 'selected' : ''} ${flag ? 'row-meter-flag' : ''} ${
+          <tr class="${isSel ? 'selected' : ''} ${flag || zeroGallons(e) ? 'row-meter-flag' : ''} ${
             e.status === 'approved' && balanceOf(e) === 'issue' ? 'row-issue' : ''}">
             <td class="td-narrow">
               <input type="checkbox" ${isSel ? 'checked' : ''} onchange="toggleRow('${escJsAttr(e.id)}')" />
@@ -1944,6 +1968,8 @@
             <td>${escapeHtml(e.fuel_card || '—')}</td>
             <td class="num">${num(e.gallons, 2)}${meteredGallons(e) != null
               ? '<span class="auto-chip" title="Calculated from the tank meter readings, not typed in.">auto</span>'
+              : ''}${zeroGallons(e)
+              ? '<span class="meter-flag" title="This entry records no fuel at all. Nothing on a statement can balance against 0 gallons.">0 gal</span>'
               : ''}</td>
             <td class="num">${num(e.mileage, 1)}</td>
             <td class="num">${num(e.beginning_meter, 1)}</td>

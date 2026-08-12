@@ -833,6 +833,27 @@ function pageTests() {
     assert('a missing reading is not flagged (the workflow catches that)',
       meterFlagged({ beginning_meter: null, ending_meter: 5 }) === false);
   }
+
+  console.log('\n[fuel-admin.html — an entry that bought no fuel]');
+  {
+    const src = read('fuel-admin.html');
+    const zeroGallons = new Function(`
+      ${liftFn(src, 'zeroGallons', 'fuel-admin.html')}
+      return zeroGallons;
+    `)();
+    // The whole form is built so that 0 is never mistaken for blank, which is
+    // right for the meters and wrong for the thing being bought: an entry
+    // recording no fuel passes every completeness check there is and then
+    // fails to balance against a statement that says forty gallons.
+    assert('0 gallons is flagged', zeroGallons({ gallons: 0 }) === true);
+    assert('and so is a string zero off the wire', zeroGallons({ gallons: '0' }) === true);
+    assert('a real fill is not', zeroGallons({ gallons: 84.5 }) === false);
+    // Blank is a different problem with its own message — an entry that never
+    // answered is caught by the completeness check before it can be submitted,
+    // and reporting it here as "bought nothing" would be wrong about it.
+    assert('and neither is a blank one', zeroGallons({ gallons: null }) === false);
+    assert('nor an entry that is not there at all', zeroGallons(null) === false);
+  }
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
