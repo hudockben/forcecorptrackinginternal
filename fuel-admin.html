@@ -74,7 +74,7 @@
     }
 
     /* ── Stat strip ── */
-    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.85rem; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 0.85rem; }
     .stat {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -1044,15 +1044,15 @@
 
     <!-- ── Stats ── -->
     <div class="stats">
-      <div class="stat submitted">
+      <div class="stat submitted" id="stat-card-submitted">
         <div class="stat-label">Awaiting Review</div>
         <div class="stat-value" id="stat-submitted">0</div>
       </div>
-      <div class="stat approved">
+      <div class="stat approved" id="stat-card-approved">
         <div class="stat-label">Approved (in range)</div>
         <div class="stat-value" id="stat-approved">0</div>
       </div>
-      <div class="stat gallons">
+      <div class="stat gallons" id="stat-card-gallons">
         <div class="stat-label">Gallons (approved)</div>
         <div class="stat-value" id="stat-gallons">0.00</div>
       </div>
@@ -1076,15 +1076,15 @@
         <label for="flt-to">To</label>
         <input type="date" id="flt-to" />
       </div>
-      <div class="filter-field">
+      <div class="filter-field" id="fltf-employee">
         <label for="flt-employee">Employee</label>
         <select id="flt-employee"><option value="">All</option></select>
       </div>
-      <div class="filter-field">
+      <div class="filter-field" id="fltf-card">
         <label for="flt-card">Fuel Card</label>
         <select id="flt-card"><option value="">All</option></select>
       </div>
-      <div class="filter-field">
+      <div class="filter-field" id="fltf-type">
         <label for="flt-type">Fuel Type</label>
         <select id="flt-type"><option value="">All</option></select>
       </div>
@@ -1723,6 +1723,17 @@
     // grid out for its own panel.
     const GRID_TABS = ['pending', 'approved', 'balancing'];
 
+    // What the top strip carries that Balancing has no use for.
+    //
+    // "Awaiting Review" and the approved counts belong to the daily review a
+    // tab away; the two that matter here are how much is still to balance and
+    // how much is flagged. The three filters go because the only thing that
+    // scopes a reconciliation is the month — everything else narrows it
+    // silently.
+    const BALANCE_HIDDEN_TILES   = ['stat-card-submitted', 'stat-card-approved'];
+    const BALANCE_HIDDEN_FILTERS = ['flt-employee', 'flt-card', 'flt-type'];
+    const FILTER_FIELD_OF = { 'flt-employee': 'fltf-employee', 'flt-card': 'fltf-card', 'flt-type': 'fltf-type' };
+
     function switchTab(tab) {
       activeTab = tab;
       document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
@@ -1740,6 +1751,14 @@
       // Both tabs work a month at a time, so both get the month picker.
       el('reportRanges').style.display = (tab === 'reports' || tab === 'balancing') ? '' : 'none';
       el('repOnlyControls').style.display = tab === 'reports' ? 'contents' : 'none';
+      // Trim the top strip to what this tab is for.
+      const balancing = tab === 'balancing';
+      for (const id of BALANCE_HIDDEN_TILES) {
+        const n = el(id); if (n) n.style.display = balancing ? 'none' : '';
+      }
+      for (const id of BALANCE_HIDDEN_FILTERS) {
+        const n = el(FILTER_FIELD_OF[id]); if (n) n.style.display = balancing ? 'none' : '';
+      }
       // Approval controls and balancing controls never share a bar: they are
       // two managers' jobs on two cadences, and an Approve button beside Mark
       // Balanced is an invitation to press the wrong one.
@@ -1759,7 +1778,19 @@
       // The match needs the same model the report is built from. Kicked off
       // after the grid so the entries are on screen while it loads, and it
       // leaves an open reconciliation alone unless the range actually moved.
-      if (tab === 'balancing') loadReport();
+      //
+      // A filter left on from another tab is the reason this is not just a
+      // reload. Balancing is the whole fleet's month against one account, and
+      // the account is picked in the panel below — an employee or card filter
+      // carried over from the Approved tab would quietly leave fill-ups out of
+      // "we reported" and there is nothing in a difference of 300 gallons that
+      // says a filter did it. Cleared rather than ignored, so what is on
+      // screen is what was counted.
+      if (tab === 'balancing') {
+        const carried = BALANCE_HIDDEN_FILTERS.filter(id => val(id));
+        if (carried.length) { carried.forEach(id => { el(id).value = ''; }); applyFilters(); }
+        else loadReport();
+      }
     }
 
     // ── Load + filter ──────────────────────────────────────────────────────
