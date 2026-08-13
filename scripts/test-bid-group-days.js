@@ -195,6 +195,26 @@ for (const file of FILES) {
     assert(`${label}: says nothing on a cost code with no days`,
       /\(gDays \? `<span/.test(block));
   }
+
+  // ── The job summary's own Days Worked column ──────────────────────────────
+  console.log('  — the job summary column');
+  assert('every sub code row counts its own days',
+    /const bDays  = daysWorkedForBidItem\(b, projId\);/.test(js) &&
+    /<td class="num days">\$\{bDays \? bDays \+ ' day'/.test(js));
+  assert('the column is the last one, after Variance',
+    /<th class="num">Variance<\/th>\s*<th class="num">Days Worked<\/th>/.test(js));
+  // The three roll-up rows each count their own scope. Summing the rows above
+  // would double-count a date two sub codes were both worked on.
+  assert('the cost-code subtotal prints the group\'s own count',
+    /<td class="num days">\$\{gDays \? gDays \+ ' day'/.test(js));
+  assert('the project total prints the job\'s own count',
+    /<td class="num days">\$\{daysWorked \? daysWorked \+ ' day'/.test(js));
+  assert('the top strip counts days the same way the column does',
+    /const daysWorked = new Set\(rowsAll\.filter\(_rowIsWorkDay\)\.map\(r => r\.date\)\.filter\(Boolean\)\)\.size;/.test(js));
+  assert('the column is styled and explained',
+    /td\.days \{ color: #1d4ed8/.test(src) &&
+    /Days Worked counts the distinct dates booked to a sub code/.test(js) &&
+    /do not add down the column/.test(js));
 }
 
 /* The Days Worked column replaced the historical estimate on the turf page —
