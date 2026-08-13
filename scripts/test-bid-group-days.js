@@ -1,24 +1,28 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Days worked on the bid view's green cost-code header
+ * Days worked — the green cost-code header, the printed reports, and the
+ * turf page's per-sub-code column
  *
  * Run: node scripts/test-bid-group-days.js
  *
- * The header says how far along a cost code is; it now also says how many
- * days have gone into it. The figure is a count of DISTINCT DATES across
- * the cost code's sub codes, which is the only reading that survives the
- * two ways a naive count goes wrong:
+ * Everywhere this figure appears it is one thing: a count of DISTINCT DATES
+ * booked to the sub codes in question. That is the only reading that
+ * survives the two ways a naive count goes wrong:
  *   - a gap between work days is not worked time (the 1st and the 5th are
  *     two days, not five)
  *   - two sub codes worked on the same date are one day on the job, so the
- *     sub codes' own day counts cannot simply be added up
+ *     sub codes' own day counts cannot simply be added up — which is why
+ *     the group figure is counted across the group, never summed from the
+ *     rows under it
  *
  * Two layers, matching the house style of the other frontend tests:
- *   1. Behavioural — evaluates the real daysWorkedForGroup out of each
- *      division page against fixtures.
- *   2. Structural — the header renders it, off the same visible sub codes
- *      the percent badge speaks for, and the style it needs exists.
+ *   1. Behavioural — evaluates the real day-counting out of each division
+ *      page against fixtures.
+ *   2. Structural — the green header renders it off the same visible sub
+ *      codes the percent badge speaks for, both printed reports carry it,
+ *      and on turf the Days Worked column that replaced the historical
+ *      estimate left none of that estimate behind.
  */
 
 const fs   = require('fs');
@@ -58,9 +62,10 @@ function load(src) {
     function getProj() { return _proj; }
     function getAllDailyRows() { return []; }
     ${extractFunction(src, '_rowIsWorkDay')}
+    ${extractFunction(src, '_workDaysForItems')}
     ${extractFunction(src, 'daysWorkedForGroup')}
     ${extractFunction(src, '_bidGroupDaysHTML')}
-    return { daysWorkedForGroup, _bidGroupDaysHTML, setProj };
+    return { _workDaysForItems, daysWorkedForGroup, _bidGroupDaysHTML, setProj };
   `)();
 }
 
@@ -76,8 +81,9 @@ const day = (date, sub, extra = {}) =>
 for (const file of FILES) {
   console.log(`\n[${file}]`);
   const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
-  const { daysWorkedForGroup, _bidGroupDaysHTML, setProj } = load(src);
+  const { _workDaysForItems, daysWorkedForGroup, _bidGroupDaysHTML, setProj } = load(src);
   const days = (rows, items = GROUP) => { setProj({ id: 'p1', dailyRows: rows }); return daysWorkedForGroup(items, 'p1'); };
+  const dates = (rows, items = GROUP) => { setProj({ id: 'p1', dailyRows: rows }); return _workDaysForItems(items, 'p1'); };
 
   console.log('  — the count itself');
   // The example from the request: two days on one sub code, one on another.
@@ -152,18 +158,65 @@ for (const file of FILES) {
   assert('the tooltip does not break out of its attribute',
     !/title="[^"]*"[^>]*"/.test(_bidGroupDaysHTML(3).split('\n')[0]));
 
+  console.log('  — the dates behind the count');
+  const AUG = [day('2026-08-06', 'Structure Excavation'), day('2026-08-03', 'Trench Drain Excavation'),
+               day('2026-08-04', 'Trench Drain Excavation')];
+  assert('the dates come back sorted, whatever order the rows are in',
+    dates(AUG).join() === '2026-08-03,2026-08-04,2026-08-06', dates(AUG).join());
+  assert('the count is just how many there are', dates(AUG).length === days(AUG));
+  assert('no days → an empty list, not a null', Array.isArray(dates([])) && dates([]).length === 0);
+
   console.log('  — wiring');
   const render = extractFunction(src, 'renderBidTable');
   // visItems, not groupItems: a filtered group's header has to speak for the
   // rows on screen, the same rule the percent badge already follows.
   assert('the header counts the visible sub codes',
-    (render.match(/_bidGroupDaysHTML\(daysWorkedForGroup\(visItems, projId\)\)/g) || []).length === 1);
+    (render.match(/const gDaysWorked = daysWorkedForGroup\(visItems, projId\);/g) || []).length === 1);
+  assert('the badge reads that one count', /_bidGroupDaysHTML\(gDaysWorked\)/.test(render));
   assert('both the read-only and editable headers print it',
     (render.match(/\$\{gPctHTML\}\$\{gDaysHTML\}/g) || []).length === 2);
   assert('it sits after the percent badge, not before it',
     !/\$\{gDaysHTML\}\$\{gPctHTML\}/.test(render));
   assert('the style it needs ships with the page',
-    /\.bid-grp-days \{[^}]*color: var\(--muted\)/.test(src) && /\.bid-grp-days::before/.test(src));
+    /\.bid-grp-days \{[^}]*color: var\(--blue\)/.test(src) && /\.bid-grp-days::before/.test(src));
+
+  // ── The printed reports carry the same figure ─────────────────────────────
+  console.log('  — the printed reports');
+  const pdf = extractFunction(src, 'exportBidPDF');
+  const js  = (() => {
+    const a = src.indexOf('async function exportJobSummary(projId, opts = {})');
+    return src.slice(a, src.indexOf('function exportBidPDF', a));
+  })();
+  for (const [label, block] of [['bid report', pdf], ['job summary', js]]) {
+    assert(`${label}: counts the group's days`,
+      /const gDays = daysWorkedForGroup\(g[iI]tems, projId\);/.test(block));
+    assert(`${label}: prints them on the cost-code header row`,
+      /\$\{gDays\} day\$\{gDays !== 1 \? 's' : ''\} worked/.test(block));
+    assert(`${label}: says nothing on a cost code with no days`,
+      /\(gDays \? `<span/.test(block));
+  }
+}
+
+/* The Days Worked column replaced the historical estimate on the turf page —
+   the only page that ever carried it. Its machinery has no caller left, and
+   dead code that still looks live is worse than no code. */
+console.log('\n[turf — the column the estimate gave up]');
+const turf = fs.readFileSync(path.resolve(__dirname, '../tracker.html'), 'utf8');
+assert('the header names the column for what it now shows',
+  /<th class="num" title="Distinct days this sub code has been worked[^"]*">Days Worked<\/th>/.test(turf) &&
+  !/Hist\. Estimate/.test(turf));
+assert('a sub code counts its own days off the shared rule',
+  /function daysWorkedForBidItem\(b, projId\) \{\s*return _workDaysForItems\(\[b\], projId\)\.length;/.test(turf));
+assert('the cell prints the count over the span it falls across',
+  /\$\{_dCount\} day\$\{_dCount !== 1 \? 's' : ''\}[\s\S]{0,200}_workDaySpanLabel\(_wDays\)/.test(turf));
+assert('the span reads as a range, not a second count',
+  /\$\{lbl\(dates\[0\]\)\} \\u2013 \$\{lbl\(dates\[dates\.length - 1\]\)\}/.test(turf));
+assert('the group total row reads the same count as the header above it',
+  /\$\{gDaysWorked \? gDaysWorked \+ ' day'/.test(turf));
+assert('the bid footer totals days, not estimated hours',
+  /const totalDays = daysWorkedForGroup\(p\.bidItems \|\| \[\], projId\);/.test(turf));
+for (const gone of ['_deriveEstFromHist', 'estimateDurationForBidItem', 'applyEstimateToDates', 'gEstHrs', 'totalEstHrs']) {
+  assert(`no ${gone} left behind`, !turf.includes(gone), 'still referenced');
 }
 
 console.log(`\n${failed === 0 ? '✅' : '❌'}  ${passed} passed, ${failed} failed`);
