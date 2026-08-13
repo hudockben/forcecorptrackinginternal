@@ -2705,7 +2705,7 @@
       <button class="modal-close" onclick="closeJobSummaryModal()">&#10005;</button>
     </div>
     <div style="padding:1rem 1.25rem;font-size:0.78rem;color:var(--muted);line-height:1.55">
-      End-of-job summary: cost &amp; sub-code groups with bid vs. running quantities and actual cost, plus a merged purchases list (purchase orders and material entered directly on job rows).
+      End-of-job summary: cost &amp; sub-code groups with bid vs. running quantities, the running unit cost each sub code is landing at, and actual cost, plus a merged purchases list (purchase orders and material entered directly on job rows).
     </div>
     <div style="padding:0 1.25rem 1rem;display:flex;gap:0.5rem;justify-content:flex-end;">
       <button class="btn btn-ghost" onclick="closeJobSummaryModal()">Cancel</button>
@@ -17151,7 +17151,7 @@ async function exportJobSummary(projId, opts = {}) {
   const qtyCORows = [];                 // flat list for the Change Orders section
   groupOrder.forEach(cc => {
     const gItems = groups[cc];
-    bidRowsHTML += `<tr class="group-hdr"><td colspan="7"><strong>${esc(cc) || '(No Code)'}</strong></td></tr>`;
+    bidRowsHTML += `<tr class="group-hdr"><td colspan="8"><strong>${esc(cc) || '(No Code)'}</strong></td></tr>`;
     let gBid = 0, gActual = 0;
     gItems.forEach(b => {
       const baseQty = parseFloat(b.quantity) || 0;
@@ -17162,6 +17162,12 @@ async function exportJobSummary(projId, opts = {}) {
       const rqty   = runningQtyForBidItem(b, projId);
       const actual = actualForBidItem(b, projId);
       const varc   = bidTot - actual;
+      // What the work has actually cost per unit put down — the same rate the
+      // Bid Items page calls Running Unit Cost. It is the figure that carries
+      // to the next bid, so it is read against the bid's own unit cost and
+      // colored the way the variance beside it is.
+      const runUC  = rqty > 0 && actual ? actual / rqty : 0;
+      const rucCls = (runUC && uc) ? (runUC <= uc ? 'under' : 'over') : '';
       gBid += bidTot; gActual += actual;
       coQtyCostImpact += coDelta * uc;
       (b.change_orders || []).forEach(co => qtyCORows.push({ co, item: b, uc }));
@@ -17175,6 +17181,7 @@ async function exportJobSummary(projId, opts = {}) {
         <td class="ctr">${esc(b.unit || '')}</td>
         <td class="num">${bidQty ? qfmt(bidQty) : dash}${coLine}</td>
         <td class="num">${rqty ? qfmt(rqty) : dash}</td>
+        <td class="num ${rucCls}">${runUC ? '$' + fmt(runUC) : dash}</td>
         <td class="num">${bidTot ? '$' + fmt(bidTot) : dash}</td>
         <td class="num actual">${actual ? '$' + fmt(actual) : dash}</td>
         <td class="num ${varc >= 0 ? 'under' : 'over'}">${bidTot ? money(varc) : dash}</td>
@@ -17183,7 +17190,7 @@ async function exportJobSummary(projId, opts = {}) {
     grandBid += gBid; mappedActual += gActual;
     const gVar = gBid - gActual;
     bidRowsHTML += `<tr class="subtotal">
-      <td colspan="4"><em>${esc(cc) || '(No Code)'} — Subtotal</em></td>
+      <td colspan="5"><em>${esc(cc) || '(No Code)'} — Subtotal</em></td>
       <td class="num">${gBid ? '$' + fmt(gBid) : dash}</td>
       <td class="num actual">${gActual ? '$' + fmt(gActual) : dash}</td>
       <td class="num ${gVar >= 0 ? 'under' : 'over'}">${gBid ? money(gVar) : dash}</td>
@@ -17196,16 +17203,16 @@ async function exportJobSummary(projId, opts = {}) {
   const totalActual = (p.dailyRows || []).reduce((s, r) => s + dailyRowCost(r), 0);
   const unmatched   = totalActual - mappedActual;
   if (unmatched > 0.005) {
-    bidRowsHTML += `<tr class="group-hdr"><td colspan="7"><strong>Unmatched Job Rows</strong> <span style="font-weight:400;color:#777">(cost entered on job rows with no matching bid item)</span></td></tr>`;
+    bidRowsHTML += `<tr class="group-hdr"><td colspan="8"><strong>Unmatched Job Rows</strong> <span style="font-weight:400;color:#777">(cost entered on job rows with no matching bid item)</span></td></tr>`;
     bidRowsHTML += `<tr class="subtotal">
-      <td colspan="4"><em>Unmatched — Subtotal</em></td>
+      <td colspan="5"><em>Unmatched — Subtotal</em></td>
       <td class="num">${dash}</td>
       <td class="num actual">$${fmt(unmatched)}</td>
       <td class="num">${dash}</td>
     </tr>`;
   }
   if (!bidRowsHTML) {
-    bidRowsHTML = `<tr><td colspan="7" style="text-align:center;color:#888;padding:8px">No bid items on this project.</td></tr>`;
+    bidRowsHTML = `<tr><td colspan="8" style="text-align:center;color:#888;padding:8px">No bid items on this project.</td></tr>`;
   }
 
   const grandActual = totalActual;
@@ -17426,8 +17433,8 @@ async function exportJobSummary(projId, opts = {}) {
     .desc { color: #666; font-weight: 400; }
     td.num, th.num { text-align: right; white-space: nowrap; }
     td.ctr { text-align: center; color: #555; }
-    td.under { color: #166534; }
-    td.over  { color: #991b1b; }
+    td.under, .note .under { color: #166534; }
+    td.over,  .note .over  { color: #991b1b; }
     td.actual { color: #92400e; }
     tr.group-hdr td { background: #e8f5e9; font-size: 10px; padding: 4px 6px; }
     tr.subtotal td { background: #d9e2ea; font-weight: 700; font-style: italic; font-size: 10px; border-top: 1.5px solid #64748b; border-bottom: 1px solid #94a3b8; }
@@ -17472,17 +17479,18 @@ async function exportJobSummary(projId, opts = {}) {
   <table>
     <thead><tr>
       <th>Sub Code</th><th class="ctr" style="text-align:center">Unit</th>
-      <th class="num">Bid Qty</th><th class="num">Running Qty</th>
+      <th class="num">Bid Qty</th><th class="num">Running Qty</th><th class="num">Running Unit Cost</th>
       <th class="num">Bid Cost</th><th class="num">Actual Cost</th><th class="num">Variance</th>
     </tr></thead>
     <tbody>${bidRowsHTML}
     <tr class="totals">
-      <td colspan="4">Project Totals</td>
+      <td colspan="5">Project Totals</td>
       <td class="num">${grandBid ? '$' + fmt(grandBid) : dash}</td>
       <td class="num actual">${grandActual ? '$' + fmt(grandActual) : dash}</td>
       <td class="num ${grandVar >= 0 ? 'under' : 'over'}">${grandBid ? money(grandVar) : dash}</td>
     </tr></tbody>
   </table>
+  <p class="note">Running Unit Cost is actual cost &divide; running quantity — what the work has cost per unit put down so far. It reads <span class="under">green</span> at or under the bid's unit cost (bid cost &divide; bid qty) and <span class="over">red</span> above it, and is blank on a sub code with no quantity recorded against it. Sub codes are not totalled per unit because a cost code mixes units.</p>
 
   <h3>Purchases — Purchase Orders &amp; Job-Row Material</h3>
   <table>
