@@ -1126,13 +1126,12 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  * payroll and locked in the Trucking division. invoice fields default to
  * Unpaid/blank (the trucking office manages invoicing).
  *
- * A dust-sourced row differs in exactly two ways. The Division column defaults
- * to "Dust" rather than blank — that column exists to tell the trucking office
- * whose work a row represents, and the answer is already known here, though
- * payroll can still override it in the modal. And unit/description come out
- * blank, because truck_unit and truck_description are captured on the timesheet
- * only for the trucking division (see neon-schema.sql); the trucking office
- * fills the unit in, same as it would on a row typed by hand.
+ * A dust-sourced row differs in one way: the Division column defaults to "Dust"
+ * rather than blank — that column exists to tell the trucking office whose work
+ * a row represents, and the answer is already known here, though payroll can
+ * still override it in the modal. Unit and description come off the timesheet
+ * exactly as they do for trucking; the driver is asked for them whenever the
+ * entry is headed for this tab (see needsTruckTrackingRow).
  */
 async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
   const workDate = safeDate(entry.work_date) || '';
@@ -1499,12 +1498,15 @@ function normalizeEntryBody(body) {
     ? null
     : Math.round(((travel_to_site_hours || 0) + (travel_to_shop_hours || 0)) * 100) / 100;
 
-  // Trucking-only extras: the truck Unit and a per-haul Description. Only
-  // meaningful for the trucking division (they map to the Truck Tracking unit +
-  // description columns on approval); for every other division they're forced to
-  // null so a stray value can't leak across.
-  const truck_unit        = division === 'trucking' ? safeStr(body.truck_unit, 100)        : null;
-  const truck_description = division === 'trucking' ? safeStr(body.truck_description, 2000) : null;
+  // Truck Unit + per-haul Description. Captured for exactly the entries whose
+  // approval injects a Truck Tracking row — trucking, and dust customer hauls —
+  // because that is where the two columns land. Gated on the same predicate the
+  // injection uses rather than a division test of its own, so a dust job can
+  // never collect a unit the approval would then discard, or vice versa. Forced
+  // to null everywhere else so a stray value can't leak across divisions.
+  const isTruckRow = needsTruckTrackingRow({ entry_type: 'daily', division, job_id });
+  const truck_unit        = isTruckRow ? safeStr(body.truck_unit, 100)        : null;
+  const truck_description = isTruckRow ? safeStr(body.truck_description, 2000) : null;
 
   // EES-only extras, captured only for a dust entry on one of the two standing
   // EES jobs. Forced to null everywhere else so a stray value can't leak across
@@ -2461,6 +2463,7 @@ module.exports = async (req, res) => {
 // Not part of the HTTP contract — do not depend on these from other endpoints.
 module.exports._test = {
   normalizeSplitTag,
+  normalizeEntryBody,
   matchRosterEmployee,
   insertSplitRows,
   removeSplitRows,

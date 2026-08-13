@@ -5168,9 +5168,9 @@
           ? ` <span style="font-weight:400;color:var(--muted)">(${num2(work)} work + ${num2(travel)} travel)</span>`
           : ''}</div>
         <div style="grid-column:1 / -1">Description: <strong>${escapeHtml(entry.truck_description || '—')}</strong></div>
-        ${entry.division === 'dust' ? `<div style="grid-column:1 / -1;color:var(--muted);font-size:12px">
-          Dust haul — unit &amp; description aren't captured on a dust timesheet;
-          the trucking office fills them in on the row.</div>` : ''}
+        ${entry.division === 'dust' && !entry.truck_unit ? `<div style="grid-column:1 / -1;color:var(--muted);font-size:12px">
+          No unit on this timesheet — entries submitted before the Unit field was
+          added to dust hauls leave it blank for the trucking office.</div>` : ''}
       `;
       const msg = document.getElementById('truckingMsg');
       msg.textContent = ''; msg.className = 'modal-msg';
@@ -5809,10 +5809,8 @@
             <div class="bulk-field"><span>Haul Fee ($/hr) <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkNum(idx, 'haul_fee', g.template.haul_fee, '0.00')}</div>
             <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, g.division === 'dust' ? 'defaults to Dust' : 'e.g. Paving')}</div>
           </div>
-          <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, hours &amp;
-            customer come from each timesheet.${g.division === 'dust'
-              ? ' Dust timesheets carry no truck unit, so the trucking office fills that in.'
-              : ' Unit comes from the timesheet too.'}</div>`;
+          <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
+            customer come from each timesheet.</div>`;
       } else {
         badgeClass = 'plain'; badgeText = 'No injection';
         title = 'Status-only entries';

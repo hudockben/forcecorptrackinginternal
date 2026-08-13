@@ -507,9 +507,11 @@
           </div>
         </div>
 
-        <!-- Trucking-only fields. Shown only when Division = Trucking; the Unit
-             and Description map to the matching Truck Tracking columns when the
-             entry is approved into the Trucking division. -->
+        <!-- Unit + Description for a haul. Shown when Division = Trucking, and
+             when Division = Dust Control on a customer job (not the EES
+             activities, which have their own fields below) — those are exactly
+             the entries whose approval injects a Truck Tracking row, and these
+             two map to its matching columns. -->
         <div id="truckingFields" style="display:none;flex-direction:column;gap:0.85rem">
           <div class="row">
             <label for="f-truck-unit">Unit</label>
@@ -1204,9 +1206,9 @@
       const jobSel = bel(i, 'job');
       const token = jobLoadToken[i] = (jobLoadToken[i] || 0) + 1;
       const stale = () => jobLoadToken[i] !== token || !document.getElementById(bid(i, 'job'));
-      // Trucking-only Unit + Description fields ride alongside the job picker.
-      const truckWrap = bel(i, 'truckingFields');
-      if (truckWrap) truckWrap.style.display = (div === 'trucking') ? 'flex' : 'none';
+      // The Unit + Description fields ride alongside the job picker; whether
+      // they show depends on the job as well as the division under dust, so
+      // onJobChange owns the reveal and runs again once the jobs have loaded.
       onJobChange(i);
       if (!div) {
         jobSel.innerHTML = '<option value="">— pick division first —</option>';
@@ -1254,9 +1256,25 @@
           && EES_JOB_IDS.includes(bel(i, 'job').value);
     }
 
+    // The Unit + Description are asked for exactly when approval will inject a
+    // Truck Tracking row, since that is the only place they land. Mirrors
+    // needsTruckTrackingRow in api/timesheet-entries.js — ask on a job the
+    // server won't keep them for and the driver types a unit into a void.
+    //
+    // For trucking the division decides it; for dust the JOB does, which is why
+    // this is re-evaluated on every job change and not just on division change.
+    function isTruckSelection(i = 0) {
+      const div = bel(i, 'division').value;
+      if (div === 'trucking') return true;
+      const job = bel(i, 'job').value;
+      return div === 'dust' && !!job && !EES_JOB_IDS.includes(job);
+    }
+
     function onJobChange(i = 0) {
       const wrap = bel(i, 'eesFields');
       if (wrap) wrap.style.display = isEesSelection(i) ? 'flex' : 'none';
+      const truckWrap = bel(i, 'truckingFields');
+      if (truckWrap) truckWrap.style.display = isTruckSelection(i) ? 'flex' : 'none';
     }
 
     // ── Entries list ──────────────────────────────────────────────────────
@@ -1768,10 +1786,12 @@
       const list = blocks.map((b, pos) => {
         const isEes  = isEesSelection(b.i);
         const eesVal = key => isEes ? (bel(b.i, key).value || '').trim() : '';
-        // Trucking-only extras (Unit + Description). Sent only for the trucking
-        // division; the server ignores/nulls them for every other division.
-        const truckUnit = b.div === 'trucking' ? (bel(b.i, 'truck-unit').value || '').trim() : '';
-        const truckDesc = b.div === 'trucking' ? (bel(b.i, 'truck-desc').value || '').trim() : '';
+        // Unit + Description. Sent for the same selections that show the fields
+        // (trucking, and dust customer hauls); the server nulls them for
+        // anything else, so this only decides whether the value makes the trip.
+        const isTruck   = isTruckSelection(b.i);
+        const truckUnit = isTruck ? (bel(b.i, 'truck-unit').value || '').trim() : '';
+        const truckDesc = isTruck ? (bel(b.i, 'truck-desc').value || '').trim() : '';
         return {
           block: b.i,
           label: blockName(b.i),
