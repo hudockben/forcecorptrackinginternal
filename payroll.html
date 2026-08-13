@@ -3826,10 +3826,10 @@
       }
     }
 
-    // "Approve Selected" — the checked pending rows. Entries whose division
-    // injects a cost row (turf/paving split, quarry, trucking) go through the
-    // bulk approve+inject modal so a project's cost code is assigned once;
-    // status-only entries (dust / time-off) take the fast confirm path.
+    // "Approve Selected" — the checked pending rows. Entries that inject a cost
+    // row (turf/paving split, quarry, trucking, dust customer hauls) go through
+    // the bulk approve+inject modal so a project's cost code is assigned once;
+    // status-only entries (dust EES, time-off) take the fast confirm path.
     function bulkApprove() {
       const entries = Array.from(selectedIds)
         .map(id => filtered.find(x => x.id === id) || allEntries.find(x => x.id === id))
@@ -5105,22 +5105,39 @@
     // rest of the row is pulled from the timesheet. Those two fields can be
     // re-edited later via "Edit Row" (resplit) since the row is locked in the
     // Trucking division.
+    //
+    // Dust customer entries open this same modal, because that work is hauling
+    // and injects the same Truck Tracking row (the Division column defaults to
+    // "Dust" server-side rather than blank).
     let truckingEntry = null;
     let truckingMode  = null;
     const TK_LABEL = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
     const TK_INPUT = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
+    // Mirrors EES_JOB_IDS in api/timesheet-entries.js and timesheet.html. A dust
+    // entry on one of these goes to the dust EES Other tab, not Truck Tracking.
+    const EES_JOB_IDS = ['ees:preloading', 'ees:washing'];
+    // Mirrors needsTruckTrackingRow in api/timesheet-entries.js. Drift one way
+    // and payroll approves a dust haul without ever being asked for a haul fee,
+    // leaving an injected row billing nothing until someone notices; drift the
+    // other and it collects a fee the server discards.
+    // scripts/test-trucking-injection.js holds the two together.
     function entryNeedsTrucking(e) {
-      return !!e && e.entry_type === 'daily' && e.division === 'trucking';
+      if (!e || e.entry_type !== 'daily') return false;
+      if (e.division === 'trucking') return true;
+      return e.division === 'dust' && !!e.job_id && !EES_JOB_IDS.includes(String(e.job_id));
     }
     function truckingFieldsHtml(row) {
       const r = row || {};
       const fee = (r.haul_fee == null || r.haul_fee === '') ? '' : r.haul_fee;
       const div = r.division || '';
+      // Both call sites run after truckingEntry is assigned, so the placeholder
+      // can tell a dust haul what blank will mean (the server fills in "Dust").
+      const isDust = !!truckingEntry && truckingEntry.division === 'dust';
       return `
         <label style="${TK_LABEL}"><span>Haul Fee ($/hr)</span>
           <input type="number" id="tk_haulFee" min="0" step="0.01" value="${escapeHtml(String(fee))}" placeholder="0.00" style="${TK_INPUT}"></label>
         <label style="${TK_LABEL}"><span>Division <span style="font-weight:400;color:var(--muted)">(optional)</span></span>
-          <input type="text" id="tk_division" maxlength="100" value="${escapeHtml(div)}" placeholder="e.g. Paving" style="${TK_INPUT}"></label>`;
+          <input type="text" id="tk_division" maxlength="100" value="${escapeHtml(div)}" placeholder="${isDust ? 'defaults to Dust' : 'e.g. Paving'}" style="${TK_INPUT}"></label>`;
     }
     function openTruckingModalById(id, mode) {
       const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
@@ -5130,7 +5147,11 @@
     async function openTruckingModal(entry, mode) {
       truckingEntry = entry;
       truckingMode  = mode || 'approve';
-      const work = Number(entry.computed_hours) || 0;
+      // Work + travel — the figure the haul fee bills against. Shown with the
+      // legs broken out so the approver can see where the number came from
+      // rather than wondering why it disagrees with the clock window.
+      const work   = Number(entry.computed_hours) || 0;
+      const travel = Number(entry.travel_hours) || 0;
       const times = (entry.start_time && entry.end_time)
         ? `${escapeHtml(entry.start_time)} – ${escapeHtml(entry.end_time)}`
         : '—';
@@ -5143,8 +5164,13 @@
         <div>Customer: <strong>${escapeHtml(entry.job_label || '—')}</strong></div>
         <div>Unit: <strong>${escapeHtml(entry.truck_unit || '—')}</strong></div>
         <div>Start–End: <strong>${times}</strong></div>
-        <div>Hours: <strong>${num2(work)}</strong></div>
+        <div>Hours: <strong>${num2(work + travel)}</strong>${travel > 0
+          ? ` <span style="font-weight:400;color:var(--muted)">(${num2(work)} work + ${num2(travel)} travel)</span>`
+          : ''}</div>
         <div style="grid-column:1 / -1">Description: <strong>${escapeHtml(entry.truck_description || '—')}</strong></div>
+        ${entry.division === 'dust' ? `<div style="grid-column:1 / -1;color:var(--muted);font-size:12px">
+          Dust haul — unit &amp; description aren't captured on a dust timesheet;
+          the trucking office fills them in on the row.</div>` : ''}
       `;
       const msg = document.getElementById('truckingMsg');
       msg.textContent = ''; msg.className = 'modal-msg';
@@ -5241,7 +5267,10 @@
         let key;
         if (isSplit)       key = `split|${e.division}|${e.job_id}`;
         else if (isQuarry) key = `quarry|${activity}|${e.job_id}`;
-        else if (isTruck)  key = 'trucking';
+        // Keyed by division, not a flat 'trucking': dust customer hauls inject
+        // the same row type but are not the same work, and one shared haul fee
+        // across both divisions would quietly bill them at each other's rate.
+        else if (isTruck)  key = `trucking|${e.division}`;
         else               key = 'plain';
         let g = map.get(key);
         if (!g) {
@@ -5772,15 +5801,18 @@
           <div class="bulk-note">Blank uses each employee's own quarry rate; type a value to apply one rate to
             every day. Fuel gallons &amp; PPG are left blank — open a single day to add them.</div>`;
       } else if (g.type === 'trucking') {
-        badgeClass = 'trucking'; badgeText = 'Trucking';
-        title = 'Truck Tracking'; meta = metaHrs;
+        badgeClass = 'trucking'; badgeText = prettyDiv(g.division);
+        title = g.division === 'dust' ? 'Truck Tracking — dust hauls' : 'Truck Tracking';
+        meta = metaHrs;
         fields = `
           <div class="bulk-fields">
             <div class="bulk-field"><span>Haul Fee ($/hr) <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkNum(idx, 'haul_fee', g.template.haul_fee, '0.00')}</div>
-            <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, 'e.g. Paving')}</div>
+            <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, g.division === 'dust' ? 'defaults to Dust' : 'e.g. Paving')}</div>
           </div>
-          <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
-            customer come from each timesheet.</div>`;
+          <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, hours &amp;
+            customer come from each timesheet.${g.division === 'dust'
+              ? ' Dust timesheets carry no truck unit, so the trucking office fills that in.'
+              : ' Unit comes from the timesheet too.'}</div>`;
       } else {
         badgeClass = 'plain'; badgeText = 'No injection';
         title = 'Status-only entries';

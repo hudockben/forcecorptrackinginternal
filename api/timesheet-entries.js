@@ -80,9 +80,12 @@
  *   - user_id / username / company_code (taken from JWT, never the body)
  *
  * timesheet_entries is the payroll source of truth. Approval is the only bridge
- * out of it: turf/paving/quarry/trucking daily entries inject cost-tracking rows
- * on approval (see the approve/unapprove actions below); the remaining divisions
- * stay isolated (status flip only).
+ * out of it: turf/paving/quarry/trucking/dust daily entries inject cost-tracking
+ * rows on approval (see the approve/unapprove actions below). Dust is the one
+ * division that routes by job rather than by division alone — the two standing
+ * EES activities go to the Dust division's "EES Other" tab, and customer work
+ * goes to the Trucking division's "Truck Tracking" tab, because that work is
+ * hauling. A dust entry with no job stays isolated (status flip only).
  */
 
 const { neon } = require('@neondatabase/serverless');
@@ -118,6 +121,8 @@ function quarryRowIdPrefix(entryId) { return `tsq-${entryId}-`; }
 // deliberately left blank for the trucking office to fill in later. Injected
 // rows are tagged by encoding the timesheet entry id into the row id (same
 // scheme as quarry) so unapprove/delete can find and remove them again.
+//
+// Dust customer work lands here too — see needsTruckTrackingRow below.
 const TRUCK_DIVISION_BLOB = 'fct_truck_division';
 function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
 
@@ -142,6 +147,38 @@ function isEesJob(jobId) { return EES_JOB_IDS.includes(String(jobId || '')); }
 // rate a Billable row bills at. Everything else on the row is timesheet-fed, so
 // a re-injection must preserve this and overwrite the rest.
 const EES_OTHER_TAB_FIELDS = ['rate'];
+
+/**
+ * True when approving this entry injects a Truck Tracking row.
+ *
+ * Two divisions route here. Trucking, obviously — its own daily entries have
+ * always injected. And dust customer work, because that work IS hauling: a
+ * driver takes a truck to a customer for a day, which is the same shape the
+ * Truck Tracking tab already records, down to the driver/date/customer/hours
+ * columns. Filing it under dust describes who did the work, not where the cost
+ * belongs.
+ *
+ * A dust entry therefore routes by job, and the two dust destinations are
+ * disjoint by construction: the standing EES activities go to the Dust
+ * division's own "EES Other" tab (isEesJob), every other dust job is a customer
+ * haul and comes here. That disjointness is what lets the approve path treat
+ * them as an if/else rather than having to order them.
+ *
+ * A dust entry with no job names no customer, so it injects nowhere and just
+ * flips status — the same rule EES already applies. Trucking keeps its old
+ * behaviour of injecting regardless, since its rows carry a unit and a
+ * description that stand on their own without a customer.
+ *
+ * Single predicate on purpose: the gate appears at five sites (approve,
+ * resplit, un-approve, the edit guard, and payroll.html's modal trigger), and a
+ * row that outlives its entry is exactly what happens when one of them drifts.
+ * The delete sweep deliberately casts wider than this — see the note there.
+ */
+function needsTruckTrackingRow(entry) {
+  if (!entry || entry.entry_type !== 'daily') return false;
+  if (entry.division === 'trucking') return true;
+  return entry.division === 'dust' && !!entry.job_id && !isEesJob(entry.job_id);
+}
 
 function safeDate(v) {
   if (!v) return null;
@@ -975,11 +1012,21 @@ function validateTruckingInjection(raw) {
 
 // Best-effort match of the timesheet employee to the trucking driver roster so
 // the injected row's driver reads as a real driver name where possible. The
-// roster lives in dropdown_lists (list_name='truck_drivers'). Login names are
-// often a last name; try exact then an unambiguous suffix, else keep the raw
-// name (the Truck Tracking combobox preserves free text).
+// roster lives in dropdown_lists (list_name='truck_drivers').
+//
+// Matching is the same cascade the split path uses (see matchRosterEmployee):
+// exact, the name's words run together either way round, surname alone,
+// initial+surname, then a shortened first name — each retried with doubled
+// letters collapsed, and each having to hit exactly one roster entry.
+//
+// This function used to try the login verbatim and then a " surname" suffix,
+// which is the same pair the roster lookup was cut back from, and it left every
+// concatenated login unmatched: "barrmike" against a roster reading "Mike Barr"
+// fell through to the raw login, so the driver column showed the login instead
+// of the driver. An unmatched name is still kept verbatim rather than blanked —
+// the Truck Tracking driver cell is a free-text combobox.
 async function matchTruckingDriver(sql, companyCode, name) {
-  const n = (name || '').trim().toLowerCase();
+  const n = (name || '').trim();
   if (!n) return name || '';
   // Roster source of truth is the fct_truck_division_lists blob (the
   // dropdown_lists mirror can lag in serverless — same reason api/timesheet-jobs
@@ -1002,11 +1049,11 @@ async function matchTruckingDriver(sql, companyCode, name) {
     `;
     names = rows.map(r => String(r.value || '')).filter(Boolean);
   }
-  const exact = names.find(v => v.trim().toLowerCase() === n);
-  if (exact) return exact;
-  const suffix = names.filter(v => v.trim().toLowerCase().endsWith(' ' + n));
-  if (suffix.length === 1) return suffix[0];
-  return name || '';
+  // matchRosterEmployee takes the roster as {name} objects (it is shared with
+  // the employee blob, whose entries carry a rate alongside the name); the
+  // driver roster is a flat list of names, so wrap and unwrap.
+  const hit = matchRosterEmployee(names.map(v => ({ name: v })), name);
+  return hit ? hit.name : (name || '');
 }
 
 // Upsert one injected row into the truck_division_entries mirror table. Mirrors
@@ -1064,29 +1111,45 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
 }
 
 /**
- * Build + inject a single Truck Tracking row for an approved trucking entry.
+ * Build + inject a single Truck Tracking row for an approved entry — either a
+ * trucking entry or a dust customer haul (see needsTruckTrackingRow).
  * Deletes any prior injected rows for this entry first (idempotent — covers a
  * retried approve), appends the new row to the fct_truck_division blob, writes
  * it, and mirrors the row into truck_division_entries. Returns the row written.
  *
  * Autofill: driver ← employee, actual_date ← work_date, actual_start/end ←
- * start/end, total_hours ← the (lunch-deducted) computed work hours, customer ←
- * job_label, unit ← truck_unit, description ← truck_description. The haul fee and
+ * start/end, total_hours ← the (lunch-deducted) work hours PLUS travel hours,
+ * customer ← job_label, unit ← truck_unit, description ← truck_description.
+ * The haul fee and
  * division column come from the payroll modal (fields arg); everything else is
  * derived from the timesheet entry so the Truck Tracking row is fully owned by
  * payroll and locked in the Trucking division. invoice fields default to
  * Unpaid/blank (the trucking office manages invoicing).
+ *
+ * A dust-sourced row differs in exactly two ways. The Division column defaults
+ * to "Dust" rather than blank — that column exists to tell the trucking office
+ * whose work a row represents, and the answer is already known here, though
+ * payroll can still override it in the modal. And unit/description come out
+ * blank, because truck_unit and truck_description are captured on the timesheet
+ * only for the trucking division (see neon-schema.sql); the trucking office
+ * fills the unit in, same as it would on a row typed by hand.
  */
 async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
   const workDate = safeDate(entry.work_date) || '';
-  const hours    = _r2(Number(entry.computed_hours) || 0);
+  // Work + travel. The haul fee bills against this column, and the drive to a
+  // customer and back is part of what the haul cost — dust logs it outside the
+  // clock window entirely (3h out, 3h back on top of 05:00–17:30), so leaving
+  // it off understated the row. Payroll's bulk card already totalled the two
+  // together, so this is also what the approver was shown before clicking.
+  const hours    = _r2((Number(entry.computed_hours) || 0) + (Number(entry.travel_hours) || 0));
   const driver   = await matchTruckingDriver(sql, companyCode, entry.username);
   const customer = safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '';
   const hhmm     = v => String(v || '').slice(0, 5);
   // Payroll-entered fields (validated by validateTruckingInjection). Blank is
   // allowed — payroll can approve now and set the fee later via Edit Row.
   const haulFee  = (fields.haul_fee === '' || fields.haul_fee == null) ? '' : fields.haul_fee;
-  const division = safeStr(fields.division, 100) || '';
+  const division = safeStr(fields.division, 100)
+    || (entry.division === 'dust' ? 'Dust' : '');
 
   const row = {
     id:                `${truckingRowIdPrefix(entry.id)}${Date.now()}`,
@@ -1706,8 +1769,10 @@ module.exports = async (req, res) => {
     // to 'submitted') so payroll sees the pending row again rather than an
     // approved-but-uninjected entry.
     //
-    // For the remaining divisions (dust/trucking) the legacy behavior is
-    // preserved: approval flips status only, no cost-tracking write.
+    // Trucking daily entries — and dust customer hauls, which are the same
+    // work under a different division (see needsTruckTrackingRow) — inject one
+    // Truck Tracking row instead. Dust entries on a standing EES activity
+    // inject an "EES Other" row. Everything else flips status only.
     if (req.method === 'POST' && req.query.action === 'approve') {
       if (!canAdmin) {
         return res.status(403).json({ error: 'Payroll admin access is required' });
@@ -1730,13 +1795,14 @@ module.exports = async (req, res) => {
       const needsQuarry =
         existing.entry_type === 'daily' &&
         existing.division === 'quarry';
-      // Trucking injects an autofilled Truck Tracking row; payroll supplies the
-      // haul fee + division column in the body (both optional).
-      const needsTrucking =
-        existing.entry_type === 'daily' &&
-        existing.division === 'trucking';
-      // Dust injects an autofilled "EES Other" row. Nothing is entered on the
-      // payroll side — every value comes from the timesheet entry itself.
+      // Trucking (and dust customer work) injects an autofilled Truck Tracking
+      // row; payroll supplies the haul fee + division column in the body (both
+      // optional).
+      const needsTrucking = needsTruckTrackingRow(existing);
+      // Dust on a standing EES activity injects an autofilled "EES Other" row.
+      // Nothing is entered on the payroll side — every value comes from the
+      // timesheet entry itself. (Dust customer work routes to Truck Tracking
+      // above; the two are disjoint, so this stays an if/else.)
       const needsEesOther =
         existing.entry_type === 'daily' &&
         existing.division === 'dust' &&
@@ -1908,7 +1974,7 @@ module.exports = async (req, res) => {
       // Trucking re-edit: rewrite the injected Truck Tracking row with the new
       // haul fee / division. insertTruckingRow removes the prior injected row for
       // this entry before appending, so there's no separate delete step.
-      if (existing.entry_type === 'daily' && existing.division === 'trucking') {
+      if (needsTruckTrackingRow(existing)) {
         const { fields, error } = validateTruckingInjection(req.body && req.body.trucking);
         if (error) return res.status(400).json({ error });
         try {
@@ -1994,11 +2060,11 @@ module.exports = async (req, res) => {
       if (existing.division === 'quarry') {
         removedQuarry = await removeQuarryRows(sql, companyCode, existing);
       }
-      // Trucking stores its injected rows in the fct_truck_division blob +
-      // truck_division_entries table — clear those so the Truck Tracking tab
-      // reflects the un-approval.
+      // Trucking (and dust customer work) stores its injected rows in the
+      // fct_truck_division blob + truck_division_entries table — clear those so
+      // the Truck Tracking tab reflects the un-approval.
       let removedTrucking = 0;
-      if (existing.division === 'trucking') {
+      if (needsTruckTrackingRow(existing)) {
         removedTrucking = await removeTruckingRows(sql, companyCode, existing);
       }
       // Dust stores its injected rows in the dust_ees_other_rows blob — clear
@@ -2251,7 +2317,7 @@ module.exports = async (req, res) => {
           const { row } = await quarrySplitForEntry(sql, companyCode, existing);
           if (row) injected += 1;
         }
-        if (existing.division === 'trucking') {
+        if (needsTruckTrackingRow(existing)) {
           if (await truckingHasInjectedRow(sql, companyCode, existing)) injected += 1;
         }
         // Same rule for EES: the tab shows the entry's hours and times verbatim,
@@ -2360,7 +2426,13 @@ module.exports = async (req, res) => {
       if (existing.division === 'quarry') {
         removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
       }
-      if (existing.division === 'trucking') {
+      // Deliberately broader than needsTruckTrackingRow: that gate also reads
+      // the job, and a dust entry un-approved, stripped of its job and then
+      // deleted would slip past it while its injected row (removed on a sweep
+      // that threw) lived on. The sweep is keyed on the "tst-<id>-" prefix, so
+      // looking when there is nothing to find costs one blob read and can never
+      // match another entry's rows.
+      if (existing.division === 'trucking' || existing.division === 'dust') {
         removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
       }
       // Keyed on the division+job the same way the other sweeps are, so a row
@@ -2395,6 +2467,7 @@ module.exports._test = {
   truckingRowIdPrefix,
   matchTruckingDriver,
   insertTruckingRow,
+  needsTruckTrackingRow,
   insertEesOtherRow,
   removeEesOtherRows,
   eesOtherRowIdPrefix,
