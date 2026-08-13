@@ -717,6 +717,8 @@
     .bid-grp-pct-bar i { display: block; height: 100%; background: currentColor; transition: width 0.2s; }
     .bid-grp-pct-val { font-size: 0.72rem; font-variant-numeric: tabular-nums; }
     .bid-grp-pct-sub { color: var(--muted); font-weight: 400; font-size: 0.64rem; }
+    .bid-grp-days { margin-left: 0.75rem; color: var(--blue); font-weight: 500; font-size: 0.66rem; vertical-align: middle; white-space: nowrap; }
+    .bid-grp-days::before { content: '\00b7'; margin-right: 0.5rem; opacity: 0.55; }
     .bid-grp-pct.gp-done   { color: #4ade80; }
     .bid-grp-pct.gp-active { color: var(--blue); }
     .bid-grp-pct.gp-none   { color: var(--muted); }
@@ -8098,6 +8100,14 @@ function _bidGroupPctHTML(g) {
   </span>`;
 }
 
+/* How many days the cost code has actually been worked, sat quietly after the
+   percent badge. Distinct dates across every sub code under it — see
+   daysWorkedForGroup(). Nothing prints until there is a day to report. */
+function _bidGroupDaysHTML(days) {
+  if (!days) return '';
+  return `<span class="bid-grp-days" title="Distinct days worked across this cost code's sub codes. Two sub codes worked the same day count once, and a gap between work days is not counted — the 1st and the 5th are 2 days, not 5.">${days} day${days !== 1 ? 's' : ''} worked</span>`;
+}
+
 function actualForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -8150,6 +8160,43 @@ function laborerCountForBidItem(b, projId) {
     }
   });
   return names.size;
+}
+
+/* A job row is a day on the job when it carries work — hours booked, equipment
+   run, or quantity put down. A material delivery is not: a PO line writes a job
+   row carrying a date and a cost, and nobody was on site for it. */
+function _rowIsWorkDay(r) {
+  return (parseFloat(r.labor_hours) || 0) > 0
+      || (parseFloat(r.equip_hours) || 0) > 0
+      || (parseFloat(r.equip_total_override) || 0) > 0
+      || (parseFloat(r.quantity) || 0) > 0;
+}
+
+/* Distinct days worked under a cost code — the count of separate dates the crew
+   booked to its sub codes, not the span between the first and the last. Work on
+   the 1st and again on the 5th is two days, not five, and a date two sub codes
+   both worked is one day, not two: which is why this counts a set of dates
+   rather than adding the sub codes' own day counts up. Same wildcard matching as
+   actualForBidItem(), so a bid line with only a cost code takes every row under
+   that code. Sorted, so a caller can read the first and last day off the ends. */
+function _workDaysForItems(groupItems, projId) {
+  const items = (groupItems || []).filter(b => b && (b.cost_code || b.sub_code));
+  if (!items.length) return [];
+  const proj = getProj(projId);
+  const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
+  const days = new Set();
+  rows.forEach(r => {
+    if (!r.date || days.has(r.date) || !_rowIsWorkDay(r)) return;
+    const worked = items.some(b =>
+      (b.cost_code ? r.cost_code === b.cost_code : true) &&
+      (b.sub_code  ? r.sub_code  === b.sub_code  : true));
+    if (worked) days.add(r.date);
+  });
+  return [...days].sort();
+}
+
+function daysWorkedForGroup(groupItems, projId) {
+  return _workDaysForItems(groupItems, projId).length;
 }
 
 // Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
@@ -9232,7 +9279,7 @@ function _bidSubCodeCommit(input, projId, biId) {
   }
 
   if (!renamed && !filled) return;   // focus/blur with no edit — leave it alone
-  // Past Avg UC and Hist. Estimate are derived from the sub code, so re-render
+  // Past Avg UC is derived from the sub code, so re-render
   // to show what the new name actually pools with.
   if (bidViewProjId === projId) renderBidTable(projId);
 }
@@ -9560,6 +9607,10 @@ function renderBidTable(projId, opts = {}) {
     const visItems = scFilter ? groupItems.filter(b => scFilter.has(b.sub_code || '')) : groupItems;
     const gPct     = bidGroupPct(visItems, projId);
     const gPctHTML = _bidGroupPctHTML(gPct);
+    // Days come off the same visible sub codes, so a filtered group's header
+    // reports the days behind the rows on screen rather than the whole group's.
+    const gDaysWorked = daysWorkedForGroup(visItems, projId);
+    const gDaysHTML   = _bidGroupDaysHTML(gDaysWorked);
 
     // ── Group header ──
     const hdrTr = document.createElement('tr');
@@ -9571,7 +9622,7 @@ function renderBidTable(projId, opts = {}) {
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
           <strong>${esc(costCode) || '(No Code)'}</strong>
           <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">${groupItems.length} sub code${groupItems.length!==1?'s':''}</span>
-          ${gPctHTML}
+          ${gPctHTML}${gDaysHTML}
         </td>`
       : `<td colspan="${COLS}">
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
@@ -9579,7 +9630,7 @@ function renderBidTable(projId, opts = {}) {
             onclick="event.stopPropagation()"
             onchange="updateBidGroupCode('${projId}','${escJs(costCode)}',this.value)">
           <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${escJs(costCode)}')">+ Sub Code</button>
-          ${gPctHTML}
+          ${gPctHTML}${gDaysHTML}
           <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
             onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${escJs(costCode)}\\'?'))removeBidGroup('${projId}','${escJs(costCode)}')">✕</button>
         </td>`;
@@ -17151,7 +17202,11 @@ async function exportJobSummary(projId, opts = {}) {
   const qtyCORows = [];                 // flat list for the Change Orders section
   groupOrder.forEach(cc => {
     const gItems = groups[cc];
-    bidRowsHTML += `<tr class="group-hdr"><td colspan="9"><strong>${esc(cc) || '(No Code)'}</strong></td></tr>`;
+    // Days worked reads the whole group — the printed report has no filters.
+    const gDays = daysWorkedForGroup(gItems, projId);
+    bidRowsHTML += `<tr class="group-hdr"><td colspan="9"><strong>${esc(cc) || '(No Code)'}</strong>`
+      + (gDays ? `<span style="font-weight:400;color:#1d4ed8"> · ${gDays} day${gDays !== 1 ? 's' : ''} worked</span>` : '')
+      + `</td></tr>`;
     let gBid = 0, gActual = 0;
     gItems.forEach(b => {
       const baseQty = parseFloat(b.quantity) || 0;
@@ -17569,9 +17624,11 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     // the table's exact width — overshooting it forces a phantom trailing
     // column onto every other row of the report.
     const gPct = bidGroupPct(gItems, projId);
+    const gDays = daysWorkedForGroup(gItems, projId);
     rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong>`
       + (gPct ? ` <span style="font-weight:400;color:#166534">· ${gPct.pct.toFixed(1)}% complete</span>`
               + `<span style="font-weight:400;color:#666"> · ${gPct.done}/${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} done</span>` : '')
+      + (gDays ? `<span style="font-weight:400;color:#1d4ed8"> · ${gDays} day${gDays !== 1 ? 's' : ''} worked</span>` : '')
       + `</td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;

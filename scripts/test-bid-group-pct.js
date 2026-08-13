@@ -258,7 +258,7 @@ for (const file of FILES) {
     return new Function('readonly', `
       const _dashCell = '<td class="bid-calc">—</td>';
       const gPctCell  = '<td class="bid-calc" data-pct="1">62.5%</td>';
-      const gBidTotal = 1000, gActual = 900, gCumHrs = 10, gProj = 950, gEstHrs = 5;
+      const gBidTotal = 1000, gActual = 900, gCumHrs = 10, gProj = 950, gDaysWorked = 5;
       const gDiffCls = 'a', gDiffTxt = 'b', gProjCls = 'c';
       const fmt = n => String(n), qfmt = n => String(n);
       ${render.slice(s, e)}
@@ -274,7 +274,7 @@ for (const file of FILES) {
   assert('total row: …and one column earlier in the editable table',
     pctSlot(totalCellsFor(false)) === 3, `slot ${pctSlot(totalCellsFor(false))}`);
   assert('total row: the cell count is unchanged, so nothing downstream shifts',
-    roCells.length === 13 && edCells.length === 13 + (/gEstHrs/.test(render) ? 3 : 2),
+    roCells.length === 13 && edCells.length === 13 + (/gDaysWorked \? gDaysWorked/.test(render) ? 3 : 2),
     `${roCells.length} readonly / ${edCells.length} editable`);
   assert('total row: Cost Total still follows the seven leading cells',
     roCells[7].includes('1000') && edCells[7].includes('1000'));
