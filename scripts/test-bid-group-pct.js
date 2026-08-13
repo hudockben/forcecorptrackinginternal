@@ -273,8 +273,10 @@ for (const file of FILES) {
     pctSlot(totalCellsFor(true)) === 4, `slot ${pctSlot(totalCellsFor(true))}`);
   assert('total row: …and one column earlier in the editable table',
     pctSlot(totalCellsFor(false)) === 3, `slot ${pctSlot(totalCellsFor(false))}`);
+  // The editable table carries three columns the dashboard does not: Start
+  // Date, Target Date and Days Worked.
   assert('total row: the cell count is unchanged, so nothing downstream shifts',
-    roCells.length === 13 && edCells.length === 13 + (/gDaysWorked \? gDaysWorked/.test(render) ? 3 : 2),
+    roCells.length === 13 && edCells.length === 16,
     `${roCells.length} readonly / ${edCells.length} editable`);
   assert('total row: Cost Total still follows the seven leading cells',
     roCells[7].includes('1000') && edCells[7].includes('1000'));

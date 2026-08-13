@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Days worked — the green cost-code header, the printed reports, and the
- * turf page's per-sub-code column
+ * Days worked — the green cost-code header, the bid table's per-sub-code
+ * column, and the printed reports
  *
  * Run: node scripts/test-bid-group-days.js
  *
@@ -20,9 +20,9 @@
  *   1. Behavioural — evaluates the real day-counting out of each division
  *      page against fixtures.
  *   2. Structural — the green header renders it off the same visible sub
- *      codes the percent badge speaks for, both printed reports carry it,
- *      and on turf the Days Worked column that replaced the historical
- *      estimate left none of that estimate behind.
+ *      codes the percent badge speaks for, the bid table's own column and
+ *      both printed reports carry it, and on turf — where the column
+ *      replaced a historical estimate — none of that estimate is left.
  */
 
 const fs   = require('fs');
@@ -170,6 +170,8 @@ for (const file of FILES) {
   const render = extractFunction(src, 'renderBidTable');
   // visItems, not groupItems: a filtered group's header has to speak for the
   // rows on screen, the same rule the percent badge already follows.
+  assert('a sub code counts its own days off the shared rule',
+    /function daysWorkedForBidItem\(b, projId\) \{\s*return _workDaysForItems\(\[b\], projId\)\.length;/.test(src));
   assert('the header counts the visible sub codes',
     (render.match(/const gDaysWorked = daysWorkedForGroup\(visItems, projId\);/g) || []).length === 1);
   assert('the badge reads that one count', /_bidGroupDaysHTML\(gDaysWorked\)/.test(render));
@@ -215,26 +217,34 @@ for (const file of FILES) {
     /td\.days \{ color: #1d4ed8/.test(src) &&
     /Days Worked counts the distinct dates booked to a sub code/.test(js) &&
     /do not add down the column/.test(js));
+
+  // ── The bid table's own Days Worked column ────────────────────────────────
+  console.log('  — the bid table column');
+  const head = src.slice(src.lastIndexOf('<thead>', src.indexOf('<tbody id="bid-fs-tbody">')),
+                         src.indexOf('<tbody id="bid-fs-tbody">'));
+  assert('the column is the table\'s last, after Target Date',
+    /<th>Target Date<\/th>\s*<th class="num" title="Distinct days this sub code has been worked[^"]*">Days Worked<\/th>/.test(head),
+    head.slice(-160).replace(/\s+/g, ' '));
+  assert('every sub code row counts its own days',
+    /const _wDays  = _workDaysForItems\(\[b\], projId\);/.test(render) &&
+    /\$\{_dCount\} day\$\{_dCount !== 1 \? 's' : ''\}/.test(render));
+  assert('the count carries the span it falls across beneath it',
+    /_workDaySpanLabel\(_wDays\)/.test(render) &&
+    /\$\{lbl\(dates\[0\]\)\} \\u2013 \$\{lbl\(dates\[dates\.length - 1\]\)\}/.test(src));
+  assert('the group total row reads the same count as the header above it',
+    /\$\{gDaysWorked \? gDaysWorked \+ ' day'/.test(render));
+  const foot = extractFunction(src, 'renderBidFooter');
+  assert('the footer counts the whole bid the same way',
+    /const totalDays = daysWorkedForGroup\(p\.bidItems \|\| \[\], projId\);/.test(foot) &&
+    /\$\{totalDays \? totalDays \+ ' day'/.test(foot));
 }
 
-/* The Days Worked column replaced the historical estimate on the turf page —
-   the only page that ever carried it. Its machinery has no caller left, and
-   dead code that still looks live is worse than no code. */
-console.log('\n[turf — the column the estimate gave up]');
+/* On turf the column replaced a historical estimate — the only page that ever
+   carried one. Its machinery has no caller left, and dead code that still looks
+   live is worse than no code. */
+console.log('\n[turf — the estimate the column replaced]');
 const turf = fs.readFileSync(path.resolve(__dirname, '../tracker.html'), 'utf8');
-assert('the header names the column for what it now shows',
-  /<th class="num" title="Distinct days this sub code has been worked[^"]*">Days Worked<\/th>/.test(turf) &&
-  !/Hist\. Estimate/.test(turf));
-assert('a sub code counts its own days off the shared rule',
-  /function daysWorkedForBidItem\(b, projId\) \{\s*return _workDaysForItems\(\[b\], projId\)\.length;/.test(turf));
-assert('the cell prints the count over the span it falls across',
-  /\$\{_dCount\} day\$\{_dCount !== 1 \? 's' : ''\}[\s\S]{0,200}_workDaySpanLabel\(_wDays\)/.test(turf));
-assert('the span reads as a range, not a second count',
-  /\$\{lbl\(dates\[0\]\)\} \\u2013 \$\{lbl\(dates\[dates\.length - 1\]\)\}/.test(turf));
-assert('the group total row reads the same count as the header above it',
-  /\$\{gDaysWorked \? gDaysWorked \+ ' day'/.test(turf));
-assert('the bid footer totals days, not estimated hours',
-  /const totalDays = daysWorkedForGroup\(p\.bidItems \|\| \[\], projId\);/.test(turf));
+assert('the estimate is gone from the header it used to name', !/Hist\. Estimate/.test(turf));
 for (const gone of ['_deriveEstFromHist', 'estimateDurationForBidItem', 'applyEstimateToDates', 'gEstHrs', 'totalEstHrs']) {
   assert(`no ${gone} left behind`, !turf.includes(gone), 'still referenced');
 }

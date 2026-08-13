@@ -2651,6 +2651,7 @@
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
         <th>Start Date</th><th>Target Date</th>
+        <th class="num" title="Distinct days this sub code has been worked. A date counts once however many crew or rows were booked to it, and the gaps between work days are not counted — worked the 1st and the 5th is 2 days, not 5.">Days Worked</th>
       </tr></thead>
       <tbody id="bid-fs-tbody"></tbody>
       <tfoot><tr id="bid-fs-tfoot"></tr></tfoot>
@@ -8205,6 +8206,15 @@ function daysWorkedForBidItem(b, projId) {
   return _workDaysForItems([b], projId).length;
 }
 
+/* "Aug 14" for a single day, "Aug 3 – Aug 28" for a span. Printed under a sub
+   code's day count precisely so the two are never confused: eight days worked
+   between Aug 3 and Aug 28 is eight days, not 26. */
+function _workDaySpanLabel(dates) {
+  if (!dates.length) return '';
+  const lbl = d => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return dates.length === 1 ? lbl(dates[0]) : `${lbl(dates[0])} \u2013 ${lbl(dates[dates.length - 1])}`;
+}
+
 // Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
 // actualForBidItem(), so on-bid spend is never miscounted as off-bid. Accepts a
 // project id or the project object itself.
@@ -8326,6 +8336,7 @@ function renderBidFooter(projId, opts = {}) {
   const projCls = (totalProj - totalBid) <= 0 ? 'foot-under' : 'foot-over';
   const diffTxt = totalBid ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : '—';
   const totalCumHrs = (p.bidItems||[]).reduce((s,b) => s + cumulativeHoursForBidItem(b, projId), 0);
+  const totalDays = daysWorkedForGroup(p.bidItems || [], projId);
   const totalLab = new Set((p.dailyRows||[]).map(r => r.employee).filter(Boolean)).size;
   const cells = `
     <td class="foot-label">Totals</td>
@@ -8342,7 +8353,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${totalBid ? projCls : 'foot-actual'}">${(totalBid || totalProj) ? '$'+fmt(totalProj) : '—'}</td>`;
-  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td>`;
+  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td><td class="foot-label num" title="Distinct days worked across every sub code on the bid. A day counts once however many sub codes were worked on it, so this is not the sum of the cost codes above.">${totalDays ? totalDays + ' day' + (totalDays !== 1 ? 's' : '') : '—'}</td>`;
 
   // Update the summary bar in the fullscreen view (only when this project is open).
   // Always shows the financial roll-up (contract value, costs, profit); the
@@ -9285,7 +9296,7 @@ function _bidSubCodeCommit(input, projId, biId) {
   }
 
   if (!renamed && !filled) return;   // focus/blur with no edit — leave it alone
-  // Past Avg UC is derived from the sub code, so re-render
+  // Past Avg UC and Days Worked are derived from the sub code, so re-render
   // to show what the new name actually pools with.
   if (bidViewProjId === projId) renderBidTable(projId);
 }
@@ -9688,6 +9699,16 @@ function renderBidTable(projId, opts = {}) {
         ? ((actual / rqty) > _paUC ? 'color:#f87171' : 'color:#4ade80')
         : '';
 
+      // Days this sub code has been worked — the dates themselves, so the cell
+      // can show the span under the count.
+      const _wDays  = _workDaysForItems([b], projId);
+      const _dCount = _wDays.length;
+      const _dTip   = _dCount
+        ? _dCount + ' distinct day' + (_dCount !== 1 ? 's' : '') + ' worked on this sub code, '
+          + _workDaySpanLabel(_wDays) + '. A date counts once however many crew or rows were booked '
+          + 'to it, and the gaps between work days are not counted.'
+        : 'No days worked on this sub code yet. A day counts once the crew books hours, equipment or quantity to it — a material delivery on its own is not a day.';
+
       const childTr = document.createElement('tr');
       childTr.className = 'bid-group-child';
       childTr.dataset.group = groupId;
@@ -9741,7 +9762,13 @@ function renderBidTable(projId, opts = {}) {
              onchange="updateBidItem('${projId}','${b.id}','start_date',this.value);this.style.color=this.value?'var(--green)':'var(--muted)'"></td>
            <td><input type="date" value="${esc(b.target_date||'')}" title="Target completion date for this sub code"
              style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.target_date ? 'var(--blue)' : 'var(--muted)'}"
-             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>`;
+             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>
+           <td class="bid-calc" style="white-space:nowrap" title="${esc(_dTip)}">${
+             _dCount
+               ? `<div style="font-weight:600;color:var(--blue)">${_dCount} day${_dCount !== 1 ? 's' : ''}</div>`
+                 + `<div style="font-size:0.68rem;color:var(--muted)">${esc(_workDaySpanLabel(_wDays))}</div>`
+               : '—'
+           }</td>`;
       tbody.appendChild(childTr);
     });
 
@@ -9770,7 +9797,7 @@ function renderBidTable(projId, opts = {}) {
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
       <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${(gBidTotal || gProj) ? '$'+fmt(gProj) : '—'}</td>
-      ${readonly ? '' : '<td></td><td></td>'}` ;
+      ${readonly ? '' : `<td></td><td></td><td class="bid-calc" title="Distinct days worked across this cost code's sub codes. A day two sub codes were both worked on counts once, so this is not the sum of the days above it.">${gDaysWorked ? gDaysWorked + ' day' + (gDaysWorked !== 1 ? 's' : '') : '—'}</td>`}` ;
     const totalLabel = `<td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode)||'(No Code)'} — Total</td>`;
 
     const totalTr = document.createElement('tr');
