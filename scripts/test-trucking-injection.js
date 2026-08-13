@@ -127,6 +127,56 @@ function entry(over = {}) {
     assert('driver: ambiguous suffix falls back to raw name',
       (await matchTruckingDriver(sql, CO, 'smith')) === 'smith');
   }
+
+  // ── concatenated logins ──────────────────────────────────────────────────
+  // The real logins on this roster are "lastnamefirstname" with no separator.
+  // Before this they matched nothing and the driver column showed the login.
+  {
+    const roster = ['Mike Barr', 'Colton McMillan', 'George Oakes'];
+    const { sql } = makeSql({ drivers: roster });
+    assert('driver: barrmike → Mike Barr',
+      (await matchTruckingDriver(sql, CO, 'barrmike')) === 'Mike Barr');
+    assert('driver: mcmillancolton → Colton McMillan',
+      (await matchTruckingDriver(sql, CO, 'mcmillancolton')) === 'Colton McMillan');
+    assert('driver: oakesgeorge → George Oakes',
+      (await matchTruckingDriver(sql, CO, 'oakesgeorge')) === 'George Oakes');
+    // The other convention resolves too — companies build logins both ways.
+    assert('driver: mikebarr → Mike Barr',
+      (await matchTruckingDriver(sql, CO, 'mikebarr')) === 'Mike Barr');
+    // And the shapes that already worked still do.
+    assert('driver: surname alone still resolves',
+      (await matchTruckingDriver(sql, CO, 'oakes')) === 'George Oakes');
+    assert('driver: initial+surname resolves',
+      (await matchTruckingDriver(sql, CO, 'goakes')) === 'George Oakes');
+    assert('driver: full name still resolves',
+      (await matchTruckingDriver(sql, CO, 'George Oakes')) === 'George Oakes');
+    assert('driver: case and punctuation ignored',
+      (await matchTruckingDriver(sql, CO, 'BARR.MIKE')) === 'Mike Barr');
+    assert('driver: a name on nobody stays verbatim',
+      (await matchTruckingDriver(sql, CO, 'nunezandy')) === 'nunezandy');
+  }
+  {
+    // "marksann" IS Mark Sann's name run together, and is also Ann Marks's run
+    // together backwards. The cascade is ordered by confidence, so the exact
+    // spelling wins outright and the reversal never gets a say.
+    const { sql } = makeSql({ drivers: ['Ann Marks', 'Mark Sann'] });
+    assert('driver: an exact concatenation beats a reversed one',
+      (await matchTruckingDriver(sql, CO, 'marksann')) === 'Mark Sann');
+  }
+  {
+    // A genuine tie WITHIN a stage: both of these reverse to "marksann" and
+    // neither spells it forwards, so nothing separates them. Resolving to
+    // either would put the wrong driver on a billed row, so it stays a login.
+    const { sql } = makeSql({ drivers: ['Ann Marks', 'Ann Marie Marks'] });
+    assert('driver: an unbreakable tie falls back to raw',
+      (await matchTruckingDriver(sql, CO, 'marksann')) === 'marksann');
+  }
+  {
+    // Doubled letters are where the roster and the login disagree in practice.
+    const { sql } = makeSql({ drivers: ['Matt Shufstall'] });
+    assert('driver: doubled-letter spelling still matches',
+      (await matchTruckingDriver(sql, CO, 'shuffstallmatt')) === 'Matt Shufstall');
+  }
   {
     const { sql } = makeSql({ drivers: [] });
     assert('driver: empty roster keeps raw name',
@@ -410,11 +460,9 @@ function entry(over = {}) {
     });
     const row = await insertTruckingRow(sql, CO, dust, {});
 
-    // The roster matcher resolves an exact name or a last-name login ("barr" →
-    // "Mike Barr"). A "lastnamefirstname" login like this one matches neither
-    // rule, so the raw login is kept — the Truck Tracking driver cell is a free
-    // -text combobox, so it reads as typed rather than being dropped.
-    assert('unmatched login kept verbatim',   row.driver === 'barrmike');
+    // The login is "lastnamefirstname"; the roster reads "Mike Barr". The
+    // driver column shows the driver, not the login.
+    assert('driver resolved off the roster',  row.driver === 'Mike Barr');
     assert('date autofilled',                 row.actual_date === '2026-08-12');
     assert('customer ← job label',            row.customer === 'Antero');
     assert('hours ← work + travel',           row.total_hours === 18.5);
@@ -429,8 +477,8 @@ function entry(over = {}) {
     assert('mirrored into truck_division_entries', store.tde.has(row.id));
     assert('mirror carries the Dust division', store.tde.get(row.id).division === 'Dust');
 
-    // A last-name login on the same roster does resolve, confirming the miss
-    // above is about the login format and not about the division.
+    // The surname on its own resolves to the same driver, so a company that
+    // builds logins either way lands on one name in the column.
     const { sql: sql2 } = makeSql({ drivers: ['Mike Barr'] });
     const named = await insertTruckingRow(sql2, CO, entry({
       id: 80, division: 'dust', job_id: 'Antero', username: 'barr',

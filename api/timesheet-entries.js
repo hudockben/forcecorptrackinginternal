@@ -1012,11 +1012,21 @@ function validateTruckingInjection(raw) {
 
 // Best-effort match of the timesheet employee to the trucking driver roster so
 // the injected row's driver reads as a real driver name where possible. The
-// roster lives in dropdown_lists (list_name='truck_drivers'). Login names are
-// often a last name; try exact then an unambiguous suffix, else keep the raw
-// name (the Truck Tracking combobox preserves free text).
+// roster lives in dropdown_lists (list_name='truck_drivers').
+//
+// Matching is the same cascade the split path uses (see matchRosterEmployee):
+// exact, the name's words run together either way round, surname alone,
+// initial+surname, then a shortened first name — each retried with doubled
+// letters collapsed, and each having to hit exactly one roster entry.
+//
+// This function used to try the login verbatim and then a " surname" suffix,
+// which is the same pair the roster lookup was cut back from, and it left every
+// concatenated login unmatched: "barrmike" against a roster reading "Mike Barr"
+// fell through to the raw login, so the driver column showed the login instead
+// of the driver. An unmatched name is still kept verbatim rather than blanked —
+// the Truck Tracking driver cell is a free-text combobox.
 async function matchTruckingDriver(sql, companyCode, name) {
-  const n = (name || '').trim().toLowerCase();
+  const n = (name || '').trim();
   if (!n) return name || '';
   // Roster source of truth is the fct_truck_division_lists blob (the
   // dropdown_lists mirror can lag in serverless — same reason api/timesheet-jobs
@@ -1039,11 +1049,11 @@ async function matchTruckingDriver(sql, companyCode, name) {
     `;
     names = rows.map(r => String(r.value || '')).filter(Boolean);
   }
-  const exact = names.find(v => v.trim().toLowerCase() === n);
-  if (exact) return exact;
-  const suffix = names.filter(v => v.trim().toLowerCase().endsWith(' ' + n));
-  if (suffix.length === 1) return suffix[0];
-  return name || '';
+  // matchRosterEmployee takes the roster as {name} objects (it is shared with
+  // the employee blob, whose entries carry a rate alongside the name); the
+  // driver roster is a flat list of names, so wrap and unwrap.
+  const hit = matchRosterEmployee(names.map(v => ({ name: v })), name);
+  return hit ? hit.name : (name || '');
 }
 
 // Upsert one injected row into the truck_division_entries mirror table. Mirrors
