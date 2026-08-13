@@ -8199,6 +8199,12 @@ function daysWorkedForGroup(groupItems, projId) {
   return _workDaysForItems(groupItems, projId).length;
 }
 
+/* One sub code's own days, off the same rule the group uses — so a row and the
+   cost code above it can never be counted two different ways. */
+function daysWorkedForBidItem(b, projId) {
+  return _workDaysForItems([b], projId).length;
+}
+
 // Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
 // actualForBidItem(), so on-bid spend is never miscounted as off-bid. Accepts a
 // project id or the project object itself.
@@ -17204,7 +17210,7 @@ async function exportJobSummary(projId, opts = {}) {
     const gItems = groups[cc];
     // Days worked reads the whole group — the printed report has no filters.
     const gDays = daysWorkedForGroup(gItems, projId);
-    bidRowsHTML += `<tr class="group-hdr"><td colspan="9"><strong>${esc(cc) || '(No Code)'}</strong>`
+    bidRowsHTML += `<tr class="group-hdr"><td colspan="10"><strong>${esc(cc) || '(No Code)'}</strong>`
       + (gDays ? `<span style="font-weight:400;color:#1d4ed8"> · ${gDays} day${gDays !== 1 ? 's' : ''} worked</span>` : '')
       + `</td></tr>`;
     let gBid = 0, gActual = 0;
@@ -17223,6 +17229,7 @@ async function exportJobSummary(projId, opts = {}) {
       // colored against it the way the variance beside it is.
       const runUC  = rqty > 0 && actual ? actual / rqty : 0;
       const rucCls = (runUC && uc) ? (runUC <= uc ? 'under' : 'over') : '';
+      const bDays  = daysWorkedForBidItem(b, projId);
       gBid += bidTot; gActual += actual;
       coQtyCostImpact += coDelta * uc;
       (b.change_orders || []).forEach(co => qtyCORows.push({ co, item: b, uc }));
@@ -17241,6 +17248,7 @@ async function exportJobSummary(projId, opts = {}) {
         <td class="num">${bidTot ? '$' + fmt(bidTot) : dash}</td>
         <td class="num actual">${actual ? '$' + fmt(actual) : dash}</td>
         <td class="num ${varc >= 0 ? 'under' : 'over'}">${bidTot ? money(varc) : dash}</td>
+        <td class="num days">${bDays ? bDays + ' day' + (bDays !== 1 ? 's' : '') : dash}</td>
       </tr>`;
     });
     grandBid += gBid; mappedActual += gActual;
@@ -17250,6 +17258,7 @@ async function exportJobSummary(projId, opts = {}) {
       <td class="num">${gBid ? '$' + fmt(gBid) : dash}</td>
       <td class="num actual">${gActual ? '$' + fmt(gActual) : dash}</td>
       <td class="num ${gVar >= 0 ? 'under' : 'over'}">${gBid ? money(gVar) : dash}</td>
+      <td class="num days">${gDays ? gDays + ' day' + (gDays !== 1 ? 's' : '') : dash}</td>
     </tr>`;
   });
 
@@ -17259,16 +17268,17 @@ async function exportJobSummary(projId, opts = {}) {
   const totalActual = (p.dailyRows || []).reduce((s, r) => s + dailyRowCost(r), 0);
   const unmatched   = totalActual - mappedActual;
   if (unmatched > 0.005) {
-    bidRowsHTML += `<tr class="group-hdr"><td colspan="9"><strong>Unmatched Job Rows</strong> <span style="font-weight:400;color:#777">(cost entered on job rows with no matching bid item)</span></td></tr>`;
+    bidRowsHTML += `<tr class="group-hdr"><td colspan="10"><strong>Unmatched Job Rows</strong> <span style="font-weight:400;color:#777">(cost entered on job rows with no matching bid item)</span></td></tr>`;
     bidRowsHTML += `<tr class="subtotal">
       <td colspan="6"><em>Unmatched — Subtotal</em></td>
       <td class="num">${dash}</td>
       <td class="num actual">$${fmt(unmatched)}</td>
       <td class="num">${dash}</td>
+      <td class="num">${dash}</td>
     </tr>`;
   }
   if (!bidRowsHTML) {
-    bidRowsHTML = `<tr><td colspan="9" style="text-align:center;color:#888;padding:8px">No bid items on this project.</td></tr>`;
+    bidRowsHTML = `<tr><td colspan="10" style="text-align:center;color:#888;padding:8px">No bid items on this project.</td></tr>`;
   }
 
   const grandActual = totalActual;
@@ -17330,7 +17340,9 @@ async function exportJobSummary(projId, opts = {}) {
 
   // ── Header work metrics (from job rows) ───────────────────────────
   const rowsAll    = p.dailyRows || [];
-  const daysWorked = new Set(rowsAll.map(r => r.date).filter(Boolean)).size;
+  // Same rule as the Days Worked column below: a day the crew booked work to.
+  // A delivery that landed on a Saturday is not a day on the job.
+  const daysWorked = new Set(rowsAll.filter(_rowIsWorkDay).map(r => r.date).filter(Boolean)).size;
   let laborHours = 0, laborCost = 0, equipCost = 0, truckingCost = 0;
   rowsAll.forEach(r => {
     const c = calcDaily(r);
@@ -17492,6 +17504,7 @@ async function exportJobSummary(projId, opts = {}) {
     td.under, .note .under { color: #166534; }
     td.over,  .note .over  { color: #991b1b; }
     td.actual { color: #92400e; }
+    td.days { color: #1d4ed8; white-space: nowrap; }
     tr.group-hdr td { background: #e8f5e9; font-size: 10px; padding: 4px 6px; }
     tr.subtotal td { background: #d9e2ea; font-weight: 700; font-style: italic; font-size: 10px; border-top: 1.5px solid #64748b; border-bottom: 1px solid #94a3b8; }
     tr.totals td { font-weight: 800; font-size: 11px; background: #f9f9f9; border-top: 2px solid #999; }
@@ -17538,6 +17551,7 @@ async function exportJobSummary(projId, opts = {}) {
       <th class="num">Bid Qty</th><th class="num">Running Qty</th>
       <th class="num">Bid Unit Cost</th><th class="num">Running Unit Cost</th>
       <th class="num">Bid Cost</th><th class="num">Actual Cost</th><th class="num">Variance</th>
+      <th class="num">Days Worked</th>
     </tr></thead>
     <tbody>${bidRowsHTML}
     <tr class="totals">
@@ -17545,9 +17559,11 @@ async function exportJobSummary(projId, opts = {}) {
       <td class="num">${grandBid ? '$' + fmt(grandBid) : dash}</td>
       <td class="num actual">${grandActual ? '$' + fmt(grandActual) : dash}</td>
       <td class="num ${grandVar >= 0 ? 'under' : 'over'}">${grandBid ? money(grandVar) : dash}</td>
+      <td class="num days">${daysWorked ? daysWorked + ' day' + (daysWorked !== 1 ? 's' : '') : dash}</td>
     </tr></tbody>
   </table>
   <p class="note">Bid Unit Cost is the rate the sub code was bid at. Running Unit Cost is actual cost &divide; running quantity — what the work has cost per unit put down so far — printed beside it to be read against it: <span class="under">green</span> at or under the bid rate, <span class="over">red</span> above it, blank on a sub code with no quantity recorded against it. Neither is totalled per cost code, because a cost code mixes units.</p>
+  <p class="note">Days Worked counts the distinct dates booked to a sub code — a date counts once however many crew were on it, and the gaps between work days are not counted. The figures do not add down the column: a day two sub codes were both worked on is one day on the job, so each cost code and the project total count their own days rather than summing the rows above.</p>
 
   <h3>Purchases — Purchase Orders &amp; Job-Row Material</h3>
   <table>

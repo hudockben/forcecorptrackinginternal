@@ -101,7 +101,7 @@ for (const app of APPS) {
     const trail = count(row, /<td[ >]/g) - (span ? 1 : 0);
     assert(`${label} covers all ${COLS} columns`, !!row && span + trail === COLS,
       `colspan ${span} + ${trail} cells`);
-    assert(`${label} keeps Bid / Actual / Variance in the last three columns`, trail === 3, `${trail} trailing`);
+    assert(`${label} keeps Bid / Actual / Variance / Days in the last four columns`, trail === 4, `${trail} trailing`);
   }
 
   // ── The reader is told what the columns are ────────────────────────
