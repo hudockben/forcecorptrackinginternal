@@ -66,14 +66,19 @@ for (const app of APPS) {
   const thead = slice(js, '<th>Sub Code</th>', '</tr></thead>');
   const COLS  = count(thead, /<th[ >]/g);
   assert('the cost table declares a header row', COLS > 0);
-  assert('Running Unit Cost sits between Running Qty and Bid Cost',
-    /Running Qty<\/th><th[^>]*>Running Unit Cost<\/th>\s*<th[^>]*>Bid Cost/.test(thead), thead.replace(/\s+/g, ' '));
+  // The two rates only compare if they are adjacent — a column between them
+  // is the whole reason the bid rate was brought into the report.
+  assert('Bid Unit Cost and Running Unit Cost sit side by side, before Bid Cost',
+    /Running Qty<\/th>\s*<th[^>]*>Bid Unit Cost<\/th><th[^>]*>Running Unit Cost<\/th>\s*<th[^>]*>Bid Cost/.test(thead),
+    thead.replace(/\s+/g, ' '));
 
   // ── Body row: one cell per header ──────────────────────────────────
   const bodyRow = slice(js, '<td class="sub">${esc(b.sub_code)', '</tr>`;');
   assert('one body cell per header', count(bodyRow, /<td[ >]/g) === COLS,
     `${count(bodyRow, /<td[ >]/g)} td / ${COLS} th`);
-  assert('the rate is printed as money, blank when there is none',
+  assert('the bid rate is the bid item\'s own unit cost',
+    /<td class="num">\$\{uc \? '\$' \+ fmt\(uc\) : dash\}<\/td>\s*<td class="num \$\{rucCls\}"/.test(bodyRow), bodyRow.replace(/\s+/g, ' '));
+  assert('the running rate is printed as money, blank when there is none',
     /<td class="num \$\{rucCls\}">\$\{runUC \? '\$' \+ fmt\(runUC\) : dash\}<\/td>/.test(bodyRow), bodyRow.replace(/\s+/g, ' '));
 
   // ── Group headers span the full width ──────────────────────────────
@@ -84,8 +89,8 @@ for (const app of APPS) {
     new RegExp(`<tr><td colspan="${COLS}"[^>]*>No bid items on this project\\.`).test(js));
 
   // ── Subtotals and totals: label colspan + trailing cells = width ───
-  // The label runs through Running Unit Cost — a cost code mixes units,
-  // so there is no per-unit figure to total.
+  // The label runs through both unit-cost columns — a cost code mixes
+  // units, so there is no per-unit figure to total.
   const rows = [
     ['cost-code subtotal', slice(js, '<tr class="subtotal">', '</tr>`;')],
     ['unmatched subtotal', slice(js, '<tr class="subtotal">', '</tr>`;', js.indexOf('Unmatched Job Rows'))],
@@ -99,8 +104,9 @@ for (const app of APPS) {
     assert(`${label} keeps Bid / Actual / Variance in the last three columns`, trail === 3, `${trail} trailing`);
   }
 
-  // ── The reader is told what the column is ──────────────────────────
-  assert('the report explains the rate under the table',
+  // ── The reader is told what the columns are ────────────────────────
+  assert('the report explains both rates under the table',
+    /Bid Unit Cost is the rate the sub code was bid at/.test(js) &&
     /Running Unit Cost is actual cost &divide; running quantity/.test(js));
   assert('the note\'s colour words are styled — td.under alone would not reach them',
     /td\.under, \.note \.under \{/.test(js) && /td\.over,\s+\.note \.over\s+\{/.test(js));
