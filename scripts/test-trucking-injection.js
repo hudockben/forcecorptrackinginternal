@@ -25,6 +25,7 @@ const {
   truckingRowIdPrefix, matchTruckingDriver, insertTruckingRow,
   removeTruckingRows, truckingHasInjectedRow, truckingSplitForEntry,
   validateTruckingInjection, TRUCK_DIVISION_BLOB, needsTruckTrackingRow,
+  normalizeEntryBody,
 } = _test;
 const { truckingJobs } = require('../api/timesheet-jobs.js')._test;
 
@@ -440,6 +441,83 @@ function entry(over = {}) {
       ];
       assert('page and server agree on every case',
         cases.every(e => !!pageGate(e, ids) === !!needsTruckTrackingRow(e)));
+    }
+  }
+
+  // ── the server keeps the unit on exactly those entries ───────────────────
+  // The page decides what to ASK for; this decides what is stored. They are
+  // gated on the same predicate, so a unit typed on a dust haul survives and a
+  // unit posted against anything else is dropped rather than leaking across.
+  console.log('\n[the server keeps the unit on the right entries]');
+  {
+    const body = over => ({
+      entry_type: 'daily', work_date: '2026-08-12',
+      division: 'dust', job_id: 'Antero', job_label: 'Antero',
+      start_time: '05:00', end_time: '17:30', supervisor_name: 'Scott Reefer',
+      truck_unit: '634', truck_description: 'dust run',
+      ...over,
+    });
+    const norm = over => normalizeEntryBody(body(over)).data;
+
+    const dustHaul = norm({});
+    assert('dust customer: unit kept',        dustHaul && dustHaul.truck_unit === '634');
+    assert('dust customer: description kept', dustHaul && dustHaul.truck_description === 'dust run');
+
+    const trucking = norm({ division: 'trucking', job_id: 'Acme Materials' });
+    assert('trucking: unit kept', trucking && trucking.truck_unit === '634');
+
+    const ees = norm({ job_id: 'ees:preloading' });
+    assert('dust EES: unit dropped', ees && ees.truck_unit === null);
+
+    // A jobless daily entry never gets as far as the gate — it is rejected
+    // outright. So needsTruckTrackingRow's job check is not reachable from a
+    // fresh submit; it guards the approve/un-approve/delete paths, which run
+    // the predicate against stored rows where the job can be null.
+    const jobless = normalizeEntryBody(body({ job_id: '', job_label: '' }));
+    assert('dust, no job: rejected before the gate',
+      !jobless.data && /job_id and job_label are required/.test(jobless.error || ''));
+
+    const turf = norm({ division: 'turf', job_id: '26053' });
+    assert('turf: unit dropped', turf && turf.truck_unit === null);
+  }
+
+  // ── timesheet.html asks for the unit on exactly those entries ────────────
+  // The Unit + Description are only kept for entries that inject a Truck
+  // Tracking row. If the page reveals them on a selection the server discards,
+  // a driver types a unit into a void; if it hides them on one the server
+  // keeps, the row loses a unit nobody knew to enter.
+  console.log('\n[timesheet.html asks for the unit on the right entries]');
+  {
+    const PAGE = require('fs').readFileSync(path.resolve(__dirname, '../timesheet.html'), 'utf8');
+    const fn = /function isTruckSelection\(i = 0\) \{([\s\S]*?)\n    \}/.exec(PAGE);
+    assert('isTruckSelection is still a findable function', !!fn);
+    const pm = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(PAGE);
+    assert('timesheet.html still declares EES_JOB_IDS', !!pm);
+    if (fn && pm) {
+      const ids = JSON.parse(pm[1].replace(/'/g, '"'));
+      // The page reads its two values out of the DOM; feed it a stub so the
+      // real body runs against the same cases the server answered.
+      const run = (division, job) => {
+        const bel = (_i, key) => ({ value: key === 'division' ? division : job });
+        return !!new Function('bel', 'EES_JOB_IDS', 'i', fn[1])(bel, ids, 0);
+      };
+      const cases = [
+        ['trucking', 'Acme Materials'],
+        ['dust',     'Antero'],
+        ['dust',     'ees:preloading'],
+        ['dust',     'ees:washing'],
+        ['dust',     ''],
+        ['turf',     'Juniata College Baseball'],
+        ['quarry',   'daily:1'],
+        ['',         ''],
+      ];
+      assert('page and server agree on every selection',
+        cases.every(([division, job]) =>
+          run(division, job) === needsTruckTrackingRow({ entry_type: 'daily', division, job_id: job })));
+      // The reveal has to be driven by the job, not just the division, or a
+      // dust worker never sees the field: the division is picked first and the
+      // job only afterwards.
+      assert('dust reveal depends on the job', run('dust', 'Antero') && !run('dust', 'ees:washing'));
     }
   }
 
