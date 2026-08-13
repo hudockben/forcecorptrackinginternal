@@ -5147,7 +5147,11 @@
     async function openTruckingModal(entry, mode) {
       truckingEntry = entry;
       truckingMode  = mode || 'approve';
-      const work = Number(entry.computed_hours) || 0;
+      // Work + travel — the figure the haul fee bills against. Shown with the
+      // legs broken out so the approver can see where the number came from
+      // rather than wondering why it disagrees with the clock window.
+      const work   = Number(entry.computed_hours) || 0;
+      const travel = Number(entry.travel_hours) || 0;
       const times = (entry.start_time && entry.end_time)
         ? `${escapeHtml(entry.start_time)} – ${escapeHtml(entry.end_time)}`
         : '—';
@@ -5160,7 +5164,9 @@
         <div>Customer: <strong>${escapeHtml(entry.job_label || '—')}</strong></div>
         <div>Unit: <strong>${escapeHtml(entry.truck_unit || '—')}</strong></div>
         <div>Start–End: <strong>${times}</strong></div>
-        <div>Hours: <strong>${num2(work)}</strong></div>
+        <div>Hours: <strong>${num2(work + travel)}</strong>${travel > 0
+          ? ` <span style="font-weight:400;color:var(--muted)">(${num2(work)} work + ${num2(travel)} travel)</span>`
+          : ''}</div>
         <div style="grid-column:1 / -1">Description: <strong>${escapeHtml(entry.truck_description || '—')}</strong></div>
         ${entry.division === 'dust' ? `<div style="grid-column:1 / -1;color:var(--muted);font-size:12px">
           Dust haul — unit &amp; description aren't captured on a dust timesheet;

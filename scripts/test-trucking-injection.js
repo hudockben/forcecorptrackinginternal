@@ -401,7 +401,10 @@ function entry(over = {}) {
       id: 77, username: 'barrmike', division: 'dust',
       job_id: 'Antero', job_label: 'Antero',
       work_date: '2026-08-12', start_time: '05:00', end_time: '17:30',
-      computed_hours: 12.5, notes: 'dust control',
+      // Dust logs the drive outside the clock window: 3h out + 3h back on top
+      // of 05:00–17:30. Barr's real entry.
+      computed_hours: 12.5, travel_to_site_hours: 3.0, travel_to_shop_hours: 3.0,
+      travel_hours: 6.0, notes: 'dust control',
       // A dust timesheet never captures these — they are trucking-only columns.
       truck_unit: null, truck_description: null,
     });
@@ -414,7 +417,7 @@ function entry(over = {}) {
     assert('unmatched login kept verbatim',   row.driver === 'barrmike');
     assert('date autofilled',                 row.actual_date === '2026-08-12');
     assert('customer ← job label',            row.customer === 'Antero');
-    assert('hours ← computed work hours',     row.total_hours === 12.5);
+    assert('hours ← work + travel',           row.total_hours === 18.5);
     assert('start/end autofilled',            row.actual_start === '05:00' && row.actual_end === '17:30');
     assert('notes carried over',              row.notes === 'dust control');
     assert('division defaults to Dust',       row.division === 'Dust');
@@ -439,6 +442,54 @@ function entry(over = {}) {
     const removed = await removeTruckingRows(sql, CO, dust);
     assert('un-approve removes it', removed === 1);
     assert('and clears the mirror row', !store.tde.has(row.id));
+  }
+
+  // ── total_hours = work + travel, on every Truck Tracking row ─────────────
+  // The haul fee bills against this column, so the drive has to be in it. The
+  // rule is not dust-specific: the travel fields are on the shared timesheet
+  // form for every division, and one column that meant "work only" on some
+  // rows and "work + travel" on others would be unauditable in a tab that
+  // shows them side by side.
+  console.log('\n[travel hours count toward the total]');
+  {
+    const { sql } = makeSql({ drivers: [] });
+    const withTravel = await insertTruckingRow(sql, CO, entry({
+      id: 90, computed_hours: 8.0, travel_hours: 1.5,
+    }), {});
+    assert('trucking: 8.00 work + 1.50 travel → 9.50', withTravel.total_hours === 9.5);
+
+    const noTravel = await insertTruckingRow(sql, CO, entry({
+      id: 91, computed_hours: 8.0, travel_hours: 0,
+    }), {});
+    assert('trucking: no travel → work hours unchanged', noTravel.total_hours === 8);
+
+    // travel_hours is nullable, and a NUMERIC comes back from the driver as a
+    // string — neither may turn the total into NaN or string concatenation.
+    const nullTravel = await insertTruckingRow(sql, CO, entry({
+      id: 92, computed_hours: 8.0, travel_hours: null,
+    }), {});
+    assert('null travel → work hours, not NaN', nullTravel.total_hours === 8);
+
+    const strTravel = await insertTruckingRow(sql, CO, entry({
+      id: 93, computed_hours: '8.00', travel_hours: '1.50',
+    }), {});
+    assert('numeric strings add, never concatenate', strTravel.total_hours === 9.5);
+
+    // Rounds to 2dp like every other money/hours field here.
+    const oddTravel = await insertTruckingRow(sql, CO, entry({
+      id: 94, computed_hours: 7.333, travel_hours: 1.333,
+    }), {});
+    assert('rounded to 2dp', oddTravel.total_hours === 8.67);
+
+    // And the mirror column carries the same figure the blob does — the two
+    // are written by separate statements, so they can disagree.
+    const { sql: sql3, store } = makeSql({ drivers: [] });
+    const mirrored = await insertTruckingRow(sql3, CO, entry({
+      id: 95, computed_hours: 12.5, travel_hours: 6.0,
+    }), {});
+    assert('mirror total_hours agrees with the blob',
+      store.tde.get(mirrored.id).total_hours === mirrored.total_hours);
+    assert('mirror stores it as a number', store.tde.get(mirrored.id).total_hours === 18.5);
   }
 
   // ── payroll can still override the Dust default ──────────────────────────

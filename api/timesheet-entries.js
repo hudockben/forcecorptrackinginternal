@@ -1108,8 +1108,9 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  * it, and mirrors the row into truck_division_entries. Returns the row written.
  *
  * Autofill: driver ← employee, actual_date ← work_date, actual_start/end ←
- * start/end, total_hours ← the (lunch-deducted) computed work hours, customer ←
- * job_label, unit ← truck_unit, description ← truck_description. The haul fee and
+ * start/end, total_hours ← the (lunch-deducted) work hours PLUS travel hours,
+ * customer ← job_label, unit ← truck_unit, description ← truck_description.
+ * The haul fee and
  * division column come from the payroll modal (fields arg); everything else is
  * derived from the timesheet entry so the Truck Tracking row is fully owned by
  * payroll and locked in the Trucking division. invoice fields default to
@@ -1125,7 +1126,12 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  */
 async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
   const workDate = safeDate(entry.work_date) || '';
-  const hours    = _r2(Number(entry.computed_hours) || 0);
+  // Work + travel. The haul fee bills against this column, and the drive to a
+  // customer and back is part of what the haul cost — dust logs it outside the
+  // clock window entirely (3h out, 3h back on top of 05:00–17:30), so leaving
+  // it off understated the row. Payroll's bulk card already totalled the two
+  // together, so this is also what the approver was shown before clicking.
+  const hours    = _r2((Number(entry.computed_hours) || 0) + (Number(entry.travel_hours) || 0));
   const driver   = await matchTruckingDriver(sql, companyCode, entry.username);
   const customer = safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '';
   const hhmm     = v => String(v || '').slice(0, 5);
