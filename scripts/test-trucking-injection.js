@@ -19,11 +19,12 @@
  * No DB or server required.
  */
 
+const path = require('path');
 const { _test } = require('../api/timesheet-entries.js');
 const {
   truckingRowIdPrefix, matchTruckingDriver, insertTruckingRow,
   removeTruckingRows, truckingHasInjectedRow, truckingSplitForEntry,
-  validateTruckingInjection, TRUCK_DIVISION_BLOB,
+  validateTruckingInjection, TRUCK_DIVISION_BLOB, needsTruckTrackingRow,
 } = _test;
 const { truckingJobs } = require('../api/timesheet-jobs.js')._test;
 
@@ -308,6 +309,148 @@ function entry(over = {}) {
     assert('resplit: haul fee updated', injected[0].haul_fee === 130);
     assert('resplit: division updated', injected[0].division === 'Quarry');
     assert('resplit: autofill preserved (unit)', injected[0].unit === '634');
+  }
+
+  // ── The routing gate: which entries inject a Truck Tracking row ──────────
+  // Trucking has always injected. Dust customer work injects too, because that
+  // work is hauling — but only when it names a customer, and never when it is
+  // one of the two standing EES activities (those go to the dust EES Other tab).
+  console.log('\n[routing gate]');
+  {
+    assert('trucking daily            → injects', needsTruckTrackingRow(entry()));
+    assert('dust + a customer         → injects',
+      needsTruckTrackingRow(entry({ division: 'dust', job_id: 'Antero', job_label: 'Antero' })));
+    assert('dust + pre loading        → does NOT inject',
+      !needsTruckTrackingRow(entry({ division: 'dust', job_id: 'ees:preloading' })));
+    assert('dust + washing            → does NOT inject',
+      !needsTruckTrackingRow(entry({ division: 'dust', job_id: 'ees:washing' })));
+    assert('dust + no job             → does NOT inject',
+      !needsTruckTrackingRow(entry({ division: 'dust', job_id: '' })));
+    assert('turf                      → does NOT inject',
+      !needsTruckTrackingRow(entry({ division: 'turf' })));
+    assert('quarry                    → does NOT inject',
+      !needsTruckTrackingRow(entry({ division: 'quarry' })));
+    assert('time off                  → does NOT inject',
+      !needsTruckTrackingRow(entry({ entry_type: 'time_off' })));
+    assert('null entry                → does NOT inject', !needsTruckTrackingRow(null));
+
+    // Dust routes to exactly one destination. If both gates ever answered true
+    // for the same entry the approve path's if/else would silently drop one
+    // injection, so the disjointness is the invariant, not the ordering.
+    const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const m = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(SRC);
+    const eesIds = m ? JSON.parse(m[1].replace(/'/g, '"')) : [];
+    const needsEes = e => e.entry_type === 'daily' && e.division === 'dust' && eesIds.includes(String(e.job_id || ''));
+    const dustCases = ['Antero', 'ees:preloading', 'ees:washing', ''];
+    assert('dust never routes to both tabs at once',
+      dustCases.every(job => {
+        const e = entry({ division: 'dust', job_id: job });
+        return !(needsTruckTrackingRow(e) && needsEes(e));
+      }));
+
+    // The gate is one function called at four sites (approve, resplit,
+    // un-approve, the edit guard). Inlining it at any of them is how an
+    // injected row starts outliving the entry that made it.
+    const calls = (SRC.match(/needsTruckTrackingRow\(existing\)/g) || []).length;
+    assert('approve, resplit, un-approve and the edit guard share the gate',
+      calls === 4, `found ${calls}`);
+  }
+
+  // ── payroll.html must agree on the gate ─────────────────────────────────
+  // The page decides whether to open the haul-fee modal. If it disagrees with
+  // the server, payroll approves a dust haul without ever being asked for a
+  // fee and the injected row bills nothing until somebody notices. The page is
+  // static and cannot require the module, so this is the only thing holding
+  // the two together.
+  console.log('\n[payroll.html mirrors the gate]');
+  {
+    const SRC  = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const PAGE = require('fs').readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
+    const sm = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(SRC);
+    const pm = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(PAGE);
+    assert('payroll.html declares EES_JOB_IDS', !!pm);
+    assert('and names exactly the same jobs as the server',
+      !!sm && !!pm && sm[1].replace(/\s+/g, '') === pm[1].replace(/\s+/g, ''),
+      `page ${pm && pm[1]} vs server ${sm && sm[1]}`);
+
+    // Run the page's own predicate against the same cases the server answered.
+    const fn = /function entryNeedsTrucking\(e\) \{([\s\S]*?)\n    \}/.exec(PAGE);
+    assert('entryNeedsTrucking is still a findable function', !!fn);
+    if (fn) {
+      const pageGate = new Function('e', 'EES_JOB_IDS', fn[1]);
+      const ids = JSON.parse(pm[1].replace(/'/g, '"'));
+      const cases = [
+        entry(),
+        entry({ division: 'dust', job_id: 'Antero' }),
+        entry({ division: 'dust', job_id: 'ees:preloading' }),
+        entry({ division: 'dust', job_id: 'ees:washing' }),
+        entry({ division: 'dust', job_id: '' }),
+        entry({ division: 'turf' }),
+        entry({ entry_type: 'time_off' }),
+      ];
+      assert('page and server agree on every case',
+        cases.every(e => !!pageGate(e, ids) === !!needsTruckTrackingRow(e)));
+    }
+  }
+
+  // ── a dust haul injects the same row shape, tagged to the Dust division ──
+  console.log('\n[dust customer haul]');
+  {
+    const { sql, store } = makeSql({ drivers: ['Mike Barr'] });
+    const dust = entry({
+      id: 77, username: 'barrmike', division: 'dust',
+      job_id: 'Antero', job_label: 'Antero',
+      work_date: '2026-08-12', start_time: '05:00', end_time: '17:30',
+      computed_hours: 12.5, notes: 'dust control',
+      // A dust timesheet never captures these — they are trucking-only columns.
+      truck_unit: null, truck_description: null,
+    });
+    const row = await insertTruckingRow(sql, CO, dust, {});
+
+    // The roster matcher resolves an exact name or a last-name login ("barr" →
+    // "Mike Barr"). A "lastnamefirstname" login like this one matches neither
+    // rule, so the raw login is kept — the Truck Tracking driver cell is a free
+    // -text combobox, so it reads as typed rather than being dropped.
+    assert('unmatched login kept verbatim',   row.driver === 'barrmike');
+    assert('date autofilled',                 row.actual_date === '2026-08-12');
+    assert('customer ← job label',            row.customer === 'Antero');
+    assert('hours ← computed work hours',     row.total_hours === 12.5);
+    assert('start/end autofilled',            row.actual_start === '05:00' && row.actual_end === '17:30');
+    assert('notes carried over',              row.notes === 'dust control');
+    assert('division defaults to Dust',       row.division === 'Dust');
+    assert('unit blank (not on a dust sheet)', row.unit === '');
+    assert('description blank',               row.description === '');
+    assert('haul fee left for payroll',       row.haul_fee === '');
+    assert('invoice status defaults Unpaid',  row.invoice_status === 'Unpaid');
+
+    assert('mirrored into truck_division_entries', store.tde.has(row.id));
+    assert('mirror carries the Dust division', store.tde.get(row.id).division === 'Dust');
+
+    // A last-name login on the same roster does resolve, confirming the miss
+    // above is about the login format and not about the division.
+    const { sql: sql2 } = makeSql({ drivers: ['Mike Barr'] });
+    const named = await insertTruckingRow(sql2, CO, entry({
+      id: 80, division: 'dust', job_id: 'Antero', username: 'barr',
+    }), {});
+    assert('last-name login still resolves', named.driver === 'Mike Barr');
+
+    assert('the guard sees the injected row',
+      await truckingHasInjectedRow(sql, CO, dust));
+    const removed = await removeTruckingRows(sql, CO, dust);
+    assert('un-approve removes it', removed === 1);
+    assert('and clears the mirror row', !store.tde.has(row.id));
+  }
+
+  // ── payroll can still override the Dust default ──────────────────────────
+  {
+    const { sql } = makeSql({ drivers: [] });
+    const dust = entry({ id: 78, division: 'dust', job_id: 'Antero', job_label: 'Antero' });
+    const row = await insertTruckingRow(sql, CO, dust, { haul_fee: 95, division: 'Paving' });
+    assert('explicit division beats the Dust default', row.division === 'Paving');
+    assert('haul fee still applied', row.haul_fee === 95);
+    // And a trucking entry is unaffected by the dust default.
+    const truck = await insertTruckingRow(sql, CO, entry({ id: 79 }), {});
+    assert('trucking division column still defaults blank', truck.division === '');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
