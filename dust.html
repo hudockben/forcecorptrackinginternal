@@ -2760,6 +2760,23 @@
           // Only clear ids we actually sent — newly deleted rows during the
           // round-trip stay queued for the next save.
           sentDeleted.forEach(id => deletedRowIds.delete(id));
+          // Payroll rows this save still carried that no longer exist: payroll
+          // un-approved or deleted the timesheet entry while this page was
+          // open. Forget them NOW, before the caller reconciles Intercompany —
+          // that runs off this same array, and billing a row the server has
+          // already dropped creates an entry nothing can ever remove.
+          try {
+            const body = await r.clone().json();
+            const gone = Array.isArray(body && body.withdrawn) ? body.withdrawn : [];
+            if (gone.length) {
+              const goneSet = new Set(gone.map(String));
+              for (let i = rows.length - 1; i >= 0; i--) {
+                if (goneSet.has(String(rows[i].id))) rows.splice(i, 1);
+              }
+              gone.forEach(id => icSentMapDust.delete(id));
+              renderTable();
+            }
+          } catch { /* older server without `withdrawn` — the poll catches up */ }
         }
         return r.ok;
       } catch { return false; }

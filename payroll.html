@@ -5372,6 +5372,13 @@
       fill('dk_manOptions', o.men || []);
       fill('dk_locOptions', (o.locations || []).map(l => l.name));
       fill('dk_vehOptions', (o.equipment || []).map(e => e.name));
+      // A pad typed while the lists were still in flight never got its cascade —
+      // dustOnLocation found an empty list and left the state blank, and blank
+      // saves as a deliberate blank. Run it now that the pads are known. dkSet
+      // skips anything the approver has since touched.
+      dustOnLocation();
+      dustOnVehicle(1);
+      dustOnVehicle(2);
       // On a re-edit the injected row already answered every box; only a fresh
       // approve takes suggestions from the customer.
       if (dustRowSeen) return;

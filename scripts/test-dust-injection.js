@@ -394,18 +394,41 @@ function entry(over = {}) {
       assert(`the office's ${f} survives`, !!again[f]);
     }
     assert('the row keeps its identity', again.id === dustRowId(42));
+
+    // Preserving them by reading them back and echoing them into the UPDATE is
+    // not enough: there is no transaction on Neon, so an invoice number the
+    // office typed between that read and this write would be echoed away again.
+    // The six columns must simply not appear in the DO UPDATE SET list at all.
+    const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const upsert = SRC.slice(SRC.indexOf('INSERT INTO dust_control_entries'));
+    const setList = upsert.slice(upsert.indexOf('DO UPDATE SET'), upsert.indexOf('updated_at   = NOW()'));
+    for (const f of DUST_TAB_FIELDS) {
+      assert(`an UPDATE never rewrites ${f}`, !setList.includes(`${f} `.trim() + ' ='));
+    }
+    assert('…while the payroll columns still are rewritten',
+      setList.includes('gallons_ub') && setList.includes('company_man') && setList.includes('v1_rate'));
   }
 
-  // ── Approving undoes an Intercompany removal ─────────────────────────────
-  console.log('\n[approving overrules an earlier IC removal]');
+  // ── Approving undoes an Intercompany removal; editing does not ───────────
+  console.log('\n[approving overrules an earlier IC removal — editing does not]');
   {
-    const { sql, store } = makeSql({
+    const suppressed = () => ({
       ...CONFIG,
       appData: { [`${CO}:${IC_REMOVED_BLOB}`]: [{ source: 'dust', source_id: dustRowId(42) }] },
     });
-    await insertDustTrackingRow(sql, CO, entry(), {});
-    assert('the suppression is cleared',
-      store.appData.get(`${CO}:${IC_REMOVED_BLOB}`).length === 0);
+    // Approving is the deliberate statement that this work counts.
+    const a = makeSql(suppressed());
+    await insertDustTrackingRow(a.sql, CO, entry(), {}, { clearSuppression: true });
+    assert('approving clears the suppression',
+      a.store.appData.get(`${CO}:${IC_REMOVED_BLOB}`).length === 0);
+
+    // Editing the row is not. Nothing was deleted and nothing needs recovering,
+    // so correcting a gallons figure must not silently un-delete an entry
+    // somebody removed in Intercompany — the money would just reappear.
+    const b = makeSql(suppressed());
+    await insertDustTrackingRow(b.sql, CO, entry(), { gallons_ub: 1700 });
+    assert('an Edit Row leaves the suppression in place',
+      b.store.appData.get(`${CO}:${IC_REMOVED_BLOB}`).length === 1);
   }
 
   // ── Un-approve ───────────────────────────────────────────────────────────

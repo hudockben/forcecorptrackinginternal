@@ -1650,7 +1650,7 @@ function resolveDustVehicle(name, given, opts, coRate) {
  * carried across re-injection, so correcting an entry can't wipe the invoice
  * number or paid date off a row that was already billed.
  */
-async function insertDustTrackingRow(sql, companyCode, entry, fields = {}) {
+async function insertDustTrackingRow(sql, companyCode, entry, fields = {}, flags = {}) {
   const id   = dustRowId(entry.id);
   const hhmm = v => String(v || '').slice(0, 5);
   const opts = await dustOptionsForEntry(sql, companyCode, entry);
@@ -1750,23 +1750,32 @@ async function insertDustTrackingRow(sql, companyCode, entry, fields = {}) {
       v2_unit      = EXCLUDED.v2_unit,
       v2_rate      = EXCLUDED.v2_rate,
       gallons_ub   = EXCLUDED.gallons_ub,
-      inv_number   = EXCLUDED.inv_number,
-      inv_sent     = EXCLUDED.inv_sent,
-      inv_received = EXCLUDED.inv_received,
-      inv_status   = EXCLUDED.inv_status,
-      cm_approval  = EXCLUDED.cm_approval,
-      inv_location = EXCLUDED.inv_location,
+      -- The six invoice columns are deliberately ABSENT from this SET list.
+      -- They belong to the dust office, and an UPDATE has nothing to say about
+      -- them: on a first INSERT they are written blank from the VALUES above,
+      -- and after that only the office's own saves change them. Writing them
+      -- here meant re-reading them a moment earlier and echoing them back, and
+      -- with no transaction on Neon an invoice number the office typed between
+      -- that read and this write was echoed away again.
       updated_at   = NOW()
   `;
 
-  // Approving is a deliberate statement that this work counts, so it undoes an
+  // APPROVING is a deliberate statement that this work counts, so it undoes an
   // earlier Intercompany removal rather than being silently overruled by it —
   // the same rule the trucking and EES rows apply, and reachable here for the
   // same reason: the row id is stable across a re-approval.
-  try {
-    await clearIcSuppression(sql, companyCode, IC_SOURCE_DUST, id);
-  } catch (err) {
-    console.error('[timesheet-entries] clearing dust IC suppression failed:', err.message);
+  //
+  // Editing the row is NOT that statement. Nothing was deleted and nothing
+  // needs recovering; the row has been billing (or deliberately not) all along.
+  // Clearing the suppression here meant that correcting a gallons figure
+  // silently un-deleted an entry somebody had removed in Intercompany, and the
+  // only sign of it was the money reappearing.
+  if (flags.clearSuppression) {
+    try {
+      await clearIcSuppression(sql, companyCode, IC_SOURCE_DUST, id);
+    } catch (err) {
+      console.error('[timesheet-entries] clearing dust IC suppression failed:', err.message);
+    }
   }
 
   // Payroll's write shows up in the dust tab's own audit log, tagged like any
@@ -2388,7 +2397,7 @@ module.exports = async (req, res) => {
             // rows are the same day's work seen from the two offices that need
             // it. A trucking entry only ever takes the first branch.
             if (needsTrucking) await insertTruckingRow(sql, companyCode, updated, truckingInject || {});
-            if (needsDust)     await insertDustTrackingRow(sql, companyCode, updated, dustInject || {});
+            if (needsDust)     await insertDustTrackingRow(sql, companyCode, updated, dustInject || {}, { clearSuppression: true });
           } else {
             await insertEesOtherRow(sql, companyCode, updated);
           }
@@ -2548,6 +2557,21 @@ module.exports = async (req, res) => {
             detail: injErr.message,
           });
         }
+        // The unit goes onto the entry as soon as the row that carries it
+        // exists, and BEFORE the dust write — which can fail and return, and
+        // used to leave the Truck Tracking row stamped with the new unit while
+        // the entry still held the old one. The next re-injection reads the
+        // entry, so that gap silently reverted the unit on the following edit.
+        let truckEntry = existing;
+        if (reTruck && fields.unit != null) {
+          const [reUnit] = await sql`
+            UPDATE timesheet_entries
+            SET truck_unit = ${fields.unit || null}, updated_at = NOW()
+            WHERE id = ${id} AND company_code = ${companyCode}
+            RETURNING *
+          `;
+          if (reUnit) truckEntry = reUnit;
+        }
         // The dust half of the same edit. Reported separately because the two
         // rows live in different tabs: told only "the edit failed", payroll
         // would not know that the haul fee it just corrected did land.
@@ -2561,21 +2585,6 @@ module.exports = async (req, res) => {
             error: 'Edit failed: the Truck Tracking row was updated but the Dust Control Tracking row could not be rewritten. Retry.',
             detail: injErr.message,
           });
-        }
-        // Same rule as approve: a unit typed here belongs on the entry, or the
-        // next re-injection would read the old (usually blank) one back. And as
-        // there, it is written only once the row it describes actually exists —
-        // this call can fail, and an entry updated ahead of it would be left
-        // claiming a unit the Truck Tracking row never got.
-        let truckEntry = existing;
-        if (fields.unit != null) {
-          const [reUnit] = await sql`
-            UPDATE timesheet_entries
-            SET truck_unit = ${fields.unit || null}, updated_at = NOW()
-            WHERE id = ${id} AND company_code = ${companyCode}
-            RETURNING *
-          `;
-          if (reUnit) truckEntry = reUnit;
         }
         await writeAudit(
           sql, companyCode, payload, id, 'ADMIN_EDIT',

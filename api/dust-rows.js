@@ -329,9 +329,13 @@ module.exports = async (req, res) => {
         return res.json({ ok: true });
       }
 
-      await _upsertDustRows(sql, companyCode, await _guardInjectedRows(sql, companyCode, dustRows), payload, opts);
+      const guarded = await _guardInjectedRows(sql, companyCode, dustRows);
+      await _upsertDustRows(sql, companyCode, guarded.rows, payload, opts);
 
-      return res.json({ ok: true });
+      // `withdrawn` names the payroll rows this save carried that no longer
+      // exist. The tab has to forget them before it reconciles Intercompany off
+      // its own copy — see _guardInjectedRows.
+      return res.json({ ok: true, withdrawn: guarded.withdrawn });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
@@ -365,21 +369,31 @@ async function _guardInjectedRows(sql, companyCode, incoming) {
     WHERE company_code = ${companyCode} AND id LIKE 'tsd-%'
   `;
   // Nothing injected on either side — the common case, and a no-op.
-  if (!serverRows.length && !list.some(r => r && isInjectedDustRowId(r.id))) return list;
+  if (!serverRows.length && !list.some(r => r && isInjectedDustRowId(r.id))) {
+    return { rows: list, withdrawn: [] };
+  }
 
   const merged = mergeInjectedDustRows(serverRows.map(dbToRow), list);
   const inIds  = new Set(list.filter(r => r && isInjectedDustRowId(r.id)).map(r => String(r.id)));
   const srvIds = new Set(serverRows.map(r => String(r.id)));
-  let restored = 0, ignored = 0;
+  let restored = 0;
+  // Payroll rows the SAVE still carried that the server no longer has: payroll
+  // un-approved or deleted the entry while this tab had the page open. Dropping
+  // them from the write is only half the job — the tab's in-memory copy still
+  // holds them, and its Intercompany reconciler runs off that copy straight
+  // after this call, re-creating a billing entry for a row that no longer
+  // exists. Nothing would ever remove that entry again: the sweep only looks at
+  // rows, and the IC-recovery path deliberately skips injected ids. So the
+  // withdrawn ids go back to the client, which drops them before reconciling.
+  const withdrawn = [...inIds].filter(id => !srvIds.has(id));
   for (const id of srvIds) if (!inIds.has(id)) restored++;
-  for (const id of inIds)  if (!srvIds.has(id)) ignored++;
-  if (restored || ignored) {
+  if (restored || withdrawn.length) {
     console.warn(
       `[dust-rows] ${companyCode}: kept ${restored} payroll row(s) the save omitted, ` +
-      `ignored ${ignored} the save carried that payroll no longer has`
+      `ignored ${withdrawn.length} the save carried that payroll no longer has`
     );
   }
-  return merged;
+  return { rows: merged, withdrawn };
 }
 
 /**
