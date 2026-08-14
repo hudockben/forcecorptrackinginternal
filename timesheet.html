@@ -503,7 +503,7 @@
             <select id="f-division" onchange="onDivisionChange()">
               <option value="">— pick —</option>
               <option value="turf">Turf</option>
-              <option value="dust">Dust</option>
+              <option value="dust">Dust Control</option>
               <option value="paving">Paving</option>
               <option value="kiewit">Kiewit Pinetree</option>
               <option value="trucking">Trucking</option>
@@ -1567,6 +1567,7 @@
     function prettyDivision(d) {
       if (!d) return '';
       if (d === 'kiewit') return 'Kiewit Pinetree';
+      if (d === 'dust')   return 'Dust Control';
       return d.charAt(0).toUpperCase() + d.slice(1);
     }
     function prettyOffType(t) {
