@@ -31,6 +31,20 @@
 
 const TRUCK_DIVISION_BLOB = 'fct_truck_division';
 
+/**
+ * The columns the trucking office owns on a row payroll owns.
+ *
+ * An injected row renders locked in Truck Tracking — every cost field is
+ * payroll's — except the invoice sub-row, which stays editable so the office
+ * can still manage billing on it. Re-injection therefore has to preserve these
+ * and overwrite the rest, or correcting an entry's hours quietly wipes the QB
+ * invoice number and the paid date off a row that was already invoiced. Same
+ * rule, and the same reason, as EES_OTHER_TAB_FIELDS on the dust side.
+ */
+const TRUCK_TAB_FIELDS = [
+  'qb_invoice', 'invoiced_date', 'invoice_sent_date', 'invoice_status', 'date_paid',
+];
+
 // The shared Intercompany billing list, and the tag trucking rows carry in it.
 const IC_BILLING_BLOB = 'fct_intercompany_billing_entries';
 const IC_SOURCE_TRUCKING = 'trucking';
@@ -300,6 +314,7 @@ async function sweepInjectedTruckRows(sql, companyCode, entries) {
 
 module.exports = {
   TRUCK_DIVISION_BLOB,
+  TRUCK_TAB_FIELDS,
   IC_BILLING_BLOB,
   IC_SOURCE_TRUCKING,
   EES_JOB_IDS,

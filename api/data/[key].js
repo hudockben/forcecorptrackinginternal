@@ -2,6 +2,7 @@
 
 const { neon }        = require('@neondatabase/serverless');
 const { syncForKey }  = require('../lib/sync-normalized');
+const { guardInjectedBlobWrite } = require('../lib/injected-blob-guard');
 const {
   requireAuth,
   hasDivisionAccess,
@@ -224,14 +225,26 @@ module.exports = async (req, res) => {
       }
     }
 
+    // Payroll owns the rows it injects into the quarry Daily/Crushing blobs.
+    // Those tabs save the whole list, and the copy being saved was read before
+    // any approval that has landed since — so an ordinary edit would otherwise
+    // delete labor payroll approved seconds earlier, with the entry still
+    // reading 'approved' and the tab refusing to let anyone re-add the row.
+    // A no-op for every key that carries no injected rows.
+    let stored = value;
+    try { stored = await guardInjectedBlobWrite(sql, payload.companyCode, key, value); }
+    catch (err) { console.error('[injected-blob-guard] PUT', key, err.message); }
+
     await sql`
       INSERT INTO app_data (key, value, updated_at)
-      VALUES (${scopedKey}, ${JSON.stringify(value)}, NOW())
+      VALUES (${scopedKey}, ${JSON.stringify(stored)}, NOW())
       ON CONFLICT (key)
       DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
     `;
     // Mirror into normalized tables — awaited before response so serverless doesn't kill it.
-    try { await syncForKey(sql, payload.companyCode, key, value); }
+    // Mirrors what was stored, not what was sent, so the mirror can't delete the
+    // payroll rows the guard just kept.
+    try { await syncForKey(sql, payload.companyCode, key, stored); }
     catch (err) { console.error('[sync-normalized] PUT', key, err.message); }
 
     // Emit audit entries for the Dust Other Billing tab.

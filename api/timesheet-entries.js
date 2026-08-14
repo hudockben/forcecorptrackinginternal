@@ -104,6 +104,7 @@ const {
   truckingRowIdPrefix,
   truckingRowId,
   removeIcBillingEntries,
+  TRUCK_TAB_FIELDS,
 } = require('./lib/truck-injected');
 
 const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
@@ -1160,6 +1161,19 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
   const prefix = truckingRowIdPrefix(entry.id);
   const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
   const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
+
+  // Carry over the invoice columns the trucking office owns on this row. Every
+  // cost field is payroll's and is rewritten from the entry, but the office
+  // fills in the QB number and the invoiced/paid dates on the locked row — and
+  // correcting an entry's hours must not wipe the billing history off a row
+  // that has already been invoiced. Same rule as EES_OTHER_TAB_FIELDS.
+  const prev = arr.find(isMine) || null;
+  if (prev) {
+    for (const f of TRUCK_TAB_FIELDS) {
+      if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
+    }
+  }
+
   const next   = arr.filter(r => !isMine(r));
   next.push(row);
   await writeBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB, next);

@@ -17,6 +17,7 @@
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
 const { sweepInjectedTruckRows } = require('./lib/truck-injected');
+const { guardInjectedBlobWrite } = require('./lib/injected-blob-guard');
 
 function safeFloat(v) {
   const f = parseFloat(v);
@@ -185,11 +186,24 @@ module.exports = async (req, res) => {
         }
       }
 
+      // Payroll owns the rows it injected, on write as well as on read. This
+      // page saves the whole list, and the copy it saves was read before any
+      // approval that has landed since — so without this a routine cell edit
+      // silently deletes work payroll approved seconds earlier, and a stale
+      // copy of an un-approved row puts it back. See lib/injected-blob-guard.
+      let stored = entries;
+      try {
+        stored = await guardInjectedBlobWrite(sql, companyCode, 'fct_truck_division', entries);
+      } catch (err) {
+        // Non-fatal, but say so loudly: this write is unguarded.
+        console.error('[truck-division] injected-row write guard failed:', err.message);
+      }
+
       // Write blobs in parallel with the normalized sync so neither blocks the response
       await Promise.all([
         sql`
           INSERT INTO app_data (key, value, updated_at)
-          VALUES (${companyCode + ':fct_truck_division'}, ${JSON.stringify(entries)}::jsonb, NOW())
+          VALUES (${companyCode + ':fct_truck_division'}, ${JSON.stringify(stored)}::jsonb, NOW())
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
         `,
         sql`
@@ -199,8 +213,10 @@ module.exports = async (req, res) => {
         `,
       ]);
 
-      // Mirror to normalized tables (fire-and-forget)
-      _syncToTables(sql, companyCode, entries, safeLists).catch(err =>
+      // Mirror to normalized tables (fire-and-forget). Mirrors what was stored,
+      // not what was sent — otherwise the mirror would delete the very payroll
+      // rows the guard just kept.
+      _syncToTables(sql, companyCode, stored, safeLists).catch(err =>
         console.error('[truck-division] normalize failed:', err.message)
       );
 
