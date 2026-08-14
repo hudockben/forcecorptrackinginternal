@@ -1499,7 +1499,7 @@
         <select id="flt-division">
           <option value="">All</option>
           <option value="turf">Turf</option>
-          <option value="dust">Dust</option>
+          <option value="dust">Dust Control</option>
           <option value="paving">Paving</option>
           <option value="kiewit">Kiewit Pinetree</option>
           <option value="trucking">Trucking</option>
@@ -3665,6 +3665,7 @@
     function prettyDiv(d) {
       if (!d) return '';
       if (d === 'kiewit') return 'Kiewit Pinetree';
+      if (d === 'dust')   return 'Dust Control';
       return d.charAt(0).toUpperCase() + d.slice(1);
     }
     function prettyOff(t) {
@@ -4061,7 +4062,7 @@
             <label>Division</label>
             <select id="em-division" onchange="reloadEditJobs()">
               <option value="turf">Turf</option>
-              <option value="dust">Dust</option>
+              <option value="dust">Dust Control</option>
               <option value="paving">Paving</option>
               <option value="kiewit">Kiewit Pinetree</option>
               <option value="trucking">Trucking</option>
