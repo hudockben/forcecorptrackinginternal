@@ -6,10 +6,17 @@
  * Source of truth: truck_division_entries + truck_division_units + dropdown_lists tables.
  * On first GET, if the normalized tables are empty, migrates from the legacy
  * app_data JSON blobs (fct_truck_division / fct_truck_division_lists).
+ *
+ * GET also sweeps out payroll-injected rows that outlived their timesheet entry
+ * (see lib/truck-injected.js). Those rows are the one kind the tab cannot get
+ * rid of on its own — it refuses to delete a payroll row, and payroll can only
+ * un-approve an entry that still exists and still owns that row id — so the
+ * read path is where a stranded one gets cleaned up.
  */
 
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
+const { sweepInjectedTruckRows } = require('./lib/truck-injected');
 
 function safeFloat(v) {
   const f = parseFloat(v);
@@ -109,19 +116,35 @@ module.exports = async (req, res) => {
       const blobCount = blobEntries.length;
 
       if (blobCount > 0) {
+        // Drop injected rows whose timesheet entry was un-approved or deleted
+        // before returning them, so the tab is clean on the same load that
+        // cleaned it up. Non-fatal: a sweep that fails must not take the tab's
+        // data with it, so the unfiltered list is served instead.
+        let entries = blobEntries;
+        try {
+          ({ entries } = await sweepInjectedTruckRows(sql, companyCode, blobEntries));
+        } catch (err) {
+          console.error('[truck-division] injected-row sweep failed:', err.message);
+        }
         // Keep normalized tables in sync in background when they're behind.
-        if (normCount < blobCount * 0.9) {
-          _syncToTables(sql, companyCode, blobEntries, blobLists).catch(err =>
+        if (normCount < entries.length * 0.9) {
+          _syncToTables(sql, companyCode, entries, blobLists).catch(err =>
             console.error('[truck-division] re-sync from blob failed:', err.message)
           );
         }
-        return res.json({ entries: blobEntries, lists: blobLists });
+        return res.json({ entries, lists: blobLists });
       }
 
       // Blob is empty — fall back to normalized tables (first-load / migration path).
       if (normCount > 0 || driverRows.length > 0) {
+        let entries = entryRows.map(dbToEntry);
+        try {
+          ({ entries } = await sweepInjectedTruckRows(sql, companyCode, entries));
+        } catch (err) {
+          console.error('[truck-division] injected-row sweep failed:', err.message);
+        }
         return res.json({
-          entries: entryRows.map(dbToEntry),
+          entries,
           lists: {
             drivers:   driverRows.map(r => r.value),
             customers: customerRows.map(r => r.value),
