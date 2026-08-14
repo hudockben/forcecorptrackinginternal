@@ -63,7 +63,10 @@ console.log('\n[payroll.html — the approve / Edit Row modal]');
   // protect, and a roster write would walk straight past both.
   const loader = slice(PAYROLL, 'function truckUnitRosterLoad()', 'function truckUnitOptionsHtml()', 'payroll loader');
   assert('the roster never assigns an input value', !/\.value\s*=/.test(loader), loader.match(/.*\.value\s*=.*/) || '');
-  const opener = slice(PAYROLL, 'truckUnitRosterLoad().then', 'Re-edit: pre-fill', 'payroll roster hook');
+  // Anchored on code, not on the comment that used to follow it — prose gets
+  // reworded, and a marker that moves reads as a broken test rather than a
+  // broken guarantee.
+  const opener = slice(PAYROLL, 'truckUnitRosterLoad().then', 'const wantsLookup', 'payroll roster hook');
   assert('when it lands it fills only the options and the note',
     /tk_unitOptions/.test(opener) && /truckUnitHintRefresh\(\)/.test(opener) && !/\.value\s*=/.test(opener));
 }

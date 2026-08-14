@@ -1684,14 +1684,21 @@
     </div>
   </div>
 
-  <!-- ── Trucking approve/inject modal ──
+  <!-- ── Trucking / dust approve/inject modal ──
        Trucking entries autofill a row into the Trucking division's "Truck
        Tracking" tab (fct_truck_division). Driver, hours, customer and
        description are pulled from the timesheet; payroll enters the haul fee,
        the unit (pre-filled from the timesheet, typed here when the driver left
        it off) and (optionally) the division column so the row is completed and
        locked — it can only be edited from Payroll, not in the Trucking
-       division. -->
+       division.
+
+       A dust customer haul fills in a SECOND row at the same time: the Dust
+       Control Tracking row the dust office bills from. Its extra boxes appear
+       below the trucking ones — the company man, the well pad and the UB
+       gallons, which only the approving supervisor knows, with the state, the
+       vehicles and their rates following from the customer the way they do when
+       the row is typed into that tab by hand. -->
   <div class="modal-backdrop" id="truckingBackdrop">
     <div class="modal split-modal" onclick="event.stopPropagation()">
       <div class="modal-header">
@@ -3269,6 +3276,10 @@
       if (c.removed_split_rows != null) bits.push(`${n(c.removed_split_rows, 'cost row', 'cost rows')} removed`);
       if (c.quarry_activity)   bits.push(`quarry · ${c.quarry_activity}`);
       if (c.trucking_injected) bits.push('truck tracking row posted');
+      // A dust customer haul posts both rows off one approval, so the log has to
+      // name both or an audit reads as if the dust invoice appeared by itself.
+      if (c.dust_tracking_injected) bits.push('dust control tracking row posted');
+      if (c.ees_other_injected) bits.push('EES other row posted');
       return escapeHtml(bits.join(' · '));
     }
 
@@ -3636,7 +3647,7 @@
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
               ${!isPending && entryNeedsSplit(e) ? `<button class="row-btn approve" onclick="openSplitModalById('${e.id}','resplit')" title="Edit the cost tracking split injected from this entry">Edit Split</button>` : ''}
               ${!isPending && entryNeedsQuarry(e) ? `<button class="row-btn approve" onclick="openQuarryModalById('${e.id}','resplit')" title="Edit the quarry row injected from this entry">Edit Row</button>` : ''}
-              ${!isPending && entryNeedsTrucking(e) ? `<button class="row-btn approve" onclick="openTruckingModalById('${e.id}','resplit')" title="Edit the Truck Tracking row (haul fee / division)">Edit Row</button>` : ''}
+              ${!isPending && entryNeedsTrucking(e) ? `<button class="row-btn approve" onclick="openTruckingModalById('${e.id}','resplit')" title="${e.division === 'dust' ? 'Edit the Dust Control + Truck Tracking rows posted from this entry' : 'Edit the Truck Tracking row (haul fee / division)'}">Edit Row</button>` : ''}
               ${!isPending && (entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e)) ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and remove the injected cost rows">Un-approve</button>` : ''}
               <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
@@ -5181,11 +5192,174 @@
         ? (hit.number ? `Unit #${hit.number}` : 'On the Trucking unit list.')
         : 'Not on the Trucking unit list — saved as typed.';
     }
+    // ── The dust half of the same modal ───────────────────────────────────
+    // A dust customer haul posts a Dust Control Tracking row as well as the
+    // Truck Tracking one, and that tab has columns the trucking tab does not:
+    // the company man, the well pad, the state, both vehicles with their rates,
+    // and the UB gallons. Three of those only the approving supervisor knows;
+    // the rest follow from the customer, so they are offered pre-filled rather
+    // than asked for — the same cascade dust.html runs when the row is typed in
+    // by hand (setLocation fills the state, setVehicle fills the rate, the
+    // customer's default rate beating the vehicle's own).
+    //
+    // The customer's men, pads, vehicles and defaults are fetched per entry
+    // (action=split, which also returns the injected row when re-editing). They
+    // land after the modal is already on screen, so applying them must never
+    // overwrite something the approver has already typed — see dustTouched.
+    let dustOptions = null;
+    let dustRowSeen = null;   // the injected row on a re-edit; null on a fresh approve
+    // Boxes the approver has typed in or picked in. A late-arriving default
+    // never lands on one of these, and neither does a cascade.
+    const dustTouched = new Set();
+    const isDustEntry = () => !!truckingEntry && truckingEntry.division === 'dust';
+
     // One place that puts fields on screen, so the dropdown and the hint can
     // never be left behind by a re-render.
     function truckingRenderFields(row) {
-      document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(row);
+      document.getElementById('truckingFields').innerHTML =
+        truckingFieldsHtml(row) + dustFieldsHtml(dustRowSeen);
       truckUnitHintRefresh();
+    }
+
+    const DK_SPAN = 'grid-column:1 / -1';
+    // The values every dust box opens with. An injected row is the answer
+    // outright, blanks included — an escort the approver deliberately cleared
+    // last time must not be suggested back at them on the next edit. Only when
+    // there is no row yet does the customer get to fill the boxes in.
+    function dustPrefill(row) {
+      const o = dustOptions || {};
+      const s = v => (v == null ? '' : String(v));
+      if (row) {
+        return {
+          company_man: s(row.company_man), location: s(row.location), state: s(row.state),
+          vehicle1: s(row.vehicle1), v1_rate: s(row.v1_rate),
+          vehicle2: s(row.vehicle2), v2_rate: s(row.v2_rate),
+          gallons_ub: s(row.gallons_ub),
+        };
+      }
+      return {
+        company_man: '', location: '', state: '',
+        // The truck the driver logged on the timesheet. Payroll can correct it:
+        // the driver's Unit box offers the TRUCKING office's roster, and dust
+        // names its vehicles its own way ("Distributor Truck 4000").
+        vehicle1: truckingEntry ? s(truckingEntry.truck_unit) : '',
+        v1_rate:  o.v1_rate != null ? s(o.v1_rate) : '',
+        // Nobody enters the escort on a timesheet — it follows from the customer.
+        vehicle2: s(o.usual_vehicle2),
+        v2_rate:  o.v2_rate != null ? s(o.v2_rate) : '',
+        gallons_ub: '',
+      };
+    }
+
+    function dkOptionsHtml(values) {
+      return (values || []).map(v => `<option value="${escapeHtml(String(v))}"></option>`).join('');
+    }
+    function dustFieldsHtml(row) {
+      if (!isDustEntry()) return '';
+      const p = dustPrefill(row);
+      const o = dustOptions || {};
+      const men   = o.men || [];
+      const locs  = (o.locations || []).map(l => l.name);
+      const vehs  = (o.equipment || []).map(e => e.name);
+      // Said once, under the heading, rather than as a warning on each box: when
+      // the customer isn't in the dust lists there is nothing to offer, and the
+      // boxes are plain text that still save exactly as typed.
+      const unknown = (dustOptions && !o.known)
+        ? ` <span style="font-weight:400;color:#fbbf24">— this customer isn't in the dust company list, so nothing is offered below</span>`
+        : '';
+      return `
+        <div style="${DK_SPAN};margin-top:6px;padding-top:12px;border-top:1px solid var(--border);
+                    font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#a5b4fc">
+          Dust Control Tracking${unknown}
+        </div>
+        <label style="${TK_LABEL}"><span>Company Man</span>
+          <input type="text" id="dk_companyMan" list="dk_manOptions" autocomplete="off" maxlength="200"
+            value="${escapeHtml(p.company_man)}" placeholder="Customer contact" style="${TK_INPUT}">
+          <datalist id="dk_manOptions">${dkOptionsHtml(men)}</datalist></label>
+        <label style="${TK_LABEL}"><span>Location</span>
+          <input type="text" id="dk_location" list="dk_locOptions" autocomplete="off" maxlength="500"
+            value="${escapeHtml(p.location)}" placeholder="Well pad / lease" style="${TK_INPUT}"
+            oninput="dustOnLocation()">
+          <datalist id="dk_locOptions">${dkOptionsHtml(locs)}</datalist></label>
+        <label style="${TK_LABEL}"><span>State <span style="font-weight:400;color:var(--muted)">(from the location)</span></span>
+          <input type="text" id="dk_state" maxlength="50" value="${escapeHtml(p.state)}"
+            placeholder="PA / WV / OH" style="${TK_INPUT}"></label>
+        <label style="${TK_LABEL}"><span>Gallons of UB</span>
+          <input type="number" id="dk_gallons" min="0" step="0.1" value="${escapeHtml(p.gallons_ub)}"
+            placeholder="0" style="${TK_INPUT}"></label>
+        <label style="${TK_LABEL}"><span>Vehicle 1 <span style="font-weight:400;color:var(--muted)">(the unit)</span></span>
+          <input type="text" id="dk_vehicle1" list="dk_vehOptions" autocomplete="off" maxlength="200"
+            value="${escapeHtml(p.vehicle1)}" placeholder="e.g. Distributor Truck 4000" style="${TK_INPUT}"
+            oninput="dustOnVehicle(1)">
+          <datalist id="dk_vehOptions">${dkOptionsHtml(vehs)}</datalist></label>
+        <label style="${TK_LABEL}"><span>Vehicle 1 Rate ($/hr)</span>
+          <input type="number" id="dk_v1Rate" min="0" step="0.01" value="${escapeHtml(p.v1_rate)}"
+            placeholder="0.00" style="${TK_INPUT}"></label>
+        <label style="${TK_LABEL}"><span>Vehicle 2 <span style="font-weight:400;color:var(--muted)">(escort)</span></span>
+          <input type="text" id="dk_vehicle2" list="dk_vehOptions" autocomplete="off" maxlength="200"
+            value="${escapeHtml(p.vehicle2)}" placeholder="none" style="${TK_INPUT}"
+            oninput="dustOnVehicle(2)">
+        </label>
+        <label style="${TK_LABEL}"><span>Vehicle 2 Rate ($/hr)</span>
+          <input type="number" id="dk_v2Rate" min="0" step="0.01" value="${escapeHtml(p.v2_rate)}"
+            placeholder="0.00" style="${TK_INPUT}"></label>`;
+    }
+
+    // Set a dust box the approver has not touched. Returns nothing — a box they
+    // HAVE touched is their answer, and a cascade must not argue with it.
+    function dkSet(id, value) {
+      if (dustTouched.has(id)) return;
+      const el = document.getElementById(id);
+      if (el) el.value = value == null ? '' : String(value);
+    }
+    // Picking a location fills the state in, exactly as it does in dust.html.
+    function dustOnLocation() {
+      const o = dustOptions || {};
+      const val = String((document.getElementById('dk_location') || {}).value || '').trim();
+      if (!val) return;
+      const hit = (o.locations || []).find(l => String(l.name).toLowerCase() === val.toLowerCase());
+      if (hit && hit.state) dkSet('dk_state', hit.state);
+    }
+    // Picking a vehicle fills its rate in. The CUSTOMER's default for the slot
+    // wins over the vehicle's own — the rule dust.html's setVehicle applies —
+    // and the vehicle's rate is only the fallback when the customer has none.
+    function dustOnVehicle(num) {
+      const o = dustOptions || {};
+      const vId = num === 1 ? 'dk_vehicle1' : 'dk_vehicle2';
+      const rId = num === 1 ? 'dk_v1Rate'   : 'dk_v2Rate';
+      const val = String((document.getElementById(vId) || {}).value || '').trim();
+      if (!val) return;
+      const coRate = num === 1 ? o.v1_rate : o.v2_rate;
+      const eq = (o.equipment || []).find(e => String(e.name).toLowerCase() === val.toLowerCase());
+      const rate = coRate != null ? coRate : (eq && eq.vehicle_rate != null ? eq.vehicle_rate : null);
+      if (rate != null) dkSet(rId, rate);
+    }
+
+    // The customer's lists have arrived. Fill the dropdowns, and fill in the
+    // boxes that are still both empty and untouched — a default that shows up
+    // late must never land on top of something already typed, and must never
+    // silently re-fill a box the approver has deliberately cleared.
+    function dustApplyOptions() {
+      if (!isDustEntry()) return;
+      const o = dustOptions || {};
+      const fill = (id, values) => {
+        const dl = document.getElementById(id);
+        if (dl) dl.innerHTML = dkOptionsHtml(values);
+      };
+      fill('dk_manOptions', o.men || []);
+      fill('dk_locOptions', (o.locations || []).map(l => l.name));
+      fill('dk_vehOptions', (o.equipment || []).map(e => e.name));
+      // On a re-edit the injected row already answered every box; only a fresh
+      // approve takes suggestions from the customer.
+      if (dustRowSeen) return;
+      const p = dustPrefill(null);
+      for (const [id, val] of [
+        ['dk_vehicle1', p.vehicle1], ['dk_v1Rate', p.v1_rate],
+        ['dk_vehicle2', p.vehicle2], ['dk_v2Rate', p.v2_rate],
+      ]) {
+        const el = document.getElementById(id);
+        if (el && !String(el.value || '').trim()) dkSet(id, val);
+      }
     }
     const TK_LABEL = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
     const TK_INPUT = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
@@ -5244,8 +5418,11 @@
       const times = (entry.start_time && entry.end_time)
         ? `${escapeHtml(entry.start_time)} – ${escapeHtml(entry.end_time)}`
         : '—';
+      // A dust haul writes two rows, so the title names both tabs — the modal
+      // otherwise reads as if the dust boxes below it went nowhere.
+      const tabs = entry.division === 'dust' ? 'Dust + Truck Tracking' : 'Truck Tracking';
       document.getElementById('truckingTitle').textContent =
-        (truckingMode === 'approve' ? 'Approve & Add to Truck Tracking — ' : 'Edit Truck Tracking Row — ')
+        (truckingMode === 'approve' ? `Approve & Add to ${tabs} — ` : `Edit ${tabs} Row — `)
         + (entry.username || '') + ' · ' + prettyDate(entry.work_date);
       document.getElementById('truckingSummary').innerHTML = `
         <div>Driver: <strong>${escapeHtml(entry.username || '')}</strong></div>
@@ -5263,6 +5440,13 @@
       const msg = document.getElementById('truckingMsg');
       msg.textContent = ''; msg.className = 'modal-msg';
       document.getElementById('truckingSaveBtn').textContent = truckingMode === 'approve' ? 'Approve & Add' : 'Save Row';
+      // Nothing from the last entry may survive into this one: the customer's
+      // men, pads and vehicles are per-customer, and a stale set would offer one
+      // customer's contacts on another's haul.
+      dustOptions = null;
+      dustRowSeen = null;
+      dustTouched.clear();
+      truckingNoteRefresh();
       truckingRenderFields(null);
       document.getElementById('truckingBackdrop').classList.add('open');
       // This open owns the form from here on; anything still in flight does not.
@@ -5277,17 +5461,32 @@
         if (dl) dl.innerHTML = truckUnitOptionsHtml();
         truckUnitHintRefresh();
       });
-      // Re-edit: pre-fill the haul fee / division / unit from the injected row.
-      if (truckingMode === 'resplit') {
+      // Re-edit pre-fills the haul fee / division / unit from the injected row.
+      // A dust haul asks on a fresh approve too, because the same call carries
+      // the customer's men, pads, vehicles and default rates — without them the
+      // dust boxes below would be free text against lists the approver would
+      // have to remember.
+      const wantsLookup = truckingMode === 'resplit' || entry.division === 'dust';
+      if (wantsLookup) {
         try {
           const res = await fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() });
           const j = await res.json();
-          const row = j && j.trucking && j.trucking.row ? j.trucking.row : null;
           // Late answers are dropped: the modal may have been closed or pointed
-          // at another entry while this was in flight, and payroll may already
-          // have typed. Either way this row is no longer what the form is for.
-          if (row && seq === truckingFetchSeq && !truckingDirty) {
+          // at another entry while this was in flight. Unlike the fields, the
+          // OPTIONS are safe to take even once payroll has typed — they only
+          // ever fill dropdowns and boxes still untouched (see dustApplyOptions).
+          if (seq !== truckingFetchSeq) return;
+          const row     = j && j.trucking && j.trucking.row ? j.trucking.row : null;
+          const dustRow = (truckingMode === 'resplit' && j && j.dust && j.dust.row) ? j.dust.row : null;
+          dustOptions = (j && j.dust && j.dust.options) ? j.dust.options : null;
+          if (!truckingDirty) {
+            // Nothing typed yet — re-render both halves from what came back.
+            dustRowSeen = dustRow;
             truckingRenderFields(row);
+          } else {
+            // Payroll is already typing. Leave every box alone and only bring in
+            // the dropdowns and the still-empty defaults.
+            dustApplyOptions();
           }
         } catch (_) { /* keep blank fields on lookup failure */ }
       }
@@ -5296,15 +5495,37 @@
       document.getElementById('truckingBackdrop').classList.remove('open');
       truckingEntry = null; truckingMode = null;
       truckingFetchSeq++;   // orphan any pre-fill still in flight
+      dustOptions = null; dustRowSeen = null; dustTouched.clear();
     }
     bindBackdropClose(document.getElementById('truckingBackdrop'), closeTrucking);
     // The container outlives every re-render of its inputs, and `input` bubbles,
     // so one listener here catches typing in whichever fields are on screen.
     // A dropdown pick fires `input` too, so the hint keeps up with both.
-    document.getElementById('truckingFields').addEventListener('input', () => {
+    document.getElementById('truckingFields').addEventListener('input', (e) => {
       truckingDirty = true;
       truckUnitHintRefresh();
+      // Remember which dust boxes the approver has answered, so neither a late
+      // default nor a cascade from another box can overwrite one of them.
+      const id = e.target && e.target.id;
+      if (id && id.startsWith('dk_')) dustTouched.add(id);
     });
+
+    // The note under the fields, which says where what you type ends up. A dust
+    // haul fills two tabs, and the columns it fills are worth naming — the
+    // trucking-only wording read as though the dust boxes went nowhere.
+    function truckingNoteRefresh() {
+      const note = document.getElementById('truckingNote');
+      if (!note) return;
+      note.innerHTML = isDustEntry()
+        ? `Approving posts <strong>two</strong> rows. <strong>Truck Tracking</strong> gets the driver,
+           hours, customer, description and unit from the timesheet, plus the haul fee above.
+           <strong>Dust Control Tracking</strong> gets the date, times and customer from the timesheet,
+           plus what you fill in below — the state, the vehicle rates and the escort follow from the
+           customer. Both rows are locked in their tabs and are edited here in Payroll.`
+        : `Driver, hours, customer and description are autofilled from the timesheet — the unit
+           comes from it too, and can be corrected above. The row is locked in the Trucking
+           division; it is edited here in Payroll.`;
+    }
 
     function _tkval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
     async function truckingSave() {
@@ -5320,17 +5541,37 @@
         // the one path that omits it; there one unit can't speak for a group.
         unit: _tkval('tk_unit'),
       };
+      const body = { trucking };
+      // The dust half, sent only when its boxes are actually on screen. Every
+      // key goes even when blank: the boxes were shown pre-filled, so what is in
+      // them is the approver's answer, and clearing the escort has to stick.
+      // Bulk approve sends no `dust` key at all — one company man or one gallons
+      // figure cannot speak for a week of hauls — and the server reads that
+      // absence as "fill in what the customer implies".
+      if (isDustEntry() && document.getElementById('dk_companyMan')) {
+        body.dust = {
+          company_man: _tkval('dk_companyMan'),
+          location:    _tkval('dk_location'),
+          state:       _tkval('dk_state'),
+          vehicle1:    _tkval('dk_vehicle1'),
+          v1_rate:     _tkval('dk_v1Rate'),
+          vehicle2:    _tkval('dk_vehicle2'),
+          v2_rate:     _tkval('dk_v2Rate'),
+          gallons_ub:  _tkval('dk_gallons'),
+        };
+      }
       const action = truckingMode === 'approve' ? 'approve' : 'resplit';
+      const tabs   = isDustEntry() ? 'Dust Control + Truck Tracking' : 'Truck Tracking';
       btn.disabled = true;
       try {
         const res = await fetch(
           '/api/timesheet-entries?action=' + action + '&id=' + encodeURIComponent(truckingEntry.id),
-          { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ trucking }) }
+          { method: 'POST', headers: authHeaders(true), body: JSON.stringify(body) }
         );
         const j = await res.json();
         if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
         msg.classList.add('success');
-        msg.textContent = action === 'approve' ? 'Approved & added to Truck Tracking.' : 'Row updated.';
+        msg.textContent = action === 'approve' ? `Approved & added to ${tabs}.` : 'Row updated.';
         if (j.entry) applyEntryUpdate(j.entry);
         selectedIds.delete(truckingEntry.id);
         renderRows();
@@ -5922,7 +6163,7 @@
             every day. Fuel gallons &amp; PPG are left blank — open a single day to add them.</div>`;
       } else if (g.type === 'trucking') {
         badgeClass = 'trucking'; badgeText = prettyDiv(g.division);
-        title = g.division === 'dust' ? 'Truck Tracking — dust hauls' : 'Truck Tracking';
+        title = g.division === 'dust' ? 'Dust + Truck Tracking — dust hauls' : 'Truck Tracking';
         meta = metaHrs;
         fields = `
           <div class="bulk-fields">
@@ -5931,7 +6172,11 @@
           </div>
           <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
             customer come from each timesheet — a day whose unit is blank keeps it that way;
-            fill it in from Edit Row afterwards.</div>`;
+            fill it in from Edit Row afterwards.${g.division === 'dust' ? `
+            Each day also posts a <strong>Dust Control Tracking</strong> row: the vehicles, their rates
+            and the escort come from the customer, but the <strong>company man, location and UB
+            gallons are left blank</strong> — they differ day to day. Open each day's Edit Row to
+            fill them in, or approve these hauls one at a time instead.` : ''}</div>`;
       } else {
         badgeClass = 'plain'; badgeText = 'No injection';
         title = 'Status-only entries';

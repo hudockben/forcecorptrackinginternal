@@ -3495,6 +3495,16 @@
             </div>
           </div>`;
 
+        // Payroll-injected rows are locked here: every column above the invoice
+        // sub-row was filled in when a supervisor approved the driver's
+        // timesheet, and the only correct way to change or remove one is to go
+        // back there. Leaving them editable would mean two sources of truth for
+        // the same haul — and the server discards the edit anyway, replaying its
+        // own copy of these columns over any save from this tab.
+        const injected = isInjectedRow(row);
+        const ro = (v, cls) =>
+          `<td class="${cls}" style="color:var(--text);font-size:0.72rem;padding:0.3rem 0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(v == null || v === '' ? '—' : String(v))}</td>`;
+
         const missingInvoice = !row.inv_number || !row.inv_sent;
         const effSt = effectiveInvStatus(row);
         let rowBg = '';
@@ -3503,27 +3513,43 @@
         else if (missingInvoice)   rowBg = 'rgba(239,68,68,0.18)';   // red
         const rowStyle    = rowBg ? ` style="background:${rowBg}"` : '';
         const subRowStyle = rowBg ? ` background:${rowBg};`        : '';
-        return `<tr data-idx="${idx}"${rowStyle}>
+        const lockTitle   = 'Posted from an approved timesheet entry — edit it in Payroll, not here.';
+        const tsBadge     = `<span title="${lockTitle}" style="display:inline-block;font-size:0.53rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.12);border:1px solid rgba(165,180,252,0.35);border-radius:3px;padding:0.02rem 0.26rem;white-space:nowrap">&#8592; Timesheet</span>`;
+        return `<tr data-idx="${idx}"${rowStyle}${injected ? ` title="${lockTitle}"` : ''}>
           <td class="cw-expand"><button class="expand-btn" id="expbtn-${idx}" onclick="toggleInvoice(${idx})" title="Invoice details">›</button></td>
-          <td class="cw-date"><input type="date" value="${esc(row.date       ||'')}" onchange="set(${idx},'date',this.value)"></td>
-          <td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>
-          <td class="cw-time"><input type="time" value="${esc(row.end_time   ||'')}" onchange="set(${idx},'end_time',this.value)"></td>
+          ${injected
+            ? ro(fmtDateCell(row.date), 'cw-date')
+            : `<td class="cw-date"><input type="date" value="${esc(row.date ||'')}" onchange="set(${idx},'date',this.value)"></td>`}
+          ${injected
+            ? ro(fmtTimeCell(row.start_time), 'cw-time')
+            : `<td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>`}
+          ${injected
+            ? ro(fmtTimeCell(row.end_time), 'cw-time')
+            : `<td class="cw-time"><input type="time" value="${esc(row.end_time   ||'')}" onchange="set(${idx},'end_time',this.value)"></td>`}
           ${calcCell(c.totalHours ? c.totalHours.toFixed(2) : '', 'cw-ttim')}
-          <td class="cw-co">${cbHtml(idx, 'company',     row.company||'',     '— select —')}</td>
-          <td class="cw-cm">${cbHtml(idx, 'company_man', row.company_man||'', '— select —')}</td>
-          <td class="cw-loc">${cbHtml(idx, 'location',   row.location||'',    '— select —')}</td>
-          <td class="cw-st">${cbHtml(idx, 'state',       row.state||'',       '—')}</td>
-          <td class="cw-veh">${cbHtml(idx, 'vehicle1',   row.vehicle1||'',    '— select —')}</td>
-          <td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="_liveSet(${idx},'v1_rate',this.value)" onchange="set(${idx},'v1_rate',this.value)"></td>
+          ${injected ? ro(row.company,     'cw-co') : `<td class="cw-co">${cbHtml(idx, 'company',     row.company||'',     '— select —')}</td>`}
+          ${injected ? ro(row.company_man, 'cw-cm') : `<td class="cw-cm">${cbHtml(idx, 'company_man', row.company_man||'', '— select —')}</td>`}
+          ${injected ? ro(row.location,    'cw-loc') : `<td class="cw-loc">${cbHtml(idx, 'location',   row.location||'',    '— select —')}</td>`}
+          ${injected ? ro(row.state,       'cw-st') : `<td class="cw-st">${cbHtml(idx, 'state',       row.state||'',       '—')}</td>`}
+          ${injected ? ro(row.vehicle1,    'cw-veh') : `<td class="cw-veh">${cbHtml(idx, 'vehicle1',   row.vehicle1||'',    '— select —')}</td>`}
+          ${injected
+            ? ro(row.v1_rate, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="_liveSet(${idx},'v1_rate',this.value)" onchange="set(${idx},'v1_rate',this.value)"></td>`}
           ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
-          <td class="cw-veh">${cbHtml(idx, 'vehicle2',   row.vehicle2||'',    '— select —')}</td>
-          <td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="_liveSet(${idx},'v2_rate',this.value)" onchange="set(${idx},'v2_rate',this.value)"></td>
+          ${injected ? ro(row.vehicle2,    'cw-veh') : `<td class="cw-veh">${cbHtml(idx, 'vehicle2',   row.vehicle2||'',    '— select —')}</td>`}
+          ${injected
+            ? ro(row.v2_rate, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="_liveSet(${idx},'v2_rate',this.value)" onchange="set(${idx},'v2_rate',this.value)"></td>`}
           ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
-          <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="_liveSet(${idx},'gallons_ub',this.value)" onchange="set(${idx},'gallons_ub',this.value)"></td>
+          ${injected
+            ? ro(row.gallons_ub, 'cw-gal')
+            : `<td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="_liveSet(${idx},'gallons_ub',this.value)" onchange="set(${idx},'gallons_ub',this.value)"></td>`}
           ${calcCell(c.ubTotal  ? money(c.ubTotal)  : '', 'cw-ubt')}
-          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}${icChip}</td>
-          <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
+          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}${icChip}${injected ? `<div style="margin-top:0.15rem">${tsBadge}</div>` : ''}</td>
+          ${injected
+            ? `<td class="del-col"><span title="${lockTitle}" style="color:var(--muted);font-size:0.85rem">&#128274;</span></td>`
+            : `<td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>`}
         </tr>
         <tr class="inv-row" id="inv-row-${idx}" style="display:none;${subRowStyle}">
           <td colspan="20">${invPanel}</td>
@@ -3691,7 +3717,41 @@
       }
     }
 
+    /* Rows this tab did not create: payroll posts one when a supervisor approves
+       a dust customer haul on a timesheet (id "tsd-<entryId>-row" — see
+       api/lib/dust-injected.js). They are rendered locked, and the server
+       enforces the same rule on writes, so nothing here can change or remove
+       one — the way to take one back is to un-approve the entry in Payroll. */
+    function isInjectedRow(row) {
+      return /^tsd-\d+-/.test(String((row && row.id) || ''));
+    }
+
+    /* Read-only renderings of the two column types that use a native picker, so
+       a locked row reads the way the editable ones look rather than showing raw
+       ISO values. Both take what the row stores and leave anything unexpected
+       alone rather than guessing. */
+    function fmtDateCell(v) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+      return m ? `${m[2]}/${m[3]}/${m[1]}` : (v || '');
+    }
+    function fmtTimeCell(v) {
+      const m = /^(\d{1,2}):(\d{2})/.exec(String(v || ''));
+      if (!m) return v || '';
+      const h = Number(m[1]);
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12  = h % 12 === 0 ? 12 : h % 12;
+      return `${String(h12).padStart(2, '0')}:${m[2]} ${ampm}`;
+    }
+
     function deleteRow(idx) {
+      // Locked rows have no delete button, so reaching here means a stale render
+      // or the console. Either way the row belongs to an approved timesheet
+      // entry: removing it would strip cost off approved work with nothing in
+      // Payroll to show for it, and the server would refuse the delete anyway.
+      if (isInjectedRow(rows[idx])) {
+        alert('This row was posted from an approved timesheet entry, so it cannot be deleted here.\n\nUn-approve that entry in Payroll and the row goes with it.');
+        return;
+      }
       if (!confirm('Delete this row?')) return;
       const removed = rows[idx];
       if (removed && removed.id) deletedRowIds.add(removed.id);
@@ -4052,6 +4112,11 @@
     function materializeCompanyVehicleRates() {
       let changed = false;
       rows.forEach(row => {
+        // A payroll row's rates were resolved when the entry was approved, by
+        // the same customer-then-equipment cascade this back-fill runs. Writing
+        // to one here would be discarded by the server (it replays its own copy
+        // of these columns) and would dirty the save for nothing.
+        if (isInjectedRow(row)) return;
         const co = dustLists.companies.find(c => c.name === row.company);
         if (!co) return;
         // Never retroactively re-rate a row that's already been invoiced —
