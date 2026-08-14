@@ -294,6 +294,10 @@ function loadPage(opts = {}) {
     getElementById: id => byId.get(id) || null,
     querySelectorAll: () => [],
     createElement: tag => makeEl(tag, ''),
+    // The page delegates some input handling from the document down (the truck
+    // unit note does), so the double has to accept a listener. Nothing here
+    // dispatches events, so recording it and never firing it is enough.
+    addEventListener: () => {},
   };
 
   const sandbox = {

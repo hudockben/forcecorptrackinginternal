@@ -189,7 +189,10 @@ async function actionRoutingTests() {
   CURRENT_SQL = (strings) => {
     const q = strings.join('?').replace(/\s+/g, ' ').trim();
     if (q.startsWith('SELECT * FROM timesheet_entries')) { sawListQuery = true; return Promise.resolve([]); }
-    if (q.startsWith('SELECT id, division')) { sawEntryLookup = true; return Promise.resolve([{ id: 5, division: 'paving', job_id: 'J1', job_label: 'X' }]); }
+    if (q.startsWith('SELECT id, entry_type, division')) {
+      sawEntryLookup = true;
+      return Promise.resolve([{ id: 5, entry_type: 'daily', division: 'paving', job_id: 'J1', job_label: 'X' }]);
+    }
     return Promise.resolve([]);
   };
   const res = {
@@ -203,6 +206,24 @@ async function actionRoutingTests() {
   assert('the split branch does', sawEntryLookup);
   assert('and the response carries a split, not entries',
     Array.isArray(res.body && res.body.split), JSON.stringify(res.body).slice(0, 80));
+
+  // ?action=split takes an entry id and scopes by company but not by user, so
+  // without a payroll gate any field account could read back a co-worker's
+  // injected cost rows — job cost codes and rates, and for a haul the Truck
+  // Tracking row carrying the customer's haul fee. Every caller is a payroll
+  // screen, so the gate costs nothing and closes a cross-employee read.
+  console.log('\n[GET ?action=split is payroll-only]');
+  NEXT_AUTH = FIELD;
+  let sawAnyQuery = false;
+  CURRENT_SQL = () => { sawAnyQuery = true; return Promise.resolve([]); };
+  const denied = {
+    statusCode: 200, body: null,
+    setHeader() {}, status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; return this; }, end() { return this; },
+  };
+  await handler({ method: 'GET', query: { action: 'split', id: '5' }, body: {} }, denied);
+  assert('a field account is refused', denied.statusCode === 403, JSON.stringify(denied.body));
+  assert('and no lookup runs at all', !sawAnyQuery);
 }
 
 // The other half of what was on the screen: four identical submitted rows for

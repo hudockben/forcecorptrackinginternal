@@ -1686,10 +1686,12 @@
 
   <!-- ── Trucking approve/inject modal ──
        Trucking entries autofill a row into the Trucking division's "Truck
-       Tracking" tab (fct_truck_division). Driver, unit, hours, customer and
-       description are pulled from the timesheet; payroll enters the haul fee and
-       (optionally) the division column here so the row is completed and locked
-       — it can only be edited from Payroll, not in the Trucking division. -->
+       Tracking" tab (fct_truck_division). Driver, hours, customer and
+       description are pulled from the timesheet; payroll enters the haul fee,
+       the unit (pre-filled from the timesheet, typed here when the driver left
+       it off) and (optionally) the division column so the row is completed and
+       locked — it can only be edited from Payroll, not in the Trucking
+       division. -->
   <div class="modal-backdrop" id="truckingBackdrop">
     <div class="modal split-modal" onclick="event.stopPropagation()">
       <div class="modal-header">
@@ -1700,8 +1702,9 @@
       <div id="truckingFields" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-top:8px"></div>
       <div class="modal-note" id="truckingNote"
            style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(45,212,191,0.08);color:var(--muted);font-size:0.8rem;line-height:1.4">
-        Driver, unit, hours, customer and description are autofilled from the timesheet and
-        locked in the Trucking division — this row is edited here in Payroll.
+        Driver, hours, customer and description are autofilled from the timesheet — the unit
+        comes from it too, and can be corrected above. The row is locked in the Trucking
+        division; it is edited here in Payroll.
       </div>
       <div class="modal-msg" id="truckingMsg"></div>
       <div class="modal-footer">
@@ -5111,6 +5114,79 @@
     // "Dust" server-side rather than blank).
     let truckingEntry = null;
     let truckingMode  = null;
+    // Guards on the Edit Row pre-fill lookup, which is awaited after the modal
+    // is already on screen. Bumped on every open and on close, so a lookup that
+    // comes back late — the user closed the modal, or moved on to another day —
+    // is dropped instead of writing one entry's haul fee and unit into the form
+    // of another. truckingDirty covers the other half: once payroll has typed
+    // anything, a slow answer must not overwrite what they typed.
+    let truckingFetchSeq = 0;
+    let truckingDirty    = false;
+    // The Trucking division's own unit roster ({name, number}), used to offer
+    // the office's own unit names in the Unit box instead of leaving it free
+    // text that has to match them by luck — their tab looks a row's unit up by
+    // name to show its number, so "Truck 1000" or a stray space reads fine here
+    // and unrecognised there. Fetched once and lazily: a payroll session that
+    // never approves a haul never asks for it. It only ever fills the dropdown
+    // and the hint, never the input's value, so it cannot fight the staleness
+    // and dirty guards above.
+    let truckUnitRoster        = null;
+    let truckUnitRosterPromise = null;
+    function truckUnitRosterLoad() {
+      if (truckUnitRoster) return Promise.resolve(truckUnitRoster);
+      if (!truckUnitRosterPromise) {
+        // Started inside a promise so that even a synchronous throw becomes a
+        // rejection the catch below swallows: the dropdown is a convenience, and
+        // nothing about it may stop the modal from opening.
+        truckUnitRosterPromise = Promise.resolve()
+          .then(() => fetch('/api/truck-division?lists=1', { headers: authHeaders() }))
+          .then(r => (r && r.ok ? r.json() : null))
+          .then(j => {
+            // No answer is not an empty roster. Leaving it unknown keeps the
+            // hint quiet — warning that a unit is "not on the list" when the
+            // list never arrived would be worse than saying nothing — and lets
+            // the next open try again.
+            if (!j || !j.lists) { truckUnitRosterPromise = null; return null; }
+            const units = Array.isArray(j.lists.units) ? j.lists.units : [];
+            truckUnitRoster = units
+              // Older saves stored bare strings before units grew a number.
+              .map(u => (typeof u === 'string' ? { name: u, number: '' } : u))
+              .filter(u => u && u.name)
+              .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            return truckUnitRoster;
+          })
+          .catch(() => { truckUnitRosterPromise = null; return null; });  // let the next open retry
+      }
+      return truckUnitRosterPromise;
+    }
+    function truckUnitOptionsHtml() {
+      return (truckUnitRoster || []).map(u =>
+        `<option value="${escapeHtml(String(u.name))}">${escapeHtml(u.number ? '#' + u.number : '')}</option>`
+      ).join('');
+    }
+    // Says whether what is in the box is a unit the trucking office knows, and
+    // shows its number when it is. Blank while the roster is still loading —
+    // silence is better than warning about a list we have not seen yet.
+    function truckUnitHintRefresh() {
+      const input = document.getElementById('tk_unit');
+      const hint  = document.getElementById('tk_unitHint');
+      if (!input || !hint) return;
+      const val = String(input.value || '').trim();
+      // Nothing to check against — the roster has not loaded, or this company
+      // keeps no unit list — so there is nothing worth saying.
+      if (!val || !truckUnitRoster || !truckUnitRoster.length) { hint.textContent = ''; return; }
+      const hit = truckUnitRoster.find(u => String(u.name).toLowerCase() === val.toLowerCase());
+      hint.style.color   = hit ? 'var(--muted)' : '#fbbf24';
+      hint.textContent   = hit
+        ? (hit.number ? `Unit #${hit.number}` : 'On the Trucking unit list.')
+        : 'Not on the Trucking unit list — saved as typed.';
+    }
+    // One place that puts fields on screen, so the dropdown and the hint can
+    // never be left behind by a re-render.
+    function truckingRenderFields(row) {
+      document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(row);
+      truckUnitHintRefresh();
+    }
     const TK_LABEL = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
     const TK_INPUT = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
     // Mirrors EES_JOB_IDS in api/timesheet-entries.js and timesheet.html. A dust
@@ -5133,7 +5209,20 @@
       // Both call sites run after truckingEntry is assigned, so the placeholder
       // can tell a dust haul what blank will mean (the server fills in "Dust").
       const isDust = !!truckingEntry && truckingEntry.division === 'dust';
+      // Unit is autofilled from the timesheet but editable here, because the
+      // driver can leave it blank — every dust haul submitted before the Unit
+      // field was added to that form has none, and the trucking office needs it
+      // on the row. Pre-fill from the injected row when re-editing, otherwise
+      // from the timesheet; whatever is in the box is what the row gets, and it
+      // is written back onto the entry so a later re-inject keeps it.
+      const unit = row
+        ? (r.unit || '')
+        : (truckingEntry ? (truckingEntry.truck_unit || '') : '');
       return `
+        <label style="${TK_LABEL}"><span>Unit</span>
+          <input type="text" id="tk_unit" list="tk_unitOptions" autocomplete="off" maxlength="100" value="${escapeHtml(String(unit))}" placeholder="Truck / unit #" style="${TK_INPUT}">
+          <datalist id="tk_unitOptions">${truckUnitOptionsHtml()}</datalist>
+          <span id="tk_unitHint" style="font-weight:400;font-size:11px;line-height:1.3;min-height:14px;text-transform:none;letter-spacing:0"></span></label>
         <label style="${TK_LABEL}"><span>Haul Fee ($/hr)</span>
           <input type="number" id="tk_haulFee" min="0" step="0.01" value="${escapeHtml(String(fee))}" placeholder="0.00" style="${TK_INPUT}"></label>
         <label style="${TK_LABEL}"><span>Division <span style="font-weight:400;color:var(--muted)">(optional)</span></span>
@@ -5162,36 +5251,60 @@
         <div>Driver: <strong>${escapeHtml(entry.username || '')}</strong></div>
         <div>Date: <strong>${escapeHtml(prettyDate(entry.work_date))}</strong></div>
         <div>Customer: <strong>${escapeHtml(entry.job_label || '—')}</strong></div>
-        <div>Unit: <strong>${escapeHtml(entry.truck_unit || '—')}</strong></div>
         <div>Start–End: <strong>${times}</strong></div>
         <div>Hours: <strong>${num2(work + travel)}</strong>${travel > 0
           ? ` <span style="font-weight:400;color:var(--muted)">(${num2(work)} work + ${num2(travel)} travel)</span>`
           : ''}</div>
         <div style="grid-column:1 / -1">Description: <strong>${escapeHtml(entry.truck_description || '—')}</strong></div>
-        ${entry.division === 'dust' && !entry.truck_unit ? `<div style="grid-column:1 / -1;color:var(--muted);font-size:12px">
-          No unit on this timesheet — entries submitted before the Unit field was
-          added to dust hauls leave it blank for the trucking office.</div>` : ''}
+        ${!entry.truck_unit ? `<div style="grid-column:1 / -1;color:var(--muted);font-size:12px">
+          No unit on this timesheet${entry.division === 'dust' ? ' — entries submitted before the Unit field was added to dust hauls leave it blank' : ''}.
+          Type it below and it goes on the Truck Tracking row.</div>` : ''}
       `;
       const msg = document.getElementById('truckingMsg');
       msg.textContent = ''; msg.className = 'modal-msg';
       document.getElementById('truckingSaveBtn').textContent = truckingMode === 'approve' ? 'Approve & Add' : 'Save Row';
-      document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(null);
+      truckingRenderFields(null);
       document.getElementById('truckingBackdrop').classList.add('open');
-      // Re-edit: pre-fill the haul fee / division from the injected row.
+      // This open owns the form from here on; anything still in flight does not.
+      const seq = ++truckingFetchSeq;
+      truckingDirty = false;
+      // Fill the unit dropdown whenever the roster turns up — first open pays
+      // for the fetch, later ones already have it. Touches only the options and
+      // the hint, so it needs no staleness guard of its own: it is right for
+      // whichever entry the modal is showing by the time it lands.
+      truckUnitRosterLoad().then(() => {
+        const dl = document.getElementById('tk_unitOptions');
+        if (dl) dl.innerHTML = truckUnitOptionsHtml();
+        truckUnitHintRefresh();
+      });
+      // Re-edit: pre-fill the haul fee / division / unit from the injected row.
       if (truckingMode === 'resplit') {
         try {
           const res = await fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() });
           const j = await res.json();
           const row = j && j.trucking && j.trucking.row ? j.trucking.row : null;
-          if (row) document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(row);
+          // Late answers are dropped: the modal may have been closed or pointed
+          // at another entry while this was in flight, and payroll may already
+          // have typed. Either way this row is no longer what the form is for.
+          if (row && seq === truckingFetchSeq && !truckingDirty) {
+            truckingRenderFields(row);
+          }
         } catch (_) { /* keep blank fields on lookup failure */ }
       }
     }
     function closeTrucking() {
       document.getElementById('truckingBackdrop').classList.remove('open');
       truckingEntry = null; truckingMode = null;
+      truckingFetchSeq++;   // orphan any pre-fill still in flight
     }
     bindBackdropClose(document.getElementById('truckingBackdrop'), closeTrucking);
+    // The container outlives every re-render of its inputs, and `input` bubbles,
+    // so one listener here catches typing in whichever fields are on screen.
+    // A dropdown pick fires `input` too, so the hint keeps up with both.
+    document.getElementById('truckingFields').addEventListener('input', () => {
+      truckingDirty = true;
+      truckUnitHintRefresh();
+    });
 
     function _tkval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
     async function truckingSave() {
@@ -5199,7 +5312,14 @@
       const msg = document.getElementById('truckingMsg');
       msg.className = 'modal-msg';
       const btn = document.getElementById('truckingSaveBtn');
-      const trucking = { haul_fee: _tkval('tk_haulFee'), division: _tkval('tk_division') };
+      const trucking = {
+        haul_fee: _tkval('tk_haulFee'),
+        division: _tkval('tk_division'),
+        // Always sent (blank included) — the box is pre-filled from the entry,
+        // so what's in it is the approver's answer either way. Bulk approve is
+        // the one path that omits it; there one unit can't speak for a group.
+        unit: _tkval('tk_unit'),
+      };
       const action = truckingMode === 'approve' ? 'approve' : 'resplit';
       btn.disabled = true;
       try {
@@ -5810,7 +5930,8 @@
             <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, g.division === 'dust' ? 'defaults to Dust' : 'e.g. Paving')}</div>
           </div>
           <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
-            customer come from each timesheet.</div>`;
+            customer come from each timesheet — a day whose unit is blank keeps it that way;
+            fill it in from Edit Row afterwards.</div>`;
       } else {
         badgeClass = 'plain'; badgeText = 'No injection';
         title = 'Status-only entries';

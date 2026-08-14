@@ -248,9 +248,128 @@ async function run() {
     unapproveEv && unapproveEv.changes.removed_split_rows === 2,
     unapproveEv && JSON.stringify(unapproveEv.changes));
 
+  await haulFieldsSurviveAnEdit();
+  await theUnitIsOnlyWrittenOnceTheRowExists();
+
   console.log(`\n${passed} passed, ${failed} failed`);
   await client.end();
   process.exit(failed ? 1 : 0);
+}
+
+// A haul carries two fields no other division has — the truck unit and the haul
+// description — and payroll's entry-edit form has inputs for neither: it edits
+// the day (hours, job, supervisor), not the haul. It therefore PUTs a body with
+// both keys missing, which used to normalize to null and silently wipe them, so
+// correcting a start time threw away the driver's unit and description along
+// with the unit payroll had typed at approval. Absent means keep; present still
+// wins, blank included, so the driver's own form can still clear a field.
+async function haulFieldsSurviveAnEdit() {
+  console.log('\n[a payroll edit keeps the haul fields it does not ask about]');
+  const HAUL = {
+    entry_type: 'daily', work_date: '2026-08-13', division: 'dust',
+    job_id: 'CNX', job_label: 'CNX',
+    start_time: '06:30', end_time: '15:30', lunch_break: false,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: '',
+    truck_unit: '', truck_description: 'stone to the pad',
+  };
+  const made = await call('POST', {}, HAUL, FIELD);
+  const hid  = made.body.entry.id;
+  await call('POST', { action: 'submit', id: hid }, {}, FIELD);
+  await call('POST', { action: 'approve', id: hid }, { trucking: { haul_fee: '121', unit: '1000' } }, ADMIN);
+  const approved = (await client.query(`SELECT truck_unit FROM timesheet_entries WHERE id=$1`, [hid])).rows[0];
+  assert('payroll\'s unit is on the entry after approval', approved.truck_unit === '1000', approved.truck_unit);
+
+  await call('POST', { action: 'unapprove', id: hid }, {}, ADMIN);
+  // Exactly the shape payroll.html's edit modal sends — no truck_* keys at all.
+  const edited = await call('PUT', { id: hid }, {
+    entry_type: 'daily', work_date: '2026-08-13', division: 'dust',
+    job_id: 'CNX', job_label: 'CNX',
+    start_time: '06:00', end_time: '15:30',
+    travel_to_site_hours: '0', travel_to_shop_hours: '0',
+    lunch_break: false, operated_equipment: false,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: '',
+  }, ADMIN);
+  assert('the edit goes through', edited.statusCode === 200, JSON.stringify(edited.body));
+  const kept = (await client.query(
+    `SELECT truck_unit, truck_description FROM timesheet_entries WHERE id=$1`, [hid])).rows[0];
+  assert('the unit survives it', kept.truck_unit === '1000', JSON.stringify(kept));
+  assert('and so does the description', kept.truck_description === 'stone to the pad', JSON.stringify(kept));
+
+  // Present still wins — this is how the driver's own form clears a mistake.
+  await call('PUT', { id: hid }, Object.assign({}, HAUL, {
+    truck_unit: '', truck_description: '',
+  }), ADMIN);
+  const cleared = (await client.query(
+    `SELECT truck_unit, truck_description FROM timesheet_entries WHERE id=$1`, [hid])).rows[0];
+  assert('sending them blank still clears them', !cleared.truck_unit && !cleared.truck_description,
+    JSON.stringify(cleared));
+
+  // And a division change off the haul divisions must not let a stale unit ride
+  // along — normalizeEntryBody nulls both off a non-truck row on purpose.
+  await call('PUT', { id: hid }, Object.assign({}, HAUL, { truck_unit: '999' }), ADMIN);
+  await call('PUT', { id: hid }, {
+    entry_type: 'daily', work_date: '2026-08-13', division: 'turf',
+    job_id: '26019', job_label: 'Punxsy Storage Lot',
+    start_time: '06:30', end_time: '15:30',
+    travel_to_site_hours: '0', travel_to_shop_hours: '0',
+    lunch_break: false, operated_equipment: false,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: '',
+  }, ADMIN);
+  const moved = (await client.query(`SELECT truck_unit FROM timesheet_entries WHERE id=$1`, [hid])).rows[0];
+  assert('moving the entry off a haul division drops the unit', !moved.truck_unit, JSON.stringify(moved));
+  await call('DELETE', { id: hid }, {}, ADMIN);
+}
+
+// The unit payroll types is written to the entry AND to the injected row. Those
+// are two statements with no transaction around them, so the order matters: if
+// the entry is updated first and the injection then fails, the timesheet claims
+// a unit the Truck Tracking row never got, and the failure looks recoverable
+// when the data has already drifted. Both paths write the entry last.
+async function theUnitIsOnlyWrittenOnceTheRowExists() {
+  console.log('\n[a failed injection leaves no half-written unit]');
+  const made = await call('POST', {}, {
+    entry_type: 'daily', work_date: '2026-08-14', division: 'dust',
+    job_id: 'Antero', job_label: 'Antero',
+    start_time: '06:30', end_time: '15:30', lunch_break: false,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: '',
+    truck_unit: 'AAA', truck_description: 'x',
+  }, FIELD);
+  const hid = made.body.entry.id;
+  await call('POST', { action: 'submit', id: hid }, {}, FIELD);
+  await call('POST', { action: 'approve', id: hid }, { trucking: { haul_fee: '121', unit: 'AAA' } }, ADMIN);
+
+  // Fail the next blob write, which is how insertTruckingRow persists the row.
+  const realQuery = client.query.bind(client);
+  let armed = true;
+  client.query = (text, vals) => {
+    if (armed && typeof text === 'string' && text.includes('INSERT INTO app_data')) {
+      armed = false;
+      return Promise.reject(new Error('simulated blob write failure'));
+    }
+    return realQuery(text, vals);
+  };
+  const failed = await call('POST', { action: 'resplit', id: hid }, {
+    trucking: { haul_fee: '121', unit: 'BBB' },
+  }, ADMIN);
+  client.query = realQuery;
+
+  assert('the edit reports the failure', failed.statusCode === 500, JSON.stringify(failed.body));
+  const after = (await client.query(`SELECT truck_unit FROM timesheet_entries WHERE id=$1`, [hid])).rows[0];
+  assert('the entry still holds the unit the row actually has', after.truck_unit === 'AAA', after.truck_unit);
+  const blob = (await client.query(`SELECT value FROM app_data WHERE key = 'FCT:fct_truck_division'`)).rows[0];
+  const arr  = blob ? (typeof blob.value === 'string' ? JSON.parse(blob.value) : blob.value) : [];
+  const row  = arr.find(r => String(r.id || '').startsWith(`tst-${hid}-`));
+  assert('and the Truck Tracking row agrees with it', row && row.unit === 'AAA',
+    JSON.stringify(row && row.unit));
+
+  // The retry, once whatever broke is fixed, lands both.
+  const retried = await call('POST', { action: 'resplit', id: hid }, {
+    trucking: { haul_fee: '121', unit: 'BBB' },
+  }, ADMIN);
+  assert('a retry succeeds', retried.statusCode === 200, JSON.stringify(retried.body));
+  const done = (await client.query(`SELECT truck_unit FROM timesheet_entries WHERE id=$1`, [hid])).rows[0];
+  assert('and both sides move together', done.truck_unit === 'BBB', done.truck_unit);
+  await call('DELETE', { id: hid }, {}, ADMIN);
 }
 
 run().catch(async err => {
