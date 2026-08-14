@@ -67,6 +67,47 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
+    // ── GET ?lists=1 — the dropdown rosters on their own ───────────────────
+    // Payroll's approve modal offers the trucking office's own unit names when
+    // it asks for a haul's unit, so that a unit typed there is one the office
+    // recognises rather than a near-miss its tab cannot match. It needs only the
+    // rosters, and the full GET below hands back every tracking row with them —
+    // thousands of rows to fill one dropdown. Same data, same reader, less of it.
+    if (req.method === 'GET' && req.query.lists === '1') {
+      const [blobL, blobLLegacy, driverRows, customerRows, unitRows] = await Promise.all([
+        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
+        sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
+        sql`SELECT value FROM dropdown_lists
+            WHERE company_code = ${companyCode} AND list_name = 'truck_drivers'
+            ORDER BY sort_order, value`,
+        sql`SELECT value FROM dropdown_lists
+            WHERE company_code = ${companyCode} AND list_name = 'truck_customers'
+            ORDER BY sort_order, value`,
+        sql`SELECT name, number FROM truck_division_units
+            WHERE company_code = ${companyCode} ORDER BY sort_order, name`,
+      ]);
+
+      // Blob first, same as the full GET: the trucking page PUTs it
+      // synchronously while the normalized tables are synced fire-and-forget,
+      // so a unit added minutes ago is in the blob and may not be in the table
+      // yet. Fall back to the tables only when the blob has nothing to say.
+      const asObj = v => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+      const fromBlob = asObj(blobL[0]?.value) || asObj(blobLLegacy[0]?.value);
+      const arr = v => (Array.isArray(v) ? v : []);
+      const blobHasAny = !!fromBlob && (
+        arr(fromBlob.units).length || arr(fromBlob.drivers).length || arr(fromBlob.customers).length);
+
+      return res.json({
+        lists: blobHasAny
+          ? { drivers: arr(fromBlob.drivers), customers: arr(fromBlob.customers), units: arr(fromBlob.units) }
+          : {
+              drivers:   driverRows.map(r => r.value),
+              customers: customerRows.map(r => r.value),
+              units:     unitRows.map(r => ({ name: r.name, number: r.number || '' })),
+            },
+      });
+    }
+
     // ── GET ────────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
       const [entryRows, driverRows, customerRows, unitRows] = await Promise.all([
