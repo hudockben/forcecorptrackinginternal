@@ -65,7 +65,9 @@
  *     Payroll-admin only. Deletes any injected daily_tracking rows (turf/paving),
  *     any injected fct_quarry_* blob rows (quarry), and any injected
  *     fct_truck_division rows (trucking), then reverts status. Used when an
- *     approval needs to be re-done from scratch.
+ *     approval needs to be re-done from scratch. Removing a Truck Tracking row
+ *     also pulls its Intercompany billing entry — see removeTruckingRows for
+ *     why an un-approval does not otherwise stick.
  *
  *   GET    /api/timesheet-entries?action=split&id=N     — current injected rows
  *     Returns the existing split (one element per daily_tracking row linked to
@@ -91,6 +93,19 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('./lib/auth');
 const { syncForKey } = require('./lib/sync-normalized');
+// Identity + lifecycle rules for the Truck Tracking rows this file injects.
+// Shared with api/truck-division.js, which sweeps rows that outlived their
+// entry on read — see the header of that module for why they live in one place.
+const {
+  TRUCK_DIVISION_BLOB,
+  IC_SOURCE_TRUCKING,
+  isEesJob,
+  needsTruckTrackingRow,
+  truckingRowIdPrefix,
+  truckingRowId,
+  removeIcBillingEntries,
+  TRUCK_TAB_FIELDS,
+} = require('./lib/truck-injected');
 
 const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
 const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holiday'];
@@ -120,11 +135,11 @@ function quarryRowIdPrefix(entryId) { return `tsq-${entryId}-`; }
 // autofilled from the timesheet entry. The haul fee and the division column are
 // deliberately left blank for the trucking office to fill in later. Injected
 // rows are tagged by encoding the timesheet entry id into the row id (same
-// scheme as quarry) so unapprove/delete can find and remove them again.
+// scheme as quarry) so unapprove/delete can find and remove them again — see
+// truckingRowId in lib/truck-injected.js for why that id must stay stable
+// across a re-approval.
 //
-// Dust customer work lands here too — see needsTruckTrackingRow below.
-const TRUCK_DIVISION_BLOB = 'fct_truck_division';
-function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
+// Dust customer work lands here too — see needsTruckTrackingRow, imported above.
 
 // Dust auto-injects into the Dust division's "EES Other" tab — the
 // dust_ees_other_rows app_data blob. Like trucking there are NO payroll-entered
@@ -137,48 +152,16 @@ function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
 const DUST_EES_OTHER_BLOB = 'dust_ees_other_rows';
 function eesOtherRowIdPrefix(entryId) { return `tse-${entryId}-`; }
 
-// The two standing EES activities, as encoded by api/timesheet-jobs.js. Only a
-// dust entry on one of these becomes an EES Other row — an ordinary dust
-// customer entry still just flips status, as it always has.
-const EES_JOB_IDS = ['ees:preloading', 'ees:washing'];
-function isEesJob(jobId) { return EES_JOB_IDS.includes(String(jobId || '')); }
+// The two standing EES activities are encoded by api/timesheet-jobs.js and named
+// in lib/truck-injected.js (isEesJob, imported above) — the dust EES gate and the
+// Truck Tracking gate are two halves of one routing decision, so they read one
+// list. Only a dust entry on one of these becomes an EES Other row; an ordinary
+// dust customer entry routes to Truck Tracking, as it always has.
 
 // The one column the EES Other tab owns rather than the timesheet: the hourly
 // rate a Billable row bills at. Everything else on the row is timesheet-fed, so
 // a re-injection must preserve this and overwrite the rest.
 const EES_OTHER_TAB_FIELDS = ['rate'];
-
-/**
- * True when approving this entry injects a Truck Tracking row.
- *
- * Two divisions route here. Trucking, obviously — its own daily entries have
- * always injected. And dust customer work, because that work IS hauling: a
- * driver takes a truck to a customer for a day, which is the same shape the
- * Truck Tracking tab already records, down to the driver/date/customer/hours
- * columns. Filing it under dust describes who did the work, not where the cost
- * belongs.
- *
- * A dust entry therefore routes by job, and the two dust destinations are
- * disjoint by construction: the standing EES activities go to the Dust
- * division's own "EES Other" tab (isEesJob), every other dust job is a customer
- * haul and comes here. That disjointness is what lets the approve path treat
- * them as an if/else rather than having to order them.
- *
- * A dust entry with no job names no customer, so it injects nowhere and just
- * flips status — the same rule EES already applies. Trucking keeps its old
- * behaviour of injecting regardless, since its rows carry a unit and a
- * description that stand on their own without a customer.
- *
- * Single predicate on purpose: the gate appears at five sites (approve,
- * resplit, un-approve, the edit guard, and payroll.html's modal trigger), and a
- * row that outlives its entry is exactly what happens when one of them drifts.
- * The delete sweep deliberately casts wider than this — see the note there.
- */
-function needsTruckTrackingRow(entry) {
-  if (!entry || entry.entry_type !== 'daily') return false;
-  if (entry.division === 'trucking') return true;
-  return entry.division === 'dust' && !!entry.job_id && !isEesJob(entry.job_id);
-}
 
 function safeDate(v) {
   if (!v) return null;
@@ -1151,7 +1134,11 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
     || (entry.division === 'dust' ? 'Dust' : '');
 
   const row = {
-    id:                `${truckingRowIdPrefix(entry.id)}${Date.now()}`,
+    // Stable per entry, not stamped with Date.now() — see truckingRowId. A
+    // fresh id on every re-injection orphaned the row's Intercompany billing
+    // entry, which then got read back as a lost row and rebuilt as a duplicate
+    // of the work payroll had just corrected.
+    id:                truckingRowId(entry.id),
     task_number:       '',
     actual_date:       workDate,
     driver,
@@ -1173,16 +1160,51 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
 
   const prefix = truckingRowIdPrefix(entry.id);
   const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
-  const stale  = arr.filter(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
-  const next   = arr.filter(r => !(r && typeof r === 'object' && String(r.id || '').startsWith(prefix)));
+  const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
+
+  // Carry over the invoice columns the trucking office owns on this row. Every
+  // cost field is payroll's and is rewritten from the entry, but the office
+  // fills in the QB number and the invoiced/paid dates on the locked row — and
+  // correcting an entry's hours must not wipe the billing history off a row
+  // that has already been invoiced. Same rule as EES_OTHER_TAB_FIELDS.
+  const prev = arr.find(isMine) || null;
+  if (prev) {
+    for (const f of TRUCK_TAB_FIELDS) {
+      if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
+    }
+  }
+
+  const next   = arr.filter(r => !isMine(r));
   next.push(row);
   await writeBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB, next);
 
-  const staleIds = stale.map(r => r.id).filter(Boolean);
+  // Rows under a DIFFERENT id than the one we just wrote: leftovers from the
+  // era of Date.now()-stamped ids, cleared out on the next approval. The row we
+  // are (re)writing is deliberately excluded — deleting and re-inserting it
+  // would reset created_at and move it in the tab's ordering, and would drop
+  // the Intercompany billing entry that legitimately still describes it.
+  const staleIds = arr.filter(isMine).map(r => String(r.id)).filter(id => id && id !== row.id);
   if (staleIds.length) {
     await sql`DELETE FROM truck_division_entries WHERE company_code = ${companyCode} AND id = ANY(${staleIds})`;
+    // Non-fatal: leaving a billing entry behind bills for a row that no longer
+    // exists, but failing here would roll back an otherwise-good approval.
+    try {
+      await removeIcBillingEntries(sql, companyCode, IC_SOURCE_TRUCKING, staleIds);
+    } catch (err) {
+      console.error('[timesheet-entries] clearing stale IC billing failed:', err.message);
+    }
   }
   await upsertTruckDivisionEntry(sql, companyCode, row);
+
+  // Approving is a deliberate statement that this work counts, so it undoes an
+  // earlier Intercompany removal rather than being silently overruled by it —
+  // the same rule EES applies, and it only became reachable here once the row
+  // id stopped changing on every re-approval.
+  try {
+    await clearIcSuppression(sql, companyCode, IC_SOURCE_TRUCKING, row.id);
+  } catch (err) {
+    console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
+  }
   return row;
 }
 
@@ -1313,20 +1335,40 @@ async function removeEesOtherRows(sql, companyCode, entry) {
 }
 
 /**
- * Remove every Truck Tracking row injected from this entry — from both the
- * fct_truck_division blob and the truck_division_entries mirror. Returns the
- * count removed.
+ * Remove every Truck Tracking row injected from this entry — from the
+ * fct_truck_division blob, the truck_division_entries mirror, and the shared
+ * Intercompany billing list. Returns the count removed.
+ *
+ * The Intercompany sweep is what makes an un-approval stick. Without it the
+ * billing entry outlived the row: Intercompany went on invoicing hours payroll
+ * had just taken back, and trucking.html — which reads a billing entry with no
+ * matching row as a row lost to a blob overwrite — rebuilt the row from it on
+ * the next page load. The rebuilt row carried the original id, which the tab
+ * refuses to delete and which a later re-approval no longer owned, so it sat
+ * there permanently alongside the corrected one. Any Intercompany-side invoice
+ * or payment dates on the entry go with it; that is the intended trade, since
+ * the work it billed for is no longer approved.
  */
 async function removeTruckingRows(sql, companyCode, entry) {
   const prefix    = truckingRowIdPrefix(entry.id);
+  const isMine    = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
   const arr       = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
-  const removed   = arr.filter(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
+  const removed   = arr.filter(isMine);
   if (!removed.length) return 0;
-  const remaining = arr.filter(r => !(r && typeof r === 'object' && String(r.id || '').startsWith(prefix)));
-  await writeBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB, remaining);
-  const removedIds = removed.map(r => r.id).filter(Boolean);
+  await writeBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB, arr.filter(r => !isMine(r)));
+  const removedIds = removed.map(r => String(r.id)).filter(Boolean);
   if (removedIds.length) {
     await sql`DELETE FROM truck_division_entries WHERE company_code = ${companyCode} AND id = ANY(${removedIds})`;
+    // Non-fatal. Throwing would fail the un-approve after the row is already
+    // gone, and the retry would find nothing to remove and return early — so
+    // the billing entry would be stranded by the very error meant to protect
+    // it. Reported instead; the read-time sweep and the trucking page's own
+    // reconciler both prune a billing entry whose row no longer exists.
+    try {
+      await removeIcBillingEntries(sql, companyCode, IC_SOURCE_TRUCKING, removedIds);
+    } catch (err) {
+      console.error('[timesheet-entries] removing IC billing entries failed:', err.message);
+    }
   }
   return removed.length;
 }
@@ -2468,6 +2510,7 @@ module.exports._test = {
   insertSplitRows,
   removeSplitRows,
   truckingRowIdPrefix,
+  truckingRowId,
   matchTruckingDriver,
   insertTruckingRow,
   needsTruckTrackingRow,

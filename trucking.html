@@ -516,6 +516,16 @@
     let icSentMap = new Map(); // source_id → full IC entry (trucking)
     let icBillingArr = [];        // full IC billing list for syncing updates back
     let _icBillingDirty = false;  // pending IC billing changes not yet saved
+    // True once divEntries has come back from the server at least once. The IC
+    // reconciler prunes billing entries whose truck row is gone, and "gone" is
+    // only meaningful against a list we actually loaded — before that, every row
+    // is absent and the prune would wipe the division's billing.
+    let _divEntriesLoaded = false;
+
+    // Rows autofilled from an approved timesheet entry. Payroll owns them end to
+    // end: this tab renders them locked, refuses to delete them, and treats their
+    // absence as an un-approval rather than as data loss.
+    function isPayrollRowId(id) { return String(id || '').startsWith('tst-'); }
 
     function fmtSentAt(ts) {
       if (!ts) return '';
@@ -774,6 +784,7 @@
     }
 
     // Reconcile every truck row into `entries` (MUTATED in place):
+    //  • pull the entry for a payroll row that no longer exists (un-approved),
     //  • create an entry for a newly-billable row (stamped sent_at = now),
     //  • keep an existing entry in sync when a trucking-owned field changed
     //    (preserving its original sent_at and any Intercompany-side fields),
@@ -789,6 +800,28 @@
       let changed = false;
       const sentNow  = [];   // {id, sentAt}
       const clearNow = [];   // ids whose stale entry we voided
+
+      // Payroll rows un-approved or deleted since they were mirrored: pull their
+      // billing entry so Intercompany stops invoicing hours payroll took back.
+      // The server does this at un-approve time; this is the backstop for entries
+      // stranded before it did, and it is what keeps _recoverEntriesFromIcBilling
+      // from having anything left to resurrect.
+      //
+      // Restricted to payroll rows on purpose. A manual row the office deletes is
+      // handled by the $0-total rule below while it still exists, and absence
+      // alone is not safe to read as deletion for rows this tab creates — that is
+      // the very thing _recoverEntriesFromIcBilling exists to undo. For a payroll
+      // row, absence IS the deletion: nothing else can remove one.
+      if (_divEntriesLoaded) {
+        const liveIds = new Set(divEntries.map(e => e && e.id).filter(Boolean));
+        for (const [sourceId, prev] of bySourceId) {
+          if (!isPayrollRowId(sourceId) || liveIds.has(sourceId)) continue;
+          const i = entries.indexOf(prev);
+          if (i !== -1) { entries.splice(i, 1); changed = true; }
+          bySourceId.delete(sourceId);
+          clearNow.push(sourceId);
+        }
+      }
 
       for (const row of divEntries) {
         const tot  = (parseFloat(row.total_hours) || 0) * (parseFloat(row.haul_fee) || 0);
@@ -1006,6 +1039,9 @@
         loadIcSentMap(),
       ]);
       if (divData) {
+        // Only a real array counts as "loaded" — see _divEntriesLoaded. A
+        // malformed response would otherwise read as a division with no rows.
+        _divEntriesLoaded = Array.isArray(divData.entries);
         divEntries = Array.isArray(divData.entries) ? divData.entries : [];
         const tl   = divData.lists || {};
         if (Array.isArray(tl.drivers))   divTruckLists.drivers   = tl.drivers;
@@ -1030,12 +1066,26 @@
     // Rebuild truck entries that are present in IC billing but missing from divEntries
     // (e.g. lost when the truck-division blob was overwritten or rolled back).
     // Uses source_id as the canonical truck entry ID so re-running is idempotent.
+    //
+    // Payroll-injected rows ("tst-" ids) are deliberately excluded. For a row the
+    // trucking office owns, missing-from-the-blob really does mean lost — nothing
+    // else deletes it. For a payroll row it means the opposite: payroll un-approved
+    // or deleted the timesheet entry, which is the only supported way to remove one.
+    // Recovering those resurrected un-approved work — the row came back with its
+    // original id, which this tab refuses to delete and which a later re-approval
+    // (under a new id, before those were made stable) no longer owned, so it sat
+    // here permanently double-counting the corrected row's hours and dollars.
+    //
+    // If a payroll row ever IS genuinely lost, un-approving and re-approving the
+    // entry rebuilds it — re-injection reuses the row's id now, so that restores
+    // the row rather than adding a second one.
     function _recoverEntriesFromIcBilling() {
       const existingIds = new Set(divEntries.map(e => e.id));
       const recovered = [];
       icBillingArr.forEach(ic => {
         if (ic.source !== 'trucking' || !ic.source_id) return;
         if (existingIds.has(ic.source_id)) return;
+        if (isPayrollRowId(ic.source_id)) return;
         recovered.push({
           id:               ic.source_id,
           task_number:      ic.task_number      || '',
@@ -2835,6 +2885,10 @@
           // snapshot and the next save echoes that snapshot back,
           // wiping the user's pending edits.
           if (_isEditing()) return;
+          // Set alongside the assignment, never before it: the cycle can bail
+          // out above while the user is typing, and a flag set without the rows
+          // behind it would tell the IC reconciler every payroll row is gone.
+          _divEntriesLoaded = true;
           divEntries = inEntries;
           if (Array.isArray(tl.drivers))   divTruckLists.drivers   = tl.drivers;
           if (Array.isArray(tl.customers)) divTruckLists.customers = tl.customers;
