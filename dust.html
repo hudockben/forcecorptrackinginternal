@@ -3247,13 +3247,18 @@
         // Build a key→existing-row map so we can preserve original IDs.
         // Changing IDs on update would cause recoverFromIcBilling to re-insert
         // the old rows on the next page load, creating duplicates.
+        // Payroll rows are never import targets. Adopting one's id would hand
+        // the CSV's figures to a row the server owns — which replays its own
+        // copy over them, so the import silently does nothing — while the
+        // office's real row is dropped from `kept` as "replaced".
+        const importable = rows.filter(r => !isInjectedRow(r));
         const existingByKey = new Map(
-          rows.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
+          importable.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
         );
         // Also index time-less existing rows by date+company+location so a
         // CSV row with a start_time still matches the original no-time entry.
         const existingTimeless = new Map(
-          rows
+          importable
             .filter(r => !r.start_time)
             .map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`, r])
         );

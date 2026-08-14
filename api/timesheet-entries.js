@@ -1450,8 +1450,15 @@ async function truckingSplitForEntry(sql, companyCode, entry) {
 // A dust row's money columns are NUMERIC(10,4). Blank stays blank so a rate the
 // approver hasn't set yet round-trips as "not set" rather than as a real zero,
 // which would bill the customer nothing and look deliberate.
-const DUST_RATE_MAX    = 1e7;
-const DUST_GALLONS_MAX = 1e7;
+// The widest value the columns can actually hold. v1_rate, v2_rate and
+// gallons_ub are all NUMERIC(10,4) — ten significant digits with four after the
+// point, so six integer digits. A ceiling any wider than this does not reject a
+// fat-fingered figure, it accepts one Postgres then refuses with a 22003
+// overflow, which surfaces as a 500 that rolls the whole approval back: the
+// supervisor is told the approval failed rather than that the gallons are wrong.
+const DUST_NUMERIC_MAX = 999999.9999;
+const DUST_RATE_MAX    = DUST_NUMERIC_MAX;
+const DUST_GALLONS_MAX = DUST_NUMERIC_MAX;
 function dustNum(v, max, label) {
   if (v == null || v === '') return { value: '' };
   const n = Number(v);
@@ -1554,7 +1561,14 @@ async function dustOptionsForEntry(sql, companyCode, entry) {
       WHERE company_code = ${companyCode}
         AND company      = ${co.name}
         AND COALESCE(vehicle2, '') <> ''
-      ORDER BY date DESC, created_at DESC
+        -- Never learn from the row we are about to overwrite. Re-approving would
+        -- otherwise read its own previous output back as "what this customer
+        -- usually gets", so an escort picked once could never be un-picked by
+        -- clearing it and re-approving.
+        AND id <> ${dustRowId(entry.id)}
+      -- NULLS LAST because DESC puts them FIRST in Postgres: one undated row
+      -- would otherwise be every customer's "most recent" escort forever.
+      ORDER BY date DESC NULLS LAST, created_at DESC
       LIMIT 1
     `;
     usualVehicle2 = (recent && recent.vehicle2) || '';
@@ -1592,12 +1606,17 @@ function resolveDustVehicle(name, given, opts, coRate) {
   const eq = vehicle
     ? (opts.equipment || []).find(e => String(e.name).toLowerCase() === vehicle.toLowerCase())
     : null;
+  // An empty slot bills nothing, and that outranks anything the modal sent.
+  // The tab multiplies rate x hours without ever looking at the vehicle NAME,
+  // so a rate left behind after the vehicle was cleared is a real charge for a
+  // truck that never rolled — the same invented charge materializeCompanyVehicleRates
+  // refuses to create in dust.html. Clearing the vehicle clears the slot.
+  if (!vehicle) return { vehicle: '', unit: '', rate: '' };
   const unit = given.unit !== undefined
     ? (safeStr(given.unit, 100) || '')
     : ((eq && eq.unit_number) || '');
   let rate;
   if (given.rate !== undefined) rate = given.rate;
-  else if (!vehicle)            rate = '';   // no vehicle in the slot bills nothing
   else if (coRate != null)      rate = coRate;
   else if (eq && eq.vehicle_rate != null) rate = eq.vehicle_rate;
   else rate = '';

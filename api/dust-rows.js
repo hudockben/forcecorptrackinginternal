@@ -318,6 +318,17 @@ module.exports = async (req, res) => {
       }
       const opts = safeDeletes ? { deletedIds: safeDeletes } : undefined;
 
+      // A save that carries no rows and asks for no deletes means "do nothing".
+      // _upsertDustRows has always had that safety net, keyed on its list being
+      // empty — but the guard below adds the server's own injected rows back, so
+      // an empty save would arrive there looking non-empty and fall through to
+      // the legacy full-sync DELETE, taking out every MANUAL row in the company.
+      // The net therefore has to be judged on what the CLIENT sent, here, before
+      // anything is merged into it.
+      if (dustRows.length === 0 && (!safeDeletes || safeDeletes.length === 0)) {
+        return res.json({ ok: true });
+      }
+
       await _upsertDustRows(sql, companyCode, await _guardInjectedRows(sql, companyCode, dustRows), payload, opts);
 
       return res.json({ ok: true });

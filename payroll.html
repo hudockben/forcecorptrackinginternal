@@ -5208,6 +5208,15 @@
     // overwrite something the approver has already typed — see dustTouched.
     let dustOptions = null;
     let dustRowSeen = null;   // the injected row on a re-edit; null on a fresh approve
+    // Did the row this Edit Row is meant to CORRECT actually arrive?
+    //   'none'    — a fresh approve; there is no posted row to load.
+    //   'pending' — the lookup is in flight.
+    //   'loaded'  — it answered (a null row is a valid answer: an entry approved
+    //               before dust rows existed has none yet).
+    //   'failed'  — it threw. Saving now would send the blank boxes as
+    //               deliberate clears and wipe the posted row, so saving is
+    //               refused until the modal is reopened.
+    let dustRowLoad = 'none';
     // Boxes the approver has typed in or picked in. A late-arriving default
     // never lands on one of these, and neither does a cascade.
     const dustTouched = new Set();
@@ -5243,12 +5252,26 @@
         // the driver's Unit box offers the TRUCKING office's roster, and dust
         // names its vehicles its own way ("Distributor Truck 4000").
         vehicle1: truckingEntry ? s(truckingEntry.truck_unit) : '',
-        v1_rate:  o.v1_rate != null ? s(o.v1_rate) : '',
+        v1_rate:  dkRateFor(truckingEntry ? truckingEntry.truck_unit : '', o.v1_rate),
         // Nobody enters the escort on a timesheet — it follows from the customer.
         vehicle2: s(o.usual_vehicle2),
-        v2_rate:  o.v2_rate != null ? s(o.v2_rate) : '',
+        v2_rate:  dkRateFor(o.usual_vehicle2, o.v2_rate),
         gallons_ub: '',
       };
+    }
+
+    // The rate cascade, exactly as resolveDustVehicle runs it server-side:
+    // customer default first, the vehicle's own rate as the fallback, nothing
+    // for an empty slot. The box has to show what the server would derive — it
+    // sends whatever is in it, so a blank here is saved as a deliberate blank
+    // and the server's own fallback never gets to fire.
+    function dkRateFor(vehicleName, coRate) {
+      const name = String(vehicleName || '').trim();
+      if (!name) return '';
+      if (coRate != null) return String(coRate);
+      const eq = ((dustOptions || {}).equipment || [])
+        .find(e => String(e.name).toLowerCase() === name.toLowerCase());
+      return (eq && eq.vehicle_rate != null) ? String(eq.vehicle_rate) : '';
     }
 
     function dkOptionsHtml(values) {
@@ -5361,6 +5384,28 @@
         if (el && !String(el.value || '').trim()) dkSet(id, val);
       }
     }
+
+    // Put an already-posted row's own answers into the boxes the approver has
+    // not touched.
+    //
+    // Needed because the lookup can land AFTER they have started typing, and the
+    // boxes on screen until then hold the fresh-approve prefill — mostly blank.
+    // Leaving them that way and saving would send those blanks as deliberate
+    // clears and wipe the company man, the well pad, the state and the gallons
+    // off a row that was already billing. Their typing still wins: dkSet skips
+    // anything in dustTouched.
+    function dustApplyRow(row) {
+      if (!row) return;
+      const p = dustPrefill(row);
+      dkSet('dk_companyMan', p.company_man);
+      dkSet('dk_location',   p.location);
+      dkSet('dk_state',      p.state);
+      dkSet('dk_vehicle1',   p.vehicle1);
+      dkSet('dk_v1Rate',     p.v1_rate);
+      dkSet('dk_vehicle2',   p.vehicle2);
+      dkSet('dk_v2Rate',     p.v2_rate);
+      dkSet('dk_gallons',    p.gallons_ub);
+    }
     const TK_LABEL = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
     const TK_INPUT = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
     // Mirrors EES_JOB_IDS in api/timesheet-entries.js and timesheet.html. A dust
@@ -5446,6 +5491,8 @@
       dustOptions = null;
       dustRowSeen = null;
       dustTouched.clear();
+      // Only a re-edit of a dust haul has a posted row that saving could wipe.
+      dustRowLoad = (truckingMode === 'resplit' && entry.division === 'dust') ? 'pending' : 'none';
       truckingNoteRefresh();
       truckingRenderFields(null);
       document.getElementById('truckingBackdrop').classList.add('open');
@@ -5479,16 +5526,29 @@
           const row     = j && j.trucking && j.trucking.row ? j.trucking.row : null;
           const dustRow = (truckingMode === 'resplit' && j && j.dust && j.dust.row) ? j.dust.row : null;
           dustOptions = (j && j.dust && j.dust.options) ? j.dust.options : null;
+          if (dustRowLoad === 'pending') dustRowLoad = 'loaded';
           if (!truckingDirty) {
             // Nothing typed yet — re-render both halves from what came back.
             dustRowSeen = dustRow;
             truckingRenderFields(row);
           } else {
-            // Payroll is already typing. Leave every box alone and only bring in
-            // the dropdowns and the still-empty defaults.
+            // Payroll is already typing, so their boxes stand — but every box
+            // they have NOT touched must still end up holding the truth, because
+            // a box left blank here saves as a deliberate clear. On a re-edit
+            // that truth is the posted row; on a fresh approve it is the
+            // customer's defaults. Order matters: the row is authoritative, so
+            // dustRowSeen is set first to stop dustApplyOptions offering
+            // customer defaults over it.
+            dustRowSeen = dustRow;
             dustApplyOptions();
+            dustApplyRow(dustRow);
           }
-        } catch (_) { /* keep blank fields on lookup failure */ }
+        } catch (_) {
+          // The boxes are still holding the fresh-approve prefill. That is fine
+          // for an approve — blank means blank there — but on a re-edit it would
+          // save as a wipe of the posted row, so truckingSave refuses instead.
+          if (dustRowLoad === 'pending') dustRowLoad = 'failed';
+        }
       }
     }
     function closeTrucking() {
@@ -5496,6 +5556,7 @@
       truckingEntry = null; truckingMode = null;
       truckingFetchSeq++;   // orphan any pre-fill still in flight
       dustOptions = null; dustRowSeen = null; dustTouched.clear();
+      dustRowLoad = 'none';
     }
     bindBackdropClose(document.getElementById('truckingBackdrop'), closeTrucking);
     // The container outlives every re-render of its inputs, and `input` bubbles,
@@ -5532,6 +5593,19 @@
       if (!truckingEntry || !truckingMode) return;
       const msg = document.getElementById('truckingMsg');
       msg.className = 'modal-msg';
+      // Every dust box is sent, blank included, because blank is a real answer
+      // on a fresh approve. On a re-edit that only holds once the posted row has
+      // been read back into the boxes — before then they are empty for a reason
+      // that has nothing to do with what is on the row, and saving would clear
+      // the company man, the well pad, the state and the gallons off work that
+      // is already billing.
+      if (dustRowLoad === 'pending' || dustRowLoad === 'failed') {
+        msg.classList.add('error');
+        msg.textContent = dustRowLoad === 'pending'
+          ? 'Still loading the row this entry already posted — try again in a moment.'
+          : 'Could not load the row this entry already posted. Saving now would blank it — close and reopen Edit Row.';
+        return;
+      }
       const btn = document.getElementById('truckingSaveBtn');
       const trucking = {
         haul_fee: _tkval('tk_haulFee'),

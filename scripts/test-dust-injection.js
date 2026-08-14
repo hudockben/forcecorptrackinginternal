@@ -331,6 +331,31 @@ function entry(over = {}) {
   }
   {
     const { sql } = makeSql(CONFIG);
+    // The tab multiplies rate x hours without looking at the vehicle NAME, so a
+    // rate left behind after the vehicle was cleared is a real charge for a
+    // truck that never rolled.
+    const row = await insertDustTrackingRow(sql, CO, entry(), {
+      vehicle1: '', v1_rate: 130, vehicle2: '', v2_rate: 60,
+    });
+    assert('an emptied slot bills nothing, whatever rate was left in the box',
+      row.v1_rate === '' && row.v2_rate === '');
+    assert('and carries no unit either', row.v1_unit === '' && row.v2_unit === '');
+  }
+  {
+    // The columns are NUMERIC(10,4): six integer digits. A ceiling wider than
+    // that does not reject a fat-fingered figure, it lets Postgres 22003 roll
+    // the whole approval back with a 500.
+    assert('a rate past what NUMERIC(10,4) holds is rejected up front',
+      !!validateDustInjection({ v1_rate: 1000000 }).error);
+    assert('so are gallons past it',
+      !!validateDustInjection({ gallons_ub: 1000000 }).error);
+    assert('the widest storable figure is still accepted',
+      validateDustInjection({ gallons_ub: 999999.9999 }).fields.gallons_ub === 999999.9999);
+    assert('a realistic gallons figure is unaffected',
+      validateDustInjection({ gallons_ub: 4730 }).fields.gallons_ub === 4730);
+  }
+  {
+    const { sql } = makeSql(CONFIG);
     // Bulk approve: nothing entered at all.
     const row = await insertDustTrackingRow(sql, CO, entry(), {});
     assert('bulk approve still fills in what the customer implies',
