@@ -5114,6 +5114,14 @@
     // "Dust" server-side rather than blank).
     let truckingEntry = null;
     let truckingMode  = null;
+    // Guards on the Edit Row pre-fill lookup, which is awaited after the modal
+    // is already on screen. Bumped on every open and on close, so a lookup that
+    // comes back late — the user closed the modal, or moved on to another day —
+    // is dropped instead of writing one entry's haul fee and unit into the form
+    // of another. truckingDirty covers the other half: once payroll has typed
+    // anything, a slow answer must not overwrite what they typed.
+    let truckingFetchSeq = 0;
+    let truckingDirty    = false;
     const TK_LABEL = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
     const TK_INPUT = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
     // Mirrors EES_JOB_IDS in api/timesheet-entries.js and timesheet.html. A dust
@@ -5190,21 +5198,34 @@
       document.getElementById('truckingSaveBtn').textContent = truckingMode === 'approve' ? 'Approve & Add' : 'Save Row';
       document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(null);
       document.getElementById('truckingBackdrop').classList.add('open');
-      // Re-edit: pre-fill the haul fee / division from the injected row.
+      // This open owns the form from here on; anything still in flight does not.
+      const seq = ++truckingFetchSeq;
+      truckingDirty = false;
+      // Re-edit: pre-fill the haul fee / division / unit from the injected row.
       if (truckingMode === 'resplit') {
         try {
           const res = await fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() });
           const j = await res.json();
           const row = j && j.trucking && j.trucking.row ? j.trucking.row : null;
-          if (row) document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(row);
+          // Late answers are dropped: the modal may have been closed or pointed
+          // at another entry while this was in flight, and payroll may already
+          // have typed. Either way this row is no longer what the form is for.
+          if (row && seq === truckingFetchSeq && !truckingDirty) {
+            document.getElementById('truckingFields').innerHTML = truckingFieldsHtml(row);
+          }
         } catch (_) { /* keep blank fields on lookup failure */ }
       }
     }
     function closeTrucking() {
       document.getElementById('truckingBackdrop').classList.remove('open');
       truckingEntry = null; truckingMode = null;
+      truckingFetchSeq++;   // orphan any pre-fill still in flight
     }
     bindBackdropClose(document.getElementById('truckingBackdrop'), closeTrucking);
+    // The container outlives every re-render of its inputs, and `input` bubbles,
+    // so one listener here catches typing in whichever fields are on screen.
+    document.getElementById('truckingFields')
+      .addEventListener('input', () => { truckingDirty = true; });
 
     function _tkval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
     async function truckingSave() {

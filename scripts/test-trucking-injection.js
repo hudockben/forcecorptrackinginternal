@@ -357,6 +357,10 @@ function entry(over = {}) {
     assert('validate: unit trimmed', validateTruckingInjection({ unit: '  635  ' }).fields.unit === '635');
     assert('validate: unit present but blank → \'\' (clear it), not null',
       validateTruckingInjection({ unit: '' }).fields.unit === '');
+    // An explicit JSON null is "no opinion", not "clear it" — a caller that
+    // spells absence that way must not wipe the unit off every row it touches.
+    assert('validate: unit null → treated as absent, not as a clear',
+      validateTruckingInjection({ unit: null }).fields.unit === null);
     assert('validate: whitespace-only unit → \'\' too',
       validateTruckingInjection({ unit: '   ' }).fields.unit === '');
     assert('validate: missing body → unit null', validateTruckingInjection(undefined).fields.unit === null);

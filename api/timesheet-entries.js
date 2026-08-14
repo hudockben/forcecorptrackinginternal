@@ -1019,7 +1019,11 @@ function validateTruckingInjection(raw) {
   // "keep each entry's own unit" rather than "blank every one of them". Absent
   // → null (leave the timesheet's value alone); present → the string typed,
   // '' included (clear it).
-  const unit = t.unit === undefined ? null : (safeStr(t.unit, 100) || '');
+  //
+  // `== null` catches an explicit JSON null as well as a missing key: a caller
+  // that spells "no opinion" as null must not silently wipe the unit. Clearing
+  // is spelled '' — which is what the modal sends when payroll empties the box.
+  const unit = t.unit == null ? null : (safeStr(t.unit, 100) || '');
   return { fields: { haul_fee, division, unit } };
 }
 
@@ -1870,6 +1874,13 @@ module.exports = async (req, res) => {
       // rewritten (un-approve → re-approve, or Edit Row). Absent — which is what
       // bulk approve sends, and what an older client sends — leaves each entry's
       // own unit alone; a blank string clears it.
+      //
+      // Written AFTER the injection succeeds, not folded into the status flip:
+      // the flip below is rolled back when injection fails, and a truck_unit
+      // written alongside it would not be, leaving the entry disagreeing with a
+      // Truck Tracking row that was never written. insertTruckingRow takes the
+      // unit from `fields`, not from the entry, so nothing downstream needs this
+      // write to have happened first.
       const unitGiven = !!(truckingInject && truckingInject.unit != null);
       const unitValue = unitGiven ? (truckingInject.unit || null) : null;
 
@@ -1879,9 +1890,6 @@ module.exports = async (req, res) => {
             approved_at         = NOW(),
             approved_by_user_id = ${userId},
             approved_by_name    = ${username},
-            truck_unit          = CASE WHEN ${unitGiven}::boolean
-                                       THEN ${unitValue}::text
-                                       ELSE truck_unit END,
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -1948,15 +1956,28 @@ module.exports = async (req, res) => {
         }
       }
 
+      // Injection landed (or there was none to do) — now the entry can safely
+      // record the unit payroll typed. See the note by unitGiven above.
+      let approvedRow = updated;
+      if (unitGiven) {
+        const [withUnit] = await sql`
+          UPDATE timesheet_entries
+          SET truck_unit = ${unitValue}, updated_at = NOW()
+          WHERE id = ${id} AND company_code = ${companyCode}
+          RETURNING *
+        `;
+        if (withUnit) approvedRow = withUnit;
+      }
+
       await writeAudit(
         sql, companyCode, payload, id, 'APPROVE',
         splitRows ? { split_row_count: splitRows.length }
           : quarryInject ? { quarry_activity: quarryInject.activity }
           : needsTrucking ? { trucking_injected: true }
           : needsEesOther ? { ees_other_injected: true } : null,
-        dbToEntry(updated),
+        dbToEntry(approvedRow),
       );
-      return res.json(await entryJson(sql, companyCode, updated));
+      return res.json(await entryJson(sql, companyCode, approvedRow));
     }
 
     // ── POST ?action=resplit — re-author the split on an approved entry ──
@@ -2015,8 +2036,20 @@ module.exports = async (req, res) => {
       if (needsTruckTrackingRow(existing)) {
         const { fields, error } = validateTruckingInjection(req.body && req.body.trucking);
         if (error) return res.status(400).json({ error });
+        try {
+          await insertTruckingRow(sql, companyCode, existing, fields);
+        } catch (injErr) {
+          console.error('[timesheet-entries] trucking resplit failed:', injErr.message);
+          return res.status(500).json({
+            error: 'Edit failed: could not rewrite the Truck Tracking row. Retry.',
+            detail: injErr.message,
+          });
+        }
         // Same rule as approve: a unit typed here belongs on the entry, or the
-        // next re-injection would read the old (usually blank) one back.
+        // next re-injection would read the old (usually blank) one back. And as
+        // there, it is written only once the row it describes actually exists —
+        // this call can fail, and an entry updated ahead of it would be left
+        // claiming a unit the Truck Tracking row never got.
         let truckEntry = existing;
         if (fields.unit != null) {
           const [reUnit] = await sql`
@@ -2026,15 +2059,6 @@ module.exports = async (req, res) => {
             RETURNING *
           `;
           if (reUnit) truckEntry = reUnit;
-        }
-        try {
-          await insertTruckingRow(sql, companyCode, truckEntry, fields);
-        } catch (injErr) {
-          console.error('[timesheet-entries] trucking resplit failed:', injErr.message);
-          return res.status(500).json({
-            error: 'Edit failed: could not rewrite the Truck Tracking row. Retry.',
-            detail: injErr.message,
-          });
         }
         await writeAudit(
           sql, companyCode, payload, id, 'ADMIN_EDIT',
@@ -2294,6 +2318,16 @@ module.exports = async (req, res) => {
     // Used by the payroll modal when re-editing the split for an already
     // approved entry.
     if (req.method === 'GET' && req.query.action === 'split') {
+      // Payroll-only, like every other action on this endpoint. This branch
+      // takes an entry id and scopes by company but NOT by user, so without the
+      // gate any level-1 timesheet account could read back another employee's
+      // injected cost rows — job cost codes and rates, and for a haul the Truck
+      // Tracking row with the customer's haul fee on it. The list branch above
+      // is careful to scope non-admins to their own rows; this must match.
+      // Every caller is a payroll admin screen (payroll.html's three modals).
+      if (!canAdmin) {
+        return res.status(403).json({ error: 'Payroll admin access is required' });
+      }
       const id = safeInt(req.query.id);
       if (!id) return res.status(400).json({ error: 'id is required' });
 
@@ -2402,6 +2436,23 @@ module.exports = async (req, res) => {
             split_count:    existing.split_count != null ? Number(existing.split_count) : null,
           });
 
+      // Same rule for the two haul fields. payroll.html's entry-edit form has no
+      // Unit or Description input — it edits the day, not the haul — so it sends
+      // neither key, and taking that as "clear them" silently threw away the
+      // driver's unit and description (and the one payroll typed at approval)
+      // on any correction to the hours or the job. Absent now means keep.
+      // Present still wins, blank included, so timesheet.html can still clear a
+      // field the driver filled in by mistake.
+      // Only while the entry is STILL a haul, though: normalizeEntryBody forces
+      // both to null off a truck row on purpose, so a division change away from
+      // trucking/dust must not let a stale unit ride along.
+      const body        = req.body || {};
+      const staysTruck  = needsTruckTrackingRow({
+        entry_type: data.entry_type, division: data.division, job_id: data.job_id,
+      });
+      const keepUnit    = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_unit');
+      const keepTruckDesc = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_description');
+
       const [updated] = await sql`
         UPDATE timesheet_entries SET
           entry_type         = ${data.entry_type},
@@ -2421,8 +2472,10 @@ module.exports = async (req, res) => {
           supervisor_name    = ${data.supervisor_name},
           notes              = ${data.notes},
           time_off_type      = ${data.time_off_type},
-          truck_unit         = ${data.truck_unit},
-          truck_description  = ${data.truck_description},
+          truck_unit         = CASE WHEN ${keepUnit}::boolean
+                                    THEN truck_unit ELSE ${data.truck_unit}::text END,
+          truck_description  = CASE WHEN ${keepTruckDesc}::boolean
+                                    THEN truck_description ELSE ${data.truck_description}::text END,
           ees_unit           = ${data.ees_unit},
           ees_customer       = ${data.ees_customer},
           ees_location       = ${data.ees_location},
