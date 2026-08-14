@@ -1686,10 +1686,12 @@
 
   <!-- ── Trucking approve/inject modal ──
        Trucking entries autofill a row into the Trucking division's "Truck
-       Tracking" tab (fct_truck_division). Driver, unit, hours, customer and
-       description are pulled from the timesheet; payroll enters the haul fee and
-       (optionally) the division column here so the row is completed and locked
-       — it can only be edited from Payroll, not in the Trucking division. -->
+       Tracking" tab (fct_truck_division). Driver, hours, customer and
+       description are pulled from the timesheet; payroll enters the haul fee,
+       the unit (pre-filled from the timesheet, typed here when the driver left
+       it off) and (optionally) the division column so the row is completed and
+       locked — it can only be edited from Payroll, not in the Trucking
+       division. -->
   <div class="modal-backdrop" id="truckingBackdrop">
     <div class="modal split-modal" onclick="event.stopPropagation()">
       <div class="modal-header">
@@ -1700,8 +1702,9 @@
       <div id="truckingFields" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-top:8px"></div>
       <div class="modal-note" id="truckingNote"
            style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(45,212,191,0.08);color:var(--muted);font-size:0.8rem;line-height:1.4">
-        Driver, unit, hours, customer and description are autofilled from the timesheet and
-        locked in the Trucking division — this row is edited here in Payroll.
+        Driver, hours, customer and description are autofilled from the timesheet — the unit
+        comes from it too, and can be corrected above. The row is locked in the Trucking
+        division; it is edited here in Payroll.
       </div>
       <div class="modal-msg" id="truckingMsg"></div>
       <div class="modal-footer">
@@ -5133,7 +5136,18 @@
       // Both call sites run after truckingEntry is assigned, so the placeholder
       // can tell a dust haul what blank will mean (the server fills in "Dust").
       const isDust = !!truckingEntry && truckingEntry.division === 'dust';
+      // Unit is autofilled from the timesheet but editable here, because the
+      // driver can leave it blank — every dust haul submitted before the Unit
+      // field was added to that form has none, and the trucking office needs it
+      // on the row. Pre-fill from the injected row when re-editing, otherwise
+      // from the timesheet; whatever is in the box is what the row gets, and it
+      // is written back onto the entry so a later re-inject keeps it.
+      const unit = row
+        ? (r.unit || '')
+        : (truckingEntry ? (truckingEntry.truck_unit || '') : '');
       return `
+        <label style="${TK_LABEL}"><span>Unit</span>
+          <input type="text" id="tk_unit" maxlength="100" value="${escapeHtml(String(unit))}" placeholder="Truck / unit #" style="${TK_INPUT}"></label>
         <label style="${TK_LABEL}"><span>Haul Fee ($/hr)</span>
           <input type="number" id="tk_haulFee" min="0" step="0.01" value="${escapeHtml(String(fee))}" placeholder="0.00" style="${TK_INPUT}"></label>
         <label style="${TK_LABEL}"><span>Division <span style="font-weight:400;color:var(--muted)">(optional)</span></span>
@@ -5162,15 +5176,14 @@
         <div>Driver: <strong>${escapeHtml(entry.username || '')}</strong></div>
         <div>Date: <strong>${escapeHtml(prettyDate(entry.work_date))}</strong></div>
         <div>Customer: <strong>${escapeHtml(entry.job_label || '—')}</strong></div>
-        <div>Unit: <strong>${escapeHtml(entry.truck_unit || '—')}</strong></div>
         <div>Start–End: <strong>${times}</strong></div>
         <div>Hours: <strong>${num2(work + travel)}</strong>${travel > 0
           ? ` <span style="font-weight:400;color:var(--muted)">(${num2(work)} work + ${num2(travel)} travel)</span>`
           : ''}</div>
         <div style="grid-column:1 / -1">Description: <strong>${escapeHtml(entry.truck_description || '—')}</strong></div>
-        ${entry.division === 'dust' && !entry.truck_unit ? `<div style="grid-column:1 / -1;color:var(--muted);font-size:12px">
-          No unit on this timesheet — entries submitted before the Unit field was
-          added to dust hauls leave it blank for the trucking office.</div>` : ''}
+        ${!entry.truck_unit ? `<div style="grid-column:1 / -1;color:var(--muted);font-size:12px">
+          No unit on this timesheet${entry.division === 'dust' ? ' — entries submitted before the Unit field was added to dust hauls leave it blank' : ''}.
+          Type it below and it goes on the Truck Tracking row.</div>` : ''}
       `;
       const msg = document.getElementById('truckingMsg');
       msg.textContent = ''; msg.className = 'modal-msg';
@@ -5199,7 +5212,14 @@
       const msg = document.getElementById('truckingMsg');
       msg.className = 'modal-msg';
       const btn = document.getElementById('truckingSaveBtn');
-      const trucking = { haul_fee: _tkval('tk_haulFee'), division: _tkval('tk_division') };
+      const trucking = {
+        haul_fee: _tkval('tk_haulFee'),
+        division: _tkval('tk_division'),
+        // Always sent (blank included) — the box is pre-filled from the entry,
+        // so what's in it is the approver's answer either way. Bulk approve is
+        // the one path that omits it; there one unit can't speak for a group.
+        unit: _tkval('tk_unit'),
+      };
       const action = truckingMode === 'approve' ? 'approve' : 'resplit';
       btn.disabled = true;
       try {
@@ -5810,7 +5830,8 @@
             <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, g.division === 'dust' ? 'defaults to Dust' : 'e.g. Paving')}</div>
           </div>
           <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
-            customer come from each timesheet.</div>`;
+            customer come from each timesheet — a day whose unit is blank keeps it that way;
+            fill it in from Edit Row afterwards.</div>`;
       } else {
         badgeClass = 'plain'; badgeText = 'No injection';
         title = 'Status-only entries';

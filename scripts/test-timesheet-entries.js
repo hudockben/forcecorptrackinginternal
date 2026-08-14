@@ -189,7 +189,10 @@ async function actionRoutingTests() {
   CURRENT_SQL = (strings) => {
     const q = strings.join('?').replace(/\s+/g, ' ').trim();
     if (q.startsWith('SELECT * FROM timesheet_entries')) { sawListQuery = true; return Promise.resolve([]); }
-    if (q.startsWith('SELECT id, division')) { sawEntryLookup = true; return Promise.resolve([{ id: 5, division: 'paving', job_id: 'J1', job_label: 'X' }]); }
+    if (q.startsWith('SELECT id, entry_type, division')) {
+      sawEntryLookup = true;
+      return Promise.resolve([{ id: 5, entry_type: 'daily', division: 'paving', job_id: 'J1', job_label: 'X' }]);
+    }
     return Promise.resolve([]);
   };
   const res = {

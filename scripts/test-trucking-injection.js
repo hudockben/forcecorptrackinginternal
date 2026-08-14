@@ -339,6 +339,57 @@ function entry(over = {}) {
     assert('validate: division trimmed', validateTruckingInjection({ division: '  Paving  ' }).fields.division === 'Paving');
   }
 
+  // ── The payroll-entered Unit ─────────────────────────────────────────────
+  // A driver can submit a haul with no unit — every dust haul from before the
+  // Unit field existed has none — and the trucking office needs one on the row.
+  // The approve modal pre-fills the box from the timesheet and sends it back, so
+  // payroll can supply what is missing. The distinction that carries the whole
+  // feature: an ABSENT key means "keep the entry's own unit" (that is what bulk
+  // approve sends, since one unit can't speak for a group of drivers), while a
+  // PRESENT blank means "payroll cleared it". Collapse the two and a bulk
+  // approve wipes the unit off every row it touches.
+  console.log('\n[payroll-entered unit]');
+  {
+    assert('validate: unit absent → null (keep the timesheet\'s)',
+      validateTruckingInjection({ haul_fee: 121 }).fields.unit === null);
+    assert('validate: unit present → the string typed',
+      validateTruckingInjection({ unit: '1000' }).fields.unit === '1000');
+    assert('validate: unit trimmed', validateTruckingInjection({ unit: '  635  ' }).fields.unit === '635');
+    assert('validate: unit present but blank → \'\' (clear it), not null',
+      validateTruckingInjection({ unit: '' }).fields.unit === '');
+    assert('validate: whitespace-only unit → \'\' too',
+      validateTruckingInjection({ unit: '   ' }).fields.unit === '');
+    assert('validate: missing body → unit null', validateTruckingInjection(undefined).fields.unit === null);
+    assert('validate: unit capped at 100 chars',
+      validateTruckingInjection({ unit: 'x'.repeat(150) }).fields.unit.length === 100);
+
+    const { sql, store } = makeSql({ drivers: [] });
+    // The case this exists for: a dust haul submitted with no unit, approved
+    // with one typed in the modal.
+    const noUnit = entry({ id: 60, division: 'dust', job_id: 'CNX', job_label: 'CNX', truck_unit: '' });
+    const filled = await insertTruckingRow(sql, CO, noUnit, { haul_fee: 121, unit: '1000' });
+    assert('insert: payroll unit lands on the row', filled.unit === '1000');
+    assert('insert: and on the mirror row', store.tde.get(filled.id).unit === '1000');
+
+    // Payroll correcting a unit the driver did enter.
+    const fixed = await insertTruckingRow(sql, CO, entry({ id: 61 }), { unit: '2773' });
+    assert('insert: payroll unit overrides the timesheet\'s', fixed.unit === '2773');
+
+    // Absent → the timesheet's own unit, exactly as before this field existed.
+    const kept = await insertTruckingRow(sql, CO, entry({ id: 62 }), { haul_fee: 121 });
+    assert('insert: no unit sent → timesheet unit kept (bulk approve)', kept.unit === '634');
+
+    // Present-but-blank clears it — the approver emptied a pre-filled box.
+    const cleared = await insertTruckingRow(sql, CO, entry({ id: 63 }), { unit: '' });
+    assert('insert: blank unit sent → row unit cleared', cleared.unit === '');
+
+    // End to end through the validator, the way the handler runs it.
+    const { fields } = validateTruckingInjection({ haul_fee: '121', division: '', unit: ' 1000 ' });
+    const viaValidator = await insertTruckingRow(sql, CO, noUnit, fields);
+    assert('insert: validator → injection carries the unit', viaValidator.unit === '1000');
+    assert('insert: …and still defaults dust\'s division column', viaValidator.division === 'Dust');
+  }
+
   // ── truckingSplitForEntry: re-edit pre-fill ──
   {
     const { sql } = makeSql({ drivers: [] });

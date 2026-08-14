@@ -41,11 +41,15 @@
  *     pinned to the entry's computed (work) hours. On success one row is
  *     appended to the fct_quarry_daily / fct_quarry_crushing blob (and mirrored
  *     to the normalized table), with its id prefixed "tsq-<entryId>-".
- *     For trucking daily entries NO body is needed — a Truck Tracking row is
+ *     For trucking daily entries the body MAY include a `trucking` object
+ *     ({ haul_fee, division, unit }, all optional) — a Truck Tracking row is
  *     autofilled from the entry (driver ← employee, date, start/end, hours,
  *     customer ← job_label) and appended to the fct_truck_division blob (and
  *     mirrored to truck_division_entries), with its id prefixed "tst-<entryId>-".
- *     Haul fee and the division column are left blank for the trucking office.
+ *     Haul fee and the division column come from payroll's modal; `unit` is
+ *     pre-filled there from the entry, and a value sent back is written onto
+ *     the entry's truck_unit as well as the row. Omitting `unit` (bulk approve)
+ *     keeps the entry's own.
  *     For dust daily entries NO body is needed either — an "EES Other" row is
  *     autofilled from the entry (driver, date, start/end, hours, customer ←
  *     job_label, comments ← notes) and appended to the dust_ees_other_rows
@@ -115,12 +119,12 @@ function quarryRowIdPrefix(entryId) { return `tsq-${entryId}-`; }
 
 // Trucking auto-injects too, but into the Trucking division's OWN "Truck
 // Tracking" tab — the fct_truck_division app_data blob (mirrored to the
-// truck_division_entries table by api/truck-division.js). Unlike
-// turf/paving/quarry there are NO payroll-entered cost fields: every value is
-// autofilled from the timesheet entry. The haul fee and the division column are
-// deliberately left blank for the trucking office to fill in later. Injected
-// rows are tagged by encoding the timesheet entry id into the row id (same
-// scheme as quarry) so unapprove/delete can find and remove them again.
+// truck_division_entries table by api/truck-division.js). Nearly every value is
+// autofilled from the timesheet entry; payroll's modal supplies the haul fee and
+// the division column, and can correct the unit the driver entered (or supply
+// the one they left off) — see validateTruckingInjection. Injected rows are
+// tagged by encoding the timesheet entry id into the row id (same scheme as
+// quarry) so unapprove/delete can find and remove them again.
 //
 // Dust customer work lands here too — see needsTruckTrackingRow below.
 const TRUCK_DIVISION_BLOB = 'fct_truck_division';
@@ -990,11 +994,11 @@ function truckNum(v) {
 function truckDate(v) { return safeDate(v); }
 
 // Validate the payroll modal payload (req.body.trucking) for a trucking
-// injection. Only two fields are entered on the payroll side — the haul fee
-// (billing rate per hour) and the division column; everything else autofills
-// from the timesheet entry. Both are optional (blank is allowed) so payroll can
-// approve now and fill the fee in later via Edit Row. Returns { fields } or
-// { error }.
+// injection. Three fields are entered on the payroll side — the haul fee
+// (billing rate per hour), the division column, and the unit; everything else
+// autofills from the timesheet entry. All are optional (blank is allowed) so
+// payroll can approve now and fill the fee in later via Edit Row. Returns
+// { fields } or { error }.
 const TRUCK_HAUL_FEE_MAX = 1e7;
 function validateTruckingInjection(raw) {
   const t = (raw && typeof raw === 'object') ? raw : {};
@@ -1007,7 +1011,16 @@ function validateTruckingInjection(raw) {
     haul_fee = Math.round(n * 10000) / 10000;
   }
   const division = safeStr(t.division, 100) || '';
-  return { fields: { haul_fee, division } };
+  // Unit is the one autofilled column payroll can also type: the driver may
+  // have left it off (every dust haul submitted before the Unit field existed
+  // did), and the trucking office needs it on the row. An ABSENT key is not the
+  // same as a blank one — the bulk card deliberately sends no unit, since one
+  // unit shared across a group of drivers would be wrong, and that has to mean
+  // "keep each entry's own unit" rather than "blank every one of them". Absent
+  // → null (leave the timesheet's value alone); present → the string typed,
+  // '' included (clear it).
+  const unit = t.unit === undefined ? null : (safeStr(t.unit, 100) || '');
+  return { fields: { haul_fee, division, unit } };
 }
 
 // Best-effort match of the timesheet employee to the trucking driver roster so
@@ -1126,6 +1139,12 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  * payroll and locked in the Trucking division. invoice fields default to
  * Unpaid/blank (the trucking office manages invoicing).
  *
+ * Unit straddles the two: it autofills from the timesheet like the rest, but
+ * the modal also lets payroll type it (fields.unit) for the entries that came
+ * in without one. The approve/resplit handlers write that value back onto the
+ * entry's truck_unit before calling this, so the two agree — fields.unit wins
+ * here only so the row is right even if that write is skipped.
+ *
  * A dust-sourced row differs in one way: the Division column defaults to "Dust"
  * rather than blank — that column exists to tell the trucking office whose work
  * a row represents, and the answer is already known here, though payroll can
@@ -1149,13 +1168,18 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
   const haulFee  = (fields.haul_fee === '' || fields.haul_fee == null) ? '' : fields.haul_fee;
   const division = safeStr(fields.division, 100)
     || (entry.division === 'dust' ? 'Dust' : '');
+  // null/undefined = the modal sent no unit (bulk approve, or an older client)
+  // → keep the timesheet's. A string, '' included, is payroll's answer.
+  const unit = fields.unit == null
+    ? (safeStr(entry.truck_unit, 100) || '')
+    : (safeStr(fields.unit, 100) || '');
 
   const row = {
     id:                `${truckingRowIdPrefix(entry.id)}${Date.now()}`,
     task_number:       '',
     actual_date:       workDate,
     driver,
-    unit:              safeStr(entry.truck_unit, 100) || '',
+    unit,
     actual_start:      hhmm(entry.start_time),
     actual_end:        hhmm(entry.end_time),
     total_hours:       hours,
@@ -1840,12 +1864,24 @@ module.exports = async (req, res) => {
         truckingInject = fields;
       }
 
+      // The unit payroll typed in the approve modal lands on the ENTRY, not just
+      // the injected row: the entry is what every later re-injection reads, so a
+      // unit that lived only on the row would vanish the next time the row was
+      // rewritten (un-approve → re-approve, or Edit Row). Absent — which is what
+      // bulk approve sends, and what an older client sends — leaves each entry's
+      // own unit alone; a blank string clears it.
+      const unitGiven = !!(truckingInject && truckingInject.unit != null);
+      const unitValue = unitGiven ? (truckingInject.unit || null) : null;
+
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'approved',
             approved_at         = NOW(),
             approved_by_user_id = ${userId},
             approved_by_name    = ${username},
+            truck_unit          = CASE WHEN ${unitGiven}::boolean
+                                       THEN ${unitValue}::text
+                                       ELSE truck_unit END,
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -1974,13 +2010,25 @@ module.exports = async (req, res) => {
       }
 
       // Trucking re-edit: rewrite the injected Truck Tracking row with the new
-      // haul fee / division. insertTruckingRow removes the prior injected row for
-      // this entry before appending, so there's no separate delete step.
+      // haul fee / division / unit. insertTruckingRow removes the prior injected
+      // row for this entry before appending, so there's no separate delete step.
       if (needsTruckTrackingRow(existing)) {
         const { fields, error } = validateTruckingInjection(req.body && req.body.trucking);
         if (error) return res.status(400).json({ error });
+        // Same rule as approve: a unit typed here belongs on the entry, or the
+        // next re-injection would read the old (usually blank) one back.
+        let truckEntry = existing;
+        if (fields.unit != null) {
+          const [reUnit] = await sql`
+            UPDATE timesheet_entries
+            SET truck_unit = ${fields.unit || null}, updated_at = NOW()
+            WHERE id = ${id} AND company_code = ${companyCode}
+            RETURNING *
+          `;
+          if (reUnit) truckEntry = reUnit;
+        }
         try {
-          await insertTruckingRow(sql, companyCode, existing, fields);
+          await insertTruckingRow(sql, companyCode, truckEntry, fields);
         } catch (injErr) {
           console.error('[timesheet-entries] trucking resplit failed:', injErr.message);
           return res.status(500).json({
@@ -1990,10 +2038,10 @@ module.exports = async (req, res) => {
         }
         await writeAudit(
           sql, companyCode, payload, id, 'ADMIN_EDIT',
-          { resplit: true, trucking: true },
+          { resplit: true, trucking: true, truck_unit: fields.unit != null ? (fields.unit || '') : undefined },
           dbToEntry(existing),
         );
-        return res.json(await entryJson(sql, companyCode, existing));
+        return res.json(await entryJson(sql, companyCode, truckEntry));
       }
 
       if (existing.entry_type !== 'daily' || !AUTO_INJECT_DIVISIONS.includes(existing.division)) {
@@ -2253,14 +2301,18 @@ module.exports = async (req, res) => {
       // value fields) so the payroll modal can pre-fill on re-edit. `id` MUST
       // be selected — quarrySplitForEntry keys the blob lookup on entry.id.
       const [entryRow] = await sql`
-        SELECT id, division, job_id, job_label FROM timesheet_entries
+        SELECT id, entry_type, division, job_id, job_label FROM timesheet_entries
         WHERE id = ${id} AND company_code = ${companyCode}
       `;
       if (entryRow && entryRow.division === 'quarry') {
         const { activity, row } = await quarrySplitForEntry(sql, companyCode, entryRow);
         return res.json({ quarry: { activity, row } });
       }
-      if (entryRow && entryRow.division === 'trucking') {
+      // The same gate the injection uses, not `division === 'trucking'`: a dust
+      // customer haul writes a Truck Tracking row too, and pre-filling only half
+      // of them meant re-editing a dust haul opened on blank fields and saved
+      // the haul fee (now also the unit) back as empty.
+      if (needsTruckTrackingRow(entryRow)) {
         const { row } = await truckingSplitForEntry(sql, companyCode, entryRow);
         return res.json({ trucking: { row } });
       }
