@@ -115,8 +115,11 @@ vm.createContext(sandbox);
 vm.runInContext(extractFn(dustHtml, 'function ubRateForRow(row)'), sandbox);
 // The back-fill skips payroll-injected rows, so it needs the same predicate the
 // page uses to recognise one. Pulled from the page rather than re-declared here,
-// so a change to the id scheme can't leave this test agreeing with itself.
-vm.runInContext(extractFn(dustHtml, 'function isInjectedRow(row)'), sandbox);
+// so a change to the id scheme can't leave this test agreeing with itself. Both
+// halves: isInjectedRow delegates to the id-only form, which the Intercompany
+// reconciler uses directly on an entry's source_id.
+vm.runInContext(extractFn(dustHtml, 'function isInjectedRowId(id)'), sandbox);
+vm.runInContext(extractFn(dustHtml, 'function isInjectedRow(row)'),   sandbox);
 vm.runInContext(extractFn(dustHtml, 'function materializeCompanyVehicleRates()'), sandbox);
 
 sandbox.ubRate = 1.28;

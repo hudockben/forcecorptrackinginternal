@@ -2412,6 +2412,17 @@
     // dust rows that collapse to the same key are the "same job" to IC, so we
     // never push a second entry for a key that already exists (doing so would
     // ping-pong forever against IC's collapse-and-persist dedup).
+    //
+    // Only MANUAL rows claim a key. A payroll-injected row is one approved
+    // timesheet entry, so two of them are two hauls even when the customer, the
+    // day, the truck and the well pad all match — which is exactly what happens
+    // when payroll bulk-approves a multi-haul day, since that path records no
+    // pad. Letting the first injected row of a day claim the key blocked every
+    // later one from ever billing. intercompany.html's Pass 1b skips the same
+    // rows (isInjectedDust there), so the two sides still agree and there is no
+    // ping-pong. Checking is unchanged: an injected row IS still blocked by a
+    // MANUAL row's key, so approving a haul the office already typed bills once,
+    // not twice.
     function _icJobKey(e) {
       return `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
     }
@@ -2567,7 +2578,8 @@
       entries.forEach(e => {
         if (e.source === 'dust' && e.source_id) {
           bySourceId.set(e.source_id, e);
-          dustJobKeys.add(_icJobKey(e));
+          // Claiming is manual-rows-only — see _icJobKey.
+          if (!isInjectedRowId(e.source_id)) dustJobKeys.add(_icJobKey(e));
         }
       });
 
@@ -2622,12 +2634,20 @@
           sent_by: (user?.username) || '',
         };
 
+        // Claiming a physical job key is manual-rows-only, here as above — see
+        // _icJobKey. Without this the FIRST injected row of a multi-haul day
+        // claimed the key inside this very loop and every later one fell into
+        // the skip below, so only one of the day's hauls ever billed.
+        const claimsJobKey = !isInjectedRow(row);
+
         if (prev) {
           if (_icEntrySig(prev) !== _icEntrySig(entry)) {
             const i = entries.indexOf(prev);
             if (i !== -1) entries[i] = entry; else entries.unshift(entry);
-            dustJobKeys.delete(_icJobKey(prev));
-            dustJobKeys.add(_icJobKey(entry));
+            if (claimsJobKey) {
+              dustJobKeys.delete(_icJobKey(prev));
+              dustJobKeys.add(_icJobKey(entry));
+            }
             bySourceId.set(row.id, entry);
             changed = true;
           }
@@ -2635,11 +2655,14 @@
         } else if (icIsSuppressed('dust', row.id)) {
           continue;   // deleted in Intercompany — leave it deleted
         } else if (dustJobKeys.has(_icJobKey(entry))) {
+          // Checking is unchanged for every row: a haul the office already typed
+          // holds the key, so approving the same haul in payroll still bills it
+          // once rather than twice.
           continue;   // same physical job already represented; IC would collapse a dup
         } else {
           entries.unshift(entry);
           bySourceId.set(row.id, entry);
-          dustJobKeys.add(_icJobKey(entry));
+          if (claimsJobKey) dustJobKeys.add(_icJobKey(entry));
           changed = true;
           sentNow.push({ id: row.id, sentAt });
         }
@@ -3721,9 +3744,17 @@
        a dust customer haul on a timesheet (id "tsd-<entryId>-row" — see
        api/lib/dust-injected.js). They are rendered locked, and the server
        enforces the same rule on writes, so nothing here can change or remove
-       one — the way to take one back is to un-approve the entry in Payroll. */
+       one — the way to take one back is to un-approve the entry in Payroll.
+
+       Two forms because the Intercompany reconciler holds the id on its own, as
+       an entry's source_id, rather than a whole row. Must stay in step with
+       isInjectedDustRowId in api/lib/dust-injected.js and with isInjectedDust in
+       intercompany.html. */
+    function isInjectedRowId(id) {
+      return /^tsd-\d+-/.test(String(id || ''));
+    }
     function isInjectedRow(row) {
-      return /^tsd-\d+-/.test(String((row && row.id) || ''));
+      return isInjectedRowId(row && row.id);
     }
 
     /* Read-only renderings of the two column types that use a native picker, so
