@@ -303,8 +303,12 @@ function entry(over = {}) {
   // of the feature: an ordinary dust customer entry must still inject nowhere.
   console.log('\n[only EES jobs route into the tab]');
   {
-    const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
-    const m = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(SRC);
+    // Canonical list lives in lib/truck-injected.js — the dust EES gate and the
+    // Truck Tracking gate are two halves of one routing decision, so they read
+    // the same constant rather than each keeping a copy.
+    const SRC  = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const GATE = require('fs').readFileSync(path.resolve(__dirname, '../api/lib/truck-injected.js'), 'utf8');
+    const m = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(GATE);
     assert('EES_JOB_IDS declared', !!m);
     const ids = m ? JSON.parse(m[1].replace(/'/g, '"')) : [];
     assert('covers pre loading and washing',

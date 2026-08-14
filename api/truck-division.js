@@ -6,10 +6,18 @@
  * Source of truth: truck_division_entries + truck_division_units + dropdown_lists tables.
  * On first GET, if the normalized tables are empty, migrates from the legacy
  * app_data JSON blobs (fct_truck_division / fct_truck_division_lists).
+ *
+ * GET also sweeps out payroll-injected rows that outlived their timesheet entry
+ * (see lib/truck-injected.js). Those rows are the one kind the tab cannot get
+ * rid of on its own — it refuses to delete a payroll row, and payroll can only
+ * un-approve an entry that still exists and still owns that row id — so the
+ * read path is where a stranded one gets cleaned up.
  */
 
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
+const { sweepInjectedTruckRows } = require('./lib/truck-injected');
+const { guardInjectedBlobWrite } = require('./lib/injected-blob-guard');
 
 function safeFloat(v) {
   const f = parseFloat(v);
@@ -73,6 +81,10 @@ module.exports = async (req, res) => {
     // recognises rather than a near-miss its tab cannot match. It needs only the
     // rosters, and the full GET below hands back every tracking row with them —
     // thousands of rows to fill one dropdown. Same data, same reader, less of it.
+    //
+    // It reads no entries, so it deliberately does not run the orphaned-row
+    // sweep the full GET does: there is nothing here for the sweep to correct,
+    // and a dropdown being filled is no reason to rewrite the tracking blob.
     if (req.method === 'GET' && req.query.lists === '1') {
       const [blobL, blobLLegacy, driverRows, customerRows, unitRows] = await Promise.all([
         sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
@@ -150,19 +162,35 @@ module.exports = async (req, res) => {
       const blobCount = blobEntries.length;
 
       if (blobCount > 0) {
+        // Drop injected rows whose timesheet entry was un-approved or deleted
+        // before returning them, so the tab is clean on the same load that
+        // cleaned it up. Non-fatal: a sweep that fails must not take the tab's
+        // data with it, so the unfiltered list is served instead.
+        let entries = blobEntries;
+        try {
+          ({ entries } = await sweepInjectedTruckRows(sql, companyCode, blobEntries));
+        } catch (err) {
+          console.error('[truck-division] injected-row sweep failed:', err.message);
+        }
         // Keep normalized tables in sync in background when they're behind.
-        if (normCount < blobCount * 0.9) {
-          _syncToTables(sql, companyCode, blobEntries, blobLists).catch(err =>
+        if (normCount < entries.length * 0.9) {
+          _syncToTables(sql, companyCode, entries, blobLists).catch(err =>
             console.error('[truck-division] re-sync from blob failed:', err.message)
           );
         }
-        return res.json({ entries: blobEntries, lists: blobLists });
+        return res.json({ entries, lists: blobLists });
       }
 
       // Blob is empty — fall back to normalized tables (first-load / migration path).
       if (normCount > 0 || driverRows.length > 0) {
+        let entries = entryRows.map(dbToEntry);
+        try {
+          ({ entries } = await sweepInjectedTruckRows(sql, companyCode, entries));
+        } catch (err) {
+          console.error('[truck-division] injected-row sweep failed:', err.message);
+        }
         return res.json({
-          entries: entryRows.map(dbToEntry),
+          entries,
           lists: {
             drivers:   driverRows.map(r => r.value),
             customers: customerRows.map(r => r.value),
@@ -203,11 +231,24 @@ module.exports = async (req, res) => {
         }
       }
 
+      // Payroll owns the rows it injected, on write as well as on read. This
+      // page saves the whole list, and the copy it saves was read before any
+      // approval that has landed since — so without this a routine cell edit
+      // silently deletes work payroll approved seconds earlier, and a stale
+      // copy of an un-approved row puts it back. See lib/injected-blob-guard.
+      let stored = entries;
+      try {
+        stored = await guardInjectedBlobWrite(sql, companyCode, 'fct_truck_division', entries);
+      } catch (err) {
+        // Non-fatal, but say so loudly: this write is unguarded.
+        console.error('[truck-division] injected-row write guard failed:', err.message);
+      }
+
       // Write blobs in parallel with the normalized sync so neither blocks the response
       await Promise.all([
         sql`
           INSERT INTO app_data (key, value, updated_at)
-          VALUES (${companyCode + ':fct_truck_division'}, ${JSON.stringify(entries)}::jsonb, NOW())
+          VALUES (${companyCode + ':fct_truck_division'}, ${JSON.stringify(stored)}::jsonb, NOW())
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
         `,
         sql`
@@ -217,8 +258,10 @@ module.exports = async (req, res) => {
         `,
       ]);
 
-      // Mirror to normalized tables (fire-and-forget)
-      _syncToTables(sql, companyCode, entries, safeLists).catch(err =>
+      // Mirror to normalized tables (fire-and-forget). Mirrors what was stored,
+      // not what was sent — otherwise the mirror would delete the very payroll
+      // rows the guard just kept.
+      _syncToTables(sql, companyCode, stored, safeLists).catch(err =>
         console.error('[truck-division] normalize failed:', err.message)
       );
 

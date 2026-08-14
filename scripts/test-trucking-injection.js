@@ -46,6 +46,8 @@ function makeSql(initial = {}) {
     driversMirror:   (initial.drivers   || []).slice(),   // dropdown_lists truck_drivers
     customersMirror: (initial.customers || []).slice(),   // dropdown_lists truck_customers
     tde:             new Map(),                            // id → row object
+    icMirror:        new Map(Object.entries(initial.icMirror || {})), // intercompany_billing_entries
+    entries:         new Map((initial.entries || []).map(e => [Number(e.id), e])), // timesheet_entries
   };
   const sql = (strings, ...values) => {
     const q = strings.join(' ').replace(/\s+/g, ' ').trim();
@@ -77,6 +79,47 @@ function makeSql(initial = {}) {
       const ids = values[values.length - 1] || [];
       ids.forEach(id => store.tde.delete(id));
       return Promise.resolve([]);
+    }
+    // removeIcBillingEntries — drop the billing entries for a set of source ids
+    // from the shared blob and its mirror. Params in template order:
+    // key, source, ids, source, ids, key.
+    if (q.startsWith('WITH hits AS') && q.includes('jsonb_array_elements')) {
+      const [key, source, ids] = values;
+      const cur = store.appData.get(key);
+      if (!Array.isArray(cur)) return Promise.resolve([{ removed: 0 }]);
+      const hit = e => e && e.source === source && ids.includes(String(e.source_id || ''));
+      const next = cur.filter(e => !hit(e));
+      const removed = cur.length - next.length;
+      if (removed) store.appData.set(key, next);
+      return Promise.resolve([{ removed }]);
+    }
+    if (q.startsWith('DELETE FROM intercompany_billing_entries')) {
+      const ids = values[values.length - 1] || [];
+      ids.forEach(id => store.icMirror.delete(id));
+      return Promise.resolve([]);
+    }
+    // The two single-statement blob rewrites: clearIcSuppression drops one
+    // (source, source_id) pair, deleteTruckBlobRows drops a set of row ids.
+    if (q.startsWith('UPDATE app_data') && q.includes('jsonb_array_elements')) {
+      if (q.includes("t->>'id'")) {                       // deleteTruckBlobRows
+        const [ids, key] = values;
+        const cur = store.appData.get(key);
+        if (!Array.isArray(cur)) return Promise.resolve([]);
+        store.appData.set(key, cur.filter(t => !(t && ids.includes(String(t.id || '')))));
+        return Promise.resolve([]);
+      }
+      const [source, sourceId, key] = values;             // clearIcSuppression
+      const cur = store.appData.get(key);
+      if (!Array.isArray(cur)) return Promise.resolve([]);
+      const next = cur.filter(t => !(t && t.source === source && t.source_id === sourceId));
+      if (next.length === cur.length) return Promise.resolve([]);
+      store.appData.set(key, next);
+      return Promise.resolve([{ cleared: 1 }]);
+    }
+    // The sweep's one lookup: which of these entries still exist and stand.
+    if (q.startsWith('SELECT id, status, entry_type, division, job_id FROM timesheet_entries')) {
+      const ids = values[values.length - 1] || [];
+      return Promise.resolve(ids.map(id => store.entries.get(Number(id))).filter(Boolean));
     }
     // upsertTruckDivisionEntry
     if (q.startsWith('INSERT INTO truck_division_entries')) {
@@ -444,7 +487,8 @@ function entry(over = {}) {
     // for the same entry the approve path's if/else would silently drop one
     // injection, so the disjointness is the invariant, not the ordering.
     const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
-    const m = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(SRC);
+    const GATE = require('fs').readFileSync(path.resolve(__dirname, '../api/lib/truck-injected.js'), 'utf8');
+    const m = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(GATE);
     const eesIds = m ? JSON.parse(m[1].replace(/'/g, '"')) : [];
     const needsEes = e => e.entry_type === 'daily' && e.division === 'dust' && eesIds.includes(String(e.job_id || ''));
     const dustCases = ['Antero', 'ees:preloading', 'ees:washing', ''];
@@ -470,7 +514,7 @@ function entry(over = {}) {
   // the two together.
   console.log('\n[payroll.html mirrors the gate]');
   {
-    const SRC  = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const SRC  = require('fs').readFileSync(path.resolve(__dirname, '../api/lib/truck-injected.js'), 'utf8');
     const PAGE = require('fs').readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
     const sm = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(SRC);
     const pm = /const EES_JOB_IDS = (\[[^\]]*\])/.exec(PAGE);
