@@ -17585,19 +17585,14 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     </div>`;
   })() : '';
 
-  // Financial roll-up: contract value + profit (Contract - Projected final cost)
-  const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
-  const profitVal   = contractVal ? contractVal - grandProj : null;
-  const profitCls   = profitVal === null ? '' : profitVal >= 0 ? 'sqft-under' : 'sqft-over';
-  const profitTxt   = profitVal === null ? dash : (profitVal >= 0 ? '$'+fmt(profitVal) : '-$'+fmt(Math.abs(profitVal)));
-  const profitPct   = (profitVal !== null && contractVal) ? ` (${(profitVal / contractVal * 100).toFixed(1)}%)` : '';
+  // Cost roll-up: bid vs actual vs projected, and how far along the job is.
+  // Contract value and projected profit are deliberately left off this report —
+  // it goes out to people who should see cost against bid, not the margin.
   const finBarHTML = `<div class="sqft-bar">
-      <div class="sqft-metric"><div class="sqft-label">Contract Value</div><div class="sqft-val">${contractVal ? '$'+fmt(contractVal) : dash}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Bid Budget</div><div class="sqft-val">${grandBid ? '$'+fmt(grandBid) : dash}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Actual Cost</div><div class="sqft-val sqft-actual">${grandActual ? '$'+fmt(grandActual) : dash}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Projected Cost</div><div class="sqft-val">${(grandBid || grandProj) ? '$'+fmt(grandProj) : dash}</div></div>
       <div class="sqft-sep"></div>
-      <div class="sqft-metric"><div class="sqft-label">Projected Profit</div><div class="sqft-val ${profitCls}">${profitTxt}${profitPct}</div></div>
       <div class="sqft-metric"><div class="sqft-label">Project Complete</div><div class="sqft-val">${grandPct ? grandPct.pct.toFixed(1) + '%' : dash}${grandPct ? `<span style="font-size:0.72em;font-weight:400"> · ${grandPct.done}/${grandPct.total} cost codes</span>` : ''}</div></div>
     </div>`;
 
