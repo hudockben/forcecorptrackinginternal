@@ -217,6 +217,76 @@ const icEntry = (sourceId, over = {}) => ({
       prefixes.every(Boolean), JSON.stringify(prefixes));
   }
 
+  // ── The "not reaching Intercompany" banner ──────────────────────────────
+  // Counts rows that should be billing and are not. The usual cause is a
+  // customer whose Intercompany company record is not ticked for Dust, which
+  // is silent everywhere else — the per-row invoice panel says so, but only one
+  // row at a time and only once expanded.
+  console.log('\n[the banner counts rows that should be billing and are not]');
+  {
+    const el = { hidden: true, innerHTML: '' };
+    const sb = {
+      rows: [],
+      esc: s => String(s == null ? '' : s),
+      icSentAt: r => r._sent || null,
+      icIsSuppressed: (_src, id) => !!(sb.rows.find(r => r.id === id) || {})._suppressed,
+      calc: r => ({ invTotal: r._total == null ? 940 : r._total }),
+      document: { getElementById: id => (id === 'icPendingBanner' ? el : null) },
+      console,
+    };
+    vm.createContext(sb);
+    const grab = sig => {
+      const s = DUST.indexOf(sig);
+      if (s < 0) throw new Error(`dust.html ${sig} not found`);
+      let d = 0;
+      for (let i = DUST.indexOf('{', s); i < DUST.length; i++) {
+        if (DUST[i] === '{') d++;
+        else if (DUST[i] === '}') { d--; if (d === 0) return DUST.slice(s, i + 1); }
+      }
+      throw new Error('unbalanced');
+    };
+    vm.runInContext(grab('function icPendingRows()'), sb);
+    vm.runInContext(grab('function renderIcPendingBanner()'), sb);
+    const run = rows => {
+      sb.rows = rows;
+      vm.runInContext('renderIcPendingBanner()', sb);
+      return { n: vm.runInContext('icPendingRows().length', sb), hidden: el.hidden, html: el.innerHTML };
+    };
+
+    assert('silent when there is nothing to report', run([]).hidden === true);
+    assert('a synced row is not counted',
+      run([{ id: 'a', company: 'CNX', _sent: '2026-08-14T10:00:00Z' }]).hidden === true);
+    assert('a row with no customer is incomplete, not a billing gap',
+      run([{ id: 'a', company: '' }]).hidden === true);
+    assert('a row with no billable total is not counted',
+      run([{ id: 'a', company: 'CNX', _total: 0 }]).hidden === true);
+    // Removing a row in Intercompany is a decision, not a gap — and for a dust
+    // haul it is exactly how one half of the pair is chosen.
+    assert('a row deliberately removed in IC is not counted',
+      run([{ id: 'a', company: 'CNX', _suppressed: true }]).hidden === true);
+
+    const one = run([{ id: 'a', company: 'CNX' }]);
+    assert('one unenrolled row shows', one.hidden === false && one.n === 1);
+    assert('and reads in the singular', /1 row not reaching/.test(one.html));
+
+    const three = run([
+      { id: 'a', company: 'CNX' }, { id: 'b', company: 'CNX' }, { id: 'c', company: 'Range' },
+    ]);
+    assert('rows are counted per customer',
+      three.n === 3 && /CNX <strong>2<\/strong>/.test(three.html) && /Range <strong>1<\/strong>/.test(three.html));
+
+    const many = run(Array.from({ length: 9 }, (_, i) => ({ id: 'x' + i, company: 'Co' + i })));
+    // Quoted, so the count chip's own class (ic-pending-count) is not matched.
+    assert('a long customer list is capped and the remainder counted',
+      /\+3 more/.test(many.html) && (many.html.match(/class="ic-pending-co"/g) || []).length === 7);
+
+    // The year selector is a display filter; a banner that went quiet when you
+    // switched years would be worse than no banner at all.
+    assert('it counts every year, not just the visible one',
+      run([{ id: 'a', company: 'CNX', date: '2024-01-05' },
+           { id: 'b', company: 'CNX', date: '2026-08-12' }]).n === 2);
+  }
+
   console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'} — ${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 })().catch(err => { console.error('FATAL', err); process.exit(1); });
