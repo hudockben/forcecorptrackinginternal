@@ -1150,7 +1150,7 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  * exactly as they do for trucking; the driver is asked for them whenever the
  * entry is headed for this tab (see needsTruckTrackingRow).
  */
-async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
+async function insertTruckingRow(sql, companyCode, entry, fields = {}, flags = {}) {
   const workDate = safeDate(entry.work_date) || '';
   // Work + travel. The haul fee bills against this column, and the drive to a
   // customer and back is part of what the haul cost — dust logs it outside the
@@ -1235,14 +1235,24 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}) {
   }
   await upsertTruckDivisionEntry(sql, companyCode, row);
 
-  // Approving is a deliberate statement that this work counts, so it undoes an
+  // APPROVING is a deliberate statement that this work counts, so it undoes an
   // earlier Intercompany removal rather than being silently overruled by it —
   // the same rule EES applies, and it only became reachable here once the row
   // id stopped changing on every re-approval.
-  try {
-    await clearIcSuppression(sql, companyCode, IC_SOURCE_TRUCKING, row.id);
-  } catch (err) {
-    console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
+  //
+  // Editing the row is not that statement, and for a dust haul the difference
+  // now carries money. Such a haul posts a row in BOTH tabs, billing on two
+  // different bases, so whoever reconciles Intercompany suppresses one of the
+  // pair — and it may well be this one. Clearing that on a routine haul-fee
+  // correction would quietly bill the customer twice. The dust half of the pair
+  // (insertDustTrackingRow) is gated the same way, so whichever half is chosen
+  // survives an Edit Row.
+  if (flags.clearSuppression) {
+    try {
+      await clearIcSuppression(sql, companyCode, IC_SOURCE_TRUCKING, row.id);
+    } catch (err) {
+      console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
+    }
   }
   return row;
 }
@@ -2396,7 +2406,7 @@ module.exports = async (req, res) => {
             // Not an if/else pair: a dust customer haul is BOTH, and the two
             // rows are the same day's work seen from the two offices that need
             // it. A trucking entry only ever takes the first branch.
-            if (needsTrucking) await insertTruckingRow(sql, companyCode, updated, truckingInject || {});
+            if (needsTrucking) await insertTruckingRow(sql, companyCode, updated, truckingInject || {}, { clearSuppression: true });
             if (needsDust)     await insertDustTrackingRow(sql, companyCode, updated, dustInject || {}, { clearSuppression: true });
           } else {
             await insertEesOtherRow(sql, companyCode, updated);

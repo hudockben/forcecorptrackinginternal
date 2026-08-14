@@ -729,6 +729,35 @@ function entry(over = {}) {
     assert('trucking division column still defaults blank', truck.division === '');
   }
 
+  // ── An Intercompany removal survives an Edit Row ─────────────────────────
+  // A dust customer haul posts a row in BOTH tabs, billing on two different
+  // bases, so whoever reconciles Intercompany suppresses one of the pair. That
+  // choice has to outlast a routine haul-fee correction, or the customer is
+  // billed twice. Approving is still the one action that overrules it — that is
+  // the case clearIcSuppression was written for, since un-approve leaves the
+  // removal record behind and a re-approved row would otherwise stay suppressed
+  // forever.
+  console.log('\n[an Intercompany removal survives an Edit Row]');
+  {
+    const REMOVED = `${CO}:fct_intercompany_removed_entries`;
+    const suppressed = () => ({
+      drivers: [],
+      appData: { [REMOVED]: [{ source: 'trucking', source_id: 'tst-42-row' }] },
+    });
+
+    const a = makeSql(suppressed());
+    await insertTruckingRow(a.sql, CO, entry(), { haul_fee: 95 }, { clearSuppression: true });
+    assert('approving clears the suppression',
+      (a.store.appData.get(REMOVED) || []).length === 0);
+
+    const b = makeSql(suppressed());
+    await insertTruckingRow(b.sql, CO, entry(), { haul_fee: 110 });
+    assert('an Edit Row leaves it in place',
+      (b.store.appData.get(REMOVED) || []).length === 1);
+    assert('…and the correction still lands on the row',
+      (await truckingSplitForEntry(b.sql, CO, entry())).row.haul_fee === 110);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => { console.error('FATAL', err); process.exit(1); });
