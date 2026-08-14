@@ -113,6 +113,13 @@ section('B. ubRateForRow() — customer override wins, else global');
 const sandbox = { dustLists: { companies: [] }, ubRate: 0, rows: [] };
 vm.createContext(sandbox);
 vm.runInContext(extractFn(dustHtml, 'function ubRateForRow(row)'), sandbox);
+// The back-fill skips payroll-injected rows, so it needs the same predicate the
+// page uses to recognise one. Pulled from the page rather than re-declared here,
+// so a change to the id scheme can't leave this test agreeing with itself. Both
+// halves: isInjectedRow delegates to the id-only form, which the Intercompany
+// reconciler uses directly on an entry's source_id.
+vm.runInContext(extractFn(dustHtml, 'function isInjectedRowId(id)'), sandbox);
+vm.runInContext(extractFn(dustHtml, 'function isInjectedRow(row)'),   sandbox);
 vm.runInContext(extractFn(dustHtml, 'function materializeCompanyVehicleRates()'), sandbox);
 
 sandbox.ubRate = 1.28;
@@ -162,6 +169,14 @@ assert('V2 blank left blank when customer has no V2 default', r.rows[0].v2_rate 
 });
 r = runMaterialize([{ company: 'CNX', vehicle1: 'Truck A', v1_rate: '', vehicle2: '', v2_rate: '', inv_sent: '2026-01-05' }]);
 assert('row with an invoice-sent date is NOT back-filled', r.rows[0].v1_rate === '' && r.changed === false);
+
+// payroll-injected rows are not this back-fill's business: their rates were
+// resolved by the same cascade when the timesheet entry was approved, and the
+// server replays its own copy of those columns over anything this tab sends.
+r = runMaterialize([{ id: 'tsd-42-row', company: 'CNX', vehicle1: 'Truck A', v1_rate: '', vehicle2: '', v2_rate: '' }]);
+assert('payroll-injected row is NOT back-filled', r.rows[0].v1_rate === '' && r.changed === false);
+r = runMaterialize([{ id: 'k3x9', company: 'CNX', vehicle1: 'Truck A', v1_rate: '', vehicle2: '', v2_rate: '' }]);
+assert('a manually-added row with an id still IS back-filled', r.rows[0].v1_rate === 130 && r.changed === true);
 
 // unknown company → untouched
 r = runMaterialize([{ company: 'Ghost', vehicle1: 'Truck A', v1_rate: '', vehicle2: '', v2_rate: '' }]);

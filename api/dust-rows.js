@@ -20,6 +20,15 @@
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
+// Rows payroll injected when it approved a dust customer haul. This tab does not
+// own them: it may fill in the invoice sub-row and nothing else, it may not
+// delete them, and a stale save must not resurrect one payroll has withdrawn.
+// See the header of lib/dust-injected.js.
+const {
+  isInjectedDustRowId,
+  mergeInjectedDustRows,
+  sweepInjectedDustRows,
+} = require('./lib/dust-injected');
 
 // Idempotent guard so ALTER TABLE only runs once per cold-start
 let _columnsEnsured = false;
@@ -135,6 +144,14 @@ async function recoverFromIcBilling(sql, companyCode) {
       WHERE ib.company_code = ${companyCode}
         AND ib.source       = 'dust'
         AND ib.source_id    IS NOT NULL
+        -- Never rebuild a payroll-injected row. This recovery exists for rows
+        -- lost to a blob overwrite, where a surviving billing entry is the only
+        -- copy left. An injected row's absence means the opposite: payroll
+        -- un-approved or deleted the timesheet entry behind it, and recreating
+        -- it would resurrect withdrawn work under an id the tab won't let anyone
+        -- delete. Their billing entries are swept with the row (deleteDustRows),
+        -- so this is a belt-and-braces guard against one that outlived it.
+        AND ib.source_id NOT LIKE 'tsd-%'
         AND NOT EXISTS (
           SELECT 1 FROM dust_control_entries dc
           WHERE dc.id = ib.source_id
@@ -244,8 +261,24 @@ module.exports = async (req, res) => {
         ORDER  BY date ASC, created_at ASC
       `;
 
-      if (tableRows.length > 0) {
-        return res.json({ dustRows: tableRows.map(dbToRow) });
+      // Self-healing on read: a payroll row whose timesheet entry was deleted,
+      // un-approved or edited onto another division is one nobody can remove —
+      // the tab refuses to delete payroll rows, and payroll can only un-approve
+      // an entry that still exists. Costs one indexed lookup, and only when
+      // injected rows are actually present.
+      const answer = async rows => {
+        const { rows: live } = await sweepInjectedDustRows(sql, companyCode, rows.map(dbToRow));
+        return res.json({ dustRows: live });
+      };
+
+      // Whether the legacy blob still needs importing is a question about rows
+      // this tab OWNS, not about rows in the table. Payroll can now put the
+      // first row into a table that has never been migrated, and gating on "any
+      // row at all" would stand that one row up as proof the import had already
+      // happened — stranding the office's entire history in the blob forever,
+      // with the tab showing a single injected row where a thousand belong.
+      if (tableRows.some(r => !isInjectedDustRowId(r.id))) {
+        return answer(tableRows);
       }
 
       // ── One-time migration from legacy JSON blob ──────────────────────
@@ -255,18 +288,31 @@ module.exports = async (req, res) => {
       const blob = blobRows.length ? blobRows[0].value : null;
       const list = Array.isArray(blob) ? blob : [];
 
-      if (list.length > 0) {
-        try {
-          // Skip audit for one-time blob migration to avoid noise
-          await _upsertDustRows(sql, companyCode, list, null, { skipAudit: true });
-          // Blob data is now in the table — remove the legacy key
-          await sql`DELETE FROM app_data WHERE key = ${companyCode + ':dust_rows'}`;
-        } catch (err) {
-          console.error('[dust-rows] blob migration failed:', err.message);
-        }
+      if (list.length === 0) return answer(tableRows);
+
+      try {
+        // Skip audit for the one-time blob migration to avoid noise, and pass an
+        // empty deletedIds so it runs in partial-update mode: the default
+        // full-sync would take "the blob is the whole truth" literally and
+        // delete every payroll row already sitting in the table.
+        await _upsertDustRows(sql, companyCode, list, null, { skipAudit: true, deletedIds: [] });
+        // Blob data is now in the table — remove the legacy key
+        await sql`DELETE FROM app_data WHERE key = ${companyCode + ':dust_rows'}`;
+      } catch (err) {
+        console.error('[dust-rows] blob migration failed:', err.message);
+        // The import did not land, so answer from the blob as before rather than
+        // reporting the table's lone payroll row as the company's dust history.
+        return res.json({ dustRows: list });
       }
 
-      return res.json({ dustRows: list });
+      // Re-read so the answer carries the migrated rows AND any payroll rows
+      // that were already in the table.
+      const migrated = await sql`
+        SELECT * FROM dust_control_entries
+        WHERE  company_code = ${companyCode}
+        ORDER  BY date ASC, created_at ASC
+      `;
+      return answer(migrated);
     }
 
     // ── PUT (upsert + explicit deletes) ───────────────────────────────────
@@ -279,13 +325,38 @@ module.exports = async (req, res) => {
       // When the client passes `deletedIds`, run in safe partial-update mode:
       // only the explicitly listed ids are removed. Otherwise fall back to the
       // legacy full-sync behavior so older clients continue to work.
-      const opts = Array.isArray(deletedIds)
-        ? { deletedIds: deletedIds.filter(Boolean) }
-        : undefined;
+      //
+      // Either way an injected row is never deletable from here. The tab already
+      // hides its delete button, so a listed id is a stale client or a hand-made
+      // request; honouring it would strip cost off an approved timesheet with
+      // nothing in payroll to show for it.
+      const askedDeletes = Array.isArray(deletedIds) ? deletedIds.filter(Boolean) : null;
+      const safeDeletes  = askedDeletes ? askedDeletes.filter(id => !isInjectedDustRowId(id)) : null;
+      if (askedDeletes && safeDeletes.length !== askedDeletes.length) {
+        console.warn(
+          `[dust-rows] refused ${askedDeletes.length - safeDeletes.length} delete(s) of payroll-injected row(s) for ${companyCode} — un-approve the timesheet entry instead`
+        );
+      }
+      const opts = safeDeletes ? { deletedIds: safeDeletes } : undefined;
 
-      await _upsertDustRows(sql, companyCode, dustRows, payload, opts);
+      // A save that carries no rows and asks for no deletes means "do nothing".
+      // _upsertDustRows has always had that safety net, keyed on its list being
+      // empty — but the guard below adds the server's own injected rows back, so
+      // an empty save would arrive there looking non-empty and fall through to
+      // the legacy full-sync DELETE, taking out every MANUAL row in the company.
+      // The net therefore has to be judged on what the CLIENT sent, here, before
+      // anything is merged into it.
+      if (dustRows.length === 0 && (!safeDeletes || safeDeletes.length === 0)) {
+        return res.json({ ok: true });
+      }
 
-      return res.json({ ok: true });
+      const guarded = await _guardInjectedRows(sql, companyCode, dustRows);
+      await _upsertDustRows(sql, companyCode, guarded.rows, payload, opts);
+
+      // `withdrawn` names the payroll rows this save carried that no longer
+      // exist. The tab has to forget them before it reconciles Intercompany off
+      // its own copy — see _guardInjectedRows.
+      return res.json({ ok: true, withdrawn: guarded.withdrawn });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
@@ -295,6 +366,56 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: 'Database error', detail: err.message });
   }
 };
+
+/**
+ * Reconcile one whole-list save from the tab against the payroll rows the server
+ * currently holds, and return the list to actually write.
+ *
+ * The tab PUTs every row it has, and its copy of a payroll row is always the
+ * stale one — it was read before the approval that is about to land on top of
+ * it. Without this, the tab's next debounced save after any cell edit would:
+ *   - drop a row payroll injected while the page was open (the hours never reach
+ *     the tab or the invoice, and nobody can add the row back by hand), or
+ *   - put back a row payroll un-approved, re-billing withdrawn work.
+ *
+ * So the payroll columns are taken from the SERVER's copy and the invoice
+ * sub-row (DUST_TAB_FIELDS) is replayed from the incoming one — the same rule,
+ * for the same reason, that injected-blob-guard.js applies to the blob-backed
+ * division tabs and daily-rows.js to turf/paving.
+ */
+async function _guardInjectedRows(sql, companyCode, incoming) {
+  const list = Array.isArray(incoming) ? incoming : [];
+  const serverRows = await sql`
+    SELECT * FROM dust_control_entries
+    WHERE company_code = ${companyCode} AND id LIKE 'tsd-%'
+  `;
+  // Nothing injected on either side — the common case, and a no-op.
+  if (!serverRows.length && !list.some(r => r && isInjectedDustRowId(r.id))) {
+    return { rows: list, withdrawn: [] };
+  }
+
+  const merged = mergeInjectedDustRows(serverRows.map(dbToRow), list);
+  const inIds  = new Set(list.filter(r => r && isInjectedDustRowId(r.id)).map(r => String(r.id)));
+  const srvIds = new Set(serverRows.map(r => String(r.id)));
+  let restored = 0;
+  // Payroll rows the SAVE still carried that the server no longer has: payroll
+  // un-approved or deleted the entry while this tab had the page open. Dropping
+  // them from the write is only half the job — the tab's in-memory copy still
+  // holds them, and its Intercompany reconciler runs off that copy straight
+  // after this call, re-creating a billing entry for a row that no longer
+  // exists. Nothing would ever remove that entry again: the sweep only looks at
+  // rows, and the IC-recovery path deliberately skips injected ids. So the
+  // withdrawn ids go back to the client, which drops them before reconciling.
+  const withdrawn = [...inIds].filter(id => !srvIds.has(id));
+  for (const id of srvIds) if (!inIds.has(id)) restored++;
+  if (restored || withdrawn.length) {
+    console.warn(
+      `[dust-rows] ${companyCode}: kept ${restored} payroll row(s) the save omitted, ` +
+      `ignored ${withdrawn.length} the save carried that payroll no longer has`
+    );
+  }
+  return { rows: merged, withdrawn };
+}
 
 /**
  * Upsert a list of dust rows into dust_control_entries.

@@ -479,6 +479,24 @@
     .tot-label { font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
     .tot-val { font-size: 0.82rem; font-weight: 600; color: var(--amber); font-variant-numeric: tabular-nums; }
 
+    /* ── "Not reaching Intercompany" banner ── */
+    .ic-pending-banner {
+      display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap;
+      padding: 0.5rem 1.25rem;
+      background: rgba(251,191,36,0.10);
+      border-bottom: 1px solid rgba(251,191,36,0.35);
+      font-size: 0.74rem; line-height: 1.45; color: var(--text);
+    }
+    .ic-pending-banner[hidden] { display: none; }
+    .ic-pending-banner .ic-pending-count { font-weight: 700; color: #fbbf24; white-space: nowrap; }
+    .ic-pending-banner .ic-pending-co {
+      display: inline-block; margin-right: 0.3rem; padding: 0.02rem 0.34rem;
+      border: 1px solid rgba(251,191,36,0.35); border-radius: 3px;
+      background: rgba(251,191,36,0.10); white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .ic-pending-banner .ic-pending-hint { color: var(--muted); }
+
     /* ── Table selects ── */
     .sheet-table td select {
       width: 100%; height: 100%;
@@ -1355,6 +1373,14 @@
         <span class="tot-val" id="tot-gal">—</span>
       </div>
     </div>
+
+    <!-- Rows that have a customer and a billable total but no Intercompany
+         entry. Almost always one cause: that customer's Intercompany company
+         record does not have Dust ticked, so autoSyncIntercompanyDust skips it
+         and the work never bills. Invisible until now — the only sign was a
+         line of small print inside each row's invoice panel. Hidden entirely
+         when the count is zero. -->
+    <div class="ic-pending-banner" id="icPendingBanner" hidden></div>
 
     <!-- Table -->
     <div class="table-wrap">
@@ -2412,6 +2438,17 @@
     // dust rows that collapse to the same key are the "same job" to IC, so we
     // never push a second entry for a key that already exists (doing so would
     // ping-pong forever against IC's collapse-and-persist dedup).
+    //
+    // Only MANUAL rows claim a key. A payroll-injected row is one approved
+    // timesheet entry, so two of them are two hauls even when the customer, the
+    // day, the truck and the well pad all match — which is exactly what happens
+    // when payroll bulk-approves a multi-haul day, since that path records no
+    // pad. Letting the first injected row of a day claim the key blocked every
+    // later one from ever billing. intercompany.html's Pass 1b skips the same
+    // rows (isInjectedDust there), so the two sides still agree and there is no
+    // ping-pong. Checking is unchanged: an injected row IS still blocked by a
+    // MANUAL row's key, so approving a haul the office already typed bills once,
+    // not twice.
     function _icJobKey(e) {
       return `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
     }
@@ -2567,7 +2604,8 @@
       entries.forEach(e => {
         if (e.source === 'dust' && e.source_id) {
           bySourceId.set(e.source_id, e);
-          dustJobKeys.add(_icJobKey(e));
+          // Claiming is manual-rows-only — see _icJobKey.
+          if (!isInjectedRowId(e.source_id)) dustJobKeys.add(_icJobKey(e));
         }
       });
 
@@ -2622,12 +2660,20 @@
           sent_by: (user?.username) || '',
         };
 
+        // Claiming a physical job key is manual-rows-only, here as above — see
+        // _icJobKey. Without this the FIRST injected row of a multi-haul day
+        // claimed the key inside this very loop and every later one fell into
+        // the skip below, so only one of the day's hauls ever billed.
+        const claimsJobKey = !isInjectedRow(row);
+
         if (prev) {
           if (_icEntrySig(prev) !== _icEntrySig(entry)) {
             const i = entries.indexOf(prev);
             if (i !== -1) entries[i] = entry; else entries.unshift(entry);
-            dustJobKeys.delete(_icJobKey(prev));
-            dustJobKeys.add(_icJobKey(entry));
+            if (claimsJobKey) {
+              dustJobKeys.delete(_icJobKey(prev));
+              dustJobKeys.add(_icJobKey(entry));
+            }
             bySourceId.set(row.id, entry);
             changed = true;
           }
@@ -2635,11 +2681,14 @@
         } else if (icIsSuppressed('dust', row.id)) {
           continue;   // deleted in Intercompany — leave it deleted
         } else if (dustJobKeys.has(_icJobKey(entry))) {
+          // Checking is unchanged for every row: a haul the office already typed
+          // holds the key, so approving the same haul in payroll still bills it
+          // once rather than twice.
           continue;   // same physical job already represented; IC would collapse a dup
         } else {
           entries.unshift(entry);
           bySourceId.set(row.id, entry);
-          dustJobKeys.add(_icJobKey(entry));
+          if (claimsJobKey) dustJobKeys.add(_icJobKey(entry));
           changed = true;
           sentNow.push({ id: row.id, sentAt });
         }
@@ -2704,6 +2753,7 @@
           clearNow.forEach(id => icSentMapDust.delete(id));
           refreshIcChips(sentNow.map(s => s.id));
           clearIcChips(clearNow);
+          renderIcPendingBanner();   // rows that just synced leave the count
         }
       } catch { /* non-fatal — the next save or poll retries */ }
       finally {
@@ -2737,6 +2787,23 @@
           // Only clear ids we actually sent — newly deleted rows during the
           // round-trip stay queued for the next save.
           sentDeleted.forEach(id => deletedRowIds.delete(id));
+          // Payroll rows this save still carried that no longer exist: payroll
+          // un-approved or deleted the timesheet entry while this page was
+          // open. Forget them NOW, before the caller reconciles Intercompany —
+          // that runs off this same array, and billing a row the server has
+          // already dropped creates an entry nothing can ever remove.
+          try {
+            const body = await r.clone().json();
+            const gone = Array.isArray(body && body.withdrawn) ? body.withdrawn : [];
+            if (gone.length) {
+              const goneSet = new Set(gone.map(String));
+              for (let i = rows.length - 1; i >= 0; i--) {
+                if (goneSet.has(String(rows[i].id))) rows.splice(i, 1);
+              }
+              gone.forEach(id => icSentMapDust.delete(id));
+              renderTable();
+            }
+          } catch { /* older server without `withdrawn` — the poll catches up */ }
         }
         return r.ok;
       } catch { return false; }
@@ -3224,13 +3291,18 @@
         // Build a key→existing-row map so we can preserve original IDs.
         // Changing IDs on update would cause recoverFromIcBilling to re-insert
         // the old rows on the next page load, creating duplicates.
+        // Payroll rows are never import targets. Adopting one's id would hand
+        // the CSV's figures to a row the server owns — which replays its own
+        // copy over them, so the import silently does nothing — while the
+        // office's real row is dropped from `kept` as "replaced".
+        const importable = rows.filter(r => !isInjectedRow(r));
         const existingByKey = new Map(
-          rows.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
+          importable.map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${r.start_time}`, r])
         );
         // Also index time-less existing rows by date+company+location so a
         // CSV row with a start_time still matches the original no-time entry.
         const existingTimeless = new Map(
-          rows
+          importable
             .filter(r => !r.start_time)
             .map(r => [`${r.date}|${(r.company||'').toLowerCase()}|${(r.location||'').toLowerCase()}`, r])
         );
@@ -3495,6 +3567,16 @@
             </div>
           </div>`;
 
+        // Payroll-injected rows are locked here: every column above the invoice
+        // sub-row was filled in when a supervisor approved the driver's
+        // timesheet, and the only correct way to change or remove one is to go
+        // back there. Leaving them editable would mean two sources of truth for
+        // the same haul — and the server discards the edit anyway, replaying its
+        // own copy of these columns over any save from this tab.
+        const injected = isInjectedRow(row);
+        const ro = (v, cls) =>
+          `<td class="${cls}" style="color:var(--text);font-size:0.72rem;padding:0.3rem 0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(v == null || v === '' ? '—' : String(v))}</td>`;
+
         const missingInvoice = !row.inv_number || !row.inv_sent;
         const effSt = effectiveInvStatus(row);
         let rowBg = '';
@@ -3503,27 +3585,43 @@
         else if (missingInvoice)   rowBg = 'rgba(239,68,68,0.18)';   // red
         const rowStyle    = rowBg ? ` style="background:${rowBg}"` : '';
         const subRowStyle = rowBg ? ` background:${rowBg};`        : '';
-        return `<tr data-idx="${idx}"${rowStyle}>
+        const lockTitle   = 'Posted from an approved timesheet entry — edit it in Payroll, not here.';
+        const tsBadge     = `<span title="${lockTitle}" style="display:inline-block;font-size:0.53rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.12);border:1px solid rgba(165,180,252,0.35);border-radius:3px;padding:0.02rem 0.26rem;white-space:nowrap">&#8592; Timesheet</span>`;
+        return `<tr data-idx="${idx}"${rowStyle}${injected ? ` title="${lockTitle}"` : ''}>
           <td class="cw-expand"><button class="expand-btn" id="expbtn-${idx}" onclick="toggleInvoice(${idx})" title="Invoice details">›</button></td>
-          <td class="cw-date"><input type="date" value="${esc(row.date       ||'')}" onchange="set(${idx},'date',this.value)"></td>
-          <td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>
-          <td class="cw-time"><input type="time" value="${esc(row.end_time   ||'')}" onchange="set(${idx},'end_time',this.value)"></td>
+          ${injected
+            ? ro(fmtDateCell(row.date), 'cw-date')
+            : `<td class="cw-date"><input type="date" value="${esc(row.date ||'')}" onchange="set(${idx},'date',this.value)"></td>`}
+          ${injected
+            ? ro(fmtTimeCell(row.start_time), 'cw-time')
+            : `<td class="cw-time"><input type="time" value="${esc(row.start_time ||'')}" onchange="set(${idx},'start_time',this.value)"></td>`}
+          ${injected
+            ? ro(fmtTimeCell(row.end_time), 'cw-time')
+            : `<td class="cw-time"><input type="time" value="${esc(row.end_time   ||'')}" onchange="set(${idx},'end_time',this.value)"></td>`}
           ${calcCell(c.totalHours ? c.totalHours.toFixed(2) : '', 'cw-ttim')}
-          <td class="cw-co">${cbHtml(idx, 'company',     row.company||'',     '— select —')}</td>
-          <td class="cw-cm">${cbHtml(idx, 'company_man', row.company_man||'', '— select —')}</td>
-          <td class="cw-loc">${cbHtml(idx, 'location',   row.location||'',    '— select —')}</td>
-          <td class="cw-st">${cbHtml(idx, 'state',       row.state||'',       '—')}</td>
-          <td class="cw-veh">${cbHtml(idx, 'vehicle1',   row.vehicle1||'',    '— select —')}</td>
-          <td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="_liveSet(${idx},'v1_rate',this.value)" onchange="set(${idx},'v1_rate',this.value)"></td>
+          ${injected ? ro(row.company,     'cw-co') : `<td class="cw-co">${cbHtml(idx, 'company',     row.company||'',     '— select —')}</td>`}
+          ${injected ? ro(row.company_man, 'cw-cm') : `<td class="cw-cm">${cbHtml(idx, 'company_man', row.company_man||'', '— select —')}</td>`}
+          ${injected ? ro(row.location,    'cw-loc') : `<td class="cw-loc">${cbHtml(idx, 'location',   row.location||'',    '— select —')}</td>`}
+          ${injected ? ro(row.state,       'cw-st') : `<td class="cw-st">${cbHtml(idx, 'state',       row.state||'',       '—')}</td>`}
+          ${injected ? ro(row.vehicle1,    'cw-veh') : `<td class="cw-veh">${cbHtml(idx, 'vehicle1',   row.vehicle1||'',    '— select —')}</td>`}
+          ${injected
+            ? ro(row.v1_rate, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" data-field="v1_rate" step="0.01" min="0" value="${esc(row.v1_rate||'')}" oninput="_liveSet(${idx},'v1_rate',this.value)" onchange="set(${idx},'v1_rate',this.value)"></td>`}
           ${calcCell(c.v1Total  ? money(c.v1Total)  : '', 'cw-vtot')}
-          <td class="cw-veh">${cbHtml(idx, 'vehicle2',   row.vehicle2||'',    '— select —')}</td>
-          <td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="_liveSet(${idx},'v2_rate',this.value)" onchange="set(${idx},'v2_rate',this.value)"></td>
+          ${injected ? ro(row.vehicle2,    'cw-veh') : `<td class="cw-veh">${cbHtml(idx, 'vehicle2',   row.vehicle2||'',    '— select —')}</td>`}
+          ${injected
+            ? ro(row.v2_rate, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" data-field="v2_rate" step="0.01" min="0" value="${esc(row.v2_rate||'')}" oninput="_liveSet(${idx},'v2_rate',this.value)" onchange="set(${idx},'v2_rate',this.value)"></td>`}
           ${calcCell(c.v2Total  ? money(c.v2Total)  : '', 'cw-vtot')}
           ${calcCell(c.vehTotal ? money(c.vehTotal) : '', 'cw-vgrt')}
-          <td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="_liveSet(${idx},'gallons_ub',this.value)" onchange="set(${idx},'gallons_ub',this.value)"></td>
+          ${injected
+            ? ro(row.gallons_ub, 'cw-gal')
+            : `<td class="cw-gal"><input type="number" step="0.1" min="0" value="${esc(row.gallons_ub||'')}" oninput="_liveSet(${idx},'gallons_ub',this.value)" onchange="set(${idx},'gallons_ub',this.value)"></td>`}
           ${calcCell(c.ubTotal  ? money(c.ubTotal)  : '', 'cw-ubt')}
-          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}${icChip}</td>
-          <td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>
+          <td class="calc cw-inv${c.invTotal ? '' : ' empty'}">${c.invTotal ? money(c.invTotal) : '—'}${badge}${icChip}${injected ? `<div style="margin-top:0.15rem">${tsBadge}</div>` : ''}</td>
+          ${injected
+            ? `<td class="del-col"><span title="${lockTitle}" style="color:var(--muted);font-size:0.85rem">&#128274;</span></td>`
+            : `<td class="del-col"><button class="del-btn" onclick="deleteRow(${idx})" title="Delete row">✕</button></td>`}
         </tr>
         <tr class="inv-row" id="inv-row-${idx}" style="display:none;${subRowStyle}">
           <td colspan="20">${invPanel}</td>
@@ -3541,6 +3639,7 @@
       });
 
       renderTotals(totVeh, totUb, totInv, totGal);
+      renderIcPendingBanner();
       const total = rows.length, shown = visibleIdxs.length;
       document.getElementById('rowCount').textContent = shown < total
         ? `${shown} of ${total} row${total !== 1 ? 's' : ''}`
@@ -3550,6 +3649,55 @@
     function calcCell(val, extraClass = '') {
       const empty = !val;
       return `<td class="calc ${extraClass}${empty ? ' empty' : ''}">${empty ? '—' : val}</td>`;
+    }
+
+    /* Rows that should be billing Intercompany and are not.
+     *
+     * The per-row invoice panel has always said this ("Awaiting sync — check
+     * Intercompany company list"), but only for one row at a time and only once
+     * expanded, so a customer that was never enrolled could sit there for years
+     * unnoticed. This is the same test, counted across the whole table.
+     *
+     * Deliberately NOT limited to the visible year: the year selector is a
+     * display filter, and a banner that went quiet when you switched years
+     * would be worse than no banner. The customer names come with counts so a
+     * single stray row reads differently from three years of one customer.
+     *
+     * A row is pending when it names a customer, computes a billable total, has
+     * no Intercompany entry, and was not deliberately removed over there —
+     * that last case is a decision, not a gap, and the row shows "⊘ Removed in
+     * IC" instead.
+     */
+    function icPendingRows() {
+      return rows.filter(row => {
+        if (!row || !row.company) return false;
+        if (icSentAt(row)) return false;
+        if (icIsSuppressed('dust', row.id)) return false;
+        return calc(row).invTotal > 0;
+      });
+    }
+
+    function renderIcPendingBanner() {
+      const el = document.getElementById('icPendingBanner');
+      if (!el) return;
+      const pending = icPendingRows();
+      if (!pending.length) { el.hidden = true; el.innerHTML = ''; return; }
+
+      const byCo = new Map();
+      pending.forEach(r => byCo.set(r.company, (byCo.get(r.company) || 0) + 1));
+      const cos = [...byCo.entries()].sort((a, b) => b[1] - a[1]);
+      const shown = cos.slice(0, 6);
+      const rest  = cos.length - shown.length;
+
+      el.innerHTML =
+        `<span class="ic-pending-count">⚠ ${pending.length} row${pending.length === 1 ? '' : 's'} not reaching Intercompany</span>` +
+        `<span>${shown.map(([name, n]) =>
+          `<span class="ic-pending-co">${esc(name)} <strong>${n}</strong></span>`).join('')}` +
+        (rest > 0 ? `<span class="ic-pending-co">+${rest} more</span>` : '') + `</span>` +
+        `<span class="ic-pending-hint">These have a customer and a billable total but no Intercompany entry — ` +
+        `usually the customer is not ticked for <strong>Dust</strong> in the Intercompany company list. ` +
+        `Ticking it there sends every row above on the next save, not just new ones.</span>`;
+      el.hidden = false;
     }
 
     function renderTotals(totVeh, totUb, totInv, totGal) {
@@ -3600,6 +3748,7 @@
         totGal += c.gallons;
       });
       renderTotals(totVeh, totUb, totInv, totGal);
+      renderIcPendingBanner();
     }
 
     /* ═══════════════════════════════════════════
@@ -3691,7 +3840,49 @@
       }
     }
 
+    /* Rows this tab did not create: payroll posts one when a supervisor approves
+       a dust customer haul on a timesheet (id "tsd-<entryId>-row" — see
+       api/lib/dust-injected.js). They are rendered locked, and the server
+       enforces the same rule on writes, so nothing here can change or remove
+       one — the way to take one back is to un-approve the entry in Payroll.
+
+       Two forms because the Intercompany reconciler holds the id on its own, as
+       an entry's source_id, rather than a whole row. Must stay in step with
+       isInjectedDustRowId in api/lib/dust-injected.js and with isInjectedDust in
+       intercompany.html. */
+    function isInjectedRowId(id) {
+      return /^tsd-\d+-/.test(String(id || ''));
+    }
+    function isInjectedRow(row) {
+      return isInjectedRowId(row && row.id);
+    }
+
+    /* Read-only renderings of the two column types that use a native picker, so
+       a locked row reads the way the editable ones look rather than showing raw
+       ISO values. Both take what the row stores and leave anything unexpected
+       alone rather than guessing. */
+    function fmtDateCell(v) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+      return m ? `${m[2]}/${m[3]}/${m[1]}` : (v || '');
+    }
+    function fmtTimeCell(v) {
+      const m = /^(\d{1,2}):(\d{2})/.exec(String(v || ''));
+      if (!m) return v || '';
+      const h = Number(m[1]);
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12  = h % 12 === 0 ? 12 : h % 12;
+      return `${String(h12).padStart(2, '0')}:${m[2]} ${ampm}`;
+    }
+
     function deleteRow(idx) {
+      // Locked rows have no delete button, so reaching here means a stale render
+      // or the console. Either way the row belongs to an approved timesheet
+      // entry: removing it would strip cost off approved work with nothing in
+      // Payroll to show for it, and the server would refuse the delete anyway.
+      if (isInjectedRow(rows[idx])) {
+        alert('This row was posted from an approved timesheet entry, so it cannot be deleted here.\n\nUn-approve that entry in Payroll and the row goes with it.');
+        return;
+      }
       if (!confirm('Delete this row?')) return;
       const removed = rows[idx];
       if (removed && removed.id) deletedRowIds.add(removed.id);
@@ -4052,6 +4243,11 @@
     function materializeCompanyVehicleRates() {
       let changed = false;
       rows.forEach(row => {
+        // A payroll row's rates were resolved when the entry was approved, by
+        // the same customer-then-equipment cascade this back-fill runs. Writing
+        // to one here would be discarded by the server (it replays its own copy
+        // of these columns) and would dirty the save for nothing.
+        if (isInjectedRow(row)) return;
         const co = dustLists.companies.find(c => c.name === row.company);
         if (!co) return;
         // Never retroactively re-rate a row that's already been invoiced —

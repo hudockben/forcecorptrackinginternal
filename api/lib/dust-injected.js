@@ -1,0 +1,278 @@
+'use strict';
+/**
+ * Identity + lifecycle rules for the Dust Control Tracking rows payroll injects.
+ *
+ * A dust customer haul already injects a Truck Tracking row on approval (see
+ * truck-injected.js) — that tab records who drove where, and the trucking office
+ * reads it. But the money for that haul is billed by the DUST office, off its
+ * own Dust Control Tracking tab: vehicle rates times hours, plus UB gallons.
+ * Until now that row was retyped by hand from the timesheet the driver had
+ * already filled in, which is both the slowest part of the week and the one
+ * place the two tabs could quietly disagree about the same day's work.
+ *
+ * So the same approval now writes BOTH rows, each carrying exactly the columns
+ * its own tab has — nothing invented, nothing dropped:
+ *
+ *   Truck Tracking (unchanged)   driver, date, start/end, hours, customer, unit,
+ *                                description, haul fee, division
+ *   Dust Control Tracking (new)  date, start/end, company, company man, location,
+ *                                state, vehicle 1 + rate, vehicle 2 + rate,
+ *                                gallons of UB
+ *
+ * Date, start/end and company come off the timesheet. The approving supervisor
+ * fills in the company man, the location and the gallons; state, the vehicle
+ * rates and the escort vehicle follow from the customer the same way they do
+ * when the row is typed into the dust tab by hand.
+ *
+ * Both rows feed Intercompany billing, and they bill on different bases (haul
+ * fee x hours over there, vehicle rates + gallons here). Whoever reconciles
+ * Intercompany has to pick ONE of them per haul or the customer is invoiced
+ * twice — the "⊘ Removed in IC" suppression each tab already supports is how
+ * that choice is expressed.
+ *
+ * The rules live here rather than in api/timesheet-entries.js because
+ * api/dust-rows.js needs them too — it sweeps rows that outlived their entry on
+ * read and refuses the dust tab's writes against a payroll row — and a second
+ * copy of "which rows are payroll's" is exactly the kind of drift that stranded
+ * Truck Tracking rows before it.
+ */
+
+const { isEesJob, removeIcBillingEntries } = require('./truck-injected');
+const { IC_SOURCES } = require('./ic-sources');
+
+// The tag Dust Control Tracking rows carry in the shared Intercompany list.
+const IC_SOURCE_DUST = IC_SOURCES.DUST_TRACKING;
+
+/**
+ * The columns the dust office owns on a row payroll owns.
+ *
+ * An injected row renders locked in Dust Control Tracking — every column that
+ * comes off the timesheet or out of the approve modal is payroll's — except the
+ * invoice sub-row, which stays editable so the office can still bill on it.
+ * Re-injection therefore has to preserve these and overwrite the rest, or
+ * correcting an entry's hours quietly wipes the invoice number and the paid date
+ * off a row that was already invoiced. Same rule, and the same reason, as
+ * TRUCK_TAB_FIELDS on the trucking side.
+ */
+const DUST_TAB_FIELDS = [
+  'inv_number', 'inv_sent', 'inv_received', 'inv_status',
+  'cm_approval', 'inv_location',
+];
+
+/**
+ * True when approving this entry injects a Dust Control Tracking row.
+ *
+ * Deliberately the same shape as needsTruckTrackingRow's dust branch, because it
+ * describes the same work: a dust customer haul. A dust entry on one of the two
+ * standing EES activities is not customer work and goes to the division's "EES
+ * Other" tab instead; a dust entry with no job names no customer, so there is no
+ * company to file a tracking row under and it injects nowhere.
+ *
+ * Single predicate on purpose — the gate appears at seven sites (approve,
+ * resplit, un-approve, delete, the edit guard, the read-time sweep, and
+ * payroll.html's modal) and a row that outlives its entry is what happens when
+ * one of them drifts.
+ */
+function needsDustTrackingRow(entry) {
+  if (!entry || entry.entry_type !== 'daily') return false;
+  return entry.division === 'dust' && !!entry.job_id && !isEesJob(entry.job_id);
+}
+
+// Every row injected from one timesheet entry shares this prefix, so un-approve
+// and delete can find them again. "tsd-" (timesheet → dust) rather than the
+// trucking "tst-": the two rows describe the same entry and live in different
+// tables, but sharing a prefix would make a sweep written for one of them look
+// like it matched the other's rows in any code that ever sees both.
+function dustRowIdPrefix(entryId) { return `tsd-${entryId}-`; }
+
+/**
+ * The canonical id for an entry's injected Dust Control Tracking row.
+ *
+ * Stable, not stamped with Date.now(): there is only ever one row per entry, and
+ * Intercompany keys its billing entry off this id. A fresh id on every
+ * re-injection would orphan that entry — and dust-rows.js rebuilds a row from an
+ * orphaned billing entry (recoverFromIcBilling), so the orphan would come back
+ * as a duplicate of the row payroll had just corrected. Re-injecting is
+ * idempotent: the row keeps its identity, its place in the table and its
+ * Intercompany history across an un-approve/correct/re-approve cycle.
+ */
+function dustRowId(entryId) { return `${dustRowIdPrefix(entryId)}row`; }
+
+// The timesheet entry a "tsd-<entryId>-<suffix>" row came from, or null when the
+// id isn't one of ours. Manually-added dust rows use uid() — a base-36 timestamp
+// with a random tail — so the prefix cannot collide with one.
+function entryIdFromDustRowId(rowId) {
+  const m = /^tsd-(\d+)-/.exec(String(rowId || ''));
+  return m ? Number(m[1]) : null;
+}
+
+function isInjectedDustRowId(rowId) { return entryIdFromDustRowId(rowId) != null; }
+
+/**
+ * Decide which injected rows in `rows` no longer have a right to be there.
+ *
+ * Pure — takes the rows and the timesheet entries they claim to come from, and
+ * returns the ids to drop. A row is stale when:
+ *   - its entry is gone (payroll deleted it),
+ *   - its entry is no longer approved (payroll un-approved it),
+ *   - its entry no longer routes here (edited onto another division, or moved
+ *     onto an EES job), or
+ *   - a duplicate row for the same entry exists — the canonical "-row" id wins.
+ *
+ * Manual rows are never candidates: only ids carrying the "tsd-<entryId>-"
+ * prefix payroll mints are even looked at.
+ */
+function findStaleDustRows(rows, entriesById) {
+  const stale = [];
+  const keptByEntry = new Map();
+
+  const injected = (rows || []).filter(r => r && typeof r === 'object' && isInjectedDustRowId(r.id));
+  for (const row of injected) {
+    const entryId = entryIdFromDustRowId(row.id);
+    const entry   = entriesById.get(entryId) || null;
+    if (!entry || entry.status !== 'approved' || !needsDustTrackingRow(entry)) {
+      stale.push(String(row.id));
+      continue;
+    }
+    const prev = keptByEntry.get(entryId);
+    if (!prev) { keptByEntry.set(entryId, row); continue; }
+    // Two live rows for one entry: keep the canonical id, drop the other.
+    const canonical = dustRowId(entryId);
+    if (String(row.id) === canonical) {
+      keptByEntry.set(entryId, row);
+      stale.push(String(prev.id));
+    } else {
+      stale.push(String(row.id));
+    }
+  }
+  return stale;
+}
+
+/**
+ * Remove a set of Dust Control Tracking rows by id, along with the Intercompany
+ * billing entries they created.
+ *
+ * The billing sweep is what makes a removal stick. dust-rows.js rebuilds a dust
+ * row from a billing entry whose row has gone missing (recoverFromIcBilling,
+ * written for blob-overwrite data loss) — so a billing entry left behind by an
+ * un-approval resurrects the row on the next page load, under the same id, which
+ * the tab then refuses to delete. Any Intercompany-side invoice or payment dates
+ * go with it; that is the intended trade, since the work they billed for is no
+ * longer approved.
+ */
+async function deleteDustRows(sql, companyCode, rowIds) {
+  const ids = [...new Set((rowIds || []).map(v => String(v || '')).filter(Boolean))];
+  if (!ids.length) return 0;
+  await sql`
+    DELETE FROM dust_control_entries
+     WHERE company_code = ${companyCode} AND id = ANY(${ids}::text[])
+  `;
+  // Non-fatal. Throwing here would fail an un-approve after the row is already
+  // gone, and the retry would find nothing to remove and return early — so the
+  // billing entry would be stranded by the very error meant to protect it.
+  try {
+    await removeIcBillingEntries(sql, companyCode, IC_SOURCE_DUST, ids);
+  } catch (err) {
+    console.error('[dust-injected] removing IC billing entries failed:', err.message);
+  }
+  return ids.length;
+}
+
+/**
+ * Sweep injected rows that outlived their timesheet entry out of `rows`.
+ *
+ * Self-healing on read, because the alternative is a row nobody can remove: the
+ * Dust Control Tracking tab refuses to delete payroll rows, and payroll can only
+ * un-approve an entry that still exists and still owns that id.
+ *
+ * Costs one indexed lookup, and only when the list actually contains injected
+ * rows; it writes nothing in the steady state, which is every call after the
+ * first. Returns { rows, removed } with `rows` filtered — the caller can hand it
+ * straight back to the client, so a stale row is gone from the tab on the same
+ * load that cleaned it up.
+ */
+async function sweepInjectedDustRows(sql, companyCode, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const entryIds = [...new Set(
+    list.map(r => (r && typeof r === 'object') ? entryIdFromDustRowId(r.id) : null)
+        .filter(id => id != null)
+  )];
+  if (!entryIds.length) return { rows: list, removed: [] };
+
+  const entryRows = await sql`
+    SELECT id, status, entry_type, division, job_id
+      FROM timesheet_entries
+     WHERE company_code = ${companyCode} AND id = ANY(${entryIds}::bigint[])
+  `;
+  const entriesById = new Map(entryRows.map(r => [Number(r.id), r]));
+
+  const stale = findStaleDustRows(list, entriesById);
+  if (!stale.length) return { rows: list, removed: [] };
+
+  const staleSet  = new Set(stale);
+  const remaining = list.filter(r => !(r && typeof r === 'object' && staleSet.has(String(r.id))));
+
+  await deleteDustRows(sql, companyCode, stale);
+  console.warn(`[dust-injected] swept ${stale.length} orphaned injected row(s) for ${companyCode}: ${stale.join(', ')}`);
+  return { rows: remaining, removed: stale };
+}
+
+/**
+ * Merge one incoming whole-list write from the dust tab against the server's
+ * injected rows. Pure — takes both lists, returns the list to store.
+ *
+ * The tab PUTs every row it has, and its copy is always the stale one: it was
+ * read before the approval that is about to land on top of it. Same race
+ * injected-blob-guard.js settles for the blob-backed tabs, and the same rule —
+ * a division tab has no authority over a payroll-injected row:
+ *   - a row the tab owns  → kept exactly as sent,
+ *   - a payroll row the server still has → server's copy, with the invoice
+ *     columns (DUST_TAB_FIELDS) replayed from the incoming copy,
+ *   - a payroll row the server no longer has → dropped (payroll un-approved it;
+ *     the client's copy is stale by definition),
+ *   - a payroll row the server has that the write never mentioned → kept (it was
+ *     injected after the client read).
+ */
+function mergeInjectedDustRows(serverRows, incomingRows) {
+  const server   = Array.isArray(serverRows) ? serverRows : [];
+  const incoming = Array.isArray(incomingRows) ? incomingRows : [];
+
+  const serverById = new Map();
+  for (const row of server) {
+    if (row && typeof row === 'object' && isInjectedDustRowId(row.id)) {
+      serverById.set(String(row.id), row);
+    }
+  }
+
+  const merged = [];
+  const placed = new Set();
+  for (const row of incoming) {
+    if (!row || typeof row !== 'object' || !isInjectedDustRowId(row.id)) { merged.push(row); continue; }
+    const id  = String(row.id);
+    const srv = serverById.get(id);
+    if (!srv || placed.has(id)) continue;      // withdrawn by payroll, or a duplicate
+    const out = { ...srv };
+    for (const f of DUST_TAB_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(row, f)) out[f] = row[f];
+    }
+    merged.push(out);
+    placed.add(id);
+  }
+  for (const [id, srv] of serverById) if (!placed.has(id)) merged.push(srv);
+
+  return merged;
+}
+
+module.exports = {
+  IC_SOURCE_DUST,
+  DUST_TAB_FIELDS,
+  needsDustTrackingRow,
+  dustRowIdPrefix,
+  dustRowId,
+  entryIdFromDustRowId,
+  isInjectedDustRowId,
+  findStaleDustRows,
+  deleteDustRows,
+  sweepInjectedDustRows,
+  mergeInjectedDustRows,
+};

@@ -1674,6 +1674,18 @@
         //            (date+company+location+vehicle1, ignoring start_time so that a
         //            time-less original and its timed CSV replacement collapse to one).
         // Non-dust and dust entries without source_id: dedup by content key.
+        //
+        // Pass 1b applies to MANUAL dust rows only. A payroll-injected row
+        // (source_id "tsd-<entryId>-row") is exactly one approved timesheet
+        // entry, so two of them are two hauls by construction — even when the
+        // customer, the day, the truck and the (possibly blank) well pad all
+        // match. Collapsing those dropped the second haul, and because the
+        // shrunken list is written straight back below, the loss was permanent
+        // and dust.html would not recreate it. Same rule, and the same reason,
+        // as the trucking branch further down; the job key keeps governing
+        // manual rows, where it exists to fold a time-less original into its
+        // timed CSV replacement.
+        const isInjectedDust = e => String(e.source_id || '').startsWith('tsd-');
         const bestBySourceId = new Map();
         for (const e of raw) {
           if (e.source === 'dust' && e.source_id) {
@@ -1685,6 +1697,7 @@
         }
         const bestByJobKey = new Map();
         for (const e of bestBySourceId.values()) {
+          if (isInjectedDust(e)) continue;   // identified by source_id alone
           const jk = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
           const prev = bestByJobKey.get(jk);
           if (!prev || (e.sent_at || '') > (prev.sent_at || '')) {
@@ -1696,8 +1709,14 @@
         const deduped = [];
         for (const e of raw) {
           if (e.source === 'dust' && e.source_id) {
-            const jk = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
-            if (bestByJobKey.get(jk) === e) deduped.push(e);
+            if (isInjectedDust(e)) {
+              // Pass 1a alone decides: the latest send for this timesheet entry
+              // survives, and nothing else can evict it.
+              if (bestBySourceId.get(e.source_id) === e) deduped.push(e);
+            } else {
+              const jk = `${e.actual_date}|${(e.company_name||'').toLowerCase()}|${(e.location||'').toLowerCase()}|${(e.vehicle1||'').toLowerCase()}`;
+              if (bestByJobKey.get(jk) === e) deduped.push(e);
+            }
           } else if (e.source_id) {
             // Non-dust entries with a source_id (trucking, paving) are uniquely
             // identified by (source, source_id). Without this branch the old
