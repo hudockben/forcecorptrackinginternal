@@ -759,6 +759,57 @@
       // this script (scopeUnbounded, supervisors, etc.) finish their TDZ
       // before init() / loadEntries() read them.
       queueMicrotask(init);
+      queueMicrotask(verifySession);
+    }
+
+    // ── Session validity ───────────────────────────────────────────────────
+    // The guard above only proves a token STRING is in localStorage, not that
+    // it still works. Tokens last 30 days; the user object beside it never
+    // expires. A phone that opens this page straight from a home-screen
+    // shortcut skips divisions.html — the only page that was checking — so an
+    // expired token there produced a page that looked signed in ("brewerzach"
+    // in the header, form fully drawn) while every call behind it 401'd. The
+    // visible symptom was an empty job picker on the phone and a working one
+    // on any freshly signed-in laptop, for the same account.
+    //
+    // Same shape as the check in divisions.html: fire-and-forget, and only a
+    // definitive 401 signs anyone out. A network failure leaves the cached
+    // session alone — crews work out of range and must still reach the form.
+    function sessionExpired() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html?expired=1');
+    }
+
+    async function verifySession() {
+      let res;
+      try {
+        res = await fetch('/api/auth/verify', { headers: authHeaders() });
+      } catch (err) {
+        console.error('[timesheet] session check unreachable, keeping cached session:', err);
+        return;
+      }
+      if (res.status === 401) { sessionExpired(); return; }
+      if (!res.ok) return;
+
+      // Roles are read fresh from the DB here, so a grant made after this
+      // device's last sign-in lands without a sign-out cycle — the other half
+      // of "works on my laptop, not on his phone".
+      let data = null;
+      try { data = await res.json(); } catch { return; }
+      if (!data || !data.ok || !data.user) return;
+
+      const fresh = Array.isArray(data.user.allowedDivisions) ? data.user.allowedDivisions : [];
+      const merged = Object.assign({}, user, data.user);
+      try { localStorage.setItem('fct_user', JSON.stringify(merged)); } catch { /* quota */ }
+
+      // Access revoked while the page sat open on a phone in a truck: stop
+      // showing a form whose every save is going to 403.
+      if (!data.user.isPlatformAdmin && !fresh.includes('timesheet')) {
+        document.getElementById('mainContent').classList.add('hidden');
+        document.getElementById('noAccess').classList.remove('hidden');
+      }
     }
 
     function escapeHtml(s) {
@@ -1202,14 +1253,29 @@
     async function loadSupervisors() {
       try {
         const res = await fetch('/api/timesheet-supervisors', { headers: authHeaders() });
+        if (res.status === 401) { sessionExpired(); return; }
         const data = await res.json();
-        supervisors = Array.isArray(data.supervisors) ? data.supervisors : [];
-      } catch { supervisors = []; }
+        // A non-2xx body has no `supervisors` key, so the old read turned every
+        // failure into an empty roster indistinguishable from a company that
+        // hasn't named any supervisors yet. Fail loudly to the console instead.
+        if (!res.ok || !Array.isArray(data && data.supervisors)) {
+          throw new Error((data && data.error) || `HTTP ${res.status}`);
+        }
+        supervisors = data.supervisors;
+      } catch (err) {
+        console.error('[timesheet] supervisors failed to load:', err);
+        supervisors = [];
+      }
       const opts = '<option value="">— pick —</option>' +
         supervisors.map(s => `<option value="${s.id}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
       document.getElementById('f-supervisor').innerHTML = opts;
       document.getElementById('f-off-supervisor').innerHTML = opts;
     }
+
+    // Picking this in the job box re-runs the load that failed. A <select> is
+    // the only control on screen at that moment, so the retry has to be an
+    // option inside it — a disabled select swallows taps on a phone.
+    const JOB_RETRY = '__retry__';
 
     // Which job load is the current one, per block. Two divisions picked in
     // quick succession are two loads in flight, and whichever answers LAST used
@@ -1241,8 +1307,22 @@
           const res = await fetch('/api/timesheet-jobs?division=' + encodeURIComponent(div), {
             headers: authHeaders(),
           });
-          const data = await res.json();
-          jobsCache[div] = Array.isArray(data.jobs) ? data.jobs : [];
+          // An expired token still sits in localStorage looking like a signed-in
+          // session, so the page loads and every call behind it 401s. Send the
+          // user back to sign in rather than let the form look merely empty.
+          if (res.status === 401) { sessionExpired(); return; }
+          let data = null;
+          try { data = await res.json(); } catch { /* non-JSON body */ }
+          // A 403/500 body carries `error`, not `jobs`. Reading `data.jobs`
+          // off it yielded undefined → [] → "(no active jobs)": a division
+          // full of live work read to the crew as a division with none, and
+          // the [] was cached, so re-picking the division never retried.
+          // Anything but a well-formed 2xx is now an error, and errors are
+          // NOT cached.
+          if (!res.ok || !Array.isArray(data && data.jobs)) {
+            throw new Error((data && data.error) || `HTTP ${res.status}`);
+          }
+          jobsCache[div] = data.jobs;
         }
         // A newer pick is already loading (or the block has been removed) —
         // leave the picker to whoever owns it now.
@@ -1257,9 +1337,13 @@
           jobs.map(j => `<option value="${escapeHtml(j.id)}" data-label="${escapeHtml(j.label)}">${escapeHtml(j.label)}</option>`).join('');
         jobSel.disabled = false;
       } catch (err) {
+        console.error(`[timesheet] jobs failed to load for division "${div}":`, err);
         if (stale()) return;
-        jobSel.innerHTML = '<option value="">(error loading)</option>';
-        jobSel.disabled = true;
+        // Left enabled so the retry option is reachable — the whole point is
+        // that the crew can get themselves out of this without a reinstall.
+        jobSel.innerHTML = '<option value="">(couldn\'t load jobs)</option>' +
+          `<option value="${JOB_RETRY}">↻ Retry</option>`;
+        jobSel.disabled = false;
       }
       if (stale()) return;
       onJobChange(i);
@@ -1363,6 +1447,14 @@
     });
 
     function onJobChange(i = 0) {
+      // The retry row isn't a job — it's the failed load asking to run again.
+      // Clear it first so the re-entrant onJobChange below sees an empty box.
+      const jobSel = bel(i, 'job');
+      if (jobSel && jobSel.value === JOB_RETRY) {
+        jobSel.value = '';
+        onDivisionChange(i);
+        return;
+      }
       const wrap = bel(i, 'eesFields');
       if (wrap) wrap.style.display = isEesSelection(i) ? 'flex' : 'none';
       const truckWrap = bel(i, 'truckingFields');
