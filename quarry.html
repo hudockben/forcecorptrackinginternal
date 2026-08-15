@@ -121,6 +121,30 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
+    /* ── Reports tab ── */
+    .rpt-subtab-bar {
+      display: flex; gap: 0; background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1rem; overflow-x: auto;
+    }
+    .rpt-subtab-btn {
+      padding: 0.5rem 1.1rem;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .rpt-subtab-btn:hover { color: var(--text); }
+    .rpt-subtab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .rpt-sub-panel { display: none; }
+    .rpt-sub-panel.active { display: block; }
+    .rpt-placeholder {
+      font-size: 0.75rem; color: var(--muted); text-align: center;
+      padding: 3rem 1rem; margin: 1.5rem;
+      border: 1px dashed var(--border); border-radius: 6px;
+    }
+
     /* ── Manage Lists Modal ── */
     .modal-backdrop {
       display: none; position: fixed; inset: 0;
@@ -238,6 +262,29 @@
       accent-color: var(--accent); flex: 0 0 auto;
     }
     .ml-royalty-wrap.is-on { color: var(--accent); }
+    /* Customer sales-tax toggle + per-customer rate */
+    .ml-tax-wrap {
+      display: flex; align-items: center; gap: 0.35rem;
+      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      cursor: pointer; user-select: none; white-space: nowrap;
+    }
+    .ml-tax-wrap input[type="checkbox"] {
+      width: 15px; height: 15px; margin: 0; cursor: pointer;
+      accent-color: var(--accent); flex: 0 0 auto;
+    }
+    .ml-tax-wrap.is-on { color: var(--accent); }
+    .ml-taxrate-wrap {
+      display: flex; align-items: center; gap: 0.25rem;
+      font-size: 0.62rem; color: var(--muted); white-space: nowrap;
+    }
+    .ml-taxrate-input {
+      width: 62px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.75rem;
+      padding: 0.28rem 0.4rem; outline: none; font-family: inherit;
+      text-align: right;
+    }
+    .ml-taxrate-input:focus { border-color: var(--accent); }
     .btn-del {
       font-size: 0.62rem; font-weight: 600; padding: 0.22rem 0.6rem;
       background: none; border: 1px solid rgba(239,68,68,0.25); color: #ef4444;
@@ -977,6 +1024,7 @@
     <button class="tab-btn"        data-tab="inventory" onclick="switchTab('inventory')">Inventory</button>
     <button class="tab-btn"        data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
     <button class="tab-btn"        data-tab="breakeven" onclick="switchTab('breakeven')">Break-Even</button>
+    <button class="tab-btn"        data-tab="reports"   onclick="switchTab('reports')">Reports</button>
     <div class="tab-bar-spacer"></div>
     <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
   </nav>
@@ -1244,12 +1292,14 @@
               <th class="col-num">Tons</th>
               <th class="col-payment">Payment</th>
               <th class="col-num">Price / Ton</th>
-              <th class="col-total">Total Sales</th>
+              <th class="col-num">Sales Tax</th>
+              <th class="col-total">Net Sales</th>
+              <th class="col-total">Total Due</th>
               <th class="col-actions"></th>
             </tr>
           </thead>
           <tbody id="salesTbody">
-            <tr><td colspan="10" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="12" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1538,7 +1588,7 @@
       <div class="home-section-label">Division Total</div>
       <div class="kpi-grid">
         <div class="kpi-tile is-accent">
-          <div class="kpi-label">Total Sales</div>
+          <div class="kpi-label">Net Sales</div>
           <div class="kpi-value" id="anKpiSales">$0.00</div>
           <div class="kpi-sub" id="anKpiSalesSub">0 tons sold</div>
         </div>
@@ -1975,6 +2025,22 @@
     </div>
   </div>
 
+  <!-- ── Reports tab panel ── -->
+  <div class="tab-panel"        id="tab-reports">
+    <div class="rpt-subtab-bar">
+      <button class="rpt-subtab-btn active" data-sub="royalties" onclick="switchRptSubTab('royalties')">Royalties</button>
+      <button class="rpt-subtab-btn"        data-sub="salestax"  onclick="switchRptSubTab('salestax')">Sales Tax</button>
+    </div>
+
+    <div class="rpt-sub-panel active" id="rpt-royalties">
+      <div class="rpt-placeholder">Royalties report — coming soon.</div>
+    </div>
+
+    <div class="rpt-sub-panel" id="rpt-salestax">
+      <div class="rpt-placeholder">Sales Tax report — coming soon.</div>
+    </div>
+  </div>
+
   <!-- ── Manage Lists Modal ── -->
   <div class="modal-backdrop" id="manageListsBackdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="manageListsTitle">
@@ -2151,6 +2217,14 @@
       if (tab === 'breakeven') refreshBreakeven();
     }
 
+    // ── Reports sub-tab switching ───────────────────────────────
+    function switchRptSubTab(sub) {
+      document.querySelectorAll('.rpt-subtab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.sub === sub));
+      document.querySelectorAll('.rpt-sub-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'rpt-' + sub));
+    }
+
     // ── Switch division ─────────────────────────────────────────
     function switchDivision() {
       localStorage.removeItem('fct_division');
@@ -2289,6 +2363,7 @@
       }
       const isEmployees = type.key === 'employees';
       const isProduct = type.key === 'product';
+      const isCustomer = type.key === 'customer';
       const items = quarryLists[type.key] || [];
       const sortedItems = [...items].sort((a, b) =>
         String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' })
@@ -2311,11 +2386,27 @@
                    Royalty
                  </label>`
               : '';
+            // Customers carry their own sales-tax rate: which rate applies is a
+            // function of who is buying and where the material lands, not of the
+            // pit it left, so the rate rides on the customer rather than the site.
+            const taxCell = isCustomer
+              ? `<label class="ml-tax-wrap${it.taxable ? ' is-on' : ''}" title="When checked, this customer's sales are charged sales tax at the rate below. Leave unchecked for exempt customers (resale / exemption certificate on file).">
+                   <input type="checkbox" ${it.taxable ? 'checked' : ''} onchange="toggleCustomerTaxable(${i}, this.checked)" />
+                   Taxable
+                 </label>
+                 ${it.taxable ? `<div class="ml-taxrate-wrap">
+                   <input type="number" class="ml-taxrate-input" min="0" max="100" step="0.001"
+                          value="${formatTaxRate(it.taxRate)}" placeholder="0"
+                          onchange="updateCustomerTaxRate(${i}, this.value)" />
+                   <span>%</span>
+                 </div>` : ''}`
+              : '';
             return `
             <div class="ml-item">
               <div class="ml-item-name">${escapeHtml(it.name)}</div>
               ${rateCell}
               ${royaltyCell}
+              ${taxCell}
               <button class="btn-del" onclick="deleteListItem('${type.key}', ${i})">Delete</button>
             </div>`;
           }).join('')}</div>`
@@ -2395,6 +2486,53 @@
       // Break-even royalty is gated on these flags, so refresh it now — the
       // figures behind the modal update the moment it's closed.
       if (typeof renderBreakeven === 'function') renderBreakeven();
+    }
+
+    // ── Customer sales tax ──────────────────────────────────────
+    // Rate lives on the customer, defaulting to PA's 6% state rate. Anything
+    // that stacks on top of that (Allegheny +1%, Philadelphia +2%) is typed in
+    // per customer, so a single number covers both pits.
+    const DEFAULT_TAX_RATE = 6;
+
+    // Percent as typed, 0–100. Empty/garbage reads as null so the cell can be
+    // cleared without silently falling back to the default.
+    function parseTaxRate(raw) {
+      if (raw === null || raw === undefined) return null;
+      const s = String(raw).trim();
+      if (!s) return null;
+      const n = Number(s);
+      if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+      return Math.round(n * 1000) / 1000;
+    }
+    function formatTaxRate(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v) || v < 0) return '';
+      return String(Math.round(v * 1000) / 1000);
+    }
+
+    function toggleCustomerTaxable(index, checked) {
+      if (!listsLoaded) return;
+      const list = quarryLists.customer;
+      if (!list || !list[index]) return;
+      if (checked) {
+        list[index].taxable = true;
+        // Seed the state rate on first check; an existing rate is left alone.
+        if (parseTaxRate(list[index].taxRate) === null) list[index].taxRate = DEFAULT_TAX_RATE;
+      } else {
+        delete list[index].taxable;
+      }
+      scheduleSave();
+      renderListPanel(LIST_TYPES.find(t => t.key === 'customer'));
+      if (typeof renderSales === 'function') renderSales(true);
+    }
+
+    function updateCustomerTaxRate(index, raw) {
+      if (!listsLoaded) return;
+      const list = quarryLists.customer;
+      if (!list || !list[index]) return;
+      list[index].taxRate = parseTaxRate(raw);
+      scheduleSave();
+      if (typeof renderSales === 'function') renderSales(true);
     }
 
     function escapeHtml(s) {
@@ -2569,6 +2707,44 @@
       const p = Number(row.pricePerTon);
       if (!Number.isFinite(t) || !Number.isFinite(p)) return 0;
       return t * p;
+    }
+    // Sales tax rate for a row, as a percent. Zero means "no tax on this row" —
+    // either the customer is exempt or it isn't on the customer list at all.
+    // Match on id first; fall back to the stored name so rows typed as free
+    // text (or saved before the customer was added) still pick up a rate.
+    function rowTaxRate(row) {
+      const list = quarryLists.customer || [];
+      let item = null;
+      if (row.customerId) item = list.find(it => String(it.id) === String(row.customerId));
+      if (!item && row.customerName) {
+        const name = String(row.customerName).trim().toLowerCase();
+        if (name) item = list.find(it => String(it.name || '').trim().toLowerCase() === name);
+      }
+      if (!item || !item.taxable) return 0;
+      const rate = parseTaxRate(item.taxRate);
+      return rate === null ? 0 : rate;
+    }
+    // Tax is charged on the net sale (tons x price/ton); Net Sales stays net,
+    // and the Total Due column adds the two back together for the invoice.
+    function rowSalesTax(row) {
+      const rate = rowTaxRate(row);
+      if (!rate) return 0;
+      return rowTotal(row) * rate / 100;
+    }
+    // Why a row shows a dash — "not taxable" and "taxable but the rate got
+    // cleared" both read as no tax, and they need different fixes.
+    function salesTaxTitle(row) {
+      const rate = rowTaxRate(row);
+      if (rate) return `Taxed at ${formatTaxRate(rate)}%`;
+      const list = quarryLists.customer || [];
+      let item = null;
+      if (row.customerId) item = list.find(it => String(it.id) === String(row.customerId));
+      if (!item && row.customerName) {
+        const name = String(row.customerName).trim().toLowerCase();
+        if (name) item = list.find(it => String(it.name || '').trim().toLowerCase() === name);
+      }
+      if (item && item.taxable) return 'This customer is flagged taxable but has no rate set — enter one in Manage Lists → Customer.';
+      return 'Customer is not flagged taxable — check the box in Manage Lists → Customer to charge tax.';
     }
     function formatMoney(n) {
       if (!Number.isFinite(n)) return '$0.00';
@@ -3019,6 +3195,8 @@
         salesRows[idx][idField]   = item ? item.id : '';
         salesRows[idx][nameField] = value;
         scheduleSalesSave();
+        // The tax cell is driven by which customer the row points at.
+        if (field === 'customer') refreshSalesRowTotals(idx);
       } else if (tab === 'crush') {
         if (!crushLoaded || !crushRows[idx]) return;
         const oldId = String(crushRows[idx][idField] || '');
@@ -3174,7 +3352,7 @@
       if (bulkBtn) bulkBtn.disabled = !salesLoaded;
 
       if (!salesLoaded) {
-        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">Loading…</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -3183,7 +3361,7 @@
         msRenderFilters('sales', salesRows);
       }
       if (!salesRows.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -3191,13 +3369,15 @@
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))} · ${escapeHtml(customerFilterLabel('sales'))} · ${escapeHtml(productFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))} · ${escapeHtml(customerFilterLabel('sales'))} · ${escapeHtml(productFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
         updateSalesSummary();
         return;
       }
 
       tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
         const total = rowTotal(row);
+        const taxRate = rowTaxRate(row);
+        const tax = taxRate ? total * taxRate / 100 : 0;
         // (Old `buildOptionList` calls retained below as no-ops in case
         // any other render path still depends on them — the actual cell
         // markup uses cbHtml() comboboxes instead of native <select>.)
@@ -3214,7 +3394,9 @@
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.tons === '' ? '' : row.tons}" placeholder="0" oninput="updateSalesNumber(${i}, 'tons', this.value)" /></td>
             <td class="col-payment"><select class="cell-select" onchange="updateSalesCell(${i}, 'payment', this.value)">${paymentOpts}</select></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.pricePerTon === '' ? '' : row.pricePerTon}" placeholder="0.00" oninput="updateSalesNumber(${i}, 'pricePerTon', this.value)" /></td>
-            <td class="col-total"><div class="cell-readonly${total ? '' : ' is-zero'}" id="sales-total-${i}">${formatMoney(total)}</div></td>
+            <td class="col-num"><div class="cell-readonly${tax ? '' : ' is-zero'}" id="sales-tax-${i}" title="${escapeHtml(salesTaxTitle(row))}">${taxRate ? formatMoney(tax) : '—'}</div></td>
+            <td class="col-total"><div class="cell-readonly${total ? '' : ' is-zero'}" id="sales-total-${i}" title="Revenue, excluding sales tax. This is the figure Home, Analytics, Inventory and Break-Even read.">${formatMoney(total)}</div></td>
+            <td class="col-total"><div class="cell-readonly${total + tax ? '' : ' is-zero'}" id="sales-due-${i}" title="Net sales plus sales tax — what the customer owes on this load.">${formatMoney(total + tax)}</div></td>
             <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteSalesRow(${i})">✕</button></td>
           </tr>`;
       }).join('');
@@ -3225,7 +3407,7 @@
     function updateSalesSummary() {
       const el = document.getElementById('salesSummary');
       if (!el) return;
-      let totalTons = 0, totalSales = 0, count = 0;
+      let totalTons = 0, totalSales = 0, totalTax = 0, count = 0;
       salesRows.forEach(r => {
         if (!rowMatchesYear('sales', r)) return;
         if (!rowMatchesMonth('sales', r)) return;
@@ -3236,9 +3418,10 @@
         const p = Number(r.pricePerTon);
         if (Number.isFinite(t)) totalTons += t;
         if (Number.isFinite(t) && Number.isFinite(p)) totalSales += t * p;
+        totalTax += rowSalesTax(r);
         count++;
       });
-      el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Total Sales<strong>${formatMoney(totalSales)}</strong>`;
+      el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Net Sales<strong>${formatMoney(totalSales)}</strong>· Sales Tax<strong>${formatMoney(totalTax)}</strong>· Total Due<strong>${formatMoney(totalSales + totalTax)}</strong>`;
       refreshDeleteFilteredBtn('sales');
     }
 
@@ -3288,14 +3471,36 @@
       salesRows[index][field] = s === '' ? '' : Number(s);
       // Live-update the total cell + summary without a full re-render so the
       // caret stays in the input the user is typing in.
+      refreshSalesRowTotals(index);
+      scheduleSalesSave();
+    }
+
+    // Repaint a row's computed cells (tax + total) in place. Used instead of a
+    // full renderSales() so the caret stays put in whatever cell is being typed
+    // in — and so picking a customer updates the tax without closing the combobox.
+    function refreshSalesRowTotals(index) {
+      const row = salesRows[index];
+      if (!row) return;
+      const total = rowTotal(row);
       const totalEl = document.getElementById('sales-total-' + index);
       if (totalEl) {
-        const total = rowTotal(salesRows[index]);
         totalEl.textContent = formatMoney(total);
         totalEl.classList.toggle('is-zero', !total);
       }
+      const rate = rowTaxRate(row);
+      const tax = rate ? total * rate / 100 : 0;
+      const taxEl = document.getElementById('sales-tax-' + index);
+      if (taxEl) {
+        taxEl.textContent = rate ? formatMoney(tax) : '—';
+        taxEl.classList.toggle('is-zero', !tax);
+        taxEl.title = salesTaxTitle(row);
+      }
+      const dueEl = document.getElementById('sales-due-' + index);
+      if (dueEl) {
+        dueEl.textContent = formatMoney(total + tax);
+        dueEl.classList.toggle('is-zero', !(total + tax));
+      }
       updateSalesSummary();
-      scheduleSalesSave();
     }
 
     refreshSales();
@@ -4050,7 +4255,10 @@
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'ACME Corp', 'Crushed Stone', '25.5', 'Cash', '12.00'],
         templateLayout: [
           'date', 'location', 'employee', 'customer', 'product', 'tons', 'payment', 'pricePerTon',
-          { label: 'Total Sales', computed: true },
+          // Computed from the customer's taxable flag + rate, so it isn't imported.
+          { label: 'Sales Tax',   computed: true },
+          { label: 'Net Sales',   computed: true },
+          { label: 'Total Due',   computed: true },
         ],
         state: {
           isLoaded: () => salesLoaded,
@@ -4596,7 +4804,7 @@
           </div>
           <div class="loc-kpi-grid">
             <div class="loc-kpi">
-              <div class="loc-kpi-label">Total Sales</div>
+              <div class="loc-kpi-label">Net Sales</div>
               <div class="loc-kpi-value">${formatMoney(e.totalSales)}</div>
               <div class="loc-kpi-sub">${e.salesCount} sale${e.salesCount === 1 ? '' : 's'}</div>
             </div>
@@ -8120,7 +8328,7 @@ ${sections}
 
       const kpis = `
         <div class="kpi-grid">
-          ${kpiCard('Total Sales', formatMoney(a.totalSales), `${formatTons(a.totalTonsSold)} tons sold · ${a.salesCount} sales`)}
+          ${kpiCard('Net Sales', formatMoney(a.totalSales), `${formatTons(a.totalTonsSold)} tons sold · ${a.salesCount} sales`)}
           ${kpiCard('Total Cost', formatMoney(a.totalCost), `Daily ${formatMoney(a.dailyCost)} · Crushing ${formatMoney(a.crushCost)}`)}
           ${kpiCard('Gross Margin', formatMoney(a.grossMargin), 'Sales − Cost')}
           ${kpiCard('Margin %', (Number.isFinite(a.marginPct) ? a.marginPct.toFixed(1) : '0.0') + '%', 'Of total sales')}
