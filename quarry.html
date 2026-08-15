@@ -145,6 +145,98 @@
       border: 1px dashed var(--border); border-radius: 6px;
     }
 
+    /* ── Royalties report ── */
+    .roy-wrap { padding: 1.25rem 1.5rem 2.5rem; }
+    .roy-toolbar {
+      display: flex; align-items: center; gap: 0.75rem;
+      flex-wrap: wrap; margin-bottom: 1rem;
+    }
+    .roy-title { font-size: 0.95rem; font-weight: 700; color: #fff; }
+    .roy-sub   { font-size: 0.68rem; color: var(--muted); margin-top: 0.15rem; }
+    .roy-section {
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); margin-bottom: 1.25rem; overflow: hidden;
+    }
+    .roy-section-head {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.7rem 1rem; border-bottom: 1px solid var(--border);
+      background: var(--surface2); cursor: pointer; user-select: none;
+    }
+    .roy-section-head h3 {
+      margin: 0; font-size: 0.68rem; font-weight: 700;
+      letter-spacing: 0.09em; text-transform: uppercase; color: var(--text);
+    }
+    .roy-caret { color: var(--muted); font-size: 0.7rem; transition: transform 0.15s; }
+    .roy-section.collapsed .roy-caret { transform: rotate(-90deg); }
+    .roy-section.collapsed .roy-section-body { display: none; }
+    .roy-section-body { padding: 1rem; }
+    .roy-head-note { font-size: 0.65rem; color: var(--muted); margin-left: auto; }
+
+    /* Recipients editor */
+    .roy-pit { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.85rem; }
+    .roy-pit-head {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .roy-pit-name {
+      font-size: 0.72rem; font-weight: 700; color: var(--text);
+    }
+    .roy-pit-rate { font-size: 0.65rem; color: var(--accent); font-weight: 700; margin-left: auto; }
+    .roy-pit-body { padding: 0.7rem 0.8rem; }
+    .roy-rec-head, .roy-rec-row {
+      display: grid; grid-template-columns: 1fr 6.5rem 8rem 5rem;
+      gap: 0.5rem; align-items: center;
+    }
+    .roy-rec-head {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted); padding-bottom: 0.4rem;
+    }
+    .roy-rec-row { margin-bottom: 0.45rem; }
+    .roy-rec-row input {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.78rem; padding: 0.35rem 0.5rem;
+      outline: none; font-family: inherit; width: 100%;
+    }
+    .roy-rec-row input:focus { border-color: var(--accent); }
+    .roy-field { display: flex; align-items: center; gap: 0.25rem; font-size: 0.68rem; color: var(--muted); }
+    .roy-field input { text-align: right; }
+
+    /* Breakdown tree */
+    .roy-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    .roy-table th {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted); text-align: left;
+      padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    .roy-table td {
+      padding: 0.4rem 0.6rem; border-bottom: 1px solid rgba(42,42,58,0.5);
+      color: var(--text); white-space: nowrap;
+    }
+    .roy-table .roy-num { text-align: right; font-variant-numeric: tabular-nums; }
+    .roy-lvl-year  td { background: rgba(249,115,22,0.10); font-weight: 700; color: #fff; }
+    .roy-lvl-loc   td { background: rgba(249,115,22,0.05); font-weight: 700; }
+    .roy-lvl-month td { font-weight: 600; }
+    .roy-lvl-prod  td { color: var(--muted); }
+    .roy-indent-1 { padding-left: 1.6rem !important; }
+    .roy-indent-2 { padding-left: 3rem !important; }
+    .roy-indent-3 { padding-left: 4.4rem !important; }
+    .roy-toggle {
+      background: none; border: none; color: inherit; font: inherit;
+      cursor: pointer; padding: 0; display: inline-flex; align-items: center; gap: 0.4rem;
+    }
+    .roy-toggle .roy-tw { color: var(--muted); font-size: 0.6rem; width: 0.7rem; display: inline-block; }
+    .roy-empty {
+      font-size: 0.75rem; color: var(--muted); text-align: center;
+      padding: 2rem 1rem; border: 1px dashed var(--border); border-radius: 6px;
+    }
+    .roy-badge {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.2rem 0.5rem; border-radius: 3px;
+    }
+    .roy-badge.locked { color: #22c55e; background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.3); }
+    .roy-badge.open   { color: var(--muted); background: var(--surface2); border: 1px solid var(--border); }
+
     /* ── Manage Lists Modal ── */
     .modal-backdrop {
       display: none; position: fixed; inset: 0;
@@ -2033,11 +2125,116 @@
     </div>
 
     <div class="rpt-sub-panel active" id="rpt-royalties">
-      <div class="rpt-placeholder">Royalties report — coming soon.</div>
+      <div class="roy-wrap">
+        <div class="roy-toolbar">
+          <div>
+            <div class="roy-title">Royalties</div>
+            <div class="roy-sub" id="roySubtitle">Loading…</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-left:auto;">
+            <div class="year-filter-wrap">
+              Year
+              <select class="year-filter-select" id="royaltyYearFilter" onchange="setYearFilter('royalty', this.value)" disabled></select>
+            </div>
+            <div class="year-filter-wrap">
+              Pay Month
+              <select class="year-filter-select" id="royaltyMonthSelect" onchange="roySetMonth(this.value)" disabled></select>
+            </div>
+            <button class="btn-add-row btn-bulk-upload" id="royStatementsBtn" onclick="printRoyaltyStatements()">⇩ Statements</button>
+            <button class="btn-secondary" id="royLockBtn" onclick="royToggleLock()">Lock Month</button>
+          </div>
+        </div>
+
+        <!-- Recipients editor — the same per-pit records Break-Even pays off -->
+        <div class="roy-section" id="royRecipientsSection">
+          <div class="roy-section-head" onclick="roySectionToggle('royRecipientsSection')">
+            <span class="roy-caret">▾</span>
+            <h3>Royalty Recipients</h3>
+            <span class="roy-head-note">Shared with Break-Even — one set of rates</span>
+          </div>
+          <div class="roy-section-body" id="royRecipientsBody"></div>
+        </div>
+
+        <!-- Pay-month summary: what each recipient is owed -->
+        <div class="roy-section" id="royMonthSection">
+          <div class="roy-section-head" onclick="roySectionToggle('royMonthSection')">
+            <span class="roy-caret">▾</span>
+            <h3 id="royMonthHeading">Pay Month</h3>
+            <span class="roy-head-note" id="royMonthNote"></span>
+          </div>
+          <div class="roy-section-body" id="royMonthBody"></div>
+        </div>
+
+        <!-- Full breakdown: Year > Location > Month > Product -->
+        <div class="roy-section" id="royBreakdownSection">
+          <div class="roy-section-head" onclick="roySectionToggle('royBreakdownSection')">
+            <span class="roy-caret">▾</span>
+            <h3>Breakdown — Year › Location › Month › Product</h3>
+            <span class="roy-head-note">Royalty-flagged products only</span>
+          </div>
+          <div class="roy-section-body" id="royBreakdownBody"></div>
+        </div>
+      </div>
     </div>
 
     <div class="rpt-sub-panel" id="rpt-salestax">
-      <div class="rpt-placeholder">Sales Tax report — coming soon.</div>
+      <div class="roy-wrap">
+        <div class="roy-toolbar">
+          <div>
+            <div class="roy-title">Sales Tax</div>
+            <div class="roy-sub" id="stxSubtitle">Loading…</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-left:auto;">
+            <div class="year-filter-wrap">
+              Year
+              <select class="year-filter-select" id="salestaxYearFilter" onchange="setYearFilter('salestax', this.value)" disabled></select>
+            </div>
+            <div class="year-filter-wrap">
+              File
+              <select class="year-filter-select" id="stxModeSelect" onchange="stxSetMode(this.value)">
+                <option value="month">Monthly</option>
+                <option value="quarter">Quarterly</option>
+              </select>
+            </div>
+            <div class="year-filter-wrap">
+              Period
+              <select class="year-filter-select" id="stxPeriodSelect" onchange="stxSetPeriod(this.value)" disabled></select>
+            </div>
+            <button class="btn-add-row btn-bulk-upload" id="stxPrintBtn" onclick="printSalesTaxReport()">⇩ Print / PDF</button>
+            <button class="btn-secondary" id="stxLockBtn" onclick="stxToggleLock()">Mark Filed</button>
+          </div>
+        </div>
+
+        <!-- Filing period: what to put on the return -->
+        <div class="roy-section" id="stxPeriodSection">
+          <div class="roy-section-head" onclick="roySectionToggle('stxPeriodSection')">
+            <span class="roy-caret">▾</span>
+            <h3 id="stxPeriodHeading">Filing Period</h3>
+            <span class="roy-head-note" id="stxPeriodNote"></span>
+          </div>
+          <div class="roy-section-body" id="stxPeriodBody"></div>
+        </div>
+
+        <!-- Exempt sales — the backup an auditor asks for -->
+        <div class="roy-section collapsed" id="stxExemptSection">
+          <div class="roy-section-head" onclick="roySectionToggle('stxExemptSection')">
+            <span class="roy-caret">▾</span>
+            <h3>Exempt Sales — Audit Backup</h3>
+            <span class="roy-head-note">Customers not flagged taxable</span>
+          </div>
+          <div class="roy-section-body" id="stxExemptBody"></div>
+        </div>
+
+        <!-- Full breakdown: Year > Location > Month > Customer -->
+        <div class="roy-section" id="stxBreakdownSection">
+          <div class="roy-section-head" onclick="roySectionToggle('stxBreakdownSection')">
+            <span class="roy-caret">▾</span>
+            <h3>Breakdown — Year › Location › Month › Customer</h3>
+            <span class="roy-head-note">Taxable sales only</span>
+          </div>
+          <div class="roy-section-body" id="stxBreakdownBody"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2215,6 +2412,7 @@
       if (tab === 'home') refreshHome();
       if (tab === 'analytics') refreshAnalytics();
       if (tab === 'breakeven') refreshBreakeven();
+      if (tab === 'reports')   refreshActiveRptSubTab();
     }
 
     // ── Reports sub-tab switching ───────────────────────────────
@@ -2223,6 +2421,13 @@
         b.classList.toggle('active', b.dataset.sub === sub));
       document.querySelectorAll('.rpt-sub-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'rpt-' + sub));
+      refreshActiveRptSubTab();
+    }
+    function refreshActiveRptSubTab() {
+      const active = document.querySelector('.rpt-subtab-btn.active');
+      const sub = active ? active.dataset.sub : 'royalties';
+      if (sub === 'royalties') refreshRoyaltyReport();
+      else if (sub === 'salestax') refreshSalesTaxReport();
     }
 
     // ── Switch division ─────────────────────────────────────────
@@ -2758,7 +2963,7 @@
     // ── Per-tab year filter ─────────────────────────────────────
     // Default each tab to the current year so users land on this
     // year's data. Selecting "All Years" shows everything.
-    const yearFilters = { daily: null, crushing: null, sales: null, home: null, analytics: null, breakeven: null };
+    const yearFilters = { daily: null, crushing: null, sales: null, home: null, analytics: null, breakeven: null, royalty: null, salestax: null };
 
     function getRowYear(dateStr) {
       if (!dateStr || typeof dateStr !== 'string') return null;
@@ -2783,6 +2988,8 @@
       else if (tab === 'home')     renderHome();
       else if (tab === 'analytics') renderAnalytics();
       else if (tab === 'breakeven') renderBreakeven();
+      else if (tab === 'royalty')   renderRoyaltyReport();
+      else if (tab === 'salestax')  renderSalesTaxReport();
     }
     function renderYearFilterOptions(tab, rows) {
       const sel = document.getElementById(tab + 'YearFilter');
@@ -8588,6 +8795,1195 @@ ${sections}
     // Refresh whenever the analytics tab data may have changed
     if (window.location && /quarry/i.test(document.title)) {
       // No-op guard; data is fetched on first switch into the tab.
+    }
+
+    /* ═══════════════════════════════════════════
+       ROYALTIES REPORT
+       Recipients are the same per-pit records Break-Even pays off
+       (quarryRoyalty), so the report and Break-Even can never disagree
+       about what a pit owes. Each recipient earns the greater of its
+       % of the sale or its $/ton floor, on royalty-flagged products only.
+
+       A pay month can be LOCKED once it's paid. Locking stores a full
+       snapshot of that month's figures and the rates used, and every view
+       of a locked month reads the snapshot — so a later rate change or a
+       backdated sales edit can't rewrite what you already sent a check for.
+    ═══════════════════════════════════════════ */
+    /* ── Shared print-report chrome ──────────────────────────────
+       Every printed report opens with the same DataWatch lockup top-left,
+       so a statement that leaves the building is identifiably ours. */
+    function rptCompany() {
+      return (user && (user.companyName || user.companyCode)) || 'Force Corp';
+    }
+    function rptBrandHead(title, rightHtml) {
+      return `<div class="rp-head">
+        <div>
+          <div class="rp-wm">DataWatch</div>
+          <div class="rp-co">${escapeHtml(rptCompany())} · Quarry Division</div>
+          <div class="rp-t">${escapeHtml(title)}</div>
+        </div>
+        <div class="rp-meta">${rightHtml || ''}</div>
+      </div>`;
+    }
+    function rptFooter() {
+      return `<div class="rp-foot">© DataWatch · ${escapeHtml(rptCompany())} · Quarry Division · Generated from Sales Tracking</div>`;
+    }
+    const RPT_PRINT_CSS = `
+      *{box-sizing:border-box}
+      body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111;background:#fff}
+      .rp-page{padding:34px 40px;max-width:860px;margin:0 auto;page-break-after:always}
+      .rp-page:last-child{page-break-after:auto}
+      .rp-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:12px;margin-bottom:16px}
+      .rp-wm{font-size:13px;font-weight:700;letter-spacing:.3em;text-transform:uppercase;color:#f97316}
+      .rp-co{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:#777;margin-top:4px}
+      .rp-t{font-size:19px;font-weight:700;margin-top:9px;letter-spacing:-.01em}
+      .rp-meta{text-align:right;font-size:11px;color:#555;line-height:1.65}
+      .rp-foot{margin-top:22px;padding-top:9px;border-top:1px solid #eee;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#999;text-align:center}
+      .rp-lock{font-size:11px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;padding:6px 10px;margin-bottom:16px}
+      .rp-lock.rp-open{color:#92400e;background:#fffbeb;border-color:#fde68a}
+      .rp-tbl{width:100%;border-collapse:collapse;font-size:12px}
+      .rp-tbl th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#555;border-bottom:1px solid #999;padding:7px 8px}
+      .rp-tbl td{padding:6px 8px;border-bottom:1px solid #eee}
+      .rp-tbl .rp-n{text-align:right;font-variant-numeric:tabular-nums}
+      .rp-tbl tr.rp-grp td{font-weight:700;background:#f6f6f6}
+      .rp-tbl td.rp-in{padding-left:24px;color:#444}
+      .rp-tbl tfoot td{font-weight:700;border-top:2px solid #111;border-bottom:none;padding-top:9px}
+      .rp-due{display:flex;justify-content:space-between;align-items:center;margin-top:20px;padding:13px 16px;background:#111;color:#fff;border-radius:5px}
+      .rp-due span{font-size:11px;text-transform:uppercase;letter-spacing:.12em}
+      .rp-due strong{font-size:21px}
+      .rp-note{margin-top:16px;font-size:10px;color:#666;line-height:1.6;border-top:1px solid #eee;padding-top:10px}
+      .rp-sec{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#555;margin:22px 0 8px}
+      @page{margin:14mm}
+      @media print{.rp-page{padding:0;max-width:none}}
+    `;
+    function rptPrintWindow(title, html) {
+      const w = window.open('', '_blank', 'width=1000,height=800');
+      if (!w) {
+        alert('Pop-up blocked. Allow pop-ups for this site to print the report.');
+        return;
+      }
+      w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">`
+        + `<title>${escapeHtml(title)}</title><style>${RPT_PRINT_CSS}</style></head><body>${html}`
+        + `<` + `script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>`
+        + `</body></html>`);
+      w.document.close();
+    }
+
+    const QUARRY_ROY_PERIODS_KEY = 'fct_quarry_royalty_periods';
+
+    let royPeriods = {};            // { "YYYY-MM": snapshot }
+    let royPeriodsLoaded = false;
+    let royPeriodsFetchedOnce = false;
+    let royPeriodsSavePending = null;
+    let royPeriodsSaveInFlight = false;
+    let roySelectedMonth = '';      // "" = none picked yet
+
+    function normalizeRoyPeriods(value) {
+      const out = {};
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.keys(value).forEach(k => {
+          if (!/^\d{4}-\d{2}$/.test(k)) return;
+          const p = value[k];
+          if (p && typeof p === 'object' && p.lockedAt) out[k] = p;
+        });
+      }
+      return out;
+    }
+    async function fetchRoyPeriods() {
+      const res = await fetch(`/api/data/${QUARRY_ROY_PERIODS_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_ROY_PERIODS_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeRoyPeriods(data.value);
+    }
+    async function putRoyPeriods(value) {
+      const res = await fetch(`/api/data/${QUARRY_ROY_PERIODS_KEY}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_ROY_PERIODS_KEY} → ${res.status} ${text}`);
+      }
+    }
+    function scheduleRoyPeriodsSave() {
+      royPeriodsSavePending = royPeriods;
+      if (royPeriodsSaveInFlight) return;
+      flushRoyPeriodsSave();
+    }
+    async function flushRoyPeriodsSave() {
+      while (royPeriodsSavePending) {
+        const snapshot = royPeriodsSavePending;
+        royPeriodsSavePending = null;
+        royPeriodsSaveInFlight = true;
+        try {
+          await putRoyPeriods(snapshot);
+        } catch (err) {
+          console.error('[quarry] royalty periods save failed:', err);
+          alert('Could not save the locked month — please check your connection and try again.');
+        } finally {
+          royPeriodsSaveInFlight = false;
+        }
+      }
+    }
+    async function refreshRoyPeriods() {
+      try {
+        royPeriods = await fetchRoyPeriods();
+        royPeriodsLoaded = true;
+      } catch (err) {
+        console.error('[quarry] royalty periods load failed:', err);
+        if (!royPeriodsFetchedOnce) { royPeriods = {}; royPeriodsLoaded = true; }
+      } finally {
+        royPeriodsFetchedOnce = true;
+      }
+    }
+
+    // ── Computation ─────────────────────────────────────────────
+    // One sales row's royalty, split across the pit's recipients. Mirrors
+    // royaltyForSale() exactly — same max(%, floor) rule — but keeps each
+    // recipient's share separate so a statement can be cut per owner.
+    function roySplitRow(row) {
+      const t = Number(row.tons);
+      const price = Number(row.pricePerTon);
+      if (!Number.isFinite(t) || t <= 0) return [];
+      if (!Number.isFinite(price) || price <= 0) return [];
+      const loc = String(row.locationName || '').trim() || BE_NO_LOC;
+      return royaltyOwners(loc).map(o => {
+        const rate = Number(o.rate) || 0;
+        const floor = Number(o.floor) || 0;
+        const perTonPct = price * rate / 100;
+        const perTon = Math.max(perTonPct, floor);
+        return {
+          id: String(o.id || o.name || ''),
+          name: o.name || 'Royalty',
+          rate, floor,
+          onFloor: floor > perTonPct,     // the floor is what bit on this sale
+          perTon,
+          amount: perTon * t,
+        };
+      }).filter(s => s.amount > 0);
+    }
+
+    // Full tree for the selected year: Year > Location > Month > Product,
+    // plus a per-recipient roll-up used for the statements.
+    function computeRoyalties() {
+      const sets = royaltyProductSets();
+      const years = new Map();
+      const ensure = (map, key, make) => {
+        if (!map.has(key)) map.set(key, make());
+        return map.get(key);
+      };
+      let anyFlagged = false;
+
+      salesRows.forEach(row => {
+        if (!rowMatchesYear('royalty', row)) return;
+        if (!salesRowHasRoyalty(row, sets)) return;
+        anyFlagged = true;
+        const mk = beMonthKey(row.date);
+        if (!mk) return;
+        const yr = mk.slice(0, 4);
+        const loc = String(row.locationName || '').trim() || BE_NO_LOC;
+        const prod = String(row.productName || '').trim() || '— No product —';
+        const splits = roySplitRow(row);
+        const royalty = splits.reduce((s, x) => s + x.amount, 0);
+        const tons = Number(row.tons) || 0;
+        const revenue = homeRowSales(row);
+
+        const Y = ensure(years, yr, () => ({ year: yr, tons: 0, revenue: 0, royalty: 0, locations: new Map() }));
+        const L = ensure(Y.locations, loc, () => ({ location: loc, tons: 0, revenue: 0, royalty: 0, months: new Map() }));
+        const M = ensure(L.months, mk, () => ({ month: mk, tons: 0, revenue: 0, royalty: 0, products: new Map() }));
+        const P = ensure(M.products, prod, () => ({ product: prod, tons: 0, revenue: 0, royalty: 0, recipients: new Map() }));
+        [Y, L, M, P].forEach(n => { n.tons += tons; n.revenue += revenue; n.royalty += royalty; });
+        splits.forEach(s => {
+          const r = ensure(P.recipients, s.id, () => ({ id: s.id, name: s.name, rate: s.rate, floor: s.floor, amount: 0, tons: 0, onFloor: false }));
+          r.amount += s.amount; r.tons += tons;
+          if (s.onFloor) r.onFloor = true;
+        });
+      });
+
+      const toArr = (m, f) => [...m.values()].map(f);
+      const tree = [...years.values()]
+        .sort((a, b) => b.year.localeCompare(a.year))
+        .map(Y => ({
+          ...Y,
+          locations: toArr(Y.locations, L => ({
+            ...L,
+            months: toArr(L.months, M => ({
+              ...M,
+              products: toArr(M.products, P => ({ ...P, recipients: [...P.recipients.values()] }))
+                .sort((a, b) => b.royalty - a.royalty),
+            })).sort((a, b) => a.month.localeCompare(b.month)),
+          })).sort((a, b) => a.location.localeCompare(b.location)),
+        }));
+
+      const totals = tree.reduce((acc, Y) => {
+        acc.tons += Y.tons; acc.revenue += Y.revenue; acc.royalty += Y.royalty; return acc;
+      }, { tons: 0, revenue: 0, royalty: 0 });
+
+      return { tree, totals, anyFlagged, months: royMonthsInScope(tree) };
+    }
+
+    function royMonthsInScope(tree) {
+      const s = new Set();
+      tree.forEach(Y => Y.locations.forEach(L => L.months.forEach(M => s.add(M.month))));
+      return [...s].sort();
+    }
+
+    // Everything owed for one pay month, grouped by recipient. Recipients are
+    // keyed by name so an owner set at both pits gets one statement covering
+    // both — that's one check, and the lines still show which pit each came from.
+    function computeRoyaltyMonth(mk) {
+      const sets = royaltyProductSets();
+      const byName = new Map();
+      const totals = { tons: 0, revenue: 0, royalty: 0 };
+
+      salesRows.forEach(row => {
+        if (beMonthKey(row.date) !== mk) return;
+        if (!salesRowHasRoyalty(row, sets)) return;
+        const loc = String(row.locationName || '').trim() || BE_NO_LOC;
+        const prod = String(row.productName || '').trim() || '— No product —';
+        const tons = Number(row.tons) || 0;
+        const revenue = homeRowSales(row);
+        totals.tons += tons; totals.revenue += revenue;
+        roySplitRow(row).forEach(s => {
+          const key = s.name.trim().toLowerCase();
+          if (!byName.has(key)) byName.set(key, { name: s.name, amount: 0, lines: new Map() });
+          const R = byName.get(key);
+          R.amount += s.amount;
+          totals.royalty += s.amount;
+          const lk = loc + '||' + prod;
+          if (!R.lines.has(lk)) R.lines.set(lk, { location: loc, product: prod, tons: 0, revenue: 0, amount: 0, rate: s.rate, floor: s.floor, onFloor: false });
+          const L = R.lines.get(lk);
+          L.tons += tons; L.revenue += revenue; L.amount += s.amount;
+          if (s.onFloor) L.onFloor = true;
+        });
+      });
+
+      const recipients = [...byName.values()]
+        .map(R => ({ ...R, lines: [...R.lines.values()].sort((a, b) => a.location.localeCompare(b.location) || b.amount - a.amount) }))
+        .sort((a, b) => b.amount - a.amount);
+      return { month: mk, recipients, totals };
+    }
+
+    // A locked month reads its snapshot; an open month is computed live.
+    function royMonthData(mk) {
+      if (!mk) return null;
+      const locked = royPeriods[mk];
+      if (locked && locked.data) return { ...locked.data, month: mk, locked: true, meta: locked };
+      const live = computeRoyaltyMonth(mk);
+      return { ...live, locked: false, meta: null };
+    }
+
+    // ── Rendering ───────────────────────────────────────────────
+    function roySectionToggle(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('collapsed');
+    }
+    function roySetMonth(mk) {
+      roySelectedMonth = mk || '';
+      renderRoyaltyMonth();
+    }
+    function royMoney(n) { return formatMoney(Number(n) || 0); }
+    function royTons(n)  { return formatTons(Number(n) || 0); }
+
+    // Lists without the Manage Lists modal's migration path — this tab only
+    // needs Product (royalty flags) and Location (the pit list).
+    async function refreshListsQuiet() {
+      try {
+        quarryLists = await fetchLists();
+        listsLoaded = true;
+        renderAllPanels();
+      } catch (err) {
+        console.error('[quarry] lists refresh failed:', err);
+      }
+    }
+
+    async function refreshRoyaltyReport() {
+      renderRoyaltyReport();
+      const tasks = [];
+      if (!salesFetchedOnce) tasks.push(refreshSales());
+      if (!listsLoaded) tasks.push(refreshListsQuiet());
+      if (!royaltySavePending && !royaltySaveInFlight) tasks.push(refreshRoyalty());
+      if (!royPeriodsSavePending && !royPeriodsSaveInFlight) tasks.push(refreshRoyPeriods());
+      if (tasks.length) { await Promise.allSettled(tasks); renderRoyaltyReport(); }
+    }
+
+    function renderRoyaltyReport() {
+      renderYearFilterOptions('royalty', salesRows);
+      const rep = computeRoyalties();
+
+      const sub = document.getElementById('roySubtitle');
+      if (sub) {
+        const yl = yearFilterLabel('royalty');
+        sub.textContent = rep.totals.royalty > 0
+          ? `${royMoney(rep.totals.royalty)} owed on ${royTons(rep.totals.tons)} tons of royalty-bearing product · ${yl}`
+          : `No royalty-bearing sales for ${yl}.`;
+      }
+
+      // Keep the pay-month picker in step with the months that have data,
+      // plus any month already locked (so a locked record never disappears).
+      const sel = document.getElementById('royaltyMonthSelect');
+      if (sel) {
+        const months = new Set(rep.months);
+        Object.keys(royPeriods).forEach(m => months.add(m));
+        const sorted = [...months].sort().reverse();
+        sel.innerHTML = sorted.length
+          ? sorted.map(m => `<option value="${m}">${escapeHtml(invMonthLabel(m))}${royPeriods[m] ? ' — locked' : ''}</option>`).join('')
+          : '<option value="">No months with royalty sales</option>';
+        if (!roySelectedMonth || !sorted.includes(roySelectedMonth)) roySelectedMonth = sorted[0] || '';
+        sel.value = roySelectedMonth;
+        sel.disabled = !sorted.length;
+      }
+
+      renderRoyaltyRecipients();
+      renderRoyaltyMonth();
+      renderRoyaltyBreakdown(rep);
+    }
+
+    // Recipients editor — writes straight into quarryRoyalty, the same store
+    // the Break-Even royalty cell edits.
+    function renderRoyaltyRecipients() {
+      const body = document.getElementById('royRecipientsBody');
+      if (!body) return;
+      if (!royaltyLoaded || !listsLoaded) { body.innerHTML = `<div class="roy-empty">Loading…</div>`; return; }
+
+      // Every pit on the Location list, plus any pit that already has
+      // recipients (so a renamed/removed location's rates stay reachable).
+      const pits = new Set((quarryLists.location || []).map(l => String(l.name || '').trim()).filter(Boolean));
+      Object.keys(quarryRoyalty).forEach(k => { if (k && k !== BE_NO_LOC) pits.add(k); });
+      const sorted = [...pits].sort((a, b) => a.localeCompare(b));
+
+      if (!sorted.length) {
+        body.innerHTML = `<div class="roy-empty">No pits yet — add locations in <strong>Manage Lists → Location</strong>, then set each pit's royalty recipients here.</div>`;
+        return;
+      }
+
+      body.innerHTML = sorted.map(pit => {
+        const owners = royaltyOwners(pit);
+        const combined = owners.reduce((s, o) => s + (Number(o.rate) || 0), 0);
+        const rows = owners.length
+          ? owners.map((o, i) => {
+              // Pit name rides in a data attribute, never inlined into the
+              // handler — a pit called "O'Brien" would otherwise break the JS.
+              const ref = `data-pit="${escapeHtml(pit)}" data-i="${i}"`;
+              return `
+              <div class="roy-rec-row">
+                <input type="text" value="${escapeHtml(o.name || '')}" placeholder="Recipient name" maxlength="60" ${ref}
+                       onchange="royUpdateRecipient(this.dataset.pit, +this.dataset.i, 'name', this.value)" />
+                <div class="roy-field"><input type="text" inputmode="decimal" value="${o.rate > 0 ? o.rate : ''}" placeholder="0" ${ref}
+                       onchange="royUpdateRecipient(this.dataset.pit, +this.dataset.i, 'rate', this.value)" /><span>%</span></div>
+                <div class="roy-field"><span>$</span><input type="text" inputmode="decimal" value="${o.floor > 0 ? o.floor : ''}" placeholder="0.00" ${ref}
+                       onchange="royUpdateRecipient(this.dataset.pit, +this.dataset.i, 'floor', this.value)" /><span>/ton</span></div>
+                <button class="btn-del" ${ref} onclick="royDeleteRecipient(this.dataset.pit, +this.dataset.i)">Delete</button>
+              </div>`; }).join('')
+          : `<div class="roy-empty" style="padding:1rem;">No recipients — this pit's sales carry no royalty.</div>`;
+        return `
+          <div class="roy-pit">
+            <div class="roy-pit-head">
+              <span class="roy-pit-name">${escapeHtml(pit)}</span>
+              <span class="roy-pit-rate">${combined > 0 ? (Math.round(combined * 100) / 100) + '% combined' : '—'}</span>
+            </div>
+            <div class="roy-pit-body">
+              ${owners.length ? `<div class="roy-rec-head"><span>Recipient</span><span>Rate</span><span>Floor</span><span></span></div>` : ''}
+              ${rows}
+              <button class="btn-add-row" data-pit="${escapeHtml(pit)}" onclick="royAddRecipient(this.dataset.pit)">+ Add recipient</button>
+            </div>
+          </div>`;
+      }).join('')
+      + `<div class="roy-sub" style="margin-top:0.5rem;">Each recipient is paid the greater of its <strong>% of the sale</strong> or its <strong>$/ton floor</strong>, on products checked as royalty-bearing in <strong>Manage Lists → Product</strong>. Locked months keep the rates they were locked with.</div>`;
+    }
+
+    function royEnsurePit(pit) {
+      if (!Array.isArray(quarryRoyalty[pit])) quarryRoyalty[pit] = [];
+      return quarryRoyalty[pit];
+    }
+    function royAddRecipient(pit) {
+      if (!royaltyLoaded) return;
+      royEnsurePit(pit).push({ id: newRoyaltyId(), name: 'Royalty', rate: 0, floor: 0 });
+      scheduleRoyaltySave();
+      renderRoyaltyReport();
+      renderBreakeven();
+    }
+    function royDeleteRecipient(pit, i) {
+      if (!royaltyLoaded) return;
+      const list = royEnsurePit(pit);
+      if (!list[i]) return;
+      list.splice(i, 1);
+      if (!list.length) delete quarryRoyalty[pit];
+      scheduleRoyaltySave();
+      renderRoyaltyReport();
+      renderBreakeven();
+    }
+    function royUpdateRecipient(pit, i, field, value) {
+      if (!royaltyLoaded) return;
+      const list = royEnsurePit(pit);
+      if (!list[i]) return;
+      if (field === 'name') {
+        list[i].name = String(value).trim() || 'Royalty';
+      } else {
+        const n = Number(String(value).replace(/[^0-9.]/g, ''));
+        list[i][field] = Number.isFinite(n) && n > 0 ? royaltyRound(n) : 0;
+      }
+      scheduleRoyaltySave();
+      renderRoyaltyReport();
+      renderBreakeven();
+    }
+
+    // Pay-month panel: who gets paid what, and the lock control.
+    function renderRoyaltyMonth() {
+      const body = document.getElementById('royMonthBody');
+      const heading = document.getElementById('royMonthHeading');
+      const note = document.getElementById('royMonthNote');
+      const lockBtn = document.getElementById('royLockBtn');
+      const stmtBtn = document.getElementById('royStatementsBtn');
+      if (!body) return;
+
+      const mk = roySelectedMonth;
+      if (heading) heading.textContent = mk ? `Pay Month — ${invMonthLabel(mk)}` : 'Pay Month';
+      if (!mk) {
+        body.innerHTML = `<div class="roy-empty">No months with royalty-bearing sales yet.</div>`;
+        if (note) note.innerHTML = '';
+        if (lockBtn) lockBtn.disabled = true;
+        if (stmtBtn) stmtBtn.disabled = true;
+        return;
+      }
+
+      const data = royMonthData(mk);
+      const isLocked = !!data.locked;
+      if (lockBtn) {
+        lockBtn.disabled = false;
+        lockBtn.textContent = isLocked ? 'Unlock Month' : 'Lock Month';
+      }
+      if (stmtBtn) stmtBtn.disabled = !data.recipients.length;
+      if (note) {
+        note.innerHTML = isLocked
+          ? `<span class="roy-badge locked">Locked</span> &nbsp;${escapeHtml(royLockedWhen(data.meta))}`
+          : `<span class="roy-badge open">Open</span> &nbsp;Figures update as sales change`;
+      }
+
+      if (!data.recipients.length) {
+        body.innerHTML = `<div class="roy-empty">No royalty-bearing sales in ${escapeHtml(invMonthLabel(mk))}.</div>`;
+        return;
+      }
+
+      const rows = data.recipients.map(R => `
+        <tr class="roy-lvl-loc">
+          <td>${escapeHtml(R.name)}</td>
+          <td class="roy-num">${royTons(R.lines.reduce((s, l) => s + l.tons, 0))}</td>
+          <td class="roy-num">${royMoney(R.lines.reduce((s, l) => s + l.revenue, 0))}</td>
+          <td class="roy-num">${royMoney(R.amount)}</td>
+        </tr>
+        ${R.lines.map(l => `
+          <tr class="roy-lvl-prod">
+            <td class="roy-indent-1">${escapeHtml(l.location)} · ${escapeHtml(l.product)}${l.onFloor ? ' <span title="The $/ton floor paid more than the % on at least one sale here">(floor)</span>' : ''}</td>
+            <td class="roy-num">${royTons(l.tons)}</td>
+            <td class="roy-num">${royMoney(l.revenue)}</td>
+            <td class="roy-num">${royMoney(l.amount)}</td>
+          </tr>`).join('')}
+      `).join('');
+
+      body.innerHTML = `
+        <table class="roy-table">
+          <thead><tr><th>Recipient · Pit · Product</th><th class="roy-num">Tons</th><th class="roy-num">Net Sales</th><th class="roy-num">Royalty Owed</th></tr></thead>
+          <tbody>
+            ${rows}
+            <tr class="roy-lvl-year">
+              <td>Total — ${escapeHtml(invMonthLabel(mk))}</td>
+              <td class="roy-num">${royTons(data.totals.tons)}</td>
+              <td class="roy-num">${royMoney(data.totals.revenue)}</td>
+              <td class="roy-num">${royMoney(data.totals.royalty)}</td>
+            </tr>
+          </tbody>
+        </table>`;
+    }
+
+    // "8/15/2026 by ben" — the badge next to it already says "Locked", so the
+    // word only gets prefixed where the label stands on its own.
+    function royLockedWhen(meta) {
+      if (!meta) return '';
+      const who = meta.lockedBy ? ` by ${meta.lockedBy}` : '';
+      let when = '';
+      try { when = new Date(meta.lockedAt).toLocaleDateString(); } catch { when = ''; }
+      return `${when}${who}`.trim();
+    }
+    function royLockedLabel(meta) {
+      const w = royLockedWhen(meta);
+      return w ? `Locked ${w}` : 'Locked';
+    }
+
+    // Lock stores the computed month verbatim, along with the rates in force,
+    // so the record survives later edits to sales or recipient rates.
+    function royToggleLock() {
+      const mk = roySelectedMonth;
+      if (!mk) return;
+      if (royPeriods[mk]) {
+        if (!confirm(`Unlock ${invMonthLabel(mk)}?\n\nThe stored figures from when it was paid will be discarded, and the month will go back to tracking live sales data.`)) return;
+        delete royPeriods[mk];
+        scheduleRoyPeriodsSave();
+        renderRoyaltyReport();
+        return;
+      }
+      const data = computeRoyaltyMonth(mk);
+      if (!data.recipients.length) {
+        alert(`Nothing to lock — ${invMonthLabel(mk)} has no royalty-bearing sales.`);
+        return;
+      }
+      if (!confirm(`Lock ${invMonthLabel(mk)} at ${royMoney(data.totals.royalty)} across ${data.recipients.length} recipient${data.recipients.length === 1 ? '' : 's'}?\n\nThese figures become the permanent record for this payment. Later changes to sales or rates won't alter them. You can unlock if you need to correct it.`)) return;
+      royPeriods[mk] = {
+        lockedAt: new Date().toISOString(),
+        lockedBy: (user && user.username) || '',
+        rates: JSON.parse(JSON.stringify(quarryRoyalty)),
+        data,
+      };
+      scheduleRoyPeriodsSave();
+      renderRoyaltyReport();
+    }
+
+    // Year > Location > Month > Product. Collapsible at every level; the
+    // deepest rows also name each recipient's cut so the tree answers
+    // "who is owed what, from which product" without opening a statement.
+    const royCollapsed = new Set();
+    function royToggleNode(key) {
+      if (royCollapsed.has(key)) royCollapsed.delete(key); else royCollapsed.add(key);
+      renderRoyaltyBreakdown(computeRoyalties());
+    }
+    function renderRoyaltyBreakdown(rep) {
+      const body = document.getElementById('royBreakdownBody');
+      if (!body) return;
+      if (!salesLoaded || !royaltyLoaded) { body.innerHTML = `<div class="roy-empty">Loading…</div>`; return; }
+      if (!rep.tree.length) {
+        body.innerHTML = rep.anyFlagged
+          ? `<div class="roy-empty">No royalty owed for ${escapeHtml(yearFilterLabel('royalty'))} — check that each pit has recipients above.</div>`
+          : `<div class="roy-empty">No royalty-bearing sales for ${escapeHtml(yearFilterLabel('royalty'))}.<br><br>Royalty applies only to products checked as royalty-bearing in <strong>Manage Lists → Product</strong>.</div>`;
+        return;
+      }
+
+      // Node keys carry pit and product names, so they go in a data attribute
+      // rather than inline in the handler.
+      const tw = (key) => `<span class="roy-tw">${royCollapsed.has(key) ? '▸' : '▾'}</span>`;
+      const tog = (key) => `<button class="roy-toggle" data-key="${escapeHtml(key)}" onclick="royToggleNode(this.dataset.key)">`;
+      const out = [];
+      rep.tree.forEach(Y => {
+        const yk = 'y:' + Y.year;
+        out.push(`<tr class="roy-lvl-year"><td>${tog(yk)}${tw(yk)}${escapeHtml(Y.year)}</button></td>
+          <td class="roy-num">${royTons(Y.tons)}</td><td class="roy-num">${royMoney(Y.revenue)}</td><td class="roy-num">${royMoney(Y.royalty)}</td></tr>`);
+        if (royCollapsed.has(yk)) return;
+        Y.locations.forEach(L => {
+          const lk = yk + '|l:' + L.location;
+          out.push(`<tr class="roy-lvl-loc"><td class="roy-indent-1">${tog(lk)}${tw(lk)}${escapeHtml(L.location)}</button></td>
+            <td class="roy-num">${royTons(L.tons)}</td><td class="roy-num">${royMoney(L.revenue)}</td><td class="roy-num">${royMoney(L.royalty)}</td></tr>`);
+          if (royCollapsed.has(lk)) return;
+          L.months.forEach(M => {
+            const mk2 = lk + '|m:' + M.month;
+            out.push(`<tr class="roy-lvl-month"><td class="roy-indent-2">${tog(mk2)}${tw(mk2)}${escapeHtml(invMonthLabel(M.month))}${royPeriods[M.month] ? ' <span class="roy-badge locked">Locked</span>' : ''}</button></td>
+              <td class="roy-num">${royTons(M.tons)}</td><td class="roy-num">${royMoney(M.revenue)}</td><td class="roy-num">${royMoney(M.royalty)}</td></tr>`);
+            if (royCollapsed.has(mk2)) return;
+            M.products.forEach(P => {
+              const names = P.recipients.map(r => `${escapeHtml(r.name)} ${royMoney(r.amount)}`).join(' · ');
+              out.push(`<tr class="roy-lvl-prod"><td class="roy-indent-3">${escapeHtml(P.product)}${names ? `<div style="font-size:0.62rem;color:var(--muted);">${names}</div>` : ''}</td>
+                <td class="roy-num">${royTons(P.tons)}</td><td class="roy-num">${royMoney(P.revenue)}</td><td class="roy-num">${royMoney(P.royalty)}</td></tr>`);
+            });
+          });
+        });
+      });
+
+      body.innerHTML = `
+        <table class="roy-table">
+          <thead><tr><th>Year › Pit › Month › Product</th><th class="roy-num">Tons</th><th class="roy-num">Net Sales</th><th class="roy-num">Royalty</th></tr></thead>
+          <tbody>${out.join('')}
+            <tr class="roy-lvl-year"><td>Total — ${escapeHtml(yearFilterLabel('royalty'))}</td>
+              <td class="roy-num">${royTons(rep.totals.tons)}</td><td class="roy-num">${royMoney(rep.totals.revenue)}</td><td class="roy-num">${royMoney(rep.totals.royalty)}</td></tr>
+          </tbody>
+        </table>`;
+    }
+
+    // ── Statements ──────────────────────────────────────────────
+    // One page per recipient — what they're owed and how it was arrived at —
+    // followed by an internal summary sheet listing every recipient.
+    function buildRoyaltyStatements(mk) {
+      const data = royMonthData(mk);
+      if (!data || !data.recipients.length) return null;
+      const company = rptCompany();
+      const generated = new Date().toLocaleString();
+      const label = invMonthLabel(mk);
+      const meta = `<div><strong>${escapeHtml(label)}</strong></div><div>Generated ${escapeHtml(generated)}</div>`;
+      const lockLine = data.locked
+        ? `<div class="rp-lock">${escapeHtml(royLockedLabel(data.meta))} — figures are final for this payment.</div>`
+        : `<div class="rp-lock rp-open">Draft — this month is not locked, so these figures still track live sales data.</div>`;
+
+      const pages = data.recipients.map(R => {
+        const tons = R.lines.reduce((s, l) => s + l.tons, 0);
+        const rev  = R.lines.reduce((s, l) => s + l.revenue, 0);
+        const byLoc = new Map();
+        R.lines.forEach(l => {
+          if (!byLoc.has(l.location)) byLoc.set(l.location, []);
+          byLoc.get(l.location).push(l);
+        });
+        // Terms belong on the pit row, not merged into one line — the same
+        // owner can hold a different rate at each pit, and "20% / 10%" with a
+        // lone floor tacked on tells the reader nothing about which is which.
+        const termsFor = (l) => {
+          const r = Number(l.rate) || 0, f = Number(l.floor) || 0;
+          if (r > 0 && f > 0) return `${r}% of sales or $${f.toFixed(2)}/ton, whichever is greater`;
+          if (r > 0) return `${r}% of sales`;
+          if (f > 0) return `$${f.toFixed(2)}/ton`;
+          return '';
+        };
+        const bodyRows = [...byLoc.entries()].map(([loc, lines]) => {
+          const lt = lines.reduce((s, l) => s + l.tons, 0);
+          const lr = lines.reduce((s, l) => s + l.revenue, 0);
+          const la = lines.reduce((s, l) => s + l.amount, 0);
+          const t = termsFor(lines[0]);
+          return `<tr class="rp-grp"><td>${escapeHtml(loc)}${t ? `<div class="rs-terms-in">${escapeHtml(t)}</div>` : ''}</td><td class="rp-n">${royTons(lt)}</td><td class="rp-n">${royMoney(lr)}</td><td class="rp-n">${royMoney(la)}</td></tr>`
+            + lines.map(l => `<tr><td class="rp-in">${escapeHtml(l.product)}${l.onFloor ? ' <em>(floor applied)</em>' : ''}</td>
+                 <td class="rp-n">${royTons(l.tons)}</td><td class="rp-n">${royMoney(l.revenue)}</td><td class="rp-n">${royMoney(l.amount)}</td></tr>`).join('');
+        }).join('');
+
+        return `
+        <section class="rp-page">
+          ${rptBrandHead('Royalty Statement', meta)}
+          ${lockLine}
+          <div class="rs-to"><div class="rs-lbl">Paid to</div><div class="rs-name">${escapeHtml(R.name)}</div></div>
+          <table class="rp-tbl">
+            <thead><tr><th>Pit / Product</th><th class="rp-n">Tons</th><th class="rp-n">Net Sales</th><th class="rp-n">Royalty</th></tr></thead>
+            <tbody>${bodyRows}</tbody>
+            <tfoot><tr><td>Total — ${escapeHtml(label)}</td><td class="rp-n">${royTons(tons)}</td><td class="rp-n">${royMoney(rev)}</td><td class="rp-n">${royMoney(R.amount)}</td></tr></tfoot>
+          </table>
+          <div class="rp-due"><span>Amount of this payment</span><strong>${royMoney(R.amount)}</strong></div>
+          <div class="rp-note">Royalty is calculated on royalty-bearing product only, at the greater of the percentage of sale or the per-ton floor. Net Sales excludes sales tax. Questions on this statement can be directed to ${escapeHtml(company)}.</div>
+          ${rptFooter()}
+        </section>`;
+      });
+
+      const summary = `
+        <section class="rp-page">
+          ${rptBrandHead('Royalty Summary — Internal', meta)}
+          ${lockLine}
+          <table class="rp-tbl">
+            <thead><tr><th>Recipient</th><th class="rp-n">Tons</th><th class="rp-n">Net Sales</th><th class="rp-n">Amount Due</th></tr></thead>
+            <tbody>${data.recipients.map(R => `<tr><td>${escapeHtml(R.name)}</td>
+              <td class="rp-n">${royTons(R.lines.reduce((s, l) => s + l.tons, 0))}</td>
+              <td class="rp-n">${royMoney(R.lines.reduce((s, l) => s + l.revenue, 0))}</td>
+              <td class="rp-n">${royMoney(R.amount)}</td></tr>`).join('')}</tbody>
+            <tfoot><tr><td>Total royalty payable</td><td class="rp-n">${royTons(data.totals.tons)}</td><td class="rp-n">${royMoney(data.totals.revenue)}</td><td class="rp-n">${royMoney(data.totals.royalty)}</td></tr></tfoot>
+          </table>
+          <div class="rp-note">Only <strong>Amount Due</strong> adds down this table. Tons and Net Sales are the month's totals for royalty-bearing product — recipients who share a pit are each paid on the same tonnage, so their rows overlap rather than sum.</div>
+          ${rptFooter()}
+        </section>`;
+
+      // Statement-only bits; the shared chrome lives in RPT_PRINT_CSS.
+      const style = `<style>
+        .rs-to{margin-bottom:18px}
+        .rs-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#777}
+        .rs-name{font-size:19px;font-weight:700;margin-top:2px}
+        .rs-terms-in{font-size:10px;font-weight:400;color:#555;margin-top:2px}
+      </style>`;
+
+      return { html: style + pages.join('') + summary, label, count: data.recipients.length };
+    }
+
+    function printRoyaltyStatements() {
+      const mk = roySelectedMonth;
+      if (!mk) return;
+      const built = buildRoyaltyStatements(mk);
+      if (!built) {
+        alert(`No royalty-bearing sales in ${invMonthLabel(mk)} — nothing to send.`);
+        return;
+      }
+      rptPrintWindow(`Royalty Statements — ${built.label}`, built.html);
+    }
+
+    /* ═══════════════════════════════════════════
+       SALES TAX REPORT
+       Tax comes off the customer's Taxable flag and rate (Manage Lists →
+       Customer), applied to Net Sales. The return wants gross sales, the
+       exempt deduction, taxable sales and tax due — and, because PA stacks
+       a local rate on the state 6%, the tax due split by rate.
+
+       Filing runs monthly or quarterly. Marking a period filed snapshots it
+       the same way a locked royalty month works, so an amended sale can't
+       silently rewrite a return you already sent.
+    ═══════════════════════════════════════════ */
+    const QUARRY_STX_PERIODS_KEY = 'fct_quarry_salestax_periods';
+
+    let stxPeriods = {};
+    let stxPeriodsLoaded = false;
+    let stxPeriodsFetchedOnce = false;
+    let stxPeriodsSavePending = null;
+    let stxPeriodsSaveInFlight = false;
+    let stxMode = 'month';          // 'month' | 'quarter'
+    let stxSelectedPeriod = '';
+
+    function normalizeStxPeriods(value) {
+      const out = {};
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        Object.keys(value).forEach(k => {
+          const p = value[k];
+          if (p && typeof p === 'object' && p.lockedAt) out[k] = p;
+        });
+      }
+      return out;
+    }
+    async function fetchStxPeriods() {
+      const res = await fetch(`/api/data/${QUARRY_STX_PERIODS_KEY}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`GET ${QUARRY_STX_PERIODS_KEY} → ${res.status}`);
+      const data = await res.json();
+      return normalizeStxPeriods(data.value);
+    }
+    async function putStxPeriods(value) {
+      const res = await fetch(`/api/data/${QUARRY_STX_PERIODS_KEY}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ value }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`PUT ${QUARRY_STX_PERIODS_KEY} → ${res.status} ${text}`);
+      }
+    }
+    function scheduleStxPeriodsSave() {
+      stxPeriodsSavePending = stxPeriods;
+      if (stxPeriodsSaveInFlight) return;
+      flushStxPeriodsSave();
+    }
+    async function flushStxPeriodsSave() {
+      while (stxPeriodsSavePending) {
+        const snapshot = stxPeriodsSavePending;
+        stxPeriodsSavePending = null;
+        stxPeriodsSaveInFlight = true;
+        try {
+          await putStxPeriods(snapshot);
+        } catch (err) {
+          console.error('[quarry] sales tax periods save failed:', err);
+          alert('Could not save the filed period — please check your connection and try again.');
+        } finally {
+          stxPeriodsSaveInFlight = false;
+        }
+      }
+    }
+    async function refreshStxPeriods() {
+      try {
+        stxPeriods = await fetchStxPeriods();
+        stxPeriodsLoaded = true;
+      } catch (err) {
+        console.error('[quarry] sales tax periods load failed:', err);
+        if (!stxPeriodsFetchedOnce) { stxPeriods = {}; stxPeriodsLoaded = true; }
+      } finally {
+        stxPeriodsFetchedOnce = true;
+      }
+    }
+
+    // ── Period keys ─────────────────────────────────────────────
+    function stxPeriodKeyOf(dateStr, mode) {
+      const mk = beMonthKey(dateStr);
+      if (!mk) return null;
+      if ((mode || stxMode) === 'quarter') {
+        const q = Math.floor((Number(mk.slice(5, 7)) - 1) / 3) + 1;
+        return `${mk.slice(0, 4)}-Q${q}`;
+      }
+      return mk;
+    }
+    function stxPeriodLabel(key) {
+      const k = String(key || '');
+      const q = /^(\d{4})-Q([1-4])$/.exec(k);
+      if (q) return `Q${q[2]} ${q[1]}`;
+      return invMonthLabel(k);
+    }
+
+    // ── Computation ─────────────────────────────────────────────
+    // Everything the return needs for one filing period, plus the detail
+    // behind it. Gross = all sales; exempt = sales to customers not flagged
+    // taxable; taxable = the rest; tax = what the Sales Tracking column shows.
+    function computeSalesTaxPeriod(pkey) {
+      const totals = { gross: 0, exempt: 0, taxable: 0, tax: 0, tons: 0, count: 0 };
+      const byRate = new Map();       // rate -> {rate, taxable, tax, count}
+      const byCustomer = new Map();   // taxable customers
+      const exemptBy = new Map();     // exempt customers
+
+      salesRows.forEach(row => {
+        if (stxPeriodKeyOf(row.date) !== pkey) return;
+        const net = rowTotal(row);
+        const tons = Number(row.tons) || 0;
+        const rate = rowTaxRate(row);
+        const tax = rate ? net * rate / 100 : 0;
+        const cust = String(row.customerName || '').trim() || '— No customer —';
+        const loc = String(row.locationName || '').trim() || BE_NO_LOC;
+        totals.gross += net; totals.tons += tons; totals.count++;
+
+        if (rate > 0) {
+          totals.taxable += net; totals.tax += tax;
+          const R = byRate.get(rate) || { rate, taxable: 0, tax: 0, count: 0 };
+          R.taxable += net; R.tax += tax; R.count++;
+          byRate.set(rate, R);
+          const key = cust.toLowerCase();
+          const C = byCustomer.get(key) || { name: cust, rate, taxable: 0, tax: 0, tons: 0, locations: new Set() };
+          C.taxable += net; C.tax += tax; C.tons += tons; C.locations.add(loc);
+          // A customer whose rate changed mid-period shows the latest; the
+          // per-rate table above is what the return is actually built from.
+          C.rate = rate;
+          byCustomer.set(key, C);
+        } else {
+          totals.exempt += net;
+          const key = cust.toLowerCase();
+          const E = exemptBy.get(key) || { name: cust, amount: 0, tons: 0, count: 0 };
+          E.amount += net; E.tons += tons; E.count++;
+          exemptBy.set(key, E);
+        }
+      });
+
+      return {
+        period: pkey,
+        totals,
+        rates: [...byRate.values()].sort((a, b) => a.rate - b.rate),
+        customers: [...byCustomer.values()].map(c => ({ ...c, locations: [...c.locations] }))
+          .sort((a, b) => b.tax - a.tax),
+        exempt: [...exemptBy.values()].sort((a, b) => b.amount - a.amount),
+      };
+    }
+
+    function stxPeriodData(pkey) {
+      if (!pkey) return null;
+      const filed = stxPeriods[pkey];
+      if (filed && filed.data) return { ...filed.data, period: pkey, locked: true, meta: filed };
+      return { ...computeSalesTaxPeriod(pkey), locked: false, meta: null };
+    }
+
+    // Year > Location > Month > Customer, across the selected year.
+    function computeSalesTaxTree() {
+      const years = new Map();
+      const ensure = (map, key, make) => { if (!map.has(key)) map.set(key, make()); return map.get(key); };
+      const totals = { gross: 0, exempt: 0, taxable: 0, tax: 0 };
+
+      salesRows.forEach(row => {
+        if (!rowMatchesYear('salestax', row)) return;
+        const mk = beMonthKey(row.date);
+        if (!mk) return;
+        const net = rowTotal(row);
+        const rate = rowTaxRate(row);
+        const tax = rate ? net * rate / 100 : 0;
+        totals.gross += net;
+        if (rate > 0) { totals.taxable += net; totals.tax += tax; } else { totals.exempt += net; }
+        if (rate <= 0) return;   // the tree shows taxable sales only
+
+        const yr = mk.slice(0, 4);
+        const loc = String(row.locationName || '').trim() || BE_NO_LOC;
+        const cust = String(row.customerName || '').trim() || '— No customer —';
+        const Y = ensure(years, yr, () => ({ year: yr, taxable: 0, tax: 0, locations: new Map() }));
+        const L = ensure(Y.locations, loc, () => ({ location: loc, taxable: 0, tax: 0, months: new Map() }));
+        const M = ensure(L.months, mk, () => ({ month: mk, taxable: 0, tax: 0, customers: new Map() }));
+        const C = ensure(M.customers, cust, () => ({ customer: cust, rate, taxable: 0, tax: 0 }));
+        [Y, L, M, C].forEach(n => { n.taxable += net; n.tax += tax; });
+        C.rate = rate;
+      });
+
+      const toArr = (m, f) => [...m.values()].map(f);
+      const tree = [...years.values()].sort((a, b) => b.year.localeCompare(a.year)).map(Y => ({
+        ...Y,
+        locations: toArr(Y.locations, L => ({
+          ...L,
+          months: toArr(L.months, M => ({
+            ...M,
+            customers: toArr(M.customers, c => c).sort((a, b) => b.tax - a.tax),
+          })).sort((a, b) => a.month.localeCompare(b.month)),
+        })).sort((a, b) => a.location.localeCompare(b.location)),
+      }));
+
+      const periods = new Set();
+      salesRows.forEach(row => {
+        if (!rowMatchesYear('salestax', row)) return;
+        const k = stxPeriodKeyOf(row.date);
+        if (k) periods.add(k);
+      });
+      return { tree, totals, periods: [...periods].sort() };
+    }
+
+    // ── Rendering ───────────────────────────────────────────────
+    function stxSetMode(mode) {
+      stxMode = mode === 'quarter' ? 'quarter' : 'month';
+      stxSelectedPeriod = '';
+      renderSalesTaxReport();
+    }
+    function stxSetPeriod(p) {
+      stxSelectedPeriod = p || '';
+      renderSalesTaxPeriod();
+    }
+
+    async function refreshSalesTaxReport() {
+      renderSalesTaxReport();
+      const tasks = [];
+      if (!salesFetchedOnce) tasks.push(refreshSales());
+      if (!listsLoaded) tasks.push(refreshListsQuiet());
+      if (!stxPeriodsSavePending && !stxPeriodsSaveInFlight) tasks.push(refreshStxPeriods());
+      if (tasks.length) { await Promise.allSettled(tasks); renderSalesTaxReport(); }
+    }
+
+    function renderSalesTaxReport() {
+      renderYearFilterOptions('salestax', salesRows);
+      const rep = computeSalesTaxTree();
+
+      const sub = document.getElementById('stxSubtitle');
+      if (sub) {
+        const yl = yearFilterLabel('salestax');
+        sub.textContent = rep.totals.gross > 0
+          ? `${royMoney(rep.totals.tax)} tax collected on ${royMoney(rep.totals.taxable)} taxable sales · ${yl}`
+          : `No sales recorded for ${yl}.`;
+      }
+
+      const sel = document.getElementById('stxPeriodSelect');
+      if (sel) {
+        const all = new Set(rep.periods);
+        Object.keys(stxPeriods).forEach(k => {
+          // Only show filed periods that match the current month/quarter mode.
+          const isQ = /^\d{4}-Q[1-4]$/.test(k);
+          if ((stxMode === 'quarter') === isQ) all.add(k);
+        });
+        const sorted = [...all].sort().reverse();
+        sel.innerHTML = sorted.length
+          ? sorted.map(k => `<option value="${k}">${escapeHtml(stxPeriodLabel(k))}${stxPeriods[k] ? ' — filed' : ''}</option>`).join('')
+          : '<option value="">No sales in range</option>';
+        if (!stxSelectedPeriod || !sorted.includes(stxSelectedPeriod)) stxSelectedPeriod = sorted[0] || '';
+        sel.value = stxSelectedPeriod;
+        sel.disabled = !sorted.length;
+      }
+      const modeSel = document.getElementById('stxModeSelect');
+      if (modeSel) modeSel.value = stxMode;
+
+      renderSalesTaxPeriod();
+      renderSalesTaxBreakdown(rep);
+    }
+
+    function renderSalesTaxPeriod() {
+      const body = document.getElementById('stxPeriodBody');
+      const heading = document.getElementById('stxPeriodHeading');
+      const note = document.getElementById('stxPeriodNote');
+      const lockBtn = document.getElementById('stxLockBtn');
+      const printBtn = document.getElementById('stxPrintBtn');
+      const exemptBody = document.getElementById('stxExemptBody');
+      if (!body) return;
+
+      const pk = stxSelectedPeriod;
+      if (heading) heading.textContent = pk ? `Filing Period — ${stxPeriodLabel(pk)}` : 'Filing Period';
+      if (!pk) {
+        body.innerHTML = `<div class="roy-empty">No sales in range.</div>`;
+        if (exemptBody) exemptBody.innerHTML = `<div class="roy-empty">Nothing to show.</div>`;
+        if (note) note.innerHTML = '';
+        if (lockBtn) lockBtn.disabled = true;
+        if (printBtn) printBtn.disabled = true;
+        return;
+      }
+
+      const d = stxPeriodData(pk);
+      if (lockBtn) { lockBtn.disabled = false; lockBtn.textContent = d.locked ? 'Reopen Period' : 'Mark Filed'; }
+      if (printBtn) printBtn.disabled = false;
+      if (note) {
+        note.innerHTML = d.locked
+          ? `<span class="roy-badge locked">Filed</span> &nbsp;${escapeHtml(royLockedWhen(d.meta))}`
+          : `<span class="roy-badge open">Open</span> &nbsp;Figures update as sales change`;
+      }
+
+      const line = (label, value, cls) =>
+        `<tr class="${cls || ''}"><td>${label}</td><td class="roy-num">${royMoney(value)}</td></tr>`;
+      // Deductions read as "(1,234.00)" the way a return shows them, not "$-1,234.00".
+      const deduction = (label, value) =>
+        `<tr><td>${label}</td><td class="roy-num">(${royMoney(Math.abs(value))})</td></tr>`;
+
+      const rateRows = d.rates.length
+        ? d.rates.map(r => `<tr><td class="roy-indent-1">Taxable at ${formatTaxRate(r.rate)}% <span style="color:var(--muted)">(${r.count} sale${r.count === 1 ? '' : 's'})</span></td>
+             <td class="roy-num">${royMoney(r.taxable)}</td><td class="roy-num">${royMoney(r.tax)}</td></tr>`).join('')
+        : `<tr><td class="roy-indent-1" colspan="3" style="color:var(--muted)">No taxable sales in this period.</td></tr>`;
+
+      body.innerHTML = `
+        <table class="roy-table" style="max-width:560px;margin-bottom:1.25rem;">
+          <thead><tr><th>Return Line</th><th class="roy-num">Amount</th></tr></thead>
+          <tbody>
+            ${line('Gross sales', d.totals.gross)}
+            ${deduction('Less exempt / non-taxable sales', d.totals.exempt)}
+            ${line('Net taxable sales', d.totals.taxable, 'roy-lvl-loc')}
+            ${line('Sales tax due', d.totals.tax, 'roy-lvl-year')}
+          </tbody>
+        </table>
+        <div class="roy-sub" style="margin-bottom:0.5rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;font-size:0.6rem;">Tax due by rate</div>
+        <table class="roy-table" style="max-width:560px;margin-bottom:1.25rem;">
+          <thead><tr><th>Rate</th><th class="roy-num">Taxable Sales</th><th class="roy-num">Tax Due</th></tr></thead>
+          <tbody>${rateRows}
+            <tr class="roy-lvl-year"><td>Total</td><td class="roy-num">${royMoney(d.totals.taxable)}</td><td class="roy-num">${royMoney(d.totals.tax)}</td></tr>
+          </tbody>
+        </table>
+        <div class="roy-sub" style="margin-bottom:0.5rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;font-size:0.6rem;">Taxable customers</div>
+        ${d.customers.length ? `<table class="roy-table">
+          <thead><tr><th>Customer</th><th>Pit</th><th class="roy-num">Rate</th><th class="roy-num">Taxable Sales</th><th class="roy-num">Tax</th></tr></thead>
+          <tbody>${d.customers.map(c => `<tr><td>${escapeHtml(c.name)}</td><td style="color:var(--muted)">${escapeHtml(c.locations.join(', '))}</td>
+            <td class="roy-num">${formatTaxRate(c.rate)}%</td><td class="roy-num">${royMoney(c.taxable)}</td><td class="roy-num">${royMoney(c.tax)}</td></tr>`).join('')}</tbody>
+        </table>` : `<div class="roy-empty">No taxable customers in this period.</div>`}`;
+
+      if (exemptBody) {
+        exemptBody.innerHTML = d.exempt.length
+          ? `<table class="roy-table">
+              <thead><tr><th>Customer</th><th class="roy-num">Sales</th><th class="roy-num">Tons</th><th class="roy-num">Invoices</th></tr></thead>
+              <tbody>${d.exempt.map(e => `<tr><td>${escapeHtml(e.name)}</td><td class="roy-num">${royMoney(e.amount)}</td>
+                <td class="roy-num">${royTons(e.tons)}</td><td class="roy-num">${e.count}</td></tr>`).join('')}
+                <tr class="roy-lvl-year"><td>Total exempt — ${escapeHtml(stxPeriodLabel(pk))}</td><td class="roy-num">${royMoney(d.totals.exempt)}</td><td class="roy-num"></td><td class="roy-num"></td></tr>
+              </tbody></table>
+             <div class="roy-sub" style="margin-top:0.6rem;">These sales were not taxed because the customer is not flagged taxable in <strong>Manage Lists → Customer</strong>. Keep the exemption or resale certificate on file for each one.</div>`
+          : `<div class="roy-empty">No exempt sales in ${escapeHtml(stxPeriodLabel(pk))}.</div>`;
+      }
+    }
+
+    function stxToggleLock() {
+      const pk = stxSelectedPeriod;
+      if (!pk) return;
+      if (stxPeriods[pk]) {
+        if (!confirm(`Reopen ${stxPeriodLabel(pk)}?\n\nThe figures stored when it was filed will be discarded, and the period will go back to tracking live sales data.`)) return;
+        delete stxPeriods[pk];
+        scheduleStxPeriodsSave();
+        renderSalesTaxReport();
+        return;
+      }
+      const data = computeSalesTaxPeriod(pk);
+      if (!data.totals.count) {
+        alert(`Nothing to file — ${stxPeriodLabel(pk)} has no sales.`);
+        return;
+      }
+      if (!confirm(`Mark ${stxPeriodLabel(pk)} filed at ${royMoney(data.totals.tax)} tax due on ${royMoney(data.totals.taxable)} taxable sales?\n\nThese figures become the permanent record for this return. Later changes to sales or customer rates won't alter them. You can reopen if you need to amend.`)) return;
+      stxPeriods[pk] = {
+        lockedAt: new Date().toISOString(),
+        lockedBy: (user && user.username) || '',
+        data,
+      };
+      scheduleStxPeriodsSave();
+      renderSalesTaxReport();
+    }
+
+    const stxCollapsed = new Set();
+    function stxToggleNode(key) {
+      if (stxCollapsed.has(key)) stxCollapsed.delete(key); else stxCollapsed.add(key);
+      renderSalesTaxBreakdown(computeSalesTaxTree());
+    }
+    function renderSalesTaxBreakdown(rep) {
+      const body = document.getElementById('stxBreakdownBody');
+      if (!body) return;
+      if (!salesLoaded || !listsLoaded) { body.innerHTML = `<div class="roy-empty">Loading…</div>`; return; }
+      if (!rep.tree.length) {
+        body.innerHTML = rep.totals.gross > 0
+          ? `<div class="roy-empty">No taxable sales for ${escapeHtml(yearFilterLabel('salestax'))} — every sale went to an exempt customer.<br><br>Flag customers as taxable in <strong>Manage Lists → Customer</strong>.</div>`
+          : `<div class="roy-empty">No sales for ${escapeHtml(yearFilterLabel('salestax'))}.</div>`;
+        return;
+      }
+
+      const tw = (k) => `<span class="roy-tw">${stxCollapsed.has(k) ? '▸' : '▾'}</span>`;
+      const tog = (k) => `<button class="roy-toggle" data-key="${escapeHtml(k)}" onclick="stxToggleNode(this.dataset.key)">`;
+      const out = [];
+      rep.tree.forEach(Y => {
+        const yk = 'y:' + Y.year;
+        out.push(`<tr class="roy-lvl-year"><td>${tog(yk)}${tw(yk)}${escapeHtml(Y.year)}</button></td>
+          <td class="roy-num">${royMoney(Y.taxable)}</td><td class="roy-num">${royMoney(Y.tax)}</td></tr>`);
+        if (stxCollapsed.has(yk)) return;
+        Y.locations.forEach(L => {
+          const lk = yk + '|l:' + L.location;
+          out.push(`<tr class="roy-lvl-loc"><td class="roy-indent-1">${tog(lk)}${tw(lk)}${escapeHtml(L.location)}</button></td>
+            <td class="roy-num">${royMoney(L.taxable)}</td><td class="roy-num">${royMoney(L.tax)}</td></tr>`);
+          if (stxCollapsed.has(lk)) return;
+          L.months.forEach(M => {
+            const mk2 = lk + '|m:' + M.month;
+            const filedKey = stxPeriodKeyOf(M.month + '-01');
+            out.push(`<tr class="roy-lvl-month"><td class="roy-indent-2">${tog(mk2)}${tw(mk2)}${escapeHtml(invMonthLabel(M.month))}${filedKey && stxPeriods[filedKey] ? ' <span class="roy-badge locked">Filed</span>' : ''}</button></td>
+              <td class="roy-num">${royMoney(M.taxable)}</td><td class="roy-num">${royMoney(M.tax)}</td></tr>`);
+            if (stxCollapsed.has(mk2)) return;
+            M.customers.forEach(C => {
+              out.push(`<tr class="roy-lvl-prod"><td class="roy-indent-3">${escapeHtml(C.customer)} <span style="font-size:0.62rem;">@ ${formatTaxRate(C.rate)}%</span></td>
+                <td class="roy-num">${royMoney(C.taxable)}</td><td class="roy-num">${royMoney(C.tax)}</td></tr>`);
+            });
+          });
+        });
+      });
+
+      body.innerHTML = `
+        <table class="roy-table">
+          <thead><tr><th>Year › Pit › Month › Customer</th><th class="roy-num">Taxable Sales</th><th class="roy-num">Sales Tax</th></tr></thead>
+          <tbody>${out.join('')}
+            <tr class="roy-lvl-year"><td>Total — ${escapeHtml(yearFilterLabel('salestax'))}</td>
+              <td class="roy-num">${royMoney(rep.totals.taxable)}</td><td class="roy-num">${royMoney(rep.totals.tax)}</td></tr>
+          </tbody>
+        </table>
+        <div class="roy-sub" style="margin-top:0.6rem;">Exempt sales of ${royMoney(rep.totals.exempt)} are excluded from this tree — see <strong>Exempt Sales</strong> above. Tax is charged on Net Sales, which excludes the tax itself.</div>`;
+    }
+
+    // ── Printable return backup ─────────────────────────────────
+    function buildSalesTaxReport(pk) {
+      const d = stxPeriodData(pk);
+      if (!d) return null;
+      const label = stxPeriodLabel(pk);
+      const generated = new Date().toLocaleString();
+      const meta = `<div><strong>${escapeHtml(label)}</strong></div><div>Generated ${escapeHtml(generated)}</div>`;
+      const lockLine = d.locked
+        ? `<div class="rp-lock">Filed ${escapeHtml(royLockedWhen(d.meta))} — figures are final for this return.</div>`
+        : `<div class="rp-lock rp-open">Draft — this period is not marked filed, so these figures still track live sales data.</div>`;
+
+      const money = v => royMoney(v);
+      const rateRows = d.rates.length
+        ? d.rates.map(r => `<tr><td>Taxable at ${formatTaxRate(r.rate)}%</td><td class="rp-n">${r.count}</td><td class="rp-n">${money(r.taxable)}</td><td class="rp-n">${money(r.tax)}</td></tr>`).join('')
+        : `<tr><td colspan="4" style="color:#777">No taxable sales in this period.</td></tr>`;
+
+      const html = `
+        <section class="rp-page">
+          ${rptBrandHead('Sales Tax Return — Backup', meta)}
+          ${lockLine}
+          <table class="rp-tbl" style="max-width:520px">
+            <tbody>
+              <tr><td>Gross sales</td><td class="rp-n">${money(d.totals.gross)}</td></tr>
+              <tr><td>Less exempt / non-taxable sales</td><td class="rp-n">(${money(d.totals.exempt)})</td></tr>
+              <tr class="rp-grp"><td>Net taxable sales</td><td class="rp-n">${money(d.totals.taxable)}</td></tr>
+            </tbody>
+            <tfoot><tr><td>Sales tax due</td><td class="rp-n">${money(d.totals.tax)}</td></tr></tfoot>
+          </table>
+
+          <div class="rp-sec">Tax due by rate</div>
+          <table class="rp-tbl">
+            <thead><tr><th>Rate</th><th class="rp-n">Sales</th><th class="rp-n">Taxable Sales</th><th class="rp-n">Tax Due</th></tr></thead>
+            <tbody>${rateRows}</tbody>
+            <tfoot><tr><td>Total</td><td class="rp-n">${d.rates.reduce((s, r) => s + r.count, 0)}</td><td class="rp-n">${money(d.totals.taxable)}</td><td class="rp-n">${money(d.totals.tax)}</td></tr></tfoot>
+          </table>
+
+          <div class="rp-due"><span>Sales tax due — ${escapeHtml(label)}</span><strong>${money(d.totals.tax)}</strong></div>
+          ${rptFooter()}
+        </section>
+
+        <section class="rp-page">
+          ${rptBrandHead('Sales Tax — Taxable Customers', meta)}
+          <table class="rp-tbl">
+            <thead><tr><th>Customer</th><th>Pit</th><th class="rp-n">Rate</th><th class="rp-n">Taxable Sales</th><th class="rp-n">Tax</th></tr></thead>
+            <tbody>${d.customers.length
+              ? d.customers.map(c => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml((c.locations || []).join(', '))}</td>
+                  <td class="rp-n">${formatTaxRate(c.rate)}%</td><td class="rp-n">${money(c.taxable)}</td><td class="rp-n">${money(c.tax)}</td></tr>`).join('')
+              : `<tr><td colspan="5" style="color:#777">No taxable customers in this period.</td></tr>`}</tbody>
+            <tfoot><tr><td>Total</td><td></td><td></td><td class="rp-n">${money(d.totals.taxable)}</td><td class="rp-n">${money(d.totals.tax)}</td></tr></tfoot>
+          </table>
+
+          <div class="rp-sec">Exempt sales — supporting detail</div>
+          <table class="rp-tbl">
+            <thead><tr><th>Customer</th><th class="rp-n">Sales</th><th class="rp-n">Tons</th><th class="rp-n">Invoices</th></tr></thead>
+            <tbody>${d.exempt.length
+              ? d.exempt.map(e => `<tr><td>${escapeHtml(e.name)}</td><td class="rp-n">${money(e.amount)}</td><td class="rp-n">${royTons(e.tons)}</td><td class="rp-n">${e.count}</td></tr>`).join('')
+              : `<tr><td colspan="4" style="color:#777">No exempt sales in this period.</td></tr>`}</tbody>
+            <tfoot><tr><td>Total exempt</td><td class="rp-n">${money(d.totals.exempt)}</td><td></td><td></td></tr></tfoot>
+          </table>
+          <div class="rp-note">Exempt sales are those to customers not flagged taxable, and require a valid exemption or resale certificate on file. Sales tax is charged on Net Sales, which excludes the tax itself. This sheet supports the return; it is not the return.</div>
+          ${rptFooter()}
+        </section>`;
+
+      return { html, label };
+    }
+
+    function printSalesTaxReport() {
+      const pk = stxSelectedPeriod;
+      if (!pk) return;
+      const built = buildSalesTaxReport(pk);
+      if (!built) { alert('Nothing to print for this period.'); return; }
+      rptPrintWindow(`Sales Tax — ${built.label}`, built.html);
     }
 
     /* ═══════════════════════════════════════════
