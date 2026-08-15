@@ -965,6 +965,13 @@
     }
     function clearError() { errorMsg.classList.remove('visible'); }
 
+    // Bounced here by a page that hit a 401 (see sessionExpired in
+    // timesheet.html). Say why, so a signed-out phone doesn't read as the app
+    // having simply forgotten them for no reason.
+    if (new URLSearchParams(window.location.search).get('expired') === '1') {
+      showError('Your session expired. Please sign in again.');
+    }
+
     // ── Company code ───────────────────────────────────────────────
     // The code comes from the page instead of the keyboard. Precedence,
     // highest first:
