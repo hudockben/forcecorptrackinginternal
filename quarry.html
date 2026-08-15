@@ -1293,12 +1293,13 @@
               <th class="col-payment">Payment</th>
               <th class="col-num">Price / Ton</th>
               <th class="col-num">Sales Tax</th>
-              <th class="col-total">Total Sales</th>
+              <th class="col-total">Net Sales</th>
+              <th class="col-total">Total Due</th>
               <th class="col-actions"></th>
             </tr>
           </thead>
           <tbody id="salesTbody">
-            <tr><td colspan="11" class="sales-empty">Loading…</td></tr>
+            <tr><td colspan="12" class="sales-empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1587,7 +1588,7 @@
       <div class="home-section-label">Division Total</div>
       <div class="kpi-grid">
         <div class="kpi-tile is-accent">
-          <div class="kpi-label">Total Sales</div>
+          <div class="kpi-label">Net Sales</div>
           <div class="kpi-value" id="anKpiSales">$0.00</div>
           <div class="kpi-sub" id="anKpiSalesSub">0 tons sold</div>
         </div>
@@ -2723,7 +2724,8 @@
       const rate = parseTaxRate(item.taxRate);
       return rate === null ? 0 : rate;
     }
-    // Tax is charged on the net sale (tons x price/ton); Total Sales stays net.
+    // Tax is charged on the net sale (tons x price/ton); Net Sales stays net,
+    // and the Total Due column adds the two back together for the invoice.
     function rowSalesTax(row) {
       const rate = rowTaxRate(row);
       if (!rate) return 0;
@@ -3350,7 +3352,7 @@
       if (bulkBtn) bulkBtn.disabled = !salesLoaded;
 
       if (!salesLoaded) {
-        tbody.innerHTML = `<tr><td colspan="11" class="sales-empty">Loading…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">Loading…</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -3359,7 +3361,7 @@
         msRenderFilters('sales', salesRows);
       }
       if (!salesRows.length) {
-        tbody.innerHTML = `<tr><td colspan="11" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No sales yet. Click “+ Add Row” to get started.</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -3367,7 +3369,7 @@
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row));
       if (!visibleEntries.length) {
-        tbody.innerHTML = `<tr><td colspan="11" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))} · ${escapeHtml(customerFilterLabel('sales'))} · ${escapeHtml(productFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))} · ${escapeHtml(customerFilterLabel('sales'))} · ${escapeHtml(productFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
         updateSalesSummary();
         return;
       }
@@ -3393,7 +3395,8 @@
             <td class="col-payment"><select class="cell-select" onchange="updateSalesCell(${i}, 'payment', this.value)">${paymentOpts}</select></td>
             <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.pricePerTon === '' ? '' : row.pricePerTon}" placeholder="0.00" oninput="updateSalesNumber(${i}, 'pricePerTon', this.value)" /></td>
             <td class="col-num"><div class="cell-readonly${tax ? '' : ' is-zero'}" id="sales-tax-${i}" title="${escapeHtml(salesTaxTitle(row))}">${taxRate ? formatMoney(tax) : '—'}</div></td>
-            <td class="col-total"><div class="cell-readonly${total ? '' : ' is-zero'}" id="sales-total-${i}">${formatMoney(total)}</div></td>
+            <td class="col-total"><div class="cell-readonly${total ? '' : ' is-zero'}" id="sales-total-${i}" title="Revenue, excluding sales tax. This is the figure Home, Analytics, Inventory and Break-Even read.">${formatMoney(total)}</div></td>
+            <td class="col-total"><div class="cell-readonly${total + tax ? '' : ' is-zero'}" id="sales-due-${i}" title="Net sales plus sales tax — what the customer owes on this load.">${formatMoney(total + tax)}</div></td>
             <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteSalesRow(${i})">✕</button></td>
           </tr>`;
       }).join('');
@@ -3418,7 +3421,7 @@
         totalTax += rowSalesTax(r);
         count++;
       });
-      el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Sales Tax<strong>${formatMoney(totalTax)}</strong>· Total Sales<strong>${formatMoney(totalSales)}</strong>`;
+      el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Net Sales<strong>${formatMoney(totalSales)}</strong>· Sales Tax<strong>${formatMoney(totalTax)}</strong>· Total Due<strong>${formatMoney(totalSales + totalTax)}</strong>`;
       refreshDeleteFilteredBtn('sales');
     }
 
@@ -3484,13 +3487,18 @@
         totalEl.textContent = formatMoney(total);
         totalEl.classList.toggle('is-zero', !total);
       }
+      const rate = rowTaxRate(row);
+      const tax = rate ? total * rate / 100 : 0;
       const taxEl = document.getElementById('sales-tax-' + index);
       if (taxEl) {
-        const rate = rowTaxRate(row);
-        const tax = rate ? total * rate / 100 : 0;
         taxEl.textContent = rate ? formatMoney(tax) : '—';
         taxEl.classList.toggle('is-zero', !tax);
         taxEl.title = salesTaxTitle(row);
+      }
+      const dueEl = document.getElementById('sales-due-' + index);
+      if (dueEl) {
+        dueEl.textContent = formatMoney(total + tax);
+        dueEl.classList.toggle('is-zero', !(total + tax));
       }
       updateSalesSummary();
     }
@@ -4249,7 +4257,8 @@
           'date', 'location', 'employee', 'customer', 'product', 'tons', 'payment', 'pricePerTon',
           // Computed from the customer's taxable flag + rate, so it isn't imported.
           { label: 'Sales Tax',   computed: true },
-          { label: 'Total Sales', computed: true },
+          { label: 'Net Sales',   computed: true },
+          { label: 'Total Due',   computed: true },
         ],
         state: {
           isLoaded: () => salesLoaded,
@@ -4795,7 +4804,7 @@
           </div>
           <div class="loc-kpi-grid">
             <div class="loc-kpi">
-              <div class="loc-kpi-label">Total Sales</div>
+              <div class="loc-kpi-label">Net Sales</div>
               <div class="loc-kpi-value">${formatMoney(e.totalSales)}</div>
               <div class="loc-kpi-sub">${e.salesCount} sale${e.salesCount === 1 ? '' : 's'}</div>
             </div>
@@ -8319,7 +8328,7 @@ ${sections}
 
       const kpis = `
         <div class="kpi-grid">
-          ${kpiCard('Total Sales', formatMoney(a.totalSales), `${formatTons(a.totalTonsSold)} tons sold · ${a.salesCount} sales`)}
+          ${kpiCard('Net Sales', formatMoney(a.totalSales), `${formatTons(a.totalTonsSold)} tons sold · ${a.salesCount} sales`)}
           ${kpiCard('Total Cost', formatMoney(a.totalCost), `Daily ${formatMoney(a.dailyCost)} · Crushing ${formatMoney(a.crushCost)}`)}
           ${kpiCard('Gross Margin', formatMoney(a.grossMargin), 'Sales − Cost')}
           ${kpiCard('Margin %', (Number.isFinite(a.marginPct) ? a.marginPct.toFixed(1) : '0.0') + '%', 'Of total sales')}
