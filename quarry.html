@@ -121,6 +121,30 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
+    /* ── Reports tab ── */
+    .rpt-subtab-bar {
+      display: flex; gap: 0; background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1rem; overflow-x: auto;
+    }
+    .rpt-subtab-btn {
+      padding: 0.5rem 1.1rem;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .rpt-subtab-btn:hover { color: var(--text); }
+    .rpt-subtab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .rpt-sub-panel { display: none; }
+    .rpt-sub-panel.active { display: block; }
+    .rpt-placeholder {
+      font-size: 0.75rem; color: var(--muted); text-align: center;
+      padding: 3rem 1rem; margin: 1.5rem;
+      border: 1px dashed var(--border); border-radius: 6px;
+    }
+
     /* ── Manage Lists Modal ── */
     .modal-backdrop {
       display: none; position: fixed; inset: 0;
@@ -977,6 +1001,7 @@
     <button class="tab-btn"        data-tab="inventory" onclick="switchTab('inventory')">Inventory</button>
     <button class="tab-btn"        data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
     <button class="tab-btn"        data-tab="breakeven" onclick="switchTab('breakeven')">Break-Even</button>
+    <button class="tab-btn"        data-tab="reports"   onclick="switchTab('reports')">Reports</button>
     <div class="tab-bar-spacer"></div>
     <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
   </nav>
@@ -1975,6 +2000,22 @@
     </div>
   </div>
 
+  <!-- ── Reports tab panel ── -->
+  <div class="tab-panel"        id="tab-reports">
+    <div class="rpt-subtab-bar">
+      <button class="rpt-subtab-btn active" data-sub="royalties" onclick="switchRptSubTab('royalties')">Royalties</button>
+      <button class="rpt-subtab-btn"        data-sub="salestax"  onclick="switchRptSubTab('salestax')">Sales Tax</button>
+    </div>
+
+    <div class="rpt-sub-panel active" id="rpt-royalties">
+      <div class="rpt-placeholder">Royalties report — coming soon.</div>
+    </div>
+
+    <div class="rpt-sub-panel" id="rpt-salestax">
+      <div class="rpt-placeholder">Sales Tax report — coming soon.</div>
+    </div>
+  </div>
+
   <!-- ── Manage Lists Modal ── -->
   <div class="modal-backdrop" id="manageListsBackdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="manageListsTitle">
@@ -2149,6 +2190,14 @@
       if (tab === 'home') refreshHome();
       if (tab === 'analytics') refreshAnalytics();
       if (tab === 'breakeven') refreshBreakeven();
+    }
+
+    // ── Reports sub-tab switching ───────────────────────────────
+    function switchRptSubTab(sub) {
+      document.querySelectorAll('.rpt-subtab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.sub === sub));
+      document.querySelectorAll('.rpt-sub-panel').forEach(p =>
+        p.classList.toggle('active', p.id === 'rpt-' + sub));
     }
 
     // ── Switch division ─────────────────────────────────────────
