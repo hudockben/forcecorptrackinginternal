@@ -3278,7 +3278,13 @@
       if (c.trucking_injected) bits.push('truck tracking row posted');
       // A dust customer haul posts both rows off one approval, so the log has to
       // name both or an audit reads as if the dust invoice appeared by itself.
-      if (c.dust_tracking_injected) bits.push('dust control tracking row posted');
+      // A day split across customers posts one dust row per haul; saying how
+      // many is what stops a two-row day reading as a double-post.
+      if (c.dust_tracking_injected) {
+        bits.push(c.dust_row_count > 1
+          ? `${c.dust_row_count} dust control tracking rows posted`
+          : 'dust control tracking row posted');
+      }
       if (c.ees_other_injected) bits.push('EES other row posted');
       return escapeHtml(bits.join(' · '));
     }
@@ -5126,14 +5132,13 @@
     // "Dust" server-side rather than blank).
     let truckingEntry = null;
     let truckingMode  = null;
-    // Guards on the Edit Row pre-fill lookup, which is awaited after the modal
-    // is already on screen. Bumped on every open and on close, so a lookup that
+    // Guard on the Edit Row pre-fill lookup, which is awaited after the modal is
+    // already on screen. Bumped on every open and on close, so a lookup that
     // comes back late — the user closed the modal, or moved on to another day —
     // is dropped instead of writing one entry's haul fee and unit into the form
-    // of another. truckingDirty covers the other half: once payroll has typed
-    // anything, a slow answer must not overwrite what they typed.
+    // of another. What payroll has typed by the time a lookup lands is protected
+    // per box rather than per form: see dustTouched and truckingTouched.
     let truckingFetchSeq = 0;
-    let truckingDirty    = false;
     // The Trucking division's own unit roster ({name, number}), used to offer
     // the office's own unit names in the Unit box instead of leaving it free
     // text that has to match them by luck — their tab looks a row's unit up by
@@ -5203,61 +5208,170 @@
     // by hand (setLocation fills the state, setVehicle fills the rate, the
     // customer's default rate beating the vehicle's own).
     //
-    // The customer's men, pads, vehicles and defaults are fetched per entry
-    // (action=split, which also returns the injected row when re-editing). They
-    // land after the modal is already on screen, so applying them must never
-    // overwrite something the approver has already typed — see dustTouched.
-    let dustOptions = null;
-    let dustRowSeen = null;   // the injected row on a re-edit; null on a fresh approve
-    // Did the row this Edit Row is meant to CORRECT actually arrive?
-    //   'none'    — a fresh approve; there is no posted row to load.
+    // One day can be more than one haul. A driver's ten hours might be 4,000
+    // gallons on one customer's pad and 2,000 on another's, and the dust office
+    // bills those as two invoice lines, not one. So this half of the modal is a
+    // list of LEGS: the approving supervisor splits the day the same way the
+    // driver can split it across jobs on the timesheet, and each leg posts its
+    // own row with its own customer, window, pad and gallons. The Truck Tracking
+    // row is not split — it bills the driver's whole day at one haul fee.
+    //
+    // The legs are held as a model rather than read back off the inputs, because
+    // three things write to them: the approver, the cascades, and the per-entry
+    // lookup (action=split) that lands after the modal is already on screen. The
+    // model is what survives a re-render; dustTouched is what stops any of the
+    // other two overwriting an answer the approver has already given.
+    let dustOptions   = null;   // the timesheet customer's men, pads, rates, equipment
+    let dustCompanies = null;   // every dust customer, for a leg that names another
+    let dustRowsSeen  = null;   // the injected rows on a re-edit; null on a fresh approve
+    // Did the rows this Edit Row is meant to CORRECT actually arrive?
+    //   'none'    — a fresh approve; there is nothing posted to load.
     //   'pending' — the lookup is in flight.
-    //   'loaded'  — it answered (a null row is a valid answer: an entry approved
+    //   'loaded'  — it answered (no rows is a valid answer: an entry approved
     //               before dust rows existed has none yet).
     //   'failed'  — it threw. Saving now would send the blank boxes as
-    //               deliberate clears and wipe the posted row, so saving is
+    //               deliberate clears and wipe the posted rows, so saving is
     //               refused until the modal is reopened.
     let dustRowLoad = 'none';
-    // Boxes the approver has typed in or picked in. A late-arriving default
-    // never lands on one of these, and neither does a cascade.
+    let dustLegs    = [];   // the model every dust box renders from
+    let dustLegSeq  = 0;    // monotonic: a removed leg's ids never come back
+    // "<leg key>|<field>" for every box the approver has typed in or picked in.
+    // A late-arriving default never lands on one of these, and neither does a
+    // cascade from another box.
     const dustTouched = new Set();
+    // Boxes in the trucking half they have touched. Same rule, different half:
+    // those three are plain inputs rather than a model, so a re-render puts them
+    // back the way the server's answer says — unless the approver got there
+    // first, in which case their typing is restored on top.
+    const truckingTouched = new Set();
     const isDustEntry = () => !!truckingEntry && truckingEntry.division === 'dust';
+    // Mirrors MAX_DUST_ROWS in api/lib/dust-injected.js, which refuses more.
+    const MAX_DUST_LEGS = 6;
+    const DK_FIELDS = [
+      'company', 'start_time', 'end_time', 'company_man', 'location', 'state',
+      'gallons_ub', 'vehicle1', 'v1_rate', 'vehicle2', 'v2_rate',
+    ];
 
-    // One place that puts fields on screen, so the dropdown and the hint can
-    // never be left behind by a re-render.
+    // One place that puts fields on screen, so the dropdowns, the hint and the
+    // legs can never be left behind by a re-render.
+    //
+    // Re-rendering is safe at any moment because everything on screen is held
+    // somewhere else: the dust legs in dustLegs, the trucking boxes the approver
+    // has touched in the DOM values captured here. Only the caret is lost, and
+    // even that is put back — the pre-fill lookup lands a moment after the modal
+    // opens, which is exactly when somebody may already be typing.
     function truckingRenderFields(row) {
+      const keep = {};
+      for (const id of ['tk_unit', 'tk_haulFee', 'tk_division']) {
+        if (!truckingTouched.has(id)) continue;
+        const el = document.getElementById(id);
+        if (el) keep[id] = el.value;
+      }
+      const active = document.activeElement;
+      const focusId = (active && active.id) ? active.id : '';
+      const caret = (active && typeof active.selectionStart === 'number') ? active.selectionStart : null;
+
       document.getElementById('truckingFields').innerHTML =
-        truckingFieldsHtml(row) + dustFieldsHtml(dustRowSeen);
+        truckingFieldsHtml(row) + dustFieldsHtml();
+
+      for (const id of Object.keys(keep)) {
+        const el = document.getElementById(id);
+        if (el) el.value = keep[id];
+      }
       truckUnitHintRefresh();
+      dustTallyRefresh();
+      // The note counts the rows this save will post, so adding a haul has to
+      // re-say it or the modal claims one row while showing two.
+      truckingNoteRefresh();
+      if (focusId) {
+        const again = document.getElementById(focusId);
+        if (again) {
+          again.focus();
+          // Number and time inputs throw on setSelectionRange; the focus is the
+          // part that matters, so losing the caret on those is not worth a
+          // broken render.
+          if (caret != null && typeof again.setSelectionRange === 'function') {
+            try { again.setSelectionRange(caret, caret); } catch (_) {}
+          }
+        }
+      }
     }
 
     const DK_SPAN = 'grid-column:1 / -1';
-    // The values every dust box opens with. An injected row is the answer
-    // outright, blanks included — an escort the approver deliberately cleared
-    // last time must not be suggested back at them on the next edit. Only when
-    // there is no row yet does the customer get to fill the boxes in.
-    function dustPrefill(row) {
+
+    // ── Leg model ─────────────────────────────────────────────────────────
+    const dkTouched  = (leg, field) => dustTouched.has(leg.key + '|' + field);
+    const dkFindLeg  = key => dustLegs.find(l => l.key === Number(key)) || null;
+    const dkStr      = v => (v == null ? '' : String(v));
+
+    // Minutes since midnight, and back. Overnight is handled the way dust.html's
+    // own calc() handles it — a leg that ends before it starts ran past midnight
+    // — so the hours shown here are the hours that tab will bill.
+    function dkMins(hhmm) {
+      // Not anchored at the end: a TIME column can come back as "05:00:00", and
+      // an hours figure that silently reads 0 is worse than one second of slop.
+      const m = /^(\d{1,2}):(\d{2})/.exec(String(hhmm || ''));
+      if (!m) return null;
+      const h = Number(m[1]), mi = Number(m[2]);
+      if (h > 23 || mi > 59) return null;
+      return h * 60 + mi;
+    }
+    function dkHhmm(mins) {
+      const t = ((Math.round(mins) % 1440) + 1440) % 1440;
+      return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
+    }
+    function dustLegHours(leg) {
+      const s = dkMins(leg && leg.start_time), e = dkMins(leg && leg.end_time);
+      if (s == null || e == null) return 0;
+      let d = e - s;
+      if (d < 0) d += 1440;
+      return Math.round(d / 60 * 100) / 100;
+    }
+    const dustLegsHours = () => Math.round(dustLegs.reduce((t, l) => t + dustLegHours(l), 0) * 100) / 100;
+    // The clock window on the timesheet — what the legs are carving up. Not
+    // work+travel: travel logged outside the window never reaches these rows
+    // (the Truck Tracking row is where it bills), so counting it here would
+    // always read as under-allocated.
+    function dustEntryHours() {
+      if (!truckingEntry) return 0;
+      return dustLegHours({ start_time: truckingEntry.start_time, end_time: truckingEntry.end_time });
+    }
+
+    // The customer on the timesheet. Taken from the lookup once it lands, which
+    // resolves a renamed customer back to its current name; until then the label
+    // the driver picked is the best answer there is, and it is what the Customer
+    // box opens on rather than sitting blank for a moment.
+    function dustEntryCoName() {
       const o = dustOptions || {};
-      const s = v => (v == null ? '' : String(v));
-      if (row) {
+      return dkStr(o.company) || dkStr(truckingEntry && truckingEntry.job_label);
+    }
+
+    // The customer a leg is filled in from: the one it names, falling back to the
+    // one on the timesheet. An unknown name is not an error — the boxes are free
+    // text and save as typed — it just has nothing to offer.
+    function dustCoFor(name) {
+      const o = dustOptions || {};
+      const entryName = dustEntryCoName();
+      const want = dkStr(name).trim();
+      if (!want || want.toLowerCase() === entryName.trim().toLowerCase()) {
         return {
-          company_man: s(row.company_man), location: s(row.location), state: s(row.state),
-          vehicle1: s(row.vehicle1), v1_rate: s(row.v1_rate),
-          vehicle2: s(row.vehicle2), v2_rate: s(row.v2_rate),
-          gallons_ub: s(row.gallons_ub),
+          name: entryName, known: !!o.known,
+          v1_rate: o.v1_rate != null ? o.v1_rate : null,
+          v2_rate: o.v2_rate != null ? o.v2_rate : null,
+          men: o.men || [], locations: o.locations || [],
+          usual_vehicle2: dkStr(o.usual_vehicle2),
         };
       }
+      const hit = (dustCompanies || []).find(c => dkStr(c.name).trim().toLowerCase() === want.toLowerCase());
+      if (!hit) return { name: want, known: false, v1_rate: null, v2_rate: null, men: [], locations: [], usual_vehicle2: '' };
       return {
-        company_man: '', location: '', state: '',
-        // The truck the driver logged on the timesheet. Payroll can correct it:
-        // the driver's Unit box offers the TRUCKING office's roster, and dust
-        // names its vehicles its own way ("Distributor Truck 4000").
-        vehicle1: truckingEntry ? s(truckingEntry.truck_unit) : '',
-        v1_rate:  dkRateFor(truckingEntry ? truckingEntry.truck_unit : '', o.v1_rate),
-        // Nobody enters the escort on a timesheet — it follows from the customer.
-        vehicle2: s(o.usual_vehicle2),
-        v2_rate:  dkRateFor(o.usual_vehicle2, o.v2_rate),
-        gallons_ub: '',
+        name: hit.name, known: true,
+        v1_rate: hit.v1_rate != null ? hit.v1_rate : null,
+        v2_rate: hit.v2_rate != null ? hit.v2_rate : null,
+        men: hit.men || [], locations: hit.locations || [],
+        // Only the timesheet customer's usual escort is learned server-side, so
+        // another customer's leg is offered none rather than the wrong one.
+        usual_vehicle2: '',
       };
     }
 
@@ -5267,153 +5381,385 @@
     // sends whatever is in it, so a blank here is saved as a deliberate blank
     // and the server's own fallback never gets to fire.
     function dkRateFor(vehicleName, coRate) {
-      const name = String(vehicleName || '').trim();
+      const name = dkStr(vehicleName).trim();
       if (!name) return '';
       if (coRate != null) return String(coRate);
       const eq = ((dustOptions || {}).equipment || [])
-        .find(e => String(e.name).toLowerCase() === name.toLowerCase());
+        .find(e => dkStr(e.name).toLowerCase() === name.toLowerCase());
       return (eq && eq.vehicle_rate != null) ? String(eq.vehicle_rate) : '';
     }
 
+    // A leg built from an already-posted row: its own answers outright, blanks
+    // included — an escort the approver deliberately cleared last time must not
+    // be suggested back at them on the next edit.
+    function dustLegFromRow(row) {
+      const leg = { key: ++dustLegSeq };
+      for (const f of DK_FIELDS) leg[f] = dkStr(row[f]);
+      return leg;
+    }
+
+    // The leg a fresh approve opens on: the whole day, the customer off the
+    // timesheet, and whatever that customer implies. `after` seeds an added leg
+    // from the one above it instead.
+    function dustFreshLeg(after) {
+      const co = dustCoFor(after ? after.company : '');
+      const leg = { key: ++dustLegSeq };
+      for (const f of DK_FIELDS) leg[f] = '';
+      leg.company = after ? dkStr(after.company) : co.name;
+      if (after) {
+        // Halve the leg above and hand this one the back half, so adding a leg
+        // to a ten-hour day starts life as the 5/5 it usually is. Both windows
+        // stay inside the day, and either can be corrected afterwards.
+        const s = dkMins(after.start_time), e = dkMins(after.end_time);
+        if (s != null && e != null) {
+          let span = e - s;
+          if (span < 0) span += 1440;
+          const mid = dkHhmm(s + Math.round(span / 2));
+          leg.start_time = mid;
+          leg.end_time   = after.end_time;
+          after.end_time = mid;
+          // The carve is the approver's own doing, so a pre-fill landing a
+          // moment later must not put the leg above back to the whole day.
+          dustTouched.add(after.key + '|end_time');
+        }
+        // The same truck runs the next pad unless the approver says otherwise.
+        leg.vehicle1 = dkStr(after.vehicle1);
+        leg.vehicle2 = dkStr(after.vehicle2);
+      } else {
+        leg.start_time = dkStr(truckingEntry && truckingEntry.start_time).slice(0, 5);
+        leg.end_time   = dkStr(truckingEntry && truckingEntry.end_time).slice(0, 5);
+        // The truck the driver logged on the timesheet. Payroll can correct it:
+        // the driver's Unit box offers the TRUCKING office's roster, and dust
+        // names its vehicles its own way ("Distributor Truck 4000").
+        leg.vehicle1 = dkStr(truckingEntry && truckingEntry.truck_unit);
+        // Nobody enters the escort on a timesheet — it follows from the customer.
+        leg.vehicle2 = co.usual_vehicle2;
+      }
+      leg.v1_rate = dkRateFor(leg.vehicle1, co.v1_rate);
+      leg.v2_rate = dkRateFor(leg.vehicle2, co.v2_rate);
+      return leg;
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────
     function dkOptionsHtml(values) {
       return (values || []).map(v => `<option value="${escapeHtml(String(v))}"></option>`).join('');
     }
-    function dustFieldsHtml(row) {
-      if (!isDustEntry()) return '';
-      const p = dustPrefill(row);
-      const o = dustOptions || {};
-      const men   = o.men || [];
-      const locs  = (o.locations || []).map(l => l.name);
-      const vehs  = (o.equipment || []).map(e => e.name);
-      // Said once, under the heading, rather than as a warning on each box: when
-      // the customer isn't in the dust lists there is nothing to offer, and the
-      // boxes are plain text that still save exactly as typed.
-      const unknown = (dustOptions && !o.known)
-        ? ` <span style="font-weight:400;color:#fbbf24">— this customer isn't in the dust company list, so nothing is offered below</span>`
+    // `oninput` handlers all route through dkEdit, so the model and the touched
+    // set stay in step with the boxes without a listener having to guess which
+    // leg an id belonged to.
+    const dkIn = (leg, field) => `oninput="dkEdit(${leg.key},'${field}',this.value)"`;
+
+    function dustLegHtml(leg, idx, count) {
+      const co    = dustCoFor(leg.company);
+      const split = count > 1;
+      const hours = dustLegHours(leg);
+      const men   = co.men || [];
+      const locs  = (co.locations || []).map(l => l.name);
+      // Said once, on the leg it applies to: when the customer isn't in the dust
+      // lists there is nothing to offer, and the boxes are plain text that still
+      // save exactly as typed.
+      const unknown = (dustOptions && !co.known && dkStr(leg.company).trim())
+        ? `<span style="font-weight:400;color:#fbbf24">not in the dust company list — nothing offered below</span>`
         : '';
       return `
-        <div style="${DK_SPAN};margin-top:6px;padding-top:12px;border-top:1px solid var(--border);
-                    font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#a5b4fc">
-          Dust Control Tracking${unknown}
-        </div>
-        <label style="${TK_LABEL}"><span>Company Man</span>
-          <input type="text" id="dk_companyMan" list="dk_manOptions" autocomplete="off" maxlength="200"
-            value="${escapeHtml(p.company_man)}" placeholder="Customer contact" style="${TK_INPUT}">
-          <datalist id="dk_manOptions">${dkOptionsHtml(men)}</datalist></label>
-        <label style="${TK_LABEL}"><span>Location</span>
-          <input type="text" id="dk_location" list="dk_locOptions" autocomplete="off" maxlength="500"
-            value="${escapeHtml(p.location)}" placeholder="Well pad / lease" style="${TK_INPUT}"
-            oninput="dustOnLocation()">
-          <datalist id="dk_locOptions">${dkOptionsHtml(locs)}</datalist></label>
-        <label style="${TK_LABEL}"><span>State <span style="font-weight:400;color:var(--muted)">(from the location)</span></span>
-          <input type="text" id="dk_state" maxlength="50" value="${escapeHtml(p.state)}"
-            placeholder="PA / WV / OH" style="${TK_INPUT}"></label>
-        <label style="${TK_LABEL}"><span>Gallons of UB</span>
-          <input type="number" id="dk_gallons" min="0" step="0.1" value="${escapeHtml(p.gallons_ub)}"
-            placeholder="0" style="${TK_INPUT}"></label>
-        <label style="${TK_LABEL}"><span>Vehicle 1 <span style="font-weight:400;color:var(--muted)">(the unit)</span></span>
-          <input type="text" id="dk_vehicle1" list="dk_vehOptions" autocomplete="off" maxlength="200"
-            value="${escapeHtml(p.vehicle1)}" placeholder="e.g. Distributor Truck 4000" style="${TK_INPUT}"
-            oninput="dustOnVehicle(1)">
-          <datalist id="dk_vehOptions">${dkOptionsHtml(vehs)}</datalist></label>
-        <label style="${TK_LABEL}"><span>Vehicle 1 Rate ($/hr)</span>
-          <input type="number" id="dk_v1Rate" min="0" step="0.01" value="${escapeHtml(p.v1_rate)}"
-            placeholder="0.00" style="${TK_INPUT}"></label>
-        <label style="${TK_LABEL}"><span>Vehicle 2 <span style="font-weight:400;color:var(--muted)">(escort)</span></span>
-          <input type="text" id="dk_vehicle2" list="dk_vehOptions" autocomplete="off" maxlength="200"
-            value="${escapeHtml(p.vehicle2)}" placeholder="none" style="${TK_INPUT}"
-            oninput="dustOnVehicle(2)">
-        </label>
-        <label style="${TK_LABEL}"><span>Vehicle 2 Rate ($/hr)</span>
-          <input type="number" id="dk_v2Rate" min="0" step="0.01" value="${escapeHtml(p.v2_rate)}"
-            placeholder="0.00" style="${TK_INPUT}"></label>`;
+        <div style="${DK_SPAN};display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;
+                    ${split ? 'border:1px solid var(--border);border-radius:8px;padding:12px 14px' : ''}">
+          ${split ? `<div style="${DK_SPAN};display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#a5b4fc">
+              Haul ${idx + 1} of ${count}</span>
+            <span id="dk_${leg.key}_hoursOut" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums">${num2(hours)} h</span>
+            ${unknown}
+            <div style="flex:1"></div>
+            <button type="button" class="split-row-del" onclick="dustRemoveLeg(${leg.key})">Remove</button>
+          </div>` : (unknown ? `<div style="${DK_SPAN};font-size:12px">${unknown}</div>` : '')}
+          <label style="${TK_LABEL}"><span>Customer <span style="font-weight:400;color:var(--muted)">(who this haul bills to)</span></span>
+            <input type="text" id="dk_${leg.key}_company" list="dk_coOptions" autocomplete="off" maxlength="200"
+              value="${escapeHtml(leg.company)}" placeholder="Customer" style="${TK_INPUT}"
+              onchange="dustSetCompany(${leg.key}, this.value)"></label>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;align-items:start">
+            <label style="${TK_LABEL}"><span>Start</span>
+              <input type="time" id="dk_${leg.key}_start" value="${escapeHtml(leg.start_time)}" style="${TK_INPUT}"
+                ${dkIn(leg, 'start_time')}></label>
+            <label style="${TK_LABEL}"><span>End</span>
+              <input type="time" id="dk_${leg.key}_end" value="${escapeHtml(leg.end_time)}" style="${TK_INPUT}"
+                ${dkIn(leg, 'end_time')}></label>
+            <label style="${TK_LABEL}"><span>Hours</span>
+              <input type="number" id="dk_${leg.key}_hours" min="0" step="0.25" value="${hours ? num2(hours) : ''}"
+                placeholder="0.00" style="${TK_INPUT}" onchange="dustSetHours(${leg.key}, this.value)"></label>
+          </div>
+          <label style="${TK_LABEL}"><span>Company Man</span>
+            <input type="text" id="dk_${leg.key}_companyMan" list="dk_${leg.key}_manOptions" autocomplete="off" maxlength="200"
+              value="${escapeHtml(leg.company_man)}" placeholder="Customer contact" style="${TK_INPUT}"
+              ${dkIn(leg, 'company_man')}>
+            <datalist id="dk_${leg.key}_manOptions">${dkOptionsHtml(men)}</datalist></label>
+          <label style="${TK_LABEL}"><span>Location</span>
+            <input type="text" id="dk_${leg.key}_location" list="dk_${leg.key}_locOptions" autocomplete="off" maxlength="500"
+              value="${escapeHtml(leg.location)}" placeholder="Well pad / lease" style="${TK_INPUT}"
+              ${dkIn(leg, 'location')}>
+            <datalist id="dk_${leg.key}_locOptions">${dkOptionsHtml(locs)}</datalist></label>
+          <label style="${TK_LABEL}"><span>State <span style="font-weight:400;color:var(--muted)">(from the location)</span></span>
+            <input type="text" id="dk_${leg.key}_state" maxlength="50" value="${escapeHtml(leg.state)}"
+              placeholder="PA / WV / OH" style="${TK_INPUT}" ${dkIn(leg, 'state')}></label>
+          <label style="${TK_LABEL}"><span>Gallons of UB</span>
+            <input type="number" id="dk_${leg.key}_gallons" min="0" step="0.1" value="${escapeHtml(leg.gallons_ub)}"
+              placeholder="0" style="${TK_INPUT}" ${dkIn(leg, 'gallons_ub')}></label>
+          <label style="${TK_LABEL}"><span>Vehicle 1 <span style="font-weight:400;color:var(--muted)">(the unit)</span></span>
+            <input type="text" id="dk_${leg.key}_vehicle1" list="dk_vehOptions" autocomplete="off" maxlength="200"
+              value="${escapeHtml(leg.vehicle1)}" placeholder="e.g. Distributor Truck 4000" style="${TK_INPUT}"
+              ${dkIn(leg, 'vehicle1')}></label>
+          <label style="${TK_LABEL}"><span>Vehicle 1 Rate ($/hr)</span>
+            <input type="number" id="dk_${leg.key}_v1Rate" min="0" step="0.01" value="${escapeHtml(leg.v1_rate)}"
+              placeholder="0.00" style="${TK_INPUT}" ${dkIn(leg, 'v1_rate')}></label>
+          <label style="${TK_LABEL}"><span>Vehicle 2 <span style="font-weight:400;color:var(--muted)">(escort)</span></span>
+            <input type="text" id="dk_${leg.key}_vehicle2" list="dk_vehOptions" autocomplete="off" maxlength="200"
+              value="${escapeHtml(leg.vehicle2)}" placeholder="none" style="${TK_INPUT}"
+              ${dkIn(leg, 'vehicle2')}></label>
+          <label style="${TK_LABEL}"><span>Vehicle 2 Rate ($/hr)</span>
+            <input type="number" id="dk_${leg.key}_v2Rate" min="0" step="0.01" value="${escapeHtml(leg.v2_rate)}"
+              placeholder="0.00" style="${TK_INPUT}" ${dkIn(leg, 'v2_rate')}></label>
+        </div>`;
     }
 
-    // Set a dust box the approver has not touched. Returns nothing — a box they
-    // HAVE touched is their answer, and a cascade must not argue with it.
-    function dkSet(id, value) {
-      if (dustTouched.has(id)) return;
-      const el = document.getElementById(id);
-      if (el) el.value = value == null ? '' : String(value);
+    function dustFieldsHtml() {
+      if (!isDustEntry()) return '';
+      const count = dustLegs.length;
+      const vehs  = ((dustOptions || {}).equipment || []).map(e => e.name);
+      const cos   = (dustCompanies || []).map(c => c.name);
+      const atMax = count >= MAX_DUST_LEGS;
+      return `
+        <div style="${DK_SPAN};margin-top:6px;padding-top:12px;border-top:1px solid var(--border);
+                    display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#a5b4fc">
+            Dust Control Tracking</span>
+          <span style="font-size:12px;color:var(--muted)">
+            ${count > 1 ? `${count} rows — one per haul` : 'one row'}</span>
+        </div>
+        <datalist id="dk_vehOptions">${dkOptionsHtml(vehs)}</datalist>
+        <datalist id="dk_coOptions">${dkOptionsHtml(cos)}</datalist>
+        ${dustLegs.map((leg, i) => dustLegHtml(leg, i, count)).join('')}
+        <div style="${DK_SPAN};display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <button type="button" onclick="dustAddLeg()" ${atMax ? 'disabled' : ''}
+            style="background:var(--bg);border:1px solid var(--border);color:var(--text);
+                   padding:0.45rem 0.85rem;border-radius:5px;font-size:0.78rem;
+                   cursor:${atMax ? 'not-allowed' : 'pointer'};opacity:${atMax ? '0.5' : '1'}">
+            ${count > 1 ? '+ Add another haul' : '+ Split this day across hauls'}</button>
+          <span id="dustTally" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums"></span>
+        </div>`;
     }
+
+    // The hours line under the legs. Says what the legs add up to against the
+    // clock window they are carving, and colours it only when they disagree —
+    // a gap between hauls is legitimate, so this reports rather than blocks.
+    function dustTallyRefresh() {
+      const el = document.getElementById('dustTally');
+      if (!el) return;
+      const legs = dustLegsHours();
+      const day  = dustEntryHours();
+      const off  = Math.round((legs - day) * 100) / 100;
+      const ok   = Math.abs(off) < 0.01;
+      el.style.color = ok ? 'var(--muted)' : '#fbbf24';
+      el.textContent = dustLegs.length > 1
+        ? (ok
+            ? `${num2(legs)} h across ${dustLegs.length} hauls — the whole clock window.`
+            : `${num2(legs)} h across ${dustLegs.length} hauls, ${num2(day)} h on the clock (${off > 0 ? '+' : ''}${num2(off)} h).`)
+        : (ok ? '' : `${num2(legs)} h on this row, ${num2(day)} h on the clock.`);
+      // The per-leg hours readouts and boxes follow the same numbers.
+      for (const leg of dustLegs) {
+        const h = dustLegHours(leg);
+        const out = document.getElementById(`dk_${leg.key}_hoursOut`);
+        if (out) out.textContent = `${num2(h)} h`;
+        const box = document.getElementById(`dk_${leg.key}_hours`);
+        // Never while they are typing in it: rewriting "1" to "1.00" mid-keystroke
+        // is how a box fights the person filling it in.
+        if (box && document.activeElement !== box) box.value = h ? num2(h) : '';
+      }
+    }
+
+    // ── Editing ───────────────────────────────────────────────────────────
+    // Every box routes here: the model takes the value, the box is marked as
+    // answered, and whatever follows from it is filled in.
+    function dkEdit(key, field, value) {
+      const leg = dkFindLeg(key);
+      if (!leg) return;
+      leg[field] = dkStr(value);
+      dustTouched.add(leg.key + '|' + field);
+      if (field === 'location') dustCascadeLocation(leg);
+      if (field === 'vehicle1') dustCascadeVehicle(leg, 1);
+      if (field === 'vehicle2') dustCascadeVehicle(leg, 2);
+      if (field === 'start_time' || field === 'end_time') dustTallyRefresh();
+    }
+
+    // Write a derived value into a box the approver has not answered themselves,
+    // model and DOM together. A box they HAVE touched is their answer, and a
+    // cascade must not argue with it.
+    function dkSet(leg, field, domId, value) {
+      if (dkTouched(leg, field)) return;
+      leg[field] = dkStr(value);
+      const el = document.getElementById(`dk_${leg.key}_${domId}`);
+      if (el) el.value = leg[field];
+    }
+
     // Picking a location fills the state in, exactly as it does in dust.html.
-    function dustOnLocation() {
-      const o = dustOptions || {};
-      const val = String((document.getElementById('dk_location') || {}).value || '').trim();
+    function dustCascadeLocation(leg) {
+      const co  = dustCoFor(leg.company);
+      const val = dkStr(leg.location).trim();
       if (!val) return;
-      const hit = (o.locations || []).find(l => String(l.name).toLowerCase() === val.toLowerCase());
-      if (hit && hit.state) dkSet('dk_state', hit.state);
+      const hit = (co.locations || []).find(l => dkStr(l.name).toLowerCase() === val.toLowerCase());
+      if (hit && hit.state) dkSet(leg, 'state', 'state', hit.state);
     }
     // Picking a vehicle fills its rate in. The CUSTOMER's default for the slot
     // wins over the vehicle's own — the rule dust.html's setVehicle applies —
     // and the vehicle's rate is only the fallback when the customer has none.
-    function dustOnVehicle(num) {
-      const o = dustOptions || {};
-      const vId = num === 1 ? 'dk_vehicle1' : 'dk_vehicle2';
-      const rId = num === 1 ? 'dk_v1Rate'   : 'dk_v2Rate';
-      const val = String((document.getElementById(vId) || {}).value || '').trim();
+    function dustCascadeVehicle(leg, num) {
+      const co  = dustCoFor(leg.company);
+      const val = dkStr(num === 1 ? leg.vehicle1 : leg.vehicle2).trim();
       if (!val) return;
-      const coRate = num === 1 ? o.v1_rate : o.v2_rate;
-      const eq = (o.equipment || []).find(e => String(e.name).toLowerCase() === val.toLowerCase());
+      const coRate = num === 1 ? co.v1_rate : co.v2_rate;
+      const eq = ((dustOptions || {}).equipment || [])
+        .find(e => dkStr(e.name).toLowerCase() === val.toLowerCase());
       const rate = coRate != null ? coRate : (eq && eq.vehicle_rate != null ? eq.vehicle_rate : null);
-      if (rate != null) dkSet(rId, rate);
-    }
-
-    // The customer's lists have arrived. Fill the dropdowns, and fill in the
-    // boxes that are still both empty and untouched — a default that shows up
-    // late must never land on top of something already typed, and must never
-    // silently re-fill a box the approver has deliberately cleared.
-    function dustApplyOptions() {
-      if (!isDustEntry()) return;
-      const o = dustOptions || {};
-      const fill = (id, values) => {
-        const dl = document.getElementById(id);
-        if (dl) dl.innerHTML = dkOptionsHtml(values);
-      };
-      fill('dk_manOptions', o.men || []);
-      fill('dk_locOptions', (o.locations || []).map(l => l.name));
-      fill('dk_vehOptions', (o.equipment || []).map(e => e.name));
-      // A pad typed while the lists were still in flight never got its cascade —
-      // dustOnLocation found an empty list and left the state blank, and blank
-      // saves as a deliberate blank. Run it now that the pads are known. dkSet
-      // skips anything the approver has since touched.
-      dustOnLocation();
-      dustOnVehicle(1);
-      dustOnVehicle(2);
-      // On a re-edit the injected row already answered every box; only a fresh
-      // approve takes suggestions from the customer.
-      if (dustRowSeen) return;
-      const p = dustPrefill(null);
-      for (const [id, val] of [
-        ['dk_vehicle1', p.vehicle1], ['dk_v1Rate', p.v1_rate],
-        ['dk_vehicle2', p.vehicle2], ['dk_v2Rate', p.v2_rate],
-      ]) {
-        const el = document.getElementById(id);
-        if (el && !String(el.value || '').trim()) dkSet(id, val);
+      if (rate != null) {
+        if (num === 1) dkSet(leg, 'v1_rate', 'v1Rate', rate);
+        else           dkSet(leg, 'v2_rate', 'v2Rate', rate);
       }
     }
 
-    // Put an already-posted row's own answers into the boxes the approver has
-    // not touched.
+    // Typing hours moves the end of the leg, because hours are what a supervisor
+    // knows ("five hours at Bear Hollow") and the tab bills on the window. Needs
+    // a start to count from; without one the box is left for the times to fill.
+    function dustSetHours(key, value) {
+      const leg = dkFindLeg(key);
+      if (!leg) return;
+      const hrs = Number(value);
+      const s   = dkMins(leg.start_time);
+      if (!Number.isFinite(hrs) || hrs <= 0 || s == null) { dustTallyRefresh(); return; }
+      const capped = Math.min(hrs, 24);
+      leg.end_time = dkHhmm(s + Math.round(capped * 60));
+      dustTouched.add(leg.key + '|end_time');
+      const el = document.getElementById(`dk_${leg.key}_end`);
+      if (el) el.value = leg.end_time;
+      dustTallyRefresh();
+    }
+
+    // Changing the customer re-points the whole leg. The men, the pad, the state
+    // and the escort belong to the customer that was there before, so they go
+    // rather than sit under a heading they no longer match, and the rates are
+    // re-derived from the new customer's defaults — including over a rate that
+    // was typed, because naming a different customer is the bigger statement of
+    // the two. The truck stays: it is the driver's, not the customer's.
+    function dustSetCompany(key, value) {
+      const leg = dkFindLeg(key);
+      if (!leg) return;
+      const before = dkStr(leg.company).trim().toLowerCase();
+      leg.company = dkStr(value);
+      dustTouched.add(leg.key + '|company');
+      if (before !== leg.company.trim().toLowerCase()) {
+        const co = dustCoFor(leg.company);
+        // Only the timesheet customer's usual escort is known, so a leg moved to
+        // anyone else starts with none rather than billing them for the escort
+        // the last customer gets.
+        const escort = co.usual_vehicle2;
+        for (const [f, v] of [['company_man', ''], ['location', ''], ['state', ''],
+                              ['vehicle2', escort],
+                              ['v1_rate', dkRateFor(leg.vehicle1, co.v1_rate)],
+                              ['v2_rate', dkRateFor(escort, co.v2_rate)]]) {
+          leg[f] = v;
+          dustTouched.delete(leg.key + '|' + f);
+        }
+      }
+      truckingRenderFields(dustLastTruckingRow);
+    }
+
+    function dustAddLeg() {
+      const msg = document.getElementById('truckingMsg');
+      if (dustLegs.length >= MAX_DUST_LEGS) {
+        msg.className = 'modal-msg error';
+        msg.textContent = `A day can be split across at most ${MAX_DUST_LEGS} hauls.`;
+        return;
+      }
+      dustLegs.push(dustFreshLeg(dustLegs[dustLegs.length - 1] || null));
+      truckingRenderFields(dustLastTruckingRow);
+    }
+
+    function dustRemoveLeg(key) {
+      if (dustLegs.length <= 1) return;
+      const leg = dkFindLeg(key);
+      if (!leg) return;
+      // Give the hours back to the leg above, so removing the second half of a
+      // day leaves the first half covering it rather than silently short.
+      const i = dustLegs.indexOf(leg);
+      const prev = dustLegs[i - 1];
+      if (prev && dkMins(prev.end_time) != null && dkMins(leg.end_time) != null
+          && dkStr(prev.end_time) === dkStr(leg.start_time)) {
+        prev.end_time = leg.end_time;
+        dustTouched.add(prev.key + '|end_time');
+      }
+      dustLegs.splice(i, 1);
+      for (const f of DK_FIELDS) dustTouched.delete(leg.key + '|' + f);
+      truckingRenderFields(dustLastTruckingRow);
+    }
+
+    // ── The per-entry lookup landing ──────────────────────────────────────
+    // The Truck Tracking row the last render was given, so a leg added (or a
+    // customer changed) after the lookup has landed re-renders that half with
+    // the row's own haul fee rather than blanking it.
+    let dustLastTruckingRow = null;
+
+    // The customer's lists have arrived. Fill in the boxes that are still both
+    // empty and untouched — a default that shows up late must never land on top
+    // of something already typed, and must never silently re-fill a box the
+    // approver has deliberately cleared.
+    function dustApplyOptions() {
+      if (!isDustEntry()) return;
+      for (const leg of dustLegs) {
+        // A pad typed while the lists were still in flight never got its cascade
+        // — dustCascadeLocation found an empty list and left the state blank,
+        // and blank saves as a deliberate blank. Run them now that the customer
+        // is known. dkSet skips anything the approver has since touched.
+        dustCascadeLocation(leg);
+        dustCascadeVehicle(leg, 1);
+        dustCascadeVehicle(leg, 2);
+      }
+      // On a re-edit the posted rows already answered every box; only a fresh
+      // approve takes suggestions from the customer.
+      if (dustRowsSeen) return;
+      for (const leg of dustLegs) {
+        const co = dustCoFor(leg.company);
+        if (!dkStr(leg.company).trim())  dkSet(leg, 'company', 'company', co.name);
+        if (!dkStr(leg.vehicle2).trim()) dkSet(leg, 'vehicle2', 'vehicle2', co.usual_vehicle2);
+        if (!dkStr(leg.v1_rate).trim())  dkSet(leg, 'v1_rate', 'v1Rate', dkRateFor(leg.vehicle1, co.v1_rate));
+        if (!dkStr(leg.v2_rate).trim())  dkSet(leg, 'v2_rate', 'v2Rate', dkRateFor(leg.vehicle2, co.v2_rate));
+      }
+    }
+
+    // Put the already-posted rows into the legs, box by box, skipping anything
+    // the approver has answered already.
     //
     // Needed because the lookup can land AFTER they have started typing, and the
     // boxes on screen until then hold the fresh-approve prefill — mostly blank.
     // Leaving them that way and saving would send those blanks as deliberate
     // clears and wipe the company man, the well pad, the state and the gallons
-    // off a row that was already billing. Their typing still wins: dkSet skips
+    // off rows that were already billing. Their typing still wins: dkSet skips
     // anything in dustTouched.
-    function dustApplyRow(row) {
-      if (!row) return;
-      const p = dustPrefill(row);
-      dkSet('dk_companyMan', p.company_man);
-      dkSet('dk_location',   p.location);
-      dkSet('dk_state',      p.state);
-      dkSet('dk_vehicle1',   p.vehicle1);
-      dkSet('dk_v1Rate',     p.v1_rate);
-      dkSet('dk_vehicle2',   p.vehicle2);
-      dkSet('dk_v2Rate',     p.v2_rate);
-      dkSet('dk_gallons',    p.gallons_ub);
+    function dustApplyRows(rows) {
+      if (!rows || !rows.length) return;
+      // A day approved as three hauls is edited as three: legs the modal opened
+      // with are filled from the rows in order, and any row past them is added
+      // rather than dropped — a leg left off the save is a row the server takes
+      // back, so dropping one here would quietly un-bill a haul.
+      while (dustLegs.length < rows.length) dustLegs.push(dustLegFromRow(rows[dustLegs.length]));
+      const domId = {
+        company: 'company', company_man: 'companyMan', location: 'location', state: 'state',
+        start_time: 'start', end_time: 'end', gallons_ub: 'gallons',
+        vehicle1: 'vehicle1', v1_rate: 'v1Rate', vehicle2: 'vehicle2', v2_rate: 'v2Rate',
+      };
+      rows.forEach((row, i) => {
+        const leg = dustLegs[i];
+        if (!leg) return;
+        for (const f of DK_FIELDS) dkSet(leg, f, domId[f], dkStr(row[f]));
+      });
     }
+
     const TK_LABEL = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
     const TK_INPUT = 'padding:8px 10px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:14px;width:100%;box-sizing:border-box';
     // Mirrors EES_JOB_IDS in api/timesheet-entries.js and timesheet.html. A dust
@@ -5471,8 +5817,8 @@
       const times = (entry.start_time && entry.end_time)
         ? `${escapeHtml(entry.start_time)} – ${escapeHtml(entry.end_time)}`
         : '—';
-      // A dust haul writes two rows, so the title names both tabs — the modal
-      // otherwise reads as if the dust boxes below it went nowhere.
+      // A dust haul writes at least two rows, so the title names both tabs — the
+      // modal otherwise reads as if the dust boxes below it went nowhere.
       const tabs = entry.division === 'dust' ? 'Dust + Truck Tracking' : 'Truck Tracking';
       document.getElementById('truckingTitle').textContent =
         (truckingMode === 'approve' ? `Approve & Add to ${tabs} — ` : `Edit ${tabs} Row — `)
@@ -5496,17 +5842,22 @@
       // Nothing from the last entry may survive into this one: the customer's
       // men, pads and vehicles are per-customer, and a stale set would offer one
       // customer's contacts on another's haul.
-      dustOptions = null;
-      dustRowSeen = null;
+      dustOptions   = null;
+      dustCompanies = null;
+      dustRowsSeen  = null;
+      dustLastTruckingRow = null;
       dustTouched.clear();
-      // Only a re-edit of a dust haul has a posted row that saving could wipe.
+      truckingTouched.clear();
+      // One haul covering the whole day is where every dust entry starts; the
+      // lookup below replaces this with the legs already posted when re-editing.
+      dustLegs = entry.division === 'dust' ? [dustFreshLeg(null)] : [];
+      // Only a re-edit of a dust haul has posted rows that saving could wipe.
       dustRowLoad = (truckingMode === 'resplit' && entry.division === 'dust') ? 'pending' : 'none';
       truckingNoteRefresh();
       truckingRenderFields(null);
       document.getElementById('truckingBackdrop').classList.add('open');
       // This open owns the form from here on; anything still in flight does not.
       const seq = ++truckingFetchSeq;
-      truckingDirty = false;
       // Fill the unit dropdown whenever the roster turns up — first open pays
       // for the fetch, later ones already have it. Touches only the options and
       // the hint, so it needs no staleness guard of its own: it is right for
@@ -5531,26 +5882,28 @@
           // OPTIONS are safe to take even once payroll has typed — they only
           // ever fill dropdowns and boxes still untouched (see dustApplyOptions).
           if (seq !== truckingFetchSeq) return;
-          const row     = j && j.trucking && j.trucking.row ? j.trucking.row : null;
-          const dustRow = (truckingMode === 'resplit' && j && j.dust && j.dust.row) ? j.dust.row : null;
-          dustOptions = (j && j.dust && j.dust.options) ? j.dust.options : null;
+          const row = j && j.trucking && j.trucking.row ? j.trucking.row : null;
+          // Every leg already posted, in order. `rows` is what a split-aware
+          // server answers; `row` alone is what one that predates splitting did.
+          const dustRows = (truckingMode === 'resplit' && j && j.dust)
+            ? (Array.isArray(j.dust.rows) ? j.dust.rows : (j.dust.row ? [j.dust.row] : null))
+            : null;
+          dustOptions   = (j && j.dust && j.dust.options) ? j.dust.options : null;
+          dustCompanies = (j && j.dust && Array.isArray(j.dust.companies)) ? j.dust.companies : null;
           if (dustRowLoad === 'pending') dustRowLoad = 'loaded';
-          if (!truckingDirty) {
-            // Nothing typed yet — re-render both halves from what came back.
-            dustRowSeen = dustRow;
-            truckingRenderFields(row);
-          } else {
-            // Payroll is already typing, so their boxes stand — but every box
-            // they have NOT touched must still end up holding the truth, because
-            // a box left blank here saves as a deliberate clear. On a re-edit
-            // that truth is the posted row; on a fresh approve it is the
-            // customer's defaults. Order matters: the row is authoritative, so
-            // dustRowSeen is set first to stop dustApplyOptions offering
-            // customer defaults over it.
-            dustRowSeen = dustRow;
-            dustApplyOptions();
-            dustApplyRow(dustRow);
-          }
+          // Every box payroll has NOT touched must end up holding the truth,
+          // because a box left blank here saves as a deliberate clear. On a
+          // re-edit that truth is the posted rows; on a fresh approve it is the
+          // customer's defaults. Order matters: the rows are authoritative, so
+          // dustRowsSeen is set first to stop dustApplyOptions offering customer
+          // defaults over them. Anything payroll has already typed stands —
+          // every write below goes through dkSet, which skips touched boxes, and
+          // the re-render puts their trucking boxes back on top.
+          dustRowsSeen = dustRows;
+          dustApplyOptions();
+          dustApplyRows(dustRows);
+          dustLastTruckingRow = row;
+          truckingRenderFields(row);
         } catch (_) {
           // The boxes are still holding the fresh-approve prefill. That is fine
           // for an approve — blank means blank there — but on a re-edit it would
@@ -5563,20 +5916,25 @@
       document.getElementById('truckingBackdrop').classList.remove('open');
       truckingEntry = null; truckingMode = null;
       truckingFetchSeq++;   // orphan any pre-fill still in flight
-      dustOptions = null; dustRowSeen = null; dustTouched.clear();
+      dustOptions = null; dustCompanies = null; dustRowsSeen = null;
+      dustLegs = []; dustLastTruckingRow = null;
+      dustTouched.clear(); truckingTouched.clear();
       dustRowLoad = 'none';
     }
     bindBackdropClose(document.getElementById('truckingBackdrop'), closeTrucking);
     // The container outlives every re-render of its inputs, and `input` bubbles,
     // so one listener here catches typing in whichever fields are on screen.
     // A dropdown pick fires `input` too, so the hint keeps up with both.
+    //
+    // The dust boxes keep their own record of what has been answered — each one
+    // says so through dkEdit, which knows the leg it belongs to. This listener
+    // covers the trucking half, whose three boxes are plain inputs: remembering
+    // them here is what lets a late-landing pre-fill re-render without taking a
+    // typed haul fee down with it.
     document.getElementById('truckingFields').addEventListener('input', (e) => {
-      truckingDirty = true;
       truckUnitHintRefresh();
-      // Remember which dust boxes the approver has answered, so neither a late
-      // default nor a cascade from another box can overwrite one of them.
       const id = e.target && e.target.id;
-      if (id && id.startsWith('dk_')) dustTouched.add(id);
+      if (id && id.startsWith('tk_')) truckingTouched.add(id);
     });
 
     // The note under the fields, which says where what you type ends up. A dust
@@ -5585,12 +5943,16 @@
     function truckingNoteRefresh() {
       const note = document.getElementById('truckingNote');
       if (!note) return;
+      const legs = isDustEntry() ? Math.max(1, dustLegs.length) : 1;
       note.innerHTML = isDustEntry()
-        ? `Approving posts <strong>two</strong> rows. <strong>Truck Tracking</strong> gets the driver,
-           hours, customer, description and unit from the timesheet, plus the haul fee above.
-           <strong>Dust Control Tracking</strong> gets the date, times and customer from the timesheet,
-           plus what you fill in below — the state, the vehicle rates and the escort follow from the
-           customer. Both rows are locked in their tabs and are edited here in Payroll.`
+        ? `Approving posts <strong>one Truck Tracking row</strong> and
+           <strong>${legs === 1 ? 'one Dust Control Tracking row' : legs + ' Dust Control Tracking rows'}</strong>.
+           Truck Tracking gets the driver, hours, customer, description and unit from the timesheet,
+           plus the haul fee above — the whole day on one row, whatever the day is split into.
+           Dust Control Tracking gets the date from the timesheet plus what you fill in below, one row
+           per haul: if the day ran to two customers or two pads, split it and give each its own
+           hours, gallons and pad. The state, the vehicle rates and the escort follow from whichever
+           customer that haul names. Every row is locked in its tab and is edited here in Payroll.`
         : `Driver, hours, customer and description are autofilled from the timesheet — the unit
            comes from it too, and can be corrected above. The row is locked in the Trucking
            division; it is edited here in Payroll.`;
@@ -5602,17 +5964,29 @@
       const msg = document.getElementById('truckingMsg');
       msg.className = 'modal-msg';
       // Every dust box is sent, blank included, because blank is a real answer
-      // on a fresh approve. On a re-edit that only holds once the posted row has
-      // been read back into the boxes — before then they are empty for a reason
-      // that has nothing to do with what is on the row, and saving would clear
-      // the company man, the well pad, the state and the gallons off work that
-      // is already billing.
+      // on a fresh approve. On a re-edit that only holds once the posted rows
+      // have been read back into the boxes — before then they are empty for a
+      // reason that has nothing to do with what is on them, and saving would
+      // clear the company man, the well pad, the state and the gallons off work
+      // that is already billing.
       if (dustRowLoad === 'pending' || dustRowLoad === 'failed') {
         msg.classList.add('error');
         msg.textContent = dustRowLoad === 'pending'
-          ? 'Still loading the row this entry already posted — try again in a moment.'
-          : 'Could not load the row this entry already posted. Saving now would blank it — close and reopen Edit Row.';
+          ? 'Still loading the rows this entry already posted — try again in a moment.'
+          : 'Could not load the rows this entry already posted. Saving now would blank them — close and reopen Edit Row.';
         return;
+      }
+      // A haul with no clock window bills nothing: the dust tab derives its
+      // hours from start and end, so an empty window is a row for vehicles that
+      // never rolled. Caught here rather than server-side because the fix is to
+      // fill the two boxes the approver is looking at.
+      if (isDustEntry() && dustLegs.length > 1) {
+        const blank = dustLegs.findIndex(l => !dustLegHours(l));
+        if (blank !== -1) {
+          msg.classList.add('error');
+          msg.textContent = `Haul ${blank + 1} has no hours — give it a start and end time, or remove it.`;
+          return;
+        }
       }
       const btn = document.getElementById('truckingSaveBtn');
       const trucking = {
@@ -5624,22 +5998,35 @@
         unit: _tkval('tk_unit'),
       };
       const body = { trucking };
-      // The dust half, sent only when its boxes are actually on screen. Every
-      // key goes even when blank: the boxes were shown pre-filled, so what is in
-      // them is the approver's answer, and clearing the escort has to stick.
-      // Bulk approve sends no `dust` key at all — one company man or one gallons
-      // figure cannot speak for a week of hauls — and the server reads that
-      // absence as "fill in what the customer implies".
-      if (isDustEntry() && document.getElementById('dk_companyMan')) {
+      // The dust half — one entry per haul, in the order they are on screen, so
+      // the server writes them as legs 1..n and takes back any leg this save no
+      // longer has. Every key goes even when blank: the boxes were shown
+      // pre-filled, so what is in them is the approver's answer, and clearing
+      // the escort has to stick. Bulk approve sends no `dust` key at all — one
+      // company man or one gallons figure cannot speak for a week of hauls — and
+      // the server reads that absence as "fill in what the customer implies".
+      if (isDustEntry() && dustLegs.length) {
+        // A leg on the timesheet's own customer sends no company at all, so the
+        // server resolves it the way it always has — by the job_id the driver
+        // picked, which still finds a customer that has been renamed since.
+        // Sending the name back would turn that into a name match and lose the
+        // renamed customer's rates and pads. Only a leg billed to someone else
+        // names them.
+        const entryCo = dustEntryCoName().trim().toLowerCase();
         body.dust = {
-          company_man: _tkval('dk_companyMan'),
-          location:    _tkval('dk_location'),
-          state:       _tkval('dk_state'),
-          vehicle1:    _tkval('dk_vehicle1'),
-          v1_rate:     _tkval('dk_v1Rate'),
-          vehicle2:    _tkval('dk_vehicle2'),
-          v2_rate:     _tkval('dk_v2Rate'),
-          gallons_ub:  _tkval('dk_gallons'),
+          rows: dustLegs.map(leg => ({
+            company:     dkStr(leg.company).trim().toLowerCase() === entryCo ? undefined : leg.company,
+            company_man: leg.company_man,
+            location:    leg.location,
+            state:       leg.state,
+            start_time:  leg.start_time,
+            end_time:    leg.end_time,
+            vehicle1:    leg.vehicle1,
+            v1_rate:     leg.v1_rate,
+            vehicle2:    leg.vehicle2,
+            v2_rate:     leg.v2_rate,
+            gallons_ub:  leg.gallons_ub,
+          })),
         };
       }
       const action = truckingMode === 'approve' ? 'approve' : 'resplit';
@@ -5653,7 +6040,11 @@
         const j = await res.json();
         if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
         msg.classList.add('success');
-        msg.textContent = action === 'approve' ? `Approved & added to ${tabs}.` : 'Row updated.';
+        const legs = (body.dust && body.dust.rows.length > 1)
+          ? ` (${body.dust.rows.length} dust rows)` : '';
+        msg.textContent = action === 'approve'
+          ? `Approved & added to ${tabs}${legs}.`
+          : `Row updated${legs}.`;
         if (j.entry) applyEntryUpdate(j.entry);
         selectedIds.delete(truckingEntry.id);
         renderRows();
@@ -6258,7 +6649,9 @@
             Each day also posts a <strong>Dust Control Tracking</strong> row: the vehicles, their rates
             and the escort come from the customer, but the <strong>company man, location and UB
             gallons are left blank</strong> — they differ day to day. Open each day's Edit Row to
-            fill them in, or approve these hauls one at a time instead.` : ''}</div>`;
+            fill them in — that is also where a day that ran to more than one customer or pad is
+            <strong>split into a row per haul</strong> — or approve these hauls one at a time
+            instead.` : ''}</div>`;
       } else {
         badgeClass = 'plain'; badgeText = 'No injection';
         title = 'Status-only entries';

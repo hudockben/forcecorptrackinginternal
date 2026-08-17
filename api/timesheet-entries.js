@@ -116,9 +116,11 @@ const {
 const {
   IC_SOURCE_DUST,
   DUST_TAB_FIELDS,
+  MAX_DUST_ROWS,
   needsDustTrackingRow,
   dustRowIdPrefix,
   dustRowId,
+  dustRowIndexFromId,
   deleteDustRows,
 } = require('./lib/dust-injected');
 
@@ -1479,20 +1481,21 @@ function dustNum(v, max, label) {
 }
 
 /**
- * Validate the payroll modal payload (req.body.dust) for a Dust Control
- * Tracking injection. Returns { fields } or { error }.
+ * Validate ONE leg of the payroll modal payload for a Dust Control Tracking
+ * injection. Returns { fields } or { error }.
  *
  * Every field is optional, and ABSENT is not the same as BLANK — the same
  * distinction validateTruckingInjection draws for the unit, and for the same
- * reason. The approve modal sends all nine keys because it shows all nine boxes,
- * so whatever is in them is the approver's answer, '' included: clearing the
- * escort vehicle has to stick. Bulk approve sends none of them, because one
- * company man or one gallons figure cannot speak for a week of hauls, and that
- * has to mean "derive what you can from the customer" rather than "blank it".
+ * reason. The approve modal sends every key because it shows every box, so
+ * whatever is in them is the approver's answer, '' included: clearing the escort
+ * vehicle has to stick. Bulk approve sends none of them, because one company man
+ * or one gallons figure cannot speak for a week of hauls, and that has to mean
+ * "derive what you can from the customer" rather than "blank it".
  *
- * Absent → undefined here, and insertDustTrackingRow fills it from the customer.
+ * Absent → undefined here, and insertDustTrackingRows fills it from the customer
+ * (or, for the times, from the timesheet).
  */
-function validateDustInjection(raw) {
+function validateDustLeg(raw) {
   const t = (raw && typeof raw === 'object') ? raw : {};
   const has = k => Object.prototype.hasOwnProperty.call(t, k) && t[k] != null;
   const fields = {};
@@ -1504,6 +1507,22 @@ function validateDustInjection(raw) {
   if (has('vehicle2'))    fields.vehicle2    = safeStr(t.vehicle2, 200)    || '';
   if (has('v1_unit'))     fields.v1_unit     = safeStr(t.v1_unit, 100)     || '';
   if (has('v2_unit'))     fields.v2_unit     = safeStr(t.v2_unit, 100)     || '';
+  // Which customer this leg was hauled for. Absent (and blank) means the one the
+  // driver picked on the timesheet — only a split day names anyone else, and a
+  // leg that names nobody must not post a row with no company on it.
+  if (has('company'))     fields.company     = safeStr(t.company, 200)     || '';
+
+  // The leg's own slice of the driver's day. The dust tab bills rate x (end -
+  // start), so these ARE the leg's hours: a day split 5/5 has to arrive as two
+  // windows, not as one window billed twice.
+  for (const key of ['start_time', 'end_time']) {
+    if (!has(key)) continue;
+    const given = String(t[key] || '').trim();
+    if (!given) { fields[key] = ''; continue; }
+    const v = safeTime(given);
+    if (!v) return { error: `${key} must be HH:MM` };
+    fields[key] = v;
+  }
 
   for (const [key, max, label] of [
     ['v1_rate',    DUST_RATE_MAX,    'v1_rate'],
@@ -1519,6 +1538,42 @@ function validateDustInjection(raw) {
 }
 
 /**
+ * Validate the whole payload (req.body.dust). Returns { rows } — one entry per
+ * leg, in the order they were sent — or { error }.
+ *
+ * Three shapes are accepted, because three callers send it:
+ *   absent            → [{}]           bulk approve: derive everything
+ *   a flat object     → [{ ...one }]   the modal before the day could be split,
+ *                                      and any client still sending that shape
+ *   { rows: [...] }   → [{ ...each }]  the split-aware modal
+ *
+ * An empty rows array is an error rather than "no rows": a dust customer haul
+ * always bills somewhere, and silently posting nothing would leave the office
+ * looking for an invoice line that no longer exists.
+ */
+function validateDustInjection(raw) {
+  let legs;
+  if (raw == null) legs = [{}];
+  else if (Array.isArray(raw)) legs = raw;
+  else if (typeof raw === 'object' && Array.isArray(raw.rows)) legs = raw.rows;
+  else if (typeof raw === 'object') legs = [raw];
+  else legs = [{}];
+
+  if (!legs.length) return { error: 'Dust Control Tracking needs at least one row' };
+  if (legs.length > MAX_DUST_ROWS) {
+    return { error: `A day can be split across at most ${MAX_DUST_ROWS} Dust Control Tracking rows` };
+  }
+
+  const rows = [];
+  for (const leg of legs) {
+    const { fields, error } = validateDustLeg(leg);
+    if (error) return { error };
+    rows.push(fields);
+  }
+  return { rows };
+}
+
+/**
  * Everything the approve modal (and the injection itself) needs to fill a Dust
  * Control Tracking row in for one customer: the company's men and locations, its
  * default vehicle rates, the division's equipment list, and the escort vehicle
@@ -1527,7 +1582,10 @@ function validateDustInjection(raw) {
  * The customer is resolved by dust_companies.id — that is what the timesheet
  * stores in job_id (see dustJobs in api/timesheet-jobs.js) — and only falls back
  * to matching job_label by name, so a customer renamed since the driver
- * submitted still resolves.
+ * submitted still resolves. `companyName` overrides both: a split leg can name
+ * another customer entirely (one pad for CNX, the next for Antero on the same
+ * ten hours), and that leg's rates, men and pads have to come from the customer
+ * it actually billed rather than from the one at the top of the timesheet.
  *
  * `usualVehicle2` is learned rather than configured: there is no per-customer
  * default vehicle in dust_companies, only a default RATE, and the escort a
@@ -1536,9 +1594,13 @@ function validateDustInjection(raw) {
  * is the answer, and it is offered only when the customer has a V2 default rate
  * set — a customer billed no escort rate is not sent an escort.
  */
-async function dustOptionsForEntry(sql, companyCode, entry) {
-  const jobId = safeStr(entry && entry.job_id, 200) || '';
-  const label = safeStr(entry && entry.job_label, 500) || '';
+async function dustOptionsForEntry(sql, companyCode, entry, companyName) {
+  // An overriding name is the leg's whole answer: it is resolved by name only,
+  // never by the entry's job_id, or a leg moved to another customer would keep
+  // reading the timesheet customer's rates.
+  const override = safeStr(companyName, 200) || '';
+  const jobId = override ? '' : (safeStr(entry && entry.job_id, 200) || '');
+  const label = override || (safeStr(entry && entry.job_label, 500) || '');
 
   const [byId] = jobId ? await sql`
     SELECT id, name, v1_rate, v2_rate FROM dust_companies
@@ -1571,11 +1633,13 @@ async function dustOptionsForEntry(sql, companyCode, entry) {
       WHERE company_code = ${companyCode}
         AND company      = ${co.name}
         AND COALESCE(vehicle2, '') <> ''
-        -- Never learn from the row we are about to overwrite. Re-approving would
-        -- otherwise read its own previous output back as "what this customer
-        -- usually gets", so an escort picked once could never be un-picked by
-        -- clearing it and re-approving.
-        AND id <> ${dustRowId(entry.id)}
+        -- Never learn from the rows we are about to overwrite. Re-approving
+        -- would otherwise read its own previous output back as "what this
+        -- customer usually gets", so an escort picked once could never be
+        -- un-picked by clearing it and re-approving. Every leg of the day is
+        -- excluded, not just the one being written: on a split day leg 2 would
+        -- otherwise learn its escort from leg 1's un-rewritten copy.
+        AND id NOT LIKE ${dustRowIdPrefix(entry.id) + '%'}
       -- NULLS LAST because DESC puts them FIRST in Postgres: one undated row
       -- would otherwise be every customer's "most recent" escort forever.
       ORDER BY date DESC NULLS LAST, created_at DESC
@@ -1634,13 +1698,17 @@ function resolveDustVehicle(name, given, opts, coRate) {
 }
 
 /**
- * Build + upsert the Dust Control Tracking row for an approved dust customer
- * haul. Idempotent on the stable row id, so a retried approve, an Edit Row and
- * an un-approve/re-approve cycle all land on the same row. Returns the row.
+ * Build + upsert ONE leg's Dust Control Tracking row for an approved dust
+ * customer haul. Idempotent on the stable row id, so a retried approve, an Edit
+ * Row and an un-approve/re-approve cycle all land on the same row. Returns the
+ * row.
  *
  * Autofill, column by column, matching what the tab's own columns are:
- *   date, start_time, end_time  ← the timesheet entry, verbatim
- *   company                     ← the customer the driver picked (job_label)
+ *   date                        ← the timesheet entry, verbatim
+ *   start_time, end_time        ← the entry's clock window, or the leg's own
+ *                                 slice of it on a split day
+ *   company                     ← the customer the driver picked (job_label),
+ *                                 or the customer this leg names
  *   company_man, location       ← the approving supervisor, in the modal
  *   state                       ← the location's state, as picking a location
  *                                 does in the tab
@@ -1651,19 +1719,20 @@ function resolveDustVehicle(name, given, opts, coRate) {
  *   gallons_ub                  ← the approving supervisor, in the modal
  *
  * Hours are NOT stored: the tab derives Total Time from start and end, so a
- * stored figure would be a second source of truth for the same number. That does
- * mean travel hours logged outside the clock window don't reach this row's
- * vehicle totals — the Truck Tracking row, which bills on hours, is where they
- * land.
+ * stored figure would be a second source of truth for the same number. That is
+ * also why splitting a day means splitting its clock window — the leg's times
+ * are the only place its hours can live. It does mean travel hours logged
+ * outside the clock window don't reach this row's vehicle totals; the Truck
+ * Tracking row, which bills on hours, is where they land.
  *
  * The invoice columns (DUST_TAB_FIELDS) belong to the dust office and are
  * carried across re-injection, so correcting an entry can't wipe the invoice
  * number or paid date off a row that was already billed.
  */
-async function insertDustTrackingRow(sql, companyCode, entry, fields = {}, flags = {}) {
-  const id   = dustRowId(entry.id);
+async function insertDustTrackingLeg(sql, companyCode, entry, fields = {}, flags = {}, index = 1) {
+  const id   = dustRowId(entry.id, index);
   const hhmm = v => String(v || '').slice(0, 5);
-  const opts = await dustOptionsForEntry(sql, companyCode, entry);
+  const opts = await dustOptionsForEntry(sql, companyCode, entry, fields.company);
 
   // Location is resolved first because the state follows from it, exactly as
   // picking a location in the tab fills the state in. Nobody but the approver
@@ -1695,11 +1764,19 @@ async function insertDustTrackingRow(sql, companyCode, entry, fields = {}, flags
     opts, opts.v2_rate,
   );
 
+  // A leg's own window, falling back to the whole day's — which is what a single
+  // unsplit haul, and every bulk approval, sends. A leg that clears a time keeps
+  // it clear: the tab reads a missing end as "no hours yet" rather than as the
+  // driver's clock-out, and that is a state a supervisor can deliberately leave
+  // a row in while they check what the pad actually took.
+  const startTime = fields.start_time !== undefined ? fields.start_time : hhmm(entry.start_time);
+  const endTime   = fields.end_time   !== undefined ? fields.end_time   : hhmm(entry.end_time);
+
   const row = {
     id,
     date:        safeDate(entry.work_date) || '',
-    start_time:  hhmm(entry.start_time),
-    end_time:    hhmm(entry.end_time),
+    start_time:  startTime,
+    end_time:    endTime,
     company:     opts.company || '',
     company_man: fields.company_man !== undefined ? fields.company_man : '',
     location,
@@ -1799,13 +1876,53 @@ async function insertDustTrackingRow(sql, companyCode, entry, fields = {}, flags
       VALUES
         (${companyCode}, ${id}, ${prev ? 'UPDATE' : 'INSERT'},
          null, ${'payroll approval'}, null,
-         ${JSON.stringify({ timesheet_entry_id: entry.id, employee: entry.username || '' })}::jsonb,
+         ${JSON.stringify({ timesheet_entry_id: entry.id, employee: entry.username || '', leg: index })}::jsonb,
          'tracking')
     `;
   } catch (err) {
     console.error('[timesheet-entries] dust audit write failed (non-fatal):', err.message);
   }
 
+  return row;
+}
+
+/**
+ * Write every leg of an approved dust haul, and take back the legs it no longer
+ * has. Returns the rows written, in leg order.
+ *
+ * The pruning is the half that is easy to miss: a day first approved as three
+ * customers and then corrected to two leaves leg 3's row — and leg 3's
+ * Intercompany billing entry — behind, invoicing a customer for hauling that,
+ * according to the timesheet, never happened. Nothing else would ever remove it:
+ * the dust tab refuses to delete payroll's rows, and the read-time sweep only
+ * asks whether the ENTRY still routes here, which it does.
+ *
+ * Legs are written in order and pruned after, so a mid-loop failure leaves the
+ * earlier legs in place for the caller's rollback to scrub rather than deleting
+ * rows it is about to rewrite.
+ */
+async function insertDustTrackingRows(sql, companyCode, entry, legs, flags = {}) {
+  const list = (Array.isArray(legs) && legs.length) ? legs : [{}];
+  const rows = [];
+  for (let i = 0; i < list.length; i++) {
+    rows.push(await insertDustTrackingLeg(sql, companyCode, entry, list[i] || {}, flags, i + 1));
+  }
+  const keep = new Set(rows.map(r => r.id));
+  const prior = await sql`
+    SELECT id FROM dust_control_entries
+    WHERE company_code = ${companyCode} AND id LIKE ${dustRowIdPrefix(entry.id) + '%'}
+  `;
+  const drop = prior.map(r => String(r.id)).filter(id => id && !keep.has(id));
+  if (drop.length) await deleteDustRows(sql, companyCode, drop);
+  return rows;
+}
+
+/**
+ * The single-row form, kept because an unsplit haul is still the common case and
+ * reads better as one call. Returns that row.
+ */
+async function insertDustTrackingRow(sql, companyCode, entry, fields = {}, flags = {}) {
+  const [row] = await insertDustTrackingRows(sql, companyCode, entry, [fields], flags);
   return row;
 }
 
@@ -1838,26 +1955,36 @@ async function dustHasInjectedRow(sql, companyCode, entry) {
   return !!hit;
 }
 
-// The injected Dust Control Tracking row for an entry, so the payroll modal can
-// pre-fill every box when re-editing an approved haul (mirrors the GET
-// action=split contract quarry and trucking use).
+// Every injected Dust Control Tracking row for an entry, in leg order, so the
+// payroll modal can pre-fill every box of every leg when re-editing an approved
+// haul (mirrors the GET action=split contract quarry and trucking use).
+//
+// `row` is the first leg, kept alongside `rows` so a payroll page still cached
+// from before days could be split pre-fills its single set of boxes instead of
+// opening blank — and blank, on a re-edit, saves as a wipe.
 async function dustSplitForEntry(sql, companyCode, entry) {
-  const [r] = await sql`
+  const found = await sql`
     SELECT * FROM dust_control_entries
-    WHERE company_code = ${companyCode} AND id = ${dustRowId(entry.id)}
+    WHERE company_code = ${companyCode} AND id LIKE ${dustRowIdPrefix(entry.id) + '%'}
   `;
-  if (!r) return { row: null };
   // NUMERIC(10,4) comes back from the driver as "130.0000". The modal puts these
   // straight into number inputs, where the trailing zeros are what the approver
   // sees and then re-saves, so trim them back to the figure that was entered.
   const n = v => (v == null || v === '' || !Number.isFinite(Number(v))) ? '' : String(Number(v));
-  return {
-    row: {
+  const hhmm = v => String(v || '').slice(0, 5);
+  const rows = found
+    // By leg, not by id text: "tsd-9-row" and "tsd-9-2" don't sort into leg
+    // order as strings, and the tab shows them in the order they are given.
+    .map(r => ({ r, leg: dustRowIndexFromId(r.id) || 99 }))
+    .sort((a, b) => a.leg - b.leg)
+    .map(({ r }) => ({
       id:          r.id,
       company:     r.company     || '',
       company_man: r.company_man || '',
       location:    r.location    || '',
       state:       r.state       || '',
+      start_time:  hhmm(r.start_time),
+      end_time:    hhmm(r.end_time),
       vehicle1:    r.vehicle1    || '',
       v1_unit:     r.v1_unit     || '',
       v1_rate:     n(r.v1_rate),
@@ -1865,8 +1992,48 @@ async function dustSplitForEntry(sql, companyCode, entry) {
       v2_unit:     r.v2_unit     || '',
       v2_rate:     n(r.v2_rate),
       gallons_ub:  n(r.gallons_ub),
-    },
-  };
+    }));
+  return { rows, row: rows[0] || null };
+}
+
+/**
+ * The dust customers a split leg can be pointed at, each with the men, pads and
+ * default rates that customer's own rows are filled from.
+ *
+ * Sent whole, once, with the modal's pre-fill: a supervisor splitting a day is
+ * choosing between customers, and a round trip per pick would leave the pad and
+ * rate boxes empty for as long as it took to answer. Three queries rather than
+ * three per customer — the personnel and location tables are small and are
+ * grouped here.
+ */
+async function dustCompanyDirectory(sql, companyCode) {
+  const [companies, men, locations] = await Promise.all([
+    sql`SELECT id, name, v1_rate, v2_rate FROM dust_companies
+        WHERE company_code = ${companyCode} ORDER BY name`,
+    sql`SELECT p.dust_company_id, p.name FROM dust_company_personnel p
+        JOIN dust_companies c ON c.id = p.dust_company_id
+        WHERE c.company_code = ${companyCode} ORDER BY p.sort_order, p.name`,
+    sql`SELECT l.dust_company_id, l.name, l.state FROM dust_company_locations l
+        JOIN dust_companies c ON c.id = l.dust_company_id
+        WHERE c.company_code = ${companyCode} ORDER BY l.sort_order, l.name`,
+  ]);
+  const byId = new Map(companies.map(c => [String(c.id), {
+    id:        String(c.id),
+    name:      c.name || '',
+    v1_rate:   c.v1_rate != null ? Number(c.v1_rate) : null,
+    v2_rate:   c.v2_rate != null ? Number(c.v2_rate) : null,
+    men:       [],
+    locations: [],
+  }]));
+  for (const m of men) {
+    const co = byId.get(String(m.dust_company_id));
+    if (co && m.name) co.men.push(m.name);
+  }
+  for (const l of locations) {
+    const co = byId.get(String(l.dust_company_id));
+    if (co && l.name) co.locations.push({ name: l.name, state: l.state || '' });
+  }
+  return [...byId.values()].filter(c => c.name);
 }
 
 async function writeAudit(sql, companyCode, payload, entryId, action, changes, snapshot) {
@@ -2357,12 +2524,13 @@ module.exports = async (req, res) => {
       // the trucking row records who drove where, this one carries the customer
       // detail and the vehicle/UB money. Payroll supplies the company man, the
       // location and the gallons here; the rest follows from the customer.
+      // A split day sends one leg per customer/pad — see validateDustInjection.
       const needsDust = needsDustTrackingRow(existing);
       let dustInject = null;
       if (needsDust) {
-        const { fields, error } = validateDustInjection(req.body && req.body.dust);
+        const { rows, error } = validateDustInjection(req.body && req.body.dust);
         if (error) return res.status(400).json({ error });
-        dustInject = fields;
+        dustInject = rows;
       }
 
       // The unit payroll typed in the approve modal lands on the ENTRY, not just
@@ -2407,7 +2575,7 @@ module.exports = async (req, res) => {
             // rows are the same day's work seen from the two offices that need
             // it. A trucking entry only ever takes the first branch.
             if (needsTrucking) await insertTruckingRow(sql, companyCode, updated, truckingInject || {}, { clearSuppression: true });
-            if (needsDust)     await insertDustTrackingRow(sql, companyCode, updated, dustInject || {}, { clearSuppression: true });
+            if (needsDust)     await insertDustTrackingRows(sql, companyCode, updated, dustInject || [{}], { clearSuppression: true });
           } else {
             await insertEesOtherRow(sql, companyCode, updated);
           }
@@ -2483,7 +2651,13 @@ module.exports = async (req, res) => {
         splitRows ? { split_row_count: splitRows.length }
           : quarryInject ? { quarry_activity: quarryInject.activity }
           : (needsTrucking || needsDust)
-            ? { trucking_injected: needsTrucking, dust_tracking_injected: needsDust }
+            ? {
+                trucking_injected: needsTrucking,
+                dust_tracking_injected: needsDust,
+                // How many customers/pads the day was split across, so an audit
+                // of a two-row haul doesn't read as a double-post.
+                dust_row_count: needsDust ? (dustInject || [{}]).length : undefined,
+              }
           : needsEesOther ? { ees_other_injected: true } : null,
         dbToEntry(approvedRow),
       );
@@ -2553,7 +2727,10 @@ module.exports = async (req, res) => {
         const { fields, error } = validateTruckingInjection(req.body && req.body.trucking);
         if (error) return res.status(400).json({ error });
         // Validated before either write, so a bad gallons figure is a 400 that
-        // changed nothing rather than a half-applied edit.
+        // changed nothing rather than a half-applied edit. On a dust haul this
+        // is the whole day's breakdown: legs the edit dropped are taken back by
+        // insertDustTrackingRows, so re-editing three customers down to two
+        // leaves no third invoice line behind.
         const dustParsed = validateDustInjection(req.body && req.body.dust);
         if (dustParsed.error) return res.status(400).json({ error: dustParsed.error });
         try {
@@ -2587,7 +2764,7 @@ module.exports = async (req, res) => {
         // would not know that the haul fee it just corrected did land.
         try {
           if (reDust) {
-            await insertDustTrackingRow(sql, companyCode, existing, dustParsed.fields);
+            await insertDustTrackingRows(sql, companyCode, existing, dustParsed.rows);
           }
         } catch (injErr) {
           console.error('[timesheet-entries] dust resplit failed:', injErr.message);
@@ -2602,6 +2779,7 @@ module.exports = async (req, res) => {
             resplit: true,
             trucking: reTruck,
             dust_tracking: reDust,
+            dust_row_count: reDust ? dustParsed.rows.length : undefined,
             truck_unit: fields.unit != null ? (fields.unit || '') : undefined,
           },
           dbToEntry(existing),
@@ -2901,11 +3079,15 @@ module.exports = async (req, res) => {
         // box the approver left blank first time round can still be filled from
         // a dropdown rather than typed from memory.
         if (needsDustTrackingRow(entryRow)) {
-          const [dustRow, options] = await Promise.all([
+          // `companies` carries every customer's men, pads and default rates, so
+          // a leg pointed at another customer fills itself in the same way the
+          // first one did instead of waiting on a second round trip.
+          const [dust, options, companies] = await Promise.all([
             dustSplitForEntry(sql, companyCode, entryRow),
             dustOptionsForEntry(sql, companyCode, entryRow),
+            dustCompanyDirectory(sql, companyCode),
           ]);
-          answer.dust = { row: dustRow.row, options };
+          answer.dust = { rows: dust.rows, row: dust.row, options, companies };
         }
         return res.json(answer);
       }
@@ -3165,7 +3347,9 @@ module.exports._test = {
   dustRowIdPrefix,
   validateDustInjection,
   dustOptionsForEntry,
+  dustCompanyDirectory,
   insertDustTrackingRow,
+  insertDustTrackingRows,
   removeDustTrackingRows,
   dustHasInjectedRow,
   dustSplitForEntry,

@@ -1676,10 +1676,10 @@
         // Non-dust and dust entries without source_id: dedup by content key.
         //
         // Pass 1b applies to MANUAL dust rows only. A payroll-injected row
-        // (source_id "tsd-<entryId>-row") is exactly one approved timesheet
-        // entry, so two of them are two hauls by construction — even when the
-        // customer, the day, the truck and the (possibly blank) well pad all
-        // match. Collapsing those dropped the second haul, and because the
+        // (source_id "tsd-<entryId>-<leg>") is exactly one haul off one approved
+        // timesheet entry — a day split across customers posts one per leg — so
+        // two of them are two hauls by construction, even when the customer, the
+        // day, the truck and the (possibly blank) well pad all match. Collapsing those dropped the second haul, and because the
         // shrunken list is written straight back below, the loss was permanent
         // and dust.html would not recreate it. Same rule, and the same reason,
         // as the trucking branch further down; the job key keeps governing
