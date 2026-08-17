@@ -282,10 +282,31 @@ assert('payroll is a division section like the rest, not a bespoke block',
 // ── Trucking mirrors the Trucking page ──
 console.log('\n[trucking mirrors the Trucking page]');
 
-for (const label of ['Total Revenue', 'Total Hours', 'Active Units', 'Active Drivers']) {
-  assert(`the API builds the dashboard's "${label}"`, report.includes(`label: '${label}'`));
-  assert(`  and trucking.html still shows it`, truck.includes(`statCard('${label}'`));
+// The Trucking page's Dashboard now carries the same eight-figure strip the
+// other division pages carry, and the report's section mirrors it — so this can
+// compare them label for label instead of spot-checking four.
+const TRUCK_METRICS = [
+  'Total Revenue', 'Total Hours', 'Active Units', 'Active Drivers',
+  'Avg Revenue / Entry', 'Avg Haul Fee', 'To Invoice', 'Awaiting Payment',
+];
+// renderDashboard runs to the next function; slicing there keeps the Analytics
+// sub-tabs' own cards out of the comparison.
+const truckDash = truck.slice(truck.indexOf('function renderDashboard()'),
+                              truck.indexOf('function downloadAnalyticsPDF'));
+const pageTruckMetrics = [...truckDash.matchAll(/\$\{metric\('([^']+)'/g)].map(m => m[1]);
+assert('the Trucking page\'s strip carries the eight figures in order',
+  TRUCK_METRICS.every((l, i) => pageTruckMetrics[i] === l),
+  'got: ' + JSON.stringify(pageTruckMetrics));
+for (const label of TRUCK_METRICS) {
+  assert(`  and the report's section reports "${label}" too`, report.includes(`label: '${label}'`));
 }
+assert('the page uses the same strip component as tracker/paving/kiewit',
+  truck.includes('home-metric-strip') && truck.includes('home-metric-value')
+  && tracker.includes('home-metric-strip'));
+assert('and the same project-table component for its own tables',
+  truck.includes('class="proj-table"') && tracker.includes('.proj-table {'));
+assert('the old bespoke stat cards are gone from the dashboard',
+  !truckDash.includes('statCard('));
 const tm = read('api/lib/trucking-metrics.js');
 assert('the trucking arithmetic is ported, not re-derived in SQL',
   fs.existsSync(path.resolve(__dirname, '../api/lib/trucking-metrics.js'))
@@ -314,6 +335,17 @@ const execTruckCols = headerLabels(exec, 'function renderTruckingSection(d) {', 
 assert('the customer table carries the work and the money still owed on it',
   TRUCK_COLUMNS.every((c, i) => execTruckCols[i] === c),
   'got: ' + JSON.stringify(execTruckCols));
+const pageTruckCols = headerLabels(truck, 'const custTableHtml', 1400);
+assert('and the Trucking page\'s own customer table has the same columns',
+  TRUCK_COLUMNS.every((c, i) => pageTruckCols[i] === c),
+  'got: ' + JSON.stringify(pageTruckCols));
+// The page decides invoice state from the fields its Truck Tracking tab edits;
+// the report has to read those same fields or the two will disagree.
+assert('both read invoice state off invoice_sent_date and date_paid',
+  /if \(e\.date_paid\)\s+return 'paid';/.test(truck)
+  && /if \(e\.invoice_sent_date\)\s+return 'awaiting';/.test(truck)
+  && /if \(e\.date_paid\) return 'paid';/.test(tm)
+  && /if \(e\.invoice_sent_date\) return 'awaiting';/.test(tm));
 
 // ── Intercompany mirrors the Intercompany dashboard ──
 console.log('\n[intercompany mirrors the Intercompany dashboard]');
