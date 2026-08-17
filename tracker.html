@@ -24028,8 +24028,11 @@ function renderScheduleAllProjects() {
    behind it as the selection's source of truth — hidden, but still what the PM
    report, PDF export, Gantt and AI insights read, and what the pacing cards
    write — so the picker's only job is keeping the two in step. */
-// Hoisted: cbOptionsFor sits far above this block and calls it.
-function _schedProjLabel(p) { return p['project-name'] || p['job-number'] || p.id; }
+// Hoisted: cbOptionsFor sits far above this block and calls it. String()
+// because a project blob is free-form — the <select> this replaced ran the
+// same fallback chain through esc(), and a numeric job number reaching
+// localeCompare/toLowerCase would take the whole Schedules tab down.
+function _schedProjLabel(p) { return String(p['project-name'] || p['job-number'] || p.id || ''); }
 
 // Mount the picker on first render, then keep its text on whatever the hidden
 // select holds. A search in progress is never overwritten.
@@ -24064,6 +24067,13 @@ function schedProjPick(input) {
   input.dataset.cbValue = picked.value;
   if (picked.value === sel.value) return;
   sel.value = picked.value;
+  // The select is rebuilt from the same projectsList, so its options normally
+  // already cover the pick. Assigning one they don't cover lands silently on
+  // '' — All Projects — and swallows the pick, so add it rather than drift.
+  if (sel.value !== picked.value) {
+    sel.add(new Option(picked.label, picked.value));
+    sel.value = picked.value;
+  }
   renderScheduleTab();
 }
 

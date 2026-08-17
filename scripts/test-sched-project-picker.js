@@ -115,8 +115,16 @@ function block(startLabel, endLabels) {
   return src.slice(a, Math.min(...ends));
 }
 
-// Minimal stand-ins for the two DOM nodes the picker touches.
-const select = { value: '' };
+// Minimal stand-ins for the two DOM nodes the picker touches. The select
+// models the one behaviour that matters here: assigning a value it has no
+// option for silently lands on '' instead of throwing.
+const select = {
+  _value: '',
+  values: [''],
+  get value() { return this._value; },
+  set value(v) { this._value = this.values.includes(v) ? v : ''; },
+  add(opt) { this.values.push(opt.value); },
+};
 const input  = { value: '', dataset: {} };
 const mount  = {
   firstElementChild: null,
@@ -136,7 +144,12 @@ const sandbox = {
     },
   },
   cbHtml: () => '<div class="cb" data-list="sched_projects"></div>',
-  renderScheduleTab: () => { renders++; },
+  Option: function (text, value) { this.text = text; this.value = value; },
+  // The real one repopulates the select from projectsList before syncing.
+  renderScheduleTab: () => {
+    renders++;
+    select.values = [''].concat(sandbox.projectsList.map(p => p.id));
+  },
   _cbLabel: o => (typeof o === 'string' ? o : o.label),
 };
 vm.createContext(sandbox);
@@ -151,6 +164,7 @@ sandbox.projectsList.push(
   { id: 'p3', 'project-name': 'Hempfield Founders Park' },
   { id: 'p4', 'job-number': '26090' },                     // unnamed job
 );
+select.values = [''].concat(sandbox.projectsList.map(p => p.id));
 
 console.log('\n[behavioural — the option list]');
 const opts = cbOptionsFor('sched_projects');
@@ -167,6 +181,22 @@ assert('the job number rides along as the note',
   opts.find(o => o.value === 'p2').meta === 'Job #26084');
 assert('a project with no job number has no note',
   opts.find(o => o.value === 'p3').meta === '');
+
+// A project blob is free-form JSON, so a job number can come back as a number.
+// The <select> this replaced ran the same fallback chain through esc(), which
+// coerced; without that, sorting the list throws on localeCompare and takes
+// renderScheduleTab down with it before it draws anything.
+sandbox.projectsList.push({ id: 'p5', 'job-number': 26099 });
+let numeric = null;
+try { numeric = cbOptionsFor('sched_projects'); } catch (e) { numeric = e; }
+assert('a numeric job number does not break the list',
+  Array.isArray(numeric), numeric && numeric.message);
+assert('  and still shows as text',
+  Array.isArray(numeric) && numeric.find(o => o.value === 'p5').label === '26099',
+  Array.isArray(numeric) && JSON.stringify(numeric.find(o => o.value === 'p5')));
+assert('  and is still searchable',
+  Array.isArray(numeric) && cbFilterFor('sched_projects', '26099', numeric).length === 1);
+sandbox.projectsList.pop();
 
 console.log('\n[behavioural — searching]');
 const labels = q => cbFilterFor('sched_projects', q, opts).map(o => o.label);
@@ -242,6 +272,19 @@ input.value = 'Penns Manor Groom';
 input.dataset.cbValue = 'gone';
 schedProjPick(input);
 assert('a stale id falls back to the typed label', select.value === 'p2', select.value);
+
+// The picker's list and the select's <option>s are built from projectsList in
+// two different places. If they ever drift, assigning a value the select has no
+// option for silently lands on '' — the pick vanishes into All Projects with no
+// error anywhere.
+renders = 0;
+select.value = '';
+select.values = [''];                       // select left behind by a stale render
+input.value = 'Tuffy Shellenbarger';
+input.dataset.cbValue = 'p1';
+schedProjPick(input);
+assert('a pick the select has no option for is not swallowed', select.value === 'p1', select.value);
+assert('  and still re-renders', renders === 1, String(renders));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
