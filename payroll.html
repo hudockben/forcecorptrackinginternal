@@ -859,6 +859,17 @@
       letter-spacing: 0.02em;
     }
 
+    /* ── Failed-load notice ── */
+    .load-error {
+      background: var(--surface);
+      border: 1px solid rgba(239,68,68,0.4);
+      border-radius: 8px;
+      padding: 2rem 1rem;
+      text-align: center;
+      color: var(--muted);
+    }
+    .load-error-actions { margin-top: 0.85rem; }
+
     /* ── Pager (Approved tab) ──────────────────────────────────────────────
        Pending is a queue that gets worked to zero; Approved only ever grows —
        at ~70 entries a day a two-week range is well over a thousand rows — so
@@ -1906,6 +1917,18 @@
     let editingEntry = null;
     let currentTab   = 'pending';   // 'pending' | 'approved'
 
+    // ── Entry loading ─────────────────────────────────────────────────────
+    // Every tab except Audit Log draws from one fetch of /api/timesheet-entries,
+    // so two things have to hold about that fetch:
+    //   · only the NEWEST request may write the result. Requests aren't
+    //     cancelled, and a slow reply for an old date range landing after a
+    //     fast reply for a new one leaves the grid contradicting the filter bar.
+    //   · a failed load must not leave the previous rows in memory. The filter
+    //     boxes re-render from allEntries without refetching, so stale rows
+    //     would be drawn back over the failure as if they were current.
+    let entriesFetchSeq  = 0;      // bumped per request; older replies are dropped
+    let entriesLoadError = null;   // message from the last failed load, else null
+
     // ── Approved-tab paging ───────────────────────────────────────────────
     // Pending is a queue payroll works to zero, so it stays whole. Approved is
     // cumulative — around 70 entries a day once every crew is submitting, so a
@@ -2226,6 +2249,11 @@
     }
 
     async function applyFilters() {
+      // Claim the display before anything else, including for the Audit Log
+      // branch below: moving to that tab means an entries request still in
+      // flight is answering a screen that has already gone away.
+      const seq = ++entriesFetchSeq;
+
       // Audit Log tab has its own fetch path; everything else reads from
       // /api/timesheet-entries.
       if (currentTab === 'auditlog') {
@@ -2261,15 +2289,60 @@
         const url = '/api/timesheet-entries?' + params.toString();
         const res = await fetch(url, { headers: authHeaders() });
         const data = await res.json();
+        // Someone hit Apply again (or switched tabs) while this was in flight.
+        // These rows answer a question the screen is no longer asking — the
+        // newer request owns the display, so drop this reply on the floor.
+        if (seq !== entriesFetchSeq) return;
         if (!res.ok) throw new Error(data.error || 'Failed');
         allEntries = Array.isArray(data.entries) ? data.entries : [];
+        entriesLoadError = null;
         // Diagnostic log so the empty-Pending case is easy to debug from DevTools.
         console.log('[payroll] GET', url, '→', res.status, 'entries:', allEntries.length,
           'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
         filterAndRender();
       } catch (err) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="16">Error: ${escapeHtml(err.message)}</td></tr>`;
+        // Same rule for a failure: a stale request must not put an error over
+        // whatever the newer one is doing.
+        if (seq !== entriesFetchSeq) return;
+        // Let the rows go with the load that failed. Kept in memory they are
+        // one keystroke in the Employee box away from being redrawn — payroll
+        // would be reading pre-failure numbers with nothing on screen saying
+        // the refresh never landed.
+        allEntries = [];
+        filtered   = [];
+        selectedIds.clear();
+        entriesLoadError = err.message || 'Failed to load time entries';
+        filterAndRender();
       }
+    }
+
+    /**
+     * Failed-load notice, drawn onto every surface the tabs can show. The stat
+     * strip is blanked to em-dashes rather than zeroed: the counts came from
+     * the rows just dropped, and "0" would read as a real figure.
+     */
+    function renderLoadError() {
+      const body = `Couldn't load time entries — ${escapeHtml(entriesLoadError || 'the request failed')}.`
+        + `<div class="load-error-actions"><button class="qr-btn" onclick="applyFilters()">Try again</button></div>`;
+      hidePagers();
+      const tbody = document.getElementById('rowsBody');
+      if (tbody) tbody.innerHTML = `<tr class="empty-row"><td colspan="16">${body}</td></tr>`;
+      // Reports and Analytics are built from the same dropped rows. Blank them
+      // too, or switching tabs after a failure shows the last good report as if
+      // it were still current.
+      ['reportWrap', 'analyticsWrap'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = `<div class="load-error">${body}</div>`;
+      });
+      // The stat strip and the tab badges were both counted off the dropped
+      // rows. Blanked, not zeroed — "0" and "137" are equally untrue here, and
+      // a number next to a failure notice reads as a real figure.
+      ['stat-submitted', 'stat-approved', 'stat-hours',
+       'tab-pending-count', 'tab-approved-count'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '—';
+      });
+      updateBulk();
     }
 
     function filterAndRender() {
@@ -2291,6 +2364,11 @@
         userQ, supQ,
       ].join('|');
       if (sig !== lastFilterSig) { approvedPage = 1; lastFilterSig = sig; }
+      // Nothing was loaded, so there is nothing trustworthy to draw. Say that
+      // on whichever tab is open rather than rendering an empty grid or a
+      // zeroed report, which both read as "the server answered, and the answer
+      // was none".
+      if (entriesLoadError) { renderLoadError(); return; }
       if (currentTab === 'reports') {
         renderReport();
       } else if (currentTab === 'auditlog') {

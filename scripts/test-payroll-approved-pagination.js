@@ -112,6 +112,7 @@ const tableWrap = makeElement('table-wrap');
 // is still loading, so the mock fetch must not close over a dead binding.
 let mockEntries = [];
 let mockFetchOk = true;
+let fetchQueue  = null;
 const sandbox = {
   console: { log() {}, warn() {}, error() {} },
   localStorage: {
@@ -133,9 +134,20 @@ const sandbox = {
   clearTimeout: () => {},
   // Whatever the current test has loaded — lets applyFilters() (the refetch
   // that a row edit and "Refresh Rates" both trigger) round-trip realistically.
-  fetch: async () => (mockFetchOk
-    ? { ok: true,  status: 200, json: async () => ({ entries: mockEntries }) }
-    : { ok: false, status: 500, json: async () => ({ error: 'Database unavailable' }) }),
+  fetch: async () => {
+    // fetchQueue, when set, scripts one reply per request in call order — with
+    // a real delay, so an earlier request can be made to answer LAST.
+    if (fetchQueue && fetchQueue.length) {
+      const spec = fetchQueue.shift();
+      if (spec.delayMs) await new Promise(r => setTimeout(r, spec.delayMs));
+      return spec.ok === false
+        ? { ok: false, status: 500, json: async () => ({ error: spec.error || 'Database unavailable' }) }
+        : { ok: true,  status: 200, json: async () => ({ entries: spec.entries || [] }) };
+    }
+    return mockFetchOk
+      ? { ok: true,  status: 200, json: async () => ({ entries: mockEntries }) }
+      : { ok: false, status: 500, json: async () => ({ error: 'Database unavailable' }) };
+  },
   alert() {},
   confirm: () => true,
   Date, Math, JSON, Number, String, Array, Object, Set, Map, Boolean, Error, isNaN, parseInt, parseFloat,
@@ -362,11 +374,77 @@ assert('pager is up before the failure', pagerOpen('pagerBottom'));
 mockFetchOk = false;
 await run('applyFilters()');
 mockFetchOk = true;
-assert('the error row is shown',            /Error: Database unavailable/.test(el('rowsBody').innerHTML),
+assert('the failure notice is shown',       /Couldn't load time entries — Database unavailable/.test(el('rowsBody').innerHTML),
   el('rowsBody').innerHTML.slice(0, 120));
 assert('bottom pager is pulled down',       !pagerOpen('pagerBottom'));
 assert('top pager is pulled down',          !pagerOpen('pagerTop'));
 assert('no stale page buttons remain',      el('pagerBottom').innerHTML === '' && el('pagerTop').innerHTML === '');
+
+// ── A failed load must drop the rows it failed to refresh ──
+// The filter boxes re-render straight from allEntries without refetching, so
+// rows kept after a failure are one keystroke away from being drawn back over
+// the error as though they were current.
+console.log('\n[behavioural — failed load drops stale rows]');
+loadEntries(makeEntries(137, 'approved'));
+run('renderRows()');
+mockFetchOk = false;
+await run('applyFilters()');
+mockFetchOk = true;
+assert('the failed load clears allEntries', run('allEntries.length') === 0, `got ${run('allEntries.length')}`);
+assert('the failed load clears filtered',   run('filtered.length')   === 0, `got ${run('filtered.length')}`);
+assert('the notice names the failure',
+  /Couldn't load time entries — Database unavailable/.test(el('rowsBody').innerHTML), el('rowsBody').innerHTML.slice(0, 140));
+assert('the notice offers a retry',         /onclick="applyFilters\(\)"/.test(el('rowsBody').innerHTML));
+assert('stats are blanked, not zeroed',     el('stat-approved').textContent === '—', el('stat-approved').textContent);
+assert('tab badges are blanked too',
+  el('tab-approved-count').textContent === '—' && el('tab-pending-count').textContent === '—',
+  `pending=${el('tab-pending-count').textContent} approved=${el('tab-approved-count').textContent}`);
+// The bug: typing in the Employee box redrew the pre-failure rows.
+el('flt-user').value = 'emp1';
+run('filterAndRender()');
+assert('filtering cannot resurrect the dropped rows', rowCount() === 1, `got ${rowCount()} rows`);
+assert('the failure notice survives filtering',
+  /Couldn't load time entries/.test(el('rowsBody').innerHTML), el('rowsBody').innerHTML.slice(0, 120));
+assert('pagers stay down through filtering', !pagerOpen('pagerTop') && !pagerOpen('pagerBottom'));
+// Reports and Analytics draw from the same rows, so they must not show the
+// last good render as if it were current either.
+assert('Reports shows the failure too',   /Couldn't load time entries/.test(el('reportWrap').innerHTML));
+assert('Analytics shows the failure too', /Couldn't load time entries/.test(el('analyticsWrap').innerHTML));
+// A good load clears the error state.
+el('flt-user').value = '';
+loadEntries(makeEntries(137, 'approved'));
+await run('applyFilters()');
+assert('a successful reload recovers',     run('entriesLoadError') === null && rowCount() === 50, `got ${rowCount()} rows`);
+
+// ── Only the newest request may write the result ──
+// Requests are never cancelled, so a slow reply for an old date range can land
+// after a fast reply for a new one and leave the grid contradicting the filters.
+console.log('\n[behavioural — out-of-order loads]');
+const tag = (n, name) => makeEntries(n, 'approved').map(e => ({ ...e, username: name }));
+fetchQueue = [
+  { entries: tag(60, 'OLDRANGE'), delayMs: 80 },   // requested first, answers last
+  { entries: tag(5,  'NEWRANGE'), delayMs: 0  },   // requested second, answers first
+];
+await Promise.all([run('applyFilters()'), run('applyFilters()')]);
+await flush();
+assert('the newest response wins', run('allEntries.length') === 5, `got ${run('allEntries.length')} entries`);
+assert('the stale range never lands',
+  run(`allEntries.every(e => e.username === 'NEWRANGE')`), run('allEntries[0] && allEntries[0].username'));
+
+// A stale FAILURE must not throw an error over a newer good load either.
+fetchQueue = [
+  { ok: false, delayMs: 80 },                      // requested first, fails last
+  { entries: tag(20, 'NEWRANGE'), delayMs: 0 },    // requested second, succeeds first
+];
+await Promise.all([run('applyFilters()'), run('applyFilters()')]);
+await flush();
+assert('a stale failure cannot blank a newer good load',
+  run('entriesLoadError') === null, `entriesLoadError = ${JSON.stringify(run('entriesLoadError'))}`);
+assert('the newer rows survive the stale failure', run('allEntries.length') === 20, `got ${run('allEntries.length')}`);
+fetchQueue = null;
+loadEntries(makeEntries(137, 'approved'));
+run(`approvedPage = 1;`);
+run('renderRows()');
 
 // ── Paging scrolls to the pager, not past it ──
 // Anchoring on the table puts the top bar just off-screen, so the button you
