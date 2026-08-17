@@ -457,6 +457,112 @@
 
     /* ── Home dashboard ── */
     .home-wrap { padding: 1rem 1.25rem 2rem; }
+    /* ── Shared dashboard components ──
+       The metric strip and project table are the same components tracker.html,
+       paving.html and kiewit-pinetree.html use for their home tabs. Copied
+       rather than invented so every division page opens the same way and a
+       figure keeps its position when someone moves between them. */
+    .home-metric-strip {
+      display: flex;
+      /* The strip's cards will not fit one row on most screens, and the values
+         are nowrap + ellipsis, so without wrapping the money gets cut mid-number. */
+      flex-wrap: wrap;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 1.4rem;
+      background: var(--surface);
+    }
+    .home-metric-item {
+      flex: 1 1 150px;
+      padding: 1rem 1.25rem;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      min-width: 0;
+    }
+    .home-metric-item:last-child { border-right: none; }
+    .home-metric-label {
+      font-size: 0.58rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .home-metric-value {
+      font-size: 1.3rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      line-height: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .home-metric-value.is-positive { color: #4ade80; }
+    .home-metric-value.is-negative { color: #ef4444; }
+    /* Most of the strip holds numbers, which are kept on one line so a long one
+       ellipsises rather than reflowing the row. Needs Attention holds a
+       sentence — a pit name, or "All pits stocked" — so it wraps instead of
+       being cut off mid-word. */
+    .home-metric-value.is-text {
+      white-space: normal;
+      font-size: 0.95rem;
+      line-height: 1.2;
+    }
+    .home-metric-sub { font-size: 0.63rem; color: var(--muted); }
+
+    .proj-table-wrap { overflow-x: auto; margin-bottom: 1.4rem; }
+    .proj-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+    .proj-table thead th {
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: right;
+      padding: 0 0.75rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+      font-weight: 400;
+      white-space: nowrap;
+    }
+    .proj-table thead th:first-child { text-align: left; }
+    .proj-table tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
+    .proj-table tbody tr:last-child { border-bottom: none; }
+    .proj-table tbody tr:hover { background: var(--surface2); }
+    .proj-table tbody tr.is-total td {
+      border-top: 1px solid var(--border);
+      font-weight: 700;
+    }
+    .proj-table td {
+      padding: 0.6rem 0.75rem;
+      text-align: right;
+      vertical-align: middle;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .proj-table td:first-child { text-align: left; font-variant-numeric: normal; }
+    .proj-table td.pos { color: #4ade80; }
+    .proj-table td.neg { color: #ef4444; }
+    .pt-name {
+      font-weight: 600;
+      color: var(--text);
+      font-size: 0.83rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 260px;
+    }
+    .pt-meta {
+      font-size: 0.63rem;
+      color: var(--muted);
+      margin-top: 0.1rem;
+      white-space: nowrap;
+    }
+
     .home-toolbar {
       display: flex; align-items: center; justify-content: space-between;
       gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem;
@@ -1135,56 +1241,78 @@
         </div>
       </div>
 
-      <div class="home-section-label">Stockpile &amp; Flow</div>
-      <div class="kpi-grid">
-        <div class="kpi-tile is-accent">
-          <div class="kpi-label">Tons On Hand</div>
-          <div class="kpi-value" id="homeKpiOnHand">0</div>
-          <div class="kpi-sub" id="homeKpiOnHandSub">Across 0 locations</div>
+      <!-- Stockpile & flow, then per-ton economics — the same eight figures as
+           before, on the connected strip every other division page opens with
+           rather than two separate grids of tiles. -->
+      <div class="home-section-label">Stockpile &amp; Flow · Per-Ton Economics</div>
+      <div class="home-metric-strip">
+        <div class="home-metric-item">
+          <span class="home-metric-label">Tons On Hand</span>
+          <span class="home-metric-value" id="homeKpiOnHand">0</span>
+          <span class="home-metric-sub" id="homeKpiOnHandSub">Across 0 locations</span>
         </div>
-        <div class="kpi-tile">
-          <div class="kpi-label">Days of Supply</div>
-          <div class="kpi-value" id="homeKpiDays">—</div>
-          <div class="kpi-sub" id="homeKpiDaysSub">On hand ÷ daily sales rate</div>
+        <div class="home-metric-item">
+          <span class="home-metric-label">Days of Supply</span>
+          <span class="home-metric-value" id="homeKpiDays">—</span>
+          <span class="home-metric-sub" id="homeKpiDaysSub">On hand ÷ daily sales rate</span>
         </div>
-        <div class="kpi-tile">
-          <div class="kpi-label">Net Change</div>
-          <div class="kpi-value" id="homeKpiNetChange">0</div>
-          <div class="kpi-sub" id="homeKpiNetChangeSub">Crushed vs sold</div>
+        <div class="home-metric-item">
+          <span class="home-metric-label">Net Change</span>
+          <span class="home-metric-value" id="homeKpiNetChange">0</span>
+          <span class="home-metric-sub" id="homeKpiNetChangeSub">Crushed vs sold</span>
         </div>
-        <div class="kpi-tile">
-          <div class="kpi-label">Needs Attention</div>
-          <div class="kpi-value" id="homeKpiLow">—</div>
-          <div class="kpi-sub" id="homeKpiLowSub">Lowest pit by days of supply</div>
+        <div class="home-metric-item">
+          <span class="home-metric-label">Needs Attention</span>
+          <span class="home-metric-value is-text" id="homeKpiLow">—</span>
+          <span class="home-metric-sub" id="homeKpiLowSub">Lowest pit by days of supply</span>
+        </div>
+        <div class="home-metric-item">
+          <span class="home-metric-label">Margin / Ton</span>
+          <span class="home-metric-value" id="homeKpiMarginTon">$0.00</span>
+          <span class="home-metric-sub" id="homeKpiMarginTonSub">Price − cost, per ton sold</span>
+        </div>
+        <div class="home-metric-item">
+          <span class="home-metric-label">Avg Price / Ton</span>
+          <span class="home-metric-value" id="homeKpiPriceTon">$0.00</span>
+          <span class="home-metric-sub" id="homeKpiPriceTonSub">Sales ÷ tons sold</span>
+        </div>
+        <div class="home-metric-item">
+          <span class="home-metric-label">Cost / Ton</span>
+          <span class="home-metric-value" id="homeKpiCostTon">$0.00</span>
+          <span class="home-metric-sub" id="homeKpiCostTonSub">Daily + crushing ÷ tons sold</span>
+        </div>
+        <div class="home-metric-item">
+          <span class="home-metric-label">Break-Even</span>
+          <span class="home-metric-value" id="homeKpiBreakEven">—</span>
+          <span class="home-metric-sub" id="homeKpiBreakEvenSub">Tons sold vs tons needed</span>
         </div>
       </div>
 
-      <div class="home-section-label">Per-Ton Economics</div>
-      <div class="kpi-grid">
-        <div class="kpi-tile is-accent">
-          <div class="kpi-label">Margin / Ton</div>
-          <div class="kpi-value" id="homeKpiMarginTon">$0.00</div>
-          <div class="kpi-sub" id="homeKpiMarginTonSub">Price − cost, per ton sold</div>
-        </div>
-        <div class="kpi-tile">
-          <div class="kpi-label">Avg Price / Ton</div>
-          <div class="kpi-value" id="homeKpiPriceTon">$0.00</div>
-          <div class="kpi-sub" id="homeKpiPriceTonSub">Sales ÷ tons sold</div>
-        </div>
-        <div class="kpi-tile">
-          <div class="kpi-label">Cost / Ton</div>
-          <div class="kpi-value" id="homeKpiCostTon">$0.00</div>
-          <div class="kpi-sub" id="homeKpiCostTonSub">Daily + crushing ÷ tons sold</div>
-        </div>
-        <div class="kpi-tile">
-          <div class="kpi-label">Break-Even</div>
-          <div class="kpi-value" id="homeKpiBreakEven">—</div>
-          <div class="kpi-sub" id="homeKpiBreakEvenSub">Tons sold vs tons needed</div>
-        </div>
-      </div>
-
+      <!-- The pit cards became the Performance by Location table the Analytics
+           tab already carries: same eleven columns, one row per pit, so the
+           pits can be read against each other down a column instead of by
+           looking back and forth between cards. -->
       <div class="home-section-label">By Location</div>
-      <div class="loc-cards" id="homeLocationCards"></div>
+      <div class="proj-table-wrap">
+        <table class="proj-table" id="homeLocationTable">
+          <thead>
+            <tr>
+              <th>Location</th>
+              <th>Sales</th>
+              <th>Cost</th>
+              <th>Margin</th>
+              <th>Tons Sold</th>
+              <th>Cost / Ton Sold</th>
+              <th>Cost / Ton (Prod.)</th>
+              <th>Tons Crushed</th>
+              <th>Loss %</th>
+              <th>Final Screen Tons</th>
+              <th>Hours</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
 
       <div class="home-panel" style="margin-bottom: 1.1rem">
         <div class="home-panel-title">On Hand by Product</div>
@@ -5277,8 +5405,7 @@
       // Each pit's headline metrics plus its jaws→final-screen loss, so the
       // combined division numbers above are never all you see.
       const byLoc = computeByLocation(visibleDaily, visibleCrush, visibleSales);
-      renderLocationCards('homeLocationCards', byLoc,
-        'Add entries with a Location on Daily, Crushing, or Sales to separate the pits.');
+      renderLocationTable('#homeLocationTable tbody', byLoc);
 
       // ── On hand by product (division-wide, same balance the Inventory tab shows) ──
       renderHomeProductStock(inv);
@@ -8285,7 +8412,13 @@ ${sections}
     }
 
     function renderAnalyticsLocation(byLoc) {
-      const tbody = document.querySelector('#analyticsLocationTable tbody');
+      renderLocationTable('#analyticsLocationTable tbody', byLoc);
+    }
+
+    // Performance by Location, shared by the Home tab and the Analytics tab so
+    // the two can never drift into showing a pit differently.
+    function renderLocationTable(selector, byLoc) {
+      const tbody = document.querySelector(selector);
       if (!tbody) return;
       const rows = byLoc.locations.slice().sort((x, y) => y.grossMargin - x.grossMargin);
       const COLS = 11;
@@ -8298,8 +8431,7 @@ ${sections}
         const showLoss = e.tonsCrushed > 0 && e.hasLoss;
         const lossTxt = showLoss ? e.lossPct.toFixed(1) + '%' : '—';
         const finalTxt = showLoss ? formatTons(e.finalScreenTons) : '—';
-        const style = isTotal ? ' style="border-top:2px solid var(--border);font-weight:700"' : '';
-        return `<tr${style}>
+        return `<tr${isTotal ? ' class="is-total"' : ''}>
           <td>${escapeHtml(e.name)}</td>
           <td>${formatMoney(e.totalSales)}</td>
           <td>${formatMoney(e.totalCost)}</td>
@@ -8439,8 +8571,7 @@ ${sections}
         const showLoss = e.tonsCrushed > 0 && e.hasLoss;
         const lossTxt = showLoss ? e.lossPct.toFixed(1) + '%' : '—';
         const finalTxt = showLoss ? formatTons(e.finalScreenTons) : '—';
-        const style = isTotal ? ' style="border-top:2px solid var(--border);font-weight:700"' : '';
-        return `<tr${style}>
+        return `<tr${isTotal ? ' class="is-total"' : ''}>
           <td>${escapeHtml(e.name)}</td>
           <td>${formatTons(e.crushLoads)}</td>
           <td>${formatTons(e.tonsCrushed)}</td>

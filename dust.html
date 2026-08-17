@@ -203,28 +203,107 @@
       border: 1px solid rgba(251,191,36,0.25); padding: 0.3rem 0.8rem;
       border-radius: 20px; margin-top: 0.35rem;
     }
-    .dash-kpi-strip {
-      display: flex; border: 1px solid var(--border); border-radius: 8px;
-      overflow: hidden; margin: 1.25rem 1.5rem; background: var(--surface);
+    /* ── Shared dashboard components ──
+       The metric strip and project table are the same components tracker.html,
+       paving.html and kiewit-pinetree.html use for their home tabs. Copied
+       rather than invented so every division page opens the same way and a
+       figure keeps its position when someone moves between them. */
+    .home-metric-strip {
+      display: flex;
+      /* The strip's cards will not fit one row on most screens, and the values
+         are nowrap + ellipsis, so without wrapping the money gets cut mid-number. */
+      flex-wrap: wrap;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      margin: 1.25rem 1.5rem;
+      background: var(--surface);
     }
-    .dash-kpi-item {
-      flex: 1; padding: 1rem 1.1rem; border-right: 1px solid var(--border);
-      display: flex; flex-direction: column; gap: 0.2rem;
+    .home-metric-item {
+      flex: 1 1 150px;
+      padding: 1rem 1.25rem;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      min-width: 0;
     }
-    .dash-kpi-item:last-child { border-right: none; }
-    .dash-kpi-label {
-      font-size: 0.56rem; letter-spacing: 0.14em;
-      text-transform: uppercase; color: var(--muted);
+    .home-metric-item:last-child { border-right: none; }
+    .home-metric-label {
+      font-size: 0.58rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
     }
-    .dash-kpi-value {
-      font-size: 1.22rem; font-weight: 700;
-      font-variant-numeric: tabular-nums; line-height: 1.1;
+    .home-metric-value {
+      font-size: 1.3rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      line-height: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .dash-kpi-value.amber { color: var(--amber); }
-    .dash-kpi-value.blue  { color: var(--blue);  }
-    .dash-kpi-value.green { color: var(--green); }
-    .dash-kpi-value.muted { color: var(--muted); }
-    .dash-kpi-sub { font-size: 0.62rem; color: var(--muted); }
+    .home-metric-value.amber { color: var(--amber); }
+    .home-metric-value.blue  { color: var(--blue);  }
+    .home-metric-value.green { color: var(--green); }
+    .home-metric-value.red   { color: #f87171;      }
+    .home-metric-value.muted { color: var(--muted); }
+    .home-metric-sub { font-size: 0.63rem; color: var(--muted); }
+
+    .proj-table-wrap { overflow-x: auto; margin: 0 1.5rem 2rem; }
+    .proj-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+    .proj-table thead th {
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: right;
+      padding: 0 0.75rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+      font-weight: 400;
+      white-space: nowrap;
+    }
+    .proj-table thead th:first-child { text-align: left; }
+    .proj-table tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
+    .proj-table tbody tr:last-child { border-bottom: none; }
+    .proj-table tbody tr:hover { background: var(--surface2); }
+    .proj-table tfoot td {
+      border-top: 1px solid var(--border);
+      font-weight: 700;
+      padding: 0.6rem 0.75rem;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .proj-table tfoot td:first-child { text-align: left; }
+    .proj-table td {
+      padding: 0.6rem 0.75rem;
+      text-align: right;
+      vertical-align: middle;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .proj-table td:first-child { text-align: left; font-variant-numeric: normal; }
+    .pt-name {
+      font-weight: 600;
+      color: var(--text);
+      font-size: 0.83rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 260px;
+    }
+    .pt-meta {
+      font-size: 0.63rem;
+      color: var(--muted);
+      margin-top: 0.1rem;
+      white-space: nowrap;
+    }
 
     .dash-section-lbl {
       font-size: 0.57rem; font-weight: 700; letter-spacing: 0.14em;
@@ -255,19 +334,15 @@
     .dash-widgets-row {
       display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin: 0 1.5rem;
     }
+    /* The customer bars that used to sit beside Monthly Revenue became the By
+       Customer table above, so the chart takes the full width rather than
+       leaving half the row empty. */
+    .dash-widgets-row.dash-widgets-single { grid-template-columns: 1fr; }
     .dash-widget {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 8px; padding: 1.1rem 1.25rem;
     }
     .dash-widget .dash-section-lbl { margin: 0 0 0.75rem; }
-    .dash-co-row { margin-bottom: 0.6rem; }
-    .dash-co-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.22rem; }
-    .dash-co-name { font-size: 0.72rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 65%; }
-    .dash-co-val  { font-size: 0.7rem; color: var(--amber); font-weight: 700; }
-    .dash-co-track { height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; margin-bottom: 0.18rem; }
-    .dash-co-fill  { height: 100%; border-radius: 3px; min-width: 3px; }
-    .dash-co-fill.amber { background: linear-gradient(90deg, #fbbf24, rgba(251,191,36,0.4)); }
-    .dash-co-jobs  { font-size: 0.61rem; color: var(--muted); }
 
     /* Vertical monthly bar chart */
     .dash-month-bars {
@@ -317,24 +392,6 @@
       letter-spacing: 0.06em; padding: 0.25rem 0.7rem; border-radius: 20px;
     }
     /* Invoice overview */
-    .dash-inv-strip { display: flex; gap: 1rem; margin: 0 1.5rem; }
-    .dash-inv-card {
-      flex: 1; background: var(--surface); border: 1px solid var(--border);
-      border-radius: 8px; padding: 1rem 1.1rem;
-    }
-    .dash-inv-card .dash-kpi-label {
-      font-size: 0.56rem; letter-spacing: 0.14em;
-      text-transform: uppercase; color: var(--muted);
-    }
-    .dash-inv-card .inv-amount {
-      font-size: 1.15rem; font-weight: 700;
-      font-variant-numeric: tabular-nums; line-height: 1.2;
-      margin: 0.2rem 0 0.15rem;
-    }
-    .dash-inv-card .inv-count { font-size: 0.62rem; color: var(--muted); }
-    .dash-inv-card.overdue     .inv-amount { color: #f87171; }
-    .dash-inv-card.outstanding .inv-amount { color: var(--amber); }
-    .dash-inv-card.paid        .inv-amount { color: var(--green); }
     .dash-overdue-list {
       margin: 0.75rem 1.5rem 0;
       background: var(--surface); border: 1px solid rgba(248,113,113,0.25);
@@ -357,8 +414,6 @@
     .dash-empty-sm { padding: 0.75rem 1rem; color: var(--muted); font-size: 0.74rem; }
 
     @media (max-width: 960px) {
-      .dash-kpi-strip { flex-wrap: wrap; }
-      .dash-kpi-item  { min-width: calc(33% - 1px); }
       .dash-widgets-row { grid-template-columns: 1fr; }
     }
 
@@ -4803,10 +4858,10 @@
     const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
     function kpiCard(label, value, color, sub) {
-      return `<div class="dash-kpi-item">
-        <span class="dash-kpi-label">${label}</span>
-        <span class="dash-kpi-value ${color}">${value}</span>
-        <span class="dash-kpi-sub">${sub}</span>
+      return `<div class="home-metric-item">
+        <span class="home-metric-label">${label}</span>
+        <span class="home-metric-value ${color}">${value}</span>
+        <span class="home-metric-sub">${sub}</span>
       </div>`;
     }
 
@@ -4848,16 +4903,87 @@
       }));
       const maxMonthV = Math.max(...monthBars.map(m => m.v), 1e-9);
 
-      // ── Top customers YTD ──
+      // ── By customer, YTD ──
+      // Replaces the top-7 revenue bars. The bars ranked customers and stopped
+      // there; the table says what each one is worth AND what is still owed on
+      // it, which is the question the office has to answer. Invoice state uses
+      // effectiveInvStatus, the same rule the Invoice Overview below applies.
       const coMap = {};
       ytd.forEach(r => {
         if (!r.company) return;
-        if (!coMap[r.company]) coMap[r.company] = { rev: 0, jobs: 0 };
-        coMap[r.company].rev  += r.invTotal;
-        coMap[r.company].jobs += 1;
+        if (!coMap[r.company]) coMap[r.company] = {
+          name: r.company, rev: 0, jobs: 0, gallons: 0, hours: 0,
+          overdue: 0, unpaid: 0, paid: 0, states: new Set(), lastVisit: '',
+        };
+        const c = coMap[r.company];
+        c.rev     += r.invTotal;
+        c.jobs    += 1;
+        c.gallons += r.gallons    || 0;
+        c.hours   += r.totalHours || 0;
+        if (r.invTotal) {
+          const st = effectiveInvStatus(r);
+          if      (st === 'overdue') c.overdue += r.invTotal;
+          else if (st === 'paid')    c.paid    += r.invTotal;
+          else                       c.unpaid  += r.invTotal;
+        }
+        if (r.state) c.states.add(r.state);
+        if ((r.date || '') > c.lastVisit) c.lastVisit = r.date || '';
       });
-      const topCos    = Object.entries(coMap).sort((a, b) => b[1].rev - a[1].rev).slice(0, 7);
-      const maxCoRev  = topCos.length ? topCos[0][1].rev : 1;
+      const custRows = Object.values(coMap).sort((a, b) => b.rev - a.rev || a.name.localeCompare(b.name));
+      const custTotals = custRows.reduce((t, c) => ({
+        jobs:t.jobs+c.jobs, gallons:t.gallons+c.gallons, hours:t.hours+c.hours, rev:t.rev+c.rev,
+        overdue:t.overdue+c.overdue, unpaid:t.unpaid+c.unpaid, paid:t.paid+c.paid,
+      }), { jobs:0, gallons:0, hours:0, rev:0, overdue:0, unpaid:0, paid:0 });
+
+      const money0 = v => v > 0.005 ? money(v) : '—';
+      const custTableHtml = custRows.length ? `
+        <div class="proj-table-wrap">
+          <table class="proj-table">
+            <thead><tr>
+              <th>Customer</th>
+              <th>Visits</th>
+              <th>Gallons</th>
+              <th>Hours</th>
+              <th>Revenue</th>
+              <th title="Revenue divided by visits.">Avg / Visit</th>
+              <th title="Invoiced and past due.">Overdue</th>
+              <th title="Billed but not yet paid, and not yet past due.">Unpaid</th>
+              <th>Paid</th>
+            </tr></thead>
+            <tbody>${custRows.map(c => {
+              const meta = [
+                c.states.size ? [...c.states].sort().join(', ') : '',
+                c.lastVisit ? `last visit ${c.lastVisit}` : '',
+              ].filter(Boolean).join(' · ');
+              return `<tr>
+                <td>
+                  <div class="pt-name" title="${esc(c.name)}">${esc(c.name)}</div>
+                  ${meta ? `<div class="pt-meta">${esc(meta)}</div>` : ''}
+                </td>
+                <td>${numFmt(c.jobs)}</td>
+                <td style="color:var(--blue)">${numFmt(Math.round(c.gallons))}</td>
+                <td style="color:var(--muted)">${numFmt(round2(c.hours), 1)}</td>
+                <td style="color:var(--amber)">${money(c.rev)}</td>
+                <td style="color:var(--muted)">${c.jobs ? money(c.rev / c.jobs) : '—'}</td>
+                <td style="color:${c.overdue > 0.005 ? '#f87171' : 'var(--muted)'}">${money0(c.overdue)}</td>
+                <td style="color:${c.unpaid  > 0.005 ? 'var(--amber)' : 'var(--muted)'}">${money0(c.unpaid)}</td>
+                <td style="color:${c.paid    > 0.005 ? 'var(--green)' : 'var(--muted)'}">${money0(c.paid)}</td>
+              </tr>`;
+            }).join('')}</tbody>
+            <tfoot><tr>
+              <td>Totals · ${custRows.length} customer${custRows.length === 1 ? '' : 's'}</td>
+              <td>${numFmt(custTotals.jobs)}</td>
+              <td style="color:var(--blue)">${numFmt(Math.round(custTotals.gallons))}</td>
+              <td style="color:var(--muted)">${numFmt(round2(custTotals.hours), 1)}</td>
+              <td style="color:var(--amber)">${money(custTotals.rev)}</td>
+              <td></td>
+              <td style="color:${custTotals.overdue > 0.005 ? '#f87171' : 'var(--muted)'}">${money0(custTotals.overdue)}</td>
+              <td style="color:${custTotals.unpaid  > 0.005 ? 'var(--amber)' : 'var(--muted)'}">${money0(custTotals.unpaid)}</td>
+              <td style="color:${custTotals.paid    > 0.005 ? 'var(--green)' : 'var(--muted)'}">${money0(custTotals.paid)}</td>
+            </tr></tfoot>
+          </table>
+        </div>`
+        : '<div class="dash-empty-sm" style="margin:0 1.5rem 2rem">No customers billed yet this year.</div>';
 
       // ── Recent jobs (last 10 by date desc) ──
       const recent = [...computed]
@@ -4973,7 +5099,7 @@
 
         ${noData ? '<div class="dash-empty">No data yet — import or add rows to see your dashboard.</div>' : ''}
 
-        <div class="dash-kpi-strip">
+        <div class="home-metric-strip">
           ${kpiCard('YTD Revenue',       money(ytdRevenue),              'amber', `${numFmt(ytdJobs)} job${ytdJobs !== 1 ? 's' : ''}`)}
           ${kpiCard('Jobs This Month',   numFmt(monthJobs),              monthJobs > 0 ? 'green' : 'muted', MONTH_NAMES[thisMo])}
           ${kpiCard('Gallons YTD',       numFmt(Math.round(ytdGallons)), 'blue',  'UB product applied')}
@@ -4982,23 +5108,10 @@
           ${kpiCard('Service Hours YTD', numFmt(round2(ytdHours), 1),   'blue',  'hrs in the field')}
         </div>
 
-        <div class="dash-widgets-row" style="margin-top:1.5rem">
-          <div class="dash-widget">
-            <div class="dash-section-lbl">Top Customers — YTD</div>
-            ${topCos.length ? topCos.map(([name, d]) => `
-              <div class="dash-co-row">
-                <div class="dash-co-meta">
-                  <span class="dash-co-name" title="${esc(name)}">${esc(name)}</span>
-                  <span class="dash-co-val">${money(d.rev)}</span>
-                </div>
-                <div class="dash-co-track">
-                  <div class="dash-co-fill amber" style="width:${((d.rev / maxCoRev) * 100).toFixed(1)}%"></div>
-                </div>
-                <span class="dash-co-jobs">${numFmt(d.jobs)} visit${d.jobs !== 1 ? 's' : ''}</span>
-              </div>`).join('')
-            : '<div class="dash-empty-sm">No data yet.</div>'}
-          </div>
+        <div class="dash-section-lbl">By Customer — ${thisYrStr}</div>
+        ${custTableHtml}
 
+        <div class="dash-widgets-row dash-widgets-single" style="margin-top:1.5rem">
           <div class="dash-widget">
             <div class="dash-section-lbl">Monthly Revenue — ${thisYrStr}</div>
             <div class="dash-month-bars">
@@ -5044,22 +5157,13 @@
 
         ${(invOverdue.length || invOutstanding.length || invPaid.length) ? `
         <div class="dash-section-lbl">Invoice Overview — 2026 &amp; Forward</div>
-        <div class="dash-inv-strip">
-          <div class="dash-inv-card overdue">
-            <div class="dash-kpi-label">Overdue</div>
-            <div class="inv-amount">${money(sumInv(invOverdue))}</div>
-            <div class="inv-count">${numFmt(invOverdue.length)} invoice${invOverdue.length !== 1 ? 's' : ''}</div>
-          </div>
-          <div class="dash-inv-card outstanding">
-            <div class="dash-kpi-label">Unpaid / Pending</div>
-            <div class="inv-amount">${money(sumInv(invOutstanding))}</div>
-            <div class="inv-count">${numFmt(invOutstanding.length)} invoice${invOutstanding.length !== 1 ? 's' : ''}</div>
-          </div>
-          <div class="dash-inv-card paid">
-            <div class="dash-kpi-label">Paid</div>
-            <div class="inv-amount">${money(sumInv(invPaid))}</div>
-            <div class="inv-count">${numFmt(invPaid.length)} invoice${invPaid.length !== 1 ? 's' : ''}</div>
-          </div>
+        <div class="home-metric-strip">
+          ${kpiCard('Overdue', money(sumInv(invOverdue)), 'red',
+                    `${numFmt(invOverdue.length)} invoice${invOverdue.length !== 1 ? 's' : ''}`)}
+          ${kpiCard('Unpaid / Pending', money(sumInv(invOutstanding)), 'amber',
+                    `${numFmt(invOutstanding.length)} invoice${invOutstanding.length !== 1 ? 's' : ''}`)}
+          ${kpiCard('Paid', money(sumInv(invPaid)), 'green',
+                    `${numFmt(invPaid.length)} invoice${invPaid.length !== 1 ? 's' : ''}`)}
         </div>
         ${topOverdue.length ? `
         <div class="dash-overdue-list">

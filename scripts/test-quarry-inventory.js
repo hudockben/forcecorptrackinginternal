@@ -596,8 +596,10 @@ async function main() {
     BULK_HAS_PRODUCT(win), true);
   win.switchTab('home');
   await sleep(60);
-  check('home tab still renders location cards',
-    doc.querySelectorAll('#homeLocationCards .loc-card').length > 0, true);
+  // The Home tab shows its pits as rows in the Performance by Location table
+  // now, the same table (and the same builder) the Analytics tab uses.
+  check('home tab still renders per-location rows',
+    doc.querySelectorAll('#homeLocationTable tbody tr').length > 0, true);
   win.switchTab('analytics');
   await sleep(60);
   check('analytics tab still renders its location table',
