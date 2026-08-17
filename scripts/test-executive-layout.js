@@ -138,7 +138,10 @@ const QUARRY_METRICS = [
 ];
 for (const label of QUARRY_METRICS) {
   assert(`the API builds "${label}"`, report.includes(`label: '${label}'`));
-  assert(`  and quarry.html still shows it`, quarry.includes(`>${label}</div>`));
+  // Tag-agnostic: the Home tab's KPI labels moved from <div class="kpi-label">
+  // onto the shared strip's <span class="home-metric-label">.
+  assert(`  and quarry.html still shows it`,
+    new RegExp(`>\\s*${label.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')}\\s*<`).test(quarry));
 }
 
 // The Analytics tab's Performance by Location table, column for column.
@@ -186,9 +189,11 @@ for (const label of DUST_METRICS) {
   assert(`the API builds "${label}"`, report.includes(`label: '${label}'`));
   assert(`  and dust.html still shows it`, dust.includes(`kpiCard('${label}'`));
 }
+// The invoice buckets moved onto the same strip component as the KPIs above
+// them, so they are built the same way now.
 assert('plus the page\'s two invoice buckets',
   report.includes("label: 'Overdue'") && report.includes("label: 'Unpaid / Pending'")
-  && dust.includes('>Overdue<') && dust.includes('>Unpaid / Pending<'));
+  && dust.includes("kpiCard('Overdue'") && dust.includes("kpiCard('Unpaid / Pending'"));
 
 const DUST_COLUMNS = ['Customer', 'Visits', 'Gallons', 'Hours', 'Revenue',
                       'Avg / Visit', 'Overdue', 'Unpaid', 'Paid'];
@@ -411,6 +416,48 @@ assert('as did the legacy timeline block it shared print rules with',
 for (const key of ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
   assert(`${key} has a section`, new RegExp(`'${key}'`).test(report));
 }
+
+// ── Every division page opens on the same components ──
+console.log('\n[the division pages share one dashboard layout]');
+
+for (const [name, html] of [['tracker', tracker], ['paving', paving], ['kiewit-pinetree', kiewit],
+                            ['trucking', truck], ['quarry', quarry], ['dust', dust]]) {
+  assert(`${name}.html opens on the shared metric strip`,
+    html.includes('home-metric-strip') && html.includes('home-metric-value'));
+  assert(`  and uses the shared table for its own rows`,
+    html.includes('.proj-table') || html.includes('class="proj-table"'));
+}
+assert('the bespoke strips those pages used to carry are gone',
+  !dust.includes('dash-kpi-item') && !dust.includes('dash-inv-card')
+  && !quarry.includes('id="homeLocationCards"'));
+
+// Quarry's pit cards became the table the Analytics tab already had, and both
+// mount points now run through one builder.
+assert('quarry renders Performance by Location from one shared builder',
+  /function renderLocationTable\(selector, byLoc\)/.test(quarry)
+  && /renderLocationTable\('#homeLocationTable tbody'/.test(quarry)
+  && /renderLocationTable\('#analyticsLocationTable tbody'/.test(quarry));
+const homeQuarryCols = headerLabels(quarry, 'id="homeLocationTable"');
+assert('and its Home table has the same eleven columns as Analytics',
+  QUARRY_COLUMNS.every((c, i) => homeQuarryCols[i] === c),
+  'got: ' + JSON.stringify(homeQuarryCols));
+
+// Quarry's Needs Attention holds a sentence, not a number — the strip's value
+// style is nowrap + ellipsis, so it needs the text modifier or it truncates.
+assert('quarry\'s text-valued metric is allowed to wrap',
+  /\.home-metric-value\.is-text/.test(quarry)
+  && /class="home-metric-value is-text" id="homeKpiLow"/.test(quarry));
+
+// Dust's customer table has to classify invoices the same way the Invoice
+// Overview beneath it does, or the two disagree on the same page.
+const DUST_PAGE_COLUMNS = ['Customer', 'Visits', 'Gallons', 'Hours', 'Revenue',
+                           'Avg / Visit', 'Overdue', 'Unpaid', 'Paid'];
+const dustPageCols = headerLabels(dust, 'const custTableHtml', 1400);
+assert('dust\'s customer table carries the visit and the money owed on it',
+  DUST_PAGE_COLUMNS.every((c, i) => dustPageCols[i] === c),
+  'got: ' + JSON.stringify(dustPageCols));
+assert('and classifies invoices with effectiveInvStatus, as the Invoice Overview does',
+  /const st = effectiveInvStatus\(r\);[\s\S]{0,200}c\.overdue/.test(dust));
 
 // ── Print + email scope ──
 console.log('\n[print and email scope]');
