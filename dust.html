@@ -3841,8 +3841,9 @@
     }
 
     /* Rows this tab did not create: payroll posts one when a supervisor approves
-       a dust customer haul on a timesheet (id "tsd-<entryId>-row" — see
-       api/lib/dust-injected.js). They are rendered locked, and the server
+       a dust customer haul on a timesheet, and one per haul when they split that
+       day across customers or pads (ids "tsd-<entryId>-row", "tsd-<entryId>-2"…
+       — see api/lib/dust-injected.js). They are rendered locked, and the server
        enforces the same rule on writes, so nothing here can change or remove
        one — the way to take one back is to un-approve the entry in Payroll.
 

@@ -24,6 +24,14 @@
  * rates and the escort vehicle follow from the customer the same way they do
  * when the row is typed into the dust tab by hand.
  *
+ * One timesheet entry can post MORE THAN ONE of these rows. A driver's day is
+ * one clock window on one timesheet, but the dust office bills per haul: ten
+ * hours can be 4,000 gallons to one customer's pad and 2,000 to another's, and
+ * each of those is its own invoice line with its own hours, gallons and rates.
+ * So the approve modal lets the supervisor split the day into legs, and each leg
+ * becomes one row here — and one Truck Tracking row beside it, on the same legs,
+ * so the two tabs describe the same hauls.
+ *
  * Both rows feed Intercompany billing, and they bill on different bases (haul
  * fee x hours over there, vehicle rates + gallons here). Whoever reconciles
  * Intercompany has to pick ONE of them per haul or the customer is invoiced
@@ -37,7 +45,7 @@
  * Truck Tracking rows before it.
  */
 
-const { isEesJob, removeIcBillingEntries } = require('./truck-injected');
+const { isEesJob, removeIcBillingEntries, MAX_INJECTED_LEGS } = require('./truck-injected');
 const { IC_SOURCES } = require('./ic-sources');
 
 // The tag Dust Control Tracking rows carry in the shared Intercompany list.
@@ -86,17 +94,42 @@ function needsDustTrackingRow(entry) {
 function dustRowIdPrefix(entryId) { return `tsd-${entryId}-`; }
 
 /**
- * The canonical id for an entry's injected Dust Control Tracking row.
+ * The canonical id for leg `index` (1-based) of an entry's injected rows.
  *
- * Stable, not stamped with Date.now(): there is only ever one row per entry, and
- * Intercompany keys its billing entry off this id. A fresh id on every
- * re-injection would orphan that entry — and dust-rows.js rebuilds a row from an
- * orphaned billing entry (recoverFromIcBilling), so the orphan would come back
- * as a duplicate of the row payroll had just corrected. Re-injecting is
- * idempotent: the row keeps its identity, its place in the table and its
+ * Stable, not stamped with Date.now(): a leg's position in the day is what
+ * identifies it, and Intercompany keys its billing entry off this id. A fresh id
+ * on every re-injection would orphan that entry — and dust-rows.js rebuilds a
+ * row from an orphaned billing entry (recoverFromIcBilling), so the orphan would
+ * come back as a duplicate of the row payroll had just corrected. Re-injecting
+ * is idempotent: each leg keeps its identity, its place in the table and its
  * Intercompany history across an un-approve/correct/re-approve cycle.
+ *
+ * Leg 1 keeps the historic "-row" suffix rather than becoming "-1", so every row
+ * posted before the day could be split keeps the id its billing entry, its
+ * invoice number and its Intercompany history are already filed under.
  */
-function dustRowId(entryId) { return `${dustRowIdPrefix(entryId)}row`; }
+function dustRowId(entryId, index = 1) {
+  const n = Number(index) || 1;
+  return n <= 1 ? `${dustRowIdPrefix(entryId)}row` : `${dustRowIdPrefix(entryId)}${n}`;
+}
+
+// The most legs one day can be split into. Taken from truck-injected.js rather
+// than restated: the two tabs post the same hauls, so a cap one side accepted
+// and the other refused would post half a split.
+const MAX_DUST_ROWS = MAX_INJECTED_LEGS;
+
+// The 1-based leg an injected id names, or null when the id names no leg this
+// module could have minted — including a number past the cap, which is what a
+// Date.now()-stamped leftover looks like. Bounded rather than clamped: a stray
+// row must not be read as a real haul, because dustSplitForEntry hands what it
+// returns to the approve modal, and anything the modal shows it saves.
+function dustRowIndexFromId(rowId) {
+  const m = /^tsd-\d+-(row|[1-9]\d*)$/.exec(String(rowId || ''));
+  if (!m) return null;
+  if (m[1] === 'row') return 1;
+  const n = Number(m[1]);
+  return (Number.isInteger(n) && n >= 2 && n <= MAX_DUST_ROWS) ? n : null;
+}
 
 // The timesheet entry a "tsd-<entryId>-<suffix>" row came from, or null when the
 // id isn't one of ours. Manually-added dust rows use uid() — a base-36 timestamp
@@ -117,33 +150,38 @@ function isInjectedDustRowId(rowId) { return entryIdFromDustRowId(rowId) != null
  *   - its entry is no longer approved (payroll un-approved it),
  *   - its entry no longer routes here (edited onto another division, or moved
  *     onto an EES job), or
- *   - a duplicate row for the same entry exists — the canonical "-row" id wins.
+ *   - the same id appears twice in the list handed in.
+ *
+ * Several live rows for ONE entry is normal, not a duplicate: a day split across
+ * two customers posts one row per leg. Legs the split no longer has are pruned
+ * by the injection itself (it knows how many it just wrote); this sweep only
+ * knows whether an entry still routes here at all, so an entry-level "keep one,
+ * drop the rest" rule here would delete the second customer's billing every time
+ * the dust tab was opened.
  *
  * Manual rows are never candidates: only ids carrying the "tsd-<entryId>-"
  * prefix payroll mints are even looked at.
  */
 function findStaleDustRows(rows, entriesById) {
   const stale = [];
-  const keptByEntry = new Map();
+  const seen = new Set();
 
   const injected = (rows || []).filter(r => r && typeof r === 'object' && isInjectedDustRowId(r.id));
   for (const row of injected) {
-    const entryId = entryIdFromDustRowId(row.id);
+    const id      = String(row.id);
+    const entryId = entryIdFromDustRowId(id);
     const entry   = entriesById.get(entryId) || null;
     if (!entry || entry.status !== 'approved' || !needsDustTrackingRow(entry)) {
-      stale.push(String(row.id));
+      stale.push(id);
       continue;
     }
-    const prev = keptByEntry.get(entryId);
-    if (!prev) { keptByEntry.set(entryId, row); continue; }
-    // Two live rows for one entry: keep the canonical id, drop the other.
-    const canonical = dustRowId(entryId);
-    if (String(row.id) === canonical) {
-      keptByEntry.set(entryId, row);
-      stale.push(String(prev.id));
-    } else {
-      stale.push(String(row.id));
-    }
+    // An id carrying our prefix but naming no leg is not a haul: nothing here
+    // mints one, so it is a row a failed prune left behind. Sweeping it is the
+    // only thing that ever will — the tab refuses to delete payroll's rows, and
+    // its entry is alive, so every other test here passes it.
+    if (dustRowIndexFromId(id) == null) { stale.push(id); continue; }
+    if (seen.has(id)) { stale.push(id); continue; }
+    seen.add(id);
   }
   return stale;
 }
@@ -266,9 +304,11 @@ function mergeInjectedDustRows(serverRows, incomingRows) {
 module.exports = {
   IC_SOURCE_DUST,
   DUST_TAB_FIELDS,
+  MAX_DUST_ROWS,
   needsDustTrackingRow,
   dustRowIdPrefix,
   dustRowId,
+  dustRowIndexFromId,
   entryIdFromDustRowId,
   isInjectedDustRowId,
   findStaleDustRows,

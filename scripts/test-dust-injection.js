@@ -30,7 +30,8 @@ const path = require('path');
 const { _test } = require('../api/timesheet-entries.js');
 const {
   needsDustTrackingRow, dustRowId, validateDustInjection, dustOptionsForEntry,
-  insertDustTrackingRow, removeDustTrackingRows, dustHasInjectedRow, dustSplitForEntry,
+  insertDustTrackingRow, insertDustTrackingRows, removeDustTrackingRows,
+  dustHasInjectedRow, dustSplitForEntry, dustCompanyDirectory,
 } = _test;
 const {
   findStaleDustRows, mergeInjectedDustRows, sweepInjectedDustRows,
@@ -67,7 +68,9 @@ function makeSql(initial = {}) {
   const sql = (strings, ...values) => {
     const q = strings.join(' ').replace(/\s+/g, ' ').trim();
 
-    if (q.startsWith('SELECT id, name, v1_rate, v2_rate FROM dust_companies')) {
+    // One customer, by id or by name. The whole-directory read (ORDER BY name,
+    // no id/name predicate) is a different query — see below.
+    if (q.startsWith('SELECT id, name, v1_rate, v2_rate FROM dust_companies') && !q.includes('ORDER BY name')) {
       const [, needle] = values;
       const byId = q.includes('AND id =');
       return Promise.resolve(store.companies.filter(c => (byId ? c.id : c.name) === needle));
@@ -81,17 +84,34 @@ function makeSql(initial = {}) {
     if (q.startsWith('SELECT name, unit_number, vehicle_rate FROM dust_equipment')) {
       return Promise.resolve(store.equipment.slice());
     }
-    // The learned escort: newest non-blank vehicle2 for this customer.
+    // The learned escort: newest non-blank vehicle2 for this customer, never one
+    // of the rows this very entry is about to rewrite.
     if (q.startsWith('SELECT vehicle2 FROM dust_control_entries')) {
-      const [, company] = values;
+      const [, company, minePrefix] = values;
       const hits = [...store.dce.values()]
-        .filter(r => r.company === company && r.vehicle2)
+        .filter(r => r.company === company && r.vehicle2 && !like(r.id, minePrefix))
         .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
       return Promise.resolve(hits.length ? [{ vehicle2: hits[0].vehicle2 }] : []);
     }
     if (q.startsWith('SELECT * FROM dust_control_entries') && q.includes('AND id =')) {
       const r = store.dce.get(values[1]);
       return Promise.resolve(r ? [r] : []);
+    }
+    // Every leg of one entry. Not the guard's "id LIKE 'tsd-%'" sweep, whose
+    // pattern is a literal rather than a bound value — that one is below.
+    if (q.startsWith('SELECT * FROM dust_control_entries')
+        && q.includes('AND id LIKE') && !q.includes("'tsd-%'")) {
+      return Promise.resolve([...store.dce.values()].filter(r => like(r.id, values[1])));
+    }
+    // dustCompanyDirectory: every customer, with its men and pads.
+    if (q.startsWith('SELECT id, name, v1_rate, v2_rate FROM dust_companies') && q.includes('ORDER BY name')) {
+      return Promise.resolve(store.companies.slice().sort((a, b) => a.name.localeCompare(b.name)));
+    }
+    if (q.startsWith('SELECT p.dust_company_id, p.name FROM dust_company_personnel')) {
+      return Promise.resolve(store.men.map(m => ({ ...m })));
+    }
+    if (q.startsWith('SELECT l.dust_company_id, l.name, l.state FROM dust_company_locations')) {
+      return Promise.resolve(store.locations.map(l => ({ ...l })));
     }
     if (q.startsWith('SELECT id FROM dust_control_entries') && q.includes('id LIKE')) {
       return Promise.resolve([...store.dce.values()].filter(r => like(r.id, values[1])).map(r => ({ id: r.id })));
@@ -223,18 +243,49 @@ function entry(over = {}) {
   // ── validateDustInjection: absent vs blank ───────────────────────────────
   console.log('\n[absent means derive, blank means blank]');
   {
-    const { fields } = validateDustInjection({});
+    const one = raw => validateDustInjection(raw).rows[0];
+    const fields = one({});
     assert('bulk approve sends nothing → every field absent',
       Object.keys(fields).length === 0);
-    const cleared = validateDustInjection({ vehicle2: '', gallons_ub: '' }).fields;
+    assert('no dust key at all is one derived row',
+      validateDustInjection(undefined).rows.length === 1);
+    const cleared = one({ vehicle2: '', gallons_ub: '' });
     assert('a cleared box is present and empty, not absent',
       cleared.vehicle2 === '' && cleared.gallons_ub === '');
     assert('an explicit null is treated as no opinion',
-      Object.keys(validateDustInjection({ vehicle2: null }).fields).length === 0);
-    assert('gallons round to 4dp', validateDustInjection({ gallons_ub: '1234.56789' }).fields.gallons_ub === 1234.5679);
+      Object.keys(one({ vehicle2: null })).length === 0);
+    assert('gallons round to 4dp', one({ gallons_ub: '1234.56789' }).gallons_ub === 1234.5679);
     assert('a negative rate is rejected', !!validateDustInjection({ v1_rate: -1 }).error);
     assert('a non-numeric gallons figure is rejected', !!validateDustInjection({ gallons_ub: 'lots' }).error);
     assert('a rate past the cap is rejected', !!validateDustInjection({ v2_rate: 1e9 }).error);
+  }
+
+  // ── validateDustInjection: the split payload ─────────────────────────────
+  console.log('\n[a day split across customers]');
+  {
+    const split = validateDustInjection({
+      rows: [
+        { company: 'CNX',    start_time: '05:00', end_time: '10:00', gallons_ub: 4000 },
+        { company: 'Antero', start_time: '10:00', end_time: '15:00', gallons_ub: 2000 },
+      ],
+    });
+    assert('both legs come back, in order',
+      split.rows.length === 2 && split.rows[0].company === 'CNX' && split.rows[1].company === 'Antero');
+    assert('each leg keeps its own window and gallons',
+      split.rows[1].start_time === '10:00' && split.rows[1].gallons_ub === 2000);
+    // The flat object shape is what a payroll page cached from before the split
+    // existed still sends, and what bulk approve's absence resolves to.
+    assert('the old flat shape is still one leg',
+      validateDustInjection({ gallons_ub: 10 }).rows.length === 1);
+    assert('a bare array of legs is accepted too',
+      validateDustInjection([{ gallons_ub: 1 }, { gallons_ub: 2 }]).rows.length === 2);
+    assert('a leg with a bad time is rejected',
+      !!validateDustInjection({ rows: [{ start_time: '25:00' }] }).error);
+    assert('a cleared time is kept as a deliberate blank',
+      validateDustInjection({ rows: [{ end_time: '' }] }).rows[0].end_time === '');
+    assert('no legs at all is rejected', !!validateDustInjection({ rows: [] }).error);
+    assert('past the leg cap is rejected',
+      !!validateDustInjection({ rows: Array.from({ length: 7 }, () => ({})) }).error);
   }
 
   // ── dustOptionsForEntry ──────────────────────────────────────────────────
@@ -350,9 +401,9 @@ function entry(over = {}) {
     assert('so are gallons past it',
       !!validateDustInjection({ gallons_ub: 1000000 }).error);
     assert('the widest storable figure is still accepted',
-      validateDustInjection({ gallons_ub: 999999.9999 }).fields.gallons_ub === 999999.9999);
+      validateDustInjection({ gallons_ub: 999999.9999 }).rows[0].gallons_ub === 999999.9999);
     assert('a realistic gallons figure is unaffected',
-      validateDustInjection({ gallons_ub: 4730 }).fields.gallons_ub === 4730);
+      validateDustInjection({ gallons_ub: 4730 }).rows[0].gallons_ub === 4730);
   }
   {
     const { sql } = makeSql(CONFIG);
@@ -476,6 +527,167 @@ function entry(over = {}) {
       row.v1_rate === '130' && row.gallons_ub === '1660');
     const { row: none } = await dustSplitForEntry(sql, CO, entry({ id: 99 }));
     assert('an entry with no row reads back null', none === null);
+  }
+
+  // ── One day, two customers ───────────────────────────────────────────────
+  // The case this whole split exists for: ten hours, 4,000 gallons to the
+  // customer on the timesheet and 2,000 to another, each its own invoice line.
+  console.log('\n[a day split across two customers posts two rows]');
+  {
+    const { sql, store } = makeSql({
+      ...CONFIG,
+      companies: [...CONFIG.companies, { id: 'co-ant', name: 'Antero', v1_rate: 145, v2_rate: null }],
+      locations: [...CONFIG.locations, { dust_company_id: 'co-ant', name: 'Bear Hollow', state: 'WV' }],
+      men:       [...CONFIG.men,       { dust_company_id: 'co-ant', name: 'Maximus Lockerbie' }],
+    });
+    const day = entry({ start_time: '05:00', end_time: '15:00' });
+    const rows = await insertDustTrackingRows(sql, CO, day, [
+      { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00', gallons_ub: 4000 },
+      { company: 'Antero', company_man: 'Maximus Lockerbie', location: 'Bear Hollow',
+        start_time: '10:00', end_time: '15:00', gallons_ub: 2000 },
+    ]);
+    assert('two rows are posted', rows.length === 2);
+    assert('leg 1 keeps the historic id, leg 2 gets its own',
+      rows[0].id === dustRowId(42) && rows[1].id === dustRowId(42, 2));
+    assert('each leg bills its own window',
+      rows[0].start_time === '05:00' && rows[0].end_time === '10:00' &&
+      rows[1].start_time === '10:00' && rows[1].end_time === '15:00');
+    assert('each leg bills its own gallons',
+      rows[0].gallons_ub === 4000 && rows[1].gallons_ub === 2000);
+    assert('leg 1 stays with the timesheet customer', rows[0].company === 'CNX');
+    assert('leg 2 goes to the customer it names',     rows[1].company === 'Antero');
+    // The whole point of resolving a leg's options by ITS company: Antero's own
+    // V1 default, and its own pad's state — not CNX's.
+    assert('leg 2 takes its rate from the customer it named',
+      rows[1].v1_rate === 145 && rows[0].v1_rate === 130);
+    assert('leg 2\'s state follows its own pad', rows[1].state === 'WV' && rows[0].state === 'PA');
+    assert('a customer with no escort rate is sent no escort', rows[1].vehicle2 === '');
+    assert('both reached the table', store.dce.has(dustRowId(42)) && store.dce.has(dustRowId(42, 2)));
+
+    // Re-editing reads both back, in leg order, for the modal to re-fill.
+    const back = await dustSplitForEntry(sql, CO, day);
+    assert('both legs read back in order',
+      back.rows.length === 2 && back.rows[0].company === 'CNX' && back.rows[1].company === 'Antero');
+    assert('their windows read back too',
+      back.rows[0].end_time === '10:00' && back.rows[1].start_time === '10:00');
+    assert('a page that only knows one row still gets the first leg',
+      back.row && back.row.id === dustRowId(42));
+
+    // Correcting the day back down to one customer must take leg 2's row — and
+    // its billing entry — with it, or Antero keeps being invoiced for a haul the
+    // timesheet no longer says happened.
+    const after = await insertDustTrackingRows(sql, CO, day, [
+      { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '15:00', gallons_ub: 6000 },
+    ]);
+    assert('dropping a leg leaves one row', after.length === 1);
+    assert('and takes the dropped leg out of the table',
+      store.dce.has(dustRowId(42)) && !store.dce.has(dustRowId(42, 2)));
+    assert('the surviving leg is rewritten in place',
+      store.dce.get(dustRowId(42)).gallons_ub === 6000);
+  }
+
+  // ── The invoice stays with the haul it was raised for ───────────────────
+  {
+    console.log('\n[a removed haul does not hand its invoice to the next one]');
+    const { sql, store } = makeSql({
+      ...CONFIG,
+      companies: [...CONFIG.companies, { id: 'co-ant', name: 'Antero', v1_rate: 145, v2_rate: null }],
+    });
+    const day = entry({ start_time: '05:00', end_time: '15:00' });
+    await insertDustTrackingRows(sql, CO, day, [
+      { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00', gallons_ub: 4000 },
+      { company: 'Antero', start_time: '10:00', end_time: '15:00', gallons_ub: 2000 },
+    ]);
+    // The dust office invoices haul 1.
+    Object.assign(store.dce.get(dustRowId(42)), {
+      inv_number: 'INV-77', inv_status: 'sent', cm_approval: 'MB',
+    });
+    // A correction on the same customer keeps it…
+    const same = await insertDustTrackingRows(sql, CO, day, [
+      { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00', gallons_ub: 4500 },
+      { company: 'Antero', start_time: '10:00', end_time: '15:00', gallons_ub: 2000 },
+    ]);
+    assert('a correction keeps the invoice on its own haul',
+      same[0].inv_number === 'INV-77' && same[0].inv_status === 'sent');
+    // …but Antero sliding into the vacated id does not inherit CNX's invoice.
+    const moved = await insertDustTrackingRows(sql, CO, day, [
+      { company: 'Antero', location: 'Bear Hollow', start_time: '05:00', end_time: '15:00', gallons_ub: 6000 },
+    ]);
+    assert('the surviving haul takes the vacated id', moved[0].id === dustRowId(42));
+    assert('with a clean invoice sub-row',
+      moved[0].inv_number === '' && moved[0].inv_status === '' && moved[0].cm_approval === '',
+      JSON.stringify([moved[0].inv_number, moved[0].inv_status, moved[0].cm_approval]));
+    assert('and it is the customer that was left', moved[0].company === 'Antero');
+  }
+
+  // ── A removal in Intercompany describes a haul, not a slot ──────────────
+  {
+    console.log('\n[the dust customer who arrives is not the one who was removed]');
+    const { sql, store } = makeSql({
+      ...CONFIG,
+      companies: [...CONFIG.companies, { id: 'co-ant', name: 'Antero', v1_rate: 145, v2_rate: null }],
+      appData: { [`${CO}:${IC_REMOVED_BLOB}`]: [{ source: 'dust', source_id: dustRowId(42) }] },
+    });
+    const day = entry({ start_time: '05:00', end_time: '15:00' });
+    await insertDustTrackingRows(sql, CO, day, [
+      { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00' },
+      { company: 'Antero', start_time: '10:00', end_time: '15:00' },
+    ]);
+    assert('an edit leaves the removal alone while the haul is still CNX\'s',
+      (store.appData.get(`${CO}:${IC_REMOVED_BLOB}`) || []).length === 1);
+    await insertDustTrackingRows(sql, CO, day, [
+      { company: 'Antero', location: 'Bear Hollow', start_time: '05:00', end_time: '15:00' },
+    ]);
+    assert('but the customer who moves in does not inherit it',
+      (store.appData.get(`${CO}:${IC_REMOVED_BLOB}`) || []).length === 0,
+      JSON.stringify(store.appData.get(`${CO}:${IC_REMOVED_BLOB}`)));
+  }
+
+  // ── A stray id is not a haul ─────────────────────────────────────────────
+  {
+    console.log('\n[rows under an id that names no haul]');
+    const { sql, store } = makeSql(CONFIG);
+    await insertDustTrackingRows(sql, CO, entry(), [{ location: 'Deer Lick Compressor' }]);
+    // A Date.now()-stamped leftover, or a row a failed prune left behind.
+    store.dce.set('tsd-42-1737059382000', {
+      id: 'tsd-42-1737059382000', company: 'CNX', gallons_ub: '9999',
+    });
+    const back = await dustSplitForEntry(sql, CO, entry());
+    assert('the day still reads as one haul',
+      back.rows.length === 1 && back.rows[0].id === dustRowId(42),
+      JSON.stringify(back.rows.map(r => r.id)));
+    assert('the stray row is not offered as a second one',
+      !back.rows.some(r => r.gallons_ub === '9999'));
+    // …and the next save prunes it, like any row this split no longer has.
+    await insertDustTrackingRows(sql, CO, entry(), [{ location: 'Deer Lick Compressor' }]);
+    assert('and it is taken out of the table on the next save',
+      !store.dce.has('tsd-42-1737059382000'));
+  }
+
+  // ── Blank is blank, whitespace included ──────────────────────────────────
+  {
+    console.log('\n[a gallons figure nobody has set yet]');
+    assert('a whitespace-only gallons figure is blank, not zero',
+      validateDustInjection({ gallons_ub: '  ' }).rows[0].gallons_ub === '');
+    assert('a whitespace-only rate is blank too',
+      validateDustInjection({ v1_rate: ' ' }).rows[0].v1_rate === '');
+    assert('and a real zero still means zero',
+      validateDustInjection({ gallons_ub: '0' }).rows[0].gallons_ub === 0);
+  }
+
+  // ── The customer picker a split leg chooses from ─────────────────────────
+  console.log('\n[the customers a leg can be pointed at]');
+  {
+    const { sql } = makeSql(CONFIG);
+    const dir = await dustCompanyDirectory(sql, CO);
+    assert('every customer comes back', dir.length === 2);
+    assert('with their own men and pads',
+      dir.find(c => c.name === 'CNX').men.join() === 'Steve Quinn' &&
+      dir.find(c => c.name === 'CNX').locations.length === 2 &&
+      dir.find(c => c.name === 'Northeast Natural Energy').locations[0].state === 'WV');
+    assert('and their default rates',
+      dir.find(c => c.name === 'CNX').v1_rate === 130 &&
+      dir.find(c => c.name === 'Northeast Natural Energy').v2_rate === null);
   }
 
   // ── The tab's own saves ──────────────────────────────────────────────────

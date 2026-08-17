@@ -28,10 +28,14 @@
  *
  * For every "tst-" row in a company's truck blob:
  *   - entry exists, is approved, still routes to Truck Tracking, and this is
- *     the only row for it   → KEEP
+ *     the only row for that LEG of it   → KEEP
  *   - entry gone / not approved / moved to another division, or a newer row
- *     for the same entry exists → REMOVE, along with its normalized mirror row
+ *     for the same leg exists → REMOVE, along with its normalized mirror row
  *     and its Intercompany billing entry
+ *
+ * A day payroll split across customers posts one row per haul, and all of them
+ * are legs of the same entry — findStaleTruckRows competes them per leg, so a
+ * second haul is never mistaken for a duplicate of the first.
  *
  * Rows the trucking office created (UUIDs, "TR-####" task numbers) are never
  * touched — the sweep only ever looks at the payroll prefix.

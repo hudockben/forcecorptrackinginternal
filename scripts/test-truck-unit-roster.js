@@ -61,14 +61,23 @@ console.log('\n[payroll.html — the approve / Edit Row modal]');
   // The roster arrives asynchronously while the modal is already on screen, so
   // it must never touch the value — that is what the staleness and dirty guards
   // protect, and a roster write would walk straight past both.
-  const loader = slice(PAYROLL, 'function truckUnitRosterLoad()', 'function truckUnitOptionsHtml()', 'payroll loader');
+  const loader = slice(PAYROLL, 'function truckListsLoad()', 'const truckUnitRoster', 'payroll loader');
   assert('the roster never assigns an input value', !/\.value\s*=/.test(loader), loader.match(/.*\.value\s*=.*/) || '');
+  // One fetch, two rosters. The customer list rides along because a split day's
+  // hauls are picked from it, and a second call for one more array off the same
+  // route would be a second chance for the modal to open with an empty dropdown.
+  assert('the same fetch keeps the customer roster too',
+    /Array\.isArray\(j\.lists\.customers\)/.test(loader) && /customers:/.test(loader));
+  assert('and both are read back through their own accessors',
+    /const truckUnitRoster\s*=\s*\(\)/.test(PAYROLL) && /const truckCustomerRoster\s*=\s*\(\)/.test(PAYROLL));
   // Anchored on code, not on the comment that used to follow it — prose gets
   // reworded, and a marker that moves reads as a broken test rather than a
   // broken guarantee.
-  const opener = slice(PAYROLL, 'truckUnitRosterLoad().then', 'const wantsLookup', 'payroll roster hook');
+  const opener = slice(PAYROLL, 'truckListsLoad().then', 'const wantsLookup', 'payroll roster hook');
   assert('when it lands it fills only the options and the note',
     /tk_unitOptions/.test(opener) && /truckUnitHintRefresh\(\)/.test(opener) && !/\.value\s*=/.test(opener));
+  assert('including the haul customer list, without touching a value',
+    /hl_coOptions/.test(opener));
 }
 
 console.log('\n[timesheet.html — the driver\'s form]');
@@ -125,11 +134,15 @@ const ROSTER = [
 ];
 
 // payroll.html: truckUnitHintRefresh() reads #tk_unit and writes #tk_unitHint.
+// The roster reaches it through an accessor now (one cached fetch backs both the
+// unit and the customer lists), so the mock supplies that rather than a bare
+// array — including the "no answer yet" case, which is a null accessor result
+// and not an empty list.
 function payrollHint(rosterValue, inputValue) {
-  const src  = slice(PAYROLL, 'function truckUnitHintRefresh()', '// One place that puts fields', 'payroll hint');
+  const src  = slice(PAYROLL, 'function truckUnitHintRefresh()', '// ── The hauls a day is split into', 'payroll hint');
   const hint = hintNode();
   const ctx  = {
-    truckUnitRoster: rosterValue,
+    truckUnitRoster: () => rosterValue,
     document: mockDoc({ tk_unit: { id: 'tk_unit', value: inputValue }, tk_unitHint: hint }),
   };
   vm.runInNewContext(src + '\ntruckUnitHintRefresh();', ctx);
