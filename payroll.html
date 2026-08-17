@@ -4362,10 +4362,21 @@
       openSplitModal(e, mode);
     }
 
+    // Did the split this Edit Split is meant to CORRECT actually arrive? Same
+    // four states, and the same reason, as the trucking and quarry modals: the
+    // form opens on defaults, and defaults saved over a real breakdown are not
+    // an error the server can catch — one labor row for the full hours is a
+    // perfectly valid split, so it lands, reports success, and takes every cost
+    // code, sub code, quantity and equipment line with it.
+    let splitRowLoad = 'none';
+    let splitFetchSeq = 0;
+
     async function openSplitModal(entry, mode) {
       splitMode  = mode;            // 'approve' | 'resplit'
       splitEntry = entry;
       splitRows  = [];
+      const seq = ++splitFetchSeq;
+      splitRowLoad = mode === 'resplit' ? 'pending' : 'none';
 
       const work   = Number(entry.computed_hours) || 0;
       const travel = Number(entry.travel_hours)   || 0;
@@ -4406,10 +4417,21 @@
         loadCostCodesFor(entry.division, entry.job_id),
         (mode === 'resplit'
           ? fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() })
-              .then(r => r.json()).then(j => Array.isArray(j.split) ? j.split : [])
-              .catch(() => [])
+              .then(async r => {
+                const j = await r.json();
+                // A refusal parses like an answer. Read as "this entry has no
+                // split", it drops the form to its defaults, which save cleanly
+                // over the breakdown the supervisor built.
+                if (!r.ok) throw new Error((j && j.error) || `lookup failed (${r.status})`);
+                return Array.isArray(j.split) ? j.split : [];
+              })
+              .then(rows => { if (seq === splitFetchSeq) splitRowLoad = 'loaded'; return rows; })
+              .catch(() => { if (seq === splitFetchSeq) splitRowLoad = 'failed'; return []; })
           : Promise.resolve(null)),
       ]);
+      // Another entry's modal opened while this was in flight; its rows are not
+      // this form's business.
+      if (seq !== splitFetchSeq) return;
 
       if (mode === 'resplit' && existing && existing.length) {
         splitRows = existing.map(r => ({
@@ -4435,6 +4457,8 @@
       splitMode  = null;
       splitEntry = null;
       splitRows  = [];
+      splitFetchSeq++;          // orphan any pre-fill still in flight
+      splitRowLoad = 'none';
     }
     bindBackdropClose(document.getElementById('splitBackdrop'), closeSplit);
 
@@ -4739,6 +4763,19 @@
       msg.className = 'modal-msg';
       const btn = document.getElementById('splitSaveBtn');
 
+      // On a re-edit the rows on screen are only the truth once the posted split
+      // has been read back into them. Before then they are this modal's
+      // defaults — one labor row for the whole day — and saving those would
+      // replace a real breakdown with them, without the server having anything
+      // to object to.
+      if (splitRowLoad === 'pending' || splitRowLoad === 'failed') {
+        msg.classList.add('error');
+        msg.textContent = splitRowLoad === 'pending'
+          ? 'Still loading the split this entry already posted — try again in a moment.'
+          : 'Could not load the split this entry already posted. Saving now would replace it — close and reopen Edit Split.';
+        return;
+      }
+
       // Client-side pre-validation: surface obvious problems before the
       // server round-trip. The server re-validates everything either way.
       if (!splitRows.length) {
@@ -4803,6 +4840,21 @@
     // quarry-specific cost fields payroll knows, then POSTs { quarry: {...} }.
     let quarryEntry = null;
     let quarryMode  = null;   // 'approve' | 'resplit'
+    // Did the row this Edit Row is meant to CORRECT actually arrive? Same four
+    // states, and the same reason, as the trucking modal's rowLoad:
+    //   'none'    — a fresh approve; there is nothing posted to load.
+    //   'pending' — the lookup is in flight.
+    //   'loaded'  — it answered (no row is a valid answer: an entry approved
+    //               before quarry rows existed has none yet).
+    //   'failed'  — it threw, or answered with a refusal. The boxes are still
+    //               blank, and saving would write those blanks over the cost
+    //               row the quarry office is billing from, so saving is refused
+    //               until the modal is reopened.
+    let quarryRowLoad = 'none';
+    // Bumped on every open and on close, so a lookup that comes back late — the
+    // user closed the modal, or moved on to another entry — cannot pre-fill one
+    // entry's rate, equipment and fuel into another entry's form.
+    let quarryFetchSeq = 0;
     const QUARRY_DEFAULT_RATE = 26;   // flat quarry Daily rate ($/h), pre-filled on approve
 
     const Q_LABEL_STYLE = 'display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1';
@@ -5008,22 +5060,42 @@
         mode === 'approve' ? 'Approve & Inject' : 'Save Row';
       document.getElementById('quarryFields').innerHTML = quarryFieldsHtml(activity, null);
       document.getElementById('quarryBackdrop').classList.add('open');
+      // This open owns the form from here on; anything still in flight does not.
+      const seq = ++quarryFetchSeq;
+      quarryRowLoad = mode === 'resplit' ? 'pending' : 'none';
 
       // Re-edit: pre-fill from the currently injected row.
       if (mode === 'resplit') {
         try {
           const res = await fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() });
           const j = await res.json();
+          // A refusal is not an answer. The endpoint spells 403 and 500 as JSON
+          // bodies, which parse perfectly well, and reading one as "this entry
+          // has no quarry row" leaves the boxes blank — which a save then writes
+          // over the rate, equipment, task, fuel and quantities the quarry
+          // office bills from. Thrown, so it lands in the catch below.
+          if (!res.ok) throw new Error((j && j.error) || `lookup failed (${res.status})`);
+          // Late answers are dropped: the modal may have been closed or pointed
+          // at another entry while this was in flight.
+          if (seq !== quarryFetchSeq) return;
           const row = j && j.quarry && j.quarry.row ? j.quarry.row : null;
           const act = (j && j.quarry && j.quarry.activity) || activity;
+          quarryRowLoad = 'loaded';
           if (row) document.getElementById('quarryFields').innerHTML = quarryFieldsHtml(act, row);
-        } catch (_) { /* keep blank fields on lookup failure */ }
+        } catch (_) {
+          // The boxes are still blank. That is fine for an approve — blank means
+          // blank there — but on a re-edit it would save as a wipe of the posted
+          // row, so quarrySave refuses instead.
+          if (seq === quarryFetchSeq && quarryRowLoad === 'pending') quarryRowLoad = 'failed';
+        }
       }
     }
 
     function closeQuarry() {
       document.getElementById('quarryBackdrop').classList.remove('open');
       quarryEntry = null; quarryMode = null;
+      quarryFetchSeq++;          // orphan any pre-fill still in flight
+      quarryRowLoad = 'none';
     }
     bindBackdropClose(document.getElementById('quarryBackdrop'), closeQuarry);
 
@@ -5064,6 +5136,18 @@
       const activity = quarryActivityOf(quarryEntry);
       const msg = document.getElementById('quarryMsg');
       msg.className = 'modal-msg';
+      // Every box is sent, blank included, because blank is a real answer on a
+      // fresh approve. On a re-edit that only holds once the posted row has been
+      // read back into the boxes — before then they are empty for a reason that
+      // has nothing to do with what is on the row, and saving would clear the
+      // rate, the equipment, the task and the fuel off work already costed.
+      if (quarryRowLoad === 'pending' || quarryRowLoad === 'failed') {
+        msg.classList.add('error');
+        msg.textContent = quarryRowLoad === 'pending'
+          ? 'Still loading the row this entry already posted — try again in a moment.'
+          : 'Could not load the row this entry already posted. Saving now would blank it — close and reopen Edit Row.';
+        return;
+      }
       const btn = document.getElementById('quarrySaveBtn');
       const quarry = collectQuarryFields(activity);
       // Guard: a fuel cost with no gallons can't be represented — fuelCost/ppg is
