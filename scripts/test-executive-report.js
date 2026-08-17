@@ -27,6 +27,7 @@ const FAKE_TURF = [
     'end-date':        '2026-09-15',
     'client':          'Franklin Regional SD',
     'pm':              'George Oakes',
+    prevailing_wage:   true,
     pinned:            true,
     bidItems: [
       { id: 'bi-p1-01', cost_code: '01', sub_code: '',  quantity: 1, unit_cost: 375931.05, description: 'Sitework', unit: 'LS', status: 'Active' },
@@ -197,6 +198,39 @@ const FAKE_DUST_ROWS = [
 const FAKE_DUST_COMPANIES = [{ name: 'Acme Aggregates', ub_rate: 2 }];
 const FAKE_DUST_UB_RATE = 1.5;
 
+// ── Timesheet entries for the payroll section ──
+// p1 (Franklin Regional Tennis Court) is flagged prevailing wage below; p3 is
+// not, and the dust job has no prevailing-wage concept at all.
+//   Strick: 8h work + 1h travel on the prevailing job (approved)
+//         + 6h work + 0.5h travel on a non-prevailing job (approved)
+//   Oakes:  4h work + 2h travel on the prevailing job (submitted → pending)
+//         + a submitted time-off day and an approved one
+const FAKE_TIMESHEET = [
+  {
+    user_id: 1, username: 'A. Strick', entry_type: 'daily', status: 'approved',
+    division: 'turf', job_id: 'p1', work_date: '2026-08-10',
+    computed_hours: 8, travel_hours: 1, travel_to_site_hours: 0.5, travel_to_shop_hours: 0.5,
+  },
+  {
+    user_id: 1, username: 'A. Strick', entry_type: 'daily', status: 'approved',
+    division: 'turf', job_id: 'p3', work_date: '2026-08-11',
+    computed_hours: 6, travel_hours: 0.5, travel_to_site_hours: 0.5, travel_to_shop_hours: 0,
+  },
+  {
+    user_id: 2, username: 'G. Oakes', entry_type: 'daily', status: 'submitted',
+    division: 'turf', job_id: 'p1', work_date: '2026-08-10',
+    computed_hours: 4, travel_hours: 2, travel_to_site_hours: 1, travel_to_shop_hours: 1,
+  },
+  {
+    // Two entries on one date must still count as one day worked.
+    user_id: 2, username: 'G. Oakes', entry_type: 'daily', status: 'submitted',
+    division: 'dust', job_id: 'Acme Aggregates', work_date: '2026-08-10',
+    computed_hours: 2, travel_hours: 0, travel_to_site_hours: 0, travel_to_shop_hours: 0,
+  },
+  { user_id: 2, username: 'G. Oakes', entry_type: 'time_off', status: 'submitted', work_date: '2026-08-12' },
+  { user_id: 2, username: 'G. Oakes', entry_type: 'time_off', status: 'approved',  work_date: '2026-08-13' },
+];
+
 const DAILY_BY_DIVISION = {
   turf:   FAKE_TURF_DAILY,
   paving: FAKE_PAVING_DAILY,
@@ -268,6 +302,12 @@ function fakeSql(strings, ...values) {
     const ids = Array.isArray(values[2]) ? new Set(values[2]) : new Set();
     const src = DAILY_BY_DIVISION[division] || [];
     return Promise.resolve(src.filter(d => ids.has(d.project_id)));
+  }
+
+  // Payroll: the executive report reads the entries and aggregates in JS, the
+  // same way payroll.html's Reports tab does.
+  if (lower.includes('from timesheet_entries')) {
+    return Promise.resolve(FAKE_TIMESHEET.map(e => ({ ...e })));
   }
 
   // weekly trucking per project (details)
@@ -391,6 +431,17 @@ const res = {
     }
     for (const r of (payload.dust.rows || [])) {
       console.log(`     · ${(r.name || '').padEnd(20)} visits=${r.visits} gal=${r.gallons} hrs=${r.hours} rev=${r.revenue} overdue=${r.overdue} unpaid=${r.unpaid} paid=${r.paid}`);
+    }
+  }
+
+  if (payload.payroll) {
+    const pr = payload.payroll;
+    console.log(`\npayroll — status=${pr.status} (${pr.periodStart} → ${pr.periodEnd})`);
+    for (const m of (pr.metrics || [])) {
+      console.log(`     ${m.label.padEnd(16)} = ${String(m.value).padEnd(10)} ${m.sub || ''}`);
+    }
+    for (const r of [...(pr.rows || []), pr.total].filter(Boolean)) {
+      console.log(`     · ${(r.name || '').padEnd(24)} work=${r.workHours} travel=${r.travelHours} (site ${r.travelToSite}/shop ${r.travelToShop}) total=${r.totalHours} pw=${r.pwHours} std=${r.stdHours} pending=${r.pendingHours} approved=${r.approvedHours} off=${r.pendingOff}/${r.approvedOff}`);
     }
   }
 
@@ -588,6 +639,75 @@ const res = {
 
     if ((dust.metrics || []).length !== 8) fail(`dust has ${(dust.metrics || []).length} metrics (expected 8)`);
     else pass('dust carries the home dashboard\'s KPIs plus the invoice picture');
+  }
+
+  // ── Payroll ──
+  // Strick: 8 + 1 travel on the prevailing job, 6 + 0.5 on a non-prevailing one,
+  // both approved → 14 work, 1.5 travel, 15.5 total. Prevailing counts the work
+  // hours on the prevailing job only (8), so standard is the other 7.5.
+  // Oakes: 4 + 2 travel on the prevailing job plus 2 more on a dust job, both
+  // submitted → 6 work, 2 travel, 8 total pending, prevailing 4, standard 4.
+  const pr = payload.payroll;
+  const pMetric = label => (pr && pr.metrics || []).find(m => m.label === label);
+  if (!pr) fail('payroll section missing');
+  else {
+    const strick = (pr.rows || []).find(r => /Strick/.test(r.name));
+    const oakes  = (pr.rows || []).find(r => /Oakes/.test(r.name));
+
+    if (!strick || Math.abs(strick.workHours - 14) > 0.001 || Math.abs(strick.travelHours - 1.5) > 0.001) {
+      fail(`Strick work/travel = ${strick && strick.workHours}/${strick && strick.travelHours} (expected 14/1.5)`);
+    } else pass(`payroll: Strick ${strick.workHours} work + ${strick.travelHours} travel`);
+    if (!strick || Math.abs(strick.travelToSite - 1) > 0.001 || Math.abs(strick.travelToShop - 0.5) > 0.001) {
+      fail(`Strick travel legs = ${strick && strick.travelToSite}/${strick && strick.travelToShop} (expected 1/0.5)`);
+    } else pass('payroll: the two travel legs are carried separately from their sum');
+
+    // The heart of it: travel is never prevailing, so the prevailing job's 1h of
+    // travel falls to standard along with the whole non-prevailing day.
+    if (!strick || Math.abs(strick.pwHours - 8) > 0.001) {
+      fail(`Strick prevailing = ${strick && strick.pwHours} (expected 8 — work on the prevailing job only)`);
+    } else pass(`payroll: prevailing hours = ${strick.pwHours}, the work on the prevailing job`);
+    if (!strick || Math.abs(strick.stdHours - 7.5) > 0.001) {
+      fail(`Strick standard = ${strick && strick.stdHours} (expected 7.5 — its travel plus the whole non-prevailing day)`);
+    } else pass(`payroll: standard hours = ${strick.stdHours}, including that job's travel`);
+    if (!strick || Math.abs(strick.pwHours + strick.stdHours - strick.totalHours) > 0.001) {
+      fail(`prevailing + standard = ${strick && (strick.pwHours + strick.stdHours)} but total = ${strick && strick.totalHours}`);
+    } else pass('payroll: prevailing + standard add back up to the total');
+
+    if (!strick || Math.abs(strick.approvedHours - 15.5) > 0.001 || strick.pendingHours !== 0) {
+      fail(`Strick pending/approved = ${strick && strick.pendingHours}/${strick && strick.approvedHours} (expected 0/15.5)`);
+    } else pass(`payroll: Strick is fully approved at ${strick.approvedHours} h`);
+    if (!oakes || Math.abs(oakes.pendingHours - 8) > 0.001 || oakes.approvedHours !== 0) {
+      fail(`Oakes pending/approved = ${oakes && oakes.pendingHours}/${oakes && oakes.approvedHours} (expected 8/0)`);
+    } else pass(`payroll: Oakes has ${oakes.pendingHours} h awaiting approval`);
+    if (!oakes || oakes.daysWorked !== 1) {
+      fail(`Oakes days worked = ${oakes && oakes.daysWorked} (expected 1 — two entries on one date is one day)`);
+    } else pass('payroll: two entries on one date count as one day worked');
+    if (!oakes || oakes.pendingOff !== 1 || oakes.approvedOff !== 1) {
+      fail(`Oakes time off = ${oakes && oakes.pendingOff}/${oakes && oakes.approvedOff} (expected 1/1)`);
+    } else pass('payroll: time-off requests are counted, not folded into hours');
+    // A dust job has no prevailing-wage concept, so its hours are standard.
+    if (!oakes || Math.abs(oakes.pwHours - 4) > 0.001 || Math.abs(oakes.stdHours - 4) > 0.001) {
+      fail(`Oakes prevailing/standard = ${oakes && oakes.pwHours}/${oakes && oakes.stdHours} (expected 4/4)`);
+    } else pass('payroll: a division with no prevailing-wage concept is standard, not prevailing');
+
+    const totalHrs = pMetric('Total Hours');
+    if (!totalHrs || totalHrs.value !== '23.50') fail(`payroll Total Hours = ${totalHrs && totalHrs.value} (expected 23.50)`);
+    else pass(`payroll Total Hours = ${totalHrs.value} — ${totalHrs.sub}`);
+    const pending = pMetric('Pending Hrs');
+    if (!pending || pending.value !== '8.00') fail(`payroll Pending Hrs = ${pending && pending.value} (expected 8.00)`);
+    else pass(`payroll Pending Hrs = ${pending.value} — ${pending.sub}`);
+    if (pr.status !== '8.00 h Pending') fail(`payroll status = "${pr.status}" (expected the pending hours)`);
+    else pass(`payroll status pill reads "${pr.status}"`);
+    if (!pr.total || Math.abs(pr.total.pwHours - 12) > 0.001) {
+      fail(`payroll total prevailing = ${pr.total && pr.total.pwHours} (expected 12)`);
+    } else pass(`payroll: totals row carries ${pr.total.pwHours} prevailing hours`);
+    if ((pr.metrics || []).length !== 8) fail(`payroll has ${(pr.metrics || []).length} metrics (expected 8)`);
+    else pass('payroll carries the Hours Report\'s totals as its strip');
+    // The cycle the payroll page's "Current Biweekly" button selects: Mon → Sun,
+    // fourteen days, anchored on Sun May 10 2026.
+    const days = Math.round((new Date(pr.periodEnd) - new Date(pr.periodStart)) / 86400000);
+    if (days !== 13) fail(`pay period spans ${days + 1} days (expected 14)`);
+    else pass(`payroll covers the biweekly cycle ${pr.periodStart} → ${pr.periodEnd}`);
   }
 
   // Every division section must be able to stand on its own in the PDF.

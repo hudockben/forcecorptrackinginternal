@@ -989,36 +989,12 @@
         <div class="div-grid" id="divGrid"></div>
       </div>
 
-      <!-- ─────────── PAGE 2+: ONE SECTION PER JOB-RUNNING DIVISION ───────────
-           Turf, Paving and Kiewit each get the layout of their own home page:
-           the metric strip, then the project table. renderPortfolios() builds
-           them from /api/executive/report's `portfolios`. -->
+      <!-- ─────────── PAGE 2+: ONE SECTION PER DIVISION ───────────
+           Turf, Paving and Kiewit get the layout of their own home page — the
+           metric strip, then the project table. Quarry, Dust Control and Payroll
+           each get the layout of theirs. renderPortfolios() builds them all from
+           /api/executive/report. -->
       <div id="portfolioSections"></div>
-
-      <!-- ─────────── PAGE 3: PAYROLL PAY PERIOD SUMMARY ─────────── -->
-      <div class="section page-break" id="payrollSection">
-        <div class="section-head">
-          <div class="section-title">Payroll · Pay Period Summary</div>
-          <div class="section-sub" id="payrollSub">—</div>
-        </div>
-        <div class="ptable-wrap">
-          <table class="ptable" id="payrollTable">
-            <thead>
-              <tr>
-                <th>Employee</th>
-                <th class="col-num">Days</th>
-                <th class="col-num">Work Hours</th>
-                <th class="col-num">Travel Hours</th>
-                <th class="col-num">Total Hours</th>
-                <th class="col-num">Time Off</th>
-                <th class="col-num">Status</th>
-              </tr>
-            </thead>
-            <tbody id="payrollBody"></tbody>
-            <tfoot id="payrollFoot"></tfoot>
-          </table>
-        </div>
-      </div>
 
     </div>
 
@@ -1144,6 +1120,22 @@
       const v = Number(n);
       if (!isFinite(v)) return '—';
       return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    }
+    // Hours to two decimals, the way payroll reads them.
+    function fmtHours(n) {
+      const v = Number(n);
+      if (!isFinite(v)) return '0.00';
+      return v.toFixed(2);
+    }
+    // "Aug 3 – Aug 16, 2026" for a pay period.
+    function fmtPeriod(a, b) {
+      if (!a || !b) return 'No pay period';
+      const da = new Date(a + 'T00:00:00Z');
+      const db = new Date(b + 'T00:00:00Z');
+      if (isNaN(da) || isNaN(db)) return 'No pay period';
+      const opts  = { month: 'short', day: 'numeric', timeZone: 'UTC' };
+      const yOpts = { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' };
+      return `${da.toLocaleDateString('en-US', opts)} – ${db.toLocaleDateString('en-US', yOpts)}`;
     }
     // Whole counts — visits, gallons, entries.
     function fmtCount(n) {
@@ -1462,19 +1454,18 @@
       renderPortfolios(
         Array.isArray(data.portfolios) ? data.portfolios : [],
         Array.isArray(data.inventory)  ? data.inventory  : [],
-        data.quarry || null,
-        data.dust   || null,
+        data.quarry  || null,
+        data.dust    || null,
+        data.payroll || null,
       );
-
-      renderPayrollSummary(data.payroll || null);
     }
 
     // One section per division, in the order the report reads: the job-running
-    // divisions first, then Quarry and Dust Control, each shaped like its own
-    // page. Rubber inventory rides along inside the Turf section, which is where
-    // it lives on the division page too — and it means a Turf-only PDF still
-    // carries the stock counts.
-    function renderPortfolios(portfolios, inventory, quarry, dust) {
+    // divisions first, then Quarry, Dust Control and Payroll, each shaped like
+    // its own page. Rubber inventory rides along inside the Turf section, which
+    // is where it lives on the division page too — and it means a Turf-only PDF
+    // still carries the stock counts.
+    function renderPortfolios(portfolios, inventory, quarry, dust, payroll) {
       const wrap = document.getElementById('portfolioSections');
       if (!wrap) return;
       const html = [
@@ -1482,87 +1473,79 @@
           d,
           d.key === 'turf' ? renderRubberInventory(inventory) : '',
         )),
-        quarry ? renderQuarrySection(quarry) : '',
-        dust   ? renderDustSection(dust)     : '',
+        quarry  ? renderQuarrySection(quarry)   : '',
+        dust    ? renderDustSection(dust)       : '',
+        payroll ? renderPayrollSection(payroll) : '',
       ];
       wrap.innerHTML = html.join('');
     }
 
-    // Render the payroll pay-period summary table. Aggregates submitted +
-    // approved timesheet_entries per employee for the current biweekly
-    // cycle (Mon → Sun, anchored on the same date payroll.html uses) so
-    // executives see a one-line total per worker instead of every entry.
-    function renderPayrollSummary(payroll) {
-      const sub  = document.getElementById('payrollSub');
-      const body = document.getElementById('payrollBody');
-      const foot = document.getElementById('payrollFoot');
-      if (!sub || !body || !foot) return;
+    // ── Payroll ──
+    // Mirrors the Payroll page's Reports tab: its Hours Report totals across the
+    // strip, then its per-employee table, twelve columns and a totals row. The
+    // travel split and the prevailing/standard split are the point — a single
+    // "total hours" figure cannot tell payroll what rate anything is paid at.
+    function renderPayrollSection(d) {
+      const rows  = Array.isArray(d.rows) ? d.rows : [];
+      const total = d.total || null;
+      const sub   = rows.length
+        ? `${fmtPeriod(d.periodStart, d.periodEnd)} · ${fmtCount(rows.length)} employee${rows.length === 1 ? '' : 's'} · ${fmtHours(total ? total.totalHours : 0)} total hours`
+        : `${fmtPeriod(d.periodStart, d.periodEnd)} · no submitted timesheets`;
 
-      const employees = Array.isArray(payroll?.employees) ? payroll.employees : [];
-      const totals    = payroll?.totals || { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 };
+      const timeOff = r => (r.pendingOff || r.approvedOff)
+        ? `${r.pendingOff} pending / ${r.approvedOff} approved`
+        : '—';
+      const statusCell = r => r.hasPending
+        ? `<span class="pstatus tone-amber">${esc(fmtHours(r.pendingHours))} h pending</span>`
+        : `<span class="pstatus tone-green">All approved</span>`;
 
-      const fmtHrs = n => {
-        const v = Number(n) || 0;
-        return v ? v.toFixed(2) : '—';
-      };
-      const fmtRangeIso = (a, b) => {
-        if (!a || !b) return '—';
-        const da = new Date(a + 'T00:00:00Z');
-        const db = new Date(b + 'T00:00:00Z');
-        const opts = { month: 'short', day: 'numeric' };
-        const yOpts = { month: 'short', day: 'numeric', year: 'numeric' };
-        return `${da.toLocaleDateString('en-US', opts)} – ${db.toLocaleDateString('en-US', yOpts)}`;
-      };
+      const row = (r, isTotal) => `
+        <tr${isTotal ? ' class="ptable-total"' : ''}>
+          <td>
+            <div class="pname">
+              <span class="pname-main">${esc(r.name)}</span>
+              ${r.meta ? `<span class="pname-sub">${esc(r.meta)}</span>` : ''}
+            </div>
+          </td>
+          <td class="col-num v-actual">${esc(fmtHours(r.workHours))}</td>
+          <td class="col-num v-mute">${esc(fmtHours(r.travelToSite))}</td>
+          <td class="col-num v-mute">${esc(fmtHours(r.travelToShop))}</td>
+          <td class="col-num v-mute">${esc(fmtHours(r.travelHours))}</td>
+          <td class="col-num v-profit-pos">${esc(fmtHours(r.totalHours))}</td>
+          <td class="col-num ${r.pwHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pwHours))}</td>
+          <td class="col-num v-actual">${esc(fmtHours(r.stdHours))}</td>
+          <td class="col-num ${r.pendingHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pendingHours))}</td>
+          <td class="col-num ${r.approvedHours > 0.001 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtHours(r.approvedHours))}</td>
+          <td class="v-mute">${esc(timeOff(r))}</td>
+          <td>${statusCell(r)}</td>
+        </tr>`;
 
-      sub.textContent = employees.length
-        ? `${fmtRangeIso(payroll.periodStart, payroll.periodEnd)} · ${employees.length} employee${employees.length === 1 ? '' : 's'} · ${(totals.totalHours || 0).toFixed(2)} total hours`
-        : `${fmtRangeIso(payroll?.periodStart, payroll?.periodEnd)} · No submitted entries`;
+      const body = rows.length ? `
+        <div class="ptable-wrap">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th class="col-num">Hours</th>
+                <th class="col-num" title="Timesheet field: Travel Time to Site">Travel to Site</th>
+                <th class="col-num" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
+                <th class="col-num" title="Travel to site + travel to shop">Travel</th>
+                <th class="col-num">Total</th>
+                <th class="col-num" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
+                <th class="col-num" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
+                <th class="col-num">Pending Hrs</th>
+                <th class="col-num">Approved Hrs</th>
+                <th>Time Off</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>${rows.map(r => row(r, false)).join('')}</tbody>
+            ${total ? `<tfoot>${row(total, true)}</tfoot>` : ''}
+          </table>
+        </div>`
+        : '<div class="section-empty">No submitted timesheets in this pay period.</div>';
 
-      if (!employees.length) {
-        body.innerHTML = '<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--muted)">No submitted timesheets in this pay period.</td></tr>';
-        foot.innerHTML = '';
-        return;
-      }
-
-      body.innerHTML = employees.map(e => {
-        let status;
-        if (e.submittedCount && e.approvedCount) {
-          status = `<span class="pstatus" style="color: var(--amber);">${e.approvedCount} approved · ${e.submittedCount} pending</span>`;
-        } else if (e.submittedCount) {
-          status = `<span class="pstatus" style="color: var(--amber);">${e.submittedCount} pending</span>`;
-        } else if (e.approvedCount) {
-          status = `<span class="pstatus" style="color: var(--green);">${e.approvedCount} approved</span>`;
-        } else {
-          status = '<span class="pstatus">—</span>';
-        }
-        return `
-          <tr>
-            <td>
-              <div class="pname">
-                <span class="pname-main">${esc(e.username)}</span>
-              </div>
-            </td>
-            <td class="col-num v-actual">${e.daysWorked || '—'}</td>
-            <td class="col-num v-actual">${esc(fmtHrs(e.workHours))}</td>
-            <td class="col-num v-mute">${esc(fmtHrs(e.travelHours))}</td>
-            <td class="col-num v-profit-pos">${esc(fmtHrs(e.totalHours))}</td>
-            <td class="col-num v-mute">${e.timeOffEntries || '—'}</td>
-            <td class="col-num">${status}</td>
-          </tr>
-        `;
-      }).join('');
-
-      foot.innerHTML = `
-        <tr style="border-top: 1px solid var(--border);">
-          <td style="font-weight: 700;">Total · ${totals.employees} employee${totals.employees === 1 ? '' : 's'}</td>
-          <td class="col-num" style="font-weight: 700;">${totals.daysWorked || '—'}</td>
-          <td class="col-num v-actual" style="font-weight: 700;">${esc(fmtHrs(totals.workHours))}</td>
-          <td class="col-num v-mute" style="font-weight: 700;">${esc(fmtHrs(totals.travelHours))}</td>
-          <td class="col-num v-profit-pos" style="font-weight: 700;">${esc(fmtHrs(totals.totalHours))}</td>
-          <td class="col-num"></td>
-          <td class="col-num"></td>
-        </tr>
-      `;
+      return renderDivisionSection(d, { sub, body });
     }
 
     // Mirrors the home page's per-rubber-type stock cards so the executive

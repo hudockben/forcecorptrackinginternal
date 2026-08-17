@@ -25,6 +25,7 @@ const {
   INVOICE_ERA_START_YEAR,
   OVERDUE_AFTER_DAYS: DUST_OVERDUE_DAYS,
 } = require('../lib/dust-metrics');
+const { payrollMetrics } = require('../lib/payroll-metrics');
 
 const DUST_INVOICE_ERA_START = `${INVOICE_ERA_START_YEAR}-01-01`;
 
@@ -1313,57 +1314,147 @@ function biweeklyPayPeriod(today) {
   };
 }
 
+// The prevailing-wage flag lives on the project blob, not the timesheet row, so
+// resolving it needs one app_data read per batch. Same rule and same key scheme
+// as attachPrevailingWage in api/timesheet-entries.js: only turf, paving and
+// kiewit keep projects there, and the other divisions have no prevailing-wage
+// concept at all.
+//   true / false → read from the project blob (false when the blob is gone)
+//   null         → division has no such concept, or no job is attached
+const PW_PROJECT_PREFIX = {
+  turf:   'fct_project_',
+  paving: 'fct_paving_project_',
+  kiewit: 'fct_kiewit_project_',
+};
+
+async function attachPrevailingWage(sql, companyCode, entries) {
+  const keyFor = e => {
+    const prefix = PW_PROJECT_PREFIX[e.division];
+    return prefix && e.job_id ? `${companyCode}:${prefix}${e.job_id}` : null;
+  };
+  const keys = [...new Set(entries.map(keyFor).filter(Boolean))];
+
+  const pwByKey = new Map();
+  if (keys.length) {
+    const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${keys})`;
+    for (const r of rows) {
+      const blob = r.value;
+      pwByKey.set(r.key, !!(blob && typeof blob === 'object' && blob.prevailing_wage === true));
+    }
+  }
+  for (const e of entries) {
+    const key = keyFor(e);
+    e.prevailing_wage = key == null ? null : (pwByKey.has(key) ? pwByKey.get(key) : false);
+  }
+  return entries;
+}
+
+// The payroll section, shaped like the Payroll page's Reports tab: its Hours
+// Report totals across the strip, then its per-employee table. Scoped to the
+// current biweekly cycle, the same cycle the page's "Current Biweekly" button
+// selects, so the two land on the same fortnight.
 async function buildPayrollSummary(sql, companyCode) {
   const { startIso, endIso } = biweeklyPayPeriod(new Date());
 
-  const rows = await safeRun('payroll.summary', async () => {
-    return await sql`
-      SELECT
-        user_id,
-        username,
-        COUNT(*) FILTER (WHERE entry_type = 'daily')::int                                     AS daily_entries,
-        COUNT(DISTINCT work_date) FILTER (WHERE entry_type = 'daily')::int                    AS days_worked,
-        COUNT(*) FILTER (WHERE entry_type = 'time_off')::int                                  AS time_off_entries,
-        COALESCE(SUM(computed_hours), 0)::float                                               AS work_hours,
-        COALESCE(SUM(travel_hours),   0)::float                                               AS travel_hours,
-        COALESCE(SUM(COALESCE(computed_hours, 0) + COALESCE(travel_hours, 0)), 0)::float      AS total_hours,
-        COUNT(*) FILTER (WHERE status = 'submitted')::int                                     AS submitted_count,
-        COUNT(*) FILTER (WHERE status = 'approved')::int                                      AS approved_count
-      FROM timesheet_entries
-      WHERE company_code = ${companyCode}
-        AND status IN ('submitted', 'approved')
-        AND work_date >= ${startIso}::date
-        AND work_date <= ${endIso}::date
-      GROUP BY user_id, username
-      ORDER BY username ASC
-    `;
-  });
+  const rows = await safeRun('payroll.entries', () => sql`
+    SELECT
+      user_id, username, entry_type, status, division, job_id,
+      work_date::text                    AS work_date,
+      computed_hours::float              AS computed_hours,
+      travel_hours::float                AS travel_hours,
+      travel_to_site_hours::float        AS travel_to_site_hours,
+      travel_to_shop_hours::float        AS travel_to_shop_hours
+    FROM timesheet_entries
+    WHERE company_code = ${companyCode}
+      AND status IN ('submitted', 'approved')
+      AND work_date >= ${startIso}::date
+      AND work_date <= ${endIso}::date
+  `);
 
-  const employees = (rows || []).map(r => ({
-    userId:          r.user_id,
-    username:        r.username || '—',
-    daysWorked:      r.days_worked     || 0,
-    workHours:       Number(r.work_hours)   || 0,
-    travelHours:     Number(r.travel_hours) || 0,
-    totalHours:      Number(r.total_hours)  || 0,
-    timeOffEntries:  r.time_off_entries || 0,
-    submittedCount:  r.submitted_count  || 0,
-    approvedCount:   r.approved_count   || 0,
-  }));
+  const entries = rows || [];
+  // A failed lookup must not silently reclassify prevailing work as standard —
+  // leave the flag null (the "no such concept" value) and let the figures show
+  // everything as standard rather than inventing a split.
+  await safeRun('payroll.prevailing_wage', () => attachPrevailingWage(sql, companyCode, entries));
 
-  const totals = employees.reduce((acc, e) => ({
-    employees:    acc.employees + 1,
-    workHours:    acc.workHours + e.workHours,
-    travelHours:  acc.travelHours + e.travelHours,
-    totalHours:   acc.totalHours + e.totalHours,
-    daysWorked:   acc.daysWorked + e.daysWorked,
-  }), { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 });
+  const m = payrollMetrics({ entries, periodStart: startIso, periodEnd: endIso });
+
+  const hrs = n => (Number(n) || 0).toFixed(2);
+  const t   = m.totals;
+
+  let status, statusKind;
+  if      (!t.employees)         { status = 'No Timesheets';  statusKind = 'mute';  }
+  else if (t.pendingHours > 0.001) { status = `${hrs(t.pendingHours)} h Pending`; statusKind = 'amber'; }
+  else                           { status = 'All Approved';   statusKind = 'green'; }
 
   return {
-    periodStart: startIso,
-    periodEnd:   endIso,
-    employees,
-    totals,
+    key: 'payroll', name: 'Payroll', accent: '#22d3ee',
+    status, statusKind,
+    periodStart: m.periodStart,
+    periodEnd:   m.periodEnd,
+    metrics: [
+      {
+        label: 'Employees', value: String(t.employees), tone: 'blue',
+        // Employee-days, not calendar days: each worker's distinct dates, added
+        // across the crew. Two people on one date is two.
+        sub: `${t.daysWorked} employee-day${t.daysWorked === 1 ? '' : 's'} logged`,
+      },
+      { label: 'Hours',        value: hrs(t.workHours),   tone: 'plain', sub: 'worked on the job' },
+      { label: 'Travel',       value: hrs(t.travelHours), tone: 'mute',
+        sub: `to site ${hrs(t.travelToSite)} · to shop ${hrs(t.travelToShop)}` },
+      { label: 'Total Hours',  value: hrs(t.totalHours),  tone: 'green', sub: 'work + travel' },
+      {
+        label: 'Prevailing Hrs', value: hrs(t.pwHours), tone: 'amber',
+        sub: 'work on prevailing-wage jobs',
+      },
+      {
+        label: 'Standard Hrs', value: hrs(t.stdHours), tone: 'plain',
+        sub: 'everything at the standard rate',
+      },
+      {
+        label: 'Pending Hrs', value: hrs(t.pendingHours),
+        tone: t.pendingHours > 0.001 ? 'amber' : 'green',
+        sub: t.pendingOff ? `${t.pendingOff} time-off request${t.pendingOff === 1 ? '' : 's'} too` : 'awaiting approval',
+      },
+      {
+        label: 'Approved Hrs', value: hrs(t.approvedHours), tone: 'green',
+        sub: t.approvedOff ? `${t.approvedOff} time-off entr${t.approvedOff === 1 ? 'y' : 'ies'} too` : 'signed off',
+      },
+    ],
+    rows: m.employees.map(e => ({
+      name:          e.username,
+      meta:          e.divisions.length ? e.divisions.join(' · ') : '',
+      daysWorked:    e.daysWorked,
+      workHours:     e.workHours,
+      travelToSite:  e.travelToSite,
+      travelToShop:  e.travelToShop,
+      travelHours:   e.travelHours,
+      totalHours:    e.totalHours,
+      pwHours:       e.pwHours,
+      stdHours:      e.stdHours,
+      pendingHours:  e.pendingHours,
+      approvedHours: e.approvedHours,
+      pendingOff:    e.pendingOff,
+      approvedOff:   e.approvedOff,
+      hasPending:    e.hasPending,
+    })),
+    total: {
+      name:          `Totals · ${t.employees} employee${t.employees === 1 ? '' : 's'}`,
+      meta:          '',
+      workHours:     t.workHours,
+      travelToSite:  t.travelToSite,
+      travelToShop:  t.travelToShop,
+      travelHours:   t.travelHours,
+      totalHours:    t.totalHours,
+      pwHours:       t.pwHours,
+      stdHours:      t.stdHours,
+      pendingHours:  t.pendingHours,
+      approvedHours: t.approvedHours,
+      pendingOff:    t.pendingOff,
+      approvedOff:   t.approvedOff,
+      hasPending:    t.pendingHours > 0.001,
+      isTotal:       true,
+    },
   };
 }
 
@@ -1432,10 +1523,10 @@ function mockReport() {
     },
 
     payroll: {
-      periodStart: null,
-      periodEnd:   null,
-      employees:   [],
-      totals:      { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 },
+      key: 'payroll', name: 'Payroll', accent: '#22d3ee',
+      status: '—', statusKind: 'mute',
+      periodStart: null, periodEnd: null,
+      metrics: [], rows: [], total: null,
     },
   };
 }
@@ -1527,7 +1618,7 @@ module.exports = async (req, res) => {
     if (Array.isArray(liveInventory)) {
       report.inventory = liveInventory;
     }
-    if (livePayroll && Array.isArray(livePayroll.employees)) {
+    if (livePayroll && Array.isArray(livePayroll.rows)) {
       report.payroll = livePayroll;
     }
 

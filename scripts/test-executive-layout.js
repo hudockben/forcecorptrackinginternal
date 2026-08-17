@@ -23,6 +23,7 @@ const paving  = read('paving.html');
 const kiewit  = read('kiewit-pinetree.html');
 const quarry  = read('quarry.html');
 const dust    = read('dust.html');
+const payroll = read('payroll.html');
 
 let failed = 0;
 const assert = (msg, cond, detail) => {
@@ -211,6 +212,71 @@ assert('an unpaid invoice past 45 days reads overdue, and paid stays paid',
   /OVERDUE_AFTER_DAYS = 45/.test(dm)
   && /inv_status === 'paid' \|\| row\.inv_received/.test(dm));
 
+// ── Payroll mirrors the Payroll page's Reports tab ──
+console.log('\n[payroll mirrors the Payroll page]');
+
+// The Hours Report's twelve columns, in the page's own words and order.
+const PAYROLL_COLUMNS = [
+  'Employee', 'Hours', 'Travel to Site', 'Travel to Shop', 'Travel', 'Total',
+  'Prevailing Hrs', 'Standard Hrs', 'Pending Hrs', 'Approved Hrs',
+  'Time Off', 'Status',
+];
+const execPayrollCols = headerLabels(exec, '<th>Employee</th>');
+assert('the executive payroll table has the same twelve columns',
+  PAYROLL_COLUMNS.every((c, i) => execPayrollCols[i] === c),
+  'got: ' + JSON.stringify(execPayrollCols));
+// Anchor inside the Reports tab's own table — the Pending tab's table also opens
+// with an Employee column and comes first in the file. The page writes these
+// headers with &nbsp; and inline alignment, so compare on the text.
+const pagePayrollCols = [...payroll.slice(payroll.indexOf('<div class="report-scroll">'))
+  .slice(0, 1800).matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)]
+  .map(m => m[1].replace(/&nbsp;/g, ' ').replace(/<[^>]*>/g, '').trim());
+assert('and payroll.html\'s Hours Report still has them',
+  PAYROLL_COLUMNS.every((c, i) => pagePayrollCols[i] === c),
+  'got: ' + JSON.stringify(pagePayrollCols));
+
+assert('the two tooltips that explain the pay-rate split come across verbatim',
+  exec.includes('Travel is excluded — it is not paid at the prevailing rate.')
+  && payroll.includes('Travel is excluded — it is not paid at the prevailing rate.')
+  && exec.includes('work on non-prevailing jobs plus all travel time')
+  && payroll.includes('work on non-prevailing jobs plus all travel time'));
+
+const pm = read('api/lib/payroll-metrics.js');
+assert('the payroll arithmetic is ported, not re-derived in SQL',
+  fs.existsSync(path.resolve(__dirname, '../api/lib/payroll-metrics.js'))
+  && report.includes("require('../lib/payroll-metrics')"));
+assert('hours are work plus travel',
+  /const h\s*=\s*work \+ travel;/.test(pm) && /const h = work \+ travel;/.test(payroll));
+assert('travel never counts as prevailing — the prevailing job\'s travel falls to standard',
+  /prevailing_wage === true\) \{ acc\.pwHours \+= work; acc\.stdHours \+= travel; \}/.test(pm)
+  && /prevailing_wage === true\) \{ acc\.pwHours \+= work; acc\.stdHours \+= travel; \}/.test(payroll));
+assert('only an explicit true is prevailing, so a division without the concept is standard',
+  /=== true/.test(pm) && !/prevailing_wage\s*\?/.test(pm));
+assert('only submitted and approved entries carry hours',
+  /COUNTED_STATUSES = new Set\(\['submitted', 'approved'\]\)/.test(pm));
+assert('the two travel legs stay separate from their authoritative sum',
+  /travelToSite \+= num\(e\.travel_to_site_hours\)/.test(pm)
+  && /travelToShop \+= num\(e\.travel_to_shop_hours\)/.test(pm));
+
+// The flag lives on the project blob, so the report has to look it up the same
+// way the timesheet API does — same three divisions, same key prefixes.
+const tsApi = read('api/timesheet-entries.js');
+for (const [div, prefix] of [['turf', 'fct_project_'], ['paving', 'fct_paving_project_'], ['kiewit', 'fct_kiewit_project_']]) {
+  assert(`prevailing wage for ${div} reads ${prefix}<id>, as the timesheet API does`,
+    new RegExp(`${div}:\\s*'${prefix}'`).test(report)
+    && new RegExp(`${div}:\\s*'${prefix}'`).test(tsApi));
+}
+assert('a missing project blob reads as not-prevailing, never as prevailing',
+  /pwByKey\.has\(key\) \? pwByKey\.get\(key\) : false/.test(report));
+
+assert('the pay period is the biweekly cycle anchored on the page\'s own date',
+  /new Date\(Date\.UTC\(2026, 4, 10\)\)/.test(report)
+  && /new Date\(2026, 4, 10\)/.test(payroll));
+
+assert('payroll is a division section like the rest, not a bespoke block',
+  exec.includes('renderPayrollSection(payroll)')
+  && !exec.includes('id="payrollBody"') && !exec.includes('id="payrollSub"'));
+
 // ── Print + email scope ──
 console.log('\n[print and email scope]');
 assert('each division section prints on its own via printSection()',
@@ -222,6 +288,10 @@ assert('and drops its scope classes when printing ends, so the full-report butto
   /afterprint[\s\S]{0,400}remove\('printing-scoped'\)|remove\('printing-scoped'\)[\s\S]{0,400}afterprint/.test(exec));
 assert('the emailed report covers every section on the page',
   exec.includes("'#reportBody .section'"));
+assert('and every division builds one, so none can be left out of it',
+  ['renderPortfolioSection', 'renderQuarrySection', 'renderDustSection', 'renderPayrollSection']
+    .every(fn => exec.includes(`function ${fn}(`))
+  && /renderDivisionSection\(d, \{/.test(exec));
 assert('the per-project detail pages are gone from the report',
   !/pd-table|project-detail|renderDetail|projectDetails/.test(exec));
 assert('and from the API, along with the per-project queries they needed',
