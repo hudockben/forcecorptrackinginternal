@@ -41,26 +41,10 @@ function addDaysISO(iso, n) {
 function fmtCurrency(n) {
   const v = Math.round(Number(n) || 0);
   // Prefix the minus before the $ ("−$1,234" not "$-1,234") so loss values
-  // read cleanly on KPI tiles. Uses U+2212 to match fmtCostVsBid's style.
+  // read cleanly on KPI tiles. Uses U+2212 rather than a hyphen.
   if (v < 0) return '−$' + Math.abs(v).toLocaleString('en-US');
   return '$' + v.toLocaleString('en-US');
 }
-// Format a cost-vs-bid variance as a signed pct ("+2.1%", "−0.4%").
-// Returns { text, color } where color is 'green' for under bid (negative
-// variance) and 'red' for over bid. Uses a true minus sign (U+2212) to
-// match the existing UI style.
-function fmtCostVsBid(booked, bid) {
-  const b = Number(booked) || 0;
-  const k = Number(bid)    || 0;
-  if (k <= 0) return { text: '—', color: 'mute' };
-  const variance = (b - k) / k;
-  const pct = variance * 100;
-  if (Math.abs(pct) < 0.1) return { text: 'on plan', color: 'mute' };
-  const sign = pct > 0 ? '+' : '−';
-  const txt = `${sign}${Math.abs(pct).toFixed(1)}%`;
-  return { text: txt, color: pct > 0 ? 'red' : 'green' };
-}
-
 function fmtRevenueDelta(curr, prev) {
   const c = Number(curr) || 0;
   const p = Number(prev) || 0;
@@ -122,6 +106,15 @@ const readTurfProjects   = (sql, cc) => readProjectBlobs(sql, cc, 'fct_projects_
 const readPavingProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_paving_projects_index', 'fct_paving_project_', 'fct_paving_projects');
 const readKiewitProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_kiewit_projects_index', 'fct_kiewit_project_', 'fct_kiewit_projects');
 
+// The divisions that run jobs: each has projects, bid items and a contract
+// value, and each has a home page whose layout this report mirrors. Trucking,
+// Dust and Quarry have no jobs, so they are not in here.
+const PROJECT_DIVISIONS = [
+  { key: 'turf',   name: 'Turf Management', accent: '#22c55e', read: readTurfProjects   },
+  { key: 'paving', name: 'Paving',          accent: '#60a5fa', read: readPavingProjects },
+  { key: 'kiewit', name: 'Kiewit Pinetree', accent: '#a78bfa', read: readKiewitProjects },
+];
+
 // Rubber inventory blob — same shape as the home page's `inventoryEntries`.
 // Entries with project_id are treated as "used by a project", entries without
 // project_id are stock-add (produced). Mirrors tracker.html ~line 3756.
@@ -143,7 +136,6 @@ const projName = p => String(p['project-name'] || p.name || '').trim() || 'Untit
 const projJob  = p => String(p['job-number']   || p.job_number || '').trim();
 const projStatus = p => String(p['status'] || p.status || '').trim();
 const projIsComplete = p => ['complete','closed'].includes(projStatus(p).toLowerCase());
-const projIsOnHold   = p => projStatus(p).toLowerCase() === 'on hold';
 
 // Executive rollup cutoff: legacy / preloaded projects have job numbers
 // below this threshold. Real production projects start at Saint Edmunds
@@ -167,9 +159,10 @@ const projMeetsExecCutoff = p => {
   const n = projJobInt(p);
   return Number.isFinite(n) && n >= EXEC_MIN_JOB_NUMBER;
 };
-const projStartDate  = p => p['start-date'] || p.start_date || null;
 const projEndDate    = p => p['end-date']   || p.end_date   || p['target-completion'] || p.target_completion || null;
 const projPinned     = p => p.pinned === true;
+const projClient     = p => String(p['client'] || p.client || '').trim();
+const projPm         = p => String(p['pm']     || p.pm     || '').trim();
 
 function projNum(v) {
   if (v == null || v === '') return 0;
@@ -191,12 +184,19 @@ const projContract = p => projNum(
 // (paving uses bid_item_cost as an alias). Returns the total bid dollars
 // AND a per-(cost_code, sub_code) breakdown for finer projection scaling
 // when daily actuals are joined back.
+//
+// Quantity is the EFFECTIVE quantity — the bid quantity plus every change
+// order booked against the line. The division pages have always read it that
+// way (their _effQty helper), so leaving change orders out here reported a
+// smaller bid budget than the page the number came from.
 function projBidLines(p) {
   const items = Array.isArray(p.bidItems) ? p.bidItems : [];
+  const coQty = b => (Array.isArray(b.change_orders) ? b.change_orders : [])
+    .reduce((s, co) => s + projNum(co && co.qty_delta), 0);
   return items.map(b => ({
     cost_code: String(b.cost_code || b.costCode || ''),
     sub_code:  String(b.sub_code  || b.subCode  || ''),
-    quantity:  projNum(b.quantity),
+    quantity:  projNum(b.quantity) + coQty(b),
     unit_cost: projNum(b.unit_cost ?? b.unitCost ?? b.bid_item_cost ?? b.bidItemCost),
     start_date:  b.start_date  || b.startDate  || null,
     target_date: b.target_date || b.targetDate || null,
@@ -318,16 +318,15 @@ async function buildHero(sql, companyCode) {
   const lastWeekStart  = addDaysISO(weekStart, -7);
   const lastWeekEnd    = weekStart;
 
-  // Active projects = Turf + Paving blobs whose status isn't Complete/Closed.
-  // We read both divisions' blobs in parallel and sum the active counts so
-  // the hero KPI mirrors what users see across both home pages.
+  // Active projects = every job-running division's blobs whose status isn't
+  // Complete/Closed. Each division's blobs are read in parallel and the active
+  // counts summed, so the hero KPI mirrors what users see across the home pages.
   const activeProjects = await safeRun('active_projects', async () => {
-    const [turf, paving] = await Promise.all([
-      readTurfProjects(sql, companyCode).catch(() => []),
-      readPavingProjects(sql, companyCode).catch(() => []),
-    ]);
-    return turf.filter(p => projMeetsExecCutoff(p) && !projIsComplete(p)).length
-         + paving.filter(p => projMeetsExecCutoff(p) && !projIsComplete(p)).length;
+    const perDivision = await Promise.all(PROJECT_DIVISIONS.map(d =>
+      d.read(sql, companyCode).catch(() => [])
+    ));
+    return perDivision.reduce((n, list) =>
+      n + list.filter(p => projMeetsExecCutoff(p) && !projIsComplete(p)).length, 0);
   });
 
   // Bucketed by actual_date — the date the work was performed — not by
@@ -557,108 +556,6 @@ async function buildFinancials(sql, companyCode, division, projects) {
   return { contract_total, bid_total, actual_total, projected_total, perProject };
 }
 
-// Build a financial tile (Turf or Paving) from the active blob set + a
-// per-project financial breakdown. Common shape so both divisions read
-// consistently and the row pairs visually.
-function makeFinancialTile({ key, name, accent, projects, financials }) {
-  const active   = projects.filter(p => !projIsComplete(p));
-  const onHold   = active.filter(projIsOnHold).length;
-  const f        = financials || { contract_total: 0, bid_total: 0, actual_total: 0, projected_total: 0 };
-
-  const totalBid       = Number(f.bid_total)       || 0;
-  const totalActual    = Number(f.actual_total)    || 0;
-
-  // Profit/margin must only compare projects that have BOTH a contract amount
-  // AND a projected cost. "Awarded" projects often carry a full bid (which
-  // drives a large projected cost) before the contract value is entered, so
-  // summing total projected against total contract produces a phantom loss.
-  // tracker.html mirrors this per-project: contractVal ? contractVal - projCost : null.
-  let matchedContract = 0, matchedProjected = 0, pendingContractCount = 0;
-  if (f.perProject) {
-    for (const row of f.perProject.values()) {
-      const c  = Number(row.contract)  || 0;
-      const pj = Number(row.projected) || 0;
-      if (c > 0 && pj > 0) {
-        matchedContract  += c;
-        matchedProjected += pj;
-      } else if (pj > 0 && c <= 0) {
-        pendingContractCount += 1;
-      }
-    }
-  }
-
-  const cvbFmt = totalBid > 0 ? fmtCostVsBid(totalActual, totalBid) : { text: '—', color: 'mute' };
-  const cvbSub = totalBid > 0
-    ? (cvbFmt.color === 'red'   ? 'Over bid'
-      : cvbFmt.color === 'green' ? 'Under bid'
-      : 'On plan')
-    : undefined;
-
-  let profitText = '—', profitSub;
-  if (matchedContract > 0 && matchedProjected > 0) {
-    const profit = matchedContract - matchedProjected;
-    if (Math.abs(profit) < 1) {
-      profitText = '$0';
-      profitSub  = 'Break-even';
-    } else if (profit > 0) {
-      profitText = fmtCurrency(profit);
-      profitSub  = `${((profit / matchedContract) * 100).toFixed(1)}% margin`;
-    } else {
-      profitText = `−${fmtCurrency(Math.abs(profit))}`;
-      profitSub  = `${(Math.abs(profit / matchedContract) * 100).toFixed(1)}% loss`;
-    }
-    if (pendingContractCount > 0) {
-      profitSub += ` · ${pendingContractCount} pending contract`;
-    }
-  } else if (pendingContractCount > 0) {
-    profitSub = `${pendingContractCount} pending contract`;
-  }
-
-  let status, statusKind;
-  if (!projects.length)                                                    { status = 'No Projects'; statusKind = 'mute'; }
-  else if (onHold > 0)                                                     { status = `${onHold} On Hold`; statusKind = 'amber'; }
-  else if (matchedContract > 0 && matchedProjected > matchedContract)      { status = 'Margin Risk'; statusKind = 'amber'; }
-  else                                                                     { status = 'On Track'; statusKind = 'green'; }
-
-  return {
-    key, name, accent,
-    status, statusKind,
-    kpis: [
-      {
-        label: 'Active Projects',
-        value: String(active.length),
-        sub:   onHold > 0 ? `${onHold} on hold` : undefined,
-      },
-      { label: 'Cost vs Bid', value: cvbFmt.text, sub: cvbSub },
-      {
-        label: 'Projected Cost',
-        value: matchedProjected > 0 ? fmtCurrency(matchedProjected) : '—',
-        sub:   matchedContract > 0  ? `vs ${fmtCurrency(matchedContract)} contract` : undefined,
-      },
-      { label: 'Projected Profit', value: profitText, sub: profitSub },
-    ].map(k => { if (k.sub === undefined) delete k.sub; return k; }),
-  };
-}
-
-// Turf — financial-status focused: Active / Cost vs Bid / Projected / Profit.
-// Reads project state from fct_projects_index + per-project blobs and
-// joins actuals from daily_tracking.division='turf'. See readProjectBlobs
-// for why we read blobs instead of the projects table.
-async function buildTurfTile(sql, companyCode /* , weekStart, weekEnd unused */) {
-  const blobs  = (await readTurfProjects(sql, companyCode)).filter(projMeetsExecCutoff);
-  const active = blobs.filter(p => !projIsComplete(p));
-  const financials = await safeRun('turf.financials', async () => {
-    return await buildFinancials(sql, companyCode, 'turf', active);
-  });
-  return makeFinancialTile({
-    key:      'turf',
-    name:     'Turf Management',
-    accent:   '#22c55e',
-    projects: blobs,
-    financials,
-  });
-}
-
 async function buildTruckingTile(sql, companyCode, weekStart, weekEnd) {
   const activeHauls = await safeRun('trucking.active_hauls', async () => {
     const rows = await sql`
@@ -828,243 +725,256 @@ async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
   };
 }
 
-// ── Project portfolio (page 2) ───────────────────────────────────────
-// Cross-division roll-up: top 12 active-or-pinned projects from Turf +
-// Paving blobs, with bid/actual/projected joined from daily_tracking
-// for the matching division. Mirrors the financial table users see on
-// each home page (Project · Status · Progress · Contract · Bid · Actual ·
-// Variance · Projected · Profit · Pinned).
-async function buildProjectsPortfolio(sql, companyCode) {
-  const [turfBlobs, pavingBlobs] = await Promise.all([
-    readTurfProjects(sql, companyCode).catch(err => {
-      console.error('[executive/report] portfolio turf blobs failed:', err.message); return [];
-    }),
-    readPavingProjects(sql, companyCode).catch(err => {
-      console.error('[executive/report] portfolio paving blobs failed:', err.message); return [];
-    }),
-  ]);
+// ── Per-division project portfolios (page 2+) ────────────────────────
+// One block per job-running division, shaped like that division's own home
+// page: the metric strip across the top, then the project table beneath it
+// (pinned first, then the most recent). The layout is copied deliberately —
+// an executive reading a figure here should find the identical figure on the
+// division page it came from, with no translation in between.
+//
+// Everything the division owns feeds the metric strip. The table shows the
+// same six rows the home page shows, with the rest reported as a count.
 
-  const tagged = [
-    ...turfBlobs.map(p   => ({ p, division: 'turf' })),
-    ...pavingBlobs.map(p => ({ p, division: 'paving' })),
-  ].filter(({ p }) => projMeetsExecCutoff(p) && (!projIsComplete(p) || projPinned(p)))
-   .sort((a, b) => Number(projPinned(b.p)) - Number(projPinned(a.p)))
-   .slice(0, 12);
+// tracker.html / paving.html / kiewit-pinetree.html each cap the home tab at
+// six projects (MAX_CARDS), and their tables list those same six.
+const MAX_PORTFOLIO_ROWS = 6;
 
-  if (!tagged.length) return { summary: { pinned: 0, recent: 0, total: 0 }, rows: [] };
+const pct1 = n => `${(Number(n) || 0).toLocaleString('en-US', {
+  minimumFractionDigits: 1, maximumFractionDigits: 1,
+})}%`;
 
-  // Bucket projects by division so each financial query stays scoped.
-  const byDiv = { turf: [], paving: [] };
-  tagged.forEach(({ p, division }) => byDiv[division].push(p));
-
-  const [turfFin, pavingFin] = await Promise.all([
-    byDiv.turf.length   ? buildFinancials(sql, companyCode, 'turf',   byDiv.turf)   : Promise.resolve(null),
-    byDiv.paving.length ? buildFinancials(sql, companyCode, 'paving', byDiv.paving) : Promise.resolve(null),
-  ].map(p => p.catch(err => { console.error('[executive/report] portfolio fin:', err.message); return null; })));
-
-  const finByProject = new Map();
-  for (const f of [turfFin, pavingFin]) {
-    if (!f) continue;
-    for (const [pid, vals] of f.perProject) finByProject.set(pid, vals);
+// Bid-item statuses drive the home table's Status cell: a line flagged At Risk
+// or On Hold outranks the project's own status there, because it is the thing
+// that needs someone to look at it.
+function bidStatusCounts(p) {
+  const items = Array.isArray(p.bidItems) ? p.bidItems : [];
+  let atRisk = 0, onHold = 0;
+  for (const b of items) {
+    if (!b) continue;
+    if      (b.status === 'At Risk') atRisk++;
+    else if (b.status === 'On Hold') onHold++;
   }
+  return { atRisk, onHold };
+}
 
-  const rows = tagged.map(({ p, division }) => {
-    const fin       = finByProject.get(p.id) || { bid: 0, actual: 0, projected: 0, offBid: 0, offBidCodes: [] };
-    const contract  = projContract(p);
-    const bid       = fin.bid;
-    const actual    = fin.actual;
-    const projected = fin.projected;
+// Days to the target completion date. null for a finished job (its deadline
+// stopped mattering) or one with no end date recorded.
+function daysLeftFor(p) {
+  const end = projEndDate(p);
+  if (!end || projIsComplete(p)) return null;
+  const endMs = new Date(String(end) + 'T00:00:00Z').getTime();
+  if (!Number.isFinite(endMs)) return null;
+  return Math.ceil((endMs - Date.now()) / 86400000);
+}
 
-    const progressPct = bid > 0 ? Math.min(Math.round((actual / bid) * 100), 100) : 0;
-    const variance    = bid - actual;
-    const profit      = contract > 0 && projected > 0 ? contract - projected : null;
-    const profitPct   = profit != null && contract > 0 ? (profit / contract) * 100 : null;
+function portfolioRow(p, fin) {
+  const f         = fin || { bid: 0, actual: 0, projected: 0, offBid: 0, offBidCodes: [] };
+  const contract  = projContract(p);
+  const bid       = Number(f.bid)       || 0;
+  const actual    = Number(f.actual)    || 0;
+  const projected = Number(f.projected) || 0;
+  const { atRisk, onHold } = bidStatusCounts(p);
 
-    return {
-      name:        projName(p),
-      jobNumber:   projJob(p) || '—',
-      division,
-      status:      projStatus(p) || 'In Progress',
-      pinned:      projPinned(p),
-      progressPct,
-      contract,
-      bid,
-      actual,
-      variance,
-      projected,
-      profit,
-      profitPct,
-      offBid:      Number(fin.offBid) || 0,
-      offBidCodes: Array.isArray(fin.offBidCodes) ? fin.offBidCodes : [],
-    };
+  // Progress is spend against budget, so it tracks the same three bands the
+  // division pages use: at or over budget is red, the last 15% is amber.
+  const burn = bid > 0 ? actual / bid : null;
+  const progressTone = burn == null ? 'mute' : burn >= 1 ? 'red' : burn >= 0.85 ? 'amber' : 'green';
+  const projectedTone = bid <= 0        ? 'mute'
+                      : projected > bid        ? 'red'
+                      : projected > bid * 0.85 ? 'amber'
+                      : 'green';
+
+  // A job with no contract value has no revenue to subtract a cost from, so
+  // its profit is unknown rather than zero. Actual Profit additionally needs
+  // real spend behind it — contract minus nothing would post an untouched job
+  // as pure margin.
+  const profit    = contract > 0 && projected > 0 ? contract - projected : null;
+  const actProfit = contract > 0 && actual    > 0 ? contract - actual    : null;
+
+  return {
+    id:          p.id,
+    name:        projName(p),
+    jobNumber:   projJob(p) || '',
+    client:      projClient(p),
+    pm:          projPm(p),
+    status:      projStatus(p),
+    atRisk,
+    onHold,
+    daysLeft:    daysLeftFor(p),
+    pinned:      projPinned(p),
+    progressPct: burn == null ? 0 : Math.min(Math.round(burn * 100), 100),
+    progressTone,
+    projectedTone,
+    contract,
+    bid,
+    actual,
+    variance:    bid - actual,
+    projected,
+    profit,
+    profitPct:    profit    != null && contract > 0 ? (profit    / contract) * 100 : null,
+    actProfit,
+    actProfitPct: actProfit != null && contract > 0 ? (actProfit / contract) * 100 : null,
+    offBid:      Number(f.offBid) || 0,
+    offBidCodes: Array.isArray(f.offBidCodes) ? f.offBidCodes : [],
+  };
+}
+
+// The metric strip, in the division pages' own words. The split between "in
+// progress" and "awarded" is theirs too and it matters: an awarded job carries
+// a contract and a budget but has spent nothing against either, so folding it
+// into Actual Spend or Variance would report the company further under budget
+// every time it won work. Actual Profit is what finished work returned, so it
+// covers completed jobs only.
+function portfolioMetrics(rows, totalProjects) {
+  const live = rows.filter(r => r.status === 'In Progress');
+  const awd  = rows.filter(r => r.status === 'Awarded');
+  const done = rows.filter(r => r.complete && r.actProfit != null);
+  const sum  = (list, k) => list.reduce((s, r) => s + (Number(r[k]) || 0), 0);
+
+  const ipContract = sum(live, 'contract');
+  const ipBid      = sum(live, 'bid');
+  const ipActual   = sum(live, 'actual');
+  const awContract = sum(awd,  'contract');
+  const awBid      = sum(awd,  'bid');
+
+  const ipVariance = ipBid - ipActual;
+  const burnPct    = ipBid > 0 ? (ipActual / ipBid) * 100 : 0;
+  const spendTone  = burnPct >= 100 ? 'red' : burnPct >= 85 ? 'amber' : 'green';
+
+  // Only jobs carrying a contract can contribute a profit figure, and the
+  // margin percentage has to be read against those same jobs' contracts.
+  const withContract   = [...live, ...awd].filter(r => r.profit != null);
+  const bookProfit     = sum(withContract, 'profit');
+  const bookProfitBase = sum(withContract, 'contract');
+  const doneProfit     = sum(done, 'actProfit');
+
+  const bookCount    = live.length + awd.length;
+  const bookContract = ipContract + awContract;
+
+  return [
+    {
+      label: 'Active Projects',
+      value: String(bookCount),
+      sub:   awd.length
+        ? `${live.length} in progress · ${awd.length} awarded`
+        : `in progress of ${totalProjects}`,
+      tone: 'blue',
+    },
+    {
+      label: 'Total Contract Value',
+      value: fmtCurrency(bookContract),
+      sub:   awd.length ? 'in progress + awarded' : 'in progress jobs',
+      tone:  'blue',
+    },
+    {
+      label: 'Awarded Backlog',
+      value: fmtCurrency(awContract),
+      sub:   awd.length
+        ? `${awd.length} awarded job${awd.length === 1 ? '' : 's'} not started`
+        : 'nothing awarded',
+      tone: awContract ? 'awarded' : 'plain',
+    },
+    {
+      label: 'Total Bid Budget',
+      value: fmtCurrency(ipBid + awBid),
+      sub:   awd.length ? 'in progress + awarded' : 'in progress jobs',
+      tone:  'green',
+    },
+    {
+      label: 'Total Actual Spend',
+      value: fmtCurrency(ipActual),
+      sub:   `${pct1(burnPct)} of in-progress budget`,
+      tone:  spendTone,
+    },
+    {
+      label: 'Total Variance',
+      value: fmtCurrency(ipVariance),
+      sub:   `${ipVariance >= 0 ? 'under' : 'over'} budget · in progress`,
+      tone:  ipVariance >= 0 ? 'green' : 'red',
+    },
+    {
+      label: 'Total Projected Profit',
+      value: fmtCurrency(bookProfit),
+      sub:   bookProfitBase
+        ? `${pct1((bookProfit / bookProfitBase) * 100)} margin`
+        : (awd.length ? 'in progress + awarded' : 'in progress jobs'),
+      tone:  bookProfit >= 0 ? 'green' : 'red',
+    },
+    {
+      label: 'Total Actual Profit',
+      value: fmtCurrency(doneProfit),
+      sub:   `${done.length} completed job${done.length === 1 ? '' : 's'}`,
+      tone:  doneProfit >= 0 ? 'green' : 'red',
+    },
+  ];
+}
+
+async function buildDivisionPortfolio(sql, companyCode, div) {
+  const all = (await div.read(sql, companyCode)).filter(projMeetsExecCutoff);
+
+  // One grouped query covers the whole division, so the strip can be built
+  // from every project rather than just the six on show.
+  const fin = all.length
+    ? await buildFinancials(sql, companyCode, div.key, all)
+    : null;
+  const finFor = p => (fin && fin.perProject.get(p.id)) || null;
+
+  const allRows = all.map(p => {
+    const row = portfolioRow(p, finFor(p));
+    row.complete = projIsComplete(p);
+    return row;
   });
 
-  const pinnedCount = rows.filter(r => r.pinned).length;
+  // Row order mirrors the home pages: pinned first (most recently pinned
+  // first), then the most recent unpinned, six in total.
+  const pinned   = allRows.filter(r => r.pinned).slice().reverse().slice(0, MAX_PORTFOLIO_ROWS);
+  const unpinned = allRows.filter(r => !r.pinned).slice().reverse()
+    .slice(0, MAX_PORTFOLIO_ROWS - pinned.length);
+  const rows     = [...pinned, ...unpinned];
+  const hidden   = Math.max(0, allRows.filter(r => !r.pinned).length - unpinned.length);
+
+  const onHoldProjects = allRows.filter(r => r.status === 'On Hold').length;
+  const live           = allRows.filter(r => r.status === 'In Progress' || r.status === 'Awarded');
+  const overContract   = live.filter(r => r.profit != null && r.profit < 0).length;
+
+  let status, statusKind;
+  if      (!allRows.length)    { status = 'No Projects';   statusKind = 'mute';  }
+  else if (overContract > 0)   { status = 'Margin Risk';   statusKind = 'amber'; }
+  else if (onHoldProjects > 0) { status = `${onHoldProjects} On Hold`; statusKind = 'amber'; }
+  else                         { status = 'On Track';      statusKind = 'green'; }
+
   return {
-    summary: {
-      pinned: pinnedCount,
-      recent: rows.length - pinnedCount,
-      total:  rows.length,
-    },
-    rows,
-  };
-}
-
-// ── Per-project detail (page 3+) ─────────────────────────────────────
-// Returns the top 6 active projects with full header info plus
-// section blocks (bid items, weekly trucking activity). Quarry and
-// dust sections are intentionally omitted until quarry data lands
-// and dust gains a project linkage. Each per-project sub-query runs
-// in parallel and is independently safe-wrapped.
-// Per-project detail (page 3+): top 6 active across Turf + Paving by
-// earliest start date. Bid items come from the blob, booked cost +
-// weekly trucking come from the normalized tables joined by project_id.
-async function buildProjectDetails(sql, companyCode) {
-  const [turfBlobs, pavingBlobs] = await Promise.all([
-    readTurfProjects(sql, companyCode).catch(() => []),
-    readPavingProjects(sql, companyCode).catch(() => []),
-  ]);
-
-  const tagged = [
-    ...turfBlobs.map(p   => ({ p, division: 'turf'   })),
-    ...pavingBlobs.map(p => ({ p, division: 'paving' })),
-  ].filter(({ p }) => projMeetsExecCutoff(p) && !projIsComplete(p))
-   .sort((a, b) => {
-     const sa = projStartDate(a.p) || '';
-     const sb = projStartDate(b.p) || '';
-     // empty start dates sort last
-     if (!sa && !sb) return projName(a.p).localeCompare(projName(b.p));
-     if (!sa) return 1;
-     if (!sb) return -1;
-     return sa.localeCompare(sb);
-   })
-   .slice(0, 6);
-
-  if (!tagged.length) return [];
-
-  return Promise.all(tagged.map(async ({ p, division }) => {
-    const [weeks, booked] = await Promise.all([
-      safeRun(`details.weeks.${p.id}`, async () => {
-        return await sql`
-          SELECT
-            date_trunc('week', date)::date::text                                AS week_start,
-            COALESCE(SUM(loads),  0)::float                                     AS loads,
-            COALESCE(SUM(hours),  0)::float                                     AS hours,
-            COALESCE(SUM(COALESCE(loads,0) * COALESCE(rate,0)), 0)::float       AS dollars
-          FROM trucking_entries
-          WHERE company_code = ${companyCode}
-            AND project_id   = ${p.id}
-          GROUP BY date_trunc('week', date)
-          ORDER BY week_start DESC
-          LIMIT 4
-        `;
-      }),
-      safeRun(`details.booked.${p.id}`, async () => {
-        const rows = await sql`
-          SELECT
-            COALESCE(SUM(
-              COALESCE(total_cost_override,
-                COALESCE(labor_hours, 0) * COALESCE(rate, 0)
-                + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
-                + COALESCE(material_cost, 0)
-              )
-            ), 0)::float AS booked
-          FROM daily_tracking
-          WHERE company_code = ${companyCode}
-            AND division     = ${division}
-            AND project_id   = ${p.id}
-        `;
-        return rows[0]?.booked ?? 0;
-      }),
-    ]);
-
-    return buildDetailObject(p, division, projBidLines(p), weeks, booked);
-  }));
-}
-
-function buildDetailObject(p, division, bidItems, weeks, booked) {
-  const start = projStartDate(p);
-  const end   = projEndDate(p);
-  const startMs = start ? new Date(start + 'T00:00:00Z').getTime() : null;
-  const endMs   = end   ? new Date(end   + 'T00:00:00Z').getTime() : null;
-  const todayMs = Date.now();
-
-  let pctComplete = '—';
-  if (startMs != null && endMs != null && endMs > startMs) {
-    const elapsed = Math.max(0, Math.min(todayMs, endMs) - startMs);
-    pctComplete = Math.round((elapsed / (endMs - startMs)) * 100) + '%';
-  }
-
-  const fmtDate = iso =>
-    iso
-      ? new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-      : '—';
-
-  const sections = {};
-
-  if (Array.isArray(bidItems) && bidItems.length) {
-    const accent = division === 'paving' ? '#60a5fa' : '#22c55e';
-    sections.bidItems = {
-      color: accent,
-      cols:  ['Item', 'Qty', 'Status'],
-      rows:  bidItems.slice(0, 8).map(b => [
-        b.description || b.cost_code || '—',
-        b.quantity > 0
-          ? `${Number(b.quantity).toLocaleString('en-US')} ${b.unit || ''}`.trim()
-          : '—',
-        b.status || 'Active',
-      ]),
-    };
-  }
-
-  if (Array.isArray(weeks) && weeks.length) {
-    const sorted       = [...weeks].sort((a, b) => String(a.week_start).localeCompare(String(b.week_start)));
-    const totalLoads   = sorted.reduce((s, w) => s + (Number(w.loads)   || 0), 0);
-    const totalHours   = sorted.reduce((s, w) => s + (Number(w.hours)   || 0), 0);
-    const totalDollars = sorted.reduce((s, w) => s + (Number(w.dollars) || 0), 0);
-    const fmtWeek = iso =>
-      new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
-    sections.trucking = {
-      color: '#ef4444',
-      cols:  ['Week', 'Loads', 'Hours', '$'],
-      rows: [
-        ...sorted.map(w => [
-          fmtWeek(w.week_start),
-          Math.round(Number(w.loads) || 0).toLocaleString('en-US'),
-          Math.round(Number(w.hours) || 0).toLocaleString('en-US'),
-          fmtCurrency(w.dollars),
-        ]),
-        [
-          'Total to date',
-          Math.round(totalLoads).toLocaleString('en-US'),
-          Math.round(totalHours).toLocaleString('en-US'),
-          fmtCurrency(totalDollars),
-        ],
-      ],
-    };
-  }
-
-  const status = projStatus(p) || 'Active';
-  const statusColor =
-    status === 'On Hold' ? 'mute' :
-    status === 'At Risk' ? 'amber' :
-    'green';
-
-  const contract = projContract(p);
-  return {
-    name:        projName(p),
-    jobNumber:   projJob(p) || '—',
-    division,
+    key:     div.key,
+    name:    div.name,
+    accent:  div.accent,
     status,
-    statusColor,
-    start:       fmtDate(start),
-    target:      fmtDate(end),
-    contract:    contract > 0 ? fmtCurrency(contract) : '—',
-    bookedCost:  booked != null ? fmtCurrency(booked) : '—',
-    pctComplete,
-    sections,
+    statusKind,
+    metrics: portfolioMetrics(allRows, allRows.length),
+    rows,
+    shown:   rows.length,
+    pinned:  pinned.length,
+    recent:  unpinned.length,
+    hidden,
+    total:   allRows.length,
   };
+}
+
+// A division whose blobs can't be read is reported as an errored division
+// rather than dropped, so a missing index reads as "couldn't load" instead of
+// silently looking like a division with no work.
+function buildDivisionPortfolios(sql, companyCode) {
+  return Promise.all(PROJECT_DIVISIONS.map(div =>
+    buildDivisionPortfolio(sql, companyCode, div).catch(err => {
+      console.error(`[executive/report] ${div.key} portfolio failed:`, err.message);
+      return {
+        key: div.key, name: div.name, accent: div.accent,
+        status: 'Unavailable', statusKind: 'mute',
+        metrics: [], rows: [],
+        shown: 0, pinned: 0, recent: 0, hidden: 0, total: 0,
+        error: true,
+      };
+    })
+  ));
 }
 
 async function buildIntercompanyTile(sql, companyCode) {
@@ -1166,23 +1076,6 @@ async function buildRubberInventory(sql, companyCode) {
       in_stock:  v.produced - v.used,
       lbs_total: v.lbs_total,
     }));
-}
-
-// Paving — same shape as Turf, sourced from fct_paving_projects_index +
-// per-project blobs and joined to daily_tracking.division='paving'.
-async function buildPavingTile(sql, companyCode) {
-  const blobs  = (await readPavingProjects(sql, companyCode)).filter(projMeetsExecCutoff);
-  const active = blobs.filter(p => !projIsComplete(p));
-  const financials = await safeRun('paving.financials', async () => {
-    return await buildFinancials(sql, companyCode, 'paving', active);
-  });
-  return makeFinancialTile({
-    key:      'paving',
-    name:     'Paving',
-    accent:   '#60a5fa',
-    projects: blobs,
-    financials,
-  });
 }
 
 // ── Quarry tile ──────────────────────────────────────────────────────
@@ -1556,29 +1449,6 @@ function mockReport() {
 
       divisions: [
         {
-          // Mirrors the live Turf tile shape (Active / Cost vs Bid /
-          // Projected / Profit) so the fallback layout still reads as
-          // intended even when DB is unreachable.
-          key: 'turf', name: 'Turf Management', accent: '#22c55e',
-          status: 'On Track', statusKind: 'green',
-          kpis: [
-            { label: 'Active Projects', value: '—' },
-            { label: 'Cost vs Bid',     value: '—' },
-            { label: 'Projected Cost',    value: '—' },
-            { label: 'Projected Profit',  value: '—' },
-          ],
-        },
-        {
-          key: 'paving', name: 'Paving', accent: '#60a5fa',
-          status: '—', statusKind: 'mute',
-          kpis: [
-            { label: 'Active Projects', value: '—' },
-            { label: 'Cost vs Bid',     value: '—' },
-            { label: 'Projected Cost',    value: '—' },
-            { label: 'Projected Profit',  value: '—' },
-          ],
-        },
-        {
           key: 'trucking', name: 'Trucking', accent: '#ef4444',
           status: '—', statusKind: 'mute',
           kpis: [
@@ -1621,12 +1491,14 @@ function mockReport() {
       ],
     },
 
-    projects: {
-      summary: { pinned: 0, recent: 0, total: 0 },
-      rows: [],
-    },
-
-    details: [],
+    // One entry per job-running division, each carrying that division's
+    // metric strip + project table. Empty until the live build fills them in.
+    portfolios: PROJECT_DIVISIONS.map(d => ({
+      key: d.key, name: d.name, accent: d.accent,
+      status: '—', statusKind: 'mute',
+      metrics: [], rows: [],
+      shown: 0, pinned: 0, recent: 0, hidden: 0, total: 0,
+    })),
 
     payroll: {
       periodStart: null,
@@ -1675,16 +1547,11 @@ module.exports = async (req, res) => {
       console.error('[executive/report] hero build failed:', err.message);
     }
 
-    // All six division tiles are wired live. A failed builder leaves the
-    // mock '—' placeholder for that tile (rather than overwriting it with
-    // null) so the grid layout stays intact.
+    // The non-project division tiles are wired live. A failed builder leaves
+    // the mock '—' placeholder for that tile (rather than overwriting it with
+    // null) so the grid layout stays intact. Turf / Paving / Kiewit have no
+    // tile: they get a full portfolio section each, further down.
     const liveTiles = await Promise.all([
-      buildTurfTile(sql, company, weekStart, weekEnd).catch(e => {
-        console.error('[executive/report] turf tile failed:', e.message); return null;
-      }),
-      buildPavingTile(sql, company).catch(e => {
-        console.error('[executive/report] paving tile failed:', e.message); return null;
-      }),
       buildTruckingTile(sql, company, weekStart, weekEnd).catch(e => {
         console.error('[executive/report] trucking tile failed:', e.message); return null;
       }),
@@ -1698,11 +1565,9 @@ module.exports = async (req, res) => {
         console.error('[executive/report] intercompany tile failed:', e.message); return null;
       }),
     ]);
-    const [turfLive, pavingLive, truckingLive, dustLive, quarryLive, icLive] = liveTiles;
+    const [truckingLive, dustLive, quarryLive, icLive] = liveTiles;
 
     report.snapshot.divisions = report.snapshot.divisions.map(tile => {
-      if (tile.key === 'turf'         && turfLive)     return turfLive;
-      if (tile.key === 'paving'       && pavingLive)   return pavingLive;
       if (tile.key === 'trucking'     && truckingLive) return truckingLive;
       if (tile.key === 'dust'         && dustLive)     return dustLive;
       if (tile.key === 'quarry'       && quarryLive)   return quarryLive;
@@ -1710,16 +1575,12 @@ module.exports = async (req, res) => {
       return tile;
     });
 
-    // Active project portfolio (page 2) and per-project detail (page 3+).
-    // The builders return null on error or when there are no active
-    // projects — both cases leave the mock's empty placeholders, which
-    // now contain no fake project entries.
-    const [livePortfolio, liveDetails, liveInventory, livePayroll] = await Promise.all([
-      buildProjectsPortfolio(sql, company).catch(err => {
-        console.error('[executive/report] portfolio build failed:', err.message); return null;
-      }),
-      buildProjectDetails(sql, company).catch(err => {
-        console.error('[executive/report] details build failed:', err.message); return null;
+    // Per-division project portfolios (page 2+). The builders return null on
+    // error or when there are no active projects — both cases leave the mock's
+    // empty placeholders, which now contain no fake project entries.
+    const [livePortfolios, liveInventory, livePayroll] = await Promise.all([
+      buildDivisionPortfolios(sql, company).catch(err => {
+        console.error('[executive/report] portfolios build failed:', err.message); return null;
       }),
       buildRubberInventory(sql, company).catch(err => {
         console.error('[executive/report] inventory build failed:', err.message); return null;
@@ -1728,11 +1589,8 @@ module.exports = async (req, res) => {
         console.error('[executive/report] payroll summary failed:', err.message); return null;
       }),
     ]);
-    if (livePortfolio && Array.isArray(livePortfolio.rows)) {
-      report.projects = livePortfolio;
-    }
-    if (Array.isArray(liveDetails)) {
-      report.details = liveDetails;
+    if (Array.isArray(livePortfolios) && livePortfolios.length) {
+      report.portfolios = livePortfolios;
     }
     if (Array.isArray(liveInventory)) {
       report.inventory = liveInventory;

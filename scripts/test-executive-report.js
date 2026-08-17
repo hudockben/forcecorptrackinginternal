@@ -25,6 +25,8 @@ const FAKE_TURF = [
     'contract-amount': '479312.32',
     'start-date':      '2026-03-01',
     'end-date':        '2026-09-15',
+    'client':          'Franklin Regional SD',
+    'pm':              'George Oakes',
     pinned:            true,
     bidItems: [
       { id: 'bi-p1-01', cost_code: '01', sub_code: '',  quantity: 1, unit_cost: 375931.05, description: 'Sitework', unit: 'LS', status: 'Active' },
@@ -60,10 +62,31 @@ const FAKE_TURF = [
     pinned: false, bidItems: [],
   },
   {
+    // Finished with spend behind it — the only shape that can contribute to
+    // Total Actual Profit (contract $200k − actual $150k = $50k).
     id: 'p6',
     'project-name': 'Done Project', 'job-number': '26020', 'status': 'Complete',
     'contract-amount': '200000', 'start-date': '2025-01-01', 'end-date': '2025-12-01',
-    pinned: false, bidItems: [],
+    pinned: false,
+    bidItems: [
+      { id: 'bi-p6-01', cost_code: '09', sub_code: '', quantity: 1, unit_cost: 160000, description: 'Build', unit: 'LS', status: 'Active' },
+    ],
+  },
+  {
+    // Won, not started: feeds Awarded Backlog. Its bid line carries a change
+    // order, so its bid budget is (100 + 20) × $500 = $60,000, not $50,000.
+    id: 'p7',
+    'project-name': 'Juniata College Baseball', 'job-number': '26053', 'status': 'Awarded',
+    'contract-amount': '75000', 'start-date': '2026-06-01', 'end-date': '2026-11-01',
+    'pm': 'Allen Strick',
+    pinned: false,
+    bidItems: [
+      {
+        id: 'bi-p7-01', cost_code: '05', sub_code: '', quantity: 100, unit_cost: 500,
+        description: 'Field', unit: 'SY', status: 'Active',
+        change_orders: [{ id: 'co-1', date: '2026-06-15', qty_delta: 20, note: 'added infield' }],
+      },
+    ],
   },
 ];
 
@@ -73,6 +96,7 @@ const FAKE_TURF_DAILY = [
   { project_id: 'p3', cost_code: '02', sub_code: 'a', actual:  5000, rqty: 70 },
   { project_id: 'p3', cost_code: '02', sub_code: 'b', actual:  2500, rqty: 30 },
   { project_id: 'p3', cost_code: '03', sub_code: '',  actual: 98289.27, rqty: 1 },
+  { project_id: 'p6', cost_code: '09', sub_code: '',  actual: 150000, rqty: 1 },
 ];
 
 // Two paving projects in app_data blob storage. pv1 active w/ bid + actual,
@@ -97,6 +121,21 @@ const FAKE_PAVING_DAILY = [
   { project_id: 'pv1', cost_code: '02', sub_code: '', actual: 12000, rqty: 200 },
 ];
 
+// One kiewit project so the third portfolio section has live numbers.
+const FAKE_KIEWIT = [
+  {
+    id: 'kw1', 'project-name': 'Pinetree Pads 12–18', 'job-number': '26061',
+    status: 'In Progress', 'contract-amount': '310000', 'pm': 'Allen Strick',
+    pinned: true,
+    bidItems: [
+      { id: 'bi-kw1-01', cost_code: '01', sub_code: '', quantity: 18, unit_cost: 10000 },
+    ],
+  },
+];
+const FAKE_KIEWIT_DAILY = [
+  { project_id: 'kw1', cost_code: '01', sub_code: '', actual: 90000, rqty: 9 },
+];
+
 // Quarry sales blob: mix of this-week + this-month entries.
 const todayIso = new Date().toISOString().slice(0, 10);
 const FAKE_QUARRY_SALES = [
@@ -104,6 +143,12 @@ const FAKE_QUARRY_SALES = [
   { date: todayIso, locationName: 'Pit 3 — Hollidaysburg', productName: '2A Modified',   tons: 15, pricePerTon: 22 },
   { date: todayIso, locationName: 'Pit 1 — Altoona',       productName: '#57 Limestone', tons: 10, pricePerTon: 18 },
 ];
+
+const DAILY_BY_DIVISION = {
+  turf:   FAKE_TURF_DAILY,
+  paving: FAKE_PAVING_DAILY,
+  kiewit: FAKE_KIEWIT_DAILY,
+};
 
 function fakeSql(strings, ...values) {
   let q = strings[0];
@@ -120,6 +165,9 @@ function fakeSql(strings, ...values) {
     }
     if (key === `${COMPANY}:fct_paving_projects_index`) {
       return Promise.resolve([{ value: { ids: FAKE_PAVING.map(p => p.id) } }]);
+    }
+    if (key === `${COMPANY}:fct_kiewit_projects_index`) {
+      return Promise.resolve([{ value: { ids: FAKE_KIEWIT.map(p => p.id) } }]);
     }
     if (key === `${COMPANY}:fct_quarry_sales`) {
       return Promise.resolve([{ value: FAKE_QUARRY_SALES }]);
@@ -140,6 +188,11 @@ function fakeSql(strings, ...values) {
       m = String(k).match(/^[^:]+:fct_paving_project_(.+)$/);
       if (m) {
         const proj = FAKE_PAVING.find(p => p.id === m[1]);
+        if (proj) { rows.push({ key: k, value: proj }); continue; }
+      }
+      m = String(k).match(/^[^:]+:fct_kiewit_project_(.+)$/);
+      if (m) {
+        const proj = FAKE_KIEWIT.find(p => p.id === m[1]);
         if (proj) rows.push({ key: k, value: proj });
       }
     }
@@ -152,7 +205,7 @@ function fakeSql(strings, ...values) {
       && lower.includes('group by project_id, cost_code')) {
     const division = values[1];
     const ids = Array.isArray(values[2]) ? new Set(values[2]) : new Set();
-    const src = division === 'paving' ? FAKE_PAVING_DAILY : FAKE_TURF_DAILY;
+    const src = DAILY_BY_DIVISION[division] || [];
     return Promise.resolve(src.filter(d => ids.has(d.project_id)));
   }
 
@@ -165,7 +218,7 @@ function fakeSql(strings, ...values) {
   if (lower.includes('total_cost_override') && lower.includes('as booked')) {
     const division = values[1];
     const projId = values[2];
-    const src = division === 'paving' ? FAKE_PAVING_DAILY : FAKE_TURF_DAILY;
+    const src = DAILY_BY_DIVISION[division] || [];
     const booked = src.filter(d => d.project_id === projId).reduce((s, d) => s + d.actual, 0);
     return Promise.resolve([{ booked }]);
   }
@@ -217,6 +270,13 @@ const res = {
   console.log('\n──── RESPONSE ────  status=' + statusCode);
   if (!payload) { console.error('NO PAYLOAD'); process.exit(1); }
 
+  // Opt-in dump so the executive front end can be rendered against a real
+  // payload: EXEC_REPORT_JSON=/tmp/report.json node scripts/test-executive-report.js
+  if (process.env.EXEC_REPORT_JSON) {
+    require('fs').writeFileSync(process.env.EXEC_REPORT_JSON, JSON.stringify(payload, null, 2));
+    console.log('wrote payload to ' + process.env.EXEC_REPORT_JSON);
+  }
+
   console.log('\nhero KPIs:');
   for (const k of payload.snapshot.hero) {
     console.log(`  ${k.label.padEnd(28)} = ${String(k.value).padEnd(14)} ${k.delta || ''}`);
@@ -230,50 +290,113 @@ const res = {
     }
   }
 
-  console.log('\nprojects portfolio:');
-  console.log('  summary:', JSON.stringify(payload.projects?.summary || {}));
-  for (const p of (payload.projects?.rows || [])) {
-    console.log(`  ${(p.name || '').padEnd(36)} div=${p.division.padEnd(7)} status=${(p.status||'').padEnd(14)} bid=${p.bid} actual=${p.actual} projected=${p.projected} pinned=${p.pinned} progress=${p.progressPct}%`);
+  console.log('\ndivision portfolios:');
+  for (const d of (payload.portfolios || [])) {
+    console.log(`\n  ${d.name} — status=${d.status} (${d.shown} of ${d.total} shown, ${d.hidden} more)`);
+    for (const m of (d.metrics || [])) {
+      console.log(`     ${m.label.padEnd(22)} = ${String(m.value).padEnd(14)} ${m.sub || ''}`);
+    }
+    for (const r of (d.rows || [])) {
+      console.log(`     · ${(r.name || '').padEnd(30)} ${(r.status||'').padEnd(12)} bid=${r.bid} actual=${r.actual} proj=${r.projected} profit=${r.profit} actProfit=${r.actProfit} pinned=${r.pinned} ${r.progressPct}%`);
+    }
   }
 
-  console.log('\nproject details:', payload.details?.length || 0, 'projects');
-  for (const d of (payload.details || [])) {
-    console.log(`  ${d.name.padEnd(36)} div=${d.division.padEnd(7)} contract=${d.contract} booked=${d.bookedCost} pct=${d.pctComplete} sections=${Object.keys(d.sections || {}).join(',')}`);
-  }
 
   console.log('\n──── ASSERTIONS ────');
   let failed = 0;
   const fail = m => { console.error('  FAIL: ' + m); failed++; };
   const pass = m => console.log('  OK:   ' + m);
 
-  // Hero Active Projects = active turf (5: p1..p5) + active paving (1: pv1) = 6
+  // Hero Active Projects = active turf (6: p1..p5, p7) + paving (1: pv1)
+  // + kiewit (1: kw1) = 8. Anything not Complete/Closed counts.
   const heroActive = payload.snapshot.hero.find(k => k.label === 'Active Projects');
   if (!heroActive)               fail('hero Active Projects KPI missing');
-  else if (heroActive.value !== '6') fail(`hero Active Projects = ${heroActive.value} (expected 6)`);
-  else                           pass(`hero Active Projects = ${heroActive.value}`);
+  else if (heroActive.value !== '8') fail(`hero Active Projects = ${heroActive.value} (expected 8, incl. kiewit)`);
+  else                           pass(`hero Active Projects = ${heroActive.value} (turf + paving + kiewit)`);
 
-  const turf = payload.snapshot.divisions.find(d => d.key === 'turf');
-  if (!turf) fail('turf tile missing');
-  else {
-    const active = turf.kpis.find(k => k.label === 'Active Projects');
-    if (!active || active.value !== '5') fail(`turf Active Projects = ${active && active.value} (expected 5)`);
-    else pass(`turf tile shows 5 active (Done Project filtered)`);
+  // Turf / Paving / Kiewit are portfolio sections now, not snapshot tiles —
+  // their numbers would otherwise be reported twice on one page.
+  const tileKeys = payload.snapshot.divisions.map(d => d.key);
+  const strayTiles = tileKeys.filter(k => ['turf', 'paving', 'kiewit'].includes(k));
+  if (strayTiles.length) fail('job divisions still have snapshot tiles: ' + strayTiles.join(', '));
+  else pass('snapshot tiles cover the non-job divisions only: ' + tileKeys.join(', '));
 
-    const cvb = turf.kpis.find(k => k.label === 'Cost vs Bid');
-    if (!cvb || cvb.value === '—') fail('turf Cost vs Bid is — (financials not wired)');
-    else pass(`turf Cost vs Bid = ${cvb.value}`);
+  const portfolios = payload.portfolios || [];
+  const byKey = k => portfolios.find(d => d.key === k);
+  const metric = (d, label) => (d.metrics || []).find(m => m.label === label);
+
+  for (const key of ['turf', 'paving', 'kiewit']) {
+    if (!byKey(key)) fail(`${key} portfolio missing`);
+  }
+  if (portfolios.length === 3) pass('one portfolio per job-running division (turf, paving, kiewit)');
+
+  const turf = byKey('turf');
+  if (turf) {
+    // Metric strip mirrors the division home strip: p1 + p2 + p3 in progress,
+    // p7 awarded, p4 (blank status) and p5 (On Hold) are neither.
+    const active = metric(turf, 'Active Projects');
+    if (!active || active.value !== '4') fail(`turf Active Projects = ${active && active.value} (expected 4: 3 in progress + 1 awarded)`);
+    else pass(`turf Active Projects = ${active.value} — ${active.sub}`);
+
+    const backlog = metric(turf, 'Awarded Backlog');
+    if (!backlog || backlog.value !== '$75,000') fail(`turf Awarded Backlog = ${backlog && backlog.value} (expected $75,000)`);
+    else pass(`turf Awarded Backlog = ${backlog.value}`);
+
+    // Completed Done Project: $200,000 contract − $150,000 spend.
+    const actProfit = metric(turf, 'Total Actual Profit');
+    if (!actProfit || actProfit.value !== '$50,000') fail(`turf Total Actual Profit = ${actProfit && actProfit.value} (expected $50,000)`);
+    else pass(`turf Total Actual Profit = ${actProfit.value} — ${actProfit.sub}`);
+
+    // Bid budget: p1 $375,931.05 + p3 $151,641.89 in progress, plus awarded
+    // p7 at (100 + 20 change-order qty) × $500 = $60,000.
+    const bidBudget = metric(turf, 'Total Bid Budget');
+    if (!bidBudget || bidBudget.value !== '$587,573') fail(`turf Total Bid Budget = ${bidBudget && bidBudget.value} (expected $587,573 — includes the change order)`);
+    else pass(`turf Total Bid Budget = ${bidBudget.value} (change-order qty counted)`);
+
+    const co = (turf.rows || []).find(r => r.jobNumber === '26053');
+    if (!co || Math.abs(co.bid - 60000) > 0.01) fail(`change-order row bid = ${co && co.bid} (expected 60000)`);
+    else pass('change orders raise the row\'s bid budget (120 × $500)');
+
+    // Six rows max, pinned first — same as the home page.
+    if (turf.rows.length !== 6) fail(`turf shows ${turf.rows.length} rows (expected 6)`);
+    else pass('turf shows 6 rows (the home page cap)');
+    if (turf.total !== 7) fail(`turf total = ${turf.total} (expected 7 past the job-number cutoff)`);
+    else pass(`turf covers ${turf.total} projects, ${turf.hidden} beyond the table`);
+    const firstUnpinned = turf.rows.findIndex(r => !r.pinned);
+    const pinnedAfter   = turf.rows.slice(firstUnpinned + 1).some(r => r.pinned);
+    if (firstUnpinned !== -1 && pinnedAfter) fail('turf rows are not pinned-first');
+    else pass('turf rows are pinned-first');
+
+    const pmRow = (turf.rows || []).find(r => r.jobNumber === '26049');
+    if (!pmRow || pmRow.pm !== 'George Oakes' || pmRow.client !== 'Franklin Regional SD') {
+      fail(`turf row is missing PM / client (pm=${pmRow && pmRow.pm}, client=${pmRow && pmRow.client})`);
+    } else pass('project rows carry PM + client for the name sub-line');
   }
 
-  const paving = payload.snapshot.divisions.find(d => d.key === 'paving');
-  if (!paving) fail('paving tile missing');
-  else {
-    const active = paving.kpis.find(k => k.label === 'Active Projects');
-    if (!active || active.value !== '1') fail(`paving Active Projects = ${active && active.value} (expected 1)`);
-    else pass(`paving tile shows 1 active project (pv2 filtered)`);
-    const cvb = paving.kpis.find(k => k.label === 'Cost vs Bid');
-    // bid = 1000*75 + 500*50 = $100k, actual = $30k + $12k = $42k → -58.0%
-    if (!cvb || cvb.value !== '−58.0%') fail(`paving Cost vs Bid = ${cvb && cvb.value} (expected −58.0%)`);
-    else pass(`paving Cost vs Bid = ${cvb.value}`);
+  const paving = byKey('paving');
+  if (paving) {
+    const active = metric(paving, 'Active Projects');
+    // pv1's status is 'Active', which is neither In Progress nor Awarded, so
+    // the strip reports 0 the same way paving.html's own strip does.
+    if (!active) fail('paving Active Projects metric missing');
+    else pass(`paving Active Projects = ${active.value} — ${active.sub}`);
+    const row = (paving.rows || []).find(r => r.jobNumber === 'P-26001');
+    // bid = 1000×75 + 500×50 = $100k, actual = $30k + $12k = $42k
+    if (!row || row.bid !== 100000 || row.actual !== 42000) {
+      fail(`paving row bid/actual = ${row && row.bid}/${row && row.actual} (expected 100000/42000)`);
+    } else pass(`paving row: bid $${row.bid}, actual $${row.actual}, ${row.progressPct}% burn`);
+  }
+
+  const kiewit = byKey('kiewit');
+  if (kiewit) {
+    if (!kiewit.rows.length) fail('kiewit portfolio has no rows (blobs not read)');
+    else {
+      const r = kiewit.rows[0];
+      // bid = 18 × $10,000 = $180k, actual = $90k on 9 of 18 units, so the
+      // qty-burn projection lands back on the full bid.
+      if (r.bid !== 180000 || r.actual !== 90000) fail(`kiewit row bid/actual = ${r.bid}/${r.actual} (expected 180000/90000)`);
+      else pass(`kiewit row: bid $${r.bid}, actual $${r.actual}, projected $${r.projected}`);
+    }
   }
 
   const quarry = payload.snapshot.divisions.find(d => d.key === 'quarry');
@@ -287,20 +410,24 @@ const res = {
     else pass(`quarry Top Product = #57 Limestone`);
   }
 
-  // Portfolio: 5 active turf + 1 active paving (Done Project filtered, pv2 too)
-  if (!payload.projects?.rows?.length) fail('projects portfolio is empty');
-  else pass(`projects portfolio has ${payload.projects.rows.length} rows (turf+paving roll-up)`);
-  const portfolioTurf   = (payload.projects?.rows || []).filter(r => r.division === 'turf').length;
-  const portfolioPaving = (payload.projects?.rows || []).filter(r => r.division === 'paving').length;
-  if (portfolioTurf < 1)   fail(`portfolio missing turf projects (got ${portfolioTurf})`);
-  else                     pass(`portfolio includes ${portfolioTurf} turf projects`);
-  if (portfolioPaving < 1) fail(`portfolio missing paving projects (got ${portfolioPaving})`);
-  else                     pass(`portfolio includes ${portfolioPaving} paving project(s)`);
+  // Every division section must be able to stand on its own in the PDF.
+  for (const d of portfolios) {
+    if (!d.metrics || d.metrics.length !== 8) {
+      fail(`${d.key} has ${d.metrics ? d.metrics.length : 0} metrics (expected the home strip's 8)`);
+    }
+  }
+  if (portfolios.every(d => (d.metrics || []).length === 8)) {
+    pass('every portfolio carries the home strip\'s 8 metrics');
+  }
 
-  // Details should NOT contain mock entries from old fallback
-  const mockNames = (payload.details || []).filter(d => /Riverbend|Cedar Park/.test(d.name)).map(d => d.name);
-  if (mockNames.length) fail('project details still includes mock entries: ' + mockNames.join(', '));
-  else pass('project details has no mock entries');
+  // The per-project detail pages are gone — the division tables carry the
+  // figures, and nothing should still be paying for the per-project queries
+  // those pages needed.
+  if ('details' in payload) fail('payload still carries per-project detail');
+  else pass('no per-project detail in the payload');
+  const perProjectQueries = queries.filter(q => /date_trunc\('week', date\)/.test(q.sql)).length;
+  if (perProjectQueries) fail(`${perProjectQueries} per-project trucking queries still run`);
+  else pass('the per-project trucking queries are no longer issued');
 
   if (failed) {
     console.error('\n❌ ' + failed + ' assertion(s) failed');

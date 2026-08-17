@@ -158,11 +158,22 @@
     .btn.primary:hover { background: #8b6fe0; border-color: #8b6fe0; }
     .btn svg { width: 14px; height: 14px; }
 
-    /* ── Report container (this is what gets printed) ── */
+    /* ── Report container (this is what gets printed) ──
+       Wide enough for the eleven-column project table to sit without a
+       horizontal scrollbar, which is the point of mirroring the division
+       tables: every figure visible at once. */
     .report {
-      max-width: 1200px;
+      max-width: 1500px;
       margin: 0 auto 3rem;
       padding: 0 2rem;
+      /* body is a flex column and the auto side margins above opt this item
+         out of cross-axis stretch, so without an explicit width it sizes to
+         fit its content — which the project table's min-width then drags wider
+         than the window, scrolling the whole page sideways instead of just the
+         table. width + min-width:0 pins it to the window and lets
+         .ptable-wrap do the scrolling. */
+      width: 100%;
+      min-width: 0;
     }
 
     /* ── Filters ── */
@@ -276,9 +287,12 @@
     .delta-flat { color: var(--muted); }
 
     /* ── Division tiles ── */
+    /* Two columns: the grid holds the divisions that don't run jobs (Trucking,
+       Dust, Quarry, Intercompany), and the wider tile gives Quarry's six KPIs
+       room to sit two-across like everything else. */
     .div-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(2, 1fr);
       gap: 1rem;
     }
     .div-tile {
@@ -341,6 +355,110 @@
       margin-top: 0.15rem;
     }
 
+    /* ── Division portfolio: metric strip ──
+       A copy of the strip that heads each division's own home page
+       (tracker.html / paving.html / kiewit-pinetree.html), so a figure read
+       here is the same figure, in the same place, on the page it came from. */
+    /* Four across, two deep: the strip carries eight figures, and a flex row
+       that wraps leaves a single orphan on the second line. A grid splits them
+       evenly and keeps every label on one line. */
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--surface);
+      margin-bottom: 1.25rem;
+    }
+    .metric-item {
+      padding: 0.85rem 1.1rem;
+      border-right: 1px solid var(--border);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      min-width: 0;
+    }
+    .metric-item:nth-child(4n) { border-right: none; }
+    .metric-item:nth-child(-n+4) { border-top: none; }
+    .metric-label {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .metric-value {
+      font-size: 1.2rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      line-height: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .metric-sub { font-size: 0.6rem; color: var(--muted); }
+    /* Shared by the metric strip, the status column and the Projected Cost
+       cell, so one place decides what "over budget" looks like — and so the
+       print rules can swap the whole palette for ink without fighting inline
+       styles. The shades match tracker.html's statusTextColor(). */
+    .tone-blue    { color: var(--blue); }
+    .tone-green   { color: var(--green); }
+    .tone-teal    { color: #34d399; }
+    .tone-amber   { color: var(--amber); }
+    .tone-red     { color: var(--red); }
+    .tone-awarded { color: #86efac; }
+    .tone-mute    { color: var(--muted); }
+    .tone-plain   { color: var(--text); }
+
+    /* ── Division portfolio: section head ── */
+    .div-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 0.5rem;
+      vertical-align: middle;
+      background: var(--accent, var(--border));
+    }
+    .section-title .div-status {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.5rem;
+      border-radius: 3px;
+      margin-left: 0.6rem;
+      vertical-align: middle;
+    }
+    .ptable-more {
+      text-align: center;
+      margin-top: 0.85rem;
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+    .ptable-more a { color: var(--green); text-decoration: none; }
+    .ptable-more a:hover { text-decoration: underline; }
+    .section-empty {
+      padding: 2rem 1rem;
+      text-align: center;
+      font-size: 0.78rem;
+      color: var(--muted);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .inv-head {
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
     /* ── Rubber inventory strip (on Projects page + PDF) ── */
     .inv-strip {
       display: flex;
@@ -390,69 +508,6 @@
       margin-top: 0.18rem;
     }
 
-    /* ── Division summary strip (Quarry + Dust on the Projects PDF) ── */
-    /* Inherits inv-card spacing so the row sits flush above the projects
-       table in both screen view and the Projects-only print scope. */
-    .divsum-strip {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.6rem;
-      margin-bottom: 1rem;
-    }
-    .divsum-card {
-      flex: 1 1 320px;
-      min-width: 280px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.7rem 0.85rem;
-    }
-    .divsum-head {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      margin-bottom: 0.55rem;
-    }
-    .divsum-name {
-      font-size: 0.78rem;
-      font-weight: 700;
-      letter-spacing: 0.02em;
-    }
-    .divsum-status {
-      font-size: 0.55rem;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      padding: 0.18rem 0.42rem;
-      border-radius: 999px;
-    }
-    .divsum-status.green { background: rgba(34,197,94,0.12);   color: var(--green); }
-    .divsum-status.amber { background: rgba(245,158,11,0.12);  color: var(--amber); }
-    .divsum-status.red   { background: rgba(239,68,68,0.12);   color: var(--red);   }
-    .divsum-status.mute  { background: rgba(148,163,184,0.12); color: var(--muted); }
-    .divsum-kpis {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 0.45rem 0.85rem;
-    }
-    .divsum-kpi-label {
-      font-size: 0.58rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-    .divsum-kpi-value {
-      font-size: 0.95rem;
-      font-weight: 700;
-      line-height: 1.1;
-    }
-    .divsum-kpi-sub {
-      font-size: 0.6rem;
-      color: var(--muted);
-      margin-top: 0.1rem;
-    }
-
     /* ── Projects financial table ── */
     .ptable-wrap {
       background: var(--surface);
@@ -465,11 +520,13 @@
       width: 100%;
       border-collapse: collapse;
       font-size: 0.78rem;
-      min-width: 1100px;
+      /* Eleven columns of money need the room; the wrap scrolls if the window
+         is narrower than this. */
+      min-width: 1180px;
     }
     .ptable th {
       text-align: left;
-      padding: 0.85rem 0.85rem 0.6rem;
+      padding: 0.85rem 0.6rem 0.6rem;
       font-size: 0.55rem;
       font-weight: 700;
       letter-spacing: 0.16em;
@@ -479,7 +536,7 @@
       white-space: nowrap;
     }
     .ptable td {
-      padding: 0.7rem 0.85rem;
+      padding: 0.7rem 0.6rem;
       border-bottom: 1px solid rgba(42,42,58,0.4);
       vertical-align: middle;
       white-space: nowrap;
@@ -491,16 +548,25 @@
       flex-direction: column;
       gap: 0.18rem;
     }
+    /* Names and their job-number / client / PM line are clipped rather than
+       allowed to widen the column — every cell in the table is nowrap, so one
+       long project name would otherwise push the money columns off the page. */
     .ptable .pname-main {
       font-weight: 700;
       color: #fff;
       letter-spacing: -0.01em;
       font-size: 0.85rem;
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .ptable .pname-sub {
       font-size: 0.65rem;
       color: var(--muted);
       letter-spacing: 0.02em;
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .ptable .pstatus {
       font-size: 0.65rem;
@@ -510,8 +576,8 @@
     .ptable .pprogress {
       display: flex;
       align-items: center;
-      gap: 0.6rem;
-      min-width: 140px;
+      gap: 0.5rem;
+      min-width: 118px;
     }
     .ptable .pprogress-track {
       flex: 1;
@@ -538,7 +604,6 @@
     .ptable .v-contract  { color: #60a5fa; }      /* blue */
     .ptable .v-bid       { color: #22c55e; }      /* green */
     .ptable .v-actual    { color: var(--text); }
-    .ptable .v-projected { color: #fbbf24; }      /* amber */
     .ptable .v-variance-under { color: #22c55e; }
     .ptable .v-variance-over  { color: #ef4444; }
     .ptable .v-profit-pos     { color: #22c55e; }
@@ -551,7 +616,7 @@
     .ptable .offbid-flag {
       display: block;
       margin-top: 0.15rem;
-      color: #fbbf24;
+      color: var(--amber);
       font-size: 0.62rem;
       font-weight: 600;
       white-space: nowrap;
@@ -562,7 +627,9 @@
       color: #22c55e;
       font-size: 0.95rem;
       text-align: center;
-      width: 24px;
+      width: 20px;
+      padding-left: 0.3rem;
+      padding-right: 0.3rem;
     }
     .ptable .pstar.off   { color: rgba(42,42,58,0.7); }
 
@@ -614,17 +681,6 @@
       gap: 0.6rem;
       align-items: center;
     }
-    .div-pill {
-      font-size: 0.5rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      padding: 0.12rem 0.45rem;
-      border-radius: 3px;
-    }
-    .div-pill.turf   { background: rgba(34,197,94,0.12); color: var(--green); }
-    .div-pill.paving { background: rgba(96,165,250,0.12); color: var(--blue); }
-
     .timeline-bar {
       position: relative;
       height: 28px;
@@ -719,101 +775,6 @@
     .timeline-mini-label { color: var(--muted); }
     .timeline-mini-val { color: var(--text); font-weight: 600; text-align: right; }
 
-    /* ── Per-project detail ── */
-    .project-detail {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.5rem;
-      margin-bottom: 1.5rem;
-    }
-    .pd-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      margin-bottom: 1.25rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    .pd-name {
-      font-size: 1.05rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.01em;
-      margin-bottom: 0.4rem;
-    }
-    .pd-meta {
-      font-size: 0.7rem;
-      color: var(--muted);
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    .pd-meta strong { color: var(--text); font-weight: 600; }
-    .pd-totals {
-      display: flex;
-      gap: 1.5rem;
-      flex-wrap: wrap;
-    }
-    .pd-total-label {
-      font-size: 0.55rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 0.2rem;
-    }
-    .pd-total-val {
-      font-size: 1rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.01em;
-    }
-
-    .pd-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1.5rem;
-    }
-    .pd-block-title {
-      font-size: 0.62rem;
-      font-weight: 700;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 0.7rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .pd-block-title .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-    }
-    .pd-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.72rem;
-    }
-    .pd-table th {
-      text-align: left;
-      padding: 0.4rem 0.5rem;
-      font-size: 0.55rem;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border);
-      font-weight: 700;
-    }
-    .pd-table td {
-      padding: 0.45rem 0.5rem;
-      border-bottom: 1px solid rgba(42,42,58,0.4);
-    }
-    .pd-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-
     /* ── Footer ── */
     footer {
       text-align: center;
@@ -830,37 +791,22 @@
       body { background: #fff; color: #000; }
       header, .action-bar, footer, .filters, .section-action-btn { display: none !important; }
       .report { max-width: none; margin: 0; padding: 0; }
-      .hero-kpi, .div-tile, .timeline-wrap, .project-detail {
+      .hero-kpi, .div-tile, .timeline-wrap {
         background: #fff;
         border: 1px solid #ccc;
         color: #000;
         box-shadow: none;
       }
-      .div-tile-name, .timeline-proj-name, .pd-name,
-      .hero-kpi-value, .div-kpi-value, .pd-total-val,
+      .div-tile-name, .timeline-proj-name,
+      .hero-kpi-value, .div-kpi-value,
       .section-title { color: #000; }
-      .hero-kpi-label, .div-kpi-label, .pd-total-label,
-      .section-sub, .timeline-proj-meta, .div-kpi-sub,
-      .pd-meta, .pd-block-title, .pd-table th { color: #555; }
+      .hero-kpi-label, .div-kpi-label,
+      .section-sub, .timeline-proj-meta, .div-kpi-sub { color: #555; }
       .div-kpi-sub { color: #777; }
       .section-head { border-color: #ccc; }
-      .pd-table th { border-color: #ccc; }
-      .pd-table td { border-color: #eee; color: #000; }
       .timeline-bar { background: #eee; }
       .timeline-grid { border-color: #eee; min-width: 0; }
       .timeline-grid.head { border-color: #ccc; }
-      /* Division summary cards inherit print colors so they match the rest
-         of the Projects PDF (black text on white background, light borders). */
-      .divsum-card    { background: #fff; border: 1px solid #ccc; color: #000; }
-      .divsum-name,
-      .divsum-kpi-value { color: #000; }
-      .divsum-kpi-label,
-      .divsum-kpi-sub   { color: #555; }
-      .divsum-status.green { background: #e8f7ec; color: #166534; }
-      .divsum-status.amber { background: #fdf3d6; color: #92400e; }
-      .divsum-status.red   { background: #fce8e8; color: #991b1b; }
-      .divsum-status.mute  { background: #eee;    color: #555;    }
-
       .ptable-wrap { background: #fff; border: 1px solid #ccc; overflow: visible; }
       .ptable      { min-width: 0; font-size: 0.55rem; table-layout: auto; }
       .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.3rem; font-size: 0.5rem; }
@@ -870,33 +816,93 @@
       .ptable .pname-sub, .ptable .pstatus,
       .ptable .pprogress-pct, .ptable .v-mute,
       .ptable .v-profit-pct { color: #555; font-size: 0.5rem; }
-      .ptable .offbid-flag { color: #b45309; font-size: 0.5rem; }
+      .ptable .offbid-flag { color: #92400e; font-size: 0.5rem; }
       .ptable .pstar.off { color: #ddd; }
       .ptable .pprogress { min-width: 70px; gap: 0.3rem; }
       .ptable .pprogress-track { background: #eee; min-width: 40px; }
-      .pd-head { border-color: #ccc; }
       .timeline-today { background: #000; box-shadow: none; }
       .timeline-today::after { color: #000; }
       .page-break { break-before: page; page-break-before: always; }
-      .project-detail { break-inside: avoid; page-break-inside: avoid; }
 
-      /* Projects-only print scope: when the Projects "Download PDF" button
-         is clicked, body.printing-projects-only is added and everything
-         outside #projectsSection is hidden so the browser's native
-         print-to-PDF renders just that section. */
-      body.printing-projects-only #reportBody > .section:not(#projectsSection):not(#payrollSection) {
+      /* Single-section print scope: a division's "PDF" button marks that
+         section .print-scope and puts body in printing-scoped, which hides
+         every other section so the browser's native print-to-PDF renders
+         just that one. The first printed section must not force a page
+         break, or the PDF opens on a blank sheet. */
+      body.printing-scoped #reportBody > .section:not(.print-scope),
+      body.printing-scoped #portfolioSections > .section:not(.print-scope) {
         display: none !important;
       }
-      body.printing-projects-only #projectsSection {
+      body.printing-scoped .print-scope {
         break-before: auto !important;
         page-break-before: auto !important;
       }
+
+      /* Division sections in print: the metric strip is the whole point of
+         the layout, so it keeps its borders and drops to ink-on-paper. */
+      .metric-strip { background: #fff; border-color: #ccc; grid-template-columns: repeat(4, 1fr); }
+      .metric-item  { border-right-color: #ccc; border-top-color: #ccc; padding: 0.4rem 0.5rem; }
+      .metric-item:nth-child(4n)   { border-right: none; }
+      .metric-item:nth-child(-n+4) { border-top: none; }
+      .metric-value { font-size: 0.8rem; }
+      .metric-label { font-size: 0.45rem; }
+      .metric-sub   { font-size: 0.45rem; }
+
+      /* Ink versions of the tone palette. The screen shades are tuned for a
+         near-black background and several of them (amber especially) are
+         unreadable on paper. */
+      .tone-plain, .tone-mute    { color: #000; }
+      .tone-blue                 { color: #1d4ed8; }
+      .tone-green, .tone-awarded,
+      .tone-teal                 { color: #166534; }
+      .tone-amber                { color: #92400e; }
+      .tone-red                  { color: #991b1b; }
+      .ptable .pstatus.tone-mute { color: #555; }
+      .metric-label, .metric-sub { color: #555; }
+      .metric-value { color: #000; }
+      /* Rubber inventory cards were never given print colours — they printed
+         as a black block in the middle of an otherwise white page. */
+      /* Status pills: the screen versions are a translucent tint plus bright
+         text, which on paper leaves light-on-light. Give them solid ink. */
+      .status-green { background: #e8f7ec; color: #166534; border-color: #bbe5c6; }
+      .status-amber { background: #fdf3d6; color: #92400e; border-color: #eedca6; }
+      .status-red   { background: #fce8e8; color: #991b1b; border-color: #f2c4c4; }
+      .status-mute  { background: #f1f1f4; color: #555;    border-color: #ddd;    }
+
+      .inv-head { color: #555; }
+      .inv-card { background: #fff; border: 1px solid #ccc; }
+      .inv-type, .inv-stock-lbl, .inv-meta, .inv-lbs { color: #555; }
+      .inv-stock.lo  { color: #991b1b; }
+      .inv-stock.mid { color: #92400e; }
+      .inv-stock.ok  { color: #166534; }
+      .ptable-more { color: #555; }
+      .ptable-more a { color: #166534; }
+      .section-empty { background: #fff; border-color: #ccc; color: #555; }
+      .division-section .section-title { color: #000; }
+      /* The money columns keep their meaning on paper: contract in blue,
+         budget and under-budget in green, over-budget and losses in red —
+         all at ink-weight rather than the screen's brighter shades. */
+      .ptable .v-contract        { color: #1d4ed8; }
+      .ptable .v-bid             { color: #166534; }
+      .ptable .v-variance-under  { color: #166534; }
+      .ptable .v-variance-over   { color: #991b1b; }
+      .ptable .v-profit-pos      { color: #166534; }
+      .ptable .v-profit-neg      { color: #991b1b; }
+      .ptable .pstar             { color: #166534; }
+      .division-section { break-inside: auto; }
+    }
+
+    @media (max-width: 1200px) {
+      .metric-strip { grid-template-columns: repeat(2, 1fr); }
+      .metric-item:nth-child(4n)   { border-right: 1px solid var(--border); }
+      .metric-item:nth-child(2n)   { border-right: none; }
+      .metric-item:nth-child(-n+4) { border-top: 1px solid var(--border); }
+      .metric-item:nth-child(-n+2) { border-top: none; }
     }
 
     @media (max-width: 900px) {
       .hero-kpis { grid-template-columns: repeat(2, 1fr); }
       .div-grid { grid-template-columns: 1fr; }
-      .pd-grid { grid-template-columns: 1fr; }
       .action-bar { padding: 1rem; }
       .report { padding: 0 1rem; }
     }
@@ -963,62 +969,17 @@
       <div class="section">
         <div class="section-head">
           <div class="section-title">Company Snapshot</div>
-          <div class="section-sub">All divisions · This week</div>
+          <div class="section-sub">Company-wide · This week</div>
         </div>
         <div class="hero-kpis" id="heroKpis"></div>
         <div class="div-grid" id="divGrid"></div>
       </div>
 
-      <!-- ─────────── PAGE 2: PROJECTS (FINANCIAL OVERVIEW) ─────────── -->
-      <div class="section page-break" id="projectsSection">
-        <div class="section-head section-head-projects">
-          <div class="section-head-text">
-            <div class="section-title">Projects</div>
-            <div class="section-sub" id="projectsSub">—</div>
-          </div>
-          <button class="btn section-action-btn" id="downloadProjectsBtn" onclick="downloadProjectsPdf()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Download PDF
-          </button>
-        </div>
-
-        <div id="rubberInventoryWrap" style="display:none;">
-          <div class="div-kpi-label" style="margin:0 0 0.5rem;">Rubber Inventory</div>
-          <div class="inv-strip" id="rubberInventoryStrip"></div>
-        </div>
-
-        <!-- Quarry + Dust summary cards. Populated by renderDivSummaries from
-             the same /api/executive/report payload used by the Company
-             Snapshot, so the Projects-only PDF still carries those numbers. -->
-        <div id="divSummariesWrap" style="display:none;">
-          <div class="div-kpi-label" style="margin:0 0 0.5rem;">Quarry &amp; Dust Control</div>
-          <div class="divsum-strip" id="divSummariesStrip"></div>
-        </div>
-
-        <div class="ptable-wrap">
-          <table class="ptable" id="projectsTable">
-            <thead>
-              <tr>
-                <th>Project</th>
-                <th>Status</th>
-                <th>Progress</th>
-                <th class="col-num">Contract Value</th>
-                <th class="col-num">Bid Budget</th>
-                <th class="col-num">Actual</th>
-                <th class="col-num">Variance</th>
-                <th class="col-num">Projected Cost</th>
-                <th class="col-num">Projected Profit</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="projectsBody"></tbody>
-          </table>
-        </div>
-      </div>
+      <!-- ─────────── PAGE 2+: ONE SECTION PER JOB-RUNNING DIVISION ───────────
+           Turf, Paving and Kiewit each get the layout of their own home page:
+           the metric strip, then the project table. renderPortfolios() builds
+           them from /api/executive/report's `portfolios`. -->
+      <div id="portfolioSections"></div>
 
       <!-- ─────────── PAGE 3: PAYROLL PAY PERIOD SUMMARY ─────────── -->
       <div class="section page-break" id="payrollSection">
@@ -1043,15 +1004,6 @@
             <tfoot id="payrollFoot"></tfoot>
           </table>
         </div>
-      </div>
-
-      <!-- ─────────── PAGE 4+: PER-PROJECT DETAIL ─────────── -->
-      <div class="section page-break">
-        <div class="section-head">
-          <div class="section-title">Project Detail</div>
-          <div class="section-sub">One page per active project</div>
-        </div>
-        <div id="projectDetails"></div>
       </div>
 
     </div>
@@ -1131,12 +1083,49 @@
       });
     }
 
+    // Tone → colour, shared by the metric strip, the progress bar and the
+    // Projected Cost column. Same three bands the division pages use.
+    const TONE_COLORS = {
+      blue:    '#60a5fa',
+      green:   '#22c55e',
+      amber:   '#fbbf24',
+      red:     '#ef4444',
+      awarded: '#86efac',
+      mute:    '#666',
+      plain:   '#e0e0e0',
+    };
+    const toneColor = t => TONE_COLORS[t] || TONE_COLORS.plain;
+
+    // Project status → tone, mirroring tracker.html's statusTextColor so a
+    // status reads the same colour here as it does on the division page.
+    const STATUS_TONES = {
+      'Bidding':                'blue',
+      'Awarded':                'awarded',
+      'In Progress':            'green',
+      'Substantially Complete': 'teal',
+      'Complete':               'blue',
+      'On Hold':                'amber',
+    };
+
+    // A signed percentage in parentheses — "(20.0%)" / "(−4.2%)" — matching the
+    // division tables, which show the sign only when the figure is negative.
+    function pctNote(pct) {
+      if (pct == null || !isFinite(pct)) return '';
+      const sign = pct < 0 ? '−' : '';
+      return ` <span class="v-profit-pct">(${sign}${Math.abs(pct).toFixed(1)}%)</span>`;
+    }
+
+    // A profit cell: the money, its sign colour, and the margin percentage.
+    // null means "unknowable" (no contract value, or no spend yet for Actual
+    // Profit) and shows as a dash rather than a misleading zero.
+    function profitCell(value, pct) {
+      if (value == null) return '<td class="col-num v-mute">—</td>';
+      const cls = value >= 0 ? 'v-profit-pos' : 'v-profit-neg';
+      return `<td class="col-num ${cls}">${esc(fmtMoney(value))}${pctNote(pct)}</td>`;
+    }
+
     function renderProjectRow(p) {
       const progressPct = Math.max(0, Math.min(100, Number(p.progressPct) || 0));
-      const progressColor =
-        progressPct >= 100 ? '#60a5fa' :
-        progressPct >=  85 ? '#fbbf24' :
-        '#22c55e';
 
       // Variance: + = under bid (green), − = over bid (red)
       let varCell;
@@ -1146,18 +1135,6 @@
         varCell = `<td class="col-num v-variance-under">${esc(fmtMoney(p.variance))} <span class="v-profit-pct">under</span></td>`;
       } else {
         varCell = `<td class="col-num v-variance-over">${esc(fmtMoney(Math.abs(p.variance)))} <span class="v-profit-pct">over</span></td>`;
-      }
-
-      // Profit: contract − projected
-      let profitCell;
-      if (p.profit == null) {
-        profitCell = `<td class="col-num v-mute">—</td>`;
-      } else {
-        const cls = p.profit >= 0 ? 'v-profit-pos' : 'v-profit-neg';
-        const pct = p.profitPct != null
-          ? ` <span class="v-profit-pct">(${(p.profitPct >= 0 ? '+' : '−')}${Math.abs(p.profitPct).toFixed(1)}%)</span>`
-          : '';
-        profitCell = `<td class="col-num ${cls}">${esc(fmtMoney(p.profit))}${pct}</td>`;
       }
 
       // Off-bid flag: part of Actual is booked under codes that aren't on the
@@ -1176,22 +1153,48 @@
         offBidFlag  = `<div class="offbid-flag" title="${esc(title)}">⚠ ${esc(fmtMoney(offBid))} off-bid</div>`;
       }
 
-      const star = p.pinned ? '★' : '☆';
-      const starCls = p.pinned ? 'pstar' : 'pstar off';
+      // Sub-line under the project name: job number, client, project manager —
+      // the same line the division tables carry.
+      const metaBits = [p.jobNumber, p.client].filter(Boolean).map(esc);
+      if (p.pm) metaBits.push('PM: ' + esc(p.pm));
+      const meta = metaBits.join(' · ');
+
+      // A bid line flagged At Risk or On Hold outranks the project's own status:
+      // it is the thing that needs someone to look at it.
+      let statusCell;
+      if (p.atRisk > 0) {
+        statusCell = `<span class="pstatus tone-red" style="font-weight: 600;">⚠ ${p.atRisk} At Risk</span>`;
+      } else if (p.onHold > 0) {
+        statusCell = `<span class="pstatus tone-amber" style="font-weight: 600;">◼ ${p.onHold} On Hold</span>`;
+      } else if (p.status) {
+        statusCell = `<span class="pstatus tone-${STATUS_TONES[p.status] || 'mute'}">${esc(p.status)}</span>`;
+      } else {
+        statusCell = '<span class="pstatus tone-mute">—</span>';
+      }
+
+      // Deadline note, shown only when it is close enough to matter.
+      let deadline = '';
+      if (p.daysLeft != null) {
+        if (p.daysLeft < 0) {
+          deadline = `<div class="offbid-flag tone-red">${Math.abs(p.daysLeft)}d overdue</div>`;
+        } else if (p.daysLeft <= 14) {
+          deadline = `<div class="offbid-flag tone-amber">${p.daysLeft}d left</div>`;
+        }
+      }
 
       return `
         <tr>
           <td>
             <div class="pname">
               <span class="pname-main">${esc(p.name)}</span>
-              <span class="pname-sub">${esc(p.jobNumber)}</span>
+              ${meta ? `<span class="pname-sub">${meta}</span>` : ''}
             </div>
           </td>
-          <td><span class="pstatus">${esc(p.status)}</span></td>
+          <td>${statusCell}${deadline}</td>
           <td>
             <div class="pprogress">
               <div class="pprogress-track">
-                <div class="pprogress-fill" style="width: ${progressPct}%; background: ${progressColor};"></div>
+                <div class="pprogress-fill" style="width: ${progressPct}%; background: ${toneColor(p.progressTone)};"></div>
               </div>
               <span class="pprogress-pct">${progressPct}%</span>
             </div>
@@ -1200,99 +1203,125 @@
           <td class="col-num v-bid">${esc(fmtMoney(p.bid,      { zeroDash: true }))}</td>
           <td class="col-num v-actual">${esc(fmtMoney(p.actual, { zeroDash: true }))}${offBidFlag}</td>
           ${varCell}
-          <td class="col-num v-projected">${esc(fmtMoney(p.projected, { zeroDash: true }))}</td>
-          ${profitCell}
-          <td class="${starCls}">${star}</td>
+          <td class="col-num tone-${esc(p.projectedTone || 'plain')}">${esc(fmtMoney(p.projected, { zeroDash: true }))}</td>
+          ${profitCell(p.profit, p.profitPct)}
+          ${profitCell(p.actProfit, p.actProfitPct)}
+          <td class="${p.pinned ? 'pstar' : 'pstar off'}">${p.pinned ? '★' : '☆'}</td>
         </tr>
       `;
     }
 
-    function renderDetailSection(title, dot, block) {
-      if (!block) return '';
-      const head = (block.cols || []).map(c => `<th${/^\d|\$|%|tons|hours|loads|qty|gallons/i.test(c) ? ' class="num"' : ''}>${esc(c)}</th>`).join('');
-      const rows = (block.rows || []).map(r => {
-        const tds = r.map((cell, i) => {
-          const isNum = /^\d|\$|%|^—$/.test(String(cell));
-          return `<td${isNum ? ' class="num"' : ''}>${esc(cell)}</td>`;
-        }).join('');
-        return `<tr>${tds}</tr>`;
-      }).join('');
-      return `
-        <div>
-          <div class="pd-block-title"><span class="dot" style="background: ${esc(dot)};"></span>${esc(title)}</div>
-          <table class="pd-table">
-            <thead><tr>${head}</tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-      `;
+    // ── Division portfolio sections ──
+    // One per job-running division, laid out like that division's home page:
+    // the metric strip, then the project table. The executive report and the
+    // division page are the same view of the same numbers, which is what makes
+    // a figure here traceable without translation.
+    const DIVISION_PAGES = {
+      turf:   { href: 'tracker.html',          label: 'Turf'   },
+      paving: { href: 'paving.html',           label: 'Paving' },
+      kiewit: { href: 'kiewit-pinetree.html',  label: 'Kiewit' },
+    };
+
+    function renderMetricStrip(metrics) {
+      if (!metrics.length) return '';
+      return `<div class="metric-strip">${metrics.map(m => `
+        <div class="metric-item">
+          <span class="metric-label">${esc(m.label)}</span>
+          <span class="metric-value tone-${esc(m.tone || 'plain')}">${esc(m.value)}</span>
+          <span class="metric-sub">${esc(m.sub || '')}</span>
+        </div>`).join('')}</div>`;
     }
 
-    function renderDetail(p) {
-      const s = p.sections || {};
-      const blocks = [
-        renderDetailSection('Bid Items',                  s.bidItems?.color || '#60a5fa', s.bidItems),
-        renderDetailSection('Trucking Activity',          s.trucking?.color || '#ef4444', s.trucking),
-        renderDetailSection('Quarry Materials Drawn',     s.quarry?.color   || '#f97316', s.quarry),
-        renderDetailSection('Dust Control Applications',  s.dust?.color     || '#fbbf24', s.dust),
-      ].join('');
-      const divPill = p.division
-        ? `<span class="div-pill ${esc(p.division)}" style="vertical-align: middle; margin-left: 0.4rem;">${esc(p.division)}</span>`
-        : '';
+    function renderPortfolioSection(d, extraHTML) {
+      const page  = DIVISION_PAGES[d.key] || null;
+      const rows  = Array.isArray(d.rows) ? d.rows : [];
+      const parts = [];
+      if (d.pinned) parts.push(`${d.pinned} pinned`);
+      if (d.recent) parts.push(`${d.recent} most recent`);
+      const sub = d.error
+        ? 'Could not load this division'
+        : (d.total
+            ? `${parts.join(' · ') || `${rows.length} shown`} of ${d.total} project${d.total === 1 ? '' : 's'}`
+            : 'No projects');
+
+      const table = rows.length ? `
+        <div class="ptable-wrap">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th class="col-num">Contract Value</th>
+                <th class="col-num">Bid Budget</th>
+                <th class="col-num">Actual</th>
+                <th class="col-num">Variance</th>
+                <th class="col-num">Projected Cost</th>
+                <th class="col-num">Projected Profit</th>
+                <th class="col-num" title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${rows.map(renderProjectRow).join('')}</tbody>
+          </table>
+        </div>
+        ${d.hidden > 0 && page
+          ? `<p class="ptable-more">${d.hidden} more — <a href="${page.href}">View all in ${esc(page.label)}</a></p>`
+          : ''}`
+        : `<div class="section-empty">${d.error
+              ? 'This division\'s projects could not be loaded.'
+              : 'No projects in this division yet.'}</div>`;
+
+      const id = 'portfolio-' + d.key;
       return `
-        <div class="project-detail">
-          <div class="pd-head">
-            <div>
-              <div class="pd-name">${esc(p.name)} ${divPill}</div>
-              <div class="pd-meta">
-                <span><strong>Job #</strong> ${esc(p.jobNumber)}</span>
-                <span><strong>Start</strong> ${esc(p.start)}</span>
-                <span><strong>Target</strong> ${esc(p.target)}</span>
-                <span><strong>Status</strong> <span style="color: var(--${esc(p.statusColor || 'green')});">${esc(p.status)}</span></span>
+        <div class="section division-section page-break" id="${id}" style="--accent: ${esc(d.accent || '#666')};">
+          <div class="section-head section-head-projects">
+            <div class="section-head-text">
+              <div class="section-title">
+                <span class="div-dot"></span>${esc(d.name)}
+                <span class="div-status status-${esc(d.statusKind || 'mute')}">${esc(d.status || '—')}</span>
               </div>
+              <div class="section-sub">${esc(sub)}</div>
             </div>
-            <div class="pd-totals">
-              <div><div class="pd-total-label">Contract Value</div>    <div class="pd-total-val">${esc(p.contract)}</div></div>
-              <div><div class="pd-total-label">Booked Cost</div> <div class="pd-total-val">${esc(p.bookedCost)}</div></div>
-              <div><div class="pd-total-label">% Complete</div>  <div class="pd-total-val">${esc(p.pctComplete)}</div></div>
-            </div>
+            <button class="btn section-action-btn" onclick="printSection('${id}')" title="Print just this division">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              PDF
+            </button>
           </div>
-          <div class="pd-grid">${blocks}</div>
+          ${renderMetricStrip(Array.isArray(d.metrics) ? d.metrics : [])}
+          ${extraHTML || ''}
+          ${table}
         </div>
       `;
     }
 
     function renderReport(data) {
-      document.getElementById('heroKpis').innerHTML       = renderHero(data.snapshot?.hero || []);
-      document.getElementById('divGrid').innerHTML        = (data.snapshot?.divisions || []).map(renderDivisionTile).join('');
+      document.getElementById('heroKpis').innerHTML = renderHero(data.snapshot?.hero || []);
+      document.getElementById('divGrid').innerHTML  = (data.snapshot?.divisions || []).map(renderDivisionTile).join('');
 
-      // Projects financial table — accepts either { summary, rows } or
-      // a flat array (legacy mock).
-      const projData    = data.projects;
-      const projRows    = Array.isArray(projData) ? projData : (projData?.rows || []);
-      const projSummary = (!Array.isArray(projData) && projData?.summary) || null;
-      document.getElementById('projectsBody').innerHTML = projRows.map(renderProjectRow).join('') ||
-        '<tr><td colspan="10" style="padding:1.5rem;text-align:center;color:var(--muted)">No active projects.</td></tr>';
+      renderPortfolios(
+        Array.isArray(data.portfolios) ? data.portfolios : [],
+        Array.isArray(data.inventory)  ? data.inventory  : [],
+      );
 
-      const subEl = document.getElementById('projectsSub');
-      if (subEl) {
-        if (projSummary && projSummary.total > 0) {
-          const parts = [];
-          if (projSummary.pinned) parts.push(`${projSummary.pinned} pinned`);
-          if (projSummary.recent) parts.push(`${projSummary.recent} most recent`);
-          subEl.textContent = parts.length ? `(${parts.join(' · ')})` : `${projSummary.total} active`;
-        } else if (projRows.length) {
-          subEl.textContent = `${projRows.length} active`;
-        } else {
-          subEl.textContent = 'No active projects';
-        }
-      }
-
-      document.getElementById('projectDetails').innerHTML = (data.details || []).map(renderDetail).join('');
-
-      renderRubberInventory(Array.isArray(data.inventory) ? data.inventory : []);
-      renderDivSummaries(data.snapshot?.divisions || []);
       renderPayrollSummary(data.payroll || null);
+    }
+
+    // One section per job-running division. Rubber inventory rides along inside
+    // the Turf section, which is where it lives on the division page too — and
+    // it means a Turf-only PDF still carries the stock counts.
+    function renderPortfolios(portfolios, inventory) {
+      const wrap = document.getElementById('portfolioSections');
+      if (!wrap) return;
+      if (!portfolios.length) { wrap.innerHTML = ''; return; }
+      wrap.innerHTML = portfolios.map(d => renderPortfolioSection(
+        d,
+        d.key === 'turf' ? renderRubberInventory(inventory) : '',
+      )).join('');
     }
 
     // Render the payroll pay-period summary table. Aggregates submitted +
@@ -1372,52 +1401,15 @@
       `;
     }
 
-    // Render compact Quarry + Dust Control cards inside the Projects section
-    // so the Projects-only PDF (and the screen view) carry their KPIs.
-    // Reuses the per-tile KPI list the API already builds for the Company
-    // Snapshot — no extra fetches, no duplicated math.
-    function renderDivSummaries(divisions) {
-      const wrap  = document.getElementById('divSummariesWrap');
-      const strip = document.getElementById('divSummariesStrip');
-      if (!wrap || !strip) return;
-      const wanted = ['quarry', 'dust'];
-      const byKey  = new Map((divisions || []).map(d => [d.key, d]));
-      const tiles  = wanted.map(k => byKey.get(k)).filter(Boolean);
-      if (!tiles.length) { wrap.style.display = 'none'; strip.innerHTML = ''; return; }
-
-      strip.innerHTML = tiles.map(t => {
-        const kpis = Array.isArray(t.kpis) ? t.kpis : [];
-        const kpiCells = kpis.map(k => `
-          <div>
-            <div class="divsum-kpi-label">${esc(k.label)}</div>
-            <div class="divsum-kpi-value">${esc(k.value)}</div>
-            ${k.sub ? `<div class="divsum-kpi-sub">${esc(k.sub)}</div>` : ''}
-          </div>`).join('');
-        const statusKind = t.statusKind || 'mute';
-        const status     = t.status     || '—';
-        return `
-          <div class="divsum-card">
-            <div class="divsum-head">
-              <div class="divsum-name">${esc(t.name || t.key)}</div>
-              <div class="divsum-status ${esc(statusKind)}">${esc(status)}</div>
-            </div>
-            <div class="divsum-kpis">${kpiCells}</div>
-          </div>`;
-      }).join('');
-      wrap.style.display = '';
-    }
-
     // Mirrors the home page's per-rubber-type stock cards so the executive
-    // PDF (which clones #projectsSection) carries the same inventory snapshot.
+    // report (and a Turf-only PDF) carries the same inventory snapshot.
+    // Returns HTML — the caller decides where it lands.
     function renderRubberInventory(rows) {
-      const wrap  = document.getElementById('rubberInventoryWrap');
-      const strip = document.getElementById('rubberInventoryStrip');
-      if (!wrap || !strip) return;
-      if (!rows.length) { wrap.style.display = 'none'; strip.innerHTML = ''; return; }
+      if (!Array.isArray(rows) || !rows.length) return '';
       const fmt = n => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
-      strip.innerHTML = rows.map(r => {
-        const stock     = Number(r.in_stock) || 0;
-        const stockCls  = stock <= 0 ? 'lo' : stock < 50 ? 'mid' : 'ok';
+      const cards = rows.map(r => {
+        const stock    = Number(r.in_stock) || 0;
+        const stockCls = stock <= 0 ? 'lo' : stock < 50 ? 'mid' : 'ok';
         return `
           <div class="inv-card">
             <div class="inv-type">${esc(r.rubber_type)}</div>
@@ -1431,7 +1423,10 @@
           </div>
         `;
       }).join('');
-      wrap.style.display = '';
+      return `
+        <div class="inv-head">Rubber Inventory</div>
+        <div class="inv-strip">${cards}</div>
+      `;
     }
 
     // ── Fetch ──
@@ -1472,11 +1467,10 @@
     loadReport();
 
     // ── Email Report ──
-    // Captures the Projects + Payroll sections (same scope the "Download
-    // PDF" button on the Projects card uses) + the page's <style> blocks
-    // (CSS variables resolved to literal hex values so email clients
-    // render colors even when they strip <style>) and opens the shared
-    // recipient-picker modal from report-email.js.
+    // Captures every section of the report as read on screen. The page's
+    // <style> blocks ride along with the CSS variables resolved to literal hex
+    // values, so email clients render the colours even when they strip
+    // <style>.
     function emailExecutiveReport() {
       if (typeof window.openReportEmailModal !== 'function') {
         alert('Email module is still loading — please try again in a moment.');
@@ -1487,10 +1481,11 @@
         alert('The report is still loading.');
         return;
       }
-      const projectsEl = document.getElementById('projectsSection');
-      const payrollEl  = document.getElementById('payrollSection');
-      if (!projectsEl) {
-        alert('Projects section not found on this report.');
+      // Descendant selector, so the division sections nested under
+      // #portfolioSections come back in the order they're read on screen.
+      const sections = document.querySelectorAll('#reportBody .section');
+      if (!sections.length) {
+        alert('There is nothing to email yet — the report has no sections.');
         return;
       }
       // Resolve CSS variables to literal values so the email keeps colors
@@ -1511,23 +1506,23 @@
       // specificity beats the wrapper's inline color. Forcing color via
       // inline style on the clones guarantees the text shows up even
       // when the email client strips <style> blocks.
-      const projectsClone = projectsEl.cloneNode(true);
-      const payrollClone  = payrollEl ? payrollEl.cloneNode(true) : null;
-      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .hero-kpi-value, .div-tile-name, .div-kpi-value, .timeline-proj-name, .timeline-label, .pd-name, .pd-total-val';
-      [projectsClone, payrollClone].forEach(root => {
-        if (!root) return;
-        root.querySelectorAll(darkTextSel).forEach(el => {
-          const isMuted = el.classList.contains('pname-sub') || el.classList.contains('timeline-label');
-          el.style.color = isMuted ? '#555' : '#111';
+      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .hero-kpi-value, .div-tile-name, .div-kpi-value, .metric-value';
+      const clones = Array.from(sections).map(el => {
+        const clone = el.cloneNode(true);
+        // The per-division PDF buttons are page controls, not report content.
+        clone.querySelectorAll('.section-action-btn').forEach(btn => btn.remove());
+        clone.querySelectorAll(darkTextSel).forEach(node => {
+          const isMuted = node.classList.contains('pname-sub');
+          // A tone class already carries its own colour; overriding it would
+          // flatten every metric to plain black.
+          if (node.className && /\btone-/.test(node.className)) return;
+          node.style.color = isMuted ? '#555' : '#111';
         });
         // Stack name + job-number vertically even when <style> is stripped
         // (the on-page layout relies on flex column on .pname).
-        root.querySelectorAll('.pname').forEach(el => {
-          el.style.display = 'block';
-        });
-        root.querySelectorAll('.pname-main, .pname-sub').forEach(el => {
-          el.style.display = 'block';
-        });
+        clone.querySelectorAll('.pname').forEach(node => { node.style.display = 'block'; });
+        clone.querySelectorAll('.pname-main, .pname-sub').forEach(node => { node.style.display = 'block'; });
+        return clone.outerHTML;
       });
       // Order matters: include the page's original <style> blocks first, then
       // an override block that resolves :root CSS variables to literal hex
@@ -1539,14 +1534,13 @@
       const wrapped = `
 <div style="background:#fff;color:#111;padding:1.5rem;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;">
   <style>${styles}\n:root { ${resolved} }</style>
-  <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report — Projects</div>
+  <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report</div>
   <div style="font-size:0.78rem;color:#555;margin-bottom:1rem;">${reportDate}</div>
-  ${projectsClone.outerHTML}
-  ${payrollClone ? payrollClone.outerHTML : ''}
+  ${clones.join('\n')}
 </div>`;
       window.openReportEmailModal({
         reportType: 'executive',
-        defaultSubject: `Executive Projects Report — ${new Date().toLocaleDateString()}`,
+        defaultSubject: `Executive Report — ${new Date().toLocaleDateString()}`,
         getHTML: () => wrapped,
       });
     }
@@ -1558,20 +1552,24 @@
       window.location.replace('index.html');
     }
 
-    // ── PDF: native browser print, scoped to #projectsSection ──
-    // Mirrors the top-of-page "Generate Report (PDF)" button (which
-    // calls window.print()) — adding body.printing-projects-only hides
-    // every other section via the @media print rules so the user gets
-    // a Projects-only PDF from their browser's Save as PDF flow.
-    function downloadProjectsPdf() {
-      document.body.classList.add('printing-projects-only');
-      // Two-path cleanup so the scope class can't linger and break the
+    // ── PDF: native browser print, scoped to one section ──
+    // Mirrors the top-of-page "Generate Report (PDF)" button (which calls
+    // window.print()) — marking one section as the print scope hides every
+    // other one via the @media print rules, so the user gets a single-division
+    // PDF out of their browser's Save as PDF flow.
+    function printSection(sectionId) {
+      const target = document.getElementById(sectionId);
+      if (!target) { window.print(); return; }
+      target.classList.add('print-scope');
+      document.body.classList.add('printing-scoped');
+      // Two-path cleanup so the scope classes can't linger and break the
       // top-of-page "Generate Report (PDF)" button: afterprint covers
       // Chrome/Firefox/Edge/Safari 14+, the matchMedia('print') change
       // event covers older Safari / iOS that don't fire afterprint.
       const mql = window.matchMedia('print');
       const cleanup = () => {
-        document.body.classList.remove('printing-projects-only');
+        document.body.classList.remove('printing-scoped');
+        target.classList.remove('print-scope');
         window.removeEventListener('afterprint', cleanup);
         mql.removeEventListener?.('change', onMqlChange);
       };
