@@ -99,11 +99,23 @@ assert('intercompany: no dust UB term still multiplies by the bare icUbRate',
 assert('intercompany: dust UB terms route through dustUbRateFor()',
   (icHtml.match(/\* dustUbRateFor\(/g) || []).length >= 6);
 
-// executive report — apply path
-assert('executive report: joins dust_companies for per-customer rate',
-  /LEFT JOIN dust_companies c\s*\n\s*ON c\.company_code = d\.company_code AND c\.name = d\.company/.test(reportJs));
-assert('executive report: COALESCEs co rate over settings rate (x2 queries)',
-  (reportJs.match(/COALESCE\(co_ub_rate, \(SELECT ub_rate::float FROM dust_settings WHERE company_code = \$\{companyCode\}\), 0\)/g) || []).length === 2);
+// executive report — apply path. The report no longer does this arithmetic in
+// SQL: it reads the rows, the customer list and the division default, then runs
+// dust.html's own formula over them in api/lib/dust-metrics. The requirement is
+// unchanged — a per-customer override must beat the global rate — so the checks
+// follow it to where it now lives.
+const dustMetricsJs = read('api/lib/dust-metrics.js');
+assert('executive report: reads dust_companies so per-customer rates are available',
+  /FROM dust_companies/.test(reportJs));
+assert('executive report: reads the division default from dust_settings',
+  /FROM dust_settings WHERE company_code =/.test(reportJs));
+assert('executive report: hands both to dustMetrics rather than computing in SQL',
+  /dustMetrics\(\{[\s\S]{0,200}companies:/.test(reportJs)
+  && /ubRate:/.test(reportJs));
+assert('executive report: the customer override wins over the default',
+  /const own = byName\.get\(String\(\(row && row\.company\) \|\| ''\)\);\s*\n\s*return own != null \? own : fallback;/.test(dustMetricsJs));
+assert('executive report: gallons are billed at that resolved rate',
+  /ubTotal\s*=\s*round2\(gallons \* ubRateFor\(row\)\)/.test(dustMetricsJs));
 assert('executive report: ensures ub_rate column before querying',
   /ALTER TABLE IF EXISTS dust_companies ADD COLUMN IF NOT EXISTS ub_rate/.test(reportJs));
 

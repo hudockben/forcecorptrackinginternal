@@ -21,6 +21,8 @@ const exec    = read('executive.html');
 const tracker = read('tracker.html');
 const paving  = read('paving.html');
 const kiewit  = read('kiewit-pinetree.html');
+const quarry  = read('quarry.html');
+const dust    = read('dust.html');
 
 let failed = 0;
 const assert = (msg, cond, detail) => {
@@ -123,6 +125,92 @@ assert('Actual Profit is rendered from its own field',
 assert('and the API only reports it where there is both a contract and spend',
   /actProfit = contract > 0 && actual\s+> 0 \? contract - actual\s+: null/.test(report));
 
+// ── Quarry mirrors the Quarry page ──
+console.log('\n[quarry mirrors the Quarry page]');
+
+// The eight Home KPIs, in the page's own words and the page's own order.
+const QUARRY_METRICS = [
+  'Tons On Hand', 'Days of Supply', 'Net Change', 'Needs Attention',
+  'Margin / Ton', 'Avg Price / Ton', 'Cost / Ton', 'Break-Even',
+];
+for (const label of QUARRY_METRICS) {
+  assert(`the API builds "${label}"`, report.includes(`label: '${label}'`));
+  assert(`  and quarry.html still shows it`, quarry.includes(`>${label}</div>`));
+}
+
+// The Analytics tab's Performance by Location table, column for column.
+const QUARRY_COLUMNS = [
+  'Location', 'Sales', 'Cost', 'Margin', 'Tons Sold', 'Cost / Ton Sold',
+  'Cost / Ton (Prod.)', 'Tons Crushed', 'Loss %', 'Final Screen Tons', 'Hours',
+];
+const execQuarryCols = headerLabels(exec, '<th>Location</th>');
+assert('the executive quarry table has the same eleven columns',
+  QUARRY_COLUMNS.every((c, i) => execQuarryCols[i] === c),
+  'got: ' + JSON.stringify(execQuarryCols));
+// Anchor on the table's own id — the Daily Tracking table also opens with a
+// Location column, and it comes first in the file.
+const pageQuarryCols = headerLabels(quarry, 'id="analyticsLocationTable"');
+assert('and quarry.html\'s Performance by Location table still has them',
+  QUARRY_COLUMNS.every((c, i) => pageQuarryCols[i] === c),
+  'got: ' + JSON.stringify(pageQuarryCols));
+
+assert('the quarry arithmetic is ported, not re-derived',
+  fs.existsSync(path.resolve(__dirname, '../api/lib/quarry-metrics.js'))
+  && report.includes("require('../lib/quarry-metrics')"));
+assert('the old approximate Quarry tile is gone',
+  !report.includes('buildQuarryTile') && report.includes('buildQuarryPortfolio'));
+const qm = read('api/lib/quarry-metrics.js');
+assert('cost per ton sold divides total cost by tons sold, and cost per ton divides crushing by tons crushed',
+  /avgCostPerTonSold\s*=\s*e\.tonsSold > 0 \? e\.totalCost \/ e\.tonsSold/.test(qm)
+  && /costPerTon\s*=\s*e\.tonsCrushed > 0 \? e\.crushCost \/ e\.tonsCrushed/.test(qm));
+assert('break-even takes royalty off the price before dividing fixed cost',
+  /avgPrice - royaltyPerTon - varCostPerTon/.test(qm));
+assert('and the division break-even sums the pits rather than blending them',
+  /breakEvenTons: T\.beTonsAny \? T\.beTons : null/.test(qm));
+assert('the stockpile balances opening + produced − sold + adjustments',
+  /onHand\s*=\s*e\.opening \+ e\.produced - e\.tonsSold \+ e\.adjustments/.test(qm));
+assert('a pit with no loss figure reports null rather than 0%',
+  /hasLoss\) \? e\.lossPct : null/.test(report));
+
+// ── Dust Control mirrors the Dust Control page ──
+console.log('\n[dust control mirrors the Dust Control page]');
+
+const DUST_METRICS = [
+  'YTD Revenue', 'Jobs This Month', 'Gallons YTD', 'Active Customers',
+  'Avg Rev / Job', 'Service Hours YTD',
+];
+for (const label of DUST_METRICS) {
+  assert(`the API builds "${label}"`, report.includes(`label: '${label}'`));
+  assert(`  and dust.html still shows it`, dust.includes(`kpiCard('${label}'`));
+}
+assert('plus the page\'s two invoice buckets',
+  report.includes("label: 'Overdue'") && report.includes("label: 'Unpaid / Pending'")
+  && dust.includes('>Overdue<') && dust.includes('>Unpaid / Pending<'));
+
+const DUST_COLUMNS = ['Customer', 'Visits', 'Gallons', 'Hours', 'Revenue',
+                      'Avg / Visit', 'Overdue', 'Unpaid', 'Paid'];
+const execDustCols = headerLabels(exec, '<th>Customer</th>');
+assert('the customer table carries visits, volume, revenue and the invoice state',
+  DUST_COLUMNS.every((c, i) => execDustCols[i] === c),
+  'got: ' + JSON.stringify(execDustCols));
+
+const dm = read('api/lib/dust-metrics.js');
+assert('the dust arithmetic is ported, not re-derived in SQL',
+  fs.existsSync(path.resolve(__dirname, '../api/lib/dust-metrics.js'))
+  && report.includes("require('../lib/dust-metrics')"));
+assert('the old approximate Dust tile is gone',
+  !report.includes('buildDustTile') && report.includes('buildDustPortfolio'));
+assert('a job invoices for vehicle hours plus gallons at the customer\'s UB rate',
+  /v1Total\s*=\s*round2\(num\(row && row\.v1_rate\) \* hours\)/.test(dm)
+  && /ubTotal\s*=\s*round2\(gallons \* ubRateFor\(row\)\)/.test(dm));
+assert('an overnight shift wraps instead of going negative',
+  /if \(mins < 0\) mins \+= 24 \* 60/.test(dm));
+assert('a per-customer UB rate override beats the division default',
+  /const own = byName\.get/.test(dm));
+assert('an unpaid invoice past 45 days reads overdue, and paid stays paid',
+  /OVERDUE_AFTER_DAYS = 45/.test(dm)
+  && /inv_status === 'paid' \|\| row\.inv_received/.test(dm));
+
 // ── Print + email scope ──
 console.log('\n[print and email scope]');
 assert('each division section prints on its own via printSection()',
@@ -145,9 +233,14 @@ assert('and strips the per-division PDF buttons out of the email',
 console.log('\n[the PDF is ink on paper]');
 const printBlock = exec.slice(exec.indexOf('@media print'), exec.indexOf('@media (max-width: 1200px)'));
 for (const sel of ['.metric-strip', '.inv-card', '.tone-amber', '.ptable .v-contract',
-                   '.ptable .v-variance-over', '.section-empty', '.ptable-more']) {
+                   '.ptable .v-variance-over', '.section-empty', '.ptable-more',
+                   '.status-red', '.ptable tfoot .ptable-total td']) {
   assert(`${sel} has print colours`, printBlock.includes(sel));
 }
+// A blanket .metric-value colour after the tone palette flattens every figure on
+// the strip to black on paper — margin, variance and overdue all reading alike.
+assert('no blanket .metric-value colour undoes the tone palette in print',
+  !/\.metric-value\s*\{[^}]*color:/.test(printBlock));
 assert('row colours come from tone classes, not inline styles that would beat the print rules',
   exec.includes('class="pstatus tone-') && !exec.includes('STATUS_COLORS'));
 

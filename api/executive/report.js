@@ -16,6 +16,17 @@
 const { neon }                          = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
 const { DUST_IC_SOURCES } = require('../lib/ic-sources');
+const {
+  quarryMetrics,
+  INV_RATE_WINDOW_DAYS: QUARRY_RATE_WINDOW_DAYS,
+} = require('../lib/quarry-metrics');
+const {
+  dustMetrics,
+  INVOICE_ERA_START_YEAR,
+  OVERDUE_AFTER_DAYS: DUST_OVERDUE_DAYS,
+} = require('../lib/dust-metrics');
+
+const DUST_INVOICE_ERA_START = `${INVOICE_ERA_START_YEAR}-01-01`;
 
 // "Active" mirrors tracker.html's isDone() inverse: anything whose
 // status is NOT 'complete' or 'closed' (case-insensitive) counts as
@@ -38,12 +49,49 @@ function addDaysISO(iso, n) {
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
+// Local calendar date, not UTC: the quarry stockpile balances "through today"
+// and toISOString() would roll that to tomorrow for anyone west of UTC in the
+// evening, quietly pulling a day of crushing into the pile.
+function localDateIso(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+                     'July', 'August', 'September', 'October', 'November', 'December'];
+// 'YYYY-MM' → 'August 2026'
+function monthName(monthKey) {
+  const m = String(monthKey || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return String(monthKey || '');
+  const idx = Number(m[2]) - 1;
+  return MONTH_NAMES[idx] ? `${MONTH_NAMES[idx]} ${m[1]}` : String(monthKey);
+}
+
 function fmtCurrency(n) {
   const v = Math.round(Number(n) || 0);
   // Prefix the minus before the $ ("−$1,234" not "$-1,234") so loss values
   // read cleanly on KPI tiles. Uses U+2212 rather than a hyphen.
   if (v < 0) return '−$' + Math.abs(v).toLocaleString('en-US');
   return '$' + v.toLocaleString('en-US');
+}
+
+// Money to the cent, matching quarry.html's formatMoney and dust.html's money.
+// Per-ton economics need the cents: rounding $19.20/ton to $19 and $4.35 to $4
+// turns a margin the pit lives on into a rounding artefact.
+function fmtCurrency2(n) {
+  const v = Number(n) || 0;
+  const body = Math.abs(v).toLocaleString('en-US', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+  return (v < 0 ? '−$' : '$') + body;
+}
+
+// Tons, matching quarry.html's formatTons: up to two decimals, none forced, so
+// a round 230 tons reads as "230".
+function fmtTons(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '0';
+  return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 function fmtRevenueDelta(curr, prev) {
   const c = Number(curr) || 0;
@@ -334,8 +382,8 @@ async function buildHero(sql, companyCode) {
   // Those diverge whenever someone enters last month's work today, and a
   // division switching to auto-sync restamps its whole backlog with sent_at =
   // now, which under the old query landed every historical row in "this week".
-  // actual_date is also what buildDustTile and the other division tiles use,
-  // so the hero KPI now agrees with the tiles beneath it.
+  // actual_date is also what the division sections below use, so the hero KPI
+  // agrees with them rather than with when a row happened to be mirrored.
   const revNow = await safeRun('revenue_this_week', async () => {
     const rows = await sql`
       SELECT COALESCE(SUM(total), 0)::float AS v
@@ -614,114 +662,124 @@ async function buildTruckingTile(sql, companyCode, weekStart, weekEnd) {
   };
 }
 
-// Dust — simplified to revenue-focused per executive feedback.
-// Revenue is computed canonically from dust_control_entries:
-//   v1_rate × hours + v2_rate × hours + gallons_ub × dust_settings.ub_rate
-// Hours are derived from start_time/end_time (HH:MM strings); rows with
-// malformed times contribute 0 hours to the rate fees but their gallons
-// still count toward the UB fee. GREATEST(0, ...) guards against
-// overnight time wraparound producing negative intervals.
-async function buildDustTile(sql, companyCode, weekStart, weekEnd) {
+// ── Dust Control ─────────────────────────────────────────────────────
+// The division's home dashboard, read back: year-to-date service figures, the
+// invoice picture from the invoice era forward, and its customers ranked by
+// revenue. The row-level money is computed in JS by api/lib/dust-metrics so it
+// comes out of the same formula dust.html uses.
+async function buildDustPortfolio(sql, companyCode) {
   // Per-customer UB $/gal override column may not exist on older DBs; the
-  // dust-config endpoint adds it lazily, but the report can run first. Ensure
-  // it so the revenue joins below can reference dust_companies.ub_rate.
+  // dust-config endpoint adds it lazily, but the report can run first. Ensure it
+  // so the customer rates below can be read.
   await safeRun('dust.ensure_ub_col', () =>
     sql`ALTER TABLE IF EXISTS dust_companies ADD COLUMN IF NOT EXISTS ub_rate NUMERIC(10,4)`);
 
-  // Revenue · This Week
-  const revWk = await safeRun('dust.revenue_wk', async () => {
-    const rows = await sql`
-      SELECT
-        COALESCE(SUM(
-          COALESCE(v1_rate, 0)     * GREATEST(0, hrs)
-          + COALESCE(v2_rate, 0)   * GREATEST(0, hrs)
-          + COALESCE(gallons_ub, 0)
-            * COALESCE(co_ub_rate, (SELECT ub_rate::float FROM dust_settings WHERE company_code = ${companyCode}), 0)
-        ), 0)::float AS v
-      FROM (
-        SELECT
-          d.v1_rate, d.v2_rate, d.gallons_ub,
-          c.ub_rate::float AS co_ub_rate,
-          CASE
-            WHEN d.start_time ~ '^[0-9]{1,2}:[0-9]{2}'
-             AND d.end_time   ~ '^[0-9]{1,2}:[0-9]{2}'
-            THEN EXTRACT(EPOCH FROM (d.end_time::time - d.start_time::time)) / 3600.0
-            ELSE 0
-          END AS hrs
-        FROM dust_control_entries d
-        LEFT JOIN dust_companies c
-          ON c.company_code = d.company_code AND c.name = d.company
-        WHERE d.company_code = ${companyCode}
-          AND d.date >= ${weekStart}
-          AND d.date <  ${weekEnd}
-      ) e
-    `;
-    return rows[0]?.v ?? 0;
-  });
+  const yearStart = `${new Date().getFullYear()}-01-01`;
+  // Two windows are needed and they only coincide while the current year IS the
+  // first invoice year: the KPIs are year-to-date, the invoice overview runs
+  // from the start of the invoice era. Fetch from whichever is earlier.
+  const from = yearStart < DUST_INVOICE_ERA_START ? yearStart : DUST_INVOICE_ERA_START;
 
-  // Revenue · This Month (calendar month, not last 30 days)
-  const revMo = await safeRun('dust.revenue_mo', async () => {
-    const rows = await sql`
-      SELECT
-        COALESCE(SUM(
-          COALESCE(v1_rate, 0)     * GREATEST(0, hrs)
-          + COALESCE(v2_rate, 0)   * GREATEST(0, hrs)
-          + COALESCE(gallons_ub, 0)
-            * COALESCE(co_ub_rate, (SELECT ub_rate::float FROM dust_settings WHERE company_code = ${companyCode}), 0)
-        ), 0)::float AS v
-      FROM (
-        SELECT
-          d.v1_rate, d.v2_rate, d.gallons_ub,
-          c.ub_rate::float AS co_ub_rate,
-          CASE
-            WHEN d.start_time ~ '^[0-9]{1,2}:[0-9]{2}'
-             AND d.end_time   ~ '^[0-9]{1,2}:[0-9]{2}'
-            THEN EXTRACT(EPOCH FROM (d.end_time::time - d.start_time::time)) / 3600.0
-            ELSE 0
-          END AS hrs
-        FROM dust_control_entries d
-        LEFT JOIN dust_companies c
-          ON c.company_code = d.company_code AND c.name = d.company
-        WHERE d.company_code = ${companyCode}
-          AND d.date >= date_trunc('month', CURRENT_DATE)
-          AND d.date <  date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
-      ) e
-    `;
-    return rows[0]?.v ?? 0;
-  });
-
-  // Activity context
-  const gallonsWk = await safeRun('dust.gallons_wk', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(gallons_ub), 0)::float AS v
+  const [rows, companies, ubRate] = await Promise.all([
+    safeRun('dust.rows', () => sql`
+      SELECT date::text AS date, company, location, state,
+             start_time, end_time,
+             v1_rate::float  AS v1_rate,
+             v2_rate::float  AS v2_rate,
+             gallons_ub::float AS gallons_ub,
+             inv_sent::text  AS inv_sent,
+             inv_received::text AS inv_received,
+             inv_status
         FROM dust_control_entries
        WHERE company_code = ${companyCode}
-         AND date >= ${weekStart}
-         AND date <  ${weekEnd}
-    `;
-    return rows[0]?.v ?? 0;
-  });
-  const activeRoutes = await safeRun('dust.active_routes', async () => {
-    const rows = await sql`
-      SELECT COUNT(DISTINCT company)::int AS n
-        FROM dust_control_entries
+         AND date IS NOT NULL
+         AND date >= ${from}::date
+    `),
+    safeRun('dust.companies', () => sql`
+      SELECT name, ub_rate::float AS ub_rate
+        FROM dust_companies
        WHERE company_code = ${companyCode}
-         AND date >= (CURRENT_DATE - INTERVAL '30 days')
-         AND company IS NOT NULL
-         AND TRIM(company) <> ''
-    `;
-    return rows[0]?.n ?? 0;
+    `),
+    safeRun('dust.ub_rate', async () => {
+      const r = await sql`SELECT ub_rate::float AS v FROM dust_settings WHERE company_code = ${companyCode}`;
+      return r[0]?.v ?? 0;
+    }),
+  ]);
+
+  const m = dustMetrics({
+    rows:      rows      || [],
+    companies: companies || [],
+    ubRate:    ubRate    || 0,
   });
+
+  const money = fmtCurrency2;
+  const count = n => Math.round(Number(n) || 0).toLocaleString('en-US');
+
+  let status, statusKind;
+  if      (!m.jobsYtd)                     { status = 'No Activity'; statusKind = 'mute';  }
+  else if (m.invoices.overdue.count > 0)   { status = `${m.invoices.overdue.count} Overdue`; statusKind = 'red'; }
+  else if (m.invoices.needsSent.count > 0) { status = `${m.invoices.needsSent.count} To Invoice`; statusKind = 'amber'; }
+  else                                     { status = 'On Track'; statusKind = 'green'; }
 
   return {
     key: 'dust', name: 'Dust Control', accent: '#fbbf24',
-    status: 'On Track', statusKind: 'green',
-    kpis: [
-      { label: 'Revenue · Wk',  value: revWk        != null ? fmtCurrency(revWk) : '—' },
-      { label: 'Revenue · Mo',  value: revMo        != null ? fmtCurrency(revMo) : '—' },
-      { label: 'Gallons · Wk',  value: gallonsWk    != null ? Math.round(gallonsWk).toLocaleString('en-US') : '—' },
-      { label: 'Active Routes', value: activeRoutes != null ? String(activeRoutes) : '—' },
+    status, statusKind,
+    year: m.year,
+    metrics: [
+      {
+        label: 'YTD Revenue', value: money(m.revenueYtd), tone: 'amber',
+        sub: `${count(m.jobsYtd)} job${m.jobsYtd === 1 ? '' : 's'} in ${m.year}`,
+      },
+      {
+        label: 'Jobs This Month', value: count(m.jobsThisMonth),
+        tone: m.jobsThisMonth > 0 ? 'green' : 'mute',
+        sub:  monthName(m.month),
+      },
+      {
+        label: 'Gallons YTD', value: count(m.gallonsYtd), tone: 'blue',
+        sub: 'UB product applied',
+      },
+      {
+        label: 'Active Customers', value: count(m.activeCustomers), tone: 'amber',
+        sub: m.states.length
+          ? `served across ${m.states.length} state${m.states.length === 1 ? '' : 's'}`
+          : 'served this year',
+      },
+      {
+        label: 'Avg Rev / Job', value: money(m.avgRevenuePerJob), tone: 'green',
+        sub: 'this year',
+      },
+      {
+        label: 'Service Hours YTD', value: m.hoursYtd.toFixed(1), tone: 'blue',
+        sub: 'hours in the field',
+      },
+      {
+        label: 'Overdue', value: money(m.invoices.overdue.amount),
+        tone: m.invoices.overdue.amount > 0 ? 'red' : 'green',
+        sub: `${count(m.invoices.overdue.count)} invoice${m.invoices.overdue.count === 1 ? '' : 's'} past ${DUST_OVERDUE_DAYS} days`,
+      },
+      {
+        label: 'Unpaid / Pending', value: money(m.invoices.outstanding.amount),
+        tone: m.invoices.outstanding.amount > 0 ? 'amber' : 'green',
+        sub: m.invoices.needsSent.count
+          ? `${count(m.invoices.needsSent.count)} still to invoice`
+          : `${count(m.invoices.outstanding.count)} awaiting payment`,
+      },
     ],
+    rows: m.customers.map(c => ({
+      name:        c.name,
+      meta:        c.states.length ? c.states.join(' · ') : '',
+      lastVisit:   c.lastVisit,
+      visits:      c.visits,
+      gallons:     c.gallons,
+      hours:       c.hours,
+      revenue:     c.revenue,
+      avgPerVisit: c.avgPerVisit,
+      overdue:     c.overdue,
+      unpaid:      c.unpaid,
+      paid:        c.paidAmt,
+    })),
+    invoices: m.invoices,
   };
 }
 
@@ -1078,278 +1136,158 @@ async function buildRubberInventory(sql, companyCode) {
     }));
 }
 
-// ── Quarry tile ──────────────────────────────────────────────────────
-// Quarry data lives entirely in JSONB blobs (no normalized tables yet):
-//   fct_quarry_sales    → [{ date, locationName, productName, tons, pricePerTon, payment }]
-//   fct_quarry_daily    → [{ date, locationName, hours, rate, fuelGallons, ppg }]
-//   fct_quarry_crushing → [{ date, locationName, hourlyRate, hours, fuelGallons, fuelCost, ... }]
-// We compute weekly PROFIT (sales revenue − daily labor/fuel costs − crushing
-// payroll/fuel costs, all scoped to the current Sun-anchored week) and
-// monthly tons sold, plus the top product and active pit count.
-async function buildQuarryTile(sql, companyCode, weekStart, weekEnd) {
-  const [salesBlob, dailyBlob, crushBlob, fixedBlob, royaltyBlob, listsBlob] = await Promise.all([
-    safeRun('quarry.sales_blob', async () => {
-      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_sales`}`;
-      return r[0]?.value;
-    }),
-    safeRun('quarry.daily_blob', async () => {
-      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_daily`}`;
-      return r[0]?.value;
-    }),
-    safeRun('quarry.crush_blob', async () => {
-      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_crushing`}`;
-      return r[0]?.value;
-    }),
-    safeRun('quarry.fixed_blob', async () => {
-      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_monthly_fixed`}`;
-      return r[0]?.value;
-    }),
-    safeRun('quarry.royalty_blob', async () => {
-      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_royalty`}`;
-      return r[0]?.value;
-    }),
-    safeRun('quarry.lists_blob', async () => {
-      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_quarry_lists`}`;
-      return r[0]?.value;
-    }),
-  ]);
-  const sales = Array.isArray(salesBlob) ? salesBlob : [];
-  const daily = Array.isArray(dailyBlob) ? dailyBlob : [];
-  const crush = Array.isArray(crushBlob) ? crushBlob : [];
-  const fixed = (fixedBlob && typeof fixedBlob === 'object' && !Array.isArray(fixedBlob)) ? fixedBlob : {};
-  // Royalty owners per pit: { pit: [ { name, rate, floor } ] }. Each owner is
-  // paid the greater of (rate% of the sale) or ($floor per ton), stacked, on
-  // royalty-flagged products only. Legacy blobs stored a bare number per pit.
-  const royalty = (royaltyBlob && typeof royaltyBlob === 'object' && !Array.isArray(royaltyBlob)) ? royaltyBlob : {};
-  const royaltyOwnersFor = loc => {
-    const v = royalty[loc];
-    if (Array.isArray(v)) return v;
-    const n = Number(v);
-    return (Number.isFinite(n) && n > 0) ? [{ rate: n, floor: 0 }] : [];
-  };
-  // Royalty $ owed on one sale, summed across the pit's owners.
-  const royaltyForSale = (loc, tons, price) => {
-    const t = Number(tons); if (!Number.isFinite(t) || t <= 0) return 0;
-    const p = Number(price);
-    // No price → no sale value → no royalty (don't let the floor charge
-    // against $0 revenue on an incomplete row).
-    if (!Number.isFinite(p) || p <= 0) return 0;
-    let total = 0;
-    for (const o of royaltyOwnersFor(loc)) {
-      const rate = Number(o && o.rate) || 0;
-      const floor = Number(o && o.floor) || 0;
-      total += Math.max(p * rate / 100, floor) * t;
-    }
-    return total;
-  };
-  // Royalties apply only to material flagged as royalty-bearing in Manage
-  // Lists → Product (rock/aggregate), not every product — mirror the Quarry
-  // page so this tile isn't inflated by non-royalty sales (fill, millings…).
-  const lists = (listsBlob && typeof listsBlob === 'object' && !Array.isArray(listsBlob)) ? listsBlob : {};
-  const royaltyProductIds = new Set(), royaltyProductNames = new Set();
-  (Array.isArray(lists.product) ? lists.product : []).forEach(p => {
-    if (!p || !p.royalty) return;
-    if (p.id != null && p.id !== '') royaltyProductIds.add(String(p.id));
-    const nm = String(p.name || '').trim().toLowerCase();
-    if (nm) royaltyProductNames.add(nm);
+// ── Quarry ───────────────────────────────────────────────────────────
+// Quarry state lives entirely in JSONB blobs (no normalized tables yet):
+//   fct_quarry_sales         → [{ date, locationName, productName, tons, pricePerTon }]
+//   fct_quarry_daily         → [{ date, locationName, hours, rate, fuelGallons, ppg }]
+//   fct_quarry_crushing      → [{ date, locationName, hourlyRate, hours, fuelGallons,
+//                                 fuelCost, loadsToCrusher, tonsPerLoad, hoursCrushing }]
+//   fct_quarry_inventory     → { basis, openings: [...], adjustments: [...] }
+//   fct_quarry_loss_pct      → { '<pit>': percent }
+//   fct_quarry_monthly_fixed → { '<pit>': { 'YYYY-MM': amount } }
+//   fct_quarry_royalty       → { '<pit>': [ { name, rate, floor } ] }
+//   fct_quarry_lists         → { product: [ { id, name, royalty } ], … }
+//
+// All eight are read and handed to api/lib/quarry-metrics, which is a port of
+// the Quarry page's own arithmetic — the report is meant to agree with the page
+// down to the cent, and the only way to guarantee that is to run its formulas.
+const QUARRY_BLOBS = {
+  sales:        'fct_quarry_sales',
+  daily:        'fct_quarry_daily',
+  crush:        'fct_quarry_crushing',
+  inventory:    'fct_quarry_inventory',
+  lossPct:      'fct_quarry_loss_pct',
+  monthlyFixed: 'fct_quarry_monthly_fixed',
+  royalty:      'fct_quarry_royalty',
+  lists:        'fct_quarry_lists',
+};
+
+async function buildQuarryPortfolio(sql, companyCode) {
+  const names = Object.keys(QUARRY_BLOBS);
+  const values = await Promise.all(names.map(n => safeRun(`quarry.${n}_blob`, async () => {
+    const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:${QUARRY_BLOBS[n]}`}`;
+    return r[0]?.value;
+  })));
+  const blob = {};
+  names.forEach((n, i) => { blob[n] = values[i]; });
+
+  // The Quarry Home tab defaults its Year filter to the current year, and its
+  // stockpile balances through today for that year. Mirror both.
+  const now  = new Date();
+  const year = now.getFullYear();
+  const m = quarryMetrics({
+    sales:        blob.sales,
+    daily:        blob.daily,
+    crush:        blob.crush,
+    inventory:    blob.inventory,
+    lossPct:      blob.lossPct,
+    monthlyFixed: blob.monthlyFixed,
+    royalty:      blob.royalty,
+    lists:        blob.lists,
+    year,
+    cutoff:       localDateIso(now),
   });
-  const rowHasRoyalty = r => {
-    if (r.productId != null && r.productId !== '' && royaltyProductIds.has(String(r.productId))) return true;
-    const nm = String(r.productName || '').trim().toLowerCase();
-    return nm !== '' && royaltyProductNames.has(nm);
-  };
 
-  const now           = new Date();
-  const monthStartIso = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-  const yearPrefix    = String(now.getFullYear());
+  const tons  = fmtTons;
+  const money = fmtCurrency2;
+  const haveTons = m.total.tonsSold > 0;
+  const pits     = m.inventory.locations.length;
 
-  const num = v => {
-    if (v == null || v === '') return 0;
-    const n = parseFloat(String(v));
-    return Number.isFinite(n) ? n : 0;
-  };
-
-  // Week scoped: revenue from sales, costs from daily + crushing.
-  // Profit formula mirrors quarry.html's per-row calcs:
-  //   daily row    cost = hours*rate + fuelGallons*ppg
-  //   crushing row cost = hourlyRate*hours + fuelGallons*fuelCost
-  // Year scoped (current year): blended price/cost per ton + monthly
-  // throughput feed the break-even indicator further down.
-  let revenueWk = 0, costWk = 0, tonsMo = 0, revenueMo = 0, varCostMo = 0, royaltyCostMo = 0;
-  let revenueYr = 0, tonsSoldYr = 0, varCostYr = 0, tonsCrushedYr = 0, royaltyCostYr = 0;
-  const productTons = new Map();
-  const activePits  = new Set();
-  // Per-pit set of 'YYYY-MM' months with activity this year (sales ∪ crush),
-  // used to scope each pit's monthly-fixed average the same way the Quarry
-  // page's By-Location table does, so the tile matches "All Pits".
-  const activeMonthsByPit = new Map();
-  const addActiveMonth = (pit, date) => {
-    const name = String(pit || '').trim();
-    if (!name || date.slice(0, 4) !== yearPrefix) return;
-    let set = activeMonthsByPit.get(name);
-    if (!set) { set = new Set(); activeMonthsByPit.set(name, set); }
-    set.add(date.slice(0, 7));
-  };
-  for (const r of sales) {
-    if (!r || typeof r !== 'object') continue;
-    const date = typeof r.date === 'string' ? r.date : '';
-    if (!date) continue;
-    const tons  = num(r.tons);
-    const price = num(r.pricePerTon);
-    if (date >= weekStart && date < weekEnd) revenueWk += tons * price;
-    // Royalty stacks each owner (% of sale or $/ton floor), rock only.
-    const rowRoyalty = rowHasRoyalty(r) ? royaltyForSale(r.locationName, tons, price) : 0;
-    if (date >= monthStartIso) {
-      tonsMo += tons;
-      revenueMo += tons * price;
-      royaltyCostMo += rowRoyalty;
-      const name = String(r.productName || '').trim();
-      if (name) productTons.set(name, (productTons.get(name) || 0) + tons);
-      const pit = String(r.locationName || '').trim();
-      if (pit) activePits.add(pit);
-    }
-    if (date.slice(0, 4) === yearPrefix) {
-      revenueYr += tons * price;
-      tonsSoldYr += tons;
-      royaltyCostYr += rowRoyalty;
-      addActiveMonth(r.locationName, date);
-    }
-  }
-  for (const r of daily) {
-    if (!r || typeof r !== 'object') continue;
-    const date = typeof r.date === 'string' ? r.date : '';
-    if (!date) continue;
-    // Daily labor feeds the weekly profit only — variable cost/ton and
-    // break-even use crushing cost only.
-    const cost = num(r.hours) * num(r.rate) + num(r.fuelGallons) * num(r.ppg);
-    if (date >= weekStart && date < weekEnd) costWk += cost;
-  }
-  for (const r of crush) {
-    if (!r || typeof r !== 'object') continue;
-    const date = typeof r.date === 'string' ? r.date : '';
-    if (!date) continue;
-    const cost = num(r.hourlyRate) * num(r.hours) + num(r.fuelGallons) * num(r.fuelCost);
-    if (date >= weekStart && date < weekEnd) costWk += cost;
-    if (date >= monthStartIso) varCostMo += cost;
-    if (date.slice(0, 4) === yearPrefix) {
-      varCostYr += cost;
-      tonsCrushedYr += num(r.loadsToCrusher) * num(r.tonsPerLoad);
-      addActiveMonth(r.locationName, date);
-    }
-  }
-  const profitWk = revenueWk - costWk;
-
-  let topProduct = null, topProductTons = 0;
-  for (const [name, t] of productTons) {
-    if (t > topProductTons) { topProduct = name; topProductTons = t; }
-  }
-
-  // ── Break-even (current month, cost-coverage) ──
-  // Mirrors the Quarry page: the sales needed to cover THIS month's actual
-  // labor + fuel plus fixed overhead. Variable cost/ton and contribution stay
-  // year-blended so the per-ton economics — and the cost ≥ price guard — read
-  // steady. Monthly fixed mirrors the By-Location "All Pits" figure: the
-  // SUM of each pit's monthly fixed (a true company total), where each pit's
-  // figure is scoped to the months it had activity this year (matching what
-  // the Quarry page shows). fct_quarry_monthly_fixed is nested
-  // { scope: { 'YYYY-MM': amount } }; pit scopes exclude 'all' and no-location.
-  let monthlyFixedTotal = 0;
-  {
-    const pitAvgs = Object.keys(fixed)
-      .filter(s => s && s !== 'all' && s !== '— No location —')
-      .map(s => {
-        const months = (fixed[s] && typeof fixed[s] === 'object') ? fixed[s] : {};
-        // Scope to the pit's active months this year (the months the Quarry
-        // page actually shows), so stale entries for other months/years don't
-        // drag the average down. Fall back to the all-time average only when
-        // the pit had no activity this year.
-        const active = activeMonthsByPit.get(s);
-        let vals;
-        if (active && active.size) {
-          vals = [];
-          active.forEach(mk => { const v = num(months[mk]); if (v > 0) vals.push(v); });
-        } else {
-          vals = Object.keys(months).map(k => num(months[k])).filter(v => v > 0);
-        }
-        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-      })
-      .filter(v => v > 0);
-    // Sum the per-pit figures: the company owes every pit's fixed cost.
-    monthlyFixedTotal = pitAvgs.reduce((a, b) => a + b, 0);
-  }
-  const tonsBasisYr     = tonsCrushedYr > 0 ? tonsCrushedYr : tonsSoldYr;
-  const avgPrice        = tonsSoldYr  > 0 ? revenueYr / tonsSoldYr : null;
-  const varCostPerTon   = tonsBasisYr > 0 ? varCostYr / tonsBasisYr : null;  // crushing only
-  const royaltyPerTonYr = tonsSoldYr  > 0 ? royaltyCostYr / tonsSoldYr : 0;   // royalty is % of sales
-  const contribution    = (avgPrice != null && varCostPerTon != null) ? avgPrice - royaltyPerTonYr - varCostPerTon : null;
-
-  // Current month: blended price falls back to the year's when this month
-  // hasn't booked sales yet. Full monthly fixed is applied (it's owed
-  // regardless). Royalty (% of sales) comes off the price; break-even covers
-  // crushing + fixed at the net-of-royalty price.
-  const priceMo         = tonsMo > 0 ? revenueMo / tonsMo : avgPrice;
-  const effRateMo       = revenueMo > 0 ? royaltyCostMo / revenueMo : 0;
-  const netPriceMo      = priceMo != null ? priceMo * (1 - effRateMo) : null;
-  const totalCostMo     = varCostMo + monthlyFixedTotal;
-  const breakEvenTonsMo = (netPriceMo != null && netPriceMo > 0) ? totalCostMo / netPriceMo : null;
-  const tonsShortMo     = breakEvenTonsMo != null ? Math.max(0, breakEvenTonsMo - tonsMo) : null;
-
-  // Status pill reflects this month's break-even when we can judge it,
-  // otherwise falls back to the prior On Track / No Data behavior.
   let status, statusKind;
-  if (!sales.length) {
-    status = 'No Data'; statusKind = 'mute';
-  } else if (contribution != null && contribution <= 0) {
-    status = 'No Break-Even'; statusKind = 'red';
-  } else if (monthlyFixedTotal > 0 && breakEvenTonsMo != null && breakEvenTonsMo > 0) {
-    if (tonsMo >= breakEvenTonsMo) { status = 'Above B/E'; statusKind = 'green'; }
-    else { status = 'Below B/E'; statusKind = 'red'; }
-  } else {
-    status = 'On Track'; statusKind = 'green';
-  }
-
-  const round = n => Math.round(n).toLocaleString('en-US');
-
-  // Break-even KPI = this month's cost-coverage target (tons), with how
-  // many more tons it takes to cover the month.
-  let beKpi;
-  if (contribution != null && contribution <= 0) {
-    beKpi = { label: 'Break-Even · Mo', value: 'None', small: true, sub: 'cost ≥ price/ton' };
-  } else if (monthlyFixedTotal > 0 && breakEvenTonsMo != null) {
-    beKpi = { label: 'Break-Even · Mo', value: `${round(breakEvenTonsMo)} t`,
-              sub: tonsShortMo > 0 ? `${round(tonsShortMo)} t to go` : 'covered ✓' };
-  } else if (monthlyFixedTotal <= 0) {
-    beKpi = { label: 'Break-Even · Mo', value: 'Set costs', small: true, sub: 'on Quarry page' };
-  } else {
-    beKpi = { label: 'Break-Even · Mo', value: '—', sub: 'needs sales data' };
-  }
-  const marginKpi = {
-    label: 'Margin / Ton',
-    value: contribution != null ? fmtCurrency(contribution) : '—',
-    sub: (avgPrice != null && varCostPerTon != null)
-      ? `price ${fmtCurrency(avgPrice)} · cost ${fmtCurrency(varCostPerTon)}` : undefined,
-  };
+  const be = m.breakEven.status;
+  if      (!m.entryCount)                { status = 'No Data';     statusKind = 'mute'; }
+  else if (m.alert.tone === 'red')        { status = 'Stock Alert'; statusKind = 'red';  }
+  else if (be.value === 'Below')          { status = 'Below B/E';   statusKind = 'red';  }
+  else if (be.value === 'Above')          { status = 'Above B/E';   statusKind = 'green'; }
+  else                                    { status = 'On Track';    statusKind = 'green'; }
 
   return {
     key: 'quarry', name: 'Quarry', accent: '#f97316',
     status, statusKind,
-    kpis: [
-      // Show the profit value whenever the week saw any activity (sales OR
-      // costs). A pit that ran daily/crushing hours without recording sales
-      // is a real loss week worth surfacing rather than masking with '—'.
-      { label: 'Profit · Wk',  value: (revenueWk > 0 || costWk > 0) ? fmtCurrency(profitWk) : '—' },
-      { label: 'Tons · Mo',    value: tonsMo > 0 ? round(tonsMo) : '—' },
-      topProduct
-        ? { label: 'Top Product', value: topProduct, sub: `${round(topProductTons)} tons` }
-        : { label: 'Top Product', value: '—' },
-      { label: 'Active Pits',  value: activePits.size > 0 ? String(activePits.size) : '—' },
-      beKpi,
-      marginKpi,
-    ].map(k => {
-      if (k.sub === undefined || k.sub === null) delete k.sub;
-      if (k.small === undefined) delete k.small;
-      return k;
-    }),
+    year: m.year,
+    entryCount: m.entryCount,
+    metrics: [
+      // Stockpile & flow — the page's first KPI row.
+      {
+        label: 'Tons On Hand', value: tons(m.inventory.total.onHand),
+        tone: m.inventory.total.onHand < -0.005 ? 'red' : 'plain',
+        sub: pits ? `${pits} location${pits === 1 ? '' : 's'} · as of ${m.cutoff}` : 'Set up Inventory to track the piles',
+      },
+      {
+        label: 'Days of Supply',
+        value: m.inventory.total.daysOfSupply !== null ? `${Math.round(m.inventory.total.daysOfSupply)} days` : '—',
+        tone: 'plain',
+        sub: m.inventory.total.dailyRate > 0
+          ? `at ${tons(m.inventory.total.dailyRate)} tons/day sold`
+          : `no sales in the last ${QUARRY_RATE_WINDOW_DAYS} days`,
+      },
+      {
+        label: 'Net Change',
+        value: (m.flow.net > 0 ? '+' : '') + tons(m.flow.net),
+        tone: m.flow.net > 0.005 ? 'green' : m.flow.net < -0.005 ? 'red' : 'plain',
+        sub: `${m.flow.month} · crushed ${tons(m.flow.produced)} · sold ${tons(m.flow.sold)}`,
+      },
+      { label: 'Needs Attention', value: m.alert.value, tone: m.alert.tone, sub: m.alert.sub },
+
+      // Per-ton economics — the page's second KPI row.
+      {
+        label: 'Margin / Ton',
+        value: haveTons ? money(m.total.avgPricePerTon - m.total.avgCostPerTonSold) : '—',
+        tone: !haveTons ? 'plain'
+          : (m.total.avgPricePerTon - m.total.avgCostPerTonSold) > 0 ? 'green' : 'red',
+        sub: haveTons
+          ? `${m.total.marginPct.toFixed(1)}% margin · ${money(m.total.grossMargin)} total`
+          : 'no tons sold this year',
+      },
+      {
+        label: 'Avg Price / Ton', value: haveTons ? money(m.total.avgPricePerTon) : '—', tone: 'blue',
+        sub: haveTons
+          ? `${tons(m.total.tonsSold)} tons across ${m.total.salesCount} sale${m.total.salesCount === 1 ? '' : 's'}`
+          : 'sales ÷ tons sold',
+      },
+      {
+        label: 'Cost / Ton', value: haveTons ? money(m.total.avgCostPerTonSold) : '—', tone: 'amber',
+        sub: haveTons
+          ? `daily ${money(m.total.dailyCost)} · crushing ${money(m.total.crushCost)}`
+          : 'daily + crushing ÷ tons sold',
+      },
+      { label: 'Break-Even', value: be.value, tone: be.tone, sub: be.sub },
+    ],
+    // Ordered by margin, the way the Analytics tab's Performance by Location
+    // table orders it — the pit losing money belongs at the top, not the one
+    // selling the most.
+    rows: m.locations.slice().sort((a, b) => b.grossMargin - a.grossMargin).map(e => ({
+      name:            e.name,
+      meta:            `${e.salesCount} sale${e.salesCount === 1 ? '' : 's'}`,
+      sales:           e.totalSales,
+      cost:            e.totalCost,
+      margin:          e.grossMargin,
+      marginPct:       e.totalSales > 0 ? e.marginPct : null,
+      tonsSold:        e.tonsSold,
+      costPerTonSold:  e.tonsSold > 0 ? e.avgCostPerTonSold : null,
+      costPerTon:      e.tonsCrushed > 0 ? e.costPerTon : null,
+      tonsCrushed:     e.tonsCrushed,
+      // A pit with no loss figure entered shows a dash, not 0% — an unset
+      // percentage must not read as a perfect screen.
+      lossPct:         (e.tonsCrushed > 0 && e.hasLoss) ? e.lossPct : null,
+      finalScreenTons: (e.tonsCrushed > 0 && e.hasLoss) ? e.finalScreenTons : null,
+      hours:           e.totalHours,
+    })),
+    total: {
+      name:            m.total.name,
+      meta:            `${m.total.salesCount} sale${m.total.salesCount === 1 ? '' : 's'}`,
+      sales:           m.total.totalSales,
+      cost:            m.total.totalCost,
+      margin:          m.total.grossMargin,
+      marginPct:       m.total.totalSales > 0 ? m.total.marginPct : null,
+      tonsSold:        m.total.tonsSold,
+      costPerTonSold:  m.total.tonsSold > 0 ? m.total.avgCostPerTonSold : null,
+      costPerTon:      m.total.tonsCrushed > 0 ? m.total.costPerTon : null,
+      tonsCrushed:     m.total.tonsCrushed,
+      lossPct:         (m.total.tonsCrushed > 0 && m.total.hasLoss) ? m.total.lossPct : null,
+      finalScreenTons: (m.total.tonsCrushed > 0 && m.total.hasLoss) ? m.total.finalScreenTons : null,
+      hours:           m.total.totalHours,
+    },
   };
 }
 
@@ -1459,26 +1397,6 @@ function mockReport() {
           ],
         },
         {
-          key: 'dust', name: 'Dust Control', accent: '#fbbf24',
-          status: '—', statusKind: 'mute',
-          kpis: [
-            { label: 'Revenue · Wk',  value: '—' },
-            { label: 'Revenue · Mo',  value: '—' },
-            { label: 'Gallons · Wk',  value: '—' },
-            { label: 'Active Routes', value: '—' },
-          ],
-        },
-        {
-          key: 'quarry', name: 'Quarry', accent: '#f97316',
-          status: '—', statusKind: 'mute',
-          kpis: [
-            { label: 'Revenue · Wk', value: '—' },
-            { label: 'Tons · Mo',    value: '—' },
-            { label: 'Top Product',  value: '—' },
-            { label: 'Active Pits',  value: '—' },
-          ],
-        },
-        {
           key: 'intercompany', name: 'Intercompany Billing', accent: '#a78bfa',
           status: '—', statusKind: 'mute',
           kpis: [
@@ -1499,6 +1417,19 @@ function mockReport() {
       metrics: [], rows: [],
       shown: 0, pinned: 0, recent: 0, hidden: 0, total: 0,
     })),
+
+    // Quarry and Dust Control each get their own section, shaped like their own
+    // page rather than like a project table.
+    quarry: {
+      key: 'quarry', name: 'Quarry', accent: '#f97316',
+      status: '—', statusKind: 'mute',
+      metrics: [], rows: [], total: null,
+    },
+    dust: {
+      key: 'dust', name: 'Dust Control', accent: '#fbbf24',
+      status: '—', statusKind: 'mute',
+      metrics: [], rows: [],
+    },
 
     payroll: {
       periodStart: null,
@@ -1547,40 +1478,39 @@ module.exports = async (req, res) => {
       console.error('[executive/report] hero build failed:', err.message);
     }
 
-    // The non-project division tiles are wired live. A failed builder leaves
-    // the mock '—' placeholder for that tile (rather than overwriting it with
-    // null) so the grid layout stays intact. Turf / Paving / Kiewit have no
-    // tile: they get a full portfolio section each, further down.
+    // Trucking and Intercompany still read as snapshot tiles. A failed builder
+    // leaves the mock '—' placeholder for that tile (rather than overwriting it
+    // with null) so the grid layout stays intact. Every other division gets a
+    // full section of its own, further down.
     const liveTiles = await Promise.all([
       buildTruckingTile(sql, company, weekStart, weekEnd).catch(e => {
         console.error('[executive/report] trucking tile failed:', e.message); return null;
-      }),
-      buildDustTile(sql, company, weekStart, weekEnd).catch(e => {
-        console.error('[executive/report] dust tile failed:', e.message); return null;
-      }),
-      buildQuarryTile(sql, company, weekStart, weekEnd).catch(e => {
-        console.error('[executive/report] quarry tile failed:', e.message); return null;
       }),
       buildIntercompanyTile(sql, company).catch(e => {
         console.error('[executive/report] intercompany tile failed:', e.message); return null;
       }),
     ]);
-    const [truckingLive, dustLive, quarryLive, icLive] = liveTiles;
+    const [truckingLive, icLive] = liveTiles;
 
     report.snapshot.divisions = report.snapshot.divisions.map(tile => {
       if (tile.key === 'trucking'     && truckingLive) return truckingLive;
-      if (tile.key === 'dust'         && dustLive)     return dustLive;
-      if (tile.key === 'quarry'       && quarryLive)   return quarryLive;
       if (tile.key === 'intercompany' && icLive)       return icLive;
       return tile;
     });
 
-    // Per-division project portfolios (page 2+). The builders return null on
-    // error or when there are no active projects — both cases leave the mock's
-    // empty placeholders, which now contain no fake project entries.
-    const [livePortfolios, liveInventory, livePayroll] = await Promise.all([
+    // Division sections. The project divisions come as a set; Quarry and Dust
+    // each build their own, since neither runs jobs and each mirrors a different
+    // page. A builder that fails leaves the mock's empty placeholder, so one bad
+    // division cannot blank the report.
+    const [livePortfolios, liveQuarry, liveDust, liveInventory, livePayroll] = await Promise.all([
       buildDivisionPortfolios(sql, company).catch(err => {
         console.error('[executive/report] portfolios build failed:', err.message); return null;
+      }),
+      buildQuarryPortfolio(sql, company).catch(err => {
+        console.error('[executive/report] quarry portfolio failed:', err.message); return null;
+      }),
+      buildDustPortfolio(sql, company).catch(err => {
+        console.error('[executive/report] dust portfolio failed:', err.message); return null;
       }),
       buildRubberInventory(sql, company).catch(err => {
         console.error('[executive/report] inventory build failed:', err.message); return null;
@@ -1592,6 +1522,8 @@ module.exports = async (req, res) => {
     if (Array.isArray(livePortfolios) && livePortfolios.length) {
       report.portfolios = livePortfolios;
     }
+    if (liveQuarry) report.quarry = liveQuarry;
+    if (liveDust)   report.dust   = liveDust;
     if (Array.isArray(liveInventory)) {
       report.inventory = liveInventory;
     }
