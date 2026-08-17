@@ -45,20 +45,28 @@ console.log('\n[the list itself]');
 
 console.log('\n[the executive report reads the list, it does not restate it]');
 {
-  const src = read('api/executive/report.js');
-  assert('requires the shared list', /require\('\.\.\/lib\/ic-sources'\)/.test(src));
-
-  const tile = src.slice(src.indexOf('async function buildIntercompanyTile'));
-  const body = tile.slice(0, tile.indexOf('return {'));
-  assert('unbilled dust filters by the list', /source = ANY\(\$\{DUST_IC_SOURCES\}\)/.test(body));
+  // The report's intercompany section no longer splits dust from trucking in
+  // SQL — it reads the same blob intercompany.html reads and classifies each row
+  // in api/lib/ic-metrics. The requirement is unchanged: one shared list, named
+  // in one place, because a hand-written copy is what drifted twice before.
+  const src = read('api/lib/ic-metrics.js');
+  assert('requires the shared list', /require\('\.\/ic-sources'\)/.test(src));
+  assert('classifies dust rows through it rather than by prefix',
+    /isDustEntry\s*=\s*e => isDustSource\(e && e\.source\)/.test(src),
+    'a prefix test would disagree with intercompany.html\'s _isDustSrc');
+  assert('derives the flat-total tags from it too',
+    /DUST_FLAT_TOTAL_SOURCES = DUST_IC_SOURCES\.filter/.test(src));
+  assert('trucking still filters on its own tag',
+    /IC_SOURCES\.TRUCKING/.test(src));
 
   // A hand-written list is exactly what drifted twice before.
   assert('no hand-written dust source list survives',
-    !/source IN \([^)]*dust/.test(body), 'found a literal IN (…dust…) list');
-  const truckingOnly = (body.match(/source = 'trucking'/g) || []).length;
-  assert('trucking still filters on its own tag', truckingOnly === 1, `${truckingOnly} occurrences`);
-  const byList = (body.match(/source = ANY\(\$\{DUST_IC_SOURCES\}\)/g) || []).length;
-  assert('dust filters on the list exactly once', byList === 1, `${byList} occurrences`);
+    !/\['dust'[^\]]*\]|\['dust-[^\]]*\]/.test(src),
+    'found a literal dust source array');
+
+  const report = read('api/executive/report.js');
+  assert('and the report itself no longer enumerates them',
+    !/source IN \([^)]*dust/.test(report) && !/DUST_IC_SOURCES/.test(report));
 }
 
 console.log('\n[intercompany.html agrees with the list]');

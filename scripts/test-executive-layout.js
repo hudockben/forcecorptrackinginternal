@@ -23,6 +23,9 @@ const paving  = read('paving.html');
 const kiewit  = read('kiewit-pinetree.html');
 const quarry  = read('quarry.html');
 const dust    = read('dust.html');
+const payroll = read('payroll.html');
+const truck   = read('trucking.html');
+const ic      = read('intercompany.html');
 
 let failed = 0;
 const assert = (msg, cond, detail) => {
@@ -41,10 +44,10 @@ const COLUMNS = [
 ];
 
 // Pull the <th> labels out of a page's project table, in document order.
-function headerLabels(html, marker) {
+function headerLabels(html, marker, span = 1600) {
   const at = html.indexOf(marker);
   if (at < 0) return [];
-  const slice = html.slice(at, at + 1600);
+  const slice = html.slice(at, at + span);
   return [...slice.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map(m => m[1].trim());
 }
 
@@ -211,6 +214,172 @@ assert('an unpaid invoice past 45 days reads overdue, and paid stays paid',
   /OVERDUE_AFTER_DAYS = 45/.test(dm)
   && /inv_status === 'paid' \|\| row\.inv_received/.test(dm));
 
+// ── Payroll mirrors the Payroll page's Reports tab ──
+console.log('\n[payroll mirrors the Payroll page]');
+
+// The Hours Report's twelve columns, in the page's own words and order.
+const PAYROLL_COLUMNS = [
+  'Employee', 'Hours', 'Travel to Site', 'Travel to Shop', 'Travel', 'Total',
+  'Prevailing Hrs', 'Standard Hrs', 'Pending Hrs', 'Approved Hrs',
+  'Time Off', 'Status',
+];
+const execPayrollCols = headerLabels(exec, '<th>Employee</th>');
+assert('the executive payroll table has the same twelve columns',
+  PAYROLL_COLUMNS.every((c, i) => execPayrollCols[i] === c),
+  'got: ' + JSON.stringify(execPayrollCols));
+// Anchor inside the Reports tab's own table — the Pending tab's table also opens
+// with an Employee column and comes first in the file. The page writes these
+// headers with &nbsp; and inline alignment, so compare on the text.
+const pagePayrollCols = [...payroll.slice(payroll.indexOf('<div class="report-scroll">'))
+  .slice(0, 1800).matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)]
+  .map(m => m[1].replace(/&nbsp;/g, ' ').replace(/<[^>]*>/g, '').trim());
+assert('and payroll.html\'s Hours Report still has them',
+  PAYROLL_COLUMNS.every((c, i) => pagePayrollCols[i] === c),
+  'got: ' + JSON.stringify(pagePayrollCols));
+
+assert('the two tooltips that explain the pay-rate split come across verbatim',
+  exec.includes('Travel is excluded — it is not paid at the prevailing rate.')
+  && payroll.includes('Travel is excluded — it is not paid at the prevailing rate.')
+  && exec.includes('work on non-prevailing jobs plus all travel time')
+  && payroll.includes('work on non-prevailing jobs plus all travel time'));
+
+const pm = read('api/lib/payroll-metrics.js');
+assert('the payroll arithmetic is ported, not re-derived in SQL',
+  fs.existsSync(path.resolve(__dirname, '../api/lib/payroll-metrics.js'))
+  && report.includes("require('../lib/payroll-metrics')"));
+assert('hours are work plus travel',
+  /const h\s*=\s*work \+ travel;/.test(pm) && /const h = work \+ travel;/.test(payroll));
+assert('travel never counts as prevailing — the prevailing job\'s travel falls to standard',
+  /prevailing_wage === true\) \{ acc\.pwHours \+= work; acc\.stdHours \+= travel; \}/.test(pm)
+  && /prevailing_wage === true\) \{ acc\.pwHours \+= work; acc\.stdHours \+= travel; \}/.test(payroll));
+assert('only an explicit true is prevailing, so a division without the concept is standard',
+  /=== true/.test(pm) && !/prevailing_wage\s*\?/.test(pm));
+assert('only submitted and approved entries carry hours',
+  /COUNTED_STATUSES = new Set\(\['submitted', 'approved'\]\)/.test(pm));
+assert('the two travel legs stay separate from their authoritative sum',
+  /travelToSite \+= num\(e\.travel_to_site_hours\)/.test(pm)
+  && /travelToShop \+= num\(e\.travel_to_shop_hours\)/.test(pm));
+
+// The flag lives on the project blob, so the report has to look it up the same
+// way the timesheet API does — same three divisions, same key prefixes.
+const tsApi = read('api/timesheet-entries.js');
+for (const [div, prefix] of [['turf', 'fct_project_'], ['paving', 'fct_paving_project_'], ['kiewit', 'fct_kiewit_project_']]) {
+  assert(`prevailing wage for ${div} reads ${prefix}<id>, as the timesheet API does`,
+    new RegExp(`${div}:\\s*'${prefix}'`).test(report)
+    && new RegExp(`${div}:\\s*'${prefix}'`).test(tsApi));
+}
+assert('a missing project blob reads as not-prevailing, never as prevailing',
+  /pwByKey\.has\(key\) \? pwByKey\.get\(key\) : false/.test(report));
+
+assert('the pay period is the biweekly cycle anchored on the page\'s own date',
+  /new Date\(Date\.UTC\(2026, 4, 10\)\)/.test(report)
+  && /new Date\(2026, 4, 10\)/.test(payroll));
+
+assert('payroll is a division section like the rest, not a bespoke block',
+  exec.includes('renderPayrollSection(data.payroll)')
+  && !exec.includes('id="payrollBody"') && !exec.includes('id="payrollSub"'));
+
+// ── Trucking mirrors the Trucking page ──
+console.log('\n[trucking mirrors the Trucking page]');
+
+for (const label of ['Total Revenue', 'Total Hours', 'Active Units', 'Active Drivers']) {
+  assert(`the API builds the dashboard's "${label}"`, report.includes(`label: '${label}'`));
+  assert(`  and trucking.html still shows it`, truck.includes(`statCard('${label}'`));
+}
+const tm = read('api/lib/trucking-metrics.js');
+assert('the trucking arithmetic is ported, not re-derived in SQL',
+  fs.existsSync(path.resolve(__dirname, '../api/lib/trucking-metrics.js'))
+  && report.includes("require('../lib/trucking-metrics')"));
+assert('the old approximate Trucking tile is gone',
+  !report.includes('buildTruckingTile') && report.includes('buildTruckingPortfolio'));
+assert('revenue is hours × haul fee, as it is on the page — there is no stored column',
+  /num\(e && e\.total_hours\) \* num\(e && e\.haul_fee\)/.test(tm)
+  && /\(parseFloat\(e\.total_hours\)\|\|0\)\*\(parseFloat\(e\.haul_fee\)\|\|0\)/.test(truck));
+assert('"this year" is the latest year with entries, falling back to the calendar year',
+  /years\.length \? years\[years\.length - 1\] : String\(fallbackYear\)/.test(tm)
+  && /allYears\.length \? allYears\[allYears\.length-1\] : String\(new Date\(\)\.getFullYear\(\)\)/.test(truck));
+assert('the average haul fee is the mean rate, not revenue divided by hours',
+  /reduce\(\(s, e\) => s \+ num\(e\.haul_fee\), 0\) \/ cur\.length/.test(tm));
+
+// The page reads the blob because a save writes it synchronously; the mirror
+// table lags behind. Reading the table here would show a stale day.
+assert('trucking reads the same blob the page reads, with the table as a fallback',
+  report.includes('TRUCK_DIVISION_BLOB') && /FROM truck_division_entries/.test(report));
+assert('and hides orphaned injected rows without deleting them — a report mutates nothing',
+  report.includes('findStaleTruckRows') && !report.includes('sweepInjectedTruckRows'));
+
+const TRUCK_COLUMNS = ['Customer', 'Entries', 'Hours', 'Revenue', 'Avg / Hr',
+                       'To Invoice', 'Awaiting Payment', 'Paid'];
+const execTruckCols = headerLabels(exec, 'function renderTruckingSection(d) {', 2600);
+assert('the customer table carries the work and the money still owed on it',
+  TRUCK_COLUMNS.every((c, i) => execTruckCols[i] === c),
+  'got: ' + JSON.stringify(execTruckCols));
+
+// ── Intercompany mirrors the Intercompany dashboard ──
+console.log('\n[intercompany mirrors the Intercompany dashboard]');
+
+const IC_METRICS = ['Total IC Revenue — YTD', 'Trucking IC — YTD', 'Dust Control IC — YTD',
+                    'Total Hours — YTD', 'Customer Revenue — YTD', 'Outstanding IC'];
+for (const label of IC_METRICS) {
+  assert(`the API builds "${label}"`, report.includes(`label: '${label}'`));
+  assert(`  and intercompany.html still shows it`, ic.includes(`kpiCard('${label}'`));
+}
+
+const im = read('api/lib/ic-metrics.js');
+assert('the intercompany arithmetic is ported, not re-derived in SQL',
+  fs.existsSync(path.resolve(__dirname, '../api/lib/ic-metrics.js'))
+  && report.includes("require('../lib/ic-metrics')"));
+assert('the old approximate Intercompany tile is gone',
+  !report.includes('buildIntercompanyTile') && report.includes('buildIcPortfolio'));
+
+// The blob is the source, not the mirror table: payment_received_date and the
+// rates live only there, and the table keeps the duplicates the page collapses.
+// The mirror table has no place in this section, nor in the hero KPIs that
+// report the same money — the whole point is that both read the deduped blob.
+const icSection = report.slice(report.indexOf('async function buildIcPortfolio'));
+assert('intercompany reads the billing blob, not the mirror table',
+  report.includes('fct_intercompany_billing_entries')
+  && !/FROM intercompany_billing_entries/.test(icSection));
+assert('and the hero\'s two intercompany KPIs read that same roll-up',
+  /buildHero\(sql, company, liveIc \? liveIc\.summary : null\)/.test(report)
+  && !/FROM intercompany_billing_entries[\s\S]{0,400}invoice_sent_date <\s*\(CURRENT_DATE/.test(report)
+  && /value:\s*ic \? fmtCurrency\(ic\.notInvoiced\.amount\)/.test(report));
+assert('payment_received_date is a blob-only field, which is why',
+  /payment_received_date/.test(im) && /payment_received_date/.test(ic)
+  && !/payment_received_date/.test(read('neon-schema.sql')));
+assert('the page\'s two-pass dedup comes across, so a re-send is not billed twice',
+  /bestBySourceId/.test(im) && /bestByJobKey/.test(im)
+  && /bestBySourceId/.test(ic) && /bestByJobKey/.test(ic));
+assert('a payroll-injected dust row is decided by source_id alone — two are two real hauls',
+  /isInjectedDust/.test(im) && /isInjectedDust/.test(ic));
+assert('the intercompany amount is rate × quantity per source, with flat-total sources apart',
+  /DUST_FLAT_TOTAL_SOURCES/.test(im) && /num\(e\.total_hours\) \* truckRate/.test(im)
+  && /DUST_FLAT_TOTAL_SOURCES = \['dust-other-billing', 'dust-ees-other'\]/.test(ic));
+assert('and it is not the customer total — the two prices are reported side by side',
+  /customerRevenue/.test(report) && exec.includes('Customer Revenue'));
+assert('the truck rate falls back to the page\'s own default when nothing is saved',
+  /DEFAULT_TRUCK_RATE = 121/.test(im) && /ic_truck_rate.*121/.test(ic));
+
+const IC_COLUMNS = ['Company', 'Hours', 'Trucking IC', 'Dust IC', 'Total IC',
+                    'Customer Revenue', 'Not Invoiced', 'Awaiting Payment', 'Paid'];
+const execIcCols = headerLabels(exec, '<th>Company</th>');
+assert('the company table splits intercompany by division and by invoice state',
+  IC_COLUMNS.every((c, i) => execIcCols[i] === c),
+  'got: ' + JSON.stringify(execIcCols));
+
+// ── Nothing is a snapshot tile any more ──
+console.log('\n[every division has its own section]');
+assert('the snapshot is the company-wide KPIs only',
+  !exec.includes('id="divGrid"') && !exec.includes('renderDivisionTile')
+  && !/snapshot\.divisions/.test(report));
+assert('and the tile CSS went with it',
+  !exec.includes('.div-tile') && !exec.includes('.div-kpi-'));
+assert('as did the legacy timeline block it shared print rules with',
+  !exec.includes('.timeline-'));
+for (const key of ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
+  assert(`${key} has a section`, new RegExp(`'${key}'`).test(report));
+}
+
 // ── Print + email scope ──
 console.log('\n[print and email scope]');
 assert('each division section prints on its own via printSection()',
@@ -222,6 +391,11 @@ assert('and drops its scope classes when printing ends, so the full-report butto
   /afterprint[\s\S]{0,400}remove\('printing-scoped'\)|remove\('printing-scoped'\)[\s\S]{0,400}afterprint/.test(exec));
 assert('the emailed report covers every section on the page',
   exec.includes("'#reportBody .section'"));
+assert('and every division builds one, so none can be left out of it',
+  ['renderPortfolioSection', 'renderQuarrySection', 'renderDustSection',
+   'renderTruckingSection', 'renderIcSection', 'renderPayrollSection']
+    .every(fn => exec.includes(`function ${fn}(`))
+  && /renderDivisionSection\(d, \{/.test(exec));
 assert('the per-project detail pages are gone from the report',
   !/pd-table|project-detail|renderDetail|projectDetails/.test(exec));
 assert('and from the API, along with the per-project queries they needed',

@@ -286,75 +286,6 @@
     .delta-down { color: var(--red); }
     .delta-flat { color: var(--muted); }
 
-    /* ── Division tiles ── */
-    /* Two columns: the grid holds the divisions that don't run jobs (Trucking,
-       Dust, Quarry, Intercompany), and the wider tile gives Quarry's six KPIs
-       room to sit two-across like everything else. */
-    .div-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 1rem;
-    }
-    .div-tile {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-left: 3px solid var(--accent, var(--border));
-      border-radius: 10px;
-      padding: 1.1rem 1.2rem 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.85rem;
-    }
-    .div-tile-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .div-tile-name {
-      font-size: 0.85rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.01em;
-    }
-    .div-tile-status {
-      font-size: 0.55rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      padding: 0.18rem 0.5rem;
-      border-radius: 3px;
-    }
-    .status-green { background: rgba(34,197,94,0.12);  color: var(--green); border:1px solid rgba(34,197,94,0.25); }
-    .status-amber { background: rgba(251,191,36,0.12); color: var(--amber); border:1px solid rgba(251,191,36,0.25); }
-    .status-red   { background: rgba(239,68,68,0.12);  color: var(--red);   border:1px solid rgba(239,68,68,0.25); }
-    .status-mute  { background: rgba(100,116,139,0.1); color: #94a3b8;     border:1px solid rgba(100,116,139,0.2); }
-
-    .div-tile-kpis {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0.75rem 1rem;
-    }
-    .div-kpi-label {
-      font-size: 0.55rem;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 0.2rem;
-    }
-    .div-kpi-value {
-      font-size: 1.05rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.01em;
-      line-height: 1.1;
-    }
-    .div-kpi-sub {
-      font-size: 0.62rem;
-      color: var(--muted);
-      margin-top: 0.15rem;
-    }
-
     /* ── Division portfolio: metric strip ──
        A copy of the strip that heads each division's own home page
        (tracker.html / paving.html / kiewit-pinetree.html), so a figure read
@@ -642,148 +573,6 @@
     }
     .ptable .pstar.off   { color: rgba(42,42,58,0.7); }
 
-    /* ── Project timeline (legacy — kept for any future use) ── */
-    .timeline-wrap {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.25rem 1.25rem 0.5rem;
-      overflow-x: auto;
-    }
-    .timeline-grid {
-      display: grid;
-      grid-template-columns: 280px 1fr 220px;
-      gap: 1rem;
-      align-items: center;
-      padding: 0.7rem 0;
-      border-bottom: 1px solid rgba(42,42,58,0.5);
-      min-width: 900px;
-    }
-    .timeline-grid.head {
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 0.4rem;
-      padding-bottom: 0.6rem;
-    }
-    .timeline-grid:last-child { border-bottom: none; }
-    .timeline-head-label {
-      font-size: 0.55rem;
-      font-weight: 700;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-    .timeline-proj-info {
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-    }
-    .timeline-proj-name {
-      font-size: 0.85rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.01em;
-    }
-    .timeline-proj-meta {
-      font-size: 0.65rem;
-      color: var(--muted);
-      display: flex;
-      gap: 0.6rem;
-      align-items: center;
-    }
-    .timeline-bar {
-      position: relative;
-      height: 28px;
-      background: rgba(42,42,58,0.4);
-      border-radius: 5px;
-      overflow: hidden;
-    }
-    .timeline-bar-axis {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      pointer-events: none;
-    }
-    .axis-tick {
-      flex: 1;
-      border-right: 1px dashed rgba(42,42,58,0.6);
-    }
-    .axis-tick:last-child { border-right: none; }
-    .timeline-bar-fill {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      background: linear-gradient(90deg, rgba(96,165,250,0.55), rgba(96,165,250,0.85));
-      border-radius: 5px;
-    }
-    .timeline-bar-fill.turf {
-      background: linear-gradient(90deg, rgba(34,197,94,0.55), rgba(34,197,94,0.85));
-    }
-    .timeline-bar-fill.atrisk {
-      background: linear-gradient(90deg, rgba(251,191,36,0.55), rgba(251,191,36,0.85));
-    }
-    .timeline-bar-fill.hold {
-      background: linear-gradient(90deg, rgba(100,116,139,0.4), rgba(100,116,139,0.65));
-    }
-    .timeline-bar-progress {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      background: rgba(255,255,255,0.18);
-    }
-    .timeline-today {
-      position: absolute;
-      top: -3px;
-      bottom: -3px;
-      width: 2px;
-      background: #fff;
-      box-shadow: 0 0 6px rgba(255,255,255,0.6);
-    }
-    .timeline-today::after {
-      content: 'TODAY';
-      position: absolute;
-      top: -14px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 0.5rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      color: #fff;
-    }
-    .timeline-icons {
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-      font-size: 0.7rem;
-      letter-spacing: 0.04em;
-      color: rgba(255,255,255,0.85);
-      display: flex;
-      gap: 0.3rem;
-      pointer-events: none;
-    }
-    .tl-icon {
-      width: 14px;
-      height: 14px;
-      border-radius: 50%;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.55rem;
-      font-weight: 800;
-      color: #0a0a0f;
-    }
-    .tl-icon.t { background: var(--red); }
-    .tl-icon.q { background: var(--orange); }
-    .tl-icon.d { background: var(--amber); }
-
-    .timeline-mini {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0.4rem 0.8rem;
-      font-size: 0.65rem;
-    }
-    .timeline-mini-label { color: var(--muted); }
-    .timeline-mini-val { color: var(--text); font-weight: 600; text-align: right; }
-
     /* ── Footer ── */
     footer {
       text-align: center;
@@ -800,22 +589,15 @@
       body { background: #fff; color: #000; }
       header, .action-bar, footer, .filters, .section-action-btn { display: none !important; }
       .report { max-width: none; margin: 0; padding: 0; }
-      .hero-kpi, .div-tile, .timeline-wrap {
+      .hero-kpi {
         background: #fff;
         border: 1px solid #ccc;
         color: #000;
         box-shadow: none;
       }
-      .div-tile-name, .timeline-proj-name,
-      .hero-kpi-value, .div-kpi-value,
-      .section-title { color: #000; }
-      .hero-kpi-label, .div-kpi-label,
-      .section-sub, .timeline-proj-meta, .div-kpi-sub { color: #555; }
-      .div-kpi-sub { color: #777; }
+      .hero-kpi-value, .section-title { color: #000; }
+      .hero-kpi-label, .section-sub { color: #555; }
       .section-head { border-color: #ccc; }
-      .timeline-bar { background: #eee; }
-      .timeline-grid { border-color: #eee; min-width: 0; }
-      .timeline-grid.head { border-color: #ccc; }
       .ptable-wrap { background: #fff; border: 1px solid #ccc; overflow: visible; }
       .ptable      { min-width: 0; font-size: 0.55rem; table-layout: auto; }
       .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.3rem; font-size: 0.5rem; }
@@ -829,8 +611,6 @@
       .ptable .pstar.off { color: #ddd; }
       .ptable .pprogress { min-width: 70px; gap: 0.3rem; }
       .ptable .pprogress-track { background: #eee; min-width: 40px; }
-      .timeline-today { background: #000; box-shadow: none; }
-      .timeline-today::after { color: #000; }
       .page-break { break-before: page; page-break-before: always; }
 
       /* Single-section print scope: a division's "PDF" button marks that
@@ -916,7 +696,6 @@
 
     @media (max-width: 900px) {
       .hero-kpis { grid-template-columns: repeat(2, 1fr); }
-      .div-grid { grid-template-columns: 1fr; }
       .action-bar { padding: 1rem; }
       .report { padding: 0 1rem; }
     }
@@ -986,39 +765,14 @@
           <div class="section-sub">Company-wide · This week</div>
         </div>
         <div class="hero-kpis" id="heroKpis"></div>
-        <div class="div-grid" id="divGrid"></div>
       </div>
 
-      <!-- ─────────── PAGE 2+: ONE SECTION PER JOB-RUNNING DIVISION ───────────
-           Turf, Paving and Kiewit each get the layout of their own home page:
-           the metric strip, then the project table. renderPortfolios() builds
-           them from /api/executive/report's `portfolios`. -->
+      <!-- ─────────── PAGE 2+: ONE SECTION PER DIVISION ───────────
+           Turf, Paving and Kiewit get the layout of their own home page — the
+           metric strip, then the project table. Quarry, Dust Control and Payroll
+           each get the layout of theirs. renderPortfolios() builds them all from
+           /api/executive/report. -->
       <div id="portfolioSections"></div>
-
-      <!-- ─────────── PAGE 3: PAYROLL PAY PERIOD SUMMARY ─────────── -->
-      <div class="section page-break" id="payrollSection">
-        <div class="section-head">
-          <div class="section-title">Payroll · Pay Period Summary</div>
-          <div class="section-sub" id="payrollSub">—</div>
-        </div>
-        <div class="ptable-wrap">
-          <table class="ptable" id="payrollTable">
-            <thead>
-              <tr>
-                <th>Employee</th>
-                <th class="col-num">Days</th>
-                <th class="col-num">Work Hours</th>
-                <th class="col-num">Travel Hours</th>
-                <th class="col-num">Total Hours</th>
-                <th class="col-num">Time Off</th>
-                <th class="col-num">Status</th>
-              </tr>
-            </thead>
-            <tbody id="payrollBody"></tbody>
-            <tfoot id="payrollFoot"></tfoot>
-          </table>
-        </div>
-      </div>
 
     </div>
 
@@ -1066,25 +820,6 @@
           <div class="hero-kpi-delta delta-${esc(k.deltaDir || 'flat')}">${esc(k.delta || '')}</div>
         </div>
       `).join('');
-    }
-
-    function renderDivisionTile(div) {
-      const kpis = (div.kpis || []).map(k => `
-        <div>
-          <div class="div-kpi-label">${esc(k.label)}</div>
-          <div class="div-kpi-value"${k.small ? ' style="font-size: 0.78rem;"' : ''}>${esc(k.value)}</div>
-          ${k.sub ? `<div class="div-kpi-sub">${esc(k.sub)}</div>` : ''}
-        </div>
-      `).join('');
-      return `
-        <div class="div-tile" style="--accent: ${esc(div.accent)};">
-          <div class="div-tile-head">
-            <div class="div-tile-name">${esc(div.name)}</div>
-            <span class="div-tile-status status-${esc(div.statusKind || 'mute')}">${esc(div.status)}</span>
-          </div>
-          <div class="div-tile-kpis">${kpis}</div>
-        </div>
-      `;
     }
 
     // Currency formatter — "$12,345.67" or "—" for null/zero
@@ -1144,6 +879,22 @@
       const v = Number(n);
       if (!isFinite(v)) return '—';
       return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    }
+    // Hours to two decimals, the way payroll reads them.
+    function fmtHours(n) {
+      const v = Number(n);
+      if (!isFinite(v)) return '0.00';
+      return v.toFixed(2);
+    }
+    // "Aug 3 – Aug 16, 2026" for a pay period.
+    function fmtPeriod(a, b) {
+      if (!a || !b) return 'No pay period';
+      const da = new Date(a + 'T00:00:00Z');
+      const db = new Date(b + 'T00:00:00Z');
+      if (isNaN(da) || isNaN(db)) return 'No pay period';
+      const opts  = { month: 'short', day: 'numeric', timeZone: 'UTC' };
+      const yOpts = { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' };
+      return `${da.toLocaleDateString('en-US', opts)} – ${db.toLocaleDateString('en-US', yOpts)}`;
     }
     // Whole counts — visits, gallons, entries.
     function fmtCount(n) {
@@ -1455,114 +1206,212 @@
       return renderDivisionSection(d, { sub, body });
     }
 
+    // ── Trucking ──
+    // Mirrors the Trucking dashboard's YTD Overview and the Financials sub-tab's
+    // averages across the strip, then the Customer Data sub-tab's per-customer
+    // aggregation as the table — widened with the invoice state, because the
+    // money is only half the question once a haul is done.
+    function renderTruckingSection(d) {
+      const rows = Array.isArray(d.rows) ? d.rows : [];
+      const sub  = d.entryCount
+        ? `${fmtCount(d.entryCount)} entr${d.entryCount === 1 ? 'y' : 'ies'} for ${esc(d.year || '')}`
+        : 'No hauls recorded';
+
+      const body = rows.length ? `
+        <div class="ptable-wrap">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th class="col-num">Entries</th>
+                <th class="col-num">Hours</th>
+                <th class="col-num">Revenue</th>
+                <th class="col-num" title="Revenue divided by hours — what the work billed at, on average.">Avg / Hr</th>
+                <th class="col-num" title="Billable and not yet invoiced.">To Invoice</th>
+                <th class="col-num" title="Invoiced and not yet paid.">Awaiting Payment</th>
+                <th class="col-num">Paid</th>
+              </tr>
+            </thead>
+            <tbody>${rows.map(r => `
+              <tr>
+                <td>
+                  <div class="pname">
+                    <span class="pname-main">${esc(r.name)}</span>
+                    ${r.meta ? `<span class="pname-sub">${esc(r.meta)}</span>` : ''}
+                  </div>
+                </td>
+                <td class="col-num v-actual">${esc(fmtCount(r.entries))}</td>
+                <td class="col-num v-mute">${esc(Number(r.hours || 0).toFixed(1))}</td>
+                <td class="col-num v-contract">${esc(fmtMoney(r.revenue, { zeroDash: true }))}</td>
+                <td class="col-num v-mute">${esc(fmtMoney(r.avgHaulFee, { zeroDash: true }))}</td>
+                <td class="col-num ${r.uninvoiced > 0.005 ? 'v-profit-neg' : 'v-mute'}">${esc(fmtMoney(r.uninvoiced, { zeroDash: true }))}</td>
+                <td class="col-num ${r.awaiting   > 0.005 ? 'tone-amber'   : 'v-mute'}">${esc(fmtMoney(r.awaiting,   { zeroDash: true }))}</td>
+                <td class="col-num ${r.paid       > 0.005 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtMoney(r.paid,       { zeroDash: true }))}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        </div>`
+        : `<div class="section-empty">No hauls recorded for ${esc(d.year || 'this year')}.</div>`;
+
+      return renderDivisionSection(d, { sub, body });
+    }
+
+    // ── Intercompany Billing ──
+    // Mirrors the Intercompany dashboard: its six KPIs plus the two halves of
+    // "outstanding" across the strip, then its Top Companies list as a table.
+    // Intercompany and customer revenue sit side by side on purpose — they are
+    // two different prices for the same work, and the gap is the point.
+    function renderIcSection(d) {
+      const rows  = Array.isArray(d.rows) ? d.rows : [];
+      const total = d.total || null;
+      const bits  = [];
+      if (d.entryCount) bits.push(`${fmtCount(d.entryCount)} entr${d.entryCount === 1 ? 'y' : 'ies'} for ${d.year || ''}`);
+      if (d.duplicates > 0) bits.push(`${fmtCount(d.duplicates)} duplicate${d.duplicates === 1 ? '' : 's'} collapsed`);
+      const sub = bits.length ? bits.join(' · ') : 'No billing entries';
+
+      const row = (r, isTotal) => `
+        <tr${isTotal ? ' class="ptable-total"' : ''}>
+          <td>
+            <div class="pname">
+              <span class="pname-main">${esc(r.name)}</span>
+              ${r.meta ? `<span class="pname-sub">${esc(r.meta)}</span>` : ''}
+            </div>
+          </td>
+          <td class="col-num v-mute">${esc(fmtCount(r.hours))}</td>
+          <td class="col-num tone-red">${esc(fmtMoney(r.truckIc, { zeroDash: true }))}</td>
+          <td class="col-num tone-amber">${esc(fmtMoney(r.dustIc, { zeroDash: true }))}</td>
+          <td class="col-num v-actual">${esc(fmtMoney(r.ic, { zeroDash: true }))}</td>
+          <td class="col-num v-contract">${esc(fmtMoney(r.revenue, { zeroDash: true }))}</td>
+          <td class="col-num ${r.notInvoiced     > 0.005 ? 'v-profit-neg' : 'v-mute'}">${esc(fmtMoney(r.notInvoiced,     { zeroDash: true }))}</td>
+          <td class="col-num ${r.awaitingPayment > 0.005 ? 'tone-amber'   : 'v-mute'}">${esc(fmtMoney(r.awaitingPayment, { zeroDash: true }))}</td>
+          <td class="col-num ${r.paid            > 0.005 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtMoney(r.paid,            { zeroDash: true }))}</td>
+        </tr>`;
+
+      const body = rows.length ? `
+        <div class="ptable-wrap">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th class="col-num">Hours</th>
+                <th class="col-num">Trucking IC</th>
+                <th class="col-num">Dust IC</th>
+                <th class="col-num">Total IC</th>
+                <th class="col-num" title="What the end customer is billed, at customer rates.">Customer Revenue</th>
+                <th class="col-num" title="Billable intercompany work with no invoice sent.">Not Invoiced</th>
+                <th class="col-num" title="Invoiced with no payment recorded.">Awaiting Payment</th>
+                <th class="col-num">Paid</th>
+              </tr>
+            </thead>
+            <tbody>${rows.map(r => row(r, false)).join('')}</tbody>
+            ${total ? `<tfoot>${row(total, true)}</tfoot>` : ''}
+          </table>
+        </div>`
+        : `<div class="section-empty">No intercompany billing entries for ${esc(d.year || 'this year')}.</div>`;
+
+      return renderDivisionSection(d, { sub, body });
+    }
+
     function renderReport(data) {
       document.getElementById('heroKpis').innerHTML = renderHero(data.snapshot?.hero || []);
-      document.getElementById('divGrid').innerHTML  = (data.snapshot?.divisions || []).map(renderDivisionTile).join('');
 
-      renderPortfolios(
-        Array.isArray(data.portfolios) ? data.portfolios : [],
-        Array.isArray(data.inventory)  ? data.inventory  : [],
-        data.quarry || null,
-        data.dust   || null,
-      );
-
-      renderPayrollSummary(data.payroll || null);
+      renderPortfolios({
+        portfolios: Array.isArray(data.portfolios) ? data.portfolios : [],
+        inventory:  Array.isArray(data.inventory)  ? data.inventory  : [],
+        quarry:       data.quarry       || null,
+        dust:         data.dust         || null,
+        trucking:     data.trucking     || null,
+        intercompany: data.intercompany || null,
+        payroll:      data.payroll      || null,
+      });
     }
 
     // One section per division, in the order the report reads: the job-running
-    // divisions first, then Quarry and Dust Control, each shaped like its own
-    // page. Rubber inventory rides along inside the Turf section, which is where
-    // it lives on the division page too — and it means a Turf-only PDF still
-    // carries the stock counts.
-    function renderPortfolios(portfolios, inventory, quarry, dust) {
+    // divisions first, then the service divisions, then Payroll. Each is shaped
+    // like its own page. Rubber inventory rides along inside the Turf section,
+    // which is where it lives on the division page too — and it means a
+    // Turf-only PDF still carries the stock counts.
+    function renderPortfolios(data) {
       const wrap = document.getElementById('portfolioSections');
       if (!wrap) return;
-      const html = [
-        ...portfolios.map(d => renderPortfolioSection(
+      wrap.innerHTML = [
+        ...data.portfolios.map(d => renderPortfolioSection(
           d,
-          d.key === 'turf' ? renderRubberInventory(inventory) : '',
+          d.key === 'turf' ? renderRubberInventory(data.inventory) : '',
         )),
-        quarry ? renderQuarrySection(quarry) : '',
-        dust   ? renderDustSection(dust)     : '',
-      ];
-      wrap.innerHTML = html.join('');
+        data.quarry       ? renderQuarrySection(data.quarry)        : '',
+        data.dust         ? renderDustSection(data.dust)            : '',
+        data.trucking     ? renderTruckingSection(data.trucking)    : '',
+        data.intercompany ? renderIcSection(data.intercompany)      : '',
+        data.payroll      ? renderPayrollSection(data.payroll)      : '',
+      ].join('');
     }
 
-    // Render the payroll pay-period summary table. Aggregates submitted +
-    // approved timesheet_entries per employee for the current biweekly
-    // cycle (Mon → Sun, anchored on the same date payroll.html uses) so
-    // executives see a one-line total per worker instead of every entry.
-    function renderPayrollSummary(payroll) {
-      const sub  = document.getElementById('payrollSub');
-      const body = document.getElementById('payrollBody');
-      const foot = document.getElementById('payrollFoot');
-      if (!sub || !body || !foot) return;
+    // ── Payroll ──
+    // Mirrors the Payroll page's Reports tab: its Hours Report totals across the
+    // strip, then its per-employee table, twelve columns and a totals row. The
+    // travel split and the prevailing/standard split are the point — a single
+    // "total hours" figure cannot tell payroll what rate anything is paid at.
+    function renderPayrollSection(d) {
+      const rows  = Array.isArray(d.rows) ? d.rows : [];
+      const total = d.total || null;
+      const sub   = rows.length
+        ? `${fmtPeriod(d.periodStart, d.periodEnd)} · ${fmtCount(rows.length)} employee${rows.length === 1 ? '' : 's'} · ${fmtHours(total ? total.totalHours : 0)} total hours`
+        : `${fmtPeriod(d.periodStart, d.periodEnd)} · no submitted timesheets`;
 
-      const employees = Array.isArray(payroll?.employees) ? payroll.employees : [];
-      const totals    = payroll?.totals || { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 };
+      const timeOff = r => (r.pendingOff || r.approvedOff)
+        ? `${r.pendingOff} pending / ${r.approvedOff} approved`
+        : '—';
+      const statusCell = r => r.hasPending
+        ? `<span class="pstatus tone-amber">${esc(fmtHours(r.pendingHours))} h pending</span>`
+        : `<span class="pstatus tone-green">All approved</span>`;
 
-      const fmtHrs = n => {
-        const v = Number(n) || 0;
-        return v ? v.toFixed(2) : '—';
-      };
-      const fmtRangeIso = (a, b) => {
-        if (!a || !b) return '—';
-        const da = new Date(a + 'T00:00:00Z');
-        const db = new Date(b + 'T00:00:00Z');
-        const opts = { month: 'short', day: 'numeric' };
-        const yOpts = { month: 'short', day: 'numeric', year: 'numeric' };
-        return `${da.toLocaleDateString('en-US', opts)} – ${db.toLocaleDateString('en-US', yOpts)}`;
-      };
+      const row = (r, isTotal) => `
+        <tr${isTotal ? ' class="ptable-total"' : ''}>
+          <td>
+            <div class="pname">
+              <span class="pname-main">${esc(r.name)}</span>
+              ${r.meta ? `<span class="pname-sub">${esc(r.meta)}</span>` : ''}
+            </div>
+          </td>
+          <td class="col-num v-actual">${esc(fmtHours(r.workHours))}</td>
+          <td class="col-num v-mute">${esc(fmtHours(r.travelToSite))}</td>
+          <td class="col-num v-mute">${esc(fmtHours(r.travelToShop))}</td>
+          <td class="col-num v-mute">${esc(fmtHours(r.travelHours))}</td>
+          <td class="col-num v-profit-pos">${esc(fmtHours(r.totalHours))}</td>
+          <td class="col-num ${r.pwHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pwHours))}</td>
+          <td class="col-num v-actual">${esc(fmtHours(r.stdHours))}</td>
+          <td class="col-num ${r.pendingHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pendingHours))}</td>
+          <td class="col-num ${r.approvedHours > 0.001 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtHours(r.approvedHours))}</td>
+          <td class="v-mute">${esc(timeOff(r))}</td>
+          <td>${statusCell(r)}</td>
+        </tr>`;
 
-      sub.textContent = employees.length
-        ? `${fmtRangeIso(payroll.periodStart, payroll.periodEnd)} · ${employees.length} employee${employees.length === 1 ? '' : 's'} · ${(totals.totalHours || 0).toFixed(2)} total hours`
-        : `${fmtRangeIso(payroll?.periodStart, payroll?.periodEnd)} · No submitted entries`;
+      const body = rows.length ? `
+        <div class="ptable-wrap">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th class="col-num">Hours</th>
+                <th class="col-num" title="Timesheet field: Travel Time to Site">Travel to Site</th>
+                <th class="col-num" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
+                <th class="col-num" title="Travel to site + travel to shop">Travel</th>
+                <th class="col-num">Total</th>
+                <th class="col-num" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
+                <th class="col-num" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
+                <th class="col-num">Pending Hrs</th>
+                <th class="col-num">Approved Hrs</th>
+                <th>Time Off</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>${rows.map(r => row(r, false)).join('')}</tbody>
+            ${total ? `<tfoot>${row(total, true)}</tfoot>` : ''}
+          </table>
+        </div>`
+        : '<div class="section-empty">No submitted timesheets in this pay period.</div>';
 
-      if (!employees.length) {
-        body.innerHTML = '<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--muted)">No submitted timesheets in this pay period.</td></tr>';
-        foot.innerHTML = '';
-        return;
-      }
-
-      body.innerHTML = employees.map(e => {
-        let status;
-        if (e.submittedCount && e.approvedCount) {
-          status = `<span class="pstatus" style="color: var(--amber);">${e.approvedCount} approved · ${e.submittedCount} pending</span>`;
-        } else if (e.submittedCount) {
-          status = `<span class="pstatus" style="color: var(--amber);">${e.submittedCount} pending</span>`;
-        } else if (e.approvedCount) {
-          status = `<span class="pstatus" style="color: var(--green);">${e.approvedCount} approved</span>`;
-        } else {
-          status = '<span class="pstatus">—</span>';
-        }
-        return `
-          <tr>
-            <td>
-              <div class="pname">
-                <span class="pname-main">${esc(e.username)}</span>
-              </div>
-            </td>
-            <td class="col-num v-actual">${e.daysWorked || '—'}</td>
-            <td class="col-num v-actual">${esc(fmtHrs(e.workHours))}</td>
-            <td class="col-num v-mute">${esc(fmtHrs(e.travelHours))}</td>
-            <td class="col-num v-profit-pos">${esc(fmtHrs(e.totalHours))}</td>
-            <td class="col-num v-mute">${e.timeOffEntries || '—'}</td>
-            <td class="col-num">${status}</td>
-          </tr>
-        `;
-      }).join('');
-
-      foot.innerHTML = `
-        <tr style="border-top: 1px solid var(--border);">
-          <td style="font-weight: 700;">Total · ${totals.employees} employee${totals.employees === 1 ? '' : 's'}</td>
-          <td class="col-num" style="font-weight: 700;">${totals.daysWorked || '—'}</td>
-          <td class="col-num v-actual" style="font-weight: 700;">${esc(fmtHrs(totals.workHours))}</td>
-          <td class="col-num v-mute" style="font-weight: 700;">${esc(fmtHrs(totals.travelHours))}</td>
-          <td class="col-num v-profit-pos" style="font-weight: 700;">${esc(fmtHrs(totals.totalHours))}</td>
-          <td class="col-num"></td>
-          <td class="col-num"></td>
-        </tr>
-      `;
+      return renderDivisionSection(d, { sub, body });
     }
 
     // Mirrors the home page's per-rubber-type stock cards so the executive
@@ -1670,7 +1519,7 @@
       // specificity beats the wrapper's inline color. Forcing color via
       // inline style on the clones guarantees the text shows up even
       // when the email client strips <style> blocks.
-      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .hero-kpi-value, .div-tile-name, .div-kpi-value, .metric-value';
+      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .hero-kpi-value, .metric-value';
       const clones = Array.from(sections).map(el => {
         const clone = el.cloneNode(true);
         // The per-division PDF buttons are page controls, not report content.

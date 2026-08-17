@@ -15,7 +15,6 @@
 
 const { neon }                          = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
-const { DUST_IC_SOURCES } = require('../lib/ic-sources');
 const {
   quarryMetrics,
   INV_RATE_WINDOW_DAYS: QUARRY_RATE_WINDOW_DAYS,
@@ -25,6 +24,14 @@ const {
   INVOICE_ERA_START_YEAR,
   OVERDUE_AFTER_DAYS: DUST_OVERDUE_DAYS,
 } = require('../lib/dust-metrics');
+const { payrollMetrics } = require('../lib/payroll-metrics');
+const { truckingMetrics } = require('../lib/trucking-metrics');
+const { icMetrics } = require('../lib/ic-metrics');
+const {
+  TRUCK_DIVISION_BLOB,
+  entryIdFromTruckRowId,
+  findStaleTruckRows,
+} = require('../lib/truck-injected');
 
 const DUST_INVOICE_ERA_START = `${INVOICE_ERA_START_YEAR}-01-01`;
 
@@ -358,8 +365,10 @@ async function runDiagnostics(sql, companyCode) {
   return out;
 }
 
-// Live hero KPIs scoped to the platform admin's primary companyCode.
-async function buildHero(sql, companyCode) {
+// Live hero KPIs scoped to the platform admin's primary companyCode. `ic` is the
+// Intercompany section's roll-up, passed in so the two intercompany KPIs here
+// and that section agree by construction rather than by coincidence.
+async function buildHero(sql, companyCode, ic) {
   const today          = new Date();
   const weekStart      = startOfWeekISO(today);
   const weekEnd        = addDaysISO(weekStart, 7);
@@ -406,29 +415,6 @@ async function buildHero(sql, companyCode) {
     return rows[0]?.v ?? 0;
   });
 
-  const ar30 = await safeRun('ar_30', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         AND invoice_sent_date IS NOT NULL
-         AND invoice_sent_date < (CURRENT_DATE - INTERVAL '30 days')
-         AND date_paid IS NULL
-         AND (invoice_status IS NULL OR LOWER(invoice_status) NOT LIKE 'paid%')
-    `;
-    return rows[0]?.v ?? 0;
-  });
-
-  const unbilledIc = await safeRun('unbilled_ic', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         AND (qb_invoice IS NULL OR TRIM(qb_invoice) = '')
-    `;
-    return rows[0]?.v ?? 0;
-  });
-
   const revDelta = (revNow != null && revPrev != null)
     ? fmtRevenueDelta(revNow, revPrev)
     : { delta: '—', deltaDir: 'flat' };
@@ -446,16 +432,25 @@ async function buildHero(sql, companyCode) {
       delta:    revDelta.delta,
       deltaDir: revDelta.deltaDir,
     },
+    // Both intercompany figures come from the Intercompany section's own
+    // numbers rather than a second query of their own. They used to read the
+    // mirror table while the section reads the blob, which meant the same page
+    // could show two different answers for the same money — the table keeps the
+    // duplicates the page collapses, and has no payment_received_date at all.
     {
-      label:    'AR · 30+ Days',
-      value:    ar30 != null ? fmtCurrency(ar30) : '—',
-      delta:    'Outstanding past 30d',
+      label:    `AR · ${ic ? ic.aged.days : 30}+ Days`,
+      value:    ic ? fmtCurrency(ic.aged.amount) : '—',
+      delta:    ic
+        ? `${ic.aged.count} invoice${ic.aged.count === 1 ? '' : 's'} unpaid past ${ic.aged.days}d`
+        : 'Outstanding past 30d',
       deltaDir: 'flat',
     },
     {
       label:    'Unbilled Intercompany',
-      value:    unbilledIc != null ? fmtCurrency(unbilledIc) : '—',
-      delta:    'Sent · no QB invoice',
+      value:    ic ? fmtCurrency(ic.notInvoiced.amount) : '—',
+      delta:    ic
+        ? `${ic.notInvoiced.count} entr${ic.notInvoiced.count === 1 ? 'y' : 'ies'} with no invoice sent`
+        : 'No invoice sent',
       deltaDir: 'flat',
     },
   ];
@@ -604,61 +599,136 @@ async function buildFinancials(sql, companyCode, division, projects) {
   return { contract_total, bid_total, actual_total, projected_total, perProject };
 }
 
-async function buildTruckingTile(sql, companyCode, weekStart, weekEnd) {
-  const activeHauls = await safeRun('trucking.active_hauls', async () => {
-    const rows = await sql`
-      SELECT COUNT(DISTINCT project_id)::int AS n
-        FROM trucking_entries
-       WHERE company_code = ${companyCode}
-         AND project_id IS NOT NULL
-         AND date >= (CURRENT_DATE - INTERVAL '7 days')
-    `;
-    return rows[0]?.n ?? 0;
-  });
-  const loadsWk = await safeRun('trucking.loads_wk', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(loads), 0)::float AS v
-        FROM trucking_entries
-       WHERE company_code = ${companyCode}
-         AND date >= ${weekStart}
-         AND date <  ${weekEnd}
-    `;
-    return rows[0]?.v ?? 0;
-  });
-  const invoicedWk = await safeRun('trucking.invoiced_wk', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(haul_fee), 0)::float AS v
-        FROM truck_division_entries
-       WHERE company_code = ${companyCode}
-         AND invoice_sent_date >= ${weekStart}
-         AND invoice_sent_date <  ${weekEnd}
-    `;
-    return rows[0]?.v ?? 0;
-  });
-  const unbilled = await safeRun('trucking.unbilled', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(haul_fee), 0)::float AS amt,
-             COUNT(*)::int                     AS n
-        FROM truck_division_entries
-       WHERE company_code = ${companyCode}
-         AND invoice_sent_date IS NULL
-    `;
-    return { amt: rows[0]?.amt ?? 0, n: rows[0]?.n ?? 0 };
-  });
+// ── Trucking ─────────────────────────────────────────────────────────
+// The Trucking page reads its entries from the fct_truck_division blob rather
+// than the normalized truck_division_entries table, because a save writes the
+// blob synchronously and the table is synced fire-and-forget behind it. Reading
+// the table here would show the report a version of the day that is seconds —
+// occasionally minutes — behind what the division is looking at, so this reads
+// the blob too, with the same scoped-then-legacy preference /api/truck-division
+// uses, and falls back to the table only when the blob has nothing.
+async function readTruckDivisionEntries(sql, companyCode) {
+  const [scoped, legacy] = await Promise.all([
+    safeRun('trucking.blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:${TRUCK_DIVISION_BLOB}`}`;
+      return r[0]?.value;
+    }),
+    safeRun('trucking.blob_legacy', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${TRUCK_DIVISION_BLOB}`;
+      return r[0]?.value;
+    }),
+  ]);
+
+  const pick = v => (Array.isArray(v) ? v : null);
+  const blobEntries = (pick(scoped) && pick(scoped).length ? pick(scoped) : pick(legacy)) || [];
+  if (blobEntries.length) {
+    // Injected rows whose timesheet entry was un-approved or deleted are hidden
+    // on the page. Hide them here too — but only hide them. The page's loader
+    // sweeps them from storage; a report has no business deleting anything, so
+    // this uses the read-only half of that check.
+    const stale = await safeRun('trucking.stale_injected', async () => {
+      const entryIds = [...new Set(
+        blobEntries.map(r => (r && typeof r === 'object') ? entryIdFromTruckRowId(r.id) : null)
+                   .filter(id => id != null)
+      )];
+      if (!entryIds.length) return [];
+      const rows = await sql`
+        SELECT id, status, entry_type, division, job_id
+          FROM timesheet_entries
+         WHERE company_code = ${companyCode} AND id = ANY(${entryIds}::bigint[])
+      `;
+      return findStaleTruckRows(blobEntries, new Map(rows.map(r => [Number(r.id), r])));
+    });
+    if (stale && stale.length) {
+      const staleSet = new Set(stale.map(String));
+      return blobEntries.filter(r => !(r && staleSet.has(String(r.id))));
+    }
+    return blobEntries;
+  }
+
+  // No blob for this company — read the mirror table instead of reporting a
+  // division with no work.
+  const rows = await safeRun('trucking.table', () => sql`
+    SELECT actual_date::text AS actual_date, driver, unit, customer, task_number,
+           total_hours::float AS total_hours,
+           haul_fee::float    AS haul_fee,
+           invoice_sent_date::text AS invoice_sent_date,
+           date_paid::text         AS date_paid
+      FROM truck_division_entries
+     WHERE company_code = ${companyCode}
+  `);
+  return rows || [];
+}
+
+async function buildTruckingPortfolio(sql, companyCode) {
+  const entries = await readTruckDivisionEntries(sql, companyCode);
+  const m = truckingMetrics({ entries, fallbackYear: new Date().getFullYear() });
+
+  const money = fmtCurrency2;
+  const hrs   = n => (Number(n) || 0).toFixed(1);
+  const count = n => Math.round(Number(n) || 0).toLocaleString('en-US');
+
+  // Year-over-year, in the page's words: a signed percentage against last year.
+  const vsPrev = (curr, prev) => {
+    if (!m.prevYear || !prev) return null;
+    const pct = ((curr - prev) / prev) * 100;
+    return `${pct >= 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}% vs ${m.prevYear}`;
+  };
+
+  let status, statusKind;
+  if      (!m.entryCount)                       { status = 'No Activity'; statusKind = 'mute';  }
+  else if (m.invoices.uninvoiced.count > 0)      { status = `${m.invoices.uninvoiced.count} To Invoice`; statusKind = 'amber'; }
+  else if (m.invoices.awaiting.count > 0)        { status = `${m.invoices.awaiting.count} Awaiting Payment`; statusKind = 'amber'; }
+  else                                          { status = 'On Track';    statusKind = 'green'; }
 
   return {
     key: 'trucking', name: 'Trucking', accent: '#ef4444',
-    status: 'On Track', statusKind: 'green',
-    kpis: [
-      { label: 'Active Hauls',  value: activeHauls != null ? String(activeHauls)             : '—' },
-      { label: 'Loads · Wk',    value: loadsWk     != null ? Math.round(loadsWk).toLocaleString('en-US') : '—' },
-      { label: 'Invoiced · Wk', value: invoicedWk  != null ? fmtCurrency(invoicedWk)         : '—' },
+    status, statusKind,
+    year: m.year,
+    entryCount: m.entryCount,
+    metrics: [
       {
-        label: 'Unbilled',
-        value: unbilled?.amt != null ? fmtCurrency(unbilled.amt) : '—',
-        sub:   unbilled?.n   ? `${unbilled.n} entries` : null,
+        label: 'Total Revenue', value: money(m.revenue), tone: 'amber',
+        sub: vsPrev(m.revenue, m.prevRevenue)
+          || `${count(m.entryCount)} entr${m.entryCount === 1 ? 'y' : 'ies'} this year`,
       },
-    ].map(k => { if (k.sub == null) delete k.sub; return k; }),
+      {
+        label: 'Total Hours', value: hrs(m.hours), tone: 'blue',
+        sub: vsPrev(m.hours, m.prevHours) || 'logged this year',
+      },
+      { label: 'Active Units',   value: count(m.activeUnits),   tone: 'plain', sub: 'units running' },
+      { label: 'Active Drivers', value: count(m.activeDrivers), tone: 'plain', sub: 'drivers active' },
+      {
+        label: 'Avg Revenue / Entry', value: money(m.avgRevenuePerEntry), tone: 'green',
+        sub: `${count(m.entryCount)} entr${m.entryCount === 1 ? 'y' : 'ies'}`,
+      },
+      { label: 'Avg Haul Fee', value: money(m.avgHaulFee), tone: 'plain', sub: 'per hour, averaged' },
+      {
+        label: 'To Invoice', value: money(m.invoices.uninvoiced.amount),
+        tone: m.invoices.uninvoiced.amount > 0 ? 'amber' : 'green',
+        sub: `${count(m.invoices.uninvoiced.count)} haul${m.invoices.uninvoiced.count === 1 ? '' : 's'} not yet sent`,
+      },
+      {
+        label: 'Awaiting Payment', value: money(m.invoices.awaiting.amount),
+        tone: m.invoices.awaiting.amount > 0 ? 'amber' : 'green',
+        sub: `${money(m.invoices.paid.amount)} paid`,
+      },
+    ],
+    rows: m.customers.map(c => ({
+      name:        c.name,
+      meta:        [
+        c.units.length   ? `${c.units.length} unit${c.units.length === 1 ? '' : 's'}`     : '',
+        c.drivers.length ? `${c.drivers.length} driver${c.drivers.length === 1 ? '' : 's'}` : '',
+        c.lastHaul ? `last haul ${c.lastHaul}` : '',
+      ].filter(Boolean).join(' · '),
+      entries:     c.entries,
+      hours:       c.hours,
+      revenue:     c.revenue,
+      avgHaulFee:  c.avgHaulFee,
+      uninvoiced:  c.uninvoiced,
+      awaiting:    c.awaiting,
+      paid:        c.paid,
+    })),
   };
 }
 
@@ -1035,73 +1105,118 @@ function buildDivisionPortfolios(sql, companyCode) {
   ));
 }
 
-async function buildIntercompanyTile(sql, companyCode) {
-  const unbilledTrucking = await safeRun('ic.unbilled_trucking', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         AND source = 'trucking'
-         AND (qb_invoice IS NULL OR TRIM(qb_invoice) = '')
-    `;
-    return rows[0]?.v ?? 0;
+// ── Intercompany Billing ─────────────────────────────────────────────
+// Reads the blob the Intercompany page reads, for two reasons. The page's
+// payment_received_date and its per-source rates live only there — the mirror
+// table has neither — and the blob's duplicates are collapsed on load, which the
+// table's row-for-row sync keeps, so counting from the table over-reports.
+async function buildIcPortfolio(sql, companyCode) {
+  // Per-customer UB $/gal override column may not exist on older DBs.
+  await safeRun('ic.ensure_ub_col', () =>
+    sql`ALTER TABLE IF EXISTS dust_companies ADD COLUMN IF NOT EXISTS ub_rate NUMERIC(10,4)`);
+
+  const [billingBlob, ratesBlob, dustUbRate, dustCompanies] = await Promise.all([
+    safeRun('ic.billing_blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_intercompany_billing_entries`}`;
+      return r[0]?.value;
+    }),
+    safeRun('ic.rates_blob', async () => {
+      const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:fct_intercompany_rates`}`;
+      return r[0]?.value;
+    }),
+    safeRun('ic.dust_ub_rate', async () => {
+      const r = await sql`SELECT ub_rate::float AS v FROM dust_settings WHERE company_code = ${companyCode}`;
+      return r[0]?.v ?? 0;
+    }),
+    safeRun('ic.dust_companies', () => sql`
+      SELECT name, ub_rate::float AS ub_rate FROM dust_companies WHERE company_code = ${companyCode}
+    `),
+  ]);
+
+  const m = icMetrics({
+    entries:       Array.isArray(billingBlob) ? billingBlob : [],
+    ratesBlob,
+    dustUbRate:    dustUbRate || 0,
+    dustCompanies: dustCompanies || [],
+    year:          new Date().getFullYear(),
+    asOfIso:       localDateIso(new Date()),
   });
-  const unbilledDust = await safeRun('ic.unbilled_dust', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         -- Dust Control bills from several tabs, each under its own source
-         -- tag. Listing them by hand here is what twice left this figure short
-         -- of the tile's own AR and top-customer numbers, which filter on
-         -- nothing and so count every one. The list now lives in one place.
-         AND source = ANY(${DUST_IC_SOURCES})
-         AND (qb_invoice IS NULL OR TRIM(qb_invoice) = '')
-    `;
-    return rows[0]?.v ?? 0;
-  });
-  const ar30 = await safeRun('ic.ar_30', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         AND invoice_sent_date IS NOT NULL
-         AND invoice_sent_date < (CURRENT_DATE - INTERVAL '30 days')
-         AND date_paid IS NULL
-         AND (invoice_status IS NULL OR LOWER(invoice_status) NOT LIKE 'paid%')
-    `;
-    return rows[0]?.v ?? 0;
-  });
-  const top = await safeRun('ic.top_customer', async () => {
-    const rows = await sql`
-      SELECT company_name, COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         AND date_paid IS NULL
-         AND company_name IS NOT NULL
-         AND TRIM(company_name) <> ''
-       GROUP BY company_name
-       ORDER BY v DESC
-       LIMIT 1
-    `;
-    return rows[0] || null;
-  });
+
+  const money = fmtCurrency2;
+  const hrs   = n => Math.round(Number(n) || 0).toLocaleString('en-US');
+  const count = n => Math.round(Number(n) || 0).toLocaleString('en-US');
+  const entryWord = n => `${count(n)} entr${n === 1 ? 'y' : 'ies'}`;
+
+  let status, statusKind;
+  if      (!m.entryCount)               { status = 'No Activity'; statusKind = 'mute';  }
+  else if (m.notInvoiced.count > 0)     { status = `${m.notInvoiced.count} To Invoice`; statusKind = 'red'; }
+  else if (m.awaitingPayment.count > 0) { status = `${m.awaitingPayment.count} Awaiting Payment`; statusKind = 'amber'; }
+  else                                  { status = 'Settled';     statusKind = 'green'; }
 
   return {
     key: 'intercompany', name: 'Intercompany Billing', accent: '#a78bfa',
-    status: ar30 > 0 ? 'Aging' : 'On Track',
-    statusKind: ar30 > 0 ? 'amber' : 'green',
-    kpis: [
-      { label: 'Unbilled · Trucking', value: unbilledTrucking != null ? fmtCurrency(unbilledTrucking) : '—' },
-      { label: 'Unbilled · Dust',     value: unbilledDust     != null ? fmtCurrency(unbilledDust)     : '—' },
-      { label: 'AR 30+ Days',         value: ar30             != null ? fmtCurrency(ar30)             : '—' },
-      top && top.company_name ? {
-        label: 'Top Customer',
-        value: String(top.company_name),
-        sub:   `${fmtCurrency(top.v)} outstanding`,
-        small: true,
-      } : { label: 'Top Customer', value: '—' },
+    status, statusKind,
+    year: m.year,
+    entryCount: m.entryCount,
+    duplicates: m.duplicates,
+    truckRate:  m.rates.truckRate,
+    metrics: [
+      { label: 'Total IC Revenue — YTD', value: money(m.totalIc), tone: 'plain', sub: entryWord(m.entryCount) },
+      { label: 'Trucking IC — YTD',      value: money(m.truckIc), tone: 'red',   sub: `${entryWord(m.truckEntries)} at ${money(m.rates.truckRate)}/hr` },
+      { label: 'Dust Control IC — YTD',  value: money(m.dustIc),  tone: 'amber', sub: entryWord(m.dustEntries) },
+      { label: 'Total Hours — YTD',      value: hrs(m.totalHours), tone: 'blue', sub: 'across all divisions' },
+      {
+        label: 'Customer Revenue — YTD', value: money(m.customerRevenue), tone: 'green',
+        sub: 'billed at customer rates',
+      },
+      {
+        label: 'Outstanding IC', value: money(m.outstanding.amount),
+        tone: m.outstanding.amount > 0 ? 'amber' : 'green',
+        sub: `${count(m.outstanding.count)} action required`,
+      },
+      {
+        label: 'Not Yet Invoiced', value: money(m.notInvoiced.amount),
+        tone: m.notInvoiced.amount > 0 ? 'red' : 'green',
+        sub: entryWord(m.notInvoiced.count),
+      },
+      {
+        label: 'Awaiting Payment', value: money(m.awaitingPayment.amount),
+        tone: m.awaitingPayment.amount > 0 ? 'amber' : 'green',
+        sub: entryWord(m.awaitingPayment.count),
+      },
     ],
+    rows: m.companies.map(c => ({
+      name:            c.name,
+      meta:            entryWord(c.entries),
+      hours:           c.hours,
+      truckIc:         c.truckIc,
+      dustIc:          c.dustIc,
+      ic:              c.ic,
+      revenue:         c.revenue,
+      notInvoiced:     c.notInvoiced,
+      awaitingPayment: c.awaitingPayment,
+      paid:            c.paid,
+    })),
+    // The hero's two intercompany KPIs read these, so both places report the same
+    // money from the same deduped list.
+    summary: {
+      aged:        m.aged,
+      notInvoiced: m.notInvoiced,
+      outstanding: m.outstanding,
+    },
+    total: {
+      name:            'All Companies',
+      meta:            entryWord(m.entryCount),
+      hours:           m.totalHours,
+      truckIc:         m.truckIc,
+      dustIc:          m.dustIc,
+      ic:              m.totalIc,
+      revenue:         m.customerRevenue,
+      notInvoiced:     m.notInvoiced.amount,
+      awaitingPayment: m.awaitingPayment.amount,
+      paid:            m.companies.reduce((s, c) => s + c.paid, 0),
+      isTotal:         true,
+    },
   };
 }
 
@@ -1313,57 +1428,147 @@ function biweeklyPayPeriod(today) {
   };
 }
 
+// The prevailing-wage flag lives on the project blob, not the timesheet row, so
+// resolving it needs one app_data read per batch. Same rule and same key scheme
+// as attachPrevailingWage in api/timesheet-entries.js: only turf, paving and
+// kiewit keep projects there, and the other divisions have no prevailing-wage
+// concept at all.
+//   true / false → read from the project blob (false when the blob is gone)
+//   null         → division has no such concept, or no job is attached
+const PW_PROJECT_PREFIX = {
+  turf:   'fct_project_',
+  paving: 'fct_paving_project_',
+  kiewit: 'fct_kiewit_project_',
+};
+
+async function attachPrevailingWage(sql, companyCode, entries) {
+  const keyFor = e => {
+    const prefix = PW_PROJECT_PREFIX[e.division];
+    return prefix && e.job_id ? `${companyCode}:${prefix}${e.job_id}` : null;
+  };
+  const keys = [...new Set(entries.map(keyFor).filter(Boolean))];
+
+  const pwByKey = new Map();
+  if (keys.length) {
+    const rows = await sql`SELECT key, value FROM app_data WHERE key = ANY(${keys})`;
+    for (const r of rows) {
+      const blob = r.value;
+      pwByKey.set(r.key, !!(blob && typeof blob === 'object' && blob.prevailing_wage === true));
+    }
+  }
+  for (const e of entries) {
+    const key = keyFor(e);
+    e.prevailing_wage = key == null ? null : (pwByKey.has(key) ? pwByKey.get(key) : false);
+  }
+  return entries;
+}
+
+// The payroll section, shaped like the Payroll page's Reports tab: its Hours
+// Report totals across the strip, then its per-employee table. Scoped to the
+// current biweekly cycle, the same cycle the page's "Current Biweekly" button
+// selects, so the two land on the same fortnight.
 async function buildPayrollSummary(sql, companyCode) {
   const { startIso, endIso } = biweeklyPayPeriod(new Date());
 
-  const rows = await safeRun('payroll.summary', async () => {
-    return await sql`
-      SELECT
-        user_id,
-        username,
-        COUNT(*) FILTER (WHERE entry_type = 'daily')::int                                     AS daily_entries,
-        COUNT(DISTINCT work_date) FILTER (WHERE entry_type = 'daily')::int                    AS days_worked,
-        COUNT(*) FILTER (WHERE entry_type = 'time_off')::int                                  AS time_off_entries,
-        COALESCE(SUM(computed_hours), 0)::float                                               AS work_hours,
-        COALESCE(SUM(travel_hours),   0)::float                                               AS travel_hours,
-        COALESCE(SUM(COALESCE(computed_hours, 0) + COALESCE(travel_hours, 0)), 0)::float      AS total_hours,
-        COUNT(*) FILTER (WHERE status = 'submitted')::int                                     AS submitted_count,
-        COUNT(*) FILTER (WHERE status = 'approved')::int                                      AS approved_count
-      FROM timesheet_entries
-      WHERE company_code = ${companyCode}
-        AND status IN ('submitted', 'approved')
-        AND work_date >= ${startIso}::date
-        AND work_date <= ${endIso}::date
-      GROUP BY user_id, username
-      ORDER BY username ASC
-    `;
-  });
+  const rows = await safeRun('payroll.entries', () => sql`
+    SELECT
+      user_id, username, entry_type, status, division, job_id,
+      work_date::text                    AS work_date,
+      computed_hours::float              AS computed_hours,
+      travel_hours::float                AS travel_hours,
+      travel_to_site_hours::float        AS travel_to_site_hours,
+      travel_to_shop_hours::float        AS travel_to_shop_hours
+    FROM timesheet_entries
+    WHERE company_code = ${companyCode}
+      AND status IN ('submitted', 'approved')
+      AND work_date >= ${startIso}::date
+      AND work_date <= ${endIso}::date
+  `);
 
-  const employees = (rows || []).map(r => ({
-    userId:          r.user_id,
-    username:        r.username || '—',
-    daysWorked:      r.days_worked     || 0,
-    workHours:       Number(r.work_hours)   || 0,
-    travelHours:     Number(r.travel_hours) || 0,
-    totalHours:      Number(r.total_hours)  || 0,
-    timeOffEntries:  r.time_off_entries || 0,
-    submittedCount:  r.submitted_count  || 0,
-    approvedCount:   r.approved_count   || 0,
-  }));
+  const entries = rows || [];
+  // A failed lookup must not silently reclassify prevailing work as standard —
+  // leave the flag null (the "no such concept" value) and let the figures show
+  // everything as standard rather than inventing a split.
+  await safeRun('payroll.prevailing_wage', () => attachPrevailingWage(sql, companyCode, entries));
 
-  const totals = employees.reduce((acc, e) => ({
-    employees:    acc.employees + 1,
-    workHours:    acc.workHours + e.workHours,
-    travelHours:  acc.travelHours + e.travelHours,
-    totalHours:   acc.totalHours + e.totalHours,
-    daysWorked:   acc.daysWorked + e.daysWorked,
-  }), { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 });
+  const m = payrollMetrics({ entries, periodStart: startIso, periodEnd: endIso });
+
+  const hrs = n => (Number(n) || 0).toFixed(2);
+  const t   = m.totals;
+
+  let status, statusKind;
+  if      (!t.employees)         { status = 'No Timesheets';  statusKind = 'mute';  }
+  else if (t.pendingHours > 0.001) { status = `${hrs(t.pendingHours)} h Pending`; statusKind = 'amber'; }
+  else                           { status = 'All Approved';   statusKind = 'green'; }
 
   return {
-    periodStart: startIso,
-    periodEnd:   endIso,
-    employees,
-    totals,
+    key: 'payroll', name: 'Payroll', accent: '#22d3ee',
+    status, statusKind,
+    periodStart: m.periodStart,
+    periodEnd:   m.periodEnd,
+    metrics: [
+      {
+        label: 'Employees', value: String(t.employees), tone: 'blue',
+        // Employee-days, not calendar days: each worker's distinct dates, added
+        // across the crew. Two people on one date is two.
+        sub: `${t.daysWorked} employee-day${t.daysWorked === 1 ? '' : 's'} logged`,
+      },
+      { label: 'Hours',        value: hrs(t.workHours),   tone: 'plain', sub: 'worked on the job' },
+      { label: 'Travel',       value: hrs(t.travelHours), tone: 'mute',
+        sub: `to site ${hrs(t.travelToSite)} · to shop ${hrs(t.travelToShop)}` },
+      { label: 'Total Hours',  value: hrs(t.totalHours),  tone: 'green', sub: 'work + travel' },
+      {
+        label: 'Prevailing Hrs', value: hrs(t.pwHours), tone: 'amber',
+        sub: 'work on prevailing-wage jobs',
+      },
+      {
+        label: 'Standard Hrs', value: hrs(t.stdHours), tone: 'plain',
+        sub: 'everything at the standard rate',
+      },
+      {
+        label: 'Pending Hrs', value: hrs(t.pendingHours),
+        tone: t.pendingHours > 0.001 ? 'amber' : 'green',
+        sub: t.pendingOff ? `${t.pendingOff} time-off request${t.pendingOff === 1 ? '' : 's'} too` : 'awaiting approval',
+      },
+      {
+        label: 'Approved Hrs', value: hrs(t.approvedHours), tone: 'green',
+        sub: t.approvedOff ? `${t.approvedOff} time-off entr${t.approvedOff === 1 ? 'y' : 'ies'} too` : 'signed off',
+      },
+    ],
+    rows: m.employees.map(e => ({
+      name:          e.username,
+      meta:          e.divisions.length ? e.divisions.join(' · ') : '',
+      daysWorked:    e.daysWorked,
+      workHours:     e.workHours,
+      travelToSite:  e.travelToSite,
+      travelToShop:  e.travelToShop,
+      travelHours:   e.travelHours,
+      totalHours:    e.totalHours,
+      pwHours:       e.pwHours,
+      stdHours:      e.stdHours,
+      pendingHours:  e.pendingHours,
+      approvedHours: e.approvedHours,
+      pendingOff:    e.pendingOff,
+      approvedOff:   e.approvedOff,
+      hasPending:    e.hasPending,
+    })),
+    total: {
+      name:          `Totals · ${t.employees} employee${t.employees === 1 ? '' : 's'}`,
+      meta:          '',
+      workHours:     t.workHours,
+      travelToSite:  t.travelToSite,
+      travelToShop:  t.travelToShop,
+      travelHours:   t.travelHours,
+      totalHours:    t.totalHours,
+      pwHours:       t.pwHours,
+      stdHours:      t.stdHours,
+      pendingHours:  t.pendingHours,
+      approvedHours: t.approvedHours,
+      pendingOff:    t.pendingOff,
+      approvedOff:   t.approvedOff,
+      hasPending:    t.pendingHours > 0.001,
+      isTotal:       true,
+    },
   };
 }
 
@@ -1382,32 +1587,9 @@ function mockReport() {
     ok: true,
     generatedAt: new Date().toISOString(),
 
-    snapshot: {
-      hero: mockHero(),
-
-      divisions: [
-        {
-          key: 'trucking', name: 'Trucking', accent: '#ef4444',
-          status: '—', statusKind: 'mute',
-          kpis: [
-            { label: 'Active Hauls',  value: '—' },
-            { label: 'Loads · Wk',    value: '—' },
-            { label: 'Invoiced · Wk', value: '—' },
-            { label: 'Unbilled',      value: '—' },
-          ],
-        },
-        {
-          key: 'intercompany', name: 'Intercompany Billing', accent: '#a78bfa',
-          status: '—', statusKind: 'mute',
-          kpis: [
-            { label: 'Unbilled · Trucking', value: '—' },
-            { label: 'Unbilled · Dust',     value: '—' },
-            { label: 'AR 30+ Days',         value: '—' },
-            { label: 'Top Customer',        value: '—' },
-          ],
-        },
-      ],
-    },
+    // Every division now carries its own section, so the snapshot is the four
+    // company-wide KPIs and nothing else.
+    snapshot: { hero: mockHero() },
 
     // One entry per job-running division, each carrying that division's
     // metric strip + project table. Empty until the live build fills them in.
@@ -1430,12 +1612,22 @@ function mockReport() {
       status: '—', statusKind: 'mute',
       metrics: [], rows: [],
     },
+    trucking: {
+      key: 'trucking', name: 'Trucking', accent: '#ef4444',
+      status: '—', statusKind: 'mute',
+      metrics: [], rows: [],
+    },
+    intercompany: {
+      key: 'intercompany', name: 'Intercompany Billing', accent: '#a78bfa',
+      status: '—', statusKind: 'mute',
+      metrics: [], rows: [], total: null,
+    },
 
     payroll: {
-      periodStart: null,
-      periodEnd:   null,
-      employees:   [],
-      totals:      { employees: 0, workHours: 0, travelHours: 0, totalHours: 0, daysWorked: 0 },
+      key: 'payroll', name: 'Payroll', accent: '#22d3ee',
+      status: '—', statusKind: 'mute',
+      periodStart: null, periodEnd: null,
+      metrics: [], rows: [], total: null,
     },
   };
 }
@@ -1467,42 +1659,17 @@ module.exports = async (req, res) => {
   // '—' rather than blanking the report. If the entire build throws —
   // DB unreachable, missing config — we keep the mock placeholders.
   if (payload.companyCode && process.env.DATABASE_URL) {
-    const sql       = neon(process.env.DATABASE_URL);
-    const company   = payload.companyCode;
-    const weekStart = startOfWeekISO(new Date());
-    const weekEnd   = addDaysISO(weekStart, 7);
+    const sql     = neon(process.env.DATABASE_URL);
+    const company = payload.companyCode;
 
-    try {
-      report.snapshot.hero = await buildHero(sql, company);
-    } catch (err) {
-      console.error('[executive/report] hero build failed:', err.message);
-    }
-
-    // Trucking and Intercompany still read as snapshot tiles. A failed builder
-    // leaves the mock '—' placeholder for that tile (rather than overwriting it
-    // with null) so the grid layout stays intact. Every other division gets a
-    // full section of its own, further down.
-    const liveTiles = await Promise.all([
-      buildTruckingTile(sql, company, weekStart, weekEnd).catch(e => {
-        console.error('[executive/report] trucking tile failed:', e.message); return null;
-      }),
-      buildIntercompanyTile(sql, company).catch(e => {
-        console.error('[executive/report] intercompany tile failed:', e.message); return null;
-      }),
-    ]);
-    const [truckingLive, icLive] = liveTiles;
-
-    report.snapshot.divisions = report.snapshot.divisions.map(tile => {
-      if (tile.key === 'trucking'     && truckingLive) return truckingLive;
-      if (tile.key === 'intercompany' && icLive)       return icLive;
-      return tile;
-    });
-
-    // Division sections. The project divisions come as a set; Quarry and Dust
-    // each build their own, since neither runs jobs and each mirrors a different
-    // page. A builder that fails leaves the mock's empty placeholder, so one bad
-    // division cannot blank the report.
-    const [livePortfolios, liveQuarry, liveDust, liveInventory, livePayroll] = await Promise.all([
+    // Division sections. The project divisions come as a set; every other
+    // division builds its own, since none of them runs jobs and each mirrors a
+    // different page. A builder that fails leaves the mock's empty placeholder,
+    // so one bad division cannot blank the report.
+    const [
+      livePortfolios, liveQuarry, liveDust, liveTrucking, liveIc,
+      liveInventory, livePayroll,
+    ] = await Promise.all([
       buildDivisionPortfolios(sql, company).catch(err => {
         console.error('[executive/report] portfolios build failed:', err.message); return null;
       }),
@@ -1511,6 +1678,12 @@ module.exports = async (req, res) => {
       }),
       buildDustPortfolio(sql, company).catch(err => {
         console.error('[executive/report] dust portfolio failed:', err.message); return null;
+      }),
+      buildTruckingPortfolio(sql, company).catch(err => {
+        console.error('[executive/report] trucking portfolio failed:', err.message); return null;
+      }),
+      buildIcPortfolio(sql, company).catch(err => {
+        console.error('[executive/report] intercompany portfolio failed:', err.message); return null;
       }),
       buildRubberInventory(sql, company).catch(err => {
         console.error('[executive/report] inventory build failed:', err.message); return null;
@@ -1522,12 +1695,22 @@ module.exports = async (req, res) => {
     if (Array.isArray(livePortfolios) && livePortfolios.length) {
       report.portfolios = livePortfolios;
     }
-    if (liveQuarry) report.quarry = liveQuarry;
-    if (liveDust)   report.dust   = liveDust;
+    if (liveQuarry)   report.quarry      = liveQuarry;
+    if (liveDust)     report.dust        = liveDust;
+    if (liveTrucking) report.trucking    = liveTrucking;
+    if (liveIc)       report.intercompany = liveIc;
+
+    // The hero runs last: its two intercompany KPIs are the Intercompany
+    // section's own figures, so it needs that section built first.
+    try {
+      report.snapshot.hero = await buildHero(sql, company, liveIc ? liveIc.summary : null);
+    } catch (err) {
+      console.error('[executive/report] hero build failed:', err.message);
+    }
     if (Array.isArray(liveInventory)) {
       report.inventory = liveInventory;
     }
-    if (livePayroll && Array.isArray(livePayroll.employees)) {
+    if (livePayroll && Array.isArray(livePayroll.rows)) {
       report.payroll = livePayroll;
     }
 
