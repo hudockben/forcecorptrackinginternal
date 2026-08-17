@@ -198,6 +198,76 @@ const FAKE_DUST_ROWS = [
 const FAKE_DUST_COMPANIES = [{ name: 'Acme Aggregates', ub_rate: 2 }];
 const FAKE_DUST_UB_RATE = 1.5;
 
+// ── Trucking: the fct_truck_division blob, the source the page reads ──
+// Revenue is total_hours × haul_fee, so these are exact:
+//   Kiewit  8h × $120 = $960 (paid) + 6h × $120 = $720 (invoiced, unpaid)
+//   Hanson  4h × $110 = $440 (not invoiced)
+// Total 18 hours, $2,120, over 3 hauls in 2026.
+const FAKE_TRUCK_DIVISION = [
+  {
+    id: 'td1', actual_date: '2026-03-04', task_number: 'T-1', driver: 'R. Kelso', unit: '304',
+    customer: 'Kiewit', total_hours: 8, haul_fee: 120,
+    invoice_sent_date: '2026-03-10', date_paid: '2026-03-25',
+  },
+  {
+    id: 'td2', actual_date: '2026-03-11', task_number: 'T-2', driver: 'R. Kelso', unit: '307',
+    customer: 'Kiewit', total_hours: 6, haul_fee: 120,
+    invoice_sent_date: '2026-03-20', date_paid: null,
+  },
+  {
+    id: 'td3', actual_date: '2026-04-02', task_number: 'T-3', driver: 'D. Yost', unit: '304',
+    customer: 'Hanson', total_hours: 4, haul_fee: 110,
+    invoice_sent_date: null, date_paid: null,
+  },
+  // Prior year, so it feeds only the year-over-year comparison: 10h × $100.
+  { id: 'td0', actual_date: '2025-06-01', driver: 'R. Kelso', unit: '304',
+    customer: 'Kiewit', total_hours: 10, haul_fee: 100 },
+];
+
+// ── Intercompany: the fct_intercompany_billing_entries blob ──
+// The truck rate is $130/hr from the rates blob; dust bills v1 + v2 + gallons at
+// the customer's UB rate ($2 for Acme via dust_companies).
+//   ic1 trucking  8h × $130 = $1,040 IC, $960 customer   (paid)
+//   ic2 trucking  6h × $130 =   $780 IC, $720 customer   (sent, unpaid)
+//   ic3 dust      $1,200 + $0 + 500 gal × $2 = $2,200 IC (not invoiced)
+//   ic4 flat-total dust-other-billing → its own total, $450 (paid)
+// ic2dup re-sends ic2 with a later sent_at, so the dedup must drop the original
+// rather than bill the hours twice.
+const FAKE_IC_BILLING = [
+  {
+    id: 'ic1', source: 'trucking', source_id: 'td1', company_name: 'Kiewit',
+    actual_date: '2026-03-04', actual_start: '06:00', total_hours: 8, total: 960,
+    sent_at: '2026-03-05T10:00:00Z',
+    invoice_sent_date: '2026-03-10', payment_received_date: '2026-03-25',
+  },
+  {
+    id: 'ic2', source: 'trucking', source_id: 'td2', company_name: 'Kiewit',
+    actual_date: '2026-03-11', actual_start: '06:00', total_hours: 6, total: 720,
+    sent_at: '2026-03-12T10:00:00Z',
+    invoice_sent_date: '2026-03-20', payment_received_date: null,
+  },
+  {
+    // Same (source, source_id) as ic2 — a re-send. Deduped away.
+    id: 'ic2dup', source: 'trucking', source_id: 'td2', company_name: 'Kiewit',
+    actual_date: '2026-03-11', actual_start: '06:00', total_hours: 6, total: 720,
+    sent_at: '2026-03-13T10:00:00Z',
+    invoice_sent_date: '2026-03-20', payment_received_date: null,
+  },
+  {
+    id: 'ic3', source: 'dust', source_id: 'dust-1', company_name: 'Acme Aggregates',
+    actual_date: '2026-03-02', location: 'Route 22', vehicle1: 'DT-1',
+    total_hours: 8, total: 2200, v1_total: 1200, v2_total: 0, gallons_ub: 500,
+    sent_at: '2026-03-03T10:00:00Z',
+    invoice_sent_date: null, payment_received_date: null,
+  },
+  {
+    id: 'ic4', source: 'dust-other-billing', company_name: 'Acme Aggregates',
+    actual_date: '2026-05-01', total: 450, total_hours: 0,
+    invoice_sent_date: '2026-05-05', payment_received_date: '2026-05-20',
+  },
+];
+const FAKE_IC_RATES = { truck: 130 };
+
 // ── Timesheet entries for the payroll section ──
 // p1 (Franklin Regional Tennis Court) is flagged prevailing wage below; p3 is
 // not, and the dust job has no prevailing-wage concept at all.
@@ -255,6 +325,15 @@ function fakeSql(strings, ...values) {
     }
     if (key === `${COMPANY}:fct_kiewit_projects_index`) {
       return Promise.resolve([{ value: { ids: FAKE_KIEWIT.map(p => p.id) } }]);
+    }
+    if (key === `${COMPANY}:fct_truck_division`) {
+      return Promise.resolve([{ value: FAKE_TRUCK_DIVISION }]);
+    }
+    if (key === `${COMPANY}:fct_intercompany_billing_entries`) {
+      return Promise.resolve([{ value: FAKE_IC_BILLING }]);
+    }
+    if (key === `${COMPANY}:fct_intercompany_rates`) {
+      return Promise.resolve([{ value: FAKE_IC_RATES }]);
     }
     const QUARRY_BLOBS = {
       [`${COMPANY}:fct_quarry_sales`]:         FAKE_QUARRY_SALES,
@@ -395,13 +474,6 @@ const res = {
     console.log(`  ${k.label.padEnd(28)} = ${String(k.value).padEnd(14)} ${k.delta || ''}`);
   }
 
-  console.log('\ndivision tiles:');
-  for (const t of payload.snapshot.divisions) {
-    console.log(`  ${t.name.padEnd(24)} status=${t.status}`);
-    for (const k of t.kpis) {
-      console.log(`     ${k.label.padEnd(22)} = ${String(k.value).padEnd(14)} ${k.sub || ''}`);
-    }
-  }
 
   console.log('\ndivision portfolios:');
   for (const d of (payload.portfolios || [])) {
@@ -434,6 +506,22 @@ const res = {
     }
   }
 
+  const logSection = (key, extra) => {
+    const d = payload[key];
+    if (!d) return;
+    console.log(`\n${key} — status=${d.status} ${extra ? extra(d) : ''}`);
+    for (const m of (d.metrics || [])) {
+      console.log(`     ${m.label.padEnd(24)} = ${String(m.value).padEnd(14)} ${m.sub || ''}`);
+    }
+    for (const r of [...(d.rows || []), d.total].filter(Boolean)) {
+      console.log('     · ' + Object.entries(r)
+        .filter(([k, v]) => !['name', 'meta', 'isTotal'].includes(k) && typeof v !== 'object')
+        .map(([k, v]) => `${k}=${v}`).join(' ') + `   [${r.name}]`);
+    }
+  };
+  logSection('trucking',     d => `(${d.entryCount} entries, ${d.year})`);
+  logSection('intercompany', d => `(${d.entryCount} entries, ${d.year}, ${d.duplicates} dup, $${d.truckRate}/hr)`);
+
   if (payload.payroll) {
     const pr = payload.payroll;
     console.log(`\npayroll — status=${pr.status} (${pr.periodStart} → ${pr.periodEnd})`);
@@ -457,12 +545,12 @@ const res = {
   else if (heroActive.value !== '8') fail(`hero Active Projects = ${heroActive.value} (expected 8, incl. kiewit)`);
   else                           pass(`hero Active Projects = ${heroActive.value} (turf + paving + kiewit)`);
 
-  // Turf / Paving / Kiewit are portfolio sections now, not snapshot tiles —
-  // their numbers would otherwise be reported twice on one page.
-  const tileKeys = payload.snapshot.divisions.map(d => d.key);
-  const strayTiles = tileKeys.filter(k => ['turf', 'paving', 'kiewit'].includes(k));
-  if (strayTiles.length) fail('job divisions still have snapshot tiles: ' + strayTiles.join(', '));
-  else pass('snapshot tiles cover the non-job divisions only: ' + tileKeys.join(', '));
+  // Every division has a section of its own now, so nothing is a snapshot tile —
+  // a division reported in both places would be reported twice on one page.
+  if (payload.snapshot.divisions) {
+    fail('the snapshot still carries division tiles: '
+      + payload.snapshot.divisions.map(d => d.key).join(', '));
+  } else pass('the snapshot is the company-wide KPIs only — no division tiles left');
 
   const portfolios = payload.portfolios || [];
   const byKey = k => portfolios.find(d => d.key === k);
@@ -639,6 +727,99 @@ const res = {
 
     if ((dust.metrics || []).length !== 8) fail(`dust has ${(dust.metrics || []).length} metrics (expected 8)`);
     else pass('dust carries the home dashboard\'s KPIs plus the invoice picture');
+  }
+
+  // ── Trucking ──
+  // Revenue is total_hours × haul_fee: Kiewit 8×120 + 6×120 = $1,680 over 14 h,
+  // Hanson 4×110 = $440 over 4 h. 2025 held one 10 h haul at $100 = $1,000.
+  const tr = payload.trucking;
+  const trMetric = label => (tr && tr.metrics || []).find(m => m.label === label);
+  if (!tr) fail('trucking section missing');
+  else {
+    const kiewit = (tr.rows || []).find(r => r.name === 'Kiewit');
+    const hanson = (tr.rows || []).find(r => r.name === 'Hanson');
+    if (!kiewit || Math.abs(kiewit.revenue - 1680) > 0.01 || Math.abs(kiewit.hours - 14) > 0.01) {
+      fail(`Kiewit revenue/hours = ${kiewit && kiewit.revenue}/${kiewit && kiewit.hours} (expected 1680/14)`);
+    } else pass(`trucking: Kiewit $${kiewit.revenue} over ${kiewit.hours} h (hours × haul fee)`);
+    if (!kiewit || Math.abs(kiewit.paid - 960) > 0.01 || Math.abs(kiewit.awaiting - 720) > 0.01) {
+      fail(`Kiewit paid/awaiting = ${kiewit && kiewit.paid}/${kiewit && kiewit.awaiting} (expected 960/720)`);
+    } else pass(`trucking: Kiewit $${kiewit.paid} paid, $${kiewit.awaiting} invoiced and unpaid`);
+    if (!hanson || Math.abs(hanson.uninvoiced - 440) > 0.01) {
+      fail(`Hanson uninvoiced = ${hanson && hanson.uninvoiced} (expected 440)`);
+    } else pass(`trucking: Hanson's $${hanson.uninvoiced} has not been invoiced`);
+
+    const rev = trMetric('Total Revenue');
+    if (!rev || rev.value !== '$2,120.00') fail(`trucking Total Revenue = ${rev && rev.value} (expected $2,120.00)`);
+    else pass(`trucking Total Revenue = ${rev.value} — ${rev.sub}`);
+    // The page compares against the previous year with data, not "last year".
+    if (!rev || !/\+112\.0% vs 2025/.test(rev.sub || '')) {
+      fail(`trucking year-over-year = "${rev && rev.sub}" (expected +112.0% vs 2025)`);
+    } else pass('trucking: revenue carries its year-over-year against the last year with data');
+    const fee = trMetric('Avg Haul Fee');
+    if (!fee || fee.value !== '$116.67') fail(`trucking Avg Haul Fee = ${fee && fee.value} (expected $116.67 — the mean rate, not revenue ÷ hours)`);
+    else pass(`trucking Avg Haul Fee = ${fee.value}, the mean rate across entries`);
+    if (tr.year !== '2026') fail(`trucking year = ${tr.year} (expected 2026)`);
+    else pass(`trucking scopes to ${tr.year}, the latest year with entries`);
+    if ((tr.metrics || []).length !== 8) fail(`trucking has ${(tr.metrics || []).length} metrics (expected 8)`);
+    else pass('trucking carries the dashboard KPIs plus the Financials averages');
+  }
+
+  // ── Intercompany ──
+  // Intercompany bills trucking at the rate in the rates blob ($130/hr here, not
+  // the $121 default) and dust at v1 + v2 + gallons × the customer's UB rate.
+  // ic2dup re-sends ic2, and must be collapsed rather than billed twice.
+  const ic = payload.intercompany;
+  const icMetric = label => (ic && ic.metrics || []).find(m => m.label === label);
+  if (!ic) fail('intercompany section missing');
+  else {
+    if (ic.duplicates !== 1 || ic.entryCount !== 4) {
+      fail(`intercompany saw ${ic.entryCount} entries / ${ic.duplicates} duplicates (expected 4 / 1)`);
+    } else pass(`intercompany: the re-sent entry is collapsed — ${ic.entryCount} entries, ${ic.duplicates} duplicate dropped`);
+    if (ic.truckRate !== 130) fail(`intercompany truck rate = ${ic.truckRate} (expected 130 from the rates blob, not the 121 default)`);
+    else pass(`intercompany bills trucking at $${ic.truckRate}/hr from the saved rates blob`);
+
+    const truckIc = icMetric('Trucking IC — YTD');
+    if (!truckIc || truckIc.value !== '$1,820.00') fail(`Trucking IC = ${truckIc && truckIc.value} (expected $1,820.00 = 14 h × $130)`);
+    else pass(`intercompany Trucking IC = ${truckIc.value} (14 h × $130, the duplicate not counted twice)`);
+    const dustIc = icMetric('Dust Control IC — YTD');
+    // 1200 + 0 + 500 gal × $2 (Acme's own rate) = 2200, plus a $450 flat total.
+    if (!dustIc || dustIc.value !== '$2,650.00') fail(`Dust IC = ${dustIc && dustIc.value} (expected $2,650.00)`);
+    else pass(`intercompany Dust IC = ${dustIc.value} — gallons at the customer's own UB rate, plus a flat-total row`);
+    const custRev = icMetric('Customer Revenue — YTD');
+    if (!custRev || custRev.value !== '$4,330.00') fail(`Customer Revenue = ${custRev && custRev.value} (expected $4,330.00)`);
+    else pass(`intercompany Customer Revenue = ${custRev.value}, apart from the $4,470.00 billed between companies`);
+
+    // Outstanding is the two halves added: uninvoiced work plus invoiced-unpaid.
+    const outstanding = icMetric('Outstanding IC');
+    if (!outstanding || outstanding.value !== '$2,980.00') fail(`Outstanding IC = ${outstanding && outstanding.value} (expected $2,980.00)`);
+    else pass(`intercompany Outstanding = ${outstanding.value} = $2,200 uninvoiced + $780 unpaid`);
+    const notInv = icMetric('Not Yet Invoiced');
+    const await_ = icMetric('Awaiting Payment');
+    if (!notInv || notInv.value !== '$2,200.00' || !await_ || await_.value !== '$780.00') {
+      fail(`the two halves = ${notInv && notInv.value} / ${await_ && await_.value} (expected $2,200.00 / $780.00)`);
+    } else pass('intercompany splits outstanding into not-yet-invoiced and awaiting-payment');
+
+    const kiewitIc = (ic.rows || []).find(r => r.name === 'Kiewit');
+    if (!kiewitIc || Math.abs(kiewitIc.ic - 1820) > 0.01 || Math.abs(kiewitIc.revenue - 1680) > 0.01) {
+      fail(`Kiewit IC/revenue = ${kiewitIc && kiewitIc.ic}/${kiewitIc && kiewitIc.revenue} (expected 1820/1680)`);
+    } else pass(`intercompany: Kiewit costs $${kiewitIc.ic} between companies against $${kiewitIc.revenue} billed out`);
+    if (!ic.total || Math.abs(ic.total.ic - 4470) > 0.01) {
+      fail(`intercompany total IC = ${ic.total && ic.total.ic} (expected 4470)`);
+    } else pass(`intercompany: totals row carries $${ic.total.ic}`);
+    if ((ic.metrics || []).length !== 8) fail(`intercompany has ${(ic.metrics || []).length} metrics (expected 8)`);
+    else pass('intercompany carries the dashboard\'s six KPIs plus both halves of outstanding');
+
+    // The two hero KPIs report the same money as this section. They used to come
+    // from the mirror table, which keeps the duplicates the blob's loader drops
+    // and has no payment_received_date, so the page could show two answers.
+    const heroAr      = payload.snapshot.hero.find(k => /^AR · /.test(k.label));
+    const heroUnbilled = payload.snapshot.hero.find(k => k.label === 'Unbilled Intercompany');
+    if (!heroAr || heroAr.value !== '$780') {
+      fail(`hero AR = ${heroAr && heroAr.value} (expected $780, the section's awaiting-payment figure)`);
+    } else pass(`hero ${heroAr.label} = ${heroAr.value} — the same invoice the section reports unpaid`);
+    if (!heroUnbilled || heroUnbilled.value !== '$2,200') {
+      fail(`hero Unbilled = ${heroUnbilled && heroUnbilled.value} (expected $2,200, the section's not-invoiced figure)`);
+    } else pass(`hero Unbilled Intercompany = ${heroUnbilled.value} — the same entry the section reports uninvoiced`);
   }
 
   // ── Payroll ──
