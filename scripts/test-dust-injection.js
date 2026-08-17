@@ -586,6 +586,72 @@ function entry(over = {}) {
       store.dce.get(dustRowId(42)).gallons_ub === 6000);
   }
 
+  // ── The invoice stays with the haul it was raised for ───────────────────
+  {
+    console.log('\n[a removed haul does not hand its invoice to the next one]');
+    const { sql, store } = makeSql({
+      ...CONFIG,
+      companies: [...CONFIG.companies, { id: 'co-ant', name: 'Antero', v1_rate: 145, v2_rate: null }],
+    });
+    const day = entry({ start_time: '05:00', end_time: '15:00' });
+    await insertDustTrackingRows(sql, CO, day, [
+      { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00', gallons_ub: 4000 },
+      { company: 'Antero', start_time: '10:00', end_time: '15:00', gallons_ub: 2000 },
+    ]);
+    // The dust office invoices haul 1.
+    Object.assign(store.dce.get(dustRowId(42)), {
+      inv_number: 'INV-77', inv_status: 'sent', cm_approval: 'MB',
+    });
+    // A correction on the same customer keeps it…
+    const same = await insertDustTrackingRows(sql, CO, day, [
+      { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00', gallons_ub: 4500 },
+      { company: 'Antero', start_time: '10:00', end_time: '15:00', gallons_ub: 2000 },
+    ]);
+    assert('a correction keeps the invoice on its own haul',
+      same[0].inv_number === 'INV-77' && same[0].inv_status === 'sent');
+    // …but Antero sliding into the vacated id does not inherit CNX's invoice.
+    const moved = await insertDustTrackingRows(sql, CO, day, [
+      { company: 'Antero', location: 'Bear Hollow', start_time: '05:00', end_time: '15:00', gallons_ub: 6000 },
+    ]);
+    assert('the surviving haul takes the vacated id', moved[0].id === dustRowId(42));
+    assert('with a clean invoice sub-row',
+      moved[0].inv_number === '' && moved[0].inv_status === '' && moved[0].cm_approval === '',
+      JSON.stringify([moved[0].inv_number, moved[0].inv_status, moved[0].cm_approval]));
+    assert('and it is the customer that was left', moved[0].company === 'Antero');
+  }
+
+  // ── A stray id is not a haul ─────────────────────────────────────────────
+  {
+    console.log('\n[rows under an id that names no haul]');
+    const { sql, store } = makeSql(CONFIG);
+    await insertDustTrackingRows(sql, CO, entry(), [{ location: 'Deer Lick Compressor' }]);
+    // A Date.now()-stamped leftover, or a row a failed prune left behind.
+    store.dce.set('tsd-42-1737059382000', {
+      id: 'tsd-42-1737059382000', company: 'CNX', gallons_ub: '9999',
+    });
+    const back = await dustSplitForEntry(sql, CO, entry());
+    assert('the day still reads as one haul',
+      back.rows.length === 1 && back.rows[0].id === dustRowId(42),
+      JSON.stringify(back.rows.map(r => r.id)));
+    assert('the stray row is not offered as a second one',
+      !back.rows.some(r => r.gallons_ub === '9999'));
+    // …and the next save prunes it, like any row this split no longer has.
+    await insertDustTrackingRows(sql, CO, entry(), [{ location: 'Deer Lick Compressor' }]);
+    assert('and it is taken out of the table on the next save',
+      !store.dce.has('tsd-42-1737059382000'));
+  }
+
+  // ── Blank is blank, whitespace included ──────────────────────────────────
+  {
+    console.log('\n[a gallons figure nobody has set yet]');
+    assert('a whitespace-only gallons figure is blank, not zero',
+      validateDustInjection({ gallons_ub: '  ' }).rows[0].gallons_ub === '');
+    assert('a whitespace-only rate is blank too',
+      validateDustInjection({ v1_rate: ' ' }).rows[0].v1_rate === '');
+    assert('and a real zero still means zero',
+      validateDustInjection({ gallons_ub: '0' }).rows[0].gallons_ub === 0);
+  }
+
   // ── The customer picker a split leg chooses from ─────────────────────────
   console.log('\n[the customers a leg can be pointed at]');
   {

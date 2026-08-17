@@ -891,6 +891,78 @@ function entry(over = {}) {
     assert('both are mirrored', store.tde.has(rows[0].id) && store.tde.has(rows[1].id));
   }
 
+  // ── An invoice belongs to a haul, not to a slot ──────────────────────────
+  // Leg ids are positional: remove the first haul of a two-haul day and the
+  // second is rewritten under the first one's id. The office's QB number and
+  // paid date must not ride along to a customer who was never invoiced.
+  {
+    console.log('\n[the invoice stays with the haul it was raised for]');
+    const { sql, store } = makeSql({ drivers: [] });
+    const day = entry();
+    await insertTruckingRows(sql, CO, day, {
+      haul_fee: 90, rows: [
+        { company: 'Acme Materials', start_time: '07:00', end_time: '11:15' },
+        { company: 'Derry Stone',    start_time: '11:15', end_time: '15:30' },
+      ],
+    });
+    // The office invoices haul 1 and marks it paid.
+    const blobRows = store.appData.get(BLOB_KEY);
+    const first = blobRows.find(r => r.id === truckingRowId(42));
+    Object.assign(first, { qb_invoice: 'QB-1234', invoice_status: 'Paid', date_paid: '2026-07-10' });
+    store.appData.set(BLOB_KEY, blobRows);
+
+    // Correcting the day's hours must not disturb it — same customer, same slot.
+    const same = await insertTruckingRows(sql, CO, day, {
+      haul_fee: 95, rows: [
+        { company: 'Acme Materials', start_time: '07:00', end_time: '11:15' },
+        { company: 'Derry Stone',    start_time: '11:15', end_time: '15:30' },
+      ],
+    });
+    assert('a correction keeps the invoice on the haul it belongs to',
+      same[0].qb_invoice === 'QB-1234' && same[0].invoice_status === 'Paid' && same[0].date_paid === '2026-07-10');
+
+    // Now haul 1 is removed. Derry Stone slides into its id — and must arrive
+    // with a clean invoice sub-row, not Acme's paid one.
+    const moved = await insertTruckingRows(sql, CO, day, {
+      haul_fee: 95, rows: [{ company: 'Derry Stone', start_time: '07:00', end_time: '15:30' }],
+    });
+    assert('the surviving haul takes the vacated id', moved[0].id === truckingRowId(42));
+    assert('but not the invoice raised against the haul that left',
+      moved[0].qb_invoice === '' && moved[0].date_paid === '' && moved[0].invoice_status === 'Unpaid',
+      JSON.stringify([moved[0].qb_invoice, moved[0].invoice_status, moved[0].date_paid]));
+    assert('and it is the customer that was left', moved[0].customer === 'Derry Stone');
+  }
+
+  // ── The lunch break has to come off SOMEWHERE ────────────────────────────
+  {
+    console.log('\n[a lunch break bigger than the first haul]');
+    const { sql } = makeSql({ drivers: [] });
+    // 07:00–15:30 is 8.5 h of clock; computed_hours 8.0 means half an hour of
+    // lunch. Split so the first haul is shorter than the break itself.
+    const rows = await insertTruckingRows(sql, CO, entry(), {
+      haul_fee: 90, rows: [
+        { start_time: '07:00', end_time: '07:15' },   // 0.25 h — cannot absorb 0.5
+        { company: 'Derry Stone', start_time: '07:15', end_time: '15:30' },
+      ],
+    });
+    assert('the first haul bills nothing rather than negative hours', rows[0].total_hours === 0);
+    assert('and what it could not absorb comes off the next haul',
+      rows[1].total_hours === 8, String(rows[1].total_hours));
+    assert('so the day still adds up to what payroll approved',
+      rows[0].total_hours + rows[1].total_hours === 8);
+  }
+
+  // ── Blank is blank, whitespace included ──────────────────────────────────
+  {
+    console.log('\n[a fee nobody has set yet]');
+    assert('an empty fee stays empty', validateTruckingInjection({ haul_fee: '' }).fields.haul_fee === '');
+    assert('a whitespace-only fee is empty too, not $0/hr',
+      validateTruckingInjection({ haul_fee: '  ' }).fields.haul_fee === '',
+      JSON.stringify(validateTruckingInjection({ haul_fee: '  ' }).fields.haul_fee));
+    assert('and a real zero is still a real zero',
+      validateTruckingInjection({ haul_fee: '0' }).fields.haul_fee === 0);
+  }
+
   // ── Bulk approve must stay out of the split ──────────────────────────────
   // One card covers a week of days for a whole crew: one unit, one window or one
   // customer cannot speak for them, so its body carries the fee and the division

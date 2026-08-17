@@ -269,6 +269,51 @@ async function run() {
     icIds.includes('ic1') && icIds.includes('ic3'), JSON.stringify(icIds));
   assert('and a manual row\'s entry is never touched', icIds.includes('ic5'));
 
+  // ── An out-of-date page cannot quietly un-bill a split day ───────────────
+  // A payroll tab cached from before splitting sends the old flat shape — no
+  // `rows` key at all — which parses as one derive-everything haul. Applying it
+  // would prune every other haul and its Intercompany billing, off a page that
+  // never knew they existed. The read side stays old-client-friendly; the write
+  // side refuses.
+  console.log('\n[a stale page editing a split day]');
+  {
+    // Put the day back to two hauls first.
+    await call('POST', { action: 'resplit', id: dustId }, {
+      trucking: { haul_fee: 135, unit: 'Distributor Truck 4000', rows: [
+        { start_time: '05:00', end_time: '10:00' }, { company: 'Antero', start_time: '10:00', end_time: '15:00' }] },
+      dust: { rows: [
+        { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00', gallons_ub: 4000 },
+        { company: 'Antero', location: 'Bear Hollow', start_time: '10:00', end_time: '15:00', gallons_ub: 2000 }] },
+    }, ADMIN);
+    const before = (await q(`SELECT id FROM dust_control_entries WHERE id LIKE $1`, [tsd + '%'])).rows.length;
+    assert('two hauls posted', before === 2);
+
+    const stale = await call('POST', { action: 'resplit', id: dustId }, {
+      trucking: { haul_fee: 135, division: '', unit: 'Distributor Truck 4000' },
+      dust: { company_man: 'Steve Quinn', location: 'Deer Lick Compressor', gallons_ub: 6000 },
+    }, ADMIN);
+    assert('the edit is refused', stale.statusCode === 409, JSON.stringify(stale.body));
+    assert('naming how many hauls the day actually has',
+      stale.body && stale.body.posted_haul_count === 2, JSON.stringify(stale.body));
+    assert('and nothing is taken away',
+      (await q(`SELECT id FROM dust_control_entries WHERE id LIKE $1`, [tsd + '%'])).rows.length === 2 &&
+      mine(await blob(TRUCK_BLOB), tst).length === 2);
+
+    // The same body against a day that only ever had one haul is fine — that is
+    // every bulk approval and every unsplit re-edit.
+    const oneHaul = await call('POST', { action: 'resplit', id: dustId }, {
+      trucking: { haul_fee: 135, unit: 'Distributor Truck 4000', rows: [{ start_time: '05:00', end_time: '15:00' }] },
+      dust: { rows: [{ location: 'Deer Lick Compressor', start_time: '05:00', end_time: '15:00', gallons_ub: 6000 }] },
+    }, ADMIN);
+    assert('collapsing it deliberately still works', oneHaul.statusCode === 200);
+    const after = await call('POST', { action: 'resplit', id: dustId }, {
+      trucking: { haul_fee: 140, division: '', unit: 'Distributor Truck 4000' },
+      dust: { company_man: 'Steve Quinn', location: 'Deer Lick Compressor', gallons_ub: 6500 },
+    }, ADMIN);
+    assert('and an old-shape edit of a one-haul day goes through', after.statusCode === 200,
+      JSON.stringify(after.body));
+  }
+
   // ── Un-approve takes every leg back ──────────────────────────────────────
   console.log('\n[un-approving a split day]');
   // Split it again first, so there is more than one leg on each side to sweep.

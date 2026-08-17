@@ -5325,6 +5325,14 @@
       const active = document.activeElement;
       const focusId = (active && active.id) ? active.id : '';
       const caret = (active && typeof active.selectionStart === 'number') ? active.selectionStart : null;
+      // The box being typed in right now keeps what is in it. The model is
+      // written on every keystroke for most boxes, but Hours derives its value
+      // and the browser's own datalist editing sits between the two — and a
+      // pre-fill landing mid-word would otherwise put the box back to whatever
+      // the model last saw, with the caret restored on top so it still looked
+      // live. Applies to the haul boxes; the trucking half is covered by `keep`.
+      const focusValue = (focusId.startsWith('hl_') && active && typeof active.value === 'string')
+        ? active.value : null;
 
       document.getElementById('truckingFields').innerHTML =
         truckingFieldsHtml(row) + haulSectionHtml();
@@ -5341,6 +5349,7 @@
       if (focusId) {
         const again = document.getElementById(focusId);
         if (again) {
+          if (focusValue != null && again.value !== focusValue) again.value = focusValue;
           again.focus();
           // Number and time inputs throw on setSelectionRange; the focus is the
           // part that matters, so losing the caret on those is not worth a
@@ -5494,6 +5503,10 @@
       }
       leg.v1_rate = dustRateFor(leg.vehicle1, co.v1_rate);
       leg.v2_rate = dustRateFor(leg.vehicle2, co.v2_rate);
+      // The customer these values were derived from. Not one of HAUL_FIELDS, so
+      // it is never sent — it exists only so haulSetCompany can tell a real
+      // change of customer from a re-blur. See the note there.
+      leg.derivedFrom = leg.company;
       return leg;
     }
 
@@ -5511,10 +5524,13 @@
       const co    = dustCoFor(leg.company);
       const split = count > 1;
       const hours = haulHours(leg);
-      // A trucking day whose boxes are on screen unsplit gets the header too,
-      // because that is where the hours it will actually bill are spelled out —
-      // the window in these boxes is not it (see haulTallyRefresh).
-      const header = split || !dust;
+      // A haul whose boxes are on screen unsplit gets the header too, because
+      // that is where the hours it will actually bill are spelled out — the
+      // window in these boxes is not it (see haulTallyRefresh). That matters
+      // most on a DUST day, whose boxes are always shown: narrowing the window
+      // there moves the Dust Control row's hours and not the Truck Tracking
+      // row's, and the header is what says so before it is typed.
+      const header = true;
       const men   = co.men || [];
       const locs  = (co.locations || []).map(l => l.name);
       // Said once, on the leg it applies to: when the customer isn't on the list
@@ -5562,6 +5578,7 @@
           <label style="${TK_LABEL}"><span>Customer <span style="font-weight:400;color:var(--muted)">(who this haul bills to)</span></span>
             <input type="text" id="hl_${leg.key}_company" list="hl_coOptions" autocomplete="off" maxlength="200"
               value="${escapeHtml(leg.company)}" placeholder="Customer" style="${TK_INPUT}"
+              ${haulIn(leg, 'company')}
               onchange="haulSetCompany(${leg.key}, this.value)"></label>
           <div style="display:grid;grid-template-columns:${split ? '1fr 1fr 1fr 1.1fr' : '1fr 1fr 1fr'};gap:8px;align-items:start">
             <label style="${TK_LABEL}"><span>Start</span>
@@ -5724,6 +5741,11 @@
     function haulSet(leg, field, domId, value) {
       if (haulTouchedHas(leg, field)) return;
       leg[field] = legStr(value);
+      // A customer written from a posted row brought that row's rates with it,
+      // so it is what those values are derived from — otherwise the first blur
+      // of the box would re-derive them from the customer's defaults and quietly
+      // overwrite a rate the office had corrected.
+      if (field === 'company') leg.derivedFrom = leg[field];
       const el = document.getElementById(`hl_${leg.key}_${domId}`);
       if (el) el.value = leg[field];
     }
@@ -5761,9 +5783,13 @@
       if (!leg) return;
       const hrs = Number(value);
       const s   = legMins(leg.start_time);
-      if (!Number.isFinite(hrs) || hrs <= 0 || s == null) { haulTallyRefresh(); return; }
-      const capped = Math.min(hrs, 24);
-      leg.end_time = legHhmm(s + Math.round(capped * 60));
+      // 24 or more is not a haul: the clock wraps at a day, so it would set the
+      // end equal to the start and leave the box reading zero hours — then
+      // refuse the save for a haul that has both times filled in. Left alone,
+      // so the number they typed stays visible and the times still say what
+      // they said.
+      if (!Number.isFinite(hrs) || hrs <= 0 || hrs >= 24 || s == null) { haulTallyRefresh(); return; }
+      leg.end_time = legHhmm(s + Math.round(hrs * 60));
       haulTouched.add(leg.key + '|end_time');
       const el = document.getElementById(`hl_${leg.key}_end`);
       if (el) el.value = leg.end_time;
@@ -5779,8 +5805,15 @@
     function haulSetCompany(key, value) {
       const leg = haulLegBy(key);
       if (!leg) return;
-      const before = legStr(leg.company).trim().toLowerCase();
+      // Compared against the customer the haul's derived values were last built
+      // from, NOT against leg.company — the box writes the model on every
+      // keystroke (so a pre-fill landing mid-word cannot revert it), which means
+      // by the time this fires on blur the model already holds the new name and
+      // a self-comparison would always say "unchanged", leaving the previous
+      // customer's rate on the new customer's haul.
+      const before = legStr(leg.derivedFrom).trim().toLowerCase();
       leg.company = legStr(value);
+      leg.derivedFrom = leg.company;
       haulTouched.add(leg.key + '|company');
       if (before !== leg.company.trim().toLowerCase()) {
         const co = dustCoFor(leg.company);

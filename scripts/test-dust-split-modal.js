@@ -105,7 +105,10 @@ console.log('[the payload the modal and the server agree on]');
 function makeSandbox(entry, options, companies) {
   const els = new Map();
   const el = id => {
-    if (!els.has(id)) els.set(id, { id, value: '', textContent: '', innerHTML: '', style: {}, className: '' });
+    if (!els.has(id)) els.set(id, {
+      id, value: '', textContent: '', innerHTML: '', style: {}, className: '',
+      focus() {}, setSelectionRange() {},
+    });
     return els.get(id);
   };
   const ctx = {
@@ -150,6 +153,8 @@ function makeSandbox(entry, options, companies) {
     run,
     legs: () => run('haulLegs'),
     call: (fn, ...args) => { ctx.__args = args; return run(`${fn}(...__args)`); },
+    // Park the caret in a stubbed box, the way a supervisor mid-word would.
+    focus: node => { ctx.document.activeElement = node; },
     el,
   };
 }
@@ -209,8 +214,15 @@ console.log('\n[splitting the day]');
   t.call('haulEdit', a.key, 'location', 'Deer Lick Compressor');
   t.call('haulEdit', a.key, 'gallons_ub', '4000');
   assert('picking a pad fills the state in', a.state === 'PA');
+  // The real event order: the box writes the model as it is typed (oninput),
+  // then commits on blur (onchange). A cascade that compared the model against
+  // itself would find "no change" here and leave the last customer's rate on
+  // the new customer's haul — which is exactly what a browser produces and a
+  // direct haulSetCompany call does not.
+  t.call('haulEdit', b.key, 'company', 'Antero');
   t.call('haulSetCompany', b.key, 'Antero');
-  assert('re-pointing a haul takes the other customer\'s rate', b.v1_rate === '145');
+  assert('re-pointing a haul takes the other customer\'s rate', b.v1_rate === '145',
+    `v1_rate=${b.v1_rate}`);
   // The escort belongs to the customer that was there before: a customer billed
   // no escort rate is not sent one, and is certainly not billed the last
   // customer's escort.
@@ -481,6 +493,77 @@ console.log('\n[hauls that would bill something odd]');
   assert('the survivor covers the whole day again',
     t2.legs().length === 1 && y.start_time === '07:00' && y.end_time === '15:30',
     JSON.stringify([y.start_time, y.end_time]));
+}
+
+console.log('\n[what is being typed survives a pre-fill landing]');
+{
+  // The lookup lands a moment after the modal opens, and re-renders the section
+  // from the model. Anything typed but not yet committed has to survive that:
+  // the box keeps its text and the caret, so a save cannot post a customer the
+  // approver had already replaced.
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  const leg = t.legs()[0];
+  // Typing goes into the model on every keystroke, not just on blur.
+  t.call('haulEdit', leg.key, 'company', 'Ant');
+  assert('a half-typed customer is already in the model', leg.company === 'Ant');
+  assert('and the box is bound to fire on input',
+    /id="hl_\$\{leg\.key\}_company"[\s\S]{0,260}\$\{haulIn\(leg, 'company'\)\}/.test(SRC));
+
+  // Mid-word, with focus in the box, a re-render must not put the old value back.
+  const box = t.el(`hl_${leg.key}_company`);
+  box.value = 'Anter';
+  box.selectionStart = 5;
+  t.focus(box);
+  t.call('truckingRenderFields', null);
+  assert('the box keeps what is in it across a re-render',
+    t.el(`hl_${leg.key}_company`).value === 'Anter',
+    t.el(`hl_${leg.key}_company`).value);
+}
+
+console.log('\n[hours that would fold the clock]');
+{
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  const leg = t.legs()[0];
+  t.call('haulSetHours', leg.key, '24');
+  assert('a 24-hour haul is refused rather than collapsed to zero',
+    leg.end_time === '15:00' && t.call('haulHours', leg) === 10,
+    JSON.stringify([leg.end_time, t.call('haulHours', leg)]));
+  t.call('haulSetHours', leg.key, '6');
+  assert('while an ordinary figure still moves the end', leg.end_time === '11:00');
+}
+
+console.log('\n[an unsplit dust day says what its truck row bills]');
+{
+  // A dust day always shows its haul boxes, so the window can be narrowed there
+  // — and the Truck Tracking row bills the day's hours regardless. The haul says
+  // so, rather than leaving the two tabs to disagree unannounced.
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  assert('the lone haul carries a header line',
+    /The whole day/.test(t.run('haulSectionHtml()')));
+  assert('with the hours its Truck Tracking row will actually bill',
+    /_truckOut/.test(t.run('haulSectionHtml()')));
+  t.call('haulTallyRefresh');
+  assert('spelled out in full',
+    /Truck Tracking bills the day: 10\.00 h/.test(t.el(`hl_${t.legs()[0].key}_truckOut`).textContent),
+    t.el(`hl_${t.legs()[0].key}_truckOut`).textContent);
+}
+
+console.log('\n[typing a customer, then blurring, still re-rates the haul]');
+{
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  t.call('haulAddLeg');
+  const [, b] = t.legs();
+  // Keystroke by keystroke, the way the box actually fires.
+  for (const partial of ['A', 'An', 'Ant', 'Ante', 'Anter', 'Antero']) {
+    t.call('haulEdit', b.key, 'company', partial);
+  }
+  assert('nothing is re-derived while they are still typing', b.v1_rate === '135');
+  t.call('haulSetCompany', b.key, 'Antero');
+  assert('and the blur re-rates the haul for its new customer', b.v1_rate === '145');
+  // Blurring again with no change must not disturb a rate they then corrected.
+  t.call('haulEdit', b.key, 'v1_rate', '160');
+  t.call('haulSetCompany', b.key, 'Antero');
+  assert('a second blur leaves a corrected rate alone', b.v1_rate === '160');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

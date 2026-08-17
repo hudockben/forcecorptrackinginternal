@@ -29,8 +29,8 @@
  * hours can be 4,000 gallons to one customer's pad and 2,000 to another's, and
  * each of those is its own invoice line with its own hours, gallons and rates.
  * So the approve modal lets the supervisor split the day into legs, and each leg
- * becomes one row here. The Truck Tracking row is NOT split — it bills the
- * driver's whole day at one haul fee, which is how that tab has always read it.
+ * becomes one row here — and one Truck Tracking row beside it, on the same legs,
+ * so the two tabs describe the same hauls.
  *
  * Both rows feed Intercompany billing, and they bill on different bases (haul
  * fee x hours over there, vehicle rates + gallons here). Whoever reconciles
@@ -113,17 +113,23 @@ function dustRowId(entryId, index = 1) {
   return n <= 1 ? `${dustRowIdPrefix(entryId)}row` : `${dustRowIdPrefix(entryId)}${n}`;
 }
 
-// The 1-based leg an injected id names, or null when the id isn't one of ours.
-function dustRowIndexFromId(rowId) {
-  const m = /^tsd-\d+-(row|[1-9]\d*)$/.exec(String(rowId || ''));
-  if (!m) return null;
-  return m[1] === 'row' ? 1 : Number(m[1]);
-}
-
 // The most legs one day can be split into. Taken from truck-injected.js rather
 // than restated: the two tabs post the same hauls, so a cap one side accepted
 // and the other refused would post half a split.
 const MAX_DUST_ROWS = MAX_INJECTED_LEGS;
+
+// The 1-based leg an injected id names, or null when the id names no leg this
+// module could have minted — including a number past the cap, which is what a
+// Date.now()-stamped leftover looks like. Bounded rather than clamped: a stray
+// row must not be read as a real haul, because dustSplitForEntry hands what it
+// returns to the approve modal, and anything the modal shows it saves.
+function dustRowIndexFromId(rowId) {
+  const m = /^tsd-\d+-(row|[1-9]\d*)$/.exec(String(rowId || ''));
+  if (!m) return null;
+  if (m[1] === 'row') return 1;
+  const n = Number(m[1]);
+  return (Number.isInteger(n) && n >= 2 && n <= MAX_DUST_ROWS) ? n : null;
+}
 
 // The timesheet entry a "tsd-<entryId>-<suffix>" row came from, or null when the
 // id isn't one of ours. Manually-added dust rows use uid() — a base-36 timestamp
@@ -169,6 +175,11 @@ function findStaleDustRows(rows, entriesById) {
       stale.push(id);
       continue;
     }
+    // An id carrying our prefix but naming no leg is not a haul: nothing here
+    // mints one, so it is a row a failed prune left behind. Sweeping it is the
+    // only thing that ever will — the tab refuses to delete payroll's rows, and
+    // its entry is alive, so every other test here passes it.
+    if (dustRowIndexFromId(id) == null) { stale.push(id); continue; }
     if (seen.has(id)) { stale.push(id); continue; }
     seen.add(id);
   }
