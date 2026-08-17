@@ -620,6 +620,29 @@ function entry(over = {}) {
     assert('and it is the customer that was left', moved[0].company === 'Antero');
   }
 
+  // ── A removal in Intercompany describes a haul, not a slot ──────────────
+  {
+    console.log('\n[the dust customer who arrives is not the one who was removed]');
+    const { sql, store } = makeSql({
+      ...CONFIG,
+      companies: [...CONFIG.companies, { id: 'co-ant', name: 'Antero', v1_rate: 145, v2_rate: null }],
+      appData: { [`${CO}:${IC_REMOVED_BLOB}`]: [{ source: 'dust', source_id: dustRowId(42) }] },
+    });
+    const day = entry({ start_time: '05:00', end_time: '15:00' });
+    await insertDustTrackingRows(sql, CO, day, [
+      { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00' },
+      { company: 'Antero', start_time: '10:00', end_time: '15:00' },
+    ]);
+    assert('an edit leaves the removal alone while the haul is still CNX\'s',
+      (store.appData.get(`${CO}:${IC_REMOVED_BLOB}`) || []).length === 1);
+    await insertDustTrackingRows(sql, CO, day, [
+      { company: 'Antero', location: 'Bear Hollow', start_time: '05:00', end_time: '15:00' },
+    ]);
+    assert('but the customer who moves in does not inherit it',
+      (store.appData.get(`${CO}:${IC_REMOVED_BLOB}`) || []).length === 0,
+      JSON.stringify(store.appData.get(`${CO}:${IC_REMOVED_BLOB}`)));
+  }
+
   // ── A stray id is not a haul ─────────────────────────────────────────────
   {
     console.log('\n[rows under an id that names no haul]');

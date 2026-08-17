@@ -1389,13 +1389,24 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   // correction would quietly bill the customer twice. The dust half of the pair
   // (insertDustTrackingRows) is gated the same way, so whichever half is chosen
   // survives an Edit Row.
-  if (flags.clearSuppression) {
-    for (const row of rows) {
-      try {
-        await clearIcSuppression(sql, companyCode, IC_SOURCE_TRUCKING, row.id);
-      } catch (err) {
-        console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
-      }
+  //
+  // A slot whose OCCUPANT changed is the third case, and it is not an editing
+  // decision at all. Remove the first haul of a two-haul day and the second is
+  // rewritten under the first one's id — so a removal somebody recorded in
+  // Intercompany against the first customer's haul would go on suppressing the
+  // second customer's, which has never been billed and now never would be, with
+  // nothing on screen to say why. The suppression described the haul that left.
+  const reoccupied = rows
+    .filter(row => {
+      const prev = priorById.get(row.id);
+      return prev && !sameHaul(prev.customer, row.customer);
+    })
+    .map(row => row.id);
+  for (const id of new Set([...(flags.clearSuppression ? rows.map(r => r.id) : []), ...reoccupied])) {
+    try {
+      await clearIcSuppression(sql, companyCode, IC_SOURCE_TRUCKING, id);
+    } catch (err) {
+      console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
     }
   }
   return rows;
@@ -2042,7 +2053,13 @@ async function insertDustTrackingLeg(sql, companyCode, entry, fields = {}, flags
   // Clearing the suppression here meant that correcting a gallons figure
   // silently un-deleted an entry somebody had removed in Intercompany, and the
   // only sign of it was the money reappearing.
-  if (flags.clearSuppression) {
+  //
+  // A slot whose OCCUPANT changed is the third case, and it is not an editing
+  // decision either: removing the first haul of a two-haul day rewrites the
+  // second under the first one's id, and a removal recorded in Intercompany
+  // against the customer who left would go on suppressing the customer who
+  // arrived — work that has never been billed and now never would be.
+  if (flags.clearSuppression || (prev && !sameCompany)) {
     try {
       await clearIcSuppression(sql, companyCode, IC_SOURCE_DUST, id);
     } catch (err) {

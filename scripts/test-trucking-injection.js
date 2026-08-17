@@ -933,6 +933,35 @@ function entry(over = {}) {
     assert('and it is the customer that was left', moved[0].customer === 'Derry Stone');
   }
 
+  // ── A removal in Intercompany describes a haul, not a slot ──────────────
+  {
+    console.log('\n[the customer who arrives is not the one who was removed]');
+    const REMOVED = `${CO}:fct_intercompany_removed_entries`;
+    const { sql, store } = makeSql({
+      drivers: [],
+      // Somebody removed haul 1 — Acme's — from Intercompany billing.
+      appData: { [REMOVED]: [{ source: 'trucking', source_id: 'tst-42-row' }] },
+    });
+    const day = entry();
+    await insertTruckingRows(sql, CO, day, {
+      haul_fee: 90, rows: [
+        { company: 'Acme Materials', start_time: '07:00', end_time: '11:15' },
+        { company: 'Derry Stone',    start_time: '11:15', end_time: '15:30' },
+      ],
+    });
+    assert('an edit leaves that removal alone while the haul is still Acme\'s',
+      (store.appData.get(REMOVED) || []).length === 1);
+
+    // Haul 1 is removed, so Derry Stone is rewritten under tst-42-row. It has
+    // never been billed, and must not inherit Acme's removal.
+    await insertTruckingRows(sql, CO, day, {
+      haul_fee: 90, rows: [{ company: 'Derry Stone', start_time: '07:00', end_time: '15:30' }],
+    });
+    assert('but the customer who moves in does not inherit it',
+      (store.appData.get(REMOVED) || []).length === 0,
+      JSON.stringify(store.appData.get(REMOVED)));
+  }
+
   // ── The lunch break has to come off SOMEWHERE ────────────────────────────
   {
     console.log('\n[a lunch break bigger than the first haul]');
