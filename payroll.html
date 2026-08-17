@@ -3657,7 +3657,7 @@
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
               ${!isPending && entryNeedsSplit(e) ? `<button class="row-btn approve" onclick="openSplitModalById('${e.id}','resplit')" title="Edit the cost tracking split injected from this entry">Edit Split</button>` : ''}
               ${!isPending && entryNeedsQuarry(e) ? `<button class="row-btn approve" onclick="openQuarryModalById('${e.id}','resplit')" title="Edit the quarry row injected from this entry">Edit Row</button>` : ''}
-              ${!isPending && entryNeedsTrucking(e) ? `<button class="row-btn approve" onclick="openTruckingModalById('${e.id}','resplit')" title="${e.division === 'dust' ? 'Edit the Dust Control + Truck Tracking rows posted from this entry' : 'Edit the Truck Tracking row (haul fee / division)'}">Edit Row</button>` : ''}
+              ${!isPending && entryNeedsTrucking(e) ? `<button class="row-btn approve" onclick="openTruckingModalById('${e.id}','resplit')" title="${e.division === 'dust' ? 'Edit the Dust Control + Truck Tracking rows posted from this entry — including splitting the day into hauls' : 'Edit the Truck Tracking rows posted from this entry — including splitting the day into hauls'}">Edit Row</button>` : ''}
               ${!isPending && (entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e)) ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and remove the injected cost rows">Un-approve</button>` : ''}
               <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
@@ -5141,25 +5141,29 @@
     // comes back late — the user closed the modal, or moved on to another day —
     // is dropped instead of writing one entry's haul fee and unit into the form
     // of another. What payroll has typed by the time a lookup lands is protected
-    // per box rather than per form: see dustTouched and truckingTouched.
+    // per box rather than per form: see haulTouched and truckingTouched.
     let truckingFetchSeq = 0;
-    // The Trucking division's own unit roster ({name, number}), used to offer
-    // the office's own unit names in the Unit box instead of leaving it free
-    // text that has to match them by luck — their tab looks a row's unit up by
-    // name to show its number, so "Truck 1000" or a stray space reads fine here
-    // and unrecognised there. Fetched once and lazily: a payroll session that
-    // never approves a haul never asks for it. It only ever fills the dropdown
-    // and the hint, never the input's value, so it cannot fight the staleness
-    // and dirty guards above.
-    let truckUnitRoster        = null;
-    let truckUnitRosterPromise = null;
-    function truckUnitRosterLoad() {
-      if (truckUnitRoster) return Promise.resolve(truckUnitRoster);
-      if (!truckUnitRosterPromise) {
+    // The Trucking division's own rosters, used to offer the office's own names
+    // rather than leaving these boxes free text that has to match them by luck:
+    //   units     ({name, number}) — their tab looks a row's unit up by name to
+    //             show its number, so "Truck 1000" or a stray space reads fine
+    //             here and unrecognised there.
+    //   customers (strings)        — the Customer column on a Truck Tracking row
+    //             is a dropdown off this list, and Intercompany matches a row to
+    //             a billed company BY NAME, so a haul split onto a customer
+    //             spelled differently here would simply never bill.
+    // Fetched once and lazily: a payroll session that never approves a haul never
+    // asks for them. They only ever fill dropdowns and the unit hint, never an
+    // input's value, so they cannot fight the staleness and touched guards above.
+    let truckLists        = null;   // { units: [{name, number}], customers: [string] }
+    let truckListsPromise = null;
+    function truckListsLoad() {
+      if (truckLists) return Promise.resolve(truckLists);
+      if (!truckListsPromise) {
         // Started inside a promise so that even a synchronous throw becomes a
-        // rejection the catch below swallows: the dropdown is a convenience, and
-        // nothing about it may stop the modal from opening.
-        truckUnitRosterPromise = Promise.resolve()
+        // rejection the catch below swallows: the dropdowns are a convenience,
+        // and nothing about them may stop the modal from opening.
+        truckListsPromise = Promise.resolve()
           .then(() => fetch('/api/truck-division?lists=1', { headers: authHeaders() }))
           .then(r => (r && r.ok ? r.json() : null))
           .then(j => {
@@ -5167,21 +5171,31 @@
             // hint quiet — warning that a unit is "not on the list" when the
             // list never arrived would be worse than saying nothing — and lets
             // the next open try again.
-            if (!j || !j.lists) { truckUnitRosterPromise = null; return null; }
+            if (!j || !j.lists) { truckListsPromise = null; return null; }
             const units = Array.isArray(j.lists.units) ? j.lists.units : [];
-            truckUnitRoster = units
-              // Older saves stored bare strings before units grew a number.
-              .map(u => (typeof u === 'string' ? { name: u, number: '' } : u))
-              .filter(u => u && u.name)
-              .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-            return truckUnitRoster;
+            const customers = Array.isArray(j.lists.customers) ? j.lists.customers : [];
+            truckLists = {
+              units: units
+                // Older saves stored bare strings before units grew a number.
+                .map(u => (typeof u === 'string' ? { name: u, number: '' } : u))
+                .filter(u => u && u.name)
+                .sort((a, b) => String(a.name).localeCompare(String(b.name))),
+              customers: customers
+                .map(c => (c && typeof c === 'object' ? c.name : c))
+                .filter(Boolean)
+                .map(String)
+                .sort((a, b) => a.localeCompare(b)),
+            };
+            return truckLists;
           })
-          .catch(() => { truckUnitRosterPromise = null; return null; });  // let the next open retry
+          .catch(() => { truckListsPromise = null; return null; });  // let the next open retry
       }
-      return truckUnitRosterPromise;
+      return truckListsPromise;
     }
+    const truckUnitRoster     = () => (truckLists && truckLists.units) || null;
+    const truckCustomerRoster = () => (truckLists && truckLists.customers) || [];
     function truckUnitOptionsHtml() {
-      return (truckUnitRoster || []).map(u =>
+      return (truckUnitRoster() || []).map(u =>
         `<option value="${escapeHtml(String(u.name))}">${escapeHtml(u.number ? '#' + u.number : '')}</option>`
       ).join('');
     }
@@ -5195,35 +5209,39 @@
       const val = String(input.value || '').trim();
       // Nothing to check against — the roster has not loaded, or this company
       // keeps no unit list — so there is nothing worth saying.
-      if (!val || !truckUnitRoster || !truckUnitRoster.length) { hint.textContent = ''; return; }
-      const hit = truckUnitRoster.find(u => String(u.name).toLowerCase() === val.toLowerCase());
+      const roster = truckUnitRoster();
+      if (!val || !roster || !roster.length) { hint.textContent = ''; return; }
+      const hit = roster.find(u => String(u.name).toLowerCase() === val.toLowerCase());
       hint.style.color   = hit ? 'var(--muted)' : '#fbbf24';
       hint.textContent   = hit
         ? (hit.number ? `Unit #${hit.number}` : 'On the Trucking unit list.')
         : 'Not on the Trucking unit list — saved as typed.';
     }
-    // ── The dust half of the same modal ───────────────────────────────────
-    // A dust customer haul posts a Dust Control Tracking row as well as the
-    // Truck Tracking one, and that tab has columns the trucking tab does not:
-    // the company man, the well pad, the state, both vehicles with their rates,
-    // and the UB gallons. Three of those only the approving supervisor knows;
-    // the rest follow from the customer, so they are offered pre-filled rather
-    // than asked for — the same cascade dust.html runs when the row is typed in
-    // by hand (setLocation fills the state, setVehicle fills the rate, the
-    // customer's default rate beating the vehicle's own).
+    // ── The hauls a day is split into ─────────────────────────────────────
+    // One timesheet day can be more than one haul. A driver's ten hours might be
+    // 4,000 gallons on one customer's pad and 2,000 on another's, or two loads
+    // for two customers with nothing to do with dust — and both offices bill
+    // those as two invoice lines, not one. So this half of the modal is a list of
+    // HAULS: the approving supervisor splits the day the same way the driver can
+    // split it across jobs on the timesheet, and each haul posts a row of its own
+    // in every tab this entry feeds.
     //
-    // One day can be more than one haul. A driver's ten hours might be 4,000
-    // gallons on one customer's pad and 2,000 on another's, and the dust office
-    // bills those as two invoice lines, not one. So this half of the modal is a
-    // list of LEGS: the approving supervisor splits the day the same way the
-    // driver can split it across jobs on the timesheet, and each leg posts its
-    // own row with its own customer, window, pad and gallons. The Truck Tracking
-    // row is not split — it bills the driver's whole day at one haul fee.
+    // What a haul carries depends on where it posts. Every entry that reaches
+    // this modal posts a Truck Tracking row per haul — the customer, the clock
+    // window and the haul fee. A DUST customer haul posts a Dust Control Tracking
+    // row alongside it, and that tab has columns the trucking tab does not: the
+    // company man, the well pad, the state, both vehicles with their rates, and
+    // the UB gallons. Three of those only the approving supervisor knows; the
+    // rest follow from the customer, so they are offered pre-filled rather than
+    // asked for — the same cascade dust.html runs when the row is typed in by
+    // hand (setLocation fills the state, setVehicle fills the rate, the
+    // customer's default rate beating the vehicle's own). isDustEntry() gates
+    // that half; entrySplits() gates the hauls themselves.
     //
-    // The legs are held as a model rather than read back off the inputs, because
+    // The hauls are held as a model rather than read back off the inputs, because
     // three things write to them: the approver, the cascades, and the per-entry
     // lookup (action=split) that lands after the modal is already on screen. The
-    // model is what survives a re-render; dustTouched is what stops any of the
+    // model is what survives a re-render; haulTouched is what stops any of the
     // other two overwriting an answer the approver has already given.
     let dustOptions   = null;   // the timesheet customer's men, pads, rates, equipment
     let dustCompanies = null;   // every dust customer, for a leg that names another
@@ -5236,26 +5254,55 @@
     //   'failed'  — it threw. Saving now would send the blank boxes as
     //               deliberate clears and wipe the posted rows, so saving is
     //               refused until the modal is reopened.
-    let dustRowLoad = 'none';
-    let dustLegs    = [];   // the model every dust box renders from
-    let dustLegSeq  = 0;    // monotonic: a removed leg's ids never come back
+    let rowLoad = 'none';
+    let haulLegs    = [];   // the model every haul box renders from
+    // Did a posted row put something on a haul that the timesheet alone would
+    // not have? Only then do a lone haul's boxes have anything to show.
+    let haulPrefilled = false;
+    let haulLegSeq  = 0;    // monotonic: a removed leg's ids never come back
     // "<leg key>|<field>" for every box the approver has typed in or picked in.
     // A late-arriving default never lands on one of these, and neither does a
     // cascade from another box.
-    const dustTouched = new Set();
+    const haulTouched = new Set();
     // Boxes in the trucking half they have touched. Same rule, different half:
     // those three are plain inputs rather than a model, so a re-render puts them
     // back the way the server's answer says — unless the approver got there
     // first, in which case their typing is restored on top.
     const truckingTouched = new Set();
+    // Which halves this entry fills. A dust customer haul posts rows in BOTH
+    // tabs, so its hauls carry the dust columns as well; a trucking entry posts
+    // Truck Tracking rows only, and its hauls carry just the customer, the
+    // window and the fee. Everything about splitting a day is common to the two
+    // — the same hauls, the same arithmetic, the same one-row-per-haul rule —
+    // which is why the leg model below is not the dust tab's any more.
     const isDustEntry = () => !!truckingEntry && truckingEntry.division === 'dust';
-    // Mirrors MAX_DUST_ROWS in api/lib/dust-injected.js, which refuses more.
-    const MAX_DUST_LEGS = 6;
+    const entrySplits = () => entryNeedsTrucking(truckingEntry);
+    // Which hauls show their boxes. A dust haul always does — the company man,
+    // the pad and the gallons have to be filled in whether or not the day was
+    // split. A trucking day shows none until it IS split: unsplit, everything
+    // its row needs is already in the three boxes above, and offering a second
+    // set invites a supervisor to "correct" a window that an unsplit row does
+    // not bill by.
+    //
+    // Once they HAVE answered a haul box, it stays on screen even if the day
+    // collapses back to one haul. Splitting a day, re-pointing the first haul at
+    // the customer it was really for, then removing the second would otherwise
+    // hide an override that is still being sent — and a box that is invisible
+    // and still saved is the worst of both. The fee is not an answer for this
+    // purpose: it is typed at the top of the modal on an unsplit day, and would
+    // pop the rest of the boxes open the moment anybody filled it in.
+    const haulAnswered = () => {
+      for (const k of haulTouched) if (!k.endsWith('|haul_fee')) return true;
+      return false;
+    };
+    const haulBoxesShown = () => isDustEntry() || haulLegs.length > 1 || haulAnswered() || haulPrefilled;
+    // Mirrors MAX_DUST_ROWS / MAX_INJECTED_LEGS on the server, which refuse more.
+    const MAX_HAUL_LEGS = 6;
     // haul_fee is the odd one out: it is a TRUCK Tracking column, not a dust
     // one. It lives on the leg because a split day posts a truck row per haul
     // too, and a haul billed to another customer can bill at another fee. On an
     // unsplit day it is the box at the top of the modal, bound to leg 1.
-    const DK_FIELDS = [
+    const HAUL_FIELDS = [
       'company', 'start_time', 'end_time', 'company_man', 'location', 'state',
       'gallons_ub', 'vehicle1', 'v1_rate', 'vehicle2', 'v2_rate', 'haul_fee',
     ];
@@ -5264,7 +5311,7 @@
     // legs can never be left behind by a re-render.
     //
     // Re-rendering is safe at any moment because everything on screen is held
-    // somewhere else: the dust legs in dustLegs, the trucking boxes the approver
+    // somewhere else: the hauls in haulLegs, the trucking boxes the approver
     // has touched in the DOM values captured here. Only the caret is lost, and
     // even that is put back — the pre-fill lookup lands a moment after the modal
     // opens, which is exactly when somebody may already be typing.
@@ -5280,14 +5327,14 @@
       const caret = (active && typeof active.selectionStart === 'number') ? active.selectionStart : null;
 
       document.getElementById('truckingFields').innerHTML =
-        truckingFieldsHtml(row) + dustFieldsHtml();
+        truckingFieldsHtml(row) + haulSectionHtml();
 
       for (const id of Object.keys(keep)) {
         const el = document.getElementById(id);
         if (el) el.value = keep[id];
       }
       truckUnitHintRefresh();
-      dustTallyRefresh();
+      haulTallyRefresh();
       // The note counts the rows this save will post, so adding a haul has to
       // re-say it or the modal claims one row while showing two.
       truckingNoteRefresh();
@@ -5305,17 +5352,17 @@
       }
     }
 
-    const DK_SPAN = 'grid-column:1 / -1';
+    const FULL_ROW = 'grid-column:1 / -1';
 
     // ── Leg model ─────────────────────────────────────────────────────────
-    const dkTouched  = (leg, field) => dustTouched.has(leg.key + '|' + field);
-    const dkFindLeg  = key => dustLegs.find(l => l.key === Number(key)) || null;
-    const dkStr      = v => (v == null ? '' : String(v));
+    const haulTouchedHas  = (leg, field) => haulTouched.has(leg.key + '|' + field);
+    const haulLegBy  = key => haulLegs.find(l => l.key === Number(key)) || null;
+    const legStr      = v => (v == null ? '' : String(v));
 
     // Minutes since midnight, and back. Overnight is handled the way dust.html's
     // own calc() handles it — a leg that ends before it starts ran past midnight
     // — so the hours shown here are the hours that tab will bill.
-    function dkMins(hhmm) {
+    function legMins(hhmm) {
       // Not anchored at the end: a TIME column can come back as "05:00:00", and
       // an hours figure that silently reads 0 is worse than one second of slop.
       const m = /^(\d{1,2}):(\d{2})/.exec(String(hhmm || ''));
@@ -5324,34 +5371,34 @@
       if (h > 23 || mi > 59) return null;
       return h * 60 + mi;
     }
-    function dkHhmm(mins) {
+    function legHhmm(mins) {
       const t = ((Math.round(mins) % 1440) + 1440) % 1440;
       return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
     }
-    function dustLegHours(leg) {
-      const s = dkMins(leg && leg.start_time), e = dkMins(leg && leg.end_time);
+    function haulHours(leg) {
+      const s = legMins(leg && leg.start_time), e = legMins(leg && leg.end_time);
       if (s == null || e == null) return 0;
       let d = e - s;
       if (d < 0) d += 1440;
       return Math.round(d / 60 * 100) / 100;
     }
-    const dustLegsHours = () => Math.round(dustLegs.reduce((t, l) => t + dustLegHours(l), 0) * 100) / 100;
+    const haulHoursAllocated = () => Math.round(haulLegs.reduce((t, l) => t + haulHours(l), 0) * 100) / 100;
     // The clock window on the timesheet — what the legs are carving up. Not
     // work+travel: travel logged outside the window never reaches these rows
     // (the Truck Tracking row is where it bills), so counting it here would
     // always read as under-allocated.
-    function dustEntryHours() {
+    function entryClockHours() {
       if (!truckingEntry) return 0;
-      return dustLegHours({ start_time: truckingEntry.start_time, end_time: truckingEntry.end_time });
+      return haulHours({ start_time: truckingEntry.start_time, end_time: truckingEntry.end_time });
     }
 
     // The customer on the timesheet. Taken from the lookup once it lands, which
     // resolves a renamed customer back to its current name; until then the label
     // the driver picked is the best answer there is, and it is what the Customer
     // box opens on rather than sitting blank for a moment.
-    function dustEntryCoName() {
+    function entryCustomerName() {
       const o = dustOptions || {};
-      return dkStr(o.company) || dkStr(truckingEntry && truckingEntry.job_label);
+      return legStr(o.company) || legStr(truckingEntry && truckingEntry.job_label);
     }
 
     // The customer a leg is filled in from: the one it names, falling back to the
@@ -5359,18 +5406,18 @@
     // text and save as typed — it just has nothing to offer.
     function dustCoFor(name) {
       const o = dustOptions || {};
-      const entryName = dustEntryCoName();
-      const want = dkStr(name).trim();
+      const entryName = entryCustomerName();
+      const want = legStr(name).trim();
       if (!want || want.toLowerCase() === entryName.trim().toLowerCase()) {
         return {
           name: entryName, known: !!o.known,
           v1_rate: o.v1_rate != null ? o.v1_rate : null,
           v2_rate: o.v2_rate != null ? o.v2_rate : null,
           men: o.men || [], locations: o.locations || [],
-          usual_vehicle2: dkStr(o.usual_vehicle2),
+          usual_vehicle2: legStr(o.usual_vehicle2),
         };
       }
-      const hit = (dustCompanies || []).find(c => dkStr(c.name).trim().toLowerCase() === want.toLowerCase());
+      const hit = (dustCompanies || []).find(c => legStr(c.name).trim().toLowerCase() === want.toLowerCase());
       if (!hit) return { name: want, known: false, v1_rate: null, v2_rate: null, men: [], locations: [], usual_vehicle2: '' };
       return {
         name: hit.name, known: true,
@@ -5388,219 +5435,269 @@
     // for an empty slot. The box has to show what the server would derive — it
     // sends whatever is in it, so a blank here is saved as a deliberate blank
     // and the server's own fallback never gets to fire.
-    function dkRateFor(vehicleName, coRate) {
-      const name = dkStr(vehicleName).trim();
+    function dustRateFor(vehicleName, coRate) {
+      const name = legStr(vehicleName).trim();
       if (!name) return '';
       if (coRate != null) return String(coRate);
       const eq = ((dustOptions || {}).equipment || [])
-        .find(e => dkStr(e.name).toLowerCase() === name.toLowerCase());
+        .find(e => legStr(e.name).toLowerCase() === name.toLowerCase());
       return (eq && eq.vehicle_rate != null) ? String(eq.vehicle_rate) : '';
     }
 
     // A leg built from an already-posted row: its own answers outright, blanks
     // included — an escort the approver deliberately cleared last time must not
     // be suggested back at them on the next edit.
-    function dustLegFromRow(row) {
-      const leg = { key: ++dustLegSeq };
-      for (const f of DK_FIELDS) leg[f] = dkStr(row[f]);
+    function haulLegFromDustRow(row) {
+      const leg = { key: ++haulLegSeq };
+      for (const f of HAUL_FIELDS) leg[f] = legStr(row[f]);
       return leg;
     }
 
     // The leg a fresh approve opens on: the whole day, the customer off the
     // timesheet, and whatever that customer implies. `after` seeds an added leg
     // from the one above it instead.
-    function dustFreshLeg(after) {
+    function haulFreshLeg(after) {
       const co = dustCoFor(after ? after.company : '');
-      const leg = { key: ++dustLegSeq };
-      for (const f of DK_FIELDS) leg[f] = '';
-      leg.company = after ? dkStr(after.company) : co.name;
+      const leg = { key: ++haulLegSeq };
+      for (const f of HAUL_FIELDS) leg[f] = '';
+      leg.company = after ? legStr(after.company) : co.name;
       if (after) {
         // Halve the leg above and hand this one the back half, so adding a leg
         // to a ten-hour day starts life as the 5/5 it usually is. Both windows
         // stay inside the day, and either can be corrected afterwards.
-        const s = dkMins(after.start_time), e = dkMins(after.end_time);
+        const s = legMins(after.start_time), e = legMins(after.end_time);
         if (s != null && e != null) {
           let span = e - s;
           if (span < 0) span += 1440;
-          const mid = dkHhmm(s + Math.round(span / 2));
+          const mid = legHhmm(s + Math.round(span / 2));
           leg.start_time = mid;
           leg.end_time   = after.end_time;
           after.end_time = mid;
           // The carve is the approver's own doing, so a pre-fill landing a
           // moment later must not put the leg above back to the whole day.
-          dustTouched.add(after.key + '|end_time');
+          haulTouched.add(after.key + '|end_time');
         }
         // The same truck runs the next pad unless the approver says otherwise,
         // and it hauls at the same fee until they say otherwise too.
-        leg.vehicle1 = dkStr(after.vehicle1);
-        leg.vehicle2 = dkStr(after.vehicle2);
-        leg.haul_fee = dkStr(after.haul_fee);
+        leg.vehicle1 = legStr(after.vehicle1);
+        leg.vehicle2 = legStr(after.vehicle2);
+        leg.haul_fee = legStr(after.haul_fee);
       } else {
-        leg.start_time = dkStr(truckingEntry && truckingEntry.start_time).slice(0, 5);
-        leg.end_time   = dkStr(truckingEntry && truckingEntry.end_time).slice(0, 5);
+        leg.start_time = legStr(truckingEntry && truckingEntry.start_time).slice(0, 5);
+        leg.end_time   = legStr(truckingEntry && truckingEntry.end_time).slice(0, 5);
         // The truck the driver logged on the timesheet. Payroll can correct it:
         // the driver's Unit box offers the TRUCKING office's roster, and dust
         // names its vehicles its own way ("Distributor Truck 4000").
-        leg.vehicle1 = dkStr(truckingEntry && truckingEntry.truck_unit);
+        leg.vehicle1 = legStr(truckingEntry && truckingEntry.truck_unit);
         // Nobody enters the escort on a timesheet — it follows from the customer.
         leg.vehicle2 = co.usual_vehicle2;
       }
-      leg.v1_rate = dkRateFor(leg.vehicle1, co.v1_rate);
-      leg.v2_rate = dkRateFor(leg.vehicle2, co.v2_rate);
+      leg.v1_rate = dustRateFor(leg.vehicle1, co.v1_rate);
+      leg.v2_rate = dustRateFor(leg.vehicle2, co.v2_rate);
       return leg;
     }
 
     // ── Rendering ─────────────────────────────────────────────────────────
-    function dkOptionsHtml(values) {
+    function haulOptionsHtml(values) {
       return (values || []).map(v => `<option value="${escapeHtml(String(v))}"></option>`).join('');
     }
-    // `oninput` handlers all route through dkEdit, so the model and the touched
+    // `oninput` handlers all route through haulEdit, so the model and the touched
     // set stay in step with the boxes without a listener having to guess which
     // leg an id belonged to.
-    const dkIn = (leg, field) => `oninput="dkEdit(${leg.key},'${field}',this.value)"`;
+    const haulIn = (leg, field) => `oninput="haulEdit(${leg.key},'${field}',this.value)"`;
 
-    function dustLegHtml(leg, idx, count) {
+    function haulLegHtml(leg, idx, count) {
+      const dust  = isDustEntry();
       const co    = dustCoFor(leg.company);
       const split = count > 1;
-      const hours = dustLegHours(leg);
+      const hours = haulHours(leg);
+      // A trucking day whose boxes are on screen unsplit gets the header too,
+      // because that is where the hours it will actually bill are spelled out —
+      // the window in these boxes is not it (see haulTallyRefresh).
+      const header = split || !dust;
       const men   = co.men || [];
       const locs  = (co.locations || []).map(l => l.name);
-      // Said once, on the leg it applies to: when the customer isn't in the dust
-      // lists there is nothing to offer, and the boxes are plain text that still
-      // save exactly as typed.
-      const unknown = (dustOptions && !co.known && dkStr(leg.company).trim())
-        ? `<span style="font-weight:400;color:#fbbf24">not in the dust company list — nothing offered below</span>`
+      // Said once, on the leg it applies to: when the customer isn't on the list
+      // the boxes are plain text that still save exactly as typed. Dust misses a
+      // whole set of per-customer offers with it; a trucking haul misses only the
+      // spelling the office bills under — and Intercompany matches a truck row to
+      // a company BY NAME, so a haul spelled its own way quietly never bills.
+      // Both stay silent while the roster is empty or still in flight: calling a
+      // real customer unknown because a list has not landed is worse than saying
+      // nothing, which is the rule truckUnitHintRefresh already follows.
+      const roster  = dust ? null : truckCustomerRoster();
+      const typed   = legStr(leg.company).trim();
+      const offList = dust
+        ? (dustOptions && !co.known && typed)
+        : (typed && roster && roster.length
+            && !roster.some(c => String(c).trim().toLowerCase() === typed.toLowerCase()));
+      const unknown = offList
+        ? `<span style="font-weight:400;color:#fbbf24">${dust
+            ? 'not in the dust company list — nothing offered below'
+            : 'not on the Trucking customer list — saved as typed'}</span>`
+        : '';
+      // A haul that ends before it starts ran past midnight, and both this modal
+      // and the tab it posts into add 24 hours to it. That is right for a night
+      // haul and catastrophic for a typo — 15:30 mistyped as 05:30 bills 18.25
+      // hours — so it is called out whenever the day it belongs to did NOT run
+      // overnight itself.
+      const wraps = legMins(leg.start_time) != null && legMins(leg.end_time) != null
+        && legMins(leg.end_time) < legMins(leg.start_time)
+        && !(truckingEntry && legMins(truckingEntry.end_time) < legMins(truckingEntry.start_time));
+      const overnight = wraps
+        ? `<span style="font-weight:400;color:#fbbf24">ends before it starts — billed as running past midnight</span>`
         : '';
       return `
-        <div style="${DK_SPAN};display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;
+        <div style="${FULL_ROW};display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;
                     ${split ? 'border:1px solid var(--border);border-radius:8px;padding:12px 14px' : ''}">
-          ${split ? `<div style="${DK_SPAN};display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          ${header ? `<div style="${FULL_ROW};display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <span style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#a5b4fc">
-              Haul ${idx + 1} of ${count}</span>
-            <span id="dk_${leg.key}_hoursOut" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums">${num2(hours)} h</span>
-            ${idx === 0 ? `<span id="dk_${leg.key}_truckOut" style="font-size:12px;color:var(--muted)"></span>` : ''}
-            ${unknown}
+              ${split ? `Haul ${idx + 1} of ${count}` : 'The whole day'}</span>
+            <span id="hl_${leg.key}_hoursOut" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums">${num2(hours)} h</span>
+            ${idx === 0 ? `<span id="hl_${leg.key}_truckOut" style="font-size:12px;color:var(--muted)"></span>` : ''}
+            ${unknown}${overnight}
             <div style="flex:1"></div>
-            <button type="button" class="split-row-del" onclick="dustRemoveLeg(${leg.key})">Remove</button>
-          </div>` : (unknown ? `<div style="${DK_SPAN};font-size:12px">${unknown}</div>` : '')}
+            ${split ? `<button type="button" class="split-row-del" onclick="haulRemoveLeg(${leg.key})">Remove</button>` : ''}
+          </div>` : ((unknown || overnight) ? `<div style="${FULL_ROW};font-size:12px">${unknown}${overnight}</div>` : '')}
           <label style="${TK_LABEL}"><span>Customer <span style="font-weight:400;color:var(--muted)">(who this haul bills to)</span></span>
-            <input type="text" id="dk_${leg.key}_company" list="dk_coOptions" autocomplete="off" maxlength="200"
+            <input type="text" id="hl_${leg.key}_company" list="hl_coOptions" autocomplete="off" maxlength="200"
               value="${escapeHtml(leg.company)}" placeholder="Customer" style="${TK_INPUT}"
-              onchange="dustSetCompany(${leg.key}, this.value)"></label>
+              onchange="haulSetCompany(${leg.key}, this.value)"></label>
           <div style="display:grid;grid-template-columns:${split ? '1fr 1fr 1fr 1.1fr' : '1fr 1fr 1fr'};gap:8px;align-items:start">
             <label style="${TK_LABEL}"><span>Start</span>
-              <input type="time" id="dk_${leg.key}_start" value="${escapeHtml(leg.start_time)}" style="${TK_INPUT}"
-                ${dkIn(leg, 'start_time')}></label>
+              <input type="time" id="hl_${leg.key}_start" value="${escapeHtml(leg.start_time)}" style="${TK_INPUT}"
+                ${haulIn(leg, 'start_time')}></label>
             <label style="${TK_LABEL}"><span>End</span>
-              <input type="time" id="dk_${leg.key}_end" value="${escapeHtml(leg.end_time)}" style="${TK_INPUT}"
-                ${dkIn(leg, 'end_time')}></label>
+              <input type="time" id="hl_${leg.key}_end" value="${escapeHtml(leg.end_time)}" style="${TK_INPUT}"
+                ${haulIn(leg, 'end_time')}></label>
             <label style="${TK_LABEL}"><span>Hours</span>
-              <input type="number" id="dk_${leg.key}_hours" min="0" step="0.25" value="${hours ? num2(hours) : ''}"
-                placeholder="0.00" style="${TK_INPUT}" onchange="dustSetHours(${leg.key}, this.value)"></label>
+              <input type="number" id="hl_${leg.key}_hours" min="0" step="0.25" value="${hours ? num2(hours) : ''}"
+                placeholder="0.00" style="${TK_INPUT}" onchange="haulSetHours(${leg.key}, this.value)"></label>
             ${split ? `<label style="${TK_LABEL}"><span>Haul Fee <span style="font-weight:400;color:var(--muted)">($/hr)</span></span>
-              <input type="number" id="dk_${leg.key}_haulFee" min="0" step="0.01" value="${escapeHtml(leg.haul_fee)}"
-                placeholder="0.00" style="${TK_INPUT}" ${dkIn(leg, 'haul_fee')}></label>` : ''}
+              <input type="number" id="hl_${leg.key}_haulFee" min="0" step="0.01" value="${escapeHtml(leg.haul_fee)}"
+                placeholder="0.00" style="${TK_INPUT}" ${haulIn(leg, 'haul_fee')}></label>` : ''}
           </div>
+          ${!dust ? '' : `
           <label style="${TK_LABEL}"><span>Company Man</span>
-            <input type="text" id="dk_${leg.key}_companyMan" list="dk_${leg.key}_manOptions" autocomplete="off" maxlength="200"
+            <input type="text" id="hl_${leg.key}_companyMan" list="hl_${leg.key}_manOptions" autocomplete="off" maxlength="200"
               value="${escapeHtml(leg.company_man)}" placeholder="Customer contact" style="${TK_INPUT}"
-              ${dkIn(leg, 'company_man')}>
-            <datalist id="dk_${leg.key}_manOptions">${dkOptionsHtml(men)}</datalist></label>
+              ${haulIn(leg, 'company_man')}>
+            <datalist id="hl_${leg.key}_manOptions">${haulOptionsHtml(men)}</datalist></label>
           <label style="${TK_LABEL}"><span>Location</span>
-            <input type="text" id="dk_${leg.key}_location" list="dk_${leg.key}_locOptions" autocomplete="off" maxlength="500"
+            <input type="text" id="hl_${leg.key}_location" list="hl_${leg.key}_locOptions" autocomplete="off" maxlength="500"
               value="${escapeHtml(leg.location)}" placeholder="Well pad / lease" style="${TK_INPUT}"
-              ${dkIn(leg, 'location')}>
-            <datalist id="dk_${leg.key}_locOptions">${dkOptionsHtml(locs)}</datalist></label>
+              ${haulIn(leg, 'location')}>
+            <datalist id="hl_${leg.key}_locOptions">${haulOptionsHtml(locs)}</datalist></label>
           <label style="${TK_LABEL}"><span>State <span style="font-weight:400;color:var(--muted)">(from the location)</span></span>
-            <input type="text" id="dk_${leg.key}_state" maxlength="50" value="${escapeHtml(leg.state)}"
-              placeholder="PA / WV / OH" style="${TK_INPUT}" ${dkIn(leg, 'state')}></label>
+            <input type="text" id="hl_${leg.key}_state" maxlength="50" value="${escapeHtml(leg.state)}"
+              placeholder="PA / WV / OH" style="${TK_INPUT}" ${haulIn(leg, 'state')}></label>
           <label style="${TK_LABEL}"><span>Gallons of UB</span>
-            <input type="number" id="dk_${leg.key}_gallons" min="0" step="0.1" value="${escapeHtml(leg.gallons_ub)}"
-              placeholder="0" style="${TK_INPUT}" ${dkIn(leg, 'gallons_ub')}></label>
+            <input type="number" id="hl_${leg.key}_gallons" min="0" step="0.1" value="${escapeHtml(leg.gallons_ub)}"
+              placeholder="0" style="${TK_INPUT}" ${haulIn(leg, 'gallons_ub')}></label>
           <label style="${TK_LABEL}"><span>Vehicle 1 <span style="font-weight:400;color:var(--muted)">(the unit)</span></span>
-            <input type="text" id="dk_${leg.key}_vehicle1" list="dk_vehOptions" autocomplete="off" maxlength="200"
+            <input type="text" id="hl_${leg.key}_vehicle1" list="hl_vehOptions" autocomplete="off" maxlength="200"
               value="${escapeHtml(leg.vehicle1)}" placeholder="e.g. Distributor Truck 4000" style="${TK_INPUT}"
-              ${dkIn(leg, 'vehicle1')}></label>
+              ${haulIn(leg, 'vehicle1')}></label>
           <label style="${TK_LABEL}"><span>Vehicle 1 Rate ($/hr)</span>
-            <input type="number" id="dk_${leg.key}_v1Rate" min="0" step="0.01" value="${escapeHtml(leg.v1_rate)}"
-              placeholder="0.00" style="${TK_INPUT}" ${dkIn(leg, 'v1_rate')}></label>
+            <input type="number" id="hl_${leg.key}_v1Rate" min="0" step="0.01" value="${escapeHtml(leg.v1_rate)}"
+              placeholder="0.00" style="${TK_INPUT}" ${haulIn(leg, 'v1_rate')}></label>
           <label style="${TK_LABEL}"><span>Vehicle 2 <span style="font-weight:400;color:var(--muted)">(escort)</span></span>
-            <input type="text" id="dk_${leg.key}_vehicle2" list="dk_vehOptions" autocomplete="off" maxlength="200"
+            <input type="text" id="hl_${leg.key}_vehicle2" list="hl_vehOptions" autocomplete="off" maxlength="200"
               value="${escapeHtml(leg.vehicle2)}" placeholder="none" style="${TK_INPUT}"
-              ${dkIn(leg, 'vehicle2')}></label>
+              ${haulIn(leg, 'vehicle2')}></label>
           <label style="${TK_LABEL}"><span>Vehicle 2 Rate ($/hr)</span>
-            <input type="number" id="dk_${leg.key}_v2Rate" min="0" step="0.01" value="${escapeHtml(leg.v2_rate)}"
-              placeholder="0.00" style="${TK_INPUT}" ${dkIn(leg, 'v2_rate')}></label>
+            <input type="number" id="hl_${leg.key}_v2Rate" min="0" step="0.01" value="${escapeHtml(leg.v2_rate)}"
+              placeholder="0.00" style="${TK_INPUT}" ${haulIn(leg, 'v2_rate')}></label>`}
         </div>`;
     }
 
-    function dustFieldsHtml() {
-      if (!isDustEntry()) return '';
-      const count = dustLegs.length;
+    function haulSectionHtml() {
+      if (!entrySplits()) return '';
+      const dust  = isDustEntry();
+      const count = haulLegs.length;
       const vehs  = ((dustOptions || {}).equipment || []).map(e => e.name);
-      const cos   = (dustCompanies || []).map(c => c.name);
-      const atMax = count >= MAX_DUST_LEGS;
+      // Whose customer list a haul is picked from: the dust office's own
+      // directory for a dust haul, the trucking office's roster for a trucking
+      // day. Both are only ever offered — the box saves what is typed.
+      const cos   = dust ? (dustCompanies || []).map(c => c.name) : truckCustomerRoster();
+      const atMax = count >= MAX_HAUL_LEGS;
+      // The heading names the tab (or tabs) the hauls below post into, so it is
+      // never a mystery which grid a box ends up in.
+      const heading = dust ? 'Dust Control Tracking' : 'Truck Tracking — hauls';
+      const subhead = dust
+        ? (count > 1 ? `${count} rows — one per haul` : 'one row')
+        : (count > 1 ? `${count} rows — one per haul` : 'one row for the whole day');
       return `
-        <div style="${DK_SPAN};margin-top:6px;padding-top:12px;border-top:1px solid var(--border);
+        <div style="${FULL_ROW};margin-top:6px;padding-top:12px;border-top:1px solid var(--border);
                     display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
           <span style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#a5b4fc">
-            Dust Control Tracking</span>
-          <span style="font-size:12px;color:var(--muted)">
-            ${count > 1 ? `${count} rows — one per haul` : 'one row'}</span>
+            ${heading}</span>
+          <span style="font-size:12px;color:var(--muted)">${subhead}</span>
         </div>
-        <datalist id="dk_vehOptions">${dkOptionsHtml(vehs)}</datalist>
-        <datalist id="dk_coOptions">${dkOptionsHtml(cos)}</datalist>
-        ${dustLegs.map((leg, i) => dustLegHtml(leg, i, count)).join('')}
-        <div style="${DK_SPAN};display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-          <button type="button" onclick="dustAddLeg()" ${atMax ? 'disabled' : ''}
+        ${dust ? `<datalist id="hl_vehOptions">${haulOptionsHtml(vehs)}</datalist>` : ''}
+        <datalist id="hl_coOptions">${haulOptionsHtml(cos)}</datalist>
+        ${haulBoxesShown() ? haulLegs.map((leg, i) => haulLegHtml(leg, i, count)).join('') : ''}
+        <div style="${FULL_ROW};display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <button type="button" onclick="haulAddLeg()" ${atMax ? 'disabled' : ''}
             style="background:var(--bg);border:1px solid var(--border);color:var(--text);
                    padding:0.45rem 0.85rem;border-radius:5px;font-size:0.78rem;
                    cursor:${atMax ? 'not-allowed' : 'pointer'};opacity:${atMax ? '0.5' : '1'}">
             ${count > 1 ? '+ Add another haul' : '+ Split this day across hauls'}</button>
-          <span id="dustTally" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums"></span>
+          <span id="haulTally" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums"></span>
+          ${count > 1 ? '' : `<span style="font-size:12px;color:var(--muted)">
+            Split it if the day ran to more than one customer${dust ? ' or pad' : ''}.</span>`}
         </div>`;
     }
 
     // The hours line under the legs. Says what the legs add up to against the
     // clock window they are carving, and colours it only when they disagree —
     // a gap between hauls is legitimate, so this reports rather than blocks.
-    function dustTallyRefresh() {
-      const el = document.getElementById('dustTally');
+    function haulTallyRefresh() {
+      const el = document.getElementById('haulTally');
       if (!el) return;
-      const legs = dustLegsHours();
-      const day  = dustEntryHours();
+      const legs = haulHoursAllocated();
+      const day  = entryClockHours();
       const off  = Math.round((legs - day) * 100) / 100;
       const ok   = Math.abs(off) < 0.01;
       el.style.color = ok ? 'var(--muted)' : '#fbbf24';
-      el.textContent = dustLegs.length > 1
+      el.textContent = haulLegs.length > 1
         ? (ok
-            ? `${num2(legs)} h across ${dustLegs.length} hauls — the whole clock window.`
-            : `${num2(legs)} h across ${dustLegs.length} hauls, ${num2(day)} h on the clock (${off > 0 ? '+' : ''}${num2(off)} h).`)
+            ? `${num2(legs)} h across ${haulLegs.length} hauls — the whole clock window.`
+            : `${num2(legs)} h across ${haulLegs.length} hauls, ${num2(day)} h on the clock (${off > 0 ? '+' : ''}${num2(off)} h).`)
         : (ok ? '' : `${num2(legs)} h on this row, ${num2(day)} h on the clock.`);
       // What haul 1's Truck Tracking row will bill, when that is not simply its
       // own window. The lunch break the timesheet deducted and the travel logged
       // outside the clock have to be carried by one of the hauls or the day
       // stops adding up; both go on the first, and this is where the approver is
       // told so rather than finding the two tabs disagreeing later.
-      const first = dustLegs[0];
-      const out   = first && document.getElementById(`dk_${first.key}_truckOut`);
+      //
+      // Unsplit, none of that arithmetic runs: the row bills the day's own hours
+      // whatever is in these boxes, so the line says so outright. A window
+      // "corrected" here would move the times on the row and not the money, and
+      // that is worth knowing before it is typed rather than after.
+      const first = haulLegs[0];
+      const out   = first && document.getElementById(`hl_${first.key}_truckOut`);
       if (out) {
         const work   = Number(truckingEntry && truckingEntry.computed_hours) || 0;
         const travel = Number(truckingEntry && truckingEntry.travel_hours) || 0;
         const lunch  = Math.max(0, Math.round((day - work) * 100) / 100);
-        const bills  = Math.round((Math.max(0, dustLegHours(first) - lunch) + travel) * 100) / 100;
-        const parts  = [];
-        if (travel) parts.push(`+${num2(travel)} travel`);
-        if (lunch)  parts.push(`−${num2(lunch)} lunch`);
-        out.textContent = parts.length
-          ? `· Truck Tracking ${num2(bills)} h (${parts.join(', ')})` : '';
+        if (haulLegs.length > 1) {
+          const bills = Math.round((Math.max(0, haulHours(first) - lunch) + travel) * 100) / 100;
+          const parts = [];
+          if (travel) parts.push(`+${num2(travel)} travel`);
+          if (lunch)  parts.push(`−${num2(lunch)} lunch`);
+          out.textContent = parts.length
+            ? `· Truck Tracking ${num2(bills)} h (${parts.join(', ')})` : '';
+        } else {
+          out.textContent = `· Truck Tracking bills the day: ${num2(Math.round((work + travel) * 100) / 100)} h`;
+        }
       }
       // The per-leg hours readouts and boxes follow the same numbers.
-      for (const leg of dustLegs) {
-        const h = dustLegHours(leg);
-        const out = document.getElementById(`dk_${leg.key}_hoursOut`);
+      for (const leg of haulLegs) {
+        const h = haulHours(leg);
+        const out = document.getElementById(`hl_${leg.key}_hoursOut`);
         if (out) out.textContent = `${num2(h)} h`;
-        const box = document.getElementById(`dk_${leg.key}_hours`);
+        const box = document.getElementById(`hl_${leg.key}_hours`);
         // Never while they are typing in it: rewriting "1" to "1.00" mid-keystroke
         // is how a box fights the person filling it in.
         if (box && document.activeElement !== box) box.value = h ? num2(h) : '';
@@ -5610,67 +5707,67 @@
     // ── Editing ───────────────────────────────────────────────────────────
     // Every box routes here: the model takes the value, the box is marked as
     // answered, and whatever follows from it is filled in.
-    function dkEdit(key, field, value) {
-      const leg = dkFindLeg(key);
+    function haulEdit(key, field, value) {
+      const leg = haulLegBy(key);
       if (!leg) return;
-      leg[field] = dkStr(value);
-      dustTouched.add(leg.key + '|' + field);
+      leg[field] = legStr(value);
+      haulTouched.add(leg.key + '|' + field);
       if (field === 'location') dustCascadeLocation(leg);
       if (field === 'vehicle1') dustCascadeVehicle(leg, 1);
       if (field === 'vehicle2') dustCascadeVehicle(leg, 2);
-      if (field === 'start_time' || field === 'end_time') dustTallyRefresh();
+      if (field === 'start_time' || field === 'end_time') haulTallyRefresh();
     }
 
     // Write a derived value into a box the approver has not answered themselves,
     // model and DOM together. A box they HAVE touched is their answer, and a
     // cascade must not argue with it.
-    function dkSet(leg, field, domId, value) {
-      if (dkTouched(leg, field)) return;
-      leg[field] = dkStr(value);
-      const el = document.getElementById(`dk_${leg.key}_${domId}`);
+    function haulSet(leg, field, domId, value) {
+      if (haulTouchedHas(leg, field)) return;
+      leg[field] = legStr(value);
+      const el = document.getElementById(`hl_${leg.key}_${domId}`);
       if (el) el.value = leg[field];
     }
 
     // Picking a location fills the state in, exactly as it does in dust.html.
     function dustCascadeLocation(leg) {
       const co  = dustCoFor(leg.company);
-      const val = dkStr(leg.location).trim();
+      const val = legStr(leg.location).trim();
       if (!val) return;
-      const hit = (co.locations || []).find(l => dkStr(l.name).toLowerCase() === val.toLowerCase());
-      if (hit && hit.state) dkSet(leg, 'state', 'state', hit.state);
+      const hit = (co.locations || []).find(l => legStr(l.name).toLowerCase() === val.toLowerCase());
+      if (hit && hit.state) haulSet(leg, 'state', 'state', hit.state);
     }
     // Picking a vehicle fills its rate in. The CUSTOMER's default for the slot
     // wins over the vehicle's own — the rule dust.html's setVehicle applies —
     // and the vehicle's rate is only the fallback when the customer has none.
     function dustCascadeVehicle(leg, num) {
       const co  = dustCoFor(leg.company);
-      const val = dkStr(num === 1 ? leg.vehicle1 : leg.vehicle2).trim();
+      const val = legStr(num === 1 ? leg.vehicle1 : leg.vehicle2).trim();
       if (!val) return;
       const coRate = num === 1 ? co.v1_rate : co.v2_rate;
       const eq = ((dustOptions || {}).equipment || [])
-        .find(e => dkStr(e.name).toLowerCase() === val.toLowerCase());
+        .find(e => legStr(e.name).toLowerCase() === val.toLowerCase());
       const rate = coRate != null ? coRate : (eq && eq.vehicle_rate != null ? eq.vehicle_rate : null);
       if (rate != null) {
-        if (num === 1) dkSet(leg, 'v1_rate', 'v1Rate', rate);
-        else           dkSet(leg, 'v2_rate', 'v2Rate', rate);
+        if (num === 1) haulSet(leg, 'v1_rate', 'v1Rate', rate);
+        else           haulSet(leg, 'v2_rate', 'v2Rate', rate);
       }
     }
 
     // Typing hours moves the end of the leg, because hours are what a supervisor
     // knows ("five hours at Bear Hollow") and the tab bills on the window. Needs
     // a start to count from; without one the box is left for the times to fill.
-    function dustSetHours(key, value) {
-      const leg = dkFindLeg(key);
+    function haulSetHours(key, value) {
+      const leg = haulLegBy(key);
       if (!leg) return;
       const hrs = Number(value);
-      const s   = dkMins(leg.start_time);
-      if (!Number.isFinite(hrs) || hrs <= 0 || s == null) { dustTallyRefresh(); return; }
+      const s   = legMins(leg.start_time);
+      if (!Number.isFinite(hrs) || hrs <= 0 || s == null) { haulTallyRefresh(); return; }
       const capped = Math.min(hrs, 24);
-      leg.end_time = dkHhmm(s + Math.round(capped * 60));
-      dustTouched.add(leg.key + '|end_time');
-      const el = document.getElementById(`dk_${leg.key}_end`);
+      leg.end_time = legHhmm(s + Math.round(capped * 60));
+      haulTouched.add(leg.key + '|end_time');
+      const el = document.getElementById(`hl_${leg.key}_end`);
       if (el) el.value = leg.end_time;
-      dustTallyRefresh();
+      haulTallyRefresh();
     }
 
     // Changing the customer re-points the whole leg. The men, the pad, the state
@@ -5679,12 +5776,12 @@
     // re-derived from the new customer's defaults — including over a rate that
     // was typed, because naming a different customer is the bigger statement of
     // the two. The truck stays: it is the driver's, not the customer's.
-    function dustSetCompany(key, value) {
-      const leg = dkFindLeg(key);
+    function haulSetCompany(key, value) {
+      const leg = haulLegBy(key);
       if (!leg) return;
-      const before = dkStr(leg.company).trim().toLowerCase();
-      leg.company = dkStr(value);
-      dustTouched.add(leg.key + '|company');
+      const before = legStr(leg.company).trim().toLowerCase();
+      leg.company = legStr(value);
+      haulTouched.add(leg.key + '|company');
       if (before !== leg.company.trim().toLowerCase()) {
         const co = dustCoFor(leg.company);
         // Only the timesheet customer's usual escort is known, so a leg moved to
@@ -5693,49 +5790,60 @@
         const escort = co.usual_vehicle2;
         for (const [f, v] of [['company_man', ''], ['location', ''], ['state', ''],
                               ['vehicle2', escort],
-                              ['v1_rate', dkRateFor(leg.vehicle1, co.v1_rate)],
-                              ['v2_rate', dkRateFor(escort, co.v2_rate)]]) {
+                              ['v1_rate', dustRateFor(leg.vehicle1, co.v1_rate)],
+                              ['v2_rate', dustRateFor(escort, co.v2_rate)]]) {
           leg[f] = v;
-          dustTouched.delete(leg.key + '|' + f);
+          haulTouched.delete(leg.key + '|' + f);
         }
       }
-      truckingRenderFields(dustLastTruckingRow);
+      truckingRenderFields(lastTruckingRow);
     }
 
-    function dustAddLeg() {
+    function haulAddLeg() {
       const msg = document.getElementById('truckingMsg');
-      if (dustLegs.length >= MAX_DUST_LEGS) {
+      if (haulLegs.length >= MAX_HAUL_LEGS) {
         msg.className = 'modal-msg error';
-        msg.textContent = `A day can be split across at most ${MAX_DUST_LEGS} hauls.`;
+        msg.textContent = `A day can be split across at most ${MAX_HAUL_LEGS} hauls.`;
         return;
       }
-      dustLegs.push(dustFreshLeg(dustLegs[dustLegs.length - 1] || null));
-      truckingRenderFields(dustLastTruckingRow);
+      haulLegs.push(haulFreshLeg(haulLegs[haulLegs.length - 1] || null));
+      truckingRenderFields(lastTruckingRow);
     }
 
-    function dustRemoveLeg(key) {
-      if (dustLegs.length <= 1) return;
-      const leg = dkFindLeg(key);
+    function haulRemoveLeg(key) {
+      if (haulLegs.length <= 1) return;
+      const leg = haulLegBy(key);
       if (!leg) return;
       // Give the hours back to the leg above, so removing the second half of a
       // day leaves the first half covering it rather than silently short.
-      const i = dustLegs.indexOf(leg);
-      const prev = dustLegs[i - 1];
-      if (prev && dkMins(prev.end_time) != null && dkMins(leg.end_time) != null
-          && dkStr(prev.end_time) === dkStr(leg.start_time)) {
+      const i = haulLegs.indexOf(leg);
+      const prev = haulLegs[i - 1];
+      if (prev && legMins(prev.end_time) != null && legMins(leg.end_time) != null
+          && legStr(prev.end_time) === legStr(leg.start_time)) {
         prev.end_time = leg.end_time;
-        dustTouched.add(prev.key + '|end_time');
+        haulTouched.add(prev.key + '|end_time');
+      } else {
+        // Removing the FIRST haul has no leg above to give the hours to, so they
+        // go forward instead. Without this, taking the first half of a day off
+        // leaves the survivor covering only the back half — hours that were
+        // approved, silently unbilled.
+        const next = haulLegs[i + 1];
+        if (next && legMins(next.start_time) != null && legMins(leg.start_time) != null
+            && legStr(next.start_time) === legStr(leg.end_time)) {
+          next.start_time = leg.start_time;
+          haulTouched.add(next.key + '|start_time');
+        }
       }
-      dustLegs.splice(i, 1);
-      for (const f of DK_FIELDS) dustTouched.delete(leg.key + '|' + f);
-      truckingRenderFields(dustLastTruckingRow);
+      haulLegs.splice(i, 1);
+      for (const f of HAUL_FIELDS) haulTouched.delete(leg.key + '|' + f);
+      truckingRenderFields(lastTruckingRow);
     }
 
     // ── The per-entry lookup landing ──────────────────────────────────────
     // The Truck Tracking row the last render was given, so a leg added (or a
     // customer changed) after the lookup has landed re-renders that half with
     // the row's own haul fee rather than blanking it.
-    let dustLastTruckingRow = null;
+    let lastTruckingRow = null;
 
     // The customer's lists have arrived. Fill in the boxes that are still both
     // empty and untouched — a default that shows up late must never land on top
@@ -5743,11 +5851,11 @@
     // approver has deliberately cleared.
     function dustApplyOptions() {
       if (!isDustEntry()) return;
-      for (const leg of dustLegs) {
+      for (const leg of haulLegs) {
         // A pad typed while the lists were still in flight never got its cascade
         // — dustCascadeLocation found an empty list and left the state blank,
         // and blank saves as a deliberate blank. Run them now that the customer
-        // is known. dkSet skips anything the approver has since touched.
+        // is known. haulSet skips anything the approver has since touched.
         dustCascadeLocation(leg);
         dustCascadeVehicle(leg, 1);
         dustCascadeVehicle(leg, 2);
@@ -5755,12 +5863,12 @@
       // On a re-edit the posted rows already answered every box; only a fresh
       // approve takes suggestions from the customer.
       if (dustRowsSeen) return;
-      for (const leg of dustLegs) {
+      for (const leg of haulLegs) {
         const co = dustCoFor(leg.company);
-        if (!dkStr(leg.company).trim())  dkSet(leg, 'company', 'company', co.name);
-        if (!dkStr(leg.vehicle2).trim()) dkSet(leg, 'vehicle2', 'vehicle2', co.usual_vehicle2);
-        if (!dkStr(leg.v1_rate).trim())  dkSet(leg, 'v1_rate', 'v1Rate', dkRateFor(leg.vehicle1, co.v1_rate));
-        if (!dkStr(leg.v2_rate).trim())  dkSet(leg, 'v2_rate', 'v2Rate', dkRateFor(leg.vehicle2, co.v2_rate));
+        if (!legStr(leg.company).trim())  haulSet(leg, 'company', 'company', co.name);
+        if (!legStr(leg.vehicle2).trim()) haulSet(leg, 'vehicle2', 'vehicle2', co.usual_vehicle2);
+        if (!legStr(leg.v1_rate).trim())  haulSet(leg, 'v1_rate', 'v1Rate', dustRateFor(leg.vehicle1, co.v1_rate));
+        if (!legStr(leg.v2_rate).trim())  haulSet(leg, 'v2_rate', 'v2Rate', dustRateFor(leg.vehicle2, co.v2_rate));
       }
     }
 
@@ -5771,21 +5879,46 @@
     //
     // Rows past the legs on screen are added rather than dropped, for the same
     // reason as below — a leg left off the save is a row the server takes back.
-    function dustApplyTruckRows(rows) {
-      if (!isDustEntry() || !rows || !rows.length) return;
-      while (dustLegs.length < rows.length) {
-        const r   = rows[dustLegs.length] || {};
-        const leg = dustFreshLeg(null);
-        leg.company    = dkStr(r.customer);
-        leg.start_time = dkStr(r.actual_start).slice(0, 5);
-        leg.end_time   = dkStr(r.actual_end).slice(0, 5);
-        dustLegs.push(leg);
+    function haulApplyTruckRows(rows) {
+      if (!entrySplits() || !rows || !rows.length) return;
+      const hhmm = v => legStr(v).slice(0, 5);
+      while (haulLegs.length < rows.length) {
+        const r   = rows[haulLegs.length] || {};
+        const leg = haulFreshLeg(null);
+        // A haul only the Truck Tracking rows know about — nothing else on
+        // screen describes it, so it is built from what they say, whichever
+        // division this is. (On a dust haul the dust rows normally get here
+        // first and this loop has nothing left to add.)
+        if (legStr(r.customer))     leg.company    = legStr(r.customer);
+        if (legStr(r.actual_start)) leg.start_time = hhmm(r.actual_start);
+        if (legStr(r.actual_end))   leg.end_time   = hhmm(r.actual_end);
+        haulLegs.push(leg);
       }
       rows.forEach((row, i) => {
-        const leg = dustLegs[i];
+        const leg = haulLegs[i];
         if (!leg) return;
         const fee = (row.haul_fee == null || row.haul_fee === '') ? '' : String(row.haul_fee);
-        dkSet(leg, 'haul_fee', 'haulFee', fee);
+        haulSet(leg, 'haul_fee', 'haulFee', fee);
+        // On a dust haul the customer and the window are the DUST row's to
+        // answer — dustApplyRows has just done it, off the tab that bills by
+        // window, and re-applying the truck row's copy would only be a second
+        // voice saying the same thing.
+        //
+        // On a trucking day there is no dust row, so this is the only thing that
+        // can put a posted haul back on screen. Without it, leg 1 keeps the
+        // fresh-approve seed — the whole clock window, on the timesheet's
+        // customer — and re-opening Edit Row on a split day and saving with
+        // nothing touched re-bills the entire day on haul 1 under the wrong
+        // customer, with no sign on screen that it happened.
+        if (isDustEntry()) return;
+        const before = [leg.company, leg.start_time, leg.end_time].join('|');
+        haulSet(leg, 'company',    'company', legStr(row.customer));
+        haulSet(leg, 'start_time', 'start',   hhmm(row.actual_start));
+        haulSet(leg, 'end_time',   'end',     hhmm(row.actual_end));
+        // Anything a posted row filled in has to be visible, or a trucking day
+        // whose single row differs from its timesheet would round-trip an
+        // invisible override — see haulBoxesShown.
+        if ([leg.company, leg.start_time, leg.end_time].join('|') !== before) haulPrefilled = true;
       });
     }
 
@@ -5796,24 +5929,24 @@
     // boxes on screen until then hold the fresh-approve prefill — mostly blank.
     // Leaving them that way and saving would send those blanks as deliberate
     // clears and wipe the company man, the well pad, the state and the gallons
-    // off rows that were already billing. Their typing still wins: dkSet skips
-    // anything in dustTouched.
+    // off rows that were already billing. Their typing still wins: haulSet skips
+    // anything in haulTouched.
     function dustApplyRows(rows) {
       if (!rows || !rows.length) return;
       // A day approved as three hauls is edited as three: legs the modal opened
       // with are filled from the rows in order, and any row past them is added
       // rather than dropped — a leg left off the save is a row the server takes
       // back, so dropping one here would quietly un-bill a haul.
-      while (dustLegs.length < rows.length) dustLegs.push(dustLegFromRow(rows[dustLegs.length]));
+      while (haulLegs.length < rows.length) haulLegs.push(haulLegFromDustRow(rows[haulLegs.length]));
       const domId = {
         company: 'company', company_man: 'companyMan', location: 'location', state: 'state',
         start_time: 'start', end_time: 'end', gallons_ub: 'gallons',
         vehicle1: 'vehicle1', v1_rate: 'v1Rate', vehicle2: 'vehicle2', v2_rate: 'v2Rate',
       };
       rows.forEach((row, i) => {
-        const leg = dustLegs[i];
+        const leg = haulLegs[i];
         if (!leg) return;
-        for (const f of DK_FIELDS) dkSet(leg, f, domId[f], dkStr(row[f]));
+        for (const f of HAUL_FIELDS) haulSet(leg, f, domId[f], legStr(row[f]));
       });
     }
 
@@ -5840,8 +5973,8 @@
       // has always been and reads out of the model instead of the row. Split, it
       // moves into each haul and there is nothing to show here — one fee at the
       // top of a modal showing two customers would be a lie about what it bills.
-      const legOne = isDustEntry() ? dustLegs[0] : null;
-      const split  = isDustEntry() && dustLegs.length > 1;
+      const legOne = entrySplits() ? haulLegs[0] : null;
+      const split  = entrySplits() && haulLegs.length > 1;
       const fee = legOne
         ? legOne.haul_fee
         : ((r.haul_fee == null || r.haul_fee === '') ? '' : r.haul_fee);
@@ -5865,7 +5998,7 @@
           <span id="tk_unitHint" style="font-weight:400;font-size:11px;line-height:1.3;min-height:14px;text-transform:none;letter-spacing:0"></span></label>
         ${split ? '' : `<label style="${TK_LABEL}"><span>Haul Fee ($/hr)</span>
           <input type="number" id="tk_haulFee" min="0" step="0.01" value="${escapeHtml(String(fee))}" placeholder="0.00" style="${TK_INPUT}"
-            ${legOne ? `oninput="dkEdit(${legOne.key},'haul_fee',this.value)"` : ''}></label>`}
+            ${legOne ? `oninput="haulEdit(${legOne.key},'haul_fee',this.value)"` : ''}></label>`}
         <label style="${TK_LABEL}"><span>Division <span style="font-weight:400;color:var(--muted)">(optional)</span></span>
           <input type="text" id="tk_division" maxlength="100" value="${escapeHtml(div)}" placeholder="${isDust ? 'defaults to Dust' : 'e.g. Paving'}" style="${TK_INPUT}"></label>`;
     }
@@ -5913,38 +6046,58 @@
       dustOptions   = null;
       dustCompanies = null;
       dustRowsSeen  = null;
-      dustLastTruckingRow = null;
-      dustTouched.clear();
+      lastTruckingRow = null;
+      haulTouched.clear();
       truckingTouched.clear();
-      // One haul covering the whole day is where every dust entry starts; the
+      // One haul covering the whole day is where every entry starts; the
       // lookup below replaces this with the legs already posted when re-editing.
-      dustLegs = entry.division === 'dust' ? [dustFreshLeg(null)] : [];
+      haulLegs = entrySplits() ? [haulFreshLeg(null)] : [];
+      haulPrefilled = false;
       // Only a re-edit of a dust haul has posted rows that saving could wipe.
-      dustRowLoad = (truckingMode === 'resplit' && entry.division === 'dust') ? 'pending' : 'none';
+      rowLoad = (truckingMode === 'resplit' && entrySplits()) ? 'pending' : 'none';
       truckingNoteRefresh();
       truckingRenderFields(null);
       document.getElementById('truckingBackdrop').classList.add('open');
       // This open owns the form from here on; anything still in flight does not.
       const seq = ++truckingFetchSeq;
-      // Fill the unit dropdown whenever the roster turns up — first open pays
-      // for the fetch, later ones already have it. Touches only the options and
-      // the hint, so it needs no staleness guard of its own: it is right for
-      // whichever entry the modal is showing by the time it lands.
-      truckUnitRosterLoad().then(() => {
+      // Fill the unit and customer dropdowns whenever the rosters turn up —
+      // first open pays for the fetch, later ones already have them. Touches
+      // only the options and the hint, so it needs no staleness guard of its
+      // own: it is right for whichever entry the modal is showing by the time it
+      // lands. The customer list is the trucking office's own, and is what a
+      // trucking day's hauls are split across; a dust haul is split across the
+      // dust customer directory instead and ignores it.
+      truckListsLoad().then(() => {
         const dl = document.getElementById('tk_unitOptions');
         if (dl) dl.innerHTML = truckUnitOptionsHtml();
+        const cl = document.getElementById('hl_coOptions');
+        if (cl && !isDustEntry()) cl.innerHTML = haulOptionsHtml(truckCustomerRoster());
         truckUnitHintRefresh();
       });
-      // Re-edit pre-fills the haul fee / division / unit from the injected row.
+      // Re-edit pre-fills the unit, the division column and each haul's fee from
+      // the rows already posted — for a trucking day as much as a dust one, and
+      // it is also how a day that was split comes back split rather than as a
+      // single haul that would prune the rest away on save.
+      //
       // A dust haul asks on a fresh approve too, because the same call carries
       // the customer's men, pads, vehicles and default rates — without them the
       // dust boxes below would be free text against lists the approver would
-      // have to remember.
+      // have to remember. A trucking day needs none of that: its one roster
+      // (truckListsLoad, above) is fetched once per session.
       const wantsLookup = truckingMode === 'resplit' || entry.division === 'dust';
       if (wantsLookup) {
         try {
           const res = await fetch('/api/timesheet-entries?action=split&id=' + encodeURIComponent(entry.id), { headers: authHeaders() });
           const j = await res.json();
+          // A refusal is not an answer. The endpoint spells 403 and 500 as JSON
+          // bodies, which parse perfectly well — and taking one as "this entry
+          // has posted nothing" is the most expensive mistake this modal can
+          // make: the boxes stay on their fresh-approve prefill, so the save
+          // sends ONE haul, and the server prunes every other haul this day had
+          // posted along with its Intercompany billing. Throwing puts it in the
+          // catch below, where rowLoad goes 'failed' and saving is refused until
+          // the modal is reopened.
+          if (!res.ok) throw new Error((j && j.error) || `lookup failed (${res.status})`);
           // Late answers are dropped: the modal may have been closed or pointed
           // at another entry while this was in flight. Unlike the fields, the
           // OPTIONS are safe to take even once payroll has typed — they only
@@ -5952,8 +6105,12 @@
           if (seq !== truckingFetchSeq) return;
           const row = j && j.trucking && j.trucking.row ? j.trucking.row : null;
           // Every Truck Tracking row this entry has posted, so a split day's
-          // per-haul fees come back on the hauls they belong to.
-          const truckRows = (j && j.trucking && Array.isArray(j.trucking.rows)) ? j.trucking.rows : null;
+          // per-haul fees come back on the hauls they belong to. Falling back to
+          // the single row keeps the fee filled in if this page ever talks to a
+          // server that predates splitting — blank here saves as a cleared fee.
+          const truckRows = (j && j.trucking && Array.isArray(j.trucking.rows))
+            ? j.trucking.rows
+            : (row ? [row] : null);
           // Every leg already posted, in order. `rows` is what a split-aware
           // server answers; `row` alone is what one that predates splitting did.
           const dustRows = (truckingMode === 'resplit' && j && j.dust)
@@ -5961,26 +6118,26 @@
             : null;
           dustOptions   = (j && j.dust && j.dust.options) ? j.dust.options : null;
           dustCompanies = (j && j.dust && Array.isArray(j.dust.companies)) ? j.dust.companies : null;
-          if (dustRowLoad === 'pending') dustRowLoad = 'loaded';
+          if (rowLoad === 'pending') rowLoad = 'loaded';
           // Every box payroll has NOT touched must end up holding the truth,
           // because a box left blank here saves as a deliberate clear. On a
           // re-edit that truth is the posted rows; on a fresh approve it is the
           // customer's defaults. Order matters: the rows are authoritative, so
           // dustRowsSeen is set first to stop dustApplyOptions offering customer
           // defaults over them. Anything payroll has already typed stands —
-          // every write below goes through dkSet, which skips touched boxes, and
+          // every write below goes through haulSet, which skips touched boxes, and
           // the re-render puts their trucking boxes back on top.
           dustRowsSeen = dustRows;
           dustApplyOptions();
           dustApplyRows(dustRows);
-          dustApplyTruckRows(truckRows);
-          dustLastTruckingRow = row;
+          haulApplyTruckRows(truckRows);
+          lastTruckingRow = row;
           truckingRenderFields(row);
         } catch (_) {
           // The boxes are still holding the fresh-approve prefill. That is fine
           // for an approve — blank means blank there — but on a re-edit it would
           // save as a wipe of the posted row, so truckingSave refuses instead.
-          if (dustRowLoad === 'pending') dustRowLoad = 'failed';
+          if (rowLoad === 'pending') rowLoad = 'failed';
         }
       }
     }
@@ -5989,9 +6146,9 @@
       truckingEntry = null; truckingMode = null;
       truckingFetchSeq++;   // orphan any pre-fill still in flight
       dustOptions = null; dustCompanies = null; dustRowsSeen = null;
-      dustLegs = []; dustLastTruckingRow = null;
-      dustTouched.clear(); truckingTouched.clear();
-      dustRowLoad = 'none';
+      haulLegs = []; lastTruckingRow = null; haulPrefilled = false;
+      haulTouched.clear(); truckingTouched.clear();
+      rowLoad = 'none';
     }
     bindBackdropClose(document.getElementById('truckingBackdrop'), closeTrucking);
     // The container outlives every re-render of its inputs, and `input` bubbles,
@@ -5999,7 +6156,7 @@
     // A dropdown pick fires `input` too, so the hint keeps up with both.
     //
     // The dust boxes keep their own record of what has been answered — each one
-    // says so through dkEdit, which knows the leg it belongs to. This listener
+    // says so through haulEdit, which knows the leg it belongs to. This listener
     // covers the trucking half, whose three boxes are plain inputs: remembering
     // them here is what lets a late-landing pre-fill re-render without taking a
     // typed haul fee down with it.
@@ -6015,21 +6172,36 @@
     function truckingNoteRefresh() {
       const note = document.getElementById('truckingNote');
       if (!note) return;
-      const legs = isDustEntry() ? Math.max(1, dustLegs.length) : 1;
-      note.innerHTML = isDustEntry()
-        ? `Approving posts <strong>${legs === 1 ? 'one row in each tab' : legs + ' rows in each tab'}</strong> —
+      const legs  = entrySplits() ? Math.max(1, haulLegs.length) : 1;
+      const split = legs > 1;
+      // Said once, wherever it applies: the day's hours have to land somewhere,
+      // and on a split they land on the first haul.
+      const carry = split
+        ? `The lunch break and any travel hours ride on the <strong>first</strong> haul's Truck
+           Tracking row, so the day still adds up to the hours you approved. `
+        : '';
+      if (isDustEntry()) {
+        note.innerHTML =
+          `Approving posts <strong>${split ? legs + ' rows in each tab' : 'one row in each tab'}</strong> —
            one Truck Tracking row and one Dust Control Tracking row <strong>per haul</strong>.
            If the day ran to two customers or two pads, split it and give each haul its own hours,
            gallons, pad and fee. Driver, unit and description come from the timesheet and are the
            same on every row; the customer, the hours and the haul fee are the haul's own. The state,
            the vehicle rates and the escort follow from whichever customer that haul names.
-           ${legs > 1
-             ? `The lunch break and any travel hours ride on the <strong>first</strong> haul's Truck
-                Tracking row, so the day still adds up to the hours you approved. `
-             : ''}Every row is locked in its tab and is edited here in Payroll.`
-        : `Driver, hours, customer and description are autofilled from the timesheet — the unit
-           comes from it too, and can be corrected above. The row is locked in the Trucking
-           division; it is edited here in Payroll.`;
+           ${carry}Every row is locked in its tab and is edited here in Payroll.`;
+        return;
+      }
+      note.innerHTML =
+        `Approving posts <strong>${split ? legs + ' Truck Tracking rows' : 'one Truck Tracking row'}</strong>.
+         Driver, hours, customer and description are autofilled from the timesheet — the unit comes
+         from it too, and can be corrected above.
+         ${split
+           ? `Each haul carries the customer it was for, its own hours and its own fee; the unit and
+              the description are the day's and read the same on every row. ${carry}`
+           : `A day that ran for more than one customer can be <strong>split into a row per haul</strong>
+              below, each with its own customer, hours and fee. `}
+         The ${split ? 'rows are' : 'row is'} locked in the Trucking division;
+         ${split ? 'they are' : 'it is'} edited here in Payroll.`;
     }
 
     function _tkval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
@@ -6042,9 +6214,19 @@
     // still finds a customer that has been renamed since. Sending the name back
     // would turn that into a name match and lose the renamed customer's rates
     // and pads. Only a leg billed to someone else names them.
-    function dustLegCompanyPayload(leg) {
-      const entryCo = dustEntryCoName().trim().toLowerCase();
-      return dkStr(leg.company).trim().toLowerCase() === entryCo ? undefined : leg.company;
+    function legCustomerPayload(leg) {
+      const typed   = legStr(leg.company).trim();
+      const entryCo = entryCustomerName().trim();
+      // Dust resolves a customer by the job_id the driver picked, so a haul on
+      // the same customer under any spelling is the same customer and sends
+      // nothing. Trucking has no id behind the name — the name IS the customer
+      // (see truckingJobs in api/timesheet-jobs.js), and the office's roster can
+      // hold two that differ only in case — so only an exact match is the
+      // timesheet's own, and a re-spelling is an answer worth sending.
+      const same = isDustEntry()
+        ? typed.toLowerCase() === entryCo.toLowerCase()
+        : typed === entryCo;
+      return same ? undefined : leg.company;
     }
     async function truckingSave() {
       if (!truckingEntry || !truckingMode) return;
@@ -6056,9 +6238,9 @@
       // reason that has nothing to do with what is on them, and saving would
       // clear the company man, the well pad, the state and the gallons off work
       // that is already billing.
-      if (dustRowLoad === 'pending' || dustRowLoad === 'failed') {
+      if (rowLoad === 'pending' || rowLoad === 'failed') {
         msg.classList.add('error');
-        msg.textContent = dustRowLoad === 'pending'
+        msg.textContent = rowLoad === 'pending'
           ? 'Still loading the rows this entry already posted — try again in a moment.'
           : 'Could not load the rows this entry already posted. Saving now would blank them — close and reopen Edit Row.';
         return;
@@ -6067,8 +6249,8 @@
       // hours from start and end, so an empty window is a row for vehicles that
       // never rolled. Caught here rather than server-side because the fix is to
       // fill the two boxes the approver is looking at.
-      if (isDustEntry() && dustLegs.length > 1) {
-        const blank = dustLegs.findIndex(l => !dustLegHours(l));
+      if (entrySplits() && haulLegs.length > 1) {
+        const blank = haulLegs.findIndex(l => !haulHours(l));
         if (blank !== -1) {
           msg.classList.add('error');
           msg.textContent = `Haul ${blank + 1} has no hours — give it a start and end time, or remove it.`;
@@ -6085,19 +6267,20 @@
         unit: _tkval('tk_unit'),
       };
       const body = { trucking };
-      // A dust haul posts a Truck Tracking row per haul as well, so the same
-      // legs go to both halves: each carries the customer it billed, its slice
-      // of the clock and its own fee. The unit, the division column and the
-      // description are the driver's day rather than the haul, so they stay on
-      // the parent payload and every row gets the same answer. A trucking entry
-      // sends no rows at all and posts one row for the day, as it always has.
-      if (isDustEntry() && dustLegs.length) {
+      // Every entry that posts Truck Tracking rows sends its hauls here, a
+      // trucking day as much as a dust one, and one element when the day was
+      // never split. Each haul carries the customer it billed, its slice of the
+      // clock and its own fee. The unit, the division column and the description
+      // are the driver's day rather than the haul, so they stay on the parent
+      // payload and every row gets the same answer. Bulk approve sends no rows
+      // at all, and posts one row for the day.
+      if (entrySplits() && haulLegs.length) {
         // With the day split there is no box at the top to read, and the day's
         // fee is the first haul's — it is what the server falls back to for a
         // leg that names none.
-        trucking.haul_fee = dustLegs[0].haul_fee;
-        trucking.rows = dustLegs.map(leg => ({
-          company:    dustLegCompanyPayload(leg),
+        trucking.haul_fee = haulLegs[0].haul_fee;
+        trucking.rows = haulLegs.map(leg => ({
+          company:    legCustomerPayload(leg),
           start_time: leg.start_time,
           end_time:   leg.end_time,
           haul_fee:   leg.haul_fee,
@@ -6110,10 +6293,10 @@
       // the escort has to stick. Bulk approve sends no `dust` key at all — one
       // company man or one gallons figure cannot speak for a week of hauls — and
       // the server reads that absence as "fill in what the customer implies".
-      if (isDustEntry() && dustLegs.length) {
+      if (isDustEntry() && haulLegs.length) {
         body.dust = {
-          rows: dustLegs.map(leg => ({
-            company:     dustLegCompanyPayload(leg),
+          rows: haulLegs.map(leg => ({
+            company:     legCustomerPayload(leg),
             company_man: leg.company_man,
             location:    leg.location,
             state:       leg.state,

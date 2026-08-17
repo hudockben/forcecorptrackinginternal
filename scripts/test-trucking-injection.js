@@ -819,6 +819,99 @@ function entry(over = {}) {
     assert('and the whole day is back on the surviving row', after[0].total_hours === 9);
   }
 
+  // ── An unsplit day sends one leg and must bill exactly as it always did ──
+  // The payroll modal sends trucking.rows for every entry that can be split,
+  // one element when it wasn't. That element carries the day's own window, and
+  // the day's window is NOT how an unsplit row bills — computed_hours is, and it
+  // is lunch-deducted. Billing the window would quietly pay back every lunch
+  // break in the division.
+  {
+    console.log('\n[one leg is the day, not a split]');
+    const { sql } = makeSql({ drivers: [] });
+    const day = entry({ travel_hours: 1 });          // 07:00–15:30 window, 8.0 h work
+    const noRows  = await insertTruckingRows(sql, CO, day, { haul_fee: 90 });
+    const oneRow  = await insertTruckingRows(sql, CO, day, {
+      haul_fee: 90, rows: [{ start_time: '07:00', end_time: '15:30', haul_fee: 90 }],
+    });
+    assert('one leg posts one row', oneRow.length === 1 && noRows.length === 1);
+    assert('and bills the entry\'s own hours, lunch deducted, not its window',
+      oneRow[0].total_hours === 9 && noRows[0].total_hours === 9);
+    assert('every other column matches the no-rows form',
+      oneRow[0].id === noRows[0].id && oneRow[0].customer === noRows[0].customer &&
+      oneRow[0].actual_start === noRows[0].actual_start &&
+      oneRow[0].actual_end === noRows[0].actual_end &&
+      oneRow[0].haul_fee === noRows[0].haul_fee);
+    // The window is all-or-nothing with the hours. A single leg carrying some
+    // other window — which is what removing the first haul of a split leaves
+    // behind — must not stamp a row "11:15-15:30" against the day's nine hours.
+    const oddWindow = await insertTruckingRows(sql, CO, day, {
+      haul_fee: 90, rows: [{ start_time: '11:15', end_time: '15:30' }],
+    });
+    assert('an unsplit row keeps the entry\'s own window, whatever the leg says',
+      oddWindow[0].actual_start === '07:00' && oddWindow[0].actual_end === '15:30',
+      `${oddWindow[0].actual_start}-${oddWindow[0].actual_end}`);
+    assert('and still bills the day', oddWindow[0].total_hours === 9);
+    // A trucking entry's leg can still name another customer without splitting.
+    const renamed = await insertTruckingRows(sql, CO, day, {
+      haul_fee: 90, rows: [{ company: 'Somebody Else' }],
+    });
+    assert('a single leg can still re-point the customer',
+      renamed[0].customer === 'Somebody Else' && renamed[0].total_hours === 9);
+    const ownFee = await insertTruckingRows(sql, CO, day, {
+      haul_fee: 90, rows: [{ haul_fee: 111 }],
+    });
+    assert('and can still set its own fee', ownFee[0].haul_fee === 111);
+    const blank = await insertTruckingRows(sql, CO, day, { haul_fee: 90, rows: [{ company: '' }] });
+    assert('and a blank customer falls back to the timesheet job',
+      blank[0].customer === 'Acme Materials');
+  }
+
+  // ── A trucking day split across customers ────────────────────────────────
+  {
+    console.log('\n[a trucking day split across customers]');
+    const { sql, store } = makeSql({ drivers: [] });
+    const day = entry();                              // 07:00–15:30, 8.0 h, no travel
+    const rows = await insertTruckingRows(sql, CO, day, {
+      haul_fee: 90, unit: '634',
+      rows: [
+        { company: 'Acme Materials', start_time: '07:00', end_time: '11:15' },
+        { company: 'Derry Stone',    start_time: '11:15', end_time: '15:30', haul_fee: 105 },
+      ],
+    });
+    assert('two rows, one per customer',
+      rows.length === 2 && rows[0].customer === 'Acme Materials' && rows[1].customer === 'Derry Stone');
+    assert('the lunch break comes off the first haul',
+      rows[0].total_hours === 3.75 && rows[1].total_hours === 4.25);
+    assert('and the day still adds up to what payroll approved',
+      rows[0].total_hours + rows[1].total_hours === 8);
+    assert('the second haul bills at its own fee',
+      rows[0].haul_fee === 90 && rows[1].haul_fee === 105);
+    assert('the division column stays blank for a trucking entry',
+      rows[0].division === '' && rows[1].division === '');
+    assert('both are mirrored', store.tde.has(rows[0].id) && store.tde.has(rows[1].id));
+  }
+
+  // ── Bulk approve must stay out of the split ──────────────────────────────
+  // One card covers a week of days for a whole crew: one unit, one window or one
+  // customer cannot speak for them, so its body carries the fee and the division
+  // column and nothing else. A `rows` key here would post a bulk-approved week
+  // against one leg's window; a `unit` key would stamp one driver's truck on
+  // every entry.
+  {
+    console.log('\n[bulk approve sends no hauls]');
+    const SRC = require('fs').readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
+    const body = SRC.match(/return \{ trucking: \{[^}]*\} \};/);
+    assert('the bulk trucking body still carries only the fee and the division',
+      !!body && /haul_fee: g\.template\.haul_fee/.test(body[0])
+             && /division: g\.template\.division_col/.test(body[0])
+             && !/rows/.test(body[0]) && !/unit/.test(body[0]), body && body[0]);
+    // …and the server reads that absence as "one row for the day".
+    const { sql } = makeSql({ drivers: [] });
+    const bulk = await insertTruckingRows(sql, CO, entry({ travel_hours: 1 }), { haul_fee: 90, division: '' });
+    assert('which posts exactly one row, billing the whole day',
+      bulk.length === 1 && bulk[0].total_hours === 9);
+  }
+
   // ── The sweep must not read a second haul as a duplicate ─────────────────
   {
     console.log('\n[the read-time sweep knows a haul from a duplicate]');

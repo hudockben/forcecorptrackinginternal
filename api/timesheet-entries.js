@@ -1059,9 +1059,10 @@ function validateTruckingInjection(raw) {
   const unit = t.unit == null ? null : (safeStr(t.unit, 100) || '');
   const fields = { haul_fee, division, unit };
 
-  // A split day sends one leg per haul. Absent — which is what a trucking entry,
-  // bulk approve and any older client send — means the day posts one row, as it
-  // always has.
+  // A split day sends one leg per haul. The approve modal sends this for every
+  // entry that posts Truck Tracking rows, one element when the day was not
+  // split; absent — which is what bulk approve and any older client send —
+  // means the day posts one row, as it always has.
   if (t.rows != null) {
     if (!Array.isArray(t.rows)) return { error: 'trucking.rows must be an array' };
     if (!t.rows.length) return { error: 'Truck Tracking needs at least one row' };
@@ -1254,13 +1255,19 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   // modal's tally is where they are told.
   const deduction = daySpan == null ? 0 : Math.max(0, _r2(daySpan - work));
   // An unsplit day keeps billing its own stated hours, verbatim — no window
-  // arithmetic at all. That is what every trucking entry and every bulk approval
-  // still does, and the figure payroll was shown on the approve card.
+  // arithmetic at all. One leg is not a split: it is how the approve modal
+  // spells "the whole day", so it lands here alongside bulk approve's
+  // no-legs-at-all, and both bill the figure payroll was shown on the card.
   const split = legs.length > 1;
 
   const rows = legs.map((leg, i) => {
-    const start = leg.start_time !== undefined ? leg.start_time : hhmm(entry.start_time);
-    const end   = leg.end_time   !== undefined ? leg.end_time   : hhmm(entry.end_time);
+    // An unsplit day is the day, window and all. Its row bills computed_hours +
+    // travel_hours whatever the modal sent, so taking the times from the leg
+    // would stamp a row "11:15–15:30" against nine hours — which is what a
+    // supervisor gets by splitting a day, then removing the first haul. Either
+    // both come from the leg or neither does.
+    const start = (split && leg.start_time !== undefined) ? leg.start_time : hhmm(entry.start_time);
+    const end   = (split && leg.end_time   !== undefined) ? leg.end_time   : hhmm(entry.end_time);
     const span  = computeHours(start, end);
     let hours;
     if (!split) {
