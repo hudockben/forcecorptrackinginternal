@@ -1944,11 +1944,15 @@
       if (!Number.isFinite(n)) return;
       approvedPage = Math.max(1, Math.round(n));   // renderRows clamps the top end
       renderRows();
-      // Land at the head of the table — paging from the bottom bar otherwise
-      // drops you into the middle of the new page.
-      const wrap = document.querySelector('.table-wrap');
-      if (wrap && typeof wrap.scrollIntoView === 'function') {
-        wrap.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      // Land at the head of the list — paging from the bottom bar otherwise
+      // drops you into the middle of the new page. Anchor on the pager above
+      // the table rather than the table itself, or the bar you just clicked
+      // scrolls off the top and you have to hunt for it to turn the next page.
+      const top = document.getElementById('pagerTop');
+      const anchor = (top && top.classList.contains('open'))
+        ? top : document.querySelector('.table-wrap');
+      if (anchor && typeof anchor.scrollIntoView === 'function') {
+        anchor.scrollIntoView({ block: 'start', behavior: 'smooth' });
       }
     }
 
@@ -1980,11 +1984,42 @@
     }
 
     /**
+     * Puts keyboard focus back on the control that was just used. Redrawing a
+     * bar through innerHTML destroys the button under focus, which drops the
+     * caret to <body> — a keyboard user would tab in from the top of the page
+     * again for every single page turn.
+     */
+    function restorePagerFocus(barId, key) {
+      // The bar you were in can be emptied by the redraw — picking "All" from
+      // the top bar collapses the list to one page and takes that bar away —
+      // so fall through to the other bar rather than dropping focus entirely.
+      const other = barId === 'pagerTop' ? 'pagerBottom' : 'pagerTop';
+      for (const bar of [document.getElementById(barId), document.getElementById(other)]) {
+        if (!bar || typeof bar.querySelector !== 'function') continue;
+        const exact = bar.querySelector(`[data-pager-key="${key}"]`);
+        // The control can also vanish or go disabled at the ends of the run
+        // (Next on the last page, or the page number you jumped from). Fall
+        // back to the current-page button so focus stays inside the pager.
+        const target = (exact && !exact.disabled) ? exact : bar.querySelector('.pager-btn.current');
+        // preventScroll: gotoApprovedPage is already scrolling deliberately.
+        if (target && typeof target.focus === 'function') {
+          target.focus({ preventScroll: true });
+          return;
+        }
+      }
+    }
+
+    /**
      * Draws both pager bars. `total` is the whole approved set in view,
      * `firstIdx`/`lastIdx` are the 1-based bounds of the rows on screen.
      */
     function renderPager(total, pageCount, firstIdx, lastIdx) {
       if (currentTab !== 'approved' || !total) { hidePagers(); return; }
+
+      // Note which control has focus before the redraw destroys it.
+      const active     = document.activeElement;
+      const focusedBar = (active && typeof active.closest === 'function') ? active.closest('.pager') : null;
+      const focusedKey = focusedBar ? (active.dataset && active.dataset.pagerKey) : null;
 
       const sizeOpts = APPROVED_PAGE_SIZES.map(n =>
         `<option value="${n}"${n === approvedPageSize ? ' selected' : ''}>${n === 0 ? 'All' : n}</option>`
@@ -1992,17 +2027,17 @@
 
       const nav = pageCount > 1 ? `
         <div class="pager-pages">
-          <button class="pager-btn" title="First page" ${approvedPage === 1 ? 'disabled' : ''}
+          <button class="pager-btn" data-pager-key="first" title="First page" ${approvedPage === 1 ? 'disabled' : ''}
                   onclick="gotoApprovedPage(1)">&laquo;</button>
-          <button class="pager-btn" title="Previous page" ${approvedPage === 1 ? 'disabled' : ''}
+          <button class="pager-btn" data-pager-key="prev" title="Previous page" ${approvedPage === 1 ? 'disabled' : ''}
                   onclick="gotoApprovedPage(${approvedPage - 1})">&lsaquo; Prev</button>
           ${pagerPageList(approvedPage, pageCount).map(p => p === '…'
             ? '<span class="pager-gap">…</span>'
-            : `<button class="pager-btn${p === approvedPage ? ' current' : ''}"${p === approvedPage ? ' aria-current="page"' : ''}
+            : `<button class="pager-btn${p === approvedPage ? ' current' : ''}" data-pager-key="page-${p}"${p === approvedPage ? ' aria-current="page"' : ''}
                        onclick="gotoApprovedPage(${p})">${p}</button>`).join('')}
-          <button class="pager-btn" title="Next page" ${approvedPage === pageCount ? 'disabled' : ''}
+          <button class="pager-btn" data-pager-key="next" title="Next page" ${approvedPage === pageCount ? 'disabled' : ''}
                   onclick="gotoApprovedPage(${approvedPage + 1})">Next &rsaquo;</button>
-          <button class="pager-btn" title="Last page" ${approvedPage === pageCount ? 'disabled' : ''}
+          <button class="pager-btn" data-pager-key="last" title="Last page" ${approvedPage === pageCount ? 'disabled' : ''}
                   onclick="gotoApprovedPage(${pageCount})">&raquo;</button>
         </div>` : '';
 
@@ -2013,7 +2048,7 @@
         <div class="pager-spacer"></div>
         ${nav}
         <label class="pager-size">Per page
-          <select onchange="setApprovedPageSize(this.value)">${sizeOpts}</select>
+          <select data-pager-key="size" onchange="setApprovedPageSize(this.value)">${sizeOpts}</select>
         </label>`;
 
       const bot = document.getElementById('pagerBottom');
@@ -2025,6 +2060,7 @@
         if (pageCount > 1) { top.innerHTML = html; top.classList.add('open'); }
         else               { top.innerHTML = '';   top.classList.remove('open'); }
       }
+      if (focusedBar && focusedKey) restorePagerFocus(focusedBar.id, focusedKey);
     }
 
     function init() {
@@ -2213,6 +2249,13 @@
 
       const tbody = document.getElementById('rowsBody');
       tbody.innerHTML = '<tr class="empty-row"><td colspan="16">Loading…</td></tr>';
+      // The rows are being replaced wholesale. A pager left sitting over the
+      // "Loading…" / "Error:" row still counts the PREVIOUS result set, and
+      // its buttons re-render those stale rows straight over the error message
+      // — the admin would be looking at pre-failure data with nothing on
+      // screen to say the refresh never landed. renderRows() puts the bars
+      // back as soon as real rows exist.
+      hidePagers();
 
       try {
         const url = '/api/timesheet-entries?' + params.toString();

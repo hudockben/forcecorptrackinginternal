@@ -64,6 +64,8 @@ if (!scriptMatch) {
   process.exit(1);
 }
 
+const scrolledInto = [];   // ids passed to scrollIntoView, newest last
+
 function makeElement(id) {
   const classes = new Set();
   return {
@@ -85,7 +87,7 @@ function makeElement(id) {
     },
     addEventListener() {},
     removeEventListener() {},
-    scrollIntoView() {},
+    scrollIntoView() { scrolledInto.push(id); },
     focus() {},
     querySelector()    { return null; },
     querySelectorAll() { return []; },
@@ -109,6 +111,7 @@ const tableWrap = makeElement('table-wrap');
 // Declared ahead of the sandbox: init() fires a request while the page script
 // is still loading, so the mock fetch must not close over a dead binding.
 let mockEntries = [];
+let mockFetchOk = true;
 const sandbox = {
   console: { log() {}, warn() {}, error() {} },
   localStorage: {
@@ -130,7 +133,9 @@ const sandbox = {
   clearTimeout: () => {},
   // Whatever the current test has loaded — lets applyFilters() (the refetch
   // that a row edit and "Refresh Rates" both trigger) round-trip realistically.
-  fetch: async () => ({ ok: true, status: 200, json: async () => ({ entries: mockEntries }) }),
+  fetch: async () => (mockFetchOk
+    ? { ok: true,  status: 200, json: async () => ({ entries: mockEntries }) }
+    : { ok: false, status: 500, json: async () => ({ error: 'Database unavailable' }) }),
   alert() {},
   confirm: () => true,
   Date, Math, JSON, Number, String, Array, Object, Set, Map, Boolean, Error, isNaN, parseInt, parseFloat,
@@ -188,6 +193,10 @@ function rowCount() {
 const pagerText = (id) => el(id).innerHTML.replace(/\s+/g, ' ');
 const pagerOpen = (id) => el(id).classList.contains('open');
 
+// switchTab() fires an un-awaited applyFilters(). Left in flight it resolves
+// during a later test and re-renders on top of it, so drain the queue first.
+const flush = () => new Promise(r => setImmediate(r));
+
 // Wrapped so the one refetch assertion below can await applyFilters().
 (async function behavioural() {
 
@@ -210,7 +219,8 @@ assert('Prev is disabled on page 1',
 assert('Next is live on page 1',
   /title="Next page"\s+onclick="gotoApprovedPage\(2\)"/.test(pagerText('pagerBottom')));
 assert('current page button is marked',
-  /class="pager-btn current" aria-current="page"[^>]*>1</.test(pagerText('pagerBottom')));
+  /class="pager-btn current" data-pager-key="page-1" aria-current="page"[^>]*>1</.test(pagerText('pagerBottom')),
+  pagerText('pagerBottom').slice(0, 400));
 
 // ── Last page ──
 run('gotoApprovedPage(3)');
@@ -337,6 +347,55 @@ assert('pagers are open before leaving the tab', pagerOpen('pagerBottom'));
 run(`switchTab('reports')`);
 assert('switching to Reports hides the bottom pager', !pagerOpen('pagerBottom'));
 assert('switching to Reports hides the top pager',    !pagerOpen('pagerTop'));
+await flush();   // let switchTab's refetch land before the next section
+assert('they stay hidden once the refetch lands',     !pagerOpen('pagerBottom') && !pagerOpen('pagerTop'));
+
+// ── A failed refetch must not leave a live pager over the error ──
+// Otherwise the bar still counts the previous result set, and clicking a page
+// button re-renders those stale rows straight over the error message — payroll
+// would be reading pre-failure data with nothing on screen saying so.
+console.log('\n[behavioural — failed refetch]');
+run(`currentTab = 'approved'; approvedPageSize = 50;`);
+loadEntries(makeEntries(137, 'approved'));
+run('renderRows()');
+assert('pager is up before the failure', pagerOpen('pagerBottom'));
+mockFetchOk = false;
+await run('applyFilters()');
+mockFetchOk = true;
+assert('the error row is shown',            /Error: Database unavailable/.test(el('rowsBody').innerHTML),
+  el('rowsBody').innerHTML.slice(0, 120));
+assert('bottom pager is pulled down',       !pagerOpen('pagerBottom'));
+assert('top pager is pulled down',          !pagerOpen('pagerTop'));
+assert('no stale page buttons remain',      el('pagerBottom').innerHTML === '' && el('pagerTop').innerHTML === '');
+
+// ── Paging scrolls to the pager, not past it ──
+// Anchoring on the table puts the top bar just off-screen, so the button you
+// just clicked is gone when you go to click it again.
+console.log('\n[behavioural — scroll anchor]');
+loadEntries(makeEntries(137, 'approved'));
+run('renderRows()');
+scrolledInto.length = 0;
+run('gotoApprovedPage(2)');
+assert('paging anchors on the top pager', scrolledInto[scrolledInto.length - 1] === 'pagerTop',
+  `scrolled to ${scrolledInto[scrolledInto.length - 1]}`);
+// With one page there is no top bar, so the table is the only anchor left.
+run('setApprovedPageSize(0)');
+scrolledInto.length = 0;
+run('gotoApprovedPage(1)');
+assert('falls back to the table when no top bar', scrolledInto[scrolledInto.length - 1] === 'table-wrap',
+  `scrolled to ${scrolledInto[scrolledInto.length - 1]}`);
+run('setApprovedPageSize(50)');
+
+// ── Focus survives the redraw ──
+// Every control needs a stable key, because the redraw destroys the button
+// under the cursor and focus would otherwise drop to <body> each page turn.
+console.log('\n[behavioural — keyboard focus]');
+run('renderRows()');
+const bar = pagerText('pagerBottom');
+['first', 'prev', 'next', 'last', 'size', 'page-1'].forEach(k =>
+  assert(`control "${k}" carries a focus key`, bar.includes(`data-pager-key="${k}"`)));
+assert('restorePagerFocus is wired into the redraw',
+  /if \(focusedBar && focusedKey\) restorePagerFocus\(focusedBar\.id, focusedKey\)/.test(HTML));
 
 // ── Page-window builder ──
 console.log('\n[behavioural — page window]');
