@@ -659,7 +659,7 @@
       /* On paper there is nothing to scroll — let the table print in full. */
       .report-scroll { overflow: visible !important; }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
-      .modal-backdrop, .btn-print { display: none !important; }
+      .pager, .modal-backdrop, .btn-print { display: none !important; }
       main { max-width: none !important; padding: 0 !important; }
 
       /* Reports tab */
@@ -857,6 +857,94 @@
       font-size: 0.7rem;
       color: #555;
       letter-spacing: 0.02em;
+    }
+
+    /* ── Failed-load notice ── */
+    .load-error {
+      background: var(--surface);
+      border: 1px solid rgba(239,68,68,0.4);
+      border-radius: 8px;
+      padding: 2rem 1rem;
+      text-align: center;
+      color: var(--muted);
+    }
+    .load-error-actions { margin-top: 0.85rem; }
+
+    /* ── Pager (Approved tab) ──────────────────────────────────────────────
+       Pending is a queue that gets worked to zero; Approved only ever grows —
+       at ~70 entries a day a two-week range is well over a thousand rows — so
+       the Approved tab renders one page at a time. */
+    .pager {
+      display: none;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.55rem 0.85rem;
+    }
+    .pager.open { display: flex; }
+    .pager-info { font-size: 0.75rem; color: var(--muted); }
+    .pager-info strong { color: var(--text); font-weight: 600; }
+    .pager-spacer { flex: 1 1 auto; }
+    .pager-pages {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      flex-wrap: wrap;
+    }
+    .pager-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.3rem 0.6rem;
+      border-radius: 5px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      min-width: 2rem;
+      line-height: 1.2;
+    }
+    .pager-btn:hover:not(:disabled):not(.current) {
+      border-color: var(--green);
+      color: var(--green);
+    }
+    .pager-btn:disabled { opacity: 0.32; cursor: not-allowed; }
+    .pager-btn.current {
+      background: rgba(34,197,94,0.15);
+      border-color: var(--green);
+      color: var(--green);
+      cursor: default;
+    }
+    .pager-gap { color: var(--muted); font-size: 0.72rem; padding: 0 0.1rem; }
+    .pager-size {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.62rem;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .pager-size select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 5px;
+      padding: 0.26rem 0.4rem;
+      font-size: 0.75rem;
+      font-family: inherit;
+      letter-spacing: normal;
+      text-transform: none;
+      cursor: pointer;
+    }
+    /* Narrow screens: let the controls drop to their own line instead of
+       squeezing the "Showing 1–50 of 412" caption down to nothing. */
+    @media (max-width: 760px) {
+      .pager-spacer { flex-basis: 100%; height: 0; }
     }
 
     /* ── Badge ── */
@@ -1583,6 +1671,9 @@
     <!-- ── Analytics container ── -->
     <div id="analyticsWrap" style="display:none"></div>
 
+    <!-- ── Pager, above the table (Approved tab, only when it spans pages) ── -->
+    <div class="pager" id="pagerTop"></div>
+
     <!-- ── Table ── -->
     <div class="table-wrap">
       <div id="hoursFlagBanner" class="hours-flag-banner" hidden></div>
@@ -1612,6 +1703,9 @@
         </tbody>
       </table>
     </div>
+
+    <!-- ── Pager, below the table (Approved tab) ── -->
+    <div class="pager" id="pagerBottom"></div>
 
   </main>
 
@@ -1823,6 +1917,175 @@
     let editingEntry = null;
     let currentTab   = 'pending';   // 'pending' | 'approved'
 
+    // ── Entry loading ─────────────────────────────────────────────────────
+    // Every tab except Audit Log draws from one fetch of /api/timesheet-entries,
+    // so two things have to hold about that fetch:
+    //   · only the NEWEST request may write the result. Requests aren't
+    //     cancelled, and a slow reply for an old date range landing after a
+    //     fast reply for a new one leaves the grid contradicting the filter bar.
+    //   · a failed load must not leave the previous rows in memory. The filter
+    //     boxes re-render from allEntries without refetching, so stale rows
+    //     would be drawn back over the failure as if they were current.
+    let entriesFetchSeq  = 0;      // bumped per request; older replies are dropped
+    let entriesLoadError = null;   // message from the last failed load, else null
+
+    // ── Approved-tab paging ───────────────────────────────────────────────
+    // Pending is a queue payroll works to zero, so it stays whole. Approved is
+    // cumulative — around 70 entries a day once every crew is submitting, so a
+    // two-week range is well past a thousand rows — and is rendered a page at
+    // a time. Page size is remembered per browser; 0 means "All".
+    const APPROVED_PAGE_SIZES    = [25, 50, 100, 250, 0];
+    const APPROVED_PAGE_SIZE_KEY = 'payroll.approvedPageSize';
+    let approvedPage     = 1;
+    let approvedPageSize = readApprovedPageSize();
+    let lastFilterSig    = null;    // page resets when the filters re-scope the list
+
+    function readApprovedPageSize() {
+      try {
+        const raw = localStorage.getItem(APPROVED_PAGE_SIZE_KEY);
+        // Guard the empty/missing case before converting — Number(null) is 0,
+        // which is a legal size here ("All"), so a first-time visitor would
+        // silently get the unpaged list this whole change exists to avoid.
+        if (raw != null && raw !== '') {
+          const v = Number(raw);
+          if (Number.isFinite(v) && APPROVED_PAGE_SIZES.includes(v)) return v;
+        }
+      } catch { /* storage blocked (private mode) — fall through to the default */ }
+      return 50;
+    }
+
+    function setApprovedPageSize(v) {
+      const n = Number(v);
+      approvedPageSize = APPROVED_PAGE_SIZES.includes(n) ? n : 50;
+      approvedPage = 1;
+      try { localStorage.setItem(APPROVED_PAGE_SIZE_KEY, String(approvedPageSize)); } catch {}
+      renderRows();
+    }
+
+    function gotoApprovedPage(p) {
+      const n = Number(p);
+      if (!Number.isFinite(n)) return;
+      approvedPage = Math.max(1, Math.round(n));   // renderRows clamps the top end
+      renderRows();
+      // Land at the head of the list — paging from the bottom bar otherwise
+      // drops you into the middle of the new page. Anchor on the pager above
+      // the table rather than the table itself, or the bar you just clicked
+      // scrolls off the top and you have to hunt for it to turn the next page.
+      const top = document.getElementById('pagerTop');
+      const anchor = (top && top.classList.contains('open'))
+        ? top : document.querySelector('.table-wrap');
+      if (anchor && typeof anchor.scrollIntoView === 'function') {
+        anchor.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+    }
+
+    /**
+     * Page buttons to show: always first and last, plus a window around the
+     * current page, with '…' standing in wherever numbers are skipped.
+     */
+    function pagerPageList(current, count) {
+      if (count <= 7) return Array.from({ length: count }, (_, i) => i + 1);
+      const pages = new Set([1, count, current, current - 1, current + 1]);
+      if (current <= 3)         [2, 3, 4].forEach(p => pages.add(p));
+      if (current >= count - 2) [count - 1, count - 2, count - 3].forEach(p => pages.add(p));
+      const list = [...pages].filter(p => p >= 1 && p <= count).sort((a, b) => a - b);
+      const out = [];
+      let prev = 0;
+      for (const p of list) {
+        if (prev && p - prev > 1) out.push('…');
+        out.push(p);
+        prev = p;
+      }
+      return out;
+    }
+
+    function hidePagers() {
+      ['pagerTop', 'pagerBottom'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.classList.remove('open'); el.innerHTML = ''; }
+      });
+    }
+
+    /**
+     * Puts keyboard focus back on the control that was just used. Redrawing a
+     * bar through innerHTML destroys the button under focus, which drops the
+     * caret to <body> — a keyboard user would tab in from the top of the page
+     * again for every single page turn.
+     */
+    function restorePagerFocus(barId, key) {
+      // The bar you were in can be emptied by the redraw — picking "All" from
+      // the top bar collapses the list to one page and takes that bar away —
+      // so fall through to the other bar rather than dropping focus entirely.
+      const other = barId === 'pagerTop' ? 'pagerBottom' : 'pagerTop';
+      for (const bar of [document.getElementById(barId), document.getElementById(other)]) {
+        if (!bar || typeof bar.querySelector !== 'function') continue;
+        const exact = bar.querySelector(`[data-pager-key="${key}"]`);
+        // The control can also vanish or go disabled at the ends of the run
+        // (Next on the last page, or the page number you jumped from). Fall
+        // back to the current-page button so focus stays inside the pager.
+        const target = (exact && !exact.disabled) ? exact : bar.querySelector('.pager-btn.current');
+        // preventScroll: gotoApprovedPage is already scrolling deliberately.
+        if (target && typeof target.focus === 'function') {
+          target.focus({ preventScroll: true });
+          return;
+        }
+      }
+    }
+
+    /**
+     * Draws both pager bars. `total` is the whole approved set in view,
+     * `firstIdx`/`lastIdx` are the 1-based bounds of the rows on screen.
+     */
+    function renderPager(total, pageCount, firstIdx, lastIdx) {
+      if (currentTab !== 'approved' || !total) { hidePagers(); return; }
+
+      // Note which control has focus before the redraw destroys it.
+      const active     = document.activeElement;
+      const focusedBar = (active && typeof active.closest === 'function') ? active.closest('.pager') : null;
+      const focusedKey = focusedBar ? (active.dataset && active.dataset.pagerKey) : null;
+
+      const sizeOpts = APPROVED_PAGE_SIZES.map(n =>
+        `<option value="${n}"${n === approvedPageSize ? ' selected' : ''}>${n === 0 ? 'All' : n}</option>`
+      ).join('');
+
+      const nav = pageCount > 1 ? `
+        <div class="pager-pages">
+          <button class="pager-btn" data-pager-key="first" title="First page" ${approvedPage === 1 ? 'disabled' : ''}
+                  onclick="gotoApprovedPage(1)">&laquo;</button>
+          <button class="pager-btn" data-pager-key="prev" title="Previous page" ${approvedPage === 1 ? 'disabled' : ''}
+                  onclick="gotoApprovedPage(${approvedPage - 1})">&lsaquo; Prev</button>
+          ${pagerPageList(approvedPage, pageCount).map(p => p === '…'
+            ? '<span class="pager-gap">…</span>'
+            : `<button class="pager-btn${p === approvedPage ? ' current' : ''}" data-pager-key="page-${p}"${p === approvedPage ? ' aria-current="page"' : ''}
+                       onclick="gotoApprovedPage(${p})">${p}</button>`).join('')}
+          <button class="pager-btn" data-pager-key="next" title="Next page" ${approvedPage === pageCount ? 'disabled' : ''}
+                  onclick="gotoApprovedPage(${approvedPage + 1})">Next &rsaquo;</button>
+          <button class="pager-btn" data-pager-key="last" title="Last page" ${approvedPage === pageCount ? 'disabled' : ''}
+                  onclick="gotoApprovedPage(${pageCount})">&raquo;</button>
+        </div>` : '';
+
+      const html = `
+        <div class="pager-info">Showing <strong>${firstIdx}&ndash;${lastIdx}</strong> of
+          <strong>${total}</strong> approved ${total === 1 ? 'entry' : 'entries'}${
+          pageCount > 1 ? ` &middot; Page <strong>${approvedPage}</strong> of <strong>${pageCount}</strong>` : ''}</div>
+        <div class="pager-spacer"></div>
+        ${nav}
+        <label class="pager-size">Per page
+          <select data-pager-key="size" onchange="setApprovedPageSize(this.value)">${sizeOpts}</select>
+        </label>`;
+
+      const bot = document.getElementById('pagerBottom');
+      if (bot) { bot.innerHTML = html; bot.classList.add('open'); }
+      // The bar above the table is only worth its space once the list actually
+      // spans pages — otherwise it just repeats the one below.
+      const top = document.getElementById('pagerTop');
+      if (top) {
+        if (pageCount > 1) { top.innerHTML = html; top.classList.add('open'); }
+        else               { top.innerHTML = '';   top.classList.remove('open'); }
+      }
+      if (focusedBar && focusedKey) restorePagerFocus(focusedBar.id, focusedKey);
+    }
+
     function init() {
       // Default range: last 14 days through today
       const to = new Date();
@@ -1868,6 +2131,9 @@
       if (rateBar)    rateBar.classList.remove('open');
       if (quick)      quick.style.display      = 'none';
       if (anaQuick)   anaQuick.style.display   = 'none';
+      // renderRows() re-opens these for the Approved tab; every other tab
+      // leaves them hidden.
+      hidePagers();
 
       if (tab === 'reports') {
         if (reportWrap) reportWrap.style.display = '';
@@ -1983,6 +2249,11 @@
     }
 
     async function applyFilters() {
+      // Claim the display before anything else, including for the Audit Log
+      // branch below: moving to that tab means an entries request still in
+      // flight is answering a screen that has already gone away.
+      const seq = ++entriesFetchSeq;
+
       // Audit Log tab has its own fetch path; everything else reads from
       // /api/timesheet-entries.
       if (currentTab === 'auditlog') {
@@ -2006,20 +2277,72 @@
 
       const tbody = document.getElementById('rowsBody');
       tbody.innerHTML = '<tr class="empty-row"><td colspan="16">Loading…</td></tr>';
+      // The rows are being replaced wholesale. A pager left sitting over the
+      // "Loading…" / "Error:" row still counts the PREVIOUS result set, and
+      // its buttons re-render those stale rows straight over the error message
+      // — the admin would be looking at pre-failure data with nothing on
+      // screen to say the refresh never landed. renderRows() puts the bars
+      // back as soon as real rows exist.
+      hidePagers();
 
       try {
         const url = '/api/timesheet-entries?' + params.toString();
         const res = await fetch(url, { headers: authHeaders() });
         const data = await res.json();
+        // Someone hit Apply again (or switched tabs) while this was in flight.
+        // These rows answer a question the screen is no longer asking — the
+        // newer request owns the display, so drop this reply on the floor.
+        if (seq !== entriesFetchSeq) return;
         if (!res.ok) throw new Error(data.error || 'Failed');
         allEntries = Array.isArray(data.entries) ? data.entries : [];
+        entriesLoadError = null;
         // Diagnostic log so the empty-Pending case is easy to debug from DevTools.
         console.log('[payroll] GET', url, '→', res.status, 'entries:', allEntries.length,
           'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
         filterAndRender();
       } catch (err) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="16">Error: ${escapeHtml(err.message)}</td></tr>`;
+        // Same rule for a failure: a stale request must not put an error over
+        // whatever the newer one is doing.
+        if (seq !== entriesFetchSeq) return;
+        // Let the rows go with the load that failed. Kept in memory they are
+        // one keystroke in the Employee box away from being redrawn — payroll
+        // would be reading pre-failure numbers with nothing on screen saying
+        // the refresh never landed.
+        allEntries = [];
+        filtered   = [];
+        selectedIds.clear();
+        entriesLoadError = err.message || 'Failed to load time entries';
+        filterAndRender();
       }
+    }
+
+    /**
+     * Failed-load notice, drawn onto every surface the tabs can show. The stat
+     * strip is blanked to em-dashes rather than zeroed: the counts came from
+     * the rows just dropped, and "0" would read as a real figure.
+     */
+    function renderLoadError() {
+      const body = `Couldn't load time entries — ${escapeHtml(entriesLoadError || 'the request failed')}.`
+        + `<div class="load-error-actions"><button class="qr-btn" onclick="applyFilters()">Try again</button></div>`;
+      hidePagers();
+      const tbody = document.getElementById('rowsBody');
+      if (tbody) tbody.innerHTML = `<tr class="empty-row"><td colspan="16">${body}</td></tr>`;
+      // Reports and Analytics are built from the same dropped rows. Blank them
+      // too, or switching tabs after a failure shows the last good report as if
+      // it were still current.
+      ['reportWrap', 'analyticsWrap'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = `<div class="load-error">${body}</div>`;
+      });
+      // The stat strip and the tab badges were both counted off the dropped
+      // rows. Blanked, not zeroed — "0" and "137" are equally untrue here, and
+      // a number next to a failure notice reads as a real figure.
+      ['stat-submitted', 'stat-approved', 'stat-hours',
+       'tab-pending-count', 'tab-approved-count'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '—';
+      });
+      updateBulk();
     }
 
     function filterAndRender() {
@@ -2030,6 +2353,22 @@
         if (supQ  && !(e.supervisor_name || '').toLowerCase().includes(supQ))  return false;
         return true;
       });
+      // Any change to the filters re-scopes the list, so the Approved tab goes
+      // back to page 1 — page 6 of the old result set means nothing in the new
+      // one. Row-level edits (approve, delete, un-approve) re-render through
+      // renderRows() instead and deliberately hold your place.
+      const sig = [
+        document.getElementById('flt-from').value,
+        document.getElementById('flt-to').value,
+        document.getElementById('flt-division').value,
+        userQ, supQ,
+      ].join('|');
+      if (sig !== lastFilterSig) { approvedPage = 1; lastFilterSig = sig; }
+      // Nothing was loaded, so there is nothing trustworthy to draw. Say that
+      // on whichever tab is open rather than rendering an empty grid or a
+      // zeroed report, which both read as "the server answered, and the answer
+      // was none".
+      if (entriesLoadError) { renderLoadError(); return; }
       if (currentTab === 'reports') {
         renderReport();
       } else if (currentTab === 'auditlog') {
@@ -3521,7 +3860,7 @@
     function renderRows() {
       const tbody = document.getElementById('rowsBody');
       const status = tabStatus();
-      const rows = filtered.filter(e => e.status === status);
+      const allRows = filtered.filter(e => e.status === status);
 
       // Refresh tab counts from the current filtered set
       document.getElementById('tab-pending-count').textContent  =
@@ -3553,13 +3892,27 @@
 
       const banner = document.getElementById('hoursFlagBanner');
 
-      if (!rows.length) {
+      if (!allRows.length) {
         tbody.innerHTML = `<tr class="empty-row"><td colspan="16">${emptyMsg}</td></tr>`;
         if (banner) { banner.hidden = true; banner.innerHTML = ''; }
         if (isPending) selectedIds.clear();
+        hidePagers();
         updateBulk();
         return;
       }
+
+      // ── Paging (Approved tab only) ──
+      // Pending stays whole so "Approve All Submitted" and the select-all
+      // checkbox keep acting on everything the admin can see. Approved is cut
+      // into pages; pageSize 0 is the "All" option, which renders it whole too.
+      const pageSize  = (currentTab === 'approved' && approvedPageSize > 0) ? approvedPageSize : 0;
+      const pageCount = pageSize ? Math.max(1, Math.ceil(allRows.length / pageSize)) : 1;
+      // Clamp — the row count shrinks under us when an entry is deleted or
+      // un-approved, and the last page can disappear entirely.
+      approvedPage = Math.min(Math.max(approvedPage, 1), pageCount);
+      const start = pageSize ? (approvedPage - 1) * pageSize : 0;
+      const rows  = pageSize ? allRows.slice(start, start + pageSize) : allRows;
+      renderPager(allRows.length, pageCount, start + 1, start + rows.length);
 
       // Flag laborers whose hours diverge from their crew on the same job/day.
       // Computed over the full filtered set (both statuses) so a pending entry
@@ -3569,13 +3922,20 @@
       // Notice bar: how many entries in THIS tab are flagged, so the mismatch
       // stands out before the supervisor even scans the rows.
       if (banner) {
-        const flaggedInView = rows.reduce((n, e) => n + (mismatchFlags.has(e.id) ? 1 : 0), 0);
+        const flaggedInView = allRows.reduce((n, e) => n + (mismatchFlags.has(e.id) ? 1 : 0), 0);
+        const flaggedOnPage = rows.reduce((n, e) => n + (mismatchFlags.has(e.id) ? 1 : 0), 0);
         if (flaggedInView > 0) {
           banner.hidden = false;
+          // The count covers the whole tab; on a paged Approved list say how
+          // many of those rows are actually on screen, so the badge the banner
+          // points at is one you can go and hover.
+          const pageNote = flaggedOnPage !== flaggedInView
+            ? ` (<strong>${flaggedOnPage}</strong> on this page)`
+            : '';
           banner.innerHTML =
             `<span style="font-size:1.05rem;line-height:1">⚑</span>`
             + `<span><strong>${flaggedInView}</strong> ${flaggedInView === 1 ? 'entry has' : 'entries have'} `
-            + `hours that don't match the crew on the same job/day — hover the amber <strong>⚑ Hours vary</strong> badge to compare before approving.</span>`;
+            + `hours that don't match the crew on the same job/day${pageNote} — hover the amber <strong>⚑ Hours vary</strong> badge to compare before approving.</span>`;
         } else {
           banner.hidden = true;
           banner.innerHTML = '';
