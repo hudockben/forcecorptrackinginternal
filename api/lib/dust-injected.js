@@ -45,7 +45,7 @@
  * Truck Tracking rows before it.
  */
 
-const { isEesJob, removeIcBillingEntries } = require('./truck-injected');
+const { isEesJob, removeIcBillingEntries, MAX_INJECTED_LEGS } = require('./truck-injected');
 const { IC_SOURCES } = require('./ic-sources');
 
 // The tag Dust Control Tracking rows carry in the shared Intercompany list.
@@ -120,10 +120,10 @@ function dustRowIndexFromId(rowId) {
   return m[1] === 'row' ? 1 : Number(m[1]);
 }
 
-// The most legs one day can be split into. Six is what the timesheet allows a
-// driver to split a day across (MAX_JOB_BLOCKS in timesheet.html); a supervisor
-// breaking the same day down by customer has no reason to need more.
-const MAX_DUST_ROWS = 6;
+// The most legs one day can be split into. Taken from truck-injected.js rather
+// than restated: the two tabs post the same hauls, so a cap one side accepted
+// and the other refused would post half a split.
+const MAX_DUST_ROWS = MAX_INJECTED_LEGS;
 
 // The timesheet entry a "tsd-<entryId>-<suffix>" row came from, or null when the
 // id isn't one of ours. Manually-added dust rows use uid() — a base-36 timestamp

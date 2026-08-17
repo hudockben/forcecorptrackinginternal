@@ -107,8 +107,10 @@ const {
   needsTruckTrackingRow,
   truckingRowIdPrefix,
   truckingRowId,
+  truckRowLegIndex,
   removeIcBillingEntries,
   TRUCK_TAB_FIELDS,
+  MAX_INJECTED_LEGS,
 } = require('./lib/truck-injected');
 // The same rules for the Dust Control Tracking row a dust customer haul also
 // injects. Shared with api/dust-rows.js, which sweeps rows that outlived their
@@ -996,16 +998,51 @@ function truckDate(v) { return safeDate(v); }
 // payroll can approve now and fill the fee in later via Edit Row. Returns
 // { fields } or { error }.
 const TRUCK_HAUL_FEE_MAX = 1e7;
+function truckFee(v) {
+  if (v === '' || v == null) return { value: '' };
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > TRUCK_HAUL_FEE_MAX) {
+    return { error: `haul_fee must be a number between 0 and ${TRUCK_HAUL_FEE_MAX}` };
+  }
+  return { value: Math.round(n * 10000) / 10000 };
+}
+
+/**
+ * Validate ONE leg of a split day's Truck Tracking payload. Returns { fields }
+ * or { error }.
+ *
+ * A leg carries only what differs between hauls: who it billed, when it ran, and
+ * what it billed at. The unit, the division column and the description are the
+ * driver's day, not the haul, so they stay on the parent payload and every row
+ * gets the same answer. Absent keys fall back to the day: a leg with no window
+ * bills the whole day's hours, and a leg with no fee bills the day's fee.
+ */
+function validateTruckingLeg(raw) {
+  const t = (raw && typeof raw === 'object') ? raw : {};
+  const has = k => Object.prototype.hasOwnProperty.call(t, k) && t[k] != null;
+  const fields = {};
+  if (has('company')) fields.company = safeStr(t.company, 500) || '';
+  if (has('haul_fee')) {
+    const { value, error } = truckFee(t.haul_fee);
+    if (error) return { error };
+    fields.haul_fee = value;
+  }
+  for (const key of ['start_time', 'end_time']) {
+    if (!has(key)) continue;
+    const given = String(t[key] || '').trim();
+    if (!given) { fields[key] = ''; continue; }
+    const v = safeTime(given);
+    if (!v) return { error: `${key} must be HH:MM` };
+    fields[key] = v;
+  }
+  return { fields };
+}
+
 function validateTruckingInjection(raw) {
   const t = (raw && typeof raw === 'object') ? raw : {};
-  let haul_fee = '';
-  if (t.haul_fee !== '' && t.haul_fee != null) {
-    const n = Number(t.haul_fee);
-    if (!Number.isFinite(n) || n < 0 || n > TRUCK_HAUL_FEE_MAX) {
-      return { error: `haul_fee must be a number between 0 and ${TRUCK_HAUL_FEE_MAX}` };
-    }
-    haul_fee = Math.round(n * 10000) / 10000;
-  }
+  const fee = truckFee(t.haul_fee);
+  if (fee.error) return { error: fee.error };
+  const haul_fee = fee.value;
   const division = safeStr(t.division, 100) || '';
   // Unit is the one autofilled column payroll can also type: the driver may
   // have left it off (every dust haul submitted before the Unit field existed
@@ -1020,7 +1057,26 @@ function validateTruckingInjection(raw) {
   // that spells "no opinion" as null must not silently wipe the unit. Clearing
   // is spelled '' — which is what the modal sends when payroll empties the box.
   const unit = t.unit == null ? null : (safeStr(t.unit, 100) || '');
-  return { fields: { haul_fee, division, unit } };
+  const fields = { haul_fee, division, unit };
+
+  // A split day sends one leg per haul. Absent — which is what a trucking entry,
+  // bulk approve and any older client send — means the day posts one row, as it
+  // always has.
+  if (t.rows != null) {
+    if (!Array.isArray(t.rows)) return { error: 'trucking.rows must be an array' };
+    if (!t.rows.length) return { error: 'Truck Tracking needs at least one row' };
+    if (t.rows.length > MAX_INJECTED_LEGS) {
+      return { error: `A day can be split across at most ${MAX_INJECTED_LEGS} Truck Tracking rows` };
+    }
+    const legs = [];
+    for (const leg of t.rows) {
+      const { fields: legFields, error } = validateTruckingLeg(leg);
+      if (error) return { error };
+      legs.push(legFields);
+    }
+    fields.rows = legs;
+  }
+  return { fields };
 }
 
 // Best-effort match of the timesheet employee to the trucking driver roster so
@@ -1124,20 +1180,36 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
 }
 
 /**
- * Build + inject a single Truck Tracking row for an approved entry — either a
- * trucking entry or a dust customer haul (see needsTruckTrackingRow).
- * Deletes any prior injected rows for this entry first (idempotent — covers a
- * retried approve), appends the new row to the fct_truck_division blob, writes
- * it, and mirrors the row into truck_division_entries. Returns the row written.
+ * Build + inject the Truck Tracking rows for an approved entry — either a
+ * trucking entry or a dust customer haul (see needsTruckTrackingRow). One row
+ * per leg, which is one row for the day unless payroll split it in the approve
+ * modal. Idempotent on the stable row ids (covers a retried approve), written
+ * into the fct_truck_division blob in a single pass and mirrored into
+ * truck_division_entries. Returns the rows written, in leg order.
  *
  * Autofill: driver ← employee, actual_date ← work_date, actual_start/end ←
  * start/end, total_hours ← the (lunch-deducted) work hours PLUS travel hours,
  * customer ← job_label, unit ← truck_unit, description ← truck_description.
- * The haul fee and
- * division column come from the payroll modal (fields arg); everything else is
- * derived from the timesheet entry so the Truck Tracking row is fully owned by
- * payroll and locked in the Trucking division. invoice fields default to
- * Unpaid/blank (the trucking office manages invoicing).
+ * The haul fee and division column come from the payroll modal (fields arg);
+ * everything else is derived from the timesheet entry so the Truck Tracking row
+ * is fully owned by payroll and locked in the Trucking division. invoice fields
+ * default to Unpaid/blank (the trucking office manages invoicing).
+ *
+ * On a split day the three columns that describe the HAUL rather than the day —
+ * customer, the clock window and the haul fee — come from the leg instead, so
+ * the tab reads one line per customer the driver actually hauled for, matching
+ * the Dust Control Tracking rows the same approval posts. The unit, the
+ * description, the division column and the driver are the day, and every row
+ * carries the same answer.
+ *
+ * Hours split with the window, and two adjustments keep the day whole:
+ *   - the lunch deduction (the gap between the clock window and the entry's
+ *     lunch-deducted computed_hours) comes off the FIRST leg, and
+ *   - travel hours, which are logged outside the window entirely, go on the
+ *     first leg too.
+ * So the legs still sum to exactly what the single row billed before the split —
+ * an unsplit day computes to computed_hours + travel_hours, unchanged — and
+ * neither figure has to be guessed at per haul.
  *
  * Unit straddles the two: it autofills from the timesheet like the rest, but
  * the modal also lets payroll type it (fields.unit) for the entries that came
@@ -1152,20 +1224,15 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  * exactly as they do for trucking; the driver is asked for them whenever the
  * entry is headed for this tab (see needsTruckTrackingRow).
  */
-async function insertTruckingRow(sql, companyCode, entry, fields = {}, flags = {}) {
+async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = {}) {
+  const legs     = (Array.isArray(fields.rows) && fields.rows.length) ? fields.rows : [{}];
   const workDate = safeDate(entry.work_date) || '';
-  // Work + travel. The haul fee bills against this column, and the drive to a
-  // customer and back is part of what the haul cost — dust logs it outside the
-  // clock window entirely (3h out, 3h back on top of 05:00–17:30), so leaving
-  // it off understated the row. Payroll's bulk card already totalled the two
-  // together, so this is also what the approver was shown before clicking.
-  const hours    = _r2((Number(entry.computed_hours) || 0) + (Number(entry.travel_hours) || 0));
   const driver   = await matchTruckingDriver(sql, companyCode, entry.username);
-  const customer = safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '';
+  const dayCustomer = safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '';
   const hhmm     = v => String(v || '').slice(0, 5);
   // Payroll-entered fields (validated by validateTruckingInjection). Blank is
   // allowed — payroll can approve now and set the fee later via Edit Row.
-  const haulFee  = (fields.haul_fee === '' || fields.haul_fee == null) ? '' : fields.haul_fee;
+  const dayFee   = (fields.haul_fee === '' || fields.haul_fee == null) ? '' : fields.haul_fee;
   const division = safeStr(fields.division, 100)
     || (entry.division === 'dust' ? 'Dust' : '');
   // null/undefined = the modal sent no unit (bulk approve, or an older client)
@@ -1174,57 +1241,98 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}, flags = {
     ? (safeStr(entry.truck_unit, 100) || '')
     : (safeStr(fields.unit, 100) || '');
 
-  const row = {
-    // Stable per entry, not stamped with Date.now() — see truckingRowId. A
-    // fresh id on every re-injection orphaned the row's Intercompany billing
-    // entry, which then got read back as a lost row and rebuilt as a duplicate
-    // of the work payroll had just corrected.
-    id:                truckingRowId(entry.id),
-    task_number:       '',
-    actual_date:       workDate,
-    driver,
-    unit,
-    actual_start:      hhmm(entry.start_time),
-    actual_end:        hhmm(entry.end_time),
-    total_hours:       hours,
-    haul_fee:          haulFee,   // entered on the payroll side
-    customer,
-    description:       safeStr(entry.truck_description, 2000) || '',
-    division,                     // entered on the payroll side
-    notes:             entry.notes || '',
-    qb_invoice:        '',
-    invoiced_date:     '',
-    invoice_sent_date: '',
-    invoice_status:    'Unpaid',
-    date_paid:         '',
-  };
+  // What the day's hours have to add up to, and the two pieces that do not come
+  // from a leg's own window — the lunch break and the travel, which both land on
+  // the first leg.
+  const work      = Number(entry.computed_hours) || 0;
+  const travel    = Number(entry.travel_hours) || 0;
+  const daySpan   = computeHours(hhmm(entry.start_time), hhmm(entry.end_time));
+  // Only ever a deduction, never a top-up: an entry whose computed_hours exceeds
+  // its own clock window is telling us something we cannot allocate to a haul,
+  // and inventing hours on leg 1 to make the arithmetic close would bill for
+  // them. Whether the legs cover the day is the approver's business, and the
+  // modal's tally is where they are told.
+  const deduction = daySpan == null ? 0 : Math.max(0, _r2(daySpan - work));
+  // An unsplit day keeps billing its own stated hours, verbatim — no window
+  // arithmetic at all. That is what every trucking entry and every bulk approval
+  // still does, and the figure payroll was shown on the approve card.
+  const split = legs.length > 1;
+
+  const rows = legs.map((leg, i) => {
+    const start = leg.start_time !== undefined ? leg.start_time : hhmm(entry.start_time);
+    const end   = leg.end_time   !== undefined ? leg.end_time   : hhmm(entry.end_time);
+    const span  = computeHours(start, end);
+    let hours;
+    if (!split) {
+      hours = _r2(work + travel);
+    } else {
+      // A leg of a split day bills its own window and nothing else. Cleared
+      // times leave it at zero rather than falling back to the day, which on a
+      // split would bill the whole day again on one haul; the modal refuses to
+      // save a haul with no hours, so this is the belt to that brace.
+      const base = span == null ? 0 : Math.max(0, _r2(span - (i === 0 ? deduction : 0)));
+      hours = i === 0 ? _r2(base + travel) : base;
+    }
+    return {
+      // Stable per entry and leg, not stamped with Date.now() — see
+      // truckingRowId. A fresh id on every re-injection orphaned the row's
+      // Intercompany billing entry, which then got read back as a lost row and
+      // rebuilt as a duplicate of the work payroll had just corrected.
+      id:                truckingRowId(entry.id, i + 1),
+      task_number:       '',
+      actual_date:       workDate,
+      driver,
+      unit,
+      actual_start:      hhmm(start),
+      actual_end:        hhmm(end),
+      total_hours:       hours,
+      haul_fee:          leg.haul_fee !== undefined ? leg.haul_fee : dayFee,
+      customer:          leg.company !== undefined && leg.company !== ''
+        ? safeStr(leg.company, 500) || dayCustomer
+        : dayCustomer,
+      description:       safeStr(entry.truck_description, 2000) || '',
+      division,                     // entered on the payroll side
+      notes:             entry.notes || '',
+      qb_invoice:        '',
+      invoiced_date:     '',
+      invoice_sent_date: '',
+      invoice_status:    'Unpaid',
+      date_paid:         '',
+    };
+  });
 
   const prefix = truckingRowIdPrefix(entry.id);
   const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
   const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
 
-  // Carry over the invoice columns the trucking office owns on this row. Every
+  // Carry over the invoice columns the trucking office owns on each row. Every
   // cost field is payroll's and is rewritten from the entry, but the office
   // fills in the QB number and the invoiced/paid dates on the locked row — and
   // correcting an entry's hours must not wipe the billing history off a row
-  // that has already been invoiced. Same rule as EES_OTHER_TAB_FIELDS.
-  const prev = arr.find(isMine) || null;
-  if (prev) {
+  // that has already been invoiced. Matched by id so a leg keeps its own
+  // invoice, not the leg above it. Same rule as EES_OTHER_TAB_FIELDS.
+  const priorById = new Map(arr.filter(isMine).map(r => [String(r.id), r]));
+  for (const row of rows) {
+    const prev = priorById.get(row.id);
+    if (!prev) continue;
     for (const f of TRUCK_TAB_FIELDS) {
       if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
     }
   }
 
-  const next   = arr.filter(r => !isMine(r));
-  next.push(row);
+  const next = arr.filter(r => !isMine(r));
+  next.push(...rows);
   await writeBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB, next);
 
-  // Rows under a DIFFERENT id than the one we just wrote: leftovers from the
-  // era of Date.now()-stamped ids, cleared out on the next approval. The row we
-  // are (re)writing is deliberately excluded — deleting and re-inserting it
-  // would reset created_at and move it in the tab's ordering, and would drop
-  // the Intercompany billing entry that legitimately still describes it.
-  const staleIds = arr.filter(isMine).map(r => String(r.id)).filter(id => id && id !== row.id);
+  // Rows under an id we did NOT just write: legs a re-edit dropped (three
+  // customers corrected down to two), plus leftovers from the era of
+  // Date.now()-stamped ids. Both have to take their Intercompany billing entry
+  // with them, or the tab keeps invoicing a haul the timesheet no longer has.
+  // The rows we are (re)writing are deliberately excluded — deleting and
+  // re-inserting one would reset created_at and move it in the tab's ordering,
+  // and would drop the billing entry that legitimately still describes it.
+  const kept     = new Set(rows.map(r => r.id));
+  const staleIds = [...priorById.keys()].filter(id => id && !kept.has(id));
   if (staleIds.length) {
     await sql`DELETE FROM truck_division_entries WHERE company_code = ${companyCode} AND id = ANY(${staleIds})`;
     // Non-fatal: leaving a billing entry behind bills for a row that no longer
@@ -1235,7 +1343,7 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}, flags = {
       console.error('[timesheet-entries] clearing stale IC billing failed:', err.message);
     }
   }
-  await upsertTruckDivisionEntry(sql, companyCode, row);
+  for (const row of rows) await upsertTruckDivisionEntry(sql, companyCode, row);
 
   // APPROVING is a deliberate statement that this work counts, so it undoes an
   // earlier Intercompany removal rather than being silently overruled by it —
@@ -1247,15 +1355,27 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}, flags = {
   // different bases, so whoever reconciles Intercompany suppresses one of the
   // pair — and it may well be this one. Clearing that on a routine haul-fee
   // correction would quietly bill the customer twice. The dust half of the pair
-  // (insertDustTrackingRow) is gated the same way, so whichever half is chosen
+  // (insertDustTrackingRows) is gated the same way, so whichever half is chosen
   // survives an Edit Row.
   if (flags.clearSuppression) {
-    try {
-      await clearIcSuppression(sql, companyCode, IC_SOURCE_TRUCKING, row.id);
-    } catch (err) {
-      console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
+    for (const row of rows) {
+      try {
+        await clearIcSuppression(sql, companyCode, IC_SOURCE_TRUCKING, row.id);
+      } catch (err) {
+        console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
+      }
     }
   }
+  return rows;
+}
+
+/**
+ * The single-row form, kept because an unsplit day is still the common case —
+ * every trucking entry and every bulk approval — and reads better as one call.
+ * Returns that row.
+ */
+async function insertTruckingRow(sql, companyCode, entry, fields = {}, flags = {}) {
+  const [row] = await insertTruckingRows(sql, companyCode, entry, fields, flags);
   return row;
 }
 
@@ -1440,14 +1560,22 @@ async function truckingHasInjectedRow(sql, companyCode, entry) {
   return arr.some(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix));
 }
 
-// The injected Truck Tracking row for an entry, so the payroll modal can pre-fill
-// the haul fee + division when re-editing an approved entry (mirrors the GET
-// action=split contract quarry uses).
+// The injected Truck Tracking rows for an entry, in leg order, so the payroll
+// modal can pre-fill the haul fee + division when re-editing an approved entry
+// (mirrors the GET action=split contract quarry uses). `row` is the first leg,
+// which is the whole answer for a day that was never split — and is what a
+// payroll page cached from before splitting existed still reads.
 async function truckingSplitForEntry(sql, companyCode, entry) {
   const prefix = truckingRowIdPrefix(entry.id);
   const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
-  const row    = arr.find(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix)) || null;
-  return { row };
+  const rows   = arr
+    .filter(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix))
+    // By leg, not by id text: "tst-9-row" and "tst-9-2" don't sort into leg
+    // order as strings, and the modal fills its hauls in the order given.
+    .map(r => ({ r, leg: truckRowLegIndex(r.id) }))
+    .sort((a, b) => a.leg - b.leg)
+    .map(({ r }) => r);
+  return { rows, row: rows[0] || null };
 }
 
 // ── Dust Control Tracking helpers (timesheet → dust_control_entries) ───────
@@ -2574,7 +2702,7 @@ module.exports = async (req, res) => {
             // Not an if/else pair: a dust customer haul is BOTH, and the two
             // rows are the same day's work seen from the two offices that need
             // it. A trucking entry only ever takes the first branch.
-            if (needsTrucking) await insertTruckingRow(sql, companyCode, updated, truckingInject || {}, { clearSuppression: true });
+            if (needsTrucking) await insertTruckingRows(sql, companyCode, updated, truckingInject || {}, { clearSuppression: true });
             if (needsDust)     await insertDustTrackingRows(sql, companyCode, updated, dustInject || [{}], { clearSuppression: true });
           } else {
             await insertEesOtherRow(sql, companyCode, updated);
@@ -2655,8 +2783,13 @@ module.exports = async (req, res) => {
                 trucking_injected: needsTrucking,
                 dust_tracking_injected: needsDust,
                 // How many customers/pads the day was split across, so an audit
-                // of a two-row haul doesn't read as a double-post.
+                // of a two-row haul doesn't read as a double-post. Both tabs get
+                // one row per haul, and the two counts are reported separately
+                // because only one of them is a split when a trucking entry goes
+                // through this path.
                 dust_row_count: needsDust ? (dustInject || [{}]).length : undefined,
+                truck_row_count: needsTrucking
+                  ? ((truckingInject && truckingInject.rows) || [{}]).length : undefined,
               }
           : needsEesOther ? { ees_other_injected: true } : null,
         dbToEntry(approvedRow),
@@ -2735,7 +2868,7 @@ module.exports = async (req, res) => {
         if (dustParsed.error) return res.status(400).json({ error: dustParsed.error });
         try {
           if (reTruck) {
-            await insertTruckingRow(sql, companyCode, existing, fields);
+            await insertTruckingRows(sql, companyCode, existing, fields);
           }
         } catch (injErr) {
           console.error('[timesheet-entries] trucking resplit failed:', injErr.message);
@@ -2769,7 +2902,7 @@ module.exports = async (req, res) => {
         } catch (injErr) {
           console.error('[timesheet-entries] dust resplit failed:', injErr.message);
           return res.status(500).json({
-            error: 'Edit failed: the Truck Tracking row was updated but the Dust Control Tracking row could not be rewritten. Retry.',
+            error: 'Edit failed: the Truck Tracking rows were updated but the Dust Control Tracking rows could not be rewritten. Retry.',
             detail: injErr.message,
           });
         }
@@ -2780,6 +2913,7 @@ module.exports = async (req, res) => {
             trucking: reTruck,
             dust_tracking: reDust,
             dust_row_count: reDust ? dustParsed.rows.length : undefined,
+            truck_row_count: reTruck ? ((fields.rows) || [{}]).length : undefined,
             truck_unit: fields.unit != null ? (fields.unit || '') : undefined,
           },
           dbToEntry(existing),
@@ -3072,8 +3206,10 @@ module.exports = async (req, res) => {
       // of them meant re-editing a dust haul opened on blank fields and saved
       // the haul fee (now also the unit) back as empty.
       if (needsTruckTrackingRow(entryRow) || needsDustTrackingRow(entryRow)) {
-        const { row } = await truckingSplitForEntry(sql, companyCode, entryRow);
-        const answer = { trucking: { row } };
+        // Every leg, so a split day re-opens with each haul's own fee rather
+        // than the first one's applied to all of them.
+        const { rows: truckRows, row } = await truckingSplitForEntry(sql, companyCode, entryRow);
+        const answer = { trucking: { row, rows: truckRows } };
         // A dust haul's modal shows both tabs' fields, so it needs both rows
         // back — plus the customer's men, locations, vehicles and defaults, so a
         // box the approver left blank first time round can still be filled from
@@ -3330,6 +3466,7 @@ module.exports._test = {
   truckingRowId,
   matchTruckingDriver,
   insertTruckingRow,
+  insertTruckingRows,
   needsTruckTrackingRow,
   insertEesOtherRow,
   removeEesOtherRows,

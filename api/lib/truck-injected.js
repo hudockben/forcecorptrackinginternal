@@ -94,18 +94,39 @@ function needsTruckTrackingRow(entry) {
 function truckingRowIdPrefix(entryId) { return `tst-${entryId}-`; }
 
 /**
- * The canonical id for an entry's injected row.
+ * The most legs one day can be split into, in either tab.
  *
- * Stable, not stamped with Date.now(): there is only ever one row per entry,
- * and Intercompany keys its billing entry off this id. A fresh id on every
- * re-injection orphaned that entry — the billing entry outlived the row it
- * described, kept billing the customer, and got read back as a lost row and
- * rebuilt into a duplicate. Re-injecting is now genuinely idempotent: the row
+ * Defined here because the two halves of a dust haul must agree on it — the
+ * Truck Tracking rows and the Dust Control Tracking rows are the same hauls seen
+ * from two offices, so a cap either side could accept and the other refuse would
+ * post half a split. dust-injected.js re-exports this as MAX_DUST_ROWS.
+ *
+ * Six is what the timesheet allows a driver to split a day across
+ * (MAX_JOB_BLOCKS in timesheet.html); a supervisor breaking the same day down by
+ * customer has no reason to need more.
+ */
+const MAX_INJECTED_LEGS = 6;
+
+/**
+ * The canonical id for leg `index` (1-based) of an entry's injected rows.
+ *
+ * Stable, not stamped with Date.now(): a leg's position in the day is what
+ * identifies it, and Intercompany keys its billing entry off this id. A fresh id
+ * on every re-injection orphaned that entry — the billing entry outlived the row
+ * it described, kept billing the customer, and got read back as a lost row and
+ * rebuilt into a duplicate. Re-injecting is now genuinely idempotent: each leg
  * keeps its identity, its place in the table, and its Intercompany history
  * across an un-approve/correct/re-approve cycle. Matches the scheme the dust
  * "EES Other" rows were moved to for the same reason.
+ *
+ * Leg 1 keeps the historic "-row" suffix rather than becoming "-1", so every row
+ * posted before a day could be split keeps the id its billing entry and its
+ * invoice history are already filed under.
  */
-function truckingRowId(entryId) { return `${truckingRowIdPrefix(entryId)}row`; }
+function truckingRowId(entryId, index = 1) {
+  const n = Number(index) || 1;
+  return n <= 1 ? `${truckingRowIdPrefix(entryId)}row` : `${truckingRowIdPrefix(entryId)}${n}`;
+}
 
 // The timesheet entry a "tst-<entryId>-<suffix>" row came from, or null when the
 // id isn't one of ours. Manual rows use UUIDs and "TR-####" task numbers, so the
@@ -117,7 +138,7 @@ function entryIdFromTruckRowId(rowId) {
 
 function isInjectedTruckRowId(rowId) { return entryIdFromTruckRowId(rowId) != null; }
 
-// Rank competing rows for the same entry so exactly one survives a sweep: the
+// Rank competing rows for the same LEG so exactly one survives a sweep: the
 // canonical "-row" id wins outright, otherwise the newest Date.now() stamp does
 // (the current row is always the last one injected). An unparseable suffix
 // sorts below every real candidate.
@@ -126,6 +147,24 @@ function truckRowRecency(rowId) {
   if (suffix === 'row') return Number.MAX_SAFE_INTEGER;
   const n = Number(suffix);
   return Number.isFinite(n) ? n : -1;
+}
+
+/**
+ * Which leg of the day an injected id names.
+ *
+ * "-row" is leg 1 and "-2".."-6" are the legs a split day adds. A legacy
+ * Date.now()-stamped id is NOT a leg: it is a leftover copy of the pre-split
+ * single row, so it answers 1 and goes on competing with the canonical id for
+ * that leg — which is what keeps the sweep clearing those out.
+ *
+ * The two are told apart by magnitude, which is safe because a Date.now() stamp
+ * is around 1.7e12 and a leg index never exceeds MAX_INJECTED_LEGS.
+ */
+function truckRowLegIndex(rowId) {
+  const suffix = String(rowId || '').replace(/^tst-\d+-/, '');
+  if (suffix === 'row') return 1;
+  const n = Number(suffix);
+  return (Number.isInteger(n) && n >= 2 && n <= MAX_INJECTED_LEGS) ? n : 1;
 }
 
 /**
@@ -233,15 +272,22 @@ async function deleteTruckBlobRows(sql, companyCode, rowIds) {
  *   - its entry is no longer approved (payroll un-approved it),
  *   - its entry no longer routes to Truck Tracking (it was edited onto a
  *     different division, or a dust entry moved onto an EES job), or
- *   - a newer row for the same entry exists — the duplicate an old Date.now()
- *     id left behind when the entry was re-approved.
+ *   - a newer row for the same LEG of the same entry exists — the duplicate an
+ *     old Date.now() id left behind when the entry was re-approved.
+ *
+ * Competition is per leg, not per entry: a day split across two customers posts
+ * one row per haul, and both are live. Legs the split no longer has are pruned
+ * by the injection itself, which knows how many it just wrote; this sweep only
+ * knows whether the entry still routes here at all, so an entry-level "keep one,
+ * drop the rest" rule would delete the second haul's billing on every load of
+ * the Truck Tracking tab.
  *
  * Manual rows are never candidates: the sweep only ever looks at ids carrying
  * the "tst-<entryId>-" prefix payroll mints.
  */
 function findStaleTruckRows(entries, entriesById) {
   const stale = [];
-  const newestByEntry = new Map();
+  const newestByLeg = new Map();
 
   const injected = (entries || []).filter(r => r && typeof r === 'object' && isInjectedTruckRowId(r.id));
   for (const row of injected) {
@@ -251,11 +297,12 @@ function findStaleTruckRows(entries, entriesById) {
       stale.push(String(row.id));
       continue;
     }
-    const prev = newestByEntry.get(entryId);
-    if (!prev) { newestByEntry.set(entryId, row); continue; }
-    // Two live rows for one entry: keep the newer, drop the other.
+    const key  = `${entryId}|${truckRowLegIndex(row.id)}`;
+    const prev = newestByLeg.get(key);
+    if (!prev) { newestByLeg.set(key, row); continue; }
+    // Two live rows for one leg: keep the newer, drop the other.
     if (truckRowRecency(row.id) > truckRowRecency(prev.id)) {
-      newestByEntry.set(entryId, row);
+      newestByLeg.set(key, row);
       stale.push(String(prev.id));
     } else {
       stale.push(String(row.id));
@@ -318,6 +365,7 @@ module.exports = {
   IC_BILLING_BLOB,
   IC_SOURCE_TRUCKING,
   EES_JOB_IDS,
+  MAX_INJECTED_LEGS,
   isEesJob,
   needsTruckTrackingRow,
   truckingRowIdPrefix,
@@ -325,6 +373,7 @@ module.exports = {
   entryIdFromTruckRowId,
   isInjectedTruckRowId,
   truckRowRecency,
+  truckRowLegIndex,
   removeIcBillingEntries,
   deleteTruckBlobRows,
   findStaleTruckRows,

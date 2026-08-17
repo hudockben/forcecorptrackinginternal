@@ -35,6 +35,8 @@ function assert(label, cond, detail) {
 const SRC    = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
 const SERVER = fs.readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
 const LIB    = fs.readFileSync(path.resolve(__dirname, '../api/lib/dust-injected.js'), 'utf8');
+const { MAX_DUST_ROWS } = require('../api/lib/dust-injected.js');
+const { MAX_INJECTED_LEGS } = require('../api/lib/truck-injected.js');
 
 console.log('Payroll dust split modal\n');
 
@@ -46,8 +48,12 @@ console.log('[the payload the modal and the server agree on]');
     !!save && /body\.dust = \{\s*\n\s*rows: dustLegs\.map/.test(save[0]));
   assert('every leg carries its own window',
     !!save && /start_time:\s*leg\.start_time/.test(save[0]) && /end_time:\s*leg\.end_time/.test(save[0]));
-  assert('a leg on the timesheet customer sends no company',
-    !!save && /=== entryCo \? undefined : leg\.company/.test(save[0]));
+  assert('a leg on the timesheet customer sends no company to either tab',
+    /=== entryCo \? undefined : leg\.company/.test(SRC)
+    && !!save && (save[0].match(/company:\s*dustLegCompanyPayload\(leg\)/g) || []).length === 2);
+  assert('and the same legs go to the Truck Tracking half',
+    !!save && /trucking\.rows = dustLegs\.map/.test(save[0])
+    && /haul_fee:\s*leg\.haul_fee/.test(save[0]));
   assert('a haul with no hours is refused before it can bill nothing',
     !!save && /has no hours/.test(save[0]));
 
@@ -61,10 +67,16 @@ console.log('[the payload the modal and the server agree on]');
   assert('leg 1 keeps the historic row id',
     /n <= 1 \? `\$\{dustRowIdPrefix\(entryId\)\}row`/.test(LIB));
 
-  const cap = LIB.match(/const MAX_DUST_ROWS = (\d+)/);
   const uiCap = SRC.match(/const MAX_DUST_LEGS = (\d+)/);
   assert('the modal and the server cap the split at the same number',
-    !!cap && !!uiCap && cap[1] === uiCap[1], `${cap && cap[1]} vs ${uiCap && uiCap[1]}`);
+    !!uiCap && Number(uiCap[1]) === MAX_DUST_ROWS, `${uiCap && uiCap[1]} vs ${MAX_DUST_ROWS}`);
+  assert('and both tabs cap it at the same number too',
+    MAX_DUST_ROWS === MAX_INJECTED_LEGS);
+  assert('the server prunes dropped Truck Tracking legs as well',
+    /const staleIds = \[\.\.\.priorById\.keys\(\)\]\.filter\(id => id && !kept\.has\(id\)\)/.test(SERVER));
+  assert('the truck sweep competes per leg, not per entry',
+    /Competition is per leg, not per entry/.test(
+      fs.readFileSync(path.resolve(__dirname, '../api/lib/truck-injected.js'), 'utf8')));
 
   // The read-time sweep must no longer treat a second leg as a duplicate.
   assert('the sweep keeps every live leg of one entry',
@@ -232,6 +244,39 @@ console.log('\n[a late pre-fill never overwrites an answer]');
                            { company: 'Antero', location: 'Bear Hollow' }]);
   assert('a second posted haul is picked up rather than lost',
     t.legs().length === 2 && t.legs()[1].location === 'Bear Hollow');
+}
+
+console.log('\n[the haul fee follows the haul]');
+{
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  // The fee typed at the top of the modal belongs to leg 1 — the box is bound to
+  // it — so splitting the day carries it onto the haul that was added.
+  t.call('dkEdit', t.legs()[0].key, 'haul_fee', '135');
+  t.call('dustAddLeg');
+  const [a, b] = t.legs();
+  assert('the fee typed for the day carries onto the new haul',
+    a.haul_fee === '135' && b.haul_fee === '135');
+  t.call('dkEdit', b.key, 'haul_fee', '145');
+  assert('and each haul can then bill its own',
+    a.haul_fee === '135' && b.haul_fee === '145');
+
+  // Re-editing reads the posted Truck Tracking rows back onto the hauls.
+  const t2 = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  t2.call('dustApplyTruckRows', [
+    { id: 'tst-42-row', customer: 'CNX',    actual_start: '05:00', actual_end: '10:00', haul_fee: 135 },
+    { id: 'tst-42-2',   customer: 'Antero', actual_start: '10:00', actual_end: '15:00', haul_fee: 145 },
+  ]);
+  const legs2 = t2.legs();
+  assert('a posted second haul is picked up rather than lost',
+    legs2.length === 2 && legs2[1].company === 'Antero' && legs2[1].start_time === '10:00');
+  assert('each haul gets back the fee it was posted with',
+    legs2[0].haul_fee === '135' && legs2[1].haul_fee === '145');
+
+  // A fee the approver has already typed is theirs, late answer or not.
+  const t3 = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  t3.call('dkEdit', t3.legs()[0].key, 'haul_fee', '999');
+  t3.call('dustApplyTruckRows', [{ id: 'tst-42-row', haul_fee: 135 }]);
+  assert('what they typed stands', t3.legs()[0].haul_fee === '999');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
