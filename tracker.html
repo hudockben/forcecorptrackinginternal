@@ -2483,6 +2483,27 @@
     .cb-opt.hi .cb-opt-meta, .cb-opt:hover .cb-opt-meta { color: #dbeafe; }
     .cb[data-list^="bid_subcodes"] .cb-menu { max-width: 460px; }
 
+    /* Schedules toolbar project filter: the same combobox, sized for the bar
+       and given a caret so it still reads as a dropdown. */
+    .cb[data-list="sched_projects"] { width: 240px; max-width: 100%; }
+    .cb[data-list="sched_projects"] .cb-input {
+      background: var(--bg);
+      border-radius: 4px;
+      padding: 0.25rem 1.3rem 0.25rem 0.5rem;
+      text-overflow: ellipsis;
+    }
+    .cb[data-list="sched_projects"]::after {
+      content: '\25BE';
+      position: absolute;
+      right: 0.5rem;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.7rem;
+      color: var(--muted, #6b7280);
+      pointer-events: none;
+    }
+    .cb[data-list="sched_projects"] .cb-menu { max-width: 420px; }
+
     /* Construction-schedule timeline: a scroll pane of its own, so the column
        headers stay put and the horizontal scrollbar is always within reach
        instead of sitting below every row. */
@@ -3136,8 +3157,12 @@
 <div class="tab-panel" id="tab-schedule">
   <div class="sched-proj-bar">
     <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Project:</span>
-    <select id="sched-proj-select" onchange="renderScheduleTab()"
-      style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:0.25rem 0.5rem;font-size:0.8rem;outline:none;min-width:200px;">
+    <!-- Searchable project picker: the shared typeahead combobox, mounted by
+         syncSchedProjInput. The <select> stays behind it as the selection's
+         source of truth — hidden, but still what every reader and the pacing
+         cards use — so the picker's only job is keeping the two in step. -->
+    <span id="sched-proj-cb-mount"></span>
+    <select id="sched-proj-select" onchange="renderScheduleTab()" style="display:none">
       <option value="">All Projects</option>
     </select>
     <button class="btn btn-ghost" onclick="loadScheduleDeadlines().then(renderScheduleTab)" style="font-size:0.75rem">&#8635; Refresh</button>
@@ -4246,6 +4271,15 @@ function cbOptionsFor(listKey) {
   if (listKey === 'employees') return (lists.employees || []).map(e => e && e.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
   if (listKey === 'equipment') return (lists.equipment || []).map(e => e && e.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
   if (listKey === 'projects') return projectsList.slice().sort((a,b) => (a['project-name']||'').localeCompare(b['project-name']||'')).map(p => ({ value: p.id, label: p['project-name'] || 'Untitled' }));
+  // Schedules toolbar filter: every project plus the All Projects reset, with
+  // the job number carried as the note so it shows in the menu and is
+  // searchable alongside the name.
+  if (listKey === 'sched_projects') {
+    return [{ value: '', label: 'All Projects' }].concat(
+      projectsList.slice()
+        .sort((a, b) => _schedProjLabel(a).localeCompare(_schedProjLabel(b)))
+        .map(p => ({ value: p.id, label: _schedProjLabel(p), meta: p['job-number'] ? 'Job #' + p['job-number'] : '' })));
+  }
   if (listKey.startsWith('tr_subcodes:')) {
     const trId = listKey.slice(12);
     const tr = truckingEntries.find(t => t.id === trId);
@@ -4293,6 +4327,9 @@ const _cbValue = o => typeof o === 'string' ? o : o.value;
 function cbFilterFor(listKey, rawQuery, options) {
   if (String(listKey || '').startsWith('bid_subcodes')) return _bidSubCodeFilter(listKey, rawQuery, options);
   const q = String(rawQuery || '').trim().toLowerCase();
+  // Projects also match on the job number in their note — looking a job up by
+  // its number is how half the office finds it.
+  if (listKey === 'sched_projects') return q ? options.filter(o => (_cbLabel(o) + ' ' + (o.meta || '')).toLowerCase().includes(q)) : options;
   return q ? options.filter(o => _cbLabel(o).toLowerCase().includes(q)) : options;
 }
 
@@ -23985,6 +24022,51 @@ function renderScheduleAllProjects() {
   `;
 }
 
+/* ── Schedules project picker ─────────────────────────────────────────────
+   The Project filter is the shared typeahead combobox, so it searches the same
+   way every other project picker on the page does. #sched-proj-select stays
+   behind it as the selection's source of truth — hidden, but still what the PM
+   report, PDF export, Gantt and AI insights read, and what the pacing cards
+   write — so the picker's only job is keeping the two in step. */
+// Hoisted: cbOptionsFor sits far above this block and calls it.
+function _schedProjLabel(p) { return p['project-name'] || p['job-number'] || p.id; }
+
+// Mount the picker on first render, then keep its text on whatever the hidden
+// select holds. A search in progress is never overwritten.
+function syncSchedProjInput() {
+  const mount = document.getElementById('sched-proj-cb-mount');
+  const sel   = document.getElementById('sched-proj-select');
+  if (!mount || !sel) return;
+  if (!mount.firstElementChild) {
+    mount.innerHTML = cbHtml('sched_projects', '', 'Search projects…', 'onchange="schedProjPick(this)"');
+  }
+  const input = mount.querySelector('.cb-input');
+  if (!input || document.activeElement === input) return;
+  const opts = cbOptionsFor('sched_projects');
+  const opt  = opts.find(o => o.value === sel.value) || opts[0];
+  input.value = opt.label;
+  input.dataset.cbValue = opt.value;
+}
+
+// Commit handler — fires on a menu pick, Enter, Tab or blur. Resolves whatever
+// the box holds to a project, hands it to the hidden select and re-renders.
+function schedProjPick(input) {
+  const sel = document.getElementById('sched-proj-select');
+  if (!sel) return;
+  const opts  = cbOptionsFor('sched_projects');
+  const typed = input.value.trim().toLowerCase();
+  const picked = (input.dataset.cbValue && opts.find(o => o.value === input.dataset.cbValue))
+    || (typed ? opts.find(o => o.label.toLowerCase() === typed) : opts[0])
+    // Text matching nothing puts the current selection back, rather than
+    // quietly falling through to All Projects.
+    || opts.find(o => o.value === sel.value) || opts[0];
+  input.value = picked.label;
+  input.dataset.cbValue = picked.value;
+  if (picked.value === sel.value) return;
+  sel.value = picked.value;
+  renderScheduleTab();
+}
+
 async function renderScheduleTab() {
   const body = document.getElementById('sched-body');
   if (!body) return;
@@ -23998,6 +24080,7 @@ async function renderScheduleTab() {
         `<option value="${p.id}">${esc(p['project-name'] || p['job-number'] || p.id)}</option>`
       ).join('');
     sel.value = currentVal;
+    syncSchedProjInput();
   }
 
   body.innerHTML = '<div class="sched-no-data" style="padding:2rem">Loading…</div>';
