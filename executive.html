@@ -681,17 +681,6 @@
       gap: 0.6rem;
       align-items: center;
     }
-    .div-pill {
-      font-size: 0.5rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      padding: 0.12rem 0.45rem;
-      border-radius: 3px;
-    }
-    .div-pill.turf   { background: rgba(34,197,94,0.12); color: var(--green); }
-    .div-pill.paving { background: rgba(96,165,250,0.12); color: var(--blue); }
-
     .timeline-bar {
       position: relative;
       height: 28px;
@@ -786,101 +775,6 @@
     .timeline-mini-label { color: var(--muted); }
     .timeline-mini-val { color: var(--text); font-weight: 600; text-align: right; }
 
-    /* ── Per-project detail ── */
-    .project-detail {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.5rem;
-      margin-bottom: 1.5rem;
-    }
-    .pd-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      margin-bottom: 1.25rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    .pd-name {
-      font-size: 1.05rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.01em;
-      margin-bottom: 0.4rem;
-    }
-    .pd-meta {
-      font-size: 0.7rem;
-      color: var(--muted);
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    .pd-meta strong { color: var(--text); font-weight: 600; }
-    .pd-totals {
-      display: flex;
-      gap: 1.5rem;
-      flex-wrap: wrap;
-    }
-    .pd-total-label {
-      font-size: 0.55rem;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 0.2rem;
-    }
-    .pd-total-val {
-      font-size: 1rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.01em;
-    }
-
-    .pd-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1.5rem;
-    }
-    .pd-block-title {
-      font-size: 0.62rem;
-      font-weight: 700;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 0.7rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .pd-block-title .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-    }
-    .pd-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.72rem;
-    }
-    .pd-table th {
-      text-align: left;
-      padding: 0.4rem 0.5rem;
-      font-size: 0.55rem;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border);
-      font-weight: 700;
-    }
-    .pd-table td {
-      padding: 0.45rem 0.5rem;
-      border-bottom: 1px solid rgba(42,42,58,0.4);
-    }
-    .pd-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-
     /* ── Footer ── */
     footer {
       text-align: center;
@@ -897,22 +791,19 @@
       body { background: #fff; color: #000; }
       header, .action-bar, footer, .filters, .section-action-btn { display: none !important; }
       .report { max-width: none; margin: 0; padding: 0; }
-      .hero-kpi, .div-tile, .timeline-wrap, .project-detail {
+      .hero-kpi, .div-tile, .timeline-wrap {
         background: #fff;
         border: 1px solid #ccc;
         color: #000;
         box-shadow: none;
       }
-      .div-tile-name, .timeline-proj-name, .pd-name,
-      .hero-kpi-value, .div-kpi-value, .pd-total-val,
+      .div-tile-name, .timeline-proj-name,
+      .hero-kpi-value, .div-kpi-value,
       .section-title { color: #000; }
-      .hero-kpi-label, .div-kpi-label, .pd-total-label,
-      .section-sub, .timeline-proj-meta, .div-kpi-sub,
-      .pd-meta, .pd-block-title, .pd-table th { color: #555; }
+      .hero-kpi-label, .div-kpi-label,
+      .section-sub, .timeline-proj-meta, .div-kpi-sub { color: #555; }
       .div-kpi-sub { color: #777; }
       .section-head { border-color: #ccc; }
-      .pd-table th { border-color: #ccc; }
-      .pd-table td { border-color: #eee; color: #000; }
       .timeline-bar { background: #eee; }
       .timeline-grid { border-color: #eee; min-width: 0; }
       .timeline-grid.head { border-color: #ccc; }
@@ -929,11 +820,9 @@
       .ptable .pstar.off { color: #ddd; }
       .ptable .pprogress { min-width: 70px; gap: 0.3rem; }
       .ptable .pprogress-track { background: #eee; min-width: 40px; }
-      .pd-head { border-color: #ccc; }
       .timeline-today { background: #000; box-shadow: none; }
       .timeline-today::after { color: #000; }
       .page-break { break-before: page; page-break-before: always; }
-      .project-detail { break-inside: avoid; page-break-inside: avoid; }
 
       /* Single-section print scope: a division's "PDF" button marks that
          section .print-scope and puts body in printing-scoped, which hides
@@ -1014,7 +903,6 @@
     @media (max-width: 900px) {
       .hero-kpis { grid-template-columns: repeat(2, 1fr); }
       .div-grid { grid-template-columns: 1fr; }
-      .pd-grid { grid-template-columns: 1fr; }
       .action-bar { padding: 1rem; }
       .report { padding: 0 1rem; }
     }
@@ -1116,17 +1004,6 @@
             <tfoot id="payrollFoot"></tfoot>
           </table>
         </div>
-      </div>
-
-      <!-- ─────────── PAGE 4+: PER-PROJECT DETAIL ─────────── -->
-      <!-- detail-section keeps these pages out of the emailed report: they run
-           one page per project and are meant for the printed PDF. -->
-      <div class="section page-break detail-section">
-        <div class="section-head">
-          <div class="section-title">Project Detail</div>
-          <div class="section-sub">One page per active project</div>
-        </div>
-        <div id="projectDetails"></div>
       </div>
 
     </div>
@@ -1422,61 +1299,6 @@
       `;
     }
 
-    function renderDetailSection(title, dot, block) {
-      if (!block) return '';
-      const head = (block.cols || []).map(c => `<th${/^\d|\$|%|tons|hours|loads|qty|gallons/i.test(c) ? ' class="num"' : ''}>${esc(c)}</th>`).join('');
-      const rows = (block.rows || []).map(r => {
-        const tds = r.map((cell, i) => {
-          const isNum = /^\d|\$|%|^—$/.test(String(cell));
-          return `<td${isNum ? ' class="num"' : ''}>${esc(cell)}</td>`;
-        }).join('');
-        return `<tr>${tds}</tr>`;
-      }).join('');
-      return `
-        <div>
-          <div class="pd-block-title"><span class="dot" style="background: ${esc(dot)};"></span>${esc(title)}</div>
-          <table class="pd-table">
-            <thead><tr>${head}</tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-      `;
-    }
-
-    function renderDetail(p) {
-      const s = p.sections || {};
-      const blocks = [
-        renderDetailSection('Bid Items',                  s.bidItems?.color || '#60a5fa', s.bidItems),
-        renderDetailSection('Trucking Activity',          s.trucking?.color || '#ef4444', s.trucking),
-        renderDetailSection('Quarry Materials Drawn',     s.quarry?.color   || '#f97316', s.quarry),
-        renderDetailSection('Dust Control Applications',  s.dust?.color     || '#fbbf24', s.dust),
-      ].join('');
-      const divPill = p.division
-        ? `<span class="div-pill ${esc(p.division)}" style="vertical-align: middle; margin-left: 0.4rem;">${esc(p.division)}</span>`
-        : '';
-      return `
-        <div class="project-detail">
-          <div class="pd-head">
-            <div>
-              <div class="pd-name">${esc(p.name)} ${divPill}</div>
-              <div class="pd-meta">
-                <span><strong>Job #</strong> ${esc(p.jobNumber)}</span>
-                <span><strong>Start</strong> ${esc(p.start)}</span>
-                <span><strong>Target</strong> ${esc(p.target)}</span>
-                <span><strong>Status</strong> <span style="color: var(--${esc(p.statusColor || 'green')});">${esc(p.status)}</span></span>
-              </div>
-            </div>
-            <div class="pd-totals">
-              <div><div class="pd-total-label">Contract Value</div>    <div class="pd-total-val">${esc(p.contract)}</div></div>
-              <div><div class="pd-total-label">Booked Cost</div> <div class="pd-total-val">${esc(p.bookedCost)}</div></div>
-              <div><div class="pd-total-label">% Complete</div>  <div class="pd-total-val">${esc(p.pctComplete)}</div></div>
-            </div>
-          </div>
-          <div class="pd-grid">${blocks}</div>
-        </div>
-      `;
-    }
-
     function renderReport(data) {
       document.getElementById('heroKpis').innerHTML = renderHero(data.snapshot?.hero || []);
       document.getElementById('divGrid').innerHTML  = (data.snapshot?.divisions || []).map(renderDivisionTile).join('');
@@ -1485,8 +1307,6 @@
         Array.isArray(data.portfolios) ? data.portfolios : [],
         Array.isArray(data.inventory)  ? data.inventory  : [],
       );
-
-      document.getElementById('projectDetails').innerHTML = (data.details || []).map(renderDetail).join('');
 
       renderPayrollSummary(data.payroll || null);
     }
@@ -1647,11 +1467,10 @@
     loadReport();
 
     // ── Email Report ──
-    // Captures the company snapshot, every division section and the payroll
-    // summary — the report as read on screen, minus the per-project detail
-    // pages, which are too long to sit in an inbox. The page's <style> blocks
-    // ride along with the CSS variables resolved to literal hex values, so
-    // email clients render the colours even when they strip <style>.
+    // Captures every section of the report as read on screen. The page's
+    // <style> blocks ride along with the CSS variables resolved to literal hex
+    // values, so email clients render the colours even when they strip
+    // <style>.
     function emailExecutiveReport() {
       if (typeof window.openReportEmailModal !== 'function') {
         alert('Email module is still loading — please try again in a moment.');
@@ -1664,7 +1483,7 @@
       }
       // Descendant selector, so the division sections nested under
       // #portfolioSections come back in the order they're read on screen.
-      const sections = document.querySelectorAll('#reportBody .section:not(.detail-section)');
+      const sections = document.querySelectorAll('#reportBody .section');
       if (!sections.length) {
         alert('There is nothing to email yet — the report has no sections.');
         return;
@@ -1687,7 +1506,7 @@
       // specificity beats the wrapper's inline color. Forcing color via
       // inline style on the clones guarantees the text shows up even
       // when the email client strips <style> blocks.
-      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .hero-kpi-value, .div-tile-name, .div-kpi-value, .metric-value, .pd-name, .pd-total-val';
+      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .hero-kpi-value, .div-tile-name, .div-kpi-value, .metric-value';
       const clones = Array.from(sections).map(el => {
         const clone = el.cloneNode(true);
         // The per-division PDF buttons are page controls, not report content.

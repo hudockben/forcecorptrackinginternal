@@ -159,7 +159,6 @@ const projMeetsExecCutoff = p => {
   const n = projJobInt(p);
   return Number.isFinite(n) && n >= EXEC_MIN_JOB_NUMBER;
 };
-const projStartDate  = p => p['start-date'] || p.start_date || null;
 const projEndDate    = p => p['end-date']   || p.end_date   || p['target-completion'] || p.target_completion || null;
 const projPinned     = p => p.pinned === true;
 const projClient     = p => String(p['client'] || p.client || '').trim();
@@ -978,162 +977,6 @@ function buildDivisionPortfolios(sql, companyCode) {
   ));
 }
 
-// ── Per-project detail (page 3+) ─────────────────────────────────────
-// Returns the top 6 active projects with full header info plus
-// section blocks (bid items, weekly trucking activity). Quarry and
-// dust sections are intentionally omitted until quarry data lands
-// and dust gains a project linkage. Each per-project sub-query runs
-// in parallel and is independently safe-wrapped.
-// Per-project detail (page 3+): top 6 active across every job-running
-// division by earliest start date. Bid items come from the blob, booked cost +
-// weekly trucking come from the normalized tables joined by project_id.
-async function buildProjectDetails(sql, companyCode) {
-  const perDivision = await Promise.all(PROJECT_DIVISIONS.map(async d => ({
-    division: d.key,
-    blobs:    await d.read(sql, companyCode).catch(() => []),
-  })));
-
-  const tagged = perDivision
-   .flatMap(({ division, blobs }) => blobs.map(p => ({ p, division })))
-   .filter(({ p }) => projMeetsExecCutoff(p) && !projIsComplete(p))
-   .sort((a, b) => {
-     const sa = projStartDate(a.p) || '';
-     const sb = projStartDate(b.p) || '';
-     // empty start dates sort last
-     if (!sa && !sb) return projName(a.p).localeCompare(projName(b.p));
-     if (!sa) return 1;
-     if (!sb) return -1;
-     return sa.localeCompare(sb);
-   })
-   .slice(0, 6);
-
-  if (!tagged.length) return [];
-
-  return Promise.all(tagged.map(async ({ p, division }) => {
-    const [weeks, booked] = await Promise.all([
-      safeRun(`details.weeks.${p.id}`, async () => {
-        return await sql`
-          SELECT
-            date_trunc('week', date)::date::text                                AS week_start,
-            COALESCE(SUM(loads),  0)::float                                     AS loads,
-            COALESCE(SUM(hours),  0)::float                                     AS hours,
-            COALESCE(SUM(COALESCE(loads,0) * COALESCE(rate,0)), 0)::float       AS dollars
-          FROM trucking_entries
-          WHERE company_code = ${companyCode}
-            AND project_id   = ${p.id}
-          GROUP BY date_trunc('week', date)
-          ORDER BY week_start DESC
-          LIMIT 4
-        `;
-      }),
-      safeRun(`details.booked.${p.id}`, async () => {
-        const rows = await sql`
-          SELECT
-            COALESCE(SUM(
-              COALESCE(total_cost_override,
-                COALESCE(labor_hours, 0) * COALESCE(rate, 0)
-                + COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)
-                + COALESCE(material_cost, 0)
-              )
-            ), 0)::float AS booked
-          FROM daily_tracking
-          WHERE company_code = ${companyCode}
-            AND division     = ${division}
-            AND project_id   = ${p.id}
-        `;
-        return rows[0]?.booked ?? 0;
-      }),
-    ]);
-
-    return buildDetailObject(p, division, projBidLines(p), weeks, booked);
-  }));
-}
-
-function buildDetailObject(p, division, bidItems, weeks, booked) {
-  const start = projStartDate(p);
-  const end   = projEndDate(p);
-  const startMs = start ? new Date(start + 'T00:00:00Z').getTime() : null;
-  const endMs   = end   ? new Date(end   + 'T00:00:00Z').getTime() : null;
-  const todayMs = Date.now();
-
-  let pctComplete = '—';
-  if (startMs != null && endMs != null && endMs > startMs) {
-    const elapsed = Math.max(0, Math.min(todayMs, endMs) - startMs);
-    pctComplete = Math.round((elapsed / (endMs - startMs)) * 100) + '%';
-  }
-
-  const fmtDate = iso =>
-    iso
-      ? new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-      : '—';
-
-  const sections = {};
-
-  if (Array.isArray(bidItems) && bidItems.length) {
-    const accent = (PROJECT_DIVISIONS.find(d => d.key === division) || {}).accent || '#22c55e';
-    sections.bidItems = {
-      color: accent,
-      cols:  ['Item', 'Qty', 'Status'],
-      rows:  bidItems.slice(0, 8).map(b => [
-        b.description || b.cost_code || '—',
-        b.quantity > 0
-          ? `${Number(b.quantity).toLocaleString('en-US')} ${b.unit || ''}`.trim()
-          : '—',
-        b.status || 'Active',
-      ]),
-    };
-  }
-
-  if (Array.isArray(weeks) && weeks.length) {
-    const sorted       = [...weeks].sort((a, b) => String(a.week_start).localeCompare(String(b.week_start)));
-    const totalLoads   = sorted.reduce((s, w) => s + (Number(w.loads)   || 0), 0);
-    const totalHours   = sorted.reduce((s, w) => s + (Number(w.hours)   || 0), 0);
-    const totalDollars = sorted.reduce((s, w) => s + (Number(w.dollars) || 0), 0);
-    const fmtWeek = iso =>
-      new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
-    sections.trucking = {
-      color: '#ef4444',
-      cols:  ['Week', 'Loads', 'Hours', '$'],
-      rows: [
-        ...sorted.map(w => [
-          fmtWeek(w.week_start),
-          Math.round(Number(w.loads) || 0).toLocaleString('en-US'),
-          Math.round(Number(w.hours) || 0).toLocaleString('en-US'),
-          fmtCurrency(w.dollars),
-        ]),
-        [
-          'Total to date',
-          Math.round(totalLoads).toLocaleString('en-US'),
-          Math.round(totalHours).toLocaleString('en-US'),
-          fmtCurrency(totalDollars),
-        ],
-      ],
-    };
-  }
-
-  const status = projStatus(p) || 'Active';
-  const statusColor =
-    status === 'On Hold' ? 'mute' :
-    status === 'At Risk' ? 'amber' :
-    'green';
-
-  const contract = projContract(p);
-  return {
-    name:        projName(p),
-    jobNumber:   projJob(p) || '—',
-    division,
-    status,
-    statusColor,
-    start:       fmtDate(start),
-    target:      fmtDate(end),
-    contract:    contract > 0 ? fmtCurrency(contract) : '—',
-    bookedCost:  booked != null ? fmtCurrency(booked) : '—',
-    pctComplete,
-    sections,
-  };
-}
-
 async function buildIntercompanyTile(sql, companyCode) {
   const unbilledTrucking = await safeRun('ic.unbilled_trucking', async () => {
     const rows = await sql`
@@ -1657,8 +1500,6 @@ function mockReport() {
       shown: 0, pinned: 0, recent: 0, hidden: 0, total: 0,
     })),
 
-    details: [],
-
     payroll: {
       periodStart: null,
       periodEnd:   null,
@@ -1734,16 +1575,12 @@ module.exports = async (req, res) => {
       return tile;
     });
 
-    // Per-division project portfolios (page 2+) and per-project detail. The
-    // builders return null on error or when there are no active projects —
-    // both cases leave the mock's empty placeholders, which now contain no
-    // fake project entries.
-    const [livePortfolios, liveDetails, liveInventory, livePayroll] = await Promise.all([
+    // Per-division project portfolios (page 2+). The builders return null on
+    // error or when there are no active projects — both cases leave the mock's
+    // empty placeholders, which now contain no fake project entries.
+    const [livePortfolios, liveInventory, livePayroll] = await Promise.all([
       buildDivisionPortfolios(sql, company).catch(err => {
         console.error('[executive/report] portfolios build failed:', err.message); return null;
-      }),
-      buildProjectDetails(sql, company).catch(err => {
-        console.error('[executive/report] details build failed:', err.message); return null;
       }),
       buildRubberInventory(sql, company).catch(err => {
         console.error('[executive/report] inventory build failed:', err.message); return null;
@@ -1754,9 +1591,6 @@ module.exports = async (req, res) => {
     ]);
     if (Array.isArray(livePortfolios) && livePortfolios.length) {
       report.portfolios = livePortfolios;
-    }
-    if (Array.isArray(liveDetails)) {
-      report.details = liveDetails;
     }
     if (Array.isArray(liveInventory)) {
       report.inventory = liveInventory;

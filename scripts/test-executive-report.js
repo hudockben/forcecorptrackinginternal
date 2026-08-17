@@ -301,10 +301,6 @@ const res = {
     }
   }
 
-  console.log('\nproject details:', payload.details?.length || 0, 'projects');
-  for (const d of (payload.details || [])) {
-    console.log(`  ${d.name.padEnd(36)} div=${d.division.padEnd(7)} contract=${d.contract} booked=${d.bookedCost} pct=${d.pctComplete} sections=${Object.keys(d.sections || {}).join(',')}`);
-  }
 
   console.log('\n──── ASSERTIONS ────');
   let failed = 0;
@@ -424,10 +420,14 @@ const res = {
     pass('every portfolio carries the home strip\'s 8 metrics');
   }
 
-  // Details should NOT contain mock entries from old fallback
-  const mockNames = (payload.details || []).filter(d => /Riverbend|Cedar Park/.test(d.name)).map(d => d.name);
-  if (mockNames.length) fail('project details still includes mock entries: ' + mockNames.join(', '));
-  else pass('project details has no mock entries');
+  // The per-project detail pages are gone — the division tables carry the
+  // figures, and nothing should still be paying for the per-project queries
+  // those pages needed.
+  if ('details' in payload) fail('payload still carries per-project detail');
+  else pass('no per-project detail in the payload');
+  const perProjectQueries = queries.filter(q => /date_trunc\('week', date\)/.test(q.sql)).length;
+  if (perProjectQueries) fail(`${perProjectQueries} per-project trucking queries still run`);
+  else pass('the per-project trucking queries are no longer issued');
 
   if (failed) {
     console.error('\n❌ ' + failed + ' assertion(s) failed');

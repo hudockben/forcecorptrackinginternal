@@ -132,9 +132,12 @@ assert('the scoped print hides the other sections',
   /body\.printing-scoped #portfolioSections > \.section:not\(\.print-scope\)/.test(exec));
 assert('and drops its scope classes when printing ends, so the full-report button still works',
   /afterprint[\s\S]{0,400}remove\('printing-scoped'\)|remove\('printing-scoped'\)[\s\S]{0,400}afterprint/.test(exec));
-assert('the emailed report covers every section but the per-project detail pages',
-  exec.includes("'#reportBody .section:not(.detail-section)'") &&
-  exec.includes('class="section page-break detail-section"'));
+assert('the emailed report covers every section on the page',
+  exec.includes("'#reportBody .section'"));
+assert('the per-project detail pages are gone from the report',
+  !/pd-table|project-detail|renderDetail|projectDetails/.test(exec));
+assert('and from the API, along with the per-project queries they needed',
+  !/buildProjectDetails|buildDetailObject/.test(report));
 assert('and strips the per-division PDF buttons out of the email',
   /section-action-btn'\)\.forEach\(btn => btn\.remove\(\)\)/.test(exec));
 
