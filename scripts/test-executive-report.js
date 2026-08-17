@@ -136,13 +136,66 @@ const FAKE_KIEWIT_DAILY = [
   { project_id: 'kw1', cost_code: '01', sub_code: '', actual: 90000, rqty: 9 },
 ];
 
-// Quarry sales blob: mix of this-week + this-month entries.
-const todayIso = new Date().toISOString().slice(0, 10);
+// ── Quarry blobs ──
+// Two pits with round numbers so every derived figure can be checked by hand.
+// Altoona: 35 tons sold at $18 = $630; McGees: 15 t at $22 = $330.
+const todayIso  = new Date().toISOString().slice(0, 10);
+const thisMonth = todayIso.slice(0, 7);
 const FAKE_QUARRY_SALES = [
   { date: todayIso, locationName: 'Pit 1 — Altoona',       productName: '#57 Limestone', tons: 25, pricePerTon: 18 },
   { date: todayIso, locationName: 'Pit 3 — Hollidaysburg', productName: '2A Modified',   tons: 15, pricePerTon: 22 },
   { date: todayIso, locationName: 'Pit 1 — Altoona',       productName: '#57 Limestone', tons: 10, pricePerTon: 18 },
 ];
+// Daily: Altoona 10h × $50 = $500 labour, 20 gal × $4 = $80 fuel → $580.
+const FAKE_QUARRY_DAILY = [
+  { date: todayIso, locationName: 'Pit 1 — Altoona', hours: 10, rate: 50, fuelGallons: 20, ppg: 4 },
+];
+// Crushing: Altoona 8h × $90 = $720 payroll, 30 gal × $5 = $150 fuel → $870,
+// and 10 loads × 20 t = 200 tons to the crusher over 8 crushing hours.
+const FAKE_QUARRY_CRUSH = [
+  {
+    date: todayIso, locationName: 'Pit 1 — Altoona',
+    hourlyRate: 90, hours: 8, fuelGallons: 30, fuelCost: 5,
+    loadsToCrusher: 10, tonsPerLoad: 20, hoursCrushing: 8,
+  },
+];
+// Opening count of 100 tons at Altoona, taken before the rows above.
+const FAKE_QUARRY_INVENTORY = {
+  basis: 'final',
+  openings: [{ locationName: 'Pit 1 — Altoona', productName: '#57 Limestone', tons: 100, asOf: '2026-01-01' }],
+  adjustments: [],
+};
+// 10% jaws→screen loss at Altoona: 200 tons crushed → 180 sellable.
+const FAKE_QUARRY_LOSS = { 'Pit 1 — Altoona': 10 };
+const FAKE_QUARRY_FIXED = { 'Pit 1 — Altoona': { [thisMonth]: 1000 } };
+const FAKE_QUARRY_ROYALTY = { 'Pit 1 — Altoona': [{ name: 'Landowner', rate: 10, floor: 0 }] };
+const FAKE_QUARRY_LISTS = { product: [{ id: 'pr1', name: '#57 Limestone', royalty: true }] };
+
+// ── Dust Control rows ──
+// Three jobs: two for Acme (one paid, one long overdue), one for Borough.
+// Acme has its own UB rate of $2/gal; Borough falls back to the $1.50 default.
+const FAKE_DUST_ROWS = [
+  {
+    date: `${todayIso.slice(0, 4)}-03-02`, company: 'Acme Aggregates', location: 'Route 22', state: 'PA',
+    start_time: '07:00', end_time: '15:00',          // 8 hours
+    v1_rate: 100, v2_rate: 50, gallons_ub: 500,      // 8×150 = 1200 + 500×2 = 1000 → $2,200
+    inv_sent: `${todayIso.slice(0, 4)}-03-05`, inv_received: `${todayIso.slice(0, 4)}-03-20`, inv_status: 'paid',
+  },
+  {
+    date: `${todayIso.slice(0, 4)}-03-09`, company: 'Acme Aggregates', location: 'Route 22', state: 'PA',
+    start_time: '08:00', end_time: '12:00',          // 4 hours
+    v1_rate: 100, v2_rate: 0, gallons_ub: 200,       // 4×100 = 400 + 200×2 = 400 → $800
+    inv_sent: null, inv_received: null, inv_status: null,
+  },
+  {
+    date: `${todayIso.slice(0, 4)}-04-01`, company: 'Cresson Borough', location: 'Main St', state: 'WV',
+    start_time: '22:00', end_time: '02:00',          // overnight: 4 hours
+    v1_rate: 80, v2_rate: 0, gallons_ub: 100,       // 4×80 = 320 + 100×1.5 = 150 → $470
+    inv_sent: null, inv_received: null, inv_status: null,
+  },
+];
+const FAKE_DUST_COMPANIES = [{ name: 'Acme Aggregates', ub_rate: 2 }];
+const FAKE_DUST_UB_RATE = 1.5;
 
 const DAILY_BY_DIVISION = {
   turf:   FAKE_TURF_DAILY,
@@ -169,9 +222,17 @@ function fakeSql(strings, ...values) {
     if (key === `${COMPANY}:fct_kiewit_projects_index`) {
       return Promise.resolve([{ value: { ids: FAKE_KIEWIT.map(p => p.id) } }]);
     }
-    if (key === `${COMPANY}:fct_quarry_sales`) {
-      return Promise.resolve([{ value: FAKE_QUARRY_SALES }]);
-    }
+    const QUARRY_BLOBS = {
+      [`${COMPANY}:fct_quarry_sales`]:         FAKE_QUARRY_SALES,
+      [`${COMPANY}:fct_quarry_daily`]:         FAKE_QUARRY_DAILY,
+      [`${COMPANY}:fct_quarry_crushing`]:      FAKE_QUARRY_CRUSH,
+      [`${COMPANY}:fct_quarry_inventory`]:     FAKE_QUARRY_INVENTORY,
+      [`${COMPANY}:fct_quarry_loss_pct`]:      FAKE_QUARRY_LOSS,
+      [`${COMPANY}:fct_quarry_monthly_fixed`]: FAKE_QUARRY_FIXED,
+      [`${COMPANY}:fct_quarry_royalty`]:       FAKE_QUARRY_ROYALTY,
+      [`${COMPANY}:fct_quarry_lists`]:         FAKE_QUARRY_LISTS,
+    };
+    if (key in QUARRY_BLOBS) return Promise.resolve([{ value: QUARRY_BLOBS[key] }]);
     return Promise.resolve([]);
   }
 
@@ -223,7 +284,19 @@ function fakeSql(strings, ...values) {
     return Promise.resolve([{ booked }]);
   }
 
-  // Other-division queries (trucking / dust / IC / etc.) — return zeros
+  // Dust Control: the executive report reads the rows and does the money in JS,
+  // the same way dust.html does.
+  if (lower.includes('from dust_control_entries')) {
+    return Promise.resolve(FAKE_DUST_ROWS);
+  }
+  if (lower.includes('from dust_companies')) {
+    return Promise.resolve(FAKE_DUST_COMPANIES);
+  }
+  if (lower.includes('from dust_settings')) {
+    return Promise.resolve([{ v: FAKE_DUST_UB_RATE }]);
+  }
+
+  // Other-division queries (trucking / IC / etc.) — return zeros
   return Promise.resolve([{ n: 0, v: 0, amt: 0 }]);
 }
 
@@ -301,6 +374,25 @@ const res = {
     }
   }
 
+
+  if (payload.quarry) {
+    console.log(`\nquarry — status=${payload.quarry.status} (${payload.quarry.entryCount} entries, ${payload.quarry.year})`);
+    for (const m of (payload.quarry.metrics || [])) {
+      console.log(`     ${m.label.padEnd(20)} = ${String(m.value).padEnd(22)} ${m.sub || ''}`);
+    }
+    for (const r of [...(payload.quarry.rows || []), payload.quarry.total].filter(Boolean)) {
+      console.log(`     · ${(r.name || '').padEnd(26)} sales=${r.sales} cost=${r.cost} margin=${r.margin} tonsSold=${r.tonsSold} crushed=${r.tonsCrushed} loss=${r.lossPct} final=${r.finalScreenTons}`);
+    }
+  }
+  if (payload.dust) {
+    console.log(`\ndust — status=${payload.dust.status} (${payload.dust.year})`);
+    for (const m of (payload.dust.metrics || [])) {
+      console.log(`     ${m.label.padEnd(20)} = ${String(m.value).padEnd(22)} ${m.sub || ''}`);
+    }
+    for (const r of (payload.dust.rows || [])) {
+      console.log(`     · ${(r.name || '').padEnd(20)} visits=${r.visits} gal=${r.gallons} hrs=${r.hours} rev=${r.revenue} overdue=${r.overdue} unpaid=${r.unpaid} paid=${r.paid}`);
+    }
+  }
 
   console.log('\n──── ASSERTIONS ────');
   let failed = 0;
@@ -399,15 +491,103 @@ const res = {
     }
   }
 
-  const quarry = payload.snapshot.divisions.find(d => d.key === 'quarry');
-  if (!quarry) fail('quarry tile missing');
+  // ── Quarry ──
+  // Hand-checkable fixture: Altoona sells 35 t at $18 = $630 and McGees 15 t at
+  // $22 = $330, so division sales are $960. Altoona's cost is $580 daily +
+  // $870 crushing = $1,450, and it crushed 10 × 20 = 200 tons over 8 hours.
+  const q = payload.quarry;
+  const qMetric = label => (q && q.metrics || []).find(m => m.label === label);
+  if (!q) fail('quarry section missing');
   else {
-    const rev = quarry.kpis.find(k => k.label === 'Profit · Wk');
-    if (!rev || rev.value === '—') fail('quarry Profit · Wk is — (sales blob not read)');
-    else pass(`quarry Profit · Wk = ${rev.value}`);
-    const top = quarry.kpis.find(k => k.label === 'Top Product');
-    if (!top || top.value !== '#57 Limestone') fail(`quarry Top Product = ${top && top.value} (expected #57 Limestone)`);
-    else pass(`quarry Top Product = #57 Limestone`);
+    const alt = (q.rows || []).find(r => /Altoona/.test(r.name));
+    const mcg = (q.rows || []).find(r => /Hollidaysburg/.test(r.name));
+    if (!alt || Math.abs(alt.sales - 630) > 0.01)  fail(`Altoona sales = ${alt && alt.sales} (expected 630)`);
+    else pass(`quarry: Altoona sales $${alt.sales}`);
+    if (!alt || Math.abs(alt.cost - 1450) > 0.01)  fail(`Altoona cost = ${alt && alt.cost} (expected 1450: $580 daily + $870 crushing)`);
+    else pass(`quarry: Altoona cost $${alt.cost} (daily + crushing)`);
+    if (!alt || Math.abs(alt.margin + 820) > 0.01) fail(`Altoona margin = ${alt && alt.margin} (expected −820)`);
+    else pass(`quarry: Altoona margin $${alt.margin} — a loss, shown as one`);
+    // Cost / Ton Sold = total cost ÷ tons sold; Cost / Ton = crushing ÷ crushed.
+    if (!alt || Math.abs(alt.costPerTonSold - 1450 / 35) > 0.01) fail(`Altoona cost/ton sold = ${alt && alt.costPerTonSold}`);
+    else pass(`quarry: cost/ton sold $${alt.costPerTonSold.toFixed(2)} = total cost ÷ tons sold`);
+    if (!alt || Math.abs(alt.costPerTon - 870 / 200) > 0.01)     fail(`Altoona cost/ton (prod) = ${alt && alt.costPerTon} (expected 4.35)`);
+    else pass(`quarry: cost/ton produced $${alt.costPerTon.toFixed(2)} = crushing ÷ tons crushed`);
+    // 10% loss configured → 200 crushed becomes 180 sellable.
+    if (!alt || alt.lossPct !== 10 || Math.abs(alt.finalScreenTons - 180) > 0.01) {
+      fail(`Altoona loss/final = ${alt && alt.lossPct}% / ${alt && alt.finalScreenTons} (expected 10% / 180)`);
+    } else pass(`quarry: 10% loss takes 200 tons crushed to ${alt.finalScreenTons} sellable`);
+    // McGees has no loss figure entered, so it must read "—" not 0%.
+    if (!mcg || mcg.lossPct !== null || mcg.finalScreenTons !== null) {
+      fail(`McGees loss = ${mcg && mcg.lossPct} (expected null — no figure entered)`);
+    } else pass('quarry: a pit with no loss figure reports null, never 0%');
+
+    if (!q.total || Math.abs(q.total.sales - 960) > 0.01) fail(`quarry total sales = ${q.total && q.total.sales} (expected 960)`);
+    else pass(`quarry: division total sales $${q.total.sales}`);
+
+    // Stockpile: 100 t opening + 180 sellable crushed − 50 sold = 230.
+    const onHand = qMetric('Tons On Hand');
+    if (!onHand || onHand.value !== '230') fail(`quarry Tons On Hand = ${onHand && onHand.value} (expected 230)`);
+    else pass(`quarry Tons On Hand = ${onHand.value} (100 opening + 180 crushed − 50 sold)`);
+
+    // Break-even is each pit's own target summed, never the division's blended
+    // contribution — that is the "no average of averages" rule the Quarry page
+    // states, and it matters here. Altoona: price $18.00/t, royalty 10% of its
+    // $630 of rock = $63 over 35 t = $1.80/t, crushing $870 over 200 t crushed
+    // = $4.35/t → contribution $11.85, so $1,000 of fixed cost needs 84.39 t/mo.
+    // McGees has no fixed cost, so it contributes 0. Selling 50 t/mo is short.
+    const be = qMetric('Break-Even');
+    if (!be) fail('quarry Break-Even metric missing');
+    else pass(`quarry Break-Even = ${be.value} — ${be.sub}`);
+    if (!be || be.value !== 'Below' || !/need 84\.39/.test(be.sub || '')) {
+      fail(`quarry break-even = "${be && be.value}: ${be && be.sub}" (expected Below, need 84.39 t/mo)`);
+    } else pass('quarry break-even sums the pits and takes royalty off the price first');
+    const marginTon = qMetric('Margin / Ton');
+    if (!marginTon || marginTon.value !== '−$9.80') {
+      fail(`quarry Margin / Ton = ${marginTon && marginTon.value} (expected −$9.80 — cents matter on a per-ton figure)`);
+    } else pass(`quarry Margin / Ton = ${marginTon.value} (price $19.20 − cost $29.00)`);
+
+    if ((q.metrics || []).length !== 8) fail(`quarry has ${(q.metrics || []).length} metrics (expected the page's 8)`);
+    else pass('quarry carries the Quarry page\'s 8 Home KPIs');
+  }
+
+  // ── Dust Control ──
+  // Acme: $2,200 paid + $800 unpaid over 2 visits, 700 gallons, 12 hours.
+  // Cresson: one overnight 4-hour visit at $470, 100 gallons at the $1.50
+  // default rate. Division revenue $3,470 over 3 jobs.
+  const dust = payload.dust;
+  const dMetric = label => (dust && dust.metrics || []).find(m => m.label === label);
+  if (!dust) fail('dust section missing');
+  else {
+    const acme = (dust.rows || []).find(r => /Acme/.test(r.name));
+    const bor  = (dust.rows || []).find(r => /Cresson/.test(r.name));
+    if (!acme || Math.abs(acme.revenue - 3000) > 0.01) fail(`Acme revenue = ${acme && acme.revenue} (expected 3000)`);
+    else pass(`dust: Acme revenue $${acme.revenue} at its own $2/gal UB rate`);
+    if (!acme || acme.visits !== 2 || Math.abs(acme.gallons - 700) > 0.01 || Math.abs(acme.hours - 12) > 0.01) {
+      fail(`Acme visits/gallons/hours = ${acme && acme.visits}/${acme && acme.gallons}/${acme && acme.hours} (expected 2/700/12)`);
+    } else pass(`dust: Acme ${acme.visits} visits, ${acme.gallons} gallons, ${acme.hours} hours`);
+    if (!acme || Math.abs(acme.paid - 2200) > 0.01) fail(`Acme paid = ${acme && acme.paid} (expected 2200)`);
+    else pass(`dust: Acme $${acme.paid} paid`);
+    // The unpaid March job is well past 45 days, so it reads overdue.
+    if (!acme || Math.abs(acme.overdue - 800) > 0.01) fail(`Acme overdue = ${acme && acme.overdue} (expected 800 — unpaid past 45 days)`);
+    else pass(`dust: Acme $${acme.overdue} overdue (unpaid past 45 days)`);
+    // A 22:00→02:00 shift is four hours, not minus twenty.
+    if (!bor || Math.abs(bor.hours - 4) > 0.01) fail(`Cresson hours = ${bor && bor.hours} (expected 4 across midnight)`);
+    else pass('dust: an overnight shift counts as 4 hours, not a negative span');
+    if (!bor || Math.abs(bor.revenue - 470) > 0.01) fail(`Cresson revenue = ${bor && bor.revenue} (expected 470 at the $1.50 default)`);
+    else pass(`dust: a customer with no rate override falls back to the division default`);
+
+    const rev = dMetric('YTD Revenue');
+    if (!rev || rev.value !== '$3,470.00') fail(`dust YTD Revenue = ${rev && rev.value} (expected $3,470.00)`);
+    else pass(`dust YTD Revenue = ${rev.value} — ${rev.sub}`);
+    const hours = dMetric('Service Hours YTD');
+    if (!hours || hours.value !== '16.0') fail(`dust Service Hours = ${hours && hours.value} (expected 16.0)`);
+    else pass(`dust Service Hours YTD = ${hours.value}`);
+    const overdue = dMetric('Overdue');
+    if (!overdue || overdue.value !== '$1,270.00') fail(`dust Overdue = ${overdue && overdue.value} (expected $1,270.00)`);
+    else pass(`dust Overdue = ${overdue.value} — ${overdue.sub}`);
+
+    if ((dust.metrics || []).length !== 8) fail(`dust has ${(dust.metrics || []).length} metrics (expected 8)`);
+    else pass('dust carries the home dashboard\'s KPIs plus the invoice picture');
   }
 
   // Every division section must be able to stand on its own in the PDF.

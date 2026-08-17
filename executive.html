@@ -623,6 +623,15 @@
       cursor: help;
     }
     .ptable .v-mute      { color: var(--muted); }
+    /* A table's own total row: separated from the body and set in the page's
+       own "this is the sum" weight, the way the pit cards mark Division Total. */
+    .ptable tfoot .ptable-total td {
+      border-top: 1px solid var(--border);
+      border-bottom: none;
+      font-weight: 700;
+      padding-top: 0.8rem;
+    }
+    .ptable tfoot .ptable-total .pname-main { color: var(--text); }
     .ptable .pstar       {
       color: #22c55e;
       font-size: 0.95rem;
@@ -859,9 +868,10 @@
       .tone-red                  { color: #991b1b; }
       .ptable .pstatus.tone-mute { color: #555; }
       .metric-label, .metric-sub { color: #555; }
-      .metric-value { color: #000; }
-      /* Rubber inventory cards were never given print colours — they printed
-         as a black block in the middle of an otherwise white page. */
+      /* No .metric-value colour here: every value carries a tone class, and a
+         blanket rule after the palette above flattened the whole strip to black
+         on paper — margin, variance and overdue all reading the same. */
+
       /* Status pills: the screen versions are a translucent tint plus bright
          text, which on paper leaves light-on-light. Give them solid ink. */
       .status-green { background: #e8f7ec; color: #166534; border-color: #bbe5c6; }
@@ -869,6 +879,8 @@
       .status-red   { background: #fce8e8; color: #991b1b; border-color: #f2c4c4; }
       .status-mute  { background: #f1f1f4; color: #555;    border-color: #ddd;    }
 
+      /* Rubber inventory cards were never given print colours — they printed as
+         a black block in the middle of an otherwise white page. */
       .inv-head { color: #555; }
       .inv-card { background: #fff; border: 1px solid #ccc; }
       .inv-type, .inv-stock-lbl, .inv-meta, .inv-lbs { color: #555; }
@@ -889,6 +901,8 @@
       .ptable .v-profit-pos      { color: #166534; }
       .ptable .v-profit-neg      { color: #991b1b; }
       .ptable .pstar             { color: #166534; }
+      .ptable tfoot .ptable-total td { border-top-color: #ccc; }
+      .ptable tfoot .ptable-total .pname-main { color: #000; }
       .division-section { break-inside: auto; }
     }
 
@@ -1124,6 +1138,20 @@
       return `<td class="col-num ${cls}">${esc(fmtMoney(value))}${pctNote(pct)}</td>`;
     }
 
+    // Tons and hours, matching the quarry page's formatTons: up to two decimals,
+    // none forced, so a round 200 tons reads as "200".
+    function fmtTons(n) {
+      const v = Number(n);
+      if (!isFinite(v)) return '—';
+      return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    }
+    // Whole counts — visits, gallons, entries.
+    function fmtCount(n) {
+      const v = Number(n);
+      if (!isFinite(v)) return '—';
+      return Math.round(v).toLocaleString('en-US');
+    }
+
     function renderProjectRow(p) {
       const progressPct = Math.max(0, Math.min(100, Number(p.progressPct) || 0));
 
@@ -1232,6 +1260,37 @@
         </div>`).join('')}</div>`;
     }
 
+    // Section chrome every division shares: its accent dot, name, status pill,
+    // sub-line, and its own PDF button — then the metric strip and whatever
+    // table that division's page puts under it.
+    function renderDivisionSection(d, opts) {
+      const id = 'portfolio-' + d.key;
+      return `
+        <div class="section division-section page-break" id="${id}" style="--accent: ${esc(d.accent || '#666')};">
+          <div class="section-head section-head-projects">
+            <div class="section-head-text">
+              <div class="section-title">
+                <span class="div-dot"></span>${esc(d.name)}
+                <span class="div-status status-${esc(d.statusKind || 'mute')}">${esc(d.status || '—')}</span>
+              </div>
+              <div class="section-sub">${esc(opts.sub || '')}</div>
+            </div>
+            <button class="btn section-action-btn" onclick="printSection('${id}')" title="Print just this division">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              PDF
+            </button>
+          </div>
+          ${renderMetricStrip(Array.isArray(d.metrics) ? d.metrics : [])}
+          ${opts.extra || ''}
+          ${opts.body || ''}
+        </div>
+      `;
+    }
+
     function renderPortfolioSection(d, extraHTML) {
       const page  = DIVISION_PAGES[d.key] || null;
       const rows  = Array.isArray(d.rows) ? d.rows : [];
@@ -1244,7 +1303,7 @@
             ? `${parts.join(' · ') || `${rows.length} shown`} of ${d.total} project${d.total === 1 ? '' : 's'}`
             : 'No projects');
 
-      const table = rows.length ? `
+      const body = rows.length ? `
         <div class="ptable-wrap">
           <table class="ptable">
             <thead>
@@ -1272,31 +1331,128 @@
               ? 'This division\'s projects could not be loaded.'
               : 'No projects in this division yet.'}</div>`;
 
-      const id = 'portfolio-' + d.key;
-      return `
-        <div class="section division-section page-break" id="${id}" style="--accent: ${esc(d.accent || '#666')};">
-          <div class="section-head section-head-projects">
-            <div class="section-head-text">
-              <div class="section-title">
-                <span class="div-dot"></span>${esc(d.name)}
-                <span class="div-status status-${esc(d.statusKind || 'mute')}">${esc(d.status || '—')}</span>
-              </div>
-              <div class="section-sub">${esc(sub)}</div>
+      return renderDivisionSection(d, { sub, body, extra: extraHTML });
+    }
+
+    // ── Quarry ──
+    // Mirrors the Quarry page: its eight Home KPIs across the strip, then the
+    // Analytics tab's "Performance by Location" table — the pits are what a
+    // quarry has instead of projects, so they are the rows.
+    function renderQuarrySection(d) {
+      const rows  = Array.isArray(d.rows) ? d.rows : [];
+      const total = d.total || null;
+      const sub   = d.entryCount
+        ? `${fmtCount(d.entryCount)} entr${d.entryCount === 1 ? 'y' : 'ies'} for ${esc(d.year || '')}`
+        : 'Add entries on Daily, Crushing or Sales to populate this section';
+
+      // Margin carries its percentage the way the pit cards do.
+      const marginCell = r => {
+        if (r.margin == null) return '<td class="col-num v-mute">—</td>';
+        const cls = r.margin >= 0 ? 'v-profit-pos' : 'v-profit-neg';
+        const pct = r.marginPct != null
+          ? ` <span class="v-profit-pct">(${r.marginPct < 0 ? '−' : ''}${Math.abs(r.marginPct).toFixed(1)}%)</span>`
+          : '';
+        return `<td class="col-num ${cls}">${esc(fmtMoney(r.margin))}${pct}</td>`;
+      };
+
+      const row = (r, isTotal) => `
+        <tr${isTotal ? ' class="ptable-total"' : ''}>
+          <td>
+            <div class="pname">
+              <span class="pname-main">${esc(r.name)}</span>
+              ${r.meta ? `<span class="pname-sub">${esc(r.meta)}</span>` : ''}
             </div>
-            <button class="btn section-action-btn" onclick="printSection('${id}')" title="Print just this division">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7 10 12 15 17 10"/>
-                <line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              PDF
-            </button>
-          </div>
-          ${renderMetricStrip(Array.isArray(d.metrics) ? d.metrics : [])}
-          ${extraHTML || ''}
-          ${table}
-        </div>
-      `;
+          </td>
+          <td class="col-num v-contract">${esc(fmtMoney(r.sales))}</td>
+          <td class="col-num tone-amber">${esc(fmtMoney(r.cost))}</td>
+          ${marginCell(r)}
+          <td class="col-num v-actual">${esc(fmtTons(r.tonsSold))}</td>
+          <td class="col-num ${r.costPerTonSold == null ? 'v-mute' : 'tone-amber'}">${esc(r.costPerTonSold == null ? '—' : fmtMoney(r.costPerTonSold))}</td>
+          <td class="col-num ${r.costPerTon == null ? 'v-mute' : 'tone-amber'}">${esc(r.costPerTon == null ? '—' : fmtMoney(r.costPerTon))}</td>
+          <td class="col-num v-actual">${esc(fmtTons(r.tonsCrushed))}</td>
+          <td class="col-num ${r.lossPct == null ? 'v-mute' : 'tone-red'}">${esc(r.lossPct == null ? '—' : r.lossPct.toFixed(1) + '%')}</td>
+          <td class="col-num ${r.finalScreenTons == null ? 'v-mute' : 'v-bid'}">${esc(r.finalScreenTons == null ? '—' : fmtTons(r.finalScreenTons))}</td>
+          <td class="col-num v-mute">${esc(fmtTons(r.hours))}</td>
+        </tr>`;
+
+      const body = rows.length ? `
+        <div class="ptable-wrap">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th class="col-num">Sales</th>
+                <th class="col-num">Cost</th>
+                <th class="col-num">Margin</th>
+                <th class="col-num">Tons Sold</th>
+                <th class="col-num" title="Total pit cost (daily + crushing) divided by tons sold.">Cost / Ton Sold</th>
+                <th class="col-num" title="Crushing cost divided by tons crushed — the production cost.">Cost / Ton (Prod.)</th>
+                <th class="col-num">Tons Crushed</th>
+                <th class="col-num" title="Share of tonnage fed to the jaw crusher that does not reach the final screen.">Loss %</th>
+                <th class="col-num">Final Screen Tons</th>
+                <th class="col-num">Hours</th>
+              </tr>
+            </thead>
+            <tbody>${rows.map(r => row(r, false)).join('')}</tbody>
+            ${total ? `<tfoot>${row(total, true)}</tfoot>` : ''}
+          </table>
+        </div>`
+        : `<div class="section-empty">No quarry activity recorded for ${esc(d.year || 'this year')}.</div>`;
+
+      return renderDivisionSection(d, { sub, body });
+    }
+
+    // ── Dust Control ──
+    // Mirrors the Dust Control home dashboard: its year-to-date KPIs plus the
+    // invoice picture across the strip, then its Top Customers ranking widened
+    // into a table. Customers are the unit of work here, so they are the rows.
+    function renderDustSection(d) {
+      const rows = Array.isArray(d.rows) ? d.rows : [];
+      const sub  = rows.length
+        ? `${fmtCount(rows.length)} customer${rows.length === 1 ? '' : 's'} · ${esc(d.year || '')} year to date`
+        : 'No dust control jobs recorded this year';
+
+      const body = rows.length ? `
+        <div class="ptable-wrap">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th class="col-num">Visits</th>
+                <th class="col-num">Gallons</th>
+                <th class="col-num">Hours</th>
+                <th class="col-num">Revenue</th>
+                <th class="col-num">Avg / Visit</th>
+                <th class="col-num" title="Invoiced, unpaid, and older than 45 days.">Overdue</th>
+                <th class="col-num" title="Invoiced or awaiting invoice, not yet paid.">Unpaid</th>
+                <th class="col-num">Paid</th>
+              </tr>
+            </thead>
+            <tbody>${rows.map(r => `
+              <tr>
+                <td>
+                  <div class="pname">
+                    <span class="pname-main">${esc(r.name)}</span>
+                    ${(r.meta || r.lastVisit)
+                      ? `<span class="pname-sub">${[r.meta, r.lastVisit ? `last visit ${r.lastVisit}` : '']
+                          .filter(Boolean).map(esc).join(' · ')}</span>`
+                      : ''}
+                  </div>
+                </td>
+                <td class="col-num v-actual">${esc(fmtCount(r.visits))}</td>
+                <td class="col-num tone-blue">${esc(fmtCount(r.gallons))}</td>
+                <td class="col-num v-mute">${esc(Number(r.hours || 0).toFixed(1))}</td>
+                <td class="col-num v-contract">${esc(fmtMoney(r.revenue, { zeroDash: true }))}</td>
+                <td class="col-num v-mute">${esc(fmtMoney(r.avgPerVisit, { zeroDash: true }))}</td>
+                <td class="col-num ${r.overdue > 0.005 ? 'v-profit-neg' : 'v-mute'}">${esc(fmtMoney(r.overdue, { zeroDash: true }))}</td>
+                <td class="col-num ${r.unpaid  > 0.005 ? 'tone-amber'   : 'v-mute'}">${esc(fmtMoney(r.unpaid,  { zeroDash: true }))}</td>
+                <td class="col-num ${r.paid    > 0.005 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtMoney(r.paid,    { zeroDash: true }))}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        </div>`
+        : `<div class="section-empty">No dust control jobs recorded for ${esc(d.year || 'this year')}.</div>`;
+
+      return renderDivisionSection(d, { sub, body });
     }
 
     function renderReport(data) {
@@ -1306,22 +1462,30 @@
       renderPortfolios(
         Array.isArray(data.portfolios) ? data.portfolios : [],
         Array.isArray(data.inventory)  ? data.inventory  : [],
+        data.quarry || null,
+        data.dust   || null,
       );
 
       renderPayrollSummary(data.payroll || null);
     }
 
-    // One section per job-running division. Rubber inventory rides along inside
-    // the Turf section, which is where it lives on the division page too — and
-    // it means a Turf-only PDF still carries the stock counts.
-    function renderPortfolios(portfolios, inventory) {
+    // One section per division, in the order the report reads: the job-running
+    // divisions first, then Quarry and Dust Control, each shaped like its own
+    // page. Rubber inventory rides along inside the Turf section, which is where
+    // it lives on the division page too — and it means a Turf-only PDF still
+    // carries the stock counts.
+    function renderPortfolios(portfolios, inventory, quarry, dust) {
       const wrap = document.getElementById('portfolioSections');
       if (!wrap) return;
-      if (!portfolios.length) { wrap.innerHTML = ''; return; }
-      wrap.innerHTML = portfolios.map(d => renderPortfolioSection(
-        d,
-        d.key === 'turf' ? renderRubberInventory(inventory) : '',
-      )).join('');
+      const html = [
+        ...portfolios.map(d => renderPortfolioSection(
+          d,
+          d.key === 'turf' ? renderRubberInventory(inventory) : '',
+        )),
+        quarry ? renderQuarrySection(quarry) : '',
+        dust   ? renderDustSection(dust)     : '',
+      ];
+      wrap.innerHTML = html.join('');
     }
 
     // Render the payroll pay-period summary table. Aggregates submitted +
