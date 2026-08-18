@@ -6,12 +6,10 @@
 // Access: platform admins, or any user whose divisionRoles.executive
 // is not 'no_access' (gated by hasDivisionAccess below).
 //
-// Wiring is incremental: the 4 hero KPIs (Active Projects, Revenue
-// This Week, AR 30+ Days, Unbilled Intercompany) come from live SQL
-// scoped to the caller's company_code. Division tiles, the project
-// portfolio, and per-project detail are still mock until subsequent
-// passes. Each hero query runs independently and falls back to '—'
-// on failure so a single bad query can't blank the report.
+// The report is one section per division, each built from live SQL
+// scoped to the caller's company_code. Every section builds
+// independently and falls back to its mock shape on failure, so a
+// single bad query can't blank the whole report.
 
 const { neon }                          = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
@@ -45,17 +43,6 @@ const DUST_INVOICE_ERA_START = `${INVOICE_ERA_START_YEAR}-01-01`;
 // array support.
 
 // ── Date / formatting helpers ────────────────────────────────────────────
-function startOfWeekISO(d) {
-  // Sunday-anchored week, returned as YYYY-MM-DD
-  const day = d.getDay();
-  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - day);
-  return start.toISOString().slice(0, 10);
-}
-function addDaysISO(iso, n) {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
 // Local calendar date, not UTC: the quarry stockpile balances "through today"
 // and toISOString() would roll that to tomorrow for anyone west of UTC in the
 // evening, quietly pulling a day of crushing into the pile.
@@ -99,18 +86,6 @@ function fmtTons(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return '0';
   return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
-}
-function fmtRevenueDelta(curr, prev) {
-  const c = Number(curr) || 0;
-  const p = Number(prev) || 0;
-  const diff = c - p;
-  if (Math.abs(diff) < 1) return { delta: 'flat', deltaDir: 'flat' };
-  const sign = diff > 0 ? '+' : '−';
-  const abs  = Math.abs(diff);
-  const txt  = abs >= 1000
-    ? `${sign}$${Math.round(abs / 1000)}k vs last week`
-    : `${sign}$${Math.round(abs).toLocaleString('en-US')} vs last week`;
-  return { delta: txt, deltaDir: diff > 0 ? 'up' : 'down' };
 }
 
 // ── Blob readers ─────────────────────────────────────────────────────
@@ -363,97 +338,6 @@ async function runDiagnostics(sql, companyCode) {
     }
   }
   return out;
-}
-
-// Live hero KPIs scoped to the platform admin's primary companyCode. `ic` is the
-// Intercompany section's roll-up, passed in so the two intercompany KPIs here
-// and that section agree by construction rather than by coincidence.
-async function buildHero(sql, companyCode, ic) {
-  const today          = new Date();
-  const weekStart      = startOfWeekISO(today);
-  const weekEnd        = addDaysISO(weekStart, 7);
-  const lastWeekStart  = addDaysISO(weekStart, -7);
-  const lastWeekEnd    = weekStart;
-
-  // Active projects = every job-running division's blobs whose status isn't
-  // Complete/Closed. Each division's blobs are read in parallel and the active
-  // counts summed, so the hero KPI mirrors what users see across the home pages.
-  const activeProjects = await safeRun('active_projects', async () => {
-    const perDivision = await Promise.all(PROJECT_DIVISIONS.map(d =>
-      d.read(sql, companyCode).catch(() => [])
-    ));
-    return perDivision.reduce((n, list) =>
-      n + list.filter(p => projMeetsExecCutoff(p) && !projIsComplete(p)).length, 0);
-  });
-
-  // Bucketed by actual_date — the date the work was performed — not by
-  // sent_at, which only records when a row was mirrored into Intercompany.
-  // Those diverge whenever someone enters last month's work today, and a
-  // division switching to auto-sync restamps its whole backlog with sent_at =
-  // now, which under the old query landed every historical row in "this week".
-  // actual_date is also what the division sections below use, so the hero KPI
-  // agrees with them rather than with when a row happened to be mirrored.
-  const revNow = await safeRun('revenue_this_week', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         AND actual_date >= ${weekStart}
-         AND actual_date <  ${weekEnd}
-    `;
-    return rows[0]?.v ?? 0;
-  });
-
-  const revPrev = await safeRun('revenue_last_week', async () => {
-    const rows = await sql`
-      SELECT COALESCE(SUM(total), 0)::float AS v
-        FROM intercompany_billing_entries
-       WHERE company_code = ${companyCode}
-         AND actual_date >= ${lastWeekStart}
-         AND actual_date <  ${lastWeekEnd}
-    `;
-    return rows[0]?.v ?? 0;
-  });
-
-  const revDelta = (revNow != null && revPrev != null)
-    ? fmtRevenueDelta(revNow, revPrev)
-    : { delta: '—', deltaDir: 'flat' };
-
-  return [
-    {
-      label:    'Active Projects',
-      value:    activeProjects != null ? String(activeProjects) : '—',
-      delta:    'Excludes Complete / Closed',
-      deltaDir: 'flat',
-    },
-    {
-      label:    'Revenue · This Week',
-      value:    revNow != null ? fmtCurrency(revNow) : '—',
-      delta:    revDelta.delta,
-      deltaDir: revDelta.deltaDir,
-    },
-    // Both intercompany figures come from the Intercompany section's own
-    // numbers rather than a second query of their own. They used to read the
-    // mirror table while the section reads the blob, which meant the same page
-    // could show two different answers for the same money — the table keeps the
-    // duplicates the page collapses, and has no payment_received_date at all.
-    {
-      label:    `AR · ${ic ? ic.aged.days : 30}+ Days`,
-      value:    ic ? fmtCurrency(ic.aged.amount) : '—',
-      delta:    ic
-        ? `${ic.aged.count} invoice${ic.aged.count === 1 ? '' : 's'} unpaid past ${ic.aged.days}d`
-        : 'Outstanding past 30d',
-      deltaDir: 'flat',
-    },
-    {
-      label:    'Unbilled Intercompany',
-      value:    ic ? fmtCurrency(ic.notInvoiced.amount) : '—',
-      delta:    ic
-        ? `${ic.notInvoiced.count} entr${ic.notInvoiced.count === 1 ? 'y' : 'ies'} with no invoice sent`
-        : 'No invoice sent',
-      deltaDir: 'flat',
-    },
-  ];
 }
 
 // ── Division tile builders ────────────────────────────────────────────
@@ -1197,8 +1081,8 @@ async function buildIcPortfolio(sql, companyCode) {
       awaitingPayment: c.awaitingPayment,
       paid:            c.paid,
     })),
-    // The hero's two intercompany KPIs read these, so both places report the same
-    // money from the same deduped list.
+    // Section-level roll-up of the same deduped list the rows come from, so a
+    // consumer that wants the totals doesn't re-add the rows itself.
     summary: {
       aged:        m.aged,
       notInvoiced: m.notInvoiced,
@@ -1572,24 +1456,10 @@ async function buildPayrollSummary(sql, companyCode) {
   };
 }
 
-// Mock fallback — used only if the entire hero build throws.
-function mockHero() {
-  return [
-    { label: 'Active Projects',       value: '—', delta: '—', deltaDir: 'flat' },
-    { label: 'Revenue · This Week',   value: '—', delta: '—', deltaDir: 'flat' },
-    { label: 'AR · 30+ Days',         value: '—', delta: '—', deltaDir: 'flat' },
-    { label: 'Unbilled Intercompany', value: '—', delta: '—', deltaDir: 'flat' },
-  ];
-}
-
 function mockReport() {
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-
-    // Every division now carries its own section, so the snapshot is the four
-    // company-wide KPIs and nothing else.
-    snapshot: { hero: mockHero() },
 
     // One entry per job-running division, each carrying that division's
     // metric strip + project table. Empty until the live build fills them in.
@@ -1699,14 +1569,6 @@ module.exports = async (req, res) => {
     if (liveDust)     report.dust        = liveDust;
     if (liveTrucking) report.trucking    = liveTrucking;
     if (liveIc)       report.intercompany = liveIc;
-
-    // The hero runs last: its two intercompany KPIs are the Intercompany
-    // section's own figures, so it needs that section built first.
-    try {
-      report.snapshot.hero = await buildHero(sql, company, liveIc ? liveIc.summary : null);
-    } catch (err) {
-      console.error('[executive/report] hero build failed:', err.message);
-    }
     if (Array.isArray(liveInventory)) {
       report.inventory = liveInventory;
     }

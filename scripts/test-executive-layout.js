@@ -371,16 +371,12 @@ assert('the old approximate Intercompany tile is gone',
 
 // The blob is the source, not the mirror table: payment_received_date and the
 // rates live only there, and the table keeps the duplicates the page collapses.
-// The mirror table has no place in this section, nor in the hero KPIs that
-// report the same money — the whole point is that both read the deduped blob.
 const icSection = report.slice(report.indexOf('async function buildIcPortfolio'));
 assert('intercompany reads the billing blob, not the mirror table',
   report.includes('fct_intercompany_billing_entries')
   && !/FROM intercompany_billing_entries/.test(icSection));
-assert('and the hero\'s two intercompany KPIs read that same roll-up',
-  /buildHero\(sql, company, liveIc \? liveIc\.summary : null\)/.test(report)
-  && !/FROM intercompany_billing_entries[\s\S]{0,400}invoice_sent_date <\s*\(CURRENT_DATE/.test(report)
-  && /value:\s*ic \? fmtCurrency\(ic\.notInvoiced\.amount\)/.test(report));
+assert('and nothing queries the mirror table for aged invoices either',
+  !/FROM intercompany_billing_entries/.test(report));
 assert('payment_received_date is a blob-only field, which is why',
   /payment_received_date/.test(im) && /payment_received_date/.test(ic)
   && !/payment_received_date/.test(read('neon-schema.sql')));
@@ -404,11 +400,17 @@ assert('the company table splits intercompany by division and by invoice state',
   IC_COLUMNS.every((c, i) => execIcCols[i] === c),
   'got: ' + JSON.stringify(execIcCols));
 
-// ── Nothing is a snapshot tile any more ──
+// ── The report is division sections and nothing else ──
 console.log('\n[every division has its own section]');
-assert('the snapshot is the company-wide KPIs only',
+assert('nothing is a snapshot tile',
   !exec.includes('id="divGrid"') && !exec.includes('renderDivisionTile')
   && !/snapshot\.divisions/.test(report));
+assert('and the Company Snapshot above them is gone too',
+  !exec.includes('Company Snapshot') && !exec.includes('id="heroKpis"')
+  && !exec.includes('renderHero') && !/\bsnapshot\b/.test(report)
+  && !/buildHero|mockHero/.test(report));
+assert('the hero CSS went with it',
+  !exec.includes('.hero-kpi') && !exec.includes('.delta-'));
 assert('and the tile CSS went with it',
   !exec.includes('.div-tile') && !exec.includes('.div-kpi-'));
 assert('as did the legacy timeline block it shared print rules with',
