@@ -691,7 +691,12 @@ async function buildDustPortfolio(sql, companyCode) {
   ]);
 
   const m = dustMetrics({
-    rows:      rows      || [],
+    // NOT `rows || []`. safeRun answers null when the query threw, and
+    // collapsing that to an empty list would report the division's largest book
+    // as billing nothing — the smaller figure looking exactly like a real one,
+    // which is the failure readDustBook exists to prevent. dustMetrics reads
+    // null as "unavailable" and the section says so.
+    rows,
     obRows,      // null when unreadable — see readDustBook
     eesRows,
     companies: companies || [],
@@ -746,9 +751,11 @@ async function buildDustPortfolio(sql, companyCode) {
         // different measure in a unit that varies row to row, so it rides
         // alongside in its own units rather than being added in.
         label: 'Gallons YTD', value: count(m.gallonsYtd), tone: 'blue',
+        // books[1].volume, not a re-derivation: `count` rounds, and dust's own
+        // formatter deliberately keeps two decimals so a part-bag is not
+        // reported as a quantity nobody delivered.
         sub: m.deliveredQuantity.length
-          ? `UB applied · plus ${m.deliveredQuantity
-              .map(q => `${count(q.quantity)} ${q.unit}`).join(' · ')} delivered`
+          ? `UB applied · plus ${(m.books.find(b => b.key === 'other') || {}).volume} delivered`
           : 'UB product applied',
       },
       {

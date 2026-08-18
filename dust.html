@@ -2965,6 +2965,11 @@
        STATE
     ═══════════════════════════════════════════ */
     let rows       = [];
+    // Whether /api/dust-rows has actually answered, mirroring obLoaded and
+    // eeLoaded. The home dashboard reports this book's revenue and its share of
+    // the division, so a failed read left as an empty list would show the
+    // largest book billing $0 with nothing on screen saying why.
+    let dustLoaded  = false;
     let ubRate     = 0;
     // Profit Margin calculator inputs (persisted via dust-config settings blob)
     let profitMargin = {
@@ -5035,7 +5040,11 @@
         });
         const c = coMap.get(key);
         apply(c);
-        const n = String(rawName).trim();
+        // `|| ''` matters: a SQL NULL company, or a blob row with no customer
+        // key at all, otherwise records the literal "null"/"undefined" as this
+        // bucket's only spelling and the table labels it that. Same guard as
+        // `bump` in api/lib/dust-metrics.js, which the report reads.
+        const n = String(rawName || '').trim();
         if (n) c.spellings.set(n, (c.spellings.get(n) || 0) + 1);
         if ((date || '') > c.lastVisit) c.lastVisit = date || '';
       };
@@ -5253,8 +5262,9 @@
       // division-wide figure below is missing whatever it holds, so say which
       // rather than let the numbers read as complete.
       const booksOut = [
-        obLoaded ? '' : 'Other Billing',
-        eeLoaded ? '' : 'EES Other',
+        dustLoaded ? '' : 'Dust Control Tracking',
+        obLoaded   ? '' : 'Other Billing',
+        eeLoaded   ? '' : 'EES Other',
       ].filter(Boolean);
 
       // One line per book: what it billed, in its own measures, and what its
@@ -5265,7 +5275,7 @@
       // scripts/test-dust-metrics-port.js, so this list and that one describe
       // the same three books in the same words or the test fails.
       const bookRows = [
-        { label: 'Dust Control Tracking', ok: true, lines: ytd.length, rev: trackingRevenue,
+        { label: 'Dust Control Tracking', ok: dustLoaded, lines: ytd.length, rev: trackingRevenue,
           vol: ytdGallons ? `${numFmt(Math.round(ytdGallons))} gal UB` : '',
           hrs: ytdHours ? `${numFmt(round2(ytdHours), 1)} field hours` : '',
           ar: 'invoiced here — sent, paid and overdue all tracked' },
@@ -5478,6 +5488,7 @@
         // fields. If duplicates exist, leave them visible so the user can
         // review and remove them manually with the row delete button.
         rows = savedRows;
+        dustLoaded = true;
       }
 
       if (config) {
@@ -5549,12 +5560,16 @@
       pmInitInputs();
       renderYearSelector();
       renderTable();
-      renderHomeDashboard();
 
       // Backfill: mirror any existing qualifying rows into Intercompany Billing
       // on load so the division stays in sync even for rows entered before
       // auto-send, and without waiting for the next edit.
       autoSyncIntercompanyDust();
+      // After the sync and isolated from it — see refreshHomeDashboard. The
+      // dashboard now walks three books, a customer map and two tables, so a
+      // throw in here would otherwise abort init() before the mirror ran and
+      // leave the division silently unsynced on every page load.
+      refreshHomeDashboard();
     }
 
     // Flush pending save on unload — keepalive lets the request survive
@@ -8644,6 +8659,7 @@
           if (!Array.isArray(incoming)) return;
           if (JSON.stringify(incoming) === JSON.stringify(rows)) return;
           rows = incoming;
+          dustLoaded = true;
           renderYearSelector();
           renderTable();
           refreshHomeDashboard();

@@ -381,12 +381,28 @@ async function main() {
   console.log('\n[the invoice buckets stayed on the one book that has invoices]');
   const trackingEra = m.invoices.overdue.count + m.invoices.outstanding.count + m.invoices.paid.count;
   assert('every aged invoice is a tracking row', trackingEra <= TRACKING.length, String(trackingEra));
+  // `untracked` is INVOICE-ERA scoped (2026 and forward, like the buckets beside
+  // it), while revenue.other/.ees are year-to-date. Comparing the two directly
+  // passed only because the fixture's prior year is currently pre-era; once PREV
+  // reaches 2026 the prior-year rows enter one side and not the other and the
+  // assertion breaks with no code change. Derive it from the era rows instead.
+  const isEra = r => {
+    const y = parseInt(String(r.date || r.actual_date || '').slice(0, 4), 10);
+    return Number.isFinite(y) && y >= 2026;
+  };
+  const expObEra = OTHER_BILLING.filter(isEra).reduce((n, r) =>
+    n + (Math.round((Number(r.gallons_bags) || 0) * (Number(r.price_per_unit) || 0) * 100) / 100)
+      + (Math.round((Number(r.trucking_hrs) || 0) * (Number(r.trucking_rate) || 0) * 100) / 100), 0);
+  const expEesEra = EES.filter(isEra)
+    .filter(r => /^billable$/i.test(String(r.billing).trim()))
+    .reduce((n, r) => n + Math.round((Number(r.actual_hours) || 0) * (Number(r.rate) || 0) * 100) / 100, 0);
   assert('Other Billing and EES money is reported as untracked instead',
-    Math.abs(m.invoices.untracked.amount - (m.revenue.other + m.revenue.ees)) < 0.005,
-    `${m.invoices.untracked.amount} vs ${m.revenue.other + m.revenue.ees}`);
+    Math.abs(m.invoices.untracked.amount - (expObEra + expEesEra)) < 0.005,
+    `${m.invoices.untracked.amount} vs ${expObEra + expEesEra}`);
   assert('and it is broken out by book',
-    Math.abs(m.invoices.untracked.byBook.other - m.revenue.other) < 0.005
-    && Math.abs(m.invoices.untracked.byBook.ees - m.revenue.ees) < 0.005);
+    Math.abs(m.invoices.untracked.byBook.other - expObEra) < 0.005
+    && Math.abs(m.invoices.untracked.byBook.ees - expEesEra) < 0.005,
+    JSON.stringify(m.invoices.untracked.byBook));
   assert('per customer, the four money columns reconcile to revenue',
     m.customers.every(c =>
       Math.abs((c.overdue + c.unpaid + c.paidAmt + c.untracked) - c.revenue) < 0.005),

@@ -27,6 +27,8 @@ const payroll = read('payroll.html');
 const truck   = read('trucking.html');
 const ic      = read('intercompany.html');
 
+const vm = require('vm');
+
 let failed = 0;
 const assert = (msg, cond, detail) => {
   if (cond) { console.log('  ✓ ' + msg); return; }
@@ -500,6 +502,98 @@ assert('row colours come from tone classes, not inline styles that would beat th
   exec.includes('class="pstatus tone-') && !exec.includes('STATUS_COLORS'));
 
 console.log('');
+// ── Dust Control renders its per-book composition ──────────────────────────
+// Not a grep: the "Revenue by Billing Book" block was attached to
+// renderQuarrySection for a whole commit — a one-line paste into the first of
+// several identically-ending section renderers — and every structural check
+// still passed, because the call WAS there and renderDustBooks DID exist. Only
+// rendering the section catches that. Quarry carries no `books`, so the block
+// silently returned '' there and the executive report simply never showed the
+// composition behind a revenue figure that had just changed meaning.
+console.log('\n[the executive report renders Dust Control\'s billing books]');
+{
+  // The render helpers, sliced out and run for real against stubs. Everything
+  // from renderMetricStrip through the end of renderDustSection, which is all
+  // of them plus the two other section renderers the block must NOT be on.
+  const from = exec.indexOf('    function renderMetricStrip(metrics) {');
+  const to   = exec.indexOf('\n', exec.indexOf('    function renderDustSection(d) {'));
+  const end  = exec.indexOf('\n    }\n', to) + '\n    }\n'.length;
+  assert('the render helpers are where the test expects', from > 0 && end > from);
+
+  const ctx = {
+    esc: s => String(s ?? '').replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+    fmtMoney: (n, o = {}) => (o.zeroDash && !(Math.abs(Number(n) || 0) > 0.005))
+      ? '—' : '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    fmtCount: n => Math.round(Number(n) || 0).toLocaleString('en-US'),
+    DIVISION_PAGES: {},
+    console,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(exec.slice(from, end), ctx);
+
+  const payload = {
+    key: 'dust', name: 'Dust Control', accent: '#fbbf24',
+    status: 'On Track', statusKind: 'green', year: '2026',
+    metrics: [{ label: 'YTD Revenue', value: '$50,000.00', tone: 'amber', sub: 'x' }],
+    books: [
+      { key: 'tracking', label: 'Dust Control Tracking', available: true, lines: 12,
+        revenue: 30000, hours: 96, hoursLabel: 'field hours',
+        hoursText: '96.0 field hours', volume: '40,000 gal UB',
+        ar: 'invoiced here — sent, paid and overdue all tracked' },
+      { key: 'other', label: 'Other Billing', available: true, lines: 5,
+        revenue: 15000, hours: 20, hoursLabel: 'trucking hours',
+        hoursText: '20.0 trucking hours', volume: '4,500.5 GAL · 40 BAG',
+        ar: 'invoice number only — no sent or paid date on this side' },
+      { key: 'ees', label: 'EES Other', available: false, lines: 0,
+        revenue: 0, hours: 0, hoursLabel: 'billable hours',
+        hoursText: '', volume: '',
+        ar: 'no dust-side invoice — billed through Intercompany' },
+    ],
+    unavailable: ['EES Other'],
+    unpriced: { count: 3, other: 1, ees: 2 },
+    invoices: { untracked: { amount: 15000, count: 5, byBook: { other: 15000, ees: 0 } } },
+    rows: [{
+      name: 'CNX', meta: 'PA · WV', lastVisit: '2026-08-04',
+      visits: 12, gallons: 40000, hours: 96,
+      revenue: 45000, revenueTracking: 30000, revenueOther: 15000, revenueEes: 0,
+      avgPerVisit: 2500, overdue: 1000, unpaid: 2000, paid: 27000, untracked: 15000,
+    }],
+  };
+
+  ctx.__d = payload;
+  const html = vm.runInContext('renderDustSection(__d)', ctx);
+
+  assert('the Dust section renders the billing-book table',
+    /Revenue by Billing Book|Billing book/.test(html), html.slice(0, 200));
+  for (const label of ['Dust Control Tracking', 'Other Billing', 'EES Other']) {
+    assert(`  it lists ${label}`, html.includes(label));
+  }
+  assert('  with the module\'s own volume string, not a re-rounded one',
+    html.includes('4,500.5 GAL · 40 BAG'), 'part-bag was rounded away');
+  assert('  and the module\'s own hours string',
+    html.includes('96.0 field hours') && html.includes('20.0 trucking hours'));
+  assert('  it states each book\'s invoicing regime',
+    html.includes('sent, paid and overdue all tracked')
+    && html.includes('no sent or paid date on this side'));
+  assert('an unreadable book is called out, not shown as zero',
+    /Could not read/.test(html) && html.includes('EES Other'), 'no unavailable banner');
+  assert('money with no invoice state is named as such',
+    /not AR-tracked|no dust-side invoice state/i.test(html), 'untracked note missing');
+  assert('work recorded at no price is surfaced',
+    /record work at no price|no price/i.test(html), 'unpriced note missing');
+  assert('the customer table carries the Untracked column',
+    html.includes('>Untracked<'), 'column missing');
+  assert('and the per-customer books split is in the revenue tooltip',
+    html.includes('Other Billing $15,000.00'), 'tooltip missing the split');
+
+  // The other two section renderers must NOT carry it — that is the actual bug.
+  const quarryHtml = vm.runInContext(
+    'renderQuarrySection({ key: "quarry", name: "Quarry", metrics: [], rows: [], locations: [] })', ctx);
+  assert('the Quarry section does not render dust\'s books block',
+    !/Billing book/.test(quarryHtml));
+}
+
 if (failed) {
   console.error(`❌ ${failed} assertion(s) failed`);
   process.exit(1);

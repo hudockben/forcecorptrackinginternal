@@ -1108,7 +1108,7 @@
         </div>`
         : `<div class="section-empty">No quarry activity recorded for ${esc(d.year || 'this year')}.</div>`;
 
-      return renderDivisionSection(d, { sub, body, extra: renderDustBooks(d) });
+      return renderDivisionSection(d, { sub, body });
     }
 
     // ── Dust Control ──
@@ -1170,8 +1170,7 @@
                 <td class="col-num v-mute">${b.available && total > 0.005
                     ? esc((100 * b.revenue / total).toFixed(0) + '%') : '—'}</td>
                 <td class="v-mute">${b.available ? esc(b.volume || '—') : 'unavailable'}</td>
-                <td class="v-mute">${b.available && b.hours
-                    ? esc(`${Number(b.hours).toFixed(1)} ${b.hoursLabel}`) : '—'}</td>
+                <td class="v-mute">${b.available ? esc(b.hoursText || '—') : '—'}</td>
                 <td class="v-mute">${esc(b.ar)}</td>
               </tr>`).join('')}</tbody>
             <tfoot>
@@ -1242,7 +1241,7 @@
         </div>`
         : `<div class="section-empty">No dust control jobs recorded for ${esc(d.year || 'this year')}.</div>`;
 
-      return renderDivisionSection(d, { sub, body });
+      return renderDivisionSection(d, { sub, body, extra: renderDustBooks(d) });
     }
 
     // ── Trucking ──

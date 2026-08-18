@@ -1865,7 +1865,7 @@ function validateDustInjection(raw) {
  * is the answer, and it is offered only when the customer has a V2 default rate
  * set — a customer billed no escort rate is not sent an escort.
  */
-async function dustOptionsForEntry(sql, companyCode, entry, companyName) {
+async function dustOptionsForEntry(sql, companyCode, entry, companyName, opts = {}) {
   // An overriding name is the leg's whole answer: it is resolved by name only,
   // never by the entry's job_id, or a leg moved to another customer would keep
   // reading the timesheet customer's rates.
@@ -1895,12 +1895,21 @@ async function dustOptionsForEntry(sql, companyCode, entry, companyName) {
   // The Material and MU lists the Other Billing grid's own dropdowns are built
   // from. Offered in the approve modal for the same reason the men and the pads
   // are: a haul billed under a material spelled its own way is a material the
-  // office's filters and totals never group with the rest. Neither is
-  // per-customer, so they are fetched once rather than per leg.
-  const [materials, mu] = await Promise.all([
-    dustRosterNames(sql, companyCode, 'dust_materials', 'materials'),
-    dustRosterNames(sql, companyCode, 'dust_mu',        'mu'),
-  ]);
+  // office's filters and totals never group with the rest.
+  //
+  // Fetched ONLY for the modal (?action=split), never for an injection. Each
+  // call is three queries, dustRosterNames is asked twice, and this function
+  // runs once per distinct customer in EACH of the two injection paths — so a
+  // two-customer approve was issuing up to 24 round trips inside the request
+  // that also has to roll the approval back if anything throws, for lists
+  // neither injection reads (buildObRow takes material and mu straight off the
+  // validated leg).
+  const [materials, mu] = opts.withLists
+    ? await Promise.all([
+        dustRosterNames(sql, companyCode, 'dust_materials', 'materials'),
+        dustRosterNames(sql, companyCode, 'dust_mu',        'mu'),
+      ])
+    : [[], []];
 
   const v2Rate = co && co.v2_rate != null ? Number(co.v2_rate) : null;
   let usualVehicle2 = '';
@@ -3839,7 +3848,7 @@ module.exports = async (req, res) => {
           const [dust, ob, options, companies] = await Promise.all([
             dustSplitForEntry(sql, companyCode, entryRow),
             obSplitForEntry(sql, companyCode, entryRow),
-            dustOptionsForEntry(sql, companyCode, entryRow),
+            dustOptionsForEntry(sql, companyCode, entryRow, '', { withLists: true }),
             dustCompanyDirectory(sql, companyCode),
           ]);
           // `ob_rows` beside `rows`, each element carrying the leg of the day it

@@ -109,9 +109,15 @@ assert('executive report: reads dust_companies so per-customer rates are availab
   /FROM dust_companies/.test(reportJs));
 assert('executive report: reads the division default from dust_settings',
   /FROM dust_settings WHERE company_code =/.test(reportJs));
+// Matched on the call's own argument block rather than a fixed character window
+// from `dustMetrics({` — a comment added inside the call once pushed `companies:`
+// past 200 chars and failed this while the behaviour was unchanged. The claim is
+// that both values are HANDED OVER, and that the rate is not resolved in SQL.
+const dustMetricsCall = (reportJs.match(/dustMetrics\(\{[\s\S]*?\n  \}\)/) || [''])[0];
 assert('executive report: hands both to dustMetrics rather than computing in SQL',
-  /dustMetrics\(\{[\s\S]{0,200}companies:/.test(reportJs)
-  && /ubRate:/.test(reportJs));
+  /companies:/.test(dustMetricsCall) && /ubRate:/.test(dustMetricsCall)
+  && !/COALESCE\([a-z_]*\.?ub_rate/i.test(reportJs),
+  dustMetricsCall.replace(/\s+/g, ' ').slice(0, 160));
 assert('executive report: the customer override wins over the default',
   /const own = byName\.get\(String\(\(row && row\.company\) \|\| ''\)\);\s*\n\s*return own != null \? own : fallback;/.test(dustMetricsJs));
 assert('executive report: gallons are billed at that resolved rate',

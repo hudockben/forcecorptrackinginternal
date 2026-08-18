@@ -579,9 +579,19 @@ console.log('Dust timesheet → Other Billing injection\n');
   console.log('\n[the approve modal is offered the grid\'s own lists]');
   {
     const { sql } = makeSql(FIXTURE);
-    const opts = await dustOptionsForEntry(sql, CO, ENTRY);
-    assert('materials come from the dust list', opts.materials.join(',') === 'ClearFrac,Calcium Chloride');
-    assert('MU comes from the dust list', opts.mu.join(',') === 'GAL,BAG');
+    const forModal = await dustOptionsForEntry(sql, CO, ENTRY, '', { withLists: true });
+    assert('materials come from the dust list', forModal.materials.join(',') === 'ClearFrac,Calcium Chloride');
+    assert('MU comes from the dust list', forModal.mu.join(',') === 'GAL,BAG');
+    // …and ONLY for the modal. Each list costs three queries and this runs once
+    // per distinct customer in both injection paths, inside the request that
+    // rolls the approval back on failure — for lists no injection reads.
+    const forInjection = await dustOptionsForEntry(sql, CO, ENTRY);
+    assert('an injection is not charged for them',
+      forInjection.materials.length === 0 && forInjection.mu.length === 0,
+      JSON.stringify({ m: forInjection.materials, u: forInjection.mu }));
+    assert('and still gets everything it does need',
+      forInjection.company === 'CNX' && forInjection.equipment.length > 0
+      && forInjection.locations.length > 0);
     assert('a name off the roster is left as typed',
       (await matchDustEmployee(sql, CO, 'Nobody At All')) === 'Nobody At All');
     assert('and a login resolves to the roster spelling',

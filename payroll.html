@@ -6592,9 +6592,14 @@
       // instead of saving as a blank row.
       while (haulLegs.length < posted.length) {
         const src = posted[haulLegs.length];
-        haulLegs.push(src
-          ? haulLegFromDustRow(src)
-          : haulFreshLeg(haulLegs[haulLegs.length - 1] || null));
+        // haulFreshLeg(null), never haulFreshLeg(previousLeg): seeding from the
+        // leg above CARVES IT IN HALF — that is what it is for when the approver
+        // clicks "add a haul" — and marks its end_time touched, so the pre-fill
+        // below can no longer put the posted window back. A day whose leg 1 was
+        // posted 06:00–09:00 would re-open as 06:00–11:00 and re-save billing
+        // five hours instead of three. haulApplyTruckRows takes null for the
+        // same reason.
+        haulLegs.push(src ? haulLegFromDustRow(src) : haulFreshLeg(null));
       }
       const domId = {
         company: 'company', company_man: 'companyMan', location: 'location', state: 'state',
@@ -6866,11 +6871,15 @@
         // note counts them rather than naming one tab for the day.
         const obN  = haulLegs.filter(legIsOb).length;
         const trkN = Math.max(0, legs - obN);
+        // Counted per grid, not worded per grid: three UB hauls post THREE Dust
+        // Control Tracking rows, and calling that "a Dust Control Tracking row"
+        // understates what the button is about to do.
+        const rowsOf = (n, label) => `<strong>${n} ${label}</strong> row${n === 1 ? '' : 's'}`;
         const where = obN === 0
-          ? `a <strong>Dust Control Tracking</strong> row`
+          ? rowsOf(trkN, 'Dust Control Tracking')
           : trkN === 0
-            ? `an <strong>Other Billing</strong> row`
-            : `<strong>${trkN} Dust Control Tracking</strong> and <strong>${obN} Other Billing</strong> row${obN + trkN === 1 ? '' : 's'}`;
+            ? rowsOf(obN, 'Other Billing')
+            : `${rowsOf(trkN, 'Dust Control Tracking')} and ${rowsOf(obN, 'Other Billing')}`;
         note.innerHTML =
           `Approving posts <strong>${split ? legs + ' Truck Tracking rows' : 'one Truck Tracking row'}</strong>
            and, beside ${split ? 'them' : 'it'}, ${where}.
