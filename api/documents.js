@@ -414,11 +414,15 @@ module.exports = async (req, res) => {
       if (sizeBytes > storage.maxUploadBytes()) {
         return res.status(413).json({ error: 'That file is larger than the upload limit' });
       }
-      // The key is minted by api/document-upload-url.js and echoed back. Refuse
-      // one that does not sit under this company and division, or a caller
-      // could register a row pointing at another company's object.
-      if (!storageKey.startsWith(`${companyCode}/${division}/`)) {
-        return res.status(400).json({ error: 'storageKey does not belong to this company' });
+      // The key is minted by api/document-upload-url.js and echoed back here.
+      // Recompute it from the same inputs rather than sanity-checking the
+      // string: a prefix test still admits a hand-crafted key like
+      // 'FCT/turf/../../OTH/…', and object stores treat keys as opaque while
+      // proxies in front of them may not. If it does not match byte for byte,
+      // it did not come from us.
+      const expectedKey = storage.buildKey({ companyCode, division, projectId, documentId: id, filename });
+      if (storageKey !== expectedKey) {
+        return res.status(400).json({ error: 'storageKey does not match this document' });
       }
 
       const folder = await sql`

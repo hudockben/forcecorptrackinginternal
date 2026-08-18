@@ -117,7 +117,7 @@ let seq = 0;
 async function upload(folderId, filename, auth, extra = {}) {
   const documentId = `doc-${++seq}`;
   const projectId  = extra.projectId !== undefined ? extra.projectId : PROJ;
-  const storageKey = `FCT/turf/${projectId || 'general'}/${documentId}/${filename}`;
+  const storageKey = `FCT/turf/${projectId || 'general'}/${documentId}/${filename}`; // same shape storage.buildKey mints
   return call('POST', { division: 'turf', projectId: projectId || undefined },
     { documentId, filename, storageKey, folderId, sizeBytes: 1024, ...extra }, auth);
 }
@@ -274,6 +274,22 @@ async function upload(folderId, filename, auth, extra = {}) {
     folderId: safety.id, sizeBytes: 10,
   }, PM);
   assert('a storage key outside the company is refused', badKey.statusCode === 400, JSON.stringify(badKey.body));
+
+  // A prefix check alone would admit this one — it does start with FCT/turf/.
+  const traversal = await call('POST', { division: 'turf', projectId: PROJ }, {
+    documentId: 'doc-trav', filename: 'x.pdf', storageKey: `FCT/turf/../../OTH/turf/p/d/x.pdf`,
+    folderId: safety.id, sizeBytes: 10,
+  }, PM);
+  assert('a key that climbs out of its own prefix is refused',
+    traversal.statusCode === 400, JSON.stringify(traversal.body));
+
+  // Nor may a caller point a new row at a file that is already registered.
+  const swapped = await call('POST', { division: 'turf', projectId: PROJ }, {
+    documentId: 'doc-swap', filename: 'x.pdf', storageKey: `FCT/turf/${PROJ}/doc-1/ticket.pdf`,
+    folderId: safety.id, sizeBytes: 10,
+  }, PM);
+  assert("a key belonging to another document is refused",
+    swapped.statusCode === 400, JSON.stringify(swapped.body));
 
   // ── Type rules ──────────────────────────────────────────────────────────
   console.log('\nFile types');
