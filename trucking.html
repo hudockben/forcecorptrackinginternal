@@ -1808,14 +1808,21 @@
             const ro = v => `<span style="color:var(--text);font-size:0.8rem">${esc(v == null ? '' : String(v))}</span>`;
             const unitNum = `<div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>`;
             const caretCell = `<td style="width:28px;text-align:center;padding:0 0.25rem;cursor:pointer" onclick="toggleInvoiceRow('${e.id}')"><span id="caret-${e.id}" style="${caretStyle}">&#8250;</span></td>`;
-            const tsBadge = `<span title="Injected from an approved timesheet entry — edit it in Payroll, not here." style="display:inline-block;margin-top:0.15rem;font-size:0.56rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#2dd4bf;background:rgba(45,212,191,0.12);border:1px solid rgba(45,212,191,0.35);border-radius:3px;padding:0.05rem 0.32rem;white-space:nowrap">&#8592; Timesheet</span>`;
+            const tsBadge = `<span title="Injected from an approved timesheet entry — edit it in Payroll, not here." style="display:inline-block;font-size:0.56rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#2dd4bf;background:rgba(45,212,191,0.12);border:1px solid rgba(45,212,191,0.35);border-radius:3px;padding:0.05rem 0.32rem;white-space:nowrap">&#8592; Timesheet</span>`;
+            // Payroll numbers its rows out of the same TR-#### series this tab
+            // uses (api/lib/truck-injected.js), so an injected haul is named in
+            // the Task Number column like any other — the badge keeps its place
+            // and the number sits to its right. A row still waiting on the
+            // read-time backfill shows the badge alone rather than a gap.
+            const tsTaskCell = `<div style="display:flex;align-items:center;gap:0.4rem">${tsBadge}${
+              e.task_number ? `<span>${esc(e.task_number)}</span>` : ''}</div>`;
             // Payroll-injected rows are locked here — the core data is read-only
             // (edited in Payroll), but the invoice sub-row below stays editable so
             // the trucking office can still manage billing.
             const mainRow = isInjected
               ? `<tr style="${rowBg}" title="Injected from an approved timesheet entry — edit it in Payroll, not here.">
                   ${caretCell}
-                  <td class="td-task-num">${esc(e.task_number)}${tsBadge}</td>
+                  <td class="td-task-num">${tsTaskCell}</td>
                   <td style="min-width:110px">${ro(e.actual_date)}</td>
                   <td style="min-width:140px">${ro(e.driver)}</td>
                   <td style="min-width:140px">${ro(e.unit)}${unitNum}</td>

@@ -167,6 +167,162 @@ function truckRowLegIndex(rowId) {
   return (Number.isInteger(n) && n >= 2 && n <= MAX_INJECTED_LEGS) ? n : 1;
 }
 
+/* ── Task numbers ───────────────────────────────────────────────────────────
+ *
+ * "TR-####" is how the Truck Tracking tab names a haul: it heads the first
+ * column, rides along to Intercompany billing and lands on the executive
+ * report. The tab numbers every row it creates itself (nextTaskNum and the CSV
+ * import in trucking.html) — but a row arriving from payroll was injected with
+ * an empty task_number, so the hauls the office bills for out of a timesheet
+ * were the only ones with nothing to call them: a "← Timesheet" badge and a
+ * blank where the number goes.
+ *
+ * They are numbered here, out of the SAME TR-#### series the tab uses, so the
+ * division has one running series rather than two that have to be told apart on
+ * an invoice. Row identity is still the id — a task number is a label, and
+ * nothing keys off it.
+ *
+ * Server-side because the tab cannot do it: injected-blob-guard replays only
+ * TRUCK_TAB_FIELDS off a client save and takes every other column from the
+ * server's copy, so a number minted in the page would be dropped by the next
+ * PUT. And task_number stays OFF that list on purpose — payroll mints it, and a
+ * tab save must not be able to move it.
+ */
+
+const TRUCK_TASK_RE = /^TR-(\d+)$/;
+
+// The sequence in a "TR-####", or 0 for anything that isn't one (blank, a
+// hand-typed label, an imported number in some other format). 0 so it can be
+// fed to Math.max without a special case.
+function taskNumberSeq(value) {
+  const m = TRUCK_TASK_RE.exec(String(value == null ? '' : value).trim());
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+function formatTaskNumber(n) { return `TR-${String(n).padStart(4, '0')}`; }
+
+// Highest TR-#### across a set of rows — manual and injected alike, because the
+// series is shared and a number is only free if nothing in the tab holds it.
+function maxTaskNumber(rows) {
+  let max = 0;
+  for (const r of (Array.isArray(rows) ? rows : [])) {
+    if (!r || typeof r !== 'object') continue;
+    const n = taskNumberSeq(r.task_number);
+    if (n > max) max = n;
+  }
+  return max;
+}
+
+/**
+ * Number the injected rows in `entries` that have no task number, continuing
+ * the list's own series. Pure: returns { entries, assigned } with `entries` a
+ * new array carrying the numbers and `assigned` the [{ id, task_number }] that
+ * were minted (empty when there was nothing to do).
+ *
+ * Only injected rows, and only blank ones. A manual row without a number is the
+ * tab's business — it mints its own on add and on CSV import — and a row that
+ * already has one keeps it, which is what makes this safe to run on every read:
+ * a number that has been shown to the office, invoiced under, or mirrored into
+ * Intercompany must never be re-issued.
+ *
+ * Assigned in list order, which for injected rows is the order they were
+ * approved (injection appends), so the numbering follows the same
+ * oldest-lowest rule a manually added row gets.
+ */
+function numberInjectedRows(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const blank = list.filter(r =>
+    r && typeof r === 'object' &&
+    isInjectedTruckRowId(r.id) &&
+    !String(r.task_number == null ? '' : r.task_number).trim());
+  if (!blank.length) return { entries: list, assigned: [] };
+
+  let next = maxTaskNumber(list);
+  const assigned = blank.map(r => ({ id: String(r.id), task_number: formatTaskNumber(++next) }));
+  const byId = new Map(assigned.map(a => [a.id, a.task_number]));
+  const patched = list.map(r => {
+    const num = (r && typeof r === 'object') ? byId.get(String(r.id)) : null;
+    return num ? { ...r, task_number: num } : r;
+  });
+  return { entries: patched, assigned };
+}
+
+/**
+ * Stamp task numbers onto rows in the Truck Tracking blob, race-free.
+ *
+ * Same hazard as deleteTruckBlobRows: trucking.html PUTs the whole list, so a
+ * read-modify-write here could undo a row somebody edited in between. The patch
+ * happens inside the UPDATE and touches only the named ids — and only while
+ * they are still blank, so a number minted by a concurrent read (or by payroll
+ * re-injecting) is never overwritten by a second one.
+ *
+ * Company-scoped key only, for the reason deleteTruckBlobRows gives: the
+ * unscoped legacy blob is shared across companies and is not ours to rewrite.
+ * A read served from it still hands the client the numbers it just minted, and
+ * the mirror table below carries them until the first save migrates the blob.
+ */
+async function setTruckBlobTaskNumbers(sql, companyCode, assigned) {
+  const map = {};
+  for (const a of (assigned || [])) {
+    if (a && a.id && a.task_number) map[String(a.id)] = String(a.task_number);
+  }
+  if (!Object.keys(map).length) return;
+  const scoped = `${companyCode}:${TRUCK_DIVISION_BLOB}`;
+  const patch  = JSON.stringify(map);
+  await sql`
+    UPDATE app_data
+       SET value = COALESCE((
+             SELECT jsonb_agg(
+                      CASE WHEN jsonb_typeof(t) = 'object'
+                            AND COALESCE(t->>'task_number', '') = ''
+                            AND (${patch}::jsonb ->> (t->>'id')) IS NOT NULL
+                           THEN t || jsonb_build_object('task_number', ${patch}::jsonb ->> (t->>'id'))
+                           ELSE t END
+                      ORDER BY ord)
+               FROM jsonb_array_elements(value) WITH ORDINALITY AS a(t, ord)
+           ), '[]'::jsonb),
+           updated_at = NOW()
+     WHERE key = ${scoped}
+       AND jsonb_typeof(value) = 'array'
+  `;
+}
+
+/**
+ * Give every injected row in `entries` a task number, and persist the ones this
+ * call minted. Returns { entries, assigned } with `entries` ready to hand
+ * straight back to the client, so a row is numbered on the same load that
+ * numbers it.
+ *
+ * Runs on read for the same reason the orphan sweep does: rows injected before
+ * payroll started numbering them are blank in a column the office bills out of,
+ * and the tab cannot fill them in itself. Costs nothing in the steady state —
+ * no blank injected rows means no write, which is every call after the first.
+ */
+async function backfillInjectedTaskNumbers(sql, companyCode, entries) {
+  const { entries: patched, assigned } = numberInjectedRows(entries);
+  if (!assigned.length) return { entries: patched, assigned };
+
+  await setTruckBlobTaskNumbers(sql, companyCode, assigned);
+
+  // Keep the normalized mirror honest — the executive report and Intercompany
+  // read it directly, and it is what the GET falls back to when the blob is
+  // empty. Blank-only there too, so this can never renumber a live row.
+  const ids  = assigned.map(a => a.id);
+  const nums = assigned.map(a => a.task_number);
+  await sql`
+    UPDATE truck_division_entries t
+       SET task_number = v.num, updated_at = NOW()
+      FROM (SELECT unnest(${ids}::text[]) AS id, unnest(${nums}::text[]) AS num) v
+     WHERE t.company_code = ${companyCode}
+       AND t.id = v.id
+       AND COALESCE(t.task_number, '') = ''
+  `;
+
+  console.warn(`[truck-injected] numbered ${assigned.length} injected row(s) for ${companyCode}: ` +
+    assigned.map(a => `${a.id}→${a.task_number}`).join(', '));
+  return { entries: patched, assigned };
+}
+
 /**
  * Drop Intercompany billing entries for a set of source rows, from both the
  * shared blob and its normalized mirror. Returns the number removed.
@@ -374,6 +530,12 @@ module.exports = {
   isInjectedTruckRowId,
   truckRowRecency,
   truckRowLegIndex,
+  taskNumberSeq,
+  formatTaskNumber,
+  maxTaskNumber,
+  numberInjectedRows,
+  setTruckBlobTaskNumbers,
+  backfillInjectedTaskNumbers,
   removeIcBillingEntries,
   deleteTruckBlobRows,
   findStaleTruckRows,

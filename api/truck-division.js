@@ -16,7 +16,10 @@
 
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
-const { sweepInjectedTruckRows } = require('./lib/truck-injected');
+const {
+  sweepInjectedTruckRows,
+  backfillInjectedTaskNumbers,
+} = require('./lib/truck-injected');
 const { guardInjectedBlobWrite } = require('./lib/injected-blob-guard');
 
 function safeFloat(v) {
@@ -172,6 +175,18 @@ module.exports = async (req, res) => {
         } catch (err) {
           console.error('[truck-division] injected-row sweep failed:', err.message);
         }
+        // Number any payroll row still carrying a blank Task Number. Rows
+        // injected before payroll started minting one are blank in the column
+        // the office bills a haul out of, and the tab cannot fill them in
+        // itself — its writes against a payroll row are refused. Same
+        // self-healing-on-read bargain as the sweep above, and equally
+        // non-fatal: a numbering that fails must not take the tab's data with
+        // it, so the rows are served as they are.
+        try {
+          ({ entries } = await backfillInjectedTaskNumbers(sql, companyCode, entries));
+        } catch (err) {
+          console.error('[truck-division] task-number backfill failed:', err.message);
+        }
         // Keep normalized tables in sync in background when they're behind.
         if (normCount < entries.length * 0.9) {
           _syncToTables(sql, companyCode, entries, blobLists).catch(err =>
@@ -188,6 +203,11 @@ module.exports = async (req, res) => {
           ({ entries } = await sweepInjectedTruckRows(sql, companyCode, entries));
         } catch (err) {
           console.error('[truck-division] injected-row sweep failed:', err.message);
+        }
+        try {
+          ({ entries } = await backfillInjectedTaskNumbers(sql, companyCode, entries));
+        } catch (err) {
+          console.error('[truck-division] task-number backfill failed:', err.message);
         }
         return res.json({
           entries,

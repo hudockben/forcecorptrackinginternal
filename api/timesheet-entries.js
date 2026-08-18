@@ -111,6 +111,8 @@ const {
   removeIcBillingEntries,
   TRUCK_TAB_FIELDS,
   MAX_INJECTED_LEGS,
+  maxTaskNumber,
+  formatTaskNumber,
 } = require('./lib/truck-injected');
 // The same rules for the Dust Control Tracking row a dust customer haul also
 // injects. Shared with api/dust-rows.js, which sweeps rows that outlived their
@@ -1350,6 +1352,33 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
     for (const f of TRUCK_TAB_FIELDS) {
       if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
     }
+  }
+
+  // Number each row out of the tab's own TR-#### series, so a haul that came
+  // from a timesheet is identifiable in the Task Number column — and on the
+  // invoice, in Intercompany billing and in the executive report — exactly like
+  // one the office typed. Until this, an injected row carried a blank there.
+  //
+  // Minted here rather than in the page because injected-blob-guard takes every
+  // column but TRUCK_TAB_FIELDS from the server's copy of the row, so a number
+  // written by the tab would not survive its next save. Rows already in the
+  // blob, manual ones included, set the high-water mark: one series covers the
+  // division.
+  //
+  // Carried across a re-approval on the same terms as the invoice columns —
+  // same id AND same customer. Correcting a day's hours leaves the number
+  // alone, so a haul keeps the number it was invoiced under. A leg whose
+  // occupant changed (remove the first haul of a two-haul day and the second is
+  // rewritten under the first one's id) is different work and takes a fresh
+  // number, rather than inheriting one the office has already billed another
+  // customer under.
+  let nextTask = maxTaskNumber(arr);
+  for (const row of rows) {
+    const prev    = priorById.get(row.id);
+    const carried = (prev && sameHaul(prev.customer, row.customer))
+      ? String(prev.task_number || '').trim()
+      : '';
+    row.task_number = carried || formatTaskNumber(++nextTask);
   }
 
   const next = arr.filter(r => !isMine(r));
