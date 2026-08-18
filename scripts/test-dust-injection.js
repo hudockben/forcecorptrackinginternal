@@ -61,6 +61,9 @@ function makeSql(initial = {}) {
     appData:   new Map(Object.entries(initial.appData || {})),
     icMirror:  new Map(Object.entries(initial.icMirror || {})),
     entries:   new Map((initial.entries || []).map(e => [Number(e.id), e])),
+    // dropdown_lists rows, by list_name — the Material and MU lists the approve
+    // modal offers on a haul billed off Other Billing.
+    lists:     Object.assign({}, initial.lists || {}),
     audits:    [],
   };
   const like = (v, pattern) => String(v).startsWith(String(pattern).replace(/%$/, ''));
@@ -167,6 +170,16 @@ function makeSql(initial = {}) {
       if (next.length === cur.length) return Promise.resolve([]);
       store.appData.set(key, next);
       return Promise.resolve([{ cleared: 1 }]);
+    }
+    // dustRosterNames: the normalized dropdown rows, unioned with the dust_lists
+    // blob's copy. Both are asked for; either can be empty.
+    if (q.startsWith('SELECT value FROM dropdown_lists')) {
+      const listName = values[1];
+      return Promise.resolve((store.lists[listName] || []).map(v => ({ value: v })));
+    }
+    if (q.startsWith('SELECT value FROM app_data')) {
+      const key = values[0];
+      return Promise.resolve(store.appData.has(key) ? [{ value: store.appData.get(key) }] : []);
     }
     if (q.startsWith('SELECT id, status, entry_type, division, job_id FROM timesheet_entries')) {
       const ids = values[values.length - 1] || [];

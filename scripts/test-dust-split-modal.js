@@ -50,9 +50,12 @@ console.log('[the payload the modal and the server agree on]');
     !!save && /body\.dust = \{\s*\n\s*rows: haulLegs\.map/.test(save[0]));
   assert('every leg carries its own window',
     !!save && /start_time:\s*leg\.start_time/.test(save[0]) && /end_time:\s*leg\.end_time/.test(save[0]));
-  assert('a leg on the timesheet customer sends no company to either tab',
+  // Three call sites, not two: the Truck Tracking half, and each of the two
+  // grids a dust haul can bill off. All three have to name the customer the
+  // same way or one tab's row bills somebody the others never heard of.
+  assert('a leg on the timesheet customer sends no company to any tab',
     /return same \? undefined : leg\.company/.test(SRC)
-    && !!save && (save[0].match(/company:\s*legCustomerPayload\(leg\)/g) || []).length === 2);
+    && !!save && (save[0].match(/company:\s*legCustomerPayload\(leg\)/g) || []).length === 3);
   assert('and the two divisions compare that customer their own way',
     /typed\.toLowerCase\(\) === entryCo\.toLowerCase\(\)/.test(SRC) && /typed === entryCo/.test(SRC));
   assert('and the same legs go to the Truck Tracking half',
@@ -60,6 +63,28 @@ console.log('[the payload the modal and the server agree on]');
     && /haul_fee:\s*leg\.haul_fee/.test(save[0]));
   assert('a haul with no hours is refused before it can bill nothing',
     !!save && /has no hours/.test(save[0]));
+  // The per-haul destination. Both branches have to say which grid they are,
+  // because the server reads `dest` and nothing else to decide — a leg that
+  // sent no destination would silently bill UB rates against a delivery.
+  assert('each leg says which dust grid it bills off',
+    !!save && /dest:\s*'ob'/.test(save[0]) && /dest:\s*'dust'/.test(save[0]));
+  assert('and the branch is the leg\'s own answer',
+    !!save && /rows: haulLegs\.map\(leg => legIsOb\(leg\)/.test(save[0]));
+  assert('an Other Billing leg sends that grid\'s columns',
+    !!save && ['trailer_number', 'material', 'gallons_bags', 'mu', 'price_per_unit', 'trucking_rate']
+      .every(f => new RegExp(`${f}:\\s*leg\\.${f}`).test(save[0])));
+  // …and only those. Every key sent counts as the approver's answer, blank
+  // included, so a UB column riding along on a material haul would be an answer
+  // to a question that haul was never asked.
+  {
+    const branch = (save || [''])[0].match(/legIsOb\(leg\)\s*\n\s*\? \{([\s\S]*?)\n\s*\}\s*\n\s*: \{/);
+    assert('and does NOT send the tracking grid\'s columns',
+      !!branch && !/gallons_ub|company_man|v1_rate|v2_rate|vehicle2/.test(branch[1]),
+      branch ? branch[1].replace(/\s+/g, ' ').slice(0, 120) : 'no ob branch found');
+  }
+  assert('every leg still posts its Truck Tracking row, whichever grid it bills off',
+    !!save && /trucking\.rows = haulLegs\.map/.test(save[0])
+    && !/trucking\.rows = haulLegs\.filter/.test(save[0]));
 
   // The server reads that payload, caps it, and prunes what a save dropped.
   assert('the server accepts { rows: [...] }',
@@ -564,6 +589,86 @@ console.log('\n[typing a customer, then blurring, still re-rates the haul]');
   t.call('haulEdit', b.key, 'v1_rate', '160');
   t.call('haulSetCompany', b.key, 'Antero');
   assert('a second blur leaves a corrected rate alone', b.v1_rate === '160');
+}
+
+console.log('\n[the per-haul destination toggle]');
+{
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  const [first] = t.legs();
+  assert('a dust day opens on the tracking grid', t.call('legDest', first) === 'dust');
+
+  t.call('haulSetDest', first.key, 'ob');
+  assert('the toggle moves it to Other Billing', t.call('legDest', t.legs()[0]) === 'ob');
+  assert('and the truck, customer and window are untouched',
+    t.legs()[0].vehicle1 === 'Distributor Truck 4000'
+    && t.legs()[0].company === 'CNX'
+    && t.legs()[0].start_time === '05:00' && t.legs()[0].end_time === '15:00');
+
+  // The UB answers stay on the leg so flipping back loses nothing — the save
+  // simply never sends them while the leg is billing material.
+  t.call('haulEdit', t.legs()[0].key, 'material', 'ClearFrac');
+  t.call('haulSetDest', t.legs()[0].key, 'dust');
+  assert('flipping back is free', t.call('legDest', t.legs()[0]) === 'dust');
+  assert('and the material typed under the other grid is still there',
+    t.legs()[0].material === 'ClearFrac');
+
+  // A haul added after a delivery is usually another delivery.
+  t.call('haulSetDest', t.legs()[0].key, 'ob');
+  t.call('haulAddLeg');
+  assert('an added haul inherits the destination above it',
+    t.legs().length === 2 && t.call('legDest', t.legs()[1]) === 'ob');
+  assert('and a day with any material haul is reported as mixed',
+    t.run('anyObLeg()') === true && t.run('allObLegs()') === true);
+
+  t.call('haulSetDest', t.legs()[1].key, 'dust');
+  assert('one of each is mixed but not all',
+    t.run('anyObLeg()') === true && t.run('allObLegs()') === false);
+}
+
+console.log('\n[re-editing a day that ran to both dust grids]');
+{
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  // What ?action=split answers for a day whose MIDDLE haul billed material:
+  // two tracking legs at 1 and 3, one Other Billing leg at 2.
+  const dustRows = [
+    { leg: 1, dest: 'dust', company: 'CNX', start_time: '05:00', end_time: '08:00',
+      company_man: 'Steve Quinn', location: 'Deer Lick Compressor', state: 'PA',
+      gallons_ub: '3000', vehicle1: 'Distributor Truck 4000', v1_rate: '135',
+      vehicle2: 'Escort Vehicle 7549', v2_rate: '60', haul_fee: '' },
+    { leg: 3, dest: 'dust', company: 'CNX', start_time: '12:00', end_time: '15:00',
+      company_man: 'Steve Quinn', location: 'Deer Lick Compressor', state: 'PA',
+      gallons_ub: '2000', vehicle1: 'Distributor Truck 4000', v1_rate: '135',
+      vehicle2: 'Escort Vehicle 7549', v2_rate: '60', haul_fee: '' },
+  ];
+  const obRows = [
+    { leg: 2, dest: 'ob', company: 'Antero', start_time: '08:00', end_time: '12:00',
+      location: 'Bear Hollow', state: 'WV', vehicle1: 'Distributor Truck 4000',
+      trailer_number: 'TR-9', material: 'Calcium Chloride', gallons_bags: '40',
+      mu: 'BAG', price_per_unit: '12.5', trucking_rate: '95' },
+  ];
+  t.run('dustRowsSeen = [1];');   // a re-edit: the posted rows are authoritative
+  t.call('dustApplyRows', dustRows, obRows);
+
+  const legs = t.legs();
+  assert('the day comes back as three hauls', legs.length === 3, String(legs.length));
+  assert('in the order they were billed in',
+    legs.map(l => t.call('legDest', l)).join(',') === 'dust,ob,dust');
+  assert('the material haul lands in the middle, not packed to the front',
+    legs[1].company === 'Antero' && legs[1].material === 'Calcium Chloride');
+  assert('with its own window', legs[1].start_time === '08:00' && legs[1].end_time === '12:00');
+  assert('and its own money', legs[1].price_per_unit === '12.5' && legs[1].trucking_rate === '95');
+  assert('the UB hauls keep their gallons',
+    legs[0].gallons_ub === '3000' && legs[2].gallons_ub === '2000');
+
+  // A destination the approver already changed is theirs, even if the lookup
+  // lands afterwards — it is the one late write that would change which boxes
+  // are on screen.
+  const t2 = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  t2.call('haulSetDest', t2.legs()[0].key, 'ob');
+  t2.run('dustRowsSeen = [1];');
+  t2.call('dustApplyRows', [dustRows[0]], []);
+  assert('a late pre-fill cannot move a haul the approver just re-pointed',
+    t2.call('legDest', t2.legs()[0]) === 'ob');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

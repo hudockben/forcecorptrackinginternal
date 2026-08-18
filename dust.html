@@ -1815,6 +1815,9 @@
         style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
       <div id="obYearSelector" class="year-selector"></div>
       <span class="row-count" id="obRowCount">0 rows</span>
+      <span style="font-size:0.72rem;color:var(--muted)">
+        Rows also arrive automatically when payroll approves a dust haul billed as Other Billing.
+      </span>
     </div>
 
     <!-- Totals bar -->
@@ -6617,6 +6620,23 @@
       return obSaveTimer != null || obSaving || obDeletedIds.size > 0;
     }
 
+    /* Rows this tab did not create: payroll posts one when a supervisor approves
+       a dust timesheet entry and marks that haul as Other Billing rather than
+       Dust Control Tracking — a delivery of material rather than UB on a pad.
+       A day split across hauls posts one per haul (ids "tso-<entryId>-1",
+       "tso-<entryId>-2"… — see api/lib/dust-ob-injected.js). They render locked,
+       and the server refuses this tab's writes against every column but the
+       invoice number and the comment.
+
+       Kept in step with isInjectedObRowId in api/lib/dust-ob-injected.js and
+       with the "tso-" prefix in api/lib/injected-blob-guard.js. */
+    function obIsInjectedRowId(id) {
+      return /^tso-\d+-/.test(String(id || ''));
+    }
+    function obIsInjectedRow(row) {
+      return obIsInjectedRowId(row && row.id);
+    }
+
     function obAddRow() {
       const countEl = document.getElementById('ob-bulk-add-count');
       const count = Math.min(Math.max(parseInt(countEl?.value) || 1, 1), 100);
@@ -6643,6 +6663,15 @@
     }
 
     function obDeleteRow(idx) {
+      // Locked rows have no delete button, so reaching here means a stale
+      // render or the console. Either way the row belongs to an approved
+      // timesheet entry: removing it would strip billing off approved work with
+      // nothing in Payroll to show for it, and the next save would be overruled
+      // by the server anyway — it replays its own copy of every payroll row.
+      if (obIsInjectedRow(obRows[idx])) {
+        alert('This row was posted from an approved timesheet entry, so it cannot be deleted here.\n\nUn-approve that entry in Payroll — or change that haul back to Dust Control Tracking — and the row goes with it.');
+        return;
+      }
       if (!confirm('Delete this row?')) return;
       const [removed] = obRows.splice(idx, 1);
       // Queue the id so the next sync pulls this row's Intercompany entry.
@@ -6653,8 +6682,19 @@
       obScheduleSave();
     }
 
+    // The two columns the dust office still owns on a payroll row: the invoice
+    // it bills under and the note against it. Mirrors OB_TAB_FIELDS in
+    // api/lib/dust-ob-injected.js, which is what the server replays from this
+    // tab's saves and what re-injection preserves — anything not on this list
+    // is silently discarded on the way in, so offering it here would be a box
+    // that looks editable and never saves.
+    const OB_TAB_FIELDS = ['inv_number', 'comments'];
+
     function obSet(idx, field, value) {
       if (!obRows[idx]) return;
+      // A locked cell renders read-only, so reaching here with one means a
+      // stale render or the console. The server discards the write either way.
+      if (obIsInjectedRow(obRows[idx]) && !OB_TAB_FIELDS.includes(field)) return;
       obRows[idx][field] = value;
       if (field === 'gallons_bags' || field === 'price_per_unit'
           || field === 'trucking_hrs' || field === 'trucking_rate') {
@@ -6668,6 +6708,7 @@
     // destination dropdown from the newly selected company's locations.
     function obSetCustomer(idx, value) {
       if (!obRows[idx]) return;
+      if (obIsInjectedRow(obRows[idx])) return;
       obRows[idx].customer    = value;
       obRows[idx].destination = '';
       obRows[idx].state       = '';
@@ -6690,6 +6731,7 @@
     // selected location's metadata when available.
     function obSetDestination(idx, locationName) {
       if (!obRows[idx]) return;
+      if (obIsInjectedRow(obRows[idx])) return;
       obRows[idx].destination = locationName;
       const co  = (dustLists.companies || []).find(c => c.name === obRows[idx].customer);
       const loc = co ? (co.locations || []).find(l => l.name === locationName) : null;
@@ -6711,6 +6753,7 @@
 
     function _obLiveSet(idx, field, value) {
       if (!obRows[idx]) return;
+      if (obIsInjectedRow(obRows[idx]) && !OB_TAB_FIELDS.includes(field)) return;
       obRows[idx][field] = value;
       if (field === 'gallons_bags' || field === 'price_per_unit'
           || field === 'trucking_hrs' || field === 'trucking_rate') {
@@ -6865,26 +6908,67 @@
             </div>
           </div>`;
 
+        // Payroll-injected rows are locked here: every column but the invoice
+        // number and the comment was filled in when a supervisor approved the
+        // driver's timesheet and billed that haul as material, and the only
+        // correct way to change or remove one is to go back there. Leaving them
+        // editable would mean two sources of truth for the same delivery — and
+        // the server discards the edit anyway, replaying its own copy of these
+        // columns over any save from this tab.
+        const obInjected = obIsInjectedRow(row);
+        const obRo = (v, cls) =>
+          `<td class="${cls}" style="color:var(--text);font-size:0.72rem;padding:0.3rem 0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(v == null || v === '' ? '—' : String(v))}</td>`;
+        const obLockTitle = 'Posted from an approved timesheet entry — edit it in Payroll, not here.';
+        const obTsBadge   = `<span title="${obLockTitle}" style="display:inline-block;font-size:0.53rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.12);border:1px solid rgba(165,180,252,0.35);border-radius:3px;padding:0.02rem 0.26rem;white-space:nowrap">&#8592; Timesheet</span>`;
+
         const expanded = obExpanded.has(row.id);
-        return `<tr data-idx="${idx}">
+        return `<tr data-idx="${idx}"${obInjected ? ` title="${obLockTitle}"` : ''}>
           <td class="cw-expand"><button class="expand-btn${expanded?' open':''}" id="ob-expbtn-${idx}" onclick="obToggleExpand(${idx})" title="Intercompany billing">›</button></td>
-          <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="obSet(${idx},'date',this.value)"></td>
+          ${obInjected
+            ? obRo(row.date, 'cw-date')
+            : `<td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="obSet(${idx},'date',this.value)"></td>`}
           <td class="cw-unit"><input type="text" value="${esc(row.inv_number||'')}" placeholder="INV-…" oninput="obSet(${idx},'inv_number',this.value)"></td>
-          <td class="cw-cm"><select onchange="obSet(${idx},'driver',this.value)">${empOpts}</select></td>
-          <td class="cw-unit"><select data-role="ob-truck" onchange="obSet(${idx},'truck_number',this.value)">${truckOpts}</select></td>
-          <td class="cw-unit"><input type="text" value="${esc(row.trailer_number||'')}" oninput="obSet(${idx},'trailer_number',this.value)"></td>
-          <td class="cw-co"><select onchange="obSetCustomer(${idx},this.value)">${coOpts}</select></td>
-          <td class="cw-loc"><select data-role="ob-dest" onchange="obSetDestination(${idx},this.value)">${destOpts}</select></td>
-          <td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>
-          <td class="cw-veh"><select onchange="obSet(${idx},'material',this.value)">${matOpts}</select></td>
-          <td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>
-          <td class="cw-mu"><select onchange="obSet(${idx},'mu',this.value)">${muOpts}</select></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>
+          ${obInjected
+            ? obRo(row.driver, 'cw-cm')
+            : `<td class="cw-cm"><select onchange="obSet(${idx},'driver',this.value)">${empOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.truck_number, 'cw-unit')
+            : `<td class="cw-unit"><select data-role="ob-truck" onchange="obSet(${idx},'truck_number',this.value)">${truckOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.trailer_number, 'cw-unit')
+            : `<td class="cw-unit"><input type="text" value="${esc(row.trailer_number||'')}" oninput="obSet(${idx},'trailer_number',this.value)"></td>`}
+          ${obInjected
+            ? obRo(row.customer, 'cw-co')
+            : `<td class="cw-co"><select onchange="obSetCustomer(${idx},this.value)">${coOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.destination, 'cw-loc')
+            : `<td class="cw-loc"><select data-role="ob-dest" onchange="obSetDestination(${idx},this.value)">${destOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.state, 'cw-st')
+            : `<td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.material, 'cw-veh')
+            : `<td class="cw-veh"><select onchange="obSet(${idx},'material',this.value)">${matOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.gallons_bags, 'cw-gal')
+            : `<td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>`}
+          ${obInjected
+            ? obRo(row.mu, 'cw-mu')
+            : `<td class="cw-mu"><select onchange="obSet(${idx},'mu',this.value)">${muOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.price_per_unit, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>`}
+          ${obInjected
+            ? obRo(row.trucking_hrs, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>`}
+          ${obInjected
+            ? obRo(row.trucking_rate, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>`}
           <td class="cw-loc"><input type="text" value="${esc(row.comments||'')}" placeholder="Notes…" oninput="obSet(${idx},'comments',this.value)"></td>
-          <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}</td>
-          <td class="del-col"><button class="del-btn" onclick="obDeleteRow(${idx})" title="Delete row">✕</button></td>
+          <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}${obInjected ? `<div style="margin-top:0.15rem">${obTsBadge}</div>` : ''}</td>
+          ${obInjected
+            ? `<td class="del-col"><span title="${obLockTitle}" style="color:var(--muted);font-size:0.85rem">&#128274;</span></td>`
+            : `<td class="del-col"><button class="del-btn" onclick="obDeleteRow(${idx})" title="Delete row">✕</button></td>`}
         </tr>
         <tr class="inv-row" id="ob-ic-row-${idx}" style="display:${expanded?'':'none'}">
           <td colspan="18">${icPanel}</td>
