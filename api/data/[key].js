@@ -3,6 +3,10 @@
 const { neon }        = require('@neondatabase/serverless');
 const { syncForKey }  = require('../lib/sync-normalized');
 const { guardInjectedBlobWrite } = require('../lib/injected-blob-guard');
+// Dust Other Billing carries payroll-injected rows but, unlike the Truck
+// Tracking and Dust Control Tracking grids, is read straight off this generic
+// blob endpoint — so its read-time orphan sweep has to live here.
+const { sweepInjectedObRows } = require('../lib/dust-ob-injected');
 const {
   requireAuth,
   hasDivisionAccess,
@@ -146,8 +150,26 @@ module.exports = async (req, res) => {
     // else changed the blob in between. Purely additive — callers that ignore
     // it keep the previous last-writer-wins behaviour.
     const rows = await sql`SELECT value, updated_at FROM app_data WHERE key = ${scopedKey}`;
+    let value = rows.length ? rows[0].value : null;
+
+    // A payroll row that outlived its timesheet entry is a row nobody can
+    // remove: the Other Billing tab refuses to delete payroll's rows, and
+    // payroll can only un-approve an entry that still exists and still owns
+    // that id. So the list is healed on the way out, the same way api/trucking
+    // and api/dust-rows heal theirs. Non-fatal and a no-op in the steady state:
+    // it costs one indexed lookup, and only when the list actually carries
+    // injected rows.
+    if (key === 'dust_other_billing_rows' && Array.isArray(value)) {
+      try {
+        const swept = await sweepInjectedObRows(sql, payload.companyCode, value);
+        value = swept.rows;
+      } catch (err) {
+        console.error('[dust-ob-injected] GET sweep failed:', err.message);
+      }
+    }
+
     return res.json({
-      value:      rows.length ? rows[0].value : null,
+      value,
       updated_at: rows.length && rows[0].updated_at
         ? new Date(rows[0].updated_at).toISOString()
         : null,
@@ -247,11 +269,15 @@ module.exports = async (req, res) => {
     try { await syncForKey(sql, payload.companyCode, key, stored); }
     catch (err) { console.error('[sync-normalized] PUT', key, err.message); }
 
-    // Emit audit entries for the Dust Other Billing tab.
+    // Emit audit entries for the Dust Other Billing tab. Diffed against what
+    // was STORED rather than what was sent: the guard above now applies to this
+    // key too, so a save that tried to drop or overwrite a payroll row was
+    // corrected before it landed, and auditing the client's version would log
+    // an edit the blob never took.
     if (key === 'dust_other_billing_rows') {
       try {
         const { auditObChanges } = require('../lib/dust-ob-audit');
-        await auditObChanges(sql, payload, _obOldValue, value);
+        await auditObChanges(sql, payload, _obOldValue, stored);
       } catch (err) { console.error('[dust-ob-audit] PUT', err.message); }
     }
 

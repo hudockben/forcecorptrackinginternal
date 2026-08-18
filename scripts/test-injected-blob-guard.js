@@ -241,7 +241,7 @@ const payroll = (id, over = {}) => ({ id, driver: 'Mike Barr', total_hours: 12.5
 
     assert('every blob payroll injects into is registered',
       Object.keys(INJECTED_BLOBS).sort().join(',') ===
-      'fct_quarry_crushing,fct_quarry_daily,fct_truck_division',
+      'dust_other_billing_rows,fct_quarry_crushing,fct_quarry_daily,fct_truck_division',
       Object.keys(INJECTED_BLOBS).join(','));
     // dust_ees_other_rows is the deliberate omission — it version-checks its own
     // writes and merges on conflict. If that ever stops being true it belongs here.
