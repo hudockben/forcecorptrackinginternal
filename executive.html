@@ -256,6 +256,27 @@
     /* Four across, two deep: the strip carries eight figures, and a flex row
        that wraps leaves a single orphan on the second line. A grid splits them
        evenly and keeps every label on one line. */
+    /* Dust Control's per-book composition, under its metric strip. */
+    .dust-books { margin-bottom: 1rem; }
+    .dust-books tfoot td { font-weight: 700; border-top: 2px solid var(--border); }
+    .dust-book-out td { opacity: 0.55; font-style: italic; }
+    .dust-book-warn {
+      margin: 0 0 0.75rem;
+      padding: 0.55rem 0.8rem;
+      border: 1px solid #b45309;
+      border-left-width: 3px;
+      border-radius: 6px;
+      background: rgba(180, 83, 9, 0.10);
+      font-size: 0.78rem;
+      line-height: 1.4;
+    }
+    .dust-book-note {
+      margin: -0.4rem 0 1.1rem;
+      font-size: 0.76rem;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .dust-book-note > div + div { margin-top: 0.2rem; }
     .metric-strip {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -1087,13 +1108,88 @@
         </div>`
         : `<div class="section-empty">No quarry activity recorded for ${esc(d.year || 'this year')}.</div>`;
 
-      return renderDivisionSection(d, { sub, body });
+      return renderDivisionSection(d, { sub, body, extra: renderDustBooks(d) });
     }
 
     // ── Dust Control ──
     // Mirrors the Dust Control home dashboard: its year-to-date KPIs plus the
     // invoice picture across the strip, then its Top Customers ranking widened
     // into a table. Customers are the unit of work here, so they are the rows.
+    // Dust Control bills off three books — Dust Control Tracking, Other Billing
+    // and EES Other — and payroll posts an approved haul into exactly one of
+    // them. Revenue is their sum; almost nothing else is, because they measure
+    // in different units and only the first carries invoice dates. So the strip
+    // above reports the total and this block reports the composition: what each
+    // book billed, in its own measures, and what its invoice regime actually is.
+    // Without it the reader has a blended number and no way to question it.
+    function renderDustBooks(d) {
+      const books = Array.isArray(d.books) ? d.books : [];
+      if (!books.length) return '';
+      const total = books.reduce((n, b) => n + (Number(b.revenue) || 0), 0);
+      const lines = books.reduce((n, b) => n + (Number(b.lines) || 0), 0);
+      // A book that could not be read makes every total on this page smaller
+      // than the truth while looking exactly like a real one, so it is called
+      // out above the numbers rather than under them.
+      const warn = (Array.isArray(d.unavailable) && d.unavailable.length)
+        ? `<div class="dust-book-warn">Could not read ${d.unavailable.map(esc).join(' and ')} —
+             the figures on this page exclude ${d.unavailable.length === 1 ? 'it' : 'them'}.</div>`
+        : '';
+      const untracked = (d.invoices && d.invoices.untracked) || null;
+      const unpriced  = d.unpriced || null;
+      const notes = [
+        untracked && untracked.amount
+          ? `${fmtMoney(untracked.amount)} of this revenue has no dust-side invoice state, so it never
+             appears in Overdue, Unpaid or Paid however long it goes uncollected.`
+          : '',
+        unpriced && unpriced.count
+          ? `${fmtCount(unpriced.count)} line${unpriced.count === 1 ? '' : 's'} record work at no price —
+             they total $0 and are not revenue until somebody rates them.`
+          : '',
+      ].filter(Boolean);
+
+      return `
+        ${warn}
+        <div class="ptable-wrap dust-books">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th>Billing book</th>
+                <th class="col-num">Lines</th>
+                <th class="col-num">Revenue</th>
+                <th class="col-num">Share</th>
+                <th>Volume</th>
+                <th>Hours</th>
+                <th>Invoicing</th>
+              </tr>
+            </thead>
+            <tbody>${books.map(b => `
+              <tr${b.available ? '' : ' class="dust-book-out"'}>
+                <td><div class="pname"><span class="pname-main">${esc(b.label)}</span></div></td>
+                <td class="col-num v-actual">${b.available ? esc(fmtCount(b.lines)) : '—'}</td>
+                <td class="col-num v-contract">${b.available ? esc(fmtMoney(b.revenue, { zeroDash: true })) : '—'}</td>
+                <td class="col-num v-mute">${b.available && total > 0.005
+                    ? esc((100 * b.revenue / total).toFixed(0) + '%') : '—'}</td>
+                <td class="v-mute">${b.available ? esc(b.volume || '—') : 'unavailable'}</td>
+                <td class="v-mute">${b.available && b.hours
+                    ? esc(`${Number(b.hours).toFixed(1)} ${b.hoursLabel}`) : '—'}</td>
+                <td class="v-mute">${esc(b.ar)}</td>
+              </tr>`).join('')}</tbody>
+            <tfoot>
+              <tr>
+                <td>Division</td>
+                <td class="col-num v-actual">${esc(fmtCount(lines))}</td>
+                <td class="col-num v-contract">${esc(fmtMoney(total, { zeroDash: true }))}</td>
+                <td class="col-num v-mute">100%</td>
+                <td class="v-mute" title="The three books measure different things — UB applied, quantity delivered, hours worked — so there is no division total.">—</td>
+                <td class="v-mute" title="Field hours, trucking hours and EES hours are three different measures.">—</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        ${notes.length ? `<div class="dust-book-note">${notes.map(n => `<div>${n}</div>`).join('')}</div>` : ''}`;
+    }
+
     function renderDustSection(d) {
       const rows = Array.isArray(d.rows) ? d.rows : [];
       const sub  = rows.length
@@ -1111,9 +1207,10 @@
                 <th class="col-num">Hours</th>
                 <th class="col-num">Revenue</th>
                 <th class="col-num">Avg / Visit</th>
-                <th class="col-num" title="Invoiced, unpaid, and older than 45 days.">Overdue</th>
-                <th class="col-num" title="Invoiced or awaiting invoice, not yet paid.">Unpaid</th>
-                <th class="col-num">Paid</th>
+                <th class="col-num" title="Invoiced, unpaid, and older than 45 days. Dust Control Tracking only — it is the one book that carries invoice dates.">Overdue</th>
+                <th class="col-num" title="Invoiced or awaiting invoice, not yet paid. Dust Control Tracking only.">Unpaid</th>
+                <th class="col-num" title="Dust Control Tracking only.">Paid</th>
+                <th class="col-num" title="Billed off Other Billing or EES Other, which carry no invoice dates — so this money never ages into Overdue, Unpaid or Paid. Overdue + Unpaid + Paid + Untracked = Revenue.">Untracked</th>
               </tr>
             </thead>
             <tbody>${rows.map(r => `
@@ -1130,11 +1227,16 @@
                 <td class="col-num v-actual">${esc(fmtCount(r.visits))}</td>
                 <td class="col-num tone-blue">${esc(fmtCount(r.gallons))}</td>
                 <td class="col-num v-mute">${esc(Number(r.hours || 0).toFixed(1))}</td>
-                <td class="col-num v-contract">${esc(fmtMoney(r.revenue, { zeroDash: true }))}</td>
+                <td class="col-num v-contract" title="${esc([
+                    `Dust Control Tracking ${fmtMoney(r.revenueTracking || 0)}`,
+                    r.revenueOther ? `Other Billing ${fmtMoney(r.revenueOther)}` : '',
+                    r.revenueEes   ? `EES Other ${fmtMoney(r.revenueEes)}` : '',
+                  ].filter(Boolean).join(' · '))}">${esc(fmtMoney(r.revenue, { zeroDash: true }))}</td>
                 <td class="col-num v-mute">${esc(fmtMoney(r.avgPerVisit, { zeroDash: true }))}</td>
                 <td class="col-num ${r.overdue > 0.005 ? 'v-profit-neg' : 'v-mute'}">${esc(fmtMoney(r.overdue, { zeroDash: true }))}</td>
                 <td class="col-num ${r.unpaid  > 0.005 ? 'tone-amber'   : 'v-mute'}">${esc(fmtMoney(r.unpaid,  { zeroDash: true }))}</td>
                 <td class="col-num ${r.paid    > 0.005 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtMoney(r.paid,    { zeroDash: true }))}</td>
+                <td class="col-num ${r.untracked > 0.005 ? 'tone-blue' : 'v-mute'}">${esc(fmtMoney(r.untracked, { zeroDash: true }))}</td>
               </tr>`).join('')}</tbody>
           </table>
         </div>`
