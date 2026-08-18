@@ -1,0 +1,866 @@
+/* eslint-disable no-undef */
+/* DataWatch — Job Document Vault
+ *
+ * The folder browser behind the Documents tab, and the attach flow behind the
+ * paperclip on a purchase order. Shared by the division pages the same way
+ * report-email.js is: one <script src>, no bundler, all styling inline off the
+ * host page's CSS variables so it inherits whatever theme that page uses.
+ *
+ * The host page configures it once:
+ *
+ *   FCTDocuments.configure({
+ *     division:          'turf',
+ *     getProjectId:      () => activeProjectId,       // null = General / Non-Job
+ *     getProjectName:    id => 'Route 30 Resurfacing',
+ *     getCostCodes:      id => [{ code: '420', label: 'Paving' }],
+ *     getPurchaseOrders: () => [{ id, po_number, supplier, project_id }],
+ *     perm:              { canUpload, canManage, canDelete },
+ *   });
+ *
+ * then calls FCTDocuments.renderTab(mountEl) when the tab opens, and
+ * FCTDocuments.openAttach(po) from a PO row.
+ *
+ * File bytes go straight from the browser to object storage with a presigned
+ * URL — see api/lib/storage.js for why they cannot go through the API.
+ */
+(function () {
+  if (window.FCTDocuments) return; // already loaded
+
+  const API = '/api';
+  const Z   = 10060; // above report-email.js (10050)
+
+  // Long edge, in pixels, that photos are resized to before upload. A modern
+  // phone camera produces 12 MP files; a delivery ticket is legible at a
+  // fraction of that, and the difference is what fills a bucket.
+  const PHOTO_MAX_EDGE = 2400;
+  const PHOTO_QUALITY  = 0.85;
+
+  let cfg = {
+    division: 'turf',
+    getProjectId: () => null,
+    getProjectName: () => '',
+    getCostCodes: () => [],
+    getPurchaseOrders: () => [],
+    perm: { canUpload: false, canManage: false, canDelete: false },
+  };
+
+  // ── State ───────────────────────────────────────────────────────────
+  let folders   = [];
+  let documents = [];
+  let caps      = { canUpload: false, canManage: false, canDelete: false };
+  let currentFolderId = null;   // null = the root listing
+  let search    = '';
+  let mountEl   = null;
+  let loadedFor = undefined;    // project id the current data belongs to
+  let poCounts  = {};
+
+  // ── Helpers ─────────────────────────────────────────────────────────
+  function token() { return localStorage.getItem('fct_token') || ''; }
+
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  function fmtBytes(n) {
+    if (!n) return '—';
+    if (n < 1024) return `${n} B`;
+    if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`;
+    return `${(n / 1048576).toFixed(1)} MB`;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function iconFor(doc) {
+    const t = doc.content_type || '';
+    if (t.startsWith('image/')) return '&#128247;';        // camera
+    if (t === 'application/pdf') return '&#128196;';        // page
+    if (t.includes('sheet') || t.includes('excel') || t === 'text/csv') return '&#128202;';
+    if (t.includes('word')) return '&#128209;';
+    return '&#128206;';                                     // paperclip
+  }
+
+  async function api(method, path, body) {
+    const init = {
+      method,
+      headers: { 'Authorization': `Bearer ${token()}` },
+    };
+    if (body !== undefined) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    const r = await fetch(`${API}${path}`, init);
+    let data = null;
+    try { data = await r.json(); } catch { /* empty body */ }
+    if (!r.ok) {
+      const err = new Error((data && data.error) || `Request failed (${r.status})`);
+      err.status = r.status;
+      throw err;
+    }
+    return data;
+  }
+
+  function q(params) {
+    const parts = [`division=${encodeURIComponent(cfg.division)}`];
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v !== null && v !== undefined && v !== '') parts.push(`${k}=${encodeURIComponent(v)}`);
+    }
+    return '?' + parts.join('&');
+  }
+
+  // ── Toast ───────────────────────────────────────────────────────────
+  function toast(message, kind) {
+    const el = document.createElement('div');
+    el.textContent = message;
+    el.style.cssText = `
+      position:fixed;bottom:1.25rem;left:50%;transform:translateX(-50%);z-index:${Z + 20};
+      background:var(--surface2,#1a1a26);color:var(--text,#e0e0e0);
+      border:1px solid ${kind === 'error' ? 'var(--red,#ef4444)' : 'var(--green,#22c55e)'};
+      border-left-width:3px;padding:0.6rem 1rem;border-radius:4px;font-size:0.85rem;
+      box-shadow:0 8px 24px rgba(0,0,0,0.5);max-width:min(90vw,520px)`;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), kind === 'error' ? 6000 : 3200);
+  }
+
+  // ── Photo downscaling ───────────────────────────────────────────────
+  /**
+   * Shrink a camera photo before it leaves the phone.
+   *
+   * Returns { blob, filename } — the original untouched when the browser
+   * cannot decode the image (HEIC outside Safari is the usual case) or when it
+   * is already small. A converted file is renamed to .jpg so it still matches
+   * the server's extension allowlist.
+   */
+  async function maybeDownscale(file) {
+    const asIs = { blob: file, filename: file.name };
+    if (!file.type.startsWith('image/')) return asIs;
+    if (file.size < 400 * 1024) return asIs;
+    if (typeof createImageBitmap !== 'function') return asIs;
+
+    try {
+      const bitmap = await createImageBitmap(file);
+      const longest = Math.max(bitmap.width, bitmap.height);
+      if (longest <= PHOTO_MAX_EDGE) { bitmap.close?.(); return asIs; }
+
+      const scale = PHOTO_MAX_EDGE / longest;
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close?.();
+
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', PHOTO_QUALITY));
+      if (!blob || blob.size >= file.size) return asIs;
+
+      const base = file.name.replace(/\.[^.]+$/, '') || 'photo';
+      return { blob, filename: `${base}.jpg` };
+    } catch {
+      // Undecodable (HEIC in Chrome, a corrupt file) — send the original and
+      // let the server's allowlist have the final say.
+      return asIs;
+    }
+  }
+
+  // ── Data ────────────────────────────────────────────────────────────
+  async function load(projectId, { force = false } = {}) {
+    if (!force && loadedFor === projectId) return;
+
+    // Seed the generated tree first — the six fixed folders, the Purchase
+    // Orders root, and one folder per cost code on this job. Idempotent, so
+    // this is safe on every open, and it is how a cost code added this morning
+    // gets a folder this afternoon.
+    if (cfg.perm.canUpload) {
+      const costCodes = (cfg.getCostCodes(projectId) || [])
+        .map(c => (typeof c === 'string' ? { code: c, label: '' } : c))
+        .filter(c => c && c.code);
+      try {
+        await api('PUT', `/documents${q({ projectId })}`, { costCodes });
+      } catch (err) {
+        // A failed seed is not fatal — whatever folders exist still list below.
+        console.warn('[documents] folder seed failed:', err.message);
+      }
+    }
+
+    const data = await api('GET', `/documents${q({ projectId })}`);
+    folders   = data.folders || [];
+    documents = data.documents || [];
+    caps      = data.caps || cfg.perm;
+    loadedFor = projectId;
+  }
+
+  async function refreshPoCounts() {
+    try {
+      const data = await api('GET', `/documents${q({ poCounts: 1 })}`);
+      poCounts = data.counts || {};
+    } catch {
+      poCounts = {};
+    }
+    return poCounts;
+  }
+
+  // ── Folder tree ─────────────────────────────────────────────────────
+  function childrenOf(parentId) {
+    return folders
+      .filter(f => (f.parent_id || null) === (parentId || null))
+      .sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
+  }
+
+  function folderById(id) { return folders.find(f => f.id === id) || null; }
+
+  function trail(folderId) {
+    const out = [];
+    let f = folderById(folderId);
+    while (f) { out.unshift(f); f = f.parent_id ? folderById(f.parent_id) : null; }
+    return out;
+  }
+
+  function docsIn(folderId) {
+    return documents.filter(d => d.folder_ids.includes(folderId));
+  }
+
+  // Every document whose name, note, or uploader matches the search box.
+  function searchHits() {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return null;
+    return documents.filter(d =>
+      (d.filename || '').toLowerCase().includes(needle)
+      || (d.note || '').toLowerCase().includes(needle)
+      || (d.uploaded_by || '').toLowerCase().includes(needle));
+  }
+
+  // ── Rendering ───────────────────────────────────────────────────────
+  const S = {
+    wrap:  'display:flex;gap:0;border:1px solid var(--border,#2a2a3a);border-radius:6px;overflow:hidden;min-height:26rem;background:var(--surface,#111118)',
+    side:  'flex:0 0 15rem;border-right:1px solid var(--border,#2a2a3a);padding:0.6rem;overflow-y:auto;max-height:34rem;background:var(--bg,#0a0a0f)',
+    main:  'flex:1 1 auto;padding:0.85rem 1rem;overflow-y:auto;max-height:34rem;min-width:0',
+    bar:   'display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;margin-bottom:0.85rem',
+    btn:   'padding:0.35rem 0.7rem;border:1px solid var(--border,#2a2a3a);background:var(--surface2,#1a1a26);color:var(--text,#e0e0e0);border-radius:4px;font-size:0.78rem;cursor:pointer',
+    green: 'padding:0.35rem 0.7rem;border:1px solid var(--green,#22c55e);background:transparent;color:var(--green,#22c55e);border-radius:4px;font-size:0.78rem;cursor:pointer;font-weight:600',
+    input: 'padding:0.35rem 0.6rem;border:1px solid var(--border,#2a2a3a);background:var(--surface2,#1a1a26);color:var(--text,#e0e0e0);border-radius:4px;font-size:0.8rem',
+    muted: 'color:var(--muted,#666);font-size:0.78rem',
+  };
+
+  function folderNodeHTML(f, depth) {
+    const kids     = childrenOf(f.id);
+    const isActive = f.id === currentFolderId;
+    const count    = docsIn(f.id).length;
+    const icon     = f.kind === 'cost_code' ? '&#128203;' : '&#128193;';
+    return `
+      <div>
+        <div data-folder="${esc(f.id)}"
+             title="${esc(f.name)}"
+             style="display:flex;align-items:center;gap:0.35rem;padding:0.28rem 0.4rem;
+                    padding-left:${0.4 + depth * 0.8}rem;border-radius:3px;cursor:pointer;font-size:0.8rem;
+                    ${isActive ? 'background:var(--surface2,#1a1a26);color:var(--green,#22c55e);font-weight:600' : 'color:var(--text,#e0e0e0)'}">
+          <span>${icon}</span>
+          <span style="flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
+          ${count ? `<span style="${S.muted}">${count}</span>` : ''}
+        </div>
+        ${kids.map(k => folderNodeHTML(k, depth + 1)).join('')}
+      </div>`;
+  }
+
+  function docRowHTML(d) {
+    const pos = (d.po_ids || []).length;
+    return `
+      <div data-doc="${esc(d.id)}"
+           style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.6rem;
+                  border-bottom:1px solid var(--border,#2a2a3a);font-size:0.82rem">
+        <span style="font-size:1rem">${iconFor(d)}</span>
+        <div style="flex:1 1 auto;min-width:0">
+          <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <a href="#" data-open="${esc(d.id)}" style="color:var(--text,#e0e0e0);text-decoration:none">${esc(d.filename)}</a>
+            ${pos ? `<span title="Attached to ${pos} purchase order${pos === 1 ? '' : 's'}"
+                           style="margin-left:0.4rem;color:var(--green,#22c55e);font-size:0.72rem">&#128206;${pos}</span>` : ''}
+          </div>
+          <div style="${S.muted}">
+            ${fmtBytes(d.size_bytes)} · ${esc(d.uploaded_by || 'unknown')} · ${fmtDate(d.uploaded_at)}
+            ${d.note ? ` · ${esc(d.note)}` : ''}
+          </div>
+        </div>
+        <button data-download="${esc(d.id)}" style="${S.btn}" title="Download">&#11015;</button>
+        ${caps.canUpload ? `<button data-attach="${esc(d.id)}" style="${S.btn}" title="Attach to a purchase order">&#128206;</button>` : ''}
+        ${caps.canDelete ? `<button data-delete="${esc(d.id)}" style="${S.btn}" title="Delete">&#10005;</button>` : ''}
+      </div>`;
+  }
+
+  function render() {
+    if (!mountEl) return;
+
+    const projectId = cfg.getProjectId();
+    const hits      = searchHits();
+    const roots     = childrenOf(null);
+    const listing   = hits !== null ? hits
+                    : currentFolderId ? docsIn(currentFolderId)
+                    : [];
+    const crumbs    = trail(currentFolderId);
+
+    const heading = projectId
+      ? esc(cfg.getProjectName(projectId) || 'Job')
+      : 'General / Non-Job';
+
+    mountEl.innerHTML = `
+      <div style="${S.bar}">
+        <span style="font-size:1rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase">Documents</span>
+        <span style="${S.muted}">${heading}</span>
+        <input type="text" id="fctdoc-search" placeholder="&#128269; Search documents…"
+               value="${esc(search)}" style="${S.input};flex:1 1 12rem;max-width:22rem" />
+        ${caps.canUpload ? `<button id="fctdoc-newfolder" style="${S.btn}">+ New Folder</button>` : ''}
+        ${caps.canUpload ? `<button id="fctdoc-upload" style="${S.green}">&#11014; Upload</button>` : ''}
+      </div>
+
+      <div style="${S.wrap}">
+        <div style="${S.side}" id="fctdoc-tree">
+          ${roots.length ? roots.map(f => folderNodeHTML(f, 0)).join('')
+                         : `<div style="${S.muted};padding:0.5rem">No folders yet.</div>`}
+        </div>
+        <div style="${S.main}" id="fctdoc-main">
+          ${hits !== null
+            ? `<div style="margin-bottom:0.6rem;${S.muted}">${listing.length} match${listing.length === 1 ? '' : 'es'} for &ldquo;${esc(search)}&rdquo;</div>`
+            : `<div style="margin-bottom:0.6rem;font-size:0.8rem">
+                 <a href="#" data-folder-crumb="" style="color:var(--muted,#666);text-decoration:none">Home</a>
+                 ${crumbs.map(c => ` <span style="${S.muted}">&rsaquo;</span> <a href="#" data-folder-crumb="${esc(c.id)}" style="color:var(--text,#e0e0e0);text-decoration:none">${esc(c.name)}</a>`).join('')}
+               </div>`}
+
+          ${hits === null && !currentFolderId
+            ? `<div style="${S.muted};padding:1.5rem 0;text-align:center">Pick a folder to see what is filed in it.</div>`
+            : listing.length
+              ? `<div>${listing.map(docRowHTML).join('')}</div>`
+              : `<div style="${S.muted};padding:1.5rem 0;text-align:center">
+                   Nothing filed here yet.${caps.canUpload ? ' Drop a file anywhere on this panel to upload it.' : ''}
+                 </div>`}
+
+          ${caps.canUpload && hits === null && currentFolderId ? `
+            <div id="fctdoc-drop" style="margin-top:0.9rem;border:1px dashed var(--border,#2a2a3a);border-radius:5px;
+                                         padding:1rem;text-align:center;${S.muted}">
+              Drop files here to file them in <strong style="color:var(--text,#e0e0e0)">${esc(folderById(currentFolderId)?.name || '')}</strong>
+            </div>` : ''}
+        </div>
+      </div>`;
+
+    wireTab();
+  }
+
+  function wireTab() {
+    const searchBox = mountEl.querySelector('#fctdoc-search');
+    if (searchBox) {
+      searchBox.addEventListener('input', e => {
+        search = e.target.value;
+        const at = e.target.selectionStart;
+        render();
+        const again = mountEl.querySelector('#fctdoc-search');
+        again.focus();
+        again.setSelectionRange(at, at);
+      });
+    }
+
+    mountEl.querySelectorAll('[data-folder]').forEach(el => {
+      el.addEventListener('click', () => { currentFolderId = el.dataset.folder; search = ''; render(); });
+    });
+    mountEl.querySelectorAll('[data-folder-crumb]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.preventDefault();
+        currentFolderId = el.dataset.folderCrumb || null;
+        render();
+      });
+    });
+
+    mountEl.querySelectorAll('[data-open]').forEach(el => {
+      el.addEventListener('click', e => { e.preventDefault(); openPreview(el.dataset.open); });
+    });
+    mountEl.querySelectorAll('[data-download]').forEach(el => {
+      el.addEventListener('click', () => downloadDoc(el.dataset.download));
+    });
+    mountEl.querySelectorAll('[data-delete]').forEach(el => {
+      el.addEventListener('click', () => deleteDoc(el.dataset.delete));
+    });
+    mountEl.querySelectorAll('[data-attach]').forEach(el => {
+      el.addEventListener('click', () => openLinkToPo(el.dataset.attach));
+    });
+
+    const up = mountEl.querySelector('#fctdoc-upload');
+    if (up) up.addEventListener('click', () => openUpload({ folderId: currentFolderId }));
+
+    const nf = mountEl.querySelector('#fctdoc-newfolder');
+    if (nf) nf.addEventListener('click', openNewFolder);
+
+    const drop = mountEl.querySelector('#fctdoc-main');
+    if (drop && caps.canUpload) {
+      drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.outline = '2px dashed var(--green,#22c55e)'; });
+      drop.addEventListener('dragleave', () => { drop.style.outline = 'none'; });
+      drop.addEventListener('drop', e => {
+        e.preventDefault();
+        drop.style.outline = 'none';
+        const files = [...(e.dataTransfer?.files || [])];
+        if (!files.length) return;
+        if (!currentFolderId) { toast('Open a folder first — every file has to be filed somewhere.', 'error'); return; }
+        openUpload({ folderId: currentFolderId, files });
+      });
+    }
+  }
+
+  // ── Modal shell ─────────────────────────────────────────────────────
+  function modal(title, bodyHTML, { wide = false } = {}) {
+    const back = document.createElement('div');
+    back.style.cssText = `position:fixed;inset:0;z-index:${Z};background:rgba(0,0,0,0.6);
+                          display:flex;align-items:center;justify-content:center;padding:1rem`;
+    back.innerHTML = `
+      <div style="background:var(--surface,#111118);border:1px solid var(--border,#2a2a3a);border-radius:6px;
+                  width:${wide ? 'min(60rem,95vw)' : 'min(30rem,95vw)'};max-height:92vh;display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;
+                    border-bottom:1px solid var(--border,#2a2a3a)">
+          <span style="font-weight:700;font-size:0.9rem;letter-spacing:0.04em;text-transform:uppercase">${esc(title)}</span>
+          <button data-close style="background:none;border:none;color:var(--muted,#666);font-size:1.1rem;cursor:pointer">&#10005;</button>
+        </div>
+        <div style="padding:1rem;overflow:auto" data-body>${bodyHTML}</div>
+      </div>`;
+    document.body.appendChild(back);
+    const close = () => back.remove();
+    back.querySelector('[data-close]').addEventListener('click', close);
+    back.addEventListener('click', e => { if (e.target === back) close(); });
+    document.addEventListener('keydown', function onEsc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); }
+    });
+    return { el: back, body: back.querySelector('[data-body]'), close };
+  }
+
+  // Options for the "file it in" picker — every folder, indented by depth.
+  function folderOptionsHTML(selectedId) {
+    const out = [];
+    (function walk(parentId, depth) {
+      for (const f of childrenOf(parentId)) {
+        out.push(`<option value="${esc(f.id)}" ${f.id === selectedId ? 'selected' : ''}>${'&nbsp;'.repeat(depth * 4)}${esc(f.name)}</option>`);
+        walk(f.id, depth + 1);
+      }
+    })(null, 0);
+    return out.join('');
+  }
+
+  function poOptionsHTML(projectId, selectedId) {
+    const pos = (cfg.getPurchaseOrders() || [])
+      .filter(po => !projectId || !po.project_id || po.project_id === projectId);
+    return `<option value="">— none —</option>` + pos.map(po =>
+      `<option value="${esc(po.id)}" ${po.id === selectedId ? 'selected' : ''}>${esc(po.po_number || po.id)}${po.supplier ? ` — ${esc(po.supplier)}` : ''}</option>`
+    ).join('');
+  }
+
+  // ── Upload ──────────────────────────────────────────────────────────
+  /**
+   * The upload dialog. Folder is required — a file with nowhere to live is how
+   * a document vault turns into a junk drawer. The PO field is optional and is
+   * what makes the link work from this side as well as from the PO tab.
+   */
+  function openUpload({ folderId, files = [], poId = null, lockPo = false, projectId }) {
+    // Default to the tab's selection, but let callers override: openAttach()
+    // works against the PO's own job, which is not always the one on screen.
+    if (projectId === undefined) projectId = cfg.getProjectId();
+    const m = modal('Upload documents', `
+      <div style="display:flex;flex-direction:column;gap:0.85rem">
+        <div>
+          <label style="display:block;${S.muted};margin-bottom:0.25rem">Files</label>
+          <input type="file" id="fctdoc-files" multiple style="${S.input};width:100%" />
+          <div id="fctdoc-filelist" style="${S.muted};margin-top:0.35rem"></div>
+        </div>
+        <div>
+          <label style="display:block;${S.muted};margin-bottom:0.25rem">Folder <span style="color:var(--red,#ef4444)">*</span></label>
+          <select id="fctdoc-folder" style="${S.input};width:100%">
+            <option value="">— pick a folder —</option>
+            ${folderOptionsHTML(folderId)}
+          </select>
+        </div>
+        <div>
+          <label style="display:block;${S.muted};margin-bottom:0.25rem">Link to purchase order <span style="opacity:0.7">(optional)</span></label>
+          <select id="fctdoc-po" style="${S.input};width:100%" ${lockPo ? 'disabled' : ''}>
+            ${poOptionsHTML(projectId, poId)}
+          </select>
+        </div>
+        <div>
+          <label style="display:block;${S.muted};margin-bottom:0.25rem">Note <span style="opacity:0.7">(optional)</span></label>
+          <input type="text" id="fctdoc-note" placeholder="e.g. 22.14 tons" maxlength="500" style="${S.input};width:100%" />
+        </div>
+        <div id="fctdoc-progress" style="${S.muted}"></div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+          <button data-cancel style="${S.btn}">Cancel</button>
+          <button id="fctdoc-go" style="${S.green}">Upload</button>
+        </div>
+      </div>`);
+
+    const fileInput = m.body.querySelector('#fctdoc-files');
+    const fileList  = m.body.querySelector('#fctdoc-filelist');
+    const progress  = m.body.querySelector('#fctdoc-progress');
+    let picked = files;
+
+    function showPicked() {
+      fileList.innerHTML = picked.length
+        ? picked.map(f => `${esc(f.name)} <span style="opacity:0.7">(${fmtBytes(f.size)})</span>`).join('<br>')
+        : '';
+    }
+    showPicked();
+    fileInput.addEventListener('change', () => { picked = [...fileInput.files]; showPicked(); });
+
+    m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
+
+    m.body.querySelector('#fctdoc-go').addEventListener('click', async () => {
+      const chosenFolder = m.body.querySelector('#fctdoc-folder').value;
+      const chosenPo     = m.body.querySelector('#fctdoc-po').value || null;
+      const note         = m.body.querySelector('#fctdoc-note').value.trim();
+
+      if (!picked.length)   { toast('Pick at least one file.', 'error'); return; }
+      if (!chosenFolder)    { toast('Pick a folder — every file has to be filed somewhere.', 'error'); return; }
+
+      const go = m.body.querySelector('#fctdoc-go');
+      go.disabled = true;
+      go.textContent = 'Uploading…';
+
+      let done = 0, failed = 0;
+      for (const file of picked) {
+        progress.textContent = `Uploading ${done + failed + 1} of ${picked.length}: ${file.name}`;
+        try {
+          await uploadOne(file, { folderId: chosenFolder, poId: chosenPo, note, projectId });
+          done++;
+        } catch (err) {
+          failed++;
+          toast(`${file.name}: ${err.message}`, 'error');
+        }
+      }
+
+      m.close();
+      if (done) toast(`${done} file${done === 1 ? '' : 's'} uploaded.`);
+      await load(projectId, { force: true });
+      await refreshPoCounts();
+      if (cfg.onChange) cfg.onChange();
+      render();
+    });
+  }
+
+  async function uploadOne(file, { folderId, poId, note, projectId }) {
+    const prepared = await maybeDownscale(file);
+
+    // 1. Ticket. Nothing is written until step 3, so an abandoned ticket costs
+    //    nothing but an unreferenced object.
+    const ticket = await api('POST', `/document-upload-url${q({})}`, {
+      filename: prepared.filename,
+      sizeBytes: prepared.blob.size,
+      projectId,
+    });
+
+    // 2. Bytes, straight to storage — never through the API.
+    const put = await fetch(ticket.uploadUrl, {
+      method: 'PUT',
+      body: prepared.blob,
+      headers: { 'Content-Type': ticket.contentType },
+    });
+    if (!put.ok) throw new Error(`Upload to storage failed (${put.status})`);
+
+    // 3. Register the metadata.
+    return api('POST', `/documents${q({ projectId })}`, {
+      documentId: ticket.documentId,
+      filename:   prepared.filename,
+      storageKey: ticket.storageKey,
+      sizeBytes:  prepared.blob.size,
+      folderId,
+      poId,
+      note,
+    });
+  }
+
+  // ── New folder ──────────────────────────────────────────────────────
+  function openNewFolder() {
+    const m = modal('New folder', `
+      <div style="display:flex;flex-direction:column;gap:0.85rem">
+        <div>
+          <label style="display:block;${S.muted};margin-bottom:0.25rem">Name</label>
+          <input type="text" id="fctdoc-fname" maxlength="120" style="${S.input};width:100%" />
+        </div>
+        <div>
+          <label style="display:block;${S.muted};margin-bottom:0.25rem">Inside</label>
+          <select id="fctdoc-fparent" style="${S.input};width:100%">
+            <option value="">— top level —</option>
+            ${folderOptionsHTML(currentFolderId)}
+          </select>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+          <button data-cancel style="${S.btn}">Cancel</button>
+          <button id="fctdoc-mk" style="${S.green}">Create</button>
+        </div>
+      </div>`);
+
+    m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
+    const nameInput = m.body.querySelector('#fctdoc-fname');
+    nameInput.focus();
+
+    async function create() {
+      const name = nameInput.value.trim();
+      if (!name) { toast('Give the folder a name.', 'error'); return; }
+      const parentId = m.body.querySelector('#fctdoc-fparent').value || null;
+      try {
+        await api('POST', `/documents${q({ projectId: cfg.getProjectId(), folder: 1 })}`, { name, parentId });
+        m.close();
+        await load(cfg.getProjectId(), { force: true });
+        render();
+        toast('Folder created.');
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    }
+    m.body.querySelector('#fctdoc-mk').addEventListener('click', create);
+    nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') create(); });
+  }
+
+  // ── Preview / download ──────────────────────────────────────────────
+  async function signedUrl(id, inline) {
+    return api('GET', `/document-download${q({ id, inline: inline ? 1 : '' })}`);
+  }
+
+  async function downloadDoc(id) {
+    try {
+      const { url } = await signedUrl(id, false);
+      // A plain navigation, not an <a download> — the signed URL already
+      // carries the filename in its content-disposition.
+      window.open(url, '_blank', 'noopener');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  async function openPreview(id) {
+    const doc = documents.find(d => d.id === id);
+    if (!doc) return;
+
+    let info;
+    try {
+      info = await signedUrl(id, true);
+    } catch (err) {
+      toast(err.message, 'error');
+      return;
+    }
+
+    const linkedPos = (doc.po_ids || []).map(poId => {
+      const po = (cfg.getPurchaseOrders() || []).find(p => p.id === poId);
+      return po ? `${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}` : poId;
+    });
+
+    const viewer = !info.inline
+      ? `<div style="${S.muted};padding:2rem;text-align:center">
+           No preview for this file type. Download it to open it.
+         </div>`
+      : doc.content_type === 'application/pdf'
+        ? `<iframe src="${esc(info.url)}" style="width:100%;height:65vh;border:1px solid var(--border,#2a2a3a);border-radius:4px"></iframe>`
+        : `<img src="${esc(info.url)}" alt="${esc(doc.filename)}"
+                style="max-width:100%;max-height:65vh;display:block;margin:0 auto;border-radius:4px" />`;
+
+    const m = modal(doc.filename, `
+      ${viewer}
+      <div style="margin-top:0.85rem;display:flex;flex-wrap:wrap;gap:0.6rem;align-items:center;${S.muted}">
+        <span>${fmtBytes(doc.size_bytes)}</span>
+        <span>·</span>
+        <span>Uploaded by ${esc(doc.uploaded_by || 'unknown')} on ${fmtDate(doc.uploaded_at)}</span>
+        ${doc.note ? `<span>·</span><span>${esc(doc.note)}</span>` : ''}
+      </div>
+      ${linkedPos.length ? `<div style="margin-top:0.4rem;font-size:0.8rem;color:var(--green,#22c55e)">
+          &#128206; Linked to ${linkedPos.map(esc).join(', ')}
+        </div>` : ''}
+      <div style="margin-top:0.4rem;${S.muted}">
+        Filed in ${(doc.folder_ids || []).map(fid => esc(folderById(fid)?.name || '—')).join(', ') || '—'}
+      </div>
+      <div style="margin-top:1rem;display:flex;justify-content:flex-end;gap:0.5rem">
+        <button data-dl style="${S.btn}">&#11015; Download</button>
+        ${caps.canUpload ? `<button data-link style="${S.btn}">&#128206; Link to PO</button>` : ''}
+        ${caps.canDelete ? `<button data-del style="${S.btn};border-color:var(--red,#ef4444);color:var(--red,#ef4444)">Delete</button>` : ''}
+      </div>`, { wide: true });
+
+    m.body.querySelector('[data-dl]').addEventListener('click', () => downloadDoc(id));
+    m.body.querySelector('[data-link]')?.addEventListener('click', () => { m.close(); openLinkToPo(id); });
+    m.body.querySelector('[data-del]')?.addEventListener('click', () => { m.close(); deleteDoc(id); });
+  }
+
+  // ── Link an existing document to a PO ───────────────────────────────
+  function openLinkToPo(id) {
+    const doc = documents.find(d => d.id === id);
+    if (!doc) return;
+    const projectId = cfg.getProjectId();
+
+    const m = modal('Link to purchase order', `
+      <div style="display:flex;flex-direction:column;gap:0.85rem">
+        <div style="${S.muted}">${esc(doc.filename)}</div>
+        <div>
+          <label style="display:block;${S.muted};margin-bottom:0.25rem">Purchase order</label>
+          <select id="fctdoc-linkpo" style="${S.input};width:100%">${poOptionsHTML(projectId, null)}</select>
+        </div>
+        ${(doc.po_ids || []).length ? `
+          <div>
+            <div style="${S.muted};margin-bottom:0.25rem">Already linked to</div>
+            ${doc.po_ids.map(poId => {
+              const po = (cfg.getPurchaseOrders() || []).find(p => p.id === poId);
+              const label = po ? `${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}` : poId;
+              return `<div style="display:flex;align-items:center;gap:0.5rem;font-size:0.8rem;padding:0.2rem 0">
+                        <span style="flex:1 1 auto">${esc(label)}</span>
+                        <button data-unlink="${esc(poId)}" style="${S.btn}">Remove</button>
+                      </div>`;
+            }).join('')}
+          </div>` : ''}
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+          <button data-cancel style="${S.btn}">Close</button>
+          <button id="fctdoc-dolink" style="${S.green}">Link</button>
+        </div>
+      </div>`);
+
+    m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
+
+    m.body.querySelector('#fctdoc-dolink').addEventListener('click', async () => {
+      const poId = m.body.querySelector('#fctdoc-linkpo').value;
+      if (!poId) { toast('Pick a purchase order.', 'error'); return; }
+      try {
+        await api('PATCH', `/documents${q({ id })}`, { addPoId: poId });
+        m.close();
+        await load(projectId, { force: true });
+        await refreshPoCounts();
+        if (cfg.onChange) cfg.onChange();
+        render();
+        toast('Linked.');
+      } catch (err) { toast(err.message, 'error'); }
+    });
+
+    m.body.querySelectorAll('[data-unlink]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await api('PATCH', `/documents${q({ id })}`, { removePoId: btn.dataset.unlink });
+          m.close();
+          await load(projectId, { force: true });
+          await refreshPoCounts();
+          if (cfg.onChange) cfg.onChange();
+          render();
+          toast('Unlinked. The file is still in its folder.');
+        } catch (err) { toast(err.message, 'error'); }
+      });
+    });
+  }
+
+  // ── Delete ──────────────────────────────────────────────────────────
+  function deleteDoc(id) {
+    const doc = documents.find(d => d.id === id);
+    if (!doc) return;
+    const m = modal('Delete document', `
+      <div style="display:flex;flex-direction:column;gap:0.85rem">
+        <div>Delete <strong>${esc(doc.filename)}</strong>?</div>
+        <div style="${S.muted}">
+          It moves to the deleted bin and can be restored for 30 days. Every delete is
+          recorded against your name.
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+          <button data-cancel style="${S.btn}">Cancel</button>
+          <button data-yes style="${S.btn};border-color:var(--red,#ef4444);color:var(--red,#ef4444)">Delete</button>
+        </div>
+      </div>`);
+
+    m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.body.querySelector('[data-yes]').addEventListener('click', async () => {
+      try {
+        await api('DELETE', `/documents${q({ id })}`);
+        m.close();
+        await load(cfg.getProjectId(), { force: true });
+        await refreshPoCounts();
+        if (cfg.onChange) cfg.onChange();
+        render();
+        toast('Deleted. Recoverable for 30 days.');
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  }
+
+  // ── Purchase-order side ─────────────────────────────────────────────
+  /**
+   * The paperclip on a PO row. Lists what is attached, and offers an upload
+   * that files the document on the job AND under the PO in one action.
+   */
+  async function openAttach(po) {
+    const projectId = po.project_id || null;
+
+    // A PO can belong to a different job than the one on screen, and a non-job
+    // PO belongs to the General area — either way, load that scope's folders
+    // so the filing picker offers the right ones.
+    if (loadedFor !== projectId) {
+      try { await load(projectId, { force: true }); }
+      catch (err) { toast(err.message, 'error'); return; }
+    }
+
+    let attached = [];
+    try {
+      attached = (await api('GET', `/documents${q({ poId: po.id })}`)).documents || [];
+    } catch (err) { toast(err.message, 'error'); return; }
+
+    const title = `PO ${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}`;
+    const m = modal(title, `
+      <div style="display:flex;flex-direction:column;gap:0.85rem">
+        <div>
+          <div style="${S.muted};margin-bottom:0.35rem">${attached.length} attached document${attached.length === 1 ? '' : 's'}</div>
+          ${attached.length ? attached.map(d => `
+            <div style="display:flex;align-items:center;gap:0.6rem;padding:0.4rem 0;border-bottom:1px solid var(--border,#2a2a3a);font-size:0.82rem">
+              <span>${iconFor(d)}</span>
+              <div style="flex:1 1 auto;min-width:0">
+                <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.filename)}</div>
+                <div style="${S.muted}">${fmtBytes(d.size_bytes)} · ${esc(d.uploaded_by || 'unknown')} · ${fmtDate(d.uploaded_at)}${d.note ? ` · ${esc(d.note)}` : ''}</div>
+              </div>
+              <button data-adl="${esc(d.id)}" style="${S.btn}">&#11015;</button>
+            </div>`).join('')
+            : `<div style="${S.muted};padding:0.75rem 0">Nothing attached yet.</div>`}
+        </div>
+        ${caps.canUpload ? `
+          <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+            <button data-cancel style="${S.btn}">Close</button>
+            <button data-attach-new style="${S.green}">&#11014; Attach a document</button>
+          </div>`
+          : `<div style="display:flex;justify-content:flex-end"><button data-cancel style="${S.btn}">Close</button></div>`}
+      </div>`, { wide: true });
+
+    m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.body.querySelectorAll('[data-adl]').forEach(b =>
+      b.addEventListener('click', () => downloadDoc(b.dataset.adl)));
+
+    m.body.querySelector('[data-attach-new]')?.addEventListener('click', () => {
+      m.close();
+      // The PO is fixed; the job folder is the choice the user still has to
+      // make, which is what keeps a ticket findable from the job as well.
+      openUpload({ folderId: null, poId: po.id, lockPo: true, projectId });
+    });
+  }
+
+  // ── Public API ──────────────────────────────────────────────────────
+  window.FCTDocuments = {
+    configure(opts) {
+      cfg = { ...cfg, ...opts };
+      caps = { ...cfg.perm };
+    },
+
+    /** Render the Documents tab into `el` for the currently selected project. */
+    async renderTab(el) {
+      mountEl = el;
+      const projectId = cfg.getProjectId();
+      mountEl.innerHTML = `<div style="${S.muted};padding:1.5rem">Loading documents…</div>`;
+      try {
+        await load(projectId, { force: true });
+        currentFolderId = null;
+        search = '';
+        render();
+      } catch (err) {
+        mountEl.innerHTML = `<div style="color:var(--red,#ef4444);padding:1.5rem">
+          Could not load documents: ${esc(err.message)}</div>`;
+      }
+    },
+
+    openAttach,
+    refreshPoCounts,
+    poCount(poId) { return poCounts[poId] || 0; },
+    get counts() { return poCounts; },
+
+    // exercised by scripts/test-documents-frontend.js — the upload sequence is
+    // the one part of this file a static read cannot confirm.
+    _uploadOne: uploadOne,
+    _maybeDownscale: maybeDownscale,
+  };
+})();
