@@ -1404,3 +1404,138 @@ CREATE TABLE IF NOT EXISTS report_recipient_groups (
 
 CREATE INDEX IF NOT EXISTS idx_rrg_company         ON report_recipient_groups(company_code, name);
 CREATE INDEX IF NOT EXISTS idx_rrg_company_project ON report_recipient_groups(company_code, project_id);
+
+-- ─────────────────────────────────────────────────
+-- JOB DOCUMENT VAULT
+-- Per-project document storage. File BYTES live in object storage;
+-- these tables hold only metadata, the folder tree, and the audit trail.
+--
+-- project_id is a plain TEXT column with NO foreign key, exactly like
+-- purchase_orders.project_id: each division keeps its own project list
+-- (turf in `projects` + fct_projects, paving in fct_paving_projects,
+-- kiewit in fct_kiewit_projects), so a single FK could only ever be
+-- valid for turf. A NULL project_id means the row belongs to the
+-- division-level General / Non-Job area rather than to any job.
+-- ─────────────────────────────────────────────────
+
+-- Folder tree. parent_id self-reference gives unlimited nesting.
+-- kind: 'fixed'     — the six standard job folders, created with the project
+--       'cost_code' — generated from the job's bid items, labelled from the
+--                     cost-code master list
+--       'user'      — anything a user added by hand
+CREATE TABLE IF NOT EXISTS project_folders (
+    id           TEXT PRIMARY KEY,
+    company_code TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    division     TEXT        NOT NULL DEFAULT 'turf',
+    project_id   TEXT,
+    parent_id    TEXT        REFERENCES project_folders(id) ON DELETE CASCADE,
+    name         TEXT        NOT NULL,
+    kind         TEXT        NOT NULL DEFAULT 'user',
+    slug         TEXT,
+    cost_code    TEXT,
+    sort_order   INTEGER     NOT NULL DEFAULT 0,
+    archived     BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_by   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Stable identity for a generated folder, independent of its display name.
+-- Matching on the name alone meant renaming 'Photos' to 'Site Photos' made the
+-- generator miss it and create 'Photos' all over again on the next load.
+ALTER TABLE project_folders ADD COLUMN IF NOT EXISTS slug TEXT;
+
+ALTER TABLE project_folders DROP CONSTRAINT IF EXISTS project_folders_kind_chk;
+ALTER TABLE project_folders ADD  CONSTRAINT project_folders_kind_chk
+  CHECK (kind IN ('fixed','cost_code','user'));
+
+ALTER TABLE project_folders DROP CONSTRAINT IF EXISTS project_folders_division_chk;
+ALTER TABLE project_folders ADD  CONSTRAINT project_folders_division_chk
+  CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry'));
+
+CREATE INDEX IF NOT EXISTS idx_pf_scope  ON project_folders(company_code, division, project_id);
+CREATE INDEX IF NOT EXISTS idx_pf_parent ON project_folders(parent_id);
+
+-- Two folders cannot share a name under the same parent. COALESCE is required
+-- because Postgres treats NULLs as distinct in a unique index, which would let
+-- duplicate root folders (parent_id NULL) and duplicate division-level folders
+-- (project_id NULL) through.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_unique_slug ON project_folders
+  (company_code, division, COALESCE(project_id, ''), slug) WHERE slug IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_unique_name ON project_folders
+  (company_code, division, COALESCE(project_id, ''), COALESCE(parent_id, ''), lower(name));
+
+-- One row per stored file. storage_key is the object-store path; nothing here
+-- ever holds file bytes.
+CREATE TABLE IF NOT EXISTS project_documents (
+    id           TEXT        PRIMARY KEY,
+    company_code TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    division     TEXT        NOT NULL DEFAULT 'turf',
+    project_id   TEXT,
+    filename     TEXT        NOT NULL,
+    content_type TEXT,
+    size_bytes   BIGINT      NOT NULL DEFAULT 0,
+    storage_key  TEXT        NOT NULL,
+    storage_url  TEXT,
+    note         TEXT,
+    uploaded_by  TEXT,
+    uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at   TIMESTAMPTZ,
+    deleted_by   TEXT,
+    purge_after  TIMESTAMPTZ
+);
+
+ALTER TABLE project_documents DROP CONSTRAINT IF EXISTS project_documents_division_chk;
+ALTER TABLE project_documents ADD  CONSTRAINT project_documents_division_chk
+  CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry'));
+
+CREATE INDEX IF NOT EXISTS idx_pd_scope   ON project_documents(company_code, division, project_id);
+CREATE INDEX IF NOT EXISTS idx_pd_live    ON project_documents(company_code, division, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_pd_purge   ON project_documents(purge_after) WHERE purge_after IS NOT NULL;
+
+-- Where a document appears. Several rows per document — one per folder it is
+-- filed in, one per purchase order it is attached to. This is what lets a
+-- delivery ticket sit in a cost-code folder AND under its PO without storing
+-- the file twice, and what will let an invoice hang off a PO line later
+-- without a migration.
+CREATE TABLE IF NOT EXISTS document_links (
+    id           BIGSERIAL   PRIMARY KEY,
+    document_id  TEXT        NOT NULL REFERENCES project_documents(id) ON DELETE CASCADE,
+    company_code TEXT        NOT NULL,
+    link_type    TEXT        NOT NULL,
+    target_id    TEXT        NOT NULL,
+    created_by   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE document_links DROP CONSTRAINT IF EXISTS document_links_type_chk;
+ALTER TABLE document_links ADD  CONSTRAINT document_links_type_chk
+  CHECK (link_type IN ('folder','po'));
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dl_unique ON document_links(document_id, link_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_dl_target ON document_links(link_type, target_id);
+
+-- Every upload, delete, restore, rename, and link change. Same shape as
+-- timesheet_audit_log / fuel_audit_log / dust_control_audit_log.
+CREATE TABLE IF NOT EXISTS document_audit_log (
+    id           BIGSERIAL   PRIMARY KEY,
+    company_code TEXT        NOT NULL,
+    division     TEXT        NOT NULL DEFAULT 'turf',
+    document_id  TEXT,
+    folder_id    TEXT,
+    project_id   TEXT,
+    action       TEXT        NOT NULL,
+    actor        TEXT,
+    actor_id     INTEGER,
+    detail       JSONB,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE document_audit_log DROP CONSTRAINT IF EXISTS document_audit_action_chk;
+ALTER TABLE document_audit_log ADD  CONSTRAINT document_audit_action_chk
+  CHECK (action IN ('UPLOAD','DELETE','RESTORE','PURGE','RENAME','LINK','UNLINK','FOLDER_CREATE','FOLDER_RENAME','FOLDER_DELETE'));
+
+CREATE INDEX IF NOT EXISTS idx_dal_company ON document_audit_log(company_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dal_doc     ON document_audit_log(document_id, created_at DESC);
