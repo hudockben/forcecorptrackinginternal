@@ -469,11 +469,6 @@ const res = {
     console.log('wrote payload to ' + process.env.EXEC_REPORT_JSON);
   }
 
-  console.log('\nhero KPIs:');
-  for (const k of payload.snapshot.hero) {
-    console.log(`  ${k.label.padEnd(28)} = ${String(k.value).padEnd(14)} ${k.delta || ''}`);
-  }
-
 
   console.log('\ndivision portfolios:');
   for (const d of (payload.portfolios || [])) {
@@ -538,19 +533,11 @@ const res = {
   const fail = m => { console.error('  FAIL: ' + m); failed++; };
   const pass = m => console.log('  OK:   ' + m);
 
-  // Hero Active Projects = active turf (6: p1..p5, p7) + paving (1: pv1)
-  // + kiewit (1: kw1) = 8. Anything not Complete/Closed counts.
-  const heroActive = payload.snapshot.hero.find(k => k.label === 'Active Projects');
-  if (!heroActive)               fail('hero Active Projects KPI missing');
-  else if (heroActive.value !== '8') fail(`hero Active Projects = ${heroActive.value} (expected 8, incl. kiewit)`);
-  else                           pass(`hero Active Projects = ${heroActive.value} (turf + paving + kiewit)`);
-
-  // Every division has a section of its own now, so nothing is a snapshot tile —
-  // a division reported in both places would be reported twice on one page.
-  if (payload.snapshot.divisions) {
-    fail('the snapshot still carries division tiles: '
-      + payload.snapshot.divisions.map(d => d.key).join(', '));
-  } else pass('the snapshot is the company-wide KPIs only — no division tiles left');
+  // The report is division sections only — the Company Snapshot that used to
+  // head it is gone, so the payload carries no snapshot at all.
+  if (payload.snapshot) {
+    fail('the payload still carries a snapshot: ' + JSON.stringify(Object.keys(payload.snapshot)));
+  } else pass('no snapshot in the payload — the report is division sections only');
 
   const portfolios = payload.portfolios || [];
   const byKey = k => portfolios.find(d => d.key === k);
@@ -809,17 +796,16 @@ const res = {
     if ((ic.metrics || []).length !== 8) fail(`intercompany has ${(ic.metrics || []).length} metrics (expected 8)`);
     else pass('intercompany carries the dashboard\'s six KPIs plus both halves of outstanding');
 
-    // The two hero KPIs report the same money as this section. They used to come
-    // from the mirror table, which keeps the duplicates the blob's loader drops
-    // and has no payment_received_date, so the page could show two answers.
-    const heroAr      = payload.snapshot.hero.find(k => /^AR · /.test(k.label));
-    const heroUnbilled = payload.snapshot.hero.find(k => k.label === 'Unbilled Intercompany');
-    if (!heroAr || heroAr.value !== '$780') {
-      fail(`hero AR = ${heroAr && heroAr.value} (expected $780, the section's awaiting-payment figure)`);
-    } else pass(`hero ${heroAr.label} = ${heroAr.value} — the same invoice the section reports unpaid`);
-    if (!heroUnbilled || heroUnbilled.value !== '$2,200') {
-      fail(`hero Unbilled = ${heroUnbilled && heroUnbilled.value} (expected $2,200, the section's not-invoiced figure)`);
-    } else pass(`hero Unbilled Intercompany = ${heroUnbilled.value} — the same entry the section reports uninvoiced`);
+    // The roll-up is read off the deduped blob, not the mirror table — the
+    // table keeps the duplicates the blob's loader drops and has no
+    // payment_received_date, so it would report different money.
+    const icSummary = ic.summary || {};
+    if (!icSummary.aged || Math.abs(icSummary.aged.amount - 780) > 0.01) {
+      fail(`intercompany aged AR = ${icSummary.aged && icSummary.aged.amount} (expected 780, the section's awaiting-payment figure)`);
+    } else pass(`intercompany aged AR = $${icSummary.aged.amount} — the same invoice the section reports unpaid`);
+    if (!icSummary.notInvoiced || Math.abs(icSummary.notInvoiced.amount - 2200) > 0.01) {
+      fail(`intercompany not-invoiced = ${icSummary.notInvoiced && icSummary.notInvoiced.amount} (expected 2200)`);
+    } else pass(`intercompany not-invoiced = $${icSummary.notInvoiced.amount} — the same entry the section reports uninvoiced`);
   }
 
   // ── Payroll ──

@@ -249,43 +249,6 @@
       flex-shrink: 0;
     }
 
-    /* ── Hero KPIs ── */
-    .hero-kpis {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 1rem;
-      margin-bottom: 2rem;
-    }
-    .hero-kpi {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.1rem 1.25rem;
-    }
-    .hero-kpi-label {
-      font-size: 0.58rem;
-      font-weight: 700;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 0.55rem;
-    }
-    .hero-kpi-value {
-      font-size: 1.7rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.02em;
-      line-height: 1.1;
-    }
-    .hero-kpi-delta {
-      font-size: 0.7rem;
-      margin-top: 0.4rem;
-      letter-spacing: 0.02em;
-    }
-    .delta-up   { color: var(--green); }
-    .delta-down { color: var(--red); }
-    .delta-flat { color: var(--muted); }
-
     /* ── Division portfolio: metric strip ──
        A copy of the strip that heads each division's own home page
        (tracker.html / paving.html / kiewit-pinetree.html), so a figure read
@@ -589,14 +552,8 @@
       body { background: #fff; color: #000; }
       header, .action-bar, footer, .filters, .section-action-btn { display: none !important; }
       .report { max-width: none; margin: 0; padding: 0; }
-      .hero-kpi {
-        background: #fff;
-        border: 1px solid #ccc;
-        color: #000;
-        box-shadow: none;
-      }
-      .hero-kpi-value, .section-title { color: #000; }
-      .hero-kpi-label, .section-sub { color: #555; }
+      .section-title { color: #000; }
+      .section-sub   { color: #555; }
       .section-head { border-color: #ccc; }
       .ptable-wrap { background: #fff; border: 1px solid #ccc; overflow: visible; }
       .ptable      { min-width: 0; font-size: 0.55rem; table-layout: auto; }
@@ -695,7 +652,6 @@
     }
 
     @media (max-width: 900px) {
-      .hero-kpis { grid-template-columns: repeat(2, 1fr); }
       .action-bar { padding: 1rem; }
       .report { padding: 0 1rem; }
     }
@@ -758,16 +714,7 @@
     <!-- Body sections (populated by JS from /api/executive/report) -->
     <div id="reportBody" style="display:none;">
 
-      <!-- ─────────── PAGE 1: COMPANY SNAPSHOT ─────────── -->
-      <div class="section">
-        <div class="section-head">
-          <div class="section-title">Company Snapshot</div>
-          <div class="section-sub">Company-wide · This week</div>
-        </div>
-        <div class="hero-kpis" id="heroKpis"></div>
-      </div>
-
-      <!-- ─────────── PAGE 2+: ONE SECTION PER DIVISION ───────────
+      <!-- ─────────── ONE SECTION PER DIVISION ───────────
            Turf, Paving and Kiewit get the layout of their own home page — the
            metric strip, then the project table. Quarry, Dust Control and Payroll
            each get the layout of theirs. renderPortfolios() builds them all from
@@ -812,16 +759,6 @@
     }
 
     // ── Renderers ──
-    function renderHero(items) {
-      return items.map(k => `
-        <div class="hero-kpi">
-          <div class="hero-kpi-label">${esc(k.label)}</div>
-          <div class="hero-kpi-value">${esc(k.value)}</div>
-          <div class="hero-kpi-delta delta-${esc(k.deltaDir || 'flat')}">${esc(k.delta || '')}</div>
-        </div>
-      `).join('');
-    }
-
     // Currency formatter — "$12,345.67" or "—" for null/zero
     function fmtMoney(n, opts = {}) {
       if (n == null || (opts.zeroDash && Math.abs(Number(n)) < 0.005)) return '—';
@@ -1312,8 +1249,6 @@
     }
 
     function renderReport(data) {
-      document.getElementById('heroKpis').innerHTML = renderHero(data.snapshot?.hero || []);
-
       renderPortfolios({
         portfolios: Array.isArray(data.portfolios) ? data.portfolios : [],
         inventory:  Array.isArray(data.inventory)  ? data.inventory  : [],
@@ -1519,7 +1454,7 @@
       // specificity beats the wrapper's inline color. Forcing color via
       // inline style on the clones guarantees the text shows up even
       // when the email client strips <style> blocks.
-      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .hero-kpi-value, .metric-value';
+      const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .metric-value';
       const clones = Array.from(sections).map(el => {
         const clone = el.cloneNode(true);
         // The per-division PDF buttons are page controls, not report content.
