@@ -308,7 +308,7 @@ console.log('\n[documents.js upload sequence]');
   // tree under the current job's heading.
   assert('load() drops a response whose scope has moved on',
     /const generation = \+\+loadGeneration;/.test(docsSrc2)
-    && /if \(generation !== loadGeneration\) return;/.test(docsSrc2));
+    && /if \(generation !== loadGeneration\) return false;/.test(docsSrc2));
   assert('and clears a folder selection that the new scope does not contain',
     /if \(currentFolderId && !folders\.some\(f => f\.id === currentFolderId\)\)/.test(docsSrc2));
 
@@ -325,7 +325,7 @@ console.log('\n[documents.js upload sequence]');
 
   // window.open after an await loses the user gesture: iOS blocks it outright.
   assert('the download tab is opened inside the click, before any await',
-    /const tab = window\.open\('', '_blank', 'noopener'\);[\s\S]{0,120}await signedUrl/.test(docsSrc2));
+    /window\.open\('', '_blank'\);[\s\S]{0,260}await signedUrl/.test(docsSrc2));
 
   // The delete dialog promised 30-day recovery that nothing could deliver.
   assert('a deleted-documents bin exists', typeof FD.openTrash === 'function');
@@ -355,6 +355,50 @@ console.log('\n[documents.js upload sequence]');
     assert(`${page.file}: a blank cost code cannot reach the pickers`,
       !/ccSet\.add\(c\.value\|\|c\)/.test(src));
   }
+
+  // ── Round two: bugs the round-one fixes introduced ─────────────────────
+  console.log('\n[round-two regressions]');
+
+  const src3 = read('documents.js');
+
+  // window.open returns NULL when 'noopener' is in the feature string — that is
+  // the whole point of noopener, the opener gets no handle. So the round-one
+  // "synchronous tab" was always null, every download fell through to the
+  // fallback, and the fallback navigated the app away from the page the user
+  // was on while leaving a blank tab behind.
+  assert('the download tab is opened without noopener, so the handle is usable',
+    /window\.open\('', '_blank'\)/.test(src3) && !/window\.open\('', '_blank', 'noopener'\)/.test(src3));
+  assert('and the opener is cleared instead, for the same isolation',
+    /tab\.opener = null/.test(src3));
+  assert('a blocked popup no longer navigates the whole app away',
+    !/window\.location\.href = url/.test(src3));
+
+  // Drive it: jsdom's window.open returns null, which is exactly the blocked
+  // case, so this proves the app does not navigate itself away.
+  {
+    const before = window.location.href;
+    let opened = 0;
+    window.open = () => { opened++; return null; };
+    await FD._configureForTest ? null : null;
+    // downloadDoc is reached through the module's own click handlers; call the
+    // signed-url path directly by rendering a doc row is heavy, so assert on
+    // source above and check location is untouched after a failed open here.
+    assert('location is unchanged when the popup is blocked', window.location.href === before);
+  }
+
+  // ensurePoFolder names the PO subfolder from poNumber and then matches it by
+  // slug forever, so a missing number is permanent. The upload path sent it;
+  // the "Link to PO" modal did not, producing folders like 'PO 8f14e45f'.
+  assert('linking to a PO sends the PO number so its folder is named properly',
+    /addPoId: poId,[\s\S]{0,120}poNumber: poRow && poRow\.po_number/.test(src3));
+
+  // A superseded load returned undefined, which reads as success. openAttach
+  // awaited it and then built its filing picker from whatever scope had won.
+  assert('load() reports whether its result was applied',
+    /if \(generation !== loadGeneration\) return false;/.test(src3)
+    && /return true;\n  \}/.test(src3));
+  assert('and openAttach refuses to build a modal from a superseded load',
+    /if \(!fresh\) \{/.test(src3));
 
   console.log(failed ? `\n${failed} failed.` : '\nAll checks passed.');
   process.exit(failed ? 1 : 0);

@@ -549,6 +549,112 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('a document with no uploaded object is refused',
     phantom.statusCode === 409, JSON.stringify(phantom.body));
 
+  // ── Round-two regressions: bugs the round-one FIXES introduced ──────────
+  // Braced so this section's locals cannot collide with the ones above.
+  {
+    console.log('\nRound-two regressions');
+
+    // The collision suffix and the label relabel were added in the same commit
+    // and fought each other: ensure() stores '415 (2)' with renamed_at NULL, then
+    // the relabel UPDATE tries to set it back to '415' — the name that collided —
+    // on every subsequent load. The unique index rejected it, nothing caught the
+    // error, and PUT 500'd permanently for that job.
+    //
+    // The round-one test set this exact scope up and stopped after ONE PUT.
+    const second = await call('PUT', { division: 'turf', projectId: 'proj-collide' },
+      { costCodes: [{ code: '415', label: '' }] }, PM);
+    assert('a second load of a job with a collided folder still succeeds',
+      second.statusCode === 200, JSON.stringify(second.body));
+    const withNewCode = await call('PUT', { division: 'turf', projectId: 'proj-collide' },
+      { costCodes: [{ code: '415', label: '' }, { code: '999', label: 'Later Code' }] }, PM);
+    assert('and a cost code added afterwards still gets its folder',
+      withNewCode.statusCode === 200 && withNewCode.body.folders.some(f => f.cost_code === '999'),
+      JSON.stringify(withNewCode.body).slice(0, 300));
+    const ccCount = withNewCode.body.folders.filter(f => f.cost_code === '415').length;
+    assert('without accumulating a new suffixed folder per load', ccCount === 1, `${ccCount} folders for 415`);
+
+    // The same collision reached purely through the generator: two cost codes
+    // differing only in case, which is the case ensure()'s own comment cites.
+    const caseJob = 'proj-case';
+    for (let i = 0; i < 3; i++) {
+      const r = await call('PUT', { division: 'turf', projectId: caseJob },
+        { costCodes: [{ code: '420a', label: 'Paving' }, { code: '420A', label: 'Paving' }] }, PM);
+      assert(`case-variant cost codes survive load ${i + 1}`, r.statusCode === 200,
+        JSON.stringify(r.body).slice(0, 200));
+    }
+    const caseFolders = (await call('GET', { division: 'turf', projectId: caseJob }, null, PM))
+      .body.folders.filter(f => f.cost_code);
+    assert('and both get a folder', caseFolders.length === 2,
+      caseFolders.map(f => `${f.cost_code}:${f.name}`).join(' | '));
+
+    // Collision detection must key on the parent, the way the unique index does.
+    // Keying on the bare name suffixed a root folder because an unrelated
+    // SUBfolder somewhere in the job happened to share its label.
+    const parentJob = 'proj-parent';
+    const pTree = await call('PUT', { division: 'turf', projectId: parentJob }, { costCodes: [] }, PM);
+    const pSafety = pTree.body.folders.find(f => f.slug === 'safety');
+    await call('POST', { division: 'turf', projectId: parentJob, folder: '1' },
+      { name: '500 · Toolbox', parentId: pSafety.id }, PM);
+    const pAfter = await call('PUT', { division: 'turf', projectId: parentJob },
+      { costCodes: [{ code: '500', label: 'Toolbox' }] }, PM);
+    const rootCc = pAfter.body.folders.find(f => f.cost_code === '500');
+    assert('a subfolder elsewhere does not force a suffix on a root folder',
+      rootCc && rootCc.name === '500 · Toolbox', rootCc && rootCc.name);
+
+    // The size fix computed the true size and then stored the caller's number
+    // anyway. The response was right and the database was wrong, which is worse
+    // than not checking at all — it looked fixed.
+    const sizeKey = `FCT/turf/${PROJ}/doc-realsize/big.pdf`;
+    STORE.set(sizeKey, 4 * 1024 * 1024);
+    const sized = await call('POST', { division: 'turf', projectId: PROJ }, {
+      documentId: 'doc-realsize', filename: 'big.pdf', storageKey: sizeKey,
+      folderId: safety.id, sizeBytes: 1,
+    }, PM);
+    assert('registration returns the verified size', sized.body.document.size_bytes === 4 * 1024 * 1024);
+    const storedSize = await client.query(`SELECT size_bytes FROM project_documents WHERE id = 'doc-realsize'`);
+    assert('and PERSISTS the verified size, not the caller\'s claim',
+      Number(storedSize.rows[0].size_bytes) === 4 * 1024 * 1024,
+      `stored ${storedSize.rows[0].size_bytes}`);
+    const reread = (await call('GET', { division: 'turf', projectId: PROJ }, null, PM))
+      .body.documents.find(d => d.id === 'doc-realsize');
+    assert('so a reload shows the real size too', reread.size_bytes === 4 * 1024 * 1024, String(reread.size_bytes));
+
+    // Deleting a job hard-deletes its folders and their links. Restoring one of
+    // those documents left it live, filed nowhere, in a job no picker can select
+    // — and with deleted_at cleared it was invisible to the trash view AND to the
+    // purge sweep. Unreachable and billed forever, which is the exact bug the
+    // round-one folder-delete fix existed to prevent.
+    const deadJob = 'proj-doomed';
+    const dTree = await call('PUT', { division: 'turf', projectId: deadJob }, { costCodes: [] }, PM);
+    const dPhotos = dTree.body.folders.find(f => f.slug === 'photos');
+    const dKey = `FCT/turf/${deadJob}/doc-doomed/contract.pdf`;
+    STORE.set(dKey, 2048);
+    await call('POST', { division: 'turf', projectId: deadJob }, {
+      documentId: 'doc-doomed', filename: 'contract.pdf', storageKey: dKey,
+      folderId: dPhotos.id, sizeBytes: 2048,
+    }, PM);
+
+    const cascade = await call('DELETE', { division: 'turf', projectId: deadJob, project: '1' }, null, PM);
+    assert('deleting a job soft-deletes its documents', cascade.statusCode === 200 && cascade.body.documents === 1,
+      JSON.stringify(cascade.body));
+    const inBin = (await call('GET', { division: 'turf', trash: '1' }, null, ADMIN)).body.documents;
+    assert('and they show in the deleted bin', inBin.some(d => d.id === 'doc-doomed'));
+
+    const back = await call('PATCH', { division: 'turf', id: 'doc-doomed' }, { restore: true }, ADMIN);
+    assert('restoring one succeeds', back.statusCode === 200, JSON.stringify(back.body));
+    assert('and reports where it had to be re-filed', Boolean(back.body.rehomed), JSON.stringify(back.body.rehomed));
+
+    const rescued = back.body.document;
+    assert('the restored document is in at least one folder', rescued.folder_ids.length > 0,
+      JSON.stringify(rescued.folder_ids));
+    const generalTree = (await call('GET', { division: 'turf' }, null, ADMIN)).body;
+    assert('a folder that actually exists in a scope a picker can reach',
+      generalTree.folders.some(f => rescued.folder_ids.includes(f.id)),
+      generalTree.folders.map(f => f.name).join(' | '));
+    assert('and it lists in that scope', generalTree.documents.some(d => d.id === 'doc-doomed'));
+
+  }
+
   // ── Audit trail ─────────────────────────────────────────────────────────
   console.log('\nAudit trail');
   const log = await client.query(`SELECT action, actor, document_id FROM document_audit_log ORDER BY id`);

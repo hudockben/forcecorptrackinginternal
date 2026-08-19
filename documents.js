@@ -177,7 +177,7 @@
 
   // ── Data ────────────────────────────────────────────────────────────
   async function load(projectId, { force = false } = {}) {
-    if (!force && loadedFor === projectId) return;
+    if (!force && loadedFor === projectId) return true;
     const generation = ++loadGeneration;
 
     // Seed the generated tree first — the six fixed folders, the Purchase
@@ -206,7 +206,11 @@
 
     // A newer load started while this one was in flight — its scope is what the
     // user is looking at, so this response is stale and must not land.
-    if (generation !== loadGeneration) return;
+    //
+    // Reported to the caller, not swallowed: openAttach() reads folders and
+    // caps straight after awaiting this, so a silent early return handed it
+    // another job's folder list to build its filing picker from.
+    if (generation !== loadGeneration) return false;
 
     folders   = data.folders || [];
     documents = data.documents || [];
@@ -217,6 +221,7 @@
     if (currentFolderId && !folders.some(f => f.id === currentFolderId)) {
       currentFolderId = null;
     }
+    return true;
   }
 
   async function refreshPoCounts() {
@@ -738,13 +743,26 @@
     // Open the tab synchronously, inside the click. Calling window.open after
     // an awaited round trip loses the user-gesture context: iOS Safari blocks
     // it outright and desktop browsers block it whenever the request is slow
-    // enough — a cold start or jobsite LTE — so downloads failed silently and
-    // only sometimes.
-    const tab = window.open('', '_blank', 'noopener');
+    // enough — a cold start or jobsite LTE.
+    //
+    // NOT 'noopener': per the HTML standard window.open returns null when that
+    // feature is set, so the handle is always null, the tab is left blank, and
+    // the fallback below navigates the whole app away from the page the user
+    // was on. Clearing tab.opener afterwards gives the same isolation while
+    // keeping the handle.
+    let tab = null;
+    try { tab = window.open('', '_blank'); } catch { tab = null; }
+    if (tab) { try { tab.opener = null; } catch { /* cross-origin already */ } }
+
     try {
       const { url } = await signedUrl(id, false);
-      if (tab && !tab.closed) tab.location = url;
-      else window.location.href = url;   // blocked anyway: navigate in place
+      if (tab && !tab.closed) {
+        tab.location = url;
+      } else {
+        // The popup blocker won. Don't navigate the app away — hand the user a
+        // link they can click, which counts as a fresh gesture.
+        toast('Your browser blocked the download tab. Tap the file name again to retry.', 'error');
+      }
     } catch (err) {
       if (tab && !tab.closed) tab.close();
       toast(err.message, 'error');
@@ -851,7 +869,14 @@
       const poId = m.body.querySelector('#fctdoc-linkpo').value;
       if (!poId) { toast('Pick a purchase order.', 'error'); return; }
       try {
-        await api('PATCH', `/documents${q({ id })}`, { addPoId: poId });
+        // poNumber names the PO's subfolder. Without it the server fell back to
+        // a slice of the internal id — 'PO 8f14e45f' — and because the folder is
+        // matched by slug from then on, that placeholder was permanent.
+        const poRow = (cfg.getPurchaseOrders() || []).find(p => p.id === poId);
+        await api('PATCH', `/documents${q({ id })}`, {
+          addPoId: poId,
+          poNumber: poRow && poRow.po_number,
+        });
         m.close();
         await load(projectId, { force: true });
         await refreshPoCounts();
@@ -984,8 +1009,17 @@
     // PO belongs to the General area — either way, load that scope's folders
     // so the filing picker offers the right ones.
     if (loadedFor !== projectId) {
-      try { await load(projectId, { force: true }); }
+      let fresh;
+      try { fresh = await load(projectId, { force: true }); }
       catch (err) { toast(err.message, 'error'); return; }
+      // Something else — the job picker, another paperclip — started a load
+      // while this one was in flight and won. The module state now describes a
+      // different job, so opening this modal would offer that job's folders as
+      // places to file a document against THIS purchase order.
+      if (!fresh) {
+        toast('Something else loaded while that was opening. Try the paperclip again.', 'error');
+        return;
+      }
     }
 
     let attached = [];

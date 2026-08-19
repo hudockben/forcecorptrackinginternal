@@ -171,6 +171,46 @@ async function ensurePoFolder(sql, { companyCode, division, projectId, poId, poN
   }
 }
 
+/**
+ * The division-level folder a restored document lands in when its own folder
+ * is gone — because the job was deleted, or the folder was removed while the
+ * document sat in the trash.
+ *
+ * Restoring has to leave the file REACHABLE. Clearing deleted_at alone gave a
+ * live row with no folder links, no job a picker could select, and no
+ * deleted_at for the trash view or the purge sweep to find it by: the document
+ * existed, was billed, and could not be reached from anywhere.
+ */
+async function ensureRecoveredFolder(sql, { companyCode, division, username }) {
+  const hit = await sql`
+    SELECT id FROM project_folders
+    WHERE company_code = ${companyCode} AND division = ${division}
+      AND project_id IS NULL AND slug = 'recovered'
+    LIMIT 1
+  `;
+  if (hit.length) return hit[0].id;
+
+  const id = newId();
+  try {
+    await sql`
+      INSERT INTO project_folders
+        (id, company_code, division, project_id, parent_id, name, kind, slug, sort_order, created_by)
+      VALUES
+        (${id}, ${companyCode}, ${division}, NULL, NULL, 'Recovered', 'fixed', 'recovered', 950, ${username || null})
+    `;
+    return id;
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    const back = await sql`
+      SELECT id FROM project_folders
+      WHERE company_code = ${companyCode} AND division = ${division}
+        AND project_id IS NULL AND slug = 'recovered'
+      LIMIT 1
+    `;
+    return back.length ? back[0].id : null;
+  }
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -318,11 +358,12 @@ module.exports = async (req, res) => {
       // `name` is only the opening label. A folder is identified by its slug
       // (fixed folders) or its cost code, so user renames survive every
       // subsequent call.
-      // Names that are already taken by a folder this generator does NOT own.
-      // A cost-code label can collide with one — a user folder literally named
-      // '415', or two bid items whose codes differ only in case — and the
-      // unique index on lower(name) then rejects the insert.
-      const takenNames = new Map(existing.map(f => [String(f.name).toLowerCase(), f]));
+      // Names already taken, keyed the way the unique index keys them: names
+      // only collide within the same parent. Keying on the bare name treated a
+      // subfolder buried in Safety as a conflict for a new root folder, and
+      // suffixed a folder that had nothing to collide with.
+      const nameKey = (parentId, name) => `${parentId || ''}\u0000${String(name).toLowerCase()}`;
+      const takenNames = new Map(existing.map(f => [nameKey(f.parent_id, f.name), f]));
 
       async function ensure({ slug, name, kind, costCode, sortOrder, parentId }) {
         const hit = costCode ? byCostCode.get(costCode) : bySlug.get(slug);
@@ -335,15 +376,15 @@ module.exports = async (req, res) => {
         // dropped, PUT still reported success, and it could never appear on any
         // later load because the collision is permanent.
         let finalName = name;
-        if (takenNames.has(String(finalName).toLowerCase())) {
-          const owner = takenNames.get(String(finalName).toLowerCase());
+        if (takenNames.has(nameKey(parentId, finalName))) {
+          const owner = takenNames.get(nameKey(parentId, finalName));
           // Same generated folder under a different identity is the concurrent
           // case — reuse it. Otherwise suffix until the name is free.
           if ((slug && owner.slug === slug) || (costCode && owner.cost_code === costCode)) {
             return owner.id;
           }
           let attempt = 2;
-          while (takenNames.has(`${finalName} (${attempt})`.toLowerCase()) && attempt < 50) attempt++;
+          while (takenNames.has(nameKey(parentId, `${finalName} (${attempt})`)) && attempt < 50) attempt++;
           finalName = `${finalName} (${attempt})`;
           skipped.push({ wanted: name, used: finalName, cost_code: costCode || null });
         }
@@ -358,7 +399,7 @@ module.exports = async (req, res) => {
                ${kind}, ${slug || null}, ${costCode || null}, ${sortOrder}, ${payload.username || null})
           `;
           created.push({ id, name: finalName, kind });
-          takenNames.set(String(finalName).toLowerCase(), { id, slug, cost_code: costCode || null });
+          takenNames.set(nameKey(parentId, finalName), { id, slug, cost_code: costCode || null, parent_id: parentId || null });
           return id;
         } catch (err) {
           // Two users opening the same job at once both try to seed it. The
@@ -395,13 +436,35 @@ module.exports = async (req, res) => {
           // nothing on any job that already had folders — the feature read as
           // broken on exactly the jobs people care about. A folder someone
           // renamed by hand is left alone: renamed_at marks it as the user's.
+          //
+          // Collision-aware, because it has to coexist with the suffixing
+          // above. A folder that had to become '415 (2)' differs from its label
+          // forever, so an unguarded UPDATE retried the exact name that caused
+          // the collision on every single load — the unique index rejected it,
+          // and with no catch the whole PUT 500'd permanently for that job.
           const cur = byCostCode.get(code);
           if (id && cur && cur.name !== label && !cur.renamed_at) {
-            await sql`
-              UPDATE project_folders SET name = ${label}, updated_at = NOW()
-              WHERE id = ${id} AND renamed_at IS NULL
-            `;
-            relabelled.push({ from: cur.name, to: label });
+            const clash = takenNames.get(nameKey(cur.parent_id, label));
+            if (clash && clash.id !== id) {
+              // The label belongs to something else. Leave the folder as it is
+              // and say so, rather than failing the request.
+              skipped.push({ wanted: label, used: cur.name, cost_code: code });
+            } else {
+              try {
+                await sql`
+                  UPDATE project_folders SET name = ${label}, updated_at = NOW()
+                  WHERE id = ${id} AND renamed_at IS NULL
+                `;
+                takenNames.delete(nameKey(cur.parent_id, cur.name));
+                takenNames.set(nameKey(cur.parent_id, label), { id, slug: cur.slug, cost_code: code, parent_id: cur.parent_id });
+                relabelled.push({ from: cur.name, to: label });
+              } catch (err) {
+                // A concurrent request took the name between the check and the
+                // write. Not worth failing a folder listing over.
+                if (!isUniqueViolation(err)) throw err;
+                skipped.push({ wanted: label, used: cur.name, cost_code: code });
+              }
+            }
           }
         }
       } else {
@@ -556,7 +619,7 @@ module.exports = async (req, res) => {
              storage_key, note, uploaded_by)
           VALUES
             (${id}, ${companyCode}, ${division}, ${projectId}, ${filename}, ${contentType},
-             ${sizeBytes}, ${storageKey}, ${body.note ? String(body.note).slice(0, 500) : null},
+             ${trueSize}, ${storageKey}, ${body.note ? String(body.note).slice(0, 500) : null},
              ${payload.username || null})
         `;
       } catch (err) {
@@ -618,6 +681,7 @@ module.exports = async (req, res) => {
       `;
       if (!rows.length) return res.status(404).json({ error: 'Document not found' });
       const doc = rows[0];
+      let rehomed = null;   // set when a restore had to re-file the document
 
       // level2 may tidy up their own uploads; level3 and admin may touch any.
       const isOwn = doc.uploaded_by && doc.uploaded_by === payload.username;
@@ -643,7 +707,45 @@ module.exports = async (req, res) => {
       if (body.restore) {
         if (!caps.canDelete) return res.status(403).json({ error: 'Only an administrator can restore a document' });
         await sql`UPDATE project_documents SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL WHERE id = ${id}`;
-        await audit(sql, { companyCode, division, projectId: doc.project_id, documentId: id, action: 'RESTORE', payload });
+
+        // A restored document must end up somewhere a person can reach. Count
+        // only links whose folder still EXISTS — deleting a job hard-deletes
+        // its folders and their links, and a folder can also be removed while
+        // a document sits in the trash. Without this the row came back live,
+        // filed nowhere, in a job no picker could select, and with deleted_at
+        // cleared it was invisible to the trash view and to the purge sweep
+        // too: unreachable and billed forever.
+        const live = await sql`
+          SELECT COUNT(*)::int AS n
+          FROM   document_links l
+          JOIN   project_folders f ON f.id = l.target_id
+          WHERE  l.document_id = ${id}
+            AND  l.link_type   = 'folder'
+            AND  f.company_code = ${companyCode}
+            AND  f.division     = ${division}
+        `;
+        if (!live[0].n) {
+          const recoveredId = await ensureRecoveredFolder(sql, {
+            companyCode, division, username: payload.username,
+          });
+          if (recoveredId) {
+            // Into the division-level General area, because the job it belonged
+            // to may no longer exist. The audit entry records where it came from.
+            await sql`UPDATE project_documents SET project_id = NULL WHERE id = ${id}`;
+            await sql`
+              INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
+              VALUES (${id}, ${companyCode}, 'folder', ${recoveredId}, ${payload.username || null})
+              ON CONFLICT DO NOTHING
+            `;
+            rehomed = { folder: 'Recovered', from_project: doc.project_id };
+          }
+        }
+
+        await audit(sql, {
+          companyCode, division, projectId: doc.project_id, documentId: id,
+          action: 'RESTORE', payload,
+          detail: rehomed ? { rehomed_to: 'General / Non-Job \u203a Recovered', from_project: doc.project_id } : undefined,
+        });
       }
 
       // Link changes. addFolderId / addPoId file the document somewhere new;
@@ -734,7 +836,10 @@ module.exports = async (req, res) => {
         WHERE  d.id = ${id}
         GROUP  BY d.id
       `;
-      return res.json({ document: back.length ? documentOut(back[0]) : null });
+      return res.json({
+        document: back.length ? documentOut(back[0]) : null,
+        rehomed,
+      });
     }
 
     // ── DELETE ───────────────────────────────────────────────────────────
