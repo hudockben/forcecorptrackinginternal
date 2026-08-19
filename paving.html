@@ -2452,16 +2452,20 @@
     .cb-opt.hi .cb-opt-meta, .cb-opt:hover .cb-opt-meta { color: #dbeafe; }
     .cb[data-list^="bid_subcodes"] .cb-menu { max-width: 460px; }
 
-    /* Schedules toolbar project filter: the same combobox, sized for the bar
-       and given a caret so it still reads as a dropdown. */
+    /* Schedules toolbar project filter and the Documents tab job picker: the
+       same combobox, sized for the bar and given a caret so each still reads
+       as a dropdown. */
     .cb[data-list="sched_projects"] { width: 240px; max-width: 100%; }
-    .cb[data-list="sched_projects"] .cb-input {
+    .cb[data-list="docs_projects"]  { width: 18rem; max-width: 100%; }
+    .cb[data-list="sched_projects"] .cb-input,
+    .cb[data-list="docs_projects"] .cb-input {
       background: var(--bg);
       border-radius: 4px;
       padding: 0.25rem 1.3rem 0.25rem 0.5rem;
       text-overflow: ellipsis;
     }
-    .cb[data-list="sched_projects"]::after {
+    .cb[data-list="sched_projects"]::after,
+    .cb[data-list="docs_projects"]::after {
       content: '\25BE';
       position: absolute;
       right: 0.5rem;
@@ -2471,7 +2475,8 @@
       color: var(--muted, #6b7280);
       pointer-events: none;
     }
-    .cb[data-list="sched_projects"] .cb-menu { max-width: 420px; }
+    .cb[data-list="sched_projects"] .cb-menu,
+    .cb[data-list="docs_projects"] .cb-menu { max-width: 420px; }
 
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
@@ -4081,6 +4086,14 @@ function cbOptionsFor(listKey) {
         .sort((a, b) => _schedProjLabel(a).localeCompare(_schedProjLabel(b)))
         .map(p => ({ value: p.id, label: _schedProjLabel(p), meta: p['job-number'] ? 'Job #' + p['job-number'] : '' })));
   }
+  // Documents tab job picker: the same list under the General / Non-Job reset
+  // that stands in for the division-level area outside any job.
+  if (listKey === 'docs_projects') {
+    return [{ value: '', label: 'General / Non-Job' }].concat(
+      projectsList.slice()
+        .sort((a, b) => _schedProjLabel(a).localeCompare(_schedProjLabel(b)))
+        .map(p => ({ value: p.id, label: _schedProjLabel(p), meta: p['job-number'] ? 'Job #' + p['job-number'] : '' })));
+  }
   if (listKey.startsWith('tr_subcodes:')) {
     const trId = listKey.slice(12);
     const tr = truckingEntries.find(t => t.id === trId);
@@ -4115,7 +4128,7 @@ function cbFilterFor(listKey, rawQuery, options) {
   const q = String(rawQuery || '').trim().toLowerCase();
   // Projects also match on the job number in their note — looking a job up by
   // its number is how half the office finds it.
-  if (listKey === 'sched_projects') return q ? options.filter(o => (_cbLabel(o) + ' ' + (o.meta || '')).toLowerCase().includes(q)) : options;
+  if (listKey === 'sched_projects' || listKey === 'docs_projects') return q ? options.filter(o => (_cbLabel(o) + ' ' + (o.meta || '')).toLowerCase().includes(q)) : options;
   return q ? options.filter(o => _cbLabel(o).toLowerCase().includes(q)) : options;
 }
 
@@ -10365,26 +10378,45 @@ function renderDocsTab() {
     docsProjectId = null;
   }
 
-  const opts = projectsList.map(p =>
-    `<option value="${esc(p.id)}" ${p.id === docsProjectId ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`
-  ).join('');
+  const opts    = cbOptionsFor('docs_projects');
+  const current = opts.find(o => o.value === (docsProjectId || '')) || opts[0];
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.9rem;flex-wrap:wrap">
       <label for="docs-proj" style="color:var(--muted);font-size:0.78rem;letter-spacing:0.06em;text-transform:uppercase">Job</label>
-      <select id="docs-proj" style="padding:0.35rem 0.6rem;border:1px solid var(--border);background:var(--surface2);color:var(--text);border-radius:4px;font-size:0.82rem;min-width:16rem">
-        <option value="">General / Non-Job</option>
-        ${opts}
-      </select>
+      ${cbHtml('docs_projects', current.label, 'Search jobs…', 'id="docs-proj" onchange="docsProjPick(this)"')}
     </div>
     <div id="docs-mount"></div>`;
 
-  document.getElementById('docs-proj').addEventListener('change', e => {
-    docsProjectId = e.target.value || null;
-    renderDocsTab();
-  });
+  // cbHtml only renders the label; the resolved id has to be planted after so
+  // a blur with the text untouched resolves back to this job instead of
+  // falling through the label match.
+  const projInput = document.getElementById('docs-proj');
+  if (projInput) projInput.dataset.cbValue = current.value;
 
   FCTDocuments.renderTab(document.getElementById('docs-mount'));
+}
+
+// Job-picker commit handler — fires on a menu pick, Enter, Tab or blur.
+// Resolves whatever the box holds to a job; text matching nothing puts the
+// current job back rather than quietly dropping the user into General /
+// Non-Job. Only an emptied box means "no job".
+function docsProjPick(input) {
+  const opts   = cbOptionsFor('docs_projects');
+  const typed  = input.value.trim().toLowerCase();
+  const picked = (input.dataset.cbValue && opts.find(o => o.value === input.dataset.cbValue))
+    || (typed ? opts.find(o => o.label.toLowerCase() === typed) : opts[0])
+    || opts.find(o => o.value === (docsProjectId || '')) || opts[0];
+  input.value = picked.label;
+  input.dataset.cbValue = picked.value;
+  if (picked.value === (docsProjectId || '')) return;
+  docsProjectId = picked.value || null;
+  // Reload only the browser below the picker. A full renderDocsTab() would
+  // rebuild the combobox out from under the change event still dispatching on
+  // it and take the caret with it.
+  const mount = document.getElementById('docs-mount');
+  if (mount && window.FCTDocuments) FCTDocuments.renderTab(mount);
+  else renderDocsTab();
 }
 
 /* ── Purchase Orders Tab ── */

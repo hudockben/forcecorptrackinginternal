@@ -59,6 +59,8 @@ for (const page of PAGES) {
     /if \((?:activeTab|_t) === 'docs'\)\s+renderDocsTab\(\);/.test(src));
   assert(`it configures itself as ${page.configuredAs}`,
     src.includes(`division:          ${page.configuredAs},`), page.configuredAs);
+  assert("the job picker is the searchable combobox, not a <select>",
+    /cbHtml\(.docs_projects./.test(src) && !/<select id="docs-proj"/.test(src));
 
   // level1 is view-only but must still reach the tab — the API decides what it
   // may do there, and hiding it outright would be a different product decision.
@@ -420,6 +422,142 @@ console.log('\n[documents.js upload sequence]');
       /session expired/i.test(msg) && /sign in/i.test(msg), msg);
     window.fetch = savedFetch;
     delete window.logout;
+  }
+
+  // ── 3. The Documents job picker, driven in jsdom ─────────────────────────
+  // The picker is the app's shared combobox now, not a <select>, so "can you
+  // find a job by typing part of its name, or its job number" is only
+  // answerable by running it. Each page's inline script is 30k lines and can't
+  // be evaluated whole, so the combobox core and the two docs functions are
+  // sliced out of the source and run against a real DOM — which also proves
+  // the inline onchange the markup depends on actually resolves.
+  for (const page of PAGES) {
+    console.log(`\n[${page.file} — job picker]`);
+    const src = read(page.file);
+
+    // Lift a declaration out of the page, brace-matched to its close. Every
+    // brace these particular functions contain is either code or a balanced
+    // ${} inside a template literal, so counting is enough.
+    const grabFn = header => {
+      const at = src.indexOf(header);
+      if (at < 0) throw new Error(`${page.file}: no ${header}`);
+      let depth = 0;
+      for (let i = src.indexOf('{', at); i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}' && --depth === 0) return src.slice(at, i + 1);
+      }
+      throw new Error(`${page.file}: unbalanced ${header}`);
+    };
+    const grabLine = header => {
+      const at = src.indexOf(header);
+      if (at < 0) throw new Error(`${page.file}: no ${header}`);
+      return src.slice(at, src.indexOf('\n', at));
+    };
+
+    const harness = [
+      grabLine('const _cbState = new WeakMap();'),
+      grabLine('const _cbEsc = s =>'),
+      grabLine('const _cbLabel = o =>'),
+      grabFn('function cbHtml('),
+      grabFn('function cbOptionsFor('),
+      grabFn('function cbFilterFor('),
+      grabFn('function cbOnFocus('),
+      grabFn('function cbOnInput('),
+      grabFn('function cbRenderMenu('),
+      grabFn('function cbClose('),
+      grabFn('function cbCommitInput('),
+      grabFn('function _schedProjLabel('),
+      grabFn('function renderDocsTab('),
+      grabFn('function docsProjPick('),
+      // Fixtures, plus the few page globals those functions reach for.
+      `var projectsList = [
+         { id: 'p-b', 'project-name': 'Beaver Falls Interchange', 'job-number': '5501' },
+         { id: 'p-a', 'project-name': 'Allegheny Commons',        'job-number': '4402' },
+         { id: 'p-f', 'project-name': 'Franklin Regional Multi',  'job-number': '0137' },
+       ];
+       var docsProjectId = null, _docsWaitTicks = 0, _docsWaitTimer = null, _rendered = [];
+       function _docsEnsureConfigured() {}
+       window.FCTDocuments = { renderTab: el => _rendered.push(el && el.id) };
+       function _probe() { return { projectId: docsProjectId, rendered: _rendered.slice() }; }`,
+    ].join('\n\n');
+
+    const pdom = new JSDOM('<!doctype html><body><div id="docs-root"></div></body>',
+      { url: 'http://localhost/', runScripts: 'dangerously' });
+    const win = pdom.window;
+    const doc = win.document;
+    win.eval(harness);
+
+    win.renderDocsTab();
+    const cb = doc.querySelector('.cb[data-list="docs_projects"]');
+    assert('the job picker renders as the searchable combobox', Boolean(cb));
+    assert('and no <select> is left behind', !doc.querySelector('#docs-root select'));
+
+    const input = doc.getElementById('docs-proj');
+    assert('it opens on General / Non-Job', Boolean(input) && input.value === 'General / Non-Job',
+      input && input.value);
+    assert('with the resolved id planted, so an untouched blur resolves back to it',
+      input.dataset.cbValue === '', JSON.stringify(input.dataset.cbValue));
+
+    const menu = () => [...cb.querySelectorAll('.cb-opt')].map(o => o.dataset.val);
+    const type = text => { input.value = text; win.cbOnInput({ stopPropagation() {} }, input); };
+
+    win.cbOnFocus(input);
+    assert('the unfiltered menu leads with General / Non-Job, then jobs A→Z',
+      menu().join('|') === 'General / Non-Job|Allegheny Commons|Beaver Falls Interchange|Franklin Regional Multi',
+      menu().join('|'));
+
+    // The office looks jobs up by number as often as by name, so the number
+    // carried in the note has to narrow the list too.
+    type('0137');
+    assert('typing a job number narrows to that job',
+      menu().join('|') === 'Franklin Regional Multi', menu().join('|'));
+    type('commons');
+    assert('typing part of a name narrows to that job',
+      menu().join('|') === 'Allegheny Commons', menu().join('|'));
+    type('non-job');
+    assert('the General / Non-Job entry is reachable by typing too',
+      menu().join('|') === 'General / Non-Job', menu().join('|'));
+
+    // Pick one the way the menu's mousedown delegate does.
+    type('');
+    const pick = [...cb.querySelectorAll('.cb-opt')].find(o => o.dataset.val === 'Franklin Regional Multi');
+    input.value = pick.dataset.val;
+    input.dataset.cbValue = pick.dataset.cbVal;
+    win.cbCommitInput(input);
+    let probe = win._probe();
+    assert('picking a job selects it', probe.projectId === 'p-f', probe.projectId);
+    assert('it reloads the browser under the picker', probe.rendered.join(',') === 'docs-mount,docs-mount',
+      probe.rendered.join(','));
+    assert('and leaves the picker itself standing, caret and all',
+      doc.getElementById('docs-proj') === input);
+
+    // Text matching nothing must put the current job back rather than quietly
+    // dumping the user into the division-level area.
+    delete input.dataset.cbValue;
+    input.value = 'zzz not a job';
+    win.cbCommitInput(input);
+    probe = win._probe();
+    assert('junk text keeps the current job', probe.projectId === 'p-f', probe.projectId);
+    assert('and the box shows that job again', input.value === 'Franklin Regional Multi', input.value);
+
+    // An emptied box is the one gesture that means "no job".
+    delete input.dataset.cbValue;
+    input.value = '';
+    win.cbCommitInput(input);
+    probe = win._probe();
+    assert('an emptied box falls back to General / Non-Job', probe.projectId === null, String(probe.projectId));
+    assert('and the box says so', input.value === 'General / Non-Job', input.value);
+
+    // A job deleted while it was selected must not leave the picker showing a
+    // live name for a scope no picker can reach again.
+    win.eval('docsProjectId = "deleted-job"');
+    win.renderDocsTab();
+    assert('a job that left the list resets the picker',
+      win._probe().projectId === null
+        && doc.getElementById('docs-proj').value === 'General / Non-Job',
+      doc.getElementById('docs-proj').value);
+
+    pdom.window.close();
   }
 
   console.log(failed ? `\n${failed} failed.` : '\nAll checks passed.');
