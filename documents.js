@@ -680,12 +680,59 @@
     });
   }
 
-  function poOptionsHTML(projectId, selectedId) {
-    const pos = (cfg.getPurchaseOrders() || [])
+  // The purchase orders this job may link to: its own, plus any that carry no
+  // job at all.
+  function posFor(projectId) {
+    return (cfg.getPurchaseOrders() || [])
       .filter(po => !projectId || !po.project_id || po.project_id === projectId);
+  }
+
+  // How a purchase order reads everywhere it is listed, and what the filter
+  // box matches against — the number and the supplier, because half the office
+  // knows a PO by who it went to.
+  function poLabel(po) {
+    return `${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}`;
+  }
+
+  function poOptionsHTML(projectId, selectedId, needle) {
+    // A purchase order already picked stays listed even when it does not match
+    // — a filter is for finding one, not for dropping the one already chosen.
+    const pos = posFor(projectId).filter(po =>
+      !needle || po.id === selectedId || poLabel(po).toLowerCase().includes(needle));
     return `<option value="">— none —</option>` + pos.map(po =>
-      `<option value="${esc(po.id)}" ${po.id === selectedId ? 'selected' : ''}>${esc(po.po_number || po.id)}${po.supplier ? ` — ${esc(po.supplier)}` : ''}</option>`
+      `<option value="${esc(po.id)}" ${po.id === selectedId ? 'selected' : ''}>${esc(poLabel(po))}</option>`
     ).join('');
+  }
+
+  // Same shape as the folder picker: a filter box over a real <select>, so the
+  // native picker a phone puts up and every reader of .value are untouched.
+  function poPickerHTML(id, projectId, selectedId, locked) {
+    const filter = locked ? '' : `
+      <input type="text" data-po-filter="${esc(id)}" placeholder="&#128269; Filter purchase orders…"
+             autocomplete="off" spellcheck="false"
+             style="${S.input};width:100%;box-sizing:border-box;font-size:0.76rem;margin-bottom:0.3rem" />`;
+    return `${filter}
+      <select id="${esc(id)}" style="${S.input};width:100%" ${locked ? 'disabled' : ''}>
+        ${poOptionsHTML(projectId, selectedId)}
+      </select>`;
+  }
+
+  function wirePoFilter(root, id, projectId) {
+    const box = root.querySelector(`[data-po-filter="${id}"]`);
+    const sel = root.querySelector('#' + id);
+    if (!box || !sel) return;
+    box.addEventListener('input', () => {
+      const needle = box.value.trim().toLowerCase();
+      const held   = sel.value;
+      sel.innerHTML = poOptionsHTML(projectId, held, needle);
+      sel.value = held;
+      // Narrowing to exactly one picks it, which is the whole point on a
+      // phone. Only when nothing is picked yet — never over a choice made.
+      if (!held && needle) {
+        const hits = posFor(projectId).filter(po => poLabel(po).toLowerCase().includes(needle));
+        if (hits.length === 1) sel.value = hits[0].id;
+      }
+    });
   }
 
   // ── Upload ──────────────────────────────────────────────────────────
@@ -711,9 +758,7 @@
         </div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Link to purchase order <span style="opacity:0.7">(optional)</span></label>
-          <select id="fctdoc-po" style="${S.input};width:100%" ${lockPo ? 'disabled' : ''}>
-            ${poOptionsHTML(projectId, poId)}
-          </select>
+          ${poPickerHTML('fctdoc-po', projectId, poId, lockPo)}
         </div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Note <span style="opacity:0.7">(optional)</span></label>
@@ -727,6 +772,7 @@
       </div>`);
 
     wireFolderFilter(m.body, 'fctdoc-folder', '— pick a folder —');
+    wirePoFilter(m.body, 'fctdoc-po', projectId);
 
     const fileInput = m.body.querySelector('#fctdoc-files');
     const fileList  = m.body.querySelector('#fctdoc-filelist');
@@ -1005,14 +1051,14 @@
         <div style="${S.muted}">${esc(doc.filename)}</div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Purchase order</label>
-          <select id="fctdoc-linkpo" style="${S.input};width:100%">${poOptionsHTML(projectId, null)}</select>
+          ${poPickerHTML('fctdoc-linkpo', projectId, null, false)}
         </div>
         ${(doc.po_ids || []).length ? `
           <div>
             <div style="${S.muted};margin-bottom:0.25rem">Already linked to</div>
             ${doc.po_ids.map(poId => {
               const po = (cfg.getPurchaseOrders() || []).find(p => p.id === poId);
-              const label = po ? `${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}` : poId;
+              const label = po ? poLabel(po) : poId;
               return `<div style="display:flex;align-items:center;gap:0.5rem;font-size:0.8rem;padding:0.2rem 0">
                         <span style="flex:1 1 auto">${esc(label)}</span>
                         <button data-unlink="${esc(poId)}" style="${S.btn}">Remove</button>
@@ -1025,6 +1071,7 @@
         </div>
       </div>`);
 
+    wirePoFilter(m.body, 'fctdoc-linkpo', projectId);
     m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
 
     m.body.querySelector('#fctdoc-dolink').addEventListener('click', async () => {

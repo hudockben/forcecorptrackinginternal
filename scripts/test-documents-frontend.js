@@ -574,6 +574,91 @@ console.log('\n[documents.js upload sequence]');
       fsel.value === 'f-earth', fsel.value);
 
     dlg.remove();
+
+    // ── The purchase-order <select> in the dialogs ─────────────────────────
+    // Same problem as the folder list: a busy job runs dozens of POs, and the
+    // office knows them by number or by who they went to, so both have to
+    // narrow the list.
+    FD.configure({ getPurchaseOrders: () => [
+      { id: 'po-1', po_number: 'PO-0137', supplier: 'Cleveland Quarry', project_id: 'p1' },
+      { id: 'po-2', po_number: 'PO-0212', supplier: 'Keystone Asphalt',  project_id: 'p1' },
+      { id: 'po-3', po_number: 'PO-0219', supplier: 'Keystone Asphalt',  project_id: 'p1' },
+      { id: 'po-4', po_number: 'PO-0455', supplier: 'Allegheny Ready Mix', project_id: 'p2' },
+      { id: 'po-5', po_number: 'PO-0500', supplier: 'No Job Supply',     project_id: null },
+    ] });
+
+    mount.querySelector('#fctdoc-upload').click();
+    const up    = [...window.document.querySelectorAll('body > div')].pop();
+    const pbox  = up.querySelector('[data-po-filter="fctdoc-po"]');
+    const psel  = up.querySelector('#fctdoc-po');
+    const popt  = () => [...psel.options].map(o => o.textContent).join('|');
+    const ptype = text => {
+      pbox.value = text;
+      pbox.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+
+    assert('the Upload dialog gets a filter over its purchase orders',
+      Boolean(pbox) && Boolean(psel));
+    assert('listing this job\'s POs and the ones with no job, never another job\'s',
+      popt() === '— none —|PO-0137 — Cleveland Quarry|PO-0212 — Keystone Asphalt|'
+               + 'PO-0219 — Keystone Asphalt|PO-0500 — No Job Supply', popt());
+
+    ptype('0212');
+    assert('typing a PO number narrows to it',
+      popt() === '— none —|PO-0212 — Keystone Asphalt', popt());
+    assert('and a single match picks itself', psel.value === 'po-2', psel.value);
+
+    ptype('');
+    ptype('keystone');
+    assert('typing a supplier narrows to everything bought from them',
+      popt() === '— none —|PO-0212 — Keystone Asphalt|PO-0219 — Keystone Asphalt', popt());
+
+    // Two matches, so nothing is auto-picked — but po-2 was picked before and
+    // has to survive both the wider filter and this one.
+    assert('a PO already picked stays picked', psel.value === 'po-2', psel.value);
+
+    ptype('cleveland');
+    assert('and stays listed even when the filter excludes it',
+      [...psel.options].some(o => o.value === 'po-2'),
+      [...psel.options].map(o => o.value).join(','));
+    assert('a lone match does not steal a pick already made', psel.value === 'po-2', psel.value);
+
+    ptype('zzz');
+    assert('a filter matching nothing leaves only the none option',
+      popt() === '— none —|PO-0212 — Keystone Asphalt', popt());
+    up.remove();
+
+    // Attaching from the PO tab pins the PO — there is nothing to search, and
+    // a filter box over a disabled select would just be a dead control.
+    await FD.openAttach({ id: 'po-1', po_number: 'PO-0137', project_id: 'p1' });
+    const att = [...window.document.querySelectorAll('body > div')].pop();
+    att.querySelector('[data-attach-new]').click();
+    const pinned = [...window.document.querySelectorAll('body > div')].pop();
+    assert('attaching from a purchase order pins it, with no filter box',
+      pinned.querySelector('#fctdoc-po').disabled
+        && !pinned.querySelector('[data-po-filter="fctdoc-po"]'));
+    assert('and the pinned purchase order is the one selected',
+      pinned.querySelector('#fctdoc-po').value === 'po-1',
+      pinned.querySelector('#fctdoc-po').value);
+    assert('while its folder still has a filter, since that is the open choice',
+      Boolean(pinned.querySelector('[data-folder-filter="fctdoc-folder"]')));
+    pinned.remove();
+
+    // The Link dialog carries the same picker.
+    mount.querySelector('[data-folder="f-earth"]').click();
+    mount.querySelector('[data-attach="d1"]').click();
+    const lnk = [...window.document.querySelectorAll('body > div')].pop();
+    const lbox = lnk.querySelector('[data-po-filter="fctdoc-linkpo"]');
+    const lsel = lnk.querySelector('#fctdoc-linkpo');
+    assert('the Link dialog gets one too', Boolean(lbox) && Boolean(lsel));
+    lbox.value = 'cleveland';
+    lbox.dispatchEvent(new window.Event('input', { bubbles: true }));
+    assert('and it narrows and picks the same way',
+      lsel.value === 'po-1' && [...lsel.options].length === 2,
+      `${lsel.value} / ${[...lsel.options].map(o => o.textContent).join('|')}`);
+    lnk.remove();
+
+    FD.configure({ getPurchaseOrders: () => [] });
     window.fetch = savedFetch;
   }
 
