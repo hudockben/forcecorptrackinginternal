@@ -424,6 +424,159 @@ console.log('\n[documents.js upload sequence]');
     delete window.logout;
   }
 
+  // ── 4. The folder rail's filter, driven in jsdom ─────────────────────────
+  // A job carries a folder per cost code, so the rail is the longest list on
+  // the page. The filter has to narrow it without breaking navigation: the
+  // main pane lists documents only, so the rail is the sole way into a
+  // subfolder and anything it hides is unreachable while the box has text.
+  {
+    console.log('\n[folder rail filter]');
+
+    // Purchase Orders ── PO PO-0137
+    // Earthwork
+    // Design & Permitting ── Drawings ─┬─ Permits ── Township
+    //                                  └─ Correspondence
+    //
+    // The shape is deliberate. Searching "per" hits both Design & Permitting
+    // and Permits — one an ancestor of the other, with a folder between them
+    // that matches nothing. Correspondence hangs off that in-between folder,
+    // and is the only thing that notices whether the descent into a matched
+    // branch is blocked by a folder already kept as some other hit's ancestor.
+    const TREE = [
+      { id: 'f-po',    parent_id: null,     name: 'Purchase Orders',     kind: 'fixed',     sort_order: 1 },
+      { id: 'f-po137', parent_id: 'f-po',   name: 'PO PO-0137',          kind: 'po',        sort_order: 1 },
+      { id: 'f-earth', parent_id: null,     name: 'Earthwork',           kind: 'cost_code', sort_order: 2 },
+      { id: 'f-des',   parent_id: null,     name: 'Design & Permitting', kind: 'cost_code', sort_order: 3 },
+      { id: 'f-dwg',   parent_id: 'f-des',  name: 'Drawings',            kind: 'cost_code', sort_order: 1 },
+      { id: 'f-perm',  parent_id: 'f-dwg',  name: 'Permits',             kind: 'cost_code', sort_order: 1 },
+      { id: 'f-town',  parent_id: 'f-perm', name: 'Township',            kind: 'cost_code', sort_order: 1 },
+      { id: 'f-corr',  parent_id: 'f-dwg',  name: 'Correspondence',      kind: 'cost_code', sort_order: 2 },
+    ];
+
+    const savedFetch = window.fetch;
+    window.fetch = async url => {
+      if (String(url).includes('/api/documents')) {
+        return { ok: true, status: 200, json: async () => ({
+          folders: TREE,
+          documents: [{ id: 'd1', filename: 'ticket.pdf', folder_ids: ['f-earth'],
+                        size_bytes: 10, uploaded_by: 'ben', uploaded_at: '2026-08-19T00:00:00Z', po_ids: [] }],
+          caps: { canUpload: true, canManage: true, canDelete: true },
+        }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+
+    const mount = window.document.getElementById('mount');
+    await FD.renderTab(mount);
+
+    const box  = () => mount.querySelector('#fctdoc-folder-search');
+    const rail = () => [...mount.querySelectorAll('[data-folder]')].map(el => el.title);
+    const type = text => {
+      const b = box();
+      b.value = text;
+      b.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+
+    assert('the rail carries a filter box', Boolean(box()));
+    assert('and lists every folder before anything is typed',
+      rail().join('|') === 'Purchase Orders|PO PO-0137|Earthwork|Design & Permitting|Drawings|Permits|Township|Correspondence', rail().join('|'));
+
+    // A leaf match has to keep the branch above it, or the hit shows up with
+    // no indication of where it lives.
+    type('township');
+    assert('a match keeps the ancestors that lead to it',
+      rail().join('|') === 'Design & Permitting|Drawings|Permits|Township', rail().join('|'));
+
+    // …and a match has to keep what is under it. The main pane never lists
+    // subfolders, so a hidden child cannot be reached at all.
+    type('permits');
+    assert('a match keeps its children, which are otherwise unreachable',
+      rail().join('|') === 'Design & Permitting|Drawings|Permits|Township', rail().join('|'));
+
+    // Two hits where one is an ancestor of the other. The branch under the
+    // outer hit must still be walked even though the folder at its head was
+    // already kept as the inner hit's ancestor — miss that and a matched
+    // folder quietly loses children it is supposed to still show.
+    type('per');
+    assert('overlapping matches do not swallow each other\'s children',
+      rail().join('|') === 'Design & Permitting|Drawings|Permits|Township|Correspondence',
+      rail().join('|'));
+
+    type('earth');
+    assert('an unrelated branch drops out entirely',
+      rail().join('|') === 'Earthwork', rail().join('|'));
+    assert('the matched run is highlighted',
+      /<mark[^>]*>Earth<\/mark>work/.test(mount.querySelector('[data-folder]').innerHTML),
+      mount.querySelector('[data-folder]').innerHTML);
+
+    type('zzz');
+    assert('a filter matching nothing says so', rail().length === 0 && /No folder matches/.test(mount.innerHTML));
+    assert('and leaves the box up so it can be cleared', Boolean(box()) && box().value === 'zzz');
+
+    // Enter opens the first match in the order the rail draws them.
+    type('perm');
+    box().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    const active = [...mount.querySelectorAll('[data-folder]')].find(el => /font-weight:600/.test(el.getAttribute('style')));
+    assert('Enter opens the first folder the filter found',
+      Boolean(active) && active.title === 'Design & Permitting', active && active.title);
+    assert('and the filter survives it, so the next one is a keystroke away',
+      Boolean(box()) && box().value === 'perm', box() && box().value);
+
+    // Escape clears.
+    box().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    assert('Escape clears the filter', box().value === '' && rail().length === 8, rail().join('|'));
+
+    // The filter is the rail's own; it must not touch the document search.
+    type('earth');
+    const docBox = mount.querySelector('#fctdoc-search');
+    assert('the document search is left alone', docBox && docBox.value === '', docBox && docBox.value);
+
+    // ── The folder <select> in the dialogs ─────────────────────────────────
+    // The same list again, and the one that is a required pick on every single
+    // upload. Go Home first so the dialog opens with nothing preselected.
+    [...mount.querySelectorAll('[data-folder-crumb]')].find(el => el.dataset.folderCrumb === '').click();
+    mount.querySelector('#fctdoc-newfolder').click();
+    const dlg  = [...window.document.querySelectorAll('body > div')].pop();
+    const fbox = dlg.querySelector('[data-folder-filter="fctdoc-fparent"]');
+    const fsel = dlg.querySelector('#fctdoc-fparent');
+    const fopt = () => [...fsel.options].map(o => o.textContent.replace(/ /g, '')).join('|');
+    const ftype = text => {
+      fbox.value = text;
+      fbox.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+
+    assert('the New Folder dialog gets a filter over its folder list',
+      Boolean(fbox) && Boolean(fsel));
+    assert('which starts on the whole tree, indented',
+      [...fsel.options].length === 9, fopt());
+    assert('and starts unpicked', fsel.value === '', fsel.value);
+
+    ftype('permits');
+    assert('typing narrows the options the way the rail narrows',
+      fopt() === '— top level —|Design & Permitting|Drawings|Permits|Township', fopt());
+    assert('and a single match picks itself, so a phone needs no scrolling',
+      fsel.value === 'f-perm', fsel.value);
+
+    ftype('');
+    assert('clearing the box puts the whole tree back',
+      [...fsel.options].length === 9, fopt());
+    assert('without disturbing the pick', fsel.value === 'f-perm', fsel.value);
+
+    // A pick already made must survive a filter that excludes it — losing the
+    // folder you chose because you then typed in a search box is the worst
+    // outcome this control has.
+    fsel.value = 'f-earth';
+    ftype('township');
+    assert('a folder already picked stays picked and stays listed',
+      fsel.value === 'f-earth' && [...fsel.options].some(o => o.value === 'f-earth'),
+      `${fsel.value} / ${[...fsel.options].map(o => o.value).join(',')}`);
+    assert('and a lone match does not steal a pick that was already made',
+      fsel.value === 'f-earth', fsel.value);
+
+    dlg.remove();
+    window.fetch = savedFetch;
+  }
+
   // ── 3. The Documents job picker, driven in jsdom ─────────────────────────
   // The picker is the app's shared combobox now, not a <select>, so "can you
   // find a job by typing part of its name, or its job number" is only
