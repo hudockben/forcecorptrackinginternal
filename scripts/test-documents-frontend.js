@@ -83,7 +83,10 @@ for (const page of PAGES) {
     `COLS=${colsMatch && colsMatch[1]} but counted ${thCount} header cells`);
 
   assert('the paperclip column is in the header', /title="Attached documents"/.test(thead));
-  assert('the paperclip cell calls openPODocs', /onclick="openPODocs\('\$\{po\.id\}'\)"/.test(poTab));
+  // The id travels in a data attribute rather than interpolated into the
+  // handler string — see the audit regression block at the end of this file.
+  assert('the paperclip cell calls openPODocs',
+    /onclick="openPODocs\(this\.dataset\.poDocs\)"/.test(poTab));
   assert('the badge count comes from the shared module',
     /const docCount= window\.FCTDocuments \? FCTDocuments\.poCount\(po\.id\) : 0;/.test(poTab));
   assert('counts are fetched once, guarded against a render loop',
@@ -233,13 +236,125 @@ console.log('\n[documents.js upload sequence]');
     !/if \(cfg\.perm\.canUpload\) \{[\s\S]{0,200}\/documents\$\{q\(\{ projectId \}\)\}/.test(docsSrc),
     'the seed must run and let the server 403 if it disagrees');
 
-  // A non-image is passed through untouched — downscaling a PDF would corrupt it.
-  const asIs = await FD._maybeDownscale(file);
-  assert('a PDF is uploaded byte for byte', asIs.filename === 'ticket.pdf' && asIs.blob === file);
+  // ── Photo downscaling ──────────────────────────────────────────────────
+  // jsdom ships neither createImageBitmap nor a canvas, so maybeDownscale()
+  // short-circuits on its capability check and returns every input untouched.
+  // Asserting "not re-encoded" against that proves nothing — it was the same
+  // answer for a 40 MP photo. Stub both so the real branch actually runs.
+  let decoded = null, encodedAt = null;
+  window.createImageBitmap = async blob => {
+    decoded = blob;
+    return { width: 4032, height: 3024, close() {} };
+  };
+  const realCreateElement = window.document.createElement.bind(window.document);
+  window.document.createElement = tag => {
+    if (tag !== 'canvas') return realCreateElement(tag);
+    const c = { width: 0, height: 0 };
+    c.getContext = () => ({ drawImage() {} });
+    c.toBlob = (cb, type, quality) => {
+      encodedAt = { type, quality, w: c.width, h: c.height };
+      cb(new window.Blob([new Uint8Array(50_000)], { type }));
+    };
+    return c;
+  };
 
+  const bigPhoto = new window.File([new Uint8Array(5_000_000)], 'IMG_0042.HEIC', { type: 'image/heic' });
+  const shrunk = await FD._maybeDownscale(bigPhoto);
+  assert('a big photo really is re-encoded', shrunk.blob !== bigPhoto && shrunk.blob.size < bigPhoto.size,
+    `${shrunk.blob && shrunk.blob.size} vs ${bigPhoto.size}`);
+  assert('down to the long-edge cap, aspect preserved',
+    encodedAt && encodedAt.w === 2400 && encodedAt.h === 1800,
+    JSON.stringify(encodedAt));
+  assert('as a JPEG', encodedAt && encodedAt.type === 'image/jpeg');
+  assert('and renamed so the server allowlist still matches it',
+    shrunk.filename === 'IMG_0042.jpg', shrunk.filename);
+
+  // A non-image is passed through untouched — downscaling a PDF would corrupt
+  // it. Now a real assertion: the decoder is never even called.
+  decoded = null;
+  const asIs = await FD._maybeDownscale(file);
+  assert('a PDF is uploaded byte for byte',
+    asIs.filename === 'ticket.pdf' && asIs.blob === file && decoded === null);
+
+  // Under the size floor: cheap enough to leave alone.
+  decoded = null;
   const small = new window.File([new Uint8Array(1000)], 'small.jpg', { type: 'image/jpeg' });
   const smallOut = await FD._maybeDownscale(small);
-  assert('a small photo is not re-encoded', smallOut.blob === small);
+  assert('a small photo is not re-encoded', smallOut.blob === small && decoded === null);
+
+  // An image already under the cap is decoded but not re-encoded.
+  window.createImageBitmap = async blob => { decoded = blob; return { width: 1200, height: 900, close() {} }; };
+  encodedAt = null;
+  const modest = new window.File([new Uint8Array(600_000)], 'modest.jpg', { type: 'image/jpeg' });
+  const modestOut = await FD._maybeDownscale(modest);
+  assert('an image already within the cap keeps its bytes',
+    modestOut.blob === modest && encodedAt === null);
+
+  // A browser that cannot decode the format falls back to the original rather
+  // than losing the upload — HEIC in Chrome is the real case.
+  window.createImageBitmap = async () => { throw new Error('unsupported image format'); };
+  const undecodable = new window.File([new Uint8Array(3_000_000)], 'IMG_9.HEIC', { type: 'image/heic' });
+  const passthrough = await FD._maybeDownscale(undecodable);
+  assert('an undecodable image is uploaded as-is',
+    passthrough.blob === undecodable && passthrough.filename === 'IMG_9.HEIC');
+
+  // ── Regressions from the adversarial audit ─────────────────────────────
+  console.log('\n[audit regressions]');
+
+  const docsSrc2 = read('documents.js');
+
+  // A late response from a load for another job used to overwrite the state
+  // behind whatever was on screen — the next click repainted a foreign job's
+  // tree under the current job's heading.
+  assert('load() drops a response whose scope has moved on',
+    /const generation = \+\+loadGeneration;/.test(docsSrc2)
+    && /if \(generation !== loadGeneration\) return;/.test(docsSrc2));
+  assert('and clears a folder selection that the new scope does not contain',
+    /if \(currentFolderId && !folders\.some\(f => f\.id === currentFolderId\)\)/.test(docsSrc2));
+
+  // Zeroing the counts on a blip drew an empty paperclip on every PO, and the
+  // host fetches them once per session so nothing corrected it.
+  assert('a failed count refresh keeps the last good counts',
+    !/catch \{\s*poCounts = \{\};/.test(docsSrc2));
+
+  // The preview frame is the one place a stored file is rendered rather than
+  // downloaded.
+  assert('the preview iframe is sandboxed', /<iframe src="\$\{esc\(info\.url\)\}" sandbox=/.test(docsSrc2));
+  assert('and text files have a viewer branch rather than a broken image',
+    /content_type === 'text\/plain'/.test(docsSrc2));
+
+  // window.open after an await loses the user gesture: iOS blocks it outright.
+  assert('the download tab is opened inside the click, before any await',
+    /const tab = window\.open\('', '_blank', 'noopener'\);[\s\S]{0,120}await signedUrl/.test(docsSrc2));
+
+  // The delete dialog promised 30-day recovery that nothing could deliver.
+  assert('a deleted-documents bin exists', typeof FD.openTrash === 'function');
+  assert('and it can restore', /\{ restore: true \}/.test(docsSrc2));
+
+  // Bytes land in the bucket before the row is written; a failed registration
+  // used to leave them there forever, invisible to the purge sweep.
+  assert('a failed registration cleans up the uploaded object',
+    /DELETE.*document-upload-url.*storageKey/.test(docsSrc2));
+
+  // The headline use case is a foreman on a phone.
+  assert('the browser carries a responsive stylesheet',
+    /@media \(max-width: 720px\)/.test(docsSrc2) && /fctdoc-wrap/.test(docsSrc2));
+
+  for (const page of PAGES) {
+    const src = read(page.file);
+    assert(`${page.file}: the PO id is not interpolated into an inline handler`,
+      /data-po-docs="\$\{esc\(po\.id\)\}" onclick="openPODocs\(this\.dataset\.poDocs\)"/.test(src));
+    assert(`${page.file}: a deleted job clears the Documents selection`,
+      /if \(docsProjectId && !projectsList\.some\(p => p\.id === docsProjectId\)\)/.test(src));
+    assert(`${page.file}: the deferred-script wait is bounded`,
+      /_docsWaitTicks > 40/.test(src));
+    assert(`${page.file}: deleting a job takes its documents with it`,
+      /documents\?division=\$\{DOCS_DIVISION\}&projectId=\$\{encodeURIComponent\(id\)\}&project=1/.test(src));
+    assert(`${page.file}: the lists poll applies the cost-code migration`,
+      /incoming\.cost_codes = \(incoming\.cost_codes \|\| \[\]\)\.map/.test(src));
+    assert(`${page.file}: a blank cost code cannot reach the pickers`,
+      !/ccSet\.add\(c\.value\|\|c\)/.test(src));
+  }
 
   console.log(failed ? `\n${failed} failed.` : '\nAll checks passed.');
   process.exit(failed ? 1 : 0);

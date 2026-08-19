@@ -7592,6 +7592,15 @@ function deleteProject(id) {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${fctToken}` }
     }).catch(() => {});
+    // Take the job's documents with it. project_id has no foreign key, so
+    // nothing cascades: the rows survived with deleted_at NULL, which meant the
+    // purge sweep could never reach them and no picker could select the job
+    // again to find them. This soft-deletes them, so they stay recoverable in
+    // the deleted bin for 30 days like any other delete.
+    fetch(`${API_BASE}/documents?division=${DOCS_DIVISION}&projectId=${encodeURIComponent(id)}&project=1`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    }).catch(() => {});
     renderProjectsTab();
   });
 
@@ -10163,6 +10172,9 @@ function saveLists() { apiPut('fct_kiewit_lists', lists); }
 ═══════════════════════════════════════════ */
 let docsProjectId = null;   // null = the division-level General / Non-Job area
 let _docsConfigured = false;
+let _docsWaitTicks  = 0;    // bounded wait for the deferred documents.js
+let _docsWaitTimer  = null;
+const DOCS_DIVISION = DIVISION;   // division these documents belong to
 
 /**
  * Cost codes on a job, each with the label its folder should carry.
@@ -10226,13 +10238,32 @@ function renderDocsTab() {
   if (!root) return;
 
   if (!window.FCTDocuments) {
-    root.innerHTML = '<div style="color:var(--muted);padding:1.5rem">Loading the document browser…</div>';
     // documents.js is deferred, so on a fast tab click it may not have run yet.
-    setTimeout(renderDocsTab, 150);
+    // Bounded: an unconditional retry chain never stops when the script fails
+    // to load at all, and every click on the tab started another one.
+    _docsWaitTicks++;
+    if (_docsWaitTicks > 40) {          // ~6 seconds
+      root.innerHTML = '<div style="color:var(--red);padding:1.5rem">'
+        + 'The document browser could not be loaded. Refresh the page to try again.</div>';
+      return;
+    }
+    root.innerHTML = '<div style="color:var(--muted);padding:1.5rem">Loading the document browser…</div>';
+    clearTimeout(_docsWaitTimer);
+    _docsWaitTimer = setTimeout(renderDocsTab, 150);
     return;
   }
+  _docsWaitTicks = 0;
 
   _docsEnsureConfigured();
+
+  // A project can leave projectsList while it is selected here — deleted on
+  // the dashboard, or dropped by the poll after someone else deleted it. The
+  // <select> then falls back to its first option and reads "General / Non-Job"
+  // while docsProjectId still points at the dead job, so uploads filed under a
+  // scope no picker could reach again.
+  if (docsProjectId && !projectsList.some(p => p.id === docsProjectId)) {
+    docsProjectId = null;
+  }
 
   const opts = projectsList.map(p =>
     `<option value="${esc(p.id)}" ${p.id === docsProjectId ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`
@@ -10710,7 +10741,7 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}" onclick="event.stopPropagation()">${selOpts('status',statusOpts,po.status,po.id,null)}${statusMeta}</td>
           <td style="padding:0.25rem 0.4rem;text-align:center" onclick="event.stopPropagation()">
-            <button onclick="openPODocs('${po.id}')" title="${docCount ? `${docCount} attached document${docCount === 1 ? '' : 's'}` : 'Attach a document'}"
+            <button data-po-docs="${esc(po.id)}" onclick="openPODocs(this.dataset.poDocs)" title="${docCount ? `${docCount} attached document${docCount === 1 ? '' : 's'}` : 'Attach a document'}"
               style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:0.15rem 0.4rem;
                      font-size:0.72rem;white-space:nowrap;color:${docCount ? 'var(--green)' : 'var(--muted)'}">&#128206;${docCount || ''}</button>
           </td>
@@ -13502,7 +13533,12 @@ function renderMobileEntryForm(successMsg) {
 
   const ccSet = new Set();
   projectsList.forEach(p => (p.bidItems||[]).forEach(b => { if (b.cost_code) ccSet.add(b.cost_code); }));
-  (lists.cost_codes||[]).forEach(c => ccSet.add(c.value||c));
+  // A row whose Code has been cleared has value '' — `c.value || c` would
+  // fall through to the object itself and render as "[object Object]".
+  (lists.cost_codes||[]).forEach(c => {
+    const v = (c && typeof c === 'object') ? c.value : c;
+    if (v) ccSet.add(v);
+  });
   const ccOpts = `<option value="">— Cost Code —</option>` +
     [...ccSet].sort().map(cc => `<option value="${esc(cc)}">${esc(cc)}</option>`).join('');
 
@@ -13621,7 +13657,12 @@ function _mobCodeBlockHTML(idx, ccOpts, jobClassOpts, removable) {
   if (!ccOpts) {
     const ccSet = new Set();
     projectsList.forEach(p => (p.bidItems||[]).forEach(b => { if (b.cost_code) ccSet.add(b.cost_code); }));
-    (lists.cost_codes||[]).forEach(c => ccSet.add(c.value||c));
+    // A row whose Code has been cleared has value '' — `c.value || c` would
+  // fall through to the object itself and render as "[object Object]".
+  (lists.cost_codes||[]).forEach(c => {
+    const v = (c && typeof c === 'object') ? c.value : c;
+    if (v) ccSet.add(v);
+  });
     ccOpts = `<option value="">— Cost Code —</option>` + [...ccSet].sort().map(cc => `<option value="${esc(cc)}">${esc(cc)}</option>`).join('');
   }
   if (!jobClassOpts) {
@@ -21219,6 +21260,11 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
         typeof s === 'string' ? { name: s, state: '', address: '', phone: '', website: '' } : { address: '', phone: '', website: '', ...s });
       incoming.employees = (incoming.employees || []).map(e =>
         typeof e === 'string' ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
+      // Same normalization loadLists() does. Without it the poll wrote the raw
+      // stored shape back over the migrated one every 60 seconds, so a bare
+      // string cost code reappeared and the editor rendered blank rows.
+      incoming.cost_codes = (incoming.cost_codes || []).map(c =>
+        typeof c === 'string' ? { value: c, description: '' } : { value: '', description: '', ...c });
       if (JSON.stringify(incoming) === JSON.stringify(lists)) return;
       Object.assign(lists, incoming);
       // Refresh the manage-lists panel if it's currently open

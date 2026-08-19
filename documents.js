@@ -54,6 +54,14 @@
   let loadedFor = undefined;    // project id the current data belongs to
   let poCounts  = {};
 
+  // Bumped by every load(). A response whose generation is stale — because the
+  // job picker moved on, or because openAttach() started a load for a PO on
+  // another job — is dropped instead of overwriting the state behind whatever
+  // is currently on screen. Without this the last response to arrive won, and
+  // the next click repainted a foreign job's folder tree under the current
+  // job's heading.
+  let loadGeneration = 0;
+
   // ── Helpers ─────────────────────────────────────────────────────────
   function token() { return localStorage.getItem('fct_token') || ''; }
 
@@ -170,6 +178,7 @@
   // ── Data ────────────────────────────────────────────────────────────
   async function load(projectId, { force = false } = {}) {
     if (!force && loadedFor === projectId) return;
+    const generation = ++loadGeneration;
 
     // Seed the generated tree first — the six fixed folders, the Purchase
     // Orders root, and one folder per cost code on this job. Idempotent, so
@@ -194,18 +203,32 @@
     }
 
     const data = await api('GET', `/documents${q({ projectId })}`);
+
+    // A newer load started while this one was in flight — its scope is what the
+    // user is looking at, so this response is stale and must not land.
+    if (generation !== loadGeneration) return;
+
     folders   = data.folders || [];
     documents = data.documents || [];
     caps      = data.caps || cfg.perm;
     loadedFor = projectId;
+
+    // The folder that was open may not exist in the scope just loaded.
+    if (currentFolderId && !folders.some(f => f.id === currentFolderId)) {
+      currentFolderId = null;
+    }
   }
 
   async function refreshPoCounts() {
     try {
       const data = await api('GET', `/documents${q({ poCounts: 1 })}`);
       poCounts = data.counts || {};
-    } catch {
-      poCounts = {};
+    } catch (err) {
+      // Keep the counts we already had. Zeroing them on a transient failure
+      // drew an empty paperclip on every purchase order — including ones with
+      // documents attached — and the host fetches counts once per session, so
+      // nothing ever corrected it. A stale count beats a wrong one.
+      console.warn('[documents] PO counts refresh failed, keeping the last good set:', err.message);
     }
     return poCounts;
   }
@@ -241,6 +264,37 @@
   }
 
   // ── Rendering ───────────────────────────────────────────────────────
+  // Inline styles cannot carry a media query, and the phone is the headline
+  // case here — a foreman photographing a delivery ticket. Without this the
+  // 15rem folder rail does not shrink and leaves ~100px for the file list on a
+  // 375px screen. One stylesheet, injected once.
+  function injectStyles() {
+    if (document.getElementById('fctdoc-styles')) return;
+    const el = document.createElement('style');
+    el.id = 'fctdoc-styles';
+    el.textContent = `
+      @media (max-width: 720px) {
+        .fctdoc-wrap { flex-direction: column !important; min-height: 0 !important; }
+        .fctdoc-side {
+          flex: 0 0 auto !important; width: 100% !important;
+          max-height: 11rem !important;
+          border-right: 0 !important;
+          border-bottom: 1px solid var(--border,#2a2a3a) !important;
+        }
+        .fctdoc-main { max-height: none !important; }
+        .fctdoc-bar  { gap: 0.4rem !important; }
+        .fctdoc-bar input[type="text"] { flex: 1 1 100% !important; max-width: none !important; }
+        .fctdoc-row-actions button { padding: 0.3rem 0.5rem !important; }
+      }
+      /* Touch targets big enough to hit with a glove on. */
+      @media (pointer: coarse) {
+        .fctdoc-side [data-folder] { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+        .fctdoc-row-actions button { min-width: 2.25rem; min-height: 2.25rem; }
+      }
+    `;
+    document.head.appendChild(el);
+  }
+
   const S = {
     wrap:  'display:flex;gap:0;border:1px solid var(--border,#2a2a3a);border-radius:6px;overflow:hidden;min-height:26rem;background:var(--surface,#111118)',
     side:  'flex:0 0 15rem;border-right:1px solid var(--border,#2a2a3a);padding:0.6rem;overflow-y:auto;max-height:34rem;background:var(--bg,#0a0a0f)',
@@ -290,9 +344,11 @@
             ${d.note ? ` · ${esc(d.note)}` : ''}
           </div>
         </div>
+        <span class="fctdoc-row-actions" style="display:flex;gap:0.35rem;flex:none">
         <button data-download="${esc(d.id)}" style="${S.btn}" title="Download">&#11015;</button>
         ${caps.canUpload ? `<button data-attach="${esc(d.id)}" style="${S.btn}" title="Attach to a purchase order">&#128206;</button>` : ''}
         ${caps.canDelete ? `<button data-delete="${esc(d.id)}" style="${S.btn}" title="Delete">&#10005;</button>` : ''}
+        </span>
       </div>`;
   }
 
@@ -311,22 +367,25 @@
       ? esc(cfg.getProjectName(projectId) || 'Job')
       : 'General / Non-Job';
 
+    injectStyles();
+
     mountEl.innerHTML = `
-      <div style="${S.bar}">
+      <div class="fctdoc-bar" style="${S.bar}">
         <span style="font-size:1rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase">Documents</span>
         <span style="${S.muted}">${heading}</span>
         <input type="text" id="fctdoc-search" placeholder="&#128269; Search documents…"
                value="${esc(search)}" style="${S.input};flex:1 1 12rem;max-width:22rem" />
+        ${caps.canDelete ? `<button id="fctdoc-trash" style="${S.btn}" title="Documents deleted in the last 30 days">&#128465; Deleted</button>` : ''}
         ${caps.canUpload ? `<button id="fctdoc-newfolder" style="${S.btn}">+ New Folder</button>` : ''}
         ${caps.canUpload ? `<button id="fctdoc-upload" style="${S.green}">&#11014; Upload</button>` : ''}
       </div>
 
-      <div style="${S.wrap}">
-        <div style="${S.side}" id="fctdoc-tree">
+      <div class="fctdoc-wrap" style="${S.wrap}">
+        <div class="fctdoc-side" style="${S.side}" id="fctdoc-tree">
           ${roots.length ? roots.map(f => folderNodeHTML(f, 0)).join('')
                          : `<div style="${S.muted};padding:0.5rem">No folders yet.</div>`}
         </div>
-        <div style="${S.main}" id="fctdoc-main">
+        <div class="fctdoc-main" style="${S.main}" id="fctdoc-main">
           ${hits !== null
             ? `<div style="margin-bottom:0.6rem;${S.muted}">${listing.length} match${listing.length === 1 ? '' : 'es'} for &ldquo;${esc(search)}&rdquo;</div>`
             : `<div style="margin-bottom:0.6rem;font-size:0.8rem">
@@ -395,6 +454,9 @@
 
     const nf = mountEl.querySelector('#fctdoc-newfolder');
     if (nf) nf.addEventListener('click', openNewFolder);
+
+    const tr = mountEl.querySelector('#fctdoc-trash');
+    if (tr) tr.addEventListener('click', openTrash);
 
     const drop = mountEl.querySelector('#fctdoc-main');
     if (drop && caps.canUpload) {
@@ -528,7 +590,12 @@
       for (const file of picked) {
         progress.textContent = `Uploading ${done + failed + 1} of ${picked.length}: ${file.name}`;
         try {
-          await uploadOne(file, { folderId: chosenFolder, poId: chosenPo, note, projectId });
+          const chosenPoRow = (cfg.getPurchaseOrders() || []).find(p => p.id === chosenPo);
+          await uploadOne(file, {
+            folderId: chosenFolder, poId: chosenPo,
+            poNumber: chosenPoRow && chosenPoRow.po_number,
+            note, projectId,
+          });
           done++;
         } catch (err) {
           failed++;
@@ -538,14 +605,23 @@
 
       m.close();
       if (done) toast(`${done} file${done === 1 ? '' : 's'} uploaded.`);
-      await load(projectId, { force: true });
-      await refreshPoCounts();
-      if (cfg.onChange) cfg.onChange();
-      render();
+
+      // The upload is committed; only the refresh can still fail. Left
+      // unguarded it rejected, skipped the re-render, and left a green
+      // "uploaded" toast above a listing that did not contain the file — so
+      // people uploaded it a second time.
+      try {
+        await load(projectId, { force: true });
+        await refreshPoCounts();
+        if (cfg.onChange) cfg.onChange();
+        render();
+      } catch (err) {
+        toast(`Uploaded, but the list could not be refreshed: ${err.message}. Reopen the tab to see it.`, 'error');
+      }
     });
   }
 
-  async function uploadOne(file, { folderId, poId, note, projectId }) {
+  async function uploadOne(file, { folderId, poId, poNumber, note, projectId }) {
     const prepared = await maybeDownscale(file);
 
     // 1. Ticket. Nothing is written until step 3, so an abandoned ticket costs
@@ -557,23 +633,50 @@
     });
 
     // 2. Bytes, straight to storage — never through the API.
-    const put = await fetch(ticket.uploadUrl, {
-      method: 'PUT',
-      body: prepared.blob,
-      headers: { 'Content-Type': ticket.contentType },
-    });
+    let put;
+    try {
+      put = await fetch(ticket.uploadUrl, {
+        method: 'PUT',
+        body: prepared.blob,
+        headers: { 'Content-Type': ticket.contentType },
+      });
+    } catch (err) {
+      // A cross-origin PUT with a non-safelisted Content-Type needs a preflight,
+      // and a bucket with no CORS rule refuses it — which surfaces as a bare
+      // "Failed to fetch" with nothing in any server log, because the request
+      // never reached us. It is the first thing that goes wrong on a new
+      // deployment, so name it rather than leaving people guessing.
+      throw new Error(
+        'Could not reach file storage. If this is a new deployment the storage '
+        + 'bucket most likely needs a CORS rule allowing PUT from this site — '
+        + 'see api/.env.example. (' + err.message + ')'
+      );
+    }
     if (!put.ok) throw new Error(`Upload to storage failed (${put.status})`);
 
-    // 3. Register the metadata.
-    return api('POST', `/documents${q({ projectId })}`, {
-      documentId: ticket.documentId,
-      filename:   prepared.filename,
-      storageKey: ticket.storageKey,
-      sizeBytes:  prepared.blob.size,
-      folderId,
-      poId,
-      note,
-    });
+    // 3. Register the metadata. If this fails the bytes are already in the
+    //    bucket with nothing pointing at them — the purge sweep only walks
+    //    project_documents, so an orphan is invisible and billed forever.
+    //    Clean up before surfacing the error.
+    try {
+      return await api('POST', `/documents${q({ projectId })}`, {
+        documentId: ticket.documentId,
+        filename:   prepared.filename,
+        storageKey: ticket.storageKey,
+        sizeBytes:  prepared.blob.size,
+        folderId,
+        poId,
+        poNumber,
+        note,
+      });
+    } catch (err) {
+      try {
+        await api('DELETE', `/document-upload-url${q({ storageKey: ticket.storageKey })}`);
+      } catch (cleanupErr) {
+        console.warn('[documents] could not remove the orphaned upload:', cleanupErr.message);
+      }
+      throw err;
+    }
   }
 
   // ── New folder ──────────────────────────────────────────────────────
@@ -601,10 +704,15 @@
     const nameInput = m.body.querySelector('#fctdoc-fname');
     nameInput.focus();
 
+    let creating = false;
     async function create() {
+      if (creating) return;   // Enter and a second click both land here
       const name = nameInput.value.trim();
       if (!name) { toast('Give the folder a name.', 'error'); return; }
       const parentId = m.body.querySelector('#fctdoc-fparent').value || null;
+      creating = true;
+      const mkBtn = m.body.querySelector('#fctdoc-mk');
+      if (mkBtn) { mkBtn.disabled = true; mkBtn.textContent = 'Creating…'; }
       try {
         await api('POST', `/documents${q({ projectId: cfg.getProjectId(), folder: 1 })}`, { name, parentId });
         m.close();
@@ -613,6 +721,8 @@
         toast('Folder created.');
       } catch (err) {
         toast(err.message, 'error');
+        creating = false;
+        if (mkBtn) { mkBtn.disabled = false; mkBtn.textContent = 'Create'; }
       }
     }
     m.body.querySelector('#fctdoc-mk').addEventListener('click', create);
@@ -625,12 +735,18 @@
   }
 
   async function downloadDoc(id) {
+    // Open the tab synchronously, inside the click. Calling window.open after
+    // an awaited round trip loses the user-gesture context: iOS Safari blocks
+    // it outright and desktop browsers block it whenever the request is slow
+    // enough — a cold start or jobsite LTE — so downloads failed silently and
+    // only sometimes.
+    const tab = window.open('', '_blank', 'noopener');
     try {
       const { url } = await signedUrl(id, false);
-      // A plain navigation, not an <a download> — the signed URL already
-      // carries the filename in its content-disposition.
-      window.open(url, '_blank', 'noopener');
+      if (tab && !tab.closed) tab.location = url;
+      else window.location.href = url;   // blocked anyway: navigate in place
     } catch (err) {
+      if (tab && !tab.closed) tab.close();
       toast(err.message, 'error');
     }
   }
@@ -656,8 +772,20 @@
       ? `<div style="${S.muted};padding:2rem;text-align:center">
            No preview for this file type. Download it to open it.
          </div>`
+      : (doc.content_type === 'text/plain' || doc.content_type === 'text/csv')
+        // Declared inline-safe by the download route, but the viewer only had
+        // an image branch — a .txt preview rendered as a broken image.
+        ? `<iframe src="${esc(info.url)}" sandbox=""
+                   style="width:100%;height:65vh;border:1px solid var(--border,#2a2a3a);border-radius:4px;background:var(--surface2,#1a1a26)"></iframe>`
       : doc.content_type === 'application/pdf'
-        ? `<iframe src="${esc(info.url)}" style="width:100%;height:65vh;border:1px solid var(--border,#2a2a3a);border-radius:4px"></iframe>`
+        // sandbox with allow-scripts only: a PDF viewer needs script, but the
+        // frame gets no same-origin access, no form submission, and crucially
+        // no allow-top-navigation, so nothing inside it can move the page the
+        // user is on. The download route also pins the served Content-Type, so
+        // a file registered as a PDF cannot come back as HTML in the first
+        // place — this is the second line of defence.
+        ? `<iframe src="${esc(info.url)}" sandbox="allow-scripts"
+                   style="width:100%;height:65vh;border:1px solid var(--border,#2a2a3a);border-radius:4px"></iframe>`
         : `<img src="${esc(info.url)}" alt="${esc(doc.filename)}"
                 style="max-width:100%;max-height:65vh;display:block;margin:0 auto;border-radius:4px" />`;
 
@@ -779,6 +907,71 @@
     });
   }
 
+  // ── Deleted bin ─────────────────────────────────────────────────────
+  /**
+   * The other half of the soft delete. deleteDoc() has always told the user a
+   * file is "recoverable for 30 days" — this is what makes that true. Admin
+   * only, matching the API, which gates both the listing and the restore.
+   */
+  async function openTrash() {
+    let deleted = [];
+    try {
+      deleted = (await api('GET', `/documents${q({ trash: 1 })}`)).documents || [];
+    } catch (err) {
+      toast(err.message, 'error');
+      return;
+    }
+
+    const rows = deleted.length
+      ? deleted.map(d => `
+          <div style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0;
+                      border-bottom:1px solid var(--border,#2a2a3a);font-size:0.82rem">
+            <span>${iconFor(d)}</span>
+            <div style="flex:1 1 auto;min-width:0">
+              <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.filename)}</div>
+              <div style="${S.muted}">
+                ${fmtBytes(d.size_bytes)} · uploaded by ${esc(d.uploaded_by || 'unknown')}
+                · deleted ${fmtDate(d.deleted_at)}
+              </div>
+            </div>
+            <button data-restore="${esc(d.id)}" style="${S.green}">Restore</button>
+          </div>`).join('')
+      : `<div style="${S.muted};padding:1rem 0;text-align:center">Nothing has been deleted in the last 30 days.</div>`;
+
+    const m = modal('Deleted documents', `
+      <div style="display:flex;flex-direction:column;gap:0.85rem">
+        <div style="${S.muted}">
+          Deleted files stay here for 30 days and are then removed permanently,
+          along with the stored file. Everything on this list can still be restored.
+        </div>
+        <div>${rows}</div>
+        <div style="display:flex;justify-content:flex-end">
+          <button data-cancel style="${S.btn}">Close</button>
+        </div>
+      </div>`, { wide: true });
+
+    m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
+    m.body.querySelectorAll('[data-restore]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        btn.textContent = 'Restoring…';
+        try {
+          await api('PATCH', `/documents${q({ id: btn.dataset.restore })}`, { restore: true });
+          m.close();
+          await load(cfg.getProjectId(), { force: true });
+          await refreshPoCounts();
+          if (cfg.onChange) cfg.onChange();
+          render();
+          toast('Restored.');
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = 'Restore';
+          toast(err.message, 'error');
+        }
+      });
+    });
+  }
+
   // ── Purchase-order side ─────────────────────────────────────────────
   /**
    * The paperclip on a PO row. Lists what is attached, and offers an upload
@@ -860,6 +1053,7 @@
     },
 
     openAttach,
+    openTrash,
     refreshPoCounts,
     poCount(poId) { return poCounts[poId] || 0; },
     get counts() { return poCounts; },

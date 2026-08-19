@@ -39,6 +39,27 @@ for (const file of files) {
     continue;
   }
 
+  // jsdom's parser is HTML5-lenient: it silently repairs an unclosed <div> by
+  // nesting everything after it, and reports no error at all. On a 30k-line
+  // hand-edited page that is exactly the mistake worth catching, so check tag
+  // balance against the source before trusting the parse.
+  const BALANCED = ['div', 'table', 'thead', 'tbody', 'tr', 'select', 'button', 'span'];
+  const stripped = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '');
+
+  let unbalanced = 0;
+  for (const tag of BALANCED) {
+    const open  = (stripped.match(new RegExp(`<${tag}[\\s>]`, 'gi')) || []).length;
+    const close = (stripped.match(new RegExp(`</${tag}>`, 'gi')) || []).length;
+    if (open !== close) {
+      console.error(`✗ ${file} — <${tag}> is unbalanced: ${open} opened, ${close} closed`);
+      unbalanced++;
+    }
+  }
+  if (unbalanced) { failed++; continue; }
+
   const scripts = [...dom.window.document.querySelectorAll('script')]
     .filter(s => !s.src && s.textContent.trim())
     .filter(s => {

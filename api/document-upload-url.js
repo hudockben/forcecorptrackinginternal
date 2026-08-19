@@ -21,10 +21,12 @@ const UPLOAD_WINDOW_SECONDS = 900; // 15 minutes — enough for a slow jobsite L
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (!['POST', 'DELETE'].includes(req.method)) {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
   const guard = requireDivision(req, res);
   if (!guard) return;
@@ -42,6 +44,32 @@ module.exports = async (req, res) => {
     return res.status(503).json({
       error: 'Document storage is not configured on this deployment. Set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY.',
     });
+  }
+
+  // ── DELETE — abandon an upload whose registration never landed ────────
+  // Step 2 puts the bytes in the bucket and step 3 writes the row. When step 3
+  // fails (a folder deleted underneath the user, an expired token, a cold-start
+  // timeout) the object is already stored and nothing references it: the purge
+  // sweep only walks project_documents, so it was billed forever and no tool
+  // could find it. The browser calls this to clean up after itself.
+  if (req.method === 'DELETE') {
+    const key = String((req.query && req.query.storageKey) || '').trim();
+    if (!key) return res.status(400).json({ error: 'storageKey is required' });
+
+    // Only ever a key inside this caller's own company and division, and only
+    // one that no document row claims — so this can never delete a live file.
+    if (!key.startsWith(`${companyCode}/${division}/`) || key.includes('..')) {
+      return res.status(400).json({ error: 'storageKey does not belong to this company' });
+    }
+    const { neon } = require('@neondatabase/serverless');
+    const sql = neon(process.env.DATABASE_URL);
+    const claimed = await sql`SELECT id FROM project_documents WHERE storage_key = ${key} LIMIT 1`;
+    if (claimed.length) {
+      return res.status(409).json({ error: 'That file is registered to a document and was not removed' });
+    }
+
+    const gone = await storage.deleteObject(key);
+    return res.json({ ok: gone });
   }
 
   const body     = req.body || {};

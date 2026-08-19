@@ -779,6 +779,53 @@ module.exports = async (req, res) => {
         return res.json({ ok: true });
       }
 
+      // Whole-job cleanup, called when a project is deleted. Without it the
+      // documents survived with deleted_at NULL, so the purge sweep — which
+      // only selects soft-deleted rows — could never reach them, and no UI
+      // could select the job again to find them. Rows and stored objects were
+      // unreachable and billed forever.
+      if (req.query.project) {
+        if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+        // Same bar as deleting the project itself (admin or level3), and it is
+        // a soft delete, so everything stays recoverable for 30 days.
+        if (!caps.canManage) {
+          return res.status(403).json({ error: 'You do not have permission to delete this job\u2019s documents' });
+        }
+
+        const hit = await sql`
+          UPDATE project_documents
+          SET    deleted_at  = NOW(),
+                 deleted_by  = ${payload.username || null},
+                 purge_after = NOW() + make_interval(days => ${TRASH_WINDOW_DAYS})
+          WHERE  company_code = ${companyCode} AND division = ${division}
+            AND  COALESCE(project_id, '') = ${projectId}
+            AND  deleted_at IS NULL
+          RETURNING id
+        `;
+        // Folders go now: they carry no bytes, and leaving them would resurrect
+        // an empty tree for a job that no longer exists. document_links to them
+        // go too, so a restore lands via the trash view rather than a dead tree.
+        await sql`
+          DELETE FROM document_links
+          WHERE link_type = 'folder'
+            AND target_id IN (
+              SELECT id FROM project_folders
+              WHERE company_code = ${companyCode} AND division = ${division}
+                AND COALESCE(project_id, '') = ${projectId}
+            )
+        `;
+        await sql`
+          DELETE FROM project_folders
+          WHERE company_code = ${companyCode} AND division = ${division}
+            AND COALESCE(project_id, '') = ${projectId}
+        `;
+        await audit(sql, {
+          companyCode, division, projectId, action: 'DELETE', payload,
+          detail: { reason: 'project deleted', documents: hit.length, recoverable_days: TRASH_WINDOW_DAYS },
+        });
+        return res.json({ ok: true, documents: hit.length, recoverableDays: TRASH_WINDOW_DAYS });
+      }
+
       const id = req.query.id ? String(req.query.id) : null;
       if (!id) return res.status(400).json({ error: 'id is required' });
       if (!caps.canDelete) {
