@@ -59,6 +59,8 @@ for (const page of PAGES) {
     /if \((?:activeTab|_t) === 'docs'\)\s+renderDocsTab\(\);/.test(src));
   assert(`it configures itself as ${page.configuredAs}`,
     src.includes(`division:          ${page.configuredAs},`), page.configuredAs);
+  assert("the job picker is the searchable combobox, not a <select>",
+    /cbHtml\(.docs_projects./.test(src) && !/<select id="docs-proj"/.test(src));
 
   // level1 is view-only but must still reach the tab — the API decides what it
   // may do there, and hiding it outright would be a different product decision.
@@ -399,6 +401,402 @@ console.log('\n[documents.js upload sequence]');
     && /return true;\n  \}/.test(src3));
   assert('and openAttach refuses to build a modal from a superseded load',
     /if \(!fresh\) \{/.test(src3));
+
+  // An expired token must end the session, the way every other call in the app
+  // does. Left unhandled the Documents tab showed a raw "Unauthorized" toast and
+  // stranded the user on a page that looked signed in but could save nothing.
+  {
+    let loggedOut = 0;
+    window.logout = () => { loggedOut++; };
+    const savedFetch = window.fetch;
+    window.fetch = async () => ({ ok: false, status: 401, json: async () => ({ error: 'Unauthorized — please log in' }) });
+
+    let msg = '';
+    try {
+      await FD._uploadOne(new window.File(['x'], 'a.pdf', { type: 'application/pdf' }),
+        { folderId: 'f', projectId: 'p' });
+    } catch (err) { msg = err.message; }
+
+    assert('a 401 ends the session instead of just toasting', loggedOut === 1, `logout called ${loggedOut}x`);
+    assert('and says so in words a person can act on',
+      /session expired/i.test(msg) && /sign in/i.test(msg), msg);
+    window.fetch = savedFetch;
+    delete window.logout;
+  }
+
+  // ── 4. The folder rail's filter, driven in jsdom ─────────────────────────
+  // A job carries a folder per cost code, so the rail is the longest list on
+  // the page. The filter has to narrow it without breaking navigation: the
+  // main pane lists documents only, so the rail is the sole way into a
+  // subfolder and anything it hides is unreachable while the box has text.
+  {
+    console.log('\n[folder rail filter]');
+
+    // Purchase Orders ── PO PO-0137
+    // Earthwork
+    // Design & Permitting ── Drawings ─┬─ Permits ── Township
+    //                                  └─ Correspondence
+    //
+    // The shape is deliberate. Searching "per" hits both Design & Permitting
+    // and Permits — one an ancestor of the other, with a folder between them
+    // that matches nothing. Correspondence hangs off that in-between folder,
+    // and is the only thing that notices whether the descent into a matched
+    // branch is blocked by a folder already kept as some other hit's ancestor.
+    const TREE = [
+      { id: 'f-po',    parent_id: null,     name: 'Purchase Orders',     kind: 'fixed',     sort_order: 1 },
+      { id: 'f-po137', parent_id: 'f-po',   name: 'PO PO-0137',          kind: 'po',        sort_order: 1 },
+      { id: 'f-earth', parent_id: null,     name: 'Earthwork',           kind: 'cost_code', sort_order: 2 },
+      { id: 'f-des',   parent_id: null,     name: 'Design & Permitting', kind: 'cost_code', sort_order: 3 },
+      { id: 'f-dwg',   parent_id: 'f-des',  name: 'Drawings',            kind: 'cost_code', sort_order: 1 },
+      { id: 'f-perm',  parent_id: 'f-dwg',  name: 'Permits',             kind: 'cost_code', sort_order: 1 },
+      { id: 'f-town',  parent_id: 'f-perm', name: 'Township',            kind: 'cost_code', sort_order: 1 },
+      { id: 'f-corr',  parent_id: 'f-dwg',  name: 'Correspondence',      kind: 'cost_code', sort_order: 2 },
+    ];
+
+    const savedFetch = window.fetch;
+    window.fetch = async url => {
+      if (String(url).includes('/api/documents')) {
+        return { ok: true, status: 200, json: async () => ({
+          folders: TREE,
+          documents: [{ id: 'd1', filename: 'ticket.pdf', folder_ids: ['f-earth'],
+                        size_bytes: 10, uploaded_by: 'ben', uploaded_at: '2026-08-19T00:00:00Z', po_ids: [] }],
+          caps: { canUpload: true, canManage: true, canDelete: true },
+        }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+
+    const mount = window.document.getElementById('mount');
+    await FD.renderTab(mount);
+
+    const box  = () => mount.querySelector('#fctdoc-folder-search');
+    const rail = () => [...mount.querySelectorAll('[data-folder]')].map(el => el.title);
+    const type = text => {
+      const b = box();
+      b.value = text;
+      b.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+
+    assert('the rail carries a filter box', Boolean(box()));
+    assert('and lists every folder before anything is typed',
+      rail().join('|') === 'Purchase Orders|PO PO-0137|Earthwork|Design & Permitting|Drawings|Permits|Township|Correspondence', rail().join('|'));
+
+    // A leaf match has to keep the branch above it, or the hit shows up with
+    // no indication of where it lives.
+    type('township');
+    assert('a match keeps the ancestors that lead to it',
+      rail().join('|') === 'Design & Permitting|Drawings|Permits|Township', rail().join('|'));
+
+    // …and a match has to keep what is under it. The main pane never lists
+    // subfolders, so a hidden child cannot be reached at all.
+    type('permits');
+    assert('a match keeps its children, which are otherwise unreachable',
+      rail().join('|') === 'Design & Permitting|Drawings|Permits|Township', rail().join('|'));
+
+    // Two hits where one is an ancestor of the other. The branch under the
+    // outer hit must still be walked even though the folder at its head was
+    // already kept as the inner hit's ancestor — miss that and a matched
+    // folder quietly loses children it is supposed to still show.
+    type('per');
+    assert('overlapping matches do not swallow each other\'s children',
+      rail().join('|') === 'Design & Permitting|Drawings|Permits|Township|Correspondence',
+      rail().join('|'));
+
+    type('earth');
+    assert('an unrelated branch drops out entirely',
+      rail().join('|') === 'Earthwork', rail().join('|'));
+    assert('the matched run is highlighted',
+      /<mark[^>]*>Earth<\/mark>work/.test(mount.querySelector('[data-folder]').innerHTML),
+      mount.querySelector('[data-folder]').innerHTML);
+
+    type('zzz');
+    assert('a filter matching nothing says so', rail().length === 0 && /No folder matches/.test(mount.innerHTML));
+    assert('and leaves the box up so it can be cleared', Boolean(box()) && box().value === 'zzz');
+
+    // Enter opens the first match in the order the rail draws them.
+    type('perm');
+    box().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    const active = [...mount.querySelectorAll('[data-folder]')].find(el => /font-weight:600/.test(el.getAttribute('style')));
+    assert('Enter opens the first folder the filter found',
+      Boolean(active) && active.title === 'Design & Permitting', active && active.title);
+    assert('and the filter survives it, so the next one is a keystroke away',
+      Boolean(box()) && box().value === 'perm', box() && box().value);
+
+    // Escape clears.
+    box().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    assert('Escape clears the filter', box().value === '' && rail().length === 8, rail().join('|'));
+
+    // The filter is the rail's own; it must not touch the document search.
+    type('earth');
+    const docBox = mount.querySelector('#fctdoc-search');
+    assert('the document search is left alone', docBox && docBox.value === '', docBox && docBox.value);
+
+    // ── The folder <select> in the dialogs ─────────────────────────────────
+    // The same list again, and the one that is a required pick on every single
+    // upload. Go Home first so the dialog opens with nothing preselected.
+    [...mount.querySelectorAll('[data-folder-crumb]')].find(el => el.dataset.folderCrumb === '').click();
+    mount.querySelector('#fctdoc-newfolder').click();
+    const dlg  = [...window.document.querySelectorAll('body > div')].pop();
+    const fbox = dlg.querySelector('[data-folder-filter="fctdoc-fparent"]');
+    const fsel = dlg.querySelector('#fctdoc-fparent');
+    const fopt = () => [...fsel.options].map(o => o.textContent.replace(/ /g, '')).join('|');
+    const ftype = text => {
+      fbox.value = text;
+      fbox.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+
+    assert('the New Folder dialog gets a filter over its folder list',
+      Boolean(fbox) && Boolean(fsel));
+    assert('which starts on the whole tree, indented',
+      [...fsel.options].length === 9, fopt());
+    assert('and starts unpicked', fsel.value === '', fsel.value);
+
+    ftype('permits');
+    assert('typing narrows the options the way the rail narrows',
+      fopt() === '— top level —|Design & Permitting|Drawings|Permits|Township', fopt());
+    assert('and a single match picks itself, so a phone needs no scrolling',
+      fsel.value === 'f-perm', fsel.value);
+
+    ftype('');
+    assert('clearing the box puts the whole tree back',
+      [...fsel.options].length === 9, fopt());
+    assert('without disturbing the pick', fsel.value === 'f-perm', fsel.value);
+
+    // A pick already made must survive a filter that excludes it — losing the
+    // folder you chose because you then typed in a search box is the worst
+    // outcome this control has.
+    fsel.value = 'f-earth';
+    ftype('township');
+    assert('a folder already picked stays picked and stays listed',
+      fsel.value === 'f-earth' && [...fsel.options].some(o => o.value === 'f-earth'),
+      `${fsel.value} / ${[...fsel.options].map(o => o.value).join(',')}`);
+    assert('and a lone match does not steal a pick that was already made',
+      fsel.value === 'f-earth', fsel.value);
+
+    dlg.remove();
+
+    // ── The purchase-order <select> in the dialogs ─────────────────────────
+    // Same problem as the folder list: a busy job runs dozens of POs, and the
+    // office knows them by number or by who they went to, so both have to
+    // narrow the list.
+    FD.configure({ getPurchaseOrders: () => [
+      { id: 'po-1', po_number: 'PO-0137', supplier: 'Cleveland Quarry', project_id: 'p1' },
+      { id: 'po-2', po_number: 'PO-0212', supplier: 'Keystone Asphalt',  project_id: 'p1' },
+      { id: 'po-3', po_number: 'PO-0219', supplier: 'Keystone Asphalt',  project_id: 'p1' },
+      { id: 'po-4', po_number: 'PO-0455', supplier: 'Allegheny Ready Mix', project_id: 'p2' },
+      { id: 'po-5', po_number: 'PO-0500', supplier: 'No Job Supply',     project_id: null },
+    ] });
+
+    mount.querySelector('#fctdoc-upload').click();
+    const up    = [...window.document.querySelectorAll('body > div')].pop();
+    const pbox  = up.querySelector('[data-po-filter="fctdoc-po"]');
+    const psel  = up.querySelector('#fctdoc-po');
+    const popt  = () => [...psel.options].map(o => o.textContent).join('|');
+    const ptype = text => {
+      pbox.value = text;
+      pbox.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+
+    assert('the Upload dialog gets a filter over its purchase orders',
+      Boolean(pbox) && Boolean(psel));
+    assert('listing this job\'s POs and the ones with no job, never another job\'s',
+      popt() === '— none —|PO-0137 — Cleveland Quarry|PO-0212 — Keystone Asphalt|'
+               + 'PO-0219 — Keystone Asphalt|PO-0500 — No Job Supply', popt());
+
+    ptype('0212');
+    assert('typing a PO number narrows to it',
+      popt() === '— none —|PO-0212 — Keystone Asphalt', popt());
+    assert('and a single match picks itself', psel.value === 'po-2', psel.value);
+
+    ptype('');
+    ptype('keystone');
+    assert('typing a supplier narrows to everything bought from them',
+      popt() === '— none —|PO-0212 — Keystone Asphalt|PO-0219 — Keystone Asphalt', popt());
+
+    // Two matches, so nothing is auto-picked — but po-2 was picked before and
+    // has to survive both the wider filter and this one.
+    assert('a PO already picked stays picked', psel.value === 'po-2', psel.value);
+
+    ptype('cleveland');
+    assert('and stays listed even when the filter excludes it',
+      [...psel.options].some(o => o.value === 'po-2'),
+      [...psel.options].map(o => o.value).join(','));
+    assert('a lone match does not steal a pick already made', psel.value === 'po-2', psel.value);
+
+    ptype('zzz');
+    assert('a filter matching nothing leaves only the none option',
+      popt() === '— none —|PO-0212 — Keystone Asphalt', popt());
+    up.remove();
+
+    // Attaching from the PO tab pins the PO — there is nothing to search, and
+    // a filter box over a disabled select would just be a dead control.
+    await FD.openAttach({ id: 'po-1', po_number: 'PO-0137', project_id: 'p1' });
+    const att = [...window.document.querySelectorAll('body > div')].pop();
+    att.querySelector('[data-attach-new]').click();
+    const pinned = [...window.document.querySelectorAll('body > div')].pop();
+    assert('attaching from a purchase order pins it, with no filter box',
+      pinned.querySelector('#fctdoc-po').disabled
+        && !pinned.querySelector('[data-po-filter="fctdoc-po"]'));
+    assert('and the pinned purchase order is the one selected',
+      pinned.querySelector('#fctdoc-po').value === 'po-1',
+      pinned.querySelector('#fctdoc-po').value);
+    assert('while its folder still has a filter, since that is the open choice',
+      Boolean(pinned.querySelector('[data-folder-filter="fctdoc-folder"]')));
+    pinned.remove();
+
+    // The Link dialog carries the same picker.
+    mount.querySelector('[data-folder="f-earth"]').click();
+    mount.querySelector('[data-attach="d1"]').click();
+    const lnk = [...window.document.querySelectorAll('body > div')].pop();
+    const lbox = lnk.querySelector('[data-po-filter="fctdoc-linkpo"]');
+    const lsel = lnk.querySelector('#fctdoc-linkpo');
+    assert('the Link dialog gets one too', Boolean(lbox) && Boolean(lsel));
+    lbox.value = 'cleveland';
+    lbox.dispatchEvent(new window.Event('input', { bubbles: true }));
+    assert('and it narrows and picks the same way',
+      lsel.value === 'po-1' && [...lsel.options].length === 2,
+      `${lsel.value} / ${[...lsel.options].map(o => o.textContent).join('|')}`);
+    lnk.remove();
+
+    FD.configure({ getPurchaseOrders: () => [] });
+    window.fetch = savedFetch;
+  }
+
+  // ── 3. The Documents job picker, driven in jsdom ─────────────────────────
+  // The picker is the app's shared combobox now, not a <select>, so "can you
+  // find a job by typing part of its name, or its job number" is only
+  // answerable by running it. Each page's inline script is 30k lines and can't
+  // be evaluated whole, so the combobox core and the two docs functions are
+  // sliced out of the source and run against a real DOM — which also proves
+  // the inline onchange the markup depends on actually resolves.
+  for (const page of PAGES) {
+    console.log(`\n[${page.file} — job picker]`);
+    const src = read(page.file);
+
+    // Lift a declaration out of the page, brace-matched to its close. Every
+    // brace these particular functions contain is either code or a balanced
+    // ${} inside a template literal, so counting is enough.
+    const grabFn = header => {
+      const at = src.indexOf(header);
+      if (at < 0) throw new Error(`${page.file}: no ${header}`);
+      let depth = 0;
+      for (let i = src.indexOf('{', at); i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}' && --depth === 0) return src.slice(at, i + 1);
+      }
+      throw new Error(`${page.file}: unbalanced ${header}`);
+    };
+    const grabLine = header => {
+      const at = src.indexOf(header);
+      if (at < 0) throw new Error(`${page.file}: no ${header}`);
+      return src.slice(at, src.indexOf('\n', at));
+    };
+
+    const harness = [
+      grabLine('const _cbState = new WeakMap();'),
+      grabLine('const _cbEsc = s =>'),
+      grabLine('const _cbLabel = o =>'),
+      grabFn('function cbHtml('),
+      grabFn('function cbOptionsFor('),
+      grabFn('function cbFilterFor('),
+      grabFn('function cbOnFocus('),
+      grabFn('function cbOnInput('),
+      grabFn('function cbRenderMenu('),
+      grabFn('function cbClose('),
+      grabFn('function cbCommitInput('),
+      grabFn('function _schedProjLabel('),
+      grabFn('function renderDocsTab('),
+      grabFn('function docsProjPick('),
+      // Fixtures, plus the few page globals those functions reach for.
+      `var projectsList = [
+         { id: 'p-b', 'project-name': 'Beaver Falls Interchange', 'job-number': '5501' },
+         { id: 'p-a', 'project-name': 'Allegheny Commons',        'job-number': '4402' },
+         { id: 'p-f', 'project-name': 'Franklin Regional Multi',  'job-number': '0137' },
+       ];
+       var docsProjectId = null, _docsWaitTicks = 0, _docsWaitTimer = null, _rendered = [];
+       function _docsEnsureConfigured() {}
+       window.FCTDocuments = { renderTab: el => _rendered.push(el && el.id) };
+       function _probe() { return { projectId: docsProjectId, rendered: _rendered.slice() }; }`,
+    ].join('\n\n');
+
+    const pdom = new JSDOM('<!doctype html><body><div id="docs-root"></div></body>',
+      { url: 'http://localhost/', runScripts: 'dangerously' });
+    const win = pdom.window;
+    const doc = win.document;
+    win.eval(harness);
+
+    win.renderDocsTab();
+    const cb = doc.querySelector('.cb[data-list="docs_projects"]');
+    assert('the job picker renders as the searchable combobox', Boolean(cb));
+    assert('and no <select> is left behind', !doc.querySelector('#docs-root select'));
+
+    const input = doc.getElementById('docs-proj');
+    assert('it opens on General / Non-Job', Boolean(input) && input.value === 'General / Non-Job',
+      input && input.value);
+    assert('with the resolved id planted, so an untouched blur resolves back to it',
+      input.dataset.cbValue === '', JSON.stringify(input.dataset.cbValue));
+
+    const menu = () => [...cb.querySelectorAll('.cb-opt')].map(o => o.dataset.val);
+    const type = text => { input.value = text; win.cbOnInput({ stopPropagation() {} }, input); };
+
+    win.cbOnFocus(input);
+    assert('the unfiltered menu leads with General / Non-Job, then jobs A→Z',
+      menu().join('|') === 'General / Non-Job|Allegheny Commons|Beaver Falls Interchange|Franklin Regional Multi',
+      menu().join('|'));
+
+    // The office looks jobs up by number as often as by name, so the number
+    // carried in the note has to narrow the list too.
+    type('0137');
+    assert('typing a job number narrows to that job',
+      menu().join('|') === 'Franklin Regional Multi', menu().join('|'));
+    type('commons');
+    assert('typing part of a name narrows to that job',
+      menu().join('|') === 'Allegheny Commons', menu().join('|'));
+    type('non-job');
+    assert('the General / Non-Job entry is reachable by typing too',
+      menu().join('|') === 'General / Non-Job', menu().join('|'));
+
+    // Pick one the way the menu's mousedown delegate does.
+    type('');
+    const pick = [...cb.querySelectorAll('.cb-opt')].find(o => o.dataset.val === 'Franklin Regional Multi');
+    input.value = pick.dataset.val;
+    input.dataset.cbValue = pick.dataset.cbVal;
+    win.cbCommitInput(input);
+    let probe = win._probe();
+    assert('picking a job selects it', probe.projectId === 'p-f', probe.projectId);
+    assert('it reloads the browser under the picker', probe.rendered.join(',') === 'docs-mount,docs-mount',
+      probe.rendered.join(','));
+    assert('and leaves the picker itself standing, caret and all',
+      doc.getElementById('docs-proj') === input);
+
+    // Text matching nothing must put the current job back rather than quietly
+    // dumping the user into the division-level area.
+    delete input.dataset.cbValue;
+    input.value = 'zzz not a job';
+    win.cbCommitInput(input);
+    probe = win._probe();
+    assert('junk text keeps the current job', probe.projectId === 'p-f', probe.projectId);
+    assert('and the box shows that job again', input.value === 'Franklin Regional Multi', input.value);
+
+    // An emptied box is the one gesture that means "no job".
+    delete input.dataset.cbValue;
+    input.value = '';
+    win.cbCommitInput(input);
+    probe = win._probe();
+    assert('an emptied box falls back to General / Non-Job', probe.projectId === null, String(probe.projectId));
+    assert('and the box says so', input.value === 'General / Non-Job', input.value);
+
+    // A job deleted while it was selected must not leave the picker showing a
+    // live name for a scope no picker can reach again.
+    win.eval('docsProjectId = "deleted-job"');
+    win.renderDocsTab();
+    assert('a job that left the list resets the picker',
+      win._probe().projectId === null
+        && doc.getElementById('docs-proj').value === 'General / Non-Job',
+      doc.getElementById('docs-proj').value);
+
+    pdom.window.close();
+  }
 
   console.log(failed ? `\n${failed} failed.` : '\nAll checks passed.');
   process.exit(failed ? 1 : 0);

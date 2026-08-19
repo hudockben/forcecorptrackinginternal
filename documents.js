@@ -49,7 +49,8 @@
   let documents = [];
   let caps      = { canUpload: false, canManage: false, canDelete: false };
   let currentFolderId = null;   // null = the root listing
-  let search    = '';
+  let search    = '';           // the document search in the toolbar
+  let folderSearch = '';        // the folder rail's own filter — independent
   let mountEl   = null;
   let loadedFor = undefined;    // project id the current data belongs to
   let poCounts  = {};
@@ -69,6 +70,21 @@
     return String(s ?? '').replace(/[&<>"']/g, c => (
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
     ));
+  }
+
+  // Escape `text`, wrapping the run that matches `needle` so the eye lands on
+  // it. The split happens on the raw string and each piece is escaped after —
+  // escaping first and then searching would miss any needle containing a
+  // character esc() rewrites, and could match the entity it produced.
+  function mark(text, needle) {
+    const s = String(text == null ? '' : text);
+    if (!needle) return esc(s);
+    const at = s.toLowerCase().indexOf(needle);
+    if (at < 0) return esc(s);
+    return esc(s.slice(0, at))
+      + '<mark style="background:var(--green,#22c55e);color:#0a0a0f;border-radius:2px;padding:0 1px">'
+      + esc(s.slice(at, at + needle.length)) + '</mark>'
+      + esc(s.slice(at + needle.length));
   }
 
   function fmtBytes(n) {
@@ -106,6 +122,26 @@
     const r = await fetch(`${API}${path}`, init);
     let data = null;
     try { data = await r.json(); } catch { /* empty body */ }
+
+    // An expired token has to end the session, the way every other call in the
+    // app does (apiGet/apiPut and the pollers all call logout() on a 401).
+    // Without this the Documents tab showed the raw server string as a toast
+    // and left the user on a page that looked signed in but could save nothing
+    // — which reads as a mysterious "session error" rather than "log in again".
+    // logout() is a global on every host page and latches itself, so calling it
+    // from several in-flight requests at once is safe.
+    if (r.status === 401) {
+      if (typeof window.logout === 'function') {
+        window.logout();
+      } else {
+        localStorage.removeItem('fct_token');
+        window.location.reload();
+      }
+      const err = new Error('Your session expired. Please sign in again.');
+      err.status = 401;
+      throw err;
+    }
+
     if (!r.ok) {
       const err = new Error((data && data.error) || `Request failed (${r.status})`);
       err.status = r.status;
@@ -268,6 +304,51 @@
       || (d.uploaded_by || '').toLowerCase().includes(needle));
   }
 
+  // Which folders survive the rail's filter, as a Set of ids; null when the
+  // box is empty. A folder is kept when its own name matches, when one of its
+  // descendants matches — so the branch leading to a hit still reads — or when
+  // one of its ancestors matches. That last case matters more than it looks:
+  // the main pane lists documents only, so the rail is the sole way into a
+  // subfolder, and dropping a matched folder's children would strand them
+  // behind a filter with no way to reach them.
+  function visibleFolderIds() { return folderMatchIds(folderSearch.trim().toLowerCase()); }
+
+  function folderMatchIds(needle) {
+    if (!needle) return null;
+    const hits = folders.filter(f => (f.name || '').toLowerCase().includes(needle));
+    const keep = new Set();
+    for (const f of hits) for (const a of trail(f.id)) keep.add(a.id);   // hit + ancestors
+    // Descend from every hit. The visited set is deliberately separate from
+    // keep: a folder already kept as some other hit's ancestor still has to be
+    // descended into, or its children go missing from under a match.
+    const seen  = new Set();
+    const stack = hits.flatMap(f => childrenOf(f.id));
+    while (stack.length) {
+      const kid = stack.pop();
+      if (seen.has(kid.id)) continue;                   // also stops a cyclic parent_id
+      seen.add(kid.id);
+      keep.add(kid.id);
+      stack.push(...childrenOf(kid.id));
+    }
+    return keep;
+  }
+
+  // The first folder the filter matches, in the order the rail draws them —
+  // what Enter opens.
+  function firstFolderMatch() {
+    const needle = folderSearch.trim().toLowerCase();
+    if (!needle) return null;
+    const walk = parentId => {
+      for (const f of childrenOf(parentId)) {
+        if ((f.name || '').toLowerCase().includes(needle)) return f;
+        const hit = walk(f.id);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return walk(null);
+  }
+
   // ── Rendering ───────────────────────────────────────────────────────
   // Inline styles cannot carry a media query, and the phone is the headline
   // case here — a foreman photographing a delivery ticket. Without this the
@@ -311,7 +392,8 @@
     muted: 'color:var(--muted,#666);font-size:0.78rem',
   };
 
-  function folderNodeHTML(f, depth) {
+  function folderNodeHTML(f, depth, visible, needle) {
+    if (visible && !visible.has(f.id)) return '';
     const kids     = childrenOf(f.id);
     const isActive = f.id === currentFolderId;
     const count    = docsIn(f.id).length;
@@ -324,10 +406,10 @@
                     padding-left:${0.4 + depth * 0.8}rem;border-radius:3px;cursor:pointer;font-size:0.8rem;
                     ${isActive ? 'background:var(--surface2,#1a1a26);color:var(--green,#22c55e);font-weight:600' : 'color:var(--text,#e0e0e0)'}">
           <span>${icon}</span>
-          <span style="flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
+          <span style="flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${mark(f.name, needle)}</span>
           ${count ? `<span style="${S.muted}">${count}</span>` : ''}
         </div>
-        ${kids.map(k => folderNodeHTML(k, depth + 1)).join('')}
+        ${kids.map(k => folderNodeHTML(k, depth + 1, visible, needle)).join('')}
       </div>`;
   }
 
@@ -363,6 +445,9 @@
     const projectId = cfg.getProjectId();
     const hits      = searchHits();
     const roots     = childrenOf(null);
+    const visible   = visibleFolderIds();
+    const needle    = folderSearch.trim().toLowerCase();
+    const tree      = roots.map(f => folderNodeHTML(f, 0, visible, needle)).join('');
     const listing   = hits !== null ? hits
                     : currentFolderId ? docsIn(currentFolderId)
                     : [];
@@ -387,8 +472,15 @@
 
       <div class="fctdoc-wrap" style="${S.wrap}">
         <div class="fctdoc-side" style="${S.side}" id="fctdoc-tree">
-          ${roots.length ? roots.map(f => folderNodeHTML(f, 0)).join('')
-                         : `<div style="${S.muted};padding:0.5rem">No folders yet.</div>`}
+          ${roots.length ? `
+            <div style="position:sticky;top:0;z-index:1;background:var(--bg,#0a0a0f);padding-bottom:0.4rem">
+              <input type="text" id="fctdoc-folder-search" placeholder="&#128269; Filter folders…"
+                     value="${esc(folderSearch)}" autocomplete="off" spellcheck="false"
+                     style="${S.input};width:100%;box-sizing:border-box;font-size:0.76rem;padding:0.25rem 0.45rem" />
+            </div>` : ''}
+          ${!roots.length
+            ? `<div style="${S.muted};padding:0.5rem">No folders yet.</div>`
+            : tree || `<div style="${S.muted};padding:0.5rem">No folder matches &ldquo;${esc(folderSearch)}&rdquo;.</div>`}
         </div>
         <div class="fctdoc-main" style="${S.main}" id="fctdoc-main">
           ${hits !== null
@@ -417,16 +509,47 @@
     wireTab();
   }
 
+  // render() rebuilds the whole panel, so the box being typed into is replaced
+  // mid-keystroke. Put focus and caret back on whatever took its place.
+  function rerenderKeeping(selector, box) {
+    const at = box.selectionStart;
+    render();
+    const again = mountEl.querySelector(selector);
+    if (!again) return;
+    again.focus();
+    again.setSelectionRange(at, at);
+  }
+
   function wireTab() {
     const searchBox = mountEl.querySelector('#fctdoc-search');
     if (searchBox) {
       searchBox.addEventListener('input', e => {
         search = e.target.value;
-        const at = e.target.selectionStart;
-        render();
-        const again = mountEl.querySelector('#fctdoc-search');
-        again.focus();
-        again.setSelectionRange(at, at);
+        rerenderKeeping('#fctdoc-search', e.target);
+      });
+    }
+
+    const folderBox = mountEl.querySelector('#fctdoc-folder-search');
+    if (folderBox) {
+      folderBox.addEventListener('input', e => {
+        folderSearch = e.target.value;
+        rerenderKeeping('#fctdoc-folder-search', e.target);
+      });
+      folderBox.addEventListener('keydown', e => {
+        // Enter opens the first folder the filter found — type "earthwork",
+        // press Enter, you are in it. Escape clears the filter.
+        if (e.key === 'Enter') {
+          const hit = firstFolderMatch();
+          if (!hit) return;
+          e.preventDefault();
+          currentFolderId = hit.id;
+          search = '';
+          rerenderKeeping('#fctdoc-folder-search', e.target);
+        } else if (e.key === 'Escape' && folderSearch) {
+          e.preventDefault();
+          folderSearch = '';
+          rerenderKeeping('#fctdoc-folder-search', e.target);
+        }
       });
     }
 
@@ -504,10 +627,14 @@
   }
 
   // Options for the "file it in" picker — every folder, indented by depth.
-  function folderOptionsHTML(selectedId) {
+  function folderOptionsHTML(selectedId, keep) {
     const out = [];
     (function walk(parentId, depth) {
       for (const f of childrenOf(parentId)) {
+        // keep is ancestor-closed — a folder that did not survive the filter
+        // cannot have a descendant that did — so the subtree goes with it and
+        // the indentation never shows a child under a parent that is gone.
+        if (keep && !keep.has(f.id)) continue;
         out.push(`<option value="${esc(f.id)}" ${f.id === selectedId ? 'selected' : ''}>${'&nbsp;'.repeat(depth * 4)}${esc(f.name)}</option>`);
         walk(f.id, depth + 1);
       }
@@ -515,12 +642,97 @@
     return out.join('');
   }
 
-  function poOptionsHTML(projectId, selectedId) {
-    const pos = (cfg.getPurchaseOrders() || [])
+  // A <select> of thirty cost-code folders is a scroll on a laptop and a
+  // lottery on a phone. Sit a filter box on top of it that narrows the options
+  // as you type. The element stays a real <select>, so every reader of its
+  // .value — and the native picker a phone puts up — is untouched.
+  function folderPickerHTML(id, selectedId, firstLabel) {
+    return `
+      <input type="text" data-folder-filter="${esc(id)}" placeholder="&#128269; Filter folders…"
+             autocomplete="off" spellcheck="false"
+             style="${S.input};width:100%;box-sizing:border-box;font-size:0.76rem;margin-bottom:0.3rem" />
+      <select id="${esc(id)}" style="${S.input};width:100%">
+        <option value="">${firstLabel}</option>
+        ${folderOptionsHTML(selectedId, null)}
+      </select>`;
+  }
+
+  function wireFolderFilter(root, id, firstLabel) {
+    const box = root.querySelector(`[data-folder-filter="${id}"]`);
+    const sel = root.querySelector('#' + id);
+    if (!box || !sel) return;
+    box.addEventListener('input', () => {
+      const needle = box.value.trim().toLowerCase();
+      const held   = sel.value;
+      const keep   = folderMatchIds(needle);
+      // Whatever is already picked stays in the list even when it does not
+      // match — a filter is for finding a folder, not for silently dropping
+      // the one already chosen.
+      if (keep && held) for (const a of trail(held)) keep.add(a.id);
+      sel.innerHTML = `<option value="">${firstLabel}</option>` + folderOptionsHTML(held, keep);
+      sel.value = held;
+      // Narrowing to exactly one folder picks it, which is the whole point on
+      // a phone. Only when nothing is picked yet — never overwrite a choice.
+      if (!held && needle) {
+        const hits = folders.filter(f => (f.name || '').toLowerCase().includes(needle));
+        if (hits.length === 1) sel.value = hits[0].id;
+      }
+    });
+  }
+
+  // The purchase orders this job may link to: its own, plus any that carry no
+  // job at all.
+  function posFor(projectId) {
+    return (cfg.getPurchaseOrders() || [])
       .filter(po => !projectId || !po.project_id || po.project_id === projectId);
+  }
+
+  // How a purchase order reads everywhere it is listed, and what the filter
+  // box matches against — the number and the supplier, because half the office
+  // knows a PO by who it went to.
+  function poLabel(po) {
+    return `${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}`;
+  }
+
+  function poOptionsHTML(projectId, selectedId, needle) {
+    // A purchase order already picked stays listed even when it does not match
+    // — a filter is for finding one, not for dropping the one already chosen.
+    const pos = posFor(projectId).filter(po =>
+      !needle || po.id === selectedId || poLabel(po).toLowerCase().includes(needle));
     return `<option value="">— none —</option>` + pos.map(po =>
-      `<option value="${esc(po.id)}" ${po.id === selectedId ? 'selected' : ''}>${esc(po.po_number || po.id)}${po.supplier ? ` — ${esc(po.supplier)}` : ''}</option>`
+      `<option value="${esc(po.id)}" ${po.id === selectedId ? 'selected' : ''}>${esc(poLabel(po))}</option>`
     ).join('');
+  }
+
+  // Same shape as the folder picker: a filter box over a real <select>, so the
+  // native picker a phone puts up and every reader of .value are untouched.
+  function poPickerHTML(id, projectId, selectedId, locked) {
+    const filter = locked ? '' : `
+      <input type="text" data-po-filter="${esc(id)}" placeholder="&#128269; Filter purchase orders…"
+             autocomplete="off" spellcheck="false"
+             style="${S.input};width:100%;box-sizing:border-box;font-size:0.76rem;margin-bottom:0.3rem" />`;
+    return `${filter}
+      <select id="${esc(id)}" style="${S.input};width:100%" ${locked ? 'disabled' : ''}>
+        ${poOptionsHTML(projectId, selectedId)}
+      </select>`;
+  }
+
+  function wirePoFilter(root, id, projectId) {
+    const box = root.querySelector(`[data-po-filter="${id}"]`);
+    const sel = root.querySelector('#' + id);
+    if (!box || !sel) return;
+    box.addEventListener('input', () => {
+      const needle = box.value.trim().toLowerCase();
+      const held   = sel.value;
+      sel.innerHTML = poOptionsHTML(projectId, held, needle);
+      sel.value = held;
+      // Narrowing to exactly one picks it, which is the whole point on a
+      // phone. Only when nothing is picked yet — never over a choice made.
+      if (!held && needle) {
+        const hits = posFor(projectId).filter(po => poLabel(po).toLowerCase().includes(needle));
+        if (hits.length === 1) sel.value = hits[0].id;
+      }
+    });
   }
 
   // ── Upload ──────────────────────────────────────────────────────────
@@ -542,16 +754,11 @@
         </div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Folder <span style="color:var(--red,#ef4444)">*</span></label>
-          <select id="fctdoc-folder" style="${S.input};width:100%">
-            <option value="">— pick a folder —</option>
-            ${folderOptionsHTML(folderId)}
-          </select>
+          ${folderPickerHTML('fctdoc-folder', folderId, '— pick a folder —')}
         </div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Link to purchase order <span style="opacity:0.7">(optional)</span></label>
-          <select id="fctdoc-po" style="${S.input};width:100%" ${lockPo ? 'disabled' : ''}>
-            ${poOptionsHTML(projectId, poId)}
-          </select>
+          ${poPickerHTML('fctdoc-po', projectId, poId, lockPo)}
         </div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Note <span style="opacity:0.7">(optional)</span></label>
@@ -563,6 +770,9 @@
           <button id="fctdoc-go" style="${S.green}">Upload</button>
         </div>
       </div>`);
+
+    wireFolderFilter(m.body, 'fctdoc-folder', '— pick a folder —');
+    wirePoFilter(m.body, 'fctdoc-po', projectId);
 
     const fileInput = m.body.querySelector('#fctdoc-files');
     const fileList  = m.body.querySelector('#fctdoc-filelist');
@@ -694,10 +904,7 @@
         </div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Inside</label>
-          <select id="fctdoc-fparent" style="${S.input};width:100%">
-            <option value="">— top level —</option>
-            ${folderOptionsHTML(currentFolderId)}
-          </select>
+          ${folderPickerHTML('fctdoc-fparent', currentFolderId, '— top level —')}
         </div>
         <div style="display:flex;justify-content:flex-end;gap:0.5rem">
           <button data-cancel style="${S.btn}">Cancel</button>
@@ -705,6 +912,7 @@
         </div>
       </div>`);
 
+    wireFolderFilter(m.body, 'fctdoc-fparent', '— top level —');
     m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
     const nameInput = m.body.querySelector('#fctdoc-fname');
     nameInput.focus();
@@ -843,14 +1051,14 @@
         <div style="${S.muted}">${esc(doc.filename)}</div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Purchase order</label>
-          <select id="fctdoc-linkpo" style="${S.input};width:100%">${poOptionsHTML(projectId, null)}</select>
+          ${poPickerHTML('fctdoc-linkpo', projectId, null, false)}
         </div>
         ${(doc.po_ids || []).length ? `
           <div>
             <div style="${S.muted};margin-bottom:0.25rem">Already linked to</div>
             ${doc.po_ids.map(poId => {
               const po = (cfg.getPurchaseOrders() || []).find(p => p.id === poId);
-              const label = po ? `${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}` : poId;
+              const label = po ? poLabel(po) : poId;
               return `<div style="display:flex;align-items:center;gap:0.5rem;font-size:0.8rem;padding:0.2rem 0">
                         <span style="flex:1 1 auto">${esc(label)}</span>
                         <button data-unlink="${esc(poId)}" style="${S.btn}">Remove</button>
@@ -863,6 +1071,7 @@
         </div>
       </div>`);
 
+    wirePoFilter(m.body, 'fctdoc-linkpo', projectId);
     m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
 
     m.body.querySelector('#fctdoc-dolink').addEventListener('click', async () => {
@@ -1079,6 +1288,7 @@
         await load(projectId, { force: true });
         currentFolderId = null;
         search = '';
+        folderSearch = '';
         render();
       } catch (err) {
         mountEl.innerHTML = `<div style="color:var(--red,#ef4444);padding:1.5rem">
