@@ -411,6 +411,26 @@
     .dash-overdue-days { font-size: 0.62rem; color: var(--muted); flex-shrink: 0; min-width: 55px; text-align: right; }
 
     .dash-empty    { text-align: center; padding: 2.5rem; color: var(--muted); font-size: 0.82rem; }
+    /* Revenue by Billing Book — the composition behind the YTD Revenue tile. */
+    .dash-books tfoot td { font-weight: 700; border-top: 2px solid var(--border, #333); }
+    .dash-book-out td { opacity: 0.55; font-style: italic; }
+    .dash-book-warn {
+      margin: 0 1.5rem 0.75rem;
+      padding: 0.55rem 0.8rem;
+      border: 1px solid #b45309;
+      border-left-width: 3px;
+      border-radius: 6px;
+      background: rgba(180, 83, 9, 0.12);
+      font-size: 0.75rem;
+      line-height: 1.45;
+    }
+    .dash-book-note {
+      margin: 0.35rem 1.5rem 1.5rem;
+      font-size: 0.72rem;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .dash-book-note > div + div { margin-top: 0.2rem; }
     .dash-empty-sm { padding: 0.75rem 1rem; color: var(--muted); font-size: 0.74rem; }
 
     @media (max-width: 960px) {
@@ -1815,6 +1835,9 @@
         style="width:52px;padding:0.28rem 0.4rem;background:var(--surface2,#1e1e1e);border:1px solid var(--border,#333);border-radius:4px;color:var(--text,#eee);font-size:0.72rem;text-align:center;outline:none">
       <div id="obYearSelector" class="year-selector"></div>
       <span class="row-count" id="obRowCount">0 rows</span>
+      <span style="font-size:0.72rem;color:var(--muted)">
+        Rows also arrive automatically when payroll approves a dust haul billed as Other Billing.
+      </span>
     </div>
 
     <!-- Totals bar -->
@@ -2942,6 +2965,11 @@
        STATE
     ═══════════════════════════════════════════ */
     let rows       = [];
+    // Whether /api/dust-rows has actually answered, mirroring obLoaded and
+    // eeLoaded. The home dashboard reports this book's revenue and its share of
+    // the division, so a failed read left as an empty list would show the
+    // largest book billing $0 with nothing on screen saying why.
+    let dustLoaded  = false;
     let ubRate     = 0;
     // Profit Margin calculator inputs (persisted via dust-config settings blob)
     let profitMargin = {
@@ -4865,6 +4893,20 @@
       </div>`;
     }
 
+    // Refresh the Home dashboard without letting it take anything else down.
+    //
+    // The dashboard now reads all three billing books, so several paths have to
+    // repaint it — the two background loads and the two pollers. Every one of
+    // those also mirrors rows into Intercompany, and the pollers swallow their
+    // own exceptions, so a render that threw would silently stop money reaching
+    // Intercompany and leave nothing in the log to say why. The money path is
+    // the one that must not be gated on the presentation path: this is called
+    // AFTER the sync at every site, and it isolates its own failure either way.
+    function refreshHomeDashboard() {
+      try { renderHomeDashboard(); }
+      catch (err) { console.error('[dust] home dashboard render failed:', err); }
+    }
+
     function renderHomeDashboard() {
       const el = document.getElementById('home-content');
       if (!el) return;
@@ -4882,21 +4924,90 @@
       const ytd      = computed.filter(r => (r.date || '').startsWith(thisYrStr));
       const thisMonth = computed.filter(r => (r.date || '').startsWith(thisMoStr));
 
+      // ── The division's other two billing books ──
+      // Dust Control invoices off three grids and payroll posts an approved
+      // haul into exactly one of them, so revenue is their SUM — see the header
+      // of api/lib/dust-metrics.js, which computes these same figures for the
+      // executive report and must not disagree with this.
+      //
+      // Almost nothing else adds: gallons_ub is UB applied while gallons_bags
+      // is a quantity delivered in whatever the MU column says, and the three
+      // books' hours are three different measures. Those stay separate below.
+      const obComputed = obRows
+        .filter(r => r && typeof r === 'object')
+        .map(r => ({ ...r, ...obCalc(r) }));
+      const eeComputed = eeRows
+        .filter(r => r && typeof r === 'object')
+        .map(r => ({ ...r, date: r.actual_date || '', ...eeCalc(r) }));
+      const obYtd = obComputed.filter(r => (r.date || '').startsWith(thisYrStr));
+      const eeYtd = eeComputed.filter(r => (r.date || '').startsWith(thisYrStr));
+
       // ── KPIs ──
-      const ytdRevenue   = ytd.reduce((s, r) => s + r.invTotal,   0);
+      const trackingRevenue = ytd.reduce((s, r) => s + r.invTotal, 0);
+      const obRevenue       = obYtd.reduce((s, r) => s + r.total,  0);
+      const eeRevenue       = eeYtd.reduce((s, r) => s + r.total,  0);
+      const ytdRevenue   = round2(trackingRevenue + obRevenue + eeRevenue);
       const ytdGallons   = ytd.reduce((s, r) => s + r.gallons,    0);
       const ytdHours     = ytd.reduce((s, r) => s + r.totalHours, 0);
+      const obHours      = round2(obYtd.reduce((s, r) => s + (parseFloat(r.trucking_hrs) || 0), 0));
+      const eeHoursBill  = round2(eeYtd.filter(r => eeIsBillable(r)).reduce((s, r) => s + r.hrs, 0));
+      const eeHoursNon   = round2(eeYtd.filter(r => !eeIsBillable(r)).reduce((s, r) => s + r.hrs, 0));
+      // Pad visits, and tracking's alone: an Other Billing row is a delivery
+      // and an EES row is a shift, so counting them here would change what the
+      // word means. Each book's line count is shown in the breakdown instead.
       const ytdJobs      = ytd.length;
       const monthJobs    = thisMonth.length;
-      const activeCos    = new Set(ytd.map(r => r.company).filter(Boolean)).size;
-      const avgRevPerJob = ytdJobs ? ytdRevenue / ytdJobs : 0;
+      // Customers DO span the books — the same customer is billed off more than
+      // one of them, and "what is this customer worth" is a division question.
+      const custKey      = n => String(n == null ? '' : n).trim().replace(/\s+/g, ' ').toLowerCase();
+      const activeCos    = new Set([
+        ...ytd.map(r => r.company),
+        ...obYtd.map(r => r.customer),
+        ...eeYtd.map(r => r.customer),
+      ].map(custKey).filter(Boolean)).size;
+      // Tracking revenue over tracking visits — the two halves of the ratio
+      // have to come off the same book or it is not an average of anything.
+      const avgRevPerJob = ytdJobs ? trackingRevenue / ytdJobs : 0;
+
+      // Delivered quantity, per unit, never totalled: gallons of one thing and
+      // bags of another do not add.
+      const obByUnit = new Map();
+      obYtd.forEach(r => {
+        const q = parseFloat(r.gallons_bags) || 0;
+        if (!q) return;
+        const u = String(r.mu || '').trim() || '(no unit)';
+        obByUnit.set(u, (obByUnit.get(u) || 0) + q);
+      });
+      // The same expression as fmtQty in api/lib/dust-metrics.js, deliberately:
+      // the two surfaces print this string, neither can require the other, and
+      // scripts/test-dust-metrics-port.js compares the strings themselves.
+      // numFmt is NOT used here — it pins minimum and maximum fraction digits to
+      // the same number, so a part-bag would be rounded away.
+      const qtyStr = n => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+      const obVolume = [...obByUnit.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([u, q]) => `${qtyStr(round2(q))} ${u}`).join(' · ');
+
+      // Work recorded with nobody's price on it. It totals $0 either way; the
+      // point of counting it is that zero revenue on real hours is a gap to
+      // close, not a fact about the job.
+      const unpricedCount =
+        obYtd.filter(r => (parseFloat(r.gallons_bags) || 0) > 0 && !(parseFloat(r.price_per_unit) || 0)
+                       && !((parseFloat(r.trucking_hrs) || 0) && (parseFloat(r.trucking_rate) || 0))).length
+      + eeYtd.filter(r => eeIsBillable(r) && r.hrs > 0 && !r.rate).length;
 
       // ── Monthly revenue bars (all 12 months of this year) ──
+      // All three books, because the bars are labelled with the same revenue
+      // the KPI above them reports — a chart that trended one third of it would
+      // contradict the number it sits under.
       const byMonth = {};
-      ytd.forEach(r => {
-        const mo = (r.date || '').slice(5, 7);
-        if (mo) byMonth[mo] = (byMonth[mo] || 0) + r.invTotal;
-      });
+      const addMonth = (date, amt) => {
+        const mo = String(date || '').slice(5, 7);
+        if (mo && amt) byMonth[mo] = (byMonth[mo] || 0) + amt;
+      };
+      ytd.forEach(r   => addMonth(r.date, r.invTotal));
+      obYtd.forEach(r => addMonth(r.date, r.total));
+      eeYtd.forEach(r => addMonth(r.date, r.total));
       const monthBars = MONTH_NAMES.map((name, i) => ({
         label: name,
         v: byMonth[String(i + 1).padStart(2, '0')] || 0,
@@ -4908,18 +5019,43 @@
       // there; the table says what each one is worth AND what is still owed on
       // it, which is the question the office has to answer. Invoice state uses
       // effectiveInvStatus, the same rule the Invoice Overview below applies.
-      const coMap = {};
-      ytd.forEach(r => {
-        if (!r.company) return;
-        if (!coMap[r.company]) coMap[r.company] = {
-          name: r.company, rev: 0, jobs: 0, gallons: 0, hours: 0,
-          overdue: 0, unpaid: 0, paid: 0, states: new Set(), lastVisit: '',
-        };
-        const c = coMap[r.company];
-        c.rev     += r.invTotal;
-        c.jobs    += 1;
-        c.gallons += r.gallons    || 0;
-        c.hours   += r.totalHours || 0;
+      // Keyed across all three books on the normalised name, so a customer
+      // billed off two of them is one row rather than two. The display name is
+      // the spelling seen most often — each grid picks its customer its own
+      // way, and showing a spelling the office does not use is its own bug.
+      const coMap = new Map();
+      const NO_CUSTOMER = '— No customer —';
+      const bumpCo = (rawName, date, apply) => {
+        // A row with no customer on it is still money, and this table's footer
+        // now claims to total the division's revenue — so it buckets rather
+        // than drops. Dropping is what it used to do, which left the footer
+        // quietly disagreeing with the YTD Revenue tile above it and with the
+        // executive report, whose dustMetrics has always bucketed these.
+        const key = custKey(rawName) || NO_CUSTOMER;
+        if (!coMap.has(key)) coMap.set(key, {
+          name: String(rawName || '').trim() || NO_CUSTOMER, rev: 0, jobs: 0, gallons: 0, hours: 0,
+          overdue: 0, unpaid: 0, paid: 0, untracked: 0,
+          revTracking: 0, revOther: 0, revEes: 0,
+          states: new Set(), lastVisit: '', spellings: new Map(),
+        });
+        const c = coMap.get(key);
+        apply(c);
+        // `|| ''` matters: a SQL NULL company, or a blob row with no customer
+        // key at all, otherwise records the literal "null"/"undefined" as this
+        // bucket's only spelling and the table labels it that. Same guard as
+        // `bump` in api/lib/dust-metrics.js, which the report reads.
+        const n = String(rawName || '').trim();
+        if (n) c.spellings.set(n, (c.spellings.get(n) || 0) + 1);
+        if ((date || '') > c.lastVisit) c.lastVisit = date || '';
+      };
+
+      ytd.forEach(r => bumpCo(r.company, r.date, c => {
+        // Visits, gallons and hours are tracking's measures.
+        c.rev         += r.invTotal;
+        c.revTracking += r.invTotal;
+        c.jobs        += 1;
+        c.gallons     += r.gallons    || 0;
+        c.hours       += r.totalHours || 0;
         if (r.invTotal) {
           const st = effectiveInvStatus(r);
           if      (st === 'overdue') c.overdue += r.invTotal;
@@ -4927,13 +5063,30 @@
           else                       c.unpaid  += r.invTotal;
         }
         if (r.state) c.states.add(r.state);
-        if ((r.date || '') > c.lastVisit) c.lastVisit = r.date || '';
-      });
-      const custRows = Object.values(coMap).sort((a, b) => b.rev - a.rev || a.name.localeCompare(b.name));
+      }));
+      // The other two books carry no invoice dates, so their money cannot be
+      // aged into overdue / unpaid / paid. It sits in its own column instead of
+      // being guessed into one of those three.
+      obYtd.forEach(r => bumpCo(r.customer, r.date, c => {
+        c.rev += r.total; c.revOther += r.total; c.untracked += r.total;
+        if (r.state) c.states.add(r.state);
+      }));
+      eeYtd.forEach(r => bumpCo(r.customer, r.date, c => {
+        c.rev += r.total; c.revEes += r.total; c.untracked += r.total;
+      }));
+
+      const custRows = [...coMap.values()]
+        .map(c => {
+          let best = c.name, bestN = -1;
+          for (const [sp, n] of c.spellings) if (n > bestN) { best = sp; bestN = n; }
+          return { ...c, name: best || c.name };
+        })
+        .sort((a, b) => b.rev - a.rev || a.name.localeCompare(b.name));
       const custTotals = custRows.reduce((t, c) => ({
         jobs:t.jobs+c.jobs, gallons:t.gallons+c.gallons, hours:t.hours+c.hours, rev:t.rev+c.rev,
         overdue:t.overdue+c.overdue, unpaid:t.unpaid+c.unpaid, paid:t.paid+c.paid,
-      }), { jobs:0, gallons:0, hours:0, rev:0, overdue:0, unpaid:0, paid:0 });
+        untracked:t.untracked+c.untracked,
+      }), { jobs:0, gallons:0, hours:0, rev:0, overdue:0, unpaid:0, paid:0, untracked:0 });
 
       const money0 = v => v > 0.005 ? money(v) : '—';
       const custTableHtml = custRows.length ? `
@@ -4946,9 +5099,10 @@
               <th>Hours</th>
               <th>Revenue</th>
               <th title="Revenue divided by visits.">Avg / Visit</th>
-              <th title="Invoiced and past due.">Overdue</th>
-              <th title="Billed but not yet paid, and not yet past due.">Unpaid</th>
-              <th>Paid</th>
+              <th title="Invoiced and past due. Dust Control Tracking only — it is the one book that carries invoice dates.">Overdue</th>
+              <th title="Billed but not yet paid, and not yet past due. Dust Control Tracking only.">Unpaid</th>
+              <th title="Dust Control Tracking only.">Paid</th>
+              <th title="Billed off Other Billing or EES Other, which carry no invoice dates — so this money never ages into Overdue, Unpaid or Paid. Overdue + Unpaid + Paid + Untracked = Revenue.">Untracked</th>
             </tr></thead>
             <tbody>${custRows.map(c => {
               const meta = [
@@ -4963,11 +5117,16 @@
                 <td>${numFmt(c.jobs)}</td>
                 <td style="color:var(--blue)">${numFmt(Math.round(c.gallons))}</td>
                 <td style="color:var(--muted)">${numFmt(round2(c.hours), 1)}</td>
-                <td style="color:var(--amber)">${money(c.rev)}</td>
-                <td style="color:var(--muted)">${c.jobs ? money(c.rev / c.jobs) : '—'}</td>
+                <td style="color:var(--amber)" title="${esc([
+                    `Dust Control Tracking ${money(c.revTracking)}`,
+                    c.revOther ? `Other Billing ${money(c.revOther)}` : '',
+                    c.revEes   ? `EES Other ${money(c.revEes)}` : '',
+                  ].filter(Boolean).join(' · '))}">${money(c.rev)}</td>
+                <td style="color:var(--muted)" title="Tracking revenue over pad visits — both halves off the same book.">${c.jobs ? money(c.revTracking / c.jobs) : '—'}</td>
                 <td style="color:${c.overdue > 0.005 ? '#f87171' : 'var(--muted)'}">${money0(c.overdue)}</td>
                 <td style="color:${c.unpaid  > 0.005 ? 'var(--amber)' : 'var(--muted)'}">${money0(c.unpaid)}</td>
                 <td style="color:${c.paid    > 0.005 ? 'var(--green)' : 'var(--muted)'}">${money0(c.paid)}</td>
+                <td style="color:${c.untracked > 0.005 ? 'var(--blue)' : 'var(--muted)'}">${money0(c.untracked)}</td>
               </tr>`;
             }).join('')}</tbody>
             <tfoot><tr>
@@ -4980,6 +5139,7 @@
               <td style="color:${custTotals.overdue > 0.005 ? '#f87171' : 'var(--muted)'}">${money0(custTotals.overdue)}</td>
               <td style="color:${custTotals.unpaid  > 0.005 ? 'var(--amber)' : 'var(--muted)'}">${money0(custTotals.unpaid)}</td>
               <td style="color:${custTotals.paid    > 0.005 ? 'var(--green)' : 'var(--muted)'}">${money0(custTotals.paid)}</td>
+              <td style="color:${custTotals.untracked > 0.005 ? 'var(--blue)' : 'var(--muted)'}">${money0(custTotals.untracked)}</td>
             </tr></tfoot>
           </table>
         </div>`
@@ -5010,7 +5170,14 @@
         .map(([name, e]) => ({ name, ...e }));
 
       // ── States coverage this year ──
-      const states = [...new Set(ytd.map(r => r.state).filter(Boolean))].sort();
+      // Other Billing carries a state column too, and a customer served only off
+      // that book is still a state this division worked in this year. EES has
+      // none. Mirrors `states` in api/lib/dust-metrics.js, which the executive
+      // report's "served across N states" reads — the two have to agree.
+      const states = [...new Set([
+        ...ytd.map(r => r.state),
+        ...obYtd.map(r => r.state),
+      ].filter(Boolean))].sort();
 
       // ── Invoice status overview (2026+ rows only) ──
       // "Outstanding" bucket = unpaid, sent, or not yet tracked — anything not paid/overdue
@@ -5086,7 +5253,83 @@
         </div>` : '';
 
       // ── Build HTML ──
-      const noData = !rows.length;
+      // Three books, so "no data" means none of them has a row — a year spent
+      // entirely on material deliveries has no tracking rows at all, and the
+      // empty-state banner over a dashboard showing revenue would be nonsense.
+      const noData = !rows.length && !obRows.length && !eeRows.length;
+
+      // A book that has not been read is not a book with nothing in it. Every
+      // division-wide figure below is missing whatever it holds, so say which
+      // rather than let the numbers read as complete.
+      const booksOut = [
+        dustLoaded ? '' : 'Dust Control Tracking',
+        obLoaded   ? '' : 'Other Billing',
+        eeLoaded   ? '' : 'EES Other',
+      ].filter(Boolean);
+
+      // One line per book: what it billed, in its own measures, and what its
+      // invoice regime actually is. Mirrors `books` in api/lib/dust-metrics.js,
+      // which builds the same rows for the executive report.
+      // Mirrors `books` in api/lib/dust-metrics.js — the labels, the unit words
+      // and the invoicing sentences are compared string-for-string by
+      // scripts/test-dust-metrics-port.js, so this list and that one describe
+      // the same three books in the same words or the test fails.
+      const bookRows = [
+        { label: 'Dust Control Tracking', ok: dustLoaded, lines: ytd.length, rev: trackingRevenue,
+          vol: ytdGallons ? `${numFmt(Math.round(ytdGallons))} gal UB` : '',
+          hrs: ytdHours ? `${numFmt(round2(ytdHours), 1)} field hours` : '',
+          ar: 'invoiced here — sent, paid and overdue all tracked' },
+        { label: 'Other Billing', ok: obLoaded, lines: obYtd.length, rev: obRevenue,
+          vol: obVolume,
+          hrs: obHours ? `${numFmt(obHours, 1)} trucking hours` : '',
+          ar: 'invoice number only — no sent or paid date on this side' },
+        { label: 'EES Other', ok: eeLoaded, lines: eeYtd.length, rev: eeRevenue,
+          vol: eeHoursNon ? `${numFmt(eeHoursNon, 1)} non-billable hours` : '',
+          hrs: eeHoursBill ? `${numFmt(eeHoursBill, 1)} billable hours` : '',
+          ar: 'no dust-side invoice — billed through Intercompany' },
+      ];
+      const bookTotalLines = bookRows.reduce((n, b) => n + b.lines, 0);
+      const untrackedRev   = round2(obRevenue + eeRevenue);
+
+      const booksHtml = `
+        ${booksOut.length ? `<div class="dash-book-warn">Could not read ${esc(booksOut.join(' and '))} —
+          every division figure on this page excludes ${booksOut.length === 1 ? 'it' : 'them'}.</div>` : ''}
+        <div class="dash-section-lbl">Revenue by Billing Book — ${thisYrStr}</div>
+        <div class="proj-table-wrap">
+          <table class="proj-table dash-books">
+            <thead><tr>
+              <th>Billing book</th><th>Lines</th><th>Revenue</th><th>Share</th>
+              <th>Volume</th><th>Hours</th><th>Invoicing</th>
+            </tr></thead>
+            <tbody>${bookRows.map(b => `
+              <tr${b.ok ? '' : ' class="dash-book-out"'}>
+                <td><div class="pt-name">${esc(b.label)}</div></td>
+                <td>${b.ok ? numFmt(b.lines) : '—'}</td>
+                <td style="color:var(--amber)">${b.ok ? money0(b.rev) : '—'}</td>
+                <td style="color:var(--muted)">${b.ok && ytdRevenue > 0.005
+                    ? `${Math.round(100 * b.rev / ytdRevenue)}%` : '—'}</td>
+                <td style="color:var(--muted)">${b.ok ? (esc(b.vol) || '—') : 'unavailable'}</td>
+                <td style="color:var(--muted)">${b.ok ? (esc(b.hrs) || '—') : '—'}</td>
+                <td style="color:var(--muted);font-size:0.68rem">${esc(b.ar)}</td>
+              </tr>`).join('')}</tbody>
+            <tfoot><tr>
+              <td>Division</td>
+              <td>${numFmt(bookTotalLines)}</td>
+              <td style="color:var(--amber)">${money0(ytdRevenue)}</td>
+              <td style="color:var(--muted)">100%</td>
+              <td style="color:var(--muted)" title="UB applied, quantity delivered and hours worked are three different measures — there is no division total.">—</td>
+              <td style="color:var(--muted)" title="Field hours, trucking hours and EES hours are three different measures.">—</td>
+              <td></td>
+            </tr></tfoot>
+          </table>
+        </div>
+        ${(untrackedRev > 0.005 || unpricedCount) ? `<div class="dash-book-note">
+          ${untrackedRev > 0.005 ? `<div>${money(untrackedRev)} of this year's revenue has no dust-side
+             invoice state, so it never appears in Overdue, Unpaid or Paid below however long it goes
+             uncollected.</div>` : ''}
+          ${unpricedCount ? `<div>${numFmt(unpricedCount)} line${unpricedCount === 1 ? '' : 's'} record
+             work at no price — they total $0 and are not revenue until somebody rates them.</div>` : ''}
+        </div>` : ''}`;
 
       el.innerHTML = `
         <div class="dash-header">
@@ -5100,13 +5343,24 @@
         ${noData ? '<div class="dash-empty">No data yet — import or add rows to see your dashboard.</div>' : ''}
 
         <div class="home-metric-strip">
-          ${kpiCard('YTD Revenue',       money(ytdRevenue),              'amber', `${numFmt(ytdJobs)} job${ytdJobs !== 1 ? 's' : ''}`)}
-          ${kpiCard('Jobs This Month',   numFmt(monthJobs),              monthJobs > 0 ? 'green' : 'muted', MONTH_NAMES[thisMo])}
-          ${kpiCard('Gallons YTD',       numFmt(Math.round(ytdGallons)), 'blue',  'UB product applied')}
-          ${kpiCard('Active Customers',  numFmt(activeCos),              'amber', `served this year`)}
-          ${kpiCard('Avg Rev / Job',     money(avgRevPerJob),            'green', 'this year')}
-          ${kpiCard('Service Hours YTD', numFmt(round2(ytdHours), 1),   'blue',  'hrs in the field')}
+          ${kpiCard('YTD Revenue',       money(ytdRevenue),              'amber',
+                    (obRevenue || eeRevenue)
+                      ? [`${money(trackingRevenue)} tracking`,
+                         obRevenue ? `${money(obRevenue)} other` : '',
+                         eeRevenue ? `${money(eeRevenue)} EES` : ''].filter(Boolean).join(' · ')
+                      : `${numFmt(ytdJobs)} job${ytdJobs !== 1 ? 's' : ''}`)}
+          ${kpiCard('Jobs This Month',   numFmt(monthJobs),              monthJobs > 0 ? 'green' : 'muted', `${MONTH_NAMES[thisMo]} · pad visits`)}
+          ${kpiCard('Gallons YTD',       numFmt(Math.round(ytdGallons)), 'blue',
+                    obVolume ? `UB applied · plus ${obVolume} delivered` : 'UB product applied')}
+          ${kpiCard('Active Customers',  numFmt(activeCos),              'amber', `across all three books`)}
+          ${kpiCard('Avg Rev / Job',     money(avgRevPerJob),            'green', 'per pad visit · tracking')}
+          ${kpiCard('Service Hours YTD', numFmt(round2(ytdHours), 1),   'blue',
+                    [`field hours · tracking`,
+                     obHours     ? `${numFmt(obHours, 1)} trucking` : '',
+                     eeHoursBill ? `${numFmt(eeHoursBill, 1)} EES` : ''].filter(Boolean).join(' · '))}
         </div>
+
+        ${booksHtml}
 
         <div class="dash-section-lbl">By Customer — ${thisYrStr}</div>
         ${custTableHtml}
@@ -5156,7 +5410,7 @@
         </div>` : ''}
 
         ${(invOverdue.length || invOutstanding.length || invPaid.length) ? `
-        <div class="dash-section-lbl">Invoice Overview — 2026 &amp; Forward</div>
+        <div class="dash-section-lbl">Invoice Overview — 2026 &amp; Forward · Dust Control Tracking only</div>
         <div class="home-metric-strip">
           ${kpiCard('Overdue', money(sumInv(invOverdue)), 'red',
                     `${numFmt(invOverdue.length)} invoice${invOverdue.length !== 1 ? 's' : ''}`)}
@@ -5234,6 +5488,7 @@
         // fields. If duplicates exist, leave them visible so the user can
         // review and remove them manually with the row delete button.
         rows = savedRows;
+        dustLoaded = true;
       }
 
       if (config) {
@@ -5305,12 +5560,16 @@
       pmInitInputs();
       renderYearSelector();
       renderTable();
-      renderHomeDashboard();
 
       // Backfill: mirror any existing qualifying rows into Intercompany Billing
       // on load so the division stays in sync even for rows entered before
       // auto-send, and without waiting for the next edit.
       autoSyncIntercompanyDust();
+      // After the sync and isolated from it — see refreshHomeDashboard. The
+      // dashboard now walks three books, a customer map and two tables, so a
+      // throw in here would otherwise abort init() before the mirror ran and
+      // leave the division silently unsynced on every page load.
+      refreshHomeDashboard();
     }
 
     // Flush pending save on unload — keepalive lets the request survive
@@ -6548,6 +6807,12 @@
     const OB_IC_KEY = 'fct_intercompany_billing_entries';
 
     let obRows       = [];
+    // Whether a genuine successful read has happened, mirroring eeLoaded. The
+    // home dashboard now counts this book's revenue, and a failed fetch that
+    // collapsed to [] would silently subtract it from the division total — a
+    // smaller number that looks exactly like a real one. Unknown must read as
+    // unknown, not as zero.
+    let obLoaded     = false;
     let obFilters    = {};
     let obSaveTimer  = null;
     let obSaving     = false;
@@ -6567,10 +6832,22 @@
     }
 
     async function obLoad() {
+      // Its own fetch rather than apiGet, for the reason eeLoad has one: apiGet
+      // answers null for a failed request AND for a blob that does not exist
+      // yet, and the home dashboard now counts this book's revenue — so a
+      // network error read as "no rows" would quietly subtract it from the
+      // division total. Only a 2xx sets obLoaded.
       try {
-        const data = await apiGet(OB_KEY);
-        obRows = Array.isArray(data) ? data : [];
-      } catch { obRows = []; }
+        const r = await fetch(`/api/data/${OB_KEY}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (r.status === 401) { signOut(); return false; }
+        if (!r.ok) return false;
+        const body = await r.json();
+        const v = body ? body.value : null;
+        // A stored value that is not an array is malformed, not empty.
+        if (v != null && !Array.isArray(v)) return false;
+        obRows   = Array.isArray(v) ? v : [];
+        obLoaded = true;
+      } catch { return false; }
       // Suppressions before the first render, or a removed row paints blank.
       await _loadIcSuppressions();
 
@@ -6586,6 +6863,7 @@
           });
         }
       } catch { /* non-fatal */ }
+      return true;
     }
 
     async function obSave(opts = {}) {
@@ -6617,6 +6895,23 @@
       return obSaveTimer != null || obSaving || obDeletedIds.size > 0;
     }
 
+    /* Rows this tab did not create: payroll posts one when a supervisor approves
+       a dust timesheet entry and marks that haul as Other Billing rather than
+       Dust Control Tracking — a delivery of material rather than UB on a pad.
+       A day split across hauls posts one per haul (ids "tso-<entryId>-1",
+       "tso-<entryId>-2"… — see api/lib/dust-ob-injected.js). They render locked,
+       and the server refuses this tab's writes against every column but the
+       invoice number and the comment.
+
+       Kept in step with isInjectedObRowId in api/lib/dust-ob-injected.js and
+       with the "tso-" prefix in api/lib/injected-blob-guard.js. */
+    function obIsInjectedRowId(id) {
+      return /^tso-\d+-/.test(String(id || ''));
+    }
+    function obIsInjectedRow(row) {
+      return obIsInjectedRowId(row && row.id);
+    }
+
     function obAddRow() {
       const countEl = document.getElementById('ob-bulk-add-count');
       const count = Math.min(Math.max(parseInt(countEl?.value) || 1, 1), 100);
@@ -6643,6 +6938,15 @@
     }
 
     function obDeleteRow(idx) {
+      // Locked rows have no delete button, so reaching here means a stale
+      // render or the console. Either way the row belongs to an approved
+      // timesheet entry: removing it would strip billing off approved work with
+      // nothing in Payroll to show for it, and the next save would be overruled
+      // by the server anyway — it replays its own copy of every payroll row.
+      if (obIsInjectedRow(obRows[idx])) {
+        alert('This row was posted from an approved timesheet entry, so it cannot be deleted here.\n\nUn-approve that entry in Payroll — or change that haul back to Dust Control Tracking — and the row goes with it.');
+        return;
+      }
       if (!confirm('Delete this row?')) return;
       const [removed] = obRows.splice(idx, 1);
       // Queue the id so the next sync pulls this row's Intercompany entry.
@@ -6653,8 +6957,19 @@
       obScheduleSave();
     }
 
+    // The two columns the dust office still owns on a payroll row: the invoice
+    // it bills under and the note against it. Mirrors OB_TAB_FIELDS in
+    // api/lib/dust-ob-injected.js, which is what the server replays from this
+    // tab's saves and what re-injection preserves — anything not on this list
+    // is silently discarded on the way in, so offering it here would be a box
+    // that looks editable and never saves.
+    const OB_TAB_FIELDS = ['inv_number', 'comments'];
+
     function obSet(idx, field, value) {
       if (!obRows[idx]) return;
+      // A locked cell renders read-only, so reaching here with one means a
+      // stale render or the console. The server discards the write either way.
+      if (obIsInjectedRow(obRows[idx]) && !OB_TAB_FIELDS.includes(field)) return;
       obRows[idx][field] = value;
       if (field === 'gallons_bags' || field === 'price_per_unit'
           || field === 'trucking_hrs' || field === 'trucking_rate') {
@@ -6668,6 +6983,7 @@
     // destination dropdown from the newly selected company's locations.
     function obSetCustomer(idx, value) {
       if (!obRows[idx]) return;
+      if (obIsInjectedRow(obRows[idx])) return;
       obRows[idx].customer    = value;
       obRows[idx].destination = '';
       obRows[idx].state       = '';
@@ -6690,6 +7006,7 @@
     // selected location's metadata when available.
     function obSetDestination(idx, locationName) {
       if (!obRows[idx]) return;
+      if (obIsInjectedRow(obRows[idx])) return;
       obRows[idx].destination = locationName;
       const co  = (dustLists.companies || []).find(c => c.name === obRows[idx].customer);
       const loc = co ? (co.locations || []).find(l => l.name === locationName) : null;
@@ -6711,6 +7028,7 @@
 
     function _obLiveSet(idx, field, value) {
       if (!obRows[idx]) return;
+      if (obIsInjectedRow(obRows[idx]) && !OB_TAB_FIELDS.includes(field)) return;
       obRows[idx][field] = value;
       if (field === 'gallons_bags' || field === 'price_per_unit'
           || field === 'trucking_hrs' || field === 'trucking_rate') {
@@ -6865,26 +7183,67 @@
             </div>
           </div>`;
 
+        // Payroll-injected rows are locked here: every column but the invoice
+        // number and the comment was filled in when a supervisor approved the
+        // driver's timesheet and billed that haul as material, and the only
+        // correct way to change or remove one is to go back there. Leaving them
+        // editable would mean two sources of truth for the same delivery — and
+        // the server discards the edit anyway, replaying its own copy of these
+        // columns over any save from this tab.
+        const obInjected = obIsInjectedRow(row);
+        const obRo = (v, cls) =>
+          `<td class="${cls}" style="color:var(--text);font-size:0.72rem;padding:0.3rem 0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(v == null || v === '' ? '—' : String(v))}</td>`;
+        const obLockTitle = 'Posted from an approved timesheet entry — edit it in Payroll, not here.';
+        const obTsBadge   = `<span title="${obLockTitle}" style="display:inline-block;font-size:0.53rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.12);border:1px solid rgba(165,180,252,0.35);border-radius:3px;padding:0.02rem 0.26rem;white-space:nowrap">&#8592; Timesheet</span>`;
+
         const expanded = obExpanded.has(row.id);
-        return `<tr data-idx="${idx}">
+        return `<tr data-idx="${idx}"${obInjected ? ` title="${obLockTitle}"` : ''}>
           <td class="cw-expand"><button class="expand-btn${expanded?' open':''}" id="ob-expbtn-${idx}" onclick="obToggleExpand(${idx})" title="Intercompany billing">›</button></td>
-          <td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="obSet(${idx},'date',this.value)"></td>
+          ${obInjected
+            ? obRo(row.date, 'cw-date')
+            : `<td class="cw-date"><input type="date" value="${esc(row.date||'')}" onchange="obSet(${idx},'date',this.value)"></td>`}
           <td class="cw-unit"><input type="text" value="${esc(row.inv_number||'')}" placeholder="INV-…" oninput="obSet(${idx},'inv_number',this.value)"></td>
-          <td class="cw-cm"><select onchange="obSet(${idx},'driver',this.value)">${empOpts}</select></td>
-          <td class="cw-unit"><select data-role="ob-truck" onchange="obSet(${idx},'truck_number',this.value)">${truckOpts}</select></td>
-          <td class="cw-unit"><input type="text" value="${esc(row.trailer_number||'')}" oninput="obSet(${idx},'trailer_number',this.value)"></td>
-          <td class="cw-co"><select onchange="obSetCustomer(${idx},this.value)">${coOpts}</select></td>
-          <td class="cw-loc"><select data-role="ob-dest" onchange="obSetDestination(${idx},this.value)">${destOpts}</select></td>
-          <td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>
-          <td class="cw-veh"><select onchange="obSet(${idx},'material',this.value)">${matOpts}</select></td>
-          <td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>
-          <td class="cw-mu"><select onchange="obSet(${idx},'mu',this.value)">${muOpts}</select></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>
-          <td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>
+          ${obInjected
+            ? obRo(row.driver, 'cw-cm')
+            : `<td class="cw-cm"><select onchange="obSet(${idx},'driver',this.value)">${empOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.truck_number, 'cw-unit')
+            : `<td class="cw-unit"><select data-role="ob-truck" onchange="obSet(${idx},'truck_number',this.value)">${truckOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.trailer_number, 'cw-unit')
+            : `<td class="cw-unit"><input type="text" value="${esc(row.trailer_number||'')}" oninput="obSet(${idx},'trailer_number',this.value)"></td>`}
+          ${obInjected
+            ? obRo(row.customer, 'cw-co')
+            : `<td class="cw-co"><select onchange="obSetCustomer(${idx},this.value)">${coOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.destination, 'cw-loc')
+            : `<td class="cw-loc"><select data-role="ob-dest" onchange="obSetDestination(${idx},this.value)">${destOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.state, 'cw-st')
+            : `<td class="cw-st"><select onchange="obSet(${idx},'state',this.value)">${stOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.material, 'cw-veh')
+            : `<td class="cw-veh"><select onchange="obSet(${idx},'material',this.value)">${matOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.gallons_bags, 'cw-gal')
+            : `<td class="cw-gal"><input type="number" step="0.01" min="0" value="${esc(row.gallons_bags||'')}" oninput="_obLiveSet(${idx},'gallons_bags',this.value)" onchange="obSet(${idx},'gallons_bags',this.value)"></td>`}
+          ${obInjected
+            ? obRo(row.mu, 'cw-mu')
+            : `<td class="cw-mu"><select onchange="obSet(${idx},'mu',this.value)">${muOpts}</select></td>`}
+          ${obInjected
+            ? obRo(row.price_per_unit, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>`}
+          ${obInjected
+            ? obRo(row.trucking_hrs, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>`}
+          ${obInjected
+            ? obRo(row.trucking_rate, 'cw-rate')
+            : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>`}
           <td class="cw-loc"><input type="text" value="${esc(row.comments||'')}" placeholder="Notes…" oninput="obSet(${idx},'comments',this.value)"></td>
-          <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}</td>
-          <td class="del-col"><button class="del-btn" onclick="obDeleteRow(${idx})" title="Delete row">✕</button></td>
+          <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}${obInjected ? `<div style="margin-top:0.15rem">${obTsBadge}</div>` : ''}</td>
+          ${obInjected
+            ? `<td class="del-col"><span title="${obLockTitle}" style="color:var(--muted);font-size:0.85rem">&#128274;</span></td>`
+            : `<td class="del-col"><button class="del-btn" onclick="obDeleteRow(${idx})" title="Delete row">✕</button></td>`}
         </tr>
         <tr class="inv-row" id="ob-ic-row-${idx}" style="display:${expanded?'':'none'}">
           <td colspan="18">${icPanel}</td>
@@ -7210,6 +7569,10 @@
     obLoad().then(() => {
       obRenderTable();
       autoSyncObIntercompany();
+      // The Home dashboard counts this book's revenue, and it painted before
+      // this load landed — without the repaint it would sit there showing the
+      // division short by whatever Other Billing holds.
+      refreshHomeDashboard();
     });
 
     // Flush pending OB save on unload — keepalive lets the request survive
@@ -7692,6 +8055,7 @@
     eeLoad().then(ok => {
       eeRenderTable();
       if (ok) autoSyncEesIntercompany();
+      refreshHomeDashboard();   // same reason as obLoad's — see there
     });
 
     /* ═══════════════════════════════════════════
@@ -8281,7 +8645,7 @@
           // must re-render to refresh the billing totals. Guards above ensure
           // the user isn't mid-edit, matching the row poll's render path.
           renderTable();
-          renderHomeDashboard();
+          refreshHomeDashboard();
         } catch { /* non-fatal */ }
       }
 
@@ -8295,9 +8659,10 @@
           if (!Array.isArray(incoming)) return;
           if (JSON.stringify(incoming) === JSON.stringify(rows)) return;
           rows = incoming;
+          dustLoaded = true;
           renderYearSelector();
           renderTable();
-          renderHomeDashboard();
+          refreshHomeDashboard();
         } catch { /* non-fatal */ }
       }
 
@@ -8386,6 +8751,7 @@
           if (_isEditing() || obHasPendingSave()) return;
           if (JSON.stringify(incoming) === JSON.stringify(obRows)) return;
           obRows = incoming;
+          obLoaded = true;
           const obPanel = document.getElementById('tab-other-billing');
           if (obPanel && obPanel.classList.contains('active')) {
             obRenderTable();
@@ -8393,6 +8759,10 @@
           // Rows changed under us (another device). Reconcile so the mirror
           // heals even if the device that made the edit never synced.
           autoSyncObIntercompany();
+          // Revenue on the Home dashboard includes this book, so a poll that
+          // brings in a payroll approval has to repaint it the same way
+          // pollDustRows repaints it for the tracking book.
+          refreshHomeDashboard();
         } catch { /* non-fatal */ }
       }
 
@@ -8417,6 +8787,7 @@
           if (panel && panel.classList.contains('active')) eeRenderTable();
           // A new approval (or an un-approval) just landed — mirror it.
           autoSyncEesIntercompany();
+          refreshHomeDashboard();   // same reason as pollObRows' — see there
         } catch { /* non-fatal */ }
       }
 

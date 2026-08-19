@@ -621,6 +621,30 @@ async function buildTruckingPortfolio(sql, companyCode) {
 // invoice picture from the invoice era forward, and its customers ranked by
 // revenue. The row-level money is computed in JS by api/lib/dust-metrics so it
 // comes out of the same formula dust.html uses.
+/**
+ * One of Dust Control's two blob-backed billing books, as an array.
+ *
+ * Returns [] for a book that genuinely has no rows and null for one that could
+ * not be read — safeRun collapses both to null, and the difference matters more
+ * here than anywhere else in this file: a book read as empty silently subtracts
+ * its revenue from the division, and the smaller figure looks exactly like a
+ * real one. dustMetrics takes null as "unavailable" and says so on the page
+ * rather than quietly reporting less money than the division earned.
+ *
+ * A stored value that is not an array is treated as unreadable rather than
+ * empty, for the same reason.
+ */
+async function readDustBook(sql, companyCode, key) {
+  try {
+    const r = await sql`SELECT value FROM app_data WHERE key = ${`${companyCode}:${key}`}`;
+    if (!r.length || r[0].value == null) return [];      // no rows yet — genuinely empty
+    return Array.isArray(r[0].value) ? r[0].value : null; // malformed — do not count it as empty
+  } catch (err) {
+    console.error(`[executive/report] dust.${key} failed:`, err.message);
+    return null;
+  }
+}
+
 async function buildDustPortfolio(sql, companyCode) {
   // Per-customer UB $/gal override column may not exist on older DBs; the
   // dust-config endpoint adds it lazily, but the report can run first. Ensure it
@@ -634,7 +658,7 @@ async function buildDustPortfolio(sql, companyCode) {
   // from the start of the invoice era. Fetch from whichever is earlier.
   const from = yearStart < DUST_INVOICE_ERA_START ? yearStart : DUST_INVOICE_ERA_START;
 
-  const [rows, companies, ubRate] = await Promise.all([
+  const [rows, companies, ubRate, obRows, eesRows] = await Promise.all([
     safeRun('dust.rows', () => sql`
       SELECT date::text AS date, company, location, state,
              start_time, end_time,
@@ -658,10 +682,23 @@ async function buildDustPortfolio(sql, companyCode) {
       const r = await sql`SELECT ub_rate::float AS v FROM dust_settings WHERE company_code = ${companyCode}`;
       return r[0]?.v ?? 0;
     }),
+    // The division's other two billing books. Payroll posts an approved haul
+    // into exactly one of the three, so counting only the first understated
+    // Dust Control by whatever the other two billed — which, since payroll
+    // started injecting material hauls, is a growing number.
+    readDustBook(sql, companyCode, 'dust_other_billing_rows'),
+    readDustBook(sql, companyCode, 'dust_ees_other_rows'),
   ]);
 
   const m = dustMetrics({
-    rows:      rows      || [],
+    // NOT `rows || []`. safeRun answers null when the query threw, and
+    // collapsing that to an empty list would report the division's largest book
+    // as billing nothing — the smaller figure looking exactly like a real one,
+    // which is the failure readDustBook exists to prevent. dustMetrics reads
+    // null as "unavailable" and the section says so.
+    rows,
+    obRows,      // null when unreadable — see readDustBook
+    eesRows,
     companies: companies || [],
     ubRate:    ubRate    || 0,
   });
@@ -669,8 +706,19 @@ async function buildDustPortfolio(sql, companyCode) {
   const money = fmtCurrency2;
   const count = n => Math.round(Number(n) || 0).toLocaleString('en-US');
 
+  // Lines across all three books, not pad visits alone: a year spent entirely
+  // on material deliveries has no tracking rows at all, and reading "No
+  // Activity" over a division with revenue on screen is the exact failure this
+  // change exists to fix.
+  const totalLines = m.books.reduce((n, b) => n + b.lines, 0);
+  // A book that could not be read is not a book with nothing in it. Say so
+  // rather than let the strip below report a total that is missing a third of
+  // itself and looks fine.
+  const missing = m.books.filter(b => !b.available).map(b => b.label);
+
   let status, statusKind;
-  if      (!m.jobsYtd)                     { status = 'No Activity'; statusKind = 'mute';  }
+  if      (missing.length)                 { status = `${missing.length} Book${missing.length === 1 ? '' : 's'} Unavailable`; statusKind = 'red'; }
+  else if (!totalLines)                    { status = 'No Activity'; statusKind = 'mute';  }
   else if (m.invoices.overdue.count > 0)   { status = `${m.invoices.overdue.count} Overdue`; statusKind = 'red'; }
   else if (m.invoices.needsSent.count > 0) { status = `${m.invoices.needsSent.count} To Invoice`; statusKind = 'amber'; }
   else                                     { status = 'On Track'; statusKind = 'green'; }
@@ -681,17 +729,34 @@ async function buildDustPortfolio(sql, companyCode) {
     year: m.year,
     metrics: [
       {
+        // All three billing books. The sub-caption names the split whenever
+        // more than one contributes, because a blended total with no
+        // composition is what let two of the three go unnoticed for so long.
         label: 'YTD Revenue', value: money(m.revenueYtd), tone: 'amber',
-        sub: `${count(m.jobsYtd)} job${m.jobsYtd === 1 ? '' : 's'} in ${m.year}`,
+        sub: (m.revenue.other || m.revenue.ees)
+          ? [
+              `${money(m.revenue.tracking)} tracking`,
+              m.revenue.other ? `${money(m.revenue.other)} other billing` : '',
+              m.revenue.ees   ? `${money(m.revenue.ees)} EES` : '',
+            ].filter(Boolean).join(' · ')
+          : `${count(m.jobsYtd)} job${m.jobsYtd === 1 ? '' : 's'} in ${m.year}`,
       },
       {
         label: 'Jobs This Month', value: count(m.jobsThisMonth),
         tone: m.jobsThisMonth > 0 ? 'green' : 'mute',
-        sub:  monthName(m.month),
+        sub:  `${monthName(m.month)} · pad visits`,
       },
       {
+        // UB applied, and only that. Other Billing's delivered quantity is a
+        // different measure in a unit that varies row to row, so it rides
+        // alongside in its own units rather than being added in.
         label: 'Gallons YTD', value: count(m.gallonsYtd), tone: 'blue',
-        sub: 'UB product applied',
+        // books[1].volume, not a re-derivation: `count` rounds, and dust's own
+        // formatter deliberately keeps two decimals so a part-bag is not
+        // reported as a quantity nobody delivered.
+        sub: m.deliveredQuantity.length
+          ? `UB applied · plus ${(m.books.find(b => b.key === 'other') || {}).volume} delivered`
+          : 'UB product applied',
       },
       {
         label: 'Active Customers', value: count(m.activeCustomers), tone: 'amber',
@@ -700,40 +765,72 @@ async function buildDustPortfolio(sql, companyCode) {
           : 'served this year',
       },
       {
+        // Tracking revenue over tracking visits — the two halves have to come
+        // off the same book or it is not an average of anything.
         label: 'Avg Rev / Job', value: money(m.avgRevenuePerJob), tone: 'green',
-        sub: 'this year',
+        sub: 'per pad visit · tracking',
       },
       {
         label: 'Service Hours YTD', value: m.hoursYtd.toFixed(1), tone: 'blue',
-        sub: 'hours in the field',
+        sub: [
+          'field hours · tracking',
+          m.otherHoursYtd     ? `${m.otherHoursYtd.toFixed(1)} trucking` : '',
+          m.eesHoursYtd.billable ? `${m.eesHoursYtd.billable.toFixed(1)} EES` : '',
+        ].filter(Boolean).join(' · '),
       },
       {
         label: 'Overdue', value: money(m.invoices.overdue.amount),
         tone: m.invoices.overdue.amount > 0 ? 'red' : 'green',
-        sub: `${count(m.invoices.overdue.count)} invoice${m.invoices.overdue.count === 1 ? '' : 's'} past ${DUST_OVERDUE_DAYS} days`,
+        sub: `${count(m.invoices.overdue.count)} invoice${m.invoices.overdue.count === 1 ? '' : 's'} past ${DUST_OVERDUE_DAYS} days · tracking`,
       },
       {
         label: 'Unpaid / Pending', value: money(m.invoices.outstanding.amount),
         tone: m.invoices.outstanding.amount > 0 ? 'amber' : 'green',
-        sub: m.invoices.needsSent.count
-          ? `${count(m.invoices.needsSent.count)} still to invoice`
-          : `${count(m.invoices.outstanding.count)} awaiting payment`,
+        // Only Dust Control Tracking carries invoice dates, so only its rows
+        // can be aged. Naming the money the other two books hold is the point:
+        // read without it, this tile looks like the division's whole AR
+        // picture, and it is not.
+        sub: m.invoices.untracked.amount
+          ? `${m.invoices.needsSent.count
+              ? `${count(m.invoices.needsSent.count)} still to invoice`
+              : `${count(m.invoices.outstanding.count)} awaiting payment`} · tracking; ${money(m.invoices.untracked.amount)} not AR-tracked`
+          : (m.invoices.needsSent.count
+              ? `${count(m.invoices.needsSent.count)} still to invoice · tracking`
+              : `${count(m.invoices.outstanding.count)} awaiting payment · tracking`),
       },
     ],
     rows: m.customers.map(c => ({
       name:        c.name,
       meta:        c.states.length ? c.states.join(' · ') : '',
       lastVisit:   c.lastVisit,
+      // Tracking's measures — a customer served only off Other Billing has no
+      // pad visits, no UB gallons and no field hours, and showing zeroes there
+      // is the honest answer rather than a gap.
       visits:      c.visits,
       gallons:     c.gallons,
       hours:       c.hours,
+      // Revenue across all three books, with the split beside it so a customer
+      // whose money is mostly untracked is visible as such.
       revenue:     c.revenue,
+      revenueTracking: c.revenueTracking,
+      revenueOther:    c.revenueOther,
+      revenueEes:      c.revenueEes,
       avgPerVisit: c.avgPerVisit,
       overdue:     c.overdue,
       unpaid:      c.unpaid,
       paid:        c.paidAmt,
+      // Billed, but on a book with no invoice state — so it will never appear
+      // in Overdue, Unpaid or Paid however long it goes uncollected.
+      untracked:   c.untracked,
     })),
     invoices: m.invoices,
+    // Everything that could not honestly be folded into one number: what each
+    // book billed and in what units, the money no AR process can see, and work
+    // recorded with nobody's price on it. Rendered under the metric strip.
+    books: m.books,
+    unpriced: m.unpriced,
+    coverage: m.coverage,
+    unavailable: missing,
   };
 }
 

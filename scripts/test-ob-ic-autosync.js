@@ -573,7 +573,7 @@ const obIn = state => state.store.fct_intercompany_billing_entries.filter(e => e
   // deleted row from the server snapshot, and the debounced save then wrote
   // that restored list back — the delete silently reverted.
   function buildPoller(serverRows) {
-    const state = { server: serverRows, editing: false, gate: null, renders: 0, syncs: 0 };
+    const state = { server: serverRows, editing: false, gate: null, renders: 0, syncs: 0, homeRenders: 0 };
     const api = new Function('state', `
       let obRows = [];
       let obSaveTimer = null;
@@ -584,6 +584,12 @@ const obIn = state => state.store.fct_intercompany_billing_entries.filter(e => e
       const _isEditing = () => state.editing;
       const obRenderTable = () => { state.renders++; };
       const autoSyncObIntercompany = () => { state.syncs++; };
+      // The poller repaints the Home dashboard too, because its YTD Revenue now
+      // counts this book. Stubbed here so the extracted function runs — and
+      // deliberately AFTER the sync in dust.html, so a render that threw could
+      // never stop rows reaching Intercompany.
+      let obLoaded = false;
+      const refreshHomeDashboard = () => { state.homeRenders++; };
       async function apiGet() {
         if (state.gate) { const g = state.gate; state.gate = null; await g; }
         return JSON.parse(JSON.stringify(state.server));
@@ -664,6 +670,10 @@ const obIn = state => state.store.fct_intercompany_billing_entries.filter(e => e
     await api.poll();
     assert('remote row adopted', api.rows().some(r => r.id === 'ob-b'));
     assert('table re-rendered / sync kicked', state.syncs === 1);
+    // The Home dashboard's YTD Revenue includes this book, so a poll that
+    // brings in a payroll approval has to repaint it too — and must do so
+    // AFTER the sync, so a render error cannot suppress the mirror.
+    assert('home dashboard repainted', state.homeRenders === 1, String(state.homeRenders));
   }
 
   console.log('\n[concurrency — the write carries the value it was based on]');

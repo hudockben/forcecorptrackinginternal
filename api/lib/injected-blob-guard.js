@@ -2,10 +2,11 @@
 /**
  * Payroll owns its injected rows on write, too.
  *
- * Three division tabs keep their cost tracking in a JSON blob that the tab
- * saves WHOLE — trucking (fct_truck_division) and quarry (fct_quarry_daily /
- * fct_quarry_crushing). Payroll writes into those same blobs whenever a
- * timesheet entry is approved or un-approved. The two writers race, and the
+ * Four division tabs keep their cost tracking in a JSON blob that the tab
+ * saves WHOLE — trucking (fct_truck_division), quarry (fct_quarry_daily /
+ * fct_quarry_crushing) and dust Other Billing (dust_other_billing_rows).
+ * Payroll writes into those same blobs whenever a timesheet entry is approved
+ * or un-approved. The two writers race, and the
  * tab's copy is always the stale one, because it was read before the approval
  * it is about to land on top of:
  *
@@ -33,6 +34,12 @@
  * Dust's EES tab (dust_ees_other_rows) is deliberately absent: it already
  * version-checks its writes and replays its own columns on a conflict, and is
  * the only one of the four that was never exposed.
+ *
+ * Dust's Other Billing tab (dust_other_billing_rows) joined the list when
+ * payroll started posting material hauls into it. It has neither of EES's
+ * protections — it PUTs the whole list on a 900ms debounce after any cell edit,
+ * with no version check — so without this every injected row would be erased by
+ * the next keystroke anywhere in the grid.
  */
 
 // TRUCK_TAB_FIELDS lives beside the row identity it belongs to: the same list
@@ -42,14 +49,18 @@
 const {
   needsTruckTrackingRow, truckingRowIdPrefix, TRUCK_TAB_FIELDS,
 } = require('./truck-injected');
+// Same rule, same reason, for the Dust Other Billing grid: OB_TAB_FIELDS is
+// what re-injection preserves, so it is also what a tab save may overwrite.
+const { OB_TAB_FIELDS } = require('./dust-ob-injected');
 
 /**
  * Blob key → how payroll-injected rows are recognised in it, and which of their
  * columns the owning tab may still write.
  *
  * The prefixes are the ones api/timesheet-entries.js mints: "tst-<entryId>-"
- * for Truck Tracking and "tsq-<entryId>-" for the quarry Daily/Crushing tabs.
- * Manual rows use UUIDs or "TR-####" task numbers and never collide.
+ * for Truck Tracking, "tsq-<entryId>-" for the quarry Daily/Crushing tabs and
+ * "tso-<entryId>-" for Dust Other Billing. Manual rows use UUIDs or "TR-####"
+ * task numbers and never collide.
  */
 const INJECTED_BLOBS = {
   fct_truck_division:  { prefix: 'tst-', tabFields: TRUCK_TAB_FIELDS },
@@ -57,6 +68,9 @@ const INJECTED_BLOBS = {
   // so the tab owns none of their columns.
   fct_quarry_daily:    { prefix: 'tsq-', tabFields: [] },
   fct_quarry_crushing: { prefix: 'tsq-', tabFields: [] },
+  // The dust office still bills on a payroll row here — the invoice number and
+  // the note against it are its columns, and stay editable in the tab.
+  dust_other_billing_rows: { prefix: 'tso-', tabFields: OB_TAB_FIELDS },
 };
 
 function guardConfigFor(key) { return INJECTED_BLOBS[key] || null; }
