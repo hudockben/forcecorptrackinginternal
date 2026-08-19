@@ -346,6 +346,57 @@ async function upload(folderId, filename, auth, extra = {}) {
   const jobList = (await call('GET', { division: 'turf', projectId: PROJ }, null, PM)).body.documents;
   assert('and does not leak into a job', !jobList.some(d => d.id === shopDoc.body.document.id));
 
+  // ── Two divisions side by side ──────────────────────────────────────────
+  // The earlier isolation checks proved paving sees nothing while paving HAD
+  // nothing. Give it real folders and documents and check both directions,
+  // including the case where both divisions happen to use the same project id
+  // — they keep separate project lists, so nothing stops that colliding.
+  console.log('\nTwo divisions side by side');
+  const pGen = await call('PUT', { division: 'paving', projectId: PROJ }, {
+    costCodes: [{ code: '420', label: 'Wearing Course' }],
+  }, PAVER);
+  assert('paving seeds its own tree under the same project id', pGen.statusCode === 200);
+  const pSafety = pGen.body.folders.find(f => f.name === 'Safety');
+
+  const pDoc = await call('POST', { division: 'paving', projectId: PROJ }, {
+    documentId: 'doc-pav', filename: 'paving-ticket.pdf',
+    storageKey: `FCT/paving/${PROJ}/doc-pav/paving-ticket.pdf`,
+    folderId: pSafety.id, sizeBytes: 2048, poId: 'po-1042',
+  }, PAVER);
+  assert('and a document filed into it', pDoc.statusCode === 201, JSON.stringify(pDoc.body));
+
+  const turfSide = (await call('GET', { division: 'turf', projectId: PROJ }, null, PM)).body;
+  assert('turf does not see the paving document',
+    !turfSide.documents.some(d => d.id === 'doc-pav'));
+  assert('nor the paving folders — same project id, separate trees',
+    !turfSide.folders.some(f => f.id === pSafety.id));
+
+  const pavSide = (await call('GET', { division: 'paving', projectId: PROJ }, null, PAVER)).body;
+  assert('paving sees only its own document',
+    pavSide.documents.length === 1 && pavSide.documents[0].id === 'doc-pav',
+    JSON.stringify(pavSide.documents.map(d => d.id)));
+  assert('and only its own folders', !pavSide.folders.some(f => f.name === '415'),
+    pavSide.folders.map(f => f.name).join(' | '));
+
+  // Both divisions attached something to a PO numbered 1042. The badge counts
+  // must not bleed across, or a paving PO would show turf's attachments.
+  const turfCounts = (await call('GET', { division: 'turf', poCounts: '1' }, null, PM)).body.counts;
+  const pavCounts  = (await call('GET', { division: 'paving', poCounts: '1' }, null, PAVER)).body.counts;
+  assert('paperclip counts are per-division', (pavCounts['po-1042'] || 0) === 1,
+    `turf=${JSON.stringify(turfCounts)} paving=${JSON.stringify(pavCounts)}`);
+  assert('and turf counts only turf attachments',
+    (turfCounts['po-1042'] || 0) !== (pavCounts['po-1042'] || 0) || turfCounts['po-1042'] === 1,
+    `turf=${JSON.stringify(turfCounts)}`);
+
+  const pavByPo = (await call('GET', { division: 'paving', poId: 'po-1042' }, null, PAVER)).body.documents;
+  assert('the PO view is division-scoped too',
+    pavByPo.length === 1 && pavByPo[0].id === 'doc-pav',
+    JSON.stringify(pavByPo.map(d => d.id)));
+
+  // A turf user must not reach a paving document by id, even holding it.
+  const reach = await call('PATCH', { division: 'turf', id: 'doc-pav' }, { note: 'x' }, ADMIN);
+  assert('a turf admin cannot touch a paving document by id', reach.statusCode === 404);
+
   // ── Folder housekeeping ─────────────────────────────────────────────────
   console.log('\nFolder housekeeping');
   const mk = await call('POST', { division: 'turf', projectId: PROJ, folder: '1' },

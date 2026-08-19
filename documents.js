@@ -175,16 +175,22 @@
     // Orders root, and one folder per cost code on this job. Idempotent, so
     // this is safe on every open, and it is how a cost code added this morning
     // gets a folder this afternoon.
-    if (cfg.perm.canUpload) {
-      const costCodes = (cfg.getCostCodes(projectId) || [])
-        .map(c => (typeof c === 'string' ? { code: c, label: '' } : c))
-        .filter(c => c && c.code);
-      try {
-        await api('PUT', `/documents${q({ projectId })}`, { costCodes });
-      } catch (err) {
-        // A failed seed is not fatal — whatever folders exist still list below.
-        console.warn('[documents] folder seed failed:', err.message);
-      }
+    //
+    // Deliberately NOT gated on cfg.perm: the host page derives that from
+    // fctUser.role, which login.js sets from the caller's *turf* role for
+    // tracker.html's benefit. On paving and kiewit that can understate what
+    // the user may do, and skipping the seed there would leave a job with no
+    // folders at all. The server checks properly and 403s if it disagrees,
+    // which costs one request and is caught below.
+    const costCodes = (cfg.getCostCodes(projectId) || [])
+      .map(c => (typeof c === 'string' ? { code: c, label: '' } : c))
+      .filter(c => c && c.code);
+    try {
+      await api('PUT', `/documents${q({ projectId })}`, { costCodes });
+    } catch (err) {
+      // A failed seed is not fatal — whatever folders exist still list below,
+      // and a view-only user is expected to land here.
+      if (err.status !== 403) console.warn('[documents] folder seed failed:', err.message);
     }
 
     const data = await api('GET', `/documents${q({ projectId })}`);

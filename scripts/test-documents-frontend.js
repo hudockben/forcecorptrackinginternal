@@ -7,10 +7,12 @@
  *
  * Two halves:
  *
- *  1. tracker.html's wiring, read from the source — the tab exists, dispatches,
- *     is reachable by the roles that should have it, and the PO table's column
- *     count still matches its header after the paperclip was added. A
- *     mismatched colspan is invisible until a filter empties the table.
+ *  1. The wiring on every division page that has the tab, read from the
+ *     source. The three pages are separate 30k-line files with no shared
+ *     module system, so the only thing keeping them in step is that each was
+ *     given the same edits — this is what notices when one drifts. It also
+ *     re-counts the purchase-order table's colspan against its header, which
+ *     is invisible until a filter empties the table.
  *
  *  2. documents.js driven in jsdom against a stubbed fetch. The upload
  *     sequence is the part a static read cannot confirm: bytes must go
@@ -24,7 +26,14 @@ const vm   = require('vm');
 const { JSDOM } = require('jsdom');
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-const tracker = read('tracker.html');
+
+// Every page carrying the Documents tab, and the division it reports as.
+// tracker.html hard-codes 'turf'; the others read their DIVISION constant.
+const PAGES = [
+  { file: 'tracker.html',         division: 'turf',   configuredAs: "'turf'" },
+  { file: 'paving.html',          division: 'paving', configuredAs: 'DIVISION' },
+  { file: 'kiewit-pinetree.html', division: 'kiewit', configuredAs: 'DIVISION' },
+];
 
 let failed = 0;
 const assert = (msg, cond, detail) => {
@@ -34,97 +43,97 @@ const assert = (msg, cond, detail) => {
   if (detail) console.error('      ' + String(detail).slice(0, 400));
 };
 
-// ── 1. tracker.html wiring ────────────────────────────────────────────────
-console.log('\n[tracker.html wiring]');
+// ── 1. Page wiring ────────────────────────────────────────────────────────
+for (const page of PAGES) {
+  console.log(`\n[${page.file}]`);
+  const src = read(page.file);
 
-assert('documents.js is loaded alongside report-email.js',
-  /<script src="documents\.js" defer><\/script>/.test(tracker));
-assert('the Documents tab button exists',
-  /<button class="tab-btn"\s+data-tab="docs">/.test(tracker));
-assert('the Documents panel exists',
-  /<div class="tab-panel" id="tab-docs">/.test(tracker));
-assert('clicking the tab renders it',
-  /if \(activeTab === 'docs'\)\s+renderDocsTab\(\);/.test(tracker));
+  assert('documents.js is loaded alongside report-email.js',
+    /<script src="documents\.js" defer><\/script>/.test(src));
+  assert('the Documents tab button exists',
+    /<button class="tab-btn"\s+data-tab="docs">/.test(src));
+  assert('the Documents panel exists',
+    /<div class="tab-panel" id="tab-docs">/.test(src));
+  // tracker dispatches on activeTab directly; the others defer through _t.
+  assert('clicking the tab renders it',
+    /if \((?:activeTab|_t) === 'docs'\)\s+renderDocsTab\(\);/.test(src));
+  assert(`it configures itself as ${page.configuredAs}`,
+    src.includes(`division:          ${page.configuredAs},`), page.configuredAs);
 
-// level1 is view-only but must still reach the tab — the API decides what it
-// may do there, and hiding it outright would be a different product decision.
-const permBlock = tracker.slice(tracker.indexOf('visibleTabs:'), tracker.indexOf('visibleTabs:') + 300);
-assert('level1 can see the Documents tab', /'level1'[\s\S]*?'docs'/.test(permBlock), permBlock);
-assert('level2 can see the Documents tab',
-  (permBlock.match(/'docs'/g) || []).length >= 2, permBlock);
+  // level1 is view-only but must still reach the tab — the API decides what it
+  // may do there, and hiding it outright would be a different product decision.
+  const permAt = src.indexOf('visibleTabs:');
+  const permBlock = src.slice(permAt, permAt + 320);
+  assert('both level1 and level2 can see the tab',
+    (permBlock.match(/'docs'/g) || []).length === 2, permBlock);
 
-// ── The PO table's colspan must match its header ─────────────────────────
-const poTab = tracker.slice(tracker.indexOf('function renderPOTab()'));
-const colsMatch = poTab.match(/const COLS = (\d+);/);
-assert('renderPOTab declares a column count', Boolean(colsMatch));
+  // ── The PO table's colspan must match its header ───────────────────────
+  const poTab = src.slice(src.indexOf('function renderPOTab()'));
+  const colsMatch = poTab.match(/const COLS = (\d+);/);
+  assert('renderPOTab declares a column count', Boolean(colsMatch));
 
-const theadStart = poTab.indexOf('<thead><tr>');
-const thead = poTab.slice(theadStart, poTab.indexOf('</tr></thead>', theadStart));
-// Count literal <th> plus the thf()/th() helpers that emit one each. The
-// header is the honest count — the body row wraps its delete cell in a
-// ternary, so two <td> in the source render as one.
-const thCount = (thead.match(/<th /g) || []).length + (thead.match(/\$\{th[f]?\(/g) || []).length;
-assert(`the empty-state colspan matches the ${thCount} columns actually rendered`,
-  colsMatch && thCount === Number(colsMatch[1]),
-  `COLS=${colsMatch && colsMatch[1]} but counted ${thCount} header cells`);
+  const theadStart = poTab.indexOf('<thead><tr>');
+  const thead = poTab.slice(theadStart, poTab.indexOf('</tr></thead>', theadStart));
+  // Literal <th> plus the thf()/th() helpers that emit one each. The header is
+  // the honest count — the body row wraps its delete cell in a ternary, so two
+  // <td> in the source render as one.
+  const thCount = (thead.match(/<th /g) || []).length + (thead.match(/\$\{th[f]?\(/g) || []).length;
+  assert(`the empty-state colspan matches the ${thCount} columns actually rendered`,
+    colsMatch && thCount === Number(colsMatch[1]),
+    `COLS=${colsMatch && colsMatch[1]} but counted ${thCount} header cells`);
 
-assert('the paperclip column is in the header', /title="Attached documents"/.test(thead));
-assert('the paperclip cell calls openPODocs', /onclick="openPODocs\('\$\{po\.id\}'\)"/.test(poTab));
-assert('the badge count comes from the shared module',
-  /const docCount= window\.FCTDocuments \? FCTDocuments\.poCount\(po\.id\) : 0;/.test(poTab));
-assert('counts are fetched once, guarded against a render loop',
-  /_poDocCountsLoaded = true;[\s\S]{0,200}refreshPoCounts\(\)/.test(poTab));
+  assert('the paperclip column is in the header', /title="Attached documents"/.test(thead));
+  assert('the paperclip cell calls openPODocs', /onclick="openPODocs\('\$\{po\.id\}'\)"/.test(poTab));
+  assert('the badge count comes from the shared module',
+    /const docCount= window\.FCTDocuments \? FCTDocuments\.poCount\(po\.id\) : 0;/.test(poTab));
+  assert('counts are fetched once, guarded against a render loop',
+    /_poDocCountsLoaded = true;[\s\S]{0,200}refreshPoCounts\(\)/.test(poTab));
 
-// ── 2. Cost-code label resolution ────────────────────────────────────────
-// The master list is what makes 420 read the same on every job. This runs the
-// real functions rather than trusting the source to look right.
-console.log('\n[cost-code folder labels]');
-
-function extract(name) {
-  const at = tracker.indexOf(`function ${name}(`);
-  if (at < 0) throw new Error(`${name} not found in tracker.html`);
-  // Walk braces from the first { after the signature to find the body's end.
-  let i = tracker.indexOf('{', at), depth = 0;
-  for (; i < tracker.length; i++) {
-    if (tracker[i] === '{') depth++;
-    else if (tracker[i] === '}' && --depth === 0) break;
+  // ── Cost-code label resolution, run rather than eyeballed ──────────────
+  // The master list is what makes a code read the same way on every job.
+  const sandbox = {
+    lists: { cost_codes: [{ value: '420', description: 'Paving' }, { value: '415', description: '' }] },
+    console,
+  };
+  sandbox.getProj = () => ({
+    bidItems: [
+      { cost_code: '420', description: 'Wearing Course' },  // master list should win
+      { cost_code: '415', description: 'Subbase' },         // blank master entry → bid item
+      { cost_code: '411', description: '' },                // nothing anywhere → bare code
+    ],
+  });
+  vm.createContext(sandbox);
+  for (const fn of ['costCodeLabel', 'docsCostCodesFor']) {
+    const at = src.indexOf(`function ${fn}(`);
+    if (at < 0) { assert(`${fn} exists`, false); continue; }
+    let i = src.indexOf('{', at), depth = 0;
+    for (; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) break;
+    }
+    vm.runInContext(src.slice(at, i + 1), sandbox);
   }
-  return tracker.slice(at, i + 1);
+
+  const byCode = Object.fromEntries(sandbox.docsCostCodesFor('p1').map(c => [c.code, c.label]));
+  assert('the master list wins over the bid item description',
+    byCode['420'] === 'Paving', JSON.stringify(byCode));
+  assert('a blank master entry falls back to the bid item description',
+    byCode['415'] === 'Subbase', JSON.stringify(byCode));
+  assert('a code with no label anywhere yields the bare code',
+    byCode['411'] === '', JSON.stringify(byCode));
+  assert('the General area asks for no cost codes',
+    sandbox.docsCostCodesFor(null).length === 0);
+
+  // Each division keeps its own lists blob, the same way its employees and
+  // equipment do — so the cost-code panel has to be wired into that page's own
+  // Manage Lists, not inherited from anywhere.
+  assert('the Cost Codes panel is in this page\'s Manage Lists',
+    src.includes('id="panel-cost_codes"') && src.includes("addListItem('cost_codes')"));
+  assert('cost_codes is in this page\'s defaultLists',
+    /cost_codes:   \[\],/.test(src));
 }
 
-const sandbox = {
-  lists: { cost_codes: [{ value: '420', description: 'Paving' }, { value: '415', description: '' }] },
-  projects: {
-    'p1': {
-      bidItems: [
-        { cost_code: '420', description: 'Wearing Course' },  // master list should win
-        { cost_code: '415', description: 'Subbase' },         // blank master entry → bid item
-        { cost_code: '411', description: '' },                // nothing anywhere → bare code
-      ],
-    },
-  },
-  getProj(id) { return this.projects[id]; },
-  console,
-};
-sandbox.getProj = id => sandbox.projects[id];
-vm.createContext(sandbox);
-vm.runInContext(extract('costCodeLabel'), sandbox);
-vm.runInContext(extract('docsCostCodesFor'), sandbox);
-
-const resolved = sandbox.docsCostCodesFor('p1');
-const byCode = Object.fromEntries(resolved.map(c => [c.code, c.label]));
-
-assert('the master list wins over the bid item description',
-  byCode['420'] === 'Paving', JSON.stringify(byCode));
-assert('a blank master entry falls back to the bid item description',
-  byCode['415'] === 'Subbase', JSON.stringify(byCode));
-assert('a code with no label anywhere yields an empty label, so the folder is the bare code',
-  byCode['411'] === '', JSON.stringify(byCode));
-assert('every cost code on the job gets a folder', resolved.length === 3, JSON.stringify(resolved));
-assert('the General area asks for no cost codes',
-  sandbox.docsCostCodesFor(null).length === 0);
-
-// ── 3. documents.js in jsdom ─────────────────────────────────────────────
+// ── 2. documents.js in jsdom ─────────────────────────────────────────────
 console.log('\n[documents.js upload sequence]');
 
 (async () => {
@@ -216,6 +225,13 @@ console.log('\n[documents.js upload sequence]');
   assert('openAttach threads the purchase order\'s own job into the upload',
     /openUpload\(\{ folderId: null, poId: po\.id, lockPo: true, projectId \}\)/.test(docsSrc),
     'openAttach must pass projectId explicitly');
+
+  // The host pages derive perm from fctUser.role, which login.js sets from the
+  // caller's TURF role. On paving and kiewit that can understate what the user
+  // may do, so seeding must not be gated on it — the server decides.
+  assert('folder seeding is not gated on the host page\'s perm',
+    !/if \(cfg\.perm\.canUpload\) \{[\s\S]{0,200}\/documents\$\{q\(\{ projectId \}\)\}/.test(docsSrc),
+    'the seed must run and let the server 403 if it disagrees');
 
   // A non-image is passed through untouched — downscaling a PDF would corrupt it.
   const asIs = await FD._maybeDownscale(file);

@@ -2508,6 +2508,7 @@
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
   <script src="report-email.js" defer></script>
+  <script src="documents.js" defer></script>
 </head>
 <body>
 
@@ -2544,6 +2545,7 @@
     </div>
   </div>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
+  <button class="tab-btn"        data-tab="docs">&#128193; Documents</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <div class="analytics-dropdown-wrap">
     <button class="tab-btn" id="analytics-tab-btn">&#128200; Analytics ▾</button>
@@ -2793,6 +2795,11 @@
 
 <div class="tab-panel" id="tab-po">
   <div id="po-root"></div>
+</div>
+
+<!-- ══════════════ DOCUMENTS TAB ══════════════ -->
+<div class="tab-panel" id="tab-docs">
+  <div id="docs-root"></div>
 </div>
 
 <!-- ══════════════ TRUCKING TAB ══════════════ -->
@@ -3050,6 +3057,7 @@
         <button class="modal-tab-btn" data-list="employees">Employees</button>
         <button class="modal-tab-btn" data-list="job_classes">Job Classes</button>
         <button class="modal-tab-btn" data-list="equipment">Equipment</button>
+        <button class="modal-tab-btn" data-list="cost_codes">Cost Codes</button>
         <button class="modal-tab-btn" data-list="infill_types">Home Type</button>
         <button class="modal-tab-btn" data-list="import_csv" style="margin-left:auto;color:var(--green)">⬆ Import CSV</button>
       </div>
@@ -3104,6 +3112,20 @@
       </div>
 
       <!-- Import CSV -->
+      <!-- Cost Codes (code + description) -->
+      <div class="list-panel" id="panel-cost_codes">
+        <p style="color:var(--muted);font-size:0.78rem;margin:0 0 0.75rem">
+          The master list of cost codes and what they are called. Document folders on
+          every job are labelled from this, so a code reads the same way on every job.
+        </p>
+        <div class="list-items" id="items-cost_codes"></div>
+        <div class="add-item-row">
+          <input type="text" id="new-cost_codes"      placeholder="Cost code… (e.g. 420)" style="max-width:150px" />
+          <input type="text" id="new-cost_codes-desc" placeholder="Description…" />
+          <button class="btn btn-green" onclick="addListItem('cost_codes')">+ Add</button>
+        </div>
+      </div>
+
       <div class="list-panel" id="panel-import_csv">
         <div style="padding:0.5rem 0 1rem">
           <p style="color:var(--muted);font-size:0.82rem;margin:0 0 1rem">
@@ -3856,8 +3878,8 @@ const perm = (() => {
     canEdit:          ['admin', 'level3', 'level2'].includes(r),
     canDeleteProject: ['admin', 'level3'].includes(r),
     // tabs visible to this role (null = all)
-    visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking'])
-               : (r === 'level2') ? new Set(['home', 'schedule', 'construction', 'info', 'po', 'trucking'])
+    visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking', 'docs'])
+               : (r === 'level2') ? new Set(['home', 'schedule', 'construction', 'info', 'po', 'trucking', 'docs'])
                : null,
   };
 })();
@@ -4404,6 +4426,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       if (_t === 'info')      renderProjectInfoComputed();
       if (_t === 'supplier')  renderSupplierTab();
       if (_t === 'po')        renderPOTab();
+      if (_t === 'docs')      renderDocsTab();
       if (_t === 'trucking')  renderTruckingTab();
       if (_t === 'mob-entry') renderMobileEntryForm();
     }, 0);
@@ -10085,6 +10108,7 @@ const defaultLists = {
   equipment:    [],   // [{name, unit_cost}]
   suppliers:    [],
   infill_types: [],
+  cost_codes:   [],   // [{value, description}] — the master list folder labels resolve against
 };
 
 let lists = {};
@@ -10109,11 +10133,132 @@ async function loadLists() {
   // Migrate employees from string[] to {name,non_prevailing_rate,prevailing_rate,job_class}[]
   lists.employees = lists.employees.map(e => typeof e === 'string'
     ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
+  // Cost codes are {value, description}. The key stays `value` because the
+  // cost-code pickers read `c.value || c`, so a bare string still works and an
+  // object only adds the description the document folders label themselves with.
+  lists.cost_codes = (lists.cost_codes || []).map(c => typeof c === 'string'
+    ? { value: c, description: '' } : { value: '', description: '', ...c });
+}
+
+/**
+ * Display label for a cost code, from the master list. Falls back to the bid
+ * item's own description, then to the bare code — so folders are labelled
+ * consistently across jobs where the master list has an entry, and still
+ * readable where it does not.
+ *
+ * The list is this division's own (fct_kiewit_lists), the same way its
+ * employees and equipment are.
+ */
+function costCodeLabel(code, fallback) {
+  const hit = (lists.cost_codes || []).find(c => String(c.value) === String(code));
+  return (hit && hit.description) || fallback || '';
 }
 function saveLists() { apiPut('fct_kiewit_lists', lists); }
 
+/* ═══════════════════════════════════════════
+   DOCUMENTS TAB
+   The folder browser itself lives in documents.js, shared with the other
+   division pages. This end owns the job picker and tells that module how to
+   read kiewit's projects, cost codes, purchase orders, and permissions.
+═══════════════════════════════════════════ */
+let docsProjectId = null;   // null = the division-level General / Non-Job area
+let _docsConfigured = false;
+
+/**
+ * Cost codes on a job, each with the label its folder should carry.
+ *
+ * The master list in Manage Lists wins, so a code reads the same way on every
+ * job in this division; a code that is not on it falls back to the bid item's
+ * own description, and then to the bare code.
+ */
+function docsCostCodesFor(projId) {
+  const p = projId ? getProj(projId) : null;
+  const bids = (p && p.bidItems) || [];
+  const codes = [...new Set(bids.map(b => b.cost_code).filter(Boolean))];
+  return codes.map(code => {
+    const bid = bids.find(b => b.cost_code === code && b.description);
+    return { code, label: costCodeLabel(code, bid ? bid.description : '') };
+  });
+}
+
+/**
+ * Hand documents.js everything it needs to read this division. Runs once, and
+ * only after the deferred script has loaded — the inline script here executes
+ * during parsing, well before it.
+ */
+function _docsEnsureConfigured() {
+  if (_docsConfigured || !window.FCTDocuments) return;
+  FCTDocuments.configure({
+    division:          DIVISION,
+    getProjectId:      () => docsProjectId,
+    getProjectName:    id => (getProj(id) || {})['project-name'] || 'Job',
+    getCostCodes:      docsCostCodesFor,
+    getPurchaseOrders: () => purchaseOrders.map(po => ({
+      id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: po.project_id,
+    })),
+    perm: {
+      canUpload: perm.canEdit,
+      canManage: perm.canDeleteProject,
+      canDelete: perm.isAdmin,
+    },
+    // Attaching or deleting changes the paperclip counts the PO tab draws.
+    onChange: () => { if (activeTab === 'po') renderPOTab(); },
+  });
+  _docsConfigured = true;
+}
+
+/**
+ * The paperclip on a PO row. Opens that order's attached documents, and offers
+ * an upload that files the file on the job AND under the order in one action.
+ */
+function openPODocs(poId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po) return;
+  if (!window.FCTDocuments) { setTimeout(() => openPODocs(poId), 150); return; }
+  _docsEnsureConfigured();
+  FCTDocuments.openAttach({
+    id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: po.project_id,
+  });
+}
+
+function renderDocsTab() {
+  const root = document.getElementById('docs-root');
+  if (!root) return;
+
+  if (!window.FCTDocuments) {
+    root.innerHTML = '<div style="color:var(--muted);padding:1.5rem">Loading the document browser…</div>';
+    // documents.js is deferred, so on a fast tab click it may not have run yet.
+    setTimeout(renderDocsTab, 150);
+    return;
+  }
+
+  _docsEnsureConfigured();
+
+  const opts = projectsList.map(p =>
+    `<option value="${esc(p.id)}" ${p.id === docsProjectId ? 'selected' : ''}>${esc(p['project-name'] || 'Untitled')}</option>`
+  ).join('');
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.9rem;flex-wrap:wrap">
+      <label for="docs-proj" style="color:var(--muted);font-size:0.78rem;letter-spacing:0.06em;text-transform:uppercase">Job</label>
+      <select id="docs-proj" style="padding:0.35rem 0.6rem;border:1px solid var(--border);background:var(--surface2);color:var(--text);border-radius:4px;font-size:0.82rem;min-width:16rem">
+        <option value="">General / Non-Job</option>
+        ${opts}
+      </select>
+    </div>
+    <div id="docs-mount"></div>`;
+
+  document.getElementById('docs-proj').addEventListener('change', e => {
+    docsProjectId = e.target.value || null;
+    renderDocsTab();
+  });
+
+  FCTDocuments.renderTab(document.getElementById('docs-mount'));
+}
+
 /* ── Purchase Orders Tab ── */
 let _poExpanded = new Set();   // PO ids with delivery lines visible
+let _poDocCountsLoaded = false; // attached-document counts fetched once per session
 
 // Delivery-line math. Tax is entered as a percentage (`tax_pct`) and applied on
 // top of the line amount; the resulting dollar figure is mirrored into `tax` so
@@ -10459,6 +10604,16 @@ function renderPOTab() {
   const root = document.getElementById('po-root');
   if (!root) return;
 
+  // Attached-document counts feed the paperclip badges. Fetched once, then
+  // kept current by documents.js, which calls back through onChange whenever
+  // an attachment is added or removed. The flag is set before the request so
+  // the re-render below cannot loop.
+  if (window.FCTDocuments && !_poDocCountsLoaded) {
+    _poDocCountsLoaded = true;
+    _docsEnsureConfigured();
+    FCTDocuments.refreshPoCounts().then(() => { if (activeTab === 'po') renderPOTab(); });
+  }
+
   const searchWasFocused = document.activeElement?.classList?.contains('po-global-search');
 
   const TH_S = 'padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap';
@@ -10499,7 +10654,7 @@ function renderPOTab() {
     return `<input type="${type}" value="${esc(String(current??''))}" ${attr} style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
   };
 
-  const COLS = 13; // total columns in the table
+  const COLS = 13; // total columns in the table — matches the <thead> below
 
   const bodyHTML = purchaseOrders.length === 0
     ? `<tr><td colspan="${COLS}" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No purchase orders yet. Click + New PO to begin.</td></tr>`
@@ -10509,6 +10664,7 @@ function renderPOTab() {
         const tot     = _poTotals(po);
         const lCount  = (po.lines||[]).length;
         const expanded= _poExpanded.has(po.id);
+        const docCount= window.FCTDocuments ? FCTDocuments.poCount(po.id) : 0;
 
         // Header-level searchable comboboxes — display labels for project / sub code
         const poProjName = po.project_id ? ((getProj(po.project_id) || {})['project-name'] || 'Untitled') : '';
@@ -10553,6 +10709,11 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">${tot.amt > 0 ? '$'+fmt(tot.amt) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}" onclick="event.stopPropagation()">${selOpts('status',statusOpts,po.status,po.id,null)}${statusMeta}</td>
+          <td style="padding:0.25rem 0.4rem;text-align:center" onclick="event.stopPropagation()">
+            <button onclick="openPODocs('${po.id}')" title="${docCount ? `${docCount} attached document${docCount === 1 ? '' : 's'}` : 'Attach a document'}"
+              style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:0.15rem 0.4rem;
+                     font-size:0.72rem;white-space:nowrap;color:${docCount ? 'var(--green)' : 'var(--muted)'}">&#128206;${docCount || ''}</button>
+          </td>
           ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>` : '<td></td>'}
         </tr>`;
 
@@ -10661,6 +10822,7 @@ function renderPOTab() {
             ${th('Running Amount',1)}
             ${th('Running Total',1)}
             ${thf('Status','status')}
+            <th style="${TH_S};width:44px;text-align:center" title="Attached documents">&#128206;</th>
             <th style="${TH_S};width:36px"></th>
           </tr></thead>
           <tbody>${bodyHTML}</tbody>
@@ -12343,6 +12505,25 @@ function renderAllListPanels() {
     `;
     eqContainer.appendChild(div);
   });
+
+  // Cost codes (code + description)
+  const ccContainer = document.getElementById('items-cost_codes');
+  if (ccContainer) {
+    ccContainer.innerHTML = '';
+    lists.cost_codes
+      .map((item, idx) => ({ item, idx }))
+      .sort((a, b) => String(a.item.value).localeCompare(String(b.item.value), undefined, { numeric: true }))
+      .forEach(({ item, idx }) => {
+        const div = document.createElement('div');
+        div.className = 'list-item';
+        div.innerHTML = `
+          <input type="text" value="${esc(item.value)}"       data-key="cost_codes" data-idx="${idx}" data-field="value"       placeholder="Code" style="max-width:150px" />
+          <input type="text" value="${esc(item.description)}" data-key="cost_codes" data-idx="${idx}" data-field="description" placeholder="Description" />
+          <button class="remove-item" data-key="cost_codes" data-idx="${idx}">&#10005;</button>
+        `;
+        ccContainer.appendChild(div);
+      });
+  }
 }
 
 // Modal input/change — covers text inputs, number inputs, and selects
@@ -12356,6 +12537,9 @@ function _modalFieldUpdate(el) {
     if (!lists.equipment[idx]) return;
     if (field === 'name')      lists.equipment[idx].name      = el.value;
     if (field === 'unit_cost') lists.equipment[idx].unit_cost = parseFloat(el.value) || 0;
+  } else if (key === 'cost_codes') {
+    if (!lists.cost_codes[idx]) return;
+    lists.cost_codes[idx][el.dataset.field] = el.value;
   } else if (key === 'employees') {
     const field = el.dataset.field;
     if (!lists.employees[idx]) return;
@@ -12426,10 +12610,14 @@ document.querySelector('.modal-body').addEventListener('click', e => {
 });
 
 // Add new enter key support
-['field_types','employees','job_classes','equipment','infill_types'].forEach(key => {
+['field_types','employees','job_classes','equipment','infill_types','cost_codes'].forEach(key => {
   const input = document.getElementById('new-' + key);
   if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') addListItem(key); });
 });
+// Enter from the cost-code description field adds the row too, so a code and
+// its description can be typed without reaching for the mouse.
+document.getElementById('new-cost_codes-desc')
+  ?.addEventListener('keydown', e => { if (e.key === 'Enter') addListItem('cost_codes'); });
 
 function addListItem(key) {
   if (key === 'employees') {
@@ -12453,6 +12641,12 @@ function addListItem(key) {
       const costInput = document.getElementById('new-equipment-cost');
       lists.equipment.push({ name: val, unit_cost: parseFloat(costInput.value) || 0 });
       costInput.value = '';
+    } else if (key === 'cost_codes') {
+      const descInput = document.getElementById('new-cost_codes-desc');
+      if (!lists.cost_codes.some(c => String(c.value) === val)) {
+        lists.cost_codes.push({ value: val, description: descInput.value.trim() });
+      }
+      descInput.value = '';
     } else {
       if (!lists[key].includes(val)) lists[key].push(val);
     }
