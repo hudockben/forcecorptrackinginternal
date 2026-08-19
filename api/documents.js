@@ -708,6 +708,17 @@ module.exports = async (req, res) => {
         if (!caps.canDelete) return res.status(403).json({ error: 'Only an administrator can restore a document' });
         await sql`UPDATE project_documents SET deleted_at = NULL, deleted_by = NULL, purge_after = NULL WHERE id = ${id}`;
 
+        // Drop links pointing at folders that no longer exist, so folder_ids
+        // describes where the document actually is. A phantom id renders as a
+        // stray "—" on the preview's Filed in line. This runs on EVERY restore,
+        // not only the re-homing branch — a document that still has one good
+        // folder can carry a dead link alongside it.
+        await sql`
+          DELETE FROM document_links
+          WHERE document_id = ${id} AND link_type = 'folder'
+            AND target_id NOT IN (SELECT id FROM project_folders)
+        `;
+
         // A restored document must end up somewhere a person can reach. Count
         // only links whose folder still EXISTS — deleting a job hard-deletes
         // its folders and their links, and a folder can also be removed while

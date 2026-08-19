@@ -653,6 +653,19 @@ async function upload(folderId, filename, auth, extra = {}) {
       generalTree.folders.map(f => f.name).join(' | '));
     assert('and it lists in that scope', generalTree.documents.some(d => d.id === 'doc-doomed'));
 
+    // Re-homing must also clear links pointing at folders that no longer exist,
+    // or folder_ids advertises a folder the tree cannot show and the preview
+    // renders a stray dash on its "Filed in" line.
+    await client.query(
+      `INSERT INTO document_links (document_id, company_code, link_type, target_id)
+       VALUES ('doc-doomed','FCT','folder','ghost-folder-xyz') ON CONFLICT DO NOTHING`);
+    await call('DELETE', { division: 'turf', id: 'doc-doomed' }, null, ADMIN);
+    const back2 = await call('PATCH', { division: 'turf', id: 'doc-doomed' }, { restore: true }, ADMIN);
+    const liveIds = (await call('GET', { division: 'turf' }, null, ADMIN)).body.folders.map(f => f.id);
+    assert('a restored document advertises only folders that exist',
+      back2.body.document.folder_ids.every(fid => liveIds.includes(fid)),
+      JSON.stringify(back2.body.document.folder_ids));
+
   }
 
   // ── Audit trail ─────────────────────────────────────────────────────────
