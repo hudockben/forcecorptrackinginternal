@@ -1445,6 +1445,12 @@ CREATE TABLE IF NOT EXISTS project_folders (
 -- generator miss it and create 'Photos' all over again on the next load.
 ALTER TABLE project_folders ADD COLUMN IF NOT EXISTS slug TEXT;
 
+-- Set when a person renames a generated folder by hand. Cost-code folder
+-- labels otherwise follow the cost-code master list on every load, so filling
+-- that list in relabels the folders on jobs that already exist; a folder
+-- someone renamed keeps the name they chose.
+ALTER TABLE project_folders ADD COLUMN IF NOT EXISTS renamed_at TIMESTAMPTZ;
+
 ALTER TABLE project_folders DROP CONSTRAINT IF EXISTS project_folders_kind_chk;
 ALTER TABLE project_folders ADD  CONSTRAINT project_folders_kind_chk
   CHECK (kind IN ('fixed','cost_code','user'));
@@ -1453,7 +1459,17 @@ ALTER TABLE project_folders DROP CONSTRAINT IF EXISTS project_folders_division_c
 ALTER TABLE project_folders ADD  CONSTRAINT project_folders_division_chk
   CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry'));
 
-CREATE INDEX IF NOT EXISTS idx_pf_scope  ON project_folders(company_code, division, project_id);
+-- COALESCE(project_id, '') matches the predicate the handler uses. Plain
+-- project_id could not: the queries originally said
+-- `project_id IS NOT DISTINCT FROM $n` to cover the NULL (General area) case,
+-- and that operator is not btree-indexable, so the third column was never used
+-- and every read seq-scanned the table.
+--
+-- New NAMES, not a redefinition of the old ones: CREATE INDEX IF NOT EXISTS is
+-- a no-op when the name already exists, so redefining idx_pf_scope in place
+-- would silently keep the old definition on every database that already has it.
+DROP INDEX IF EXISTS idx_pf_scope;
+CREATE INDEX IF NOT EXISTS idx_pf_company_div_proj ON project_folders(company_code, division, COALESCE(project_id, ''));
 CREATE INDEX IF NOT EXISTS idx_pf_parent ON project_folders(parent_id);
 
 -- Two folders cannot share a name under the same parent. COALESCE is required
@@ -1487,11 +1503,18 @@ CREATE TABLE IF NOT EXISTS project_documents (
     purge_after  TIMESTAMPTZ
 );
 
+-- How many times the purge sweep has failed to delete this object. Ordering
+-- the sweep by this first stops a permanently undeletable object from sitting
+-- at the head of every batch and starving everything behind it.
+ALTER TABLE project_documents ADD COLUMN IF NOT EXISTS purge_attempts   INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE project_documents ADD COLUMN IF NOT EXISTS purge_last_error TIMESTAMPTZ;
+
 ALTER TABLE project_documents DROP CONSTRAINT IF EXISTS project_documents_division_chk;
 ALTER TABLE project_documents ADD  CONSTRAINT project_documents_division_chk
   CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry'));
 
-CREATE INDEX IF NOT EXISTS idx_pd_scope   ON project_documents(company_code, division, project_id);
+DROP INDEX IF EXISTS idx_pd_scope;
+CREATE INDEX IF NOT EXISTS idx_pd_company_div_proj ON project_documents(company_code, division, COALESCE(project_id, ''));
 CREATE INDEX IF NOT EXISTS idx_pd_live    ON project_documents(company_code, division, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_pd_purge   ON project_documents(purge_after) WHERE purge_after IS NOT NULL;
 

@@ -55,15 +55,23 @@ function makeSql(c) {
   };
 }
 
+// What the object store is holding, keyed by storage key. POST now HEADs the
+// object to learn its real size instead of trusting the caller, so the tests
+// have to model a store rather than skip it.
+const STORE = new Map();
+let storageFailsHead = false;
+
 let AUTH = null;
 const origLoad = Module._load;
 Module._load = function (request) {
   if (request === '@neondatabase/serverless') return { neon: () => makeSql(client) };
   if (request === './lib/auth') {
+    // The real module, with only the two request guards replaced — so
+    // capabilities() and levelFor() under test are the ones that ship.
+    const real = origLoad.call(this, path.resolve(__dirname, '..', 'api', 'lib', 'auth.js'), module, false);
     return {
+      ...real,
       requireAuth: () => AUTH,
-      // Mirror the real guard: resolve the division, then check access, so the
-      // isolation assertions below exercise a check that actually exists.
       requireDivision: (req, res) => {
         if (!AUTH) { res.status(401).json({ error: 'Unauthorized' }); return null; }
         const division = (req.query && req.query.division) || 'turf';
@@ -72,6 +80,16 @@ Module._load = function (request) {
         if (!allowed) { res.status(403).json({ error: 'You do not have access to this division' }); return null; }
         return { payload: AUTH, division };
       },
+    };
+  }
+  if (request === './lib/storage') {
+    const real = origLoad.call(this, path.resolve(__dirname, '..', 'api', 'lib', 'storage.js'), module, false);
+    return {
+      ...real,
+      headObject: async key => (!storageFailsHead && STORE.has(key)
+        ? { exists: true, size: STORE.get(key), contentType: null }
+        : { exists: false, size: 0, contentType: null }),
+      deleteObject: async key => { STORE.delete(key); return true; },
     };
   }
   return origLoad.apply(this, arguments);
@@ -118,6 +136,7 @@ async function upload(folderId, filename, auth, extra = {}) {
   const documentId = `doc-${++seq}`;
   const projectId  = extra.projectId !== undefined ? extra.projectId : PROJ;
   const storageKey = `FCT/turf/${projectId || 'general'}/${documentId}/${filename}`; // same shape storage.buildKey mints
+  STORE.set(storageKey, extra.storedBytes !== undefined ? extra.storedBytes : 1024);
   return call('POST', { division: 'turf', projectId: projectId || undefined },
     { documentId, filename, storageKey, folderId, sizeBytes: 1024, ...extra }, auth);
 }
@@ -196,6 +215,16 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('the document is filed in the cost-code folder', doc.folder_ids.includes(paving.id));
   assert('and attached to the PO in the same action', doc.po_ids.includes('po-1042'));
 
+  // "Own folder but duplicated at the job level" — the design says one
+  // subfolder per purchase order, and for a long time nothing created them.
+  const tree2 = (await call('GET', { division: 'turf', projectId: PROJ }, null, PM)).body.folders;
+  const poSub = tree2.find(f => f.slug === 'po-po-1042');
+  assert('a subfolder is created for the purchase order', Boolean(poSub),
+    tree2.map(f => f.name).join(' | '));
+  assert('nested under the Purchase Orders root', poSub && poSub.parent_id === poRoot.id);
+  assert('and the document is filed there too', doc.folder_ids.includes(poSub.id),
+    JSON.stringify(doc.folder_ids));
+
   const stored = await client.query(`SELECT COUNT(*)::int AS n FROM project_documents WHERE id = $1`, [docId]);
   assert('reachable from both places but stored once', stored.rows[0].n === 1);
 
@@ -214,19 +243,26 @@ async function upload(folderId, filename, auth, extra = {}) {
   const counts2 = (await call('GET', { division: 'turf', poCounts: '1' }, null, PM)).body.counts;
   assert('the count follows', counts2['po-1042'] === 2, JSON.stringify(counts2));
 
-  // Filing the same document into a second folder — one file, two homes.
+  // Filing the same document into another folder — one file, several homes.
+  const beforeFile = doc.folder_ids.length;
   const filed = await call('PATCH', { division: 'turf', id: docId }, { addFolderId: poRoot.id }, PM);
-  assert('a document can sit in two folders', filed.body.document.folder_ids.length === 2);
+  assert('a document can sit in more folders still',
+    filed.body.document.folder_ids.length === beforeFile + 1,
+    JSON.stringify(filed.body.document.folder_ids));
   const stillOne = await client.query(`SELECT COUNT(*)::int AS n FROM project_documents WHERE id = $1`, [docId]);
   assert('still one stored file', stillOne.rows[0].n === 1);
 
   // ── Unfiling must never strand a document ───────────────────────────────
   console.log('\nUnfile vs delete');
   const un1 = await call('PATCH', { division: 'turf', id: docId }, { removeFolderId: poRoot.id }, PM);
-  assert('unfiling one of two folders is allowed', un1.statusCode === 200);
-  const un2 = await call('PATCH', { division: 'turf', id: docId }, { removeFolderId: paving.id }, PM);
+  assert('unfiling one of several folders is allowed', un1.statusCode === 200);
+
+  // A document with exactly one folder is where the invariant actually bites.
+  const solo = await upload(safety.id, 'solo.pdf', PM);
+  const soloId = solo.body.document.id;
+  const un2 = await call('PATCH', { division: 'turf', id: soloId }, { removeFolderId: safety.id }, PM);
   assert('unfiling the last folder is refused', un2.statusCode === 400, JSON.stringify(un2.body));
-  const survived = await client.query(`SELECT COUNT(*)::int AS n FROM document_links WHERE document_id = $1 AND link_type = 'folder'`, [docId]);
+  const survived = await client.query(`SELECT COUNT(*)::int AS n FROM document_links WHERE document_id = $1 AND link_type = 'folder'`, [soloId]);
   assert('so the document keeps a folder', survived.rows[0].n === 1);
 
   // Unlinking a PO is not a delete.
@@ -269,6 +305,7 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('and cannot touch a document by id', rivalPatch.statusCode === 404);
 
   // A storage key from another company must not be registerable.
+  STORE.set('OTH/turf/p/d/x.pdf', 10);
   const badKey = await call('POST', { division: 'turf', projectId: PROJ }, {
     documentId: 'doc-evil', filename: 'x.pdf', storageKey: 'OTH/turf/p/d/x.pdf',
     folderId: safety.id, sizeBytes: 10,
@@ -276,6 +313,7 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('a storage key outside the company is refused', badKey.statusCode === 400, JSON.stringify(badKey.body));
 
   // A prefix check alone would admit this one — it does start with FCT/turf/.
+  STORE.set('FCT/turf/../../OTH/turf/p/d/x.pdf', 10);
   const traversal = await call('POST', { division: 'turf', projectId: PROJ }, {
     documentId: 'doc-trav', filename: 'x.pdf', storageKey: `FCT/turf/../../OTH/turf/p/d/x.pdf`,
     folderId: safety.id, sizeBytes: 10,
@@ -358,6 +396,7 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('paving seeds its own tree under the same project id', pGen.statusCode === 200);
   const pSafety = pGen.body.folders.find(f => f.name === 'Safety');
 
+  STORE.set(`FCT/paving/${PROJ}/doc-pav/paving-ticket.pdf`, 2048);
   const pDoc = await call('POST', { division: 'paving', projectId: PROJ }, {
     documentId: 'doc-pav', filename: 'paving-ticket.pdf',
     storageKey: `FCT/paving/${PROJ}/doc-pav/paving-ticket.pdf`,
@@ -412,6 +451,103 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('nor a cost-code folder', rmCost.statusCode === 400);
   const rmUser = await call('DELETE', { division: 'turf', folderId: mk.body.folder.id }, null, PM);
   assert('an empty user folder can be deleted', rmUser.statusCode === 200);
+
+  // ── Regressions from the adversarial audit ──────────────────────────────
+  console.log('\nAudit regressions');
+
+  // The trash listing had no capability gate at all, so a view-only user could
+  // enumerate every document deleted anywhere in the division for 30 days.
+  const trashAsViewer = await call('GET', { division: 'turf', trash: '1' }, null, VIEWER);
+  assert('level1 cannot list the trash', trashAsViewer.statusCode === 403, JSON.stringify(trashAsViewer.body));
+  const trashAsPM = await call('GET', { division: 'turf', trash: '1' }, null, PM);
+  assert('nor can level3', trashAsPM.statusCode === 403);
+  assert('admin still can', (await call('GET', { division: 'turf', trash: '1' }, null, ADMIN)).statusCode === 200);
+
+  // A folder holding only SOFT-DELETED documents used to count as empty. It was
+  // deletable, document_links has no FK to cascade, and restoring the document
+  // then put it in a folder that no longer existed — reachable only by search.
+  const mkTrap = await call('POST', { division: 'turf', projectId: PROJ, folder: '1' }, { name: 'Trap Folder' }, PM);
+  const trapId = mkTrap.body.folder.id;
+  const trapDoc = await upload(trapId, 'trapped.pdf', PM);
+  await call('DELETE', { division: 'turf', id: trapDoc.body.document.id }, null, ADMIN);
+  const rmTrap = await call('DELETE', { division: 'turf', folderId: trapId }, null, PM);
+  assert('a folder holding only trashed documents is not "empty"',
+    rmTrap.statusCode === 400, JSON.stringify(rmTrap.body));
+  await call('PATCH', { division: 'turf', id: trapDoc.body.document.id }, { restore: true }, ADMIN);
+  const trapBack = (await call('GET', { division: 'turf', projectId: PROJ }, null, PM)).body.documents
+    .find(d => d.id === trapDoc.body.document.id);
+  const liveFolders = (await call('GET', { division: 'turf', projectId: PROJ }, null, PM)).body.folders.map(f => f.id);
+  assert('so a restored document still lands in a folder that exists',
+    trapBack.folder_ids.every(fid => liveFolders.includes(fid)),
+    JSON.stringify(trapBack.folder_ids));
+
+  // The keep-one-folder guard counted bare link rows, so a link to a folder
+  // that no longer existed could stand in for a real home.
+  const dangling = await upload(safety.id, 'dangling.pdf', PM);
+  const dId = dangling.body.document.id;
+  await client.query(
+    `INSERT INTO document_links (document_id, company_code, link_type, target_id) VALUES ($1,'FCT','folder','ghost-folder')`,
+    [dId]);
+  const unfileReal = await call('PATCH', { division: 'turf', id: dId }, { removeFolderId: safety.id }, PM);
+  assert('a dead folder link cannot satisfy the keep-one-folder rule',
+    unfileReal.statusCode === 400, JSON.stringify(unfileReal.body));
+
+  // A hand-made folder could be parented into a different job's tree, where
+  // childrenOf() never reaches it.
+  const otherJob = await call('PUT', { division: 'turf', projectId: 'proj-other' }, { costCodes: [] }, PM);
+  const otherSafety = otherJob.body.folders.find(f => f.slug === 'safety');
+  const crossParent = await call('POST', { division: 'turf', projectId: PROJ, folder: '1' },
+    { name: 'Wrong Tree', parentId: otherSafety.id }, PM);
+  assert('a parent folder from another job is refused',
+    crossParent.statusCode === 404, JSON.stringify(crossParent.body));
+
+  // A cost-code label colliding with an existing folder name used to be
+  // swallowed by the concurrent-seed catch: PUT reported success and the
+  // folder could never appear on any later load.
+  await call('POST', { division: 'turf', projectId: 'proj-collide', folder: '1' }, { name: '415' }, PM);
+  const collide = await call('PUT', { division: 'turf', projectId: 'proj-collide' },
+    { costCodes: [{ code: '415', label: '' }] }, PM);
+  const ccFolder = collide.body.folders.find(f => f.cost_code === '415');
+  assert('a colliding cost-code folder is still created', Boolean(ccFolder),
+    collide.body.folders.map(f => f.name).join(' | '));
+  assert('under a disambiguated name', ccFolder && ccFolder.name !== '415', ccFolder && ccFolder.name);
+  assert('and the collision is reported rather than swallowed',
+    Array.isArray(collide.body.collisions) && collide.body.collisions.length === 1,
+    JSON.stringify(collide.body.collisions));
+
+  // Labels used to freeze at first creation, so filling in the master list did
+  // nothing on any job that already had folders.
+  const relabelJob = 'proj-relabel';
+  await call('PUT', { division: 'turf', projectId: relabelJob }, { costCodes: [{ code: '420', label: '' }] }, PM);
+  const after = await call('PUT', { division: 'turf', projectId: relabelJob },
+    { costCodes: [{ code: '420', label: 'Paving' }] }, PM);
+  const relabelled = after.body.folders.find(f => f.cost_code === '420');
+  assert('a cost-code folder follows the master list when it is filled in',
+    relabelled && relabelled.name === '420 · Paving', relabelled && relabelled.name);
+  await client.query(`UPDATE project_folders SET renamed_at = NOW() WHERE id = $1`, [relabelled.id]);
+  await client.query(`UPDATE project_folders SET name = 'My Name' WHERE id = $1`, [relabelled.id]);
+  const afterRename = await call('PUT', { division: 'turf', projectId: relabelJob },
+    { costCodes: [{ code: '420', label: 'Something Else' }] }, PM);
+  assert('but a folder someone renamed by hand keeps their name',
+    afterRename.body.folders.find(f => f.cost_code === '420').name === 'My Name');
+
+  // Size was declared by the client twice and verified never.
+  const lieKey = `FCT/turf/${PROJ}/doc-lie/big.zip`;
+  STORE.set(lieKey, 5 * 1024 * 1024);
+  const lie = await call('POST', { division: 'turf', projectId: PROJ }, {
+    documentId: 'doc-lie', filename: 'big.zip', storageKey: lieKey, folderId: safety.id, sizeBytes: 1,
+  }, PM);
+  assert('the recorded size comes from the store, not the caller',
+    lie.statusCode === 201 && lie.body.document.size_bytes === 5 * 1024 * 1024,
+    JSON.stringify(lie.body.document && lie.body.document.size_bytes));
+
+  // Registering a document for an object that was never uploaded.
+  const phantom = await call('POST', { division: 'turf', projectId: PROJ }, {
+    documentId: 'doc-phantom', filename: 'ghost.pdf',
+    storageKey: `FCT/turf/${PROJ}/doc-phantom/ghost.pdf`, folderId: safety.id, sizeBytes: 10,
+  }, PM);
+  assert('a document with no uploaded object is refused',
+    phantom.statusCode === 409, JSON.stringify(phantom.body));
 
   // ── Audit trail ─────────────────────────────────────────────────────────
   console.log('\nAudit trail');

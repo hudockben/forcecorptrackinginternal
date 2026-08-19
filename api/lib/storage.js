@@ -191,17 +191,58 @@ function presignUpload(key, { expiresIn = 900 } = {}) {
 }
 
 /**
- * Presigned GET, short-lived. `filename` sets the download name and keeps the
- * browser from rendering, say, an .html attachment inline on our origin.
+ * Presigned GET, short-lived. `filename` sets the download name.
+ *
+ * `contentType` is not optional in spirit: presignUpload deliberately leaves
+ * Content-Type unsigned, so whoever performs the PUT chooses what the store
+ * records against the object. Without an override the store replays that
+ * choice, and a file registered as application/pdf (the extension is what
+ * decides project_documents.content_type) can come back as text/html and be
+ * rendered inline. Overriding it here means the type the database believes is
+ * the type the browser is handed, whatever is actually stored.
  */
-function presignDownload(key, { filename, expiresIn = 300, inline = false } = {}) {
+function presignDownload(key, { filename, contentType, expiresIn = 300, inline = false } = {}) {
   const extraQuery = {};
   if (filename) {
     const disp = inline ? 'inline' : 'attachment';
-    extraQuery['response-content-disposition'] =
-      `${disp}; filename="${String(filename).replace(/[""\\]/g, '_')}"`;
+    // Strip quotes, backslashes, and anything that could end the header value
+    // early — a filename is user input and this lands in a response header.
+    const safe = String(filename).replace(/[\r\n"\\]/g, '_');
+    extraQuery['response-content-disposition'] = `${disp}; filename="${safe}"`;
+  }
+  if (contentType) {
+    extraQuery['response-content-type'] = String(contentType);
   }
   return presign('GET', key, { expiresIn, extraQuery });
+}
+
+/**
+ * Ask the store what it actually holds at `key`.
+ *
+ * Returns { exists, size, contentType }. The upload flow declares a size twice
+ * — once when minting the ticket and again when registering — and neither is
+ * binding: the presigned PUT signs only `host`, so nothing bounds the body the
+ * browser sends. This is the only way to learn the truth, and it is also how
+ * registration confirms an object was uploaded at all rather than trusting a
+ * caller who skipped step 2.
+ *
+ * Resolves { exists: false } on any error, so a store hiccup fails the
+ * registration rather than silently recording a fabricated size.
+ */
+async function headObject(key) {
+  try {
+    const url = presign('HEAD', key, { expiresIn: 60 });
+    const r = await fetch(url, { method: 'HEAD' });
+    if (!r.ok) return { exists: false, size: 0, contentType: null };
+    return {
+      exists: true,
+      size: parseInt(r.headers.get('content-length'), 10) || 0,
+      contentType: r.headers.get('content-type') || null,
+    };
+  } catch (err) {
+    console.warn(`[storage] head failed for ${key}: ${err.message}`);
+    return { exists: false, size: 0, contentType: null };
+  }
 }
 
 /**
@@ -213,7 +254,22 @@ async function deleteObject(key) {
   try {
     const url = presign('DELETE', key, { expiresIn: 60 });
     const r = await fetch(url, { method: 'DELETE' });
-    return r.ok || r.status === 404;
+    // A 404 usually means NoSuchKey — the object was already gone, which is
+    // the outcome we wanted. But S3 and R2 also answer 404 for NoSuchBucket,
+    // and treating that as success would let the purge sweep delete every
+    // metadata row while the real objects survive in the real bucket,
+    // unreferenced and invisible to every later run. Read the body to tell
+    // them apart.
+    if (r.status === 404) {
+      let body = '';
+      try { body = await r.text(); } catch { /* opaque */ }
+      if (/NoSuchBucket|NoSuchHost|InvalidBucketName/i.test(body)) {
+        console.warn(`[storage] delete for ${key} hit a missing bucket — not treating as deleted`);
+        return false;
+      }
+      return true;
+    }
+    return r.ok;
   } catch (err) {
     console.warn(`[storage] delete failed for ${key}: ${err.message}`);
     return false;
@@ -225,29 +281,45 @@ async function deleteObject(key) {
  * is browsable and a per-company lifecycle rule stays possible; the document
  * id keeps two files of the same name apart.
  */
-function buildKey({ companyCode, division, projectId, documentId, filename }) {
-  // Slashes go first, then anything else outside [A-Za-z0-9._-]. Runs of dots
-  // collapse to one and leading dots are dropped: '.' survives the character
-  // filter as a legitimate extension separator, which would otherwise leave
-  // '../../etc/passwd' as the '.._.._etc_passwd' segment — harmless here, but
-  // '..' in an object key misbehaves against anything that normalizes paths.
-  const safeName = (String(filename || 'file')
+// One path segment of an object key. Anything outside [A-Za-z0-9._-] becomes
+// '_', dot runs collapse, and leading dots go — so no caller-supplied value can
+// contribute a '..' or a '/' to the key. projectId in particular is raw request
+// input on both endpoints that build a key, and project_id has no format
+// constraint in the schema, so 'FCT/turf/../../OTH/...' was reachable without
+// touching the storageKey the recompute guard checks.
+function safeSegment(value, fallback) {
+  const out = String(value == null ? '' : value)
     .replace(/[^\w.\-]+/g, '_')
     .replace(/\.{2,}/g, '.')
     .replace(/^\.+/, '')
-    .slice(-120)) || 'file';
-  const proj = projectId || 'general';
-  return `${companyCode}/${division}/${proj}/${documentId}/${safeName}`;
+    .slice(-120);
+  return out || fallback;
+}
+
+function buildKey({ companyCode, division, projectId, documentId, filename }) {
+  // Every segment is sanitized, not just the filename. A '..' anywhere in the
+  // key is normalized away by WHATWG URL parsing in fetch before the request
+  // is sent, which on a store that canonicalizes before verifying SigV4 lands
+  // the write in a different prefix entirely.
+  return [
+    safeSegment(companyCode, 'unknown'),
+    safeSegment(division, 'unknown'),
+    safeSegment(projectId, 'general'),
+    safeSegment(documentId, 'doc'),
+    safeSegment(filename, 'file'),
+  ].join('/');
 }
 
 module.exports = {
   isConfigured,
+  safeSegment,
   maxUploadBytes,
   mimeFor,
   extensionOf,
   allowedExtensions,
   presignUpload,
   presignDownload,
+  headObject,
   deleteObject,
   buildKey,
   // exported for scripts/test-document-storage.js

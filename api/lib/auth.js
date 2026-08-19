@@ -184,8 +184,47 @@ function requireDivision(req, res, options = {}) {
   return { payload, division };
 }
 
+/**
+ * Capability level for a caller IN A GIVEN DIVISION.
+ *
+ * payload.role is the caller's TURF role — login.js sets it from
+ * divisionRoles.turf (falling back to users.role) for tracker.html's benefit.
+ * Reading it directly on any other division answers about the wrong one, so
+ * divisionRoles[division] comes first and payload.role is only the fallback
+ * for legacy tokens that carry no per-division map.
+ */
+function levelFor(payload, division) {
+  if (!payload) return 'level1';
+  if (payload.isPlatformAdmin) return 'admin';
+  const dr = payload.divisionRoles;
+  if (dr && typeof dr === 'object' && dr[division] && dr[division] !== 'no_access') {
+    return dr[division];
+  }
+  return payload.role || 'level1';
+}
+
+/**
+ * What a caller may do in a division. Mirrors the `perm` object the division
+ * pages build:
+ *   level1  view only
+ *   level2  upload, and edit their own uploads
+ *   level3  everything except destroying a file
+ *   admin   destroy and restore
+ */
+function capabilities(payload, division) {
+  const level = levelFor(payload, division);
+  return {
+    level,
+    canUpload: ['admin', 'level3', 'level2'].includes(level),
+    canManage: ['admin', 'level3'].includes(level),
+    canDelete: level === 'admin',
+  };
+}
+
 module.exports = {
   ALL_DIVISIONS,
+  levelFor,
+  capabilities,
   CROSS_DIVISION_CONTRIBUTORS,
   IC_QUARRY_READONLY_KEYS,
   requireAuth,

@@ -22,7 +22,7 @@
  * where purchase orders with no job attached file their paperwork.
  */
 const { neon }            = require('@neondatabase/serverless');
-const { requireDivision } = require('./lib/auth');
+const { requireDivision, capabilities } = require('./lib/auth');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -52,40 +52,6 @@ const GENERAL_FOLDERS = [
 ];
 
 const TRASH_WINDOW_DAYS = 30;
-
-/**
- * Capability level for this caller in this division.
- *
- * payload.role is the *turf* role (login.js sets it from divisionRoles.turf
- * for tracker.html's benefit), so it is only correct for turf. Reading
- * divisionRoles[division] first keeps this right when the vault reaches
- * paving and kiewit.
- */
-function levelFor(payload, division) {
-  if (payload.isPlatformAdmin) return 'admin';
-  const dr = payload.divisionRoles;
-  if (dr && typeof dr === 'object' && dr[division] && dr[division] !== 'no_access') {
-    return dr[division];
-  }
-  return payload.role || 'level1';
-}
-
-/**
- * What this caller may do. Mirrors the `perm` object in tracker.html:
- *   level1  view only
- *   level2  upload, and unfile their own uploads
- *   level3  everything except destroying a file
- *   admin   destroy
- */
-function capabilities(payload, division) {
-  const level = levelFor(payload, division);
-  return {
-    level,
-    canUpload: ['admin', 'level3', 'level2'].includes(level),
-    canManage: ['admin', 'level3'].includes(level),
-    canDelete: level === 'admin',
-  };
-}
 
 function newId() {
   return crypto.randomUUID();
@@ -139,6 +105,70 @@ function documentOut(r) {
     folder_ids: Array.isArray(r.folder_ids) ? r.folder_ids : [],
     po_ids: Array.isArray(r.po_ids) ? r.po_ids : [],
   };
+}
+
+/**
+ * Find or create `Purchase Orders / PO <number>` and return its id.
+ *
+ * The design has always said one subfolder per purchase order — it is in the
+ * PO_ROOT comment and in the spec — but nothing created them, so the generated
+ * Purchase Orders folder stayed permanently empty and attaching a document
+ * filed it only where the user chose. This is what fills it.
+ *
+ * Returns null rather than throwing: a document that cannot get its PO
+ * subfolder is still correctly filed in the folder the user picked, and losing
+ * the upload over a nicety would be worse.
+ */
+async function ensurePoFolder(sql, { companyCode, division, projectId, poId, poNumber, username }) {
+  try {
+    const rootSlug = projectId ? PO_ROOT.slug : 'unassigned-pos';
+    const roots = await sql`
+      SELECT id FROM project_folders
+      WHERE company_code = ${companyCode} AND division = ${division}
+        AND COALESCE(project_id, '') = ${projectId || ''}
+        AND slug = ${rootSlug}
+      LIMIT 1
+    `;
+    if (!roots.length) return null;               // tree not seeded yet
+    const parentId = roots[0].id;
+
+    const slug = `po-${poId}`;
+    const hit = await sql`
+      SELECT id FROM project_folders
+      WHERE company_code = ${companyCode} AND division = ${division}
+        AND COALESCE(project_id, '') = ${projectId || ''}
+        AND slug = ${slug}
+      LIMIT 1
+    `;
+    if (hit.length) return hit[0].id;
+
+    const name = poNumber ? `PO ${poNumber}` : `PO ${String(poId).slice(0, 8)}`;
+    const id = newId();
+    try {
+      await sql`
+        INSERT INTO project_folders
+          (id, company_code, division, project_id, parent_id, name, kind, slug, sort_order, created_by)
+        VALUES
+          (${id}, ${companyCode}, ${division}, ${projectId}, ${parentId}, ${name},
+           'fixed', ${slug}, 500, ${username || null})
+      `;
+      return id;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      // Either a concurrent attach won, or the name is taken by something else.
+      const back = await sql`
+        SELECT id FROM project_folders
+        WHERE company_code = ${companyCode} AND division = ${division}
+          AND COALESCE(project_id, '') = ${projectId || ''}
+          AND slug = ${slug}
+        LIMIT 1
+      `;
+      return back.length ? back[0].id : null;
+    }
+  } catch (err) {
+    console.warn(`[documents] PO folder for ${poId} failed: ${err.message}`);
+    return null;
+  }
 }
 
 module.exports = async (req, res) => {
@@ -201,6 +231,13 @@ module.exports = async (req, res) => {
       }
 
       if (req.query.trash) {
+        // Deleted documents are admin material: restore is admin-only and so
+        // is reading one back. Without this a view-only user could enumerate
+        // every document deleted anywhere in the division for 30 days,
+        // filenames and notes included.
+        if (!caps.canDelete) {
+          return res.status(403).json({ error: 'Only an administrator can view deleted documents' });
+        }
         const rows = await sql`
           SELECT
           d.id, d.project_id, d.filename, d.content_type, d.size_bytes, d.note,
@@ -223,7 +260,7 @@ module.exports = async (req, res) => {
         SELECT * FROM project_folders
         WHERE  company_code = ${companyCode}
           AND  division     = ${division}
-          AND  project_id IS NOT DISTINCT FROM ${projectId}
+          AND  COALESCE(project_id, '') = ${projectId || ''}
         ORDER  BY sort_order ASC, name ASC
       `;
 
@@ -237,7 +274,7 @@ module.exports = async (req, res) => {
         LEFT   JOIN document_links l ON l.document_id = d.id
         WHERE  d.company_code = ${companyCode}
           AND  d.division     = ${division}
-          AND  d.project_id IS NOT DISTINCT FROM ${projectId}
+          AND  COALESCE(d.project_id, '') = ${projectId || ''}
           AND  d.deleted_at IS NULL
         GROUP  BY d.id
         ORDER  BY d.uploaded_at DESC
@@ -269,29 +306,59 @@ module.exports = async (req, res) => {
         SELECT * FROM project_folders
         WHERE  company_code = ${companyCode}
           AND  division     = ${division}
-          AND  project_id IS NOT DISTINCT FROM ${projectId}
+          AND  COALESCE(project_id, '') = ${projectId || ''}
       `;
 
       const bySlug     = new Map(existing.filter(f => f.slug).map(f => [f.slug, f]));
       const byCostCode = new Map(existing.filter(f => f.cost_code).map(f => [f.cost_code, f]));
       const created = [];
+      const skipped = [];   // folders that had to be renamed to avoid a collision
+      const relabelled = []; // cost-code folders whose label followed the master list
 
       // `name` is only the opening label. A folder is identified by its slug
       // (fixed folders) or its cost code, so user renames survive every
       // subsequent call.
+      // Names that are already taken by a folder this generator does NOT own.
+      // A cost-code label can collide with one — a user folder literally named
+      // '415', or two bid items whose codes differ only in case — and the
+      // unique index on lower(name) then rejects the insert.
+      const takenNames = new Map(existing.map(f => [String(f.name).toLowerCase(), f]));
+
       async function ensure({ slug, name, kind, costCode, sortOrder, parentId }) {
         const hit = costCode ? byCostCode.get(costCode) : bySlug.get(slug);
         if (hit) return hit.id;
+
+        // Disambiguate before inserting rather than swallowing the violation
+        // afterwards. The old catch assumed a 23505 meant "another request
+        // created MY folder" and returned whatever row matched the name — so a
+        // cost-code folder colliding with an unrelated folder was silently
+        // dropped, PUT still reported success, and it could never appear on any
+        // later load because the collision is permanent.
+        let finalName = name;
+        if (takenNames.has(String(finalName).toLowerCase())) {
+          const owner = takenNames.get(String(finalName).toLowerCase());
+          // Same generated folder under a different identity is the concurrent
+          // case — reuse it. Otherwise suffix until the name is free.
+          if ((slug && owner.slug === slug) || (costCode && owner.cost_code === costCode)) {
+            return owner.id;
+          }
+          let attempt = 2;
+          while (takenNames.has(`${finalName} (${attempt})`.toLowerCase()) && attempt < 50) attempt++;
+          finalName = `${finalName} (${attempt})`;
+          skipped.push({ wanted: name, used: finalName, cost_code: costCode || null });
+        }
+
         const id = newId();
         try {
           await sql`
             INSERT INTO project_folders
               (id, company_code, division, project_id, parent_id, name, kind, slug, cost_code, sort_order, created_by)
             VALUES
-              (${id}, ${companyCode}, ${division}, ${projectId}, ${parentId || null}, ${name},
+              (${id}, ${companyCode}, ${division}, ${projectId}, ${parentId || null}, ${finalName},
                ${kind}, ${slug || null}, ${costCode || null}, ${sortOrder}, ${payload.username || null})
           `;
-          created.push({ id, name, kind });
+          created.push({ id, name: finalName, kind });
+          takenNames.set(String(finalName).toLowerCase(), { id, slug, cost_code: costCode || null });
           return id;
         } catch (err) {
           // Two users opening the same job at once both try to seed it. The
@@ -300,8 +367,8 @@ module.exports = async (req, res) => {
           const back = await sql`
             SELECT id FROM project_folders
             WHERE company_code = ${companyCode} AND division = ${division}
-              AND project_id IS NOT DISTINCT FROM ${projectId}
-              AND (slug = ${slug || null} OR lower(name) = ${String(name).toLowerCase()})
+              AND COALESCE(project_id, '') = ${projectId || ''}
+              AND (slug = ${slug || null} OR lower(name) = ${String(finalName).toLowerCase()})
             LIMIT 1
           `;
           return back.length ? back[0].id : null;
@@ -321,7 +388,21 @@ module.exports = async (req, res) => {
         for (const c of sorted) {
           const code  = String(c.code);
           const label = c.label ? `${code} · ${c.label}` : code;
-          await ensure({ slug: `cc-${code}`, name: label, kind: 'cost_code', costCode: code, sortOrder: sort++ });
+          const id = await ensure({ slug: `cc-${code}`, name: label, kind: 'cost_code', costCode: code, sortOrder: sort++ });
+
+          // Follow the master list when it changes. Without this the label was
+          // frozen at first creation, so filling in the Cost Codes list did
+          // nothing on any job that already had folders — the feature read as
+          // broken on exactly the jobs people care about. A folder someone
+          // renamed by hand is left alone: renamed_at marks it as the user's.
+          const cur = byCostCode.get(code);
+          if (id && cur && cur.name !== label && !cur.renamed_at) {
+            await sql`
+              UPDATE project_folders SET name = ${label}, updated_at = NOW()
+              WHERE id = ${id} AND renamed_at IS NULL
+            `;
+            relabelled.push({ from: cur.name, to: label });
+          }
         }
       } else {
         let sort = 0;
@@ -330,10 +411,14 @@ module.exports = async (req, res) => {
         }
       }
 
-      if (created.length) {
+      if (created.length || relabelled.length || skipped.length) {
         await audit(sql, {
           companyCode, division, projectId, action: 'FOLDER_CREATE', payload,
-          detail: { generated: created.map(c => c.name) },
+          detail: {
+            generated:  created.map(c => c.name),
+            relabelled: relabelled.length ? relabelled : undefined,
+            renamed_to_avoid_collision: skipped.length ? skipped : undefined,
+          },
         });
       }
 
@@ -341,10 +426,17 @@ module.exports = async (req, res) => {
         SELECT * FROM project_folders
         WHERE  company_code = ${companyCode}
           AND  division     = ${division}
-          AND  project_id IS NOT DISTINCT FROM ${projectId}
+          AND  COALESCE(project_id, '') = ${projectId || ''}
         ORDER  BY sort_order ASC, name ASC
       `;
-      return res.json({ folders: folders.map(folderOut), created: created.length });
+      // `collisions` is surfaced rather than swallowed so the browser can say
+      // why a cost code's folder does not carry the name it expected.
+      return res.json({
+        folders: folders.map(folderOut),
+        created: created.length,
+        relabelled: relabelled.length,
+        collisions: skipped,
+      });
     }
 
     // ── POST ─────────────────────────────────────────────────────────────
@@ -362,9 +454,14 @@ module.exports = async (req, res) => {
 
         const parentId = body.parentId ? String(body.parentId) : null;
         if (parentId) {
+          // Scoped to this project as well as the company and division. Without
+          // the project check a folder could be created under a parent in a
+          // different job's tree, where childrenOf() never reaches it — it
+          // existed in the database and rendered nowhere.
           const parent = await sql`
             SELECT id FROM project_folders
             WHERE id = ${parentId} AND company_code = ${companyCode} AND division = ${division}
+              AND COALESCE(project_id, '') = ${projectId || ''}
           `;
           if (!parent.length) return res.status(404).json({ error: 'Parent folder not found' });
         }
@@ -411,9 +508,6 @@ module.exports = async (req, res) => {
       if (!contentType) {
         return res.status(400).json({ error: `Files of that type cannot be uploaded. Allowed: ${storage.allowedExtensions().join(', ')}` });
       }
-      if (sizeBytes > storage.maxUploadBytes()) {
-        return res.status(413).json({ error: 'That file is larger than the upload limit' });
-      }
       // The key is minted by api/document-upload-url.js and echoed back here.
       // Recompute it from the same inputs rather than sanity-checking the
       // string: a prefix test still admits a hand-crafted key like
@@ -425,10 +519,33 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'storageKey does not match this document' });
       }
 
+      // The declared size is not evidence of anything. Both the ticket and this
+      // registration take it from the caller, and the presigned PUT signs only
+      // `host` — no signed Content-Length, no POST policy — so the store will
+      // accept a body of any length. Ask the store what it actually holds:
+      // that enforces the limit for real, records a true size, and confirms an
+      // object exists at the key rather than trusting a caller who never
+      // performed step 2.
+      const head = await storage.headObject(storageKey);
+      if (!head.exists) {
+        return res.status(409).json({
+          error: 'No uploaded file was found for this document. The upload may have failed — please try again.',
+        });
+      }
+      if (head.size > storage.maxUploadBytes()) {
+        // The bytes are already in the bucket; drop them rather than leaving an
+        // over-limit object nothing references.
+        await storage.deleteObject(storageKey);
+        return res.status(413).json({
+          error: `That file is ${(head.size / 1048576).toFixed(1)} MB. The limit is ${(storage.maxUploadBytes() / 1048576).toFixed(0)} MB.`,
+        });
+      }
+      const trueSize = head.size;
+
       const folder = await sql`
         SELECT id FROM project_folders
         WHERE id = ${folderId} AND company_code = ${companyCode} AND division = ${division}
-          AND project_id IS NOT DISTINCT FROM ${projectId}
+          AND COALESCE(project_id, '') = ${projectId || ''}
       `;
       if (!folder.length) return res.status(404).json({ error: 'Folder not found' });
 
@@ -458,18 +575,31 @@ module.exports = async (req, res) => {
           VALUES (${id}, ${companyCode}, 'po', ${poId}, ${payload.username || null})
           ON CONFLICT DO NOTHING
         `;
+        // ...and into that PO's own subfolder, which is the "own folder but
+        // duplicated at the job level" behaviour the design calls for.
+        const poFolderId = await ensurePoFolder(sql, {
+          companyCode, division, projectId, poId,
+          poNumber: body.poNumber, username: payload.username,
+        });
+        if (poFolderId) {
+          await sql`
+            INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
+            VALUES (${id}, ${companyCode}, 'folder', ${poFolderId}, ${payload.username || null})
+            ON CONFLICT DO NOTHING
+          `;
+        }
       }
 
       await audit(sql, {
         companyCode, division, projectId, documentId: id, folderId,
         action: 'UPLOAD', payload,
-        detail: { filename, size_bytes: sizeBytes, po_id: poId },
+        detail: { filename, size_bytes: trueSize, declared_bytes: sizeBytes, po_id: poId },
       });
 
       return res.status(201).json({
         document: {
           id, project_id: projectId, filename, content_type: contentType,
-          size_bytes: sizeBytes, note: body.note || null,
+          size_bytes: trueSize, note: body.note || null,
           uploaded_by: payload.username || null, uploaded_at: new Date().toISOString(),
           folder_ids: [folderId], po_ids: poId ? [poId] : [],
         },
@@ -532,7 +662,7 @@ module.exports = async (req, res) => {
           const f = await sql`
             SELECT id FROM project_folders
             WHERE id = ${targetId} AND company_code = ${companyCode} AND division = ${division}
-              AND project_id IS NOT DISTINCT FROM ${doc.project_id}
+              AND COALESCE(project_id, '') = ${doc.project_id || ''}
           `;
           if (!f.length) return res.status(404).json({ error: 'Folder not found' });
         }
@@ -543,13 +673,38 @@ module.exports = async (req, res) => {
             VALUES (${id}, ${companyCode}, ${linkType}, ${targetId}, ${payload.username || null})
             ON CONFLICT DO NOTHING
           `;
+          // Attaching to a PO after the fact files it in that PO's subfolder
+          // too, so both routes to a link produce the same tree.
+          if (linkType === 'po') {
+            const poFolderId = await ensurePoFolder(sql, {
+              companyCode, division, projectId: doc.project_id, poId: targetId,
+              poNumber: body.poNumber, username: payload.username,
+            });
+            if (poFolderId) {
+              await sql`
+                INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
+                VALUES (${id}, ${companyCode}, 'folder', ${poFolderId}, ${payload.username || null})
+                ON CONFLICT DO NOTHING
+              `;
+            }
+          }
         } else {
           // Never leave a document unreachable. Unfiling its last folder would
           // strand it in the tree with no way back short of a SQL console.
           if (linkType === 'folder') {
+            // Joins project_folders so a link pointing at a deleted folder
+            // cannot satisfy the invariant. Counting bare link rows let a
+            // dangling link stand in for a real home, and the document ended
+            // up filed nowhere at all.
             const remaining = await sql`
-              SELECT COUNT(*)::int AS n FROM document_links
-              WHERE document_id = ${id} AND link_type = 'folder' AND target_id <> ${targetId}
+              SELECT COUNT(*)::int AS n
+              FROM   document_links l
+              JOIN   project_folders f ON f.id = l.target_id
+              WHERE  l.document_id = ${id}
+                AND  l.link_type   = 'folder'
+                AND  l.target_id  <> ${targetId}
+                AND  f.company_code = ${companyCode}
+                AND  f.division     = ${division}
             `;
             if (!remaining[0].n) {
               return res.status(400).json({ error: 'A document must stay in at least one folder. Move it instead, or delete it.' });
@@ -599,12 +754,22 @@ module.exports = async (req, res) => {
           return res.status(400).json({ error: 'Standard and cost-code folders cannot be deleted' });
         }
 
+        // Counts documents in the 30-day trash as well as live ones.
+        // Skipping them let a folder holding only deleted files be removed,
+        // and document_links.target_id has no foreign key to cascade — so the
+        // link survived pointing at nothing, and restoring the document put it
+        // back into a folder that no longer existed. It was then reachable
+        // only by search, with no UI able to re-file it.
         const held = await sql`
           SELECT COUNT(*)::int AS n FROM document_links l
-          JOIN project_documents d ON d.id = l.document_id AND d.deleted_at IS NULL
+          JOIN project_documents d ON d.id = l.document_id
           WHERE l.link_type = 'folder' AND l.target_id = ${folderId}
         `;
-        if (held[0].n) return res.status(400).json({ error: 'That folder still holds documents' });
+        if (held[0].n) {
+          return res.status(400).json({
+            error: 'That folder still holds documents, including any waiting in the deleted bin.',
+          });
+        }
 
         const kids = await sql`SELECT COUNT(*)::int AS n FROM project_folders WHERE parent_id = ${folderId}`;
         if (kids[0].n) return res.status(400).json({ error: 'That folder still holds subfolders' });
@@ -653,4 +818,4 @@ module.exports = async (req, res) => {
 module.exports.FIXED_FOLDERS   = FIXED_FOLDERS;
 module.exports.GENERAL_FOLDERS = GENERAL_FOLDERS;
 module.exports.PO_ROOT         = PO_ROOT;
-module.exports._capabilities   = capabilities;
+module.exports._capabilities   = capabilities;   // re-exported for the tests

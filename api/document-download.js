@@ -17,7 +17,7 @@
  * has no idea who is asking, so the check has to live here.
  */
 const { neon }            = require('@neondatabase/serverless');
-const { requireDivision } = require('./lib/auth');
+const { requireDivision, capabilities } = require('./lib/auth');
 const storage             = require('./lib/storage');
 
 const DOWNLOAD_WINDOW_SECONDS = 300; // 5 minutes
@@ -63,13 +63,23 @@ module.exports = async (req, res) => {
     const doc = rows[0];
     // Deleted documents stay readable so an admin can confirm what they are
     // about to lose before the purge, but only an admin may look.
-    if (doc.deleted_at && !(payload.isPlatformAdmin || payload.role === 'admin')) {
+    //
+    // The level has to come from capabilities(payload, division), not from
+    // payload.role: login.js sets payload.role from the caller's TURF role for
+    // tracker.html's benefit, so testing it here read the wrong division's role
+    // in both directions — it let a turf admin read documents deleted in
+    // paving, and it refused a real paving admin their own deleted file.
+    if (doc.deleted_at && !capabilities(payload, division).canDelete) {
       return res.status(404).json({ error: 'Document not found' });
     }
 
     const inline = Boolean(req.query.inline) && INLINE_SAFE.has(doc.content_type);
+    // contentType pins what the store serves. Without it the object replays
+    // whatever Content-Type was sent on the unsigned PUT, so a file registered
+    // as a PDF could come back as text/html and render in the preview frame.
     const url = storage.presignDownload(doc.storage_key, {
       filename: doc.filename,
+      contentType: doc.content_type,
       inline,
       expiresIn: DOWNLOAD_WINDOW_SECONDS,
     });

@@ -13,7 +13,7 @@
  * the file. A ticket minted here and never used costs nothing: no row is
  * written until that second call lands.
  */
-const { requireDivision } = require('./lib/auth');
+const { requireDivision, capabilities } = require('./lib/auth');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -34,11 +34,7 @@ module.exports = async (req, res) => {
   // Same capability test /api/documents applies to the matching POST — minting
   // an upload ticket a view-only user could never redeem just wastes a round
   // trip and hands them a writable URL.
-  const level = payload.isPlatformAdmin ? 'admin'
-    : (payload.divisionRoles && payload.divisionRoles[division] && payload.divisionRoles[division] !== 'no_access')
-      ? payload.divisionRoles[division]
-      : (payload.role || 'level1');
-  if (!['admin', 'level3', 'level2'].includes(level)) {
+  if (!capabilities(payload, division).canUpload) {
     return res.status(403).json({ error: 'You do not have permission to upload' });
   }
 
