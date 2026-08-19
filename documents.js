@@ -106,6 +106,26 @@
     const r = await fetch(`${API}${path}`, init);
     let data = null;
     try { data = await r.json(); } catch { /* empty body */ }
+
+    // An expired token has to end the session, the way every other call in the
+    // app does (apiGet/apiPut and the pollers all call logout() on a 401).
+    // Without this the Documents tab showed the raw server string as a toast
+    // and left the user on a page that looked signed in but could save nothing
+    // — which reads as a mysterious "session error" rather than "log in again".
+    // logout() is a global on every host page and latches itself, so calling it
+    // from several in-flight requests at once is safe.
+    if (r.status === 401) {
+      if (typeof window.logout === 'function') {
+        window.logout();
+      } else {
+        localStorage.removeItem('fct_token');
+        window.location.reload();
+      }
+      const err = new Error('Your session expired. Please sign in again.');
+      err.status = 401;
+      throw err;
+    }
+
     if (!r.ok) {
       const err = new Error((data && data.error) || `Request failed (${r.status})`);
       err.status = r.status;

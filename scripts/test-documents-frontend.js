@@ -400,6 +400,28 @@ console.log('\n[documents.js upload sequence]');
   assert('and openAttach refuses to build a modal from a superseded load',
     /if \(!fresh\) \{/.test(src3));
 
+  // An expired token must end the session, the way every other call in the app
+  // does. Left unhandled the Documents tab showed a raw "Unauthorized" toast and
+  // stranded the user on a page that looked signed in but could save nothing.
+  {
+    let loggedOut = 0;
+    window.logout = () => { loggedOut++; };
+    const savedFetch = window.fetch;
+    window.fetch = async () => ({ ok: false, status: 401, json: async () => ({ error: 'Unauthorized — please log in' }) });
+
+    let msg = '';
+    try {
+      await FD._uploadOne(new window.File(['x'], 'a.pdf', { type: 'application/pdf' }),
+        { folderId: 'f', projectId: 'p' });
+    } catch (err) { msg = err.message; }
+
+    assert('a 401 ends the session instead of just toasting', loggedOut === 1, `logout called ${loggedOut}x`);
+    assert('and says so in words a person can act on',
+      /session expired/i.test(msg) && /sign in/i.test(msg), msg);
+    window.fetch = savedFetch;
+    delete window.logout;
+  }
+
   console.log(failed ? `\n${failed} failed.` : '\nAll checks passed.');
   process.exit(failed ? 1 : 0);
 })().catch(err => {
