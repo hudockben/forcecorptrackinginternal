@@ -4315,6 +4315,13 @@ function cbOptionsFor(listKey) {
         .sort((a, b) => _schedProjLabel(a).localeCompare(_schedProjLabel(b)))
         .map(p => ({ value: p.id, label: _schedProjLabel(p), meta: p['job-number'] ? 'Job #' + p['job-number'] : '' })));
   }
+  // Daily tracking Cost Code column: the job's own cost codes. Keyed by
+  // project because the table renders one job at a time and a row's options
+  // have to come from the job that row belongs to — the same source the sub
+  // code list beside it hangs off.
+  if (listKey.startsWith('daily_codes:')) {
+    return getCostCodes(listKey.slice(12)).slice().sort((a, b) => a.localeCompare(b));
+  }
   if (listKey.startsWith('tr_subcodes:')) {
     const trId = listKey.slice(12);
     const tr = truckingEntries.find(t => t.id === trId);
@@ -16915,7 +16922,6 @@ function renderDailyTable(projId) {
     return;
   }
 
-  const costCodes     = getCostCodes(projId);
   const subCodes      = getSubCodes(projId);
   const fieldTypeOpts = ['', ...[...lists.field_types].sort((a,b) => a.localeCompare(b))];
   const assignedEmps  = p.assigned_employees || [];
@@ -16930,7 +16936,6 @@ function renderDailyTable(projId) {
   const jobClassOpts  = ['', ...[...lists.job_classes].sort((a,b) => a.localeCompare(b))];
   const equipOpts     = ['', ...eqNames];
   const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean).sort((a,b) => a.localeCompare(b))];
-  const ccOpts        = ['', ...costCodes.slice().sort((a,b) => a.localeCompare(b))];
   const scOpts        = ['', ...subCodes.slice().sort((a,b) => a.localeCompare(b))];
 
   rows.forEach((row, _filteredIdx) => {
@@ -16955,7 +16960,7 @@ function renderDailyTable(projId) {
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', ai, 'field_type',      projId)}</td>
       <td>${cbHtml('employees', row.employee || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="employee"`)}</td>
-      <td>${makeSelect(ccOpts,        row.cost_code,        'daily', ai, 'cost_code',        projId)}</td>
+      <td>${cbHtml('daily_codes:' + projId, row.cost_code || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="cost_code"`)}</td>
       <td>${makeSelect(row.cost_code ? ['', ...getSubCodes(projId, row.cost_code).slice().sort((a,b) => a.localeCompare(b))] : scOpts, row.sub_code, 'daily', ai, 'sub_code', projId)}</td>
       <td>${makeSelect(jobClassOpts,  row.job_class,        'daily', ai, 'job_class',        projId)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="rate"            value="${row.rate}"            step="any" placeholder="0.00"></td>

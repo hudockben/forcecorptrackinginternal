@@ -101,8 +101,12 @@ console.log('\n[structural — shared combobox stayed compatible]');
 const filterFn = src.match(/function cbFilterFor\([\s\S]+?\n\}\n/);
 assert('cbFilterFor falls back to the original substring match',
   !!filterFn && /return q \? options\.filter\(o => _cbLabel\(o\)\.toLowerCase\(\)\.includes\(q\)\) : options/.test(filterFn[0]));
-assert('  and the job-number match is scoped to sched_projects',
-  !!filterFn && /if \(listKey === 'sched_projects'\)/.test(filterFn[0]));
+// The Documents tab's job picker joined this branch — it is the same list of
+// jobs and wants the same job-number match. Naming both keeps the assertion
+// doing its real job: catching the day someone makes the meta match
+// unconditional and quietly changes how every other list filters.
+assert('  and the job-number match is scoped to the project pickers',
+  !!filterFn && /if \(listKey === 'sched_projects' \|\| listKey === 'docs_projects'\)/.test(filterFn[0]));
 
 // ─────────────────────────────────────────────────────────────────────
 // 2) BEHAVIOURAL
