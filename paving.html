@@ -4094,6 +4094,30 @@ function cbOptionsFor(listKey) {
         .sort((a, b) => _schedProjLabel(a).localeCompare(_schedProjLabel(b)))
         .map(p => ({ value: p.id, label: _schedProjLabel(p), meta: p['job-number'] ? 'Job #' + p['job-number'] : '' })));
   }
+  // Daily tracking Cost Code column: the job's own cost codes. Keyed by
+  // project because the table renders one job at a time and a row's options
+  // have to come from the job that row belongs to — the same source the sub
+  // code list beside it hangs off.
+  if (listKey.startsWith('daily_codes:')) {
+    return getCostCodes(listKey.slice(12)).slice().sort((a, b) => a.localeCompare(b));
+  }
+  // Daily tracking Sub Code column: only the sub codes the row's own cost code
+  // carries, falling back to every sub code on the job when the row has no cost
+  // code yet — the same pairing the cost-code branch of the input listener
+  // enforces. The list is read fresh every time the picker opens, so a cost
+  // code changed a moment ago is already reflected. The row index leads the key
+  // so the project id, which may contain anything, is simply whatever follows
+  // the first pipe.
+  if (listKey.startsWith('daily_subcodes:')) {
+    const rest = listKey.slice(15);
+    const bar  = rest.indexOf('|');
+    if (bar < 0) return [];
+    const projId = rest.slice(bar + 1);
+    const p      = getProj(projId);
+    const row    = p && Array.isArray(p.dailyRows) ? p.dailyRows[parseInt(rest.slice(0, bar))] : null;
+    if (!row) return [];
+    return getSubCodes(projId, row.cost_code || '').slice().sort((a, b) => a.localeCompare(b));
+  }
   if (listKey.startsWith('tr_subcodes:')) {
     const trId = listKey.slice(12);
     const tr = truckingEntries.find(t => t.id === trId);
@@ -16759,8 +16783,6 @@ function renderDailyTable(projId) {
     return;
   }
 
-  const costCodes     = getCostCodes(projId);
-  const subCodes      = getSubCodes(projId);
   const fieldTypeOpts = ['', ...[...lists.field_types].sort((a,b) => a.localeCompare(b))];
   const assignedEmps  = p.assigned_employees || [];
   const assignedEquip = p.assigned_equipment || [];
@@ -16774,8 +16796,6 @@ function renderDailyTable(projId) {
   const jobClassOpts  = ['', ...[...lists.job_classes].sort((a,b) => a.localeCompare(b))];
   const equipOpts     = ['', ...eqNames];
   const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean).sort((a,b) => a.localeCompare(b))];
-  const ccOpts        = ['', ...costCodes.slice().sort((a,b) => a.localeCompare(b))];
-  const scOpts        = ['', ...subCodes.slice().sort((a,b) => a.localeCompare(b))];
 
   rows.forEach((row, _filteredIdx) => {
     const ai = allRows.indexOf(row); // actual index in p.dailyRows (unaffected by filters)
@@ -16798,19 +16818,19 @@ function renderDailyTable(projId) {
       <td><input type="date"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="date"           value="${esc(row.date)}"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="quantity"        value="${row.quantity}"        step="any" placeholder="0"></td>
       <td>${makeSelect(fieldTypeOpts, row.field_type,      'daily', ai, 'field_type',      projId)}</td>
-      <td>${cbHtml('employees', row.employee || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="employee"`)}</td>
-      <td>${makeSelect(ccOpts,        row.cost_code,        'daily', ai, 'cost_code',        projId)}</td>
-      <td>${makeSelect(row.cost_code ? ['', ...getSubCodes(projId, row.cost_code).slice().sort((a,b) => a.localeCompare(b))] : scOpts, row.sub_code, 'daily', ai, 'sub_code', projId)}</td>
+      <td>${cbHtml('employees', row.employee || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="employee"`, 'data-cb-fixed="1"')}</td>
+      <td>${cbHtml('daily_codes:' + projId, row.cost_code || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="cost_code"`, 'data-cb-fixed="1"')}</td>
+      <td>${cbHtml('daily_subcodes:' + ai + '|' + projId, row.sub_code || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="sub_code"`, 'data-cb-fixed="1"')}</td>
       <td>${makeSelect(jobClassOpts,  row.job_class,        'daily', ai, 'job_class',        projId)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="rate"            value="${row.rate}"            step="any" placeholder="0.00"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="labor_hours"     value="${row.labor_hours}"     step="any" placeholder="0"></td>
       <td class="calc">$${fmt(c.labor_cost)}</td>
-      <td>${cbHtml('equipment', row.equipment || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equipment"`)}</td>
+      <td>${cbHtml('equipment', row.equipment || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equipment"`, 'data-cb-fixed="1"')}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equip_unit_cost" value="${row.equip_unit_cost}" step="any" placeholder="0.00"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="equip_hours"     value="${row.equip_hours}"     step="any" placeholder="0"></td>
       <td class="calc">$${fmt(c.equip_total)}</td>
       <td><input type="text"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="material"        value="${esc(row.material)}"   placeholder="Description&hellip;"></td>
-      <td>${cbHtml('suppliers', row.supplier || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="supplier"`)}</td>
+      <td>${cbHtml('suppliers', row.supplier || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="supplier"`, 'data-cb-fixed="1"')}</td>
       <td>${makePOSelect(projId, row.po_num, ai)}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
@@ -21165,21 +21185,20 @@ document.addEventListener('input', e => {
     const _prevSubCode = p.dailyRows[i].sub_code;
     p.dailyRows[i][f] = el.value;
     if (f === 'sub_code') _bidScInvalidate();   // bid sub code picker reads these names
-    // Filter sub_code dropdown to only show sub codes for the selected cost code
+    // Keep the sub code honest about the cost code it now sits under. There is
+    // no option list to repopulate — the sub code picker rebuilds its list from
+    // this row's cost code every time it opens — but a sub code the new cost
+    // code does not carry still has to go.
     if (f === 'cost_code') {
       const newSubCodes = getSubCodes(projId, el.value); // includes daily-row values
       const _tbody = document.getElementById('daily-tbody-' + projId);
       const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
       if (rowEl) {
-        const scSelect = rowEl.querySelector('[data-f="sub_code"]');
-        if (scSelect) {
+        const scEl = rowEl.querySelector('[data-f="sub_code"]');
+        if (scEl) {
           const cur = p.dailyRows[i].sub_code;
-          const opts = el.value ? ['', ...newSubCodes.slice().sort((a,b) => a.localeCompare(b))] : ['', ...getSubCodes(projId).slice().sort((a,b) => a.localeCompare(b))];
-          scSelect.innerHTML = opts.map(o =>
-            `<option value="${esc(o)}"${o === cur ? ' selected' : ''}>${esc(o)}</option>`
-          ).join('');
           if (cur && !newSubCodes.includes(cur)) {
-            scSelect.value = '';
+            scEl.value = '';
             p.dailyRows[i].sub_code = '';
             // If the auto-cleared sub code was Travel, its flat rate no longer
             // applies — fall back to the employee's standard/prevailing rate.
