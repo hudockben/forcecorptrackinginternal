@@ -65,6 +65,16 @@ assert('  carrying the attributes both delegated listeners key on',
 assert('  and it commits through passthrough mode',
   /const passFlag  = passthroughAttrs \? ' data-passthrough="1"' : '';/.test(src)
   && /if \(cb\.dataset\.passthrough === '1'\)/.test(src));
+// A menu positioned inside the row is clipped by the table's own scroll
+// container. All four combobox columns opt into the fixed-position menu so the
+// list escapes it — one column behaving differently from the three beside it
+// reads as a bug even when both behaviours are defensible.
+const dailyCbs = src.match(/cbHtml\([^\n]*data-tab="daily"[^\n]*\)\}/g) || [];
+assert('the daily row has four comboboxes', dailyCbs.length === 4, String(dailyCbs.length));
+assert('  and every one lifts its menu out of the table\'s scroll container',
+  dailyCbs.every(c => c.includes(`'data-cb-fixed="1"'`)),
+  dailyCbs.filter(c => !c.includes('data-cb-fixed')).join(' | ') || 'none missing');
+
 assert('cbOptionsFor serves the daily_codes list',
   /if \(listKey\.startsWith\('daily_codes:'\)\) \{/.test(src));
 assert('  slicing the project id off the right offset',
@@ -119,6 +129,8 @@ const harness = [
   grab('function cbOnFocus('),
   grab('function cbOnInput('),
   grab('function cbRenderMenu('),
+  grab('function _cbPositionFixed('),
+  grab('function _cbRepositionFixedMenus('),
   grab('function cbClose('),
   grab('function cbCommitInput('),
   grab("document.addEventListener('input', e => {", ');'),
@@ -244,6 +256,44 @@ p = window._probe();
 assert('a cost code no longer in the lists still displays', input.value === 'Retired Code 1970', input.value);
 assert('  and survives a focus and blur that changed nothing',
   p.row.cost_code === 'Retired Code 1970', p.row.cost_code);
+
+console.log('\n[behavioural — the menu escapes the table]');
+
+const cbMenu = doc.querySelector('.cb-menu');
+window.cbOnFocus(input);
+assert('opening the menu pins it to the viewport, clear of the scroll container',
+  cbMenu.style.position === 'fixed', cbMenu.style.position || '(unset)');
+// jsdom hands out a zeroed rect, so this is the "room below" branch.
+assert('  hanging just under the cell when there is room',
+  cbMenu.style.top === '2px' && cbMenu.style.bottom === 'auto',
+  `${cbMenu.style.top} / ${cbMenu.style.bottom}`);
+
+// A row near the bottom of the window has to open upward instead of running
+// off the screen — the case that makes the last rows of a long day unusable.
+input.getBoundingClientRect = () => ({ left: 100, top: 700, bottom: 720, width: 180, right: 280, height: 20 });
+window.cbRenderMenu(input);
+assert('  and flipping above the cell when there is not',
+  cbMenu.style.top === 'auto' && cbMenu.style.bottom === '70px',
+  `${cbMenu.style.top} / ${cbMenu.style.bottom}`);
+assert('  lined up on the cell it belongs to', cbMenu.style.left === '100px', cbMenu.style.left);
+
+// Scrolling the table moves the cell out from under the menu. A viewport-fixed
+// menu does not move with it unless something moves it.
+input.getBoundingClientRect = () => ({ left: 40, top: 120, bottom: 140, width: 180, right: 220, height: 20 });
+window._cbRepositionFixedMenus();
+assert('a scroll drags the open menu back onto its cell',
+  cbMenu.style.left === '40px' && cbMenu.style.top === '142px',
+  `${cbMenu.style.left} / ${cbMenu.style.top}`);
+
+// The opt-in has to stay an opt-in: every other combobox on the page — bid
+// rows, PO lines, the job picker — relies on its menu staying in the flow.
+doc.body.insertAdjacentHTML('beforeend',
+  `<div id="control">${window.cbHtml('daily_codes:p1', '', '— select —', 'data-tab="x"')}</div>`);
+const plain = doc.querySelector('#control .cb-input');
+window.cbOnFocus(plain);
+assert('a combobox that did not opt in keeps its menu in the flow',
+  doc.querySelector('#control .cb-menu').style.position === '',
+  doc.querySelector('#control .cb-menu').style.position || '(unset)');
 
 console.log(failed ? `\n${failed} failed, ${passed} passed.` : `\nall ${passed} checks passed.`);
 process.exit(failed ? 1 : 0);
