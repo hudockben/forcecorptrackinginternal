@@ -2314,14 +2314,19 @@
                        : 'Trucking';
         const hint = ciDivFilter === 'dust'               ? 'dust control invoice panel'
                    : ciDivFilter === 'dust-other-billing' ? 'dust other billing row'
-                   : ciDivFilter === 'dust-ees-other'     ? 'EES Other row marked Billable'
                    : 'truck tracking row';
+        // EES Other is the one book nobody sends by hand: the dust tab mirrors
+        // every row carrying hours across on its own, Billable or not. Telling
+        // somebody to press a button that is not there sends them looking.
+        const howItArrives = ciDivFilter === 'dust-ees-other'
+          ? 'Rows arrive on their own once a dust timesheet entry is approved in Payroll and the customer is enrolled above.'
+          : `Use the <em>Intercompany Billing</em> button on a ${hint} to send jobs here.`;
         const hasAnyDiv = icBillingEntries.some(e => (e.source || 'trucking') === ciDivFilter);
         body.innerHTML = `<div class="ci-empty">
           <strong>No ${divLabel} Entries</strong>
           ${hasAnyDiv
             ? `No ${divLabel} entries fall in ${escT(icRangeLabel())} for this company selection.`
-            : `No ${divLabel} billing entries yet. Use the <em>Intercompany Billing</em> button on a ${hint} to send jobs here.`}
+            : `No ${divLabel} billing entries yet. ${howItArrives}`}
         </div>`;
         return;
       }

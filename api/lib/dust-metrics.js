@@ -135,7 +135,13 @@ function obRowTotals(row) {
 // ── EES Other ─────────────────────────────────────────────────────────
 // A port of eeIsBillable() / eeCalc() in dust.html. Only a Billable row carries
 // money; a Non-Billable one still has real hours — that is the whole point of
-// tracking it — but never a total, and never reaches Intercompany.
+// tracking it — but never a total.
+//
+// It does still reach Intercompany: _reconcileEesBilling over there gates on
+// HOURS rather than money, so the work shows up at $0 instead of vanishing.
+// (Both copies of this comment used to claim the opposite. They are held in
+// step by scripts/test-dust-metrics-port.js, so fixing one and not the other is
+// how the wrong half survives.)
 function eesIsBillable(row) {
   return String((row && row.billing) || '').trim().toLowerCase() === 'billable';
 }

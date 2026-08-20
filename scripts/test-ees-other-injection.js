@@ -520,6 +520,29 @@ function entry(over = {}) {
       row.billing === 'Non-Billable');
   }
 
+  // ── Un-approving has to pull the Intercompany entry too ─────────────────
+  // These hours are billed parent-to-child, so an entry that outlives its row
+  // goes on collecting hours payroll has withdrawn. Nothing server-side used to
+  // pull it: the only thing that ever did was the dust tab noticing on a later
+  // page load, which could be days.
+  console.log('\n[un-approving stops the billing]');
+  {
+    const SRC  = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    const body = SRC.slice(SRC.indexOf('async function removeEesOtherRows'),
+                           SRC.indexOf('async function removeTruckingRows'));
+    assert('removeEesOtherRows pulls the billing entries with the rows',
+      /removeIcBillingEntries\(\s*\n?\s*sql, companyCode, IC_SOURCE_EES_OTHER, removed\.map/.test(body),
+      body.replace(/\s+/g, ' ').slice(0, 160));
+    // Non-fatal, for the reason the other three give: throwing after the rows
+    // are gone would strand the entry by way of the error meant to protect it.
+    assert('and never fails the un-approve over it',
+      /catch \(err\) \{[\s\S]*?console\.error\('\[timesheet-entries\] removing EES IC billing/.test(body));
+    // Every teardown path routes through that one function, so fixing it once
+    // covers un-approve, delete and the approve rollback.
+    assert('every teardown path goes through it',
+      (SRC.match(/removeEesOtherRows\(sql, companyCode/g) || []).length >= 3);
+  }
+
   console.log('\n[the two jobs are offered under dust, and only dust]');
   {
     const JOBS = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-jobs.js'), 'utf8');

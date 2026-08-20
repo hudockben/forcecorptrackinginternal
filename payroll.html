@@ -3631,18 +3631,20 @@
         // day where one of them billed material is an audit that reads wrong.
         // Zero of a kind is silent rather than "0 rows": the count is only
         // interesting where rows were actually posted.
-        if (c.dust_row_count == null && c.dust_ob_row_count == null) {
+        const dustCounts = [c.dust_row_count, c.dust_ob_row_count, c.dust_ees_row_count];
+        if (dustCounts.every(n => n == null)) {
           bits.push('dust control tracking row posted');
         } else {
-          if (c.dust_row_count) {
-            bits.push(c.dust_row_count > 1
-              ? `${c.dust_row_count} dust control tracking rows posted`
-              : 'dust control tracking row posted');
-          }
-          if (c.dust_ob_row_count) {
-            bits.push(c.dust_ob_row_count > 1
-              ? `${c.dust_ob_row_count} other billing rows posted`
-              : 'other billing row posted');
+          // Every grid a haul can land in, or a day whose hauls all went to one
+          // of them reads as an approval that posted nothing. That is exactly
+          // what an all-non-billable day did while this branch knew only two.
+          const grids = [
+            [c.dust_row_count,     'dust control tracking row', 'dust control tracking rows'],
+            [c.dust_ob_row_count,  'other billing row',         'other billing rows'],
+            [c.dust_ees_row_count, 'EES other row',             'EES other rows'],
+          ];
+          for (const [n, one, many] of grids) {
+            if (n) bits.push(n > 1 ? `${n} ${many} posted` : `${one} posted`);
           }
         }
       }
@@ -5800,7 +5802,6 @@
     const legIsOb  = leg => legDest(leg) === 'ob';
     const legIsEes = leg => legDest(leg) === 'ees';
     const anyObLeg = () => haulLegs.some(legIsOb);
-    const allObLegs = () => haulLegs.length > 0 && haulLegs.every(legIsOb);
 
     // Whether a haul posts a Truck Tracking row, and whether this day posts any.
     //
@@ -6205,9 +6206,10 @@
           <div style="${FULL_ROW};font-size:11px;line-height:1.4;color:var(--muted)">
             Posts to <strong>EES Other</strong> as <strong>Non-Billable</strong>: the customer, the location, the unit
             and this haul's ${num2(hours)} h, and no money. It carries no rate and posts nothing to Truck
-            Tracking; it reaches Intercompany at <strong>$0</strong>, so the hours are visible there without
-            being invoiced. Name and Job Number are left blank — nothing on a customer haul names them,
-            and that tab is read-only.</div>`}
+            Tracking. The hours cross to <strong>Intercompany</strong> at $0, under this customer's EES Other
+            tab — but only while that customer is enrolled there for dust; otherwise the row stays in EES
+            Other alone. Name and Job Number are left blank: nothing about this work names them, and every
+            column of that tab is read-only, so what is typed here is what it keeps.</div>`}
         </div>`;
     }
 

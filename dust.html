@@ -7599,12 +7599,17 @@
     const EE_KEY    = 'dust_ees_other_rows';
     const EE_IC_KEY = 'fct_intercompany_billing_entries';
 
-    // The only column this tab owns. Every other value is captured on the
-    // timesheet (the EES fields that appear when Pre Loading / Washing is
-    // picked) and is shown read-only here — payroll is the source of truth, and
-    // an edit here would silently disagree with the approved entry behind it.
+    // The only column this tab owns. Every other value comes from payroll and is
+    // shown read-only here — payroll is the source of truth, and an edit here
+    // would silently disagree with the approved entry behind it. For a row off
+    // one of the standing activities that means the EES fields on the timesheet
+    // (which appear when Pre Loading / Washing is picked); for a customer haul
+    // billed off "Other Billing - Non Billable" it means the per-leg answers in
+    // the approve modal.
     // The rate is the exception: it exists solely to price a Billable row for
-    // Intercompany, and the timesheet has nowhere to put it.
+    // Intercompany, and the timesheet has nowhere to put it. A Non-Billable row
+    // never renders the input at all, so those rows are read-only end to end —
+    // whatever payroll sent is what the tab keeps.
     const EE_TAB_FIELDS = ['rate'];
 
     let eeRows      = [];

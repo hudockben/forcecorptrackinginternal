@@ -100,8 +100,8 @@
  * rows on approval (see the approve/unapprove actions below). Dust is the one
  * division that routes by job rather than by division alone — the two standing
  * EES activities go to the Dust division's "EES Other" tab, and customer work
- * is billed by the dust office off one of its own two grids. A dust entry with
- * no job stays isolated (status flip only).
+ * is recorded by the dust office on one of its own three grids. A dust entry
+ * with no job stays isolated (status flip only).
  *
  * Dust customer work is also the one place the route is finer than the entry.
  * The same driver, truck and clock window is either UB on a well pad or a
@@ -270,8 +270,13 @@ function couldHaveEesOtherRows(entry) {
 // The two standing EES activities are encoded by api/timesheet-jobs.js and named
 // in lib/truck-injected.js (isEesJob, imported above) — the dust EES gate and the
 // Truck Tracking gate are two halves of one routing decision, so they read one
-// list. Only a dust entry on one of these becomes an EES Other row; an ordinary
-// dust customer entry routes to Truck Tracking, as it always has.
+// list.
+//
+// A dust entry on one of them posts the single whole-day row insertEesOtherRow
+// writes. A dust CUSTOMER entry can post here too, but per LEG and only for the
+// hauls billed off "Other Billing - Non Billable" — insertEesOtherRows, below.
+// The two never run for the same entry: one gate is isEesJob and the other is a
+// customer haul, and they are disjoint by construction.
 
 // The one column the EES Other tab owns rather than the timesheet: the hourly
 // rate a Billable row bills at. Everything else on the row is timesheet-fed, so
@@ -1633,7 +1638,12 @@ async function insertTruckingRow(sql, companyCode, entry, fields = {}, flags = {
  * computed hours, customer ← job_label, comments ← notes. Unit / location /
  * name / job number / billing / rate are left for the dust office and preserved
  * across re-injection. Billing defaults to Non-Billable so a row never bills
- * anybody by accident — Intercompany only picks up rows marked Billable.
+ * anybody by accident.
+ *
+ * That is about MONEY, not about visibility: a Non-Billable row still reaches
+ * Intercompany, because _reconcileEesBilling in dust.html gates on HOURS. It
+ * crosses at $0 rather than not crossing. (This comment used to say Intercompany
+ * picks up Billable rows only, which is not what that function does.)
  */
 async function insertEesOtherRow(sql, companyCode, entry) {
   const hhmm     = v => String(v || '').slice(0, 5);
@@ -1899,7 +1909,30 @@ async function clearIcSuppression(sql, companyCode, source, sourceId) {
 }
 
 /**
- * Remove every EES Other row injected from this entry. Returns the count.
+ * Remove every EES Other row injected from this entry, along with the
+ * Intercompany billing entries they created. Returns the count removed.
+ *
+ * The billing sweep is what makes an un-approval stick. These hours are billed
+ * between the parent and child company, and the entry outliving its row went on
+ * reporting them: nothing server-side pulled it, so the only thing that ever
+ * did was _reconcileEesBilling in dust.html noticing on some later page load
+ * that the row had gone. Until somebody opened that tab, Intercompany was
+ * collecting hours payroll had withdrawn — and every other injected grid
+ * (removeTruckingRows, deleteObRows, deleteDustRows) already pulled its own.
+ *
+ * It also closes an id-reuse hole. Leg 1 is "tse-<entryId>-row" whether the
+ * entry is a standing EES activity or a customer haul, and the PUT guard forces
+ * an un-approve before an approved entry can be edited — so an entry moved from
+ * ees:washing onto a customer job re-approves under an id an Intercompany entry
+ * was already filed against. _reconcileEesBilling spreads the prior entry
+ * (`{ ...(prev || {}) }`), which would carry that row's invoice and payment
+ * dates onto work that has nothing to do with it. Removing the entry with the
+ * row means there is no `prev` left to inherit.
+ *
+ * Non-fatal, for the reason deleteDustRows gives: throwing here would fail an
+ * un-approve after the rows are already gone, and the retry would find nothing
+ * to remove and return early — stranding the billing entry by way of the very
+ * error meant to protect it.
  */
 async function removeEesOtherRows(sql, companyCode, entry) {
   const prefix    = eesOtherRowIdPrefix(entry.id);
@@ -1908,6 +1941,13 @@ async function removeEesOtherRows(sql, companyCode, entry) {
   const removed   = arr.filter(isMine);
   if (!removed.length) return 0;
   await writeBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB, arr.filter(r => !isMine(r)));
+  try {
+    await removeIcBillingEntries(
+      sql, companyCode, IC_SOURCE_EES_OTHER, removed.map(r => String(r.id)),
+    );
+  } catch (err) {
+    console.error('[timesheet-entries] removing EES IC billing entries failed:', err.message);
+  }
   return removed.length;
 }
 
@@ -2143,7 +2183,7 @@ function validateDustInjection(raw) {
 
   if (!legs.length) return { error: 'Dust Control Tracking needs at least one row' };
   if (legs.length > MAX_DUST_ROWS) {
-    return { error: `A day can be split across at most ${MAX_DUST_ROWS} Dust Control Tracking rows` };
+    return { error: `A day can be split across at most ${MAX_DUST_ROWS} hauls` };
   }
 
   const rows = [];

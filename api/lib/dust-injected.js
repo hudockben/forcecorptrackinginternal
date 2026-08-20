@@ -269,6 +269,19 @@ async function sweepInjectedDustRows(sql, companyCode, rows) {
  * evidence of anything — a leg whose rows failed to write, or an entry mid-
  * approval, would otherwise look like grounds to delete a haul's billing.
  *
+ * THIS GRID ONLY, and that is enough. A leg billed off "Other Billing - Non
+ * Billable" posts no Truck Tracking row either, so it looks like an omission
+ * here — but the sweep this feeds exists solely to retire rows posted back when
+ * EVERY dust haul wrote one, and every such row belongs to a leg that was UB at
+ * the time, because it was the only destination there was. A leg can only
+ * become 'ees' through a save, and that save calls insertTruckingRows, which
+ * prunes the truck row of any leg it does not write. So the row is already gone
+ * before the leg can carry a destination this query cannot see.
+ *
+ * Reading the EES blob here too would mean this module parsing "tse-" ids,
+ * which are minted in api/timesheet-entries.js — a second copy of somebody
+ * else's id scheme, bought for a case the prune path reaches first.
+ *
  * Ids only, so this stays one indexed lookup however many hauls the day had.
  */
 async function dustBilledLegs(sql, companyCode, entryIds) {

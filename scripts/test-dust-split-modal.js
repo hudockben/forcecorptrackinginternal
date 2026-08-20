@@ -765,11 +765,11 @@ console.log('\n[the per-haul destination toggle]');
   assert('an added haul inherits the destination above it',
     t.legs().length === 2 && t.call('legDest', t.legs()[1]) === 'ob');
   assert('and a day with any material haul is reported as mixed',
-    t.run('anyObLeg()') === true && t.run('allObLegs()') === true);
+    t.run('anyObLeg()') === true && t.run('haulLegs.every(legIsOb)') === true);
 
   t.call('haulSetDest', t.legs()[1].key, 'dust');
   assert('one of each is mixed but not all',
-    t.run('anyObLeg()') === true && t.run('allObLegs()') === false);
+    t.run('anyObLeg()') === true && t.run('haulLegs.every(legIsOb)') === false);
 }
 
 console.log('\n[re-editing a day that ran to both dust grids]');

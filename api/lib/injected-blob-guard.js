@@ -32,8 +32,16 @@
  * rate column. Everything else on the row stays payroll's.
  *
  * Dust's EES tab (dust_ees_other_rows) is deliberately absent: it already
- * version-checks its writes and replays its own columns on a conflict, and is
- * the only one of the four that was never exposed.
+ * version-checks its writes (eeSave sends baseUpdatedAt and retries a 409) and
+ * replays its own columns on a conflict, so the race this module settles for
+ * the others cannot open there.
+ *
+ * It is exposed to that race now — payroll writes that blob on every dust
+ * customer haul carrying an "Other Billing - Non Billable" leg, where before
+ * only the two standing EES activities put anything in it. The exemption
+ * survives that on its own merits rather than on nothing being at stake: the
+ * CAS check is what makes the difference, and it is the tab's to keep. If that
+ * check is ever dropped, this blob has to join the list the same day.
  *
  * Dust's Other Billing tab (dust_other_billing_rows) joined the list when
  * payroll started posting material hauls into it. It has neither of EES's
