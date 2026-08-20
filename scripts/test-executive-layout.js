@@ -335,6 +335,15 @@ assert('trucking reads the same blob the page reads, with the table as a fallbac
   report.includes('TRUCK_DIVISION_BLOB') && /FROM truck_division_entries/.test(report));
 assert('and hides orphaned injected rows without deleting them — a report mutates nothing',
   report.includes('findStaleTruckRows') && !report.includes('sweepInjectedTruckRows'));
+// A dust haul billed off Dust Control Tracking posts no Truck Tracking row any
+// more, and the rows posted before that was true are retired on read. Hiding
+// them needs the per-leg half of the check as well: without it the report goes
+// on counting those hauls as trucking revenue — the same hauls the dust
+// roll-up already bills — until somebody happens to open the Trucking tab, at
+// which point the division total moves on its own.
+assert('the per-leg UB exclusion is applied here too, or the report double-counts a dust haul',
+  report.includes('dustBilledLegs')
+  && /findStaleTruckRows\(blobEntries, entriesById, ubLegs\)/.test(report));
 
 const TRUCK_COLUMNS = ['Customer', 'Entries', 'Hours', 'Revenue', 'Avg / Hr',
                        'To Invoice', 'Awaiting Payment', 'Paid'];

@@ -100,17 +100,23 @@
  * rows on approval (see the approve/unapprove actions below). Dust is the one
  * division that routes by job rather than by division alone — the two standing
  * EES activities go to the Dust division's "EES Other" tab, and customer work
- * goes to the Trucking division's "Truck Tracking" tab, because that work is
- * hauling. A dust entry with no job stays isolated (status flip only).
+ * is billed by the dust office off one of its own two grids. A dust entry with
+ * no job stays isolated (status flip only).
  *
  * Dust customer work is also the one place the route is finer than the entry.
  * The same driver, truck and clock window is either UB on a well pad or a
  * delivery of material, and the dust office invoices those off two different
  * grids on two different bases — so the approving supervisor answers it PER
  * HAUL in the modal, and each haul posts its billing row in the grid its answer
- * names. The Truck Tracking row is posted either way and is unaffected by the
- * answer: the trucking office records who drove where regardless of which dust
- * invoice the haul ends up on.
+ * names.
+ *
+ * That answer also decides whether the haul reaches Truck Tracking at all. UB
+ * on a pad does not: the dust office records it, prices it off vehicle rates
+ * times hours and invoices it, end to end, and a second copy of the same haul
+ * in Truck Tracking was work nobody in that division did — undeletable from the
+ * tab, and a standing invitation to bill it twice. A material delivery does:
+ * Other Billing prices the material, and the hauling of it is the trucking
+ * office's line. See postsHere in insertTruckingRows.
  */
 
 const { neon } = require('@neondatabase/serverless');
@@ -1220,10 +1226,22 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
 
 /**
  * Build + inject the Truck Tracking rows for an approved entry — either a
- * trucking entry or a dust customer haul (see needsTruckTrackingRow). One row
- * per leg, which is one row for the day unless payroll split it in the approve
- * modal. Idempotent on the stable row ids (covers a retried approve), written
- * into the fct_truck_division blob in a single pass and mirrored into
+ * trucking entry or a dust customer haul (see needsTruckTrackingRow).
+ *
+ * Takes the WHOLE day and writes only the hauls this tab is the record of,
+ * exactly as the two dust writers do. A trucking day posts every leg. A dust
+ * day posts only the legs billed off Other Billing — see postsHere below, and
+ * `flags.dustLegs`, which is how the day's destinations get here. So this
+ * returns one row per leg for a trucking day, and anywhere from all of them to
+ * none for a dust one.
+ *
+ * The pruning matters as much as the writing: a haul re-pointed from material
+ * to UB, or a day corrected from three hauls to two, would otherwise leave a
+ * row here billing work the timesheet no longer describes. Nothing else would
+ * remove it — the tab refuses to delete payroll's rows.
+ *
+ * Idempotent on the stable row ids (covers a retried approve), written into the
+ * fct_truck_division blob in a single pass and mirrored into
  * truck_division_entries. Returns the rows written, in leg order.
  *
  * Autofill: driver ← employee, actual_date ← work_date, actual_start/end ←
@@ -1250,6 +1268,15 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  * an unsplit day computes to computed_hours + travel_hours, unchanged — and
  * neither figure has to be guessed at per haul.
  *
+ * Both adjustments stay on the day's first leg whether or not that leg posts
+ * here, which is why the arithmetic runs over every leg and the filtering
+ * happens after. A haul bills its own window; what the haul before it billed
+ * off is not its business. The visible consequence is that a dust day whose
+ * first haul is UB bills its travel nowhere in Truck Tracking — the dust grid
+ * has no travel column, and inventing one by moving the hours onto the next
+ * customer's row would bill them for a drive they did not order. The approve
+ * modal says so on the haul (see the truckOut line in payroll.html).
+ *
  * Unit straddles the two: it autofills from the timesheet like the rest, but
  * the modal also lets payroll type it (fields.unit) for the entries that came
  * in without one. The approve/resplit handlers write that value back onto the
@@ -1265,8 +1292,18 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
  */
 async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = {}) {
   const legs     = (Array.isArray(fields.rows) && fields.rows.length) ? fields.rows : [{}];
+  // The day's hauls as the DUST side sees them, or null when this entry has no
+  // dust side at all (a trucking entry, whose every leg posts here).
+  //
+  // Absent legs on a dust haul read as one leg bound for the tracking grid —
+  // the same `|| [{}]` the two dust writers apply, and the same default legDest
+  // gives an unanswered leg. That is what bulk approve sends, and it means a
+  // caller that forgets to pass the day's hauls posts NOTHING here rather than
+  // silently falling back to posting everything.
+  const dustLegs = needsDustTrackingRow(entry)
+    ? ((Array.isArray(flags.dustLegs) && flags.dustLegs.length) ? flags.dustLegs : [{}])
+    : null;
   const workDate = safeDate(entry.work_date) || '';
-  const driver   = await matchTruckingDriver(sql, companyCode, entry.username);
   const dayCustomer = safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '';
   const hhmm     = v => String(v || '').slice(0, 5);
   // Payroll-entered fields (validated by validateTruckingInjection). Blank is
@@ -1279,6 +1316,42 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   const unit = fields.unit == null
     ? (safeStr(entry.truck_unit, 100) || '')
     : (safeStr(fields.unit, 100) || '');
+
+  /**
+   * Whether leg `i` of the day posts a row into Truck Tracking.
+   *
+   * A trucking entry posts every leg — its rows ARE the trucking office's
+   * record of the day, and nothing else keeps one.
+   *
+   * A dust customer haul posts only the legs billed off Other Billing. A haul
+   * billed off Dust Control Tracking is recorded, priced and invoiced entirely
+   * by the dust office — vehicle rates times hours, on its own grid — so a
+   * second row of it here was a copy of somebody else's work that the trucking
+   * office could not delete, could not correct, and had to remember not to bill
+   * against. Other Billing is different: that grid prices the material, and the
+   * hauling of it is trucking's line, so those legs still come here.
+   *
+   * The index is the leg's place in the WHOLE day, never its place among the
+   * legs that land here — truckingRowId is keyed off it, and Intercompany keys
+   * its billing entry off that id. So a day whose middle haul was material
+   * posts tst-<id>-2 beside tsd-<id>-row and tsd-<id>-3, and re-pointing that
+   * haul at UB is a plain delete-one on a stable id rather than a renumbering
+   * of everything after it. Same rule, same reason, as obRowId.
+   */
+  const postsHere = i => !dustLegs || legDest(dustLegs[i] || {}) === 'ob';
+
+  const prefix = truckingRowIdPrefix(entry.id);
+  const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
+  const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
+  const priorById = new Map(arr.filter(isMine).map(r => [String(r.id), r]));
+
+  // Nothing here now and nothing here before: every haul of an all-UB dust day,
+  // which is the common case. It must not rewrite the blob — that would race
+  // the trucking tab's own save for no reason at all. Same guard, same reason,
+  // as insertObRows.
+  if (!legs.some((_, i) => postsHere(i)) && !priorById.size) return [];
+
+  const driver = await matchTruckingDriver(sql, companyCode, entry.username);
 
   // What the day's hours have to add up to, and the two pieces that do not come
   // from a leg's own window — the lunch break and the travel, which both land on
@@ -1301,7 +1374,11 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   // order. Only ever a deduction, so it starts at the day's and runs down.
   let owed = deduction;
 
-  const rows = legs.map((leg, i) => {
+  // Built for EVERY leg of the day and filtered afterwards, never filtered
+  // first: the lunch deduction runs down across the legs in order, so a haul's
+  // hours would otherwise change depending on whether the haul BEFORE it
+  // happened to bill off the other grid. A leg bills what it bills.
+  const allRows = legs.map((leg, i) => {
     // An unsplit day is the day, window and all. Its row bills computed_hours +
     // travel_hours whatever the modal sent, so taking the times from the leg
     // would stamp a row "11:15–15:30" against nine hours — which is what a
@@ -1359,9 +1436,11 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
     };
   });
 
-  const prefix = truckingRowIdPrefix(entry.id);
-  const arr    = await readBlobArray(sql, companyCode, TRUCK_DIVISION_BLOB);
-  const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
+  // The legs this tab actually bills. The ones dropped here are pruned below
+  // like any other leg the day no longer has — same list, same Intercompany
+  // cleanup — which is what makes flipping a haul from material to UB a move
+  // rather than a duplicate.
+  const rows = allRows.filter((_, i) => postsHere(i));
 
   // Carry over the invoice columns the trucking office owns on each row. Every
   // cost field is payroll's and is rewritten from the entry, but the office
@@ -1377,7 +1456,6 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   // real invoiced row deleted in the same save. A slot whose occupant changed
   // starts its invoice sub-row clean; the office fills it in as they would for
   // any other new haul.
-  const priorById = new Map(arr.filter(isMine).map(r => [String(r.id), r]));
   const sameHaul  = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
   for (const row of rows) {
     const prev = priorById.get(row.id);
@@ -1682,7 +1760,19 @@ async function truckingSplitForEntry(sql, companyCode, entry) {
     // order as strings, and the modal fills its hauls in the order given.
     .map(r => ({ r, leg: truckRowLegIndex(r.id) }))
     .sort((a, b) => a.leg - b.leg)
-    .map(({ r }) => r);
+    // The leg of the DAY each row describes, carried on the row itself.
+    //
+    // A dust day no longer posts one here per haul — only the hauls billed off
+    // Other Billing — so position in this list stopped being position in the
+    // day, exactly as it did on the dust side when a haul could first be billed
+    // as material. Without the leg, a day whose SECOND haul was material
+    // re-opened with that haul's fee filled into the first haul's box, and
+    // saving wrote it back that way.
+    //
+    // Additive: a payroll page cached from before this ignores the key and
+    // reads the list positionally, which is still right for every trucking day
+    // — there every leg posts, so position IS the leg.
+    .map(({ r, leg }) => ({ ...r, leg }));
   return { rows, row: rows[0] || null };
 }
 
@@ -3250,7 +3340,12 @@ module.exports = async (req, res) => {
             // Not an if/else pair: a dust customer haul is BOTH, and the two
             // rows are the same day's work seen from the two offices that need
             // it. A trucking entry only ever takes the first branch.
-            if (needsTrucking) await insertTruckingRows(sql, companyCode, updated, truckingInject || {}, { clearSuppression: true });
+            // `dustLegs` is the whole day's hauls, destinations and all. The
+            // Truck Tracking write reads it to skip the legs the dust office
+            // bills off its own tracking grid — it takes the day and writes
+            // only the hauls this tab is the record of, exactly as the two
+            // dust writers below do.
+            if (needsTrucking) await insertTruckingRows(sql, companyCode, updated, truckingInject || {}, { clearSuppression: true, dustLegs: dustInject });
             // Both dust halves take the WHOLE day's legs and each writes only
             // the ones its own tab claims, so a day split across UB and
             // material posts one row per haul in whichever grid bills it. Each
@@ -3466,10 +3561,17 @@ module.exports = async (req, res) => {
         const dustPosted = dustLegs
           ? dustLegs.flatMap(x => x.rows).reduce((n, r) => Math.max(n, Number(r.leg) || 0), 0)
           : 0;
-        const posted = Math.max(
-          reTruck ? (await truckingSplitForEntry(sql, companyCode, existing)).rows.length : 0,
-          dustPosted,
-        );
+        // The HIGHEST leg posted here, not the count — same reason the dust
+        // side takes a maximum. A dust day posts a Truck Tracking row only for
+        // the hauls billed off Other Billing, so a three-haul day can hold one
+        // row at leg 3 and counting the rows would call it a one-haul day,
+        // letting exactly the stale single-leg save this guard exists to refuse
+        // straight through.
+        const truckPosted = reTruck
+          ? (await truckingSplitForEntry(sql, companyCode, existing)).rows
+              .reduce((n, r) => Math.max(n, Number(r.leg) || 0), 0)
+          : 0;
+        const posted = Math.max(truckPosted, dustPosted);
         if (posted > 1 && ((reTruck && !askedTruck) || (reDust && !askedDust))) {
           return res.status(409).json({
             error: `This day was approved as ${posted} hauls, and this edit only describes one. `
@@ -3479,7 +3581,12 @@ module.exports = async (req, res) => {
         }
         try {
           if (reTruck) {
-            await insertTruckingRows(sql, companyCode, existing, fields);
+            // The whole day's hauls, so the write can skip the legs the dust
+            // office bills off its tracking grid — and prune the row off a leg
+            // this edit just re-pointed from material to UB, which is the one
+            // path that ever takes a Truck Tracking row back without the entry
+            // itself changing.
+            await insertTruckingRows(sql, companyCode, existing, fields, { dustLegs: dustParsed.rows });
           }
         } catch (injErr) {
           console.error('[timesheet-entries] trucking resplit failed:', injErr.message);

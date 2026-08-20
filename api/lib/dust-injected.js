@@ -256,6 +256,42 @@ async function sweepInjectedDustRows(sql, companyCode, rows) {
 }
 
 /**
+ * Which legs of which entries the dust office bills off THIS grid.
+ *
+ * Returns a Set of "<entryId>|<leg>" keys, one per injected Dust Control
+ * Tracking row that names a leg. Nothing here reads it — it exists for the
+ * Truck Tracking sweep, which has to tell a haul billed as UB (no Truck
+ * Tracking row any more) from one billed as material (still posts one), and the
+ * timesheet entry alone cannot say: the destination lives on the LEG.
+ *
+ * A row in this grid is the positive evidence that its leg bills here, which is
+ * deliberately the safe direction to read it. The absence of one is not
+ * evidence of anything — a leg whose rows failed to write, or an entry mid-
+ * approval, would otherwise look like grounds to delete a haul's billing.
+ *
+ * Ids only, so this stays one indexed lookup however many hauls the day had.
+ */
+async function dustBilledLegs(sql, companyCode, entryIds) {
+  const ids = [...new Set((entryIds || []).map(Number).filter(Number.isFinite))];
+  const legs = new Set();
+  if (!ids.length) return legs;
+
+  const patterns = ids.map(id => `${dustRowIdPrefix(id)}%`);
+  const rows = await sql`
+    SELECT id FROM dust_control_entries
+     WHERE company_code = ${companyCode} AND id LIKE ANY(${patterns}::text[])
+  `;
+  for (const r of rows) {
+    const entryId = entryIdFromDustRowId(r && r.id);
+    const leg     = dustRowIndexFromId(r && r.id);
+    // An id naming no leg is a leftover this grid's own sweep will clear; it
+    // describes no haul, so it cannot speak for one.
+    if (entryId != null && leg != null) legs.add(`${entryId}|${leg}`);
+  }
+  return legs;
+}
+
+/**
  * Merge one incoming whole-list write from the dust tab against the server's
  * injected rows. Pure — takes both lists, returns the list to store.
  *
@@ -312,6 +348,7 @@ module.exports = {
   entryIdFromDustRowId,
   isInjectedDustRowId,
   findStaleDustRows,
+  dustBilledLegs,
   deleteDustRows,
   sweepInjectedDustRows,
   mergeInjectedDustRows,

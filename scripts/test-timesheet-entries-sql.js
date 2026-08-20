@@ -336,7 +336,12 @@ async function theUnitIsOnlyWrittenOnceTheRowExists() {
   }, FIELD);
   const hid = made.body.entry.id;
   await call('POST', { action: 'submit', id: hid }, {}, FIELD);
-  await call('POST', { action: 'approve', id: hid }, { trucking: { haul_fee: '121', unit: 'AAA' } }, ADMIN);
+  // Billed off Other Billing, so the day posts a Truck Tracking row: this is
+  // about the ORDER the unit and that row are written in, and an all-UB day
+  // posts no row here to get out of step with.
+  const OB_HAUL = { dust: { rows: [{ dest: 'ob', material: 'Limestone', mu: 'TON' }] } };
+  await call('POST', { action: 'approve', id: hid },
+    { trucking: { haul_fee: '121', unit: 'AAA' }, ...OB_HAUL }, ADMIN);
 
   // Fail the next blob write, which is how insertTruckingRow persists the row.
   const realQuery = client.query.bind(client);
@@ -349,7 +354,7 @@ async function theUnitIsOnlyWrittenOnceTheRowExists() {
     return realQuery(text, vals);
   };
   const failed = await call('POST', { action: 'resplit', id: hid }, {
-    trucking: { haul_fee: '121', unit: 'BBB' },
+    trucking: { haul_fee: '121', unit: 'BBB' }, ...OB_HAUL,
   }, ADMIN);
   client.query = realQuery;
 
@@ -364,7 +369,7 @@ async function theUnitIsOnlyWrittenOnceTheRowExists() {
 
   // The retry, once whatever broke is fixed, lands both.
   const retried = await call('POST', { action: 'resplit', id: hid }, {
-    trucking: { haul_fee: '121', unit: 'BBB' },
+    trucking: { haul_fee: '121', unit: 'BBB' }, ...OB_HAUL,
   }, ADMIN);
   assert('a retry succeeds', retried.statusCode === 200, JSON.stringify(retried.body));
   const done = (await client.query(`SELECT truck_unit FROM timesheet_entries WHERE id=$1`, [hid])).rows[0];

@@ -427,7 +427,9 @@ async function deleteTruckBlobRows(sql, companyCode, rowIds) {
  *   - its entry is gone (payroll deleted it),
  *   - its entry is no longer approved (payroll un-approved it),
  *   - its entry no longer routes to Truck Tracking (it was edited onto a
- *     different division, or a dust entry moved onto an EES job), or
+ *     different division, or a dust entry moved onto an EES job),
+ *   - its LEG is a dust haul the dust office bills off its own tracking grid
+ *     (see `ubLegs`), or
  *   - a newer row for the same LEG of the same entry exists — the duplicate an
  *     old Date.now() id left behind when the entry was re-approved.
  *
@@ -438,10 +440,19 @@ async function deleteTruckBlobRows(sql, companyCode, rowIds) {
  * drop the rest" rule would delete the second haul's billing on every load of
  * the Truck Tracking tab.
  *
+ * `ubLegs` is the per-leg half of that gate: a Set of "<entryId>|<leg>" keys for
+ * the hauls the dust office bills off Dust Control Tracking, which no longer
+ * post a row here. It is what retires the rows posted before that was true —
+ * every dust haul approved up to then wrote one, the tab refuses to delete
+ * payroll's rows, and payroll cannot take one back without un-approving a
+ * timesheet the office has already been paid for. Absent (a caller with no dust
+ * side to ask about) means no leg is excluded, which is the rule every trucking
+ * entry follows anyway.
+ *
  * Manual rows are never candidates: the sweep only ever looks at ids carrying
  * the "tst-<entryId>-" prefix payroll mints.
  */
-function findStaleTruckRows(entries, entriesById) {
+function findStaleTruckRows(entries, entriesById, ubLegs = null) {
   const stale = [];
   const newestByLeg = new Map();
 
@@ -454,6 +465,10 @@ function findStaleTruckRows(entries, entriesById) {
       continue;
     }
     const key  = `${entryId}|${truckRowLegIndex(row.id)}`;
+    // This haul is UB on a pad: the dust office records it, prices it and
+    // invoices it off its own grid, and a second copy here is work nobody in
+    // this division did.
+    if (ubLegs && ubLegs.has(key)) { stale.push(String(row.id)); continue; }
     const prev = newestByLeg.get(key);
     if (!prev) { newestByLeg.set(key, row); continue; }
     // Two live rows for one leg: keep the newer, drop the other.
@@ -496,7 +511,24 @@ async function sweepInjectedTruckRows(sql, companyCode, entries) {
   `;
   const entriesById = new Map(rows.map(r => [Number(r.id), r]));
 
-  const stale = findStaleTruckRows(list, entriesById);
+  // Which of these hauls the dust office bills off its own tracking grid. Asked
+  // only for the dust entries in play, and skipped entirely when there are none
+  // — which is every trucking-only tab load.
+  //
+  // Required lazily because dust-injected.js requires THIS module at load time
+  // (for isEesJob, removeIcBillingEntries and the shared leg cap). At the top
+  // this would close the cycle and hand that module an empty object; by the
+  // time anything calls in here, both are fully loaded.
+  const dustEntryIds = [...entriesById.values()]
+    .filter(e => e && e.division === 'dust')
+    .map(e => Number(e.id));
+  let ubLegs = null;
+  if (dustEntryIds.length) {
+    const { dustBilledLegs } = require('./dust-injected');
+    ubLegs = await dustBilledLegs(sql, companyCode, dustEntryIds);
+  }
+
+  const stale = findStaleTruckRows(list, entriesById, ubLegs);
   if (!stale.length) return { entries: list, removed: [] };
 
   const staleSet = new Set(stale);

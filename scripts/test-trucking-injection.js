@@ -158,6 +158,15 @@ function entry(over = {}) {
   };
 }
 
+// A dust day's hauls, as the injection flags carry them. Only a haul billed off
+// Other Billing posts a Truck Tracking row — a haul billed off Dust Control
+// Tracking is the dust office's from end to end — so the dust cases below that
+// are about the ROW SHAPE pass an Other Billing day, and the cases about the
+// destination gate pass whichever they mean. A trucking entry ignores these
+// entirely; it has no dust side to ask.
+const obDay = (n = 1) => ({ dustLegs: Array.from({ length: n }, () => ({ dest: 'ob' })) });
+const ubDay = (n = 1) => ({ dustLegs: Array.from({ length: n }, () => ({ dest: 'dust' })) });
+
 (async () => {
   console.log('Trucking injection helpers\n');
 
@@ -417,7 +426,7 @@ function entry(over = {}) {
     // The case this exists for: a dust haul submitted with no unit, approved
     // with one typed in the modal.
     const noUnit = entry({ id: 60, division: 'dust', job_id: 'CNX', job_label: 'CNX', truck_unit: '' });
-    const filled = await insertTruckingRow(sql, CO, noUnit, { haul_fee: 121, unit: '1000' });
+    const filled = await insertTruckingRow(sql, CO, noUnit, { haul_fee: 121, unit: '1000' }, obDay());
     assert('insert: payroll unit lands on the row', filled.unit === '1000');
     assert('insert: and on the mirror row', store.tde.get(filled.id).unit === '1000');
 
@@ -435,7 +444,7 @@ function entry(over = {}) {
 
     // End to end through the validator, the way the handler runs it.
     const { fields } = validateTruckingInjection({ haul_fee: '121', division: '', unit: ' 1000 ' });
-    const viaValidator = await insertTruckingRow(sql, CO, noUnit, fields);
+    const viaValidator = await insertTruckingRow(sql, CO, noUnit, fields, obDay());
     assert('insert: validator → injection carries the unit', viaValidator.unit === '1000');
     assert('insert: …and still defaults dust\'s division column', viaValidator.division === 'Dust');
   }
@@ -638,7 +647,7 @@ function entry(over = {}) {
       // A dust timesheet never captures these — they are trucking-only columns.
       truck_unit: null, truck_description: null,
     });
-    const row = await insertTruckingRow(sql, CO, dust, {});
+    const row = await insertTruckingRow(sql, CO, dust, {}, obDay());
 
     // The login is "lastnamefirstname"; the roster reads "Mike Barr". The
     // driver column shows the driver, not the login.
@@ -662,7 +671,7 @@ function entry(over = {}) {
     const { sql: sql2 } = makeSql({ drivers: ['Mike Barr'] });
     const named = await insertTruckingRow(sql2, CO, entry({
       id: 80, division: 'dust', job_id: 'Antero', username: 'barr',
-    }), {});
+    }), {}, obDay());
     assert('last-name login still resolves', named.driver === 'Mike Barr');
 
     assert('the guard sees the injected row',
@@ -724,7 +733,7 @@ function entry(over = {}) {
   {
     const { sql } = makeSql({ drivers: [] });
     const dust = entry({ id: 78, division: 'dust', job_id: 'Antero', job_label: 'Antero' });
-    const row = await insertTruckingRow(sql, CO, dust, { haul_fee: 95, division: 'Paving' });
+    const row = await insertTruckingRow(sql, CO, dust, { haul_fee: 95, division: 'Paving' }, obDay());
     assert('explicit division beats the Dust default', row.division === 'Paving');
     assert('haul fee still applied', row.haul_fee === 95);
     // And a trucking entry is unaffected by the dust default.
@@ -817,6 +826,78 @@ function entry(over = {}) {
       left.length === 1 && left[0].id === truckingRowId(42));
     assert('out of the mirror too', !store.tde.has(truckingRowId(42, 2)));
     assert('and the whole day is back on the surviving row', after[0].total_hours === 9);
+  }
+
+  // ── Which of a dust day's hauls reach this tab at all ────────────────────
+  // A haul billed off Dust Control Tracking is the dust office's from end to
+  // end — recorded, priced and invoiced on its own grid — so it posts nothing
+  // here. A haul billed off Other Billing still does: that grid prices the
+  // material, and the hauling of it is the trucking office's line.
+  {
+    console.log('\n[a dust day posts only its material hauls]');
+    const dustDay = over => entry({
+      id: 90, division: 'dust', job_id: 'Antero', job_label: 'Antero',
+      travel_hours: 1, ...over,
+    });
+    const legs = [
+      { company: 'CNX',    start_time: '07:00', end_time: '11:15' },
+      { company: 'Antero', start_time: '11:15', end_time: '15:30', haul_fee: 145 },
+    ];
+
+    {
+      const { sql, store } = makeSql({ drivers: [] });
+      const rows = await insertTruckingRows(sql, CO, dustDay(), { haul_fee: 135, rows: legs },
+        { dustLegs: [{ dest: 'dust' }, { dest: 'dust' }] });
+      assert('an all-UB day posts nothing here', rows.length === 0);
+      assert('and writes nothing at all — no blob to race the tab over',
+        !store.appData.has(BLOB_KEY));
+    }
+    {
+      // Leg 1 UB, leg 2 material. One row, and it keeps leg 2's id: the id is
+      // the haul's place in the DAY, and Intercompany keys its billing entry off
+      // it, so renumbering it into leg 1's slot would move one customer's
+      // billing history onto another customer's haul.
+      const { sql, store } = makeSql({ drivers: [] });
+      const rows = await insertTruckingRows(sql, CO, dustDay(), { haul_fee: 135, rows: legs },
+        { dustLegs: [{ dest: 'dust' }, { dest: 'ob' }] });
+      assert('a mixed day posts only the material haul', rows.length === 1);
+      assert('under the id of the leg it actually is',
+        rows[0].id === truckingRowId(90, 2), rows[0].id);
+      assert('billing that haul\'s own customer and window',
+        rows[0].customer === 'Antero' && rows[0].actual_start === '11:15');
+      // 11:15–15:30 is 4.25 h. The lunch came off leg 1 and the travel rode on
+      // it, exactly as they would have unfiltered — a haul bills its own window
+      // whichever grid its neighbours went to.
+      assert('and its own hours, unchanged by what leg 1 billed off',
+        rows[0].total_hours === 4.25, String(rows[0].total_hours));
+      const blob = store.appData.get(BLOB_KEY).filter(x => String(x.id).startsWith(truckingRowIdPrefix(90)));
+      assert('one row in the blob', blob.length === 1);
+      assert('and one in the mirror', store.tde.has(rows[0].id) && !store.tde.has(truckingRowId(90)));
+
+      // Re-editing that haul back onto UB has to take the row with it. Nothing
+      // else ever would: the tab refuses to delete payroll's rows.
+      const after = await insertTruckingRows(sql, CO, dustDay(), { haul_fee: 135, rows: legs },
+        { dustLegs: [{ dest: 'dust' }, { dest: 'dust' }] });
+      assert('re-pointing it at UB takes the row back', after.length === 0);
+      assert('out of the blob',
+        !store.appData.get(BLOB_KEY).some(x => String(x.id).startsWith(truckingRowIdPrefix(90))));
+      assert('and out of the mirror', !store.tde.has(truckingRowId(90, 2)));
+    }
+    {
+      // Bulk approve names no hauls at all. The dust default is the tracking
+      // grid, so it posts nothing here — a caller that cannot say where a haul
+      // bills must not be read as saying "everywhere".
+      const { sql } = makeSql({ drivers: [] });
+      const rows = await insertTruckingRows(sql, CO, dustDay({ id: 91 }), { haul_fee: 135 }, {});
+      assert('a dust day approved with no hauls given posts nothing here', rows.length === 0);
+    }
+    {
+      // A trucking entry has no dust side, so nothing is filtered — every leg
+      // posts, exactly as it always has.
+      const { sql } = makeSql({ drivers: [] });
+      const rows = await insertTruckingRows(sql, CO, entry({ id: 92 }), { haul_fee: 135, rows: legs }, {});
+      assert('a trucking day still posts every leg', rows.length === 2);
+    }
   }
 
   // ── An unsplit day sends one leg and must bill exactly as it always did ──

@@ -30,6 +30,9 @@ const {
   entryIdFromTruckRowId,
   findStaleTruckRows,
 } = require('../lib/truck-injected');
+// The per-leg half of the same staleness check: which dust hauls the dust
+// office bills off its own grid, and so posts nothing to Truck Tracking.
+const { dustBilledLegs } = require('../lib/dust-injected');
 
 const DUST_INVOICE_ERA_START = `${INVOICE_ERA_START_YEAR}-01-01`;
 
@@ -560,7 +563,21 @@ async function readTruckDivisionEntries(sql, companyCode) {
           FROM timesheet_entries
          WHERE company_code = ${companyCode} AND id = ANY(${entryIds}::bigint[])
       `;
-      return findStaleTruckRows(blobEntries, new Map(rows.map(r => [Number(r.id), r])));
+      const entriesById = new Map(rows.map(r => [Number(r.id), r]));
+      // Which of these hauls the dust office bills off its own tracking grid.
+      // Asked here for the same reason the tab asks it: a dust haul billed off
+      // Dust Control Tracking posts no Truck Tracking row any more, and the
+      // rows posted before that was true are retired on read. Without this the
+      // report goes on counting them as trucking revenue until somebody opens
+      // the Trucking tab — the same hauls the dust roll-up is already billing,
+      // counted twice, with the total moving when a tab is loaded.
+      const dustEntryIds = [...entriesById.values()]
+        .filter(e => e && e.division === 'dust')
+        .map(e => Number(e.id));
+      const ubLegs = dustEntryIds.length
+        ? await dustBilledLegs(sql, companyCode, dustEntryIds)
+        : null;
+      return findStaleTruckRows(blobEntries, entriesById, ubLegs);
     });
     if (stale && stale.length) {
       const staleSet = new Set(stale.map(String));

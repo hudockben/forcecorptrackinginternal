@@ -23,12 +23,14 @@
  *                           material, gallons/bags, MU, price per unit,
  *                           trucking hours + rate
  *
- * The Truck Tracking row is posted either way, and is unaffected by the answer:
- * the trucking office records who drove where regardless of which dust invoice
- * the haul ends up on. That means each haul still feeds Intercompany from two
- * sides, and whoever reconciles it picks one — the "⊘ Removed in IC"
- * suppression both tabs already support is how that choice is expressed, same
- * as it is for a UB haul.
+ * The answer also decides whether the haul reaches Truck Tracking. A haul that
+ * lands here does: this grid prices the material, and the hauling of it is the
+ * trucking office's line, billed at trucking hours times a trucking rate. A
+ * haul billed off Dust Control Tracking does not — that grid covers the work
+ * end to end. So a material haul, and only a material haul, still feeds
+ * Intercompany from two sides, and whoever reconciles it picks one: the
+ * "⊘ Removed in IC" suppression both tabs support is how that choice is
+ * expressed. A UB haul has no trucking-side counterpart left to suppress.
  *
  * Other Billing is a JSON blob (dust_other_billing_rows) rather than a table,
  * so the mechanics here are the trucking blob's rather than dust tracking's:
