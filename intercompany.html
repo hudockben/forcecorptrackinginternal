@@ -3890,6 +3890,30 @@
           if (!entry.maxDate || date > entry.maxDate) entry.maxDate = date;
         }
 
+        // Lowboy and tri-axle haulage each get their own column; everything
+        // else on wheels is equipment. The name of the equipment decides,
+        // never the row's job class — a lowboy typed straight onto the daily
+        // grid carries the crew's class ('Hourly'), not 'Trucking', and used
+        // to be billed as Equipment because of it.
+        function isLowboy(name) {
+          return String(name || '').toLowerCase().includes('lowboy');
+        }
+        function isTriAxle(name) {
+          const n = String(name || '').toLowerCase();
+          // A bare 'tri' also matches disTRIbutor, sTRIper and elecTRIc, so it
+          // has to stand as its own word or spell out 'tri axle' — however it
+          // happens to be spaced, hyphenated or run together.
+          return /\btri\b/.test(n) || n.replace(/[^a-z0-9]/g, '').includes('triaxle');
+        }
+        // Every equipment dollar lands in exactly one column. Anything that
+        // matches neither haul type is equipment, rather than dropped: an
+        // unmatched cost used to vanish from the row it was spent on.
+        function addEquipCost(entry, name, cost) {
+          if      (isLowboy(name))  entry.lowboyCost  += cost;
+          else if (isTriAxle(name)) entry.triAxleCost += cost;
+          else                      entry.equipCost   += cost;
+        }
+
         // Build a set of daily-row IDs that are trucking mirrors — used below to
         // prevent trucking_entries from double-counting those same rows.
         const truckingDailyIds = new Set(
@@ -3912,16 +3936,7 @@
           const eto  = parseFloat(row.equip_total_override) || 0;
           entry.laborCost += rate * lh;
           entry.hoursWorked += lh;
-          if ((row.job_class || '').toLowerCase() === 'trucking') {
-            // Classify trucking rows by equipment type so manually-entered
-            // daily rows (with no trucking_entry) are still captured.
-            const truckCost = eto || (euc * eh);
-            const equip = (row.equipment || '').toLowerCase();
-            if (equip.includes('lowboy'))     entry.lowboyCost  += truckCost;
-            else if (equip.includes('tri'))   entry.triAxleCost += truckCost;
-          } else {
-            entry.equipCost += eto || (euc * eh);
-          }
+          addEquipCost(entry, row.equipment, eto || (euc * eh));
         });
 
         // Only count trucking_entries that don't already have a daily-row mirror
@@ -3934,9 +3949,7 @@
           setDiv(entry, t._division);
           trackDate(entry, t.date);
           const cost = (parseFloat(t.rate) || 0) * (parseFloat(t.hours) || 0);
-          const type = (t.truck_type || '').toLowerCase();
-          if (type.includes('lowboy'))     entry.lowboyCost  += cost;
-          else if (type.includes('tri'))   entry.triAxleCost += cost;
+          addEquipCost(entry, t.truck_type, cost);
         });
 
         // Infill inventory entries — labor, equipment, and material costs
