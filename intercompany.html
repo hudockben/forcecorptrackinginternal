@@ -19,6 +19,9 @@
       --muted:      #666;
       --green:      #22c55e;
       --red:        #ef4444;
+      /* Height of the sticky date-range bar, measured at runtime so the
+         toolbars underneath pin below it however far it wraps. */
+      --ic-range-h: 44px;
     }
 
     body {
@@ -108,6 +111,60 @@
     /* ── Panels ── */
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
+
+    /* ── Global date-range bar ──
+       One range drives Dashboard, Company Info and Analytics, so a period
+       picked on one tab still holds when you move to the next. Sticky under
+       the tab bar; its measured height feeds --ic-range-h so the toolbars
+       below can pin themselves beneath it however far it wraps. */
+    .ic-range-bar {
+      display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;
+      padding: 0.5rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 89px; z-index: 150;
+    }
+    .ic-range-label {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--muted); white-space: nowrap;
+    }
+    .ic-range-presets { display: flex; flex-wrap: wrap; gap: 0.28rem; }
+    .ic-range-chip {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 999px; padding: 0.2rem 0.62rem; font-size: 0.7rem;
+      cursor: pointer; font-family: inherit; white-space: nowrap;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+    .ic-range-chip:hover { color: var(--text); border-color: var(--accent-dim); }
+    .ic-range-chip.on {
+      background: var(--accent-dim); border-color: var(--accent-dim);
+      color: #fff; font-weight: 600;
+    }
+    .ic-range-dates { display: flex; align-items: center; gap: 0.3rem; }
+    .ic-range-date {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      font-size: 0.72rem; padding: 0.24rem 0.45rem; border-radius: 4px;
+      outline: none; cursor: pointer; font-family: inherit; color-scheme: dark;
+    }
+    .ic-range-date:focus { border-color: var(--accent); }
+    .ic-range-date:disabled { opacity: 0.4; cursor: default; }
+    .ic-range-dash { font-size: 0.7rem; color: var(--muted); }
+    .ic-range-step {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+      border-radius: 4px; width: 22px; height: 24px; line-height: 1; cursor: pointer;
+      font-family: inherit; font-size: 0.85rem;
+      transition: color 0.12s, border-color 0.12s;
+    }
+    .ic-range-step:hover:not(:disabled) { color: var(--accent); border-color: var(--accent-dim); }
+    .ic-range-step:disabled { opacity: 0.3; cursor: default; }
+    .ic-range-summary {
+      font-size: 0.68rem; color: var(--muted); white-space: nowrap;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .ic-range-summary strong { color: var(--text); font-weight: 600; }
+    .ic-range-summary .ic-range-amt { color: var(--accent); font-weight: 700; }
+    .ic-range-sep { color: var(--border); }
+    @media print { .ic-range-bar { display: none !important; } }
 
     /* ── Empty state ── */
     .empty-panel {
@@ -533,7 +590,11 @@
     .icd-section-lbl { font-size:0.6rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); margin-bottom:0.75rem; font-weight:600; }
 
     .icd-month-bars { display:flex; align-items:flex-end; gap:0.28rem; height:100px; }
-    .icd-month-col { display:flex; flex-direction:column; align-items:center; flex:1; height:100%; }
+    .icd-month-col { display:flex; flex-direction:column; align-items:center; flex:1; height:100%;
+      background:none; border:none; padding:0; font-family:inherit; cursor:pointer;
+      border-radius:3px; transition:background 0.12s; }
+    .icd-month-col:hover { background:rgba(167,139,250,0.08); }
+    .icd-month-col:hover .icd-month-lbl { color:var(--accent); }
     .icd-month-track { flex:1; display:flex; flex-direction:column; justify-content:flex-end; width:100%; gap:1px; }
     .icd-bar-truck { border-radius:2px 2px 0 0; min-height:2px; background:#ef4444; }
     .icd-bar-dust  { min-height:2px; background:#fbbf24; }
@@ -609,7 +670,7 @@
     .icd-empty-sm { font-size:0.72rem; color:var(--muted); padding:0.5rem 0; }
 
     /* ── Analytics tab ── */
-    .an-toolbar { display:flex; align-items:center; gap:1rem; padding:0.65rem 1.25rem; border-bottom:1px solid var(--border); background:var(--surface); flex-wrap:wrap; position:sticky; top:89px; z-index:100; }
+    .an-toolbar { display:flex; align-items:center; gap:1rem; padding:0.65rem 1.25rem; border-bottom:1px solid var(--border); background:var(--surface); flex-wrap:wrap; position:sticky; top:calc(89px + var(--ic-range-h)); z-index:100; }
     .an-toolbar-group { display:flex; align-items:center; gap:0.4rem; }
     .an-toolbar label { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); }
     .an-toolbar select { background:var(--surface2); border:1px solid var(--border); color:var(--text); font-size:0.75rem; padding:0.28rem 0.55rem; border-radius:4px; outline:none; cursor:pointer; }
@@ -904,6 +965,21 @@
     <button class="btn-manage-lists" onclick="openManageLists()">⚙ Manage Lists</button>
   </nav>
 
+  <!-- ── Global date range ── -->
+  <div class="ic-range-bar" id="icRangeBar">
+    <span class="ic-range-label">Date Range</span>
+    <div class="ic-range-presets" id="icRangePresets"></div>
+    <div class="ic-range-dates">
+      <button class="ic-range-step" id="icRangePrev" onclick="icShiftRange(-1)" title="Previous period">&#8249;</button>
+      <input type="date" id="icRangeStart" class="ic-range-date" onchange="icOnDateInput()" title="Start date" />
+      <span class="ic-range-dash">&#8594;</span>
+      <input type="date" id="icRangeEnd" class="ic-range-date" onchange="icOnDateInput()" title="End date" />
+      <button class="ic-range-step" id="icRangeNext" onclick="icShiftRange(1)" title="Next period">&#8250;</button>
+    </div>
+    <div class="tab-bar-spacer"></div>
+    <div class="ic-range-summary" id="icRangeSummary"></div>
+  </div>
+
   <!-- ── Dashboard ── -->
   <div class="tab-panel active" id="tab-dashboard">
     <div id="dashBody"><div class="ci-empty"><strong>Loading</strong>Fetching data…</div></div>
@@ -920,12 +996,6 @@
       <button class="ci-subtab-btn"          id="ciSubKiewit"    onclick="switchCiDiv('kiewit')">Kiewit Pinetree</button>
     </div>
     <div class="ci-toolbar">
-      <div class="ci-toolbar-group">
-        <label for="ciYearFilter">Year</label>
-        <select id="ciYearFilter" onchange="renderCompanyInfo()">
-          <option value="all">All Years</option>
-        </select>
-      </div>
       <div class="ci-toolbar-group">
         <label for="ciCoFilter">Company</label>
         <select id="ciCoFilter" onchange="renderCompanyInfo()">
@@ -1004,12 +1074,6 @@
   <div class="tab-panel" id="tab-analytics">
     <div class="an-toolbar">
       <div class="an-toolbar-group">
-        <label>Year</label>
-        <select id="anYearFilter" onchange="renderAnalytics()">
-          <option value="all">All Years</option>
-        </select>
-      </div>
-      <div class="an-toolbar-group">
         <label>Division</label>
         <div class="an-div-btns">
           <button class="an-div-btn active" data-div="all"      onclick="setAnDiv('all')">All</button>
@@ -1053,13 +1117,14 @@
     <!-- Job Summary sub-panel -->
     <div class="rpt-sub-panel active" id="rpt-job-summary">
       <div class="rpt-toolbar">
+        <div class="ic-range-presets" id="jsPresets"></div>
         <div class="rpt-toolbar-group">
           <label for="jsStartDate">Start Date</label>
-          <input type="date" id="jsStartDate" class="rpt-date-input" />
+          <input type="date" id="jsStartDate" class="rpt-date-input" onchange="jsRenderPresets()" />
         </div>
         <div class="rpt-toolbar-group">
           <label for="jsEndDate">End Date</label>
-          <input type="date" id="jsEndDate" class="rpt-date-input" />
+          <input type="date" id="jsEndDate" class="rpt-date-input" onchange="jsRenderPresets()" />
         </div>
         <button class="btn-run-report" onclick="runJobSummaryReport()">Run Report</button>
         <button class="btn-pdf" id="jsPdfBtn" style="display:none" onclick="downloadJobSummaryPdf()">&#8659; Download PDF</button>
@@ -1153,6 +1218,9 @@
         b.classList.toggle('active', b.dataset.tab === tab));
       document.querySelectorAll('.tab-panel').forEach(p =>
         p.classList.toggle('active', p.id === 'tab-' + tab));
+      const bar = document.getElementById('icRangeBar');
+      if (bar) bar.style.display = tab === 'reports' ? 'none' : '';
+      icMeasureRangeBar();
       if (tab === 'dashboard')    loadAndRenderDashboard();
       if (tab === 'company-info') loadAndRenderCompanyInfo();
       if (tab === 'analytics')    loadAndRenderAnalytics();
@@ -1356,9 +1424,8 @@
       if (dg) dg.style.display = div === 'dust'     ? '' : 'none';
       if (qg) qg.style.display = div === 'quarry'   ? '' : 'none';
       if (kg) kg.style.display = div === 'kiewit'   ? '' : 'none';
-      // Rebuild filter dropdowns. Year options come from whichever source
-      // backs this tab; company list flips to quarry locations on Quarry.
-      buildYearFilterOptions();
+      // Rebuild the company dropdown — it flips to quarry locations on Quarry
+      // and to projects on Kiewit. The date range is shared, so it stays put.
       buildCompanyFilterOptions();
       renderCompanyInfo();
     }
@@ -1538,6 +1605,386 @@
     const fmt$   = v => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     const fmtH   = v => (Math.floor(v * 100) / 100).toFixed(2) + ' hrs';
 
+    /* ══ Global date range ═══════════════════════════════════════════════
+       Dashboard, Company Info and Analytics all read one range, so a period
+       picked on any of them still holds on the next. Dates are plain
+       'YYYY-MM-DD' strings compared lexically — the same shape actual_date
+       already has — so nothing here goes near a Date's timezone. */
+    const IC_RANGE_KEY = 'ic_date_range_v1';
+
+    // Presets are ordered the way they get reached for: broadest first, then
+    // the current periods, then the trailing windows.
+    const IC_RANGE_PRESETS = [
+      { key: 'all',    label: 'All Time'  },
+      { key: 'ytd',    label: 'YTD'       },
+      { key: 'qtd',    label: 'Quarter'   },
+      { key: 'mtd',    label: 'This Month'},
+      { key: 'lastmo', label: 'Last Month'},
+      { key: 'd30',    label: 'Last 30d'  },
+      { key: 'd90',    label: 'Last 90d'  },
+      { key: 'lastyr', label: 'Last Year' },
+    ];
+
+    let icRange = { preset: 'ytd', start: '', end: '' };
+    // False until the first billing fetch settles, so the bar can tell "nothing
+    // in this range" apart from "nothing loaded yet".
+    let icEntriesLoaded = false;
+
+    const _icPad = n => String(n).padStart(2, '0');
+    const _icISO = d => d.getFullYear() + '-' + _icPad(d.getMonth() + 1) + '-' + _icPad(d.getDate());
+    // Parsed as local midnight — 'new Date("2026-01-01")' would be UTC and can
+    // land on the previous day west of Greenwich.
+    const _icDate = s => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
+      return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+    };
+
+    // A preset resolves against today, so the same stored preset means
+    // "this month" every month rather than freezing on the month it was picked.
+    function icPresetBounds(preset) {
+      const now = new Date();
+      const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+      const span = (a, b) => ({ start: _icISO(a), end: _icISO(b) });
+      switch (preset) {
+        case 'all':    return { start: '', end: '' };
+        case 'ytd':    return span(new Date(y, 0, 1), now);
+        case 'qtd':    return span(new Date(y, Math.floor(m / 3) * 3, 1), now);
+        case 'mtd':    return span(new Date(y, m, 1), now);
+        case 'lastmo': return span(new Date(y, m - 1, 1), new Date(y, m, 0));
+        case 'd30':    return span(new Date(y, m, d - 29), now);
+        case 'd90':    return span(new Date(y, m, d - 89), now);
+        case 'lastyr': return span(new Date(y - 1, 0, 1), new Date(y - 1, 11, 31));
+        default:       return null;
+      }
+    }
+
+    function icRangeBounds() {
+      const p = icPresetBounds(icRange.preset);
+      return p || { start: icRange.start || '', end: icRange.end || '' };
+    }
+
+    // An open range keeps everything, including rows with no date on them.
+    // A bounded one cannot place an undated row, so it drops out rather than
+    // being counted into a period it may not belong to.
+    function icInRange(dateStr) {
+      const { start, end } = icRangeBounds();
+      if (!start && !end) return true;
+      const s = String(dateStr || '').slice(0, 10);
+      if (!s) return false;
+      if (start && s < start) return false;
+      if (end   && s > end)   return false;
+      return true;
+    }
+
+    const icFilterRange = rows => (rows || []).filter(r => icInRange(r && r.actual_date));
+
+    // Short human range: 'All Time', 'Aug 2026' for a whole month, '2025' for a
+    // whole year, otherwise the two endpoints.
+    function icRangeLabel() {
+      const { start, end } = icRangeBounds();
+      if (!start && !end) return 'All Time';
+      const fmtOne = iso => {
+        const d = _icDate(iso);
+        return d ? MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear() : iso;
+      };
+      if (!start) return 'Through ' + fmtOne(end);
+      if (!end)   return fmtOne(start) + ' onward';
+      const a = _icDate(start), b = _icDate(end);
+      if (a && b) {
+        const wholeMonth = a.getDate() === 1 && b.getFullYear() === a.getFullYear()
+          && b.getMonth() === a.getMonth() && b.getDate() === new Date(a.getFullYear(), a.getMonth() + 1, 0).getDate();
+        if (wholeMonth) return MONTHS[a.getMonth()] + ' ' + a.getFullYear();
+        const wholeYear = a.getMonth() === 0 && a.getDate() === 1
+          && b.getFullYear() === a.getFullYear() && b.getMonth() === 11 && b.getDate() === 31;
+        if (wholeYear) return String(a.getFullYear());
+        if (a.getFullYear() === b.getFullYear()) {
+          return MONTHS[a.getMonth()] + ' ' + a.getDate() + ' – ' + MONTHS[b.getMonth()] + ' ' + b.getDate() + ', ' + b.getFullYear();
+        }
+      }
+      return fmtOne(start) + ' – ' + fmtOne(end);
+    }
+
+    // True when the range can hold entries from more than one calendar year, so
+    // month labels have to carry the year to stay unambiguous. Called once per
+    // row by icMonthBucket, so the open-range answer — the only one that has to
+    // walk the data — is memoised against the row counts that could change it.
+    let _icSpansYears = { key: null, val: false };
+    function icRangeSpansYears() {
+      const { start, end } = icRangeBounds();
+      if (start && end) return start.slice(0, 4) !== end.slice(0, 4);
+      const key = start + '|' + end + '|' + icBillingEntries.length + '|' + quarryDailyRows.length
+                + '|' + quarryCrushingRows.length + '|' + kiewitLaborRows.length;
+      if (_icSpansYears.key === key) return _icSpansYears.val;
+      const yrs = new Set(icAllDatedRows().map(r => String(r.actual_date).slice(0, 4)));
+      _icSpansYears = { key, val: yrs.size > 1 };
+      return _icSpansYears.val;
+    }
+
+    // Every dated row the page holds, whichever source it came from — used to
+    // size 'All Time' and to seed the year quick-picks.
+    function icAllDatedRows() {
+      return icBillingEntries.concat(quarryDailyRows, quarryCrushingRows, kiewitLaborRows)
+        .filter(r => /^\d{4}-\d{2}-\d{2}/.test(String(r && r.actual_date || '')));
+    }
+
+    /* Month bucket shared by every per-month table on the page. Keyed by
+       'YYYY-MM' rather than the month index alone: a range that crosses a year
+       boundary would otherwise fold Jan 2025 into Jan 2026 and post the sum of
+       both as one month. */
+    function icMonthBucket(dateStr) {
+      const s = String(dateStr || '');
+      const y = s.slice(0, 4);
+      const m = parseInt(s.slice(5, 7), 10) - 1;
+      if (!/^\d{4}$/.test(y) || isNaN(m) || m < 0 || m > 11) {
+        return { key: 'unknown', label: '—', short: '—', sort: '9999-99' };
+      }
+      const sort = y + '-' + _icPad(m + 1);
+      return {
+        key:   sort,
+        label: MONTHS[m] + (icRangeSpansYears() ? ' ' + y : ''),
+        short: MONTHS[m][0],
+        sort,
+      };
+    }
+
+    /* Intercompany value of one billing entry. Other-billing rows already store
+       the whole per-row total at time of send; trucking bills hours at the IC
+       truck rate; dust tracking uses its stored per-vehicle totals plus UB
+       gallons at the customer's rate. */
+    function icAmt(e) {
+      if (!e) return 0;
+      if (DUST_FLAT_TOTAL_SOURCES.includes(e.source)) return parseFloat(e.total) || 0;
+      if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
+      return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
+           + (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name);
+    }
+
+
+    /* Columns for the dashboard's IC chart. The range decides both the span and
+       the grain: a month or two charts day by day, up to two years charts by
+       month, and anything longer rolls up to years — so the bar count stays
+       readable instead of collapsing a short range into one fat bar. */
+    function icDashBuckets(entries) {
+      const dated = (entries || []).filter(e => /^\d{4}-\d{2}-\d{2}/.test(String(e && e.actual_date || '')));
+      const { start, end } = icRangeBounds();
+      let first = start, last = end;
+      if (!first || !last) {
+        const keys = dated.map(e => String(e.actual_date).slice(0, 10)).sort();
+        if (!keys.length) return [];
+        first = first || keys[0];
+        last  = last  || keys[keys.length - 1];
+      }
+      const a = _icDate(first), b = _icDate(last);
+      if (!a || !b || b < a) return [];
+
+      const days   = Math.round((b - a) / 86400000) + 1;
+      const months = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + 1;
+      const lastDay = (y, m) => new Date(y, m + 1, 0).getDate();
+      const cols = [];
+      let klen;
+
+      if (days <= 62) {
+        klen = 10;
+        for (let i = 0; i < days; i++) {
+          const d = new Date(a.getFullYear(), a.getMonth(), a.getDate() + i);
+          const iso = _icISO(d);
+          // Every day on a month-long range, then every fifth so the numbers
+          // stop colliding as the columns get thinner.
+          const show = days <= 31 || d.getDate() % 5 === 0;
+          cols.push({
+            key: iso, label: MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear(),
+            short: show ? String(d.getDate()) : '', start: iso, end: iso, truck: 0, dust: 0,
+          });
+        }
+      } else if (months <= 24) {
+        klen = 7;
+        const fy = a.getFullYear(), fm = a.getMonth();
+        const crossesYears = a.getFullYear() !== b.getFullYear();
+        for (let i = 0; i < months; i++) {
+          const y = fy + Math.floor((fm + i) / 12);
+          const m = (fm + i) % 12;
+          // Across a year boundary a bare initial is ambiguous, so January and
+          // the leading column carry the year.
+          const mark = crossesYears && (m === 0 || i === 0) ? " '" + String(y).slice(2) : '';
+          cols.push({
+            key:   y + '-' + _icPad(m + 1),
+            label: MONTHS[m] + ' ' + y,
+            short: MONTHS[m][0] + mark,
+            start: y + '-' + _icPad(m + 1) + '-01',
+            end:   y + '-' + _icPad(m + 1) + '-' + _icPad(lastDay(y, m)),
+            truck: 0, dust: 0,
+          });
+        }
+      } else {
+        klen = 4;
+        for (let y = a.getFullYear(); y <= b.getFullYear(); y++) {
+          cols.push({
+            key: String(y), label: String(y), short: String(y).slice(2),
+            start: y + '-01-01', end: y + '-12-31', truck: 0, dust: 0,
+          });
+        }
+      }
+
+      const byKey = new Map(cols.map(c => [c.key, c]));
+      dated.forEach(e => {
+        const c = byKey.get(String(e.actual_date).slice(0, klen));
+        if (!c) return;
+        if (_isDustSrc(e)) c.dust += icAmt(e);
+        else if ((e.source || 'trucking') === 'trucking') c.truck += icAmt(e);
+      });
+      return cols;
+    }
+
+    // Clicking a column narrows the range to that column's span.
+    function icZoomRange(start, end) {
+      if (!start || !end) return;
+      icRange = { preset: 'custom', start, end };
+      icCommitRange();
+    }
+
+    // ── Range mutations ──
+    function icSetPreset(preset) {
+      const b = icPresetBounds(preset);
+      icRange = { preset, start: b ? b.start : icRange.start, end: b ? b.end : icRange.end };
+      icCommitRange();
+    }
+
+    // Editing either date drops the preset — the range is whatever the boxes
+    // say from then on, and no chip claims to describe it.
+    function icOnDateInput() {
+      const start = document.getElementById('icRangeStart').value || '';
+      const end   = document.getElementById('icRangeEnd').value   || '';
+      icRange = { preset: 'custom', start, end };
+      icCommitRange();
+    }
+
+    /* Step the window one period at a time. A whole calendar month or year
+       steps to the neighbouring month or year; anything else slides by its own
+       length, so a 30-day window walks back 30 days. */
+    function icShiftRange(dir) {
+      const { start, end } = icRangeBounds();
+      if (!start || !end) return;
+      const a = _icDate(start), b = _icDate(end);
+      if (!a || !b || b < a) return;
+      const lastOf = (y, m) => new Date(y, m + 1, 0).getDate();
+      let ns, ne;
+      const isWholeMonth = a.getDate() === 1 && a.getFullYear() === b.getFullYear()
+        && a.getMonth() === b.getMonth() && b.getDate() === lastOf(a.getFullYear(), a.getMonth());
+      const isWholeYear = a.getMonth() === 0 && a.getDate() === 1
+        && b.getFullYear() === a.getFullYear() && b.getMonth() === 11 && b.getDate() === 31;
+      if (isWholeMonth) {
+        const t = new Date(a.getFullYear(), a.getMonth() + dir, 1);
+        ns = t; ne = new Date(t.getFullYear(), t.getMonth(), lastOf(t.getFullYear(), t.getMonth()));
+      } else if (isWholeYear) {
+        ns = new Date(a.getFullYear() + dir, 0, 1);
+        ne = new Date(a.getFullYear() + dir, 11, 31);
+      } else {
+        const days = Math.round((b - a) / 86400000) + 1;
+        ns = new Date(a.getFullYear(), a.getMonth(), a.getDate() + dir * days);
+        ne = new Date(b.getFullYear(), b.getMonth(), b.getDate() + dir * days);
+      }
+      icRange = { preset: 'custom', start: _icISO(ns), end: _icISO(ne) };
+      icCommitRange();
+    }
+
+    // Jump the range to one whole calendar year.
+    function icSetYear(year) {
+      if (!/^\d{4}$/.test(String(year))) return;
+      icRange = { preset: 'custom', start: year + '-01-01', end: year + '-12-31' };
+      icCommitRange();
+    }
+
+    function icCommitRange() {
+      try { localStorage.setItem(IC_RANGE_KEY, JSON.stringify(icRange)); } catch {}
+      icSyncRangeUI();
+      icRerenderActiveTab();
+    }
+
+    function icRerenderActiveTab() {
+      const btn = document.querySelector('.tab-btn.active');
+      const tab = btn ? btn.dataset.tab : '';
+      if (tab === 'dashboard')    renderDashboard();
+      if (tab === 'company-info') renderCompanyInfo();
+      if (tab === 'analytics')    renderAnalytics();
+    }
+
+    // ── Range bar UI ──
+    function icRenderRangePresets() {
+      const el = document.getElementById('icRangePresets');
+      if (!el) return;
+      // Year quick-picks come from the data, newest first, capped so a long
+      // history does not push the custom boxes off the bar.
+      const years = [...new Set(icAllDatedRows().map(r => String(r.actual_date).slice(0, 4)))]
+        .sort().reverse().slice(0, 4);
+      const { start, end } = icRangeBounds();
+      const chips = IC_RANGE_PRESETS.map(p =>
+        '<button class="ic-range-chip' + (icRange.preset === p.key ? ' on' : '') + '"'
+        + ' onclick="icSetPreset(\'' + p.key + '\')">' + p.label + '</button>').join('');
+      const yearChips = years.map(y => {
+        const on = icRange.preset === 'custom' && start === y + '-01-01' && end === y + '-12-31';
+        return '<button class="ic-range-chip' + (on ? ' on' : '') + '"'
+          + ' onclick="icSetYear(\'' + y + '\')">' + y + '</button>';
+      }).join('');
+      el.innerHTML = chips + yearChips;
+    }
+
+    function icSyncRangeUI() {
+      icRenderRangePresets();
+      const { start, end } = icRangeBounds();
+      const sEl = document.getElementById('icRangeStart');
+      const eEl = document.getElementById('icRangeEnd');
+      if (sEl) sEl.value = start;
+      if (eEl) eEl.value = end;
+      const bounded = !!(start && end);
+      ['icRangePrev', 'icRangeNext'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !bounded;
+      });
+
+      const sum = document.getElementById('icRangeSummary');
+      if (sum) {
+        const head = '<strong>' + escT(icRangeLabel()) + '</strong><span class="ic-range-sep">|</span>';
+        if (start && end && start > end) {
+          sum.innerHTML = '<strong style="color:var(--red)">Start date is after end date</strong>';
+        } else if (!icEntriesLoaded) {
+          sum.innerHTML = head + 'loading…';
+        } else {
+          const inRange = icFilterRange(icBillingEntries);
+          const total   = inRange.reduce((s, e) => s + icAmt(e), 0);
+          sum.innerHTML = head
+            + inRange.length.toLocaleString() + ' entr' + (inRange.length === 1 ? 'y' : 'ies')
+            + '<span class="ic-range-sep">|</span>'
+            + '<span class="ic-range-amt">' + fmt$(total) + '</span> IC';
+        }
+      }
+      icMeasureRangeBar();
+    }
+
+    // Toolbars below the bar pin to its real height, which changes as the chips
+    // wrap on a narrow window.
+    function icMeasureRangeBar() {
+      const bar = document.getElementById('icRangeBar');
+      if (!bar) return;
+      const h = bar.offsetParent === null ? 0 : bar.getBoundingClientRect().height;
+      document.documentElement.style.setProperty('--ic-range-h', Math.round(h) + 'px');
+    }
+    window.addEventListener('resize', icMeasureRangeBar);
+
+    function icLoadRange() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(IC_RANGE_KEY) || 'null');
+        if (raw && typeof raw === 'object' && typeof raw.preset === 'string') {
+          icRange = { preset: raw.preset, start: raw.start || '', end: raw.end || '' };
+        }
+      } catch {}
+      // A stored custom range with nothing in it would read as All Time while
+      // no chip is lit; fall back to the default instead.
+      if (icRange.preset === 'custom' && !icRange.start && !icRange.end) {
+        icRange = { preset: 'ytd', start: '', end: '' };
+      }
+    }
+    icLoadRange();
+
     // ── Quarry daily (auto-pulled from quarry division for IC Quarry tab) ──
     async function loadQuarryDaily() {
       try {
@@ -1670,7 +2117,7 @@
         const r = await fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
-        if (!r.ok) { icBillingEntries = []; return; }
+        if (!r.ok) { icBillingEntries = []; icEntriesLoaded = true; return; }
         const { value } = await r.json();
         const raw = Array.isArray(value) ? value : [];
 
@@ -1739,6 +2186,7 @@
         }
 
         icBillingEntries = deduped;
+        icEntriesLoaded  = true;
         if (deduped.length < raw.length) {
           console.warn(`[ic-billing] removed ${raw.length - deduped.length} duplicate entry/entries`);
           fetch(`${API_BASE}/data/${IC_BILLING_KEY}`, {
@@ -1747,7 +2195,7 @@
             body: JSON.stringify({ value: deduped })
           }).catch(() => {});
         }
-      } catch { icBillingEntries = []; }
+      } catch { icBillingEntries = []; icEntriesLoaded = true; }
     }
 
     async function loadAndRenderCompanyInfo() {
@@ -1755,31 +2203,10 @@
         '<div class="ci-empty"><strong>Loading</strong>Fetching billing entries…</div>';
       await Promise.all([loadCompanies(), loadBillingEntries(), loadQuarryDaily(), loadQuarryCrushing(), loadKiewitLabor(), loadRates()]);
 
-      buildYearFilterOptions();
+      icSyncRangeUI();
       buildCompanyFilterOptions();
 
       renderCompanyInfo();
-    }
-
-    // Builds the year-filter dropdown from whichever data source backs the
-    // active sub-tab (quarry daily rows on Quarry, IC billing entries on the
-    // others). Preserves the user's prior year if it still has data, falls
-    // back to the current year, then "all".
-    function buildYearFilterOptions() {
-      const yearSel = document.getElementById('ciYearFilter');
-      if (!yearSel) return;
-      const dateBucket = ciDivFilter === 'quarry' ? quarryDailyRows.concat(quarryCrushingRows)
-                       : ciDivFilter === 'kiewit' ? kiewitLaborRows
-                       : icBillingEntries;
-      const years = [...new Set(
-        dateBucket.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
-      )].sort().reverse();
-      const prevYear = yearSel.value;
-      yearSel.innerHTML = '<option value="all">All Years</option>' +
-        years.map(y => `<option value="${y}">${y}</option>`).join('');
-      const curYear = String(new Date().getFullYear());
-      yearSel.value = years.includes(prevYear) ? prevYear :
-                      (years.includes(curYear) ? curYear : 'all');
     }
 
     // Populates the "Company" filter dropdown. On the Quarry sub-tab the
@@ -1831,27 +2258,25 @@
     }
 
     function renderCompanyInfo() {
-      const body      = document.getElementById('ciBody');
-      const yearFilter = document.getElementById('ciYearFilter').value;
-      const coFilter   = document.getElementById('ciCoFilter').value;
+      const body     = document.getElementById('ciBody');
+      const coFilter = document.getElementById('ciCoFilter').value;
 
       // ── Quarry sub-tab: auto-pulled from fct_quarry_daily, grouped by
       //    location (since quarry rows have no customer/company field). ──
       if (ciDivFilter === 'quarry') {
-        renderQuarryCompanyInfo(body, yearFilter, coFilter);
+        renderQuarryCompanyInfo(body, coFilter);
         return;
       }
 
       // ── Kiewit sub-tab: auto-pulled from daily_tracking (division='kiewit'),
       //    grouped by project (kiewit rows have no company field). ──
       if (ciDivFilter === 'kiewit') {
-        renderKiewitCompanyInfo(body, yearFilter, coFilter);
+        renderKiewitCompanyInfo(body, coFilter);
         return;
       }
 
-      let entries = icBillingEntries;
-      if (yearFilter !== 'all') entries = entries.filter(e => (e.actual_date || '').startsWith(yearFilter));
-      if (coFilter  !== 'all') entries = entries.filter(e => e.company_id === coFilter);
+      let entries = icFilterRange(icBillingEntries);
+      if (coFilter !== 'all') entries = entries.filter(e => e.company_id === coFilter);
       entries = entries.filter(e => (e.source || 'trucking') === ciDivFilter);
 
       const count = document.getElementById('ciCount');
@@ -1870,7 +2295,7 @@
         body.innerHTML = `<div class="ci-empty">
           <strong>No ${divLabel} Entries</strong>
           ${hasAnyDiv
-            ? `No ${divLabel} entries match the current filter selection.`
+            ? `No ${divLabel} entries fall in ${escT(icRangeLabel())} for this company selection.`
             : `No ${divLabel} billing entries yet. Use the <em>Intercompany Billing</em> button on a ${hint} to send jobs here.`}
         </div>`;
         return;
@@ -1895,10 +2320,9 @@
         // Build per-month buckets including the entries themselves
         const byMonth = {};
         divRows.forEach(e => {
-          const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
-          const mIdx = isNaN(mRaw) ? -1 : mRaw;
-          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, gallons: 0, icUbTotal: 0, total: 0, icTotal: 0, entries: [] };
+          const mb   = icMonthBucket(e.actual_date);
+          const mKey = mb.key;
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mb.label, sort: mb.sort, jobs: 0, hours: 0, gallons: 0, icUbTotal: 0, total: 0, icTotal: 0, entries: [] };
           byMonth[mKey].jobs++;
           byMonth[mKey].hours     += parseFloat(e.total_hours) || 0;
           byMonth[mKey].gallons   += parseFloat(e.gallons_ub)  || 0;
@@ -1909,7 +2333,7 @@
             : (parseFloat(e.total_hours) || 0) * icTruckRate;
           byMonth[mKey].entries.push(e);
         });
-        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.sort.localeCompare(b.sort));
 
         const totJobs      = divRows.length;
         const totHours     = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
@@ -2036,17 +2460,16 @@
 
         const byMonth = {};
         divRows.forEach(e => {
-          const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
-          const mIdx = isNaN(mRaw) ? -1 : mRaw;
-          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, matTotal: 0, trkTotal: 0, total: 0, entries: [] };
+          const mb   = icMonthBucket(e.actual_date);
+          const mKey = mb.key;
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mb.label, sort: mb.sort, jobs: 0, matTotal: 0, trkTotal: 0, total: 0, entries: [] };
           byMonth[mKey].jobs++;
           byMonth[mKey].matTotal += parseFloat(e.material_total) || 0;
           byMonth[mKey].trkTotal += parseFloat(e.trucking_total) || 0;
           byMonth[mKey].total    += parseFloat(e.total)          || 0;
           byMonth[mKey].entries.push(e);
         });
-        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.sort.localeCompare(b.sort));
 
         const totJobs   = divRows.length;
         const totMat    = divRows.reduce((s, e) => s + (parseFloat(e.material_total) || 0), 0);
@@ -2155,10 +2578,9 @@
           const gal = parseFloat(e.gallons_ub) || 0;
           if (gal <= 0) return;
           const hrs = parseFloat(e.total_hours) || 0;
-          const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
-          const mIdx = isNaN(mRaw) ? -1 : mRaw;
-          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, gallons: 0, hours: 0, icUb: 0, byCo: {} };
+          const mb   = icMonthBucket(e.actual_date);
+          const mKey = mb.key;
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mb.label, sort: mb.sort, gallons: 0, hours: 0, icUb: 0, byCo: {} };
           byMonth[mKey].gallons += gal;
           byMonth[mKey].hours   += hrs;
           const coName = e.company_name || 'Unknown';
@@ -2169,7 +2591,7 @@
           // override (else the shared icUbRate) is applied to its gallons.
           byMonth[mKey].icUb += gal * dustUbRateFor(coName);
         });
-        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.sort.localeCompare(b.sort));
 
         const totGal = sortedMonths.reduce((s, m) => s + m.gallons, 0);
         if (totGal <= 0) return '';                 // nothing to total — skip the panel
@@ -2266,10 +2688,9 @@
 
         const byMonth = {};
         divRows.forEach(e => {
-          const mRaw = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
-          const mIdx = isNaN(mRaw) ? -1 : mRaw;
-          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, billHrs: 0, nonBillHrs: 0, total: 0, entries: [] };
+          const mb   = icMonthBucket(e.actual_date);
+          const mKey = mb.key;
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mb.label, sort: mb.sort, jobs: 0, hours: 0, billHrs: 0, nonBillHrs: 0, total: 0, entries: [] };
           const hrs = parseFloat(e.total_hours) || 0;
           byMonth[mKey].jobs++;
           byMonth[mKey].hours += hrs;
@@ -2278,7 +2699,7 @@
           byMonth[mKey].total += parseFloat(e.total) || 0;
           byMonth[mKey].entries.push(e);
         });
-        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.sort.localeCompare(b.sort));
 
         const totJobs    = divRows.length;
         const totHrs     = divRows.reduce((s, e) => s + (parseFloat(e.total_hours) || 0), 0);
@@ -2443,9 +2864,8 @@
     //  location card carries a Daily Tracking and a Crushing Tracking section,
     //  with labor from both rolled into the card's IC total. Does not touch
     //  icBillingEntries.
-    function renderQuarryCompanyInfo(body, yearFilter, locationFilter) {
-      let rows = quarryDailyRows.concat(quarryCrushingRows);
-      if (yearFilter !== 'all') rows = rows.filter(r => (r.actual_date || '').startsWith(yearFilter));
+    function renderQuarryCompanyInfo(body, locationFilter) {
+      let rows = icFilterRange(quarryDailyRows.concat(quarryCrushingRows));
       if (locationFilter !== 'all') {
         rows = rows.filter(r => (r.location_id || r.location_name) === locationFilter);
       }
@@ -2477,17 +2897,16 @@
         const fmtTons = v => { const n = parseFloat(v) || 0; return n ? (Math.round(n * 100) / 100).toLocaleString() : '—'; };
         const byMonth = {};
         locRows.forEach(r => {
-          const mRaw = parseInt((r.actual_date || '').slice(5, 7), 10) - 1;
-          const mIdx = isNaN(mRaw) ? -1 : mRaw;
-          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, labor: 0, icTotal: 0, entries: [] };
+          const mb   = icMonthBucket(r.actual_date);
+          const mKey = mb.key;
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mb.label, sort: mb.sort, jobs: 0, hours: 0, labor: 0, icTotal: 0, entries: [] };
           byMonth[mKey].jobs++;
           byMonth[mKey].hours   += parseFloat(r.total_hours) || 0;
           byMonth[mKey].labor   += parseFloat(r.labor_cost)  || 0;
           byMonth[mKey].icTotal += (parseFloat(r.total_hours) || 0) * icQuarryLaborRate;
           byMonth[mKey].entries.push(r);
         });
-        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.sort.localeCompare(b.sort));
 
         const totJobs  = locRows.length;
         const totHours = locRows.reduce((s, r) => s + (parseFloat(r.total_hours) || 0), 0);
@@ -2626,9 +3045,8 @@
     // ── Kiewit Pinetree Company Info — auto-pulled kiewit division labor,
     //    grouped by project, per-month expandable detail. IC Total is labor
     //    hours × the editable Kiewit IC labor rate (mirrors the Quarry tab). ──
-    function renderKiewitCompanyInfo(body, yearFilter, projectFilter) {
-      let rows = kiewitLaborRows;
-      if (yearFilter !== 'all') rows = rows.filter(r => (r.actual_date || '').startsWith(yearFilter));
+    function renderKiewitCompanyInfo(body, projectFilter) {
+      let rows = icFilterRange(kiewitLaborRows);
       if (projectFilter !== 'all') {
         rows = rows.filter(r => (r.project_id || r.project_name) === projectFilter);
       }
@@ -2658,17 +3076,16 @@
       function buildKiewitSection(projRows, sectionId) {
         const byMonth = {};
         projRows.forEach(r => {
-          const mRaw = parseInt((r.actual_date || '').slice(5, 7), 10) - 1;
-          const mIdx = isNaN(mRaw) ? -1 : mRaw;
-          const mKey = mIdx >= 0 ? String(mIdx) : 'unknown';
-          if (!byMonth[mKey]) byMonth[mKey] = { label: mIdx >= 0 ? MONTHS[mIdx] : '—', mIdx, jobs: 0, hours: 0, labor: 0, icTotal: 0, entries: [] };
+          const mb   = icMonthBucket(r.actual_date);
+          const mKey = mb.key;
+          if (!byMonth[mKey]) byMonth[mKey] = { label: mb.label, sort: mb.sort, jobs: 0, hours: 0, labor: 0, icTotal: 0, entries: [] };
           byMonth[mKey].jobs++;
           byMonth[mKey].hours   += parseFloat(r.total_hours) || 0;
           byMonth[mKey].labor   += parseFloat(r.labor_cost)  || 0;
           byMonth[mKey].icTotal += (parseFloat(r.total_hours) || 0) * icKiewitLaborRate;
           byMonth[mKey].entries.push(r);
         });
-        const sortedMonths = Object.values(byMonth).sort((a, b) => a.mIdx - b.mIdx);
+        const sortedMonths = Object.values(byMonth).sort((a, b) => a.sort.localeCompare(b.sort));
 
         const totJobs  = projRows.length;
         const totHours = projRows.reduce((s, r) => s + (parseFloat(r.total_hours) || 0), 0);
@@ -2893,16 +3310,7 @@
       const body = document.getElementById('analyticsBody');
       if (body) body.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching data…</div>';
       await Promise.all([loadCompanies(), loadBillingEntries(), loadRates()]);
-      const years = [...new Set(
-        icBillingEntries.map(e => (e.actual_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y))
-      )].sort().reverse();
-      const sel  = document.getElementById('anYearFilter');
-      const prev = sel ? sel.value : 'all';
-      if (sel) {
-        sel.innerHTML = '<option value="all">All Years</option>'
-          + years.map(y => `<option value="${y}">${y}</option>`).join('');
-        if (years.includes(prev)) sel.value = prev;
-      }
+      icSyncRangeUI();
       renderAnalytics();
     }
 
@@ -2916,27 +3324,16 @@
       const el = document.getElementById('analyticsBody');
       if (!el) return;
 
-      const yearFilter = document.getElementById('anYearFilter')?.value || 'all';
       const numFmt = n => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
       const round1 = n => n.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
       const delta$ = (d) => (d >= 0 ? '+' : '') + fmt$(d);
 
-      let entries = icBillingEntries;
-      if (yearFilter !== 'all') entries = entries.filter(e => (e.actual_date || '').startsWith(yearFilter));
+      let entries = icFilterRange(icBillingEntries);
       if (anDivFilter === 'dust') entries = entries.filter(_isDustSrc);
       else if (anDivFilter !== 'all') entries = entries.filter(e => (e.source || 'trucking') === anDivFilter);
 
       const truckEntries = entries.filter(e => (e.source || 'trucking') === 'trucking');
       const dustEntries  = entries.filter(_isDustSrc);
-
-      function icAmt(e) {
-        // Other-billing rows already store the full per-row total at time of send.
-        if (DUST_FLAT_TOTAL_SOURCES.includes(e.source)) return parseFloat(e.total) || 0;
-        if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
-        // Dust tracking: use stored per-vehicle totals (actual rates) + current UB rate.
-        return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
-             + (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name);
-      }
 
       const totalIc  = entries.reduce((s, e) => s + icAmt(e), 0);
       const totalRev = entries.reduce((s, e) => s + (parseFloat(e.total) || 0), 0);
@@ -2947,7 +3344,7 @@
       if (cnt) cnt.textContent = entries.length + ' entr' + (entries.length !== 1 ? 'ies' : 'y');
 
       if (!entries.length) {
-        el.innerHTML = '<div class="ci-empty"><strong>No Data</strong>No billing entries match the current filters.</div>';
+        el.innerHTML = '<div class="ci-empty"><strong>No Data</strong>No billing entries fall in ' + escT(icRangeLabel()) + ' for the selected division.</div>';
         return;
       }
 
@@ -3167,7 +3564,7 @@
 
           <div class="an-widgets">
             <div class="an-widget">
-              <div class="an-section-lbl">IC Revenue by Year</div>
+              <div class="an-section-lbl">IC Revenue by Year <span style="font-weight:400;font-size:0.58rem;text-transform:none;letter-spacing:0">(all time — ignores the date range)</span></div>
               <div class="icd-legend" style="margin-bottom:0.65rem">
                 <div class="icd-legend-item"><div class="icd-legend-dot" style="background:#ef4444"></div>Trucking</div>
                 <div class="icd-legend-item"><div class="icd-legend-dot" style="background:#fbbf24"></div>Dust Control</div>
@@ -3223,6 +3620,7 @@
       const body = document.getElementById('dashBody');
       if (body) body.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching data…</div>';
       await Promise.all([loadCompanies(), loadBillingEntries(), loadRates()]);
+      icSyncRangeUI();
       renderDashboard();
     }
 
@@ -3230,20 +3628,12 @@
       const el = document.getElementById('dashBody');
       if (!el) return;
 
-      const thisYr    = new Date().getFullYear();
-      const thisYrStr = String(thisYr);
-      const numFmt    = n => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+      const rangeLbl = icRangeLabel();
+      const numFmt   = n => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
-      const yrEntries    = icBillingEntries.filter(e => parseInt((e.actual_date || '').slice(0, 4), 10) === thisYr);
+      const yrEntries    = icFilterRange(icBillingEntries);
       const truckEntries = yrEntries.filter(e => (e.source || 'trucking') === 'trucking');
       const dustEntries  = yrEntries.filter(_isDustSrc);
-
-      function icAmt(e) {
-        if (DUST_FLAT_TOTAL_SOURCES.includes(e.source)) return parseFloat(e.total) || 0;
-        if ((e.source || 'trucking') === 'trucking') return (parseFloat(e.total_hours) || 0) * icTruckRate;
-        return (parseFloat(e.v1_total) || 0) + (parseFloat(e.v2_total) || 0)
-             + (parseFloat(e.gallons_ub) || 0) * dustUbRateFor(e.company_name);
-      }
 
       const truckIcYTD  = truckEntries.reduce((s, e) => s + icAmt(e), 0);
       const dustIcYTD   = dustEntries.reduce((s, e)  => s + icAmt(e), 0);
@@ -3259,15 +3649,10 @@
       const pendingPay = yrEntries.filter(e => e.invoice_sent_date && !e.payment_received_date);
       const outstandingIc = [...noInvoice, ...pendingPay].reduce((s, e) => s + icAmt(e), 0);
 
-      // Monthly IC breakdown — both dust tracking and dust-other-billing
-      // contribute to the dust band.
-      const monthData = Array.from({length: 12}, (_, i) => ({ label: MONTHS[i], truck: 0, dust: 0 }));
-      yrEntries.forEach(e => {
-        const m = parseInt((e.actual_date || '').slice(5, 7), 10) - 1;
-        if (m < 0 || m > 11) return;
-        if (_isDustSrc(e)) monthData[m].dust += icAmt(e);
-        else if ((e.source || 'trucking') === 'trucking') monthData[m].truck += icAmt(e);
-      });
+      // IC breakdown over the range — both dust tracking and dust-other-billing
+      // contribute to the dust band. One column per month while the range is
+      // short enough to read; past two years the columns become years.
+      const monthData = icDashBuckets(yrEntries);
       const maxMonthV = Math.max(...monthData.map(m => m.truck + m.dust), 1);
 
       // Top companies by IC
@@ -3296,16 +3681,23 @@
           + '</div>';
       }
 
-      const monthBarsHtml = monthData.map(m => {
-        const tot  = m.truck + m.dust;
-        const tPct = tot ? Math.max(3, (m.truck / maxMonthV) * 100) : 0;
-        const dPct = tot ? Math.max(3, (m.dust  / maxMonthV) * 100) : 0;
-        let bars = '';
-        if (m.dust  > 0) bars += '<div class="icd-bar-dust"  style="height:' + dPct.toFixed(1) + '%" title="' + m.label + ' Dust: '  + fmt$(m.dust)  + '"></div>';
-        if (m.truck > 0) bars += '<div class="icd-bar-truck" style="height:' + tPct.toFixed(1) + '%" title="' + m.label + ' Truck: ' + fmt$(m.truck) + '"></div>';
-        if (!tot) bars = '<div class="icd-bar-empty"></div>';
-        return '<div class="icd-month-col"><div class="icd-month-track">' + bars + '</div><div class="icd-month-lbl">' + m.label[0] + '</div></div>';
-      }).join('');
+      const monthBarsHtml = monthData.length
+        ? monthData.map(m => {
+            const tot  = m.truck + m.dust;
+            const tPct = tot ? Math.max(3, (m.truck / maxMonthV) * 100) : 0;
+            const dPct = tot ? Math.max(3, (m.dust  / maxMonthV) * 100) : 0;
+            let bars = '';
+            if (m.dust  > 0) bars += '<div class="icd-bar-dust"  style="height:' + dPct.toFixed(1) + '%"></div>';
+            if (m.truck > 0) bars += '<div class="icd-bar-truck" style="height:' + tPct.toFixed(1) + '%"></div>';
+            if (!tot) bars = '<div class="icd-bar-empty"></div>';
+            const tip = m.label + ' — Truck ' + fmt$(m.truck) + ', Dust ' + fmt$(m.dust)
+                      + ', Total ' + fmt$(tot) + (tot ? ' (click to zoom in)' : '');
+            return '<button class="icd-month-col" title="' + esc(tip) + '"'
+              + ' onclick="icZoomRange(\'' + m.start + '\',\'' + m.end + '\')">'
+              + '<div class="icd-month-track">' + bars + '</div>'
+              + '<div class="icd-month-lbl">' + escT(m.short) + '</div></button>';
+          }).join('')
+        : '<div class="icd-empty-sm">Nothing to chart in this range.</div>';
 
       const topCosHtml = topCos.length
         ? topCos.map(([name, ic]) =>
@@ -3317,7 +3709,7 @@
             + '<div class="icd-co-track"><div class="icd-co-fill" style="width:' + ((ic / maxCoVal) * 100).toFixed(1) + '%"></div></div>'
             + '</div>'
           ).join('')
-        : '<div class="icd-empty-sm">No entries yet for ' + thisYrStr + '.</div>';
+        : '<div class="icd-empty-sm">No entries in ' + escT(rangeLbl) + '.</div>';
 
       const pendingRowsHtml = [...noInvoice, ...pendingPay]
         .sort((a, b) => (a.actual_date || '').localeCompare(b.actual_date || ''))
@@ -3364,7 +3756,7 @@
             + '<th class="r">IC Total</th><th>Invoice Sent</th><th>Payment Received</th></tr></thead>'
             + '<tbody>' + pendingRowsHtml + '</tbody></table></div></div>'
         : '<div class="icd-all-clear"><strong>✓ All Clear</strong>'
-            + '<span style="color:var(--muted)">— all ' + thisYrStr + ' entries have invoice &amp; payment dates recorded.</span></div>';
+            + '<span style="color:var(--muted)">— every entry in ' + escT(rangeLbl) + ' has invoice &amp; payment dates recorded.</span></div>';
 
       const recentHtml = recent.length
         ? recent.map(r => {
@@ -3378,7 +3770,7 @@
               + '<span class="icd-feed-ic">' + fmt$(icAmt(r)) + '</span>'
               + '</div>';
           }).join('')
-        : '<div class="icd-empty-sm">No entries yet for ' + thisYrStr + '.</div>';
+        : '<div class="icd-empty-sm">No entries in ' + escT(rangeLbl) + '.</div>';
 
       el.innerHTML = `
         <div class="icd-wrap">
@@ -3387,21 +3779,21 @@
               <div class="icd-eyebrow">Intercompany Division</div>
               <div class="icd-title">Home Dashboard</div>
             </div>
-            <div class="icd-year">${thisYrStr}</div>
+            <div class="icd-year">${escT(rangeLbl)}</div>
           </div>
 
           <div class="icd-kpi-strip">
-            ${kpiCard('Total IC Revenue — YTD', fmt$(totalIcYTD),  'c-purple', numFmt(yrEntries.length) + ' total entr' + (yrEntries.length !== 1 ? 'ies' : 'y'))}
-            ${kpiCard('Trucking IC — YTD',      fmt$(truckIcYTD), 'c-red',    numFmt(truckEntries.length) + ' entr' + (truckEntries.length !== 1 ? 'ies' : 'y'))}
-            ${kpiCard('Dust Control IC — YTD',  fmt$(dustIcYTD),  'c-amber',  numFmt(dustEntries.length) + ' entr' + (dustEntries.length !== 1 ? 'ies' : 'y'))}
-            ${kpiCard('Total Hours — YTD',      numFmt(Math.round(totalHrsYTD)) + ' hrs', 'c-blue', 'across all divisions')}
-            ${kpiCard('Customer Revenue — YTD', fmt$(totalRevYTD), 'c-green', 'billed at customer rates')}
-            ${kpiCard('Outstanding IC',         fmt$(outstandingIc), 'c-orange', numFmt(noInvoice.length + pendingPay.length) + ' action required')}
+            ${kpiCard('Total IC Revenue', fmt$(totalIcYTD),  'c-purple', numFmt(yrEntries.length) + ' total entr' + (yrEntries.length !== 1 ? 'ies' : 'y'))}
+            ${kpiCard('Trucking IC',      fmt$(truckIcYTD), 'c-red',    numFmt(truckEntries.length) + ' entr' + (truckEntries.length !== 1 ? 'ies' : 'y'))}
+            ${kpiCard('Dust Control IC',  fmt$(dustIcYTD),  'c-amber',  numFmt(dustEntries.length) + ' entr' + (dustEntries.length !== 1 ? 'ies' : 'y'))}
+            ${kpiCard('Total Hours',      numFmt(Math.round(totalHrsYTD)) + ' hrs', 'c-blue', 'across all divisions')}
+            ${kpiCard('Customer Revenue', fmt$(totalRevYTD), 'c-green', 'billed at customer rates')}
+            ${kpiCard('Outstanding IC',   fmt$(outstandingIc), 'c-orange', numFmt(noInvoice.length + pendingPay.length) + ' action required')}
           </div>
 
           <div class="icd-widgets">
             <div class="icd-widget">
-              <div class="icd-section-lbl">Monthly IC Revenue — ${thisYrStr}</div>
+              <div class="icd-section-lbl">IC Revenue — ${escT(rangeLbl)}</div>
               <div class="icd-legend">
                 <div class="icd-legend-item"><div class="icd-legend-dot" style="background:#ef4444"></div>Trucking</div>
                 <div class="icd-legend-item"><div class="icd-legend-dot" style="background:#fbbf24"></div>Dust Control</div>
@@ -3409,7 +3801,7 @@
               <div class="icd-month-bars">${monthBarsHtml}</div>
             </div>
             <div class="icd-widget">
-              <div class="icd-section-lbl">Top Companies — IC YTD</div>
+              <div class="icd-section-lbl">Top Companies — IC</div>
               ${topCosHtml}
             </div>
           </div>
@@ -3435,7 +3827,7 @@
             </div>
           </div>
 
-          <div class="icd-section-lbl" style="margin-bottom:0.6rem">Pending Invoices &amp; Payments — ${thisYrStr}</div>
+          <div class="icd-section-lbl" style="margin-bottom:0.6rem">Pending Invoices &amp; Payments — ${escT(rangeLbl)}</div>
           ${pendingCardHtml}
 
           <div class="icd-widget">
@@ -3446,14 +3838,58 @@
     }
 
     // ── Reports Tab ─────────────────────────────────────────────
+    // True once a Job Summary report is on screen, so a preset click can
+    // refresh it instead of leaving stale figures under a new date range.
+    let _jsHasRun = false;
+
     function initReportsTab() {
       const startEl = document.getElementById('jsStartDate');
       const endEl   = document.getElementById('jsEndDate');
       if (!startEl.value) {
-        const now  = new Date();
-        startEl.value = now.getFullYear() + '-01-01';
-        endEl.value   = now.toISOString().slice(0, 10);
+        // Open on whatever range the other tabs are showing. An open range has
+        // no endpoints to copy and the report needs two, so it falls back to
+        // the data's own extent, then to year-to-date.
+        const b = icRangeBounds();
+        const ext = jsDataExtent();
+        const now = new Date();
+        startEl.value = b.start || ext.start || (now.getFullYear() + '-01-01');
+        endEl.value   = b.end   || ext.end   || _icISO(now);
       }
+      jsRenderPresets();
+    }
+
+    // Earliest and latest dated row the page holds — the concrete window an
+    // "All Time" pick has to turn into, since the report needs both endpoints.
+    function jsDataExtent() {
+      const keys = icAllDatedRows().map(r => String(r.actual_date).slice(0, 10)).sort();
+      return keys.length ? { start: keys[0], end: keys[keys.length - 1] } : { start: '', end: '' };
+    }
+
+    function jsSetPreset(preset) {
+      const b = preset === 'all' ? jsDataExtent() : icPresetBounds(preset);
+      if (!b || !b.start || !b.end) return;
+      document.getElementById('jsStartDate').value = b.start;
+      document.getElementById('jsEndDate').value   = b.end;
+      jsRenderPresets();
+      // Re-run only once a report is on screen, so a first visit still waits
+      // for an explicit Run rather than firing on the first chip touched.
+      if (_jsHasRun) runJobSummaryReport();
+    }
+
+    function jsRenderPresets() {
+      const el = document.getElementById('jsPresets');
+      if (!el) return;
+      const cur = {
+        start: document.getElementById('jsStartDate').value || '',
+        end:   document.getElementById('jsEndDate').value   || '',
+      };
+      const ext = jsDataExtent();
+      el.innerHTML = IC_RANGE_PRESETS.map(p => {
+        const b  = p.key === 'all' ? ext : icPresetBounds(p.key);
+        const on = !!(b && b.start && b.start === cur.start && b.end === cur.end);
+        return '<button class="ic-range-chip' + (on ? ' on' : '') + '"'
+          + ' onclick="jsSetPreset(\'' + p.key + '\')">' + p.label + '</button>';
+      }).join('');
     }
 
     function downloadJobSummaryPdf() {
@@ -3746,6 +4182,7 @@
         return;
       }
 
+      _jsHasRun = true;
       const btn    = document.querySelector('.btn-run-report');
       const pdfBtnL = document.getElementById('jsPdfBtn');
       if (btn)     btn.disabled = true;
@@ -4216,6 +4653,7 @@
     });
 
     // Initial dashboard load (default active tab)
+    icSyncRangeUI();
     loadAndRenderDashboard();
 
     /* ═══════════════════════════════════════════
@@ -4250,6 +4688,7 @@
           // wiping intercompany billing edits in progress.
           if (_isEditing()) return;
           icBillingEntries = incoming;
+          icSyncRangeUI();
           if (_activeTabId() === 'dashboard')    renderDashboard();
           if (_activeTabId() === 'company-info') renderCompanyInfo();
           if (_activeTabId() === 'analytics')    renderAnalytics();
