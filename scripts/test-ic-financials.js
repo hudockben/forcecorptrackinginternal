@@ -296,6 +296,14 @@ assert('  and a figure that does not apply is blank, not zero',
   /const n = v => \(v === null \|\| v === undefined\) \? '' :/.test(ic));
 assert('print exists and hides the chrome',
   /function printIcFinancials/.test(ic) && /@media print[\s\S]{0,240}rpt-toolbar[^}]*display: none/.test(ic));
+// printIcFinancials() is a plain window.print(), so the print stylesheet alone
+// decides which report reaches the paper. It used to un-hide the Job Summary
+// panel by ID, which printed that report whichever sub-tab was on screen —
+// the Financials button produced the wrong report entirely.
+assert('  and prints the open sub-tab, not a hardcoded one',
+  /\.rpt-sub-panel\.active \{ display: block !important/.test(ic)
+  && !/#rpt-job-summary \{ display: block !important/.test(ic),
+  'the print rules name a panel by ID instead of following .active');
 
 console.log('\n[it is styled for the dark page it sits on]');
 // The page is dark (--bg #0a0a0f, --text #e0e0e0). Hardcoded light colours

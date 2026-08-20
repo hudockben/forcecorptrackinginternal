@@ -808,7 +808,10 @@
       .tab-panel { display: none !important; }
       #tab-reports { display: block !important; background: #fff !important; }
       .rpt-sub-panel { display: none !important; }
-      #rpt-job-summary { display: block !important; background: #fff !important; }
+      /* Print whichever report sub-tab is open. Naming the Job Summary panel by
+         ID here printed it even when Financials was the tab on screen, so the
+         Financials Print / PDF button produced the wrong report entirely. */
+      .rpt-sub-panel.active { display: block !important; background: #fff !important; }
 
       .rpt-body { padding: 0; background: #fff !important; }
 
