@@ -374,16 +374,13 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
   // drifted apart, so the two sums are held to one expression by construction.
   const groupsByProject = new Map();
   if (ids.length) {
+    // Two CTEs rather than one nested SELECT, so the scoping predicates keep
+    // their place as the first three bind parameters. Anything that reads this
+    // query positionally — scripts/test-executive-report.js dispatches its fake
+    // rows off values[1]/values[2] — breaks silently if company/division/ids
+    // stop coming first, and a windowing change has no business moving them.
     const rows = await sql`
-      SELECT
-        project_id,
-        cost_code,
-        sub_code,
-        SUM(row_cost)::float                              AS actual,
-        COALESCE(SUM(row_cost) FILTER (WHERE in_range), 0)::float AS range_actual,
-        COUNT(*) FILTER (WHERE in_range)::int             AS range_rows,
-        SUM(qty)::float                                   AS rqty
-      FROM (
+      WITH src AS (
         SELECT
           project_id,
           cost_code,
@@ -395,13 +392,26 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
             + COALESCE(material_cost, 0)
           )                      AS row_cost,
           COALESCE(quantity, 0)  AS qty,
-          (${rStart}::date IS NULL OR date >= ${rStart}::date)
-            AND (${rEnd}::date IS NULL OR date <= ${rEnd}::date) AS in_range
+          date
         FROM daily_tracking
         WHERE company_code = ${companyCode}
           AND division     = ${division}
           AND project_id   = ANY(${ids})
-      ) t
+      ), flagged AS (
+        SELECT src.*,
+               (${rStart}::date IS NULL OR date >= ${rStart}::date)
+           AND (${rEnd}::date   IS NULL OR date <= ${rEnd}::date) AS in_range
+        FROM src
+      )
+      SELECT
+        project_id,
+        cost_code,
+        sub_code,
+        SUM(row_cost)::float                                        AS actual,
+        COALESCE(SUM(row_cost) FILTER (WHERE in_range), 0)::float    AS range_actual,
+        (COUNT(*) FILTER (WHERE in_range))::int                      AS range_rows,
+        SUM(qty)::float                                              AS rqty
+      FROM flagged
       GROUP BY project_id, cost_code, sub_code
     `;
     for (const r of rows) {
