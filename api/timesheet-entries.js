@@ -166,6 +166,12 @@ const {
   obRowIndexFromId,
   deleteObRows,
 } = require('./lib/dust-ob-injected');
+// The tag EES Other rows carry in the shared Intercompany list. Named off the
+// shared enum rather than spelled out at each use: the string appeared inline
+// in three places, and a fourth destination billing under a typo of it would
+// mirror into Intercompany as a division nothing rolls up.
+const { IC_SOURCES } = require('./lib/ic-sources');
+const IC_SOURCE_EES_OTHER = IC_SOURCES.DUST_EES_OTHER;
 
 const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
 const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holiday'];
@@ -211,6 +217,55 @@ function quarryRowIdPrefix(entryId) { return `tsq-${entryId}-`; }
 // as quarry and trucking, so unapprove/delete can find them again.
 const DUST_EES_OTHER_BLOB = 'dust_ees_other_rows';
 function eesOtherRowIdPrefix(entryId) { return `tse-${entryId}-`; }
+
+/**
+ * The id for leg `index` (1-based) of an entry's EES Other rows.
+ *
+ * Two different kinds of row share this prefix, and they cannot collide because
+ * they cannot come from the same entry: an entry on a standing EES activity
+ * posts exactly one row for the day, while a dust CUSTOMER haul posts one per
+ * leg billed off "Other Billing - Non Billable". Leg 1 keeps the historic "row"
+ * suffix either way, so every row posted before a customer haul could land here
+ * keeps the id its Intercompany history is filed under. Same scheme, and the
+ * same reason, as dustRowId.
+ */
+function eesOtherRowId(entryId, index = 1) {
+  const n = Number(index) || 1;
+  return n <= 1 ? `${eesOtherRowIdPrefix(entryId)}row` : `${eesOtherRowIdPrefix(entryId)}${n}`;
+}
+
+// The 1-based leg an EES Other id names, or null when the id names no leg this
+// file could have minted. Bounded rather than clamped, for the reason
+// dustRowIndexFromId gives: what this returns is handed to the approve modal,
+// and anything the modal shows, it saves.
+function eesOtherRowIndexFromId(rowId) {
+  const m = /^tse-\d+-(row|[1-9]\d*)$/.exec(String(rowId || ''));
+  if (!m) return null;
+  if (m[1] === 'row') return 1;
+  const n = Number(m[1]);
+  return (Number.isInteger(n) && n >= 2 && n <= MAX_DUST_ROWS) ? n : null;
+}
+
+/**
+ * True when this entry could have rows in the EES Other tab.
+ *
+ * Two different things put them there and the teardown paths must find both:
+ * the single row an entry on a standing EES ACTIVITY posts, and the per-leg
+ * rows a dust CUSTOMER haul posts for every haul billed off "Other Billing -
+ * Non Billable". Un-approve, delete and the edit guard used to ask isEesJob,
+ * which is only the first of those — so a customer haul's rows would have
+ * outlived the entry that made them, in a tab that creates and deletes nothing
+ * and could never have removed them.
+ *
+ * Deliberately wider than either gate: any dust entry at all. Every removal
+ * behind it is keyed on the "tse-<entryId>-" prefix, so asking on an entry that
+ * has none costs one blob read and finds nothing — and the alternative, a
+ * predicate that has to stay in step with two injection gates at once, is
+ * exactly the drift that stranded rows before.
+ */
+function couldHaveEesOtherRows(entry) {
+  return !!entry && entry.division === 'dust';
+}
 
 // The two standing EES activities are encoded by api/timesheet-jobs.js and named
 // in lib/truck-injected.js (isEesJob, imported above) — the dust EES gate and the
@@ -1627,11 +1682,176 @@ async function insertEesOtherRow(sql, companyCode, entry) {
   // as "Removed in IC" rather than hiding — whereas throwing would roll back
   // an otherwise-good approval over a secondary concern.
   try {
-    await clearIcSuppression(sql, companyCode, 'dust-ees-other', row.id);
+    await clearIcSuppression(sql, companyCode, IC_SOURCE_EES_OTHER, row.id);
   } catch (err) {
     console.error('[timesheet-entries] clearing IC suppression failed:', err.message);
   }
   return row;
+}
+
+/**
+ * Build one EES Other row for a leg of a dust CUSTOMER haul — the third thing a
+ * haul can bill off, which is nothing at all.
+ *
+ * Not every haul is invoiced. A driver sent to a customer's pad to move a tank,
+ * wait on a frac, or clean up after somebody else did the work is real hours
+ * against a real customer that the dust office tracks and bills to nobody, and
+ * the EES Other tab is where it has always kept that. Until now it could only
+ * get there from one of the two standing EES activities — so a non-billable
+ * customer haul had nowhere to go, and was either invoiced by accident off one
+ * of the two billing grids or left off the books entirely.
+ *
+ * The row shape is the tab's, filled from the leg rather than from the entry's
+ * ees_* fields (a customer job has none — normalizeEntryBody forces them null):
+ *
+ *   date / driver / comments   the day, off the timesheet
+ *   start, end, hours          the LEG's own window
+ *   customer, location, unit   the leg's, from the approve modal
+ *   name, job number           blank — nothing on a customer haul names them
+ *   billing                    always Non-Billable; that IS this destination
+ *   rate                       the tab's own column, and moot while Non-Billable
+ *
+ * Hours come from the leg's window, like every other per-leg dust row, rather
+ * than from the entry's lunch-deducted computed_hours the way the EES-activity
+ * row does. A split day's legs have to sum to the day they came out of, and the
+ * window is the only figure that can do that per haul.
+ */
+function buildEesHaulRow(entry, fields, index, driver) {
+  const hhmm  = v => String(v || '').slice(0, 5);
+  const start = fields.start_time !== undefined ? hhmm(fields.start_time) : hhmm(entry.start_time);
+  const end   = fields.end_time   !== undefined ? hhmm(fields.end_time)   : hhmm(entry.end_time);
+  return {
+    id:           eesOtherRowId(entry.id, index),
+    actual_date:  safeDate(entry.work_date) || '',
+    actual_start: start,
+    actual_end:   end,
+    actual_hours: legHours(start, end),
+    driver,
+    // The unit the haul ran, same fallback the dust grid's Vehicle 1 uses: the
+    // leg's answer, or the one the driver put on the timesheet.
+    unit:       safeStr(fields.vehicle1, 200) || safeStr(entry.truck_unit, 100) || '',
+    customer:   safeStr(fields.company, 500)
+                  || safeStr(entry.job_label, 500) || safeStr(entry.job_id, 500) || '',
+    location:   safeStr(fields.location, 500) || '',
+    // Left blank rather than guessed. Both are read-only in the tab, so an
+    // invented value could never be corrected there — and neither a customer
+    // haul nor its timesheet names a crew or a job number.
+    name:       '',
+    job_number: '',
+    // The whole point of this destination, and rewritten on every re-injection
+    // rather than carried: pointing a haul here IS saying it bills nobody, so
+    // the answer cannot be edited out from under that.
+    billing:    'Non-Billable',
+    // Neither of the two standing EES activities. Left blank so the tab's
+    // "From an approved timesheet entry" tooltip does not name one this haul
+    // was not.
+    activity:   '',
+    rate:       '',
+    comments:   entry.notes || '',
+  };
+}
+
+/**
+ * Write every leg of an approved customer haul that is headed for EES Other,
+ * and take back the legs it no longer has. Returns the rows written, in leg
+ * order.
+ *
+ * Takes the WHOLE day's legs, like insertDustTrackingRows and insertObRows, and
+ * writes only the ones this grid claims — the index is the leg's place in the
+ * day, so the three halves can be written independently and still describe one
+ * split.
+ *
+ * The pruning matters as much as the writing: a haul re-pointed off this grid,
+ * or a day corrected from three hauls to two, would otherwise leave a row here
+ * describing work the timesheet no longer has. Nothing else would ever remove
+ * it — the tab creates and deletes nothing, by design.
+ *
+ * Distinct from insertEesOtherRow, which posts the single row an entry on a
+ * standing EES ACTIVITY gets. The two never run for the same entry: that gate
+ * is isEesJob, this one is a customer haul, and they are disjoint by
+ * construction. Sharing the "tse-" prefix is what lets un-approve, delete and
+ * the edit guard keep asking one question about both.
+ */
+async function insertEesOtherRows(sql, companyCode, entry, legs, flags = {}) {
+  const list = (Array.isArray(legs) && legs.length) ? legs : [{}];
+  const mine = [];
+  for (let i = 0; i < list.length; i++) {
+    if (legDest(list[i] || {}) === 'ees') mine.push({ index: i + 1, fields: list[i] || {} });
+  }
+
+  const prefix = eesOtherRowIdPrefix(entry.id);
+  const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
+  const arr    = await readBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB);
+  const prior  = new Map(arr.filter(isMine).map(r => [String(r.id), r]));
+
+  // Nothing here now and nothing here before: every haul of an ordinary billed
+  // day, which is the common case. It must not rewrite the blob — that would
+  // race the dust tab's own save for no reason at all. Same guard, same reason,
+  // as insertObRows.
+  if (!mine.length && !prior.size) return [];
+
+  const rows = [];
+  if (mine.length) {
+    // The dust office's own roster, so the Driver column reads as a driver the
+    // tab recognises rather than a login. Same call insertObRows makes.
+    const driver = await matchDustEmployee(sql, companyCode, entry.username);
+    for (const { index, fields } of mine) {
+      const row  = buildEesHaulRow(entry, fields, index, driver);
+      // Carry over the one column the dust office owns — but only while the
+      // slot still holds the same haul. A leg id is positional, so removing the
+      // first haul of a two-haul day rewrites the second under the first one's
+      // id, and carrying on id alone would move one customer's rate onto
+      // another's row. Same rule, same reason, as the other two grids.
+      const prev = prior.get(row.id);
+      const same = prev
+        && String(prev.customer || '').trim().toLowerCase() === String(row.customer || '').trim().toLowerCase();
+      if (prev && same) {
+        for (const f of EES_OTHER_TAB_FIELDS) {
+          if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
+        }
+      }
+      rows.push(row);
+    }
+  }
+
+  // One pass: everything that is not ours stays exactly where it was, and ours
+  // are appended in leg order.
+  const keep = new Set(rows.map(r => r.id));
+  const next = arr.filter(r => !isMine(r)).concat(rows);
+  await writeBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB, next);
+
+  // Rows this entry used to have and no longer does — a leg removed, or one
+  // re-pointed at a grid that does bill. The blob write above has dropped them;
+  // this pulls any Intercompany billing entry that outlived them.
+  //
+  // Not a formality even though these rows are always Non-Billable: the dust
+  // tab's reconciler gates on HOURS rather than money (see _reconcileEesBilling
+  // in dust.html), so a non-billable haul does reach Intercompany — at $0, so
+  // the work is visible over there rather than missing. An entry left behind
+  // would go on reporting hours the timesheet no longer describes.
+  const dropped = [...prior.keys()].filter(id => !keep.has(id));
+  if (dropped.length) {
+    try {
+      await removeIcBillingEntries(sql, companyCode, IC_SOURCE_EES_OTHER, dropped);
+    } catch (err) {
+      console.error('[timesheet-entries] removing EES IC billing entries failed:', err.message);
+    }
+  }
+
+  // Approving is a deliberate statement that this work counts, so it undoes an
+  // Intercompany removal recorded against the row rather than being silently
+  // overruled by it — the same rule the other two grids follow, and reachable
+  // for the same reason: the id is stable across re-approval.
+  if (flags.clearSuppression) {
+    for (const row of rows) {
+      try {
+        await clearIcSuppression(sql, companyCode, IC_SOURCE_EES_OTHER, row.id);
+      } catch (err) {
+        console.error('[timesheet-entries] clearing EES IC suppression failed:', err.message);
+      }
+    }
+  }
+  return rows;
 }
 
 // Removals recorded by an intercompany user (see _suppressIcEntry in
@@ -1841,10 +2061,11 @@ function validateDustLeg(raw) {
   // leg that names nobody must not post a row with no company on it.
   if (has('company'))     fields.company     = safeStr(t.company, 200)     || '';
 
-  // Which of the dust office's two billing tabs this haul posts into. The same
-  // driver, truck and clock window is UB on a well pad or a delivery of
-  // material, and the office invoices those off different grids on different
-  // bases — so the destination belongs to the HAUL, not to the entry.
+  // Which of the dust office's three grids this haul posts into. The same
+  // driver, truck and clock window is UB on a well pad, a delivery of material,
+  // or work that is tracked and billed to nobody — and the office records those
+  // on different grids on different bases — so the destination belongs to the
+  // HAUL, not to the entry.
   //
   // Absent means 'dust', which is what every client that predates the toggle
   // sends and what bulk approve sends. Anything else is refused rather than
@@ -1852,8 +2073,8 @@ function validateDustLeg(raw) {
   // the one mistake this field can make, and it is invisible afterwards.
   if (has('dest')) {
     const d = safeStr(t.dest, 20) || '';
-    if (d && d !== 'dust' && d !== 'ob') {
-      return { error: `dest must be "dust" or "ob" (got "${d}")` };
+    if (d && !LEG_DESTS.includes(d)) {
+      return { error: `dest must be one of ${LEG_DESTS.map(x => `"${x}"`).join(', ')} (got "${d}")` };
     }
     fields.dest = d || 'dust';
   }
@@ -2318,11 +2539,16 @@ async function insertDustTrackingRows(sql, companyCode, entry, legs, flags = {})
     // for, and the index IS the leg's position in the DAY. Both halves number
     // from it, so a haul re-pointed from one tab to the other keeps its place
     // rather than renumbering everything after it. A leg headed for Other
-    // Billing is skipped here and written by insertObRows; the prune below then
-    // takes back the tracking row it used to have, along with that row's
-    // Intercompany billing entry — otherwise flipping a haul to material would
-    // leave the UB invoice line standing beside the new one.
-    if (legDest(leg) === 'ob') continue;
+    // Billing or EES Other is skipped here and written by that grid's own
+    // injector; the prune below then takes back the tracking row it used to
+    // have, along with that row's Intercompany billing entry — otherwise
+    // flipping a haul to material would leave the UB invoice line standing
+    // beside the new one.
+    //
+    // Tested POSITIVELY. Skipping only `=== 'ob'` meant this grid claimed every
+    // destination that did not exist yet, so adding EES Other would have posted
+    // a UB row beside every EES row.
+    if (legDest(leg) !== 'dust') continue;
     rows.push(await insertDustTrackingLeg(sql, companyCode, entry, leg, flags, i + 1, optsCache));
   }
   const keep = new Set(rows.map(r => r.id));
@@ -2355,11 +2581,24 @@ async function insertDustTrackingRow(sql, companyCode, entry, fields = {}, flags
 // hours times a trucking rate. See api/lib/dust-ob-injected.js for why the
 // choice belongs to the haul rather than to the entry.
 
-// Where one leg posts its dust-side billing row. Absent means the tracking tab
-// — that is what every client predating the toggle sends, and what bulk approve
-// sends, and it is the behaviour those callers already had.
+// The three grids a dust haul can post its billing row into:
+//
+//   'dust'  Dust Control Tracking — UB on a pad, vehicle rates times hours
+//   'ob'    Other Billing         — material delivered, qty times price
+//   'ees'   EES Other             — the same work, not billed to anybody
+//
+// Anything else — including absent — means the tracking tab. That is what every
+// client predating the toggle sends, and what bulk approve sends, and it is the
+// behaviour those callers already had.
+//
+// Read POSITIVELY by every writer (`=== 'dust'`, `=== 'ob'`, `=== 'ees'`), never
+// by excluding the other one: a writer that skipped `=== 'ob'` and wrote
+// everything else claimed each new destination as it was added, so the day would
+// post an EES row AND the UB row it was moved off.
+const LEG_DESTS = ['dust', 'ob', 'ees'];
 function legDest(leg) {
-  return (leg && leg.dest === 'ob') ? 'ob' : 'dust';
+  const d = leg && leg.dest;
+  return LEG_DESTS.includes(d) ? d : 'dust';
 }
 
 // A leg's own hours, from its own clock window. Other Billing STORES trucking
@@ -2673,6 +2912,46 @@ async function obSplitForEntry(sql, companyCode, entry) {
       mu:             r.mu             || '',
       price_per_unit: n(r.price_per_unit),
       trucking_rate:  n(r.trucking_rate),
+    }));
+  return { rows };
+}
+
+/**
+ * Every injected EES Other row for a CUSTOMER haul, tagged with the leg of the
+ * day it describes, so the payroll modal can put a non-billable haul back on
+ * screen as the haul it was.
+ *
+ * The third answer to the same question dustSplitForEntry and obSplitForEntry
+ * answer, and reassembled by `leg` for the same reason: a day whose middle haul
+ * billed nobody answers with legs 1 and 3 from the grids that do bill and leg 2
+ * from here, and the modal slots each into its own place. Without it the modal
+ * would pack them tight and re-save the day with its hauls in the wrong order.
+ *
+ * Only ever called for an entry that is a dust customer haul, so every "tse-"
+ * row it can see is one of these — an entry on a standing EES activity is a
+ * different gate and never reaches the modal this feeds.
+ */
+async function eesSplitForEntry(sql, companyCode, entry) {
+  const prefix = eesOtherRowIdPrefix(entry.id);
+  const arr    = await readBlobArray(sql, companyCode, DUST_EES_OTHER_BLOB);
+  const hhmm   = v => String(v || '').slice(0, 5);
+  const rows = arr
+    .filter(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix))
+    .map(r => ({ r, leg: eesOtherRowIndexFromId(r.id) }))
+    // An id carrying our prefix but naming no leg is not a haul this day has —
+    // same rule as the other two grids, and the same reason: the modal saves
+    // whatever it is shown.
+    .filter(x => x.leg != null)
+    .sort((a, b) => a.leg - b.leg)
+    .map(({ r, leg }) => ({
+      leg,
+      id:         r.id,
+      dest:       'ees',
+      company:    r.customer || '',
+      location:   r.location || '',
+      start_time: hhmm(r.actual_start),
+      end_time:   hhmm(r.actual_end),
+      vehicle1:   r.unit     || '',
     }));
   return { rows };
 }
@@ -3355,6 +3634,8 @@ module.exports = async (req, res) => {
             if (needsDust) {
               await insertDustTrackingRows(sql, companyCode, updated, dustInject || [{}], { clearSuppression: true });
               await insertObRows(sql, companyCode, updated, dustInject || [{}], { clearSuppression: true });
+              // The third grid: hauls the office tracks and bills to nobody.
+              await insertEesOtherRows(sql, companyCode, updated, dustInject || [{}], { clearSuppression: true });
             }
           } else {
             await insertEesOtherRow(sql, companyCode, updated);
@@ -3398,6 +3679,10 @@ module.exports = async (req, res) => {
             // dust office billing nothing, in either grid.
             try { await removeObRows(sql, companyCode, updated); }
             catch (cleanupErr) { console.error('[timesheet-entries] dust OB rollback cleanup failed:', cleanupErr.message); }
+            // And the third grid, on the same terms: a haul billed to nobody is
+            // still a row in a tab that cannot delete its own.
+            try { await removeEesOtherRows(sql, companyCode, updated); }
+            catch (cleanupErr) { console.error('[timesheet-entries] dust EES rollback cleanup failed:', cleanupErr.message); }
           }
           if (needsEesOther) {
             try { await removeEesOtherRows(sql, companyCode, updated); }
@@ -3446,13 +3731,15 @@ module.exports = async (req, res) => {
                 // because only one of them is a split when a trucking entry goes
                 // through this path.
                 dust_row_count: needsDust
-                  ? (dustInject || [{}]).filter(l => legDest(l) !== 'ob').length : undefined,
+                  ? (dustInject || [{}]).filter(l => legDest(l) === 'dust').length : undefined,
                 // Told apart from the tracking count because they are different
-                // invoices in different grids: an audit that folded them
-                // together would read a three-haul day as three UB rows when
-                // one of them billed material.
+                // grids: an audit that folded them together would read a
+                // three-haul day as three UB rows when one of them billed
+                // material and one billed nobody.
                 dust_ob_row_count: needsDust
                   ? (dustInject || [{}]).filter(l => legDest(l) === 'ob').length : undefined,
+                dust_ees_row_count: needsDust
+                  ? (dustInject || [{}]).filter(l => legDest(l) === 'ees').length : undefined,
                 truck_row_count: needsTrucking
                   ? ((truckingInject && truckingInject.rows) || [{}]).length : undefined,
               }
@@ -3546,16 +3833,18 @@ module.exports = async (req, res) => {
         const askedTruck = !!(req.body && req.body.trucking && Array.isArray(req.body.trucking.rows));
         const askedDust  = !!(req.body && req.body.dust && Array.isArray(req.body.dust.rows));
         // How many hauls this day was actually approved as. On the dust side
-        // that is the HIGHEST leg posted across both grids, not the count in
-        // either: a day whose middle haul billed material has one tracking row
-        // at leg 1, one at leg 3 and one Other Billing row at leg 2, and
-        // counting either grid alone would call a three-haul day a two-haul one
-        // — letting exactly the stale single-leg save this guard exists to
-        // refuse straight through.
+        // that is the HIGHEST leg posted across ALL THREE grids, not the count
+        // in any one: a day whose middle haul billed material has one tracking
+        // row at leg 1, one at leg 3 and one Other Billing row at leg 2, and
+        // counting a single grid would call a three-haul day a two-haul one —
+        // letting exactly the stale single-leg save this guard exists to refuse
+        // straight through. Every grid a haul can reach has to be asked, or the
+        // day is undercounted the moment one is left out.
         const dustLegs = reDust
           ? await Promise.all([
               dustSplitForEntry(sql, companyCode, existing),
               obSplitForEntry(sql, companyCode, existing),
+              eesSplitForEntry(sql, companyCode, existing),
             ])
           : null;
         const dustPosted = dustLegs
@@ -3622,6 +3911,9 @@ module.exports = async (req, res) => {
             // created by this one, which is why a flip is a move rather than a
             // row in both grids.
             await insertObRows(sql, companyCode, existing, dustParsed.rows);
+            // Third for the same reason, so a haul flipped onto — or off —
+            // "Other Billing - Non Billable" moves rather than duplicating.
+            await insertEesOtherRows(sql, companyCode, existing, dustParsed.rows);
           }
         } catch (injErr) {
           console.error('[timesheet-entries] dust resplit failed:', injErr.message);
@@ -3637,9 +3929,11 @@ module.exports = async (req, res) => {
             trucking: reTruck,
             dust_tracking: reDust,
             dust_row_count: reDust
-              ? dustParsed.rows.filter(l => legDest(l) !== 'ob').length : undefined,
+              ? dustParsed.rows.filter(l => legDest(l) === 'dust').length : undefined,
             dust_ob_row_count: reDust
               ? dustParsed.rows.filter(l => legDest(l) === 'ob').length : undefined,
+            dust_ees_row_count: reDust
+              ? dustParsed.rows.filter(l => legDest(l) === 'ees').length : undefined,
             truck_row_count: reTruck ? ((fields.rows) || [{}]).length : undefined,
             truck_unit: fields.unit != null ? (fields.unit || '') : undefined,
           },
@@ -3725,7 +4019,7 @@ module.exports = async (req, res) => {
       // those so the EES Other tab reflects the un-approval. The dust auto-sync
       // then pulls any Intercompany entry the row had created.
       let removedEesOther = 0;
-      if (existing.division === 'dust' && isEesJob(existing.job_id)) {
+      if (couldHaveEesOtherRows(existing)) {
         removedEesOther = await removeEesOtherRows(sql, companyCode, existing);
       }
       // A dust customer haul also posted a Dust Control Tracking row — take that
@@ -3952,18 +4246,24 @@ module.exports = async (req, res) => {
           // `companies` carries every customer's men, pads and default rates, so
           // a leg pointed at another customer fills itself in the same way the
           // first one did instead of waiting on a second round trip.
-          const [dust, ob, options, companies] = await Promise.all([
+          const [dust, ob, ees, options, companies] = await Promise.all([
             dustSplitForEntry(sql, companyCode, entryRow),
             obSplitForEntry(sql, companyCode, entryRow),
+            eesSplitForEntry(sql, companyCode, entryRow),
             dustOptionsForEntry(sql, companyCode, entryRow, '', { withLists: true }),
             dustCompanyDirectory(sql, companyCode),
           ]);
-          // `ob_rows` beside `rows`, each element carrying the leg of the day it
-          // describes, so the modal can put a day split across both grids back
-          // on screen in its own order. `row` stays what it always was — the
-          // first tracking leg — so a payroll page cached from before the
-          // destination toggle still pre-fills instead of opening blank.
-          answer.dust = { rows: dust.rows, row: dust.row, ob_rows: ob.rows, options, companies };
+          // `ob_rows` and `ees_rows` beside `rows`, each element carrying the
+          // leg of the day it describes, so the modal can put a day split across
+          // all three grids back on screen in its own order. `row` stays what it
+          // always was — the first tracking leg — so a payroll page cached from
+          // before the destination toggle still pre-fills instead of opening
+          // blank.
+          answer.dust = {
+            rows: dust.rows, row: dust.row,
+            ob_rows: ob.rows, ees_rows: ees.rows,
+            options, companies,
+          };
         }
         return res.json(answer);
       }
@@ -4040,7 +4340,7 @@ module.exports = async (req, res) => {
         // so editing an approved entry without re-injecting would leave the tab
         // — and any Intercompany figure built from it — quietly disagreeing with
         // the timesheet.
-        if (existing.division === 'dust' && isEesJob(existing.job_id)) {
+        if (couldHaveEesOtherRows(existing)) {
           if (await eesOtherHasInjectedRow(sql, companyCode, existing)) injected += 1;
         }
         if (injected > 0) {
@@ -4184,7 +4484,7 @@ module.exports = async (req, res) => {
       }
       // Keyed on the division+job the same way the other sweeps are, so a row
       // that outlived its entry still gets caught when the entry is deleted.
-      if (existing.division === 'dust' && isEesJob(existing.job_id)) {
+      if (couldHaveEesOtherRows(existing)) {
         removedSplitRows += await removeEesOtherRows(sql, companyCode, existing);
       }
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;
@@ -4219,6 +4519,11 @@ module.exports._test = {
   insertTruckingRows,
   needsTruckTrackingRow,
   insertEesOtherRow,
+  insertEesOtherRows,
+  eesOtherRowId,
+  eesOtherRowIndexFromId,
+  couldHaveEesOtherRows,
+  eesSplitForEntry,
   removeEesOtherRows,
   eesOtherRowIdPrefix,
   eesOtherHasInjectedRow,

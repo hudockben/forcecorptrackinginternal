@@ -25,6 +25,9 @@
  *   - a re-edit that drops a haul — or re-points one from material back to UB —
  *     actually deleting that row from both stores AND taking its Intercompany
  *     billing entry with it,
+ *   - a haul billed off "Other Billing - Non Billable" posting a row into EES
+ *     Other and nowhere else, and un-approve finding it — that teardown gate
+ *     used to ask isEesJob, which a customer haul is not,
  *   - the read-time sweep retiring the Truck Tracking rows posted back when
  *     every dust haul wrote one, which nothing else can remove,
  *   - un-approve sweeping every leg of both halves,
@@ -401,6 +404,75 @@ async function run() {
     !(await blob('FCT:fct_intercompany_billing_entries')).some(e => e.id === 'icm'));
   assert('while both hauls now bill off Dust Control Tracking',
     (await q(`SELECT 1 FROM dust_control_entries WHERE id LIKE $1`, [mtsd + '%'])).rows.length === 2);
+
+  // ── A haul that bills nobody ─────────────────────────────────────────────
+  // The third destination: tracked on EES Other, invoiced by no one, and posting
+  // nothing to Truck Tracking — a Truck Tracking row is an invoice line.
+  console.log('\n[a dust day with a non-billable haul]');
+  {
+    const nbId  = await submitted({ ...DUST_DAY, work_date: '2026-08-21' });
+    const ntsd  = `tsd-${nbId}-`, ntst = `tst-${nbId}-`, ntse = `tse-${nbId}-`;
+    const EE_BLOB = 'FCT:dust_ees_other_rows';
+
+    const body = secondDest => ({
+      trucking: {
+        haul_fee: 135, division: '', unit: 'Distributor Truck 4000',
+        rows: [
+          { start_time: '05:00', end_time: '10:00', haul_fee: 135 },
+          { company: 'Antero', start_time: '10:00', end_time: '15:00', haul_fee: 145 },
+        ],
+      },
+      dust: {
+        rows: [
+          { dest: 'dust', company_man: 'Steve Quinn', location: 'Deer Lick Compressor',
+            start_time: '05:00', end_time: '10:00', gallons_ub: 4000,
+            vehicle1: 'Distributor Truck 4000' },
+          secondDest === 'ees'
+            ? { dest: 'ees', company: 'Antero', location: 'Bear Hollow',
+                start_time: '10:00', end_time: '15:00', vehicle1: 'Distributor Truck 4000' }
+            : { dest: 'dust', company: 'Antero', company_man: 'Maximus Lockerbie',
+                location: 'Bear Hollow', start_time: '10:00', end_time: '15:00',
+                gallons_ub: 2000, vehicle1: 'Distributor Truck 4000' },
+        ],
+      },
+    });
+
+    const appr3 = await call('POST', { action: 'approve', id: nbId }, body('ees'), ADMIN);
+    assert('approved', appr3.statusCode === 200, JSON.stringify(appr3.body));
+
+    const ee = mine(await blob(EE_BLOB), ntse);
+    assert('one EES Other row', ee.length === 1, JSON.stringify(ee.map(r => r.id)));
+    // The id is the haul's place in the DAY, so leg 2 keeps leg 2's id rather
+    // than being packed into leg 1's slot.
+    assert('under the id of the leg it actually is', ee[0].id === `${ntse}2`, ee[0].id);
+    assert('billing that haul\'s own customer', ee[0].customer === 'Antero');
+    assert('on its own location', ee[0].location === 'Bear Hollow');
+    assert('with its own window', ee[0].actual_start === '10:00' && ee[0].actual_end === '15:00');
+    assert('and its own hours', Number(ee[0].actual_hours) === 5, String(ee[0].actual_hours));
+    assert('always Non-Billable', ee[0].billing === 'Non-Billable');
+    assert('carrying no rate', ee[0].rate === '');
+    assert('the UB haul still posts to Dust Control Tracking',
+      (await q(`SELECT id FROM dust_control_entries WHERE id LIKE $1`, [ntsd + '%'])).rows
+        .map(r => r.id).join() === `${ntsd}row`);
+    // A haul billed to nobody is not a trucking line.
+    assert('and nothing reaches Truck Tracking', mine(await blob(TRUCK_BLOB), ntst).length === 0);
+
+    // Re-pointing it back at UB has to take the EES row with it — nothing else
+    // ever would, since that tab creates and deletes nothing.
+    const back = await call('POST', { action: 'resplit', id: nbId }, body('dust'), ADMIN);
+    assert('re-pointing it at UB goes through', back.statusCode === 200, JSON.stringify(back.body));
+    assert('and takes the EES Other row back', mine(await blob(EE_BLOB), ntse).length === 0);
+    assert('while both hauls now bill off Dust Control Tracking',
+      (await q(`SELECT 1 FROM dust_control_entries WHERE id LIKE $1`, [ntsd + '%'])).rows.length === 2);
+
+    // Un-approve has to find them too — the gate used to ask isEesJob, which a
+    // customer haul is not.
+    await call('POST', { action: 'resplit', id: nbId }, body('ees'), ADMIN);
+    assert('the EES row is back', mine(await blob(EE_BLOB), ntse).length === 1);
+    const unNb = await call('POST', { action: 'unapprove', id: nbId }, {}, ADMIN);
+    assert('un-approved', unNb.statusCode === 200, JSON.stringify(unNb.body));
+    assert('and the EES Other row goes with it', mine(await blob(EE_BLOB), ntse).length === 0);
+  }
 
   // ── The rows posted before a UB haul stopped posting one ─────────────────
   // Every dust customer haul used to post a Truck Tracking row. Those rows are

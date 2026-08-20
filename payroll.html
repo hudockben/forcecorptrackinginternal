@@ -5786,9 +5786,19 @@
     const HAUL_DESTS = {
       dust: { label: 'Dust Control Tracking', hint: 'UB on a pad — vehicle rates × hours' },
       ob:   { label: 'Other Billing',         hint: 'material delivered — qty × price, plus trucking' },
+      // The third answer, and the only one that bills nobody. A driver sent out
+      // to move a tank, wait on a frac or clean up after somebody else is real
+      // hours against a real customer that the office tracks and never invoices
+      // — and until this it had nowhere to go but one of the two billing grids.
+      ees:  { label: 'Other Billing - Non Billable', hint: 'tracked on EES Other — hours only, never invoiced' },
     };
-    const legDest = leg => (leg && leg.dest === 'ob') ? 'ob' : 'dust';
-    const legIsOb = leg => legDest(leg) === 'ob';
+    // Mirrors legDest / LEG_DESTS in api/timesheet-entries.js, default included:
+    // anything unrecognised is the tracking grid, which is what bulk approve and
+    // every day approved before the toggle existed mean.
+    const LEG_DESTS = ['dust', 'ob', 'ees'];
+    const legDest  = leg => LEG_DESTS.includes(leg && leg.dest) ? leg.dest : 'dust';
+    const legIsOb  = leg => legDest(leg) === 'ob';
+    const legIsEes = leg => legDest(leg) === 'ees';
     const anyObLeg = () => haulLegs.some(legIsOb);
     const allObLegs = () => haulLegs.length > 0 && haulLegs.every(legIsOb);
 
@@ -5798,7 +5808,9 @@
     // record of it. A dust day's only when the haul bills off Other Billing:
     // that grid prices the material and the hauling of it is trucking's line,
     // while UB on a pad is recorded, priced and invoiced by the dust office
-    // alone, off vehicle rates times hours on its own grid.
+    // alone, off vehicle rates times hours on its own grid. A haul billed off
+    // EES Other posts none either, and for a plainer reason: it bills nobody,
+    // and a Truck Tracking row is an invoice line.
     //
     // Mirrors postsHere in insertTruckingRows. It decides which boxes are even
     // a question: Haul Fee and the Division column are Truck Tracking's, and
@@ -6029,7 +6041,13 @@
 
     function haulLegHtml(leg, idx, count) {
       const dust  = isDustEntry();
+      // Which grid this haul bills off, as three positive tests rather than one
+      // negated: each block below shows the columns ITS grid has, and a block
+      // written as "not the other one" would claim every destination added
+      // after it — putting UB's rates and gallons on a haul that bills nobody.
       const ob    = dust && legIsOb(leg);
+      const ees   = dust && legIsEes(leg);
+      const ub    = dust && !ob && !ees;
       // Whether this haul posts a Truck Tracking row, which is the only thing
       // the Haul Fee below is ever used for.
       const posts = legPostsTruck(leg);
@@ -6107,7 +6125,7 @@
                 placeholder="0.00" style="${TK_INPUT}" ${haulIn(leg, 'haul_fee')}></label>` : ''}
           </div>
           ${!dust ? '' : haulDestHtml(leg)}
-          ${!dust || ob ? '' : `
+          ${!dust || !ub ? '' : `
           <label style="${TK_LABEL}"><span>Company Man</span>
             <input type="text" id="hl_${leg.key}_companyMan" list="hl_${leg.key}_manOptions" autocomplete="off" maxlength="200"
               value="${escapeHtml(leg.company_man)}" placeholder="Customer contact" style="${TK_INPUT}"
@@ -6174,6 +6192,22 @@
             <input type="number" id="hl_${leg.key}_truckingRate" min="0" step="0.01" value="${escapeHtml(leg.trucking_rate)}"
               placeholder="0.00" style="${TK_INPUT}" ${haulIn(leg, 'trucking_rate')}>
             <span style="font-weight:400;font-size:11px;line-height:1.3;color:var(--muted);text-transform:none;letter-spacing:0">Billed against this haul's ${num2(hours)} h — the window above.</span></label>`}
+          ${!ees ? '' : `
+          <label style="${TK_LABEL}"><span>Location <span style="font-weight:400;color:var(--muted)">(where the work was)</span></span>
+            <input type="text" id="hl_${leg.key}_location" list="hl_${leg.key}_locOptions" autocomplete="off" maxlength="500"
+              value="${escapeHtml(leg.location)}" placeholder="Well pad / lease / yard" style="${TK_INPUT}"
+              ${haulIn(leg, 'location')}>
+            <datalist id="hl_${leg.key}_locOptions">${haulOptionsHtml(locs)}</datalist></label>
+          <label style="${TK_LABEL}"><span>Unit <span style="font-weight:400;color:var(--muted)">(the truck)</span></span>
+            <input type="text" id="hl_${leg.key}_vehicle1" list="hl_vehOptions" autocomplete="off" maxlength="200"
+              value="${escapeHtml(leg.vehicle1)}" placeholder="e.g. Distributor Truck 4000" style="${TK_INPUT}"
+              ${haulIn(leg, 'vehicle1')}></label>
+          <div style="${FULL_ROW};font-size:11px;line-height:1.4;color:var(--muted)">
+            Posts to <strong>EES Other</strong> as <strong>Non-Billable</strong>: the customer, the location, the unit
+            and this haul's ${num2(hours)} h, and no money. It carries no rate and posts nothing to Truck
+            Tracking; it reaches Intercompany at <strong>$0</strong>, so the hours are visible there without
+            being invoiced. Name and Job Number are left blank — nothing on a customer haul names them,
+            and that tab is read-only.</div>`}
         </div>`;
     }
 
@@ -6200,10 +6234,13 @@
           <span style="font-weight:400;color:var(--muted)">${escapeHtml(d.hint)}</span>
         </button>`;
       };
+      // Wrapping rather than a fixed row: three of these no longer fit side by
+      // side at the width this modal opens at, and a squeezed third button is
+      // how the one control that decides where the money goes gets misread.
       return `<div style="${FULL_ROW}">
         <div style="font-size:12px;font-weight:600;letter-spacing:.02em;color:#cbd5e1;margin-bottom:4px">
           Bills off</div>
-        <div style="display:flex;gap:8px">${btn('dust')}${btn('ob')}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${btn('dust')}${btn('ob')}${btn('ees')}</div>
       </div>`;
     }
 
@@ -6224,18 +6261,24 @@
       const atMax = count >= MAX_HAUL_LEGS;
       // The heading names the tab (or tabs) the hauls below post into, so it is
       // never a mystery which grid a box ends up in.
-      // Which of the two dust grids the hauls below actually post into — all
-      // one, all the other, or a day that ran to both. Saying "Dust Control
-      // Tracking" over a haul billed as material is the kind of heading that
-      // gets an invoice queried a month later.
-      const obN  = haulLegs.filter(legIsOb).length;
+      // Which of the three dust grids the hauls below actually post into — all
+      // of one, or a day that ran to several. Saying "Dust Control Tracking"
+      // over a haul billed as material is the kind of heading that gets an
+      // invoice queried a month later.
+      const GRIDS = [
+        ['dust', 'Dust Control Tracking'],
+        ['ob',   'Other Billing'],
+        ['ees',  'EES Other'],
+      ];
+      const perGrid = GRIDS
+        .map(([key, label]) => [label, haulLegs.filter(l => legDest(l) === key).length])
+        .filter(([, n]) => n > 0);
       const heading = !dust ? 'Truck Tracking — hauls'
-        : obN === 0     ? 'Dust Control Tracking'
-        : obN === count ? 'Other Billing'
+        : perGrid.length === 1 ? perGrid[0][0]
         : 'Dust billing — hauls';
-      const dustSub = obN === 0 || obN === count
+      const dustSub = perGrid.length <= 1
         ? (count > 1 ? `${count} rows — one per haul` : 'one row')
-        : `${count - obN} Dust Control Tracking · ${obN} Other Billing`;
+        : perGrid.map(([label, n]) => `${n} ${label}`).join(' · ');
       const subhead = dust
         ? dustSub
         : (count > 1 ? `${count} rows — one per haul` : 'one row for the whole day');
@@ -6452,7 +6495,9 @@
     function haulSetDest(key, value) {
       const leg = haulLegBy(key);
       if (!leg) return;
-      const next = value === 'ob' ? 'ob' : 'dust';
+      // Through legDest so an unrecognised value lands on the tracking grid,
+      // which is the same default every other reader applies.
+      const next = legDest({ dest: value });
       if (legDest(leg) === next) return;
       leg.dest = next;
       haulTouched.add(leg.key + '|dest');
@@ -6608,12 +6653,13 @@
     // clears and wipe the company man, the well pad, the state and the gallons
     // off rows that were already billing. Their typing still wins: haulSet skips
     // anything in haulTouched.
-    function dustApplyRows(dustRows, obRows) {
-      // The day's hauls in order, rebuilt from BOTH grids. Position in either
-      // list is no longer position in the day — a day whose middle haul billed
-      // material answers with tracking legs 1 and 3 and an Other Billing leg 2
-      // — so each row is slotted by the `leg` it carries. A row without one is
-      // a server that predates the toggle, and there the list IS the order.
+    function dustApplyRows(dustRows, obRows, eesRows) {
+      // The day's hauls in order, rebuilt from ALL THREE grids. Position in any
+      // one list is no longer position in the day — a day whose middle haul
+      // billed material answers with tracking legs 1 and 3 and an Other Billing
+      // leg 2 — so each row is slotted by the `leg` it carries. A row without
+      // one is a server that predates the toggle, and there the list IS the
+      // order.
       const posted = [];
       const place = (list) => {
         (list || []).forEach((row, i) => {
@@ -6625,6 +6671,7 @@
       };
       place(dustRows);
       place(obRows);
+      place(eesRows);
       if (!posted.length) return;
 
       // A day approved as three hauls is edited as three: legs the modal opened
@@ -6849,6 +6896,11 @@
           const dustObRows = (truckingMode === 'resplit' && j && j.dust && Array.isArray(j.dust.ob_rows))
             ? j.dust.ob_rows
             : null;
+          // And the hauls that billed nobody. Same terms again — a fresh approve
+          // is pre-filled from nothing.
+          const dustEesRows = (truckingMode === 'resplit' && j && j.dust && Array.isArray(j.dust.ees_rows))
+            ? j.dust.ees_rows
+            : null;
           dustOptions   = (j && j.dust && j.dust.options) ? j.dust.options : null;
           dustCompanies = (j && j.dust && Array.isArray(j.dust.companies)) ? j.dust.companies : null;
           if (rowLoad === 'pending') rowLoad = 'loaded';
@@ -6860,14 +6912,17 @@
           // defaults over them. Anything payroll has already typed stands —
           // every write below goes through haulSet, which skips touched boxes, and
           // the re-render puts their trucking boxes back on top.
-          // Either grid having answered means this day's hauls are known, and
+          // ANY grid having answered means this day's hauls are known, and
           // dustApplyOptions must stand down rather than offer the customer's
-          // defaults over them.
+          // defaults over them. A day whose every haul billed nobody answers
+          // only from the third list, and leaving it out here let the customer
+          // defaults land on top of hauls that were already posted.
           dustRowsSeen = (dustRows && dustRows.length) ? dustRows
                        : (dustObRows && dustObRows.length) ? dustObRows
+                       : (dustEesRows && dustEesRows.length) ? dustEesRows
                        : dustRows;
           dustApplyOptions();
-          dustApplyRows(dustRows, dustObRows);
+          dustApplyRows(dustRows, dustObRows, dustEesRows);
           haulApplyTruckRows(truckRows);
           lastTruckingRow = row;
           truckingRenderFields(row);
@@ -6925,30 +6980,36 @@
         // and invoiced by the dust office alone; a second copy of it in Truck
         // Tracking was work nobody in that division did, that its office could
         // not correct and had to remember not to bill against.
-        const obN  = haulLegs.filter(legIsOb).length;
-        const trkN = Math.max(0, legs - obN);
+        const nOf  = d => haulLegs.filter(l => legDest(l) === d).length;
+        const obN  = nOf('ob');
+        const eesN = nOf('ees');
+        const trkN = Math.max(0, legs - obN - eesN);
         // Counted per grid, not worded per grid: three UB hauls post THREE Dust
         // Control Tracking rows, and calling that "a Dust Control Tracking row"
         // understates what the button is about to do.
         const rowsOf = (n, label) => `<strong>${n} ${label}</strong> row${n === 1 ? '' : 's'}`;
-        const where = obN === 0
-          ? rowsOf(trkN, 'Dust Control Tracking')
-          : trkN === 0
-            ? rowsOf(obN, 'Other Billing')
-            : `${rowsOf(trkN, 'Dust Control Tracking')} and ${rowsOf(obN, 'Other Billing')}`;
+        const parts = [
+          [trkN, 'Dust Control Tracking'],
+          [obN,  'Other Billing'],
+          [eesN, 'EES Other'],
+        ].filter(([n]) => n > 0).map(([n, label]) => rowsOf(n, label));
+        const where = parts.length <= 1
+          ? (parts[0] || rowsOf(0, 'Dust Control Tracking'))
+          : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
         // Spelled out either way round, because "and nothing in Truck Tracking"
         // is the part that changed and the part somebody will go looking for.
         const truckLine = obN === 0
-          ? 'Nothing is posted to Truck Tracking — a haul billed off Dust Control Tracking is the dust office\'s from end to end.'
+          ? 'Nothing is posted to Truck Tracking — a haul the dust office bills, or does not bill at all, is its own from end to end.'
           : `Beside ${obN === 1 ? 'that Other Billing row' : 'those Other Billing rows'}, ${rowsOf(obN, 'Truck Tracking')}: that grid prices the material,
-             and the hauling of it is the trucking office's line. ${trkN ? 'The Dust Control Tracking hauls post none.' : ''}`;
+             and the hauling of it is the trucking office's line. ${trkN + eesN ? 'The other hauls post none.' : ''}`;
         note.innerHTML =
           `Approving posts ${where}.
            ${truckLine}
-           Each haul says which of the dust office's two grids it bills off: <strong>Dust Control
-           Tracking</strong> for UB on a pad, billed on vehicle rates times hours, or
+           Each haul says which of the dust office's three grids it goes on: <strong>Dust Control
+           Tracking</strong> for UB on a pad, billed on vehicle rates times hours;
            <strong>Other Billing</strong> for material delivered, billed on quantity times price plus
-           trucking hours times a rate.
+           trucking hours times a rate; or <strong>Other Billing - Non Billable</strong>, which tracks
+           the hours on <strong>EES Other</strong> and invoices nobody.
            If the day ran to two customers, two pads or two kinds of work, split it and give each
            haul its own hours. Driver, unit and description come from the timesheet and are the same
            on every row; the customer and the hours are the haul's own. The state, the
@@ -7070,7 +7131,20 @@
         // this haul was not asked — and every key that IS sent counts as an
         // answer, blank included.
         body.dust = {
-          rows: haulLegs.map(leg => legIsOb(leg)
+          rows: haulLegs.map(leg => legIsEes(leg)
+            ? {
+                // The EES Other grid holds only these three beyond the day
+                // itself. Every key sent counts as the approver's answer, so a
+                // haul billed to nobody must not send a rate or a quantity it
+                // was never asked for.
+                dest:       'ees',
+                company:    legCustomerPayload(leg),
+                location:   leg.location,
+                start_time: leg.start_time,
+                end_time:   leg.end_time,
+                vehicle1:   leg.vehicle1,
+              }
+            : legIsOb(leg)
             ? {
                 dest:           'ob',
                 company:        legCustomerPayload(leg),
@@ -7106,10 +7180,18 @@
       // Truck Tracking is named only when a haul actually posted there — an
       // all-UB day bills off the dust office's grid alone, and saying otherwise
       // sends somebody looking for a row that was never written.
-      const tabs   = !isDustEntry() ? 'Truck Tracking'
-        : allObLegs()               ? 'Other Billing + Truck Tracking'
-        : anyObLeg()                ? 'Dust billing + Truck Tracking'
-        : 'Dust Control Tracking';
+      // Named from the grids that actually took a row. Truck Tracking appears
+      // only when a haul posted there — an all-UB or all-non-billable day bills
+      // off the dust office's grids alone, and saying otherwise sends somebody
+      // looking for a row that was never written.
+      const tabs = !isDustEntry() ? 'Truck Tracking' : (() => {
+        const names = [];
+        if (haulLegs.some(l => legDest(l) === 'dust')) names.push('Dust Control Tracking');
+        if (anyObLeg())                                names.push('Other Billing');
+        if (haulLegs.some(legIsEes))                   names.push('EES Other');
+        if (anyTruckLeg())                             names.push('Truck Tracking');
+        return names.length ? names.join(' + ') : 'Dust Control Tracking';
+      })();
       btn.disabled = true;
       try {
         const res = await fetch(
@@ -7123,12 +7205,19 @@
         // Other Billing line reads as a confirmation of something that did not
         // happen, and this line is the only place the split is confirmed at all.
         const dustRowsOut = body.dust ? body.dust.rows : null;
-        const obCount     = dustRowsOut ? dustRowsOut.filter(r => r.dest === 'ob').length : 0;
-        const trkCount    = dustRowsOut ? dustRowsOut.length - obCount : 0;
+        // Counted per grid, never by subtraction: "everything that is not ob"
+        // called a non-billable haul a UB one the moment the third destination
+        // existed, which is a confirmation of an invoice line that was never
+        // written.
+        const countOf = d => dustRowsOut ? dustRowsOut.filter(r => r.dest === d).length : 0;
+        const obCount  = countOf('ob');
+        const eesCount = countOf('ees');
+        const trkCount = dustRowsOut ? dustRowsOut.length - obCount - eesCount : 0;
         const legs = (dustRowsOut && dustRowsOut.length > 1)
           ? ` (${[
-              trkCount ? `${trkCount} Dust Control Tracking` : '',
-              obCount  ? `${obCount} Other Billing` : '',
+              trkCount  ? `${trkCount} Dust Control Tracking` : '',
+              obCount   ? `${obCount} Other Billing` : '',
+              eesCount  ? `${eesCount} EES Other` : '',
             ].filter(Boolean).join(', ')})`
           : '';
         msg.textContent = action === 'approve'

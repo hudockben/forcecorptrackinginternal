@@ -7624,8 +7624,13 @@
       const hrs  = parseFloat(row.actual_hours) || 0;
       const rate = parseFloat(row.rate)         || 0;
       // Only a Billable row carries money. A Non-Billable one still shows its
-      // hours — that is the whole point of tracking it — but never a total,
-      // and never reaches Intercompany.
+      // hours — that is the whole point of tracking it — but never a total.
+      //
+      // It does still reach Intercompany: _reconcileEesBilling gates on HOURS,
+      // not money, so the work shows up over there at $0 rather than vanishing.
+      // (This comment used to claim the opposite, which is not what that
+      // function does — and the difference matters now that payroll can post a
+      // customer haul here as Non-Billable.)
       const total = eeIsBillable(row) ? round2(hrs * rate) : 0;
       return { hrs, rate, total };
     }

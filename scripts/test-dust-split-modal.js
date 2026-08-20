@@ -8,12 +8,19 @@
  * A driver's day is one timesheet entry, but both offices bill per haul: ten
  * hours can be 4,000 gallons on one customer's pad and 2,000 on another's, or
  * two loads for two customers with no dust in it at all. The approving
- * supervisor splits the day here, and each haul posts one billing row in
- * whichever tab it names — Truck Tracking for a trucking day, and for a dust
- * customer haul either Dust Control Tracking (which the dust office bills end
- * to end, posting nothing to Truck Tracking) or Other Billing (which posts a
- * Truck Tracking row beside it, since that grid prices the material and the
- * hauling of it is trucking's line). Two layers:
+ * supervisor splits the day here, and each haul posts one row in whichever tab
+ * it names — Truck Tracking for a trucking day, and for a dust customer haul
+ * one of three:
+ *
+ *   Dust Control Tracking          UB on a pad, billed by the dust office end
+ *                                  to end; posts nothing to Truck Tracking
+ *   Other Billing                  material delivered; posts a Truck Tracking
+ *                                  row beside it, since that grid prices the
+ *                                  material and the hauling is trucking's line
+ *   Other Billing - Non Billable   tracked on EES Other and invoiced by nobody;
+ *                                  posts nothing to Truck Tracking either
+ *
+ * Two layers:
  *
  *   1. Structural — greps payroll.html and the server so the two halves of the
  *      contract stay in step: the save sends { dust: { rows: [...] } }, the leg
@@ -53,12 +60,12 @@ console.log('[the payload the modal and the server agree on]');
     !!save && /body\.dust = \{\s*\n\s*rows: haulLegs\.map/.test(save[0]));
   assert('every leg carries its own window',
     !!save && /start_time:\s*leg\.start_time/.test(save[0]) && /end_time:\s*leg\.end_time/.test(save[0]));
-  // Three call sites, not two: the Truck Tracking half, and each of the two
-  // grids a dust haul can bill off. All three have to name the customer the
-  // same way or one tab's row bills somebody the others never heard of.
+  // Four call sites, not two: the Truck Tracking half, and each of the three
+  // grids a dust haul can go on. All four have to name the customer the same
+  // way or one tab's row bills somebody the others never heard of.
   assert('a leg on the timesheet customer sends no company to any tab',
     /return same \? undefined : leg\.company/.test(SRC)
-    && !!save && (save[0].match(/company:\s*legCustomerPayload\(leg\)/g) || []).length === 3);
+    && !!save && (save[0].match(/company:\s*legCustomerPayload\(leg\)/g) || []).length === 4);
   assert('and the two divisions compare that customer their own way',
     /typed\.toLowerCase\(\) === entryCo\.toLowerCase\(\)/.test(SRC) && /typed === entryCo/.test(SRC));
   assert('and the same legs go to the Truck Tracking half',
@@ -69,10 +76,12 @@ console.log('[the payload the modal and the server agree on]');
   // The per-haul destination. Both branches have to say which grid they are,
   // because the server reads `dest` and nothing else to decide — a leg that
   // sent no destination would silently bill UB rates against a delivery.
-  assert('each leg says which dust grid it bills off',
-    !!save && /dest:\s*'ob'/.test(save[0]) && /dest:\s*'dust'/.test(save[0]));
+  assert('each leg says which dust grid it goes on',
+    !!save && /dest:\s*'ob'/.test(save[0]) && /dest:\s*'dust'/.test(save[0])
+    && /dest:\s*'ees'/.test(save[0]));
   assert('and the branch is the leg\'s own answer',
-    !!save && /rows: haulLegs\.map\(leg => legIsOb\(leg\)/.test(save[0]));
+    !!save && /rows: haulLegs\.map\(leg => legIsEes\(leg\)/.test(save[0])
+    && /: legIsOb\(leg\)/.test(save[0]));
   assert('an Other Billing leg sends that grid\'s columns',
     !!save && ['trailer_number', 'material', 'gallons_bags', 'mu', 'price_per_unit', 'trucking_rate']
       .every(f => new RegExp(`${f}:\\s*leg\\.${f}`).test(save[0])));
@@ -171,6 +180,15 @@ console.log('\n[only a material haul reaches Truck Tracking]');
   // day that posts none.
   assert('the page mirrors the gate',
     /const legPostsTruck = leg => !isDustEntry\(\) \|\| legIsOb\(leg\)/.test(SRC));
+  // The three destinations have to be the same three on both sides, or the
+  // modal offers a grid the server refuses — or, worse, sends one it coerces.
+  assert('the page and the server agree on the destinations',
+    /const LEG_DESTS = \['dust', 'ob', 'ees'\];/.test(SRC)
+    && /const LEG_DESTS = \['dust', 'ob', 'ees'\];/.test(SERVER));
+  assert('and each grid is claimed positively, never by exclusion',
+    /if \(legDest\(leg\) !== 'dust'\) continue;/.test(SERVER)
+    && /if \(legDest\(list\[i\] \|\| \{\}\) === 'ob'\)/.test(SERVER)
+    && /if \(legDest\(list\[i\] \|\| \{\}\) === 'ees'\)/.test(SERVER));
   assert('the per-haul fee box is gated on it',
     /\$\{split && posts \? `<label style="\$\{TK_LABEL\}"><span>Haul Fee/.test(SRC));
   assert('the day\'s Haul Fee and Division boxes are gated on it too',
@@ -645,6 +663,45 @@ console.log('\n[a UB haul posts nothing to Truck Tracking]');
   t.call('haulAddLeg');
   assert('no per-haul fee box on a UB day',
     !/_haulFee/.test(t.run('haulSectionHtml()')));
+}
+
+console.log('\n[a haul that bills nobody]');
+{
+  // The third destination: tracked on EES Other, invoiced by no one. It shows
+  // that grid's columns and none of the two billing grids', because every box
+  // shown is a box the save sends as the approver's answer.
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  const leg = t.legs()[0];
+  t.call('haulSetDest', leg.key, 'ees');
+  assert('the leg takes the destination', t.run('legIsEes(haulLegs[0])') === true);
+  assert('and it is offered as a third button',
+    /Other Billing - Non Billable/.test(t.run('haulDestHtml(haulLegs[0])')));
+
+  const html = t.run('haulSectionHtml()');
+  assert('it asks for the location',  new RegExp(`hl_${leg.key}_location`).test(html));
+  assert('and the unit',              new RegExp(`hl_${leg.key}_vehicle1`).test(html));
+  // Not the UB grid's boxes…
+  assert('no company man',            !new RegExp(`hl_${leg.key}_companyMan`).test(html));
+  assert('no gallons of UB',          !new RegExp(`hl_${leg.key}_gallons"`).test(html));
+  assert('no vehicle rates',          !new RegExp(`hl_${leg.key}_v1Rate`).test(html));
+  // …nor Other Billing's.
+  assert('no material',               !new RegExp(`hl_${leg.key}_material`).test(html));
+  assert('no price per unit',         !new RegExp(`hl_${leg.key}_pricePerUnit`).test(html));
+  assert('no trucking rate',          !new RegExp(`hl_${leg.key}_truckingRate`).test(html));
+  // And nothing that would bill it.
+  assert('it posts no Truck Tracking row', t.run('legPostsTruck(haulLegs[0])') === false);
+  assert('so no haul fee is asked for', !/_haulFee/.test(html));
+  assert('the heading names the grid it lands in', /EES Other/.test(html));
+
+  // Flipping away and back must not lose what was typed under the other one —
+  // the leg keeps every field, and the server reads only the set its dest names.
+  t.call('haulEdit', leg.key, 'location', 'Great Lakes Lease');
+  t.call('haulSetDest', leg.key, 'dust');
+  assert('flipping away keeps the location typed', leg.location === 'Great Lakes Lease');
+  t.call('haulSetDest', leg.key, 'ees');
+  assert('and flipping back still has it', leg.location === 'Great Lakes Lease');
+  assert('an unknown destination falls back to the tracking grid',
+    (t.call('haulSetDest', leg.key, 'nonsense'), t.run('legDest(haulLegs[0])')) === 'dust');
 }
 
 console.log('\n[a material haul still says what its truck row bills]');
