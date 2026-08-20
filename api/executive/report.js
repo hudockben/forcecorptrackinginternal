@@ -353,43 +353,76 @@ async function runDiagnostics(sql, companyCode) {
 // scale by qty burn rate; else fall back to the bid total. Inputs:
 //   projects: array of blob objects (already filtered to "active")
 //   division: 'turf' | 'paving' — used to scope daily_tracking
-async function buildFinancials(sql, companyCode, division, projects) {
+//   range:    optional { start, end } 'YYYY-MM-DD' window. Adds a windowed
+//             spend figure alongside the lifetime one; it does NOT narrow the
+//             lifetime figures, because a bid budget and a projection describe
+//             a whole job and mean nothing clipped to a month.
+async function buildFinancials(sql, companyCode, division, projects, range) {
   const ids = projects.map(p => p.id).filter(Boolean);
+  const rStart = (range && range.start) || null;
+  const rEnd   = (range && range.end)   || null;
   // Daily cost groups (cost_code/sub_code) per project. The per-row cost mirrors
   // tracker.html's dailyRowCost/calcDaily EXACTLY so the Executive reconciles
   // with the home page: total_cost_override (if non-zero) wins, else
   // labor*rate + (equip_total_override || equip_hours*equip_unit_cost) + material.
   // NULLIF(...,0) reproduces calcDaily's `override || computed` short-circuit;
   // the previous formula ignored equip_total_override and understated actuals.
+  //
+  // The formula is written once, in the subquery, and aggregated twice — once
+  // over everything and once over the window. Writing it out a second time for
+  // the windowed sum is exactly how the per-division copies of this logic
+  // drifted apart, so the two sums are held to one expression by construction.
   const groupsByProject = new Map();
   if (ids.length) {
+    // Two CTEs rather than one nested SELECT, so the scoping predicates keep
+    // their place as the first three bind parameters. Anything that reads this
+    // query positionally — scripts/test-executive-report.js dispatches its fake
+    // rows off values[1]/values[2] — breaks silently if company/division/ids
+    // stop coming first, and a windowing change has no business moving them.
     const rows = await sql`
-      SELECT
-        project_id,
-        cost_code,
-        COALESCE(sub_code, '') AS sub_code,
-        SUM(
+      WITH src AS (
+        SELECT
+          project_id,
+          cost_code,
+          COALESCE(sub_code, '') AS sub_code,
           COALESCE(NULLIF(total_cost_override, 0),
             COALESCE(labor_hours, 0) * COALESCE(rate, 0)
             + COALESCE(NULLIF(equip_total_override, 0),
                        COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0))
             + COALESCE(material_cost, 0)
-          )
-        )::float                           AS actual,
-        SUM(COALESCE(quantity, 0))::float  AS rqty
-      FROM daily_tracking
-      WHERE company_code = ${companyCode}
-        AND division     = ${division}
-        AND project_id   = ANY(${ids})
-      GROUP BY project_id, cost_code, COALESCE(sub_code, '')
+          )                      AS row_cost,
+          COALESCE(quantity, 0)  AS qty,
+          date
+        FROM daily_tracking
+        WHERE company_code = ${companyCode}
+          AND division     = ${division}
+          AND project_id   = ANY(${ids})
+      ), flagged AS (
+        SELECT src.*,
+               (${rStart}::date IS NULL OR date >= ${rStart}::date)
+           AND (${rEnd}::date   IS NULL OR date <= ${rEnd}::date) AS in_range
+        FROM src
+      )
+      SELECT
+        project_id,
+        cost_code,
+        sub_code,
+        SUM(row_cost)::float                                        AS actual,
+        COALESCE(SUM(row_cost) FILTER (WHERE in_range), 0)::float    AS range_actual,
+        (COUNT(*) FILTER (WHERE in_range))::int                      AS range_rows,
+        SUM(qty)::float                                              AS rqty
+      FROM flagged
+      GROUP BY project_id, cost_code, sub_code
     `;
     for (const r of rows) {
       const list = groupsByProject.get(r.project_id) || [];
       list.push({
-        cost_code: r.cost_code || '',
-        sub_code:  r.sub_code  || '',
-        actual:    Number(r.actual) || 0,
-        rqty:      Number(r.rqty)   || 0,
+        cost_code:   r.cost_code || '',
+        sub_code:    r.sub_code  || '',
+        actual:      Number(r.actual)       || 0,
+        rangeActual: Number(r.range_actual) || 0,
+        rangeRows:   Number(r.range_rows)   || 0,
+        rqty:        Number(r.rqty)         || 0,
       });
       groupsByProject.set(r.project_id, list);
     }
@@ -419,6 +452,11 @@ async function buildFinancials(sql, companyCode, division, projects) {
     // Off-bid spend is included here, then surfaced separately below, so the
     // headline figure never silently drops money.
     const actual = groups.reduce((s, g) => s + g.actual, 0);
+    // Spend booked inside the window, and how many daily rows carried it — the
+    // count is what tells "no work in this period" apart from "work that cost
+    // nothing".
+    const rangeActual = groups.reduce((s, g) => s + (g.rangeActual || 0), 0);
+    const rangeRows   = groups.reduce((s, g) => s + (g.rangeRows   || 0), 0);
 
     // Per-bid-item projection — mirrors projectedCostForProject(): scale each
     // bid item by its own wildcard-matched actuals/quantities.
@@ -478,7 +516,8 @@ async function buildFinancials(sql, companyCode, division, projects) {
     bid_total       += bid;
     actual_total    += actual;
     projected_total += projected;
-    perProject.set(p.id, { contract: projContract(p), bid, actual, projected, offBid, offBidCodes });
+    perProject.set(p.id, { contract: projContract(p), bid, actual, projected, offBid, offBidCodes,
+                           rangeActual, rangeRows });
   }
   return { contract_total, bid_total, actual_total, projected_total, perProject };
 }

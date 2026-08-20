@@ -357,12 +357,30 @@ assert('both read invoice state off invoice_sent_date and date_paid',
 // ── Intercompany mirrors the Intercompany dashboard ──
 console.log('\n[intercompany mirrors the Intercompany dashboard]');
 
-const IC_METRICS = ['Total IC Revenue — YTD', 'Trucking IC — YTD', 'Dust Control IC — YTD',
-                    'Total Hours — YTD', 'Customer Revenue — YTD', 'Outstanding IC'];
+// The executive card is a fixed year-to-date snapshot and says so on every
+// tile. The intercompany dashboard now carries a user-chosen date range, so it
+// names the period once in its header badge instead of repeating a claim on six
+// tiles that a narrowed window would make false. The two therefore mirror each
+// other on the metric NAMES, and on the figures whenever the dashboard is on
+// its default window — which is asserted directly below, because that default
+// is the whole thing keeping the two screens reconciled.
+const IC_METRICS = ['Total IC Revenue', 'Trucking IC', 'Dust Control IC',
+                    'Total Hours', 'Customer Revenue', 'Outstanding IC'];
 for (const label of IC_METRICS) {
-  assert(`the API builds "${label}"`, report.includes(`label: '${label}'`));
+  // Outstanding is the one tile the executive card does not date-qualify.
+  const execLabel = label === 'Outstanding IC' ? label : `${label} — YTD`;
+  assert(`the API builds "${execLabel}"`, report.includes(`label: '${execLabel}'`));
   assert(`  and intercompany.html still shows it`, ic.includes(`kpiCard('${label}'`));
 }
+// ic-metrics.js scopes on the year alone, so entries dated later this year are
+// in its totals. The dashboard has to open on the same whole-year window or the
+// two screens post different numbers for the same metric on first load.
+assert('  and the dashboard opens on the whole year, matching ic-metrics',
+  /let icRange = \{ preset: 'year'/.test(ic)
+  && /case 'year':\s+return span\(new Date\(y, 0, 1\), new Date\(y, 11, 31\)\)/.test(ic),
+  'the default range must cover the calendar year, not year-to-date');
+assert('  and ic-metrics still scopes the executive card on the year',
+  /slice\(0, 4\) === yr/.test(read('api/lib/ic-metrics.js')));
 
 const im = read('api/lib/ic-metrics.js');
 assert('the intercompany arithmetic is ported, not re-derived in SQL',

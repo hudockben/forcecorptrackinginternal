@@ -19,6 +19,7 @@
       --muted:      #666;
       --green:      #22c55e;
       --red:        #ef4444;
+      --amber:      #fbbf24;
       /* Height of the sticky date-range bar, measured at runtime so the
          toolbars underneath pin below it however far it wraps. */
       --ic-range-h: 44px;
@@ -778,6 +779,10 @@
       font-weight: 600; color: var(--accent); padding-top: 0.5rem;
     }
     .ic-fin-name { font-weight: 600; color: var(--text); }
+    /* The windowed column is the one figure on this table that is not whole-job,
+       so it is tinted to keep that difference visible at a glance. */
+    .ic-fin-table td.ic-fin-range { color: var(--amber); font-weight: 600; }
+    .ic-fin-idle { color: var(--muted); font-weight: 400; font-style: italic; }
     /* Zebra striping at this contrast, not a light fill — a pale stripe on a
        dark page reads as a different table. */
     .ic-fin-jobs tbody tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
@@ -798,6 +803,8 @@
       .ic-fin-table td { color: #111 !important; border-bottom-color: #e5e5e5 !important; }
       .ic-fin-table tfoot td { color: #111 !important; border-top-color: #999 !important; }
       .ic-fin-name { color: #111 !important; }
+      .ic-fin-table td.ic-fin-range { color: #92400e !important; }
+      .ic-fin-idle { color: #777 !important; }
       .ic-fin-jobs tbody tr:nth-child(even) td { background: #fafafa !important; }
       .ic-fin-caption, .ic-fin-note { color: #555 !important; }
       .ic-pos { color: #15803d !important; }
@@ -1097,6 +1104,15 @@
     <!-- Financials sub-panel — every division's jobs in one table -->
     <div class="rpt-sub-panel" id="rpt-financials">
       <div class="rpt-toolbar">
+        <div class="ic-range-presets" id="icFinPresets"></div>
+        <div class="rpt-toolbar-group">
+          <label for="icFinStart">Spend From</label>
+          <input type="date" id="icFinStart" class="rpt-date-input" onchange="icFinOnDateInput()" />
+        </div>
+        <div class="rpt-toolbar-group">
+          <label for="icFinEnd">To</label>
+          <input type="date" id="icFinEnd" class="rpt-date-input" onchange="icFinOnDateInput()" />
+        </div>
         <button class="btn-run-report" onclick="runIcFinancials()">Run Report</button>
         <button class="btn-pdf" id="icFinPdfBtn" style="display:none" onclick="printIcFinancials()">&#8659; Print / PDF</button>
         <button class="btn-pdf" id="icFinCsvBtn" style="display:none" onclick="exportIcFinancialsCSV()">&#8659; Excel</button>
@@ -1106,6 +1122,7 @@
       <div class="rpt-body">
         <div class="rpt-print-header" id="icFinPrintHeader">
           <span class="rpt-print-title">Financials — All Divisions</span>
+          <span class="rpt-print-range" id="icFinPrintRange"></span>
         </div>
         <div id="icFinFilters"></div>
         <div id="icFinBody">
@@ -1616,6 +1633,7 @@
     // the current periods, then the trailing windows.
     const IC_RANGE_PRESETS = [
       { key: 'all',    label: 'All Time'  },
+      { key: 'year',   label: 'This Year' },
       { key: 'ytd',    label: 'YTD'       },
       { key: 'qtd',    label: 'Quarter'   },
       { key: 'mtd',    label: 'This Month'},
@@ -1625,7 +1643,7 @@
       { key: 'lastyr', label: 'Last Year' },
     ];
 
-    let icRange = { preset: 'ytd', start: '', end: '' };
+    let icRange = { preset: 'year', start: '', end: '' };
     // False until the first billing fetch settles, so the bar can tell "nothing
     // in this range" apart from "nothing loaded yet".
     let icEntriesLoaded = false;
@@ -1647,6 +1665,13 @@
       const span = (a, b) => ({ start: _icISO(a), end: _icISO(b) });
       switch (preset) {
         case 'all':    return { start: '', end: '' };
+        // The whole calendar year, not the part of it that has happened. This
+        // is the default, and it has to stay the default: the executive
+        // report's Intercompany card scopes on the year alone
+        // (api/lib/ic-metrics.js), so anything dated later this year counts
+        // there. Opening on YTD instead would drop those entries here and post
+        // two different totals for the same metric on two screens.
+        case 'year':   return span(new Date(y, 0, 1), new Date(y, 11, 31));
         case 'ytd':    return span(new Date(y, 0, 1), now);
         case 'qtd':    return span(new Date(y, Math.floor(m / 3) * 3, 1), now);
         case 'mtd':    return span(new Date(y, m, 1), now);
@@ -1980,7 +2005,7 @@
       // A stored custom range with nothing in it would read as All Time while
       // no chip is lit; fall back to the default instead.
       if (icRange.preset === 'custom' && !icRange.start && !icRange.end) {
-        icRange = { preset: 'ytd', start: '', end: '' };
+        icRange = { preset: 'year', start: '', end: '' };
       }
     }
     icLoadRange();
@@ -3848,25 +3873,36 @@
       if (!startEl.value) {
         // Open on whatever range the other tabs are showing. An open range has
         // no endpoints to copy and the report needs two, so it falls back to
-        // the data's own extent, then to year-to-date.
-        const b = icRangeBounds();
-        const ext = jsDataExtent();
-        const now = new Date();
-        startEl.value = b.start || ext.start || (now.getFullYear() + '-01-01');
-        endEl.value   = b.end   || ext.end   || _icISO(now);
+        // the same all-time window the chip uses.
+        const b   = icRangeBounds();
+        const all = jsAllTime();
+        startEl.value = b.start || all.start;
+        endEl.value   = b.end   || all.end;
       }
       jsRenderPresets();
+
+      // The Financials window opens on whatever range the other tabs are
+      // showing, so switching to Reports keeps the period you were just in.
+      if (!_icFinTouched) {
+        const b = icRangeBounds();
+        _icFinRange = { start: b.start || '', end: b.end || '' };
+        _icFinTouched = true;
+      }
+      icFinSyncDates();
     }
 
-    // Earliest and latest dated row the page holds — the concrete window an
-    // "All Time" pick has to turn into, since the report needs both endpoints.
-    function jsDataExtent() {
-      const keys = icAllDatedRows().map(r => String(r.actual_date).slice(0, 10)).sort();
-      return keys.length ? { start: keys[0], end: keys[keys.length - 1] } : { start: '', end: '' };
-    }
+    /* The concrete window an "All Time" pick has to turn into, since the report
+       needs both endpoints. It cannot come from the data: the Job Summary runs
+       off /daily-rows, /trucking and /projects, none of which this page has
+       loaded, and reading the intercompany blobs instead — a different set of
+       divisions — would silently clip the report to whatever span those
+       happened to cover, or do nothing at all when none are loaded. So the
+       floor is a fixed date comfortably before any record this system holds. */
+    const JS_MIN_DATE = '2000-01-01';
+    const jsAllTime = () => ({ start: JS_MIN_DATE, end: _icISO(new Date()) });
 
     function jsSetPreset(preset) {
-      const b = preset === 'all' ? jsDataExtent() : icPresetBounds(preset);
+      const b = preset === 'all' ? jsAllTime() : icPresetBounds(preset);
       if (!b || !b.start || !b.end) return;
       document.getElementById('jsStartDate').value = b.start;
       document.getElementById('jsEndDate').value   = b.end;
@@ -3883,9 +3919,8 @@
         start: document.getElementById('jsStartDate').value || '',
         end:   document.getElementById('jsEndDate').value   || '',
       };
-      const ext = jsDataExtent();
       el.innerHTML = IC_RANGE_PRESETS.map(p => {
-        const b  = p.key === 'all' ? ext : icPresetBounds(p.key);
+        const b  = p.key === 'all' ? jsAllTime() : icPresetBounds(p.key);
         const on = !!(b && b.start && b.start === cur.start && b.end === cur.end);
         return '<button class="ic-range-chip' + (on ? ' on' : '') + '"'
           + ' onclick="jsSetPreset(\'' + p.key + '\')">' + p.label + '</button>';
@@ -3915,25 +3950,97 @@
     let _icFin = null;
     // statuses: a Set of picked values, or null for all. Division stays single —
     // there are three of them and the summary table already splits by division.
-    let _icFilters = { division: '', statuses: null, q: '' };
+    // activeOnly hides jobs that booked no cost inside the window; it only
+    // means anything while a window is set.
+    let _icFilters = { division: '', statuses: null, q: '', activeOnly: false };
+
+    /* The spend window for this report. Separate from the page-wide range on
+       the other tabs because it means something narrower here: it scopes spend
+       only. Contract value, bid budget and the projections describe a whole
+       job, so clipping them to a month would report a number that was never
+       true — the window adds a Spend in Range column instead of rewriting the
+       lifetime ones. */
+    let _icFinRange = { start: '', end: '' };
+    // Seeded from the page-wide range on first open, then left alone — a later
+    // visit must not overwrite a window the user set here.
+    let _icFinTouched = false;
+    // The window the figures on screen were actually built with, echoed by the
+    // server. Editing the boxes does not change it until the report is re-run,
+    // so the table never labels itself with a window it has not applied.
+    let _icFinApplied = null;
+
+    function icFinSetPreset(preset) {
+      const b = preset === 'all' ? { start: '', end: '' } : icPresetBounds(preset);
+      if (!b) return;
+      _icFinRange = { start: b.start || '', end: b.end || '' };
+      icFinSyncDates();
+      if (_icFin) runIcFinancials();
+    }
+
+    function icFinOnDateInput() {
+      _icFinRange = {
+        start: document.getElementById('icFinStart').value || '',
+        end:   document.getElementById('icFinEnd').value   || '',
+      };
+      icFinRenderPresets();
+    }
+
+    function icFinSyncDates() {
+      const sEl = document.getElementById('icFinStart');
+      const eEl = document.getElementById('icFinEnd');
+      if (sEl) sEl.value = _icFinRange.start;
+      if (eEl) eEl.value = _icFinRange.end;
+      icFinRenderPresets();
+    }
+
+    function icFinRenderPresets() {
+      const el = document.getElementById('icFinPresets');
+      if (!el) return;
+      el.innerHTML = IC_RANGE_PRESETS.map(p => {
+        const b  = p.key === 'all' ? { start: '', end: '' } : icPresetBounds(p.key);
+        const on = !!b && (b.start || '') === _icFinRange.start && (b.end || '') === _icFinRange.end;
+        return '<button class="ic-range-chip' + (on ? ' on' : '') + '"'
+          + ' onclick="icFinSetPreset(\'' + p.key + '\')">' + p.label + '</button>';
+      }).join('');
+    }
+
+    // Human label for the applied window, reusing the page-wide formatter.
+    function icFinRangeLabel() {
+      if (!_icFinApplied) return '';
+      const saved = icRange;
+      icRange = { preset: 'custom', start: _icFinApplied.start || '', end: _icFinApplied.end || '' };
+      try { return icRangeLabel(); } finally { icRange = saved; }
+    }
+
+    const _icFinRanged = () => !!_icFinApplied;
 
     function _icFilteredRows() {
       if (!_icFin || !Array.isArray(_icFin.rows)) return [];
       const q  = (_icFilters.q || '').trim().toLowerCase();
       const dv = _icFilters.division || '';
       const sts = _icFilters.statuses;
+      const act = _icFilters.activeOnly && _icFinRanged();
       return _icFin.rows.filter(r =>
         (!dv  || r.division === dv) &&
         (!sts || sts.has(r.status || '')) &&
+        (!act || (r.rangeRows || 0) > 0) &&
         (!q  || String(r.name).toLowerCase().includes(q) || String(r.jobNumber).toLowerCase().includes(q))
       );
     }
 
-    const _icAnyFilter = () => !!(_icFilters.division || _icFilters.statuses || (_icFilters.q || '').trim());
+    const _icAnyFilter = () => !!(_icFilters.division || _icFilters.statuses || (_icFilters.q || '').trim()
+                                 || (_icFilters.activeOnly && _icFinRanged()));
 
     /* Mirrors summarise() on the server so the figures can follow the filters
        without a round trip. Only sums rows the server has already costed — the
        projection itself still happens in one place. */
+    // Windowed spend covers every job that booked cost in the window, finished
+    // or not — unlike the lifetime block below, which splits live from done.
+    function _icRangeSpend(rows) {
+      return rows.reduce((a, r) => a + (Number(r.rangeActual) || 0), 0);
+    }
+    const _icRangeJobs = rows => rows.filter(r => (r.rangeRows || 0) > 0).length;
+
     function _icSummarise(rows) {
       const live = rows.filter(r => r.inProgress);
       const done = rows.filter(r => r.complete && r.actProfit !== null);
@@ -3959,7 +4066,12 @@
     }
 
     function icClearFilters() {
-      _icFilters = { division: '', statuses: null, q: '' };
+      _icFilters = { division: '', statuses: null, q: '', activeOnly: false };
+      _renderIcFinancials();
+    }
+
+    function icToggleActiveOnly() {
+      _icFilters.activeOnly = !_icFilters.activeOnly;
       _renderIcFinancials();
     }
 
@@ -3999,6 +4111,8 @@
           </span>
           <input type="search" placeholder="Job name or number" value="${esc(_icFilters.q)}"
             style="${inp};min-width:200px" oninput="icSetFilter('q', this.value)">
+          ${_icFinRanged() ? `<button class="ic-chip${_icFilters.activeOnly ? ' on' : ''}" onclick="icToggleActiveOnly()"
+            title="Show only jobs that booked cost inside the date window">Active in range</button>` : ''}
           <button class="btn-pdf" style="padding:0.24rem 0.6rem" onclick="icClearFilters()">Clear</button>
         </div>`;
     }
@@ -4018,14 +4132,28 @@
       const info = document.getElementById('icFinInfo');
       body.innerHTML = '<div class="ci-empty"><strong>Loading…</strong>Pulling jobs from every division.</div>';
       info.textContent = '';
+      // The window goes to the server because the spend has to be summed from
+      // the daily rows behind each job; the browser only ever sees job totals.
+      const qs = new URLSearchParams();
+      if (_icFinRange.start) qs.set('start', _icFinRange.start);
+      if (_icFinRange.end)   qs.set('end',   _icFinRange.end);
+      const url = `${API_BASE}/executive/financials` + (qs.toString() ? '?' + qs : '');
       try {
-        const r = await fetch(`${API_BASE}/executive/financials`, {
+        const r = await fetch(url, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         _icFin = await r.json();
+        // Trust the server's echo, not the boxes — it is what the numbers were
+        // built from, and it has already validated and ordered the bounds.
+        _icFinApplied = _icFin.range || null;
+        if (_icFinApplied) {
+          _icFinRange = { start: _icFinApplied.start || '', end: _icFinApplied.end || '' };
+          icFinSyncDates();
+        }
       } catch (err) {
         _icFin = null;
+        _icFinApplied = null;
         body.innerHTML = '<div class="ci-empty"><strong>Could not load</strong>' + esc(err.message) + '</div>';
         return;
       }
@@ -4063,16 +4191,26 @@
       const t = _icSummarise(rows);
       const shownDivs = (_icFin.divisions || [])
         .filter(d => rows.some(r => r.division === d.key))
-        .map(d => ({ ...d, ..._icSummarise(rows.filter(r => r.division === d.key)) }));
+        .map(d => {
+          const dRows = rows.filter(r => r.division === d.key);
+          return { ...d, ..._icSummarise(dRows), rangeSpend: _icRangeSpend(dRows) };
+        });
       info.textContent = rows.length + ' job' + (rows.length === 1 ? '' : 's')
         + (_icAnyFilter() ? ' of ' + _icFin.rows.length : '')
-        + ' across ' + shownDivs.length + ' division' + (shownDivs.length === 1 ? '' : 's');
+        + ' across ' + shownDivs.length + ' division' + (shownDivs.length === 1 ? '' : 's')
+        + (_icFinRanged() ? ' · ' + _icRangeJobs(rows) + ' active in ' + icFinRangeLabel() : '');
+      const printRange = document.getElementById('icFinPrintRange');
+      if (printRange) printRange.textContent = _icFinRanged() ? 'Spend in ' + icFinRangeLabel() : '';
 
       // Per-division summary, then the combined line. Same seven figures the
       // division home strips carry, so the numbers reconcile screen to screen.
+      const ranged  = _icFinRanged();
+      const rangeTh = ranged ? '<th class="ic-num">Spend in Range</th>' : '';
+
       const divRow = d => `<tr>
         <td class="ic-fin-name">${esc(d.name)}${d.error ? ' <span class="ic-neg">(unavailable)</span>' : ''}</td>
         <td class="ic-num">${d.activeProjects}</td>
+        ${ranged ? `<td class="ic-num ic-fin-range">${_icMoney(d.rangeSpend, 0)}</td>` : ''}
         <td class="ic-num">${_icMoney(d.contract, 0)}</td>
         <td class="ic-num">${_icMoney(d.bid, 0)}</td>
         <td class="ic-num">${_icMoney(d.actual, 0)}</td>
@@ -4086,6 +4224,7 @@
         <td>${esc(r.jobNumber) || '—'}</td>
         <td>${esc(r.divisionName)}</td>
         <td>${esc(r.status) || '—'}</td>
+        ${ranged ? `<td class="ic-num ic-fin-range">${(r.rangeRows || 0) > 0 ? _icMoney(r.rangeActual) : '<span class="ic-fin-idle">no activity</span>'}</td>` : ''}
         <td class="ic-num">${_icMoney(r.contract)}</td>
         <td class="ic-num">${_icMoney(r.bid)}</td>
         <td class="ic-num">${_icMoney(r.actual)}</td>
@@ -4097,7 +4236,7 @@
       body.innerHTML = `
         <table class="ic-fin-table">
           <thead><tr>
-            <th>Division</th><th class="ic-num">Active Projects</th>
+            <th>Division</th><th class="ic-num">Active Projects</th>${rangeTh}
             <th class="ic-num">Contract Value</th><th class="ic-num">Bid Budget</th>
             <th class="ic-num">Actual Spend</th><th class="ic-num">Variance</th>
             <th class="ic-num">Projected Profit</th><th class="ic-num">Actual Profit</th>
@@ -4106,6 +4245,7 @@
           <tfoot><tr>
             <td>All Divisions</td>
             <td class="ic-num">${t.activeProjects || 0}</td>
+            ${ranged ? `<td class="ic-num ic-fin-range">${_icMoney(_icRangeSpend(rows), 0)}</td>` : ''}
             <td class="ic-num">${_icMoney(t.contract, 0)}</td>
             <td class="ic-num">${_icMoney(t.bid, 0)}</td>
             <td class="ic-num">${_icMoney(t.actual, 0)}</td>
@@ -4118,7 +4258,7 @@
         <div class="ic-fin-caption">Every job, newest first, live work above finished.</div>
         <table class="ic-fin-table ic-fin-jobs">
           <thead><tr>
-            <th>Job Name</th><th>Job #</th><th>Division</th><th>Status</th>
+            <th>Job Name</th><th>Job #</th><th>Division</th><th>Status</th>${rangeTh}
             <th class="ic-num">Contract Value</th><th class="ic-num">Bid Budget</th>
             <th class="ic-num">Actual</th><th class="ic-num">Projected Cost</th>
             <th class="ic-num">Projected Profit</th><th class="ic-num">Actual Profit</th>
@@ -4130,7 +4270,16 @@
           <strong>completed</strong> jobs — contract value minus what was actually spent — since a realised
           figure only means something once a job is done. Jobs with no contract amount contribute their
           costs but no profit.${_icAnyFilter() ? ' These figures cover the filtered rows only — as do the Excel export and the printout.' : ''}
-        </p>`;
+        </p>
+        ${ranged ? `<p class="ic-fin-note">
+          <strong>Spend in Range</strong> is the cost booked against each job between
+          <strong>${esc(_icFinApplied.start || 'the first daily entry')}</strong> and
+          <strong>${esc(_icFinApplied.end || 'the last daily entry')}</strong>, summed from the daily
+          entries behind it. Every other column stays whole-job: a contract value, a bid budget and a
+          projection describe a job end to end, so clipping them to a window would report a figure that
+          was never true. Variance and both profit columns therefore keep using lifetime spend —
+          measuring a full bid budget against one window's cost would read as margin that does not exist.
+        </p>` : ''}`;
     }
 
     function exportIcFinancialsCSV() {
@@ -4144,15 +4293,22 @@
       // apply, which is not the same claim as zero.
       const n = v => (v === null || v === undefined) ? '' : Number(v).toFixed(2);
       const m = v => v ? Number(v).toFixed(2) : '';
-      const head = ['Job Name', 'Job #', 'Division', 'Status', 'Contract Value', 'Bid Budget',
+      const ranged = _icFinRanged();
+      const rangeHead = ranged ? ['Spend ' + (_icFinApplied.start || 'start') + ' to ' + (_icFinApplied.end || 'end')] : [];
+      const head = ['Job Name', 'Job #', 'Division', 'Status', ...rangeHead, 'Contract Value', 'Bid Budget',
                     'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
       const lines = [head.map(q).join(',')];
       rows.forEach(r => lines.push([
         q(r.name), q(r.jobNumber), q(r.divisionName), q(r.status),
+        // Blank, not 0, where the job booked nothing in the window — the same
+        // distinction the table draws with "no activity".
+        ...(ranged ? [(r.rangeRows || 0) > 0 ? m(r.rangeActual) : ''] : []),
         m(r.contract), m(r.bid), m(r.actual), m(r.projected), n(r.profit), n(r.actProfit),
       ].join(',')));
       const t = _icSummarise(rows);
-      lines.push(['All Divisions (in progress)', '', '', '', m(t.contract), m(t.bid), m(t.actual), '', n(t.projProfit), n(t.actProfit)].join(','));
+      lines.push(['All Divisions (in progress)', '', '', '',
+        ...(ranged ? [m(_icRangeSpend(rows))] : []),
+        m(t.contract), m(t.bid), m(t.actual), '', n(t.projProfit), n(t.actProfit)].join(','));
 
       const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
       const a = document.createElement('a');
