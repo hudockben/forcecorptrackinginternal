@@ -52,9 +52,12 @@ require('dotenv').config();
 const { neon } = require('@neondatabase/serverless');
 const {
   TRUCK_DIVISION_BLOB, IC_SOURCE_TRUCKING,
-  entryIdFromTruckRowId, findStaleTruckRows,
+  entryIdFromTruckRowId, findStaleTruckRows, truckRowLegIndex,
   deleteTruckBlobRows, removeIcBillingEntries,
 } = require('../api/lib/truck-injected');
+// The per-leg half of the same staleness check: which dust hauls the dust
+// office bills off its own grid, and so post nothing to Truck Tracking.
+const { dustBilledLegs } = require('../api/lib/dust-injected');
 
 const apply      = process.argv.includes('--apply');
 const companyArg = (process.argv.find(a => a.startsWith('--company=')) || '').split('=')[1] || null;
@@ -73,12 +76,16 @@ function label(row) {
          `${num(row.total_hours)}h × ${num(row.haul_fee)} = $${total.toFixed(2)}  [${row.id}]`;
 }
 
-function reasonFor(row, entriesById) {
+function reasonFor(row, entriesById, ubLegs) {
   const entry = entriesById.get(entryIdFromTruckRowId(row.id));
   if (!entry) return 'timesheet entry deleted';
   if (entry.status !== 'approved') return `entry is ${entry.status}`;
   if (entry.division !== 'trucking' && entry.division !== 'dust') return `entry moved to ${entry.division}`;
   if (entry.entry_type !== 'daily') return `entry is now ${entry.entry_type}`;
+  // The reason nearly every row this tool now finds is here: the haul bills off
+  // Dust Control Tracking, which the dust office owns end to end.
+  const key = `${entryIdFromTruckRowId(row.id)}|${truckRowLegIndex(row.id)}`;
+  if (ubLegs && ubLegs.has(key)) return 'haul bills off Dust Control Tracking';
   return 'superseded by a newer row for the same entry';
 }
 
@@ -115,14 +122,26 @@ function reasonFor(row, entriesById) {
     `;
     const entriesById = new Map(entryRows.map(e => [Number(e.id), e]));
 
-    const stale = findStaleTruckRows(rows, entriesById);
+    // Which of these hauls the dust office bills off its own tracking grid.
+    // A dust haul billed off Dust Control Tracking posts no Truck Tracking row
+    // any more, so the rows posted before that was true are stale here too —
+    // and this tool has to agree with the read-time sweep, or a run of it would
+    // report "nothing to do" over rows the next tab load quietly removes.
+    const dustEntryIds = [...entriesById.values()]
+      .filter(e => e && e.division === 'dust')
+      .map(e => Number(e.id));
+    const ubLegs = dustEntryIds.length
+      ? await dustBilledLegs(sql, companyCode, dustEntryIds)
+      : null;
+
+    const stale = findStaleTruckRows(rows, entriesById, ubLegs);
     console.log(`\n${companyCode}: ${rows.length} row(s), ${entryIds.length} payroll-injected entr(ies), ${stale.length} stale.`);
     if (!stale.length) continue;
     totalStale += stale.length;
 
     const staleSet = new Set(stale);
     for (const row of rows.filter(r => r && staleSet.has(String(r.id)))) {
-      console.log(`  REMOVE  ${label(row)}  — ${reasonFor(row, entriesById)}`);
+      console.log(`  REMOVE  ${label(row)}  — ${reasonFor(row, entriesById, ubLegs)}`);
     }
 
     if (!apply) continue;

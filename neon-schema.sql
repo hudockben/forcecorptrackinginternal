@@ -984,13 +984,20 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_to_shop_hours NUME
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_hours         NUMERIC(6,2);
 
 -- Haul daily fields (added after initial release). Captured on the timesheet
--- for the entries whose approval injects a Truck Tracking row — division
+-- for the entries whose approval CAN post a Truck Tracking row — division
 -- 'trucking', and division 'dust' on a customer job (not the EES activities,
 -- which have their own columns below) — and carried into the matching Truck
 -- Tracking columns (unit + description) on payroll approval. See
--- needsTruckTrackingRow in api/timesheet-entries.js, which is the one place
--- that rule lives. Idempotent so existing deployments pick them up the next
--- time run-schema executes.
+-- needsTruckTrackingRow in api/lib/truck-injected.js, which is the one place
+-- that rule lives.
+--
+-- Asked at the entry level on purpose, even though a dust day is now routed per
+-- HAUL: only the hauls billed off Other Billing reach Truck Tracking, and which
+-- of the dust office's two grids a haul bills off is answered by the approving
+-- supervisor, long after the driver has filled this in. The unit is wanted
+-- either way — it also seeds each haul's Vehicle 1 on the dust grid.
+-- Idempotent so existing deployments pick them up the next time run-schema
+-- executes.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS truck_unit        TEXT;
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS truck_description TEXT;
 

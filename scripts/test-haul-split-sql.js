@@ -16,11 +16,20 @@
  * real PostgreSQL, because everything that makes a split expensive to get wrong
  * lives below that line:
  *
- *   - one approval writing N rows into the dust TABLE and N into the trucking
- *     BLOB plus its normalized mirror, each keyed by leg,
+ *   - one approval writing a row per leg into the dust TABLE, and into the
+ *     trucking BLOB plus its normalized mirror only for the legs that reach
+ *     that tab — a haul billed off Dust Control Tracking posts nothing there,
+ *     so the row ids that do land are the legs' places in the DAY and not
+ *     their positions in the list,
  *   - NUMERIC(10,4) coercion of per-haul gallons and rates,
- *   - a re-edit that drops a haul actually deleting that row from both stores
- *     AND taking its Intercompany billing entry with it,
+ *   - a re-edit that drops a haul — or re-points one from material back to UB —
+ *     actually deleting that row from both stores AND taking its Intercompany
+ *     billing entry with it,
+ *   - a haul billed off "Other Billing - Non Billable" posting a row into EES
+ *     Other and nowhere else, and un-approve finding it — that teardown gate
+ *     used to ask isEesJob, which a customer haul is not,
+ *   - the read-time sweep retiring the Truck Tracking rows posted back when
+ *     every dust haul wrote one, which nothing else can remove,
  *   - un-approve sweeping every leg of both halves,
  *   - a TRUCKING day splitting the same way with no dust half at all, and its
  *     hours still summing to the figure payroll approved.
@@ -62,6 +71,9 @@ Module._load = function (request) {
 };
 
 const handler = require(path.resolve(__dirname, '..', 'api', 'timesheet-entries.js'));
+// The same tagged template the handler is given, for the few library calls
+// this suite makes directly rather than through an endpoint.
+const SQL = makeSql(client);
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -197,26 +209,16 @@ async function run() {
     d1.vehicle2 === 'Escort Vehicle 7549' && Number(d1.v2_rate) === 60 &&
     (d2.vehicle2 === null || d2.vehicle2 === ''));
 
-  const truckRows = mine(await blob(TRUCK_BLOB), tst);
-  assert('two Truck Tracking rows in the blob', truckRows.length === 2, String(truckRows.length));
-  const t1 = truckRows.find(r => r.id === `${tst}row`), t2 = truckRows.find(r => r.id === `${tst}2`);
-  assert('one per haul, keyed by leg', !!t1 && !!t2);
-  assert('each bills the customer that haul was for',
-    t1.customer === 'CNX' && t2.customer === 'Antero');
-  // 5 h window − 0.5 h lunch + 1 h travel = 5.5; the second haul is its 5 h.
-  assert('the lunch break and the travel ride on the first haul',
-    t1.total_hours === 5.5 && t2.total_hours === 5, `${t1.total_hours} / ${t2.total_hours}`);
-  assert('and the day still adds up to what payroll approved (9.5 + 1)',
-    t1.total_hours + t2.total_hours === 10.5);
-  assert('each haul bills at its own fee', t1.haul_fee === 135 && t2.haul_fee === 145);
-  assert('the unit and description are the day, not the haul',
-    t2.unit === 'Distributor Truck 4000' && t2.description === t1.description);
-  assert('a dust-sourced row still defaults the division column',
-    t1.division === 'Dust' && t2.division === 'Dust');
-
-  const mirrored = (await q(`SELECT * FROM truck_division_entries WHERE id LIKE $1 ORDER BY id`, [tst + '%'])).rows;
-  assert('both hauls reach the normalized mirror', mirrored.length === 2, String(mirrored.length));
-  assert('with their own hours', mirrored.map(r => Number(r.total_hours)).sort().join() === '5,5.5');
+  // Both hauls bill off Dust Control Tracking, which the dust office owns end
+  // to end: it records the haul, prices it off vehicle rates times hours and
+  // invoices it. Nothing goes to Truck Tracking — a second copy of the same
+  // haul there was work nobody in that division did, that its office could not
+  // correct and had to remember not to bill against.
+  assert('nothing lands in Truck Tracking', mine(await blob(TRUCK_BLOB), tst).length === 0);
+  assert('nor in its normalized mirror',
+    (await q(`SELECT 1 FROM truck_division_entries WHERE id LIKE $1`, [tst + '%'])).rows.length === 0);
+  assert('and the blob is not written at all — nothing to race the tab over',
+    (await q(`SELECT 1 FROM app_data WHERE key = $1`, [TRUCK_BLOB])).rows.length === 0);
 
   // ── A re-edit that drops the second haul ─────────────────────────────────
   console.log('\n[re-editing back down to one haul]');
@@ -228,8 +230,6 @@ async function run() {
     ['FCT:fct_intercompany_billing_entries', JSON.stringify([
       { id: 'ic1', source: 'dust',     source_id: `${tsd}row`, total: 100 },
       { id: 'ic2', source: 'dust',     source_id: `${tsd}2`,   total: 200 },
-      { id: 'ic3', source: 'trucking', source_id: `${tst}row`, total: 300 },
-      { id: 'ic4', source: 'trucking', source_id: `${tst}2`,   total: 400 },
       { id: 'ic5', source: 'dust',     source_id: 'manual-1',  total: 500 },
     ])]);
 
@@ -247,26 +247,20 @@ async function run() {
   assert('the edit goes through', re.statusCode === 200, JSON.stringify(re.body));
 
   const dustAfter  = (await q(`SELECT * FROM dust_control_entries WHERE id LIKE $1`, [tsd + '%'])).rows;
-  const truckAfter = mine(await blob(TRUCK_BLOB), tst);
   assert('one dust row is left', dustAfter.length === 1 && dustAfter[0].id === `${tsd}row`,
     JSON.stringify(dustAfter.map(r => r.id)));
-  assert('one truck row is left', truckAfter.length === 1 && truckAfter[0].id === `${tst}row`,
-    JSON.stringify(truckAfter.map(r => r.id)));
-  assert('the dropped haul is gone from the mirror too',
-    (await q(`SELECT 1 FROM truck_division_entries WHERE id = $1`, [`${tst}2`])).rows.length === 0);
+  assert('and still nothing in Truck Tracking', mine(await blob(TRUCK_BLOB), tst).length === 0);
   assert('the surviving dust row carries the corrected gallons',
     Number(dustAfter[0].gallons_ub) === 6000);
   assert('and keeps the invoice number the office had typed on it',
     dustAfter[0].inv_number === 'INV-501');
-  assert('the surviving truck row is back to the whole day',
-    truckAfter[0].total_hours === 10.5, String(truckAfter[0].total_hours));
 
   const ic = await blob('FCT:fct_intercompany_billing_entries');
   const icIds = ic.map(e => e.id).sort();
-  assert('the dropped hauls\' billing entries went with them',
-    !icIds.includes('ic2') && !icIds.includes('ic4'), JSON.stringify(icIds));
-  assert('the surviving hauls keep theirs',
-    icIds.includes('ic1') && icIds.includes('ic3'), JSON.stringify(icIds));
+  assert('the dropped haul\'s billing entry went with it',
+    !icIds.includes('ic2'), JSON.stringify(icIds));
+  assert('the surviving haul keeps its own',
+    icIds.includes('ic1'), JSON.stringify(icIds));
   assert('and a manual row\'s entry is never touched', icIds.includes('ic5'));
 
   // ── An out-of-date page cannot quietly un-bill a split day ───────────────
@@ -296,8 +290,7 @@ async function run() {
     assert('naming how many hauls the day actually has',
       stale.body && stale.body.posted_haul_count === 2, JSON.stringify(stale.body));
     assert('and nothing is taken away',
-      (await q(`SELECT id FROM dust_control_entries WHERE id LIKE $1`, [tsd + '%'])).rows.length === 2 &&
-      mine(await blob(TRUCK_BLOB), tst).length === 2);
+      (await q(`SELECT id FROM dust_control_entries WHERE id LIKE $1`, [tsd + '%'])).rows.length === 2);
 
     // The same body against a day that only ever had one haul is fine — that is
     // every bulk approval and every unsplit re-edit.
@@ -324,9 +317,8 @@ async function run() {
       { location: 'Deer Lick Compressor', start_time: '05:00', end_time: '10:00', gallons_ub: 4000 },
       { company: 'Antero', location: 'Bear Hollow', start_time: '10:00', end_time: '15:00', gallons_ub: 2000 }] },
   }, ADMIN);
-  assert('two hauls again in both tabs',
-    (await q(`SELECT 1 FROM dust_control_entries WHERE id LIKE $1`, [tsd + '%'])).rows.length === 2 &&
-    mine(await blob(TRUCK_BLOB), tst).length === 2);
+  assert('two hauls again on the dust grid',
+    (await q(`SELECT 1 FROM dust_control_entries WHERE id LIKE $1`, [tsd + '%'])).rows.length === 2);
 
   const un = await call('POST', { action: 'unapprove', id: dustId }, {}, ADMIN);
   assert('un-approved', un.statusCode === 200, JSON.stringify(un.body));
@@ -335,6 +327,188 @@ async function run() {
   assert('every truck leg is gone from the blob', mine(await blob(TRUCK_BLOB), tst).length === 0);
   assert('and from the mirror',
     (await q(`SELECT 1 FROM truck_division_entries WHERE id LIKE $1`, [tst + '%'])).rows.length === 0);
+
+  // ── A day split across both dust grids ───────────────────────────────────
+  // Leg 1 is UB on a pad and leg 2 is a delivery of material. Only the second
+  // reaches Truck Tracking: Other Billing prices the material, and the hauling
+  // of it is the trucking office's line.
+  console.log('\n[a dust day billed half UB, half material]');
+  const mixedId = await submitted({ ...DUST_DAY, work_date: '2026-08-19' });
+  const mtsd = `tsd-${mixedId}-`, mtst = `tst-${mixedId}-`, mtso = `tso-${mixedId}-`;
+  const OB_BLOB = 'FCT:dust_other_billing_rows';
+
+  const mixedBody = obLeg => ({
+    trucking: {
+      haul_fee: 135, division: '', unit: 'Distributor Truck 4000',
+      rows: [
+        { start_time: '05:00', end_time: '10:00', haul_fee: 135 },
+        { company: 'Antero', start_time: '10:00', end_time: '15:00', haul_fee: 145 },
+      ],
+    },
+    dust: {
+      rows: [
+        { dest: 'dust', company_man: 'Steve Quinn', location: 'Deer Lick Compressor',
+          start_time: '05:00', end_time: '10:00', gallons_ub: 4000,
+          vehicle1: 'Distributor Truck 4000' },
+        obLeg
+          ? { dest: 'ob', company: 'Antero', location: 'Bear Hollow',
+              start_time: '10:00', end_time: '15:00', material: 'Limestone',
+              gallons_bags: 24, mu: 'TON', price_per_unit: 31, trucking_rate: 145 }
+          : { dest: 'dust', company: 'Antero', company_man: 'Maximus Lockerbie',
+              location: 'Bear Hollow', start_time: '10:00', end_time: '15:00',
+              gallons_ub: 2000, vehicle1: 'Distributor Truck 4000' },
+      ],
+    },
+  });
+
+  const mixed = await call('POST', { action: 'approve', id: mixedId }, mixedBody(true), ADMIN);
+  assert('approved', mixed.statusCode === 200, JSON.stringify(mixed.body));
+  assert('the UB haul posts to Dust Control Tracking',
+    (await q(`SELECT id FROM dust_control_entries WHERE id LIKE $1`, [mtsd + '%'])).rows
+      .map(r => r.id).join() === `${mtsd}row`);
+  assert('the material haul posts to Other Billing',
+    mine(await blob(OB_BLOB), mtso).map(r => r.id).join() === `${mtso}2`);
+
+  const mRows = mine(await blob(TRUCK_BLOB), mtst);
+  assert('exactly one Truck Tracking row', mRows.length === 1, JSON.stringify(mRows.map(r => r.id)));
+  // The id is the haul's place in the DAY, not its place among the rows that
+  // landed here — Intercompany keys its billing entry off it, so renumbering
+  // the survivor into leg 1's slot would move one customer's billing history
+  // onto another customer's haul.
+  assert('under the id of the leg it actually is', mRows[0].id === `${mtst}2`, mRows[0].id);
+  assert('billing that haul\'s own customer and window',
+    mRows[0].customer === 'Antero' && mRows[0].actual_start === '10:00');
+  // 10:00–15:00 is 5 h. The lunch came off leg 1 and the travel rode on it,
+  // exactly as they would have if leg 1 had posted here too.
+  assert('and its own hours, unchanged by what leg 1 billed off',
+    mRows[0].total_hours === 5, String(mRows[0].total_hours));
+  assert('mirrored, and only that one',
+    (await q(`SELECT id FROM truck_division_entries WHERE id LIKE $1`, [mtst + '%'])).rows
+      .map(r => r.id).join() === `${mtst}2`);
+
+  // Re-editing that haul back onto UB has to take the Truck Tracking row with
+  // it. Nothing else ever would: the tab refuses to delete payroll's rows, and
+  // the entry itself has not changed, so the read-time sweep still sees a live
+  // dust customer haul.
+  await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb)
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    ['FCT:fct_intercompany_billing_entries', JSON.stringify([
+      { id: 'icm', source: 'trucking', source_id: `${mtst}2`, total: 725 },
+    ])]);
+  const backToUb = await call('POST', { action: 'resplit', id: mixedId }, mixedBody(false), ADMIN);
+  assert('re-pointing it at UB goes through', backToUb.statusCode === 200, JSON.stringify(backToUb.body));
+  assert('and takes the Truck Tracking row back', mine(await blob(TRUCK_BLOB), mtst).length === 0);
+  assert('out of the mirror too',
+    (await q(`SELECT 1 FROM truck_division_entries WHERE id LIKE $1`, [mtst + '%'])).rows.length === 0);
+  assert('and its Intercompany billing with it',
+    !(await blob('FCT:fct_intercompany_billing_entries')).some(e => e.id === 'icm'));
+  assert('while both hauls now bill off Dust Control Tracking',
+    (await q(`SELECT 1 FROM dust_control_entries WHERE id LIKE $1`, [mtsd + '%'])).rows.length === 2);
+
+  // ── A haul that bills nobody ─────────────────────────────────────────────
+  // The third destination: tracked on EES Other, invoiced by no one, and posting
+  // nothing to Truck Tracking — a Truck Tracking row is an invoice line.
+  console.log('\n[a dust day with a non-billable haul]');
+  {
+    const nbId  = await submitted({ ...DUST_DAY, work_date: '2026-08-21' });
+    const ntsd  = `tsd-${nbId}-`, ntst = `tst-${nbId}-`, ntse = `tse-${nbId}-`;
+    const EE_BLOB = 'FCT:dust_ees_other_rows';
+
+    const body = secondDest => ({
+      trucking: {
+        haul_fee: 135, division: '', unit: 'Distributor Truck 4000',
+        rows: [
+          { start_time: '05:00', end_time: '10:00', haul_fee: 135 },
+          { company: 'Antero', start_time: '10:00', end_time: '15:00', haul_fee: 145 },
+        ],
+      },
+      dust: {
+        rows: [
+          { dest: 'dust', company_man: 'Steve Quinn', location: 'Deer Lick Compressor',
+            start_time: '05:00', end_time: '10:00', gallons_ub: 4000,
+            vehicle1: 'Distributor Truck 4000' },
+          secondDest === 'ees'
+            ? { dest: 'ees', company: 'Antero', location: 'Bear Hollow',
+                start_time: '10:00', end_time: '15:00', vehicle1: 'Distributor Truck 4000' }
+            : { dest: 'dust', company: 'Antero', company_man: 'Maximus Lockerbie',
+                location: 'Bear Hollow', start_time: '10:00', end_time: '15:00',
+                gallons_ub: 2000, vehicle1: 'Distributor Truck 4000' },
+        ],
+      },
+    });
+
+    const appr3 = await call('POST', { action: 'approve', id: nbId }, body('ees'), ADMIN);
+    assert('approved', appr3.statusCode === 200, JSON.stringify(appr3.body));
+
+    const ee = mine(await blob(EE_BLOB), ntse);
+    assert('one EES Other row', ee.length === 1, JSON.stringify(ee.map(r => r.id)));
+    // The id is the haul's place in the DAY, so leg 2 keeps leg 2's id rather
+    // than being packed into leg 1's slot.
+    assert('under the id of the leg it actually is', ee[0].id === `${ntse}2`, ee[0].id);
+    assert('billing that haul\'s own customer', ee[0].customer === 'Antero');
+    assert('on its own location', ee[0].location === 'Bear Hollow');
+    assert('with its own window', ee[0].actual_start === '10:00' && ee[0].actual_end === '15:00');
+    assert('and its own hours', Number(ee[0].actual_hours) === 5, String(ee[0].actual_hours));
+    assert('always Non-Billable', ee[0].billing === 'Non-Billable');
+    assert('carrying no rate', ee[0].rate === '');
+    assert('the UB haul still posts to Dust Control Tracking',
+      (await q(`SELECT id FROM dust_control_entries WHERE id LIKE $1`, [ntsd + '%'])).rows
+        .map(r => r.id).join() === `${ntsd}row`);
+    // A haul billed to nobody is not a trucking line.
+    assert('and nothing reaches Truck Tracking', mine(await blob(TRUCK_BLOB), ntst).length === 0);
+
+    // Re-pointing it back at UB has to take the EES row with it — nothing else
+    // ever would, since that tab creates and deletes nothing.
+    const back = await call('POST', { action: 'resplit', id: nbId }, body('dust'), ADMIN);
+    assert('re-pointing it at UB goes through', back.statusCode === 200, JSON.stringify(back.body));
+    assert('and takes the EES Other row back', mine(await blob(EE_BLOB), ntse).length === 0);
+    assert('while both hauls now bill off Dust Control Tracking',
+      (await q(`SELECT 1 FROM dust_control_entries WHERE id LIKE $1`, [ntsd + '%'])).rows.length === 2);
+
+    // Un-approve has to find them too — the gate used to ask isEesJob, which a
+    // customer haul is not.
+    await call('POST', { action: 'resplit', id: nbId }, body('ees'), ADMIN);
+    assert('the EES row is back', mine(await blob(EE_BLOB), ntse).length === 1);
+    const unNb = await call('POST', { action: 'unapprove', id: nbId }, {}, ADMIN);
+    assert('un-approved', unNb.statusCode === 200, JSON.stringify(unNb.body));
+    assert('and the EES Other row goes with it', mine(await blob(EE_BLOB), ntse).length === 0);
+  }
+
+  // ── The rows posted before a UB haul stopped posting one ─────────────────
+  // Every dust customer haul used to post a Truck Tracking row. Those rows are
+  // stranded — the tab refuses to delete payroll's, and payroll cannot take one
+  // back without un-approving a timesheet the office has been paid for — so the
+  // read-time sweep is the only thing that will ever retire them.
+  console.log('\n[a legacy UB row is retired on the next read]');
+  {
+    const { sweepInjectedTruckRows } = require(path.resolve(__dirname, '..', 'api', 'lib', 'truck-injected.js'));
+    const legacy = { id: `${mtst}row`, customer: 'CNX', total_hours: 5.5, haul_fee: 135, driver: 'Mike Barr' };
+    const manual = { id: 'TR-1016', customer: 'Kinkead', total_hours: 1.25 };
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [TRUCK_BLOB, JSON.stringify([legacy, manual])]);
+    await q(`INSERT INTO truck_division_entries (id, company_code, customer, total_hours)
+             VALUES ($1, 'FCT', 'CNX', 5.5) ON CONFLICT (id) DO NOTHING`, [legacy.id]);
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      ['FCT:fct_intercompany_billing_entries', JSON.stringify([
+        { id: 'icl', source: 'trucking', source_id: legacy.id, total: 742.5 },
+      ])]);
+
+    const { entries, removed } = await sweepInjectedTruckRows(SQL, 'FCT', [legacy, manual]);
+    assert('the legacy UB row is swept', removed.length === 1 && removed[0] === legacy.id,
+      JSON.stringify(removed));
+    assert('the office\'s own row is never touched',
+      entries.length === 1 && entries[0].id === 'TR-1016');
+    assert('gone from the blob on the same read',
+      !mine(await blob(TRUCK_BLOB), mtst).length);
+    assert('and from the mirror',
+      (await q(`SELECT 1 FROM truck_division_entries WHERE id = $1`, [legacy.id])).rows.length === 0);
+    // Without this the trucking page reads the billing entry as a row it lost
+    // and rebuilds exactly what was just swept.
+    assert('its Intercompany billing goes too',
+      !(await blob('FCT:fct_intercompany_billing_entries')).some(e => e.id === 'icl'));
+  }
 
   // ── A trucking day, which has no dust half at all ────────────────────────
   console.log('\n[a trucking day split across customers]');

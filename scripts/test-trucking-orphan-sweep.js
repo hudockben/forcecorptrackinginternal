@@ -59,6 +59,10 @@ function makeSql(initial = {}) {
     tde:      new Set(initial.tde || []),
     // intercompany_billing_entries: keyed by its own id, deleted by source_id.
     icMirror: new Map(initial.icMirror || []),
+    // dust_control_entries, by row id — the Dust Control Tracking rows payroll
+    // has posted. The sweep asks which of these hauls the dust office bills off
+    // its own grid; a row here is what says leg N does.
+    dustRows: new Set(initial.dustRows || []),
     queries:  [],
   };
   const sql = (strings, ...values) => {
@@ -121,6 +125,15 @@ function makeSql(initial = {}) {
     if (q.startsWith('INSERT INTO truck_division_entries')) {
       store.tde.add(values[0]);
       return Promise.resolve([]);
+    }
+    // dustBilledLegs: which legs of these entries have a Dust Control Tracking
+    // row, matched by the "tsd-<entryId>-%" patterns the caller builds.
+    if (q.startsWith('SELECT id FROM dust_control_entries')) {
+      const patterns = (values[values.length - 1] || []).map(p => String(p).replace(/%$/, ''));
+      return Promise.resolve(
+        [...store.dustRows].filter(id => patterns.some(p => String(id).startsWith(p)))
+                           .map(id => ({ id }))
+      );
     }
     if (q.startsWith('SELECT value FROM dropdown_lists')) return Promise.resolve([]);
     if (q.includes('FROM dropdown_lists')) return Promise.resolve([]);
@@ -326,6 +339,113 @@ const icEntry = (sourceId, over = {}) => ({
     assert('a row whose entry was deleted is swept', removed.length === 1 && entries.length === 0);
     assert('its billing entry goes too',
       (store.appData.get(IC_KEY) || []).length === 0);
+  }
+
+  // ── The dust hauls that were posted here before they stopped being ──────
+  // Every dust customer haul used to post a Truck Tracking row beside its dust
+  // billing row. A haul billed off Dust Control Tracking no longer does — that
+  // grid records, prices and invoices it end to end — but the rows already
+  // posted are stranded: the tab refuses to delete payroll's rows, and payroll
+  // cannot take one back without un-approving a timesheet the office has been
+  // paid for. The sweep is the only thing that will ever retire them.
+  console.log('\n[a UB haul\'s Truck Tracking row is retired on read]');
+  {
+    const ub  = truckingRowId(70);          // leg 1, billed off Dust Control Tracking
+    const mat = truckingRowId(71);          // leg 1, billed off Other Billing
+    const rows = [
+      { id: ub,  driver: 'Mike Barr', total_hours: 10, haul_fee: 121, customer: 'Northeast Natural Energy' },
+      { id: mat, driver: 'Mike Barr', total_hours: 8,  haul_fee: 121, customer: 'CNX' },
+      { id: 'TR-1016', driver: 'Nick Detwiler', total_hours: 1.25, customer: 'Kinkead' },
+    ];
+    const dustEntry = over => tsEntry({ division: 'dust', job_id: 'Antero', job_label: 'Antero', ...over });
+    const { sql, store } = makeSql({
+      appData: { [TRUCK_KEY]: rows.slice(), [IC_KEY]: [icEntry(ub), icEntry(mat)] },
+      entries: [dustEntry({ id: 70 }), dustEntry({ id: 71 })],
+      tde: [ub, mat, 'TR-1016'],
+      icMirror: [['ic-' + ub, ub], ['ic-' + mat, mat]],
+      // Only entry 70's haul has a Dust Control Tracking row. Entry 71's billed
+      // off Other Billing, so it has none — and keeps its Truck Tracking row.
+      dustRows: ['tsd-70-row'],
+    });
+
+    const { entries, removed } = await sweepInjectedTruckRows(sql, CO, rows);
+    assert('the UB haul\'s row is swept', removed.length === 1 && removed[0] === ub);
+    assert('the material haul\'s row stays', entries.some(r => r.id === mat));
+    assert('and the office\'s own row is never touched', entries.some(r => r.id === 'TR-1016'));
+    assert('the blob is cleaned on the same read', !store.appData.get(TRUCK_KEY).some(r => r.id === ub));
+    assert('the mirror row goes with it', !store.tde.has(ub));
+    // Without this the trucking page reads the billing entry as a row it lost
+    // and rebuilds exactly what was just swept.
+    assert('and so does its Intercompany billing',
+      !store.appData.get(IC_KEY).some(e => e.source_id === ub));
+    assert('the material haul still bills',
+      store.appData.get(IC_KEY).some(e => e.source_id === mat));
+  }
+  {
+    // A day split across both grids: leg 1 UB, leg 2 material. Only leg 1 goes,
+    // and leg 2 keeps the id — and the Intercompany history — it was posted
+    // under, rather than being renumbered into leg 1's place.
+    const legOne = truckingRowId(72, 1);
+    const legTwo = truckingRowId(72, 2);
+    const rows = [{ id: legOne, customer: 'Antero' }, { id: legTwo, customer: 'CNX' }];
+    const { sql, store } = makeSql({
+      appData: { [TRUCK_KEY]: rows.slice(), [IC_KEY]: [icEntry(legOne), icEntry(legTwo)] },
+      entries: [tsEntry({ id: 72, division: 'dust', job_id: 'Antero' })],
+      tde: [legOne, legTwo],
+      icMirror: [['ic-' + legOne, legOne], ['ic-' + legTwo, legTwo]],
+      dustRows: ['tsd-72-row'],           // leg 1 only
+    });
+    const { entries, removed } = await sweepInjectedTruckRows(sql, CO, rows);
+    assert('only the UB leg is swept', removed.length === 1 && removed[0] === legOne);
+    assert('the material leg keeps its own id', entries.length === 1 && entries[0].id === legTwo);
+    assert('and its billing entry with it',
+      store.appData.get(IC_KEY).some(e => e.source_id === legTwo));
+  }
+  {
+    // Nothing on the dust grid says anything about this haul — a row mid-
+    // approval, or one whose dust row never landed. Absence is not evidence:
+    // deleting a haul's billing on a guess is the one thing worse than leaving
+    // a stale row up, so the row stays and the day is somebody's to look at.
+    const row = truckingRowId(73);
+    const rows = [{ id: row, customer: 'Antero' }];
+    const { sql } = makeSql({
+      appData: { [TRUCK_KEY]: rows.slice() },
+      entries: [tsEntry({ id: 73, division: 'dust', job_id: 'Antero' })],
+      tde: [row], dustRows: [],
+    });
+    const { removed } = await sweepInjectedTruckRows(sql, CO, rows);
+    assert('a dust haul with no row on either grid is left alone', removed.length === 0);
+  }
+  {
+    // A trucking entry has no dust side at all, so the lookup is never made —
+    // its rows can never be retired by this rule.
+    const row = truckingRowId(42);
+    const rows = [{ id: row, customer: 'Antero' }];
+    const { sql, store } = makeSql({
+      appData: { [TRUCK_KEY]: rows.slice() }, entries: [tsEntry()], tde: [row],
+      dustRows: ['tsd-42-row'],           // would match on id, but 42 is trucking
+    });
+    const { removed } = await sweepInjectedTruckRows(sql, CO, rows);
+    assert('a trucking row is never swept for this', removed.length === 0);
+    assert('and the dust grid is not even asked about',
+      !store.queries.some(q => q.startsWith('SELECT id FROM dust_control_entries')));
+  }
+
+  // Every reader of findStaleTruckRows has to ask the same question, or they
+  // disagree about which rows exist: the tab retires a legacy UB row on read
+  // while the executive report goes on counting it as trucking revenue, and the
+  // repair tool reports "nothing to do" over rows the next tab load removes.
+  {
+    const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
+    for (const [file, label] of [
+      ['api/executive/report.js',              'the executive report'],
+      ['scripts/repair-orphaned-truck-rows.js', 'the repair tool'],
+      ['api/lib/truck-injected.js',            'the read-time sweep'],
+    ]) {
+      const src = read(file);
+      assert(`${label} asks the dust grid which hauls it bills`,
+        src.includes('dustBilledLegs') && /findStaleTruckRows\([^)]*ubLegs\)/.test(src));
+    }
   }
 
   // ── Costs nothing in the steady state ───────────────────────────────────

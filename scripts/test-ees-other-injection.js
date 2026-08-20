@@ -72,7 +72,10 @@ Module._load = function (req, parent) {
 };
 
 const TS = require(path.resolve(__dirname, '../api/timesheet-entries.js'));
-const { insertEesOtherRow, removeEesOtherRows, eesOtherRowIdPrefix } = TS._test;
+const {
+  insertEesOtherRow, insertEesOtherRows, removeEesOtherRows,
+  eesOtherRowIdPrefix, eesOtherRowId, eesSplitForEntry, couldHaveEesOtherRows,
+} = TS._test;
 const sql = require('@neondatabase/serverless').neon();
 const BLOB = 'ACME:dust_ees_other_rows';
 const rows = () => store.get(BLOB) || [];
@@ -222,7 +225,8 @@ function entry(over = {}) {
     const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
     const guard = SRC.slice(SRC.indexOf('injected cost rows, refuse'), SRC.indexOf('injected_row_count'));
     assert('the edit guard counts EES rows', /eesOtherHasInjectedRow/.test(guard));
-    assert('and gates on the EES job', /isEesJob\(existing\.job_id\)/.test(guard));
+    assert('and gates on any dust entry, not just an EES-activity one',
+      /couldHaveEesOtherRows\(existing\)/.test(guard));
   }
 
   console.log('\n[approving puts back work that Intercompany had removed]');
@@ -340,10 +344,180 @@ function entry(over = {}) {
     assert('turf + EES id       → does NOT inject', !needsEesOther(entry({ division: 'turf' })));
     assert('time off            → does NOT inject', !needsEesOther(entry({ entry_type: 'time_off' })));
 
-    // The gate must be identical everywhere it appears, or a row outlives the
+    // The TEARDOWN gate is wider than either injection gate, and deliberately.
+    // Two different things put rows in this tab: the single row an entry on a
+    // standing EES activity posts, and the per-leg rows a dust CUSTOMER haul
+    // posts for each haul billed off "Other Billing - Non Billable". Asking
+    // isEesJob would find only the first, so a customer haul's rows would
+    // outlive the entry that made them in a tab that deletes nothing.
+    assert('the teardown gate covers any dust entry',
+      /function couldHaveEesOtherRows\(entry\) \{\s*\n\s*return !!entry && entry\.division === 'dust';/.test(SRC));
+    // And it must be identical everywhere it appears, or a row outlives the
     // entry that made it (approve injects, un-approve/delete miss it).
-    const gates = SRC.match(/existing\.division === 'dust' && isEesJob\(existing\.job_id\)/g) || [];
+    const gates = SRC.match(/couldHaveEesOtherRows\(existing\)/g) || [];
     assert('un-approve, delete and the edit guard share the gate', gates.length === 3, `found ${gates.length}`);
+    assert('and none of the three still asks the old narrower one',
+      !/existing\.division === 'dust' && isEesJob\(existing\.job_id\)/.test(SRC));
+  }
+
+  // ── A customer haul billed off "Other Billing - Non Billable" ───────────
+  // Not every haul is invoiced. A driver sent out to move a tank or wait on a
+  // frac is real hours against a real customer that the dust office tracks and
+  // bills to nobody — and until this it had nowhere to go but one of the two
+  // billing grids, where it was either invoiced by accident or left off.
+  console.log('\n[a customer haul that bills nobody]');
+  {
+    const haul = over => entry({
+      id: 601, division: 'dust', job_id: 'co-cnx', job_label: 'CNX',
+      start_time: '05:00', end_time: '15:00', computed_hours: 9.5,
+      truck_unit: '4000 SPRAY', notes: 'moved the tank',
+      // A customer job carries none of these — normalizeEntryBody forces them
+      // null — which is exactly why the row is built from the leg instead.
+      ees_unit: null, ees_customer: null, ees_location: null,
+      ees_name: null, ees_job_number: null, ees_billing: null,
+      ...over,
+    });
+    const leg = over => ({
+      dest: 'ees', company: 'Northeast Natural Energy',
+      location: 'Great Lakes Lease', start_time: '05:00', end_time: '08:00', ...over,
+    });
+
+    store.clear();
+    const [row] = await insertEesOtherRows(sql, 'ACME', haul(), [leg()]);
+    assert('one row written', rows().length === 1);
+    assert('under leg 1\'s historic id', row.id === eesOtherRowId(601, 1));
+    assert('customer ← the leg, not the timesheet', row.customer === 'Northeast Natural Energy');
+    assert('location ← the leg', row.location === 'Great Lakes Lease');
+    assert('the haul\'s own window', row.actual_start === '05:00' && row.actual_end === '08:00');
+    // The leg's window, not the entry's lunch-deducted computed_hours: a split
+    // day's legs have to sum to the day they came out of.
+    assert('hours ← the leg\'s window', row.actual_hours === 3, String(row.actual_hours));
+    assert('unit falls back to the timesheet\'s', row.unit === '4000 SPRAY');
+    assert('and the leg\'s own unit wins when given',
+      (await insertEesOtherRows(sql, 'ACME', haul(), [leg({ vehicle1: '7549' })]))[0].unit === '7549');
+    assert('comments ← notes', row.comments === 'moved the tank');
+    // The whole point of this destination.
+    assert('always Non-Billable', row.billing === 'Non-Billable');
+    assert('no rate', row.rate === '');
+    // Neither of the two standing activities, so it claims neither.
+    assert('no EES activity claimed', row.activity === '');
+    // Read-only in the tab and unnameable from a customer haul, so blank rather
+    // than guessed.
+    assert('name and job number left blank', row.name === '' && row.job_number === '');
+  }
+  {
+    // A day split three ways, only the middle haul non-billable. The id is the
+    // haul's place in the DAY — Intercompany keys off it — so the row lands at
+    // leg 2 rather than being packed to the front.
+    store.clear();
+    const legs = [
+      { dest: 'dust', company: 'CNX' },
+      { dest: 'ees',  company: 'Antero', location: 'Bear Hollow', start_time: '08:00', end_time: '11:00' },
+      { dest: 'ob',   company: 'Range' },
+    ];
+    const day = entry({ id: 602, job_id: 'co-cnx', job_label: 'CNX' });
+    const written = await insertEesOtherRows(sql, 'ACME', day, legs);
+    assert('only the non-billable haul lands here', written.length === 1);
+    assert('under the id of the leg it actually is', written[0].id === eesOtherRowId(602, 2));
+    assert('billing that haul\'s own customer', written[0].customer === 'Antero');
+
+    // Re-pointing it at a grid that bills takes the row back. Nothing else ever
+    // would — the tab creates and deletes nothing.
+    const after = await insertEesOtherRows(sql, 'ACME', day,
+      legs.map(l => (l.dest === 'ees' ? { ...l, dest: 'ob' } : l)));
+    assert('re-pointing it off takes the row back', after.length === 0 && rows().length === 0);
+  }
+  {
+    // An ordinary billed day must not rewrite the blob at all — that would race
+    // the dust tab's own save for no reason.
+    store.clear();
+    store.set(BLOB, [{ id: 'manual-1', customer: 'Someone' }]);
+    const untouched = await insertEesOtherRows(sql, 'ACME',
+      entry({ id: 603, job_id: 'co-cnx' }), [{ dest: 'dust' }, { dest: 'ob' }]);
+    assert('a day with no non-billable haul writes nothing here', untouched.length === 0);
+    assert('and the tab\'s own rows are untouched',
+      rows().length === 1 && rows()[0].id === 'manual-1');
+  }
+  {
+    // The modal has to reopen the day as the day it was, by LEG.
+    store.clear();
+    const day = entry({ id: 604, job_id: 'co-cnx', job_label: 'CNX' });
+    await insertEesOtherRows(sql, 'ACME', day, [
+      { dest: 'dust' },
+      { dest: 'ees', company: 'Antero', location: 'Bear Hollow', start_time: '08:00', end_time: '11:00', vehicle1: '4000' },
+    ]);
+    const { rows: back } = await eesSplitForEntry(sql, 'ACME', day);
+    assert('the pre-fill answers one haul', back.length === 1);
+    assert('carrying the leg of the day it was', back[0].leg === 2);
+    assert('and its destination', back[0].dest === 'ees');
+    assert('with the boxes the modal asks for',
+      back[0].company === 'Antero' && back[0].location === 'Bear Hollow'
+      && back[0].vehicle1 === '4000' && back[0].start_time === '08:00');
+  }
+  {
+    // The teardown gate has to cover a customer haul, or its rows outlive the
+    // entry in a tab that cannot delete them.
+    assert('the teardown gate covers a customer haul',
+      couldHaveEesOtherRows({ division: 'dust', job_id: 'co-cnx' }) === true);
+    assert('and a standing EES activity',
+      couldHaveEesOtherRows({ division: 'dust', job_id: 'ees:washing' }) === true);
+    assert('but no other division',
+      couldHaveEesOtherRows({ division: 'trucking', job_id: 'co-cnx' }) === false);
+    assert('and not a null entry', couldHaveEesOtherRows(null) === false);
+
+    store.clear();
+    const day = entry({ id: 605, job_id: 'co-cnx', job_label: 'CNX' });
+    await insertEesOtherRows(sql, 'ACME', day, [{ dest: 'ees', company: 'CNX' }]);
+    assert('un-approve finds the customer haul\'s row',
+      (await removeEesOtherRows(sql, 'ACME', day)) === 1 && rows().length === 0);
+  }
+
+  // ── …and out to the Intercompany EES Other tab ──────────────────────────
+  // These hours are billed between the parent and child company, so the row has
+  // to reach Intercompany — under the EES Other sub-tab, filed against the
+  // customer whose day it was. Three files have to agree for that to happen,
+  // and none of them can see the other two.
+  console.log('\n[the hours reach Intercompany, under EES Other]');
+  {
+    const read = f => require('fs').readFileSync(path.resolve(__dirname, '..', f), 'utf8');
+    const DUST = read('dust.html');
+    const IC   = read('intercompany.html');
+    const { IC_SOURCES } = require('../api/lib/ic-sources.js');
+
+    // 1. The dust tab mirrors an EES row into the shared billing list, tagged.
+    const rec = DUST.slice(DUST.indexOf('function _reconcileEesBilling'),
+                           DUST.indexOf('async function autoSyncEesIntercompany'));
+    assert('the dust tab tags the entry as EES Other',
+      new RegExp(`source: '${IC_SOURCES.DUST_EES_OTHER}'`).test(rec));
+    // 2. …gating on HOURS, not money. A non-billable haul has no total by
+    //    definition, so a money gate would drop exactly these rows.
+    assert('and gates on hours, not money, so a non-billable haul still goes',
+      /if \(!\(c\.hrs > 0\)\)/.test(rec) && !/if \(!\(c\.total > 0\)\)/.test(rec));
+    // 3. …matching the company by name, falling back to the customer — which is
+    //    what files these under the customer whose day it was.
+    assert('and files it under the row\'s customer when no name is set',
+      /const key\s+= \(row\.name \|\| row\.customer \|\| ''\)/.test(rec));
+    // 4. Intercompany's EES Other sub-tab reads that same tag.
+    assert('Intercompany has an EES Other sub-tab',
+      new RegExp(`switchCiDiv\\('${IC_SOURCES.DUST_EES_OTHER}'\\)`).test(IC));
+    assert('and it selects on the source the dust tab writes',
+      /entries\.filter\(e => \(e\.source \|\| 'trucking'\) === ciDivFilter\)/.test(IC)
+      && new RegExp(`ciDivFilter === '${IC_SOURCES.DUST_EES_OTHER}'`).test(IC));
+    // 5. …and counts a Non-Billable row's hours in its own column, which is
+    //    where every row this file posts for a customer haul lands.
+    assert('a Non-Billable row\'s hours are counted separately over there',
+      /nonBillHrs \+= hrs/.test(IC));
+
+    // The row this file writes has to satisfy that reconciler: hours above zero
+    // and a customer to file it under, or it never leaves the dust tab.
+    store.clear();
+    const [row] = await insertEesOtherRows(sql, 'ACME',
+      entry({ id: 606, job_id: 'co-cnx', job_label: 'CNX', ees_customer: null }),
+      [{ dest: 'ees', company: 'CNX', start_time: '05:00', end_time: '09:00' }]);
+    assert('the row carries hours to collect', row.actual_hours === 4);
+    assert('and a customer to file them under', row.customer === 'CNX');
+    assert('marked Non-Billable, so they land in the non-billable column',
+      row.billing === 'Non-Billable');
   }
 
   console.log('\n[the two jobs are offered under dust, and only dust]');
