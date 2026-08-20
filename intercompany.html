@@ -658,6 +658,8 @@
     .an-tbl tbody tr:hover td { background:rgba(255,255,255,0.02); }
     .an-tbl tfoot td { font-weight:700; border-top:2px solid var(--border); color:var(--accent); padding:0.45rem 1rem; font-size:0.75rem; background:rgba(167,139,250,0.04); }
     .an-tbl tfoot td.r { text-align:right; }
+    /* Job number shown beside the project name in the Job Summary report */
+    .an-tbl td .js-jobno { color:var(--muted); font-weight:400; margin-left:0.45rem; font-variant-numeric:tabular-nums; }
     /* Division subtotal rows in the Job Summary report */
     .an-tbl tbody tr.js-subtotal td { font-weight:700; color:var(--text); background:rgba(148,163,184,0.07); border-top:1px solid var(--border); border-bottom:1px solid var(--border); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em; }
     .an-tbl tbody tr.js-subtotal:hover td { background:rgba(148,163,184,0.07); }
@@ -834,6 +836,7 @@
         color: #111 !important;
         background: #fff !important;
       }
+      .an-tbl tbody td .js-jobno { color: #555 !important; }
       .an-tbl tbody tr:nth-child(even) td { background: #f9f9f9 !important; }
       .an-tbl tbody td { padding: 5px 8px; border-bottom: 1px solid #ddd; }
 
@@ -3786,7 +3789,16 @@
           try {
             const pj = await projRes.json();
             (Array.isArray(pj.projects) ? pj.projects : []).forEach(p => {
-              if (p && p.id) projMap[p.id] = p; // overwrite blob entry with normalized data
+              if (!p || !p.id) return;
+              // Normalized data wins, but a project synced before the job_number
+              // column existed comes back blank — keep the blob's number in that
+              // case so the Job Summary still shows it.
+              const prev = projMap[p.id];
+              const prevJob = prev && (prev['job-number'] || prev.job_number);
+              if (prevJob && !p['job-number'] && !p.job_number) {
+                p = { ...p, 'job-number': prevJob };
+              }
+              projMap[p.id] = p; // overwrite blob entry with normalized data
             });
           } catch { /* non-fatal */ }
         }
@@ -3990,9 +4002,10 @@
           .map(p => {
             const proj  = projMap[p.pid];
             const name  = proj['project-name'] || proj.name || p.pid;
+            const jobNo = String(proj['job-number'] || proj.job_number || '').trim();
             const total = p.laborCost + p.equipCost + p.lowboyCost + p.triAxleCost;
             const division = (p.division === 'paving' || p.division === 'kiewit') ? p.division : 'turf';
-            return { ...p, name, total, division };
+            return { ...p, name, jobNo, total, division };
           })
           .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -4069,7 +4082,8 @@
             ? (r.minDate || startDate)
             : (r.minDate || startDate) + ' – ' + (r.maxDate || endDate);
           return '<tr>'
-            + '<td style="font-weight:500">' + divBadge(r.division) + escT(r.name) + '</td>'
+            + '<td style="font-weight:500">' + divBadge(r.division) + escT(r.name)
+              + (r.jobNo ? '<span class="js-jobno">#' + escT(r.jobNo) + '</span>' : '') + '</td>'
             + '<td style="color:var(--muted);white-space:nowrap">' + dateRange + '</td>'
             + '<td class="r">' + fmt$(r.laborCost) + '</td>'
             + '<td class="r">' + fmt$(r.equipCost) + '</td>'
