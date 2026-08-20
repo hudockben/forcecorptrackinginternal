@@ -19,6 +19,7 @@
       --muted:      #666;
       --green:      #22c55e;
       --red:        #ef4444;
+      --amber:      #fbbf24;
       /* Height of the sticky date-range bar, measured at runtime so the
          toolbars underneath pin below it however far it wraps. */
       --ic-range-h: 44px;
@@ -780,7 +781,7 @@
     .ic-fin-name { font-weight: 600; color: var(--text); }
     /* The windowed column is the one figure on this table that is not whole-job,
        so it is tinted to keep that difference visible at a glance. */
-    .ic-fin-table td.ic-fin-range { color: #fbbf24; font-weight: 600; }
+    .ic-fin-table td.ic-fin-range { color: var(--amber); font-weight: 600; }
     .ic-fin-idle { color: var(--muted); font-weight: 400; font-style: italic; }
     /* Zebra striping at this contrast, not a light fill — a pale stripe on a
        dark page reads as a different table. */
@@ -1632,6 +1633,7 @@
     // the current periods, then the trailing windows.
     const IC_RANGE_PRESETS = [
       { key: 'all',    label: 'All Time'  },
+      { key: 'year',   label: 'This Year' },
       { key: 'ytd',    label: 'YTD'       },
       { key: 'qtd',    label: 'Quarter'   },
       { key: 'mtd',    label: 'This Month'},
@@ -1641,7 +1643,7 @@
       { key: 'lastyr', label: 'Last Year' },
     ];
 
-    let icRange = { preset: 'ytd', start: '', end: '' };
+    let icRange = { preset: 'year', start: '', end: '' };
     // False until the first billing fetch settles, so the bar can tell "nothing
     // in this range" apart from "nothing loaded yet".
     let icEntriesLoaded = false;
@@ -1663,6 +1665,13 @@
       const span = (a, b) => ({ start: _icISO(a), end: _icISO(b) });
       switch (preset) {
         case 'all':    return { start: '', end: '' };
+        // The whole calendar year, not the part of it that has happened. This
+        // is the default, and it has to stay the default: the executive
+        // report's Intercompany card scopes on the year alone
+        // (api/lib/ic-metrics.js), so anything dated later this year counts
+        // there. Opening on YTD instead would drop those entries here and post
+        // two different totals for the same metric on two screens.
+        case 'year':   return span(new Date(y, 0, 1), new Date(y, 11, 31));
         case 'ytd':    return span(new Date(y, 0, 1), now);
         case 'qtd':    return span(new Date(y, Math.floor(m / 3) * 3, 1), now);
         case 'mtd':    return span(new Date(y, m, 1), now);
@@ -1996,7 +2005,7 @@
       // A stored custom range with nothing in it would read as All Time while
       // no chip is lit; fall back to the default instead.
       if (icRange.preset === 'custom' && !icRange.start && !icRange.end) {
-        icRange = { preset: 'ytd', start: '', end: '' };
+        icRange = { preset: 'year', start: '', end: '' };
       }
     }
     icLoadRange();
@@ -3864,12 +3873,11 @@
       if (!startEl.value) {
         // Open on whatever range the other tabs are showing. An open range has
         // no endpoints to copy and the report needs two, so it falls back to
-        // the data's own extent, then to year-to-date.
-        const b = icRangeBounds();
-        const ext = jsDataExtent();
-        const now = new Date();
-        startEl.value = b.start || ext.start || (now.getFullYear() + '-01-01');
-        endEl.value   = b.end   || ext.end   || _icISO(now);
+        // the same all-time window the chip uses.
+        const b   = icRangeBounds();
+        const all = jsAllTime();
+        startEl.value = b.start || all.start;
+        endEl.value   = b.end   || all.end;
       }
       jsRenderPresets();
 
@@ -3883,15 +3891,18 @@
       icFinSyncDates();
     }
 
-    // Earliest and latest dated row the page holds — the concrete window an
-    // "All Time" pick has to turn into, since the report needs both endpoints.
-    function jsDataExtent() {
-      const keys = icAllDatedRows().map(r => String(r.actual_date).slice(0, 10)).sort();
-      return keys.length ? { start: keys[0], end: keys[keys.length - 1] } : { start: '', end: '' };
-    }
+    /* The concrete window an "All Time" pick has to turn into, since the report
+       needs both endpoints. It cannot come from the data: the Job Summary runs
+       off /daily-rows, /trucking and /projects, none of which this page has
+       loaded, and reading the intercompany blobs instead — a different set of
+       divisions — would silently clip the report to whatever span those
+       happened to cover, or do nothing at all when none are loaded. So the
+       floor is a fixed date comfortably before any record this system holds. */
+    const JS_MIN_DATE = '2000-01-01';
+    const jsAllTime = () => ({ start: JS_MIN_DATE, end: _icISO(new Date()) });
 
     function jsSetPreset(preset) {
-      const b = preset === 'all' ? jsDataExtent() : icPresetBounds(preset);
+      const b = preset === 'all' ? jsAllTime() : icPresetBounds(preset);
       if (!b || !b.start || !b.end) return;
       document.getElementById('jsStartDate').value = b.start;
       document.getElementById('jsEndDate').value   = b.end;
@@ -3908,9 +3919,8 @@
         start: document.getElementById('jsStartDate').value || '',
         end:   document.getElementById('jsEndDate').value   || '',
       };
-      const ext = jsDataExtent();
       el.innerHTML = IC_RANGE_PRESETS.map(p => {
-        const b  = p.key === 'all' ? ext : icPresetBounds(p.key);
+        const b  = p.key === 'all' ? jsAllTime() : icPresetBounds(p.key);
         const on = !!(b && b.start && b.start === cur.start && b.end === cur.end);
         return '<button class="ic-range-chip' + (on ? ' on' : '') + '"'
           + ' onclick="jsSetPreset(\'' + p.key + '\')">' + p.label + '</button>';
@@ -3958,11 +3968,6 @@
     // server. Editing the boxes does not change it until the report is re-run,
     // so the table never labels itself with a window it has not applied.
     let _icFinApplied = null;
-
-    function icFinDataExtent() {
-      const keys = icAllDatedRows().map(r => String(r.actual_date).slice(0, 10)).sort();
-      return keys.length ? { start: keys[0], end: keys[keys.length - 1] } : { start: '', end: '' };
-    }
 
     function icFinSetPreset(preset) {
       const b = preset === 'all' ? { start: '', end: '' } : icPresetBounds(preset);
