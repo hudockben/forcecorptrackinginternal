@@ -472,6 +472,54 @@ function entry(over = {}) {
       (await removeEesOtherRows(sql, 'ACME', day)) === 1 && rows().length === 0);
   }
 
+  // ── …and out to the Intercompany EES Other tab ──────────────────────────
+  // These hours are billed between the parent and child company, so the row has
+  // to reach Intercompany — under the EES Other sub-tab, filed against the
+  // customer whose day it was. Three files have to agree for that to happen,
+  // and none of them can see the other two.
+  console.log('\n[the hours reach Intercompany, under EES Other]');
+  {
+    const read = f => require('fs').readFileSync(path.resolve(__dirname, '..', f), 'utf8');
+    const DUST = read('dust.html');
+    const IC   = read('intercompany.html');
+    const { IC_SOURCES } = require('../api/lib/ic-sources.js');
+
+    // 1. The dust tab mirrors an EES row into the shared billing list, tagged.
+    const rec = DUST.slice(DUST.indexOf('function _reconcileEesBilling'),
+                           DUST.indexOf('async function autoSyncEesIntercompany'));
+    assert('the dust tab tags the entry as EES Other',
+      new RegExp(`source: '${IC_SOURCES.DUST_EES_OTHER}'`).test(rec));
+    // 2. …gating on HOURS, not money. A non-billable haul has no total by
+    //    definition, so a money gate would drop exactly these rows.
+    assert('and gates on hours, not money, so a non-billable haul still goes',
+      /if \(!\(c\.hrs > 0\)\)/.test(rec) && !/if \(!\(c\.total > 0\)\)/.test(rec));
+    // 3. …matching the company by name, falling back to the customer — which is
+    //    what files these under the customer whose day it was.
+    assert('and files it under the row\'s customer when no name is set',
+      /const key\s+= \(row\.name \|\| row\.customer \|\| ''\)/.test(rec));
+    // 4. Intercompany's EES Other sub-tab reads that same tag.
+    assert('Intercompany has an EES Other sub-tab',
+      new RegExp(`switchCiDiv\\('${IC_SOURCES.DUST_EES_OTHER}'\\)`).test(IC));
+    assert('and it selects on the source the dust tab writes',
+      /entries\.filter\(e => \(e\.source \|\| 'trucking'\) === ciDivFilter\)/.test(IC)
+      && new RegExp(`ciDivFilter === '${IC_SOURCES.DUST_EES_OTHER}'`).test(IC));
+    // 5. …and counts a Non-Billable row's hours in its own column, which is
+    //    where every row this file posts for a customer haul lands.
+    assert('a Non-Billable row\'s hours are counted separately over there',
+      /nonBillHrs \+= hrs/.test(IC));
+
+    // The row this file writes has to satisfy that reconciler: hours above zero
+    // and a customer to file it under, or it never leaves the dust tab.
+    store.clear();
+    const [row] = await insertEesOtherRows(sql, 'ACME',
+      entry({ id: 606, job_id: 'co-cnx', job_label: 'CNX', ees_customer: null }),
+      [{ dest: 'ees', company: 'CNX', start_time: '05:00', end_time: '09:00' }]);
+    assert('the row carries hours to collect', row.actual_hours === 4);
+    assert('and a customer to file them under', row.customer === 'CNX');
+    assert('marked Non-Billable, so they land in the non-billable column',
+      row.billing === 'Non-Billable');
+  }
+
   console.log('\n[the two jobs are offered under dust, and only dust]');
   {
     const JOBS = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-jobs.js'), 'utf8');
