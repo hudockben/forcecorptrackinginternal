@@ -1183,7 +1183,15 @@
     }
 
     /* ── Project table ── */
-    .proj-table-wrap { overflow-x: auto; margin-bottom: 2rem; }
+    /* Still scrollable on narrow screens, but the scrollbar chrome is hidden —
+       it rendered as a pale bar straight across the bottom of the dark table. */
+    .proj-table-wrap {
+      overflow-x: auto;
+      margin-bottom: 2rem;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .proj-table-wrap::-webkit-scrollbar { width: 0; height: 0; display: none; }
     .proj-table {
       width: 100%;
       border-collapse: collapse;
@@ -1195,7 +1203,7 @@
       text-transform: uppercase;
       color: var(--muted);
       text-align: left;
-      padding: 0 0.75rem 0.5rem;
+      padding: 0 0.6rem 0.5rem;
       border-bottom: 1px solid var(--border);
       font-weight: 400;
       white-space: nowrap;
@@ -1208,7 +1216,7 @@
     .proj-table tbody tr:last-child { border-bottom: none; }
     .proj-table tbody tr:hover { background: var(--surface2); }
     .proj-table td {
-      padding: 0.6rem 0.75rem;
+      padding: 0.6rem;
       vertical-align: middle;
     }
     .pt-name {
@@ -1235,7 +1243,7 @@
       gap: 0.45rem;
     }
     .pt-bar-track {
-      width: 72px;
+      width: 60px;
       height: 4px;
       background: var(--surface2);
       border-radius: 2px;
@@ -1248,7 +1256,7 @@
       color: var(--muted);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
-      min-width: 2.4rem;
+      min-width: 2.1rem;
     }
     .pt-num {
       font-variant-numeric: tabular-nums;
