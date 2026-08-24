@@ -150,13 +150,153 @@
       gap: 0.5rem;
     }
     .btn:hover { border-color: #555; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn:disabled:hover { border-color: var(--border); }
     .btn.primary {
       background: var(--purple);
       color: #0a0a0f;
       border-color: var(--purple);
     }
     .btn.primary:hover { background: #8b6fe0; border-color: #8b6fe0; }
+    .btn.primary:disabled:hover { background: var(--purple); border-color: var(--purple); }
     .btn svg { width: 14px; height: 14px; }
+
+    /* ── Section picker ──
+       "Generate Report (PDF)" opens this before handing off to the browser's
+       print dialog: every section the report rendered, each with a checkbox,
+       all of them checked. Unchecking one drops it from the printout. */
+    .picker-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10040;
+      background: rgba(0,0,0,0.72);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .picker {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: min(560px, 100%);
+      max-height: calc(100vh - 3rem);
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .picker-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 1rem 1.2rem 0.85rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .picker-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+    .picker-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
+    .picker-x {
+      margin-left: auto;
+      background: none;
+      border: 0;
+      color: var(--muted);
+      font-size: 1.35rem;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 0.15rem;
+    }
+    .picker-x:hover { color: var(--text); }
+    .picker-tools {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.65rem 1.2rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .picker-link {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.3rem 0.6rem;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .picker-link:hover { color: var(--text); border-color: #555; }
+    .picker-count {
+      margin-left: auto;
+      font-size: 0.68rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .picker-list {
+      overflow-y: auto;
+      padding: 0.5rem 0.7rem;
+    }
+    .picker-row {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      padding: 0.55rem 0.6rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .picker-row:hover { background: var(--surface2); }
+    .picker-row input {
+      width: 15px;
+      height: 15px;
+      flex-shrink: 0;
+      cursor: pointer;
+      accent-color: var(--purple);
+    }
+    .picker-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    .picker-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      min-width: 0;
+    }
+    .picker-name {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .picker-meta {
+      font-size: 0.65rem;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* An excluded section stays legible — it is still a row you can click
+       back on — but reads as switched off at a glance. */
+    .picker-row.off { opacity: 0.45; }
+    .picker-foot {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.6rem;
+      padding: 0.8rem 1.2rem;
+      border-top: 1px solid var(--border);
+    }
 
     /* ── Report container (this is what gets printed) ──
        Wide enough for the eleven-column project table to sit without a
@@ -571,7 +711,8 @@
     @media print {
       @page { size: letter landscape; margin: 0.4in; }
       body { background: #fff; color: #000; }
-      header, .action-bar, footer, .filters, .section-action-btn { display: none !important; }
+      header, .action-bar, footer, .filters, .section-action-btn,
+      .picker-backdrop { display: none !important; }
       .report { max-width: none; margin: 0; padding: 0; }
       .section-title { color: #000; }
       .section-sub   { color: #555; }
@@ -601,6 +742,19 @@
         display: none !important;
       }
       body.printing-scoped .print-scope {
+        break-before: auto !important;
+        page-break-before: auto !important;
+      }
+
+      /* Picked-section print scope: the section picker marks every section the
+         user unchecked .print-omit and puts body in printing-picked, so the
+         printout carries only what was left checked. Same first-section rule as
+         above — whichever section leads the printout must not force a break. */
+      body.printing-picked #reportBody > .section.print-omit,
+      body.printing-picked #portfolioSections > .section.print-omit {
+        display: none !important;
+      }
+      body.printing-picked .print-first {
         break-before: auto !important;
         page-break-before: auto !important;
       }
@@ -709,7 +863,7 @@
         </svg>
         Email Report
       </button>
-      <button class="btn primary" onclick="window.print()">
+      <button class="btn primary" onclick="openReportPicker()" title="Choose which sections go in the PDF">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 6 2 18 2 18 9"/>
           <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
@@ -975,7 +1129,8 @@
     function renderDivisionSection(d, opts) {
       const id = 'portfolio-' + d.key;
       return `
-        <div class="section division-section page-break" id="${id}" style="--accent: ${esc(d.accent || '#666')};">
+        <div class="section division-section page-break" id="${id}"
+             data-section-name="${esc(d.name)}" style="--accent: ${esc(d.accent || '#666')};">
           <div class="section-head section-head-projects">
             <div class="section-head-text">
               <div class="section-title">
@@ -1601,11 +1756,172 @@
       window.location.replace('index.html');
     }
 
+    // ── Generate Report (PDF): pick the sections first ──
+    // The purple button opens a checklist of everything the report rendered,
+    // every box checked — the default is the whole report. Unchecking a
+    // division drops it from the printout through the same @media print
+    // mechanism the per-division PDF buttons use, just with a set of sections
+    // rather than a single one. Nothing is remembered between openings: each
+    // run starts from the full report again.
+    const PICKER_ID = 'pdfPicker';
+
+    // Every section the report currently renders, in the order it is read.
+    function reportSections() {
+      return Array.from(document.querySelectorAll('#reportBody .section'));
+    }
+
+    // A section's name for the checklist, without the status pill that shares
+    // its heading. Divisions carry it on the element; anything else falls back
+    // to the rendered title.
+    function sectionLabel(el) {
+      if (el.dataset.sectionName) return el.dataset.sectionName;
+      const title = el.querySelector('.section-title');
+      if (!title) return 'Section';
+      const clone = title.cloneNode(true);
+      clone.querySelectorAll('.div-status').forEach(n => n.remove());
+      return clone.textContent.trim() || 'Section';
+    }
+
+    function openReportPicker() {
+      const bodyEl = document.getElementById('reportBody');
+      if (!bodyEl || bodyEl.style.display === 'none') {
+        alert('The report is still loading.');
+        return;
+      }
+      if (document.getElementById(PICKER_ID)) return;  // already open
+
+      const sections = reportSections();
+      // Nothing to choose between — go straight to the print dialog.
+      if (!sections.length) { window.print(); return; }
+
+      const rows = sections.map(el => {
+        // The division's accent, read back off its own inline custom property.
+        // Only a literal colour is echoed into the dot's style attribute.
+        const accent = (el.style.getPropertyValue('--accent') || '').trim();
+        const dot    = /^#[0-9a-fA-F]{3,8}$/.test(accent) ? ` style="background: ${accent};"` : '';
+        const meta   = (el.querySelector('.section-sub')?.textContent || '').trim();
+        return `
+          <label class="picker-row">
+            <input type="checkbox" checked />
+            <span class="picker-dot"${dot}></span>
+            <span class="picker-text">
+              <span class="picker-name">${esc(sectionLabel(el))}</span>
+              ${meta ? `<span class="picker-meta">${esc(meta)}</span>` : ''}
+            </span>
+          </label>`;
+      }).join('');
+
+      const wrap = document.createElement('div');
+      wrap.id        = PICKER_ID;
+      wrap.className = 'picker-backdrop';
+      wrap.innerHTML = `
+        <div class="picker" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
+          <div class="picker-head">
+            <div>
+              <div class="picker-title" id="pickerTitle">Generate Report</div>
+              <div class="picker-sub">Uncheck any section you don't want in the PDF.</div>
+            </div>
+            <button class="picker-x" id="pickerClose" aria-label="Cancel">&times;</button>
+          </div>
+          <div class="picker-tools">
+            <button class="picker-link" id="pickerAll">Select all</button>
+            <button class="picker-link" id="pickerNone">Clear all</button>
+            <span class="picker-count" id="pickerCount"></span>
+          </div>
+          <div class="picker-list">${rows}</div>
+          <div class="picker-foot">
+            <button class="btn" id="pickerCancel">Cancel</button>
+            <button class="btn primary" id="pickerGo">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 6 2 18 2 18 9"/>
+                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                <rect x="6" y="14" width="12" height="8"/>
+              </svg>
+              Generate PDF
+            </button>
+          </div>
+        </div>`;
+      document.body.appendChild(wrap);
+
+      // The checkboxes come back in the same order as `sections`, so an index
+      // into one is an index into the other.
+      const boxes   = Array.from(wrap.querySelectorAll('.picker-list input'));
+      const countEl = wrap.querySelector('#pickerCount');
+      const goBtn   = wrap.querySelector('#pickerGo');
+
+      function sync() {
+        const n = boxes.filter(b => b.checked).length;
+        countEl.textContent = `${n} of ${boxes.length} section${boxes.length === 1 ? '' : 's'} included`;
+        boxes.forEach(b => b.closest('.picker-row').classList.toggle('off', !b.checked));
+        goBtn.disabled = n === 0;
+      }
+      const setAll = on => { boxes.forEach(b => { b.checked = on; }); sync(); };
+
+      const onKey = ev => { if (ev.key === 'Escape') close(); };
+      function close() {
+        wrap.remove();
+        document.removeEventListener('keydown', onKey);
+      }
+
+      boxes.forEach(b => b.addEventListener('change', sync));
+      document.addEventListener('keydown', onKey);
+      // Click outside to cancel, but only on the dim backdrop itself.
+      wrap.addEventListener('click', ev => { if (ev.target === wrap) close(); });
+      wrap.querySelector('#pickerClose').onclick  = close;
+      wrap.querySelector('#pickerCancel').onclick = close;
+      wrap.querySelector('#pickerAll').onclick    = () => setAll(true);
+      wrap.querySelector('#pickerNone').onclick   = () => setAll(false);
+      goBtn.onclick = () => {
+        const picked = sections.filter((_, i) => boxes[i].checked);
+        if (!picked.length) return;
+        // Close first: the modal is a page control, not report content, and the
+        // print dialog captures whatever is in the DOM when it opens.
+        close();
+        printSections(picked);
+      };
+
+      sync();
+      setTimeout(() => goBtn.focus(), 30);
+    }
+
+    // Print a chosen set of sections: everything else is marked .print-omit and
+    // hidden by the print stylesheet, and the first one that survives is
+    // cleared of its forced page break so the PDF doesn't open on a blank
+    // sheet. Cleanup takes the same two paths as printSection() — the classes
+    // must not linger, or the next printout is silently truncated.
+    function printSections(picked) {
+      const all = reportSections();
+      if (!picked.length) return;
+      // The whole report: no scoping needed, which keeps the default path
+      // identical to printing the page outright.
+      if (picked.length === all.length) { window.print(); return; }
+
+      const omitted = all.filter(el => !picked.includes(el));
+      const first   = picked[0];
+      omitted.forEach(el => el.classList.add('print-omit'));
+      first.classList.add('print-first');
+      document.body.classList.add('printing-picked');
+
+      const mql = window.matchMedia('print');
+      const cleanup = () => {
+        document.body.classList.remove('printing-picked');
+        omitted.forEach(el => el.classList.remove('print-omit'));
+        first.classList.remove('print-first');
+        window.removeEventListener('afterprint', cleanup);
+        mql.removeEventListener?.('change', onMqlChange);
+      };
+      const onMqlChange = e => { if (!e.matches) cleanup(); };
+      window.addEventListener('afterprint', cleanup, { once: true });
+      mql.addEventListener?.('change', onMqlChange);
+      window.print();
+    }
+
     // ── PDF: native browser print, scoped to one section ──
-    // Mirrors the top-of-page "Generate Report (PDF)" button (which calls
-    // window.print()) — marking one section as the print scope hides every
-    // other one via the @media print rules, so the user gets a single-division
-    // PDF out of their browser's Save as PDF flow.
+    // The per-division "PDF" button — marking one section as the print scope
+    // hides every other one via the @media print rules, so the user gets a
+    // single-division PDF out of their browser's Save as PDF flow. The
+    // top-of-page "Generate Report (PDF)" button does the same thing with a
+    // set of sections instead of one; see printSections() below.
     function printSection(sectionId) {
       const target = document.getElementById(sectionId);
       if (!target) { window.print(); return; }
