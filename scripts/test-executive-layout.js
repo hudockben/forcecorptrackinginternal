@@ -517,10 +517,19 @@ assert('and strips the per-division PDF buttons out of the email',
 console.log('\n[the PDF is ink on paper]');
 const printBlock = exec.slice(exec.indexOf('@media print'), exec.indexOf('@media (max-width: 1200px)'));
 for (const sel of ['.metric-strip', '.inv-card', '.tone-amber', '.ptable .v-contract',
-                   '.ptable .v-variance-over', '.section-empty', '.ptable-more',
+                   '.ptable .v-variance-over', '.section-empty',
                    '.status-red', '.ptable tfoot .ptable-total td']) {
   assert(`${sel} has print colours`, printBlock.includes(sel));
 }
+// "18 more — View all in Turf" is a page control, not a figure: a link to
+// another page is nothing on paper, and as the last thing in a section it takes
+// a sheet of its own whenever the table fills the page. The section's own
+// sub-line already reports the truncation — "6 pinned of 25 projects".
+const moreRule = (printBlock.match(/[^{}]*\.ptable-more[^{}]*\{[^}]*\}/) || [''])[0];
+assert('the "N more — View all in …" link does not print',
+  /display:\s*none/.test(moreRule), moreRule || '(no .ptable-more rule in the print block)');
+assert('and keeps no ink colours it can no longer use',
+  moreRule !== '' && !/color:/.test(moreRule), moreRule);
 // A blanket .metric-value colour after the tone palette flattens every figure on
 // the strip to black on paper — margin, variance and overdue all reading alike.
 assert('no blanket .metric-value colour undoes the tone palette in print',

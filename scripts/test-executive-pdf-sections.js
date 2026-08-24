@@ -264,7 +264,9 @@ async function main() {
   checkIncludes('nested division sections too', HTML,
     'body.printing-picked #portfolioSections > .section.print-omit');
   checkIncludes('the leading section drops its page break', HTML, 'body.printing-picked .print-first');
-  checkIncludes('and the picker itself never prints', HTML, '.picker-backdrop { display: none !important; }');
+  const backdropRule = (HTML.slice(HTML.indexOf('@media print'))
+    .match(/[^{}]*\.picker-backdrop[^{}]*\{[^}]*\}/) || [''])[0];
+  check('and the picker itself never prints', /display:\s*none/.test(backdropRule), true);
 
   // ── A report that has not loaded has nothing to pick from ──
   console.log('\n[a report that has not loaded yet]');
