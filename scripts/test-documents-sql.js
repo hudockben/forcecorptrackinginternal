@@ -157,9 +157,11 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('PUT seeds the tree', gen.statusCode === 200, JSON.stringify(gen.body));
   const folders = gen.body.folders;
   const names = folders.map(f => f.name);
-  assert('six fixed folders exist',
-    ['Contract & Change Orders', 'Permits & Insurance', 'Submittals', 'Safety', 'Photos', 'Closeout']
-      .every(n => names.includes(n)), names.join(' | '));
+  const STANDARD = ['Contract & Change Orders', 'Permits & Insurance', 'Submittals',
+                    'Safety', 'Photos', 'Repairs', 'Closeout'];
+  assert('every standard folder exists', STANDARD.every(n => names.includes(n)), names.join(' | '));
+  assert('and they render in the order the list declares them',
+    names.slice(0, STANDARD.length).join('|') === STANDARD.join('|'), names.join(' | '));
   assert('Purchase Orders root exists', names.includes('Purchase Orders'));
   assert('cost-code folder is labelled from the master list', names.includes('420 · Paving'), names.join(' | '));
   assert('a cost code with no master-list label falls back to the bare code',
@@ -175,6 +177,32 @@ async function upload(folderId, filename, auth, extra = {}) {
   }, PM);
   assert('re-running creates nothing', again.body.created === 0, `created ${again.body.created}`);
   assert('and returns the same folder count', again.body.folders.length === folders.length);
+  assert('and moves nothing, since the tree is already in order',
+    again.body.reordered === 0, `reordered ${again.body.reordered}`);
+
+  // ── A folder added to the standard list has to reach the jobs that already
+  // have a tree, in the place the list puts it. Wind this job back to what an
+  // older release left behind: no Repairs folder, and everything after it
+  // numbered one lower.
+  const CC = [{ code: '420', label: 'Paving' }, { code: '411', label: 'Excavation' }, { code: '415', label: '' }];
+  await client.query(`DELETE FROM project_folders WHERE project_id = $1 AND slug = 'repairs'`, [PROJ]);
+  await client.query(
+    `UPDATE project_folders SET sort_order = sort_order - 1 WHERE project_id = $1 AND sort_order >= 6`, [PROJ]);
+
+  const legacy = await call('PUT', { division: 'turf', projectId: PROJ }, { costCodes: CC }, PM);
+  const legacyNames = legacy.body.folders.map(f => f.name);
+  assert('an existing job gets a newly standard folder', legacyNames.includes('Repairs'), legacyNames.join(' | '));
+  assert('exactly one folder is created for it', legacy.body.created === 1, `created ${legacy.body.created}`);
+  assert('and it lands where the list puts it, not after the numbering it inherited',
+    legacyNames.join('|') === [...STANDARD, 'Purchase Orders', '411 · Excavation', '415', '420 · Paving'].join('|'),
+    legacyNames.join(' | '));
+  assert('the folders it displaced are renumbered, and say so',
+    legacy.body.reordered === 5, `reordered ${legacy.body.reordered}`);
+
+  // Once straightened out it stays straight — the renumbering must not run
+  // again on every single load.
+  const settled = await call('PUT', { division: 'turf', projectId: PROJ }, { costCodes: CC }, PM);
+  assert('and the next load moves nothing', settled.body.reordered === 0, `reordered ${settled.body.reordered}`);
 
   // A renamed folder must survive regeneration, or a PM's tidy-up is undone
   // every time the tab opens.
