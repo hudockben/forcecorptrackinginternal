@@ -49,6 +49,13 @@
   let documents = [];
   let caps      = { canUpload: false, canManage: false, canDelete: false };
   let currentFolderId = null;   // null = the root listing
+
+  // Folder ids whose children are drawn. The rail opens every branch closed:
+  // a job with forty purchase orders gets forty PO subfolders under Purchase
+  // Orders, and left open they push the cost-code folders below the fold and
+  // turn the rail into a scroll. This is the set the user has opened, plus the
+  // branches we open on their behalf when we move them somewhere.
+  const expanded = new Set();
   let search    = '';           // the document search in the toolbar
   let folderSearch = '';        // the folder rail's own filter — independent
   let mountEl   = null;
@@ -257,6 +264,13 @@
     if (currentFolderId && !folders.some(f => f.id === currentFolderId)) {
       currentFolderId = null;
     }
+
+    // Drop expansions for folders this scope no longer has — another job, or
+    // one deleted since. Pruning rather than clearing is what lets a folder
+    // created inside an open branch still show up under it after the reload.
+    for (const id of expanded) {
+      if (!folders.some(f => f.id === id)) expanded.delete(id);
+    }
     return true;
   }
 
@@ -292,6 +306,25 @@
 
   function docsIn(folderId) {
     return documents.filter(d => d.folder_ids.includes(folderId));
+  }
+
+  // Open a folder and every folder above it, so it is on screen rather than
+  // behind a closed twisty. Called whenever something other than a twisty
+  // click moves the user into a folder — a crumb, Enter in the filter, a
+  // folder they just created.
+  function expandTrail(folderId) {
+    for (const f of trail(folderId)) expanded.add(f.id);
+  }
+
+  // Open every branch the rail's filter kept, so its hits are visible instead
+  // of hidden under a closed parent. Deliberately driven by the filter box
+  // rather than by render(): re-deriving it on every draw would reopen a
+  // branch the moment the user closed it, since a toggle redraws.
+  function expandForFilter(needle) {
+    if (!needle) return;
+    for (const f of folders) {
+      if ((f.name || '').toLowerCase().includes(needle)) expandTrail(f.id);
+    }
   }
 
   // Every document whose name, note, or uploader matches the search box.
@@ -372,9 +405,13 @@
         .fctdoc-bar input[type="text"] { flex: 1 1 100% !important; max-width: none !important; }
         .fctdoc-row-actions button { padding: 0.3rem 0.5rem !important; }
       }
-      /* Touch targets big enough to hit with a glove on. */
+      /* Touch targets big enough to hit with a glove on. A 0.85rem twisty is
+         a thumb-width miss away from opening the folder instead of the
+         branch, so it gets a real target — and the empty slot beside a
+         childless folder grows with it, or the two indent differently. */
       @media (pointer: coarse) {
         .fctdoc-side [data-folder] { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+        .fctdoc-side .fctdoc-twisty { min-width: 1.75rem !important; }
         .fctdoc-row-actions button { min-width: 2.25rem; min-height: 2.25rem; }
       }
     `;
@@ -394,10 +431,24 @@
 
   function folderNodeHTML(f, depth, visible, needle) {
     if (visible && !visible.has(f.id)) return '';
-    const kids     = childrenOf(f.id);
+    // Filtered out early so a branch whose only children the filter dropped
+    // does not draw a twisty that opens onto nothing.
+    const kids     = childrenOf(f.id).filter(k => !visible || visible.has(k.id));
     const isActive = f.id === currentFolderId;
     const count    = docsIn(f.id).length;
     const icon     = f.kind === 'cost_code' ? '&#128203;' : '&#128193;';
+    const open     = kids.length > 0 && expanded.has(f.id);
+    // A fixed-width slot either way, so names line up whether or not the
+    // folder has anything under it.
+    const twisty   = kids.length
+      ? `<span class="fctdoc-twisty" data-folder-toggle="${esc(f.id)}" role="button" tabindex="0"
+               aria-expanded="${open ? 'true' : 'false'}"
+               title="${open ? 'Hide' : 'Show'} the ${kids.length} folder${kids.length === 1 ? '' : 's'} in ${esc(f.name)}"
+               style="flex:none;width:0.85rem;text-align:center;line-height:1;font-size:0.62rem;
+                      color:${open ? 'var(--text,#e0e0e0)' : 'var(--muted,#666)'};user-select:none">
+           ${open ? '&#9660;' : '&#9654;'}
+         </span>`
+      : '<span class="fctdoc-twisty" style="flex:none;width:0.85rem"></span>';
     return `
       <div>
         <div data-folder="${esc(f.id)}"
@@ -405,11 +456,14 @@
              style="display:flex;align-items:center;gap:0.35rem;padding:0.28rem 0.4rem;
                     padding-left:${0.4 + depth * 0.8}rem;border-radius:3px;cursor:pointer;font-size:0.8rem;
                     ${isActive ? 'background:var(--surface2,#1a1a26);color:var(--green,#22c55e);font-weight:600' : 'color:var(--text,#e0e0e0)'}">
+          ${twisty}
           <span>${icon}</span>
           <span style="flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${mark(f.name, needle)}</span>
+          ${!open && kids.length ? `<span title="${kids.length} folder${kids.length === 1 ? '' : 's'} inside"
+                 style="${S.muted};font-size:0.7rem">&#128193;${kids.length}</span>` : ''}
           ${count ? `<span style="${S.muted}">${count}</span>` : ''}
         </div>
-        ${kids.map(k => folderNodeHTML(k, depth + 1, visible, needle)).join('')}
+        ${open ? kids.map(k => folderNodeHTML(k, depth + 1, visible, needle)).join('') : ''}
       </div>`;
   }
 
@@ -533,6 +587,7 @@
     if (folderBox) {
       folderBox.addEventListener('input', e => {
         folderSearch = e.target.value;
+        expandForFilter(folderSearch.trim().toLowerCase());
         rerenderKeeping('#fctdoc-folder-search', e.target);
       });
       folderBox.addEventListener('keydown', e => {
@@ -543,6 +598,9 @@
           if (!hit) return;
           e.preventDefault();
           currentFolderId = hit.id;
+          // Clearing the filter afterwards must not drop the folder back out
+          // of sight behind a closed parent.
+          expandTrail(hit.id);
           search = '';
           rerenderKeeping('#fctdoc-folder-search', e.target);
         } else if (e.key === 'Escape' && folderSearch) {
@@ -554,12 +612,38 @@
     }
 
     mountEl.querySelectorAll('[data-folder]').forEach(el => {
-      el.addEventListener('click', () => { currentFolderId = el.dataset.folder; search = ''; render(); });
+      el.addEventListener('click', () => {
+        currentFolderId = el.dataset.folder;
+        // Clicking a folder opens it in both senses: its documents list on the
+        // right, its subfolders under it in the rail.
+        expanded.add(currentFolderId);
+        search = '';
+        render();
+      });
     });
+
+    // The twisty sits inside the folder row, and opening a branch is not the
+    // same gesture as opening the folder — so it swallows the click rather
+    // than letting it reach the row behind it.
+    mountEl.querySelectorAll('[data-folder-toggle]').forEach(el => {
+      const toggle = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = el.dataset.folderToggle;
+        if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+        render();
+      };
+      el.addEventListener('click', toggle);
+      el.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') toggle(e);
+      });
+    });
+
     mountEl.querySelectorAll('[data-folder-crumb]').forEach(el => {
       el.addEventListener('click', e => {
         e.preventDefault();
         currentFolderId = el.dataset.folderCrumb || null;
+        expandTrail(currentFolderId);
         render();
       });
     });
@@ -930,6 +1014,8 @@
         await api('POST', `/documents${q({ projectId: cfg.getProjectId(), folder: 1 })}`, { name, parentId });
         m.close();
         await load(cfg.getProjectId(), { force: true });
+        // Filed inside a closed branch it would be created into thin air.
+        expandTrail(parentId);
         render();
         toast('Folder created.');
       } catch (err) {
@@ -1289,6 +1375,7 @@
         currentFolderId = null;
         search = '';
         folderSearch = '';
+        expanded.clear();
         render();
       } catch (err) {
         mountEl.innerHTML = `<div style="color:var(--red,#ef4444);padding:1.5rem">

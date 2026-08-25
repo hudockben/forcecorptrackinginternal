@@ -478,8 +478,8 @@ console.log('\n[documents.js upload sequence]');
     };
 
     assert('the rail carries a filter box', Boolean(box()));
-    assert('and lists every folder before anything is typed',
-      rail().join('|') === 'Purchase Orders|PO PO-0137|Earthwork|Design & Permitting|Drawings|Permits|Township|Correspondence', rail().join('|'));
+    assert('and opens with every branch closed, so only the roots are listed',
+      rail().join('|') === 'Purchase Orders|Earthwork|Design & Permitting', rail().join('|'));
 
     // A leaf match has to keep the branch above it, or the hit shows up with
     // no indication of where it lives.
@@ -522,9 +522,14 @@ console.log('\n[documents.js upload sequence]');
     assert('and the filter survives it, so the next one is a keystroke away',
       Boolean(box()) && box().value === 'perm', box() && box().value);
 
-    // Escape clears.
+    // Escape clears. The branches the filter opened along the way stay open —
+    // clearing the box must not drop the folder you just found back out of
+    // sight, and Purchase Orders, which nothing matched, stays closed.
     box().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-    assert('Escape clears the filter', box().value === '' && rail().length === 8, rail().join('|'));
+    assert('Escape clears the filter',
+      box().value === ''
+        && rail().join('|') === 'Purchase Orders|Earthwork|Design & Permitting|Drawings|Permits|Township|Correspondence',
+      `${box().value} / ${rail().join('|')}`);
 
     // The filter is the rail's own; it must not touch the document search.
     type('earth');
@@ -659,6 +664,165 @@ console.log('\n[documents.js upload sequence]');
     lnk.remove();
 
     FD.configure({ getPurchaseOrders: () => [] });
+    window.fetch = savedFetch;
+  }
+
+  // ── 5. The folder rail's twisties, driven in jsdom ───────────────────────
+  // One subfolder is created per purchase order, so a busy job puts dozens of
+  // them under Purchase Orders. Left open they push the cost-code folders
+  // below the fold and the rail becomes a scroll — so every branch opens
+  // closed and the user opens the one they want.
+  {
+    console.log('\n[folder rail collapse]');
+
+    const TREE = [
+      { id: 'f-po',    parent_id: null,   name: 'Purchase Orders', kind: 'fixed',     sort_order: 1 },
+      { id: 'f-po128', parent_id: 'f-po', name: 'PO PO-0128',      kind: 'fixed',     sort_order: 500 },
+      { id: 'f-po139', parent_id: 'f-po', name: 'PO PO-0139',      kind: 'fixed',     sort_order: 500 },
+      { id: 'f-po150', parent_id: 'f-po', name: 'PO PO-0150',      kind: 'fixed',     sort_order: 500 },
+      { id: 'f-safe',  parent_id: null,   name: 'Safety',          kind: 'fixed',     sort_order: 2 },
+      { id: 'f-base',  parent_id: null,   name: 'Base Construction', kind: 'cost_code', sort_order: 3 },
+    ];
+
+    const savedFetch = window.fetch;
+    window.fetch = async (url, init = {}) => {
+      const u = String(url);
+      // The New Folder dialog posts here; grow the tree so the reload after it
+      // returns the folder that was just created.
+      if (u.includes('/api/documents') && (init.method || 'GET') === 'POST' && u.includes('folder=1')) {
+        const body = JSON.parse(init.body);
+        TREE.push({ id: 'f-new', parent_id: body.parentId, name: body.name, kind: 'user', sort_order: 900 });
+        return { ok: true, status: 200, json: async () => ({ folder: { id: 'f-new' } }) };
+      }
+      if (u.includes('/api/documents') && (init.method || 'GET') === 'GET') {
+        return { ok: true, status: 200, json: async () => ({
+          folders: TREE.slice(),
+          documents: [{ id: 'd1', filename: 'ticket.pdf', folder_ids: ['f-po139'],
+                        size_bytes: 10, uploaded_by: 'ben', uploaded_at: '2026-08-19T00:00:00Z', po_ids: [] }],
+          caps: { canUpload: true, canManage: true, canDelete: false },
+        }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+
+    const mount = window.document.getElementById('mount');
+    await FD.renderTab(mount);
+
+    const rail   = () => [...mount.querySelectorAll('[data-folder]')].map(el => el.title);
+    const row    = id => mount.querySelector(`[data-folder="${id}"]`);
+    const twisty = id => mount.querySelector(`[data-folder-toggle="${id}"]`);
+    const active = () => {
+      const el = [...mount.querySelectorAll('[data-folder]')]
+        .find(e => /font-weight:600/.test(e.getAttribute('style')));
+      return el ? el.title : null;
+    };
+    const settle = async () => { for (let i = 0; i < 30; i++) await new Promise(r => setTimeout(r, 0)); };
+
+    assert('the tab opens with the purchase orders folded away',
+      rail().join('|') === 'Purchase Orders|Safety|Base Construction', rail().join('|'));
+
+    assert('a folder with children gets a twisty', Boolean(twisty('f-po')));
+    assert('and one without gets none, rather than a control that does nothing',
+      !twisty('f-safe') && !twisty('f-base'));
+    assert('the closed twisty reports itself closed to a screen reader',
+      twisty('f-po').getAttribute('aria-expanded') === 'false');
+    assert('and the row says how many folders are hidden under it',
+      /&#128193;3|\u{1F4C1}3/u.test(row('f-po').innerHTML), row('f-po').innerHTML);
+
+    // Opening it.
+    twisty('f-po').click();
+    assert('clicking the twisty opens the branch',
+      rail().join('|') === 'Purchase Orders|PO PO-0128|PO PO-0139|PO PO-0150|Safety|Base Construction',
+      rail().join('|'));
+    assert('and it now reports itself open',
+      twisty('f-po').getAttribute('aria-expanded') === 'true');
+    assert('with the hidden-count badge gone, since nothing is hidden',
+      !/&#128193;3|\u{1F4C1}3/u.test(row('f-po').innerHTML), row('f-po').innerHTML);
+
+    // The twisty sits inside the folder row. If the click reached the row
+    // behind it, opening a branch would also drag the main pane off whatever
+    // the user was reading.
+    assert('opening a branch does not open the folder itself', active() === null, active());
+    assert('and the main pane is untouched',
+      /Pick a folder to see what is filed in it/.test(mount.innerHTML));
+
+    twisty('f-po').click();
+    assert('clicking it again folds the branch back up',
+      rail().join('|') === 'Purchase Orders|Safety|Base Construction', rail().join('|'));
+
+    // Keyboard: the twisty is reachable by tab, so it has to work on Enter and
+    // Space like the button it is dressed as.
+    assert('the twisty is in the tab order', twisty('f-po').getAttribute('tabindex') === '0');
+    assert('and grows into a real target on a phone, where the rail is thumbed',
+      /@media \(pointer: coarse\)[\s\S]*?fctdoc-twisty[^}]*min-width/.test(read('documents.js')));
+    twisty('f-po').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    assert('Enter opens it', rail().includes('PO PO-0139'), rail().join('|'));
+    twisty('f-po').dispatchEvent(new window.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
+    assert('Space closes it', !rail().includes('PO PO-0139'), rail().join('|'));
+
+    // Clicking the folder itself opens it in both senses — its documents on
+    // the right, its subfolders under it — or a click on Purchase Orders would
+    // look like it did nothing at all.
+    row('f-po').click();
+    assert('clicking the folder opens what is inside it too',
+      rail().join('|') === 'Purchase Orders|PO PO-0128|PO PO-0139|PO PO-0150|Safety|Base Construction',
+      rail().join('|'));
+    assert('and selects it', active() === 'Purchase Orders', active());
+
+    // A PO subfolder is reachable now, and going into it keeps the branch open.
+    row('f-po139').click();
+    assert('a PO subfolder opens and lists its ticket',
+      active() === 'PO PO-0139' && /ticket\.pdf/.test(mount.innerHTML), active());
+
+    // Home, then back down through the crumb — the trail has to reopen or the
+    // crumb lands the user on a folder the rail cannot show.
+    twisty('f-po').click();
+    assert('the branch can be folded up while a folder inside it is open',
+      rail().join('|') === 'Purchase Orders|Safety|Base Construction', rail().join('|'));
+    [...mount.querySelectorAll('[data-folder-crumb]')].find(el => el.dataset.folderCrumb === 'f-po139').click();
+    assert('a breadcrumb reopens the branch it points into',
+      rail().includes('PO PO-0139') && active() === 'PO PO-0139', rail().join('|'));
+
+    // The filter reaches into closed branches — it always could, but now it
+    // has to open them on the way, or the hit stays hidden behind a twisty.
+    const box  = () => mount.querySelector('#fctdoc-folder-search');
+    const type = text => {
+      const b = box();
+      b.value = text;
+      b.dispatchEvent(new window.Event('input', { bubbles: true }));
+    };
+    twisty('f-po').click();                       // fold it up again first
+    assert('folded', rail().join('|') === 'Purchase Orders|Safety|Base Construction', rail().join('|'));
+    type('0139');
+    assert('filtering opens the branch its hit is buried in',
+      rail().join('|') === 'Purchase Orders|PO PO-0139', rail().join('|'));
+
+    // …and a branch closed while the filter is up stays closed, rather than
+    // springing open again on the next keystroke-driven redraw.
+    twisty('f-po').click();
+    assert('a branch closed under an active filter stays closed',
+      rail().join('|') === 'Purchase Orders', rail().join('|'));
+    type('');
+    assert('and stays closed once the filter is cleared',
+      rail().join('|') === 'Purchase Orders|Safety|Base Construction', rail().join('|'));
+
+    // A folder created inside a closed branch has to be shown where it landed,
+    // or it reads as though the create silently failed.
+    mount.querySelector('#fctdoc-newfolder').click();
+    const dlg = [...window.document.querySelectorAll('body > div')].pop();
+    dlg.querySelector('#fctdoc-fname').value = 'Backup Tickets';
+    dlg.querySelector('#fctdoc-fparent').value = 'f-po';
+    dlg.querySelector('#fctdoc-mk').click();
+    await settle();
+    assert('a new folder opens the branch it was created in',
+      rail().includes('Backup Tickets'), rail().join('|'));
+    dlg.remove();
+
+    // Reopening the tab starts folded again, whatever was left open.
+    await FD.renderTab(mount);
+    assert('reopening the tab starts folded again',
+      rail().join('|') === 'Purchase Orders|Safety|Base Construction', rail().join('|'));
+
     window.fetch = savedFetch;
   }
 
