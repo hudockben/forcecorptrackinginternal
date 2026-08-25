@@ -325,13 +325,16 @@
       border-bottom: 1px solid var(--border);
       white-space: nowrap;
     }
-    .ana-block tbody td {
+    /* Same tfoot reach as the report table below — the Totals row in Hours by
+       Employee is a tfoot row and was losing its padding and alignment too. */
+    .ana-block tbody td,
+    .ana-block tfoot td {
       padding: 0.55rem 0.65rem;
-      border-bottom: 1px solid rgba(42,42,58,0.6);
       font-variant-numeric: tabular-nums;
     }
-    .ana-block tbody td.name { font-weight: 600; font-variant-numeric: normal; }
-    .ana-block tbody td.num  { text-align: right; }
+    .ana-block tbody td { border-bottom: 1px solid rgba(42,42,58,0.6); }
+    .ana-block td.name { font-weight: 600; font-variant-numeric: normal; }
+    .ana-block td.num  { text-align: right; }
     .ana-block tr.total td {
       border-top: 2px solid var(--border);
       font-weight: 700;
@@ -552,13 +555,22 @@
       background: var(--surface2);
       white-space: nowrap;
     }
-    .report tbody td {
+    /* Padding, tabular figures and right-alignment reach <tfoot> as well as
+       <tbody>. The Totals row is a tfoot row, so while these were scoped to
+       tbody it picked up neither the horizontal padding nor the
+       right-alignment: every total sat left-adjusted in its cell, out of step
+       with the header above it and the column of figures it sums. */
+    .report tbody td,
+    .report tfoot td {
       padding: 0.65rem 0.45rem;
-      border-bottom: 1px solid rgba(42,42,58,0.6);
       font-variant-numeric: tabular-nums;
     }
-    .report tbody td.name { font-weight: 600; font-variant-numeric: normal; }
-    .report tbody td.num  { text-align: right; }
+    .report tbody td { border-bottom: 1px solid rgba(42,42,58,0.6); }
+    .report td.name { font-weight: 600; font-variant-numeric: normal; }
+    /* Figures never break across lines — a wrapped "417.75" is unreadable.
+       The name and status columns stay wrappable so the table keeps fitting
+       the card at the widths it fits today. */
+    .report td.num  { text-align: right; white-space: nowrap; }
     /* Prevailing-wage hours column — amber on screen to tie it to the
        per-entry pill. The @media print block forces every report cell to
        black with !important, so the printed payroll sheet stays crisp. */
@@ -2598,7 +2610,9 @@
                 <td class="num">${tot.stdHours.toFixed(2)}</td>
                 <td class="num">${tot.pendingHours.toFixed(2)}</td>
                 <td class="num">${tot.approvedHours.toFixed(2)}</td>
-                <td>${tot.pendingOff} pending / ${tot.approvedOff} approved</td>
+                <td>${(tot.pendingOff || tot.approvedOff)
+                  ? `${tot.pendingOff} pending / ${tot.approvedOff} approved`
+                  : '—'}</td>
                 <td>${tot.pendingHours > 0.001
                   ? `<span class="pill pill-pending">${tot.pendingHours.toFixed(2)} h still pending</span>`
                   : `<span class="pill pill-clear">All approved</span>`}</td>
@@ -3112,7 +3126,9 @@
         cNum(tot.stdHours,      XS.totNum),
         cNum(tot.pendingHours,  XS.totNum),
         cNum(tot.approvedHours, XS.totNum),
-        cTxt(`${tot.pendingOff} pending / ${tot.approvedOff} approved`, XS.totText),
+        cTxt((tot.pendingOff || tot.approvedOff)
+          ? `${tot.pendingOff} pending / ${tot.approvedOff} approved`
+          : '—', XS.totText),
         cTxt(tot.pendingHours > 0.001 ? `${tot.pendingHours.toFixed(2)} h still pending` : 'All approved', XS.totText),
       ]);
 
