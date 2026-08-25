@@ -816,6 +816,14 @@
     </div>
   </div>
 
+  <!-- ── Scheduler dispatch report (print / PDF / email) ── -->
+  <div class="sch-backdrop" id="sched-rep-backdrop" onclick="schedCloseReport(event)">
+    <div class="sch-modal" id="sched-rep-modal" onclick="event.stopPropagation()">
+      <h3>Print or email this schedule</h3>
+      <div id="sched-rep-body"></div>
+    </div>
+  </div>
+
   <!-- ── Scheduler driver picker ── -->
   <div class="sch-backdrop" id="sched-pick-backdrop" onclick="schedClosePicker(event)">
     <div class="sch-modal" id="sched-pick-modal" onclick="event.stopPropagation()">
@@ -2659,6 +2667,8 @@
           ${conflicts ? `<span class="sch-warn" title="A truck is booked by two drivers over the same hours \u2014 or over hours we can\u2019t compare, because a start or end time is missing">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
           <span style="flex:1"></span>
           <span id="sched-status" class="sch-status"></span>
+          <button class="btn-manage-lists" onclick="schedOpenReport()"
+            title="Print, save as PDF, or email this schedule">PDF / Email</button>
           <button class="btn-manage-lists" onclick="schedOpenPicker()"
             title="Choose which drivers appear on the board">Drivers ${shown}/${total}</button>
           <button class="btn-manage-lists" onclick="openManageLists()">Manage Lists</button>
@@ -2925,6 +2935,303 @@
           : `<div style="color:var(--muted);font-size:0.8rem">Every driver on the roster is scheduled.</div>`}`;
     }
 
+
+    /* ═══════ Dispatch report — print / PDF / email ═══════
+       One HTML body serves both routes: the print window the browser turns
+       into a PDF, and the email the server sends. It is built with inline
+       styles on plain tables because that is the only thing that survives
+       both a stylesheet-less print window and an email client — the
+       send-report sanitizer keeps <style> blocks, but Outlook and Gmail
+       largely ignore them. Light palette throughout: the board is dark, and
+       nobody wants that on paper. */
+    const SCHED_REPORT_TYPE = 'trucking_dispatch';
+    let _schedRepGroups = [];
+
+    const _RP = {
+      wrap:  'font-family:Segoe UI,system-ui,-apple-system,sans-serif;color:#111;font-size:12px',
+      h1:    'font-size:17px;font-weight:800;color:#111;margin:0 0 2px',
+      sub:   'font-size:11px;color:#666;margin:0 0 14px',
+      h2:    'font-size:12px;font-weight:800;color:#111;text-transform:uppercase;letter-spacing:0.06em;margin:16px 0 5px;padding-bottom:3px;border-bottom:1.5px solid #333;page-break-after:avoid;break-after:avoid',
+      tbl:   'border-collapse:collapse;width:100%;margin-bottom:4px',
+      th:    'text-align:left;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;background:#f0f0f0;border:1px solid #ccc;padding:4px 7px',
+      td:    'border:1px solid #ddd;padding:4px 7px;font-size:11.5px;vertical-align:top',
+      tdT:   'border:1px solid #ddd;padding:4px 7px;font-size:11.5px;white-space:nowrap;font-weight:600',
+      none:  'border:1px solid #ddd;padding:7px;font-size:11px;color:#888;text-align:center',
+      open:  'font-size:10.5px;color:#666;margin:3px 0 0;line-height:1.5',
+    };
+
+    function schedRepDayLabel(ds) {
+      return schedParse(ds).toLocaleDateString('en-US',
+        { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    }
+    function schedRepDayShort(ds) {
+      return schedParse(ds).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    function schedRepTitle(scope) {
+      return scope === 'week'
+        ? (() => { const d = schedWeekDates();
+            return 'Trucking Dispatch — Week of ' +
+              schedParse(d[0]).toLocaleDateString('en-US', { month: 'long', day: 'numeric' }) +
+              '–' + schedParse(d[6]).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }); })()
+        : 'Trucking Dispatch — ' + schedRepDayLabel(schedAnchor);
+    }
+
+    function schedRepDates(scope) { return scope === 'week' ? schedWeekDates() : [schedAnchor]; }
+
+    /** Rows for one date, in run order. */
+    function schedRepItems(date) {
+      return (schedAssignments[date] || []).slice().sort((a, b) =>
+        String(a.start || '~').localeCompare(String(b.start || '~')) ||
+        String(a.driver || '').localeCompare(String(b.driver || '')));
+    }
+
+    function schedRepCell(v) { return schedEsc(v) || '<span style="color:#aaa">—</span>'; }
+
+    /** Layout A — by day. What you pin on the wall. */
+    function schedRepByDay(dates) {
+      return dates.map(d => {
+        const items = schedRepItems(d);
+        const bad   = schedUnitConflicts(d);
+        const rows  = items.length ? items.map(a => {
+          const clash = bad.has((a.unit || '').trim());
+          return `<tr>
+            <td style="${_RP.tdT}">${schedEsc(schedTime12(a.start)) || '—'}</td>
+            <td style="${_RP.tdT}">${schedEsc(schedTime12(a.end)) || '—'}</td>
+            <td style="${_RP.td};font-weight:600">${schedEsc(a.driver)}</td>
+            <td style="${_RP.td}">${schedRepCell(a.customer)}</td>
+            <td style="${_RP.td}">${schedRepCell(a.unit)}${clash ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}</td>
+            <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
+          </tr>`;
+        }).join('') : `<tr><td style="${_RP.none}" colspan="6">Nothing scheduled.</td></tr>`;
+
+        // Drivers with no hours are listed on purpose — an empty day for
+        // someone on the roster is the thing a dispatcher needs to notice.
+        const roster = schedDrivers([d]);
+        const busy   = new Set(items.map(a => a.driver));
+        // Only worth naming when some of the day is staffed. On a day with
+        // nothing at all, "Nothing scheduled." already says it, and printing
+        // the whole roster under every empty day is what turns a one-page
+        // week into four.
+        const open   = items.length ? roster.filter(n => !busy.has(n)) : [];
+
+        return `<div style="${_RP.h2}">${schedEsc(schedRepDayLabel(d))}</div>
+          <table style="${_RP.tbl}"><thead><tr>
+            <th style="${_RP.th};width:62px">Start</th><th style="${_RP.th};width:62px">End</th>
+            <th style="${_RP.th};width:130px">Driver</th><th style="${_RP.th};width:140px">Customer</th>
+            <th style="${_RP.th};width:90px">Truck</th><th style="${_RP.th}">Notes</th>
+          </tr></thead><tbody>${rows}</tbody></table>
+          ${open.length ? `<p style="${_RP.open}"><strong>No hauling hours (${open.length}):</strong> ${schedEsc(open.join(' · '))}</p>` : ''}`;
+      }).join('');
+    }
+
+    /** Layout B — by driver. What you hand each driver. */
+    function schedRepByDriver(dates) {
+      const roster = schedDrivers(dates);
+      const byDriver = new Map(roster.map(n => [n, []]));
+      dates.forEach(d => schedRepItems(d).forEach(a => {
+        if (byDriver.has(a.driver)) byDriver.get(a.driver).push({ ...a, _d: d });
+      }));
+
+      // Only a driver with work gets a table. An empty one used to get a full
+      // bordered table with column headers just to say "none", which on a
+      // normal week was fourteen tables of nothing; they are named together at
+      // the end instead, the same way the by-day layout does it.
+      const working = roster.filter(n => (byDriver.get(n) || []).length);
+      const idle    = roster.filter(n => !(byDriver.get(n) || []).length);
+
+      const blocks = working.map(n => {
+        const rows = (byDriver.get(n) || []).map(a => `<tr>
+            <td style="${_RP.tdT}">${schedEsc(schedRepDayShort(a._d))}</td>
+            <td style="${_RP.tdT}">${schedEsc(schedWindow(a)) || '—'}</td>
+            <td style="${_RP.td}">${schedRepCell(a.customer)}</td>
+            <td style="${_RP.td}">${schedRepCell(a.unit)}</td>
+            <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
+          </tr>`).join('');
+        return `<div style="${_RP.h2}">${schedEsc(n)}</div>
+          <table style="${_RP.tbl}"><thead><tr>
+            <th style="${_RP.th};width:96px">Day</th><th style="${_RP.th};width:118px">Hours</th>
+            <th style="${_RP.th};width:150px">Customer</th><th style="${_RP.th};width:90px">Truck</th>
+            <th style="${_RP.th}">Notes</th>
+          </tr></thead><tbody>${rows}</tbody></table>`;
+      }).join('');
+
+      const span = dates.length > 1 ? 'this week' : 'this day';
+      const tail = idle.length
+        ? `<div style="${_RP.h2}">No hauling hours ${schedEsc(span)} (${idle.length})</div>
+           <p style="${_RP.open}">${schedEsc(idle.join(' · '))}</p>`
+        : '';
+      const none = working.length ? '' :
+        `<p style="${_RP.none};margin-top:10px">Nothing scheduled ${schedEsc(span)}.</p>`;
+      return blocks + none + tail;
+    }
+
+    function schedRepBody(scope, layout) {
+      const dates  = schedRepDates(scope);
+      const total  = dates.reduce((n, d) => n + (schedAssignments[d] || []).length, 0);
+      const busy   = new Set();
+      dates.forEach(d => (schedAssignments[d] || []).forEach(a => busy.add(a.driver)));
+      const roster = schedDrivers(dates);
+      const clash  = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
+
+      const summary = `<p style="${_RP.sub}">
+        ${total} assignment${total === 1 ? '' : 's'} ·
+        ${busy.size} of ${roster.length} driver${roster.length === 1 ? '' : 's'} with hauling hours
+        ${clash ? ` · <strong style="color:#b45309">${clash} truck overlap${clash === 1 ? '' : 's'}</strong>` : ''}
+      </p>`;
+
+      return summary + (layout === 'driver' ? schedRepByDriver(dates) : schedRepByDay(dates));
+    }
+
+    function schedRepHasWork(scope) {
+      return schedRepDates(scope).some(d => (schedAssignments[d] || []).length);
+    }
+
+    /* ── Modal ── */
+    async function schedOpenReport() {
+      const scope = schedView === 'week' ? 'week' : 'day';
+      document.getElementById('sched-rep-body').innerHTML = `
+        <div class="sch-fld">
+          <label for="sched-rep-scope">Range</label>
+          <select id="sched-rep-scope" onchange="schedRepPreviewNote()">
+            <option value="day"${scope === 'day' ? ' selected' : ''}>This day — ${schedEsc(schedRepDayLabel(schedAnchor))}</option>
+            <option value="week"${scope === 'week' ? ' selected' : ''}>This week</option>
+          </select>
+        </div>
+        <div class="sch-fld">
+          <label for="sched-rep-layout">Layout</label>
+          <select id="sched-rep-layout" onchange="schedRepPreviewNote()">
+            <option value="day">By day — one table per date</option>
+            <option value="driver">By driver — one table per driver</option>
+          </select>
+        </div>
+        <div id="sched-rep-note" style="font-size:0.68rem;color:var(--muted);margin:-0.2rem 0 0.8rem"></div>
+        <button class="sch-btn" style="width:100%" onclick="schedPrintReport()">Open print view — print or save as PDF</button>
+
+        <div style="border-top:1px solid var(--border);margin:1rem 0 0.9rem"></div>
+        <div style="font-size:0.68rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:0.6rem">Email it out</div>
+        <div class="sch-fld">
+          <label for="sched-rep-group">Saved distribution list</label>
+          <select id="sched-rep-group"><option value="">Loading…</option></select>
+        </div>
+        <div class="sch-fld">
+          <label for="sched-rep-emails">Additional emails</label>
+          <input type="text" id="sched-rep-emails" autocomplete="off" placeholder="dispatch@…, foreman@…">
+        </div>
+        <div class="sch-fld">
+          <label for="sched-rep-msg">Note (optional)</label>
+          <textarea id="sched-rep-msg" placeholder="e.g. Updated plan — check your trucks before 6."></textarea>
+        </div>
+        <div class="sch-modal-err" id="sched-rep-result"></div>
+        <div class="sch-modal-actions">
+          <button class="sch-btn primary" id="sched-rep-send" onclick="schedEmailReport()">Send email</button>
+          <button class="sch-btn" onclick="schedCloseReport()">Close</button>
+        </div>`;
+      document.getElementById('sched-rep-backdrop').classList.add('open');
+      schedRepPreviewNote();
+
+      try {
+        const r = await fetch(`${API_BASE}/email/recipient-groups?report_type=${SCHED_REPORT_TYPE}`,
+          { headers: { 'Authorization': `Bearer ${token}` } });
+        _schedRepGroups = r.ok ? ((await r.json()).groups || []) : [];
+      } catch { _schedRepGroups = []; }
+      const sel = document.getElementById('sched-rep-group');
+      if (sel) sel.innerHTML = '<option value="">— none —</option>' +
+        _schedRepGroups.map(g => `<option value="${schedEsc(g.id)}">${schedEsc(g.name)} (${(g.emails || []).length})</option>`).join('');
+    }
+
+    function schedCloseReport(e) {
+      if (e && document.getElementById('sched-rep-modal').contains(e.target)) return;
+      document.getElementById('sched-rep-backdrop').classList.remove('open');
+    }
+
+    function schedRepPreviewNote() {
+      const el = document.getElementById('sched-rep-note');
+      if (!el) return;
+      const scope = (document.getElementById('sched-rep-scope') || {}).value || 'day';
+      const dates = schedRepDates(scope);
+      const total = dates.reduce((n, d) => n + (schedAssignments[d] || []).length, 0);
+      el.textContent = total
+        ? `${total} assignment${total === 1 ? '' : 's'} across ${dates.length} day${dates.length === 1 ? '' : 's'}.`
+        : 'Nothing scheduled in this range yet.';
+    }
+
+    function schedRepShell(title, body) {
+      const ts = new Date().toLocaleString('en-US',
+        { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+      const co = (user && (user.companyName || user.companyCode)) || 'Force Corp';
+      return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${schedEsc(title)}</title>
+        <style>@page{margin:14mm}body{margin:0}
+        /* Never split a day or a driver across a page break mid-table. */
+        table{page-break-inside:auto}tr{page-break-inside:avoid}thead{display:table-header-group}</style>
+        </head><body style="${_RP.wrap};padding:18px">
+        <div style="${_RP.h1}">${schedEsc(title)}</div>
+        <div style="${_RP.sub}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
+        ${body}</body></html>`;
+    }
+
+    function schedPrintReport() {
+      const scope  = document.getElementById('sched-rep-scope').value;
+      const layout = document.getElementById('sched-rep-layout').value;
+      const result = document.getElementById('sched-rep-result');
+      const w = window.open('', '_blank');
+      if (!w) { result.textContent = 'Allow pop-ups for this site to open the print view.'; return; }
+      result.textContent = '';
+      w.document.write(schedRepShell(schedRepTitle(scope), schedRepBody(scope, layout)));
+      w.document.close();
+      w.focus();
+      setTimeout(() => { try { w.print(); } catch { /* the user can still print manually */ } }, 350);
+    }
+
+    function schedParseEmails(s) {
+      return String(s || '').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+    }
+
+    async function schedEmailReport() {
+      const result = document.getElementById('sched-rep-result');
+      const btn    = document.getElementById('sched-rep-send');
+      const scope  = document.getElementById('sched-rep-scope').value;
+      const layout = document.getElementById('sched-rep-layout').value;
+
+      let to = [];
+      const gid = document.getElementById('sched-rep-group').value;
+      if (gid) {
+        const g = _schedRepGroups.find(x => String(x.id) === String(gid));
+        if (g) to = to.concat(g.emails || []);
+      }
+      to = [...new Set(to.concat(schedParseEmails(document.getElementById('sched-rep-emails').value))
+        .map(e => e.toLowerCase()))];
+
+      result.style.color = '';
+      if (!to.length) { result.textContent = 'Pick a saved list or type at least one email address.'; return; }
+      if (!schedRepHasWork(scope)) { result.textContent = 'Nothing scheduled in this range to send.'; return; }
+
+      btn.disabled = true;
+      result.style.color = 'var(--muted)';
+      result.textContent = 'Sending…';
+      try {
+        const r = await fetch(`${API_BASE}/email/send-report`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            report_type: SCHED_REPORT_TYPE,
+            subject:     schedRepTitle(scope),
+            note:        document.getElementById('sched-rep-msg').value || '',
+            recipients:  to,
+            html:        schedRepBody(scope, layout),
+          }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+        result.style.color = 'var(--green)';
+        result.textContent = '✓ Sent to ' + (j.recipientCount || to.length) + ' recipient(s).';
+      } catch (err) {
+        result.style.color = 'var(--orange)';
+        result.textContent = 'Could not send: ' + (err.message || 'unknown error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
 
     /* ═══════ Driver picker ═══════
        Which drivers the board shows. A name only reaches the managed drivers

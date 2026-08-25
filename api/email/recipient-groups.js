@@ -33,6 +33,7 @@ const VALID_REPORT_TYPES = new Set([
   'quarry_breakeven',
   'dust_tracking_summary',
   'scheduler_dispatch',
+  'trucking_dispatch',
 ]);
 const MAX_NAME_LEN     = 120;
 const MAX_EMAILS       = 50;
