@@ -466,6 +466,14 @@
     }
     .sch-cell:hover .sch-add { border-color: var(--border); color: var(--muted); }
 
+    .sch-driver-cell.is-hidden { color: var(--muted); font-weight: 500; }
+    .sch-hidtag {
+      font-size: 0.55rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+      border: 1px solid var(--border); border-radius: 3px;
+      padding: 0.02rem 0.25rem; margin-left: 0.35rem; vertical-align: middle;
+    }
+
     /* ── Assignment chip ── */
     .sch-chip {
       background: var(--surface2); border: 1px solid var(--border);
@@ -497,6 +505,30 @@
       font-size: 0.75rem; color: var(--muted); cursor: pointer;
     }
     .sch-open-chip:hover { color: var(--text); border-color: #555; }
+
+    /* ── Driver picker ── */
+    .sch-pick-bulk { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.5rem; }
+    .sch-pick-list {
+      max-height: 320px; overflow-y: auto;
+      border: 1px solid var(--border); border-radius: 5px; background: var(--surface);
+    }
+    .sch-pick-list::-webkit-scrollbar { width: 5px; }
+    .sch-pick-list::-webkit-scrollbar-track { background: transparent; }
+    .sch-pick-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .sch-pick-row {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.35rem 0.55rem; font-size: 0.78rem; cursor: pointer;
+      border-bottom: 1px solid var(--border);
+    }
+    .sch-pick-row:last-child { border-bottom: none; }
+    .sch-pick-row:hover { background: var(--surface2); }
+    .sch-pick-row input { accent-color: var(--orange); cursor: pointer; flex: none; }
+    .sch-pick-row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sch-pick-row input:not(:checked) ~ .nm { color: var(--muted); text-decoration: line-through; }
+    .sch-pick-row .ct {
+      font-size: 0.62rem; font-weight: 700; color: var(--amber);
+      background: rgba(250,204,21,0.12); border-radius: 8px; padding: 0.05rem 0.4rem; flex: none;
+    }
 
     /* ── Assignment editor ── */
     .sch-backdrop {
@@ -701,6 +733,14 @@
     <div class="sch-modal" id="sched-modal" onclick="event.stopPropagation()">
       <h3 id="sched-modal-title"></h3>
       <div id="sched-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ── Scheduler driver picker ── -->
+  <div class="sch-backdrop" id="sched-pick-backdrop" onclick="schedClosePicker(event)">
+    <div class="sch-modal" id="sched-pick-modal" onclick="event.stopPropagation()">
+      <h3>Drivers on the board</h3>
+      <div id="sched-pick-body"></div>
     </div>
   </div>
 
@@ -2184,6 +2224,16 @@
     let _schedLoading    = false;
     let _schedLoadError  = null;
     let _schedStatus     = 'saved'; // 'saved' | 'pending' | 'saving' | 'error'
+    // Drivers hidden from the board. The managed drivers list is shared with
+    // Truck Tracking and re-seeded from every stored entry on load, so a name
+    // that reached it via a timesheet entry (a username like an office login)
+    // cannot be removed there — deleting it just comes back on the next load,
+    // and it is still wanted in Tracking's dropdown for the historical rows.
+    // Hiding is therefore the Scheduler's own view setting. Stored with the
+    // schedule rather than per-browser so every dispatcher sees one board.
+    let schedHidden          = new Set();
+    let _schedHiddenBaseline = '[]';
+    let _schedPickQuery      = '';
 
     const schedEsc = s => String(s == null ? '' : s)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -2221,9 +2271,29 @@
           still holds an assignment is unioned in — dropping someone from the
           list must not hide work that is still on the board. ── */
     function schedDrivers(dates) {
-      const set = new Set((divTruckLists.drivers || []).filter(Boolean));
-      (dates || []).forEach(d => (schedAssignments[d] || []).forEach(a => { if (a.driver) set.add(a.driver); }));
+      // Anyone holding an assignment in view is shown whatever their settings —
+      // hiding a driver must never make scheduled work disappear with them.
+      const assigned = new Set();
+      (dates || []).forEach(d => (schedAssignments[d] || []).forEach(a => { if (a.driver) assigned.add(a.driver); }));
+      const set = new Set(assigned);
+      (divTruckLists.drivers || []).forEach(n => { if (n && !schedHidden.has(n)) set.add(n); });
       return [...set].sort((a, b) => String(a).localeCompare(String(b)));
+    }
+    /** Every name the picker can offer: the managed list plus anyone who
+     *  holds an assignment on any date, hidden or not. */
+    function schedAllDrivers() {
+      const set = new Set((divTruckLists.drivers || []).filter(Boolean));
+      Object.keys(schedAssignments).forEach(d =>
+        (schedAssignments[d] || []).forEach(a => { if (a.driver) set.add(a.driver); }));
+      return [...set].sort((a, b) => String(a).localeCompare(String(b)));
+    }
+    /** Assignments per driver across every date — shown in the picker so it is
+     *  clear before hiding someone whether they carry any work. */
+    function schedTotalsByDriver() {
+      const m = new Map();
+      Object.keys(schedAssignments).forEach(d =>
+        (schedAssignments[d] || []).forEach(a => { if (a.driver) m.set(a.driver, (m.get(a.driver) || 0) + 1); }));
+      return m;
     }
     function schedFor(date, driver) {
       return (schedAssignments[date] || [])
@@ -2285,6 +2355,9 @@
         const a = value && typeof value === 'object' ? value.assignments : null;
         schedAssignments = (a && typeof a === 'object' && !Array.isArray(a)) ? a : {};
         _schedBaseline = JSON.stringify(schedAssignments);
+        const h = value && typeof value === 'object' ? value.hidden : null;
+        schedHidden = new Set(Array.isArray(h) ? h.filter(x => typeof x === 'string') : []);
+        _schedHiddenBaseline = schedHiddenStr();
         _schedLoaded = true;
       } catch (err) {
         // Surfaced as a retryable error rather than an empty board: an empty
@@ -2298,6 +2371,8 @@
     }
 
     function schedRetryLoad() { _schedLoadError = null; renderScheduler(); schedEnsureLoaded(); }
+
+    function schedHiddenStr() { return JSON.stringify([...schedHidden].sort()); }
 
     function schedSetStatus(s) {
       _schedStatus = s;
@@ -2336,15 +2411,27 @@
             schedAssignments = schedMerge(_schedBaseline, schedAssignments, theirs);
             if (schedIsActive()) renderScheduler();
           }
+          // The hidden set is one small list rather than keyed rows, so there is
+          // nothing to merge per-item: whoever last changed it wins. If we have
+          // not touched ours since the last read, theirs is the newer answer.
+          const h = value && typeof value === 'object' ? value.hidden : null;
+          if (Array.isArray(h) && schedHiddenStr() === _schedHiddenBaseline) {
+            const next = new Set(h.filter(x => typeof x === 'string'));
+            if (JSON.stringify([...next].sort()) !== _schedHiddenBaseline) {
+              schedHidden = next;
+              if (schedIsActive()) renderScheduler();
+            }
+          }
         }
         const r = await fetch(`${API_BASE}/data/${SCHED_KEY}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ value: { version: 1, assignments: schedAssignments } })
+          body: JSON.stringify({ value: { version: 1, assignments: schedAssignments, hidden: [...schedHidden].sort() } })
         });
         await _handleSaveResponse(r, 'schedFlush');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         _schedBaseline = JSON.stringify(schedAssignments);
+        _schedHiddenBaseline = schedHiddenStr();
         _schedDirty = false;
         schedSetStatus('saved');
       } catch {
@@ -2368,7 +2455,7 @@
         fetch(`${API_BASE}/data/${SCHED_KEY}`, {
           method: 'PUT', keepalive: true,
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ value: { version: 1, assignments: schedAssignments } })
+          body: JSON.stringify({ value: { version: 1, assignments: schedAssignments, hidden: [...schedHidden].sort() } })
         }).catch(() => {});
       } catch { /* best-effort */ }
     }
@@ -2437,6 +2524,9 @@
       }
       const conflicts = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
       const planned   = dates.reduce((n, d) => n + (schedAssignments[d] || []).length, 0);
+      const roster    = schedAllDrivers();
+      const total     = roster.length;
+      const shown     = roster.filter(n => !schedHidden.has(n)).length;
 
       return `
         <div class="sch-toolbar">
@@ -2454,6 +2544,8 @@
           ${conflicts ? `<span class="sch-warn" title="A truck is assigned to more than one driver">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
           <span style="flex:1"></span>
           <span id="sched-status" class="sch-status"></span>
+          <button class="btn-manage-lists" onclick="schedOpenPicker()"
+            title="Choose which drivers appear on the board">Drivers ${shown}/${total}</button>
           <button class="btn-manage-lists" onclick="openManageLists()">Manage Lists</button>
         </div>`;
     }
@@ -2510,8 +2602,15 @@
             ${rows}<button class="sch-add" onclick="event.stopPropagation();schedAddAssign('${d}',${di})">+</button>
           </td>`;
         }).join('');
+        // A hidden driver still appears on the days they hold work. Marked so
+        // that reads as "kept because it is scheduled" rather than as the hide
+        // having failed to apply.
+        const hid = schedHidden.has(dr);
         return `<tr>
-          <td class="sch-driver-cell">${schedEsc(dr)}<span class="sch-load">${load}</span></td>
+          <td class="sch-driver-cell${hid ? ' is-hidden' : ''}"${hid
+            ? ' title="Hidden from the board — still listed because they have assignments this week"' : ''}>
+            ${schedEsc(dr)}${hid ? '<span class="sch-hidtag">hidden</span>' : ''}<span class="sch-load">${load}</span>
+          </td>
           ${cells}
         </tr>`;
       }).join('');
@@ -2541,7 +2640,8 @@
         const conflicted = bad.has((a.unit || '').trim());
         return `<tr class="${conflicted ? 'conflict' : ''}" onclick="schedEditAssign('${date}','${a.id}')" style="cursor:pointer">
           <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.start)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
-          <td style="font-weight:600">${schedEsc(a.driver)}</td>
+          <td style="font-weight:600">${schedEsc(a.driver)}${schedHidden.has(a.driver)
+            ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}</td>
           <td>${schedEsc(a.customer) || '<span style="color:var(--muted)">—</span>'}</td>
           <td>${schedEsc(a.unit) || '<span style="color:var(--muted)">—</span>'}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem">2 drivers</span>' : ''}</td>
           <td style="color:var(--muted)">${schedEsc(a.notes)}</td>
@@ -2570,6 +2670,97 @@
           : `<div style="color:var(--muted);font-size:0.8rem">Every driver on the roster is scheduled.</div>`}`;
     }
 
+
+    /* ═══════ Driver picker ═══════
+       Which drivers the board shows. A name only reaches the managed drivers
+       list by being typed there or by appearing on a stored entry, and the
+       loader re-seeds it from entries every time — so office usernames that
+       came in on a timesheet cannot be removed from the list, only hidden
+       from this board. */
+    function schedOpenPicker() {
+      _schedPickQuery = '';
+      schedRenderPicker();
+      document.getElementById('sched-pick-backdrop').classList.add('open');
+      const q = document.getElementById('sched-pick-search');
+      if (q) q.focus();
+    }
+
+    function schedClosePicker(e) {
+      if (e && document.getElementById('sched-pick-modal').contains(e.target)) return;
+      document.getElementById('sched-pick-backdrop').classList.remove('open');
+    }
+
+    function schedRenderPicker() {
+      const all    = schedAllDrivers();
+      const totals = schedTotalsByDriver();
+      const q      = _schedPickQuery.trim().toLowerCase();
+      const rows   = all.filter(n => !q || n.toLowerCase().includes(q));
+      const shown  = all.filter(n => !schedHidden.has(n)).length;
+
+      const list = rows.length ? rows.map(n => {
+        const i = all.indexOf(n);
+        const c = totals.get(n) || 0;
+        return `
+          <label class="sch-pick-row" title="${schedEsc(n)}">
+            <input type="checkbox" ${schedHidden.has(n) ? '' : 'checked'} onchange="schedTogglePick(${i})">
+            <span class="nm">${schedEsc(n)}</span>
+            ${c ? `<span class="ct" title="${c} assignment${c === 1 ? '' : 's'} on the board">${c}</span>` : ''}
+          </label>`;
+      }).join('')
+        : `<div style="padding:1rem;text-align:center;color:var(--muted);font-size:0.78rem">No driver matches “${schedEsc(_schedPickQuery)}”.</div>`;
+
+      document.getElementById('sched-pick-body').innerHTML = `
+        <div class="sch-fld" style="margin-bottom:0.5rem">
+          <input type="text" id="sched-pick-search" placeholder="Filter drivers…" autocomplete="off"
+                 value="${schedEsc(_schedPickQuery)}" oninput="schedPickSearch(this.value)">
+        </div>
+        <div class="sch-pick-bulk">
+          <button class="sch-btn" onclick="schedPickAll(true)">Show all</button>
+          <button class="sch-btn" onclick="schedPickAll(false)">Hide all</button>
+          <span style="flex:1"></span>
+          <span style="font-size:0.68rem;color:var(--muted)">${shown} of ${all.length} shown</span>
+        </div>
+        <div class="sch-pick-list">${list}</div>
+        <p style="font-size:0.66rem;color:var(--muted);margin-top:0.6rem;line-height:1.45">
+          Hiding only affects this board — the driver stays in Truck Tracking and keeps any
+          history. Anyone holding an assignment still appears on the days they are scheduled.
+        </p>
+        <div class="sch-modal-actions">
+          <button class="sch-btn primary" onclick="schedClosePicker()">Done</button>
+        </div>`;
+    }
+
+    function schedPickSearch(v) {
+      _schedPickQuery = v;
+      schedRenderPicker();
+      // innerHTML was replaced, so the box the user is typing in is a new node.
+      const q = document.getElementById('sched-pick-search');
+      if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    }
+
+    // Toggled by roster index rather than by name — a driver called
+    // O'Neil, D. would otherwise have to survive quoting into an attribute.
+    function schedTogglePick(i) {
+      const name = schedAllDrivers()[i];
+      if (!name) return;
+      if (schedHidden.has(name)) schedHidden.delete(name); else schedHidden.add(name);
+      schedMarkDirty();
+      schedRenderPicker();
+      renderScheduler();
+    }
+
+    function schedPickAll(show) {
+      const all = schedAllDrivers();
+      const q   = _schedPickQuery.trim().toLowerCase();
+      // Applies to what the search is showing, so "hide all" after a search
+      // hides that subset rather than the whole roster.
+      all.filter(n => !q || n.toLowerCase().includes(q))
+         .forEach(n => { if (show) schedHidden.delete(n); else schedHidden.add(n); });
+      schedMarkDirty();
+      schedRenderPicker();
+      renderScheduler();
+    }
+
     /* ═══════ Assignment editor ═══════
        Driver is passed by roster index rather than by name so a name carrying
        a quote or an ampersand can't break out of the inline handler. */
@@ -2585,7 +2776,9 @@
       if (id && !a) return;
       schedCtx = { date, id: id || null };
 
-      const roster    = schedDrivers([date]);
+      // Hidden drivers stay out of the picker list, except the one already on
+      // the assignment being edited — it must remain selectable to be saved.
+      const roster    = schedDrivers([date]).filter(n => !schedHidden.has(n) || (a && n === a.driver));
       const driver    = a ? a.driver : driverHint;
       const customers = (divTruckLists.customers || []).filter(Boolean);
       const units     = (divTruckLists.units || []).map(u => u && u.name).filter(Boolean);
