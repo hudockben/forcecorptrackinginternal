@@ -2958,6 +2958,13 @@
       tdT:   'border:1px solid #ddd;padding:4px 7px;font-size:11.5px;white-space:nowrap;font-weight:600',
       none:  'border:1px solid #ddd;padding:7px;font-size:11px;color:#888;text-align:center',
       open:  'font-size:10.5px;color:#666;margin:3px 0 0;line-height:1.5',
+      // Masthead. Mirrors the app header — wordmark in the division red, the
+      // division name behind a divider — so a printed sheet is recognisably
+      // the same system it came out of.
+      mast:  'border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:14px',
+      brand: 'font-size:11.5px;letter-spacing:0.3em;text-transform:uppercase;color:#cc0000;font-weight:800',
+      dvsn:  'font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;color:#777;border-left:1px solid #bbb;margin-left:11px;padding-left:11px',
+      subT:  'font-size:11px;color:#666;margin:2px 0 0',
     };
 
     function schedRepDayLabel(ds) {
@@ -3165,8 +3172,13 @@
         /* Never split a day or a driver across a page break mid-table. */
         table{page-break-inside:auto}tr{page-break-inside:avoid}thead{display:table-header-group}</style>
         </head><body style="${_RP.wrap};padding:18px">
-        <div style="${_RP.h1}">${schedEsc(title)}</div>
-        <div style="${_RP.sub}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
+        <div style="${_RP.mast}">
+          <div style="margin-bottom:5px">
+            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">Trucking</span>
+          </div>
+          <div style="${_RP.h1}">${schedEsc(title)}</div>
+          <div style="${_RP.subT}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
+        </div>
         ${body}</body></html>`;
     }
 
