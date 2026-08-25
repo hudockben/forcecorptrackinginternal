@@ -2851,7 +2851,7 @@
           ${conflicts ? `<span class="sch-warn" title="A truck is booked by two drivers over the same hours \u2014 or over hours we can\u2019t compare, because a start or end time is missing">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
           <span style="flex:1"></span>
           <span id="sched-status" class="sch-status"></span>
-          <button class="btn-manage-lists" onclick="schedOpenReport()"
+          <button class="btn-manage-lists" onclick="schedOpenPlanReport()"
             title="Print, save as PDF, or email this schedule">PDF / Email</button>
           <button class="btn-manage-lists" onclick="schedOpenPicker()"
             title="Choose which drivers appear on the board">Drivers ${shown}/${total}</button>
@@ -3178,6 +3178,13 @@
         </div>
         ${schedTimelineHTML(date, drivers, bad)}
         <p class="home-section-title">Dispatch Sheet</p>
+        <div style="display:flex;align-items:center;gap:0.5rem;margin:-0.35rem 0 0.6rem;flex-wrap:wrap">
+          <button class="sch-btn" onclick="schedSheetPrint()">Print / PDF</button>
+          <button class="sch-btn" onclick="schedSheetEmail()">Email</button>
+          <button class="sch-btn" onclick="schedSheetDownload()">Download Excel</button>
+          <span style="font-size:0.68rem;color:var(--muted)">This day's sheet, reported figures included.</span>
+          <span id="sched-sheet-msg" style="font-size:0.7rem;color:var(--orange)"></span>
+        </div>
         <div class="proj-table-wrap" style="border:1px solid var(--border);border-radius:6px;margin-bottom:1.5rem">
           <table class="sch-day-tbl">
             <thead><tr>
@@ -3198,6 +3205,248 @@
     }
 
 
+
+    /* ═══════ Dispatch sheet — print, email, Excel ═══════
+       The toolbar's PDF/Email carries the plan: what dispatch handed out.
+       This carries the whole sheet, reported figures included, which is the
+       version the office reconciles against — so it is built here from the
+       same fourteen columns rather than folded into that report. */
+
+    /** One row of the sheet as plain values, in the order the columns read.
+     *  Every output below is built from this, so the printed page, the email
+     *  and the workbook can never disagree about what the sheet said. */
+    const SCHED_SHEET_COLS = [
+      'Start', 'End', 'Act. Start', 'Act. End', 'Hours', 'Driver', 'Division',
+      'Project', 'Address', 'Material', 'Truck', 'Tons', 'Loads', 'Tickets',
+      'Notes', 'Driver notes',
+    ];
+
+    function schedSheetRow(a) {
+      const rep = schedReports.get(a.id) || null;
+      return [
+        schedTime12(a.start), schedTime12(a.end),
+        rep ? schedTime12(rep.actual_start) : '',
+        rep ? schedTime12(rep.actual_end)   : '',
+        rep ? schedHoursBetween(rep.actual_start, rep.actual_end) : '',
+        a.driver || '', schedDivLabel(a.division), schedJobOf(a), a.address || '',
+        a.material || '', a.unit || '',
+        rep && rep.tons  != null ? rep.tons  : '',
+        rep && rep.loads != null ? rep.loads : '',
+        rep ? (rep.tickets || '') : '',
+        a.notes || '',
+        rep ? (rep.notes || '') : '',
+      ];
+    }
+
+    function schedSheetRows(date) { return schedRepItems(date).map(schedSheetRow); }
+
+    function schedSheetTitle(date) { return 'Dispatch Sheet — ' + schedRepDayLabel(date); }
+
+    /** The sheet as a table, for the print window and the email alike. */
+    function schedSheetHTML(date) {
+      const rows = schedSheetRows(date);
+      // Tons and loads read as figures, so they are right-aligned like figures.
+      const numeric = new Set([4, 11, 12]);
+      const body = rows.length
+        ? rows.map(r => `<tr>${r.map((c, i) =>
+            `<td style="${_RP.td}${numeric.has(i) ? ';text-align:right' : ''}">${schedEsc(c) || '<span style="color:#bbb">—</span>'}</td>`
+          ).join('')}</tr>`).join('')
+        : `<tr><td style="${_RP.none}" colspan="${SCHED_SHEET_COLS.length}">Nothing scheduled.</td></tr>`;
+      return `<table style="${_RP.tbl}"><thead><tr>${
+        SCHED_SHEET_COLS.map(h => `<th style="${_RP.th}">${schedEsc(h)}</th>`).join('')
+      }</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function schedSheetPrint() {
+      const date = schedAnchor;
+      const w = window.open('', '_blank');
+      const msg = document.getElementById('sched-sheet-msg');
+      if (!w) {
+        if (msg) msg.textContent = 'Allow pop-ups for this site to open the print view.';
+        return;
+      }
+      if (msg) msg.textContent = '';
+      const ts = new Date().toLocaleString('en-US',
+        { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+      const co = (user && (user.companyName || user.companyCode)) || 'Force Corp';
+      // Sixteen columns will not fit a portrait page, so this one asks for
+      // landscape and a smaller body than the plan report uses.
+      w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${schedEsc(schedSheetTitle(date))}</title>
+        <style>@page{size:landscape;margin:10mm}body{margin:0}
+        table{page-break-inside:auto;font-size:9.5px}tr{page-break-inside:avoid}thead{display:table-header-group}
+        th,td{font-size:9.5px !important}</style></head>
+        <body style="${_RP.wrap};padding:14px">
+        <div style="${_RP.mast}">
+          <div style="margin-bottom:5px">
+            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">Trucking</span>
+          </div>
+          <div style="${_RP.h1}">${schedEsc(schedSheetTitle(date))}</div>
+          <div style="${_RP.subT}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
+        </div>
+        ${schedSheetHTML(date)}</body></html>`);
+      w.document.close();
+      w.focus();
+      setTimeout(() => { try { w.print(); } catch { /* the user can still print manually */ } }, 350);
+    }
+
+    /* ── Excel ──
+       A real .xlsx rather than a CSV renamed: no import dialog, no dates and
+       ticket numbers mangled into something else on open, and the columns
+       arrive sized. Written by hand because the page loads no libraries — the
+       ZIP is stored rather than deflated, which is a valid archive and means
+       no compressor is needed. */
+    function _crc32(bytes) {
+      let c, crc = 0xFFFFFFFF;
+      if (!_crc32.table) {
+        _crc32.table = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+          c = i;
+          for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+          _crc32.table[i] = c >>> 0;
+        }
+      }
+      for (let i = 0; i < bytes.length; i++) crc = _crc32.table[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+      return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    function _zip(files) {
+      const enc = new TextEncoder();
+      const parts = [], central = [];
+      let offset = 0;
+      const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
+      const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+
+      files.forEach(f => {
+        const name = enc.encode(f.name);
+        const data = enc.encode(f.data);
+        const crc  = _crc32(data);
+        const lh = [].concat([0x50,0x4b,0x03,0x04], u16(20), u16(0), u16(0), u16(0), u16(0),
+          u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0));
+        parts.push(new Uint8Array(lh), name, data);
+        central.push([].concat([0x50,0x4b,0x01,0x02], u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+          u32(crc), u32(data.length), u32(data.length), u16(name.length),
+          u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset)));
+        central.push(name);
+        offset += lh.length + name.length + data.length;
+      });
+
+      const cd = [];
+      central.forEach(c => cd.push(c instanceof Uint8Array ? c : new Uint8Array(c)));
+      const cdSize = cd.reduce((n, c) => n + c.length, 0);
+      const eocd = new Uint8Array([].concat([0x50,0x4b,0x05,0x06], u16(0), u16(0),
+        u16(files.length), u16(files.length), u32(cdSize), u32(offset), u16(0)));
+
+      const all = [...parts, ...cd, eocd];
+      const total = all.reduce((n, p) => n + p.length, 0);
+      const out = new Uint8Array(total);
+      let at = 0;
+      all.forEach(p => { out.set(p, at); at += p.length; });
+      return out;
+    }
+
+    const _xmlEsc = s => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+      // Excel refuses to open a workbook containing control characters.
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+
+    function _colName(i) {
+      let s = '';
+      for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+      return s;
+    }
+
+    function schedSheetXlsx(date) {
+      const header = SCHED_SHEET_COLS;
+      const rows   = schedSheetRows(date);
+      const numeric = new Set([4, 11, 12]);   // hours, tons, loads
+
+      const cell = (r, c, v, isHeader) => {
+        const ref = _colName(c) + (r + 1);
+        const num = numeric.has(c) && v !== '' && v !== null && isFinite(Number(String(v).replace(/,/g, '')));
+        if (num) return `<c r="${ref}" s="0"><v>${Number(String(v).replace(/,/g, ''))}</v></c>`;
+        if (v === '' || v == null) return '';
+        return `<c r="${ref}" t="inlineStr"${isHeader ? ' s="1"' : ''}><is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
+      };
+
+      const sheetRows = [
+        `<row r="1">${header.map((h, c) => cell(0, c, h, true)).join('')}</row>`,
+        ...rows.map((r, i) => `<row r="${i + 2}">${r.map((v, c) => cell(i + 1, c, v, false)).join('')}</row>`),
+      ].join('');
+
+      const widths = [9, 9, 11, 10, 8, 18, 12, 30, 30, 16, 14, 8, 8, 16, 26, 26];
+      const cols = `<cols>${widths.map((w, i) =>
+        `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`;
+
+      const files = [
+        { name: '[Content_Types].xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+          `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+          `<Default Extension="xml" ContentType="application/xml"/>` +
+          `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
+          `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
+          `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
+          `</Types>` },
+        { name: '_rels/.rels', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
+          `</Relationships>` },
+        { name: 'xl/workbook.xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
+          `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+          `<sheets><sheet name="Dispatch" sheetId="1" r:id="rId1"/></sheets></workbook>` },
+        { name: 'xl/_rels/workbook.xml.rels', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>` +
+          `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+          `</Relationships>` },
+        { name: 'xl/styles.xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+          `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>` +
+          `<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
+          `<fills count="1"><fill><patternFill patternType="none"/></fill></fills>` +
+          `<borders count="1"><border/></borders>` +
+          `<cellStyleXfs count="1"><xf/></cellStyleXfs>` +
+          `<cellXfs count="2"><xf xfId="0"/><xf xfId="0" fontId="1" applyFont="1"/></cellXfs>` +
+          // Without a named Normal style some readers warn the workbook has no
+          // default; Excel copes either way, but the file should be clean.
+          `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
+          `</styleSheet>` },
+        { name: 'xl/worksheets/sheet1.xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+          `${cols}<sheetData>${sheetRows}</sheetData></worksheet>` },
+      ];
+      return _zip(files);
+    }
+
+    function schedSheetDownload() {
+      const date = schedAnchor;
+      const blob = new Blob([schedSheetXlsx(date)],
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dispatch-' + date + '.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoked on a timer rather than immediately: Safari reads the blob
+      // after the click returns, and pulling it out from under it downloads
+      // an empty file.
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+
+    /* ── Email the sheet ── */
+    function schedSheetEmail() {
+      _schedRepSheetMode = true;
+      schedOpenReport();
+    }
+
     /* ═══════ Dispatch report — print / PDF / email ═══════
        One HTML body serves both routes: the print window the browser turns
        into a PDF, and the email the server sends. It is built with inline
@@ -3208,6 +3457,9 @@
        nobody wants that on paper. */
     const SCHED_REPORT_TYPE = 'trucking_dispatch';
     let _schedRepGroups = [];
+    // Set by the dispatch sheet's Email button; cleared when the modal opens
+    // from the toolbar, so the two never send each other's content.
+    let _schedRepSheetMode = false;
 
     const _RP = {
       wrap:  'font-family:Segoe UI,system-ui,-apple-system,sans-serif;color:#111;font-size:12px',
@@ -3373,9 +3625,21 @@
     }
 
     /* ── Modal ── */
+    function schedOpenPlanReport() { _schedRepSheetMode = false; schedOpenReport(); }
+
     async function schedOpenReport() {
       const scope = schedView === 'week' ? 'week' : 'day';
+      const sheet = _schedRepSheetMode;
       document.getElementById('sched-rep-body').innerHTML = `
+        ${sheet ? `
+        <input type="hidden" id="sched-rep-scope" value="day">
+        <input type="hidden" id="sched-rep-layout" value="day">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;
+                    padding:0.6rem 0.7rem;margin-bottom:0.9rem;font-size:0.78rem">
+          <strong>${schedEsc(schedSheetTitle(schedAnchor))}</strong>
+          <span style="display:block;color:var(--muted);font-size:0.7rem;margin-top:0.15rem">
+            The full sheet, reported figures included.</span>
+        </div>` : `
         <div class="sch-fld">
           <label for="sched-rep-scope">Range</label>
           <select id="sched-rep-scope" onchange="schedRepPreviewNote()">
@@ -3390,8 +3654,8 @@
             <option value="driver">By driver — one table per driver</option>
           </select>
         </div>
-        <div id="sched-rep-note" style="font-size:0.68rem;color:var(--muted);margin:-0.2rem 0 0.8rem"></div>
-        <button class="sch-btn" style="width:100%" onclick="schedPrintReport()">Open print view — print or save as PDF</button>
+        <div id="sched-rep-note" style="font-size:0.68rem;color:var(--muted);margin:-0.2rem 0 0.8rem"></div>`}
+        <button class="sch-btn" style="width:100%" onclick="${sheet ? 'schedSheetPrint()' : 'schedPrintReport()'}">Open print view — print or save as PDF</button>
 
         <div style="border-top:1px solid var(--border);margin:1rem 0 0.9rem"></div>
         <div style="font-size:0.68rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:0.6rem">Email it out</div>
@@ -3432,7 +3696,7 @@
 
     function schedRepPreviewNote() {
       const el = document.getElementById('sched-rep-note');
-      if (!el) return;
+      if (!el) return;   // absent in sheet mode, which states its own scope
       const scope = (document.getElementById('sched-rep-scope') || {}).value || 'day';
       const dates = schedRepDates(scope);
       const total = dates.reduce((n, d) => n + (schedAssignments[d] || []).length, 0);
@@ -3494,7 +3758,10 @@
 
       result.style.color = '';
       if (!to.length) { result.textContent = 'Pick a saved list or type at least one email address.'; return; }
-      if (!schedRepHasWork(scope)) { result.textContent = 'Nothing scheduled in this range to send.'; return; }
+      const hasWork = _schedRepSheetMode
+        ? schedRepItems(schedAnchor).length > 0
+        : schedRepHasWork(scope);
+      if (!hasWork) { result.textContent = 'Nothing scheduled in this range to send.'; return; }
 
       btn.disabled = true;
       result.style.color = 'var(--muted)';
@@ -3505,10 +3772,10 @@
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({
             report_type: SCHED_REPORT_TYPE,
-            subject:     schedRepTitle(scope),
+            subject:     _schedRepSheetMode ? schedSheetTitle(schedAnchor) : schedRepTitle(scope),
             note:        document.getElementById('sched-rep-msg').value || '',
             recipients:  to,
-            html:        schedRepBody(scope, layout),
+            html:        _schedRepSheetMode ? schedSheetHTML(schedAnchor) : schedRepBody(scope, layout),
           }),
         });
         const j = await r.json().catch(() => ({}));
