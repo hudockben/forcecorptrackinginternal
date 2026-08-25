@@ -563,7 +563,7 @@
     .sch-fld input[type=time]::-webkit-calendar-picker-indicator { filter: invert(0.75); cursor: pointer; }
     .sch-fld textarea { resize: vertical; min-height: 52px; }
     .sch-fld-row { display: flex; gap: 0.6rem; }
-    .sch-fld-row .sch-fld { flex: 1; }
+    .sch-fld-row .sch-fld { flex: 1; min-width: 0; }
     .sch-modal-actions {
       display: flex; align-items: center; gap: 0.5rem; margin-top: 1rem;
     }
@@ -2262,6 +2262,23 @@
       return h12 + (m ? ':' + schedPad(m) : '') + ap;
     }
 
+    /** "6:30a–3p", or just the one end of it that is filled in. Both are
+     *  optional: a haul can be booked before its finish time is known. */
+    function schedWindow(a) {
+      const st = schedTime12(a && a.start), en = schedTime12(a && a.end);
+      if (st && en) return st + '\u2013' + en;
+      return st || (en ? '\u2013' + en : '');
+    }
+
+    /** Minutes past midnight, or null when the time is absent/unparseable. */
+    function schedMins(hhmm) {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+      if (!m) return null;
+      const h = +m[1], mi = +m[2];
+      if (h > 23 || mi > 59) return null;
+      return h * 60 + mi;
+    }
+
     function schedIsActive() {
       const b = document.querySelector('.tab-btn.active');
       return !!b && b.dataset.tab === 'scheduler';
@@ -2302,17 +2319,35 @@
     }
     /** Units double-booked on a date — the same truck under two different
      *  drivers. Two hauls for one driver in a day is normal here, so the
-     *  driver is not the thing that conflicts; the truck is. */
+     *  driver is not the thing that conflicts; the truck is.
+     *
+     *  Now that an assignment can carry an end time, a truck handed between
+     *  shifts — 6a-2p then 2p-10p — is not a conflict, so the flag is only
+     *  raised where the windows actually collide. The proof has to be
+     *  complete to clear it: if any assignment on that truck is missing a
+     *  usable window, we cannot show the two don't overlap, so the day-level
+     *  rule stands. That way the change only ever removes a flag we can
+     *  disprove, never hides one we can't. */
     function schedUnitConflicts(date) {
       const byUnit = new Map();
       (schedAssignments[date] || []).forEach(a => {
         const u = (a.unit || '').trim();
         if (!u) return;
-        if (!byUnit.has(u)) byUnit.set(u, new Set());
-        byUnit.get(u).add(a.driver);
+        if (!byUnit.has(u)) byUnit.set(u, []);
+        byUnit.get(u).push(a);
       });
       const bad = new Set();
-      byUnit.forEach((drivers, u) => { if (drivers.size > 1) bad.add(u); });
+      byUnit.forEach((list, u) => {
+        if (new Set(list.map(a => a.driver)).size < 2) return;
+        const spans = list.map(a => [schedMins(a.start), schedMins(a.end)]);
+        // A window that is missing an end, or that runs backwards (a haul
+        // booked past midnight), is not something we can compare.
+        if (spans.some(([s0, e0]) => s0 === null || e0 === null || e0 <= s0)) { bad.add(u); return; }
+        spans.sort((x, y) => x[0] - y[0]);
+        for (let i = 1; i < spans.length; i++) {
+          if (spans[i][0] < spans[i - 1][1]) { bad.add(u); return; }
+        }
+      });
       return bad;
     }
 
@@ -2541,7 +2576,7 @@
             <button class="sch-viewbtn${schedView === 'day'  ? ' active' : ''}" onclick="schedSetView('day')">Day</button>
           </div>
           <span style="font-size:0.7rem;color:var(--muted)">${planned} assigned</span>
-          ${conflicts ? `<span class="sch-warn" title="A truck is assigned to more than one driver">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
+          ${conflicts ? `<span class="sch-warn" title="A truck is booked by two drivers over the same hours \u2014 or over hours we can\u2019t compare, because a start or end time is missing">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
           <span style="flex:1"></span>
           <span id="sched-status" class="sch-status"></span>
           <button class="btn-manage-lists" onclick="schedOpenPicker()"
@@ -2563,11 +2598,12 @@
       const bits = [];
       if (a.unit)  bits.push(schedEsc(a.unit));
       if (a.notes) bits.push(schedEsc(a.notes));
-      const title = conflicted ? ' title="This truck is assigned to another driver on this day"' : '';
+      const title = conflicted ? ' title="This truck overlaps another driver\u2019s on this day"' : '';
+      const win   = schedWindow(a);
       return `
         <div class="sch-chip${conflicted ? ' conflict' : ''}"${title}
              onclick="event.stopPropagation();schedEditAssign('${a._d}','${a.id}')">
-          <span class="cust">${a.start ? `<span class="start">${schedEsc(schedTime12(a.start))}</span> ` : ''}${schedEsc(a.customer || '—')}</span>
+          <span class="cust">${win ? `<span class="start">${schedEsc(win)}</span> ` : ''}${schedEsc(a.customer || '—')}</span>
           ${bits.length ? `<span class="meta">${bits.join(' · ')}</span>` : ''}
         </div>`;
     }
@@ -2640,14 +2676,15 @@
         const conflicted = bad.has((a.unit || '').trim());
         return `<tr class="${conflicted ? 'conflict' : ''}" onclick="schedEditAssign('${date}','${a.id}')" style="cursor:pointer">
           <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.start)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
+          <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.end)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
           <td style="font-weight:600">${schedEsc(a.driver)}${schedHidden.has(a.driver)
             ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}</td>
           <td>${schedEsc(a.customer) || '<span style="color:var(--muted)">—</span>'}</td>
-          <td>${schedEsc(a.unit) || '<span style="color:var(--muted)">—</span>'}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem">2 drivers</span>' : ''}</td>
+          <td>${schedEsc(a.unit) || '<span style="color:var(--muted)">—</span>'}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem" title="Overlaps another driver on this truck">overlap</span>' : ''}</td>
           <td style="color:var(--muted)">${schedEsc(a.notes)}</td>
         </tr>`;
       }).join('')
-        : `<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
+        : `<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
 
       const assigned = new Set(items.map(a => a.driver));
       const open     = drivers.filter(d => !assigned.has(d));
@@ -2658,7 +2695,7 @@
         </div>
         <div class="proj-table-wrap" style="border:1px solid var(--border);border-radius:6px;margin-bottom:1.5rem">
           <table class="sch-day-tbl">
-            <thead><tr><th>Start</th><th>Driver</th><th>Customer</th><th>Truck</th><th>Notes</th></tr></thead>
+            <thead><tr><th>Start</th><th>End</th><th>Driver</th><th>Customer</th><th>Truck</th><th>Notes</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -2787,14 +2824,18 @@
 
       document.getElementById('sched-modal-title').textContent = a ? 'Edit assignment' : 'New assignment';
       document.getElementById('sched-modal-body').innerHTML = `
+        <div class="sch-fld" style="max-width:190px">
+          <label for="sched-f-date">Date</label>
+          <input type="date" id="sched-f-date" value="${schedEsc(date)}">
+        </div>
         <div class="sch-fld-row">
-          <div class="sch-fld">
-            <label for="sched-f-date">Date</label>
-            <input type="date" id="sched-f-date" value="${schedEsc(date)}">
-          </div>
           <div class="sch-fld">
             <label for="sched-f-start">Start</label>
             <input type="time" id="sched-f-start" value="${schedEsc(a ? (a.start || '') : '')}">
+          </div>
+          <div class="sch-fld">
+            <label for="sched-f-end">End</label>
+            <input type="time" id="sched-f-end" value="${schedEsc(a ? (a.end || '') : '')}">
           </div>
         </div>
         <div class="sch-fld">
@@ -2854,6 +2895,7 @@
         customer: v('sched-f-customer').trim(),
         unit:     v('sched-f-unit').trim(),
         start:    v('sched-f-start').trim(),
+        end:      v('sched-f-end').trim(),
         notes:    v('sched-f-notes').trim(),
       };
       // Remove first, then re-add: the date field is editable, so an edit can
