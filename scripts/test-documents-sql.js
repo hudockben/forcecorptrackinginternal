@@ -157,9 +157,11 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('PUT seeds the tree', gen.statusCode === 200, JSON.stringify(gen.body));
   const folders = gen.body.folders;
   const names = folders.map(f => f.name);
-  assert('six fixed folders exist',
-    ['Contract & Change Orders', 'Permits & Insurance', 'Submittals', 'Safety', 'Photos', 'Closeout']
-      .every(n => names.includes(n)), names.join(' | '));
+  const STANDARD = ['Contract & Change Orders', 'Permits & Insurance', 'Submittals',
+                    'Safety', 'Photos', 'Repairs', 'Closeout'];
+  assert('every standard folder exists', STANDARD.every(n => names.includes(n)), names.join(' | '));
+  assert('and they render in the order the list declares them',
+    names.slice(0, STANDARD.length).join('|') === STANDARD.join('|'), names.join(' | '));
   assert('Purchase Orders root exists', names.includes('Purchase Orders'));
   assert('cost-code folder is labelled from the master list', names.includes('420 · Paving'), names.join(' | '));
   assert('a cost code with no master-list label falls back to the bare code',
@@ -175,6 +177,32 @@ async function upload(folderId, filename, auth, extra = {}) {
   }, PM);
   assert('re-running creates nothing', again.body.created === 0, `created ${again.body.created}`);
   assert('and returns the same folder count', again.body.folders.length === folders.length);
+  assert('and moves nothing, since the tree is already in order',
+    again.body.reordered === 0, `reordered ${again.body.reordered}`);
+
+  // ── A folder added to the standard list has to reach the jobs that already
+  // have a tree, in the place the list puts it. Wind this job back to what an
+  // older release left behind: no Repairs folder, and everything after it
+  // numbered one lower.
+  const CC = [{ code: '420', label: 'Paving' }, { code: '411', label: 'Excavation' }, { code: '415', label: '' }];
+  await client.query(`DELETE FROM project_folders WHERE project_id = $1 AND slug = 'repairs'`, [PROJ]);
+  await client.query(
+    `UPDATE project_folders SET sort_order = sort_order - 1 WHERE project_id = $1 AND sort_order >= 6`, [PROJ]);
+
+  const legacy = await call('PUT', { division: 'turf', projectId: PROJ }, { costCodes: CC }, PM);
+  const legacyNames = legacy.body.folders.map(f => f.name);
+  assert('an existing job gets a newly standard folder', legacyNames.includes('Repairs'), legacyNames.join(' | '));
+  assert('exactly one folder is created for it', legacy.body.created === 1, `created ${legacy.body.created}`);
+  assert('and it lands where the list puts it, not after the numbering it inherited',
+    legacyNames.join('|') === [...STANDARD, 'Purchase Orders', '411 · Excavation', '415', '420 · Paving'].join('|'),
+    legacyNames.join(' | '));
+  assert('the folders it displaced are renumbered, and say so',
+    legacy.body.reordered === 5, `reordered ${legacy.body.reordered}`);
+
+  // Once straightened out it stays straight — the renumbering must not run
+  // again on every single load.
+  const settled = await call('PUT', { division: 'turf', projectId: PROJ }, { costCodes: CC }, PM);
+  assert('and the next load moves nothing', settled.body.reordered === 0, `reordered ${settled.body.reordered}`);
 
   // A renamed folder must survive regeneration, or a PM's tidy-up is undone
   // every time the tab opens.
@@ -372,9 +400,36 @@ async function upload(folderId, filename, auth, extra = {}) {
   console.log('\nGeneral / Non-Job area');
   const gGen = await call('PUT', { division: 'turf' }, {}, PM);
   const gNames = gGen.body.folders.map(f => f.name);
+  const GENERAL = ['Shop Supplies', 'Office', 'Repairs', 'Unassigned POs'];
   assert('the division-level area seeds its own buckets',
-    ['Shop Supplies', 'Office', 'Unassigned POs'].every(n => gNames.includes(n)), gNames.join(' | '));
+    GENERAL.every(n => gNames.includes(n)), gNames.join(' | '));
+  assert('in the order the list declares them',
+    gNames.slice(0, GENERAL.length).join('|') === GENERAL.join('|'), gNames.join(' | '));
   assert('and does not inherit the job folders', !gNames.includes('Submittals'), gNames.join(' | '));
+
+  // Repairs exists in both scopes under the same slug. The unique index keys a
+  // slug per project, so these have to be two folders — one folder shared
+  // between the shop and every job would put a job's repair paperwork in front
+  // of anyone who opened the division-level area.
+  const genRepairs = gGen.body.folders.find(f => f.name === 'Repairs');
+  const jobRepairs = (await call('GET', { division: 'turf', projectId: PROJ }, null, PM))
+    .body.folders.find(f => f.name === 'Repairs');
+  assert('the shop\'s Repairs and a job\'s are different folders',
+    Boolean(genRepairs) && Boolean(jobRepairs) && genRepairs.id !== jobRepairs.id,
+    `${genRepairs && genRepairs.id} vs ${jobRepairs && jobRepairs.id}`);
+
+  // The division-level area is seeded by its own branch, so wind it back the
+  // same way and check a newly standard bucket lands in place there too.
+  await client.query(`DELETE FROM project_folders WHERE project_id IS NULL AND division = 'turf' AND slug = 'repairs'`);
+  await client.query(
+    `UPDATE project_folders SET sort_order = 2 WHERE project_id IS NULL AND division = 'turf' AND slug = 'unassigned-pos'`);
+  const gLegacy = await call('PUT', { division: 'turf' }, {}, PM);
+  const gLegacyNames = gLegacy.body.folders.map(f => f.name);
+  assert('an existing division-level area gets it too, in place',
+    gLegacyNames.slice(0, GENERAL.length).join('|') === GENERAL.join('|'), gLegacyNames.join(' | '));
+  assert('creating one folder and moving the one it displaced',
+    gLegacy.body.created === 1 && gLegacy.body.reordered === 1,
+    `created ${gLegacy.body.created}, reordered ${gLegacy.body.reordered}`);
 
   const shop = gGen.body.folders.find(f => f.name === 'Shop Supplies');
   const shopDoc = await upload(shop.id, 'shop-po.pdf', PM, { projectId: null, poId: 'po-9001' });

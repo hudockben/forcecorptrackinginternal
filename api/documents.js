@@ -26,28 +26,40 @@ const { requireDivision, capabilities } = require('./lib/auth');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
-// The six standard folders every job gets, in the order they render.
+// The standard folders every job gets, in the order they render.
 //
 // `slug` is the folder's real identity and `name` only its opening label: a PM
 // who renames 'Photos' to 'Site Photos' keeps that name, because the generator
 // below matches on slug. Matching on the name instead recreated the original
 // alongside the renamed one every time the tab opened.
+//
+// Adding one here gives it to every job, old jobs included — the generator
+// runs on every open and creates whatever is missing. Position matters: the
+// list's order is the rail's order, and ensure() moves existing folders to
+// match, so an entry inserted in the middle lands in the same place on a job
+// seeded last year as on one created this morning.
 const FIXED_FOLDERS = [
   { slug: 'contract-change-orders', name: 'Contract & Change Orders' },
   { slug: 'permits-insurance',      name: 'Permits & Insurance' },
   { slug: 'submittals',             name: 'Submittals' },
   { slug: 'safety',                 name: 'Safety' },
   { slug: 'photos',                 name: 'Photos' },
+  { slug: 'repairs',                name: 'Repairs' },
   { slug: 'closeout',               name: 'Closeout' },
 ];
 
 // Purchase-order paperwork lands under this folder, one subfolder per PO.
 const PO_ROOT = { slug: 'purchase-orders', name: 'Purchase Orders' };
 
-// Division-level buckets for POs with no job attached.
+// Division-level buckets for paperwork that belongs to no job. Same rules as
+// FIXED_FOLDERS above: slug is the identity, position is the order. Repairs
+// carries the same name as the job folder and is a different folder — the
+// unique index keys a slug per (company, division, project), so the shop's
+// repair paperwork and a job's never meet.
 const GENERAL_FOLDERS = [
   { slug: 'shop-supplies',  name: 'Shop Supplies' },
   { slug: 'office',         name: 'Office' },
+  { slug: 'repairs',        name: 'Repairs' },
   { slug: 'unassigned-pos', name: 'Unassigned POs' },
 ];
 
@@ -328,10 +340,11 @@ module.exports = async (req, res) => {
     }
 
     // ── PUT — ensure the generated folder tree ───────────────────────────
-    // Called when a job's Documents tab opens. Creates the six fixed folders,
+    // Called when a job's Documents tab opens. Creates the standard folders,
     // the Purchase Orders root, and one folder per cost code on the job.
-    // Idempotent: existing folders are left exactly as they are, including any
-    // the user renamed.
+    // Idempotent: an existing folder keeps its name, including one the user
+    // renamed — only its position follows this file, so a folder added to the
+    // standard list reaches jobs that were seeded before it existed.
     if (req.method === 'PUT') {
       if (!caps.canUpload) {
         return res.status(403).json({ error: 'You do not have permission to change folders' });
@@ -354,6 +367,7 @@ module.exports = async (req, res) => {
       const created = [];
       const skipped = [];   // folders that had to be renamed to avoid a collision
       const relabelled = []; // cost-code folders whose label followed the master list
+      const reordered = []; // folders moved to the position this file declares
 
       // `name` is only the opening label. A folder is identified by its slug
       // (fixed folders) or its cost code, so user renames survive every
@@ -367,7 +381,24 @@ module.exports = async (req, res) => {
 
       async function ensure({ slug, name, kind, costCode, sortOrder, parentId }) {
         const hit = costCode ? byCostCode.get(costCode) : bySlug.get(slug);
-        if (hit) return hit.id;
+        if (hit) {
+          // Follow the declared order the way the cost-code labels below follow
+          // the master list. Adding a folder to the middle of FIXED_FOLDERS
+          // shifts the number handed to every folder after it, so a job seeded
+          // by an older release sorts the new folder against stale numbers and
+          // puts it somewhere else entirely — Repairs after Closeout on one job
+          // and before it on the next. Nothing but this generator writes
+          // sort_order, so there is no user intent to overwrite.
+          if (Number(hit.sort_order) !== sortOrder) {
+            await sql`
+              UPDATE project_folders SET sort_order = ${sortOrder}, updated_at = NOW()
+              WHERE id = ${hit.id}
+            `;
+            hit.sort_order = sortOrder;
+            reordered.push({ name: hit.name, sort_order: sortOrder });
+          }
+          return hit.id;
+        }
 
         // Disambiguate before inserting rather than swallowing the violation
         // afterwards. The old catch assumed a 23505 meant "another request
@@ -474,12 +505,13 @@ module.exports = async (req, res) => {
         }
       }
 
-      if (created.length || relabelled.length || skipped.length) {
+      if (created.length || relabelled.length || skipped.length || reordered.length) {
         await audit(sql, {
           companyCode, division, projectId, action: 'FOLDER_CREATE', payload,
           detail: {
             generated:  created.map(c => c.name),
             relabelled: relabelled.length ? relabelled : undefined,
+            reordered:  reordered.length ? reordered : undefined,
             renamed_to_avoid_collision: skipped.length ? skipped : undefined,
           },
         });
@@ -498,6 +530,7 @@ module.exports = async (req, res) => {
         folders: folders.map(folderOut),
         created: created.length,
         relabelled: relabelled.length,
+        reordered: reordered.length,
         collisions: skipped,
       });
     }
