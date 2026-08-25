@@ -958,7 +958,7 @@
     const API_BASE = '/api';
     let divEntries    = [];
     let divLists      = { employees: [], equipment: [] };
-    let divTruckLists = { drivers: [], customers: [], units: [], locations: [] };
+    let divTruckLists = { drivers: [], customers: [], units: [], locations: [], materials: [] };
     let _saveTimer       = null;
     let _isSaved         = false;
     let icSentMap = new Map(); // source_id → full IC entry (trucking)
@@ -1496,6 +1496,7 @@
         if (Array.isArray(tl.customers)) divTruckLists.customers = tl.customers;
         if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
         if (Array.isArray(tl.locations)) divTruckLists.locations = tl.locations;
+        if (Array.isArray(tl.materials)) divTruckLists.materials = tl.materials;
       }
       if (lists) {
         if (Array.isArray(lists.employees)) {
@@ -1772,6 +1773,7 @@
         section('drivers',   'Drivers',   divTruckLists.drivers) +
         driverLoginsHTML(esc) +
         section('customers', 'Customers', divTruckLists.customers) +
+        section('materials', 'Materials', divTruckLists.materials) +
         locationsHTML +
         unitsHTML;
     }
@@ -2868,16 +2870,18 @@
 
     function schedChipHTML(a, conflicted) {
       const bits = [];
-      if (a.unit)  bits.push(schedEsc(a.unit));
-      if (a.notes) bits.push(schedEsc(a.notes));
-      const tipBits = [schedWindow(a), a.customer, a.address, a.unit, a.notes].filter(Boolean).join(' \u00b7 ');
+      if (a.unit)     bits.push(schedEsc(a.unit));
+      if (a.material) bits.push(schedEsc(a.material));
+      if (a.notes)    bits.push(schedEsc(a.notes));
+      const tipBits = [schedWindow(a), schedDivLabel(a.division), schedJobOf(a), a.address,
+        a.unit, a.material, a.notes].filter(Boolean).join(' \u00b7 ');
       const title = ' title="' + schedEsc(tipBits + (conflicted
         ? ' \u2014 this truck overlaps another driver\u2019s on this day' : '')) + '"';
       const win   = schedWindow(a);
       return `
         <div class="sch-chip${conflicted ? ' conflict' : ''}"${title}
              onclick="event.stopPropagation();schedEditAssign('${a._d}','${a.id}')">
-          <span class="cust">${win ? `<span class="start">${schedEsc(win)}</span> ` : ''}${schedEsc(a.customer || '—')}</span>
+          <span class="cust">${win ? `<span class="start">${schedEsc(win)}</span> ` : ''}${schedEsc(schedJobOf(a) || '—')}</span>
           ${bits.length ? `<span class="meta">${bits.join(' · ')}</span>` : ''}
         </div>`;
     }
@@ -3068,7 +3072,8 @@
           const left = x(it.s), w = Math.max(26, x(Math.min(it.e, h1 * 60)) - left);
           const conflicted = bad.has((a.unit || '').trim());
           const rep = schedReports.get(a.id);
-          const tip = [schedWindow(a) || 'no time set', a.customer, a.address, a.unit, a.notes]
+          const tip = [schedWindow(a) || 'no time set', schedDivLabel(a.division), schedJobOf(a),
+            a.address, a.unit, a.material, a.notes]
             .filter(Boolean).join(' · ') + (it.openEnd ? ' · no end time yet' : '')
             + (rep ? '\nReported: ' + (schedReportSummary(rep) || 'yes')
                    + [rep.tickets, rep.notes].filter(Boolean).map(x => ' · ' + x).join('') : '');
@@ -3076,7 +3081,7 @@
             style="left:${left}px;width:${w}px;top:${SCH_LANE_G + it.lane * (SCH_BAR_H + SCH_LANE_G)}px;height:${SCH_BAR_H}px"
             title="${schedEsc(tip)}" onclick="event.stopPropagation();schedEditAssign('${date}','${a.id}')">
             ${rep ? '<span class="b-rep" title="Reported by the driver">&#10003;</span>' : ''}
-            <span class="b-cust">${schedEsc(a.customer || '—')}</span>
+            <span class="b-cust">${schedEsc(schedJobOf(a) || '—')}</span>
             ${a.unit ? `<span class="b-unit">${schedEsc(a.unit)}</span>` : ''}
           </div>`;
         }).join('');
@@ -3128,8 +3133,10 @@
           <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.end)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
           <td style="font-weight:600">${schedEsc(a.driver)}${schedHidden.has(a.driver)
             ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}</td>
-          <td>${schedEsc(a.customer) || '<span style="color:var(--muted)">—</span>'}${
+          <td style="color:var(--muted);white-space:nowrap">${schedEsc(schedDivLabel(a.division)) || '—'}</td>
+          <td>${schedEsc(schedJobOf(a)) || '<span style="color:var(--muted)">—</span>'}${
             a.address ? `<span style="display:block;color:var(--muted);font-size:0.7rem;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
+          <td>${schedEsc(a.material) || '<span style="color:var(--muted)">—</span>'}</td>
           <td>${schedEsc(a.unit) || '<span style="color:var(--muted)">—</span>'}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem" title="Overlaps another driver on this truck">overlap</span>' : ''}</td>
           <td style="color:var(--muted)">${schedEsc(a.notes)}</td>
           <td>${(() => {
@@ -3142,7 +3149,7 @@
           })()}</td>
         </tr>`;
       }).join('')
-        : `<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
+        : `<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
 
       const assigned = new Set(items.map(a => a.driver));
       const open     = drivers.filter(d => !assigned.has(d));
@@ -3156,7 +3163,7 @@
         <p class="home-section-title">Dispatch Sheet</p>
         <div class="proj-table-wrap" style="border:1px solid var(--border);border-radius:6px;margin-bottom:1.5rem">
           <table class="sch-day-tbl">
-            <thead><tr><th>Start</th><th>End</th><th>Driver</th><th>Customer</th><th>Truck</th><th>Notes</th><th>Reported</th></tr></thead>
+            <thead><tr><th>Start</th><th>End</th><th>Driver</th><th>Division</th><th>Project</th><th>Material</th><th>Truck</th><th>Notes</th><th>Reported</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -3228,6 +3235,14 @@
 
     function schedRepCell(v) { return schedEsc(v) || '<span style="color:#aaa">—</span>'; }
 
+    /** The job a haul is for. Assignments written before divisions existed
+     *  carry only a customer, so that is the fallback rather than a blank. */
+    function schedJobOf(a) { return (a && (a.project || a.customer)) || ''; }
+    function schedDivLabel(k) {
+      const d = SCHED_DIVISIONS.find(x => x.key === k);
+      return d ? d.label : (k || '');
+    }
+
     /** Layout A — by day. What you pin on the wall. */
     function schedRepByDay(dates) {
       return dates.map(d => {
@@ -3239,12 +3254,14 @@
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.start)) || '—'}</td>
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.end)) || '—'}</td>
             <td style="${_RP.td};font-weight:600">${schedEsc(a.driver)}</td>
-            <td style="${_RP.td}">${schedRepCell(a.customer)}${
+            <td style="${_RP.td}">${schedRepCell(schedJobOf(a))}${
+              a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}${
               a.address ? `<span style="display:block;color:#666;font-size:9.5px;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
+            <td style="${_RP.td}">${schedRepCell(a.material)}</td>
             <td style="${_RP.td}">${schedRepCell(a.unit)}${clash ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`;
-        }).join('') : `<tr><td style="${_RP.none}" colspan="6">Nothing scheduled.</td></tr>`;
+        }).join('') : `<tr><td style="${_RP.none}" colspan="7">Nothing scheduled.</td></tr>`;
 
         // Drivers with no hours are listed on purpose — an empty day for
         // someone on the roster is the thing a dispatcher needs to notice.
@@ -3259,8 +3276,9 @@
         return `<div style="${_RP.h2}">${schedEsc(schedRepDayLabel(d))}</div>
           <table style="${_RP.tbl}"><thead><tr>
             <th style="${_RP.th};width:62px">Start</th><th style="${_RP.th};width:62px">End</th>
-            <th style="${_RP.th};width:130px">Driver</th><th style="${_RP.th};width:140px">Customer</th>
-            <th style="${_RP.th};width:90px">Truck</th><th style="${_RP.th}">Notes</th>
+            <th style="${_RP.th};width:118px">Driver</th><th style="${_RP.th};width:145px">Project</th>
+            <th style="${_RP.th};width:92px">Material</th>
+            <th style="${_RP.th};width:80px">Truck</th><th style="${_RP.th}">Notes</th>
           </tr></thead><tbody>${rows}</tbody></table>
           ${open.length ? `<p style="${_RP.open}"><strong>No hauling hours (${open.length}):</strong> ${schedEsc(open.join(' · '))}</p>` : ''}`;
       }).join('');
@@ -3285,15 +3303,18 @@
         const rows = (byDriver.get(n) || []).map(a => `<tr>
             <td style="${_RP.tdT}">${schedEsc(schedRepDayShort(a._d))}</td>
             <td style="${_RP.tdT}">${schedEsc(schedWindow(a)) || '—'}</td>
-            <td style="${_RP.td}">${schedRepCell(a.customer)}${
+            <td style="${_RP.td}">${schedRepCell(schedJobOf(a))}${
+              a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}${
               a.address ? `<span style="display:block;color:#666;font-size:9.5px;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
+            <td style="${_RP.td}">${schedRepCell(a.material)}</td>
             <td style="${_RP.td}">${schedRepCell(a.unit)}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`).join('');
         return `<div style="${_RP.h2}">${schedEsc(n)}</div>
           <table style="${_RP.tbl}"><thead><tr>
             <th style="${_RP.th};width:96px">Day</th><th style="${_RP.th};width:118px">Hours</th>
-            <th style="${_RP.th};width:150px">Customer</th><th style="${_RP.th};width:90px">Truck</th>
+            <th style="${_RP.th};width:150px">Project</th><th style="${_RP.th};width:92px">Material</th>
+            <th style="${_RP.th};width:80px">Truck</th>
             <th style="${_RP.th}">Notes</th>
           </tr></thead><tbody>${rows}</tbody></table>`;
       }).join('');
@@ -3570,6 +3591,95 @@
       renderScheduler();
     }
 
+
+    /* ═══════ Divisions and their jobs ═══════
+       A driver hauls for whichever division has work, so an assignment names
+       the division first and then a job inside it. The jobs come from
+       /api/timesheet-jobs, the same picker the Timesheet field form uses —
+       one definition of "which jobs are live", already carrying the project
+       number in its label, rather than a second list to keep in step.
+
+       Trucking's own entry there is its customer roster, so picking Trucking
+       gives the customer list this tab has always had. */
+    const SCHED_DIVISIONS = [
+      { key: 'turf',     label: 'Turf'          },
+      { key: 'paving',   label: 'Paving'        },
+      { key: 'kiewit',   label: 'Kiewit'        },
+      { key: 'dust',     label: 'Dust Control'  },
+      { key: 'trucking', label: 'Trucking'      },
+      { key: 'quarry',   label: 'Quarry'        },
+    ];
+    const schedJobsCache = new Map();   // division → [{id,label}]
+    const schedJobsErr   = new Map();   // division → error text
+
+    async function schedLoadJobs(division) {
+      if (!division) return [];
+      if (schedJobsCache.has(division)) return schedJobsCache.get(division);
+      try {
+        const r = await fetch(`${API_BASE}/timesheet-jobs?division=${encodeURIComponent(division)}`,
+          { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        const jobs = Array.isArray(j.jobs) ? j.jobs : [];
+        schedJobsCache.set(division, jobs);
+        schedJobsErr.delete(division);
+        return jobs;
+      } catch (err) {
+        schedJobsErr.set(division, err.message || 'could not load');
+        return [];
+      }
+    }
+
+    /** Fill the Project select for the chosen division.
+     *  `keep` is the project already on the assignment: a job that has since
+     *  closed drops off the live list, and blanking the field would quietly
+     *  rewrite what the assignment said. It is re-added instead, marked. */
+    async function schedFillProjects(division, keepId, keepLabel) {
+      const sel = document.getElementById('sched-f-project');
+      if (!sel) return;
+      if (!division) {
+        sel.innerHTML = '<option value="">— pick a division first —</option>';
+        sel.disabled = true;
+        return;
+      }
+      sel.disabled = true;
+      sel.innerHTML = '<option value="">Loading…</option>';
+      const jobs = await schedLoadJobs(division);
+      // The editor may have been closed or switched while this was in flight.
+      const now = document.getElementById('sched-f-project');
+      if (!now || now !== sel) return;
+      const cur = document.getElementById('sched-f-division');
+      if (cur && cur.value !== division) return;
+
+      const known = jobs.some(j => String(j.id) === String(keepId) || j.label === keepLabel);
+      const extra = (!known && (keepId || keepLabel))
+        ? `<option value="${schedEsc(keepId || keepLabel)}" data-label="${schedEsc(keepLabel || '')}" selected>${schedEsc(keepLabel || keepId)} (closed)</option>`
+        : '';
+      const err = schedJobsErr.get(division);
+      sel.disabled = false;
+      sel.innerHTML =
+        `<option value="">${err ? '— could not load jobs —' : '— select —'}</option>` +
+        extra +
+        jobs.map(j => `<option value="${schedEsc(j.id)}" data-label="${schedEsc(j.label)}"${
+          String(j.id) === String(keepId) || j.label === keepLabel ? ' selected' : ''
+        }>${schedEsc(j.label)}</option>`).join('');
+    }
+
+    function schedOnDivisionChange() {
+      const d = document.getElementById('sched-f-division');
+      schedFillProjects(d ? d.value : '', '', '');
+    }
+
+    /** The label is what everything downstream reads — the board, the printed
+     *  sheet, the driver's phone — so it is stored alongside the id rather
+     *  than re-resolved later against a list that will have moved on. */
+    function schedProjectLabel() {
+      const sel = document.getElementById('sched-f-project');
+      if (!sel || !sel.selectedIndex) return '';
+      const opt = sel.options[sel.selectedIndex];
+      return (opt && (opt.dataset.label || opt.textContent.replace(/ \(closed\)$/, ''))) || '';
+    }
+
     /* ═══════ Assignment editor ═══════
        Driver is passed by roster index rather than by name so a name carrying
        a quote or an ampersand can't break out of the inline handler. */
@@ -3591,6 +3701,11 @@
       const driver    = a ? a.driver : driverHint;
       const customers = (divTruckLists.customers || []).filter(Boolean);
       const locs      = (divTruckLists.locations || []).filter(l => l && l.name);
+      const materials = (divTruckLists.materials || []).filter(Boolean);
+      // An assignment made before divisions existed carries only a customer,
+      // and trucking's job list IS the customer roster — so it opens on
+      // Trucking with that customer still selectable rather than blank.
+      const curDivision = a ? (a.division || (a.customer ? 'trucking' : '')) : '';
       const units     = (divTruckLists.units || []).map(u => u && u.name).filter(Boolean);
       const opts      = [...new Set([...roster, driver].filter(Boolean))]
         .sort((x, y) => String(x).localeCompare(String(y)));
@@ -3619,10 +3734,17 @@
           </select>
         </div>
         <div class="sch-fld">
-          <label for="sched-f-customer">Customer</label>
-          <input type="text" id="sched-f-customer" list="sched-dl-customers" autocomplete="off"
-                 placeholder="Customer" value="${schedEsc(a ? (a.customer || '') : '')}">
-          <datalist id="sched-dl-customers">${customers.map(c => `<option value="${schedEsc(c)}"></option>`).join('')}</datalist>
+          <label for="sched-f-division">Division</label>
+          <select id="sched-f-division" onchange="schedOnDivisionChange()">
+            <option value="">— select —</option>
+            ${SCHED_DIVISIONS.map(d => `<option value="${d.key}"${d.key === curDivision ? ' selected' : ''}>${d.label}</option>`).join('')}
+          </select>
+        </div>
+        <div class="sch-fld">
+          <label for="sched-f-project">Project / job</label>
+          <select id="sched-f-project" disabled>
+            <option value="">— pick a division first —</option>
+          </select>
         </div>
         <div class="sch-fld">
           <label for="sched-f-location">Location</label>
@@ -3643,6 +3765,12 @@
           <datalist id="sched-dl-units">${units.map(u => `<option value="${schedEsc(u)}"></option>`).join('')}</datalist>
         </div>
         <div class="sch-fld">
+          <label for="sched-f-material">Material</label>
+          <input type="text" id="sched-f-material" list="sched-dl-materials" autocomplete="off"
+                 placeholder="What is being hauled" value="${schedEsc(a ? (a.material || '') : '')}">
+          <datalist id="sched-dl-materials">${materials.map(m => `<option value="${schedEsc(m)}"></option>`).join('')}</datalist>
+        </div>
+        <div class="sch-fld">
           <label for="sched-f-notes">Load / notes</label>
           <textarea id="sched-f-notes" placeholder="Material, origin → destination, instructions…">${schedEsc(a ? (a.notes || '') : '')}</textarea>
         </div>
@@ -3655,7 +3783,9 @@
         </div>`;
 
       document.getElementById('sched-backdrop').classList.add('open');
-      const focusEl = driver ? document.getElementById('sched-f-customer') : document.getElementById('sched-f-driver');
+      schedFillProjects(curDivision, a ? (a.project_id || '') : '',
+        a ? (a.project || a.customer || '') : '');
+      const focusEl = driver ? document.getElementById('sched-f-division') : document.getElementById('sched-f-driver');
       if (focusEl) focusEl.focus();
     }
 
@@ -3684,10 +3814,23 @@
       if (!driver)              { if (err) err.textContent = 'Pick a driver.'; return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { if (err) err.textContent = 'Pick a valid date.'; return; }
 
+      const prevRec  = schedCtx.id
+        ? (schedAssignments[schedCtx.date] || []).find(x => x.id === schedCtx.id)
+        : null;
+      const projLabel = schedProjectLabel();
+
       const rec = {
         id:       schedCtx.id || (crypto.randomUUID ? crypto.randomUUID() : 'sa-' + Date.now() + '-' + Math.random().toString(36).slice(2)),
         driver,
-        customer: v('sched-f-customer').trim(),
+        division:   v('sched-f-division').trim(),
+        project_id: v('sched-f-project').trim(),
+        project:    projLabel,
+        material:   v('sched-f-material').trim(),
+        // Everything written before divisions existed reads `customer`, so it
+        // is kept in step with the project label. Falls back to whatever the
+        // row already said rather than blanking it — an edit that never opened
+        // the project picker must not quietly erase the job.
+        customer:   projLabel || (prevRec ? (prevRec.customer || '') : ''),
         unit:     v('sched-f-unit').trim(),
         location: v('sched-f-location').trim(),
         address:  v('sched-f-address').trim(),
@@ -4823,6 +4966,7 @@
           const inCustomers = Array.isArray(tl.customers)  ? tl.customers : divTruckLists.customers;
           const inUnits     = Array.isArray(tl.units)      ? tl.units     : divTruckLists.units;
           const inLocations = Array.isArray(tl.locations)  ? tl.locations : divTruckLists.locations;
+          const inMaterials = Array.isArray(tl.materials)  ? tl.materials : divTruckLists.materials;
           // Guard: if the server returned significantly fewer entries than we currently
           // hold, the server blob is stale or corrupted — skip this poll cycle so we
           // don't overwrite good in-memory data and trigger a save with the smaller set.
@@ -4834,7 +4978,8 @@
           const listsChanged   = JSON.stringify(inDrivers)   !== JSON.stringify(divTruckLists.drivers)   ||
                                  JSON.stringify(inCustomers) !== JSON.stringify(divTruckLists.customers) ||
                                  JSON.stringify(inUnits)     !== JSON.stringify(divTruckLists.units)     ||
-                                 JSON.stringify(inLocations) !== JSON.stringify(divTruckLists.locations);
+                                 JSON.stringify(inLocations) !== JSON.stringify(divTruckLists.locations) ||
+                                 JSON.stringify(inMaterials) !== JSON.stringify(divTruckLists.materials);
           if (!entriesChanged && !listsChanged) return;
           // Skip the cycle entirely while the user is typing — otherwise
           // we replace the in-memory entries/lists with the server
@@ -4850,6 +4995,7 @@
           if (Array.isArray(tl.customers)) divTruckLists.customers = tl.customers;
           if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
           if (Array.isArray(tl.locations)) divTruckLists.locations = tl.locations;
+          if (Array.isArray(tl.materials)) divTruckLists.materials = tl.materials;
           const tab = _activeTabId();
           if (tab === 'dashboard')      renderDashboard();
           if (tab === 'truck-tracking') renderTrackingTab();

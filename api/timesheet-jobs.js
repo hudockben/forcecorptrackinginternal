@@ -203,13 +203,19 @@ module.exports = async (req, res) => {
   const payload = requireAuth(req, res);
   if (!payload) return;
 
-  // Any user with timesheet or payroll access can read the job picker
+  // Any user with timesheet or payroll access can read the job picker.
+  // Trucking is here because its Scheduler asks the same question this
+  // endpoint exists to answer: a driver hauls for turf, paving, kiewit and
+  // dust as well as trucking, so the assignment has to name a job in whatever
+  // division the haul is for. Read-only, and job names and numbers are all it
+  // returns, so widening it costs nothing a dispatcher cannot already see.
   const allowed =
     hasDivisionAccess(payload, 'timesheet') ||
     hasDivisionAccess(payload, 'payroll')   ||
+    hasDivisionAccess(payload, 'trucking')  ||
     payload.isPlatformAdmin;
   if (!allowed) {
-    return res.status(403).json({ error: 'Timesheet or Payroll access required' });
+    return res.status(403).json({ error: 'Timesheet, Payroll or Trucking access required' });
   }
 
   const division = String(req.query.division || '').toLowerCase();

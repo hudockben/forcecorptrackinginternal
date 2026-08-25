@@ -66,6 +66,13 @@
     .haul-what .cust { font-size:0.95rem; font-weight:700; }
     .haul-what .meta { font-size:0.75rem; color:var(--muted); margin-top:1px; }
     .haul-what .note { font-size:0.75rem; color:var(--blue); margin-top:3px; }
+    /* What is on the truck. Given its own line rather than folded into the
+       meta row — it is the thing a driver checks against the load. */
+    .haul-what .mat {
+      display:inline-block; margin-top:4px; padding:0.1rem 0.4rem;
+      font-size:0.72rem; font-weight:700; color:var(--amber);
+      background:rgba(250,204,21,0.12); border-radius:4px;
+    }
     /* The address is the one thing on this card a driver acts on before
        leaving the yard, so it is a link to their maps app rather than text
        to squint at and retype. stopPropagation keeps the tap from also
@@ -168,6 +175,10 @@
 
     /* ═══════ State ═══════ */
     let state = { date: todayStr(), data: null, loading: true, error: null, open: new Set() };
+
+    // Division keys come back as they are stored; drivers read names.
+    const DIV_LABEL = { turf:'Turf', paving:'Paving', kiewit:'Kiewit',
+                        dust:'Dust Control', trucking:'Trucking', quarry:'Quarry' };
 
     function pad(n) { return String(n).padStart(2, '0'); }
     function dstr(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
@@ -321,8 +332,10 @@
               ${a.end ? `<div class="t2">to ${esc(t12(a.end))}</div>` : ''}
             </div>
             <div class="haul-what">
-              <div class="cust">${esc(a.customer) || 'No customer set'}</div>
-              <div class="meta">${esc(a.unit) || 'No truck set'}</div>
+              <div class="cust">${esc(a.project || a.customer) || 'No project set'}</div>
+              <div class="meta">${[a.division ? DIV_LABEL[a.division] || a.division : '', a.unit || 'No truck set']
+                .filter(Boolean).map(esc).join(' · ')}</div>
+              ${a.material ? `<div class="mat">${esc(a.material)}</div>` : ''}
               ${a.address ? `<a class="addr" href="${esc(mapsHref(a.address))}"${mapsTarget()}
                 onclick="event.stopPropagation()"
                 title="Get directions">&#128205; <span>${esc(a.address)}</span><span class="go">Directions</span></a>` : ''}
