@@ -143,7 +143,12 @@ module.exports = async (req, res) => {
             id:       a.id,
             start:    a.start || '',
             end:      a.end || '',
+            // project/division/material are what an assignment says now;
+            // customer is what the ones written before them say.
             customer: a.customer || '',
+            project:  a.project || a.customer || '',
+            division: a.division || '',
+            material: a.material || '',
             location: a.location || '',
             address:  a.address || '',
             unit:     a.unit || '',

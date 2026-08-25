@@ -66,15 +66,33 @@
     .haul-what .cust { font-size:0.95rem; font-weight:700; }
     .haul-what .meta { font-size:0.75rem; color:var(--muted); margin-top:1px; }
     .haul-what .note { font-size:0.75rem; color:var(--blue); margin-top:3px; }
+    /* What is on the truck. Given its own line rather than folded into the
+       meta row — it is the thing a driver checks against the load. */
+    .haul-what .mat {
+      display:inline-block; margin-top:4px; padding:0.1rem 0.4rem;
+      font-size:0.72rem; font-weight:700; color:var(--amber);
+      background:rgba(250,204,21,0.12); border-radius:4px;
+    }
     /* The address is the one thing on this card a driver acts on before
        leaving the yard, so it is a link to their maps app rather than text
        to squint at and retype. stopPropagation keeps the tap from also
        toggling the card open underneath it. */
+    /* Sized as a target, not as text. This gets tapped in a cab, often with a
+       glove on, so it carries its own padding and clears Apple's 44pt minimum
+       instead of being a thin line of underlined type. */
     .haul-what .addr {
-      display:inline-block; margin-top:4px; font-size:0.78rem; line-height:1.35;
-      color:var(--green); text-decoration:none; border-bottom:1px dotted rgba(34,197,94,0.5);
+      display:flex; align-items:center; gap:0.4rem;
+      margin-top:6px; padding:0.5rem 0.6rem; min-height:44px;
+      font-size:0.82rem; line-height:1.3; font-weight:600;
+      color:var(--green); text-decoration:none;
+      background:rgba(34,197,94,0.09); border:1px solid rgba(34,197,94,0.28);
+      border-radius:8px;
     }
-    .haul-what .addr:active { opacity:0.6; }
+    .haul-what .addr:active { background:rgba(34,197,94,0.2); }
+    .haul-what .addr .go {
+      margin-left:auto; flex:none; font-size:0.62rem; font-weight:700;
+      letter-spacing:0.08em; text-transform:uppercase; color:var(--green); opacity:0.75;
+    }
     .chev { flex:none; color:var(--muted); font-size:0.85rem; align-self:center; transition:transform .15s; }
     .haul.open .chev { transform:rotate(90deg); }
 
@@ -158,6 +176,10 @@
     /* ═══════ State ═══════ */
     let state = { date: todayStr(), data: null, loading: true, error: null, open: new Set() };
 
+    // Division keys come back as they are stored; drivers read names.
+    const DIV_LABEL = { turf:'Turf', paving:'Paving', kiewit:'Kiewit',
+                        dust:'Dust Control', trucking:'Trucking', quarry:'Quarry' };
+
     function pad(n) { return String(n).padStart(2, '0'); }
     function dstr(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
     function todayStr() { return dstr(new Date()); }
@@ -171,6 +193,42 @@
       const [h, m] = String(hhmm).split(':').map(Number);
       if (isNaN(h)) return '';
       return ((h % 12) || 12) + (m ? ':' + pad(m) : '') + (h < 12 ? 'a' : 'p');
+    }
+
+    /** Where the address link should point on THIS device.
+     *
+     *  Three things matter on a truck iPad, and the obvious
+     *  https://maps.google.com/?q= link gets all three wrong:
+     *
+     *   1. Apple Maps is on every iPad; Google Maps may not be. A google.com
+     *      link on an iPad without the app lands in a Safari web map, which is
+     *      not a navigation system. maps.apple.com is a Universal Link iPadOS
+     *      hands straight to the Maps app.
+     *   2. ?q= drops a pin. A driver wants the route, so ask for directions —
+     *      daddr on Apple, dir/?api=1 on Google — with driving mode.
+     *   3. iPadOS Safari identifies itself as a Mac, so the user agent alone
+     *      cannot tell an iPad from a desktop; touch points can.
+     */
+    function mapsHref(address) {
+      const q  = encodeURIComponent(address);
+      const ua = navigator.userAgent || '';
+      const isApple = /iPad|iPhone|iPod/.test(ua) ||
+                      (/Mac/.test(ua) && (navigator.maxTouchPoints || 0) > 1);
+      return isApple
+        ? `https://maps.apple.com/?daddr=${q}&dirflg=d`
+        : `https://www.google.com/maps/dir/?api=1&destination=${q}&travelmode=driving`;
+    }
+
+    /** Apple hands a Universal Link to the Maps app only on a direct
+     *  navigation; opening it in a new tab can leave the driver in a web map
+     *  with a stray tab behind it. Safari stays put underneath either way, so
+     *  going direct loses nothing. Everywhere else a new tab is kinder — it
+     *  keeps their schedule where they left it. */
+    function mapsTarget() {
+      const ua = navigator.userAgent || '';
+      const isApple = /iPad|iPhone|iPod/.test(ua) ||
+                      (/Mac/.test(ua) && (navigator.maxTouchPoints || 0) > 1);
+      return isApple ? '' : ' target="_blank" rel="noopener"';
     }
 
     function toast(msg, bad) {
@@ -274,11 +332,13 @@
               ${a.end ? `<div class="t2">to ${esc(t12(a.end))}</div>` : ''}
             </div>
             <div class="haul-what">
-              <div class="cust">${esc(a.customer) || 'No customer set'}</div>
-              <div class="meta">${esc(a.unit) || 'No truck set'}</div>
-              ${a.address ? `<a class="addr" href="https://maps.google.com/?q=${encodeURIComponent(a.address)}"
-                target="_blank" rel="noopener" onclick="event.stopPropagation()"
-                title="Open in maps">&#128205; ${esc(a.address)}</a>` : ''}
+              <div class="cust">${esc(a.project || a.customer) || 'No project set'}</div>
+              <div class="meta">${[a.division ? DIV_LABEL[a.division] || a.division : '', a.unit || 'No truck set']
+                .filter(Boolean).map(esc).join(' · ')}</div>
+              ${a.material ? `<div class="mat">${esc(a.material)}</div>` : ''}
+              ${a.address ? `<a class="addr" href="${esc(mapsHref(a.address))}"${mapsTarget()}
+                onclick="event.stopPropagation()"
+                title="Get directions">&#128205; <span>${esc(a.address)}</span><span class="go">Directions</span></a>` : ''}
               ${a.notes ? `<div class="note">${esc(a.notes)}</div>` : ''}
               <span class="badge ${done ? 'done' : 'todo'}">${done ? 'Reported' : 'Not reported'}</span>
             </div>
