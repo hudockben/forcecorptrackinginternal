@@ -154,18 +154,23 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       width: 100%;
-      max-width: 1040px;
+      max-width: 1360px;
+      /* max- rather than a fixed height so a short list doesn't leave the
+         modal three-quarters empty. */
       max-height: 92vh;
-      overflow-y: auto;
-      padding: 1.75rem;
+      /* The modal itself never scrolls — the header and sub-tabs stay put and
+         .mu-body is the single scroll container beneath them. That's what lets
+         the table's own <thead> stick while the list scrolls. */
+      overflow: hidden;
       display: flex;
       flex-direction: column;
-      gap: 1.25rem;
     }
     .modal-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      padding: 1.4rem 1.75rem 0.9rem;
+      flex-shrink: 0;
     }
     .modal-title {
       font-size: 0.9rem;
@@ -225,7 +230,8 @@
       display: flex;
       gap: 0;
       border-bottom: 1px solid var(--border);
-      margin-top: -0.4rem;
+      padding: 0 1.75rem;
+      flex-shrink: 0;
     }
     .mu-subtab-btn {
       background: none;
@@ -242,28 +248,200 @@
     }
     .mu-subtab-btn:hover { color: var(--text); }
     .mu-subtab-btn.active { color: var(--green); border-bottom-color: var(--green); }
-    .mu-panel { display: none; flex-direction: column; gap: 1.25rem; }
+    .mu-subtab-count {
+      font-size: 0.6rem;
+      font-weight: 700;
+      color: var(--muted);
+      background: var(--surface2);
+      border-radius: 8px;
+      padding: 0.08rem 0.38rem;
+      margin-left: 0.4rem;
+    }
+    .mu-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 0 1.75rem 1.75rem;
+    }
+    .mu-panel { display: none; flex-direction: column; gap: 1rem; }
     .mu-panel.active { display: flex; }
+
+    /* ── Sticky toolbar above the list ──
+       Height is pinned so the sticky <thead> below it knows exactly how far
+       down to park (--mu-tools-h). */
+    :root { --mu-tools-h: 54px; }
+    .mu-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 6;
+      height: var(--mu-tools-h);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--surface);
+      border-bottom: 1px solid transparent;
+    }
+    .mu-search {
+      position: relative;
+      flex: 1 1 190px;
+      min-width: 130px;
+      max-width: 280px;
+    }
+    .mu-search svg {
+      position: absolute;
+      left: 0.55rem;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 13px;
+      height: 13px;
+      stroke: var(--muted);
+      pointer-events: none;
+    }
+    .modal .mu-search input { padding-left: 1.85rem; font-size: 0.8rem; }
+    .modal .mu-filter {
+      width: auto;
+      flex: 0 1 auto;
+      min-width: 108px;
+      font-size: 0.75rem;
+      padding: 0.42rem 0.5rem;
+      cursor: pointer;
+    }
+    .mu-count {
+      font-size: 0.68rem;
+      color: var(--muted);
+      white-space: nowrap;
+      margin-left: auto;
+      letter-spacing: 0.02em;
+    }
+    .mu-tool-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.66rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 5px;
+      padding: 0.44rem 0.7rem;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .mu-tool-btn:hover { border-color: #555; background: var(--surface2); }
+    .mu-tool-btn svg { width: 13px; height: 13px; }
+    .mu-tool-btn.primary {
+      color: var(--green);
+      border-color: rgba(34,197,94,0.35);
+    }
+    .mu-tool-btn.primary:hover {
+      background: rgba(34,197,94,0.08);
+      border-color: var(--green);
+    }
+    .mu-tool-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .mu-table-wrap {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      /* No overflow-x: the grid is sized to fit, and below --mu-card-bp each
+         row reflows into a card, so there is never a sideways scrollbar. */
+      overflow: visible;
+    }
     .user-table {
       width: 100%;
-      border-collapse: collapse;
+      border-collapse: separate;
+      border-spacing: 0;
       font-size: 0.8rem;
-      table-layout: auto;
+      table-layout: fixed;
     }
     .user-table th {
       text-align: left;
-      padding: 0.4rem 0.38rem;
-      font-size: 0.6rem;
+      padding: 0.5rem 0.3rem;
+      font-size: 0.58rem;
       text-transform: uppercase;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.02em;
       color: var(--muted);
+      background: var(--surface2);
       border-bottom: 1px solid var(--border);
+      line-height: 1.25;
+      /* Sticks just under the toolbar as .mu-body scrolls. */
+      position: sticky;
+      top: var(--mu-tools-h);
+      z-index: 5;
+    }
+    .user-table th:first-child { padding-left: 0.7rem; border-top-left-radius: 5px; }
+    .user-table th:last-child  { padding-right: 0.7rem; border-top-right-radius: 5px; }
+    .user-table td {
+      padding: 0.45rem 0.3rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .user-table td:first-child { padding-left: 0.7rem; }
+    .user-table td:last-child  { padding-right: 0.7rem; }
+    .user-table tbody tr:last-child td { border-bottom: none; }
+    .user-table tbody tr:nth-child(even) { background: rgba(255,255,255,0.014); }
+    .user-table tbody tr:hover { background: rgba(34,197,94,0.045); }
+    .user-table tbody tr.is-self { background: rgba(124,58,237,0.06); }
+    .user-table tbody tr.is-self:hover { background: rgba(124,58,237,0.1); }
+    .mu-empty-cell {
+      padding: 1.4rem 0.75rem !important;
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.78rem;
+    }
+
+    /* Column widths — username + 14 divisions + actions, adding to 100%. */
+    .user-table col.c-user   { width: 12.5%; }
+    .user-table col.c-div    { width: 5.5%;  }
+    .user-table col.c-act    { width: 10.5%; }
+
+    .mu-sort-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      color: inherit;
+      text-transform: inherit;
+      letter-spacing: inherit;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+    }
+    .mu-sort-btn:hover { color: var(--text); }
+    .mu-sort-btn .caret { font-size: 0.5rem; opacity: 0.7; }
+
+    .mu-username {
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+    .mu-username span.name {
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .user-table td {
-      padding: 0.5rem 0.38rem;
-      border-bottom: 1px solid rgba(42,42,58,0.6);
-      white-space: nowrap;
+    .mu-you {
+      font-size: 0.52rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #a78bfa;
+      background: rgba(124,58,237,0.15);
+      border-radius: 3px;
+      padding: 0.08rem 0.28rem;
+      flex-shrink: 0;
+    }
+    .mu-row-actions {
+      display: flex;
+      gap: 0.28rem;
+      justify-content: flex-end;
     }
     .user-del-btn {
       background: none;
@@ -271,7 +449,7 @@
       color: #ef4444;
       border-radius: 3px;
       padding: 0.15rem 0.4rem;
-      font-size: 0.68rem;
+      font-size: 0.66rem;
       cursor: pointer;
       transition: background 0.15s;
     }
@@ -282,15 +460,15 @@
       color: var(--green);
       border-radius: 3px;
       padding: 0.15rem 0.4rem;
-      font-size: 0.68rem;
+      font-size: 0.66rem;
       cursor: pointer;
       transition: background 0.15s;
-      margin-right: 0.25rem;
     }
     .user-edit-btn:hover { background: rgba(34,197,94,0.08); }
     .div-role-badge {
-      font-size: 0.64rem;
-      padding: 0.1rem 0.34rem;
+      display: inline-block;
+      font-size: 0.6rem;
+      padding: 0.1rem 0.3rem;
       border-radius: 3px;
       font-weight: 600;
       white-space: nowrap;
@@ -299,10 +477,86 @@
     .div-role-badge.level3  { background: rgba(34,197,94,0.12);  color: #22c55e; }
     .div-role-badge.level2  { background: rgba(96,165,250,0.12); color: #60a5fa; }
     .div-role-badge.level1  { background: rgba(100,116,139,0.1); color: #94a3b8; }
-    .div-role-badge.none    { color: var(--border); }
+    .div-role-badge.none    { background: none; color: var(--border); padding-left: 0; }
+
+    /* ── Status banner (save / remove feedback) ── */
+    .mu-status {
+      display: none;
+      font-size: 0.76rem;
+      border-radius: 5px;
+      padding: 0.5rem 0.7rem;
+      border: 1px solid transparent;
+    }
+    .mu-status.show { display: block; }
+    .mu-status.ok  { color: var(--green); background: rgba(34,197,94,0.08); border-color: rgba(34,197,94,0.25); }
+    .mu-status.err { color: #ef4444;      background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.25); }
+
+    /* ── Legend ── */
+    .mu-legend {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.3rem 0.85rem;
+      font-size: 0.66rem;
+      color: var(--muted);
+    }
+    .mu-legend .item { display: flex; align-items: center; gap: 0.3rem; }
+
+    /* ── Create / edit form ── */
+    .mu-form {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.1rem 1.15rem;
+      display: none;
+      flex-direction: column;
+      gap: 0.85rem;
+      background: rgba(255,255,255,0.012);
+    }
+    .mu-form.open { display: flex; }
+    .mu-form-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+    .mu-section-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+    }
+    .mu-group-label {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--green);
+      opacity: 0.85;
+      margin: 0.35rem 0 0.5rem;
+      padding-bottom: 0.3rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .mu-quickset {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.63rem;
+      color: var(--muted);
+    }
+    .mu-quickset button {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 3px;
+      padding: 0.16rem 0.45rem;
+      font-size: 0.63rem;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .mu-quickset button:hover { color: var(--text); border-color: #555; }
     .div-roles-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
       gap: 0.6rem 1.2rem;
     }
     .div-role-row {
@@ -316,6 +570,14 @@
       letter-spacing: 0.06em;
       color: var(--muted);
     }
+    .mu-form-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      border-top: 1px solid var(--border);
+      padding-top: 0.85rem;
+    }
     .mu-cancel-btn {
       padding: 0.55rem 1.2rem;
       background: none;
@@ -327,7 +589,6 @@
       border-radius: 5px;
       cursor: pointer;
       transition: color 0.15s, border-color 0.15s;
-      margin-left: 0.5rem;
     }
     .mu-cancel-btn:hover { color: var(--text); border-color: #555; }
     .sup-toggle {
@@ -346,6 +607,75 @@
     .sup-toggle input:checked + .slider { background: var(--green); }
     .sup-toggle input:checked + .slider::before { transform: translateX(22px); }
     .sup-toggle input:disabled + .slider { opacity: 0.5; cursor: not-allowed; }
+    .sup-wrap { max-width: 620px; }
+    .sup-table col.c-sup-user { width: auto; }
+    .sup-table col.c-sup-tog  { width: 120px; }
+    .sup-table th:last-child, .sup-table td:last-child { text-align: right; }
+    .mu-note { font-size: 0.75rem; color: var(--muted); line-height: 1.55; }
+
+    /* Between ~1180 and 1300px the division columns get tight enough that a
+       longer header like TRUCKING would butt into its neighbour — a smaller,
+       unspaced label buys back the room without dropping to cards early. */
+    @media (max-width: 1300px) {
+      .user-table.matrix th { font-size: 0.54rem; letter-spacing: 0; padding-left: 0.2rem; padding-right: 0.2rem; }
+      .user-table.matrix td { padding-left: 0.2rem; padding-right: 0.2rem; }
+      .user-table.matrix .div-role-badge { font-size: 0.58rem; padding: 0.1rem 0.24rem; }
+    }
+
+    /* ── Narrow screens: the 15-column grid can't fit, so each row reflows
+       into a card that lists only the access a user actually has. Keeps the
+       page free of a horizontal scrollbar at every width. ── */
+    @media (max-width: 1180px) {
+      .user-table.matrix,
+      .user-table.matrix tbody,
+      .user-table.matrix tr,
+      .user-table.matrix td { display: block; width: auto; }
+      .user-table.matrix colgroup,
+      .user-table.matrix thead { display: none; }
+      .user-table.matrix tr {
+        border-bottom: 1px solid var(--border);
+        padding: 0.75rem 0.85rem;
+        position: relative;
+      }
+      .user-table.matrix tbody tr:last-child { border-bottom: none; }
+      .user-table.matrix td { border: none; padding: 0; }
+      .user-table.matrix td[data-col="user"] { margin-bottom: 0.5rem; padding-right: 7rem; }
+      .user-table.matrix td[data-col="actions"] { position: absolute; top: 0.7rem; right: 0.85rem; }
+      /* Only granted access shows on a card — an empty cell is noise here. */
+      .user-table.matrix td.div-cell[data-role="no_access"] { display: none; }
+      .user-table.matrix td.div-cell {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        margin: 0 0.4rem 0.3rem 0;
+        font-size: 0.63rem;
+        color: var(--muted);
+      }
+      .user-table.matrix td.div-cell::before {
+        content: attr(data-col-label);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .user-table.matrix tr.mu-no-access td[data-col="user"]::after {
+        content: 'No division access';
+        display: block;
+        margin-top: 0.3rem;
+        font-size: 0.63rem;
+        font-weight: 400;
+        color: var(--muted);
+      }
+      .user-table.matrix td.mu-empty-cell { display: block; }
+      .mu-toolbar { height: auto; min-height: var(--mu-tools-h); flex-wrap: wrap; padding: 0.5rem 0; }
+      .mu-count { margin-left: 0; }
+    }
+    @media (max-width: 640px) {
+      .modal-backdrop { padding: 0; }
+      .modal { height: 100vh; max-height: 100vh; border-radius: 0; border: none; }
+      .mu-legend { display: none; }
+      .modal-header, .mu-subtabs, .mu-body { padding-left: 1rem; padding-right: 1rem; }
+      .mu-search { max-width: none; flex-basis: 100%; }
+      .modal .mu-filter { flex: 1 1 45%; min-width: 0; }
+    }
 
     /* ── Main ── */
     main {
@@ -596,13 +926,26 @@
     }
 
     /* ── Mobile ── */
+    /* Between full width and phone, drop to two columns before the cards get
+       narrower than their own contents and push the page sideways. */
+    @media (max-width: 1000px) {
+      .cards.count-3,
+      .cards.count-4,
+      .cards.count-5 { grid-template-columns: repeat(2, 1fr); max-width: 640px; }
+    }
+
     @media (max-width: 700px) {
       .cards.count-2,
       .cards.count-3,
-      .cards.count-4 { grid-template-columns: 1fr; max-width: 420px; }
+      .cards.count-4,
+      .cards.count-5 { grid-template-columns: 1fr; max-width: 420px; }
       main { padding: 2.5rem 1.25rem; }
       .welcome { margin-bottom: 2.25rem; }
       .user-label { display: none; }
+      /* The brand plus three controls won't sit on one 390px line — wrapping
+         keeps them all reachable instead of pushed off the right edge. */
+      header { flex-wrap: wrap; gap: 0.6rem; padding: 0.75rem 1rem; }
+      .header-right { flex-wrap: wrap; gap: 0.6rem; }
     }
   </style>
 </head>
@@ -623,70 +966,136 @@
 
   <!-- ── Manage Users modal (with Supervisors sub-tab) ── -->
   <div class="modal-backdrop" id="userModalBackdrop">
-    <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="muTitle" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <div class="modal-title">Manage Users</div>
-        <button class="modal-close" onclick="closeUserModal()">&#10005;</button>
+        <div class="modal-title" id="muTitle">Manage Users</div>
+        <button class="modal-close" onclick="closeUserModal()" aria-label="Close">&#10005;</button>
       </div>
 
       <div class="mu-subtabs">
-        <button class="mu-subtab-btn active" id="muTabBtnUsers"       onclick="switchUserSubTab('users')">Users</button>
+        <button class="mu-subtab-btn active" id="muTabBtnUsers"       onclick="switchUserSubTab('users')">Users<span class="mu-subtab-count" id="muTabCountUsers"></span></button>
         <button class="mu-subtab-btn"        id="muTabBtnSupervisors" onclick="switchUserSubTab('supervisors')">Supervisors</button>
       </div>
+
+      <div class="mu-body" id="muBody">
 
       <!-- ── Users sub-panel ── -->
       <div class="mu-panel active" id="mu-panel-users">
 
-      <!-- User list -->
-      <div>
-        <div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.6rem">Current Users</div>
-        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;overflow-x:auto">
-          <table class="user-table">
-            <thead>
-              <tr>
-                <th>Username</th>
-                <th>Turf</th>
-                <th>Dust</th>
-                <th>Paving</th>
-                <th>Kiewit</th>
-                <th>Trucking</th>
-                <th>Quarry</th>
-                <th>Billing</th>
-                <th>Executive</th>
-                <th>Scheduler</th>
-                <th>Timesheet</th>
-                <th>Payroll</th>
-                <th>Fuel</th>
-                <th>Fuel Admin</th>
-                <th>Driver</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="userListBody">
-              <tr><td colspan="16" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
-            </tbody>
-          </table>
+      <!-- Toolbar: search, filters, export, new user -->
+      <div class="mu-toolbar">
+        <div class="mu-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input id="mu-search" type="text" placeholder="Search users…" oninput="renderUserList()" aria-label="Search users" />
         </div>
+        <select class="mu-filter" id="mu-filter-div" onchange="renderUserList()" aria-label="Filter by division">
+          <option value="">All divisions</option>
+        </select>
+        <select class="mu-filter" id="mu-filter-role" onchange="renderUserList()" aria-label="Filter by access level">
+          <option value="">Any level</option>
+          <option value="admin">Admin</option>
+          <option value="level3">Full access</option>
+          <option value="level2">Insert &amp; edit</option>
+          <option value="level1">View only</option>
+          <option value="granted">Any access granted</option>
+          <option value="no_access">No access</option>
+        </select>
+        <span class="mu-count" id="mu-count"></span>
+        <button class="mu-tool-btn" id="mu-export-btn" onclick="exportUsersXlsx()" title="Download the list below as an Excel workbook (.xlsx)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Excel
+        </button>
+        <button class="mu-tool-btn primary" onclick="startNewUser()" title="Create a new user account">+ New User</button>
       </div>
 
-      <!-- Create / Edit form -->
-      <div style="border-top:1px solid var(--border);padding-top:1.25rem;display:flex;flex-direction:column;gap:0.75rem">
-        <div id="mu-form-heading" style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted)">Create User</div>
+      <!-- Save / remove feedback — lives outside the collapsible form so it
+           stays visible after the form closes. -->
+      <div id="mu-status" class="mu-status"></div>
+
+      <!-- User list -->
+      <div class="mu-table-wrap">
+        <table class="user-table matrix">
+          <colgroup>
+            <col class="c-user" />
+            <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
+            <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
+            <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
+            <col class="c-div" /><col class="c-div" />
+            <col class="c-act" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">
+                <button class="mu-sort-btn" onclick="toggleUserSort()" title="Sort by username">
+                  Username <span class="caret" id="mu-sort-caret">&#9650;</span>
+                </button>
+              </th>
+              <th scope="col" title="Turf Management">Turf</th>
+              <th scope="col" title="Dust Control">Dust</th>
+              <th scope="col" title="Paving">Paving</th>
+              <th scope="col" title="Kiewit Pinetree">Kiewit</th>
+              <th scope="col" title="Trucking">Trucking</th>
+              <th scope="col" title="Quarry">Quarry</th>
+              <th scope="col" title="Intercompany Billing">Billing</th>
+              <th scope="col" title="Executive roll-up">Exec</th>
+              <th scope="col" title="Scheduler (cross-division)">Sched</th>
+              <th scope="col" title="Timesheet (field entry)">Time</th>
+              <th scope="col" title="Payroll (admin review)">Payroll</th>
+              <th scope="col" title="Fuel submissions (field entry)">Fuel</th>
+              <th scope="col" title="Fuel admin (review &amp; approve)">Fuel Adm</th>
+              <th scope="col" title="Driver (field entry)">Driver</th>
+              <th scope="col"><span class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="userListBody">
+            <tr><td colspan="16" class="mu-empty-cell">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="mu-legend">
+        <span>Access levels:</span>
+        <span class="item"><span class="div-role-badge admin">Admin</span> manage users</span>
+        <span class="item"><span class="div-role-badge level3">Full</span> full access</span>
+        <span class="item"><span class="div-role-badge level2">Edit</span> insert &amp; edit</span>
+        <span class="item"><span class="div-role-badge level1">View</span> view only</span>
+        <span class="item"><span class="div-role-badge none">—</span> no access</span>
+      </div>
+
+      <!-- Create / Edit form — opens on "+ New User" or a row's Edit button -->
+      <div class="mu-form" id="mu-form">
+        <div class="mu-form-head">
+          <div id="mu-form-heading" class="mu-section-label">Create User</div>
+          <button class="modal-close" onclick="resetUserForm()" title="Close form" aria-label="Close form">&#10005;</button>
+        </div>
         <input type="hidden" id="mu-edit-id" value="" />
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem 1.2rem">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0.6rem 1.2rem">
           <div>
-            <label>Username</label>
-            <input id="mu-username" type="text" placeholder="john" />
+            <label for="mu-username">Username</label>
+            <input id="mu-username" type="text" placeholder="john" autocomplete="off" />
           </div>
           <div>
-            <label>Password <span id="mu-pw-hint" style="text-transform:none;font-weight:400;color:var(--muted)">(min 8 chars)</span></label>
-            <input id="mu-password" type="password" placeholder="••••••••" />
+            <label for="mu-password">Password <span id="mu-pw-hint" style="text-transform:none;font-weight:400;color:var(--muted)">(min 8 chars)</span></label>
+            <input id="mu-password" type="password" placeholder="••••••••" autocomplete="new-password" />
           </div>
         </div>
 
-        <!-- Per-division role selects -->
+        <!-- Per-division role selects, grouped so 14 dropdowns stay scannable -->
         <div>
-          <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:0.55rem">Division Permissions</div>
+          <div class="mu-quickset">
+            <span>Set all divisions:</span>
+            <button type="button" onclick="quickSetDivisions('no_access')">No Access</button>
+            <button type="button" onclick="quickSetDivisions('level1')">View</button>
+            <button type="button" onclick="quickSetDivisions('level2')">Edit</button>
+            <button type="button" onclick="quickSetDivisions('level3')">Full</button>
+            <button type="button" onclick="quickSetDivisions('admin')">Admin</button>
+          </div>
+
+          <div class="mu-group-label">Divisions</div>
           <div class="div-roles-grid">
             <div class="div-role-row">
               <span class="div-role-label">Turf</span>
@@ -778,6 +1187,10 @@
                 <option value="admin">Admin — Manage users</option>
               </select>
             </div>
+          </div>
+
+          <div class="mu-group-label">Field entry &amp; review</div>
+          <div class="div-roles-grid">
             <div class="div-role-row">
               <span class="div-role-label">Timesheet <span style="text-transform:none;color:var(--muted)">(field entry)</span></span>
               <select id="mu-role-timesheet">
@@ -817,9 +1230,9 @@
         </div>
 
         <div id="mu-result" class="modal-result"></div>
-        <div style="display:flex;align-items:center">
+        <div class="mu-form-actions">
           <button class="modal-submit" onclick="submitUserForm()">Save User</button>
-          <button class="mu-cancel-btn" id="mu-cancel-btn" style="display:none" onclick="resetUserForm()">Cancel</button>
+          <button class="mu-cancel-btn" onclick="resetUserForm()">Cancel</button>
         </div>
       </div>
 
@@ -827,30 +1240,42 @@
 
       <!-- ── Supervisors sub-panel ── -->
       <div class="mu-panel" id="mu-panel-supervisors">
-        <div style="font-size:0.78rem;color:var(--muted);line-height:1.55">
+        <div class="mu-toolbar">
+          <div class="mu-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="sup-search" placeholder="Search users…" oninput="renderSupervisorList()" aria-label="Search users" />
+          </div>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
+            <input type="checkbox" id="sup-only" onchange="renderSupervisorList()" style="width:auto" /> Supervisors only
+          </label>
+          <span class="mu-count" id="sup-count"></span>
+          <button class="mu-tool-btn" onclick="exportSupervisorsXlsx()" title="Download the list below as an Excel workbook (.xlsx)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Excel
+          </button>
+        </div>
+
+        <div class="mu-note">
           Flag a user account as a supervisor to make them selectable in the
           field-employee Timesheet form. The toggle attaches the supervisor
           flag to the user's username, not to any individual job entry.
         </div>
 
-        <div style="display:flex;gap:0.6rem;align-items:center">
-          <input type="text" id="sup-search" placeholder="Search users…"
-            style="flex:1" oninput="renderSupervisorList()" />
-          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
-            <input type="checkbox" id="sup-only" onchange="renderSupervisorList()" /> Supervisors only
-          </label>
-        </div>
-
-        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;max-height:55vh;overflow-y:auto">
-          <table class="user-table">
+        <div class="mu-table-wrap sup-wrap">
+          <table class="user-table sup-table">
+            <colgroup><col class="c-sup-user" /><col class="c-sup-tog" /></colgroup>
             <thead>
               <tr>
-                <th>Username</th>
-                <th style="text-align:right">Supervisor</th>
+                <th scope="col">Username</th>
+                <th scope="col">Supervisor</th>
               </tr>
             </thead>
             <tbody id="supListBody">
-              <tr><td colspan="2" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+              <tr><td colspan="2" class="mu-empty-cell">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -858,6 +1283,7 @@
         <div id="sup-result" class="modal-result"></div>
       </div><!-- /#mu-panel-supervisors -->
 
+      </div><!-- /.mu-body -->
     </div>
   </div>
 
@@ -1263,22 +1689,58 @@
       level1:    'View',
       no_access: '—',
     };
+    // Spelled-out equivalents — used in the Excel export, where a bare "Full"
+    // out of context doesn't tell the reader much.
+    const ROLE_FULL = {
+      admin:     'Admin — manage users',
+      level3:    'Full access',
+      level2:    'Insert & edit',
+      level1:    'View only',
+      no_access: 'No access',
+    };
     const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
+
+    // The five-level selects. The rest (timesheet, payroll, fuel, fuel_admin,
+    // driver) only offer one grant level each, so "set all" skips them.
+    const DIV_KEYS_FULL_SCALE = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler'];
 
     // Column labels for the user table and the "saved" summary line. Only the
     // keys whose prettified form isn't just Capitalised need an entry.
     const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver' };
     function divLabel(k) { return DIV_LABELS[k] || (k.charAt(0).toUpperCase() + k.slice(1)); }
 
+    // Longer names for the division filter and the spreadsheet header, where
+    // there's room to say what each column actually is.
+    const DIV_LONG = {
+      turf: 'Turf Management', dust: 'Dust Control', paving: 'Paving',
+      kiewit: 'Kiewit Pinetree', trucking: 'Trucking', quarry: 'Quarry',
+      intercompany: 'Intercompany Billing', executive: 'Executive',
+      scheduler: 'Scheduler (cross-division)', timesheet: 'Timesheet (field entry)',
+      payroll: 'Payroll (admin review)', fuel: 'Fuel Submissions (field entry)',
+      fuel_admin: 'Fuel Admin (review & approve)', driver: 'Driver (field entry)',
+    };
+    function divLongLabel(k) { return DIV_LONG[k] || divLabel(k); }
+
+    function escHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
     // Tracks which sub-tab is active and whether the supervisors panel has
     // been hydrated yet (lazy-loaded on first visit to skip the
     // /api/employees roundtrip when only the Users tab is needed).
     let muActiveSubTab     = 'users';
     let supervisorsLoaded  = false;
+    // Last payload from /api/company/users. Rendering, filtering and the
+    // Excel export all read from here so they can never disagree.
+    let muUsers            = [];
+    let muSortDir          = 'asc';
 
     function openUserModal() {
       document.getElementById('userModalBackdrop').classList.add('open');
       switchUserSubTab('users');
+      muStatus('');
       loadUserList();
     }
 
@@ -1294,6 +1756,7 @@
       document.getElementById('muTabBtnSupervisors').classList.toggle('active', !isUsers);
       document.getElementById('mu-panel-users').classList.toggle('active', isUsers);
       document.getElementById('mu-panel-supervisors').classList.toggle('active', !isUsers);
+      document.getElementById('muBody').scrollTop = 0;
       if (!isUsers && !supervisorsLoaded) {
         supervisorsLoaded = true;
         const search = document.getElementById('sup-search');
@@ -1310,127 +1773,228 @@
       if (e.target === this) closeUserModal();
     });
 
+    document.addEventListener('keydown', function(e) {
+      if (e.key !== 'Escape') return;
+      if (document.getElementById('userModalBackdrop').classList.contains('open')) closeUserModal();
+    });
+
+    // Populate the division filter once, from the same key list the table uses.
+    (function initDivisionFilter() {
+      const sel = document.getElementById('mu-filter-div');
+      if (!sel) return;
+      DIV_KEYS.forEach(k => {
+        const opt = document.createElement('option');
+        opt.value = k;
+        opt.textContent = divLongLabel(k);
+        sel.appendChild(opt);
+      });
+    })();
+
     function divRoleBadge(role) {
       if (!role || role === 'no_access') return '<span class="div-role-badge none">—</span>';
       return `<span class="div-role-badge ${role}">${ROLE_SHORT[role] || role}</span>`;
     }
 
+    // Normalises one user record into { divKey: role } for every division.
+    // Legacy accounts (division_roles never written) carry their old flat
+    // role on Turf and nothing elsewhere — same rule the table has always used.
+    function userRoleMap(u) {
+      const dr     = u.division_roles || {};
+      const legacy = !u.division_roles;
+      const map    = {};
+      DIV_KEYS.forEach(k => {
+        map[k] = dr[k] || (legacy && k === 'turf' ? (u.role || 'no_access') : 'no_access');
+      });
+      return map;
+    }
+
+    function grantedCount(roles) {
+      return DIV_KEYS.filter(k => roles[k] && roles[k] !== 'no_access').length;
+    }
+
+    // ── Filtering / sorting ─────────────────────────────────────────────────
+    function filteredUsers() {
+      const q       = (document.getElementById('mu-search').value || '').toLowerCase().trim();
+      const divKey  = document.getElementById('mu-filter-div').value;
+      const roleVal = document.getElementById('mu-filter-role').value;
+
+      const list = muUsers.filter(u => {
+        if (q && !String(u.username || '').toLowerCase().includes(q)) return false;
+        const roles = u._roles;
+
+        if (divKey) {
+          const r = roles[divKey];
+          if (!roleVal || roleVal === 'granted') return r !== 'no_access';
+          return r === roleVal;
+        }
+        if (!roleVal) return true;
+        if (roleVal === 'granted')   return grantedCount(roles) > 0;
+        if (roleVal === 'no_access') return grantedCount(roles) === 0;
+        return DIV_KEYS.some(k => roles[k] === roleVal);
+      });
+
+      const dir = muSortDir === 'asc' ? 1 : -1;
+      return list.sort((a, b) =>
+        dir * String(a.username || '').localeCompare(String(b.username || ''), undefined, { sensitivity: 'base' }));
+    }
+
+    function toggleUserSort() {
+      muSortDir = muSortDir === 'asc' ? 'desc' : 'asc';
+      document.getElementById('mu-sort-caret').innerHTML = muSortDir === 'asc' ? '&#9650;' : '&#9660;';
+      renderUserList();
+    }
+
+    // ── Load / render ───────────────────────────────────────────────────────
     async function loadUserList() {
       const tbody = document.getElementById('userListBody');
-      tbody.innerHTML = '<tr><td colspan="16" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="16" class="mu-empty-cell">Loading…</td></tr>';
       try {
         const res  = await fetch('/api/company/users', {
           headers: { Authorization: `Bearer ${token}` }
         });
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Failed');
-        if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="16" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
-          return;
-        }
-        tbody.innerHTML = data.users.map(u => {
-          const dr = u.division_roles || {};
-          // For legacy users (no division_roles), show role in Turf and — elsewhere
-          const turf         = dr.turf         || (u.division_roles === null ? u.role : 'no_access');
-          const dust         = dr.dust         || 'no_access';
-          const paving       = dr.paving       || 'no_access';
-          const kiewit       = dr.kiewit       || 'no_access';
-          const trucking     = dr.trucking     || 'no_access';
-          const quarry       = dr.quarry       || 'no_access';
-          const intercompany = dr.intercompany || 'no_access';
-          const executive    = dr.executive    || 'no_access';
-          const scheduler    = dr.scheduler    || 'no_access';
-          const timesheet    = dr.timesheet    || 'no_access';
-          const payroll      = dr.payroll      || 'no_access';
-          const fuel         = dr.fuel         || 'no_access';
-          const fuelAdmin    = dr.fuel_admin   || 'no_access';
-          const driver       = dr.driver       || 'no_access';
-          const isSelf       = String(u.id) === String(user.userId);
-          return `
-            <tr>
-              <td style="font-weight:600">${u.username}${isSelf ? ' <span style="color:var(--muted);font-size:0.68rem">(you)</span>' : ''}</td>
-              <td>${divRoleBadge(turf)}</td>
-              <td>${divRoleBadge(dust)}</td>
-              <td>${divRoleBadge(paving)}</td>
-              <td>${divRoleBadge(kiewit)}</td>
-              <td>${divRoleBadge(trucking)}</td>
-              <td>${divRoleBadge(quarry)}</td>
-              <td>${divRoleBadge(intercompany)}</td>
-              <td>${divRoleBadge(executive)}</td>
-              <td>${divRoleBadge(scheduler)}</td>
-              <td>${divRoleBadge(timesheet)}</td>
-              <td>${divRoleBadge(payroll)}</td>
-              <td>${divRoleBadge(fuel)}</td>
-              <td>${divRoleBadge(fuelAdmin)}</td>
-              <td>${divRoleBadge(driver)}</td>
-              <td style="text-align:right;white-space:nowrap">
-                <button class="user-edit-btn" onclick='editUser(${JSON.stringify(u)})'>Edit</button>
-                ${!isSelf
-                  ? `<button class="user-del-btn" onclick="deleteUser('${u.id}','${u.username}')">Remove</button>`
-                  : ''}
-              </td>
-            </tr>`;
-        }).join('');
+        muUsers = (data.users || []).map((u, i) => {
+          u._i     = i;              // stable handle for the row's Edit button
+          u._roles = userRoleMap(u);
+          return u;
+        });
+        document.getElementById('muTabCountUsers').textContent = muUsers.length;
+        renderUserList();
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="16" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        muUsers = [];
+        document.getElementById('mu-count').textContent = '';
+        tbody.innerHTML = `<tr><td colspan="16" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
       }
     }
 
+    function renderUserList() {
+      const tbody  = document.getElementById('userListBody');
+      const count  = document.getElementById('mu-count');
+      const expBtn = document.getElementById('mu-export-btn');
+      const list   = filteredUsers();
+
+      count.textContent = muUsers.length
+        ? (list.length === muUsers.length
+            ? `${muUsers.length} user${muUsers.length === 1 ? '' : 's'}`
+            : `${list.length} of ${muUsers.length} users`)
+        : '';
+      expBtn.disabled = list.length === 0;
+
+      if (!muUsers.length) {
+        tbody.innerHTML = '<tr><td colspan="16" class="mu-empty-cell">No users yet. Choose “+ New User” to add the first one.</td></tr>';
+        return;
+      }
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="16" class="mu-empty-cell">No users match those filters. <button class="mu-sort-btn" style="color:var(--green)" onclick="clearUserFilters()">Clear filters</button></td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = list.map(u => {
+        const roles  = u._roles;
+        const isSelf = String(u.id) === String(user.userId);
+        const cells  = DIV_KEYS.map(k =>
+          `<td class="div-cell" data-col="${k}" data-role="${roles[k]}" data-col-label="${escHtml(divLabel(k))}">${divRoleBadge(roles[k])}</td>`
+        ).join('');
+        return `
+          <tr class="${isSelf ? 'is-self' : ''}${grantedCount(roles) ? '' : ' mu-no-access'}">
+            <td data-col="user">
+              <div class="mu-username" title="${escHtml(u.username)}">
+                <span class="name">${escHtml(u.username)}</span>
+                ${isSelf ? '<span class="mu-you">you</span>' : ''}
+              </div>
+            </td>
+            ${cells}
+            <td data-col="actions">
+              <div class="mu-row-actions">
+                <button class="user-edit-btn" onclick="editUserAt(${u._i})">Edit</button>
+                ${!isSelf
+                  ? `<button class="user-del-btn" onclick="deleteUserAt(${u._i})">Remove</button>`
+                  : ''}
+              </div>
+            </td>
+          </tr>`;
+      }).join('');
+    }
+
+    function clearUserFilters() {
+      document.getElementById('mu-search').value = '';
+      document.getElementById('mu-filter-div').value = '';
+      document.getElementById('mu-filter-role').value = '';
+      renderUserList();
+    }
+
+    // ── Create / edit form ──────────────────────────────────────────────────
+    function openUserForm() {
+      document.getElementById('mu-form').classList.add('open');
+    }
+
+    function startNewUser() {
+      resetUserForm();
+      openUserForm();
+      scrollFormIntoView();
+      document.getElementById('mu-username').focus();
+    }
+
+    // scrollIntoView would park the form's heading underneath the sticky
+    // toolbar, so scroll the panel by hand and leave room for it.
+    function scrollFormIntoView() {
+      const body  = document.getElementById('muBody');
+      const form  = document.getElementById('mu-form');
+      const tools = document.querySelector('#mu-panel-users .mu-toolbar');
+      if (!body || !form) return;
+      const offset = (tools ? tools.getBoundingClientRect().height : 54) + 10;
+      const delta  = form.getBoundingClientRect().top - body.getBoundingClientRect().top - offset;
+      body.scrollTo({ top: body.scrollTop + delta, behavior: 'smooth' });
+    }
+
+    function editUserAt(i) {
+      const u = muUsers[i];
+      if (u) editUser(u);
+    }
+
     function editUser(u) {
+      openUserForm();
       document.getElementById('mu-edit-id').value = u.id;
       document.getElementById('mu-username').value = u.username;
       document.getElementById('mu-username').disabled = true;
       document.getElementById('mu-password').value = '';
       document.getElementById('mu-pw-hint').textContent = '(leave blank to keep current)';
       document.getElementById('mu-form-heading').textContent = `Edit User — ${u.username}`;
-      document.getElementById('mu-cancel-btn').style.display = '';
 
-      const dr = u.division_roles || {};
-      // For legacy users without division_roles, pre-fill turf with their legacy role
-      const legacy = !u.division_roles;
-      document.getElementById('mu-role-turf').value         = dr.turf         || (legacy ? u.role : 'no_access');
-      document.getElementById('mu-role-dust').value         = dr.dust         || 'no_access';
-      document.getElementById('mu-role-paving').value       = dr.paving       || 'no_access';
-      document.getElementById('mu-role-kiewit').value       = dr.kiewit       || 'no_access';
-      document.getElementById('mu-role-trucking').value     = dr.trucking     || 'no_access';
-      document.getElementById('mu-role-quarry').value       = dr.quarry       || 'no_access';
-      document.getElementById('mu-role-intercompany').value = dr.intercompany || 'no_access';
-      document.getElementById('mu-role-executive').value    = dr.executive    || 'no_access';
-      document.getElementById('mu-role-scheduler').value    = dr.scheduler    || 'no_access';
-      document.getElementById('mu-role-timesheet').value    = dr.timesheet    || 'no_access';
-      document.getElementById('mu-role-payroll').value      = dr.payroll      || 'no_access';
-      document.getElementById('mu-role-fuel').value         = dr.fuel         || 'no_access';
-      document.getElementById('mu-role-fuel_admin').value   = dr.fuel_admin   || 'no_access';
-      document.getElementById('mu-role-driver').value       = dr.driver       || 'no_access';
+      const roles = u._roles || userRoleMap(u);
+      DIV_KEYS.forEach(k => {
+        const sel = document.getElementById('mu-role-' + k);
+        if (sel) sel.value = roles[k];
+      });
 
       document.getElementById('mu-result').textContent = '';
-      // Scroll form into view
-      document.getElementById('mu-form-heading').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      scrollFormIntoView();
     }
 
     function resetUserForm() {
+      document.getElementById('mu-form').classList.remove('open');
       document.getElementById('mu-edit-id').value = '';
       document.getElementById('mu-username').value = '';
       document.getElementById('mu-username').disabled = false;
       document.getElementById('mu-password').value = '';
       document.getElementById('mu-pw-hint').textContent = '(min 8 chars)';
       document.getElementById('mu-form-heading').textContent = 'Create User';
-      document.getElementById('mu-cancel-btn').style.display = 'none';
-      document.getElementById('mu-role-turf').value         = 'level3';
-      document.getElementById('mu-role-dust').value         = 'no_access';
-      document.getElementById('mu-role-paving').value       = 'no_access';
-      document.getElementById('mu-role-kiewit').value       = 'no_access';
-      document.getElementById('mu-role-trucking').value     = 'no_access';
-      document.getElementById('mu-role-quarry').value       = 'no_access';
-      document.getElementById('mu-role-intercompany').value = 'no_access';
-      document.getElementById('mu-role-executive').value    = 'no_access';
-      document.getElementById('mu-role-scheduler').value    = 'no_access';
-      document.getElementById('mu-role-timesheet').value    = 'no_access';
-      document.getElementById('mu-role-payroll').value      = 'no_access';
-      document.getElementById('mu-role-fuel').value         = 'no_access';
-      document.getElementById('mu-role-fuel_admin').value   = 'no_access';
-      document.getElementById('mu-role-driver').value       = 'no_access';
-      document.getElementById('mu-result').textContent  = '';
+      DIV_KEYS.forEach(k => {
+        const sel = document.getElementById('mu-role-' + k);
+        if (sel) sel.value = k === 'turf' ? 'level3' : 'no_access';
+      });
+      document.getElementById('mu-result').textContent = '';
+    }
+
+    // Bulk-set the nine five-level division selects. The field-entry and
+    // review selects each carry a single grant level, so a blanket "Edit" or
+    // "Admin" has nothing to map onto — they're left as the admin set them.
+    function quickSetDivisions(role) {
+      DIV_KEYS_FULL_SCALE.forEach(k => {
+        const sel = document.getElementById('mu-role-' + k);
+        if (sel && Array.from(sel.options).some(o => o.value === role)) sel.value = role;
+      });
     }
 
     async function submitUserForm() {
@@ -1452,22 +2016,11 @@
         return;
       }
 
-      const division_roles = {
-        turf:         document.getElementById('mu-role-turf').value,
-        dust:         document.getElementById('mu-role-dust').value,
-        paving:       document.getElementById('mu-role-paving').value,
-        kiewit:       document.getElementById('mu-role-kiewit').value,
-        trucking:     document.getElementById('mu-role-trucking').value,
-        quarry:       document.getElementById('mu-role-quarry').value,
-        intercompany: document.getElementById('mu-role-intercompany').value,
-        executive:    document.getElementById('mu-role-executive').value,
-        scheduler:    document.getElementById('mu-role-scheduler').value,
-        timesheet:    document.getElementById('mu-role-timesheet').value,
-        payroll:      document.getElementById('mu-role-payroll').value,
-        fuel:         document.getElementById('mu-role-fuel').value,
-        fuel_admin:   document.getElementById('mu-role-fuel_admin').value,
-        driver:       document.getElementById('mu-role-driver').value,
-      };
+      const division_roles = {};
+      DIV_KEYS.forEach(k => {
+        const sel = document.getElementById('mu-role-' + k);
+        division_roles[k] = sel ? sel.value : 'no_access';
+      });
 
       const body = { username, division_roles };
       if (password) body.password = password;
@@ -1484,9 +2037,8 @@
             .filter(d => division_roles[d] !== 'no_access')
             .map(d => `${divLabel(d)}: ${ROLE_SHORT[division_roles[d]]}`)
             .join(', ') || 'No divisions';
-          result.textContent = `"${data.username}" saved. ${divSummary}`;
-          result.style.color = 'var(--green)';
           resetUserForm();
+          muStatus(`"${data.username}" saved. ${divSummary}`, 'ok');
           loadUserList();
         } else {
           result.textContent = data.error || 'Error saving user.';
@@ -1498,6 +2050,11 @@
       }
     }
 
+    function deleteUserAt(i) {
+      const u = muUsers[i];
+      if (u) deleteUser(u.id, u.username);
+    }
+
     async function deleteUser(id, username) {
       if (!confirm(`Remove user "${username}"?`)) return;
       try {
@@ -1507,10 +2064,32 @@
           body: JSON.stringify({ id }),
         });
         const data = await res.json();
-        if (data.ok) { resetUserForm(); loadUserList(); }
-        else alert(data.error || 'Error removing user.');
+        if (data.ok) {
+          resetUserForm();
+          muStatus(`"${username}" removed.`, 'ok');
+          loadUserList();
+        } else {
+          muStatus(data.error || 'Error removing user.', 'err');
+        }
       } catch (err) {
-        alert(err.message);
+        muStatus(err.message, 'err');
+      }
+    }
+
+    // Banner above the list. Successes clear themselves; errors stay put until
+    // the next action so they can't scroll away unnoticed.
+    let muStatusTimer = null;
+    function muStatus(msg, kind) {
+      const el = document.getElementById('mu-status');
+      if (!el) return;
+      clearTimeout(muStatusTimer);
+      el.textContent = msg || '';
+      el.className = 'mu-status' + (msg ? ' show ' + (kind || 'ok') : '');
+      if (msg && kind === 'ok') {
+        muStatusTimer = setTimeout(() => {
+          el.textContent = '';
+          el.className = 'mu-status';
+        }, 4000);
       }
     }
 
@@ -1519,7 +2098,7 @@
 
     async function loadSupervisorList() {
       const tbody = document.getElementById('supListBody');
-      tbody.innerHTML = '<tr><td colspan="2" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="2" class="mu-empty-cell">Loading…</td></tr>';
       try {
         // Drives the list off /api/company/users so the toggle is tied to a
         // specific user account, not to job-derived employee entries. We
@@ -1555,27 +2134,40 @@
           .sort((a, b) => a.name.localeCompare(b.name));
         renderSupervisorList();
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="2" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="2" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
       }
+    }
+
+    // Shared by the table and the Excel export so the two can't disagree.
+    function visibleSupervisors() {
+      const q        = (document.getElementById('sup-search').value || '').toLowerCase().trim();
+      const onlySups = document.getElementById('sup-only').checked;
+      let list = supEmployees;
+      if (q)        list = list.filter(e => (e.name || '').toLowerCase().includes(q));
+      if (onlySups) list = list.filter(e => e.is_supervisor === true);
+      return list;
     }
 
     function renderSupervisorList() {
       const tbody = document.getElementById('supListBody');
-      const q     = (document.getElementById('sup-search').value || '').toLowerCase().trim();
-      const onlySups = document.getElementById('sup-only').checked;
+      const count = document.getElementById('sup-count');
+      const list  = visibleSupervisors();
+      const flagged = supEmployees.filter(e => e.is_supervisor).length;
 
-      let list = supEmployees;
-      if (q)        list = list.filter(e => (e.name || '').toLowerCase().includes(q));
-      if (onlySups) list = list.filter(e => e.is_supervisor === true);
+      count.textContent = supEmployees.length
+        ? (list.length === supEmployees.length
+            ? `${flagged} of ${supEmployees.length} flagged`
+            : `${list.length} of ${supEmployees.length} users`)
+        : '';
 
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="2" style="padding:0.75rem;color:var(--muted);text-align:center">No users match.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="2" class="mu-empty-cell">No users match.</td></tr>';
         return;
       }
       tbody.innerHTML = list.map(e => `
         <tr>
-          <td style="font-weight:600">${escSupHtml(e.name)}</td>
-          <td style="text-align:right">
+          <td style="font-weight:600;color:#fff">${escSupHtml(e.name)}</td>
+          <td>
             <label class="sup-toggle" title="Toggle supervisor">
               <input type="checkbox" data-emp-name="${escSupHtml(e.name)}" ${e.is_supervisor ? 'checked' : ''} onchange="toggleSupervisor(this)" />
               <span class="slider"></span>
@@ -1584,11 +2176,9 @@
         </tr>`).join('');
     }
 
-    function escSupHtml(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-    }
+    // Kept as its own name because the supervisors panel predates escHtml();
+    // both do the same job.
+    const escSupHtml = escHtml;
 
     async function toggleSupervisor(el) {
       const name    = el.dataset.empName || '';
@@ -1620,6 +2210,257 @@
       } finally {
         el.disabled = false;
       }
+    }
+
+    // ── Excel export ────────────────────────────────────────────────────────
+    // A real .xlsx rather than a CSV renamed: usernames that look like dates
+    // or numbers survive the round trip, the header row arrives frozen and
+    // filterable, and the columns come sized. Written by hand because this
+    // page loads no libraries — the ZIP is stored rather than deflated, which
+    // is a valid archive and needs no compressor. Mirrors the writer in
+    // trucking.html.
+    function _crc32(bytes) {
+      let c, crc = 0xFFFFFFFF;
+      if (!_crc32.table) {
+        _crc32.table = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+          c = i;
+          for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+          _crc32.table[i] = c >>> 0;
+        }
+      }
+      for (let i = 0; i < bytes.length; i++) crc = _crc32.table[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+      return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    function _zip(files) {
+      const enc = new TextEncoder();
+      const parts = [], central = [];
+      let offset = 0;
+      const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
+      const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+
+      files.forEach(f => {
+        const name = enc.encode(f.name);
+        const data = enc.encode(f.data);
+        const crc  = _crc32(data);
+        const lh = [].concat([0x50,0x4b,0x03,0x04], u16(20), u16(0), u16(0), u16(0), u16(0),
+          u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0));
+        parts.push(new Uint8Array(lh), name, data);
+        central.push([].concat([0x50,0x4b,0x01,0x02], u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+          u32(crc), u32(data.length), u32(data.length), u16(name.length),
+          u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset)));
+        central.push(name);
+        offset += lh.length + name.length + data.length;
+      });
+
+      const cd = [];
+      central.forEach(c => cd.push(c instanceof Uint8Array ? c : new Uint8Array(c)));
+      const cdSize = cd.reduce((n, c) => n + c.length, 0);
+      const eocd = new Uint8Array([].concat([0x50,0x4b,0x05,0x06], u16(0), u16(0),
+        u16(files.length), u16(files.length), u32(cdSize), u32(offset), u16(0)));
+
+      const all = [...parts, ...cd, eocd];
+      const total = all.reduce((n, p) => n + p.length, 0);
+      const out = new Uint8Array(total);
+      let at = 0;
+      all.forEach(p => { out.set(p, at); at += p.length; });
+      return out;
+    }
+
+    const _xmlEsc = s => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+      // Excel refuses to open a workbook containing control characters.
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+
+    function _colName(i) {
+      let s = '';
+      for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+      return s;
+    }
+
+    // Excel rejects these characters in a tab name, and caps it at 31 chars.
+    function _sheetName(name) {
+      return String(name || 'Sheet').replace(/[\[\]\*\/\\\?:]/g, ' ').slice(0, 31) || 'Sheet';
+    }
+
+    function _sheetXml(sheet) {
+      const header  = sheet.header || [];
+      const rows    = sheet.rows   || [];
+      const numeric = new Set(sheet.numeric || []);
+
+      const cell = (r, c, v, isHeader) => {
+        const ref = _colName(c) + (r + 1);
+        if (v === '' || v == null) return '';
+        if (!isHeader && numeric.has(c) && isFinite(Number(v))) {
+          return `<c r="${ref}" s="0"><v>${Number(v)}</v></c>`;
+        }
+        return `<c r="${ref}" t="inlineStr"${isHeader ? ' s="1"' : ''}><is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
+      };
+
+      const body = [
+        `<row r="1">${header.map((h, c) => cell(0, c, h, true)).join('')}</row>`,
+        ...rows.map((r, i) => `<row r="${i + 2}">${r.map((v, c) => cell(i + 1, c, v, false)).join('')}</row>`),
+      ].join('');
+
+      const cols = (sheet.widths && sheet.widths.length)
+        ? `<cols>${sheet.widths.map((w, i) =>
+            `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`
+        : '';
+
+      const lastCol = _colName(Math.max(header.length - 1, 0));
+      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+        // Freeze the header row so it stays put while scrolling the sheet —
+        // the spreadsheet equivalent of the sticky <thead> on the page.
+        `<sheetViews><sheetView workbookViewId="0">` +
+        `<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>` +
+        `<selection pane="bottomLeft" activeCell="A2" sqref="A2"/>` +
+        `</sheetView></sheetViews>` +
+        `${cols}<sheetData>${body}</sheetData>` +
+        `<autoFilter ref="A1:${lastCol}${rows.length + 1}"/>` +
+        `</worksheet>`;
+    }
+
+    function _buildXlsx(sheets) {
+      const n = sheets.length;
+      const files = [
+        { name: '[Content_Types].xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+          `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+          `<Default Extension="xml" ContentType="application/xml"/>` +
+          `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
+          sheets.map((_, i) =>
+            `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') +
+          `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
+          `</Types>` },
+        { name: '_rels/.rels', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
+          `</Relationships>` },
+        { name: 'xl/workbook.xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
+          `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>` +
+          sheets.map((s, i) =>
+            `<sheet name="${_xmlEsc(_sheetName(s.name))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') +
+          `</sheets></workbook>` },
+        { name: 'xl/_rels/workbook.xml.rels', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          sheets.map((_, i) =>
+            `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
+          `<Relationship Id="rId${n + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+          `</Relationships>` },
+        { name: 'xl/styles.xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+          `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>` +
+          `<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
+          `<fills count="1"><fill><patternFill patternType="none"/></fill></fills>` +
+          `<borders count="1"><border/></borders>` +
+          `<cellStyleXfs count="1"><xf/></cellStyleXfs>` +
+          `<cellXfs count="2"><xf xfId="0"/><xf xfId="0" fontId="1" applyFont="1"/></cellXfs>` +
+          `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
+          `</styleSheet>` },
+        ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: _sheetXml(s) })),
+      ];
+      return _zip(files);
+    }
+
+    function _downloadXlsx(sheets, filename) {
+      const blob = new Blob([_buildXlsx(sheets)],
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoked on a timer rather than immediately: Safari reads the blob
+      // after the click returns, and pulling it out from under it downloads
+      // an empty file.
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+
+    function _todayStamp() {
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+
+    function _dateOnly(v) {
+      if (!v) return '';
+      const d = new Date(v);
+      if (isNaN(d.getTime())) return String(v);
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+
+    // Exports exactly what the table is showing — search and filters included,
+    // so "download what I'm looking at" does what it says.
+    function exportUsersXlsx() {
+      const list = filteredUsers();
+      if (!list.length) { muStatus('Nothing to export — no users match those filters.', 'err'); return; }
+
+      const header = ['Username', ...DIV_KEYS.map(divLongLabel), 'Divisions granted', 'Created'];
+      const rows = list.map(u => {
+        const roles = u._roles || userRoleMap(u);
+        return [
+          u.username,
+          ...DIV_KEYS.map(k => ROLE_FULL[roles[k]] || roles[k]),
+          grantedCount(roles),
+          _dateOnly(u.created_at),
+        ];
+      });
+      const widths = [20, ...DIV_KEYS.map(() => 18), 17, 12];
+
+      const legend = {
+        name: 'Access Levels',
+        header: ['Level', 'Shown as', 'What it allows'],
+        rows: [
+          ['admin',     'Admin', 'Full access plus the ability to manage users'],
+          ['level3',    'Full',  'Full access to the division'],
+          ['level2',    'Edit',  'Insert and edit records'],
+          ['level1',    'View',  'View only'],
+          ['no_access', '—',     'No access — the division is hidden for this user'],
+        ],
+        widths: [14, 12, 52],
+      };
+
+      const co = (user && (user.companyName || user.companyCode)) || 'company';
+      const slug = String(co).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'company';
+      _downloadXlsx(
+        [{ name: 'Users', header, rows, widths, numeric: [DIV_KEYS.length + 1] }, legend],
+        `${slug}-users-${_todayStamp()}.xlsx`
+      );
+      muStatus(`Exported ${rows.length} user${rows.length === 1 ? '' : 's'} to Excel.`, 'ok');
+    }
+
+    function exportSupervisorsXlsx() {
+      const list = visibleSupervisors();
+      const result = document.getElementById('sup-result');
+      if (!list.length) {
+        result.style.color = '#ef4444';
+        result.textContent = 'Nothing to export — no users match.';
+        return;
+      }
+      const co = (user && (user.companyName || user.companyCode)) || 'company';
+      const slug = String(co).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'company';
+      _downloadXlsx([{
+        name: 'Supervisors',
+        header: ['Username', 'Supervisor'],
+        rows: list.map(e => [e.name, e.is_supervisor ? 'Yes' : 'No']),
+        widths: [26, 14],
+      }], `${slug}-supervisors-${_todayStamp()}.xlsx`);
+      result.style.color = 'var(--green)';
+      result.textContent = `Exported ${list.length} user${list.length === 1 ? '' : 's'} to Excel.`;
+      setTimeout(() => {
+        if (result.textContent.startsWith('Exported')) result.textContent = '';
+      }, 4000);
     }
 
     // ── Sign out ────────────────────────────────────────────────────────────
