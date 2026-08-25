@@ -51,10 +51,15 @@ const FIXED_FOLDERS = [
 // Purchase-order paperwork lands under this folder, one subfolder per PO.
 const PO_ROOT = { slug: 'purchase-orders', name: 'Purchase Orders' };
 
-// Division-level buckets for POs with no job attached.
+// Division-level buckets for paperwork that belongs to no job. Same rules as
+// FIXED_FOLDERS above: slug is the identity, position is the order. Repairs
+// carries the same name as the job folder and is a different folder — the
+// unique index keys a slug per (company, division, project), so the shop's
+// repair paperwork and a job's never meet.
 const GENERAL_FOLDERS = [
   { slug: 'shop-supplies',  name: 'Shop Supplies' },
   { slug: 'office',         name: 'Office' },
+  { slug: 'repairs',        name: 'Repairs' },
   { slug: 'unassigned-pos', name: 'Unassigned POs' },
 ];
 

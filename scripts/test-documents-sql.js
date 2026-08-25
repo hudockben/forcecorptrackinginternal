@@ -400,9 +400,36 @@ async function upload(folderId, filename, auth, extra = {}) {
   console.log('\nGeneral / Non-Job area');
   const gGen = await call('PUT', { division: 'turf' }, {}, PM);
   const gNames = gGen.body.folders.map(f => f.name);
+  const GENERAL = ['Shop Supplies', 'Office', 'Repairs', 'Unassigned POs'];
   assert('the division-level area seeds its own buckets',
-    ['Shop Supplies', 'Office', 'Unassigned POs'].every(n => gNames.includes(n)), gNames.join(' | '));
+    GENERAL.every(n => gNames.includes(n)), gNames.join(' | '));
+  assert('in the order the list declares them',
+    gNames.slice(0, GENERAL.length).join('|') === GENERAL.join('|'), gNames.join(' | '));
   assert('and does not inherit the job folders', !gNames.includes('Submittals'), gNames.join(' | '));
+
+  // Repairs exists in both scopes under the same slug. The unique index keys a
+  // slug per project, so these have to be two folders — one folder shared
+  // between the shop and every job would put a job's repair paperwork in front
+  // of anyone who opened the division-level area.
+  const genRepairs = gGen.body.folders.find(f => f.name === 'Repairs');
+  const jobRepairs = (await call('GET', { division: 'turf', projectId: PROJ }, null, PM))
+    .body.folders.find(f => f.name === 'Repairs');
+  assert('the shop\'s Repairs and a job\'s are different folders',
+    Boolean(genRepairs) && Boolean(jobRepairs) && genRepairs.id !== jobRepairs.id,
+    `${genRepairs && genRepairs.id} vs ${jobRepairs && jobRepairs.id}`);
+
+  // The division-level area is seeded by its own branch, so wind it back the
+  // same way and check a newly standard bucket lands in place there too.
+  await client.query(`DELETE FROM project_folders WHERE project_id IS NULL AND division = 'turf' AND slug = 'repairs'`);
+  await client.query(
+    `UPDATE project_folders SET sort_order = 2 WHERE project_id IS NULL AND division = 'turf' AND slug = 'unassigned-pos'`);
+  const gLegacy = await call('PUT', { division: 'turf' }, {}, PM);
+  const gLegacyNames = gLegacy.body.folders.map(f => f.name);
+  assert('an existing division-level area gets it too, in place',
+    gLegacyNames.slice(0, GENERAL.length).join('|') === GENERAL.join('|'), gLegacyNames.join(' | '));
+  assert('creating one folder and moving the one it displaced',
+    gLegacy.body.created === 1 && gLegacy.body.reordered === 1,
+    `created ${gLegacy.body.created}, reordered ${gLegacy.body.reordered}`);
 
   const shop = gGen.body.folders.find(f => f.name === 'Shop Supplies');
   const shopDoc = await upload(shop.id, 'shop-po.pdf', PM, { projectId: null, poId: 'po-9001' });
