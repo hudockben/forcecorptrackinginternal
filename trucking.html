@@ -2482,7 +2482,7 @@
     const SCHED_KEY = 'fct_trucking_schedule';
 
     let schedAssignments = {};      // { 'YYYY-MM-DD': [ {id,driver,customer,unit,start,notes} ] }
-    let schedView        = 'week';  // 'week' | 'day'
+    let schedView        = 'day';   // 'week' | 'day' — opens on the day being dispatched
     let schedAnchor      = null;    // the focused date; week view shows the week around it
     let schedCtx         = null;    // open editor: { date, id|null }
     let _schedBaseline   = '{}';    // server state as of last successful read/write
