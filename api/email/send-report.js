@@ -53,6 +53,7 @@ const REPORT_TYPES = {
   quarry_breakeven:     { division: 'quarry',    label: 'Quarry Break-Even Analysis'          },
   dust_tracking_summary:{ division: 'dust',      label: 'Dust Control Tracking Report'        },
   scheduler_dispatch:   { division: 'scheduler', label: 'Crew Dispatch Schedule'              },
+  trucking_dispatch:    { division: 'trucking',  label: 'Trucking Dispatch Schedule'          },
 };
 
 module.exports = async (req, res) => {
