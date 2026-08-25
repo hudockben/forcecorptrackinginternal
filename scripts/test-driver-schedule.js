@@ -89,7 +89,8 @@ function seed() {
       version: 1,
       assignments: {
         [D1]: [
-          { id: 'mine-1',  driver: 'Kirk, Dan',      customer: 'Kiewit',   unit: 'T-101', start: '06:00', end: '14:00', notes: 'stone' },
+          { id: 'mine-1',  driver: 'Kirk, Dan',      customer: 'Kiewit',   unit: 'T-101', start: '06:00', end: '14:00', notes: 'stone',
+            location: 'Pinetree Pit', address: '1400 Quarry Rd, Somerset PA' },
           { id: 'theirs-1', driver: 'Rankin, Canyon', customer: 'Turf Div', unit: 'T-202', start: '07:00', end: '15:00', notes: '' },
         ],
         [D2]: [{ id: 'mine-2', driver: 'Kirk, Dan', customer: 'Pinetree', unit: 'T-303', start: '05:30', end: '13:00', notes: '' }],
@@ -128,6 +129,15 @@ function seed() {
     assert('only my assignments', JSON.stringify(ids) === JSON.stringify(['mine-1', 'mine-2']), JSON.stringify(ids));
     assert('another driver\'s haul is absent', !ids.includes('theirs-1'));
     assert('out-of-range day is absent', !ids.includes('mine-far'));
+    // The driver is the one navigating, so the address has to reach the phone.
+    const first = r.body.days[0].assignments[0];
+    assert('the haul carries its address and location',
+      first.address === '1400 Quarry Rd, Somerset PA' && first.location === 'Pinetree Pit',
+      JSON.stringify(first));
+    assert('a haul with no address comes back with empty strings, not undefined',
+      r.body.days[1].assignments[0].address === '' && r.body.days[1].assignments[0].location === '',
+      JSON.stringify(r.body.days[1].assignments[0]));
+
     assert('days are dated and ordered',
       r.body.days.map(d => d.date).join(',') === `${D1},${D2}`, r.body.days.map(d => d.date).join(','));
 
