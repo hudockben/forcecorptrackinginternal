@@ -6,18 +6,19 @@ const jwt        = require('jsonwebtoken');
 const { syncProjects, syncLists, syncPurchaseOrders, syncInventory } = require('../lib/sync-normalized');
 
 // All divisions the platform supports — order determines display order on the selector
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin'];
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
 
 // Restrictive divisions — must NEVER be granted implicitly via the legacy
 // fallback path (company allowed_divisions / user.divisions). They require
 // an explicit non-no_access entry in users.division_roles.
-const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin']);
+const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver']);
 
 /**
  * Compute the effective divisions a user can access.
  * Platform admins always get everything.
  * Otherwise: user.divisions (if set) overrides the company's allowed_divisions.
- * Restrictive divisions (timesheet, payroll, fuel, fuel_admin) are stripped
+ * Restrictive divisions (timesheet, payroll, fuel, fuel_admin, driver)
+ * are stripped
  * from any implicit grant — those are only available through an explicit
  * divisionRoles entry.
  */

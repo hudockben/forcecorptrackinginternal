@@ -805,6 +805,13 @@
                 <option value="level3">Level 3 — Review &amp; approve</option>
               </select>
             </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Driver <span style="text-transform:none;color:var(--muted)">(field entry)</span></span>
+              <select id="mu-role-driver">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — See own hauls &amp; report back</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -1036,6 +1043,19 @@
                   <path d="M13 8h3.5a1.5 1.5 0 0 1 1.5 1.5V17a2 2 0 0 0 3 0v-6l-2.5-3"/>
                 </svg>`,
       },
+      driver: {
+        name:  'My Schedule',
+        desc:  'Mobile view of the hauls dispatch assigned you, and where you report tons, loads and hours back against them.',
+        color: '#ef4444',
+        href:  'driver.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 4h14v11H1z"/>
+                  <path d="M15 8h3.6l2.9 3v4H15V8z"/>
+                  <circle cx="5.5" cy="18" r="2.2"/>
+                  <circle cx="18" cy="18" r="2.2"/>
+                </svg>`,
+      },
       fuel_admin: {
         name:  'Fuel Admin',
         desc:  'Review, edit, and approve field fuel submissions, and report on fuel use across the divisions.',
@@ -1051,7 +1071,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -1242,11 +1262,11 @@
       level1:    'View',
       no_access: '—',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
 
     // Column labels for the user table and the "saved" summary line. Only the
     // keys whose prettified form isn't just Capitalised need an entry.
-    const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin' };
+    const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver' };
     function divLabel(k) { return DIV_LABELS[k] || (k.charAt(0).toUpperCase() + k.slice(1)); }
 
     // Tracks which sub-tab is active and whether the supervisors panel has
@@ -1378,6 +1398,7 @@
       document.getElementById('mu-role-payroll').value      = dr.payroll      || 'no_access';
       document.getElementById('mu-role-fuel').value         = dr.fuel         || 'no_access';
       document.getElementById('mu-role-fuel_admin').value   = dr.fuel_admin   || 'no_access';
+      document.getElementById('mu-role-driver').value       = dr.driver       || 'no_access';
 
       document.getElementById('mu-result').textContent = '';
       // Scroll form into view
@@ -1405,6 +1426,7 @@
       document.getElementById('mu-role-payroll').value      = 'no_access';
       document.getElementById('mu-role-fuel').value         = 'no_access';
       document.getElementById('mu-role-fuel_admin').value   = 'no_access';
+      document.getElementById('mu-role-driver').value       = 'no_access';
       document.getElementById('mu-result').textContent  = '';
     }
 
@@ -1441,6 +1463,7 @@
         payroll:      document.getElementById('mu-role-payroll').value,
         fuel:         document.getElementById('mu-role-fuel').value,
         fuel_admin:   document.getElementById('mu-role-fuel_admin').value,
+        driver:       document.getElementById('mu-role-driver').value,
       };
 
       const body = { username, division_roles };
