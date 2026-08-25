@@ -958,7 +958,7 @@
     const API_BASE = '/api';
     let divEntries    = [];
     let divLists      = { employees: [], equipment: [] };
-    let divTruckLists = { drivers: [], customers: [], units: [] };
+    let divTruckLists = { drivers: [], customers: [], units: [], locations: [] };
     let _saveTimer       = null;
     let _isSaved         = false;
     let icSentMap = new Map(); // source_id → full IC entry (trucking)
@@ -1495,6 +1495,7 @@
         if (Array.isArray(tl.drivers))   divTruckLists.drivers   = tl.drivers;
         if (Array.isArray(tl.customers)) divTruckLists.customers = tl.customers;
         if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
+        if (Array.isArray(tl.locations)) divTruckLists.locations = tl.locations;
       }
       if (lists) {
         if (Array.isArray(lists.employees)) {
@@ -1714,6 +1715,35 @@
           </div>
         </div>`;
 
+      const locationsHTML = `
+        <div class="lists-section">
+          <div class="lists-section-title">Locations</div>
+          <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.45rem;line-height:1.45">
+            Save a place once and pick it on an assignment — the address fills itself in,
+            and the driver gets it on their phone.
+          </div>
+          <div class="lists-add-row" style="flex-wrap:wrap;gap:0.3rem">
+            <input type="text" id="lists-new-loc-name" placeholder="Name — e.g. Pinetree Pit"
+              style="flex:1;min-width:100%" onkeydown="if(event.key==='Enter')addLocation()">
+            <input type="text" id="lists-new-loc-address" placeholder="Address…"
+              style="flex:1;min-width:90px" onkeydown="if(event.key==='Enter')addLocation()">
+            <button class="lists-add-btn" onclick="addLocation()">Add</button>
+          </div>
+          <div class="lists-items">
+            ${(divTruckLists.locations || []).length === 0
+              ? `<span style="font-size:0.72rem;color:var(--muted)">No locations yet.</span>`
+              : divTruckLists.locations.map(l => `
+                  <div class="lists-item">
+                    <span style="overflow:hidden">
+                      ${esc(l.name)}
+                      <span style="display:block;color:var(--muted);font-size:0.68rem;line-height:1.3">${esc(l.address) || 'no address'}</span>
+                    </span>
+                    <button class="lists-item-del" onclick="removeLocation('${esc(l.name).replace(/'/g, "\\'")}')" title="Remove">&#10005;</button>
+                  </div>`).join('')
+            }
+          </div>
+        </div>`;
+
       const unitsHTML = `
         <div class="lists-section">
           <div class="lists-section-title">Units</div>
@@ -1742,6 +1772,7 @@
         section('drivers',   'Drivers',   divTruckLists.drivers) +
         driverLoginsHTML(esc) +
         section('customers', 'Customers', divTruckLists.customers) +
+        locationsHTML +
         unitsHTML;
     }
 
@@ -1761,6 +1792,40 @@
 
     function removeFromList(key, val) {
       divTruckLists[key] = divTruckLists[key].filter(v => v !== val);
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /* ── Saved locations ──
+       A haul goes to a place, and the place gets typed the same way every
+       week. Kept as its own roster rather than as an address on the customer:
+       a customer can have several — two pits, a yard, a job site — and the
+       assignment has to say which one. */
+    function addLocation() {
+      const nameInp = document.getElementById('lists-new-loc-name');
+      const addrInp = document.getElementById('lists-new-loc-address');
+      if (!nameInp || !addrInp) return;
+      const name    = nameInp.value.trim();
+      const address = addrInp.value.trim();
+      if (!name) return;
+      // Re-adding a name updates its address rather than leaving two entries
+      // the picker cannot tell apart.
+      const at = divTruckLists.locations.findIndex(l => l && l.name === name);
+      if (at !== -1) divTruckLists.locations[at] = { name, address };
+      else divTruckLists.locations.push({ name, address });
+      divTruckLists.locations.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      saveTruckLists();
+      nameInp.value = '';
+      addrInp.value = '';
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    function removeLocation(name) {
+      divTruckLists.locations = divTruckLists.locations.filter(l => l && l.name !== name);
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
@@ -2805,7 +2870,9 @@
       const bits = [];
       if (a.unit)  bits.push(schedEsc(a.unit));
       if (a.notes) bits.push(schedEsc(a.notes));
-      const title = conflicted ? ' title="This truck overlaps another driver\u2019s on this day"' : '';
+      const tipBits = [schedWindow(a), a.customer, a.address, a.unit, a.notes].filter(Boolean).join(' \u00b7 ');
+      const title = ' title="' + schedEsc(tipBits + (conflicted
+        ? ' \u2014 this truck overlaps another driver\u2019s on this day' : '')) + '"';
       const win   = schedWindow(a);
       return `
         <div class="sch-chip${conflicted ? ' conflict' : ''}"${title}
@@ -3001,7 +3068,7 @@
           const left = x(it.s), w = Math.max(26, x(Math.min(it.e, h1 * 60)) - left);
           const conflicted = bad.has((a.unit || '').trim());
           const rep = schedReports.get(a.id);
-          const tip = [schedWindow(a) || 'no time set', a.customer, a.unit, a.notes]
+          const tip = [schedWindow(a) || 'no time set', a.customer, a.address, a.unit, a.notes]
             .filter(Boolean).join(' · ') + (it.openEnd ? ' · no end time yet' : '')
             + (rep ? '\nReported: ' + (schedReportSummary(rep) || 'yes')
                    + [rep.tickets, rep.notes].filter(Boolean).map(x => ' · ' + x).join('') : '');
@@ -3061,7 +3128,8 @@
           <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.end)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
           <td style="font-weight:600">${schedEsc(a.driver)}${schedHidden.has(a.driver)
             ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}</td>
-          <td>${schedEsc(a.customer) || '<span style="color:var(--muted)">—</span>'}</td>
+          <td>${schedEsc(a.customer) || '<span style="color:var(--muted)">—</span>'}${
+            a.address ? `<span style="display:block;color:var(--muted);font-size:0.7rem;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
           <td>${schedEsc(a.unit) || '<span style="color:var(--muted)">—</span>'}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem" title="Overlaps another driver on this truck">overlap</span>' : ''}</td>
           <td style="color:var(--muted)">${schedEsc(a.notes)}</td>
           <td>${(() => {
@@ -3171,7 +3239,8 @@
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.start)) || '—'}</td>
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.end)) || '—'}</td>
             <td style="${_RP.td};font-weight:600">${schedEsc(a.driver)}</td>
-            <td style="${_RP.td}">${schedRepCell(a.customer)}</td>
+            <td style="${_RP.td}">${schedRepCell(a.customer)}${
+              a.address ? `<span style="display:block;color:#666;font-size:9.5px;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
             <td style="${_RP.td}">${schedRepCell(a.unit)}${clash ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`;
@@ -3216,7 +3285,8 @@
         const rows = (byDriver.get(n) || []).map(a => `<tr>
             <td style="${_RP.tdT}">${schedEsc(schedRepDayShort(a._d))}</td>
             <td style="${_RP.tdT}">${schedEsc(schedWindow(a)) || '—'}</td>
-            <td style="${_RP.td}">${schedRepCell(a.customer)}</td>
+            <td style="${_RP.td}">${schedRepCell(a.customer)}${
+              a.address ? `<span style="display:block;color:#666;font-size:9.5px;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
             <td style="${_RP.td}">${schedRepCell(a.unit)}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`).join('');
@@ -3520,6 +3590,7 @@
       const roster    = schedDrivers([date]).filter(n => !schedHidden.has(n) || (a && n === a.driver));
       const driver    = a ? a.driver : driverHint;
       const customers = (divTruckLists.customers || []).filter(Boolean);
+      const locs      = (divTruckLists.locations || []).filter(l => l && l.name);
       const units     = (divTruckLists.units || []).map(u => u && u.name).filter(Boolean);
       const opts      = [...new Set([...roster, driver].filter(Boolean))]
         .sort((x, y) => String(x).localeCompare(String(y)));
@@ -3554,6 +3625,18 @@
           <datalist id="sched-dl-customers">${customers.map(c => `<option value="${schedEsc(c)}"></option>`).join('')}</datalist>
         </div>
         <div class="sch-fld">
+          <label for="sched-f-location">Location</label>
+          <select id="sched-f-location" onchange="schedPickLocation()">
+            <option value="">— none / type an address below —</option>
+            ${locs.map(l => `<option value="${schedEsc(l.name)}"${a && a.location === l.name ? ' selected' : ''}>${schedEsc(l.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="sch-fld">
+          <label for="sched-f-address">Address</label>
+          <textarea id="sched-f-address" style="min-height:44px"
+            placeholder="Street, city — where the driver is going">${schedEsc(a ? (a.address || '') : '')}</textarea>
+        </div>
+        <div class="sch-fld">
           <label for="sched-f-unit">Truck / unit</label>
           <input type="text" id="sched-f-unit" list="sched-dl-units" autocomplete="off"
                  placeholder="Unit" value="${schedEsc(a ? (a.unit || '') : '')}">
@@ -3576,6 +3659,16 @@
       if (focusEl) focusEl.focus();
     }
 
+    /** Picking a saved location fills the address in. It stays editable —
+     *  a one-off delivery still needs somewhere to type. */
+    function schedPickLocation() {
+      const sel  = document.getElementById('sched-f-location');
+      const addr = document.getElementById('sched-f-address');
+      if (!sel || !addr) return;
+      const hit = (divTruckLists.locations || []).find(l => l && l.name === sel.value);
+      if (hit) addr.value = hit.address || '';
+    }
+
     function schedCloseEditor(e) {
       if (e && document.getElementById('sched-modal').contains(e.target)) return;
       document.getElementById('sched-backdrop').classList.remove('open');
@@ -3596,6 +3689,8 @@
         driver,
         customer: v('sched-f-customer').trim(),
         unit:     v('sched-f-unit').trim(),
+        location: v('sched-f-location').trim(),
+        address:  v('sched-f-address').trim(),
         start:    v('sched-f-start').trim(),
         end:      v('sched-f-end').trim(),
         notes:    v('sched-f-notes').trim(),
@@ -4727,6 +4822,7 @@
           const inDrivers   = Array.isArray(tl.drivers)   ? tl.drivers   : divTruckLists.drivers;
           const inCustomers = Array.isArray(tl.customers)  ? tl.customers : divTruckLists.customers;
           const inUnits     = Array.isArray(tl.units)      ? tl.units     : divTruckLists.units;
+          const inLocations = Array.isArray(tl.locations)  ? tl.locations : divTruckLists.locations;
           // Guard: if the server returned significantly fewer entries than we currently
           // hold, the server blob is stale or corrupted — skip this poll cycle so we
           // don't overwrite good in-memory data and trigger a save with the smaller set.
@@ -4737,7 +4833,8 @@
           const entriesChanged = JSON.stringify(inEntries)   !== JSON.stringify(divEntries);
           const listsChanged   = JSON.stringify(inDrivers)   !== JSON.stringify(divTruckLists.drivers)   ||
                                  JSON.stringify(inCustomers) !== JSON.stringify(divTruckLists.customers) ||
-                                 JSON.stringify(inUnits)     !== JSON.stringify(divTruckLists.units);
+                                 JSON.stringify(inUnits)     !== JSON.stringify(divTruckLists.units)     ||
+                                 JSON.stringify(inLocations) !== JSON.stringify(divTruckLists.locations);
           if (!entriesChanged && !listsChanged) return;
           // Skip the cycle entirely while the user is typing — otherwise
           // we replace the in-memory entries/lists with the server
@@ -4752,6 +4849,7 @@
           if (Array.isArray(tl.drivers))   divTruckLists.drivers   = tl.drivers;
           if (Array.isArray(tl.customers)) divTruckLists.customers = tl.customers;
           if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
+          if (Array.isArray(tl.locations)) divTruckLists.locations = tl.locations;
           const tab = _activeTabId();
           if (tab === 'dashboard')      renderDashboard();
           if (tab === 'truck-tracking') renderTrackingTab();

@@ -144,6 +144,8 @@ module.exports = async (req, res) => {
             start:    a.start || '',
             end:      a.end || '',
             customer: a.customer || '',
+            location: a.location || '',
+            address:  a.address || '',
             unit:     a.unit || '',
             notes:    a.notes || '',
             report:   byId.get(a.id) || null,

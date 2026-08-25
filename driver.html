@@ -66,6 +66,15 @@
     .haul-what .cust { font-size:0.95rem; font-weight:700; }
     .haul-what .meta { font-size:0.75rem; color:var(--muted); margin-top:1px; }
     .haul-what .note { font-size:0.75rem; color:var(--blue); margin-top:3px; }
+    /* The address is the one thing on this card a driver acts on before
+       leaving the yard, so it is a link to their maps app rather than text
+       to squint at and retype. stopPropagation keeps the tap from also
+       toggling the card open underneath it. */
+    .haul-what .addr {
+      display:inline-block; margin-top:4px; font-size:0.78rem; line-height:1.35;
+      color:var(--green); text-decoration:none; border-bottom:1px dotted rgba(34,197,94,0.5);
+    }
+    .haul-what .addr:active { opacity:0.6; }
     .chev { flex:none; color:var(--muted); font-size:0.85rem; align-self:center; transition:transform .15s; }
     .haul.open .chev { transform:rotate(90deg); }
 
@@ -267,6 +276,9 @@
             <div class="haul-what">
               <div class="cust">${esc(a.customer) || 'No customer set'}</div>
               <div class="meta">${esc(a.unit) || 'No truck set'}</div>
+              ${a.address ? `<a class="addr" href="https://maps.google.com/?q=${encodeURIComponent(a.address)}"
+                target="_blank" rel="noopener" onclick="event.stopPropagation()"
+                title="Open in maps">&#128205; ${esc(a.address)}</a>` : ''}
               ${a.notes ? `<div class="note">${esc(a.notes)}</div>` : ''}
               <span class="badge ${done ? 'done' : 'todo'}">${done ? 'Reported' : 'Not reported'}</span>
             </div>
