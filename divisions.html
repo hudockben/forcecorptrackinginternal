@@ -658,11 +658,12 @@
                 <th>Payroll</th>
                 <th>Fuel</th>
                 <th>Fuel Admin</th>
+                <th>Driver</th>
                 <th></th>
               </tr>
             </thead>
             <tbody id="userListBody">
-              <tr><td colspan="15" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
+              <tr><td colspan="16" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -1316,7 +1317,7 @@
 
     async function loadUserList() {
       const tbody = document.getElementById('userListBody');
-      tbody.innerHTML = '<tr><td colspan="15" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="16" style="padding:0.75rem;color:var(--muted);text-align:center">Loading…</td></tr>';
       try {
         const res  = await fetch('/api/company/users', {
           headers: { Authorization: `Bearer ${token}` }
@@ -1324,7 +1325,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Failed');
         if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="15" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="16" style="padding:0.75rem;color:var(--muted);text-align:center">No users yet.</td></tr>';
           return;
         }
         tbody.innerHTML = data.users.map(u => {
@@ -1343,6 +1344,7 @@
           const payroll      = dr.payroll      || 'no_access';
           const fuel         = dr.fuel         || 'no_access';
           const fuelAdmin    = dr.fuel_admin   || 'no_access';
+          const driver       = dr.driver       || 'no_access';
           const isSelf       = String(u.id) === String(user.userId);
           return `
             <tr>
@@ -1360,6 +1362,7 @@
               <td>${divRoleBadge(payroll)}</td>
               <td>${divRoleBadge(fuel)}</td>
               <td>${divRoleBadge(fuelAdmin)}</td>
+              <td>${divRoleBadge(driver)}</td>
               <td style="text-align:right;white-space:nowrap">
                 <button class="user-edit-btn" onclick='editUser(${JSON.stringify(u)})'>Edit</button>
                 ${!isSelf
@@ -1369,7 +1372,7 @@
             </tr>`;
         }).join('');
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="15" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="16" style="padding:0.75rem;color:#ef4444">${err.message}</td></tr>`;
       }
     }
 
