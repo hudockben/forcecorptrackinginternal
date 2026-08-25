@@ -8,7 +8,10 @@ const jwt = require('jsonwebtoken');
 // own. Field users typically have ONLY timesheet:level1 and nothing else.
 // 'fuel' (field fuel submissions) and 'fuel_admin' (office review of them)
 // are the same shape: a submit side and a review side of one queue.
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin'];
+// 'driver' is the same again — the field side of trucking. A driver sees the
+// hauls the Scheduler gave them and reports back against them; the review side
+// is the trucking division's own Scheduler tab, so there is no second key.
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
 
 // Keys that are intentionally shared across every division within a company
 // (any logged-in user may read/write them regardless of their division roles).

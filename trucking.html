@@ -549,6 +549,7 @@
     /* No end time yet: the bar is drawn at a nominal hour and frayed on the
        right so its length never reads as a real finish. */
     .sch-tl-bar.open-end { border-right: 1px dashed var(--muted); border-radius: 4px 0 0 4px; }
+    .sch-tl-bar .b-rep { color: var(--green); font-size: 0.7rem; font-weight: 700; flex: none; }
     .sch-tl-bar .b-cust { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
     .sch-tl-bar .b-unit { color: var(--muted); font-size: 0.64rem; }
     .sch-tl-now {
@@ -1566,10 +1567,122 @@
       tdDivPut();
     }
 
+
+    /* ═══════ Driver logins ═══════
+       Which sign-in belongs to which driver. The Scheduler names people from
+       the office's own drivers list; a login is a username, and nothing joins
+       the two. Stating it here is what lets the driver app answer "which of
+       these hauls are mine" without ever handing a phone the whole board. */
+    let driverLoginMap   = {};   // username → driver name
+    let driverLoginUsers = [];   // the company's sign-ins, for the picker
+    let _driverLoginsLoaded = false;
+
+    async function loadDriverLogins() {
+      try {
+        const r = await fetch(`${API_BASE}/driver/logins`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!r.ok) return;
+        const j = await r.json();
+        driverLoginMap   = (j && j.map && typeof j.map === 'object') ? j.map : {};
+        driverLoginUsers = Array.isArray(j && j.users) ? j.users : [];
+        _driverLoginsLoaded = true;
+      } catch { /* non-fatal — the panel says it couldn't load */ }
+    }
+
+    function saveDriverLogins() {
+      fetch(`${API_BASE}/driver/logins`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ map: driverLoginMap }),
+      }).then(r => _handleSaveResponse(r, 'driverLogins')).catch(() => _showSaveError(false));
+    }
+
+    function linkDriverLogin() {
+      const uSel = document.getElementById('lists-login-user');
+      const dSel = document.getElementById('lists-login-driver');
+      if (!uSel || !dSel) return;
+      const u = (uSel.value || '').trim();
+      const d = (dSel.value || '').trim();
+      if (!u || !d) return;
+      driverLoginMap[u] = d;
+      saveDriverLogins();
+      uSel.value = ''; dSel.value = '';
+      renderListsPanel();
+    }
+
+    function unlinkDriverLogin(username) {
+      delete driverLoginMap[username];
+      saveDriverLogins();
+      renderListsPanel();
+    }
+
+    function driverLoginsHTML(esc) {
+      if (!_driverLoginsLoaded) {
+        return `
+          <div class="lists-section">
+            <div class="lists-section-title">Driver Logins</div>
+            <span style="font-size:0.72rem;color:var(--muted)">Loading sign-ins…</span>
+          </div>`;
+      }
+      const linked = Object.keys(driverLoginMap).sort((a, b) => a.localeCompare(b));
+      const taken  = new Set(linked.map(u => u.toLowerCase()));
+      const free   = driverLoginUsers.filter(u => !taken.has(String(u.username).toLowerCase()));
+      const drivers = (divTruckLists.drivers || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+
+      return `
+        <div class="lists-section">
+          <div class="lists-section-title">Driver Logins</div>
+          <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.45rem;line-height:1.45">
+            Links a sign-in to a name on the drivers list, so the driver app can show
+            that person their own hauls. An unlinked sign-in sees nothing.
+          </div>
+          <div class="lists-add-row" style="flex-wrap:wrap;gap:0.3rem">
+            <select id="lists-login-user" style="flex:1;min-width:104px;background:var(--surface);
+              border:1px solid var(--border);border-radius:4px;color:var(--text);
+              font-size:0.76rem;padding:0.3rem 0.4rem;outline:none">
+              <option value="">Sign-in…</option>
+              ${free.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join('')}
+            </select>
+            <select id="lists-login-driver" style="flex:1;min-width:104px;background:var(--surface);
+              border:1px solid var(--border);border-radius:4px;color:var(--text);
+              font-size:0.76rem;padding:0.3rem 0.4rem;outline:none">
+              <option value="">Driver…</option>
+              ${drivers.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}
+            </select>
+            <button class="lists-add-btn" onclick="linkDriverLogin()">Link</button>
+          </div>
+          <div class="lists-items">
+            ${linked.length === 0
+              ? `<span style="font-size:0.72rem;color:var(--muted)">No sign-ins linked yet.</span>`
+              : linked.map(u => {
+                  const d = driverLoginMap[u];
+                  // A link pointing at a name no longer on the drivers list still
+                  // resolves for the driver, so it is flagged rather than hidden.
+                  const stale = !(divTruckLists.drivers || []).includes(d);
+                  return `
+                    <div class="lists-item">
+                      <span style="overflow:hidden;text-overflow:ellipsis">
+                        ${esc(u)}
+                        <span style="color:var(--muted)">&rarr;</span>
+                        <span style="color:${stale ? 'var(--amber)' : 'var(--text)'}">${esc(d)}</span>
+                        ${stale ? `<span title="Not on the drivers list any more" style="color:var(--amber);font-size:0.62rem"> (?)</span>` : ''}
+                      </span>
+                      <button class="lists-item-del" onclick="unlinkDriverLogin('${esc(u).replace(/'/g, "\\'")}')"
+                        title="Unlink">&#10005;</button>
+                    </div>`;
+                }).join('')
+            }
+          </div>
+        </div>`;
+    }
+
     /* ── Manage Lists panel ── */
     function openManageLists() {
       document.getElementById('lists-backdrop').classList.add('open');
       renderListsPanel();
+      // Fetched on first open rather than at page load: most visits to this
+      // tab never open the panel, and this is the only thing in it needing a
+      // round trip.
+      if (!_driverLoginsLoaded) loadDriverLogins().then(renderListsPanel);
     }
 
     function closeManageLists(e) {
@@ -1627,6 +1740,7 @@
 
       document.getElementById('lists-panel-body').innerHTML =
         section('drivers',   'Drivers',   divTruckLists.drivers) +
+        driverLoginsHTML(esc) +
         section('customers', 'Customers', divTruckLists.customers) +
         unitsHTML;
     }
@@ -2625,6 +2739,9 @@
         return;
       }
 
+      const rng = schedView === 'week' ? schedWeekDates() : [schedAnchor];
+      schedLoadReports(rng[0], rng[rng.length - 1]);
+
       root.innerHTML = `
         <div style="padding:1.25rem;max-width:1600px">
           ${schedToolbarHTML()}
@@ -2753,6 +2870,42 @@
         </p>`;
     }
 
+
+    /* ═══════ What the drivers sent back ═══════
+       Reported against the assignment it answers, so the day sheet can show
+       plan and actual on one line. Read-only here: a report is the driver's
+       account of their own day. Correcting a haul means correcting the
+       schedule or the payroll entry, each of which has its own owner. */
+    let schedReports = new Map();   // assignment id → report
+    let _schedReportsRange = '';
+
+    async function schedLoadReports(from, to) {
+      const key = from + '..' + to;
+      if (_schedReportsRange === key) return;
+      try {
+        const r = await fetch(`${API_BASE}/trucking-driver-reports?from=${from}&to=${to}`,
+          { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!r.ok) return;
+        const j = await r.json();
+        const m = new Map();
+        (Array.isArray(j.reports) ? j.reports : []).forEach(x => m.set(x.assignment_id, x));
+        schedReports = m;
+        _schedReportsRange = key;
+        if (schedIsActive()) renderScheduler();
+      } catch { /* non-fatal — the column just stays empty */ }
+    }
+
+    /** "24.5 t · 3 loads · 6:05a–2:20p" — only the parts they filled in. */
+    function schedReportSummary(rep) {
+      if (!rep) return '';
+      const bits = [];
+      if (rep.tons  != null) bits.push(Number(rep.tons).toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' t');
+      if (rep.loads != null) bits.push(rep.loads + (rep.loads === 1 ? ' load' : ' loads'));
+      const win = schedWindow({ start: rep.actual_start, end: rep.actual_end });
+      if (win) bits.push(win);
+      return bits.join(' · ');
+    }
+
     /* ═══════ Day timeline ═══════ */
     const SCH_HOUR_W = 92;   // px per hour
     const SCH_BAR_H  = 24;   // px per bar
@@ -2847,11 +3000,15 @@
           const a = it.a;
           const left = x(it.s), w = Math.max(26, x(Math.min(it.e, h1 * 60)) - left);
           const conflicted = bad.has((a.unit || '').trim());
+          const rep = schedReports.get(a.id);
           const tip = [schedWindow(a) || 'no time set', a.customer, a.unit, a.notes]
-            .filter(Boolean).join(' · ') + (it.openEnd ? ' · no end time yet' : '');
+            .filter(Boolean).join(' · ') + (it.openEnd ? ' · no end time yet' : '')
+            + (rep ? '\nReported: ' + (schedReportSummary(rep) || 'yes')
+                   + [rep.tickets, rep.notes].filter(Boolean).map(x => ' · ' + x).join('') : '');
           return `<div class="sch-tl-bar${conflicted ? ' conflict' : ''}${it.openEnd ? ' open-end' : ''}"
             style="left:${left}px;width:${w}px;top:${SCH_LANE_G + it.lane * (SCH_BAR_H + SCH_LANE_G)}px;height:${SCH_BAR_H}px"
             title="${schedEsc(tip)}" onclick="event.stopPropagation();schedEditAssign('${date}','${a.id}')">
+            ${rep ? '<span class="b-rep" title="Reported by the driver">&#10003;</span>' : ''}
             <span class="b-cust">${schedEsc(a.customer || '—')}</span>
             ${a.unit ? `<span class="b-unit">${schedEsc(a.unit)}</span>` : ''}
           </div>`;
@@ -2907,9 +3064,17 @@
           <td>${schedEsc(a.customer) || '<span style="color:var(--muted)">—</span>'}</td>
           <td>${schedEsc(a.unit) || '<span style="color:var(--muted)">—</span>'}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem" title="Overlaps another driver on this truck">overlap</span>' : ''}</td>
           <td style="color:var(--muted)">${schedEsc(a.notes)}</td>
+          <td>${(() => {
+            const rep = schedReports.get(a.id);
+            if (!rep) return '<span style="color:var(--muted);font-size:0.72rem">—</span>';
+            const sum = schedEsc(schedReportSummary(rep));
+            const extra = [rep.tickets, rep.notes].filter(Boolean).join(' · ');
+            return `<span style="color:var(--green);font-weight:600;white-space:nowrap">${sum || 'reported'}</span>` +
+              (extra ? `<span style="display:block;color:var(--muted);font-size:0.68rem">${schedEsc(extra)}</span>` : '');
+          })()}</td>
         </tr>`;
       }).join('')
-        : `<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
+        : `<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
 
       const assigned = new Set(items.map(a => a.driver));
       const open     = drivers.filter(d => !assigned.has(d));
@@ -2923,7 +3088,7 @@
         <p class="home-section-title">Dispatch Sheet</p>
         <div class="proj-table-wrap" style="border:1px solid var(--border);border-radius:6px;margin-bottom:1.5rem">
           <table class="sch-day-tbl">
-            <thead><tr><th>Start</th><th>End</th><th>Driver</th><th>Customer</th><th>Truck</th><th>Notes</th></tr></thead>
+            <thead><tr><th>Start</th><th>End</th><th>Driver</th><th>Customer</th><th>Truck</th><th>Notes</th><th>Reported</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>

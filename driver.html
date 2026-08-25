@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ef4444' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M1 3h15v13H1z'/><path d='M16 8h4l3 3v5h-7V8z'/><circle cx='5.5' cy='18.5' r='2.5'/><circle cx='18.5' cy='18.5' r='2.5'/></svg>" />
+  <title>Driver — My Schedule</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    :root {
+      --bg:#0a0a0f; --surface:#14141d; --surface2:#1c1c28; --border:#2a2a3a;
+      --accent:#ef4444; --accent-d:#b91c1c; --text:#e8e8ee; --muted:#888;
+      --green:#22c55e; --amber:#facc15; --blue:#60a5fa;
+    }
+    html, body { height:100%; overscroll-behavior-y:none; }
+    body {
+      background:var(--bg); color:var(--text); font-size:16px; line-height:1.4;
+      font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+      padding-bottom:env(safe-area-inset-bottom, 0);
+    }
+
+    header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0.9rem 1rem; padding-top:calc(0.9rem + env(safe-area-inset-top, 0));
+      background:var(--surface); border-bottom:1px solid var(--border);
+      position:sticky; top:0; z-index:50;
+    }
+    .brand { font-size:0.65rem; letter-spacing:0.28em; text-transform:uppercase; color:var(--accent); font-weight:700; }
+    .brand small { display:block; letter-spacing:0.12em; color:var(--muted); font-size:0.58rem; margin-top:2px; }
+    .header-right { display:flex; align-items:center; gap:0.6rem; }
+    .icon-btn {
+      background:none; border:1px solid var(--border); color:var(--muted);
+      padding:0.5rem 0.7rem; border-radius:6px; font-size:0.65rem; font-weight:600;
+      letter-spacing:0.08em; text-transform:uppercase; cursor:pointer; font-family:inherit;
+    }
+    .icon-btn:active { color:var(--text); border-color:#555; }
+
+    main { max-width:640px; margin:0 auto; padding:1rem; display:flex; flex-direction:column; gap:0.85rem; }
+
+    /* ── Day bar ── */
+    .daybar { display:flex; align-items:center; gap:0.5rem; }
+    .daybar .nav {
+      flex:none; min-width:46px; min-height:46px; border-radius:10px;
+      background:var(--surface); border:1px solid var(--border); color:var(--text);
+      font-size:1.15rem; cursor:pointer; font-family:inherit;
+    }
+    .daybar .nav:active { background:var(--surface2); }
+    .daybar .lbl { flex:1; text-align:center; }
+    .daybar .lbl .d { font-size:0.95rem; font-weight:700; }
+    .daybar .lbl .s { font-size:0.7rem; color:var(--muted); }
+    .daybar .lbl .s.today { color:var(--amber); font-weight:700; }
+
+    /* ── Haul card ── */
+    .haul {
+      background:var(--surface); border:1px solid var(--border);
+      border-left:3px solid var(--accent); border-radius:10px; overflow:hidden;
+    }
+    .haul.done { border-left-color:var(--green); }
+    .haul-head { padding:0.85rem 0.9rem; cursor:pointer; display:flex; gap:0.7rem; align-items:flex-start; }
+    .haul-when { flex:none; text-align:center; min-width:62px; }
+    .haul-when .t { font-size:0.9rem; font-weight:800; color:var(--amber); font-variant-numeric:tabular-nums; }
+    .haul-when .t2 { font-size:0.68rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .haul-what { flex:1; min-width:0; }
+    .haul-what .cust { font-size:0.95rem; font-weight:700; }
+    .haul-what .meta { font-size:0.75rem; color:var(--muted); margin-top:1px; }
+    .haul-what .note { font-size:0.75rem; color:var(--blue); margin-top:3px; }
+    .chev { flex:none; color:var(--muted); font-size:0.85rem; align-self:center; transition:transform .15s; }
+    .haul.open .chev { transform:rotate(90deg); }
+
+    .badge {
+      display:inline-block; font-size:0.6rem; font-weight:700; letter-spacing:0.07em;
+      text-transform:uppercase; padding:0.15rem 0.4rem; border-radius:4px; margin-top:4px;
+    }
+    .badge.done { background:rgba(34,197,94,0.15); color:var(--green); }
+    .badge.todo { background:rgba(250,204,21,0.13); color:var(--amber); }
+
+    /* ── Report form ── */
+    .haul-body { display:none; padding:0 0.9rem 0.9rem; flex-direction:column; gap:0.75rem; }
+    .haul.open .haul-body { display:flex; }
+    .row { display:flex; flex-direction:column; gap:0.3rem; }
+    .row-2 { display:grid; grid-template-columns:1fr 1fr; gap:0.6rem; }
+    label { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); font-weight:600; }
+    input, textarea {
+      width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+      color:var(--text); font-size:1rem; padding:0.8rem; font-family:inherit; outline:none;
+      min-height:48px; -webkit-appearance:none; appearance:none;
+    }
+    input:focus, textarea:focus { border-color:var(--accent); }
+    textarea { min-height:70px; resize:vertical; line-height:1.35; }
+    input[type=number] { font-variant-numeric:tabular-nums; font-weight:700; }
+    input[type=time]::-webkit-calendar-picker-indicator { filter:invert(0.7); }
+
+    .btn {
+      width:100%; min-height:50px; border:none; border-radius:10px;
+      font-size:0.95rem; font-weight:700; cursor:pointer; font-family:inherit;
+    }
+    .btn-primary { background:var(--accent); color:#fff; }
+    .btn-primary:active { background:var(--accent-d); }
+    .btn:disabled { opacity:0.45; }
+    .fld-note { font-size:0.7rem; color:var(--muted); }
+    .fld-note.ok { color:var(--green); }
+    .fld-note.err { color:var(--accent); }
+
+    /* ── States ── */
+    .empty {
+      background:var(--surface); border:1px solid var(--border); border-radius:10px;
+      padding:2.2rem 1rem; text-align:center; color:var(--muted); font-size:0.88rem;
+    }
+    .empty strong { display:block; color:var(--text); font-size:0.95rem; margin-bottom:0.35rem; }
+    .notice {
+      background:rgba(250,204,21,0.08); border:1px solid rgba(250,204,21,0.3);
+      border-radius:10px; padding:1.1rem; color:var(--text); font-size:0.85rem; line-height:1.5;
+    }
+    .notice strong { color:var(--amber); display:block; margin-bottom:0.3rem; }
+
+    .toast {
+      position:fixed; left:50%; bottom:calc(1.2rem + env(safe-area-inset-bottom,0));
+      transform:translateX(-50%) translateY(140%); transition:transform .25s;
+      background:var(--surface2); border:1px solid var(--border); color:var(--text);
+      padding:0.7rem 1.1rem; border-radius:999px; font-size:0.82rem; z-index:80;
+      box-shadow:0 6px 24px rgba(0,0,0,0.5); max-width:90vw;
+    }
+    .toast.show { transform:translateX(-50%) translateY(0); }
+    .toast.err { border-color:var(--accent); color:var(--accent); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">DataWatch<small id="whoLabel">Driver</small></div>
+    <div class="header-right">
+      <button class="icon-btn" id="switchBtn" style="display:none" onclick="goToDivisions()">Switch</button>
+      <button class="icon-btn" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <main id="main"></main>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    /* ═══════ Auth ═══════ */
+    const API   = '/api';
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) window.location.replace('index.html');
+
+    /* ═══════ State ═══════ */
+    let state = { date: todayStr(), data: null, loading: true, error: null, open: new Set() };
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function dstr(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function todayStr() { return dstr(new Date()); }
+    function parseD(ds) { return new Date(ds + 'T12:00:00'); }
+    function addDays(ds, n) { const d = parseD(ds); d.setDate(d.getDate() + n); return dstr(d); }
+    const esc = s => String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    function t12(hhmm) {
+      if (!hhmm) return '';
+      const [h, m] = String(hhmm).split(':').map(Number);
+      if (isNaN(h)) return '';
+      return ((h % 12) || 12) + (m ? ':' + pad(m) : '') + (h < 12 ? 'a' : 'p');
+    }
+
+    function toast(msg, bad) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.toggle('err', !!bad);
+      t.classList.add('show');
+      clearTimeout(t._t);
+      t._t = setTimeout(() => t.classList.remove('show'), 2600);
+    }
+
+    /* ═══════ Data ═══════ */
+    async function load() {
+      state.loading = true; state.error = null; render();
+      try {
+        const r = await fetch(`${API}/driver/schedule?from=${state.date}&to=${state.date}`,
+          { headers: { 'Authorization': `Bearer ${token}` } });
+        if (r.status === 401) { signOut(); return; }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        state.data = await r.json();
+      } catch (err) {
+        state.error = err.message || 'Could not load your schedule.';
+      } finally {
+        state.loading = false; render();
+      }
+    }
+
+    async function submitReport(id) {
+      const v = k => (document.getElementById(`f-${k}-${id}`) || {}).value || '';
+      const btn = document.getElementById(`btn-${id}`);
+      const note = document.getElementById(`note-${id}`);
+      btn.disabled = true;
+      note.className = 'fld-note';
+      note.textContent = 'Sending…';
+      try {
+        const r = await fetch(`${API}/driver/schedule`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            assignment_id: id,
+            tons:          v('tons'),
+            loads:         v('loads'),
+            actual_start:  v('start'),
+            actual_end:    v('end'),
+            tickets:       v('tickets'),
+            notes:         v('notes'),
+          }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+        note.className = 'fld-note ok';
+        note.textContent = 'Saved.';
+        toast('Report sent to the office');
+        // Keep this card open so the driver can see what they just filed.
+        state.open.add(id);
+        await load();
+      } catch (err) {
+        note.className = 'fld-note err';
+        note.textContent = err.message || 'Could not send.';
+        toast(err.message || 'Could not send', true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function toggle(id) {
+      if (state.open.has(id)) state.open.delete(id); else state.open.add(id);
+      render();
+    }
+
+    function step(n) { state.date = addDays(state.date, n); state.open.clear(); load(); }
+    function goToday() { state.date = todayStr(); state.open.clear(); load(); }
+
+    /* ═══════ Render ═══════ */
+    function dayBarHTML() {
+      const d = parseD(state.date);
+      const isToday = state.date === todayStr();
+      return `
+        <div class="daybar">
+          <button class="nav" onclick="step(-1)" aria-label="Previous day">&#8249;</button>
+          <div class="lbl" onclick="goToday()">
+            <div class="d">${esc(d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric' }))}</div>
+            <div class="s${isToday ? ' today' : ''}">${isToday ? 'Today' : 'Tap for today'}</div>
+          </div>
+          <button class="nav" onclick="step(1)" aria-label="Next day">&#8250;</button>
+        </div>`;
+    }
+
+    function haulHTML(a) {
+      const rep  = a.report;
+      const done = !!rep;
+      const open = state.open.has(a.id);
+      const val  = (k, fallback) => esc(rep && rep[k] != null && rep[k] !== '' ? rep[k] : (fallback || ''));
+      const meta = [a.unit, a.customer ? null : null].filter(Boolean);
+
+      return `
+        <div class="haul${done ? ' done' : ''}${open ? ' open' : ''}">
+          <div class="haul-head" onclick="toggle('${esc(a.id)}')">
+            <div class="haul-when">
+              <div class="t">${esc(t12(a.start)) || '—'}</div>
+              ${a.end ? `<div class="t2">to ${esc(t12(a.end))}</div>` : ''}
+            </div>
+            <div class="haul-what">
+              <div class="cust">${esc(a.customer) || 'No customer set'}</div>
+              <div class="meta">${esc(a.unit) || 'No truck set'}</div>
+              ${a.notes ? `<div class="note">${esc(a.notes)}</div>` : ''}
+              <span class="badge ${done ? 'done' : 'todo'}">${done ? 'Reported' : 'Not reported'}</span>
+            </div>
+            <div class="chev">&#9654;</div>
+          </div>
+          <div class="haul-body">
+            <div class="row-2">
+              <div class="row">
+                <label for="f-tons-${esc(a.id)}">Tons</label>
+                <input type="number" inputmode="decimal" step="0.01" min="0" placeholder="0"
+                  id="f-tons-${esc(a.id)}" value="${val('tons')}">
+              </div>
+              <div class="row">
+                <label for="f-loads-${esc(a.id)}">Loads</label>
+                <input type="number" inputmode="numeric" step="1" min="0" placeholder="0"
+                  id="f-loads-${esc(a.id)}" value="${val('loads')}">
+              </div>
+            </div>
+            <div class="row-2">
+              <div class="row">
+                <label for="f-start-${esc(a.id)}">Actual start</label>
+                <input type="time" id="f-start-${esc(a.id)}" value="${val('actual_start', a.start)}">
+              </div>
+              <div class="row">
+                <label for="f-end-${esc(a.id)}">Actual end</label>
+                <input type="time" id="f-end-${esc(a.id)}" value="${val('actual_end', a.end)}">
+              </div>
+            </div>
+            <div class="row">
+              <label for="f-tickets-${esc(a.id)}">Ticket numbers</label>
+              <input type="text" id="f-tickets-${esc(a.id)}" placeholder="e.g. 88214, 88215"
+                autocomplete="off" value="${val('tickets')}">
+            </div>
+            <div class="row">
+              <label for="f-notes-${esc(a.id)}">Anything the office should know</label>
+              <textarea id="f-notes-${esc(a.id)}" placeholder="Delays, breakdowns, turned away…">${val('notes')}</textarea>
+            </div>
+            <button class="btn btn-primary" id="btn-${esc(a.id)}"
+              onclick="submitReport('${esc(a.id)}')">${done ? 'Update report' : 'Send report'}</button>
+            <div class="fld-note" id="note-${esc(a.id)}">${done && rep.updated_at
+              ? 'Last sent ' + esc(new Date(rep.updated_at).toLocaleString(undefined,
+                  { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })) : ''}</div>
+          </div>
+        </div>`;
+    }
+
+    function render() {
+      const main = document.getElementById('main');
+      const who  = document.getElementById('whoLabel');
+      const d    = state.data;
+
+      if (who) who.textContent = d && d.driver ? d.driver : (user && user.username) || 'Driver';
+
+      if (state.loading && !d) { main.innerHTML = `<div class="empty">Loading your schedule…</div>`; return; }
+      if (state.error) {
+        main.innerHTML = `<div class="empty"><strong>Could not load your schedule.</strong>
+          ${esc(state.error)}<br><br>
+          <button class="btn btn-primary" style="max-width:200px;margin:0 auto" onclick="load()">Try again</button></div>`;
+        return;
+      }
+      // An unmapped login must never guess at a driver, so it gets told plainly
+      // rather than shown an empty day that looks like nothing was scheduled.
+      if (d && d.mapped === false) {
+        main.innerHTML = `<div class="notice">
+          <strong>This login isn't linked to a driver yet.</strong>
+          Ask the office to link <b>${esc((user && user.username) || '')}</b> to your name in
+          Trucking → Manage Lists. Until then there is nothing to show here.</div>`;
+        return;
+      }
+
+      const day   = d && d.days && d.days[0];
+      const hauls = day ? day.assignments : [];
+      main.innerHTML = dayBarHTML() + (hauls.length
+        ? hauls.map(haulHTML).join('')
+        : `<div class="empty"><strong>Nothing scheduled.</strong>
+             You have no hauls on this day. Check with the office if that looks wrong.</div>`);
+    }
+
+    /* ═══════ Nav ═══════ */
+    function goToDivisions() { localStorage.removeItem('fct_division'); window.location.replace('divisions.html'); }
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+
+    // A driver normally has this division and nothing else and is routed
+    // straight here, so Switch would be a dead end. Shown only when they
+    // actually have somewhere else to go.
+    (function () {
+      const roles = (user && user.divisionRoles) || {};
+      const n = Object.keys(roles).filter(k => roles[k] && roles[k] !== 'no_access').length;
+      if (n > 1 || (user && user.isPlatformAdmin)) {
+        document.getElementById('switchBtn').style.display = '';
+      }
+    })();
+
+    load();
+  </script>
+</body>
+</html>

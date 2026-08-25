@@ -1569,3 +1569,43 @@ ALTER TABLE document_audit_log ADD  CONSTRAINT document_audit_action_chk
 
 CREATE INDEX IF NOT EXISTS idx_dal_company ON document_audit_log(company_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dal_doc     ON document_audit_log(document_id, created_at DESC);
+
+-- ─────────────────────────────────────────────────
+-- TRUCKING — DRIVER REPORTS
+-- What a driver reports back against a haul the Scheduler assigned them:
+-- tons, loads, the hours they actually ran, ticket numbers and anything that
+-- went wrong.
+--
+-- Deliberately its own table rather than a column on the schedule or a row in
+-- truck_division_entries. The schedule is the dispatcher's, and a phone
+-- writing into it would overwrite the board. truck_division_entries is
+-- payroll's — those rows arrive from approved timesheets and are swept back
+-- out on un-approval, so a driver's note has no standing there. This is a
+-- third thing: the field's account of a plan, keyed to the assignment it
+-- answers.
+--
+-- One report per assignment. A driver may revise their own until the office
+-- has what it needs; updated_at carries when they last did.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS trucking_driver_reports (
+    assignment_id  TEXT        NOT NULL,
+    company_code   TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    work_date      DATE        NOT NULL,
+    driver_name    TEXT        NOT NULL,
+    user_id        INTEGER,
+    username       TEXT,
+    tons           NUMERIC(14,4),
+    loads          INTEGER,
+    actual_start   TEXT,
+    actual_end     TEXT,
+    tickets        TEXT,
+    notes          TEXT,
+    submitted_at   TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, assignment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tdr_company_date
+    ON trucking_driver_reports(company_code, work_date DESC);
+CREATE INDEX IF NOT EXISTS idx_tdr_company_driver
+    ON trucking_driver_reports(company_code, driver_name, work_date DESC);

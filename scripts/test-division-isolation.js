@@ -90,7 +90,7 @@ const legacyEmpty = {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 console.log('\n[ALL_DIVISIONS]');
-const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin'];
+const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
 assert('contains exactly the canonical divisions',
   ALL_DIVISIONS.length === EXPECTED_DIVISIONS.length &&
   EXPECTED_DIVISIONS.every(d => ALL_DIVISIONS.includes(d)));
