@@ -157,7 +157,7 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('PUT seeds the tree', gen.statusCode === 200, JSON.stringify(gen.body));
   const folders = gen.body.folders;
   const names = folders.map(f => f.name);
-  const STANDARD = ['Contract & Change Orders', 'Permits & Insurance', 'Submittals',
+  const STANDARD = ['Contract', 'Change Orders', 'Permits & Insurance', 'Submittals',
                     'Safety', 'Photos', 'Repairs', 'Closeout'];
   assert('every standard folder exists', STANDARD.every(n => names.includes(n)), names.join(' | '));
   assert('and they render in the order the list declares them',
@@ -180,39 +180,77 @@ async function upload(folderId, filename, auth, extra = {}) {
   assert('and moves nothing, since the tree is already in order',
     again.body.reordered === 0, `reordered ${again.body.reordered}`);
 
-  // ── A folder added to the standard list has to reach the jobs that already
-  // have a tree, in the place the list puts it. Wind this job back to what an
-  // older release left behind: no Repairs folder, and everything after it
-  // numbered one lower.
+  // ── Changing the standard list has to reach the jobs that already have a
+  // tree. Wind this job back to what an older release left behind: no Repairs
+  // and no Change Orders folder, the contract folder still carrying both jobs
+  // in its name, and the numbering that went with all that.
   const CC = [{ code: '420', label: 'Paving' }, { code: '411', label: 'Excavation' }, { code: '415', label: '' }];
-  await client.query(`DELETE FROM project_folders WHERE project_id = $1 AND slug = 'repairs'`, [PROJ]);
   await client.query(
-    `UPDATE project_folders SET sort_order = sort_order - 1 WHERE project_id = $1 AND sort_order >= 6`, [PROJ]);
+    `DELETE FROM project_folders WHERE project_id = $1 AND slug IN ('repairs', 'change-orders')`, [PROJ]);
+  await client.query(
+    `UPDATE project_folders SET name = 'Contract & Change Orders' WHERE project_id = $1 AND slug = 'contract-change-orders'`,
+    [PROJ]);
+  // 0 contract, 1 permits, 2 submittals, 3 safety, 4 photos, 5 closeout,
+  // 6 Purchase Orders, 7+ cost codes — the numbering before either folder
+  // joined the list.
+  const OLD_ORDER = ['contract-change-orders', 'permits-insurance', 'submittals', 'safety',
+                     'photos', 'closeout', 'purchase-orders', 'cc-411', 'cc-415', 'cc-420'];
+  for (let i = 0; i < OLD_ORDER.length; i++) {
+    await client.query(`UPDATE project_folders SET sort_order = $1 WHERE project_id = $2 AND slug = $3`,
+      [i, PROJ, OLD_ORDER[i]]);
+  }
 
   const legacy = await call('PUT', { division: 'turf', projectId: PROJ }, { costCodes: CC }, PM);
   const legacyNames = legacy.body.folders.map(f => f.name);
-  assert('an existing job gets a newly standard folder', legacyNames.includes('Repairs'), legacyNames.join(' | '));
-  assert('exactly one folder is created for it', legacy.body.created === 1, `created ${legacy.body.created}`);
-  assert('and it lands where the list puts it, not after the numbering it inherited',
+  assert('an existing job gets the folders that joined the list since it was seeded',
+    legacyNames.includes('Repairs') && legacyNames.includes('Change Orders'), legacyNames.join(' | '));
+  assert('exactly those two are created', legacy.body.created === 2, `created ${legacy.body.created}`);
+  assert('and a standard folder that was split follows its new name',
+    legacyNames.includes('Contract') && !legacyNames.includes('Contract & Change Orders'),
+    legacyNames.join(' | '));
+  assert('reported as a relabel, not as a second folder',
+    legacy.body.relabelled === 1, `relabelled ${legacy.body.relabelled}`);
+  assert('everything lands where the list puts it, not after the numbering it inherited',
     legacyNames.join('|') === [...STANDARD, 'Purchase Orders', '411 · Excavation', '415', '420 · Paving'].join('|'),
     legacyNames.join(' | '));
-  assert('the folders it displaced are renumbered, and say so',
-    legacy.body.reordered === 5, `reordered ${legacy.body.reordered}`);
+  assert('and the folders they displaced are renumbered, and say so',
+    legacy.body.reordered === 9, `reordered ${legacy.body.reordered}`);
 
-  // Once straightened out it stays straight — the renumbering must not run
-  // again on every single load.
+  // Once straightened out it stays straight — none of that may run again on
+  // every single load.
   const settled = await call('PUT', { division: 'turf', projectId: PROJ }, { costCodes: CC }, PM);
-  assert('and the next load moves nothing', settled.body.reordered === 0, `reordered ${settled.body.reordered}`);
+  assert('and the next load moves nothing',
+    settled.body.reordered === 0 && settled.body.relabelled === 0 && settled.body.created === 0,
+    JSON.stringify({ reordered: settled.body.reordered, relabelled: settled.body.relabelled, created: settled.body.created }));
 
-  // A renamed folder must survive regeneration, or a PM's tidy-up is undone
-  // every time the tab opens.
+  // The documents already filed in the folder that was renamed stay in it —
+  // a split must not strand a job's contract paperwork.
+  const contractFolder = legacy.body.folders.find(f => f.name === 'Contract');
+  const contractDoc = await upload(contractFolder.id, 'signed-contract.pdf', PM);
+  assert('a document filed in the renamed folder is still filed there',
+    contractDoc.statusCode === 201
+      && contractDoc.body.document.folder_ids.includes(contractFolder.id),
+    JSON.stringify(contractDoc.body));
+
+  // A folder renamed by hand must survive regeneration, or a PM's tidy-up is
+  // undone every time the tab opens. renamed_at is what marks it as theirs —
+  // the generator owns the name of every folder that carries no such mark,
+  // which is how a split or a relabel reaches a job that already has a tree.
   const photos = folders.find(f => f.name === 'Photos');
-  await client.query(`UPDATE project_folders SET name = 'Site Photos' WHERE id = $1`, [photos.id]);
+  await client.query(
+    `UPDATE project_folders SET name = 'Site Photos', renamed_at = NOW() WHERE id = $1`, [photos.id]);
   const third = await call('PUT', { division: 'turf', projectId: PROJ }, { costCodes: [] }, PM);
   const thirdNames = third.body.folders.map(f => f.name);
-  assert('a renamed fixed folder is not recreated',
+  assert('a folder renamed by hand is neither recreated nor relabelled',
     thirdNames.includes('Site Photos') && !thirdNames.includes('Photos'), thirdNames.join(' | '));
-  await client.query(`UPDATE project_folders SET name = 'Photos' WHERE id = $1`, [photos.id]);
+
+  // Same folder, mark cleared: now the list owns the name again.
+  await client.query(
+    `UPDATE project_folders SET renamed_at = NULL WHERE id = $1`, [photos.id]);
+  const fourth = await call('PUT', { division: 'turf', projectId: PROJ }, { costCodes: [] }, PM);
+  const fourthNames = fourth.body.folders.map(f => f.name);
+  assert('an unmarked folder follows the name the list declares',
+    fourthNames.includes('Photos') && !fourthNames.includes('Site Photos'), fourthNames.join(' | '));
 
   // Concurrent seeding — two users opening the same job at the same moment.
   await client.query(`DELETE FROM project_folders WHERE project_id = $1`, [PROJ]);

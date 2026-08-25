@@ -39,7 +39,12 @@ const crypto              = require('crypto');
 // match, so an entry inserted in the middle lands in the same place on a job
 // seeded last year as on one created this morning.
 const FIXED_FOLDERS = [
-  { slug: 'contract-change-orders', name: 'Contract & Change Orders' },
+  // The slug reads like the old name because it IS the old name, and it has to
+  // stay: it is how the generator finds the folder already holding every job's
+  // contract paperwork. Give it a tidier slug and those folders are orphaned,
+  // and a second Contract folder is filed beside them.
+  { slug: 'contract-change-orders', name: 'Contract' },
+  { slug: 'change-orders',          name: 'Change Orders' },
   { slug: 'permits-insurance',      name: 'Permits & Insurance' },
   { slug: 'submittals',             name: 'Submittals' },
   { slug: 'safety',                 name: 'Safety' },
@@ -397,6 +402,45 @@ module.exports = async (req, res) => {
             hit.sort_order = sortOrder;
             reordered.push({ name: hit.name, sort_order: sortOrder });
           }
+
+          // Follow the declared label. Without this a label was frozen at
+          // first creation: filling in the Cost Codes list did nothing on any
+          // job that already had folders, and splitting a standard folder in
+          // two — 'Contract & Change Orders' becoming 'Contract' beside a new
+          // 'Change Orders' — would leave the old name on every job that had
+          // ever opened its Documents tab. A folder someone renamed by hand is
+          // left alone: renamed_at marks it as the user's.
+          //
+          // Collision-aware, because it has to coexist with the suffixing
+          // below. A folder that had to become '415 (2)' differs from its label
+          // forever, so an unguarded UPDATE retried the exact name that caused
+          // the collision on every single load — the unique index rejected it,
+          // and with no catch the whole PUT 500'd permanently for that job.
+          if (hit.name !== name && !hit.renamed_at) {
+            const clash = takenNames.get(nameKey(hit.parent_id, name));
+            if (clash && clash.id !== hit.id) {
+              // The label belongs to something else. Leave the folder as it is
+              // and say so, rather than failing the request.
+              skipped.push({ wanted: name, used: hit.name, cost_code: costCode || null });
+            } else {
+              try {
+                await sql`
+                  UPDATE project_folders SET name = ${name}, updated_at = NOW()
+                  WHERE id = ${hit.id} AND renamed_at IS NULL
+                `;
+                takenNames.delete(nameKey(hit.parent_id, hit.name));
+                takenNames.set(nameKey(hit.parent_id, name),
+                  { id: hit.id, slug: hit.slug, cost_code: costCode || null, parent_id: hit.parent_id });
+                relabelled.push({ from: hit.name, to: name });
+                hit.name = name;
+              } catch (err) {
+                // A concurrent request took the name between the check and the
+                // write. Not worth failing a folder listing over.
+                if (!isUniqueViolation(err)) throw err;
+                skipped.push({ wanted: name, used: hit.name, cost_code: costCode || null });
+              }
+            }
+          }
           return hit.id;
         }
 
@@ -459,44 +503,11 @@ module.exports = async (req, res) => {
           .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
         for (const c of sorted) {
           const code  = String(c.code);
+          // ensure() carries the label from here onto a folder that already
+          // exists, so a cost code filled in on the master list this morning
+          // relabels its folder this afternoon.
           const label = c.label ? `${code} · ${c.label}` : code;
-          const id = await ensure({ slug: `cc-${code}`, name: label, kind: 'cost_code', costCode: code, sortOrder: sort++ });
-
-          // Follow the master list when it changes. Without this the label was
-          // frozen at first creation, so filling in the Cost Codes list did
-          // nothing on any job that already had folders — the feature read as
-          // broken on exactly the jobs people care about. A folder someone
-          // renamed by hand is left alone: renamed_at marks it as the user's.
-          //
-          // Collision-aware, because it has to coexist with the suffixing
-          // above. A folder that had to become '415 (2)' differs from its label
-          // forever, so an unguarded UPDATE retried the exact name that caused
-          // the collision on every single load — the unique index rejected it,
-          // and with no catch the whole PUT 500'd permanently for that job.
-          const cur = byCostCode.get(code);
-          if (id && cur && cur.name !== label && !cur.renamed_at) {
-            const clash = takenNames.get(nameKey(cur.parent_id, label));
-            if (clash && clash.id !== id) {
-              // The label belongs to something else. Leave the folder as it is
-              // and say so, rather than failing the request.
-              skipped.push({ wanted: label, used: cur.name, cost_code: code });
-            } else {
-              try {
-                await sql`
-                  UPDATE project_folders SET name = ${label}, updated_at = NOW()
-                  WHERE id = ${id} AND renamed_at IS NULL
-                `;
-                takenNames.delete(nameKey(cur.parent_id, cur.name));
-                takenNames.set(nameKey(cur.parent_id, label), { id, slug: cur.slug, cost_code: code, parent_id: cur.parent_id });
-                relabelled.push({ from: cur.name, to: label });
-              } catch (err) {
-                // A concurrent request took the name between the check and the
-                // write. Not worth failing a folder listing over.
-                if (!isUniqueViolation(err)) throw err;
-                skipped.push({ wanted: label, used: cur.name, cost_code: code });
-              }
-            }
-          }
+          await ensure({ slug: `cc-${code}`, name: label, kind: 'cost_code', costCode: code, sortOrder: sort++ });
         }
       } else {
         let sort = 0;
