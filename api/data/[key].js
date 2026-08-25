@@ -18,7 +18,7 @@ const {
   CROSS_DIVISION_CONTRIBUTORS,
 } = require('../lib/auth');
 
-const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists'];
+const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists', 'fct_trucking_schedule'];
 // The only prefixes /api/data/_keys will enumerate. Keeping this to the three
 // project-blob prefixes is what stops it becoming a general key scanner.
 const KEY_SCAN_PREFIXES = ['fct_project_', 'fct_paving_project_', 'fct_kiewit_project_'];

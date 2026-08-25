@@ -377,6 +377,175 @@
     }
     .btn-manage-lists:hover { color: var(--text); border-color: #555; }
 
+    /* ── Scheduler ──
+       Rows are drivers, columns are the days of the week — the shape a
+       dispatcher already thinks in, and the one that makes an open driver
+       (an empty row) and a truck booked twice (a flagged chip) visible
+       without reading anything. The Day toggle collapses the same data to
+       one date as a dispatch sheet for the morning read. */
+    .sch-toolbar {
+      display: flex; align-items: center; gap: 0.6rem;
+      flex-wrap: wrap; margin-bottom: 0.9rem;
+    }
+    .sch-nav { display: flex; align-items: center; gap: 0.3rem; }
+    .sch-navbtn {
+      font-size: 0.72rem; font-weight: 600; color: var(--muted);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer;
+      line-height: 1.2;
+    }
+    .sch-navbtn:hover { color: var(--text); border-color: #555; }
+    .sch-label {
+      font-size: 0.85rem; font-weight: 700; min-width: 210px;
+      text-align: center; font-variant-numeric: tabular-nums;
+    }
+    .sch-viewtoggle {
+      display: flex; border: 1px solid var(--border);
+      border-radius: 4px; overflow: hidden;
+    }
+    .sch-viewbtn {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+      background: var(--surface); border: none;
+      padding: 0.32rem 0.7rem; cursor: pointer;
+    }
+    .sch-viewbtn:hover { color: var(--text); }
+    .sch-viewbtn.active { background: var(--orange); color: #fff; }
+    .sch-status { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
+    .sch-status.err { color: var(--orange); }
+    .sch-warn {
+      font-size: 0.68rem; font-weight: 600; color: #0a0a0f;
+      background: var(--amber); border-radius: 3px;
+      padding: 0.18rem 0.45rem; white-space: nowrap;
+    }
+
+    /* ── Week grid ── */
+    .sch-grid-wrap {
+      overflow-x: auto; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface);
+    }
+    .sch-grid { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 980px; }
+    .sch-grid th, .sch-grid td { border-bottom: 1px solid var(--border); }
+    .sch-grid th {
+      background: var(--surface2); padding: 0.45rem 0.5rem;
+      font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em;
+      color: var(--muted); text-transform: uppercase; text-align: center;
+      border-left: 1px solid var(--border);
+    }
+    .sch-grid th .dnum { font-size: 0.74rem; color: var(--text); letter-spacing: 0; margin-top: 0.1rem; }
+    .sch-grid th.is-today .dnum { color: var(--amber); }
+    /* The driver column stays put while the week scrolls sideways — without it
+       the names leave the viewport and the rows stop meaning anything. */
+    .sch-corner, .sch-driver-cell {
+      position: sticky; left: 0; z-index: 3;
+      background: var(--surface2); text-align: left !important;
+      min-width: 165px; border-left: none !important;
+      border-right: 1px solid var(--border);
+    }
+    .sch-driver-cell {
+      background: var(--surface); padding: 0.5rem 0.6rem;
+      font-size: 0.8rem; font-weight: 600; vertical-align: top;
+    }
+    .sch-load {
+      float: right; font-size: 0.62rem; font-weight: 700;
+      color: var(--muted); background: var(--surface2);
+      border-radius: 8px; padding: 0.05rem 0.4rem; margin-left: 0.4rem;
+    }
+    .sch-cell {
+      border-left: 1px solid var(--border); vertical-align: top;
+      padding: 0.28rem; min-width: 118px; cursor: pointer; position: relative;
+    }
+    .sch-cell:hover { background: var(--surface2); }
+    .sch-cell.is-today { background: rgba(250,204,21,0.035); }
+    .sch-cell.is-today:hover { background: rgba(250,204,21,0.07); }
+    .sch-cell.is-weekend { background: rgba(0,0,0,0.22); }
+    .sch-add {
+      display: block; width: 100%; background: none; border: 1px dashed transparent;
+      border-radius: 4px; color: transparent; font-size: 0.8rem;
+      padding: 0.15rem 0; cursor: pointer; line-height: 1.3;
+    }
+    .sch-cell:hover .sch-add { border-color: var(--border); color: var(--muted); }
+
+    /* ── Assignment chip ── */
+    .sch-chip {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-left: 3px solid var(--orange); border-radius: 4px;
+      padding: 0.25rem 0.4rem; margin-bottom: 0.22rem;
+      font-size: 0.72rem; line-height: 1.35; cursor: pointer;
+    }
+    .sch-chip:hover { border-color: #555; border-left-color: var(--orange); }
+    .sch-chip.conflict { border-left-color: var(--amber); background: rgba(250,204,21,0.09); }
+    .sch-chip .cust { font-weight: 600; color: var(--text); display: block; }
+    .sch-chip .meta { color: var(--muted); font-size: 0.66rem; display: block; }
+    .sch-chip .start { color: var(--amber); font-weight: 600; }
+
+    /* ── Day view (dispatch sheet) ── */
+    .sch-day-tbl { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .sch-day-tbl thead th {
+      background: var(--surface2); padding: 0.45rem 0.7rem; text-align: left;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em;
+      color: var(--muted); text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+    }
+    .sch-day-tbl tbody td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .sch-day-tbl tbody tr:hover { background: var(--surface2); }
+    .sch-day-tbl tbody tr.conflict td { background: rgba(250,204,21,0.07); }
+    .sch-open-list { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .sch-open-chip {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.25rem 0.55rem;
+      font-size: 0.75rem; color: var(--muted); cursor: pointer;
+    }
+    .sch-open-chip:hover { color: var(--text); border-color: #555; }
+
+    /* ── Assignment editor ── */
+    .sch-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 500;
+      background: rgba(0,0,0,0.55);
+    }
+    .sch-backdrop.open { display: flex; align-items: center; justify-content: center; }
+    .sch-modal {
+      width: 380px; max-width: calc(100vw - 2rem);
+      max-height: calc(100vh - 3rem); overflow-y: auto;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 1.1rem 1.2rem 1.25rem;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    }
+    .sch-modal h3 {
+      font-size: 0.65rem; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 1rem; font-weight: 600;
+    }
+    .sch-fld { margin-bottom: 0.7rem; }
+    .sch-fld label {
+      display: block; font-size: 0.62rem; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 0.28rem; font-weight: 600;
+    }
+    .sch-fld input, .sch-fld select, .sch-fld textarea {
+      width: 100%; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.8rem;
+      padding: 0.36rem 0.5rem; outline: none; font-family: inherit;
+    }
+    .sch-fld input:focus, .sch-fld select:focus, .sch-fld textarea:focus { border-color: #555; }
+    .sch-fld input[type=date]::-webkit-calendar-picker-indicator,
+    .sch-fld input[type=time]::-webkit-calendar-picker-indicator { filter: invert(0.75); cursor: pointer; }
+    .sch-fld textarea { resize: vertical; min-height: 52px; }
+    .sch-fld-row { display: flex; gap: 0.6rem; }
+    .sch-fld-row .sch-fld { flex: 1; }
+    .sch-modal-actions {
+      display: flex; align-items: center; gap: 0.5rem; margin-top: 1rem;
+    }
+    .sch-btn {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+      border-radius: 4px; padding: 0.4rem 0.85rem; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    }
+    .sch-btn:hover { color: var(--text); border-color: #555; }
+    .sch-btn.primary { background: var(--orange); border-color: var(--orange); color: #fff; }
+    .sch-btn.primary:hover { background: var(--orange-dim); border-color: var(--orange-dim); color: #fff; }
+    .sch-btn.danger:hover { color: var(--orange); border-color: var(--orange); }
+    .sch-modal-err { font-size: 0.7rem; color: var(--orange); margin-top: 0.5rem; min-height: 1em; }
+
     /* ── Year filter tabs ── */
     .yr-tabs { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
     .yr-tab {
@@ -517,12 +686,23 @@
   <nav class="tab-bar">
     <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
     <button class="tab-btn" data-tab="truck-tracking">Truck Tracking</button>
+    <button class="tab-btn" data-tab="scheduler">Scheduler</button>
     <button class="tab-btn" data-tab="analytics">Analytics</button>
   </nav>
 
   <!-- hidden CSV upload input — must live outside the re-rendered tab panel -->
   <input type="file" id="csv-upload-input" accept=".csv" style="display:none"
     onchange="handleCSVUpload(this)">
+
+  <!-- ── Scheduler assignment editor ──
+       Lives outside #tab-scheduler on purpose: renderScheduler() replaces that
+       panel's innerHTML, which would tear the dialog out mid-edit. -->
+  <div class="sch-backdrop" id="sched-backdrop" onclick="schedCloseEditor(event)">
+    <div class="sch-modal" id="sched-modal" onclick="event.stopPropagation()">
+      <h3 id="sched-modal-title"></h3>
+      <div id="sched-modal-body"></div>
+    </div>
+  </div>
 
   <!-- ── Manage Lists overlay ── -->
   <div class="lists-backdrop" id="lists-backdrop" onclick="closeManageLists(event)">
@@ -561,6 +741,12 @@
   <div class="tab-panel" id="tab-truck-tracking">
   </div>
 
+  <!-- ══════════════════════════════════════════════
+       SCHEDULER TAB
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-scheduler">
+  </div>
+
   <script>
     /* ═══════════════════════════════════════════
        AUTH
@@ -593,6 +779,7 @@
           p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
         if (btn.dataset.tab === 'dashboard') renderDashboard();
         if (btn.dataset.tab === 'truck-tracking') renderTrackingTab();
+        if (btn.dataset.tab === 'scheduler') renderScheduler();
         if (btn.dataset.tab === 'analytics') {
           const activeSub = document.querySelector('.sub-tab-btn.active');
           if (activeSub?.dataset.sub === 'equipment-utilization') renderEquipmentUtilization();
@@ -1327,6 +1514,7 @@
       inp.value = '';
       renderListsPanel();
       renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
     }
 
     function removeFromList(key, val) {
@@ -1334,6 +1522,7 @@
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
     }
 
     function addUnit() {
@@ -1351,6 +1540,7 @@
       numInp.value  = '';
       renderListsPanel();
       renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
     }
 
     function removeUnit(name) {
@@ -1358,6 +1548,7 @@
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
     }
 
     function schedSave() {
@@ -1961,6 +2152,541 @@
         const inp = root.querySelector(`input[data-filter-field="${_activeFilterFld}"]`);
         if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
       }
+    }
+
+    /* ═══════════════════════════════════════════
+       SCHEDULER — the plan side of the division.
+
+       Truck Tracking is the RECORD: its rows are injected from approved
+       timesheet entries (api/lib/truck-injected.js), locked, and swept back
+       out on un-approval. It only ever describes work that already happened.
+       The schedule is the opposite — what we intend to run — so it lives in
+       its own blob (fct_trucking_schedule) rather than in divEntries, where
+       the payroll sweep would fight it and unworked hauls would land in the
+       revenue and hours analytics.
+
+       The two are deliberately the same shape. A tracking row carries
+       actual_date / actual_start; an assignment carries date / start against
+       the same driver, unit and customer lists, so plan-vs-actual is a join
+       on (date, driver) whenever we want to add it.
+    ═══════════════════════════════════════════ */
+    const SCHED_KEY = 'fct_trucking_schedule';
+
+    let schedAssignments = {};      // { 'YYYY-MM-DD': [ {id,driver,customer,unit,start,notes} ] }
+    let schedView        = 'week';  // 'week' | 'day'
+    let schedAnchor      = null;    // the focused date; week view shows the week around it
+    let schedCtx         = null;    // open editor: { date, id|null }
+    let _schedBaseline   = '{}';    // server state as of last successful read/write
+    let _schedDirty      = false;
+    let _schedSaveTimer  = null;
+    let _schedFlushing   = false;
+    let _schedLoaded     = false;
+    let _schedLoading    = false;
+    let _schedLoadError  = null;
+    let _schedStatus     = 'saved'; // 'saved' | 'pending' | 'saving' | 'error'
+
+    const schedEsc = s => String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    /* ── Date helpers. Every parse goes through local noon so a DST boundary
+          can't roll a date back a day the way midnight parsing does. ── */
+    function schedPad(n) { return String(n).padStart(2, '0'); }
+    function schedStr(d) { return d.getFullYear() + '-' + schedPad(d.getMonth()+1) + '-' + schedPad(d.getDate()); }
+    function schedParse(ds) { return new Date(ds + 'T12:00:00'); }
+    function schedAddDays(ds, n) { const d = schedParse(ds); d.setDate(d.getDate() + n); return schedStr(d); }
+    function schedTodayStr() { return schedStr(new Date()); }
+    function schedMonday(ds) {
+      const d = schedParse(ds), dow = d.getDay();
+      d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow));
+      return schedStr(d);
+    }
+    function schedWeekDates() {
+      const m = schedMonday(schedAnchor);
+      return Array.from({ length: 7 }, (_, i) => schedAddDays(m, i));
+    }
+    function schedTime12(hhmm) {
+      if (!hhmm) return '';
+      const [h, m] = String(hhmm).split(':').map(Number);
+      if (isNaN(h)) return '';
+      const ap = h < 12 ? 'a' : 'p', h12 = (h % 12) || 12;
+      return h12 + (m ? ':' + schedPad(m) : '') + ap;
+    }
+
+    function schedIsActive() {
+      const b = document.querySelector('.tab-btn.active');
+      return !!b && b.dataset.tab === 'scheduler';
+    }
+
+    /* ── Roster. The managed driver list is the roster, but any driver who
+          still holds an assignment is unioned in — dropping someone from the
+          list must not hide work that is still on the board. ── */
+    function schedDrivers(dates) {
+      const set = new Set((divTruckLists.drivers || []).filter(Boolean));
+      (dates || []).forEach(d => (schedAssignments[d] || []).forEach(a => { if (a.driver) set.add(a.driver); }));
+      return [...set].sort((a, b) => String(a).localeCompare(String(b)));
+    }
+    function schedFor(date, driver) {
+      return (schedAssignments[date] || [])
+        .filter(a => a.driver === driver)
+        .sort((a, b) => String(a.start || '~').localeCompare(String(b.start || '~')));
+    }
+    /** Units double-booked on a date — the same truck under two different
+     *  drivers. Two hauls for one driver in a day is normal here, so the
+     *  driver is not the thing that conflicts; the truck is. */
+    function schedUnitConflicts(date) {
+      const byUnit = new Map();
+      (schedAssignments[date] || []).forEach(a => {
+        const u = (a.unit || '').trim();
+        if (!u) return;
+        if (!byUnit.has(u)) byUnit.set(u, new Set());
+        byUnit.get(u).add(a.driver);
+      });
+      const bad = new Set();
+      byUnit.forEach((drivers, u) => { if (drivers.size > 1) bad.add(u); });
+      return bad;
+    }
+
+    /* ═══════ Persistence ═══════
+       Merge-on-save against a baseline, the same scheme the company-wide
+       scheduler uses: before each write we re-read the server copy and
+       reconcile by assignment id, so two dispatchers on the board at once
+       don't overwrite each other's rows. Adds and edits from either side
+       survive; only rows this session actually removed are removed. */
+    function _schedFlat(a) {
+      const m = {};
+      for (const d in a) for (const x of (a[d] || [])) m[x.id] = { ...x, _d: d };
+      return m;
+    }
+    function _schedUnflat(m) {
+      const o = {};
+      for (const id in m) { const { _d, ...rest } = m[id]; (o[_d] = o[_d] || []).push(rest); }
+      return o;
+    }
+    function schedMerge(baseStr, ours, theirs) {
+      let base = {};
+      try { base = JSON.parse(baseStr || '{}'); } catch { base = {}; }
+      const b = _schedFlat(base), o = _schedFlat(ours), t = _schedFlat(theirs), res = { ...t };
+      for (const id in o) if (!(id in b)) res[id] = o[id];                                                 // we added
+      for (const id in b) if (!(id in o)) delete res[id];                                                  // we removed
+      for (const id in o) if (id in b && JSON.stringify(o[id]) !== JSON.stringify(b[id])) res[id] = o[id]; // we edited
+      return _schedUnflat(res);
+    }
+
+    async function schedEnsureLoaded() {
+      if (_schedLoaded || _schedLoading) return;
+      _schedLoading = true;
+      _schedLoadError = null;
+      try {
+        const r = await fetch(`${API_BASE}/data/${SCHED_KEY}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const { value } = await r.json();
+        const a = value && typeof value === 'object' ? value.assignments : null;
+        schedAssignments = (a && typeof a === 'object' && !Array.isArray(a)) ? a : {};
+        _schedBaseline = JSON.stringify(schedAssignments);
+        _schedLoaded = true;
+      } catch (err) {
+        // Surfaced as a retryable error rather than an empty board: an empty
+        // week and a failed read look identical, and only one of them is safe
+        // to start typing into.
+        _schedLoadError = err && err.message ? err.message : 'Could not load the schedule.';
+      } finally {
+        _schedLoading = false;
+        if (schedIsActive()) renderScheduler();
+      }
+    }
+
+    function schedRetryLoad() { _schedLoadError = null; renderScheduler(); schedEnsureLoaded(); }
+
+    function schedSetStatus(s) {
+      _schedStatus = s;
+      const el = document.getElementById('sched-status');
+      if (!el) return;
+      const txt = { saved: 'All changes saved', pending: 'Unsaved changes…', saving: 'Saving…', error: '⚠ Not saved — retrying' };
+      el.textContent = txt[s] || '';
+      el.classList.toggle('err', s === 'error');
+    }
+
+    function schedMarkDirty() {
+      _schedDirty = true;
+      schedSetStatus('pending');
+      clearTimeout(_schedSaveTimer);
+      _schedSaveTimer = setTimeout(schedFlush, 600);
+    }
+
+    async function schedFlush() {
+      clearTimeout(_schedSaveTimer);
+      _schedSaveTimer = null;
+      if (!_schedDirty) return;
+      // A flush already in flight owns the merge; queue behind it rather than
+      // racing a second read-modify-write against the same key.
+      if (_schedFlushing) { _schedSaveTimer = setTimeout(schedFlush, 300); return; }
+      _schedFlushing = true;
+      schedSetStatus('saving');
+      try {
+        const r0 = await fetch(`${API_BASE}/data/${SCHED_KEY}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (r0.ok) {
+          const { value } = await r0.json();
+          const a = value && typeof value === 'object' ? value.assignments : null;
+          const theirs = (a && typeof a === 'object' && !Array.isArray(a)) ? a : {};
+          if (JSON.stringify(theirs) !== _schedBaseline) {
+            schedAssignments = schedMerge(_schedBaseline, schedAssignments, theirs);
+            if (schedIsActive()) renderScheduler();
+          }
+        }
+        const r = await fetch(`${API_BASE}/data/${SCHED_KEY}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ value: { version: 1, assignments: schedAssignments } })
+        });
+        await _handleSaveResponse(r, 'schedFlush');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        _schedBaseline = JSON.stringify(schedAssignments);
+        _schedDirty = false;
+        schedSetStatus('saved');
+      } catch {
+        // Left dirty on purpose so the next edit — or the retry below — picks
+        // it back up instead of the change being silently dropped.
+        schedSetStatus('error');
+        _schedSaveTimer = setTimeout(schedFlush, 5000);
+      } finally {
+        _schedFlushing = false;
+      }
+    }
+
+    // Edits inside the 600ms debounce would otherwise be lost on navigation.
+    // keepalive lets the PUT outlive the page; the merge is skipped because it
+    // needs a GET the browser will not reliably run mid-unload.
+    function schedFlushKeepalive() {
+      if (!_schedDirty) return;
+      clearTimeout(_schedSaveTimer);
+      _schedSaveTimer = null;
+      try {
+        fetch(`${API_BASE}/data/${SCHED_KEY}`, {
+          method: 'PUT', keepalive: true,
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ value: { version: 1, assignments: schedAssignments } })
+        }).catch(() => {});
+      } catch { /* best-effort */ }
+    }
+    window.addEventListener('beforeunload', schedFlushKeepalive);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') schedFlushKeepalive();
+    });
+
+    /* ═══════ Navigation ═══════ */
+    function schedStep(n) {
+      schedAnchor = schedAddDays(schedAnchor, schedView === 'week' ? n * 7 : n);
+      renderScheduler();
+    }
+    function schedGoToday() { schedAnchor = schedTodayStr(); renderScheduler(); }
+    function schedSetView(v) { schedView = v; renderScheduler(); }
+    function schedGoDay(date) { schedAnchor = date; schedView = 'day'; renderScheduler(); }
+
+    /* ═══════ Render ═══════ */
+    function renderScheduler() {
+      const root = document.getElementById('tab-scheduler');
+      if (!root) return;
+      if (!schedAnchor) schedAnchor = schedTodayStr();
+
+      if (_schedLoadError) {
+        root.innerHTML = `
+          <div style="padding:1.25rem;max-width:1600px">
+            <p class="home-section-title">Scheduler</p>
+            <div style="border:1px solid var(--border);border-radius:6px;padding:2.5rem 1.5rem;text-align:center">
+              <div style="color:var(--orange);font-size:0.85rem;margin-bottom:0.25rem">Could not load the schedule.</div>
+              <div style="color:var(--muted);font-size:0.75rem;margin-bottom:1rem">${schedEsc(_schedLoadError)}</div>
+              <button class="sch-btn" onclick="schedRetryLoad()">Retry</button>
+            </div>
+          </div>`;
+        return;
+      }
+      if (!_schedLoaded) {
+        schedEnsureLoaded();
+        root.innerHTML = `
+          <div style="padding:1.25rem;max-width:1600px">
+            <p class="home-section-title">Scheduler</p>
+            <div style="border:1px solid var(--border);border-radius:6px;padding:3rem 1.5rem;
+                        text-align:center;color:var(--muted);font-size:0.85rem;">Loading schedule…</div>
+          </div>`;
+        return;
+      }
+
+      root.innerHTML = `
+        <div style="padding:1.25rem;max-width:1600px">
+          ${schedToolbarHTML()}
+          ${schedView === 'week' ? schedWeekHTML() : schedDayHTML()}
+        </div>`;
+      schedSetStatus(_schedStatus);
+    }
+
+    function schedToolbarHTML() {
+      const dates = schedView === 'week' ? schedWeekDates() : [schedAnchor];
+      let label;
+      if (schedView === 'week') {
+        const a = schedParse(dates[0]), b = schedParse(dates[6]);
+        const opt = { month: 'short', day: 'numeric' };
+        label = a.toLocaleDateString(undefined, opt) + ' – ' +
+                b.toLocaleDateString(undefined, opt) + ', ' + b.getFullYear();
+      } else {
+        label = schedParse(schedAnchor)
+          .toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+      }
+      const conflicts = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
+      const planned   = dates.reduce((n, d) => n + (schedAssignments[d] || []).length, 0);
+
+      return `
+        <div class="sch-toolbar">
+          <div class="sch-nav">
+            <button class="sch-navbtn" onclick="schedStep(-1)" title="Previous">&#8249;</button>
+            <button class="sch-navbtn" onclick="schedGoToday()">Today</button>
+            <button class="sch-navbtn" onclick="schedStep(1)" title="Next">&#8250;</button>
+          </div>
+          <div class="sch-label">${schedEsc(label)}</div>
+          <div class="sch-viewtoggle">
+            <button class="sch-viewbtn${schedView === 'week' ? ' active' : ''}" onclick="schedSetView('week')">Week</button>
+            <button class="sch-viewbtn${schedView === 'day'  ? ' active' : ''}" onclick="schedSetView('day')">Day</button>
+          </div>
+          <span style="font-size:0.7rem;color:var(--muted)">${planned} assigned</span>
+          ${conflicts ? `<span class="sch-warn" title="A truck is assigned to more than one driver">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
+          <span style="flex:1"></span>
+          <span id="sched-status" class="sch-status"></span>
+          <button class="btn-manage-lists" onclick="openManageLists()">Manage Lists</button>
+        </div>`;
+    }
+
+    function schedNoDriversHTML() {
+      return `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:3rem 1.5rem;
+                    text-align:center;color:var(--muted);font-size:0.85rem;">
+          No drivers on the roster yet.<br>
+          <span style="font-size:0.78rem">Add them under <strong>Manage Lists</strong> — the same list Truck Tracking uses.</span>
+        </div>`;
+    }
+
+    function schedChipHTML(a, conflicted) {
+      const bits = [];
+      if (a.unit)  bits.push(schedEsc(a.unit));
+      if (a.notes) bits.push(schedEsc(a.notes));
+      const title = conflicted ? ' title="This truck is assigned to another driver on this day"' : '';
+      return `
+        <div class="sch-chip${conflicted ? ' conflict' : ''}"${title}
+             onclick="event.stopPropagation();schedEditAssign('${a._d}','${a.id}')">
+          <span class="cust">${a.start ? `<span class="start">${schedEsc(schedTime12(a.start))}</span> ` : ''}${schedEsc(a.customer || '—')}</span>
+          ${bits.length ? `<span class="meta">${bits.join(' · ')}</span>` : ''}
+        </div>`;
+    }
+
+    function schedWeekHTML() {
+      const dates   = schedWeekDates();
+      const drivers = schedDrivers(dates);
+      if (!drivers.length) return schedNoDriversHTML();
+      const today = schedTodayStr();
+      const conflictsByDate = {};
+      dates.forEach(d => { conflictsByDate[d] = schedUnitConflicts(d); });
+
+      const head = dates.map(d => {
+        const dd = schedParse(d);
+        return `<th class="${d === today ? 'is-today' : ''}">
+          <div class="dow">${dd.toLocaleDateString(undefined, { weekday: 'short' })}</div>
+          <div class="dnum">${dd.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
+        </th>`;
+      }).join('');
+
+      const body = drivers.map((dr, di) => {
+        const load = dates.reduce((n, d) => n + schedFor(d, dr).length, 0);
+        const cells = dates.map(d => {
+          const dow  = schedParse(d).getDay();
+          const cls  = [ 'sch-cell', d === today ? 'is-today' : '', (dow === 0 || dow === 6) ? 'is-weekend' : '' ]
+                         .filter(Boolean).join(' ');
+          const bad  = conflictsByDate[d];
+          const rows = schedFor(d, dr)
+            .map(a => schedChipHTML({ ...a, _d: d }, bad.has((a.unit || '').trim())))
+            .join('');
+          return `<td class="${cls}" onclick="schedAddAssign('${d}',${di})">
+            ${rows}<button class="sch-add" onclick="event.stopPropagation();schedAddAssign('${d}',${di})">+</button>
+          </td>`;
+        }).join('');
+        return `<tr>
+          <td class="sch-driver-cell">${schedEsc(dr)}<span class="sch-load">${load}</span></td>
+          ${cells}
+        </tr>`;
+      }).join('');
+
+      return `
+        <div class="sch-grid-wrap">
+          <table class="sch-grid">
+            <thead><tr><th class="sch-corner">Driver</th>${head}</tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+        <p style="margin-top:0.6rem;font-size:0.7rem;color:var(--muted)">
+          Click a cell to assign · click an assignment to edit it · the count beside each driver is their assignments this week.
+        </p>`;
+    }
+
+    function schedDayHTML() {
+      const date    = schedAnchor;
+      const drivers = schedDrivers([date]);
+      if (!drivers.length) return schedNoDriversHTML();
+      const bad   = schedUnitConflicts(date);
+      const items = (schedAssignments[date] || []).slice().sort((a, b) =>
+        String(a.start || '~').localeCompare(String(b.start || '~')) ||
+        String(a.driver || '').localeCompare(String(b.driver || '')));
+
+      const rows = items.length ? items.map(a => {
+        const conflicted = bad.has((a.unit || '').trim());
+        return `<tr class="${conflicted ? 'conflict' : ''}" onclick="schedEditAssign('${date}','${a.id}')" style="cursor:pointer">
+          <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.start)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
+          <td style="font-weight:600">${schedEsc(a.driver)}</td>
+          <td>${schedEsc(a.customer) || '<span style="color:var(--muted)">—</span>'}</td>
+          <td>${schedEsc(a.unit) || '<span style="color:var(--muted)">—</span>'}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem">2 drivers</span>' : ''}</td>
+          <td style="color:var(--muted)">${schedEsc(a.notes)}</td>
+        </tr>`;
+      }).join('')
+        : `<tr><td colspan="5" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
+
+      const assigned = new Set(items.map(a => a.driver));
+      const open     = drivers.filter(d => !assigned.has(d));
+
+      return `
+        <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem">
+          <button class="sch-btn primary" onclick="schedAddAssign('${date}',-1)">+ Add assignment</button>
+        </div>
+        <div class="proj-table-wrap" style="border:1px solid var(--border);border-radius:6px;margin-bottom:1.5rem">
+          <table class="sch-day-tbl">
+            <thead><tr><th>Start</th><th>Driver</th><th>Customer</th><th>Truck</th><th>Notes</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <p class="home-section-title">Open Drivers <span style="font-weight:400;text-transform:none;letter-spacing:0">(${open.length} of ${drivers.length})</span></p>
+        ${open.length
+          ? `<div class="sch-open-list">${open.map(d =>
+              `<button class="sch-open-chip" onclick="schedAddAssign('${date}',${drivers.indexOf(d)})">${schedEsc(d)} +</button>`
+            ).join('')}</div>`
+          : `<div style="color:var(--muted);font-size:0.8rem">Every driver on the roster is scheduled.</div>`}`;
+    }
+
+    /* ═══════ Assignment editor ═══════
+       Driver is passed by roster index rather than by name so a name carrying
+       a quote or an ampersand can't break out of the inline handler. */
+    function schedAddAssign(date, driverIdx) {
+      const roster = schedDrivers(schedView === 'week' ? schedWeekDates() : [date]);
+      const driver = driverIdx >= 0 ? (roster[driverIdx] || '') : '';
+      schedOpenEditor(date, null, driver);
+    }
+    function schedEditAssign(date, id) { schedOpenEditor(date, id, ''); }
+
+    function schedOpenEditor(date, id, driverHint) {
+      const a = id ? (schedAssignments[date] || []).find(x => x.id === id) : null;
+      if (id && !a) return;
+      schedCtx = { date, id: id || null };
+
+      const roster    = schedDrivers([date]);
+      const driver    = a ? a.driver : driverHint;
+      const customers = (divTruckLists.customers || []).filter(Boolean);
+      const units     = (divTruckLists.units || []).map(u => u && u.name).filter(Boolean);
+      const opts      = [...new Set([...roster, driver].filter(Boolean))]
+        .sort((x, y) => String(x).localeCompare(String(y)));
+
+      document.getElementById('sched-modal-title').textContent = a ? 'Edit assignment' : 'New assignment';
+      document.getElementById('sched-modal-body').innerHTML = `
+        <div class="sch-fld-row">
+          <div class="sch-fld">
+            <label for="sched-f-date">Date</label>
+            <input type="date" id="sched-f-date" value="${schedEsc(date)}">
+          </div>
+          <div class="sch-fld">
+            <label for="sched-f-start">Start</label>
+            <input type="time" id="sched-f-start" value="${schedEsc(a ? (a.start || '') : '')}">
+          </div>
+        </div>
+        <div class="sch-fld">
+          <label for="sched-f-driver">Driver</label>
+          <select id="sched-f-driver">
+            <option value="">— select —</option>
+            ${opts.map(d => `<option value="${schedEsc(d)}"${d === driver ? ' selected' : ''}>${schedEsc(d)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="sch-fld">
+          <label for="sched-f-customer">Customer</label>
+          <input type="text" id="sched-f-customer" list="sched-dl-customers" autocomplete="off"
+                 placeholder="Customer" value="${schedEsc(a ? (a.customer || '') : '')}">
+          <datalist id="sched-dl-customers">${customers.map(c => `<option value="${schedEsc(c)}"></option>`).join('')}</datalist>
+        </div>
+        <div class="sch-fld">
+          <label for="sched-f-unit">Truck / unit</label>
+          <input type="text" id="sched-f-unit" list="sched-dl-units" autocomplete="off"
+                 placeholder="Unit" value="${schedEsc(a ? (a.unit || '') : '')}">
+          <datalist id="sched-dl-units">${units.map(u => `<option value="${schedEsc(u)}"></option>`).join('')}</datalist>
+        </div>
+        <div class="sch-fld">
+          <label for="sched-f-notes">Load / notes</label>
+          <textarea id="sched-f-notes" placeholder="Material, origin → destination, instructions…">${schedEsc(a ? (a.notes || '') : '')}</textarea>
+        </div>
+        <div class="sch-modal-err" id="sched-modal-err"></div>
+        <div class="sch-modal-actions">
+          <button class="sch-btn primary" onclick="schedSaveEditor()">${a ? 'Save' : 'Add'}</button>
+          <button class="sch-btn" onclick="schedCloseEditor()">Cancel</button>
+          <span style="flex:1"></span>
+          ${a ? `<button class="sch-btn danger" onclick="schedDeleteEditor()">Delete</button>` : ''}
+        </div>`;
+
+      document.getElementById('sched-backdrop').classList.add('open');
+      const focusEl = driver ? document.getElementById('sched-f-customer') : document.getElementById('sched-f-driver');
+      if (focusEl) focusEl.focus();
+    }
+
+    function schedCloseEditor(e) {
+      if (e && document.getElementById('sched-modal').contains(e.target)) return;
+      document.getElementById('sched-backdrop').classList.remove('open');
+      schedCtx = null;
+    }
+
+    function schedSaveEditor() {
+      if (!schedCtx) return;
+      const v    = id => (document.getElementById(id) || {}).value || '';
+      const err  = document.getElementById('sched-modal-err');
+      const date = v('sched-f-date').trim();
+      const driver = v('sched-f-driver').trim();
+      if (!driver)              { if (err) err.textContent = 'Pick a driver.'; return; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { if (err) err.textContent = 'Pick a valid date.'; return; }
+
+      const rec = {
+        id:       schedCtx.id || (crypto.randomUUID ? crypto.randomUUID() : 'sa-' + Date.now() + '-' + Math.random().toString(36).slice(2)),
+        driver,
+        customer: v('sched-f-customer').trim(),
+        unit:     v('sched-f-unit').trim(),
+        start:    v('sched-f-start').trim(),
+        notes:    v('sched-f-notes').trim(),
+      };
+      // Remove first, then re-add: the date field is editable, so an edit can
+      // move the assignment to a different day's list.
+      if (schedCtx.id) schedRemoveById(schedCtx.date, schedCtx.id);
+      (schedAssignments[date] = schedAssignments[date] || []).push(rec);
+
+      schedMarkDirty();
+      schedCloseEditor();
+      renderScheduler();
+    }
+
+    function schedDeleteEditor() {
+      if (!schedCtx || !schedCtx.id) return;
+      schedRemoveById(schedCtx.date, schedCtx.id);
+      schedMarkDirty();
+      schedCloseEditor();
+      renderScheduler();
+    }
+
+    function schedRemoveById(date, id) {
+      const list = schedAssignments[date];
+      if (!list) return;
+      const next = list.filter(a => a.id !== id);
+      if (next.length) schedAssignments[date] = next;
+      else delete schedAssignments[date];   // keep the blob free of empty days
     }
 
     /* ═══════════════════════════════════════════
