@@ -487,6 +487,86 @@
     .sch-chip .meta { color: var(--muted); font-size: 0.66rem; display: block; }
     .sch-chip .start { color: var(--amber); font-weight: 600; }
 
+    /* ── Day timeline ──
+       Rows are drivers, the x axis is the clock. What the dispatch sheet below
+       states as two columns of times, this shows as length and position, so a
+       gap in someone's day, a truck handed between shifts, and two hauls that
+       run over each other are all visible without reading a single time.
+       Widths are in px rather than percentages because the track scrolls: an
+       hour has to stay an hour whatever the window is doing. */
+    .sch-tl-wrap {
+      overflow-x: auto; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface); margin-bottom: 1.5rem;
+    }
+    .sch-tl-wrap::-webkit-scrollbar { height: 7px; }
+    .sch-tl-wrap::-webkit-scrollbar-track { background: transparent; }
+    .sch-tl-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    .sch-tl-wrap::-webkit-scrollbar-thumb:hover { background: #555; }
+    .sch-tl-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
+    .sch-tl-row:last-child { border-bottom: none; }
+    .sch-tl-head { position: sticky; top: 0; z-index: 4; }
+    .sch-tl-name, .sch-tl-corner {
+      position: sticky; left: 0; z-index: 3; flex: none;
+      width: 165px; box-sizing: border-box;
+      border-right: 1px solid var(--border);
+      padding: 0.45rem 0.6rem; font-size: 0.78rem; font-weight: 600;
+      background: var(--surface); display: flex; align-items: center; gap: 0.35rem;
+    }
+    .sch-tl-corner {
+      background: var(--surface2); z-index: 5;
+      font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); font-weight: 700;
+    }
+    .sch-tl-name.is-hidden { color: var(--muted); font-weight: 500; }
+    .sch-tl-name.is-open   { color: var(--muted); font-weight: 500; }
+    .sch-tl-hours { flex: none; display: flex; background: var(--surface2); }
+    .sch-tl-hr {
+      flex: none; box-sizing: border-box;
+      border-left: 1px solid var(--border);
+      padding: 0.4rem 0 0.35rem; text-align: center;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.03em;
+      color: var(--muted); white-space: nowrap;
+    }
+    .sch-tl-hr.is-now { color: var(--amber); }
+    /* Hour rules are painted rather than built out of cells — one element per
+       row instead of one per hour per row. */
+    .sch-tl-track {
+      flex: none; position: relative; cursor: pointer;
+      background-image: repeating-linear-gradient(to right,
+        var(--border) 0, var(--border) 1px, transparent 1px, transparent var(--hw));
+    }
+    .sch-tl-track:hover { background-color: rgba(255,255,255,0.012); }
+    .sch-tl-bar {
+      position: absolute; box-sizing: border-box;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-left: 3px solid var(--orange); border-radius: 4px;
+      padding: 0 0.4rem; overflow: hidden; cursor: pointer;
+      display: flex; align-items: center; gap: 0.35rem;
+      font-size: 0.7rem; line-height: 1; white-space: nowrap;
+    }
+    .sch-tl-bar:hover { border-color: #666; border-left-color: var(--orange); z-index: 2; }
+    .sch-tl-bar.conflict { border-left-color: var(--amber); background: rgba(250,204,21,0.13); }
+    /* No end time yet: the bar is drawn at a nominal hour and frayed on the
+       right so its length never reads as a real finish. */
+    .sch-tl-bar.open-end { border-right: 1px dashed var(--muted); border-radius: 4px 0 0 4px; }
+    .sch-tl-bar .b-cust { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+    .sch-tl-bar .b-unit { color: var(--muted); font-size: 0.64rem; }
+    .sch-tl-now {
+      position: absolute; top: 0; bottom: 0; width: 1px;
+      background: var(--amber); opacity: 0.55; pointer-events: none; z-index: 1;
+    }
+    .sch-tl-unplaced {
+      display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center;
+      padding: 0.5rem 0.7rem; border-top: 1px solid var(--border);
+      background: rgba(250,204,21,0.05);
+    }
+    .sch-tl-unplaced .lbl { font-size: 0.66rem; color: var(--amber); font-weight: 700; }
+    .sch-tl-chip {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.2rem 0.45rem; font-size: 0.7rem; cursor: pointer;
+    }
+    .sch-tl-chip:hover { border-color: #555; }
+
     /* ── Day view (dispatch sheet) ── */
     .sch-day-tbl { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
     .sch-day-tbl thead th {
@@ -2663,6 +2743,141 @@
         </p>`;
     }
 
+    /* ═══════ Day timeline ═══════ */
+    const SCH_HOUR_W = 92;   // px per hour
+    const SCH_BAR_H  = 24;   // px per bar
+    const SCH_LANE_G = 3;    // px between stacked bars
+
+    /** The hours the day gets drawn across: the work that is on it, padded an
+     *  hour each side, never narrower than 8 so a single short haul doesn't
+     *  blow up to fill the screen. Falls back to a normal haul day when
+     *  nothing is scheduled. */
+    function schedDayRange(items) {
+      let lo = null, hi = null;
+      items.forEach(it => {
+        lo = lo === null ? it.s : Math.min(lo, it.s);
+        hi = hi === null ? it.e : Math.max(hi, it.e);
+      });
+      if (lo === null) { lo = 5 * 60; hi = 18 * 60; }
+      let h0 = Math.max(0,  Math.floor(lo / 60) - 1);
+      let h1 = Math.min(24, Math.ceil(hi / 60) + 1);
+      if (h1 - h0 < 8) {
+        h0 = Math.max(0, Math.min(h0, h1 - 8));
+        h1 = Math.min(24, h0 + 8);
+      }
+      return { h0, h1 };
+    }
+
+    /** Placeable assignments for one driver, with overlaps packed into lanes.
+     *  Drivers are allowed to overlap, so two hauls that run over each other
+     *  stack instead of one hiding the other. */
+    function schedPlace(list) {
+      const out = list
+        .map(a => {
+          const s = schedMins(a.start);
+          if (s === null) return null;                 // nothing to anchor it to
+          let e = schedMins(a.end), openEnd = false;
+          if (e === null || e <= s) { e = s + 60; openEnd = true; }  // incl. past-midnight
+          return { a, s, e, openEnd, lane: 0 };
+        })
+        .filter(Boolean)
+        .sort((x, y) => x.s - y.s || x.e - y.e);
+
+      const laneEnds = [];
+      out.forEach(it => {
+        let i = laneEnds.findIndex(end => end <= it.s);
+        if (i === -1) { laneEnds.push(it.e); i = laneEnds.length - 1; }
+        else laneEnds[i] = it.e;
+        it.lane = i;
+      });
+      return { placed: out, lanes: Math.max(1, laneEnds.length) };
+    }
+
+    function schedHourLabel(h) {
+      const ap = h < 12 || h === 24 ? 'AM' : 'PM';
+      const h12 = (h % 12) || 12;
+      return h12 + ':00 ' + ap;
+    }
+
+    function schedTimelineHTML(date, drivers, bad) {
+      const byDriver = new Map(drivers.map(d => [d, []]));
+      const unplaced = [];
+      (schedAssignments[date] || []).forEach(a => {
+        if (!byDriver.has(a.driver)) return;
+        if (schedMins(a.start) === null) unplaced.push(a);   // no start — nothing to draw
+        else byDriver.get(a.driver).push(a);
+      });
+
+      const prepared = drivers.map(d => ({ driver: d, ...schedPlace(byDriver.get(d) || []) }));
+      const { h0, h1 } = schedDayRange(prepared.flatMap(p => p.placed));
+      const hours  = h1 - h0;
+      const trackW = hours * SCH_HOUR_W;
+      const originM = h0 * 60;
+      const x = m => Math.round((m - originM) / 60 * SCH_HOUR_W);
+
+      const nowM = date === schedTodayStr()
+        ? (() => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); })() : null;
+      const nowIn = nowM !== null && nowM >= originM && nowM <= h1 * 60;
+
+      const head = `
+        <div class="sch-tl-row sch-tl-head">
+          <div class="sch-tl-corner">Driver</div>
+          <div class="sch-tl-hours" style="width:${trackW}px">
+            ${Array.from({ length: hours }, (_, i) => {
+              const h = h0 + i;
+              return `<div class="sch-tl-hr${nowM !== null && Math.floor(nowM / 60) === h ? ' is-now' : ''}"
+                style="width:${SCH_HOUR_W}px">${schedHourLabel(h)}</div>`;
+            }).join('')}
+          </div>
+        </div>`;
+
+      const rows = prepared.map((p, di) => {
+        const h = p.lanes * SCH_BAR_H + (p.lanes + 1) * SCH_LANE_G;
+        const bars = p.placed.map(it => {
+          const a = it.a;
+          const left = x(it.s), w = Math.max(26, x(Math.min(it.e, h1 * 60)) - left);
+          const conflicted = bad.has((a.unit || '').trim());
+          const tip = [schedWindow(a) || 'no time set', a.customer, a.unit, a.notes]
+            .filter(Boolean).join(' · ') + (it.openEnd ? ' · no end time yet' : '');
+          return `<div class="sch-tl-bar${conflicted ? ' conflict' : ''}${it.openEnd ? ' open-end' : ''}"
+            style="left:${left}px;width:${w}px;top:${SCH_LANE_G + it.lane * (SCH_BAR_H + SCH_LANE_G)}px;height:${SCH_BAR_H}px"
+            title="${schedEsc(tip)}" onclick="event.stopPropagation();schedEditAssign('${date}','${a.id}')">
+            <span class="b-cust">${schedEsc(a.customer || '—')}</span>
+            ${a.unit ? `<span class="b-unit">${schedEsc(a.unit)}</span>` : ''}
+          </div>`;
+        }).join('');
+        const isOpen = !p.placed.length;
+        const hid    = schedHidden.has(p.driver);
+        return `
+          <div class="sch-tl-row">
+            <div class="sch-tl-name${hid ? ' is-hidden' : isOpen ? ' is-open' : ''}">
+              ${schedEsc(p.driver)}${hid ? '<span class="sch-hidtag">hidden</span>' : ''}
+            </div>
+            <div class="sch-tl-track" style="width:${trackW}px;height:${h}px"
+                 onclick="schedTimelineAdd(event,${di},${h0})">
+              ${bars}${nowIn ? `<div class="sch-tl-now" style="left:${x(nowM)}px"></div>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+
+      const strip = unplaced.length ? `
+        <div class="sch-tl-unplaced">
+          <span class="lbl">No start time —</span>
+          ${unplaced.map(a => `<button class="sch-tl-chip" onclick="schedEditAssign('${date}','${a.id}')">
+            ${schedEsc(a.driver)}${a.customer ? ' · ' + schedEsc(a.customer) : ''}</button>`).join('')}
+        </div>` : '';
+
+      return `<div class="sch-tl-wrap"><div style="--hw:${SCH_HOUR_W}px;min-width:min-content">${head}${rows}</div>${strip}</div>`;
+    }
+
+    /** Clicking empty track opens a new assignment for that driver, started at
+     *  the hour under the pointer. */
+    function schedTimelineAdd(ev, driverIdx, h0) {
+      const r = ev.currentTarget.getBoundingClientRect();
+      const h = h0 + Math.floor((ev.clientX - r.left) / SCH_HOUR_W);
+      schedAddAssign(schedAnchor, driverIdx, schedPad(Math.max(0, Math.min(23, h))) + ':00');
+    }
+
     function schedDayHTML() {
       const date    = schedAnchor;
       const drivers = schedDrivers([date]);
@@ -2692,7 +2907,10 @@
       return `
         <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem">
           <button class="sch-btn primary" onclick="schedAddAssign('${date}',-1)">+ Add assignment</button>
+          <span style="font-size:0.7rem;color:var(--muted)">Click a driver's row at the hour you want to start them.</span>
         </div>
+        ${schedTimelineHTML(date, drivers, bad)}
+        <p class="home-section-title">Dispatch Sheet</p>
         <div class="proj-table-wrap" style="border:1px solid var(--border);border-radius:6px;margin-bottom:1.5rem">
           <table class="sch-day-tbl">
             <thead><tr><th>Start</th><th>End</th><th>Driver</th><th>Customer</th><th>Truck</th><th>Notes</th></tr></thead>
@@ -2801,14 +3019,14 @@
     /* ═══════ Assignment editor ═══════
        Driver is passed by roster index rather than by name so a name carrying
        a quote or an ampersand can't break out of the inline handler. */
-    function schedAddAssign(date, driverIdx) {
+    function schedAddAssign(date, driverIdx, startHint) {
       const roster = schedDrivers(schedView === 'week' ? schedWeekDates() : [date]);
       const driver = driverIdx >= 0 ? (roster[driverIdx] || '') : '';
-      schedOpenEditor(date, null, driver);
+      schedOpenEditor(date, null, driver, startHint);
     }
     function schedEditAssign(date, id) { schedOpenEditor(date, id, ''); }
 
-    function schedOpenEditor(date, id, driverHint) {
+    function schedOpenEditor(date, id, driverHint, startHint) {
       const a = id ? (schedAssignments[date] || []).find(x => x.id === id) : null;
       if (id && !a) return;
       schedCtx = { date, id: id || null };
@@ -2831,7 +3049,7 @@
         <div class="sch-fld-row">
           <div class="sch-fld">
             <label for="sched-f-start">Start</label>
-            <input type="time" id="sched-f-start" value="${schedEsc(a ? (a.start || '') : '')}">
+            <input type="time" id="sched-f-start" value="${schedEsc(a ? (a.start || '') : (startHint || ''))}">
           </div>
           <div class="sch-fld">
             <label for="sched-f-end">End</label>
