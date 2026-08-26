@@ -50,6 +50,9 @@ const travelReSrc = (src.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0];
 if (!travelReSrc) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
 
 let repaints = 0;
+// Every selector splitOnChange reaches for after a repaint, so the focus
+// restore can be asserted without a browser.
+let refocused = [];
 const sandbox = {
   console,
   splitEntry: null,
@@ -57,6 +60,7 @@ const sandbox = {
   splitCcCache: {},
   renderSplitRows:  () => { repaints++; },
   renderSplitTally: () => {},
+  document: { querySelector: sel => { refocused.push(sel); return { focus() {} }; } },
 };
 vm.createContext(sandbox);
 vm.runInContext([
@@ -258,6 +262,40 @@ console.log('\n[coding the travel row directly]');
   // The work row gets no such help — its sub code is a real choice.
   sandbox.splitOnChange(0, 'cost_code', 'Excavation Prep');
   assert('the work row picks its own sub code', sandbox.splitRows[0].sub_code === '');
+
+  // Filling the sub code is help on top of a cost code the supervisor chose —
+  // it does NOT hand the row back to the prefill. Marking it 'auto' here let
+  // the prefill call in the same commit revert the cost code they had just
+  // picked to whatever pairs with the work row, which on a paving job made the
+  // drive's cost code impossible to change at all.
+  assert('and the drive\'s row stays the supervisor\'s',
+    sandbox.splitRows[1].code_source === 'manual', sandbox.splitRows[1].code_source);
+}
+
+// ── Re-pointing the drive at a different task must stick ─────────────────
+// The whole reason paving needs a hand is that the pairing is a guess. If the
+// guess cannot be overridden the prefill is worse than no prefill.
+console.log('\n[re-pointing the drive]');
+{
+  sandbox.splitEntry = { division: 'paving', job_id: 'P1', computed_hours: 6.5, travel_hours: 1.5 };
+  sandbox.splitCcCache['paving::P1'] = PAVING;
+  sandbox.splitRows = [sandbox._blankSplitRow(false), sandbox._blankSplitRow(true)];
+
+  sandbox.splitOnChange(0, 'cost_code', '5in Mill & Fill');
+  assert('the drive is paired with the work task',
+    sandbox.splitRows[1].cost_code === '5in Mill & Fill', JSON.stringify(sandbox.splitRows[1]));
+
+  sandbox.splitOnChange(1, 'cost_code', 'Excavation Prep');
+  assert('re-pointing it at another task sticks',
+    sandbox.splitRows[1].cost_code === 'Excavation Prep', JSON.stringify(sandbox.splitRows[1]));
+  assert('with that task\'s own drive under it',
+    sandbox.splitRows[1].sub_code === 'Excavation Prep Travel');
+
+  // And it survives the work task being changed afterwards.
+  sandbox.splitOnChange(0, 'cost_code', 'Excavation Prep');
+  sandbox.splitOnChange(0, 'cost_code', '5in Mill & Fill');
+  assert('and survives the work task moving underneath it',
+    sandbox.splitRows[1].cost_code === 'Excavation Prep', JSON.stringify(sandbox.splitRows[1]));
 }
 
 // ── Nothing the supervisor typed is ever overwritten ─────────────────────
@@ -305,12 +343,23 @@ console.log('\n[the Travel tick]');
   sandbox.splitCcCache['turf::J1'] = TURF;
   sandbox.splitRows = [sandbox._blankSplitRow(false), sandbox._blankSplitRow(false)];
 
+  refocused = [];
   sandbox.splitOnChange(1, 'is_travel', true);
   assert('ticking Travel on a blank row codes it',
     sandbox.splitRows[1].cost_code === 'Mobilization' && sandbox.splitRows[1].sub_code === 'Travel',
     JSON.stringify(sandbox.splitRows[1]));
+  // The repaint that shows those codes destroys the tick the supervisor is
+  // standing on. Without putting the cursor back, focus lands on the body and
+  // the next Tab restarts from the top of the page.
+  assert('and puts the cursor back on the tick it just replaced',
+    refocused.length === 1 &&
+    refocused[0] === '#splitTbody tr:nth-child(2) .travel-cell input',
+    JSON.stringify(refocused));
 
+  refocused = [];
   sandbox.splitOnChange(1, 'is_travel', false);
+  assert('unticking puts the cursor back too',
+    refocused.length === 1 && /nth-child\(2\)/.test(refocused[0]), JSON.stringify(refocused));
   assert('unticking takes the guessed codes back off',
     sandbox.splitRows[1].cost_code === '' && sandbox.splitRows[1].sub_code === '',
     JSON.stringify(sandbox.splitRows[1]));
@@ -346,11 +395,12 @@ console.log('\n[tabbing through a finished row]');
   sandbox.splitCcCache['turf::J1'] = TURF;
   sandbox.splitRows = [{ cost_code: 'Silt Sock', sub_code: '18inch', labor_hours: 8,
                          is_travel: false, code_source: 'manual' }];
-  repaints = 0;
+  repaints = 0; refocused = [];
   sandbox.splitOnChange(0, 'cost_code', 'Silt Sock');    // blur, nothing picked
   assert('re-committing the same cost code keeps the sub code',
     sandbox.splitRows[0].sub_code === '18inch', JSON.stringify(sandbox.splitRows[0]));
   assert('and does not repaint the table out from under the cursor', repaints === 0);
+  assert('and does not go grabbing the focus either', refocused.length === 0);
 
   sandbox.splitOnChange(0, 'cost_code', 'Turf Install'); // a real change
   assert('an actual change still clears it', sandbox.splitRows[0].sub_code === '');
@@ -486,6 +536,7 @@ console.log('\n[bulk approve]');
   const bulk = {
     console,
     bulkGroups: [],
+    bulkR2: n => Math.round((Number(n) || 0) * 100) / 100,
     renderBulkGroups: () => {},
     updateBulkRunBtn: () => {},
   };
@@ -503,8 +554,9 @@ console.log('\n[bulk approve]');
     ].map(grab),
   ].join('\n\n'), bulk);
 
-  const group = (ccList) => ({
+  const group = (ccList, travelHours = 1.5) => ({
     type: 'split', ccList,
+    entries: [{ id: 'a', computed_hours: 6.5, travel_hours: travelHours }],
     template: { cost_code: '', sub_code: '', travel_cost_code: '', travel_sub_code: '',
                 travel_code_source: '' },
   });
@@ -552,8 +604,21 @@ console.log('\n[bulk approve]');
   assert('and a task with no drive leaves it blank',
     byHand.template.travel_sub_code === '', JSON.stringify(byHand.template));
 
+  // The card hides the travel fields when no day in the group has travel
+  // hours. Filling them anyway would put a code into the approval that nobody
+  // was shown.
+  const noTravel = group(TURF, 0);
+  bulk.bulkGroups = [noTravel];
+  assert('a group with no travel hours is left blank',
+    bulk.bulkApplyTravelPrefill(noTravel) === false &&
+    noTravel.template.travel_cost_code === '', JSON.stringify(noTravel.template));
+  bulk.bulkCostCode(0, 'Silt Sock');
+  assert('and stays blank when the work code is picked',
+    noTravel.template.travel_cost_code === '' && noTravel.template.travel_sub_code === '',
+    JSON.stringify(noTravel.template));
+
   // Non-split groups have no travel leg at all.
-  const quarry = { type: 'quarry', ccList: TURF, template: { travel_code_source: '' } };
+  const quarry = { type: 'quarry', ccList: TURF, entries: [], template: { travel_code_source: '' } };
   assert('a quarry group is left alone', bulk.bulkApplyTravelPrefill(quarry) === false);
   assert('and so is nothing at all',      bulk.bulkApplyTravelPrefill(null) === false);
 }

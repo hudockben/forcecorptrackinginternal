@@ -5264,9 +5264,16 @@
             // On the drive's own row the sub code is not much of a choice: it
             // books to the travel line filed under whichever task was picked.
             // One match fills itself; several leave the now-short list open.
+            //
+            // code_source stays 'manual'. This is help on top of a cost code
+            // the supervisor chose, not a row the prefill owns — marking it
+            // 'auto' handed the row straight back, and the prefill call below
+            // then reverted the cost code they had just picked to whatever
+            // pairs with the work row. On a paving job that made the drive's
+            // cost code impossible to change at all.
             if (r.is_travel) {
               const subs = splitTravelSubsFor(splitCcListNow(), next);
-              if (subs.length === 1) { r.sub_code = subs[0]; r.code_source = 'auto'; }
+              if (subs.length === 1) r.sub_code = subs[0];
             }
             // And the work row's code is what tells a paving travel row where
             // to book, so picking it is the moment that row can be filled.
@@ -5276,7 +5283,18 @@
       }
       // Repaint so the dependent sub-code lists — and any row the prefill just
       // wrote to — come back from the new state.
-      if (repaint) renderSplitRows();
+      if (repaint) {
+        renderSplitRows();
+        // The tick that triggered this is a live control the supervisor is
+        // still standing on, and the repaint replaced it with a new node. Put
+        // the cursor back on its replacement — otherwise focus drops to the
+        // body and the next Tab restarts from the top of the page.
+        if (field === 'is_travel') {
+          const box = document.querySelector(
+            `#splitTbody tr:nth-child(${idx + 1}) .travel-cell input`);
+          if (box) box.focus();
+        }
+      }
       renderSplitTally();
     }
 
@@ -7857,6 +7875,10 @@
     // filled itself is written to. Returns true when something moved.
     function bulkApplyTravelPrefill(g) {
       if (!g || g.type !== 'split') return false;
+      // The card only shows the travel fields when some day in the group has
+      // travel hours. Filling them on a group that shows neither would put a
+      // code into the approval that nobody was given a chance to look at.
+      if (!g.entries.some(e => bulkR2(e.travel_hours) > 0)) return false;
       if (g.template.travel_code_source === 'manual') return false;
       const blank = !String(g.template.travel_cost_code || '').trim()
                  && !String(g.template.travel_sub_code  || '').trim();
