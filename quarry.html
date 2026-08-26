@@ -3717,6 +3717,30 @@
       });
     });
 
+    // Newest first, and by the DATE rather than by where the row happens to sit
+    // in the list.
+    //
+    // The list's own order is not something anyone here controls: "+ Add Row"
+    // puts a row at the top, a CSV import puts them in file order, and a sale
+    // submitted on the Quarry Sales form arrived at the BOTTOM — under three
+    // hundred rows, on a tab with no sort control, which reads exactly like it
+    // never arrived. The server-side guard appends too, whenever a sale lands
+    // while this tab is open, so no amount of care at the injecting end fixes
+    // this on its own: the table has to order itself.
+    //
+    // Stable, so rows sharing a date keep the order they had. A row with no
+    // date sorts to the TOP, not the bottom — it is a row that needs a date
+    // typed into it, and the bottom of three hundred rows is where nothing
+    // gets attention.
+    function byDateDesc(a, b) {
+      const da = (a.row && a.row.date) || '';
+      const db = (b.row && b.row.date) || '';
+      if (da === db) return 0;
+      if (!da) return -1;
+      if (!db) return 1;
+      return db < da ? -1 : 1;   // ISO dates compare as text in date order
+    }
+
     function renderSales(keepFilters) {
       const tbody = document.getElementById('salesTbody');
       if (!tbody) return;
@@ -3741,7 +3765,8 @@
       }
       const visibleEntries = salesRows
         .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row));
+        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row))
+        .sort(byDateDesc);
       if (!visibleEntries.length) {
         tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))} · ${escapeHtml(customerFilterLabel('sales'))} · ${escapeHtml(productFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
         updateSalesSummary();
