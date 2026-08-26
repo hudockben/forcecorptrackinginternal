@@ -184,6 +184,10 @@
       border-bottom: 1px solid var(--border);
       padding: 0 0.5rem;
       overflow-x: auto;
+      /* The active tab's -1px bottom margin leaves 1px of vertical overflow,
+         which turned overflow-y into a scroller and drew a vertical scrollbar
+         beside the tabs. Only the horizontal axis should ever scroll here. */
+      overflow-y: hidden;
       flex-wrap: nowrap;
       -webkit-overflow-scrolling: touch;
       scrollbar-width: thin;
