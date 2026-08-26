@@ -1015,5 +1015,119 @@ console.log('\n[matching a typed code against the bid items]');
     f(null, 'x') === null && f(TURF, null) === null);
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+// ── The form and the server must agree about what is saveable ────────────
+// splitSave pre-validates so obvious problems are named before the round trip.
+// Anywhere it says go and the server says no, the supervisor fills out a form,
+// presses Approve, and gets a raw "split[2].equip_hours must be between 0 and
+// 24" back — which is the exact experience bulkBadEquipHours was written to
+// avoid on the crew-sized path, where it names the day instead.
+//
+// Driven, not read: the real splitSave against a stubbed fetch, and the real
+// validateSplit out of api/timesheet-entries.js.
+console.log('\n[the form and the server agree on what is saveable]');
+{
+  const { JSDOM } = require('jsdom');
+  const api = fs.readFileSync(path.resolve(__dirname, '..', 'api', 'timesheet-entries.js'), 'utf8');
+  const grabApi = name => {
+    const i = api.indexOf('function ' + name + '(');
+    assert(`api/timesheet-entries.js still defines ${name}`, i >= 0);
+    return i < 0 ? '' : api.slice(i, api.indexOf('\n}\n', i) + 3);
+  };
+  const srv = { console };
+  vm.createContext(srv);
+  vm.runInContext([
+    'function safeStr(v,n){ if (v==null) return ""; return String(v).trim().slice(0,n); }',
+    'function _r2(n){ return Math.round((Number(n)||0)*100)/100; }',
+    grabApi('normalizeSplitRow'), grabApi('validateSplit'),
+  ].join('\n\n'), srv);
+
+  const NAMES = ['isTravelSplitRow', '_splitRowUid', '_blankSplitRow', 'findCostCode',
+    'splitCcListNow', 'splitTravelCandidates', 'splitTravelSubsFor', 'splitPickTravelCodes',
+    'splitApplyTravelPrefill', 'numInputVal', '_cbHtml', '_cbReadOptions', 'cbOnFocus',
+    'cbOnInput', 'cbRenderMenu', 'cbPositionMenu', 'cbCloseAll', 'cbScrollHi', 'cbClose',
+    'cbCommit', '_splitFocusSnapshot', '_splitFocusRestore', 'renderSplitRows',
+    'splitOnChange', 'splitFlushPendingCommits'];
+  const byName = n => {
+    const i = src.indexOf('function ' + n + '(');
+    if (i < 0) throw new Error('payroll.html no longer defines: ' + n);
+    return src.slice(i, src.indexOf('\n    }\n', i) + 6);
+  };
+  const harness = [
+    travelReSrc, (src.match(/const _cbEsc = [^\n]+/) || [])[0],
+    'const _cbState = new WeakMap();', 'let _splitRowSeq = 0;',
+    ...NAMES.map(byName),
+    'async ' + byName('splitSave'),
+    'function num2(n){return Number(n).toFixed(2);}  function renderSplitTally(){}',
+    'function cbOnKey(){}  function cbOnBlur(){}',
+    'function authHeaders(){return {};}  function applyEntryUpdate(){}',
+    'function renderRows(){}  function renderStats(){}  function closeSplit(){}',
+    'var selectedIds = new Set();',
+    'var splitMode = "approve", splitRowLoad = "none";',
+    "var splitEntry = { id: 1, division: 'turf', job_id: 'J1', computed_hours: 20, travel_hours: 5 };",
+    "var splitCcCache = { 'turf::J1': [{ cost_code: 'Silt Sock', sub_codes: ['12inch'] }] };",
+    'var splitEquipmentList = [];  var splitRows = [];',
+    'window.__sent = null;',
+    'window.fetch = function (url, opts) { window.__sent = JSON.parse(opts.body);',
+    '  return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ ok: true }); } }); };',
+  ].join('\n\n');
+
+  const dom = new JSDOM('<!doctype html><body><table class="split-table">' +
+    '<tbody id="splitTbody"></tbody></table><div id="splitMsg"></div>' +
+    '<button id="splitSaveBtn"></button></body>',
+    { url: 'http://localhost/', runScripts: 'dangerously' });
+  const { window } = dom;
+  window.eval(harness);
+
+  let seq = 0;
+  const ROW = ov => Object.assign({
+    _uid: 'v' + (++seq), cost_code: 'Silt Sock', sub_code: '12inch', quantity: 0,
+    equipment: '', labor_hours: 0, equip_hours: 0, is_travel: false, code_source: '',
+  }, ov);
+  // 20 work + 5 travel, so one 25-hour row balances and the per-row cap of 24
+  // is reachable without an impossible day.
+  const ENTRY = { computed_hours: 20, travel_hours: 5 };
+  const CASES = [
+    ['a normal split',           [ROW({ labor_hours: 20 }), ROW({ labor_hours: 5, is_travel: true })]],
+    ['equipment hours over 24',  [ROW({ labor_hours: 20, equip_hours: 30 }), ROW({ labor_hours: 5, is_travel: true })]],
+    ['labor hours over 24',      [ROW({ labor_hours: 25 })]],
+    ['a quantity over the cap',  [ROW({ labor_hours: 20, quantity: 2e9 }), ROW({ labor_hours: 5, is_travel: true })]],
+    // Every row inside its own bounds and the hours adding up, so the only
+    // thing wrong is the count — otherwise a row-level rule catches it first
+    // and the cap is never the reason either end says no.
+    ['51 rows',                  Array.from({ length: 51 }, (_, i) =>
+                                   ROW(i === 0 ? { labor_hours: 20 }
+                                     : i === 1 ? { labor_hours: 5, is_travel: true }
+                                     : { labor_hours: 0, equip_hours: 1 }))],
+    // Not reachable through the table — splitOnChange clamps a typed negative
+    // to zero — but the rule should hold wherever the row came from.
+    ['a negative equipment hour', [ROW({ labor_hours: 20, equip_hours: -3 }), ROW({ labor_hours: 5, is_travel: true })]],
+    // The two ends round differently: the form compares to the cent, the
+    // server rounds each side first. They have to land on the same verdict.
+    ['a total 0.003 over',       [ROW({ labor_hours: 20.003 }), ROW({ labor_hours: 5, is_travel: true })]],
+    ['a total 0.005 over',       [ROW({ labor_hours: 20.005 }), ROW({ labor_hours: 5, is_travel: true })]],
+    ['a total 0.007 over',       [ROW({ labor_hours: 20.007 }), ROW({ labor_hours: 5, is_travel: true })]],
+    ['a row with no code',       [ROW({ labor_hours: 25, cost_code: '', sub_code: '' })]],
+    ['a row with no hours',      [ROW({ labor_hours: 25 }), ROW({ labor_hours: 0, equip_hours: 0 })]],
+    ['hours that do not add up', [ROW({ labor_hours: 5 })]],
+  ];
+
+  let pending = CASES.length;
+  const run = async () => {
+    for (const [label, rows] of CASES) {
+      window.eval('splitRows = ' + JSON.stringify(rows) + '; renderSplitRows();');
+      window.__sent = null;
+      window.document.getElementById('splitMsg').textContent = '';
+      await window.splitSave();
+      const posted = window.__sent !== null;
+      const verdict = srv.validateSplit(JSON.parse(JSON.stringify(rows)), ENTRY);
+      assert(`  ${label}: the form and the server agree`, posted === !verdict.error,
+        `form ${posted ? 'posts' : 'refuses ("' + window.document.getElementById('splitMsg').textContent + '")'}` +
+        `, server ${verdict.error ? 'rejects ("' + verdict.error + '")' : 'accepts'}`);
+      pending--;
+    }
+    console.log(`\n${passed} passed, ${failed} failed`);
+    process.exit(failed ? 1 : 0);
+  };
+  run();
+}
+

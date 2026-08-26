@@ -5532,6 +5532,21 @@
         msg.classList.add('error'); msg.textContent = 'Add at least one row.';
         return;
       }
+      if (splitRows.length > 50) {
+        msg.classList.add('error');
+        msg.textContent = `A split may not have more than 50 rows — this one has ${splitRows.length}.`;
+        return;
+      }
+      // Bounds the server enforces anyway. Checked here so a mistyped 80 comes
+      // back as "Row 3: equipment hours must be between 0 and 24" instead of
+      // "split[2].equip_hours must be between 0 and 24" after the round trip —
+      // the same reasoning bulkBadEquipHours already applies to the crew-sized
+      // path, which names the day it found the bad number on.
+      const BOUNDS = [
+        ['labor_hours', 'labor hours',     24],
+        ['equip_hours', 'equipment hours', 24],
+        ['quantity',    'quantity',        1e9],
+      ];
       for (let i = 0; i < splitRows.length; i++) {
         const r = splitRows[i];
         if (!r.cost_code && !r.sub_code) {
@@ -5543,6 +5558,14 @@
           msg.classList.add('error');
           msg.textContent = `Row ${i + 1}: enter labor hours or equipment hours.`;
           return;
+        }
+        for (const [field, label, max] of BOUNDS) {
+          const n = Number(r[field]) || 0;
+          if (!(n >= 0 && n <= max)) {
+            msg.classList.add('error');
+            msg.textContent = `Row ${i + 1}: ${label} must be between 0 and ${max.toLocaleString()}.`;
+            return;
+          }
         }
       }
       const work   = Number(splitEntry.computed_hours) || 0;
