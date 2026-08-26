@@ -1,14 +1,15 @@
 'use strict';
 /**
- * Payroll owns its injected rows on write, too.
+ * Whoever injected a row owns it on write, too.
  *
- * Four division tabs keep their cost tracking in a JSON blob that the tab
- * saves WHOLE — trucking (fct_truck_division), quarry (fct_quarry_daily /
- * fct_quarry_crushing) and dust Other Billing (dust_other_billing_rows).
- * Payroll writes into those same blobs whenever a timesheet entry is approved
- * or un-approved. The two writers race, and the
- * tab's copy is always the stale one, because it was read before the approval
- * it is about to land on top of:
+ * Five division tabs keep their tracking in a JSON blob that the tab saves
+ * WHOLE — trucking (fct_truck_division), quarry (fct_quarry_daily /
+ * fct_quarry_crushing / fct_quarry_sales) and dust Other Billing
+ * (dust_other_billing_rows). Something outside the tab writes into those same
+ * blobs: payroll whenever a timesheet entry is approved or un-approved, and
+ * the Quarry Sales form whenever the scale house submits a load. The two
+ * writers race, and the tab's copy is always the stale one, because it was
+ * read before the write it is about to land on top of:
  *
  *   - Payroll approves while the tab is open. The tab's next save — a debounced
  *     600ms write after any cell edit — PUTs the list it loaded earlier, and the
@@ -52,14 +53,19 @@ const {
 // Same rule, same reason, for the Dust Other Billing grid: OB_TAB_FIELDS is
 // what re-injection preserves, so it is also what a tab save may overwrite.
 const { OB_TAB_FIELDS } = require('./dust-ob-injected');
+// Quarry Sales is not payroll's, but it is the same problem: the field posts a
+// row into a grid the office saves whole, so SALES_TAB_FIELDS names the one
+// column the office still owns on it.
+const { SALES_TAB_FIELDS } = require('./quarry-sales-injected');
 
 /**
- * Blob key → how payroll-injected rows are recognised in it, and which of their
- * columns the owning tab may still write.
+ * Blob key → how injected rows are recognised in it, and which of their columns
+ * the owning tab may still write.
  *
- * The prefixes are the ones api/timesheet-entries.js mints: "tst-<entryId>-"
+ * Four prefixes are the ones api/timesheet-entries.js mints: "tst-<entryId>-"
  * for Truck Tracking, "tsq-<entryId>-" for the quarry Daily/Crushing tabs and
- * "tso-<entryId>-" for Dust Other Billing. Manual rows use UUIDs or "TR-####"
+ * "tso-<entryId>-" for Dust Other Billing. The fifth, "qss-<submissionId>-", is
+ * minted by api/quarry-sales-submissions.js. Manual rows use UUIDs or "TR-####"
  * task numbers and never collide.
  */
 const INJECTED_BLOBS = {
@@ -71,6 +77,10 @@ const INJECTED_BLOBS = {
   // The dust office still bills on a payroll row here — the invoice number and
   // the note against it are its columns, and stay editable in the tab.
   dust_other_billing_rows: { prefix: 'tso-', tabFields: OB_TAB_FIELDS },
+  // Sales Tracking. The only rows here that aren't the tab's own come from the
+  // Quarry Sales form, and the office prices them — so price per ton is the
+  // one column a tab save may write on one.
+  fct_quarry_sales:    { prefix: 'qss-', tabFields: SALES_TAB_FIELDS },
 };
 
 function guardConfigFor(key) { return INJECTED_BLOBS[key] || null; }

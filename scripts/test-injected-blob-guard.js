@@ -239,9 +239,13 @@ const payroll = (id, over = {}) => ({ id, driver: 'Mike Barr', total_hours: 12.5
     assert('and stores the guarded value', /JSON\.stringify\(stored\)/.test(dk));
     assert('and mirrors the guarded value', /syncForKey\(sql, payload\.companyCode, key, stored\)/.test(dk));
 
-    assert('every blob payroll injects into is registered',
+    // Payroll injects into four of these. The fifth, fct_quarry_sales, is the
+    // Quarry Sales form's — a different writer, the same race: Sales Tracking
+    // saves the whole grid on a debounce, so a sale submitted while the tab is
+    // open is one keystroke away from being erased.
+    assert('every blob written from outside its tab is registered',
       Object.keys(INJECTED_BLOBS).sort().join(',') ===
-      'dust_other_billing_rows,fct_quarry_crushing,fct_quarry_daily,fct_truck_division',
+      'dust_other_billing_rows,fct_quarry_crushing,fct_quarry_daily,fct_quarry_sales,fct_truck_division',
       Object.keys(INJECTED_BLOBS).join(','));
     // dust_ees_other_rows is the deliberate omission — it version-checks its own
     // writes and merges on conflict. If that ever stops being true it belongs here.

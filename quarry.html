@@ -850,6 +850,24 @@
       border: 1px solid rgba(249,115,22,0.5); border-radius: 4px;
       padding: 2px 5px; white-space: nowrap; cursor: default;
     }
+    /* A sale the scale house submitted on the Quarry Sales form. Green rather
+       than orange so it can be told apart at a glance from a timesheet row,
+       which is the other kind of row on these tabs nobody here typed. */
+    .qss-badge {
+      display: inline-block; font-size: 0.6rem; font-weight: 700;
+      letter-spacing: 0.04em; color: #22c55e;
+      border: 1px solid rgba(34,197,94,0.5); border-radius: 4px;
+      padding: 2px 5px; white-space: nowrap; cursor: default;
+    }
+    tr.qss-locked { background: rgba(34,197,94,0.05); }
+    tr.qss-locked .cell-readonly { color: var(--text); text-align: left; }
+    tr.qss-locked .col-num .cell-readonly,
+    tr.qss-locked .col-payment .cell-readonly,
+    tr.qss-locked .col-total .cell-readonly { text-align: right; }
+    /* Price per ton is the office's column on one of these rows, so it stays a
+       real input — outlined so it reads as the one thing still to answer. */
+    tr.qss-locked .cell-input { border-color: rgba(34,197,94,0.35); }
+    .qss-actions { display: flex; align-items: center; gap: 0.3rem; justify-content: flex-end; }
 
     .sales-empty {
       text-align: center; padding: 2.5rem 1rem;
@@ -3415,9 +3433,9 @@
       const cfg = TRACKING_DELETE_CFG[tab];
       if (!cfg) return 0;
       const rows = cfg.getRows();
-      // Timesheet-injected rows are Payroll-owned — they're never deletable
-      // from the filtered-delete tool here, so don't count them.
-      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && rowMatchesCustomer(tab, r) && rowMatchesProduct(tab, r) && !isTimesheetRow(r)).length;
+      // Injected rows belong to Payroll or to the Quarry Sales form — they're
+      // never deletable from the filtered-delete tool here, so don't count them.
+      return rows.filter(r => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && rowMatchesCustomer(tab, r) && rowMatchesProduct(tab, r) && !isInjectedRow(r)).length;
     }
 
     function refreshDeleteFilteredBtn(tab) {
@@ -3435,8 +3453,9 @@
       const cfg = TRACKING_DELETE_CFG[tab];
       if (!cfg) return;
       const rows = cfg.getRows();
-      // Never delete timesheet-injected rows (Payroll-owned) via this tool.
-      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && rowMatchesCustomer(tab, r) && rowMatchesProduct(tab, r) && !isTimesheetRow(r);
+      // Never delete injected rows (Payroll's, or the Quarry Sales form's) via
+      // this tool — each has its own owner and its own way out.
+      const matches = (r) => rowMatchesYear(tab, r) && rowMatchesMonth(tab, r) && rowMatchesLocation(tab, r) && rowMatchesCustomer(tab, r) && rowMatchesProduct(tab, r) && !isInjectedRow(r);
       const toDelete = rows.filter(matches);
       if (!toDelete.length) return;
 
@@ -3719,6 +3738,28 @@
         const paymentOpts  = ['<option value="">—</option>'].concat(
           PAYMENT_OPTIONS.map(p => `<option value="${p}"${row.payment === p ? ' selected' : ''}>${p}</option>`)
         ).join('');
+        // A sale the scale house submitted on the Quarry Sales form. Everything
+        // the form asked for is theirs and renders read-only; Price / Ton is
+        // the office's column and stays a live input, because the form never
+        // asks for it — the pit sells what the office priced.
+        if (isSalesSubmissionRow(row)) {
+          const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
+          return `
+            <tr class="qss-locked" title="Submitted on the Quarry Sales form. Fill in Price / Ton here; to take the sale back out, use the ✕.">
+              <td class="col-date">${ro(row.date)}</td>
+              <td>${ro(row.locationName)}</td>
+              <td>${ro(row.employeeName)}</td>
+              <td>${ro(row.customerName)}</td>
+              <td>${ro(row.productName)}</td>
+              <td class="col-num">${ro(row.tons)}</td>
+              <td class="col-payment">${ro(row.payment)}</td>
+              <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.pricePerTon === '' ? '' : row.pricePerTon}" placeholder="0.00" oninput="updateSalesNumber(${i}, 'pricePerTon', this.value)" /></td>
+              <td class="col-num"><div class="cell-readonly${tax ? '' : ' is-zero'}" id="sales-tax-${i}" title="${escapeHtml(salesTaxTitle(row))}">${taxRate ? formatMoney(tax) : '—'}</div></td>
+              <td class="col-total"><div class="cell-readonly${total ? '' : ' is-zero'}" id="sales-total-${i}" title="Revenue, excluding sales tax. This is the figure Home, Analytics, Inventory and Break-Even read.">${formatMoney(total)}</div></td>
+              <td class="col-total"><div class="cell-readonly${total + tax ? '' : ' is-zero'}" id="sales-due-${i}" title="Net sales plus sales tax — what the customer owes on this load.">${formatMoney(total + tax)}</div></td>
+              <td class="col-actions"><div class="qss-actions">${QSS_BADGE}<button class="row-del-btn" style="width:auto" title="Remove this sale — it goes from here and from the submitter's list" onclick="deleteSubmittedSale(${i})">✕</button></div></td>
+            </tr>`;
+        }
         return `
           <tr>
             <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateSalesCell(${i}, 'date', this.value)" /></td>
@@ -3770,9 +3811,49 @@
     function deleteSalesRow(index) {
       if (!salesLoaded) return;
       if (!salesRows[index]) return;
+      // Belt and braces: an injected row spliced out here would be restored by
+      // the server on the next save, so the grid would show it gone and then
+      // bring it back. deleteSubmittedSale is the way out for those.
+      if (isInjectedRow(salesRows[index])) return;
       salesRows.splice(index, 1);
       scheduleSalesSave();
       renderSales();
+    }
+
+    // Take a submitted sale back out — from this grid AND from the scale
+    // house's list, in one call, because the two have to agree. Deleting it
+    // here alone would leave the submitter looking at a sale they can see and
+    // the office cannot, and the blob guard would put the row back regardless.
+    async function deleteSubmittedSale(index) {
+      if (!salesLoaded) return;
+      const row = salesRows[index];
+      if (!row || !isSalesSubmissionRow(row)) return;
+      const subId = salesSubmissionId(row);
+      if (!subId) {
+        alert('This row was submitted on the Quarry Sales form but carries an id this page cannot read, so it cannot be removed from here.');
+        return;
+      }
+      const who = [row.customerName, row.productName].filter(Boolean).join(' · ') || 'this sale';
+      const ok = window.confirm(
+        `Remove ${who} on ${row.date || 'this date'}?\n\n` +
+        `It is deleted from Sales Tracking and from the submitter's list. This cannot be undone.`
+      );
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/quarry-sales-submissions?id=' + encodeURIComponent(subId), {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || !j.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      } catch (err) {
+        console.error('[quarry] sale delete failed:', err);
+        alert('Could not remove that sale — ' + (err && err.message ? err.message : 'please try again.'));
+        return;
+      }
+      // Re-read rather than splice: the delete happened on the server, and the
+      // rest of the list may have moved on while this row was being confirmed.
+      await refreshSales();
     }
 
     function updateSalesCell(index, field, value) {
@@ -3973,8 +4054,27 @@
     function isTimesheetRow(row) {
       return !!row && typeof row.id === 'string' && row.id.startsWith('tsq-');
     }
+    // A sale submitted on the Quarry Sales form. Its id is "qss-<submission>-row",
+    // minted by api/quarry-sales-submissions.js — see api/lib/quarry-sales-injected.js.
+    function isSalesSubmissionRow(row) {
+      return !!row && typeof row.id === 'string' && row.id.startsWith('qss-');
+    }
+    // The submission a row belongs to, for the delete call that removes both.
+    function salesSubmissionId(row) {
+      const m = /^qss-(\d+)-row$/.exec(String((row && row.id) || ''));
+      return m ? m[1] : null;
+    }
+    // Rows this tab did not create and may not delete from the grid. The
+    // server restores an injected row a save omitted, so a row-delete that
+    // only spliced the array locally would come straight back on the next
+    // refresh — looking, for the seconds in between, exactly like it worked.
+    function isInjectedRow(row) {
+      return isTimesheetRow(row) || isSalesSubmissionRow(row);
+    }
     const TS_LOCK_BADGE =
       '<span class="ts-lock-badge" title="Injected from an approved timesheet — manage it in Payroll">🔒 TS</span>';
+    const QSS_BADGE =
+      '<span class="qss-badge" title="Submitted on the Quarry Sales form — the pit, customer, product, tons and payment are the scale house\'s. Price / Ton is yours.">✓ SALE</span>';
 
     function renderCrush(keepFilters) {
       const tbody = document.getElementById('crushTbody');

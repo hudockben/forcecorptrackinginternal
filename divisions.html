@@ -1024,7 +1024,7 @@
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
-            <col class="c-div" /><col class="c-div" />
+            <col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-act" />
           </colgroup>
           <thead>
@@ -1048,11 +1048,12 @@
               <th scope="col" title="Fuel submissions (field entry)">Fuel</th>
               <th scope="col" title="Fuel admin (review &amp; approve)">Fuel Adm</th>
               <th scope="col" title="Driver (field entry)">Driver</th>
+              <th scope="col" title="Quarry Sales (field entry)">Qry Sales</th>
               <th scope="col"><span class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Actions</span></th>
             </tr>
           </thead>
           <tbody id="userListBody">
-            <tr><td colspan="16" class="mu-empty-cell">Loading…</td></tr>
+            <tr><td colspan="17" class="mu-empty-cell">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1224,6 +1225,13 @@
               <select id="mu-role-driver">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — See own hauls &amp; report back</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Quarry Sales <span style="text-transform:none;color:var(--muted)">(field entry)</span></span>
+              <select id="mu-role-quarry_sales">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — Submit own sales</option>
               </select>
             </div>
           </div>
@@ -1483,6 +1491,23 @@
                   <circle cx="18" cy="18" r="2.2"/>
                 </svg>`,
       },
+      // Quarry Sales is the field side of the quarry, the same shape as Fuel
+      // Submissions → Fuel Admin except that there is no queue: a submitted
+      // sale lands directly in the quarry's Sales Tracking tab.
+      quarry_sales: {
+        name:  'Quarry Sales',
+        desc:  'Scale-house entry for the quarry. Each load sold posts straight into the Quarry Sales Tracking tab.',
+        color: '#fb923c',
+        href:  'quarry-sales.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 20h18"/>
+                  <path d="M4 20l3.5-7 4.5 3"/>
+                  <circle cx="17" cy="8" r="4"/>
+                  <path d="M17 6.2v3.6"/>
+                  <path d="M18.3 7.1a1.3 1.3 0 0 0-2.6.2c0 1.4 2.6.7 2.6 2a1.3 1.3 0 0 1-2.6.1"/>
+                </svg>`,
+      },
       fuel_admin: {
         name:  'Fuel Admin',
         desc:  'Review, edit, and approve field fuel submissions, and report on fuel use across the divisions.',
@@ -1498,7 +1523,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -1698,15 +1723,16 @@
       level1:    'View only',
       no_access: 'No access',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
 
     // The five-level selects. The rest (timesheet, payroll, fuel, fuel_admin,
-    // driver) only offer one grant level each, so "set all" skips them.
+    // driver, quarry_sales) only offer one grant level each, so "set all"
+    // skips them.
     const DIV_KEYS_FULL_SCALE = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler'];
 
     // Column labels for the user table and the "saved" summary line. Only the
     // keys whose prettified form isn't just Capitalised need an entry.
-    const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver' };
+    const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver', quarry_sales: 'Qry Sales' };
     function divLabel(k) { return DIV_LABELS[k] || (k.charAt(0).toUpperCase() + k.slice(1)); }
 
     // Longer names for the division filter and the spreadsheet header, where
@@ -1718,6 +1744,7 @@
       scheduler: 'Scheduler (cross-division)', timesheet: 'Timesheet (field entry)',
       payroll: 'Payroll (admin review)', fuel: 'Fuel Submissions (field entry)',
       fuel_admin: 'Fuel Admin (review & approve)', driver: 'Driver (field entry)',
+      quarry_sales: 'Quarry Sales (field entry)',
     };
     function divLongLabel(k) { return DIV_LONG[k] || divLabel(k); }
 
@@ -1844,10 +1871,15 @@
       renderUserList();
     }
 
+    // Username column + one per division + the actions column. Derived rather
+    // than written out, because a hard-coded span is what quietly goes stale
+    // the next time a division is added.
+    const MU_SPAN = DIV_KEYS.length + 2;
+
     // ── Load / render ───────────────────────────────────────────────────────
     async function loadUserList() {
       const tbody = document.getElementById('userListBody');
-      tbody.innerHTML = '<tr><td colspan="16" class="mu-empty-cell">Loading…</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="${MU_SPAN}" class="mu-empty-cell">Loading…</td></tr>`;
       try {
         const res  = await fetch('/api/company/users', {
           headers: { Authorization: `Bearer ${token}` }
@@ -1864,7 +1896,7 @@
       } catch (err) {
         muUsers = [];
         document.getElementById('mu-count').textContent = '';
-        tbody.innerHTML = `<tr><td colspan="16" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${MU_SPAN}" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
       }
     }
 
@@ -1882,11 +1914,11 @@
       expBtn.disabled = list.length === 0;
 
       if (!muUsers.length) {
-        tbody.innerHTML = '<tr><td colspan="16" class="mu-empty-cell">No users yet. Choose “+ New User” to add the first one.</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="${MU_SPAN}" class="mu-empty-cell">No users yet. Choose “+ New User” to add the first one.</td></tr>`;
         return;
       }
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="16" class="mu-empty-cell">No users match those filters. <button class="mu-sort-btn" style="color:var(--green)" onclick="clearUserFilters()">Clear filters</button></td></tr>';
+        tbody.innerHTML = `<tr><td colspan="${MU_SPAN}" class="mu-empty-cell">No users match those filters. <button class="mu-sort-btn" style="color:var(--green)" onclick="clearUserFilters()">Clear filters</button></td></tr>`;
         return;
       }
 
