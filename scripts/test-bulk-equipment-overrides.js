@@ -61,10 +61,26 @@ const sandbox = {
   num2:        n => Number(n).toFixed(2),
   updateBulkRunBtn: () => {},
   renderBulkGroups: () => {},   // adding/removing a machine repaints the card
+  // Committing a cost code defers its repaint past the browser's focus
+  // transition. Nothing here depends on that timing, so the deferral is run
+  // straight through — what these assertions read is the template state, which
+  // is written before it either way.
+  setTimeout: fn => { fn(); },
 };
 vm.createContext(sandbox);
+// The travel prefill runs off the same regex the tally and the server read a
+// row by, so it comes across with the functions that call it.
+const travelReSrc = (src.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0];
+if (!travelReSrc) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
+vm.runInContext(travelReSrc, sandbox);
 vm.runInContext([
   'buildBulkGroups(entries) {',
+  // Picking a cost code now also offers the travel leg its code, so the
+  // lookup behind that offer has to be here or bulkCostCode dies on it.
+  'splitTravelCandidates(ccList) {',
+  'splitTravelSubsFor(ccList, costCode) {',
+  'splitPickTravelCodes(ccList, workCostCode) {',
+  'bulkApplyTravelPrefill(g) {',
   '_blankMachine() {',
   '_bulkRowCell(g, entryId) {',
   '_bulkRowItem(g, entryId, itemIdx) {',
@@ -74,6 +90,7 @@ vm.runInContext([
   'bulkRowSet(idx, entryId, itemIdx, field, value) {',
   'bulkRowEquipCommit(idx, entryId, itemIdx) {',
   'bulkRowLeg(idx, entryId, itemIdx, value) {',
+  'renderBulkGroupsSoon() {',
   'bulkTravelCostCode(idx, value) {',
   'bulkCostCode(idx, value) {',
   // Both validators below name the offending day through this, so it has to
