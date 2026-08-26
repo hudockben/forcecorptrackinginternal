@@ -682,6 +682,7 @@ console.log('\n[a repaint keeps the cursor where it was]');
     'cbScrollHi(input) {', 'cbClose(input) {', 'cbCommit(input) {',
     '_splitFocusSnapshot() {', '_splitFocusRestore(snap) {',
     'renderSplitRows() {', 'splitOnChange(idx, field, value) {',
+    'splitFlushPendingCommits() {',
   ];
   const harness = [
     travelReSrc,
@@ -860,6 +861,60 @@ console.log('\n[a repaint keeps the cursor where it was]');
   assert('and the table is repainted to show it', domVsState() === true,
     window.eval('[...document.querySelectorAll("#splitTbody tr")].map(function (tr) {' +
                 'return tr.querySelector(".cb[data-field=\\"sub_code\\"] .cb-input").value; }).join()'));
+
+  // ── What is on screen is what gets approved ───────────────────────────
+  // A typed code is not in the split until its cell commits, and that commit
+  // is deferred 120ms past the blur. Clicking Approve & Inject blurs the cell
+  // and runs the save in the same click, so the approval went out holding what
+  // the cell held BEFORE they typed. Typing into an empty cell at least failed
+  // loudly — the server rejects a row with no code. CORRECTING one did not:
+  // the old code validates, so a day's hours booked to the task the supervisor
+  // had just replaced, at that task's rate, with the box showing the code they
+  // meant.
+  window.eval("splitRows = [_blankSplitRow(false), _blankSplitRow(true)];" +
+              "splitRows[0].cost_code = 'Mobilization'; splitRows[0].sub_code = 'Travel';" +
+              "splitRows[0].labor_hours = 6.5; splitRows[1].labor_hours = 1.5;" +
+              'renderSplitRows()');
+  const correcting = cell(0, 'cost_code');
+  correcting.focus();
+  correcting.value = 'Silt Sock';           // typed, blurred by the button, uncommitted
+  window.eval('splitFlushPendingCommits()');
+  assert('a save flushes what the table is showing into the split',
+    window.eval('splitRows[0].cost_code') === 'Silt Sock',
+    window.eval('splitRows[0].cost_code'));
+  assert('and the sub code the old cost code carried goes with it',
+    window.eval('splitRows[0].sub_code') === '', window.eval('splitRows[0].sub_code'));
+
+  // Nothing pending: the flush must not disturb a split that is already true,
+  // and must not undo a clear the supervisor just made.
+  window.eval("splitRows = [_blankSplitRow(false), _blankSplitRow(true)];" +
+              "splitApplyTravelPrefill(); renderSplitRows()");
+  const beforeFlush = window.eval('JSON.stringify(splitRows.map(function (r) {' +
+                                  'return [r.cost_code, r.sub_code, r.code_source]; }))');
+  window.eval('splitFlushPendingCommits()');
+  assert('a flush with nothing pending changes nothing',
+    window.eval('JSON.stringify(splitRows.map(function (r) {' +
+                'return [r.cost_code, r.sub_code, r.code_source]; }))') === beforeFlush,
+    beforeFlush);
+
+  // The untick case again, this time through the save: the cell still shows
+  // the code it was drawn with, and the flush must not put it back.
+  const cleared = cell(1, 'sub_code');
+  cleared.focus();
+  window.eval("splitOnChange(1, 'is_travel', false)");
+  window._pendingInput = cleared;
+  window.eval('splitFlushPendingCommits()');
+  assert('and a flush does not resurrect codes an untick just cleared',
+    window.eval('splitRows[1].sub_code') === '', window.eval('splitRows[1].sub_code'));
+
+  // The flush only helps if the save runs it. Read off the source rather than
+  // driven, because splitSave is async and this file is not — what has to hold
+  // is that the call is there, ahead of the body it posts.
+  const saveSrc = src.slice(src.indexOf('async function splitSave()'),
+                            src.indexOf('JSON.stringify({ split: splitRows })'));
+  assert('and splitSave runs the flush before it posts the split',
+    saveSrc.length > 0 && /splitFlushPendingCommits\(\)/.test(saveSrc),
+    saveSrc.slice(0, 160));
 
   // ── One dropdown at a time ────────────────────────────────────────────
   // A click closes the other menus through the document handler; Tab did not,

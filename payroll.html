@@ -5465,8 +5465,39 @@
       }
     }
 
+    // A code the supervisor typed is not in the split until its cell commits,
+    // and that commit is deferred 120ms past the blur so a click on a menu
+    // option can be handled first. Clicking Approve & Inject blurs the cell and
+    // runs the save in the same click — so the approval went out holding
+    // whatever that cell held BEFORE they typed, and the split quietly caught
+    // up 120ms later with the wrong thing already injected.
+    //
+    // Typing into an empty cell at least failed loudly: the server rejects a
+    // row with no code. CORRECTING a code was the bad case — the old one
+    // validates, so a day's hours booked to the task the supervisor had just
+    // replaced, at that task's rate, with the box on screen showing the code
+    // they meant.
+    //
+    // Only cells showing something the split does not hold are committed, so
+    // an ordinary save does no extra work.
+    function splitFlushPendingCommits() {
+      for (const cb of document.querySelectorAll('#splitTbody .cb')) {
+        const input = cb.querySelector('.cb-input');
+        const field = cb.dataset.field;
+        if (!input || !field) continue;
+        const uid = cb.dataset.rowUid;
+        const row = uid ? splitRows.find(r => r && r._uid === uid) : null;
+        if (!row) continue;
+        const held = String(row[field] == null ? '' : row[field]);
+        if (String(input.value == null ? '' : input.value).trim() === held) continue;
+        cbCommit(input);
+      }
+    }
+
     async function splitSave() {
       if (!splitEntry || !splitMode) return;
+      // Whatever the table is showing is what the supervisor is approving.
+      splitFlushPendingCommits();
       const msg = document.getElementById('splitMsg');
       msg.className = 'modal-msg';
       const btn = document.getElementById('splitSaveBtn');
