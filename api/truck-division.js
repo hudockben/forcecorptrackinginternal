@@ -116,13 +116,35 @@ module.exports = async (req, res) => {
       const blobHasAny = !!fromBlob && (
         arr(fromBlob.units).length || arr(fromBlob.drivers).length || arr(fromBlob.customers).length);
 
+      // What each company is billed per hour, as set in the Trucking tab's
+      // Manage Lists. Payroll pre-fills a haul's fee from it, so a day is
+      // approved at the rate the office agreed rather than at whatever the
+      // approver remembers — the same number the tab itself drops onto a row
+      // when you name a customer on it.
+      //
+      // Read from the blob whatever the rosters came from: rates have no
+      // normalized table (dropdown_lists stores a customer as a bare name), so
+      // the blob is the only place they exist. Same shape the tab stores and
+      // the full GET returns — { 'Kinkead': '121' } — normalized here so a
+      // reader never has to guess at a stray space or a non-numeric value.
+      const rates = {};
+      const rawRates = asObj(fromBlob && fromBlob.rates);
+      if (rawRates) {
+        for (const key of Object.keys(rawRates)) {
+          const name = String(key).trim();
+          const val  = String(rawRates[key] == null ? '' : rawRates[key]).trim();
+          if (name && val && !isNaN(parseFloat(val))) rates[name] = val;
+        }
+      }
+
       return res.json({
         lists: blobHasAny
-          ? { drivers: arr(fromBlob.drivers), customers: arr(fromBlob.customers), units: arr(fromBlob.units) }
+          ? { drivers: arr(fromBlob.drivers), customers: arr(fromBlob.customers), units: arr(fromBlob.units), rates }
           : {
               drivers:   driverRows.map(r => r.value),
               customers: customerRows.map(r => r.value),
               units:     unitRows.map(r => ({ name: r.name, number: r.number || '' })),
+              rates,
             },
       });
     }

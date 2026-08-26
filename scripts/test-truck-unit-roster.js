@@ -59,8 +59,11 @@ console.log('\n[payroll.html — the approve / Edit Row modal]');
   assert('the roster comes from the lists-only route, not the full GET',
     /fetch\('\/api\/truck-division\?lists=1'/.test(PAYROLL));
   // The roster arrives asynchronously while the modal is already on screen, so
-  // it must never touch the value — that is what the staleness and dirty guards
-  // protect, and a roster write would walk straight past both.
+  // the FETCH itself must never touch a value. What is done with the answer is
+  // the caller's business, and one part of it — the haul fee, filled in from the
+  // customer's rate — does write a box; it goes through the staleness and
+  // touched guards to do it (see test-haul-fee-rate-prefill.js). Here the rule
+  // is narrower and still absolute: the loader hands back data, nothing else.
   const loader = slice(PAYROLL, 'function truckListsLoad()', 'const truckUnitRoster', 'payroll loader');
   assert('the roster never assigns an input value', !/\.value\s*=/.test(loader), loader.match(/.*\.value\s*=.*/) || '');
   // One fetch, two rosters. The customer list rides along because a split day's
@@ -74,10 +77,19 @@ console.log('\n[payroll.html — the approve / Edit Row modal]');
   // reworded, and a marker that moves reads as a broken test rather than a
   // broken guarantee.
   const opener = slice(PAYROLL, 'truckListsLoad().then', 'const wantsLookup', 'payroll roster hook');
-  assert('when it lands it fills only the options and the note',
-    /tk_unitOptions/.test(opener) && /truckUnitHintRefresh\(\)/.test(opener) && !/\.value\s*=/.test(opener));
-  assert('including the haul customer list, without touching a value',
+  assert('when it lands it fills the options and the note',
+    /tk_unitOptions/.test(opener) && /truckUnitHintRefresh\(\)/.test(opener));
+  assert('including the haul customer list',
     /hl_coOptions/.test(opener));
+  // The one thing here that DOES set a value. It may only do so behind the same
+  // staleness guard the pre-fill fetch below takes: a roster landing after the
+  // approver has moved to another day would otherwise put one entry's rate into
+  // another entry's form, and no touched-set can catch that — it is the wrong
+  // form, not the wrong box.
+  assert('the haul-fee pre-fill is fenced by the staleness guard',
+    /if \(seq !== truckingFetchSeq\) return;\s*\n\s*if \(haulRateApply\(\)\)/.test(opener));
+  assert('and nothing here writes an input value directly',
+    !/\.value\s*=/.test(opener), opener.match(/.*\.value\s*=.*/) || '');
 }
 
 console.log('\n[timesheet.html — the driver\'s form]');

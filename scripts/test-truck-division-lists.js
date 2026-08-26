@@ -20,6 +20,9 @@
  *     synchronously; the tables are synced fire-and-forget and lag),
  *   - an empty blob falls back to the tables rather than answering nothing,
  *   - the legacy unscoped blob key is still read,
+ *   - the per-customer haul rates ride along, whichever source the rosters came
+ *     from — payroll fills a haul's fee in from them, and they live only in the
+ *     blob (dropdown_lists stores a customer as a bare name),
  *   - and the full GET is left alone by the new branch.
  *
  * No DB or server required.
@@ -148,18 +151,89 @@ const UNIT_ROWS = [
     assert('it falls back to the tables', r.body.lists.units.length === 3, JSON.stringify(r.body.lists.units));
   }
 
+  console.log('\n[the customer rates ride along]');
+  {
+    // What each company is billed per hour, set in the tab's Manage Lists.
+    // Payroll pre-fills a haul's fee from it, so it has to come down the same
+    // cheap route as the rosters — the alternative is payroll downloading every
+    // tracking row to learn one number.
+    install({
+      appData: {
+        'FCT:fct_truck_division_lists': {
+          drivers: ['Boring, Jamey'], customers: ['Kinkead'],
+          units: [{ name: '1000', number: '21' }],
+          rates: { Kinkead: '121', 'Derry Stone': '98.50' },
+        },
+      },
+      unitRows: UNIT_ROWS, drivers: [], customers: [],
+    });
+    const r = await get({ lists: '1' });
+    assert('a rate comes back with the roster it belongs to',
+      r.body.lists.rates && r.body.lists.rates.Kinkead === '121', JSON.stringify(r.body.lists.rates));
+    assert('and so does every other one', r.body.lists.rates['Derry Stone'] === '98.50',
+      JSON.stringify(r.body.lists.rates));
+  }
+  {
+    // The case the fallback makes tricky: the blob's ROSTERS are empty, so the
+    // rosters come from the tables — but the rates are in the blob or nowhere,
+    // because the tables store a customer as a bare name. Reading them off the
+    // chosen source rather than off the blob would drop them silently here.
+    install({
+      appData: {
+        'FCT:fct_truck_division_lists': { drivers: [], customers: [], units: [], rates: { Kinkead: '121' } },
+      },
+      unitRows: UNIT_ROWS, drivers: ['Barr, Mike'], customers: ['CNX'],
+    });
+    const r = await get({ lists: '1' });
+    assert('rates survive a fallback to the tables',
+      r.body.lists.rates.Kinkead === '121', JSON.stringify(r.body.lists));
+    assert('while the rosters still come from them', r.body.lists.units.length === 3,
+      JSON.stringify(r.body.lists.units));
+  }
+  {
+    // A rate that is not a price must not reach a box that reads as money.
+    install({
+      appData: {
+        'FCT:fct_truck_division_lists': {
+          drivers: [], customers: [], units: [{ name: '1000', number: '21' }],
+          rates: { Kinkead: '', CNX: 'call us', '  ': '99', ' Derry Stone ': ' 98.50 ' },
+        },
+      },
+      unitRows: [], drivers: [], customers: [],
+    });
+    const r = await get({ lists: '1' });
+    assert('a blank rate is dropped', !('Kinkead' in r.body.lists.rates), JSON.stringify(r.body.lists.rates));
+    assert('so is a word', !('CNX' in r.body.lists.rates), JSON.stringify(r.body.lists.rates));
+    assert('so is a nameless one', !('' in r.body.lists.rates), JSON.stringify(r.body.lists.rates));
+    assert('and a good one is trimmed on the way out', r.body.lists.rates['Derry Stone'] === '98.50',
+      JSON.stringify(r.body.lists.rates));
+  }
+  {
+    install({ appData: {}, unitRows: UNIT_ROWS, drivers: [], customers: [] });
+    const r = await get({ lists: '1' });
+    // An absent key would read as "not supported by this server" at the far end;
+    // an empty object reads as "this company prices nothing", which is the truth.
+    assert('a company with no rates gets an empty set, never a missing key',
+      r.body.lists.rates && typeof r.body.lists.rates === 'object'
+      && Object.keys(r.body.lists.rates).length === 0, JSON.stringify(r.body.lists));
+  }
+
   console.log('\n[legacy unscoped key still readable]');
   {
     // Companies that predate the company-scoped keys keep their lists under the
     // bare key; the full GET reads it, so this must too.
     install({
-      appData: { 'fct_truck_division_lists': { drivers: [], customers: [], units: [{ name: 'OLD-1', number: '1' }] } },
+      appData: { 'fct_truck_division_lists': {
+        drivers: [], customers: [], units: [{ name: 'OLD-1', number: '1' }], rates: { Kinkead: '121' },
+      } },
       unitRows: [], drivers: [], customers: [],
     });
     const r = await get({ lists: '1' });
     assert('the legacy roster comes back',
       r.body.lists.units.length === 1 && r.body.lists.units[0].name === 'OLD-1',
       JSON.stringify(r.body.lists.units));
+    assert('and its rates with it', r.body.lists.rates.Kinkead === '121',
+      JSON.stringify(r.body.lists.rates));
   }
 
   console.log('\n[nothing anywhere]');
