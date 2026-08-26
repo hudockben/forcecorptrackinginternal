@@ -358,6 +358,7 @@
       border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; white-space: nowrap;
     }
     .lists-add-btn:hover { background: var(--orange-dim); }
+    .lists-add-btn:disabled { background: #3a3f4a; color: #8b909c; cursor: default; }
     .lists-items { display: flex; flex-direction: column; gap: 0.25rem; }
     .lists-item {
       display: flex; align-items: center; justify-content: space-between;
@@ -392,6 +393,18 @@
     .li-rate::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     .li-rate:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
     .li-rate::placeholder { color: #5b6270; }
+    /* The merge form stands in for the row it belongs to, so it is boxed like
+       one and marked as the thing being acted on. */
+    .lists-merge {
+      background: var(--surface); border: 1px solid #2563eb;
+      border-radius: 4px; padding: 0.5rem 0.55rem 0.55rem;
+    }
+    .lists-merge-sel {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.78rem;
+      padding: 0.28rem 0.4rem; outline: none;
+    }
+    .lists-merge-sel:focus { border-color: #2563eb; }
     .lists-hint {
       font-size: 0.66rem; color: var(--muted); line-height: 1.45;
       margin-bottom: 0.45rem;
@@ -1599,13 +1612,41 @@
       return best;
     }
 
-    /** Shape whatever the server hands back into the four string arrays. */
+    /* A removed unit's number, kept with the removal. Everything else on these
+       lists is just a name; a unit is a name AND the number the office reads
+       beside it on every row, and dropping that on the way out means Put back
+       hands back half a unit. */
+    function _keepRemovedUnitNumber(name) {
+      const u = (divTruckLists.units || []).find(x => x && x.name === name);
+      if (!divTruckLists.removed || typeof divTruckLists.removed !== 'object') divTruckLists.removed = {};
+      const map = divTruckLists.removed.unitNumbers = divTruckLists.removed.unitNumbers || {};
+      map[String(name).trim()] = (u && u.number) || '';
+    }
+    function _removedUnitNumber(name) {
+      const map = (divTruckLists.removed || {}).unitNumbers || {};
+      const hit = Object.keys(map).find(n => _remKey(n) === _remKey(name));
+      return hit ? String(map[hit] == null ? '' : map[hit]) : '';
+    }
+    function _forgetRemovedUnitNumber(name) {
+      const map = (divTruckLists.removed || {}).unitNumbers;
+      if (!map) return;
+      Object.keys(map).forEach(n => { if (_remKey(n) === _remKey(name)) delete map[n]; });
+    }
+
+    /** Shape whatever the server hands back into the four string arrays, plus
+     *  the numbers of any units among them. */
     function _normRemoved(r) {
-      const out = { drivers: [], customers: [], units: [], materials: [] };
+      const out = { drivers: [], customers: [], units: [], materials: [], unitNumbers: {} };
       if (r && typeof r === 'object') {
-        Object.keys(out).forEach(k => {
+        ['drivers', 'customers', 'units', 'materials'].forEach(k => {
           if (Array.isArray(r[k])) out[k] = r[k].map(v => String(v == null ? '' : v).trim()).filter(Boolean);
         });
+        if (r.unitNumbers && typeof r.unitNumbers === 'object') {
+          Object.keys(r.unitNumbers).forEach(n => {
+            const name = String(n).trim();
+            if (name) out.unitNumbers[name] = String(r.unitNumbers[n] == null ? '' : r.unitNumbers[n]).trim();
+          });
+        }
       }
       return out;
     }
@@ -1905,9 +1946,13 @@
     // is saved, and opening the panel fresh starts with a clean slate.
     let _listsUndo = null;
     let _listsShowRemoved = new Set();
+    // The item whose merge form is open, as { key, from }. One at a time: the
+    // form replaces the row it belongs to, so it reads as that name's own.
+    let _listsMerge = null;
 
     function openManageLists() {
       _listsUndo = null;
+      _listsMerge = null;
       document.getElementById('lists-backdrop').classList.add('open');
       renderListsPanel();
       // Fetched on first open rather than at page load: most visits to this
@@ -1953,15 +1998,21 @@
          reversible, and saying so where the click happened beats a dialog in
          front of every one of them. */
       const undoHTML = () => {
-        if (!_listsUndo) return '';
+        const u = _listsUndo;
+        if (!u) return '';
+        const txt = u.kind === 'merge'
+          ? `Merged <strong>${esc(u.from)}</strong> into <strong>${esc(u.to)}</strong> — ${
+              u.ids.length ? `${u.ids.length} row${u.ids.length === 1 ? '' : 's'} renamed` : 'no rows to rename'
+            }${u.locked ? `, ${u.locked} payroll row${u.locked === 1 ? '' : 's'} left alone (fix ${u.locked === 1 ? 'it' : 'those'} in Payroll)` : ''}.`
+          : `Removed <strong>${esc(u.value)}</strong>${
+              u.uses
+                ? ` — ${u.uses} row${u.uses === 1 ? '' : 's'} keep it and still total the same.`
+                : ' — no rows used it.'
+            }`;
         return `
           <div class="lists-undo">
-            <span class="u-txt">Removed <strong>${esc(_listsUndo.value)}</strong>${
-              _listsUndo.uses
-                ? ` — ${_listsUndo.uses} row${_listsUndo.uses === 1 ? '' : 's'} keep it and still total the same.`
-                : ' — no rows used it.'
-            }</span>
-            <button onclick="undoListRemoval()">Undo</button>
+            <span class="u-txt">${txt}</span>
+            <button onclick="undoListChange()">Undo</button>
           </div>`;
       };
 
@@ -1970,7 +2021,8 @@
          the stored rows — which also means this is the only way back. Folded
          away by default: it is a recycle bin, not part of the list. */
       const removedHTML = (key, label) => {
-        const gone = ((divTruckLists.removed || {})[key] || []).filter(Boolean);
+        const bucket = (divTruckLists.removed || {})[key];
+        const gone = (Array.isArray(bucket) ? bucket : []).filter(Boolean);
         if (gone.length === 0) return '';
         const open = _listsShowRemoved.has(key);
         return `
@@ -1999,6 +2051,57 @@
            onclick="removeFromList('${key}','${argEsc(v)}')"
            title="Remove from the picker. Rows that already name it keep it and still total the same.">&#10005;</button>`;
 
+      /* Merging is the answer to two spellings of one company, so the button
+         only appears where there is something to merge into. */
+      const mergeBtn = (key, v) => {
+        const others = key === 'units'
+          ? (divTruckLists.units || []).map(u => u && u.name).filter(Boolean)
+          : (divTruckLists[key] || []);
+        if (others.filter(o => _remKey(o) !== _remKey(v)).length === 0) return '';
+        return `<button class="lists-item-del" style="margin-left:0.3rem"
+          onclick="openMerge('${key}','${argEsc(v)}')"
+          title="Merge into another name — renames it on the rows that carry it, then removes it from the picker.">&#8676;</button>`;
+      };
+
+      /* The form for one name, in the place that name sits. Says what it will
+         do — how many rows, and how many it cannot — before it is run.
+
+         Nothing is preselected unless it is obviously right. The list is
+         alphabetical, so a plain <select> would sit on whatever sorts first
+         and one stray click would fold a company into an unrelated one. */
+      const mergeForm = (key, v) => {
+        const others = (key === 'units'
+          ? (divTruckLists.units || []).map(u => u && u.name).filter(Boolean)
+          : (divTruckLists[key] || []))
+          .filter(o => _remKey(o) !== _remKey(v))
+          .sort((a, b) => String(a).localeCompare(String(b)));
+        const pick = _mergeSuggestion(key, v, others);
+        const { ids, locked } = _mergeTargets(key, v);
+        return `
+          <div class="lists-merge">
+            <div class="lists-hint" style="margin-bottom:0.35rem;color:var(--text)">
+              Merge <strong>${esc(v)}</strong> into:
+            </div>
+            <select id="lists-merge-into" class="lists-merge-sel"
+              onchange="var b=document.getElementById('lists-merge-go'); if(b) b.disabled = !this.value">
+              ${pick ? '' : '<option value="">— choose a name —</option>'}
+              ${others.map(o => `<option value="${esc(o)}"${o === pick ? ' selected' : ''}>${esc(o)}${
+                o === pick ? ' — same name, different spelling' : ''}</option>`).join('')}
+            </select>
+            <div class="lists-hint" style="margin:0.35rem 0 0.4rem">
+              ${ids.length
+                ? `Renames it on ${ids.length} row${ids.length === 1 ? '' : 's'}, then drops it from the picker.`
+                : `No rows carry it — this just drops it from the picker.`}
+              ${locked ? `<br><span style="color:var(--amber)">${locked} payroll row${locked === 1 ? '' : 's'} keep${locked === 1 ? 's' : ''} the old name — change ${locked === 1 ? 'it' : 'those'} in Payroll.</span>` : ''}
+            </div>
+            <div style="display:flex;gap:0.4rem;align-items:center">
+              <button class="lists-add-btn" id="lists-merge-go" onclick="confirmMerge()"${pick ? '' : ' disabled'}>Merge</button>
+              <button class="lists-link" onclick="cancelMerge()">Cancel</button>
+            </div>
+          </div>`;
+      };
+      const merging = (key, v) => !!(_listsMerge && _listsMerge.key === key && _remKey(_listsMerge.from) === _remKey(v));
+
       const section = (key, label, items) => `
         <div class="lists-section">
           <div class="lists-section-title">${label}</div>
@@ -2010,10 +2113,11 @@
           <div class="lists-items">
             ${items.length === 0
               ? `<span style="font-size:0.72rem;color:var(--muted)">No ${label.toLowerCase()} yet.</span>`
-              : items.map(v => `
+              : items.map(v => merging(key, v) ? mergeForm(key, v) : `
                   <div class="lists-item">
                     <span class="li-name">${esc(v)}</span>
                     ${uses[key] ? countChip(key, v) : ''}
+                    ${uses[key] ? mergeBtn(key, v) : ''}
                     ${delBtn(key, v)}
                   </div>`).join('')
             }
@@ -2031,7 +2135,8 @@
           <div class="lists-section-title">Customers &amp; Rates</div>
           <div class="lists-hint">
             The rate fills in a row's Haul Fee once you name the customer. A row that
-            already has a fee is left alone.
+            already has a fee is left alone. Two spellings of one company?
+            <strong>&#8676;</strong> folds one into the other and renames its rows.
           </div>
           <div class="lists-add-row">
             <input type="text" id="lists-new-customers" placeholder="Add customer…"
@@ -2051,6 +2156,7 @@
             ${items.length === 0
               ? `<span style="font-size:0.72rem;color:var(--muted)">No customers yet.</span>`
               : items.map(c => {
+                  if (merging('customers', c)) return mergeForm('customers', c);
                   const rate = customerRate(c);
                   const past = rate ? '' : _historicRate(c);
                   return `
@@ -2061,6 +2167,7 @@
                       value="${esc(rate)}" placeholder="${past ? esc(past) : 'rate'}"
                       title="${past ? 'Usually billed at ' + esc(past) + ' on past rows' : 'Rate this customer is billed at'}"
                       onchange="updateCustomerRate('${argEsc(c)}', this.value)">
+                    ${mergeBtn('customers', c)}
                     ${delBtn('customers', c)}
                   </div>`;
                 }).join('')
@@ -2114,10 +2221,11 @@
           <div class="lists-items">
             ${divTruckLists.units.length === 0
               ? `<span style="font-size:0.72rem;color:var(--muted)">No units yet.</span>`
-              : divTruckLists.units.map(u => `
+              : divTruckLists.units.map(u => merging('units', u.name) ? mergeForm('units', u.name) : `
                   <div class="lists-item">
                     <span class="li-name">${esc(u.name)}<span style="color:var(--muted);font-size:0.7rem;margin-left:0.4rem">#${esc(u.number)}</span></span>
                     ${countChip('units', u.name)}
+                    ${mergeBtn('units', u.name)}
                     <button class="lists-item-del" style="margin-left:0.4rem" onclick="removeUnit('${argEsc(u.name)}')"
                       title="Remove from the picker. Rows that already name it keep it and still total the same.">&#10005;</button>
                   </div>`).join('')
@@ -2169,7 +2277,7 @@
       // otherwise be back the next time the page opened.
       _setRemovedName(key, val, true);
       divTruckLists[key] = divTruckLists[key].filter(v => v !== val);
-      _listsUndo = { key, value: val, uses: _countRowsNaming(key, val) };
+      _listsUndo = { kind: 'remove', key, value: val, uses: _countRowsNaming(key, val) };
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
@@ -2186,12 +2294,31 @@
       return divEntries.filter(e => _remKey(e[field]) === k).length;
     }
 
-    /** Take back the last removal, from the bar the removal put up. */
-    function undoListRemoval() {
-      if (!_listsUndo) return;
-      const { key, value } = _listsUndo;
+    /** Take back the last change to a list, from the bar it put up. */
+    function undoListChange() {
+      const u = _listsUndo;
+      if (!u) return;
       _listsUndo = null;
-      restoreToList(key, value);
+      if (u.kind === 'merge') _undoMerge(u);
+      else restoreToList(u.key, u.value);
+    }
+
+    /** Open the merge form on one name, or shut it. */
+    function openMerge(key, val) {
+      _listsMerge = { key, from: String(val == null ? '' : val).trim() };
+      renderListsPanel();
+    }
+    function cancelMerge() {
+      _listsMerge = null;
+      renderListsPanel();
+    }
+    /** Run the merge the open form describes. */
+    function confirmMerge() {
+      if (!_listsMerge) return;
+      const sel = document.getElementById('lists-merge-into');
+      const to  = sel ? (sel.value || '').trim() : '';
+      if (!to) return;
+      mergeIntoName(_listsMerge.key, _listsMerge.from, to);
     }
 
     /** Fold a section's removed-names strip open or shut. */
@@ -2222,15 +2349,148 @@
       renderListsPanel();
     }
 
+    /* ── Merging two spellings of the same thing ──
+       Deleting a duplicate tidies the picker and leaves the rows alone, which
+       is right for a name nobody should pick again. It is not enough for
+       "kovalchick" and "Kovalchick": the rows still say two different things,
+       so Analytics bills one company as two and the Scheduler boards it twice.
+       Merging is the other half — it renames the spelling on the rows that
+       carry it, then removes it from the picker.
+
+       What it will not touch is a payroll-injected row: its driver, unit and
+       customer come off an approved timesheet, and the server refuses this
+       tab's writes to them (api/lib/injected-blob-guard.js). Those are counted
+       and named rather than silently skipped — the fix for one is in Payroll. */
+    const MERGE_FIELD = { customers: 'customer', drivers: 'driver', units: 'unit' };
+
+    /** Rows naming `val` that this tab may rewrite, and the count of those it
+     *  may not. Exact spelling: merging is what joins two spellings, so it must
+     *  not quietly take a third along with them. */
+    function _mergeTargets(key, val) {
+      const field = MERGE_FIELD[key];
+      const k = _remKey(val);
+      const out = { ids: [], locked: 0 };
+      if (!field || !k) return out;
+      divEntries.forEach(e => {
+        if (_remKey(e[field]) !== k) return;
+        if (isPayrollRowId(e.id)) out.locked++;
+        else out.ids.push(e.id);
+      });
+      return out;
+    }
+
+    /** The name this one is obviously a spelling of, if there is exactly one:
+     *  same letters and digits, ignoring case, spaces and punctuation — which
+     *  is what separates "kovalchick" from "Kovalchick" and "Kinkead HC" from
+     *  "Kinkead". Ties go to the spelling more rows use, and anything less
+     *  clear-cut is left for the office to choose. */
+    function _mergeSuggestion(key, from, others) {
+      const norm = v => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const k = norm(from);
+      if (!k) return '';
+      const same = (others || []).filter(o => norm(o) === k);
+      if (same.length === 0) return '';
+      return same.reduce((best, o) =>
+        _countRowsNaming(key, o) > _countRowsNaming(key, best) ? o : best, same[0]);
+    }
+
+    /** Fold `from` into `to`: rename the rows, then drop `from` from the list. */
+    async function mergeIntoName(key, from, to) {
+      const field = MERGE_FIELD[key];
+      const src = String(from == null ? '' : from).trim();
+      const dst = String(to == null ? '' : to).trim();
+      if (!field || !src || !dst || _remKey(src) === _remKey(dst)) return;
+
+      const { ids, locked } = _mergeTargets(key, src);
+      const idSet = new Set(ids);
+      divEntries.forEach(e => { if (idSet.has(e.id)) e[field] = dst; });
+
+      // The picker loses the spelling, and the sweep is told so — a payroll row
+      // still naming it would otherwise put it straight back.
+      _setRemovedName(key, src, true);
+      if (key === 'units') {
+        _keepRemovedUnitNumber(src);
+        divTruckLists.units = (divTruckLists.units || []).filter(u => u && u.name !== src);
+      } else {
+        divTruckLists[key] = (divTruckLists[key] || []).filter(v => v !== src);
+      }
+
+      // A rate follows its company, but never over one already set: the
+      // surviving name's rate is the one the office chose to keep.
+      let rateMoved = false;
+      if (key === 'customers') {
+        const srcRate = customerRate(src);
+        if (srcRate && !customerRate(dst)) rateMoved = setCustomerRate(dst, srcRate);
+      }
+
+      // A sign-in points at a driver by name, so a merged name leaves the phone
+      // matching nothing and the driver seeing an empty board.
+      const logins = [];
+      if (key === 'drivers') {
+        Object.keys(driverLoginMap || {}).forEach(u => {
+          if (_remKey(driverLoginMap[u]) === _remKey(src)) { driverLoginMap[u] = dst; logins.push(u); }
+        });
+        if (logins.length) saveDriverLogins();
+      }
+
+      // The board names the same people and companies. Loaded first on purpose:
+      // renaming an empty board and marking it dirty is how a merge could cost
+      // someone their week's assignments.
+      const sched = [];
+      if (MERGE_FIELD[key] && (field === 'driver' || field === 'customer' || field === 'unit')) {
+        try { await schedEnsureLoaded(); } catch { /* board stays as it is */ }
+        if (_schedLoaded) {
+          Object.keys(schedAssignments || {}).forEach(d => {
+            (schedAssignments[d] || []).forEach(a => {
+              if (a && _remKey(a[field]) === _remKey(src)) { a[field] = dst; sched.push({ d, id: a.id }); }
+            });
+          });
+          if (sched.length) schedMarkDirty();
+        }
+      }
+
+      _listsUndo = { kind: 'merge', key, field, from: src, to: dst,
+                     ids, locked, rateMoved, logins, sched };
+      _listsMerge = null;
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /** Unpick a merge: every row, link and assignment it renamed carried the
+     *  same old name, so putting them back is setting that name again. */
+    function _undoMerge(u) {
+      const idSet = new Set(u.ids);
+      divEntries.forEach(e => { if (idSet.has(e.id)) e[u.field] = u.from; });
+      (u.logins || []).forEach(usr => { if (driverLoginMap) driverLoginMap[usr] = u.from; });
+      if ((u.logins || []).length) saveDriverLogins();
+      if ((u.sched || []).length && _schedLoaded) {
+        const back = new Set(u.sched.map(x => x.id));
+        Object.keys(schedAssignments || {}).forEach(d =>
+          (schedAssignments[d] || []).forEach(a => { if (a && back.has(a.id)) a[u.field] = u.from; }));
+        schedMarkDirty();
+      }
+      if (u.rateMoved) setCustomerRate(u.to, '');
+      // Last, because it is what saves the whole undo and redraws behind it.
+      restoreToList(u.key, u.from);
+    }
+
     /** Put a deleted name back. Clears the record of the deletion and re-adds
      *  the name, so the next load's re-seed leaves it alone either way. */
     function restoreToList(key, val) {
       const v = String(val == null ? '' : val).trim();
       if (!v) return;
       _setRemovedName(key, v, false);
-      if (_listsUndo && _listsUndo.key === key && _remKey(_listsUndo.value) === _remKey(v)) _listsUndo = null;
+      if (_listsUndo && _listsUndo.key === key && _remKey(_listsUndo.value || _listsUndo.from) === _remKey(v)) _listsUndo = null;
       if (key === 'units') {
-        if (!divTruckLists.units.some(u => u && u.name === v)) divTruckLists.units.push({ name: v, number: '' });
+        // The number came off the list with the name. Putting a unit back
+        // without it leaves every row that names it showing a blank, so the
+        // number is kept with the removal and handed back here.
+        if (!divTruckLists.units.some(u => u && u.name === v)) {
+          divTruckLists.units.push({ name: v, number: _removedUnitNumber(v) });
+        }
+        _forgetRemovedUnitNumber(v);
         divTruckLists.units.sort((a, b) => String(a.name).localeCompare(String(b.name)));
       } else {
         if (!Array.isArray(divTruckLists[key])) divTruckLists[key] = [];
@@ -2298,8 +2558,9 @@
 
     function removeUnit(name) {
       _setRemovedName('units', name, true);
+      _keepRemovedUnitNumber(name);
       divTruckLists.units = divTruckLists.units.filter(u => u.name !== name);
-      _listsUndo = { key: 'units', value: name, uses: _countRowsNaming('units', name) };
+      _listsUndo = { kind: 'remove', key: 'units', value: name, uses: _countRowsNaming('units', name) };
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
