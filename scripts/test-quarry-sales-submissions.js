@@ -25,18 +25,27 @@ process.env.TZ = 'Europe/Berlin';
  *    from Manage Lists on every write. Drop that and "Homer City" and "Homer
  *    city" become two pits in every report the quarry runs.
  *
- * 2. THE OFFICE'S PRICE SURVIVES. Price per ton is the one column of an
- *    injected row the office owns, and a re-submitted correction rebuilds the
- *    row. Rebuilding it from scratch turns a priced load into a $0 one, with
- *    nothing on screen to say so.
+ * 2. THE PRICE IS A DIVISION, AND IT HAS TO COME BACK. Nobody at a scale house
+ *    knows a price per ton, so the form asks what the customer was charged and
+ *    the price is worked out from it. Round that quotient to two places and a
+ *    $100 load over 3 tons bills $99.99 — so it is carried to four, and tons
+ *    times price has to return the amount charged inside the cent the grid
+ *    rounds to. The form shows the same figure as it is typed, off its own copy
+ *    of the rule, and a page that showed one number and stored another would be
+ *    worse than a page that showed nothing.
  *
- * 3. A SUBMITTED SALE IS NOT THE TAB'S TO DROP. The blob guard restores an
+ * 3. THE OFFICE'S PRICE SURVIVES. Price per ton is the one column of an
+ *    injected row the office owns, and it is filled FORWARD ONLY — onto a cell
+ *    still blank. A retried submit that restated it would silently re-price a
+ *    load that has already been invoiced.
+ *
+ * 4. A SUBMITTED SALE IS NOT THE TAB'S TO DROP. The blob guard restores an
  *    injected row a whole-blob save omitted, so a row deleted only in the grid
  *    comes back on the next refresh — which looks, for the seconds in between,
  *    exactly like it worked. Removal has to go through the endpoint, which
  *    takes the submission with it.
  *
- * 4. OWN ROWS BY DEFAULT. A request that names no scope gets the caller's own
+ * 5. OWN ROWS BY DEFAULT. A request that names no scope gets the caller's own
  *    sales, for every caller including the quarry office — company-wide is an
  *    opt-in, never something a page falls into by forgetting to ask.
  */
@@ -77,7 +86,8 @@ Module._load = function (request) {
 
 const handler = require(path.resolve(__dirname, '..', 'api', 'quarry-sales-submissions.js'));
 const {
-  FIELDS, MAX_TONS, safeDate, parseTons, normalizeBody, missingFields,
+  FIELDS, MAX_TONS, MAX_AMOUNT, safeDate, parseTons, parseAmount,
+  pricePerTonFrom, priced, normalizeBody, missingFields,
   dbToEntry, resolveListNames, injectSalesRow, removeSalesRow,
 } = handler._test;
 const { PAYMENT_OPTIONS } = require(path.resolve(__dirname, '..', 'api', 'lib', 'quarry-sales-options.js'));
@@ -102,6 +112,7 @@ const FULL = {
   customer_id: 'cus1',  customer_name: 'Kinkead Aggregates',
   product_id:  'prd1',  product_name:  '2A Modified',
   tons: '24.5',
+  amount_charged: '441.00',
   payment: 'Cash',
 };
 
@@ -113,6 +124,25 @@ const LISTS = {
   customer:  [{ id: 'cus1', name: 'Kinkead Aggregates LLC' }],
   product:   [{ id: 'prd1', name: '2A Modified' }],
 };
+
+// Every ticket the price rule is measured against — the server's copy and the
+// form's. Kept as data so pageTests() can run the page's copy through exactly
+// the same cases and fail if the two ever disagree by so much as an edge.
+const PRICE_CASES = [
+  // [amount, tons, expected price/ton or null, what it is]
+  [441,      24.5,  18,        'an ordinary ticket that lands on the cent'],
+  [100,      3,     33.3333,   'a quotient that does not — four places, not two'],
+  [441.37,   24.5,  18.0151,   'an odd total over an ordinary weight'],
+  [1,        200,   0.005,     'a nominal charge over a full load'],
+  [441,      0,     null,      'no tonnage yet — a half-finished draft'],
+  [0,        24.5,  null,      'no charge yet'],
+  [null,     24.5,  null,      'the amount not filled in'],
+  [441,      null,  null,      'the tonnage not filled in'],
+  [-441,     24.5,  null,      'a negative total'],
+  [441,      -24.5, null,      'a negative weight'],
+  ['441.00', '24.5', 18,       'the strings a form actually posts'],
+  ['lots',   24.5,  null,      'nonsense'],
+];
 
 // A tagged-template sql mock. `store` is the app_data table; anything else a
 // test needs to answer is handled by the per-test `extra` function.
@@ -155,6 +185,7 @@ function parsingTests() {
     const { data, error } = normalizeBody(FULL);
     assert('a complete sale parses', !error, error);
     assert('tons come through as a number', data.tons === 24.5, String(data.tons));
+    assert('so does the amount charged', data.amount_charged === 441, String(data.amount_charged));
     assert('and it counts as complete', missingFields(data).length === 0,
       JSON.stringify(missingFields(data)));
   }
@@ -163,7 +194,7 @@ function parsingTests() {
     assert('a date on its own parses', !error, error);
     assert('tons left blank stay null', data.tons === null);
     assert('and everything else is reported missing, in form order',
-      missingFields(data).join('|') === 'Location|Employee|Customer|Product|Tons|Payment',
+      missingFields(data).join('|') === 'Location|Employee|Customer|Product|Tons|Amount Charged|Payment',
       missingFields(data).join('|'));
   }
 
@@ -182,6 +213,39 @@ function parsingTests() {
     // over a field with a 0 sitting in it.
     const { data, error } = normalizeBody(Object.assign({}, FULL, { tons: '0' }));
     assert('and the refusal says so', !data && /more than zero/.test(error || ''), error);
+  }
+
+  console.log('\n[amount charged]');
+  assert('blank is allowed',              parseAmount('').value === null && !parseAmount('').error);
+  assert('a real ticket is kept',         parseAmount('441.00').value === 441);
+  assert('cents are kept',                parseAmount('441.37').value === 441.37);
+  assert('a third decimal is rounded off', parseAmount('441.376').value === 441.38);
+  assert('zero is refused',               !!parseAmount('0').error);
+  assert('negative is refused',           !!parseAmount('-441').error);
+  assert('nonsense is refused',           !!parseAmount('four forty one').error);
+  assert(`over $${MAX_AMOUNT} is refused`, !!parseAmount(String(MAX_AMOUNT + 1)).error);
+  assert('the cap itself is allowed',     parseAmount(String(MAX_AMOUNT)).value === MAX_AMOUNT);
+  {
+    const { data, error } = normalizeBody(Object.assign({}, FULL, { amount_charged: '0' }));
+    assert('and the refusal says what is wrong with it',
+      !data && /more than zero/.test(error || ''), error);
+  }
+
+  console.log('\n[the price the ticket implies]');
+  for (const [amount, tons, want, what] of PRICE_CASES) {
+    const got = pricePerTonFrom(amount, tons);
+    assert(`${what}`, got === want, `${amount} / ${tons} → ${got}, expected ${want}`);
+  }
+  {
+    // The point of four places. Multiply the stored price back by the tonnage
+    // and the customer's invoice has to come out where the ticket did — the
+    // grid's Net Sales column is exactly this product, rounded for display.
+    const off = PRICE_CASES
+      .filter(([a, t, want]) => want !== null && Number.isFinite(Number(a)) && Number.isFinite(Number(t)))
+      .map(([a, t, want]) => [a, t, Math.abs(Number(t) * want - Number(a))])
+      .filter(([, , delta]) => delta >= 0.005);
+    assert('tons x price returns the amount charged, inside the cent the grid shows',
+      off.length === 0, JSON.stringify(off));
   }
 
   console.log('\n[payment]');
@@ -262,24 +326,51 @@ async function injectionTests() {
       JSON.stringify(row));
     assert('the ids ride along, so the grid filters work',
       row.locationId === 'loc1' && row.customerId === 'cus1' && row.productId === 'prd1');
-    assert('price per ton arrives empty for the office to fill in', row.pricePerTon === '');
+    assert('the price is worked out from the ticket', row.pricePerTon === 18, String(row.pricePerTon));
+    assert('and multiplied back it is the amount charged',
+      Math.abs(row.tons * row.pricePerTon - 441) < 0.005, String(row.tons * row.pricePerTon));
     assert('and the normalized mirror is refreshed',
       SYNC_CALLS.some(c => c.key === 'fct_quarry_sales' && c.value.length === 2));
   }
   {
-    // The office prices the load, then the sale is corrected and re-submitted.
+    // A sale with no ticket total on it — every row posted before the form
+    // asked for one — still lands, unpriced, for the office to price by hand.
+    const store = new Map([[KEY, []]]);
+    const row = await injectSalesRow(makeSql(store), 'FCT',
+      Object.assign({}, sub, { amount_charged: null }));
+    assert('a sale with no amount arrives with a blank price', row.pricePerTon === '',
+      String(row.pricePerTon));
+  }
+  {
+    // The office re-prices the load, then the sale is corrected and
+    // re-submitted. Their figure is the answer, and a retry must not restate
+    // a load that may already have been invoiced at it.
     const store = new Map([[KEY, []]]);
     const sql = makeSql(store);
     await injectSalesRow(sql, 'FCT', sub);
     store.get(KEY)[0].pricePerTon = 18.75;
 
-    await injectSalesRow(sql, 'FCT', Object.assign({}, sub, { tons: 26 }));
+    await injectSalesRow(sql, 'FCT', Object.assign({}, sub, { tons: 26, amount_charged: 520 }));
     const arr = store.get(KEY);
     assert('a correction replaces the row rather than adding a second',
       arr.length === 1, JSON.stringify(arr.map(r => r.id)));
     assert('the corrected tonnage lands', arr[0].tons === 26, String(arr[0].tons));
-    assert("the office's price survives the correction",
+    assert("the office's price survives the correction, ticket or no ticket",
       arr[0].pricePerTon === 18.75, String(arr[0].pricePerTon));
+  }
+  {
+    // priced() states the rule on its own, because the whole of it is which of
+    // two numbers wins and an off-by-one reading of "blank" decides it.
+    const t = { tons: 24.5, amount_charged: 441 };
+    assert('no prior row → the ticket prices it',   priced(null, t) === 18);
+    assert("a prior '' → the ticket prices it",     priced({ pricePerTon: '' }, t) === 18);
+    assert('a prior null → the ticket prices it',   priced({ pricePerTon: null }, t) === 18);
+    assert('a prior absent → the ticket prices it', priced({}, t) === 18);
+    assert('a prior figure wins',                   priced({ pricePerTon: 18.75 }, t) === 18.75);
+    assert('a prior 0 wins too — a free load is an answer',
+      priced({ pricePerTon: 0 }, t) === 0);
+    assert('no prior and no ticket leaves it blank',
+      priced(null, { tons: 24.5, amount_charged: null }) === '');
   }
   {
     // Removal has to reach the mirror table too: syncForKey short-circuits on
@@ -445,6 +536,67 @@ async function accessTests() {
   NEXT_AUTH = FIELD;
 }
 
+// ── 5b. Submitting the same load twice ──────────────────────────────────────
+// A fill-up repeated to the gallon is a double-press. A truckload repeated to
+// the ton is a customer taking four of them before lunch — the tickets agree
+// on every column because the loads did. So the second one is a question, and
+// the answer comes back as ?confirm_duplicate=1.
+async function duplicateTests() {
+  console.log('\n[the same load, submitted twice]');
+
+  const DRAFT = Object.assign({
+    id: 55, company_code: 'FCT', user_id: 7, username: 'strickallen', status: 'draft',
+  }, normalizeBody(FULL).data);
+
+  // A submit path that answers every statement it runs, with the duplicate
+  // lookup switchable.
+  function submitSql(store, dupFound) {
+    const seen = [];
+    const sql = makeSql(store, (q) => {
+      seen.push(q);
+      if (/JOIN quarry_sales_submissions b/.test(q))          return dupFound ? [{ id: 99 }] : [];
+      if (/SELECT \* FROM quarry_sales_submissions/.test(q))   return [DRAFT];
+      if (/UPDATE quarry_sales_submissions/.test(q))          return [Object.assign({}, DRAFT, { status: 'submitted' })];
+    });
+    sql.seen = seen;
+    return sql;
+  }
+
+  async function submit(dupFound, query) {
+    NEXT_AUTH   = FIELD;
+    const store = new Map([['FCT:fct_quarry_sales', []]]);
+    CURRENT_SQL = submitSql(store, dupFound);
+    const res = makeRes();
+    await handler({ method: 'POST', query: Object.assign({ action: 'submit', id: '55' }, query), body: {} }, res);
+    return { res, store, sql: CURRENT_SQL };
+  }
+
+  {
+    const { res, store } = await submit(false);
+    assert('an ordinary sale goes straight in', res.statusCode === 200 && res.body.ok === true,
+      JSON.stringify(res.body));
+    assert('and lands in the grid, priced', store.get('FCT:fct_quarry_sales')[0].pricePerTon === 18,
+      JSON.stringify(store.get('FCT:fct_quarry_sales')));
+  }
+  {
+    const { res, store } = await submit(true);
+    assert('a matching sale comes back as a question, not a refusal',
+      res.statusCode === 409 && res.body.code === 'duplicate', JSON.stringify(res.body));
+    assert('the question names it as a possible second load', /second load/i.test(res.body.error),
+      res.body.error);
+    assert('it points at the sale it matched', res.body.duplicate_of === '99');
+    assert('and nothing was posted to the grid', store.get('FCT:fct_quarry_sales').length === 0);
+  }
+  {
+    const { res, store, sql } = await submit(true, { confirm_duplicate: '1' });
+    assert('answered yes, the second load goes in', res.statusCode === 200 && res.body.ok === true,
+      JSON.stringify(res.body));
+    assert('and the check is not even run', !sql.seen.some(q => /JOIN quarry_sales_submissions b/.test(q)));
+    assert('so the grid gets its second row', store.get('FCT:fct_quarry_sales').length === 1);
+  }
+  NEXT_AUTH = FIELD;
+}
+
 // ── 6. The pages and the server describe the same form ──────────────────────
 function pageTests() {
   console.log('\n[the form, the grid and the server agree]');
@@ -455,13 +607,17 @@ function pageTests() {
 
   // The seven questions, in order, on both sides.
   const serverLabels = FIELDS.map(f => f.label).join('|');
-  assert('the server asks for the seven Sales Tracking columns',
-    serverLabels === 'Date|Location|Employee|Customer|Product|Tons|Payment', serverLabels);
+  // Seven of the eight ARE the grid's columns. The eighth, Amount Charged,
+  // replaces the one column the grid has that the field cannot answer: it is
+  // asked here and divided into Price / Ton on the way in.
+  assert('the server asks for the seven Sales Tracking columns, plus the ticket total',
+    serverLabels === 'Date|Location|Employee|Customer|Product|Tons|Amount Charged|Payment',
+    serverLabels);
   const formFields = /const FIELDS = \[([\s\S]*?)\n    \];/.exec(form);
   assert('the form declares its fields as data', !!formFields);
   if (formFields) {
     const labels = [...formFields[1].matchAll(/label: '([^']+)'/g)].map(m => m[1]).join('|');
-    assert('and asks for the same seven, in the same order', labels === serverLabels, labels);
+    assert('and asks for the same eight, in the same order', labels === serverLabels, labels);
     const lists = [...formFields[1].matchAll(/list: '([^']+)'/g)].map(m => m[1]).join(',');
     assert('five of them are pickers, not text boxes',
       lists === 'locations,employees,customers,products', lists);
@@ -472,7 +628,32 @@ function pageTests() {
     !/'Cash'/.test(form) && !/"Cash"/.test(form));
   assert('the pickers are filled from the quarry\'s own Manage Lists',
     /\/api\/quarry-sales-lists/.test(form));
-  assert('tons is the one number typed in', /<input type="number" id="f-tons"/.test(form));
+  assert('tons and the ticket total are the two numbers typed in',
+    /<input type="number" id="f-tons"/.test(form) && /<input type="number" id="f-amount"/.test(form));
+  assert('and price per ton is asked for nowhere on it', !/id="f-price/.test(form));
+
+  // The form shows the price as it is typed, off its own copy of the rule. A
+  // page that showed one figure and stored another is worse than one that
+  // showed nothing, so both copies are run over the same tickets.
+  const pagePrice = (() => {
+    const start = form.indexOf('function pricePerTonFrom(');
+    assert('the form carries its own copy of the price rule', start >= 0);
+    if (start < 0) return null;
+    let depth = 0;
+    for (let j = form.indexOf('{', start); j < form.length; j++) {
+      if (form[j] === '{') depth++;
+      else if (form[j] === '}' && --depth === 0) {
+        return new Function(`${form.slice(start, j + 1)}\nreturn pricePerTonFrom;`)();
+      }
+    }
+    return null;
+  })();
+  if (pagePrice) {
+    const off = PRICE_CASES.filter(([a, t, want]) => pagePrice(a, t) !== want);
+    assert(`the form agrees with the server on all ${PRICE_CASES.length} tickets`,
+      off.length === 0,
+      off.map(([a, t, want]) => `(${a},${t}) form=${pagePrice(a, t)} server=${want}`).join('; '));
+  }
 
   // The grid's own copy of the payment list is the one the injected row has to
   // match — a value it does not know renders as a blank cell.
@@ -568,16 +749,39 @@ async function browserTests() {
     window.submitEntry();
     await settle();
     assert('an incomplete form is refused, naming what is missing in form order',
-      /still needed: Location, Customer, Product, Tons, Payment\./.test(sel('formMsg').textContent),
+      /still needed: Location, Customer, Product, Tons, Amount Charged, Payment\./.test(sel('formMsg').textContent),
       sel('formMsg').textContent);
     assert('and nothing is sent', calls.length === before);
+  }
+
+  // The price readout is the only guard against a ticket total typed wrong, so
+  // it has to appear as the two figures are entered and not a moment later.
+  assert('the price reads as pending before anything is typed',
+    !/\$/.test(sel('priceNote').textContent) && sel('priceNote').textContent.length > 0,
+    sel('priceNote').textContent);
+  sel('f-tons').value = '24.5';
+  window.updatePrice();
+  assert('and still pending with only the tonnage in',
+    !/\$/.test(sel('priceNote').textContent), sel('priceNote').textContent);
+  sel('f-amount').value = '441.00';
+  window.updatePrice();
+  assert('then works the price out as the ticket total is typed',
+    sel('priceNote').textContent === '= $18.00 / ton', sel('priceNote').textContent);
+  {
+    // The whole point: a digit typed wrong shows up here, on the screen of the
+    // person holding the ticket, because no threshold could catch it.
+    sel('f-amount').value = '4410.00';
+    window.updatePrice();
+    assert('a mistyped total is unmissable in it',
+      sel('priceNote').textContent === '= $180.00 / ton', sel('priceNote').textContent);
+    sel('f-amount').value = '441.00';
+    window.updatePrice();
   }
 
   sel('f-location').value = 'loc2';
   sel('f-employee').value = 'emp2';
   sel('f-customer').value = 'cus1';
   sel('f-product').value  = 'prd2';
-  sel('f-tons').value     = '24.5';
   sel('f-payment').value  = 'Credit';
   await window.submitEntry();
   await settle();
@@ -593,9 +797,13 @@ async function browserTests() {
       body.customer_id === 'cus1' && body.customer_name === 'Kinkead Aggregates LLC' &&
       body.product_id  === 'prd2' && body.product_name  === 'AASHTO #1',
       JSON.stringify(body));
-    assert('the two typed answers ride along', body.tons === '24.5' && body.payment === 'Credit');
+    assert('the three typed answers ride along',
+      body.tons === '24.5' && body.amount_charged === '441.00' && body.payment === 'Credit',
+      JSON.stringify(body));
+    assert('and the price is NOT among them — the server does that division',
+      !('price_per_ton' in body) && !('pricePerTon' in body), Object.keys(body).join(','));
     assert('and nothing else is sent', Object.keys(body).sort().join(',') ===
-      'customer_id,customer_name,employee_id,employee_name,location_id,location_name,payment,product_id,product_name,tons,work_date',
+      'amount_charged,customer_id,customer_name,employee_id,employee_name,location_id,location_name,payment,product_id,product_name,tons,work_date',
       Object.keys(body).sort().join(','));
   }
   assert('then it is submitted against the row it just adopted',
@@ -604,6 +812,60 @@ async function browserTests() {
   assert('the form says where the sale went',
     /Sales Tracking/.test(sel('formMsg').textContent), sel('formMsg').textContent);
   assert('and clears for the next load', sel('formTitle').textContent === 'New Sale');
+
+  // A second identical load. The endpoint asks; the form has to put the
+  // question to the person holding the tickets and act on either answer.
+  {
+    let dupUntilConfirmed = true;
+    const before = calls.length;
+    window.fetch = async (url, init) => {
+      const u = String(url), method = (init && init.method) || 'GET';
+      calls.push({ url: u, method, body: init && init.body });
+      if (u.includes('action=submit')) {
+        if (dupUntilConfirmed && !u.includes('confirm_duplicate=1')) {
+          return { ok: false, status: 409, json: async () => ({
+            error: 'A sale already submitted today matches this one exactly. Was this a second load?',
+            code: 'duplicate', duplicate_of: '54',
+          }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true, entry: { id: '56', status: 'submitted' } }) };
+      }
+      if (method === 'POST' || method === 'PUT') return { ok: true, status: 200, json: async () => ({ ok: true, entry: { id: '56', status: 'draft' } }) };
+      return { ok: true, status: 200, json: async () => ({ entries: [] }) };
+    };
+
+    const fill = () => {
+      sel('f-location').value = 'loc2'; sel('f-employee').value = 'emp2';
+      sel('f-customer').value = 'cus1'; sel('f-product').value  = 'prd2';
+      sel('f-tons').value = '24.5';     sel('f-amount').value   = '441.00';
+      sel('f-payment').value = 'Credit';
+    };
+
+    // Answered no: it stays a draft, and is not sent again.
+    let asked = 0;
+    window.confirm = () => { asked++; return asked === 1; };   // yes to submit, no to the duplicate
+    fill();
+    await window.submitEntry();
+    await settle();
+    assert('answered no, it is left as a draft',
+      /draft/i.test(sel('formMsg').textContent) && sel('formTitle').textContent === 'Edit Draft',
+      sel('formMsg').textContent);
+    assert('and never sent a second time',
+      !calls.slice(before).some(c => c.url.includes('confirm_duplicate=1')),
+      JSON.stringify(calls.slice(before).map(c => c.url)));
+
+    // Answered yes: it goes in as a second load.
+    const mark = calls.length;
+    window.confirm = () => true;
+    fill();
+    await window.submitEntry();
+    await settle();
+    assert('answered yes, the form sends it as a second load',
+      calls.slice(mark).some(c => c.url.includes('confirm_duplicate=1')),
+      JSON.stringify(calls.slice(mark).map(c => c.url)));
+    assert('and reports it went in', /Submitted/.test(sel('formMsg').textContent),
+      sel('formMsg').textContent);
+  }
 
   window.close();
 }
@@ -615,6 +877,7 @@ async function browserTests() {
   await injectionTests();
   guardTests();
   await accessTests();
+  await duplicateTests();
   pageTests();
   await browserTests();
   console.log(`\n${passed} passed, ${failed} failed`);

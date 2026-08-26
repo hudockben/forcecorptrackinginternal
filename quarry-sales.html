@@ -145,22 +145,33 @@
     }
     .field-note.warn { color: var(--accent); }
 
-    /* Tons is the number the invoice is worked out from, so it is given the
-       weight of one: a bigger figure than an ordinary field, in a block that
-       sits slightly proud of the run of questions. */
-    .tons-row {
+    /* The two figures the invoice is worked out from — the tonnage and the
+       ticket total — are given the weight of one: bigger than an ordinary
+       field, in a block that sits slightly proud of the run of questions. */
+    .figure-row {
       background: var(--surface2);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 0.8rem 0.85rem;
       gap: 0.45rem;
     }
-    .tons-row input {
+    .figure-row input {
       font-size: 1.35rem;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       background: var(--bg);
     }
+    /* The dollar sign sits inside the box rather than in the label, so the
+       figure being typed reads as money at a glance on a phone. */
+    .amount-wrap { position: relative; }
+    .amount-wrap input { padding-left: 1.9rem; }
+    .amount-prefix {
+      position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%);
+      font-size: 1.35rem; font-weight: 700; color: var(--muted); pointer-events: none;
+    }
+    /* The price the two figures work out to. Green once it resolves, because
+       it is the one number on this form nobody types and the office reads. */
+    .field-note.calc { color: var(--green); font-weight: 600; }
 
     /* ── Action buttons ── */
     .btn-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
@@ -224,10 +235,16 @@
     }
     .entry-date { font-size: 0.95rem; font-weight: 700; color: var(--text); }
     .entry-meta { font-size: 0.8rem; color: var(--muted); line-height: 1.45; }
-    .entry-tons {
+    .entry-figure {
       font-size: 1.1rem;
       font-weight: 700;
       color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .entry-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
@@ -317,10 +334,25 @@
         <div class="field-note" id="note-f-product"></div>
       </div>
 
-      <div class="row tons-row">
+      <div class="row figure-row">
         <label for="f-tons">Tons</label>
-        <input type="number" id="f-tons" inputmode="decimal" min="0" step="0.01" placeholder="0.00" />
+        <input type="number" id="f-tons" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+               oninput="updatePrice()" onchange="updatePrice()" />
         <div class="field-note">Off the scale ticket, for this load only.</div>
+      </div>
+
+      <!-- What the customer was charged. The office's grid works in price per
+           ton, which nobody at a scale house carries in their head — so the
+           ticket total is what is asked for, and the price is worked out from
+           it below, where the person holding the ticket can see it. -->
+      <div class="row figure-row">
+        <label for="f-amount">Amount Charged</label>
+        <div class="amount-wrap">
+          <span class="amount-prefix" aria-hidden="true">$</span>
+          <input type="number" id="f-amount" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+                 oninput="updatePrice()" onchange="updatePrice()" />
+        </div>
+        <div class="field-note" id="priceNote"></div>
       </div>
 
       <div class="row">
@@ -410,6 +442,7 @@
       { key: 'customer',  id: 'f-customer', label: 'Customer', list: 'customers' },
       { key: 'product',   id: 'f-product',  label: 'Product',  list: 'products'  },
       { key: 'tons',      id: 'f-tons',     label: 'Tons' },
+      { key: 'amount_charged', id: 'f-amount', label: 'Amount Charged' },
       { key: 'payment',   id: 'f-payment',  label: 'Payment' },
     ];
 
@@ -429,8 +462,57 @@
     let entriesCache = [];
     let editingId    = null;    // id of the draft row this form is sitting on
 
+    // ── The price the ticket implies ────────────────────────────────────────
+    // Copy of pricePerTonFrom() in api/quarry-sales-submissions.js, which is
+    // canonical and recomputes this on the way into the grid.
+    // scripts/test-quarry-sales-submissions.js runs both over the same table
+    // of tickets and fails if they disagree — a form that showed one figure
+    // and stored another is worse than a form that showed nothing.
+    //
+    // Four places, not two: it is a division and rarely lands on a cent, and
+    // $100 over 3 tons rounded to 33.33 bills 99.99 for a load charged 100.
+    function pricePerTonFrom(amount, tons) {
+      const a = Number(amount), t = Number(tons);
+      if (!Number.isFinite(a) || !Number.isFinite(t)) return null;
+      if (a <= 0 || t <= 0) return null;
+      return Math.round((a / t) * 10000) / 10000;
+    }
+
+    function money(n) {
+      return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    // Show what the office will see. This is the whole safety net on the
+    // amount: no threshold could tell $441 from $4,410 for a quarry whose
+    // prices this page does not know, but $180.00 / ton on the screen of
+    // someone holding the ticket is unmissable.
+    function updatePrice() {
+      const note = el('priceNote');
+      if (!note) return;
+      const tons   = val('f-tons').trim();
+      const amount = val('f-amount').trim();
+      if (amount === '' && tons === '') {
+        note.className = 'field-note';
+        note.textContent = 'The price per ton is worked out from this and the tonnage above.';
+        return;
+      }
+      const price = pricePerTonFrom(amount, tons);
+      if (price === null) {
+        note.className = 'field-note';
+        note.textContent = tons === ''
+          ? 'Fill in the tonnage above and this works out the price per ton.'
+          : 'Fill in the amount and this works out the price per ton.';
+        return;
+      }
+      note.className = 'field-note calc';
+      // Shown to the cent, which is how it reads on a price list. The figure
+      // stored keeps its four places so tons x price comes back to the amount.
+      note.textContent = `= ${money(price)} / ton`;
+    }
+
     async function init() {
       el('f-date').value = todayStr();
+      updatePrice();
       // Clear a field's error outline as soon as it stops being empty, so the
       // form isn't still marking something the worker has already filled in.
       for (const f of FIELDS) {
@@ -664,6 +746,10 @@
         // A draft with nothing in the tons box shows no figure at all, rather
         // than a 0 that reads as "nothing went out".
         const tons  = e.tons != null ? `${Number(e.tons).toLocaleString(undefined, { maximumFractionDigits: 2 })} t` : '';
+        const amount = e.amount_charged != null ? money(e.amount_charged) : '';
+        // The price is the office's figure, so it is shown small and only once
+        // both halves of it exist — it is here to be checked, not read.
+        const price = e.price_per_ton != null ? `${money(e.price_per_ton)} / ton` : '';
         const audit = entryAuditLine(e);
         return `
           <div class="entry ${isDraft ? 'draft' : ''}" ${isDraft ? `onclick="editEntry('${escapeHtml(e.id)}')"` : ''}>
@@ -673,7 +759,10 @@
             </div>
             <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:flex-end">
               <div class="entry-meta">${meta}</div>
-              ${tons ? `<div class="entry-tons">${tons}</div>` : ''}
+              <div style="text-align:right">
+                ${amount ? `<div class="entry-figure">${amount}</div>` : ''}
+                ${tons || price ? `<div class="entry-sub">${[tons, price].filter(Boolean).join(' · ')}</div>` : ''}
+              </div>
             </div>
             ${audit ? `<div class="entry-audit">${audit}</div>` : ''}
           </div>`;
@@ -729,6 +818,7 @@
         node.value = listId;
       }
 
+      updatePrice();
       markEmpty([]);
       markAsDraft();
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -751,6 +841,7 @@
       markEmpty([]);
       el('f-date').value = todayStr();
       preselectEmployee();
+      updatePrice();
       document.getElementById('formMsg').textContent = '';
     }
 
@@ -806,6 +897,20 @@
       return j.entry;
     }
 
+    // Send the adopted draft in. Resolves to the parsed body either way — a
+    // refusal is something submitEntry has to READ (a duplicate is a question
+    // it puts back to the submitter), not something it can only catch.
+    async function postSubmit(confirmDuplicate) {
+      const res = await fetch(
+        '/api/quarry-sales-submissions?action=submit&id=' + encodeURIComponent(editingId) +
+        (confirmDuplicate ? '&confirm_duplicate=1' : ''),
+        { method: 'POST', headers: authHeaders() },
+      );
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok) return body;
+      return Object.assign({ ok: false, error: `HTTP ${res.status}` }, body, { ok: false });
+    }
+
     async function saveDraft() {
       const msg = document.getElementById('formMsg');
       msg.className = 'msg';
@@ -850,7 +955,11 @@
         return;
       }
 
-      if (!confirm("Submit this sale? It goes straight into Quarry Sales Tracking, and only the quarry office can take it back out.")) return;
+      const price = pricePerTonFrom(val('f-amount'), val('f-tons'));
+      if (!confirm(
+        `Submit this sale at ${price === null ? 'no price' : money(price) + ' / ton'}?\n\n` +
+        'It goes straight into Quarry Sales Tracking, and only the quarry office can take it back out.'
+      )) return;
       if (!beginWrite()) return;
 
       try {
@@ -859,11 +968,22 @@
         // form pinned to that row — pressing Submit again retries it instead
         // of posting the same load a second time.
         await writeDraft(buildPayload());
-        const res = await fetch('/api/quarry-sales-submissions?action=submit&id=' + encodeURIComponent(editingId), {
-          method: 'POST', headers: authHeaders(),
-        });
-        const j = await res.json();
-        if (!res.ok || !j.ok) throw new Error(j.error || 'Submit failed');
+        let j = await postSubmit(false);
+        // An identical load earlier today is a QUESTION, not a refusal: four
+        // truckloads of the same stone to the same customer write four tickets
+        // that agree on every column. Only the person who wrote them knows
+        // whether they sold it twice or pressed the button twice.
+        if (j.code === 'duplicate') {
+          if (!confirm(`${j.error}\n\nChoose OK to send it as a second load, or Cancel to leave it as a draft.`)) {
+            markAsDraft();
+            msg.className = 'msg';
+            msg.textContent = 'Left as a draft — it is in the list below.';
+            await loadEntries();
+            return;
+          }
+          j = await postSubmit(true);
+        }
+        if (!j.ok) throw new Error(j.error || 'Submit failed');
         resetForm();
         msg.className = 'msg success';
         msg.textContent = 'Submitted ✓ — it is in Sales Tracking now.';

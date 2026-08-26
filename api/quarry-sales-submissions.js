@@ -24,10 +24,16 @@
  * The names are re-resolved from that list on every write, so what lands in the
  * grid is spelled the way the list spells it however the page was cached.
  *
- * The office owns the money. Price per ton is deliberately not asked for: the
- * scale house sells what the office priced. It arrives as an empty, editable
- * cell on the injected row, and sales tax, net sales and total due follow from
- * it exactly as they do on a row typed in by hand.
+ * Price per ton is not asked for, because nobody at a scale house knows it —
+ * they know what the ticket said. So the form asks for the amount charged and
+ * the price is worked out from it: amount / tons, to four places, which is the
+ * precision the mirror column carries. Multiply it back by the tonnage and you
+ * get the amount charged to the cent, so Net Sales in the grid IS the ticket.
+ *
+ * The office still owns the column. The price is filled FORWARD ONLY, onto a
+ * cell still blank, exactly as trucking fills a haul fee from a customer's
+ * rate: a figure the office typed is theirs, and a retried submit must never
+ * silently restate a load that has already been invoiced.
  */
 
 const { neon } = require('@neondatabase/serverless');
@@ -56,6 +62,7 @@ const FIELDS = [
   { key: 'customer_name', label: 'Customer', list: 'customer',  pair: 'customer_id' },
   { key: 'product_name',  label: 'Product',  list: 'product',   pair: 'product_id'  },
   { key: 'tons',          label: 'Tons' },
+  { key: 'amount_charged', label: 'Amount Charged' },
   { key: 'payment',       label: 'Payment' },
 ];
 
@@ -64,6 +71,14 @@ const FIELDS = [
 // tons into 240 and quietly moves a month's revenue. A real load above this is
 // two loads.
 const MAX_TONS = 200;
+
+// Not a number of dollars anyone charges for one load — a pasted figure or a
+// row of digits held down. Deliberately far above any real ticket rather than
+// tuned to this quarry's prices: the guard against the ordinary typo (441
+// entered as 4410) is not a threshold anyone could pick, it is the price per
+// ton showing on the form as it is typed, where the person holding the ticket
+// can see it is wrong.
+const MAX_AMOUNT = 250000;
 
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;
@@ -117,6 +132,37 @@ function parseTons(v) {
 }
 
 /**
+ * What the customer was charged for the load. Blank stays blank so a draft can
+ * be saved before the ticket is written up; anything present has to be money.
+ * Returns { value } or { error }.
+ */
+function parseAmount(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return { value: null };
+  const n = Number(v);
+  if (!Number.isFinite(n)) return { error: 'Amount charged must be a number.' };
+  if (n <= 0)              return { error: 'Amount charged must be more than zero.' };
+  if (n > MAX_AMOUNT)      return { error: `Amount charged looks wrong — $${n} is over the $${MAX_AMOUNT.toLocaleString('en-US')} limit for one load.` };
+  return { value: Math.round(n * 100) / 100 };
+}
+
+/**
+ * The price per ton a ticket implies. Null when either half is missing, so a
+ * half-finished draft prices nothing.
+ *
+ * Four decimal places, not two. It is a division, so it rarely lands on a
+ * cent: $100 over 3 tons is 33.3333, and rounding that to 33.33 bills 99.99
+ * for a load that was charged 100. quarry_sales_entries.price_per_ton is
+ * NUMERIC(14,4), and at four places tons x price comes back to the amount
+ * charged well inside the cent the grid rounds to.
+ */
+function pricePerTonFrom(amount, tons) {
+  const a = Number(amount), t = Number(tons);
+  if (!Number.isFinite(a) || !Number.isFinite(t)) return null;
+  if (a <= 0 || t <= 0) return null;
+  return Math.round((a / t) * 10000) / 10000;
+}
+
+/**
  * Everything on the form, blanks included. Never refuses an incomplete body —
  * only a value that is present and unusable. Returns { data } or { error }.
  */
@@ -128,6 +174,9 @@ function normalizeBody(body) {
 
   const tons = parseTons(b.tons);
   if (tons.error) return { error: tons.error };
+
+  const amount = parseAmount(b.amount_charged);
+  if (amount.error) return { error: amount.error };
 
   const payment = safeStr(b.payment, 20);
   if (payment && !PAYMENT_OPTIONS.includes(payment)) {
@@ -146,6 +195,7 @@ function normalizeBody(body) {
       product_id:    safeStr(b.product_id, 80),
       product_name:  safeStr(b.product_name),
       tons: tons.value,
+      amount_charged: amount.value,
       payment,
     },
   };
@@ -201,7 +251,9 @@ async function resolveListNames(sql, companyCode, data) {
 function missingFields(row) {
   return FIELDS.filter(f => {
     const v = row[f.key];
-    if (f.key === 'tons') return v === null || v === undefined || v === '';
+    if (f.key === 'tons' || f.key === 'amount_charged') {
+      return v === null || v === undefined || v === '';
+    }
     return !String(v == null ? '' : v).trim();
   }).map(f => f.label);
 }
@@ -224,7 +276,13 @@ function dbToEntry(r) {
     product_id:    r.product_id    || '',
     product_name:  r.product_name  || '',
     tons:          r.tons === null || r.tons === undefined ? null : Number(r.tons),
+    amount_charged: r.amount_charged === null || r.amount_charged === undefined
+      ? null : Number(r.amount_charged),
     payment:       r.payment || '',
+    // What the two of them work out to. Handed back so the form can show the
+    // submitter the figure the office will see, rather than leaving the one
+    // number nobody typed to appear for the first time in someone else's grid.
+    price_per_ton: pricePerTonFrom(r.amount_charged, r.tons),
     row_id:        r.row_id || null,
     submitted_at:  r.submitted_at || null,
     created_at:    r.created_at || null,
@@ -255,11 +313,27 @@ async function writeBlobArray(sql, companyCode, blobKey, arr) {
  * table the reports read.
  *
  * Idempotent: any row this submission already owns is dropped first, so a
- * retried submit corrects the sale rather than posting it twice. The price the
- * office had already typed on that row is carried across — it is the office's
- * column, and losing it on a correction is how a priced load silently becomes
- * a $0 one.
+ * retried submit corrects the sale rather than posting it twice.
+ *
+ * The price is worked out from the ticket — amount charged over tons — and
+ * written FORWARD ONLY, onto a cell still blank. A price already sitting on
+ * the row is the office's answer, whether they typed it or an earlier submit
+ * put it there, and carrying it across is what stops a retry restating a load
+ * that has already been invoiced.
  */
+/**
+ * The price to write on the row: whatever is already there, else the one the
+ * ticket implies, else blank. '' counts as blank — that is what an untouched
+ * cell holds in the grid, and what every row posted before the form asked for
+ * an amount carries.
+ */
+function priced(prior, sub) {
+  const held = prior ? prior.pricePerTon : undefined;
+  if (held !== undefined && held !== null && held !== '') return held;
+  const computed = pricePerTonFrom(sub.amount_charged, sub.tons);
+  return computed === null ? '' : computed;
+}
+
 async function injectSalesRow(sql, companyCode, sub) {
   const prefix = salesRowIdPrefix(sub.id);
   const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
@@ -280,9 +354,7 @@ async function injectSalesRow(sql, companyCode, sub) {
     productName:   sub.product_name  || '',
     tons:          sub.tons === null || sub.tons === undefined ? '' : Number(sub.tons),
     payment:       sub.payment || '',
-    // The office's column. Blank on a new sale, kept on a corrected one.
-    pricePerTon:   (prior && prior.pricePerTon !== undefined && prior.pricePerTon !== null)
-      ? prior.pricePerTon : '',
+    pricePerTon:   priced(prior, sub),
   };
 
   const next = arr.filter(r => !isMine(r));
@@ -404,14 +476,14 @@ module.exports = async (req, res) => {
           company_code, user_id, username, status, work_date,
           location_id, location_name, employee_id, employee_name,
           customer_id, customer_name, product_id, product_name,
-          tons, payment
+          tons, amount_charged, payment
         ) VALUES (
           ${companyCode}, ${userId}, ${payload.username}, 'draft', ${data.work_date},
           ${data.location_id}, ${data.location_name},
           ${data.employee_id}, ${data.employee_name},
           ${data.customer_id}, ${data.customer_name},
           ${data.product_id},  ${data.product_name},
-          ${data.tons}, ${data.payment}
+          ${data.tons}, ${data.amount_charged}, ${data.payment}
         )
         RETURNING *
       `;
@@ -452,6 +524,7 @@ module.exports = async (req, res) => {
           customer_id   = ${data.customer_id},   customer_name = ${data.customer_name},
           product_id    = ${data.product_id},    product_name  = ${data.product_name},
           tons          = ${data.tons},          payment       = ${data.payment},
+          amount_charged = ${data.amount_charged},
           updated_at    = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -491,9 +564,19 @@ module.exports = async (req, res) => {
       // The same load sent twice. A retry that lost track of its draft posts a
       // second sale instead of reusing the first, and once both are in the grid
       // nothing tells them apart — same pit, same day, same customer, same
-      // material, same weight, twice. Matched in SQL against the row being
-      // submitted so no DATE round-trips through JS and across a timezone.
-      const [dupe] = await sql`
+      // material, same weight, same money, twice.
+      //
+      // Asked, not refused. Unlike a fill-up, an identical load IS ordinary: a
+      // customer taking four truckloads of the same stone in a morning writes
+      // four tickets that agree on every column, and a check that turned those
+      // into one sale would lose three loads a day at a busy pit. So the
+      // second one comes back as a question the form puts to the submitter,
+      // who is the only person who knows whether they pressed the button twice
+      // or sold the stone twice — and ?confirm_duplicate=1 is their answer.
+      //
+      // Matched in SQL against the row being submitted so no DATE round-trips
+      // through JS and across a timezone on the way.
+      const [dupe] = q.confirm_duplicate === '1' ? [null] : await sql`
         SELECT b.id FROM quarry_sales_submissions a
         JOIN quarry_sales_submissions b
           ON  b.company_code  = a.company_code
@@ -502,6 +585,7 @@ module.exports = async (req, res) => {
           AND b.customer_name IS NOT DISTINCT FROM a.customer_name
           AND b.product_name  IS NOT DISTINCT FROM a.product_name
           AND b.tons          IS NOT DISTINCT FROM a.tons
+          AND b.amount_charged IS NOT DISTINCT FROM a.amount_charged
           AND b.payment       IS NOT DISTINCT FROM a.payment
           AND b.id           <> a.id
           AND b.status        = 'submitted'
@@ -510,7 +594,10 @@ module.exports = async (req, res) => {
       `;
       if (dupe) {
         return res.status(409).json({
-          error: 'A sale already submitted covers this pit, date, customer, product and tonnage. Delete this draft instead of sending it again.',
+          error: 'A sale already submitted today matches this one exactly — same pit, customer, product, tonnage and amount. Was this a second load?',
+          // The form keys off this rather than the wording, so it can offer to
+          // send it anyway instead of leaving the submitter stuck at a refusal.
+          code: 'duplicate',
           duplicate_of: String(dupe.id),
         });
       }
@@ -568,7 +655,8 @@ module.exports = async (req, res) => {
 // Exposed for scripts/test-quarry-sales-submissions.js, which exercises the
 // parsing and completeness rules directly rather than through a fake request.
 module.exports._test = {
-  FIELDS, MAX_TONS, VALID_STATUSES,
-  safeDate, safeInt, safeStr, parseTons, normalizeBody, missingFields,
+  FIELDS, MAX_TONS, MAX_AMOUNT, VALID_STATUSES,
+  safeDate, safeInt, safeStr, parseTons, parseAmount, pricePerTonFrom, priced,
+  normalizeBody, missingFields,
   dbToEntry, resolveListNames, injectSalesRow, removeSalesRow,
 };

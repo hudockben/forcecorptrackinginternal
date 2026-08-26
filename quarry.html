@@ -3097,6 +3097,20 @@
       if (item && item.taxable) return 'This customer is flagged taxable but has no rate set — enter one in Manage Lists → Customer.';
       return 'Customer is not flagged taxable — check the box in Manage Lists → Customer to charge tax.';
     }
+    // Where a submitted sale's price came from. It is a division — amount
+    // charged over tons — so it can carry four decimals, and someone seeing
+    // 33.3333 in a money column needs to know that is arithmetic rather than a
+    // mistyped rate.
+    function salesPriceTitle(row) {
+      const t = Number(row.tons);
+      const p = Number(row.pricePerTon);
+      if (!Number.isFinite(t) || !Number.isFinite(p) || !t || !p) {
+        return 'No price yet — the ticket total or the tonnage is missing. Type a price here to bill the load.';
+      }
+      return `Worked out from the ${formatMoney(t * p)} charged on the ticket, over ${formatTons(t)} tons. `
+           + 'Change it here if the ticket was wrong — the field cannot overwrite your figure.';
+    }
+
     function formatMoney(n) {
       if (!Number.isFinite(n)) return '$0.00';
       return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -3739,13 +3753,17 @@
           PAYMENT_OPTIONS.map(p => `<option value="${p}"${row.payment === p ? ' selected' : ''}>${p}</option>`)
         ).join('');
         // A sale the scale house submitted on the Quarry Sales form. Everything
-        // the form asked for is theirs and renders read-only; Price / Ton is
-        // the office's column and stays a live input, because the form never
-        // asks for it — the pit sells what the office priced.
+        // the form asked for is theirs and renders read-only.
+        //
+        // Price / Ton arrives worked out — the form asks what the customer was
+        // charged and the server divides it by the tonnage, so Net Sales here
+        // IS the ticket. It stays a live input because it stays the office's
+        // column: a ticket total typed wrong is corrected here, and nothing
+        // the field does afterwards overwrites the correction.
         if (isSalesSubmissionRow(row)) {
           const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
           return `
-            <tr class="qss-locked" title="Submitted on the Quarry Sales form. Fill in Price / Ton here; to take the sale back out, use the ✕.">
+            <tr class="qss-locked" title="Submitted on the Quarry Sales form. Price / Ton is worked out from the amount charged on the ticket — correct it here if the ticket was wrong; to take the sale back out, use the ✕.">
               <td class="col-date">${ro(row.date)}</td>
               <td>${ro(row.locationName)}</td>
               <td>${ro(row.employeeName)}</td>
@@ -3753,7 +3771,7 @@
               <td>${ro(row.productName)}</td>
               <td class="col-num">${ro(row.tons)}</td>
               <td class="col-payment">${ro(row.payment)}</td>
-              <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.pricePerTon === '' ? '' : row.pricePerTon}" placeholder="0.00" oninput="updateSalesNumber(${i}, 'pricePerTon', this.value)" /></td>
+              <td class="col-num"><input class="cell-input" type="number" min="0" step="0.0001" value="${row.pricePerTon === '' ? '' : row.pricePerTon}" placeholder="0.00" title="${escapeHtml(salesPriceTitle(row))}" oninput="updateSalesNumber(${i}, 'pricePerTon', this.value)" /></td>
               <td class="col-num"><div class="cell-readonly${tax ? '' : ' is-zero'}" id="sales-tax-${i}" title="${escapeHtml(salesTaxTitle(row))}">${taxRate ? formatMoney(tax) : '—'}</div></td>
               <td class="col-total"><div class="cell-readonly${total ? '' : ' is-zero'}" id="sales-total-${i}" title="Revenue, excluding sales tax. This is the figure Home, Analytics, Inventory and Break-Even read.">${formatMoney(total)}</div></td>
               <td class="col-total"><div class="cell-readonly${total + tax ? '' : ' is-zero'}" id="sales-due-${i}" title="Net sales plus sales tax — what the customer owes on this load.">${formatMoney(total + tax)}</div></td>
@@ -4074,7 +4092,7 @@
     const TS_LOCK_BADGE =
       '<span class="ts-lock-badge" title="Injected from an approved timesheet — manage it in Payroll">🔒 TS</span>';
     const QSS_BADGE =
-      '<span class="qss-badge" title="Submitted on the Quarry Sales form — the pit, customer, product, tons and payment are the scale house\'s. Price / Ton is yours.">✓ SALE</span>';
+      '<span class="qss-badge" title="Submitted on the Quarry Sales form — the pit, customer, product, tons and payment are the scale house\'s. Price / Ton came off their ticket total and is yours to correct.">✓ SALE</span>';
 
     function renderCrush(keepFilters) {
       const tbody = document.getElementById('crushTbody');
