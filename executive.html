@@ -854,7 +854,7 @@
       </div>
     </div>
     <div class="action-btns">
-      <button class="btn" onclick="emailExecutiveReport()" title="Email this report to a recipient list">
+      <button class="btn" onclick="openEmailPicker()" title="Choose which sections go in the email">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
           <polyline points="22,6 12,13 2,6"/>
@@ -1669,11 +1669,11 @@
     loadReport();
 
     // ── Email Report ──
-    // Captures every section of the report as read on screen. The page's
+    // Captures the sections the picker checked, as read on screen. The page's
     // <style> blocks ride along with the CSS variables resolved to literal hex
     // values, so email clients render the colours even when they strip
     // <style>.
-    function emailExecutiveReport() {
+    function emailExecutiveReport(picked) {
       if (typeof window.openReportEmailModal !== 'function') {
         alert('Email module is still loading — please try again in a moment.');
         return;
@@ -1683,9 +1683,10 @@
         alert('The report is still loading.');
         return;
       }
-      // Descendant selector, so the division sections nested under
-      // #portfolioSections come back in the order they're read on screen.
-      const sections = document.querySelectorAll('#reportBody .section');
+      // The picker hands over what it checked. Called without a selection —
+      // the whole report, in the order it is read on screen.
+      const all      = reportSections();
+      const sections = Array.isArray(picked) && picked.length ? picked : all;
       if (!sections.length) {
         alert('There is nothing to email yet — the report has no sections.');
         return;
@@ -1709,7 +1710,7 @@
       // inline style on the clones guarantees the text shows up even
       // when the email client strips <style> blocks.
       const darkTextSel = '.pname-main, .pname-sub, .section-title, .page-title-h, .metric-value';
-      const clones = Array.from(sections).map(el => {
+      const clones = sections.map(el => {
         const clone = el.cloneNode(true);
         // The per-division PDF buttons are page controls, not report content.
         clone.querySelectorAll('.section-action-btn').forEach(btn => btn.remove());
@@ -1726,6 +1727,21 @@
         clone.querySelectorAll('.pname-main, .pname-sub').forEach(node => { node.style.display = 'block'; });
         return clone.outerHTML;
       });
+      // A partial send says so, in the subject and above the report, so a
+      // recipient reading three divisions doesn't take it for the whole
+      // roll-up. The full report is left to read exactly as it did before.
+      const names   = sections.map(sectionLabel);
+      const partial = sections.length < all.length;
+      const today   = new Date().toLocaleDateString();
+      const subject = partial && names.length === 1
+        ? `Executive Report: ${names[0]} — ${today}`
+        : partial
+          ? `Executive Report (${names.length} of ${all.length} sections) — ${today}`
+          : `Executive Report — ${today}`;
+      const scopeLine = partial
+        ? `<div style="font-size:0.72rem;color:#555;margin-bottom:1rem;">Sections included: ${esc(names.join(' · '))}</div>`
+        : '';
+
       // Order matters: include the page's original <style> blocks first, then
       // an override block that resolves :root CSS variables to literal hex
       // values. This way email clients that respect <style> get the same
@@ -1737,12 +1753,13 @@
 <div style="background:#fff;color:#111;padding:1.5rem;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;">
   <style>${styles}\n:root { ${resolved} }</style>
   <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.2rem;">Executive Report</div>
-  <div style="font-size:0.78rem;color:#555;margin-bottom:1rem;">${reportDate}</div>
+  <div style="font-size:0.78rem;color:#555;margin-bottom:${scopeLine ? '0.3rem' : '1rem'};">${reportDate}</div>
+  ${scopeLine}
   ${clones.join('\n')}
 </div>`;
       window.openReportEmailModal({
         reportType: 'executive',
-        defaultSubject: `Executive Report — ${new Date().toLocaleDateString()}`,
+        defaultSubject: subject,
         getHTML: () => wrapped,
       });
     }
@@ -1754,14 +1771,40 @@
       window.location.replace('index.html');
     }
 
-    // ── Generate Report (PDF): pick the sections first ──
-    // The purple button opens a checklist of everything the report rendered,
-    // every box checked — the default is the whole report. Unchecking a
-    // division drops it from the printout through the same @media print
-    // mechanism the per-division PDF buttons use, just with a set of sections
-    // rather than a single one. Nothing is remembered between openings: each
-    // run starts from the full report again.
+    // ── Section picker: what goes in the PDF, and what goes in the email ──
+    // Both top-of-page buttons open the same checklist of everything the
+    // report rendered, every box checked — the default is the whole report.
+    // Unchecking a division drops it from the printout (through the same
+    // @media print mechanism the per-division PDF buttons use, just with a
+    // set of sections rather than a single one), or drops it out of the
+    // emailed HTML. Nothing is remembered between openings: each run starts
+    // from the full report again.
     const PICKER_ID = 'pdfPicker';
+
+    // What the picker calls itself, and what it hands the checked sections
+    // to. The two flows differ in nothing else.
+    const PICKER_MODES = {
+      pdf: {
+        title: 'Generate Report',
+        sub:   "Uncheck any section you don't want in the PDF.",
+        cta:   'Generate PDF',
+        icon:  `<polyline points="6 9 6 2 18 2 18 9"/>
+                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                <rect x="6" y="14" width="12" height="8"/>`,
+        run:   picked => printSections(picked),
+        // Nothing to choose between — straight to the print dialog.
+        empty: () => window.print(),
+      },
+      email: {
+        title: 'Email Report',
+        sub:   "Uncheck any section you don't want in the email.",
+        cta:   'Continue to Email',
+        icon:  `<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                <polyline points="22,6 12,13 2,6"/>`,
+        run:   picked => emailExecutiveReport(picked),
+        empty: () => alert('There is nothing to email yet — the report has no sections.'),
+      },
+    };
 
     // Every section the report currently renders, in the order it is read.
     function reportSections() {
@@ -1780,7 +1823,19 @@
       return clone.textContent.trim() || 'Section';
     }
 
-    function openReportPicker() {
+    // The "Email Report" button. The module that owns the email modal loads
+    // deferred, so it is checked before the picker opens rather than after a
+    // user has already worked through the checklist.
+    function openEmailPicker() {
+      if (typeof window.openReportEmailModal !== 'function') {
+        alert('Email module is still loading — please try again in a moment.');
+        return;
+      }
+      openReportPicker('email');
+    }
+
+    function openReportPicker(modeKey) {
+      const mode   = PICKER_MODES[modeKey] || PICKER_MODES.pdf;
       const bodyEl = document.getElementById('reportBody');
       if (!bodyEl || bodyEl.style.display === 'none') {
         alert('The report is still loading.');
@@ -1789,8 +1844,7 @@
       if (document.getElementById(PICKER_ID)) return;  // already open
 
       const sections = reportSections();
-      // Nothing to choose between — go straight to the print dialog.
-      if (!sections.length) { window.print(); return; }
+      if (!sections.length) { mode.empty(); return; }
 
       const rows = sections.map(el => {
         // The division's accent, read back off its own inline custom property.
@@ -1816,8 +1870,8 @@
         <div class="picker" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
           <div class="picker-head">
             <div>
-              <div class="picker-title" id="pickerTitle">Generate Report</div>
-              <div class="picker-sub">Uncheck any section you don't want in the PDF.</div>
+              <div class="picker-title" id="pickerTitle">${esc(mode.title)}</div>
+              <div class="picker-sub">${esc(mode.sub)}</div>
             </div>
             <button class="picker-x" id="pickerClose" aria-label="Cancel">&times;</button>
           </div>
@@ -1831,11 +1885,9 @@
             <button class="btn" id="pickerCancel">Cancel</button>
             <button class="btn primary" id="pickerGo">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="6 9 6 2 18 2 18 9"/>
-                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
-                <rect x="6" y="14" width="12" height="8"/>
+                ${mode.icon}
               </svg>
-              Generate PDF
+              ${esc(mode.cta)}
             </button>
           </div>
         </div>`;
@@ -1872,10 +1924,12 @@
       goBtn.onclick = () => {
         const picked = sections.filter((_, i) => boxes[i].checked);
         if (!picked.length) return;
-        // Close first: the modal is a page control, not report content, and the
-        // print dialog captures whatever is in the DOM when it opens.
+        // Close first: the picker is a page control, not report content. The
+        // print dialog captures whatever is in the DOM when it opens, and the
+        // email modal captures the sections it is handed — neither should see
+        // the checklist.
         close();
-        printSections(picked);
+        mode.run(picked);
       };
 
       sync();
