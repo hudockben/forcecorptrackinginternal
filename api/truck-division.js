@@ -215,6 +215,11 @@ module.exports = async (req, res) => {
             drivers:   driverRows.map(r => r.value),
             customers: customerRows.map(r => r.value),
             units:     unitRows.map(r => ({ name: r.name, number: r.number || '' })),
+            // The normalized tables hold no record of a name the office
+            // deleted, and the page re-seeds its lists from the stored rows —
+            // so without carrying this over from the blob, falling back to the
+            // tables would quietly undo every deletion.
+            removed:   (blobLists && blobLists.removed) || undefined,
           },
         });
       }

@@ -977,7 +977,15 @@
     const API_BASE = '/api';
     let divEntries    = [];
     let divLists      = { employees: [], equipment: [] };
-    let divTruckLists = { drivers: [], customers: [], units: [], locations: [], materials: [] };
+    // `removed` is the roster of names the office deleted from a managed list.
+    // Drivers, customers and units are re-seeded from every stored entry on
+    // load (see _migrateExistingEntries), so without a record of the deletion
+    // a name that still appears on any historical row came straight back on
+    // the next load. Deleting a name never touches the rows that carry it —
+    // those keep their value and still read correctly — it only drops the name
+    // out of the pickers. Re-adding the same name un-suppresses it.
+    let divTruckLists = { drivers: [], customers: [], units: [], locations: [], materials: [],
+                          removed: { drivers: [], customers: [], units: [], materials: [] } };
     let _saveTimer       = null;
     let _isSaved         = false;
     let icSentMap = new Map(); // source_id → full IC entry (trucking)
@@ -1449,6 +1457,55 @@
       }
     }
 
+    /* ── Deleted-name roster ──
+       A managed list is two things at once: what the office typed into it, and
+       whatever it swept up from the stored rows. The sweep is what makes a
+       deleted name reappear, and these keep the deletion on record so it
+       doesn't.
+
+       Names match on their trimmed text, case and all. This list carries
+       several spellings of the same company — "kovalchick", "Kovalchick",
+       "KOVALCHICK" — because each was typed onto a row and swept up as its own
+       entry, and deleting the duplicate has to leave the one being kept alone.
+       Trailing space is the exception: " Kinkead" and "Kinkead" are one entry
+       to anyone reading the panel, so they delete together. */
+    const _remKey = v => String(v == null ? '' : v).trim();
+
+    /** Shape whatever the server hands back into the four string arrays. */
+    function _normRemoved(r) {
+      const out = { drivers: [], customers: [], units: [], materials: [] };
+      if (r && typeof r === 'object') {
+        Object.keys(out).forEach(k => {
+          if (Array.isArray(r[k])) out[k] = r[k].map(v => String(v == null ? '' : v).trim()).filter(Boolean);
+        });
+      }
+      return out;
+    }
+
+    function _removedSet(key) {
+      const r = divTruckLists.removed || {};
+      return new Set((Array.isArray(r[key]) ? r[key] : []).map(_remKey));
+    }
+
+    function _isRemovedName(key, val) {
+      const k = _remKey(val);
+      return !!k && _removedSet(key).has(k);
+    }
+
+    /** Record (on = true) or clear a deletion. Returns true if anything changed. */
+    function _setRemovedName(key, val, on) {
+      const k = _remKey(val);
+      if (!k) return false;
+      if (!divTruckLists.removed || typeof divTruckLists.removed !== 'object') divTruckLists.removed = {};
+      const cur = Array.isArray(divTruckLists.removed[key]) ? divTruckLists.removed[key] : [];
+      const has = cur.some(v => _remKey(v) === k);
+      if (on === has) return false;
+      divTruckLists.removed[key] = on
+        ? cur.concat(String(val).trim())
+        : cur.filter(v => _remKey(v) !== k);
+      return true;
+    }
+
     /* Fix entries that were saved before the CSV normalisation was in place.
        Safe to call on every load — no-op when data is already clean. */
     function _migrateExistingEntries() {
@@ -1456,8 +1513,10 @@
       let dataChanged  = false;
       let listsChanged = false;
 
-      const addStr = (arr, val) => {
+      const addStr = (key, arr, val) => {
         if (!val || arr.includes(val)) return arr;
+        // Deleted on purpose — the row keeps the name, the picker doesn't.
+        if (_isRemovedName(key, val)) return arr;
         listsChanged = true;
         return arr.concat(val);
       };
@@ -1480,19 +1539,33 @@
         if (th !== (e.total_hours || '')) { e.total_hours = th; dataChanged = true; }
 
         // Auto-populate managed lists from stored entries
-        divTruckLists.drivers   = addStr(divTruckLists.drivers,   e.driver);
-        divTruckLists.customers = addStr(divTruckLists.customers, e.customer);
-        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)) {
+        divTruckLists.drivers   = addStr('drivers',   divTruckLists.drivers,   e.driver);
+        divTruckLists.customers = addStr('customers', divTruckLists.customers, e.customer);
+        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)
+            && !_isRemovedName('units', e.unit)) {
           divTruckLists.units.push({ name: e.unit, number: '' });
           listsChanged = true;
         }
       });
 
+      // Converge on the deletions: a save from another tab (or one that raced a
+      // re-seed) can hand back a name this company already deleted, so drop it
+      // here rather than waiting for someone to delete it a second time.
+      ['drivers', 'customers', 'materials'].forEach(key => {
+        const arr = divTruckLists[key];
+        if (!Array.isArray(arr) || arr.length === 0) return;
+        const kept = arr.filter(v => !_isRemovedName(key, v));
+        if (kept.length !== arr.length) { divTruckLists[key] = kept; listsChanged = true; }
+      });
+      if (Array.isArray(divTruckLists.units) && divTruckLists.units.length) {
+        const keptU = divTruckLists.units.filter(u => !_isRemovedName('units', u && u.name));
+        if (keptU.length !== divTruckLists.units.length) { divTruckLists.units = keptU; listsChanged = true; }
+      }
+
       if (listsChanged) {
         divTruckLists.drivers.sort((a, b) => a.localeCompare(b));
         divTruckLists.customers.sort((a, b) => a.localeCompare(b));
         divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
-        listsChanged = true;
       }
       // Only save if the entry count didn't drop — guards against saving a
       // partially-loaded set that was pulled from a stale server blob.
@@ -1516,6 +1589,7 @@
         if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
         if (Array.isArray(tl.locations)) divTruckLists.locations = tl.locations;
         if (Array.isArray(tl.materials)) divTruckLists.materials = tl.materials;
+        if (tl.removed && typeof tl.removed === 'object') divTruckLists.removed = _normRemoved(tl.removed);
       }
       if (lists) {
         if (Array.isArray(lists.employees)) {
@@ -1715,6 +1789,33 @@
       const esc = s => String(s == null ? '' : s)
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
+      // A name reaches an onclick as a JS string literal inside an HTML
+      // attribute, so it needs both escapes — esc() alone leaves an apostrophe
+      // to break the call, and "Kinkead's" then refuses to delete.
+      const argEsc = v => esc(v).replace(/'/g, "\\'");
+
+      /* Names deleted from this list, offered back. Deletion is remembered
+         (see removeFromList) precisely so the loader can't re-seed them from
+         the stored rows — which also means this is the only way back. */
+      const removedHTML = (key, label) => {
+        const gone = ((divTruckLists.removed || {})[key] || []).filter(Boolean);
+        if (gone.length === 0) return '';
+        return `
+          <div style="margin-top:0.45rem;padding-top:0.4rem;border-top:1px solid rgba(255,255,255,0.07)">
+            <div style="font-size:0.66rem;color:var(--muted);margin-bottom:0.3rem;line-height:1.4">
+              ${gone.length} removed — kept off this list even when an old row still names ${gone.length === 1 ? 'it' : 'them'}.
+            </div>
+            <div class="lists-items">
+              ${gone.map(v => `
+                <div class="lists-item" style="opacity:0.6">
+                  <span>${esc(v)}</span>
+                  <button class="lists-item-del" style="color:var(--muted)"
+                    onclick="restoreToList('${key}','${argEsc(v)}')" title="Put back">&#8630;</button>
+                </div>`).join('')}
+            </div>
+          </div>`;
+      };
+
       const section = (key, label, items) => `
         <div class="lists-section">
           <div class="lists-section-title">${label}</div>
@@ -1729,10 +1830,11 @@
               : items.map(v => `
                   <div class="lists-item">
                     <span>${esc(v)}</span>
-                    <button class="lists-item-del" onclick="removeFromList('${key}','${esc(v)}')" title="Remove">&#10005;</button>
+                    <button class="lists-item-del" onclick="removeFromList('${key}','${argEsc(v)}')" title="Remove">&#10005;</button>
                   </div>`).join('')
             }
           </div>
+          ${removedHTML(key, label)}
         </div>`;
 
       const locationsHTML = `
@@ -1782,10 +1884,11 @@
               : divTruckLists.units.map(u => `
                   <div class="lists-item">
                     <span>${esc(u.name)}<span style="color:var(--muted);font-size:0.7rem;margin-left:0.4rem">#${esc(u.number)}</span></span>
-                    <button class="lists-item-del" onclick="removeUnit('${esc(u.name)}')" title="Remove">&#10005;</button>
+                    <button class="lists-item-del" onclick="removeUnit('${argEsc(u.name)}')" title="Remove">&#10005;</button>
                   </div>`).join('')
             }
           </div>
+          ${removedHTML('units', 'Units')}
         </div>`;
 
       document.getElementById('lists-panel-body').innerHTML =
@@ -1802,6 +1905,8 @@
       if (!inp) return;
       const val = inp.value.trim();
       if (!val || divTruckLists[key].includes(val)) { inp.value = ''; return; }
+      // Typing a name back in is how a deleted one comes back.
+      _setRemovedName(key, val, false);
       divTruckLists[key].push(val);
       divTruckLists[key].sort((a, b) => a.localeCompare(b));
       saveTruckLists();
@@ -1812,7 +1917,31 @@
     }
 
     function removeFromList(key, val) {
+      // Recorded, not just filtered: the loader re-seeds drivers and customers
+      // from every stored row, so a name still on a historical row would
+      // otherwise be back the next time the page opened.
+      _setRemovedName(key, val, true);
       divTruckLists[key] = divTruckLists[key].filter(v => v !== val);
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /** Put a deleted name back. Clears the record of the deletion and re-adds
+     *  the name, so the next load's re-seed leaves it alone either way. */
+    function restoreToList(key, val) {
+      const v = String(val == null ? '' : val).trim();
+      if (!v) return;
+      _setRemovedName(key, v, false);
+      if (key === 'units') {
+        if (!divTruckLists.units.some(u => u && u.name === v)) divTruckLists.units.push({ name: v, number: '' });
+        divTruckLists.units.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      } else {
+        if (!Array.isArray(divTruckLists[key])) divTruckLists[key] = [];
+        if (!divTruckLists[key].includes(v)) divTruckLists[key].push(v);
+        divTruckLists[key].sort((a, b) => String(a).localeCompare(String(b)));
+      }
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
@@ -1861,6 +1990,7 @@
       const number = numInp.value.trim();
       if (!name) return;
       if (divTruckLists.units.some(u => u.name === name)) { nameInp.value = ''; numInp.value = ''; return; }
+      _setRemovedName('units', name, false);
       divTruckLists.units.push({ name, number });
       divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
       saveTruckLists();
@@ -1872,6 +2002,7 @@
     }
 
     function removeUnit(name) {
+      _setRemovedName('units', name, true);
       divTruckLists.units = divTruckLists.units.filter(u => u.name !== name);
       saveTruckLists();
       renderListsPanel();
@@ -5307,11 +5438,13 @@
 
       // Prepend so newly imported rows appear at the top
       divEntries.unshift(...newEntries);
-      const add = (arr, val) => val && !arr.includes(val) ? [...arr, val] : arr;
+      const add = (key, arr, val) =>
+        val && !arr.includes(val) && !_isRemovedName(key, val) ? [...arr, val] : arr;
       newEntries.forEach(e => {
-        divTruckLists.drivers   = add(divTruckLists.drivers,   e.driver);
-        divTruckLists.customers = add(divTruckLists.customers, e.customer);
-        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit))
+        divTruckLists.drivers   = add('drivers',   divTruckLists.drivers,   e.driver);
+        divTruckLists.customers = add('customers', divTruckLists.customers, e.customer);
+        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)
+            && !_isRemovedName('units', e.unit))
           divTruckLists.units.push({ name: e.unit, number: '' });
       });
       divTruckLists.drivers.sort((a,b) => a.localeCompare(b));
@@ -5400,6 +5533,7 @@
           if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
           if (Array.isArray(tl.locations)) divTruckLists.locations = tl.locations;
           if (Array.isArray(tl.materials)) divTruckLists.materials = tl.materials;
+          if (tl.removed && typeof tl.removed === 'object') divTruckLists.removed = _normRemoved(tl.removed);
           const tab = _activeTabId();
           if (tab === 'dashboard')      renderDashboard();
           if (tab === 'truck-tracking') renderTrackingTab();
