@@ -3717,21 +3717,24 @@
       });
     });
 
-    // Newest first, and by the DATE rather than by where the row happens to sit
-    // in the list.
+    // How all three tracking tabs order themselves: newest first, by the DATE
+    // rather than by where the row happens to sit in the list.
     //
-    // The list's own order is not something anyone here controls: "+ Add Row"
-    // puts a row at the top, a CSV import puts them in file order, and a sale
-    // submitted on the Quarry Sales form arrived at the BOTTOM — under three
-    // hundred rows, on a tab with no sort control, which reads exactly like it
-    // never arrived. The server-side guard appends too, whenever a sale lands
-    // while this tab is open, so no amount of care at the injecting end fixes
-    // this on its own: the table has to order itself.
+    // The list's own order is not something anyone here controls. "+ Add Row"
+    // puts a row at the top, a CSV import puts them in file order, and a row
+    // that arrives from somewhere else — payroll approving a timesheet, the
+    // scale house submitting a sale — is appended to the end. On a tab with no
+    // sort control, the end of three hundred rows reads exactly like it never
+    // arrived. The server-side guard appends too, whenever a row lands while
+    // the tab is open, so no amount of care at the injecting end fixes this:
+    // the table has to order itself.
     //
     // Stable, so rows sharing a date keep the order they had. A row with no
     // date sorts to the TOP, not the bottom — it is a row that needs a date
     // typed into it, and the bottom of three hundred rows is where nothing
-    // gets attention.
+    // gets attention. Daily and Crushing each carried their own copy of this
+    // rule that sorted an undated row to the bottom instead; one comparator
+    // for the three of them is how they stop disagreeing.
     function byDateDesc(a, b) {
       const da = (a.row && a.row.date) || '';
       const db = (b.row && b.row.date) || '';
@@ -4151,8 +4154,9 @@
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row) && rowMatchesProduct('crushing', row))
         // Newest first so payroll-injected (tsq-) rows surface at the top rather
-        // than being appended out of sight — matches the Daily tab.
-        .sort((a, b) => String(b.row.date || '').localeCompare(String(a.row.date || '')));
+        // than being appended out of sight. Shared with Daily and Sales — see
+        // byDateDesc.
+        .sort(byDateDesc);
       if (!visibleEntries.length) {
         tbody.innerHTML = `<tr><td colspan="19" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))} · ${escapeHtml(monthFilterLabel('crushing'))} · ${escapeHtml(locationFilterLabel('crushing'))} · ${escapeHtml(productFilterLabel('crushing'))}. Adjust the filters above.</td></tr>`;
         updateCrushSummary();
@@ -4507,9 +4511,9 @@
         .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesMonth('daily', row) && rowMatchesLocation('daily', row))
         // Newest work-date first. Payroll approval appends injected (tsq-) rows
         // to the end of the blob, so without this they'd render at the very
-        // bottom — "invisible" under a long list of older manual rows. Stable
-        // sort preserves the existing order among same-date rows.
-        .sort((a, b) => String(b.row.date || '').localeCompare(String(a.row.date || '')));
+        // bottom — "invisible" under a long list of older manual rows. Shared
+        // with Crushing and Sales — see byDateDesc.
+        .sort(byDateDesc);
       if (!visibleEntries.length) {
         tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))} · ${escapeHtml(monthFilterLabel('daily'))} · ${escapeHtml(locationFilterLabel('daily'))}. Adjust the filters above.</td></tr>`;
         updateDailySummary();
