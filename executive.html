@@ -159,6 +159,16 @@
     }
     .btn.primary:hover { background: #8b6fe0; border-color: #8b6fe0; }
     .btn.primary:disabled:hover { background: var(--purple); border-color: var(--purple); }
+    /* The send-green confirm — the section picker wears it when it is the
+       email that is being composed, so the button matches the Send it leads
+       to rather than the purple PDF button beside it. */
+    .btn.green {
+      background: var(--green);
+      color: #0a0a0f;
+      border-color: var(--green);
+    }
+    .btn.green:hover { background: var(--green-dim); border-color: var(--green-dim); }
+    .btn.green:disabled:hover { background: var(--green); border-color: var(--green); }
     .btn svg { width: 14px; height: 14px; }
 
     /* ── Section picker ──
@@ -1788,6 +1798,7 @@
         title: 'Generate Report',
         sub:   "Uncheck any section you don't want in the PDF.",
         cta:   'Generate PDF',
+        tone:  'primary',
         icon:  `<polyline points="6 9 6 2 18 2 18 9"/>
                 <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
                 <rect x="6" y="14" width="12" height="8"/>`,
@@ -1799,6 +1810,7 @@
         title: 'Email Report',
         sub:   "Uncheck any section you don't want in the email.",
         cta:   'Continue to Email',
+        tone:  'green',
         icon:  `<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
                 <polyline points="22,6 12,13 2,6"/>`,
         run:   picked => emailExecutiveReport(picked),
@@ -1883,7 +1895,7 @@
           <div class="picker-list">${rows}</div>
           <div class="picker-foot">
             <button class="btn" id="pickerCancel">Cancel</button>
-            <button class="btn primary" id="pickerGo">
+            <button class="btn ${mode.tone}" id="pickerGo">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 ${mode.icon}
               </svg>
