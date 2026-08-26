@@ -30,10 +30,11 @@
  * precision the mirror column carries. Multiply it back by the tonnage and you
  * get the amount charged to the cent, so Net Sales in the grid IS the ticket.
  *
- * The office still owns the column. The price is filled FORWARD ONLY, onto a
- * cell still blank, exactly as trucking fills a haul fee from a customer's
- * rate: a figure the office typed is theirs, and a retried submit must never
- * silently restate a load that has already been invoiced.
+ * The office still owns the column — pricePerTon is the one field of an
+ * injected row a Sales Tracking save may write, and a submitted sale is never
+ * re-injected, so a price they typed is theirs for good. What a retry does
+ * overwrite is a price an earlier unfinished submit of the same draft left
+ * behind, which is the only way this row can already carry one.
  */
 
 const { neon } = require('@neondatabase/serverless');
@@ -102,8 +103,20 @@ function safeDate(v) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
   const [y, mo, d] = s.split('-').map(Number);
   if (y < MIN_YEAR || y > MAX_YEAR) return null;
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  return s;
+  // Shaped like a date is not the same as being one. The 30th of February
+  // gets past the pattern and past a 1-31 range check, and is then refused by
+  // the DATE column instead — which surfaces as a 500 carrying a driver's
+  // error message rather than the 400 that tells the scale house to fix the
+  // date. Same guard, and the same reason, as api/fuel-submissions.js.
+  //
+  // Date.UTC maps a year of 0–99 onto 1900–1999, so the round-trip has to be
+  // told the year separately; the MIN_YEAR band above makes that unreachable
+  // here, but a check that is right only because of another check is one
+  // rewrite away from being wrong.
+  const dt = new Date(Date.UTC(2000, mo - 1, d));
+  dt.setUTCFullYear(y);
+  const real = dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === mo && dt.getUTCDate() === d;
+  return real ? s : null;
 }
 
 function safeInt(v) {
@@ -315,23 +328,40 @@ async function writeBlobArray(sql, companyCode, blobKey, arr) {
  * Idempotent: any row this submission already owns is dropped first, so a
  * retried submit corrects the sale rather than posting it twice.
  *
- * The price is worked out from the ticket — amount charged over tons — and
- * written FORWARD ONLY, onto a cell still blank. A price already sitting on
- * the row is the office's answer, whether they typed it or an earlier submit
- * put it there, and carrying it across is what stops a retry restating a load
- * that has already been invoiced.
+ * The price is worked out from the ticket — amount charged over tons — every
+ * time, so a draft corrected after a half-finished submit is corrected whole.
+ * See priced() for why nothing invoiced is at risk in that window.
  */
 /**
- * The price to write on the row: whatever is already there, else the one the
- * ticket implies, else blank. '' counts as blank — that is what an untouched
- * cell holds in the grid, and what every row posted before the form asked for
- * an amount carries.
+ * The price to write on the row: the one the ticket implies, and only if the
+ * ticket cannot answer, whatever is already there.
+ *
+ * The ticket wins, and it has to. A row can only be re-injected while its
+ * submission is still a DRAFT — submit refuses anything already sent — so the
+ * only price this can be standing on is one an earlier, unfinished submit of
+ * this same draft put there. Keeping it meant a submitter who caught a
+ * mistyped total, corrected the draft and sent it again got every column
+ * corrected except the money: a load charged $441 went on billing $4,410, with
+ * amount_charged reading 441 and nothing on the row to say the two disagreed.
+ *
+ * Nothing invoiced is at risk in that window, because a draft has not reached
+ * the office as a sale at all. Where the office's price IS protected is the
+ * two places it can actually be typed: a submitted sale is never re-injected,
+ * and pricePerTon is the one column the blob guard lets a Sales Tracking save
+ * write on an injected row (SALES_TAB_FIELDS).
+ *
+ * The fallback is defence rather than a path anyone walks — submit checks
+ * completeness first, so tons and amount are both present by the time this
+ * runs and pricePerTonFrom cannot return null. It is here so that a caller
+ * injecting an incomplete sale leaves a hand-typed price alone instead of
+ * blanking it. '' counts as blank, because that is what an untouched cell
+ * holds in the grid.
  */
 function priced(prior, sub) {
-  const held = prior ? prior.pricePerTon : undefined;
-  if (held !== undefined && held !== null && held !== '') return held;
   const computed = pricePerTonFrom(sub.amount_charged, sub.tons);
-  return computed === null ? '' : computed;
+  if (computed !== null) return computed;
+  const held = prior ? prior.pricePerTon : undefined;
+  return (held === undefined || held === null) ? '' : held;
 }
 
 async function injectSalesRow(sql, companyCode, sub) {

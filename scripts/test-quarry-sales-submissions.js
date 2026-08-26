@@ -257,6 +257,18 @@ function parsingTests() {
 
   console.log('\n[dates]');
   assert('an ISO date is kept',        safeDate('2026-08-11') === '2026-08-11');
+  // Shaped like a date is not the same as being one. These get past the
+  // pattern and a plain 1-31 range check, and are then refused by the DATE
+  // column — a 500 with a driver's error in it rather than the 400 that tells
+  // the scale house to fix the date.
+  assert('the 30th of February is refused',   safeDate('2026-02-30') === null);
+  assert('the 31st of April is refused',      safeDate('2026-04-31') === null);
+  assert('the 29th of a non-leap year too',   safeDate('2026-02-29') === null);
+  assert('but a real leap day is kept',       safeDate('2024-02-29') === '2024-02-29');
+  assert('and the last day of a long month',  safeDate('2026-12-31') === '2026-12-31');
+  assert('and the last day of a short one',   safeDate('2026-04-30') === '2026-04-30');
+  assert('an impossible date is refused as a 400, not passed to the column',
+    !!normalizeBody({ work_date: '2026-02-30' }).error);
   assert('a Date keeps its local day', safeDate(new Date(2026, 7, 11)) === '2026-08-11');
   assert('a typo is refused',          safeDate('11/08/2026') === null);
   assert('year 1899 is refused',       safeDate('1899-08-11') === null);
@@ -342,35 +354,52 @@ async function injectionTests() {
       String(row.pricePerTon));
   }
   {
-    // The office re-prices the load, then the sale is corrected and
-    // re-submitted. Their figure is the answer, and a retry must not restate
-    // a load that may already have been invoiced at it.
+    // The half-finished submit. injectSalesRow lands the row, the status UPDATE
+    // behind it dies, and the submission is still a draft — so the submitter
+    // can fix the total they fat-fingered and send it again.
+    //
+    // This regressed once and it regressed in the worst direction: the row kept
+    // the price the FIRST attempt worked out, so a load charged $441 went on
+    // billing $4,410 with amount_charged reading 441 and nothing on the row to
+    // say the two disagreed. Every column corrected except the money.
     const store = new Map([[KEY, []]]);
     const sql = makeSql(store);
-    await injectSalesRow(sql, 'FCT', sub);
-    store.get(KEY)[0].pricePerTon = 18.75;
+    await injectSalesRow(sql, 'FCT', Object.assign({}, sub, { amount_charged: 4410 }));
+    assert('the mistyped total prices the row first time round',
+      store.get(KEY)[0].pricePerTon === 180, String(store.get(KEY)[0].pricePerTon));
 
     await injectSalesRow(sql, 'FCT', Object.assign({}, sub, { tons: 26, amount_charged: 520 }));
     const arr = store.get(KEY);
     assert('a correction replaces the row rather than adding a second',
       arr.length === 1, JSON.stringify(arr.map(r => r.id)));
     assert('the corrected tonnage lands', arr[0].tons === 26, String(arr[0].tons));
-    assert("the office's price survives the correction, ticket or no ticket",
-      arr[0].pricePerTon === 18.75, String(arr[0].pricePerTon));
+    assert('AND SO DOES THE CORRECTED PRICE', arr[0].pricePerTon === 20, String(arr[0].pricePerTon));
+    assert('so the grid bills what the corrected ticket said',
+      Math.abs(arr[0].tons * arr[0].pricePerTon - 520) < 0.005,
+      String(arr[0].tons * arr[0].pricePerTon));
   }
   {
     // priced() states the rule on its own, because the whole of it is which of
     // two numbers wins and an off-by-one reading of "blank" decides it.
     const t = { tons: 24.5, amount_charged: 441 };
-    assert('no prior row → the ticket prices it',   priced(null, t) === 18);
-    assert("a prior '' → the ticket prices it",     priced({ pricePerTon: '' }, t) === 18);
-    assert('a prior null → the ticket prices it',   priced({ pricePerTon: null }, t) === 18);
-    assert('a prior absent → the ticket prices it', priced({}, t) === 18);
-    assert('a prior figure wins',                   priced({ pricePerTon: 18.75 }, t) === 18.75);
-    assert('a prior 0 wins too — a free load is an answer',
-      priced({ pricePerTon: 0 }, t) === 0);
-    assert('no prior and no ticket leaves it blank',
-      priced(null, { tons: 24.5, amount_charged: null }) === '');
+    assert('no prior row → the ticket prices it',    priced(null, t) === 18);
+    assert("a prior '' → the ticket prices it",      priced({ pricePerTon: '' }, t) === 18);
+    assert('a prior null → the ticket prices it',    priced({ pricePerTon: null }, t) === 18);
+    assert('a prior absent → the ticket prices it',  priced({}, t) === 18);
+    assert('a prior figure does NOT survive a ticket that disagrees',
+      priced({ pricePerTon: 180 }, t) === 18);
+    assert('a prior 0 does not either',              priced({ pricePerTon: 0 }, t) === 18);
+    // The one case the fallback is for: no ticket to divide, so whatever is on
+    // the row stays. Unreachable through submit, which checks completeness
+    // first — it is here so an incomplete injection cannot blank a hand-typed
+    // price.
+    const noTicket = { tons: 24.5, amount_charged: null };
+    assert('with no ticket, a hand-typed price is left alone',
+      priced({ pricePerTon: 18.75 }, noTicket) === 18.75);
+    assert('with no ticket and no prior, it stays blank',
+      priced(null, noTicket) === '');
+    assert("with no ticket, a prior '' stays ''",
+      priced({ pricePerTon: '' }, noTicket) === '');
   }
   {
     // Removal has to reach the mirror table too: syncForKey short-circuits on
@@ -666,6 +695,20 @@ function pageTests() {
   assert('and renders it locked', /class="qss-locked"/.test(grid));
   assert('leaving price per ton editable on it',
     /qss-locked[\s\S]{0,2200}updateSalesNumber\(\$\{i\}, 'pricePerTon'/.test(grid));
+  // The price tooltip used to name tons x price as "charged on the ticket",
+  // which stopped being true the moment the office re-priced the row — it then
+  // quoted a total nobody was ever charged, and refreshSalesRowTotals never
+  // refreshed it anyway. Nothing it says may depend on the price.
+  {
+    const src = /function salesPriceTitle\(row\) \{([\s\S]*?)\n    \}/.exec(grid);
+    assert('the grid explains where a submitted sale\'s price came from', !!src);
+    if (src) {
+      assert('and states no dollar figure that an edit could falsify',
+        !/formatMoney/.test(src[1]), src[1].trim());
+      assert('and reads nothing off the price itself, so it cannot go stale',
+        !/pricePerTon/.test(src[1]), src[1].trim());
+    }
+  }
   assert('the filtered-delete tool skips it', /!isInjectedRow\(r\)/.test(grid));
   assert('a row delete on it is refused locally',
     /if \(isInjectedRow\(salesRows\[index\]\)\) return;/.test(grid));

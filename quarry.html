@@ -3101,14 +3101,20 @@
     // charged over tons — so it can carry four decimals, and someone seeing
     // 33.3333 in a money column needs to know that is arithmetic rather than a
     // mistyped rate.
+    //
+    // Deliberately states no dollar figure. It used to name tons x price as
+    // "charged on the ticket", which stopped being true the moment the office
+    // re-priced the row: the tooltip then quoted a total nobody was ever
+    // charged. Everything it says now is about where the cell STARTED, which
+    // an edit cannot falsify — and since the tonnage beside it is read-only on
+    // one of these rows, there is nothing left in here to go stale between
+    // renders either.
     function salesPriceTitle(row) {
       const t = Number(row.tons);
-      const p = Number(row.pricePerTon);
-      if (!Number.isFinite(t) || !Number.isFinite(p) || !t || !p) {
-        return 'No price yet — the ticket total or the tonnage is missing. Type a price here to bill the load.';
-      }
-      return `Worked out from the ${formatMoney(t * p)} charged on the ticket, over ${formatTons(t)} tons. `
-           + 'Change it here if the ticket was wrong — the field cannot overwrite your figure.';
+      const over = (Number.isFinite(t) && t) ? `, over ${formatTons(t)} tons` : '';
+      return `Price per ton for this load. It arrives worked out from the ticket total the scale house entered${over} `
+           + '— a division, so it can run to four decimals. Type over it to re-price the load; '
+           + 'Sales Tax, Net Sales and Total Due all follow from it.';
     }
 
     function formatMoney(n) {
