@@ -5062,7 +5062,11 @@
       // The row index is kept for the inline handlers that fire synchronously;
       // the uid is what the deferred commit addresses the row by.
       const uid = _cbEsc((splitRows[rowIdx] || {})._uid || '');
-      return `<div class="cb${cls}" data-row="${rowIdx}" data-row-uid="${uid}" data-field="${field}" data-options="${optsAttr}">` +
+      // What this cell was drawn holding. A deferred commit compares it
+      // against the split to tell "nobody has touched this since" from
+      // "something the supervisor did later already changed it".
+      const drawn = _cbEsc(currentValue == null ? '' : String(currentValue));
+      return `<div class="cb${cls}" data-row="${rowIdx}" data-row-uid="${uid}" data-drawn="${drawn}" data-field="${field}" data-options="${optsAttr}">` +
         `<input type="text" class="cb-input${cls}"${title} value="${_cbEsc(currentValue || '')}" ` +
           `placeholder="${_cbEsc(placeholder || '')}" autocomplete="off" spellcheck="false" ` +
           `onfocus="cbOnFocus(this)" oninput="cbOnInput(this)" ` +
@@ -5200,18 +5204,34 @@
       cbClose(input);
       const field = cb.dataset.field;
       if (!field) return;
-      // Addressed by the row's own id, not by where it sat when this cell was
-      // drawn. The commit below is deferred 120ms past the blur so that a click
-      // on a menu option is handled first — and a single ordinary click that
-      // lands on another row's ✕ deletes a row inside that window. Every row
-      // under it then shifts up, and a commit addressed by position wrote the
-      // supervisor's code onto whichever row moved into the slot: a day's cost
-      // booked to the wrong task, with the table showing a perfectly plausible
-      // result. A row that is gone takes its pending edit with it.
+      // This commit is deferred 120ms past the blur so a click on a menu
+      // option is handled first, which means the table can have moved on
+      // beneath it. There are two ways it can have moved, and they need
+      // opposite answers.
+      //
+      // The row shifted, because another row was deleted: still the
+      // supervisor's edit, and it belongs to the row they typed it into. Hence
+      // the row's own id rather than the position this cell was drawn at — a
+      // single ordinary click blurs a code and lands on another row's ✕, every
+      // row under it shifts up, and by position the code went onto whichever
+      // row moved into the slot: a day's cost booked to the wrong task, with
+      // the table showing a perfectly plausible result.
       const uid = cb.dataset.rowUid;
       const rowIdx = uid ? splitRows.findIndex(r => r && r._uid === uid)
                          : parseInt(cb.dataset.row, 10);
-      if (!(rowIdx >= 0) || !splitRows[rowIdx]) return;
+      const row = rowIdx >= 0 ? splitRows[rowIdx] : null;
+      // Or this field was changed by something the supervisor did afterwards,
+      // and their later action wins. Unticking Travel clears the drive's
+      // codes — and the click that reaches the tick blurs the sub-code cell,
+      // so this commit arrived 120ms later and put the code straight back. A
+      // sub code does not repaint on its own, so the table went on showing the
+      // row as ordinary work while the split still carried a travel code, and
+      // the server went on pricing it as travel.
+      const drawn = cb.dataset.drawn || '';
+      if (!row || String(row[field] == null ? '' : row[field]) !== drawn) {
+        renderSplitRows();     // whatever this cell held, the split is the truth
+        return;
+      }
       // Trimmed, and written back so the box shows what was stored. A stray
       // space is invisible, but the code is matched against the job's bid
       // items exactly: "Mobilization " found nothing, so the sub-code picker
@@ -5221,7 +5241,13 @@
       // never mid-word.
       const value = String(input.value == null ? '' : input.value).trim();
       if (input.value !== value) input.value = value;
+      cb.dataset.drawn = value;          // this cell now holds what the split holds
+      const detached = !document.contains(input);
       splitOnChange(rowIdx, field, value);
+      // A commit off a cell the table has already replaced has to be painted
+      // back. A sub code or equipment change does not repaint on its own, and
+      // the supervisor approves from the table, not from the split.
+      if (detached) renderSplitRows();
     }
     document.addEventListener('mousedown', (e) => {
       const opt = e.target.closest('.cb-opt');
@@ -5301,15 +5327,21 @@
         // A prefilled code is a guess off the job's bid items, not something
         // anyone checked. Dashed and labelled so it reads as one and gets
         // looked at before it is approved.
-        const auto = r.code_source === 'auto'
+        //
+        // Marked per cell rather than per row: when a job files several drives
+        // under one task the prefill fills the cost code and deliberately
+        // leaves the sub code open, and a dashed empty box claiming to have
+        // been filled in is the exact kind of thing this marking exists to
+        // stop.
+        const auto = f => (r.code_source === 'auto' && String(r[f] || '').trim())
           ? { className: 'auto-code',
               title: "Filled in from this job's travel code — change it if the drive books somewhere else." }
           : null;
         return `
         <tr class="${r.is_travel ? 'travel-row' : ''}">
           <td style="color:var(--muted);font-variant-numeric:tabular-nums">${i + 1}</td>
-          <td>${_cbHtml(i, 'cost_code', r.cost_code, ccCodes, '— pick —', auto)}</td>
-          <td>${_cbHtml(i, 'sub_code', r.sub_code, subOpts, '—', auto)}</td>
+          <td>${_cbHtml(i, 'cost_code', r.cost_code, ccCodes, '— pick —', auto('cost_code'))}</td>
+          <td>${_cbHtml(i, 'sub_code', r.sub_code, subOpts, '—', auto('sub_code'))}</td>
           <td><input type="number" class="num" min="0" step="0.01" placeholder="0.00" value="${numInputVal(r.quantity)}" oninput="splitOnChange(${i},'quantity',this.value)"></td>
           <td>${_cbHtml(i, 'equipment', r.equipment, eqOpts, '— none —')}</td>
           <td><input type="number" class="num" min="0" max="24" step="0.25" placeholder="0.00" value="${numInputVal(r.labor_hours)}" oninput="splitOnChange(${i},'labor_hours',this.value)"></td>
@@ -8098,9 +8130,15 @@
         const anyTravel = g.entries.some(e => bulkR2(e.travel_hours) > 0);
         // Prefilled off the job's bid items rather than typed — dashed, so it
         // gets a look before a whole crew's days are approved against it.
+        // Per field, not per group: the prefill fills the travel cost code and
+        // leaves the sub code open when the task files more than one drive
+        // under it, and a dashed empty box is not what "filled in" looks like.
         const tAutoText  = "Filled in from this job's travel code — change it if the drive books somewhere else.";
-        const tAuto      = g.template.travel_code_source === 'auto' ? 'auto-code' : '';
-        const tAutoAttrs = tAuto ? `class="${tAuto}" title="${escapeHtml(tAutoText)}"` : '';
+        const tAutoFor   = v => (g.template.travel_code_source === 'auto'
+                                 && String(v || '').trim()) ? 'auto-code' : '';
+        const tAutoCc    = tAutoFor(g.template.travel_cost_code);
+        const tAutoSc    = tAutoFor(g.template.travel_sub_code);
+        const tAutoAttrs = tAutoCc ? `class="${tAutoCc}" title="${escapeHtml(tAutoText)}"` : '';
         const eqOpts  = g.eqList || [];
         const ccPh    = g._loaded ? 'Select or type…' : 'Loading…';
         badgeClass = 'split'; badgeText = prettyDiv(g.division);
@@ -8134,7 +8172,8 @@
             </div>
             <div class="bulk-field"><span>Travel Sub Code <span style="text-transform:none;font-weight:400">(optional)</span></span>
               ${_bulkList(idx, 'travel_sub_code', g.template.travel_sub_code, travelSubOpts,
-                          g.template.sub_code || 'same as above', tAuto ? { className: tAuto, title: tAutoText } : null)}
+                          g.template.sub_code || 'same as above',
+                          tAutoSc ? { className: tAutoSc, title: tAutoText } : null)}
             </div>
           </div>`}
           <div class="bulk-note">All work hours post to the cost code above. Any day with travel hours gets its

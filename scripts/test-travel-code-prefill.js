@@ -511,6 +511,21 @@ console.log('\n[the prefilled cells read as prefilled]');
   assert('the equipment cell is never marked',
     !/data-field="equipment"[^>]*auto-code/.test(html));
 
+  // A partial prefill — the cost code settled, the sub code deliberately left
+  // open because the task files more than one drive under it. Only the cell
+  // that actually got a value may claim to have been filled in; a dashed empty
+  // box saying "filled in from this job's travel code" is precisely the kind of
+  // thing this marking exists to stop.
+  render.splitRows[1].sub_code = '';
+  render.renderSplitRows();
+  const partial = store.splitTbody.innerHTML;
+  assert('a partial prefill marks only the cell it filled',
+    (partial.match(/cb-input auto-code/g) || []).length === 1,
+    String((partial.match(/cb-input auto-code/g) || []).length));
+  assert('and the empty sub code is left unmarked',
+    !/data-field="sub_code"[\s\S]{0,120}?auto-code/.test(partial));
+  render.splitRows[1].sub_code = 'Travel';
+
   // Once the supervisor takes it over the marking has to go.
   render.splitRows[1].code_source = 'manual';
   render.renderSplitRows();
@@ -794,6 +809,57 @@ console.log('\n[a repaint keeps the cursor where it was]');
   assert('and an edit whose row was deleted is dropped, not re-homed',
     window.eval('splitRows.map(function (r) { return r.cost_code; }).join()') === 'B,C',
     window.eval('splitRows.map(function (r) { return r.cost_code; }).join()'));
+
+  // ── A later action beats a commit that predates it ────────────────────
+  // Unticking Travel clears the drive's codes. The click that reaches the tick
+  // blurs the sub-code cell, so that cell's commit arrives 120ms afterwards —
+  // and it used to put the code straight back. A sub code does not repaint on
+  // its own, so the table went on showing the row as ordinary work while the
+  // split still carried a travel code, and the server went on pricing it as
+  // travel: exactly what unticking is supposed to prevent.
+  window.eval('splitRows = [_blankSplitRow(false), _blankSplitRow(true)];' +
+              'splitApplyTravelPrefill(); renderSplitRows()');
+  assert('the drive opens coded and ticked',
+    window.eval('splitRows[1].sub_code') === 'Travel' &&
+    window.eval('splitRows[1].code_source') === 'auto');
+  const driveSub = cell(1, 'sub_code');       // the supervisor is standing here
+  driveSub.focus();
+  window.eval("splitOnChange(1, 'is_travel', false)");   // and clicks the tick
+  assert('unticking clears the codes', window.eval('splitRows[1].sub_code') === '');
+  window._pendingInput = driveSub;            // the blur's commit, 120ms late
+  window.eval('cbCommit(window._pendingInput)');
+  assert('and the pending sub-code commit does not put it back',
+    window.eval('splitRows[1].sub_code') === '', window.eval('splitRows[1].sub_code'));
+  assert('so the row is not travel to the server either',
+    window.eval('isTravelSplitRow(splitRows[1])') === false);
+
+  // The table and the split must never disagree — the supervisor approves
+  // from the table.
+  const domVsState = () => window.eval(
+    '[...document.querySelectorAll("#splitTbody tr")].every(function (tr, i) {' +
+    '  return ["cost_code","sub_code","equipment"].every(function (f) {' +
+    '    var el = tr.querySelector(".cb[data-field=\\"" + f + "\\"] .cb-input");' +
+    '    return !el || el.value === String(splitRows[i][f] || ""); }); })');
+  assert('the table still shows exactly what the split holds', domVsState() === true);
+
+  // A commit nothing else disturbed still lands, and lands painted. A sub code
+  // does not repaint on its own, so one arriving from a cell the table has
+  // already replaced would otherwise sit in the split without ever appearing
+  // in the table the supervisor approves from.
+  window.eval("splitRows = ['A','B','C'].map(function (n) {" +
+              "  return Object.assign(_blankSplitRow(false), " +
+              "    { cost_code: 'Silt Sock', sub_code: n }); });" +
+              'renderSplitRows()');
+  const pending = cell(2, 'sub_code');        // the supervisor retypes row 3
+  pending.value = '18inch';
+  window.eval('splitDeleteRow(0)');           // and the same click hits row 1's ✕
+  window._pendingInput = pending;
+  window.eval('cbCommit(window._pendingInput)');
+  assert('a sub code committed off a replaced cell still reaches its row',
+    window.eval('splitRows[1].sub_code') === '18inch', window.eval('splitRows[1].sub_code'));
+  assert('and the table is repainted to show it', domVsState() === true,
+    window.eval('[...document.querySelectorAll("#splitTbody tr")].map(function (tr) {' +
+                'return tr.querySelector(".cb[data-field=\\"sub_code\\"] .cb-input").value; }).join()'));
 
   // ── One dropdown at a time ────────────────────────────────────────────
   // A click closes the other menus through the document handler; Tab did not,
