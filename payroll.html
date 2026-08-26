@@ -6044,10 +6044,16 @@
     //             is a dropdown off this list, and Intercompany matches a row to
     //             a billed company BY NAME, so a haul split onto a customer
     //             spelled differently here would simply never bill.
+    //   rates     ({ name: '121' })  — what that company is billed per hour, set
+    //             beside its name in the trucking office's Manage Lists. It is
+    //             what fills the Haul Fee box in below, so the day is approved at
+    //             the rate the office agreed rather than at whatever the approver
+    //             remembers or reads off last week's row.
     // Fetched once and lazily: a payroll session that never approves a haul never
-    // asks for them. They only ever fill dropdowns and the unit hint, never an
-    // input's value, so they cannot fight the staleness and touched guards above.
-    let truckLists        = null;   // { units: [{name, number}], customers: [string] }
+    // asks for them. The two rosters only ever fill dropdowns and the unit hint;
+    // the rates DO write a box's value, and every write of one goes through the
+    // same touched and staleness guards as any other pre-fill (see haulRateApply).
+    let truckLists        = null;   // { units: [{name, number}], customers: [string], rates: {name: '121'} }
     let truckListsPromise = null;
     function truckListsLoad() {
       if (truckLists) return Promise.resolve(truckLists);
@@ -6066,6 +6072,18 @@
             if (!j || !j.lists) { truckListsPromise = null; return null; }
             const units = Array.isArray(j.lists.units) ? j.lists.units : [];
             const customers = Array.isArray(j.lists.customers) ? j.lists.customers : [];
+            // Normalized the way trucking.html's own _normRates does, and for
+            // the same reason: a rate that is blank, non-numeric or hung off a
+            // stray space is not a price, and a box filled from one would read
+            // as a figure somebody is being charged.
+            const rawRates = (j.lists.rates && typeof j.lists.rates === 'object'
+              && !Array.isArray(j.lists.rates)) ? j.lists.rates : {};
+            const rates = {};
+            for (const key of Object.keys(rawRates)) {
+              const name = String(key).trim();
+              const val  = String(rawRates[key] == null ? '' : rawRates[key]).trim();
+              if (name && val && !isNaN(parseFloat(val))) rates[name] = val;
+            }
             truckLists = {
               units: units
                 // Older saves stored bare strings before units grew a number.
@@ -6077,6 +6095,7 @@
                 .filter(Boolean)
                 .map(String)
                 .sort((a, b) => a.localeCompare(b)),
+              rates,
             };
             return truckLists;
           })
@@ -6086,6 +6105,24 @@
     }
     const truckUnitRoster     = () => (truckLists && truckLists.units) || null;
     const truckCustomerRoster = () => (truckLists && truckLists.customers) || [];
+
+    /* ── Customer haul rates ──
+       What the trucking office bills a company per hour, straight off their
+       Manage Lists. Matched on case as well as space, exactly as trucking.html
+       matches it: the LIST is a set of spellings ("kovalchick" and "Kovalchick"
+       are two entries there because each was typed onto a row), while a rate is
+       a fact about the COMPANY — a haul typed in lower case bills the same
+       customer at the same price. */
+    const _truckRateKey = v => String(v == null ? '' : v).trim().toLowerCase();
+    /** The stored rate for a customer, or '' — '' too while the roster is still
+     *  in flight, so nothing is filled in from a list we have not seen. */
+    function truckCustomerRate(name) {
+      const k = _truckRateKey(name);
+      const rates = (truckLists && truckLists.rates) || null;
+      if (!k || !rates) return '';
+      const hit = Object.keys(rates).find(n => _truckRateKey(n) === k);
+      return hit ? String(rates[hit]) : '';
+    }
     function truckUnitOptionsHtml() {
       return (truckUnitRoster() || []).map(u =>
         `<option value="${escapeHtml(String(u.name))}">${escapeHtml(u.number ? '#' + u.number : '')}</option>`
@@ -6108,6 +6145,41 @@
       hint.textContent   = hit
         ? (hit.number ? `Unit #${hit.number}` : 'On the Trucking unit list.')
         : 'Not on the Trucking unit list — saved as typed.';
+    }
+
+    // Says where a haul fee came from, or what the office bills this customer
+    // when the box disagrees with them. Follows the unit hint's rules: silent
+    // while the roster has not landed, and silent when there is nothing to say —
+    // a company with no rate set gets no note, so a payroll that keeps no rates
+    // sees the modal it has always seen.
+    //
+    // Refreshed on every keystroke rather than only on re-render, because typing
+    // over a pre-filled fee is exactly the moment "this is not the agreed rate"
+    // is worth knowing.
+    function truckFeeHintRefresh() {
+      // The box at the top of the modal belongs to leg 1 on an unsplit day; the
+      // split boxes belong to their own legs. Same hint either way.
+      const boxes = [];
+      const top = document.getElementById('tk_haulFee');
+      if (top) boxes.push({ input: top, hint: document.getElementById('tk_haulFeeHint'), leg: haulLegs[0] || null });
+      for (const leg of haulLegs) {
+        const input = document.getElementById(`hl_${leg.key}_haulFee`);
+        if (input) boxes.push({ input, hint: document.getElementById(`hl_${leg.key}_haulFeeHint`), leg });
+      }
+      for (const { input, hint, leg } of boxes) {
+        if (!hint) continue;
+        const rate = truckCustomerRate(leg ? legCustomer(leg) : entryCustomerName());
+        if (!rate) { hint.textContent = ''; continue; }
+        const who = leg ? legCustomer(leg) : entryCustomerName();
+        // Compared as numbers: 121, 121.00 and 121.0 are the same price, and
+        // calling the box off-rate because it is spelled differently would make
+        // the note noise the first time anyone retyped the same figure.
+        const same = Number(input.value) === Number(rate);
+        hint.style.color = same ? 'var(--muted)' : '#fbbf24';
+        hint.textContent = same
+          ? `${who}'s rate, from Trucking \u2192 Manage Lists.`
+          : `Trucking bills ${who} at $${rate}/hr.`;
+      }
     }
     // ── The hauls a day is split into ─────────────────────────────────────
     // One timesheet day can be more than one haul. A driver's ten hours might be
@@ -6284,6 +6356,7 @@
         if (el) el.value = keep[id];
       }
       truckUnitHintRefresh();
+      truckFeeHintRefresh();
       haulTallyRefresh();
       // The note counts the rows this save will post, so adding a haul has to
       // re-say it or the modal claims one row while showing two.
@@ -6441,6 +6514,11 @@
         leg.vehicle1 = legStr(after.vehicle1);
         leg.vehicle2 = legStr(after.vehicle2);
         leg.haul_fee = legStr(after.haul_fee);
+        // The fee comes across with its provenance: copied from a leg the rate
+        // table filled in, it is still the rate table's to correct, so pointing
+        // this haul at another customer swaps it rather than billing the second
+        // company at the first's price. See haulRateApply.
+        leg.feeFromRate = legStr(after.feeFromRate);
       } else {
         leg.start_time = legStr(truckingEntry && truckingEntry.start_time).slice(0, 5);
         leg.end_time   = legStr(truckingEntry && truckingEntry.end_time).slice(0, 5);
@@ -6552,7 +6630,8 @@
                 placeholder="0.00" style="${TK_INPUT}" onchange="haulSetHours(${leg.key}, this.value)"></label>
             ${split && posts ? `<label style="${TK_LABEL}"><span>Haul Fee <span style="font-weight:400;color:var(--muted)">($/hr)</span></span>
               <input type="number" id="hl_${leg.key}_haulFee" min="0" step="0.01" value="${escapeHtml(leg.haul_fee)}"
-                placeholder="0.00" style="${TK_INPUT}" ${haulIn(leg, 'haul_fee')}></label>` : ''}
+                placeholder="0.00" style="${TK_INPUT}" ${haulIn(leg, 'haul_fee')}>
+              <span id="hl_${leg.key}_haulFeeHint" style="font-weight:400;font-size:11px;line-height:1.3;text-transform:none;letter-spacing:0"></span></label>` : ''}
           </div>
           ${!dust ? '' : haulDestHtml(leg)}
           ${!dust || !ub ? '' : `
@@ -6809,6 +6888,12 @@
       if (!leg) return;
       leg[field] = legStr(value);
       haulTouched.add(leg.key + '|' + field);
+      // Typed over, so the number in the box is no longer the one the rate table
+      // put there. Dropping the marker keeps it meaning exactly one thing —
+      // "this box holds a figure I filled in" — which is what the note under it
+      // and the swap on a customer change both read. haulTouched already stops
+      // the pre-fill here; this stops the marker outliving what it describes.
+      if (field === 'haul_fee') leg.feeFromRate = '';
       if (field === 'location') dustCascadeLocation(leg);
       if (field === 'vehicle1') dustCascadeVehicle(leg, 1);
       if (field === 'vehicle2') dustCascadeVehicle(leg, 2);
@@ -6826,6 +6911,11 @@
       // of the box would re-derive them from the customer's defaults and quietly
       // overwrite a rate the office had corrected.
       if (field === 'company') leg.derivedFrom = leg[field];
+      // Every fee that reaches a leg through here came off a row already posted
+      // — what the haul was billed at, and possibly invoiced at. Dropping the
+      // marker says so: the rate pre-fill only ever takes back its OWN number,
+      // so from here on it will leave this one alone.
+      if (field === 'haul_fee') leg.feeFromRate = '';
       const el = document.getElementById(`hl_${leg.key}_${domId}`);
       if (el) el.value = leg[field];
     }
@@ -6853,6 +6943,53 @@
         if (num === 1) haulSet(leg, 'v1_rate', 'v1Rate', rate);
         else           haulSet(leg, 'v2_rate', 'v2Rate', rate);
       }
+    }
+
+    // ── The haul fee, from the customer's rate ────────────────────────────
+    // What a company is billed per hour is a fact about the company, kept beside
+    // its name in the trucking office's Manage Lists — so a day hauled for
+    // Kinkead bills at Kinkead's rate without anyone typing the number again.
+    // It is the same rule trucking.html applies when you name a customer on a
+    // row, run from the other end of the same data.
+    //
+    // Read FORWARD ONLY, onto a fee that is still blank. A fee already on the
+    // haul was priced deliberately — typed here, or posted and since invoiced —
+    // and re-pricing a customer in Manage Lists must never silently restate what
+    // has already gone out the door.
+    //
+    // What it writes it can also take back, and NOTHING ELSE: `feeFromRate`
+    // remembers the exact number this pre-fill put in a box, so re-pointing a
+    // haul at another customer swaps that customer's rate in rather than billing
+    // them at the last one's price — while a fee from a posted row (haulSet
+    // clears the marker) or one the approver typed (haulTouched) is left alone
+    // for good. Worst case, it leaves a box exactly as blank as it found it.
+
+    /** The customer a haul actually bills, on the same fallback the server
+     *  applies: the name on the leg, else the one on the timesheet. */
+    const legCustomer = leg => legStr(leg && leg.company).trim() || entryCustomerName().trim();
+
+    /** Fill every fee this pre-fill owns from its customer's rate.
+     *  Returns true if anything moved, so the caller knows to re-render. */
+    function haulRateApply() {
+      if (!truckLists || !truckLists.rates) return false;   // roster not in yet
+      let changed = false;
+      for (const leg of haulLegs) {
+        // A haul that posts no Truck Tracking row has no fee to fill in — the
+        // box is not even on screen (see legPostsTruck).
+        if (!legPostsTruck(leg)) continue;
+        // Their answer, whatever it is. A fee they cleared is an answer too.
+        if (haulTouchedHas(leg, 'haul_fee')) continue;
+        const cur = legStr(leg.haul_fee).trim();
+        // Anything in the box this pre-fill did not put there stands, and stops
+        // being its business: on a re-edit that is the fee the row was posted at.
+        if (cur && cur !== legStr(leg.feeFromRate).trim()) { leg.feeFromRate = ''; continue; }
+        const next = truckCustomerRate(legCustomer(leg));
+        if (cur === next) continue;
+        leg.haul_fee    = next;
+        leg.feeFromRate = next;
+        changed = true;
+      }
+      return changed;
     }
 
     // Typing hours moves the end of the leg, because hours are what a supervisor
@@ -6908,6 +7045,11 @@
           leg[f] = v;
           haulTouched.delete(leg.key + '|' + f);
         }
+        // And the fee, on its own terms: the haul fee is not re-derived over a
+        // number the approver typed or a row already posted at, the way the
+        // dust rates above are. Only the rate this pre-fill itself filled in
+        // follows the customer — which is the whole point of it following.
+        haulRateApply();
       }
       truckingRenderFields(lastTruckingRow);
     }
@@ -6931,6 +7073,11 @@
       if (legDest(leg) === next) return;
       leg.dest = next;
       haulTouched.add(leg.key + '|dest');
+      // Pointing a dust haul at Other Billing is what PUTS a Haul Fee box on
+      // screen — that grid is the one whose hauls also post a Truck Tracking
+      // row. It should arrive holding the customer's rate, like every other fee
+      // box does, rather than blank because the box did not exist a moment ago.
+      haulRateApply();
       truckingRenderFields(lastTruckingRow);
     }
 
@@ -7197,7 +7344,8 @@
           <span id="tk_unitHint" style="font-weight:400;font-size:11px;line-height:1.3;min-height:14px;text-transform:none;letter-spacing:0"></span></label>
         ${split || !posts ? '' : `<label style="${TK_LABEL}"><span>Haul Fee ($/hr)</span>
           <input type="number" id="tk_haulFee" min="0" step="0.01" value="${escapeHtml(String(fee))}" placeholder="0.00" style="${TK_INPUT}"
-            ${legOne ? `oninput="haulEdit(${legOne.key},'haul_fee',this.value)"` : ''}></label>`}
+            ${legOne ? `oninput="haulEdit(${legOne.key},'haul_fee',this.value)"` : ''}>
+          <span id="tk_haulFeeHint" style="font-weight:400;font-size:11px;line-height:1.3;min-height:14px;text-transform:none;letter-spacing:0"></span></label>`}
         ${!posts ? '' : `<label style="${TK_LABEL}"><span>Division <span style="font-weight:400;color:var(--muted)">(optional)</span></span>
           <input type="text" id="tk_division" maxlength="100" value="${escapeHtml(div)}" placeholder="${isDust ? 'defaults to Dust' : 'e.g. Paving'}" style="${TK_INPUT}"></label>`}`;
     }
@@ -7277,6 +7425,16 @@
         const cl = document.getElementById('hl_coOptions');
         if (cl && !isDustEntry()) cl.innerHTML = haulOptionsHtml(truckCustomerRoster());
         truckUnitHintRefresh();
+        // The rates arrive with the rosters, and this is where a fresh approve
+        // gets its haul fee: nothing else fetches for a trucking day (the split
+        // lookup below runs only on a re-edit or a dust haul), so without this
+        // the box would stay blank until somebody typed a number the office had
+        // already agreed. Unlike the dropdowns above, it writes a VALUE — so it
+        // takes the staleness guard the fetch that follows takes, or a roster
+        // landing late would put one entry's rate in another entry's form.
+        if (seq !== truckingFetchSeq) return;
+        if (haulRateApply()) truckingRenderFields(lastTruckingRow);
+        else truckFeeHintRefresh();
       });
       // Re-edit pre-fills the unit, the division column and each haul's fee from
       // the rows already posted — for a trucking day as much as a dust one, and
@@ -7354,6 +7512,12 @@
           dustApplyOptions();
           dustApplyRows(dustRows, dustObRows, dustEesRows);
           haulApplyTruckRows(truckRows);
+          // Last, and only into what the rows left blank: a haul posted without
+          // a fee (approved in a hurry, or in bulk) comes back to be priced, and
+          // the customer's rate is the answer it came back for. Every fee the
+          // rows DID carry has just been written through haulSet, which drops
+          // the marker — so those are safe from it by construction.
+          haulRateApply();
           lastTruckingRow = row;
           truckingRenderFields(row);
         } catch (_) {
@@ -7385,9 +7549,17 @@
     // typed haul fee down with it.
     document.getElementById('truckingFields').addEventListener('input', (e) => {
       truckUnitHintRefresh();
+      truckFeeHintRefresh();
       const id = e.target && e.target.id;
       if (id && id.startsWith('tk_')) truckingTouched.add(id);
     });
+
+    // Whether any fee on screen was filled in from a customer's rate. Only then
+    // does the note explain the number — a payroll that keeps no rates in Manage
+    // Lists reads exactly the sentence it always did.
+    const anyRateFilled = () => haulLegs.some(leg =>
+      legPostsTruck(leg) && legStr(leg.feeFromRate).trim()
+      && legStr(leg.feeFromRate).trim() === legStr(leg.haul_fee).trim());
 
     // The note under the fields, which says where what you type ends up. A dust
     // haul fills two tabs, and the columns it fills are worth naming — the
@@ -7451,6 +7623,8 @@
         `Approving posts <strong>${split ? legs + ' Truck Tracking rows' : 'one Truck Tracking row'}</strong>.
          Driver, hours, customer and description are autofilled from the timesheet — the unit comes
          from it too, and can be corrected above.
+         ${anyRateFilled() ? `The <strong>haul fee</strong> is the customer's rate from the trucking
+           office's <strong>Manage Lists</strong>; type over it to bill this day at something else. ` : ''}
          ${split
            ? `Each haul carries the customer it was for, its own hours and its own fee; the unit and
               the description are the day's and read the same on every row. ${carry}`
@@ -7686,6 +7860,10 @@
       const r = quarryEmployeeRate(e && e.username);
       return r != null ? r : QUARRY_DEFAULT_RATE;
     };
+    // The customer a day's Truck Tracking row bills, on the same fallback the
+    // server applies when it writes one (dayCustomer in insertTruckingRows).
+    const bulkTruckCustomer = e =>
+      String((e && (e.job_label || e.job_id)) || '').trim();
 
     // Partition entries into per-project injection groups (+ a plain bucket for
     // status-only entries, + a skipped list for entries missing what injection
@@ -7739,7 +7917,11 @@
               // 'manual' the supervisor — only 'auto' legs stay the prefill's.
               travel_cost_code: '', travel_sub_code: '', travel_code_source: '',
               equipmentName: '', taskName: '', rate: '', hourlyRate: '',
-              haul_fee: '', division_col: '',
+              // haul_fee_source: '' nobody yet, 'rate' the customer's rate off
+              // the trucking office's Manage Lists. Cleared the moment the
+              // supervisor types, so the card never credits them with a number
+              // they overrode.
+              haul_fee: '', haul_fee_source: '', division_col: '',
             },
           };
           map.set(key, g);
@@ -7787,6 +7969,10 @@
 
       // Lazy-load lookups per group, then repaint and prefill quarry rates.
       const needQuarry = groups.some(g => g.type === 'quarry');
+      // The trucking office's customer rates, for the haul-fee prefill below.
+      // Only fetched when there is a card that asks for a fee — a dust trucking
+      // group has no such box (its hauls are pointed at a grid one at a time).
+      const needTruckRates = groups.some(g => g.type === 'trucking' && g.division !== 'dust');
       await Promise.all([
         ...groups.filter(g => g.type === 'split').map(async g => {
           try {
@@ -7796,6 +7982,7 @@
           g._loaded = true;
         }),
         needQuarry ? loadQuarryListsOnce() : Promise.resolve(),
+        needTruckRates ? truckListsLoad() : Promise.resolve(),
       ]);
       // Travel codes: the same prefill the single-entry modal runs, now that
       // each split group's bid items are loaded.
@@ -7810,6 +7997,22 @@
         const field = g.activity === 'crushing' ? 'hourlyRate' : 'rate';
         if (rates.size === 1 && !String(g.template[field]).trim()) {
           g.template[field] = String([...rates][0]);
+        }
+      }
+      // Haul fee, on the same terms as the quarry rate above and for the same
+      // reason: this ONE box prices every day on the card, so it may only be
+      // filled in when every day on it agrees. A week of Kinkead hauls resolves
+      // to Kinkead's rate and is approved at it; a card that also holds a day
+      // for somebody else is left blank, and those days are priced in Edit Row —
+      // which is the honest answer, since a single number could only be right
+      // for one of them. Never over a figure already typed.
+      for (const g of groups) {
+        if (g.type !== 'trucking' || g.division === 'dust') continue;
+        if (String(g.template.haul_fee || '').trim()) continue;
+        const fees = new Set(g.entries.map(e => truckCustomerRate(bulkTruckCustomer(e))));
+        if (fees.size === 1 && [...fees][0]) {
+          g.template.haul_fee = [...fees][0];
+          g.template.haul_fee_source = 'rate';
         }
       }
       renderBulkGroups();
@@ -7836,9 +8039,11 @@
              `placeholder="${escapeHtml(ph || 'Select or type…')}" autocomplete="off" ` +
              `oninput="bulkSet(${idx},'${field}',this.value)"><datalist id="${listId}">${opts}</datalist>`;
     }
-    function _bulkNum(idx, field, value, ph) {
+    function _bulkNum(idx, field, value, ph, o) {
       const v = (value === '' || value == null) ? '' : String(value);
-      return `<input type="number" min="0" step="0.01" value="${escapeHtml(v)}" ` +
+      const cls   = (o && o.className) ? ` class="${escapeHtml(o.className)}"` : '';
+      const title = (o && o.title)     ? ` title="${escapeHtml(o.title)}"`     : '';
+      return `<input type="number" min="0" step="0.01"${cls}${title} value="${escapeHtml(v)}" ` +
              `placeholder="${escapeHtml(ph || '0')}" oninput="bulkSet(${idx},'${field}',this.value)">`;
     }
     function _bulkText(idx, field, value, ph) {
@@ -7855,6 +8060,7 @@
       if (field === 'travel_cost_code' || field === 'travel_sub_code') {
         g.template.travel_code_source = 'manual';
       }
+      if (field === 'haul_fee') g.template.haul_fee_source = '';
       updateBulkRunBtn();
     }
     // ── Per-day overrides ────────────────────────────────────────────────
@@ -8306,6 +8512,20 @@
         badgeClass = 'trucking'; badgeText = prettyDiv(g.division);
         title = g.division === 'dust' ? 'Dust Control Tracking — dust hauls' : 'Truck Tracking';
         meta = metaHrs;
+        // Whether the fee below was filled in from a customer's rate rather than
+        // typed, and who to credit it to. The prefill's condition is that every
+        // day on the card agrees on the PRICE — which is what makes one box safe
+        // to fill — and two companies can be billed the same, so the card only
+        // names one when there IS only one. Naming entries[0] regardless would
+        // put a customer's name over days that were not theirs.
+        const fromRate = g.template.haul_fee_source === 'rate'
+          && String(g.template.haul_fee || '').trim();
+        const rateNames = [];
+        for (const e of g.entries) {
+          const name = bulkTruckCustomer(e);
+          if (name && !rateNames.some(n => _truckRateKey(n) === _truckRateKey(name))) rateNames.push(name);
+        }
+        const rateCustomer = rateNames.length === 1 ? rateNames[0] : '';
         // Haul Fee and the Division column are Truck Tracking's, and bulk
         // approve cannot say a haul bills off anything but Dust Control
         // Tracking — that answer is per haul, and this card covers a week of
@@ -8324,10 +8544,19 @@
             rather than UB is moved to <strong>Other Billing</strong>, which is the one thing that
             also posts a Truck Tracking row — or approve these hauls one at a time instead.</div>` : `
           <div class="bulk-fields">
-            <div class="bulk-field"><span>Haul Fee ($/hr) <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkNum(idx, 'haul_fee', g.template.haul_fee, '0.00')}</div>
+            <div class="bulk-field"><span>Haul Fee ($/hr) <span style="text-transform:none;font-weight:400">(optional)</span></span>${
+              _bulkNum(idx, 'haul_fee', g.template.haul_fee, '0.00', fromRate
+                ? { className: 'auto-code', title: `${rateCustomer ? rateCustomer + "'s rate" : 'The rate every customer here is billed at'}, from Trucking → Manage Lists. Type over it to bill these days at something else.` }
+                : null)}</div>
             <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, 'e.g. Paving')}</div>
           </div>
-          <div class="bulk-note">Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
+          <div class="bulk-note">${!fromRate ? '' : (rateCustomer
+            ? `The fee is <strong>${escapeHtml(rateCustomer)}</strong>'s rate, filled in from the trucking
+               office's <strong>Manage Lists</strong> — every day on this card hauls for them. Type over it to
+               bill these days at something else. `
+            : `The fee is filled in from the trucking office's <strong>Manage Lists</strong> — every customer
+               on this card is billed at it. Type over it to bill these days at something else. `
+          )}Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
             customer come from each timesheet — a day whose unit is blank keeps it that way;
             fill it in from Edit Row afterwards.</div>`;
       } else {

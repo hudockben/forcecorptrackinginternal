@@ -227,7 +227,13 @@ function makeSandbox(entry, options, companies) {
     truckingMode:  'approve',
     truckingFieldsHtml: () => '',
     truckUnitHintRefresh: () => {},
+    truckFeeHintRefresh:  () => {},
     truckingNoteRefresh:  () => {},
+    // No customer rates configured, which is what this file is about: splitting
+    // a day behaves the same whether or not the trucking office prices its
+    // customers, and haulRateApply short-circuits on a roster it has not got.
+    // The prefill itself is exercised in test-haul-fee-rate-prefill.js.
+    truckLists: null,
     escapeHtml: s => String(s == null ? '' : s),
     // The trucking office's own customer roster, fetched once per payroll
     // session (truckListsLoad) and offered on a trucking day's hauls.
