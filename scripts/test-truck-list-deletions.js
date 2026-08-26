@@ -107,8 +107,9 @@ function newPage(state) {
  *  HTML it wrote. Its own sandbox: the panel declares its view state, and
  *  seeding that from outside would shadow the declaration. */
 function renderPanel(state, drive) {
-  let html = '';
+  let html = '', tabsHtml = '';
   const body = { set innerHTML(v) { html = v; }, get innerHTML() { return html; } };
+  const tabs = { set innerHTML(v) { tabsHtml = v; }, get innerHTML() { return tabsHtml; } };
   const sandbox = {
     console,
     divEntries: state.entries || [],
@@ -123,15 +124,20 @@ function renderPanel(state, drive) {
     isPayrollRowId: id => String(id || '').startsWith('tst-'),
     document: {
       getElementById: id => (id === 'lists-panel-body' ? body
+        : id === 'lists-tabs' ? tabs
         : id in (state.inputs || {}) ? { value: state.inputs[id] } : null),
+      // The panel binds Escape at load; nothing here presses keys.
+      addEventListener() {},
     },
   };
   vm.createContext(sandbox);
   vm.runInContext(HELPERS + '\n' + RENDER + '\n' + ROWEDIT, sandbox, { filename: 'trucking.html' });
   if (drive) drive(sandbox);
   sandbox.renderListsPanel();
-  return { html, page: sandbox };
+  return { html, tabs: tabsHtml, page: sandbox };
 }
+
+const LIST_TABS = ['Drivers', 'Customers &amp; Rates', 'Units', 'Materials', 'Locations', 'Driver Sign-ins'];
 
 const ROWS = [
   { id: 'a', driver: 'Leasure, Rick',    unit: '7687', customer: 'Kovalchick' },
@@ -688,8 +694,19 @@ const freshLists = () => ({
       { id: '3', customer: 'Kovalchick', haul_fee: '115' },
     ];
 
-    const { html } = renderPanel({ entries, lists });
-    assert('the customers section carries the rates', /Customers &amp; Rates/.test(html));
+    const { html, tabs } = renderPanel({ entries, lists });
+    // Six lists in one column is what made this hard to work in. The strip is
+    // the section title now, and the body holds one list at a time.
+    assert('the lists are a tab strip, not one long column',
+      /class="lists-tab active"[\s\S]*Customers &amp; Rates/.test(tabs) &&
+      LIST_TABS.every(t => tabs.includes(t)),
+      tabs.replace(/\s+/g, ' ').slice(0, 240));
+    assert('each tab carries how many are in it',
+      /Customers &amp; Rates<span class="n">3<\/span>/.test(tabs),
+      (tabs.match(/>[^<]*<span class="n">\d+/g) || []).join(' | '));
+    assert('and the body is only the open one',
+      html.includes('Kovalchick') && !html.includes('Barr, Michael'),
+      html.replace(/\s+/g, ' ').slice(0, 200));
     assert('a stored rate shows in its box', /class="li-rate"[^>]*value="121"/.test(html), );
     assert('a customer with no rate offers the one its rows bill at',
       /placeholder="115"/.test(html), html.slice(html.indexOf('Kovalchick') - 300, html.indexOf('Kovalchick') + 300));
@@ -775,6 +792,43 @@ const freshLists = () => ({
       (dup.html.match(/<option[^>]*>[^<]*/g) || []).join(' | '));
     assert('and the merge is ready to run', !/ disabled>Merge</.test(dup.html));
 
+    // 26 customers down one column was the complaint. The filter is what
+    // replaces scrolling for them.
+    const wide = JSON.parse(JSON.stringify(lists));
+    wide.customers = ['Kinkead', 'Kinkead Aggregates.', 'kinkead HC', 'Kovalchick', 'Monofrax', 'XTO'];
+    const found = renderPanel({ entries, lists: wide }, page => page.listsSearch('kink'));
+    assert('the filter narrows the open list',
+      found.html.includes('Kinkead Aggregates.') && !found.html.includes('Monofrax'),
+      (found.html.match(/class="li-name"[^>]*>[^<]*/g) || []).join(' | '));
+    // A name you cannot find is then one click away, rather than six lists of
+    // scrolling to work out which one it is in.
+    assert('and every tab says how many of its own match',
+      /Customers &amp; Rates<span class="n">3<\/span>/.test(found.tabs) &&
+      /Drivers<span class="n">0<\/span>/.test(found.tabs),
+      (found.tabs.match(/>[^<]*<span class="n">\d+/g) || []).join(' | '));
+
+    const none = renderPanel({ entries, lists: wide }, page => page.listsSearch('zzz'));
+    assert('a filter that hides everything says so in its own terms',
+      /No customers match “zzz” — 6 in the list/.test(none.html),
+      (none.html.match(/No [^<]*/) || ['not found'])[0]);
+
+    // Switching tabs is what the vertical scroll used to be.
+    const onDrivers = renderPanel({ entries, lists }, page => page.listsOpenTab('drivers'));
+    assert('another tab shows another list',
+      onDrivers.html.includes('Barr, Michael') && !onDrivers.html.includes('Kovalchick'),
+      onDrivers.html.replace(/\s+/g, ' ').slice(0, 200));
+    assert('and the strip marks which one is open',
+      /class="lists-tab active"\s+onclick="listsOpenTab\('drivers'\)"/.test(onDrivers.tabs),
+      onDrivers.tabs.replace(/\s+/g, ' ').slice(0, 200));
+
+    // A merge form is a question about one list; carrying it to another would
+    // leave it open over names it does not belong to.
+    const switched = renderPanel({ entries, lists }, page => {
+      page.openMerge('customers', 'Kinkead');
+      page.listsOpenTab('units');
+    });
+    assert('switching tabs closes an open merge form', !/class="lists-merge"/.test(switched.html));
+
     // Nothing to merge into is not a merge — the button would open a form with
     // an empty picker.
     const alone = renderPanel({ entries: [{ id: 'a', customer: 'Solo' }],
@@ -816,6 +870,20 @@ const freshLists = () => ({
       /already has a fee is left alone/.test(TRUCKING));
     assert('merging is offered beside removing',
       /onclick="openMerge\('\$\{key\}','\$\{argEsc\(v\)\}'\)"/.test(TRUCKING));
+
+    // The dialog itself: centred, closable the ways a dialog is, and with the
+    // filter box outside the part that redraws on every keystroke.
+    assert('the panel is a centred dialog rather than a side rail',
+      /\.lists-backdrop\.open \{ display: flex; \}/.test(TRUCKING) &&
+      /align-items: center; justify-content: center/.test(TRUCKING));
+    assert('Escape backs out of it', /if \(e\.key !== 'Escape'\) return;/.test(TRUCKING));
+    assert('and out of an open merge form first',
+      /if \(_listsMerge\) \{ cancelMerge\(\); return; \}/.test(TRUCKING));
+    assert('it closes on its own button too', /onclick="closeManageLists\(\)"/.test(TRUCKING));
+    assert('the filter box sits outside the body that redraws under it',
+      TRUCKING.indexOf('id="lists-search"') < TRUCKING.indexOf('id="lists-panel-body"'));
+    assert('names lay out across the width instead of down it',
+      /grid-template-columns: repeat\(auto-fill, minmax\(290px, 1fr\)\)/.test(TRUCKING));
     assert('and says what it does to the rows',
       /renames it on the rows that carry it/.test(TRUCKING));
   }

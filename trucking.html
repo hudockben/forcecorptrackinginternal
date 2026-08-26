@@ -314,29 +314,74 @@
     }
     .btn-del-row:hover { color: var(--orange); background: rgba(239,68,68,0.1); }
 
-    /* ── Manage Lists panel ── */
+    /* ── Manage Lists ──
+       A centred dialog rather than the 340px rail this used to be. The rail
+       stacked six lists in one column, so cleaning up 26 customers meant
+       scrolling past the drivers to reach them and scrolling back to check.
+       One list at a time, across the full width, is a screenful instead. */
     .lists-backdrop {
       display: none; position: fixed; inset: 0; z-index: 400;
+      background: rgba(0,0,0,0.62);
+      align-items: center; justify-content: center; padding: 2rem 1.5rem;
     }
-    .lists-backdrop.open { display: block; }
+    .lists-backdrop.open { display: flex; }
     .lists-panel {
-      position: absolute; top: 0; right: 0;
-      width: 340px; background: var(--surface2);
-      border-left: 1px solid var(--border);
-      border-bottom: 1px solid var(--border);
-      border-radius: 0 0 0 8px;
-      padding: 1rem 1.1rem 1.25rem;
-      box-shadow: -4px 4px 24px rgba(0,0,0,0.5);
-      max-height: calc(100vh - 3rem);
-      overflow-y: auto;
+      display: flex; flex-direction: column;
+      /* A fixed frame, not one that fits its contents: the dialog is centred,
+         so a list that shrinks as you filter would slide what you are reading
+         up the screen on every keystroke. The body scrolls inside it. */
+      width: min(1120px, 95vw); height: min(820px, 86vh);
+      background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 18px 60px rgba(0,0,0,0.6);
     }
-    .lists-panel::-webkit-scrollbar { width: 5px; }
-    .lists-panel::-webkit-scrollbar-track { background: transparent; }
-    .lists-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-    .lists-panel::-webkit-scrollbar-thumb:hover { background: #555; }
+    .lists-head {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.85rem 1.1rem 0.7rem; border-bottom: 1px solid var(--border);
+    }
+    .lists-head h3 { margin: 0; flex: none; }
+    .lists-search {
+      flex: 1; max-width: 280px; margin-left: auto;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.78rem;
+      padding: 0.3rem 0.55rem; outline: none;
+    }
+    .lists-search:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
+    .lists-close {
+      flex: none; background: none; border: none; color: var(--muted);
+      font-size: 1rem; line-height: 1; cursor: pointer; padding: 0.2rem 0.3rem;
+    }
+    .lists-close:hover { color: var(--orange); }
+    /* One list at a time. The strip is the section title, so the sections
+       below no longer carry one of their own. */
+    .lists-tabs {
+      display: flex; flex-wrap: wrap; gap: 0.3rem;
+      padding: 0.6rem 1.1rem; border-bottom: 1px solid var(--border);
+    }
+    .lists-tab {
+      display: flex; align-items: center; gap: 0.35rem;
+      background: none; border: 1px solid var(--border); border-radius: 4px;
+      color: var(--muted); font-family: inherit;
+      font-size: 0.66rem; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; padding: 0.28rem 0.55rem; cursor: pointer;
+      white-space: nowrap;
+    }
+    .lists-tab:hover { color: var(--text); border-color: #555; }
+    .lists-tab.active { color: #fff; background: var(--orange); border-color: var(--orange); }
+    .lists-tab .n {
+      font-size: 0.62rem; font-weight: 600; letter-spacing: 0;
+      opacity: 0.75; font-variant-numeric: tabular-nums;
+    }
+    .lists-body {
+      flex: 1; min-height: 0; overflow-y: auto; padding: 0.9rem 1.1rem 1.2rem;
+    }
+    .lists-body::-webkit-scrollbar { width: 7px; }
+    .lists-body::-webkit-scrollbar-track { background: transparent; }
+    .lists-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    .lists-body::-webkit-scrollbar-thumb:hover { background: #555; }
     .lists-panel h3 {
       font-size: 0.65rem; letter-spacing: 0.12em; text-transform: uppercase;
-      color: var(--muted); margin-bottom: 1rem; font-weight: 600;
+      color: var(--muted); font-weight: 600;
     }
     .lists-section { margin-bottom: 1.1rem; }
     .lists-section-title {
@@ -344,7 +389,8 @@
       color: var(--muted); margin-bottom: 0.45rem; font-weight: 600;
     }
     .lists-add-row {
-      display: flex; gap: 0.4rem; margin-bottom: 0.5rem;
+      display: flex; gap: 0.4rem; margin-bottom: 0.6rem;
+      max-width: 460px;
     }
     .lists-add-row input {
       flex: 1; background: var(--surface); border: 1px solid var(--border);
@@ -359,7 +405,13 @@
     }
     .lists-add-btn:hover { background: var(--orange-dim); }
     .lists-add-btn:disabled { background: #3a3f4a; color: #8b909c; cursor: default; }
-    .lists-items { display: flex; flex-direction: column; gap: 0.25rem; }
+    /* Names across the width, not down it: 26 customers is four rows here and
+       twenty-six in a single column. */
+    .lists-items {
+      display: grid; gap: 0.3rem 0.55rem;
+      grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+      align-items: start;
+    }
     .lists-item {
       display: flex; align-items: center; justify-content: space-between;
       background: var(--surface); border: 1px solid var(--border);
@@ -407,7 +459,7 @@
     .lists-merge-sel:focus { border-color: #2563eb; }
     .lists-hint {
       font-size: 0.66rem; color: var(--muted); line-height: 1.45;
-      margin-bottom: 0.45rem;
+      margin-bottom: 0.45rem; max-width: 62ch;
     }
     .lists-link {
       background: none; border: none; color: var(--muted); cursor: pointer;
@@ -418,7 +470,7 @@
     /* Undo sits where the eye already is — at the top of the panel, right
        after the click that removed something. */
     .lists-undo {
-      display: flex; align-items: baseline; gap: 0.5rem;
+      display: flex; align-items: baseline; gap: 0.5rem; max-width: 70ch;
       background: rgba(37,99,235,0.12); border: 1px solid rgba(37,99,235,0.4);
       border-radius: 4px; padding: 0.35rem 0.55rem; margin-bottom: 0.8rem;
       font-size: 0.72rem; color: var(--text);
@@ -918,8 +970,16 @@
   <!-- ── Manage Lists overlay ── -->
   <div class="lists-backdrop" id="lists-backdrop" onclick="closeManageLists(event)">
     <div class="lists-panel" id="lists-panel" onclick="event.stopPropagation()">
-      <h3>Manage Lists</h3>
-      <div id="lists-panel-body"></div>
+      <div class="lists-head">
+        <h3>Manage Lists</h3>
+        <!-- Outside the re-rendered body on purpose: filtering redraws the list
+             on every keystroke, and a box inside it would lose the caret. -->
+        <input type="text" id="lists-search" class="lists-search" autocomplete="off"
+          placeholder="Filter names…" oninput="listsSearch(this.value)">
+        <button class="lists-close" onclick="closeManageLists()" title="Close (Esc)">&#10005;</button>
+      </div>
+      <div class="lists-tabs" id="lists-tabs"></div>
+      <div class="lists-body" id="lists-panel-body"></div>
     </div>
   </div>
 
@@ -1884,19 +1944,20 @@
       if (!_driverLoginsLoaded) {
         return `
           <div class="lists-section">
-            <div class="lists-section-title">Driver Logins</div>
             <span style="font-size:0.72rem;color:var(--muted)">Loading sign-ins…</span>
           </div>`;
       }
-      const linked = Object.keys(driverLoginMap).sort((a, b) => a.localeCompare(b));
+      const allLinked = Object.keys(driverLoginMap).sort((a, b) => a.localeCompare(b));
+      // Matched on either half: the office knows some of these by username and
+      // some by the driver they belong to.
+      const linked = allLinked.filter(u => _listsMatch(u) || _listsMatch(driverLoginMap[u]));
       const taken  = new Set(linked.map(u => u.toLowerCase()));
       const free   = driverLoginUsers.filter(u => !taken.has(String(u.username).toLowerCase()));
       const drivers = (divTruckLists.drivers || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
 
       return `
         <div class="lists-section">
-          <div class="lists-section-title">Driver Logins</div>
-          <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.45rem;line-height:1.45">
+          <div class="lists-hint">
             Links a sign-in to a name on the drivers list, so the driver app can show
             that person their own hauls. An unlinked sign-in sees nothing.
           </div>
@@ -1917,7 +1978,9 @@
           </div>
           <div class="lists-items">
             ${linked.length === 0
-              ? `<span style="font-size:0.72rem;color:var(--muted)">No sign-ins linked yet.</span>`
+              ? (_listsFilter.trim()
+                  ? `<span style="font-size:0.72rem;color:var(--muted)">No sign-in matches “${esc(_listsFilter.trim())}”${allLinked.length ? ` — ${allLinked.length} linked` : ''}.</span>`
+                  : `<span style="font-size:0.72rem;color:var(--muted)">No sign-ins linked yet.</span>`)
               : linked.map(u => {
                   const d = driverLoginMap[u];
                   // A link pointing at a name no longer on the drivers list still
@@ -1925,7 +1988,7 @@
                   const stale = !(divTruckLists.drivers || []).includes(d);
                   return `
                     <div class="lists-item">
-                      <span style="overflow:hidden;text-overflow:ellipsis">
+                      <span class="li-name">
                         ${esc(u)}
                         <span style="color:var(--muted)">&rarr;</span>
                         <span style="color:${stale ? 'var(--amber)' : 'var(--text)'}">${esc(d)}</span>
@@ -1946,6 +2009,46 @@
     // is saved, and opening the panel fresh starts with a clean slate.
     let _listsUndo = null;
     let _listsShowRemoved = new Set();
+    // Which list is open, and what is being looked for in it. Six lists stacked
+    // in one column is what made this hard to work in; one at a time, filtered,
+    // is what replaced it.
+    let _listsTab = 'customers';
+    let _listsFilter = '';
+    const LISTS_TABS = [
+      { key: 'drivers',   label: 'Drivers' },
+      { key: 'customers', label: 'Customers & Rates' },
+      { key: 'units',     label: 'Units' },
+      { key: 'materials', label: 'Materials' },
+      { key: 'locations', label: 'Locations' },
+      { key: 'logins',    label: 'Driver Sign-ins' },
+    ];
+
+    /** The names in one list, as plain strings — what the tab counts and the
+     *  filter matches against. */
+    function _listsNamesFor(key) {
+      if (key === 'units')     return (divTruckLists.units || []).map(u => u && u.name).filter(Boolean);
+      if (key === 'locations') return (divTruckLists.locations || []).map(l => l && l.name).filter(Boolean);
+      // A sign-in matches on either half: the office knows some by username and
+      // some by the driver they belong to.
+      if (key === 'logins')    return Object.keys(driverLoginMap || {}).map(u => u + ' ' + (driverLoginMap[u] || ''));
+      return divTruckLists[key] || [];
+    }
+
+    function _listsMatch(v) {
+      const q = _listsFilter.trim().toLowerCase();
+      return !q || String(v == null ? '' : v).toLowerCase().includes(q);
+    }
+
+    function listsSearch(v) {
+      _listsFilter = String(v == null ? '' : v);
+      renderListsPanel();
+    }
+
+    function listsOpenTab(key) {
+      _listsTab = key;
+      _listsMerge = null;   // a form open on another list is not this one's
+      renderListsPanel();
+    }
     // The item whose merge form is open, as { key, from }. One at a time: the
     // form replaces the row it belongs to, so it reads as that name's own.
     let _listsMerge = null;
@@ -1953,6 +2056,9 @@
     function openManageLists() {
       _listsUndo = null;
       _listsMerge = null;
+      _listsFilter = '';
+      const q = document.getElementById('lists-search');
+      if (q) q.value = '';
       document.getElementById('lists-backdrop').classList.add('open');
       renderListsPanel();
       // Fetched on first open rather than at page load: most visits to this
@@ -1965,6 +2071,16 @@
       if (e && document.getElementById('lists-panel').contains(e.target)) return;
       document.getElementById('lists-backdrop').classList.remove('open');
     }
+
+    // Escape backs out one step at a time: an open merge form first — it is a
+    // question waiting on an answer — and the dialog only once nothing is.
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      const b = document.getElementById('lists-backdrop');
+      if (!b || !b.classList.contains('open')) return;
+      if (_listsMerge) { cancelMerge(); return; }
+      closeManageLists();
+    });
 
     function renderListsPanel() {
       const esc = s => String(s == null ? '' : s)
@@ -2102,9 +2218,17 @@
       };
       const merging = (key, v) => !!(_listsMerge && _listsMerge.key === key && _remKey(_listsMerge.from) === _remKey(v));
 
-      const section = (key, label, items) => `
+      /* Nothing found, said in terms of what was looked for — a filter that
+         hides everything and an empty list are not the same problem. */
+      const emptyHTML = (label, total) => _listsFilter.trim()
+        ? `<span style="font-size:0.72rem;color:var(--muted)">No ${label.toLowerCase()} match “${esc(_listsFilter.trim())}”${
+            total ? ` — ${total} in the list` : ''}.</span>`
+        : `<span style="font-size:0.72rem;color:var(--muted)">No ${label.toLowerCase()} yet.</span>`;
+
+      const section = (key, label, all) => {
+        const items = all.filter(_listsMatch);
+        return `
         <div class="lists-section">
-          <div class="lists-section-title">${label}</div>
           <div class="lists-add-row">
             <input type="text" id="lists-new-${key}" placeholder="Add ${label.toLowerCase()}…"
               onkeydown="if(event.key==='Enter')addToList('${key}')">
@@ -2112,7 +2236,7 @@
           </div>
           <div class="lists-items">
             ${items.length === 0
-              ? `<span style="font-size:0.72rem;color:var(--muted)">No ${label.toLowerCase()} yet.</span>`
+              ? emptyHTML(label, all.length)
               : items.map(v => merging(key, v) ? mergeForm(key, v) : `
                   <div class="lists-item">
                     <span class="li-name">${esc(v)}</span>
@@ -2124,15 +2248,18 @@
           </div>
           ${removedHTML(key, label)}
         </div>`;
+      };
 
       /* Customers carry a rate, so they get their own section rather than the
          generic one: the number beside the name is what a new row bills at. */
-      const customersHTML = (() => {
-        const items   = divTruckLists.customers || [];
-        const fillable = items.filter(c => !customerRate(c) && _historicRate(c));
+      const customersHTML = () => {
+        const all      = divTruckLists.customers || [];
+        const items    = all.filter(_listsMatch);
+        // Counted over the whole list, not the filtered view: it is one action
+        // on every blank rate, and a filter is only how you are looking.
+        const fillable = all.filter(c => !customerRate(c) && _historicRate(c));
         return `
         <div class="lists-section">
-          <div class="lists-section-title">Customers &amp; Rates</div>
           <div class="lists-hint">
             The rate fills in a row's Haul Fee once you name the customer. A row that
             already has a fee is left alone. Two spellings of one company?
@@ -2154,7 +2281,7 @@
             </div>` : ''}
           <div class="lists-items">
             ${items.length === 0
-              ? `<span style="font-size:0.72rem;color:var(--muted)">No customers yet.</span>`
+              ? emptyHTML('Customers', all.length)
               : items.map(c => {
                   if (merging('customers', c)) return mergeForm('customers', c);
                   const rate = customerRate(c);
@@ -2175,12 +2302,14 @@
           </div>
           ${removedHTML('customers', 'customers')}
         </div>`;
-      })();
+      };
 
-      const locationsHTML = `
+      const locationsHTML = () => {
+        const all   = divTruckLists.locations || [];
+        const items = all.filter(l => l && (_listsMatch(l.name) || _listsMatch(l.address)));
+        return `
         <div class="lists-section">
-          <div class="lists-section-title">Locations</div>
-          <div style="font-size:0.68rem;color:var(--muted);margin-bottom:0.45rem;line-height:1.45">
+          <div class="lists-hint">
             Save a place once and pick it on an assignment — the address fills itself in,
             and the driver gets it on their phone.
           </div>
@@ -2192,23 +2321,26 @@
             <button class="lists-add-btn" onclick="addLocation()">Add</button>
           </div>
           <div class="lists-items">
-            ${(divTruckLists.locations || []).length === 0
-              ? `<span style="font-size:0.72rem;color:var(--muted)">No locations yet.</span>`
-              : divTruckLists.locations.map(l => `
+            ${items.length === 0
+              ? emptyHTML('Locations', all.length)
+              : items.map(l => `
                   <div class="lists-item">
-                    <span style="overflow:hidden">
+                    <span class="li-name" style="white-space:normal">
                       ${esc(l.name)}
                       <span style="display:block;color:var(--muted);font-size:0.68rem;line-height:1.3">${esc(l.address) || 'no address'}</span>
                     </span>
-                    <button class="lists-item-del" onclick="removeLocation('${esc(l.name).replace(/'/g, "\\'")}')" title="Remove">&#10005;</button>
+                    <button class="lists-item-del" onclick="removeLocation('${argEsc(l.name)}')" title="Remove">&#10005;</button>
                   </div>`).join('')
             }
           </div>
         </div>`;
+      };
 
-      const unitsHTML = `
+      const unitsHTML = () => {
+        const all   = divTruckLists.units || [];
+        const items = all.filter(u => u && _listsMatch(u.name));
+        return `
         <div class="lists-section">
-          <div class="lists-section-title">Units</div>
           <div class="lists-add-row" style="flex-wrap:wrap;gap:0.3rem">
             <input type="text" id="lists-new-unit-name" placeholder="Unit Name…"
               style="flex:1;min-width:90px"
@@ -2219,9 +2351,9 @@
             <button class="lists-add-btn" onclick="addUnit()">Add</button>
           </div>
           <div class="lists-items">
-            ${divTruckLists.units.length === 0
-              ? `<span style="font-size:0.72rem;color:var(--muted)">No units yet.</span>`
-              : divTruckLists.units.map(u => merging('units', u.name) ? mergeForm('units', u.name) : `
+            ${items.length === 0
+              ? emptyHTML('Units', all.length)
+              : items.map(u => merging('units', u.name) ? mergeForm('units', u.name) : `
                   <div class="lists-item">
                     <span class="li-name">${esc(u.name)}<span style="color:var(--muted);font-size:0.7rem;margin-left:0.4rem">#${esc(u.number)}</span></span>
                     ${countChip('units', u.name)}
@@ -2233,15 +2365,35 @@
           </div>
           ${removedHTML('units', 'Units')}
         </div>`;
+      };
 
-      document.getElementById('lists-panel-body').innerHTML =
-        undoHTML() +
-        section('drivers',   'Drivers',   divTruckLists.drivers) +
-        driverLoginsHTML(esc) +
-        customersHTML +
-        section('materials', 'Materials', divTruckLists.materials) +
-        locationsHTML +
-        unitsHTML;
+      // One list at a time, and the strip says how many are in each — with a
+      // filter running, how many of each MATCH, so a name you cannot find is
+      // one click away rather than six lists of scrolling.
+      const tabsEl = document.getElementById('lists-tabs');
+      if (tabsEl) {
+        const filtering = !!_listsFilter.trim();
+        tabsEl.innerHTML = LISTS_TABS.map(t => {
+          const names = _listsNamesFor(t.key);
+          const n = filtering ? names.filter(_listsMatch).length : names.length;
+          return `<button class="lists-tab${t.key === _listsTab ? ' active' : ''}"
+            onclick="listsOpenTab('${t.key}')"
+            title="${filtering ? n + ' of ' + names.length + ' match' : names.length + ' in this list'}">
+            ${esc(t.label)}<span class="n">${n}</span></button>`;
+        }).join('');
+      }
+
+      const bodyFor = {
+        drivers:   () => section('drivers',   'Drivers',   divTruckLists.drivers || []),
+        customers: () => customersHTML(),
+        units:     () => unitsHTML(),
+        materials: () => section('materials', 'Materials', divTruckLists.materials || []),
+        locations: () => locationsHTML(),
+        logins:    () => driverLoginsHTML(esc),
+      };
+      const render = bodyFor[_listsTab] || bodyFor.drivers;
+
+      document.getElementById('lists-panel-body').innerHTML = undoHTML() + render();
     }
 
     function addToList(key) {
