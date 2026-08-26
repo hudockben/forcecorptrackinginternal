@@ -90,7 +90,7 @@ const legacyEmpty = {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 console.log('\n[ALL_DIVISIONS]');
-const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
+const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
 assert('contains exactly the canonical divisions',
   ALL_DIVISIONS.length === EXPECTED_DIVISIONS.length &&
   EXPECTED_DIVISIONS.every(d => ALL_DIVISIONS.includes(d)));
@@ -101,6 +101,7 @@ assert('includes timesheet',       ALL_DIVISIONS.includes('timesheet'));
 assert('includes payroll',         ALL_DIVISIONS.includes('payroll'));
 assert('includes fuel',            ALL_DIVISIONS.includes('fuel'));
 assert('includes fuel_admin',      ALL_DIVISIONS.includes('fuel_admin'));
+assert('includes quarry_sales',    ALL_DIVISIONS.includes('quarry_sales'));
 
 console.log('\n[normalizeDivision]');
 assert('normalizes case',           normalizeDivision('PAVING') === 'paving');
@@ -114,6 +115,7 @@ assert('accepts trucking',          normalizeDivision('trucking') === 'trucking'
 // 'fueladmin' and stops matching anything.
 assert('keeps the underscore',      normalizeDivision('fuel_admin') === 'fuel_admin');
 assert('accepts FUEL_ADMIN',        normalizeDivision('FUEL_ADMIN') === 'fuel_admin');
+assert('keeps quarry_sales whole',  normalizeDivision('quarry_sales') === 'quarry_sales');
 assert('rejects sql injection',     normalizeDivision("paving'; DROP--") === null);
 
 console.log('\n[hasDivisionAccess — paving-only user]');

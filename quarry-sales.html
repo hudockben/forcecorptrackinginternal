@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fb923c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 20h18'/><path d='M4 20l3.5-7 4.5 3'/><circle cx='17' cy='8' r='4'/></svg>" />
+  <title>Quarry Sales — Submit a Sale</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #14141d;
+      --surface2:  #1c1c28;
+      --border:    #2a2a3a;
+      --accent:    #fb923c;
+      --accent-d:  #ea7c22;
+      --text:      #e8e8ee;
+      --muted:     #888;
+      --red:       #ef4444;
+      --green:     #22c55e;
+      --blue:      #60a5fa;
+    }
+
+    html, body { height: 100%; overscroll-behavior-y: none; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.4;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.9rem 1rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      padding-top: calc(0.9rem + env(safe-area-inset-top, 0));
+    }
+    .brand {
+      font-size: 0.65rem;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .header-right { display: flex; align-items: center; gap: 0.6rem; }
+    .user-chip { font-size: 0.72rem; color: var(--muted); }
+    .user-chip strong { color: var(--text); font-weight: 600; }
+    .icon-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.5rem 0.7rem;
+      border-radius: 6px;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .icon-btn:active { color: var(--text); border-color: #555; }
+
+    main {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    /* ── Section card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .card-title {
+      font-size: 0.66rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .card-sub { font-size: 0.78rem; color: var(--muted); }
+
+    /* ── Form fields ── */
+    .row { display: flex; flex-direction: column; gap: 0.35rem; }
+    .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
+    label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    input, select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1rem;
+      padding: 0.85rem 0.8rem;
+      font-family: inherit;
+      outline: none;
+      min-height: 48px;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    select {
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 0.6rem center;
+      background-size: 18px;
+      padding-right: 2rem;
+    }
+    /* A field the submit check called out. Cleared the moment it's filled, so
+       the form never keeps shouting about something already put right. */
+    input.bad, select.bad { border-color: var(--red); }
+
+    /* Says why a picker has nothing in it. A worker looking at an empty list
+       needs to know it is the quarry's Manage Lists that is short, not their
+       phone. */
+    .field-note {
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .field-note.warn { color: var(--accent); }
+
+    /* The two figures the invoice is worked out from — the tonnage and the
+       ticket total — are given the weight of one: bigger than an ordinary
+       field, in a block that sits slightly proud of the run of questions. */
+    .figure-row {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.8rem 0.85rem;
+      gap: 0.45rem;
+    }
+    .figure-row input {
+      font-size: 1.35rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      background: var(--bg);
+    }
+    /* The dollar sign sits inside the box rather than in the label, so the
+       figure being typed reads as money at a glance on a phone. */
+    .amount-wrap { position: relative; }
+    .amount-wrap input { padding-left: 1.9rem; }
+    .amount-prefix {
+      position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%);
+      font-size: 1.35rem; font-weight: 700; color: var(--muted); pointer-events: none;
+    }
+    /* The price the two figures work out to. Green once it resolves, because
+       it is the one number on this form nobody types and the office reads. */
+    .field-note.calc { color: var(--green); font-weight: 600; }
+
+    /* ── Action buttons ── */
+    .btn-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+    .btn {
+      flex: 1;
+      min-height: 50px;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      font-family: inherit;
+    }
+    .btn-primary { background: var(--accent); color: #201400; }
+    .btn-primary:active { background: var(--accent-d); }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:active { background: var(--border); }
+    .btn-danger {
+      background: rgba(239,68,68,0.12);
+      color: var(--red);
+      border: 1px solid rgba(239,68,68,0.3);
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Status badges ── */
+    .badge {
+      display: inline-block;
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.55rem;
+      border-radius: 4px;
+    }
+    .badge-draft     { background: rgba(136,136,136,0.15); color: var(--muted); }
+    .badge-submitted { background: rgba(34,197,94,0.15);   color: var(--green); }
+
+    /* ── Entries list ── */
+    .entry {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .entry + .entry { margin-top: 0.6rem; }
+    .entry.draft { cursor: pointer; }
+    .entry.draft:active { background: var(--surface2); }
+    .entry-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }
+    .entry-date { font-size: 0.95rem; font-weight: 700; color: var(--text); }
+    .entry-meta { font-size: 0.8rem; color: var(--muted); line-height: 1.45; }
+    .entry-figure {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .entry-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .entry-empty {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+      padding: 1.5rem 1rem;
+    }
+    .entry-audit {
+      font-size: 0.7rem;
+      color: var(--muted);
+      padding-top: 0.45rem;
+      margin-top: 0.2rem;
+      border-top: 1px dashed var(--border);
+      line-height: 1.4;
+    }
+
+    /* ── Toast / inline message ── */
+    .msg { font-size: 0.85rem; min-height: 1.2em; padding: 0.1rem 0.2rem; }
+    .msg.error   { color: var(--red); }
+    .msg.success { color: var(--green); }
+
+    /* ── No-access screen ── */
+    .no-access { max-width: 420px; margin: 4rem auto; padding: 2rem 1.25rem; text-align: center; }
+    .no-access h2 { font-size: 1.3rem; color: var(--text); margin-bottom: 0.6rem; }
+    .no-access p  { font-size: 0.9rem; color: var(--muted); margin-bottom: 1.5rem; }
+
+    .hidden { display: none !important; }
+
+    @media (min-width: 720px) {
+      main { padding: 1.5rem; }
+      .row-2 { gap: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">Quarry Sales</div>
+    <div class="header-right">
+      <div class="user-chip" id="userChip"></div>
+      <button class="icon-btn" id="switchBtn" style="display:none" onclick="goToDivisions()">Switch</button>
+      <button class="icon-btn" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <main id="mainContent">
+
+    <!-- ── Entry form ──
+         The seven questions are the seven columns of the quarry's Sales
+         Tracking tab, asked in the order that tab shows them. Five of them are
+         pickers, so a pit, a customer or a product can only ever be spelled
+         the one way the quarry's Manage Lists spells it. -->
+    <section class="card" id="formCard">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="card-title" id="formTitle">New Sale</div>
+        <span class="badge" id="formBadge" style="display:none"></span>
+      </div>
+
+      <div class="row">
+        <label for="f-date">Date</label>
+        <input type="date" id="f-date" />
+      </div>
+
+      <div class="row">
+        <label for="f-location">Location</label>
+        <select id="f-location"><option value="">— pick —</option></select>
+        <div class="field-note" id="note-f-location"></div>
+      </div>
+
+      <div class="row">
+        <label for="f-employee">Employee</label>
+        <select id="f-employee"><option value="">— pick —</option></select>
+        <div class="field-note" id="note-f-employee"></div>
+      </div>
+
+      <div class="row">
+        <label for="f-customer">Customer</label>
+        <select id="f-customer"><option value="">— pick —</option></select>
+        <div class="field-note" id="note-f-customer"></div>
+      </div>
+
+      <div class="row">
+        <label for="f-product">Product</label>
+        <select id="f-product"><option value="">— pick —</option></select>
+        <div class="field-note" id="note-f-product"></div>
+      </div>
+
+      <div class="row figure-row">
+        <label for="f-tons">Tons</label>
+        <input type="number" id="f-tons" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+               oninput="updatePrice()" onchange="updatePrice()" />
+        <div class="field-note">Off the scale ticket, for this load only.</div>
+      </div>
+
+      <!-- What the customer was charged. The office's grid works in price per
+           ton, which nobody at a scale house carries in their head — so the
+           ticket total is what is asked for, and the price is worked out from
+           it below, where the person holding the ticket can see it. -->
+      <div class="row figure-row">
+        <label for="f-amount">Amount Charged</label>
+        <div class="amount-wrap">
+          <span class="amount-prefix" aria-hidden="true">$</span>
+          <input type="number" id="f-amount" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+                 oninput="updatePrice()" onchange="updatePrice()" />
+        </div>
+        <div class="field-note" id="priceNote"></div>
+      </div>
+
+      <div class="row">
+        <label for="f-payment">Payment</label>
+        <select id="f-payment"><option value="">— pick —</option></select>
+      </div>
+
+      <div class="msg" id="formMsg"></div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="btn-reset"  onclick="resetFormAction()">Reset</button>
+        <button class="btn btn-secondary" id="btn-save"   onclick="saveDraft()">Save Draft</button>
+        <button class="btn btn-primary"   id="btn-submit" onclick="submitEntry()">Submit</button>
+      </div>
+      <div class="btn-row" id="row-delete" style="display:none">
+        <button class="btn btn-danger" id="btn-delete-draft" onclick="deleteDraft()">Delete Draft</button>
+      </div>
+    </section>
+
+    <!-- ── Past entries ── -->
+    <section class="card">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:0.6rem;flex-wrap:wrap">
+        <div class="card-title">My Recent Sales</div>
+        <div id="entriesScope" class="card-sub" style="font-size:0.72rem"></div>
+      </div>
+      <div id="entriesList"><div class="entry-empty">Loading…</div></div>
+      <div style="text-align:center">
+        <button id="toggleScopeBtn" class="btn btn-secondary"
+          style="display:none;font-size:0.78rem;padding:0.55rem 1.2rem;flex:0 0 auto"
+          onclick="toggleScope()">Show older sales</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── No-access fallback ── -->
+  <div id="noAccess" class="no-access hidden">
+    <h2>No Quarry Sales Access</h2>
+    <p>Your account doesn't have permission to record quarry sales. Ask a company admin to grant you Quarry Sales access.</p>
+    <button class="btn btn-secondary" style="max-width:240px;margin:0 auto" onclick="goToDivisions()">Back to Divisions</button>
+  </div>
+
+  <script>
+    // ── Auth + access guard ────────────────────────────────────────────────
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) window.location.replace('index.html');
+
+    const isPlatformAdmin  = Boolean(user && user.isPlatformAdmin);
+    const allowedDivisions = Array.isArray(user && user.allowedDivisions) ? user.allowedDivisions : [];
+    const hasSales         = isPlatformAdmin || allowedDivisions.includes('quarry_sales');
+    const otherDivisions   = allowedDivisions.filter(d => d !== 'quarry_sales');
+
+    if (!hasSales) {
+      document.getElementById('mainContent').classList.add('hidden');
+      document.getElementById('noAccess').classList.remove('hidden');
+    } else {
+      if (isPlatformAdmin || otherDivisions.length > 0) {
+        document.getElementById('switchBtn').style.display = '';
+      }
+      document.getElementById('userChip').innerHTML = `<strong>${escapeHtml(user.username)}</strong>`;
+      // Deferred to a microtask so the `let` declarations further down finish
+      // their TDZ before init() / loadEntries() read them.
+      queueMicrotask(init);
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    // ── The form, as data ──────────────────────────────────────────────────
+    // Every field is required at submit. The order is the order they are asked
+    // for, which is also the order the "still needed" message names them in —
+    // and the order of the columns in Sales Tracking, because they are the
+    // same seven things.
+    //
+    // `list` names the bucket /api/quarry-sales-lists returns a picker's
+    // options in. A field with a list posts BOTH halves: the id, which is what
+    // the server trusts, and the name, which is what survives the list item
+    // being deleted a year from now.
+    const FIELDS = [
+      { key: 'work_date', id: 'f-date',     label: 'Date' },
+      { key: 'location',  id: 'f-location', label: 'Location', list: 'locations' },
+      { key: 'employee',  id: 'f-employee', label: 'Employee', list: 'employees' },
+      { key: 'customer',  id: 'f-customer', label: 'Customer', list: 'customers' },
+      { key: 'product',   id: 'f-product',  label: 'Product',  list: 'products'  },
+      { key: 'tons',      id: 'f-tons',     label: 'Tons' },
+      { key: 'amount_charged', id: 'f-amount', label: 'Amount Charged' },
+      { key: 'payment',   id: 'f-payment',  label: 'Payment' },
+    ];
+
+    // Which Manage Lists panel a worker should be pointed at when a picker is
+    // empty. Named the way the quarry page names them, so the message is an
+    // instruction rather than a guess.
+    const LIST_PANEL = {
+      locations: 'Location', employees: 'Employee',
+      customers: 'Customer', products:  'Product',
+    };
+
+    function el(id) { return document.getElementById(id); }
+    function val(id) { const e = el(id); return e ? e.value : ''; }
+
+    // ── State ──────────────────────────────────────────────────────────────
+    let lists        = { locations: [], employees: [], customers: [], products: [], payments: [] };
+    let entriesCache = [];
+    let editingId    = null;    // id of the draft row this form is sitting on
+
+    // ── The price the ticket implies ────────────────────────────────────────
+    // Copy of pricePerTonFrom() in api/quarry-sales-submissions.js, which is
+    // canonical and recomputes this on the way into the grid.
+    // scripts/test-quarry-sales-submissions.js runs both over the same table
+    // of tickets and fails if they disagree — a form that showed one figure
+    // and stored another is worse than a form that showed nothing.
+    //
+    // Four places, not two: it is a division and rarely lands on a cent, and
+    // $100 over 3 tons rounded to 33.33 bills 99.99 for a load charged 100.
+    function pricePerTonFrom(amount, tons) {
+      const a = Number(amount), t = Number(tons);
+      if (!Number.isFinite(a) || !Number.isFinite(t)) return null;
+      if (a <= 0 || t <= 0) return null;
+      return Math.round((a / t) * 10000) / 10000;
+    }
+
+    function money(n) {
+      return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    // Show what the office will see. This is the whole safety net on the
+    // amount: no threshold could tell $441 from $4,410 for a quarry whose
+    // prices this page does not know, but $180.00 / ton on the screen of
+    // someone holding the ticket is unmissable.
+    function updatePrice() {
+      const note = el('priceNote');
+      if (!note) return;
+      const tons   = val('f-tons').trim();
+      const amount = val('f-amount').trim();
+      if (amount === '' && tons === '') {
+        note.className = 'field-note';
+        note.textContent = 'The price per ton is worked out from this and the tonnage above.';
+        return;
+      }
+      const price = pricePerTonFrom(amount, tons);
+      if (price === null) {
+        note.className = 'field-note';
+        note.textContent = tons === ''
+          ? 'Fill in the tonnage above and this works out the price per ton.'
+          : 'Fill in the amount and this works out the price per ton.';
+        return;
+      }
+      note.className = 'field-note calc';
+      // Shown to the cent, which is how it reads on a price list. The figure
+      // stored keeps its four places so tons x price comes back to the amount.
+      note.textContent = `= ${money(price)} / ton`;
+    }
+
+    async function init() {
+      el('f-date').value = todayStr();
+      updatePrice();
+      // Clear a field's error outline as soon as it stops being empty, so the
+      // form isn't still marking something the worker has already filled in.
+      for (const f of FIELDS) {
+        const node = el(f.id);
+        if (!node) continue;
+        const clear = () => { if (node.value !== '') node.classList.remove('bad'); };
+        node.addEventListener('input',  clear);
+        node.addEventListener('change', clear);
+      }
+      await Promise.all([loadLists(), loadEntries()]);
+    }
+
+    function todayStr() {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm   = String(d.getMonth() + 1).padStart(2, '0');
+      const dd   = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    // ── Pickers ────────────────────────────────────────────────────────────
+    // Every option comes from the quarry's own Manage Lists, which is what the
+    // Sales Tracking comboboxes read. Nothing here is typed in, so a pit or a
+    // customer cannot arrive in the grid under a second spelling.
+    async function loadLists() {
+      try {
+        const res  = await fetch('/api/quarry-sales-lists', { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data && data.error ? data.error : `HTTP ${res.status}`);
+        for (const k of Object.keys(lists)) {
+          if (Array.isArray(data[k])) lists[k] = data[k];
+        }
+      } catch (err) {
+        console.error('[quarry-sales] lists failed:', err);
+        const msg = el('formMsg');
+        msg.className = 'msg error';
+        msg.textContent = "Couldn't load the quarry's lists — the pickers below may be empty. Pull down to reload.";
+      }
+      renderPickers();
+    }
+
+    function renderPickers() {
+      for (const f of FIELDS) {
+        if (!f.list) continue;
+        const node = el(f.id);
+        const note = el('note-' + f.id);
+        if (!node) continue;
+        const items = lists[f.list] || [];
+        // Value is the list id; the picker shows the name, which is the only
+        // half a worker can read off a phone.
+        node.innerHTML = '<option value="">— pick —</option>' +
+          items.map(it => `<option value="${escapeHtml(it.id)}">${escapeHtml(it.name)}</option>`).join('');
+        if (note) {
+          note.className = items.length ? 'field-note' : 'field-note warn';
+          note.textContent = items.length
+            ? ''
+            : `Nothing in the quarry's ${LIST_PANEL[f.list]} list yet — ask the quarry office to add it under Manage Lists.`;
+        }
+      }
+      // Payment is the one list nobody maintains: Sales Tracking has always
+      // offered exactly these two, and a third value renders as a blank cell.
+      const pay = el('f-payment');
+      pay.innerHTML = '<option value="">— pick —</option>' +
+        (lists.payments || []).map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+
+      // Default the employee to whoever is signed in — they are usually
+      // selling their own loads — while leaving the picker free to name
+      // someone else. Skipped while a draft is open, which has its own answer
+      // already loaded.
+      if (!editingId) preselectEmployee();
+    }
+
+    // Best-effort match of the signed-in username to the quarry roster. Login
+    // names are often a surname, so an exact name is tried first and then an
+    // UNAMBIGUOUS surname — two Wilsons on the roster leaves the picker empty
+    // rather than guessing which one sold the load.
+    function preselectEmployee() {
+      const me = String((user && user.username) || '').trim().toLowerCase();
+      if (!me) return;
+      const roster = lists.employees || [];
+      let hit = roster.find(it => String(it.name || '').trim().toLowerCase() === me);
+      if (!hit) {
+        const bySurname = roster.filter(it => String(it.name || '').trim().toLowerCase().endsWith(' ' + me));
+        if (bySurname.length === 1) hit = bySurname[0];
+      }
+      if (hit) el('f-employee').value = hit.id;
+    }
+
+    // ── Build a payload from the form ──────────────────────────────────────
+    // Everything on screen, blanks included. A draft is allowed to be
+    // half-finished, so this never refuses anything — emptyFields() is what
+    // decides whether the form is complete enough to send in.
+    //
+    // A picked field posts its id AND the name showing against it. The server
+    // re-resolves the name from the id, so the name is what carries the answer
+    // through if the list item is ever deleted.
+    function buildPayload() {
+      const data = {};
+      for (const f of FIELDS) {
+        if (!f.list) { data[f.key] = val(f.id); continue; }
+        const node = el(f.id);
+        const opt  = node && node.selectedIndex >= 0 ? node.options[node.selectedIndex] : null;
+        data[f.key + '_id']   = node ? node.value : '';
+        data[f.key + '_name'] = (node && node.value && opt) ? opt.textContent : '';
+      }
+      return data;
+    }
+
+    // The fields still empty, in form order. Tons is compared as a string so a
+    // typed 0 is treated as filled in and refused by the server's own rule
+    // ("Tons must be more than zero"), which says something useful — rather
+    // than being reported here as a box nobody answered.
+    function emptyFields() {
+      return FIELDS.filter(f => val(f.id) === '');
+    }
+
+    function markEmpty(list) {
+      for (const f of FIELDS) {
+        const node = el(f.id);
+        if (node) node.classList.toggle('bad', list.includes(f));
+      }
+    }
+
+    // ── Entries list ───────────────────────────────────────────────────────
+    // Default window is the last 30 days so nobody scrolls a season of loads.
+    // Drafts always load whatever their date, so an unfinished sale can never
+    // quietly fall out of the window and become invisible.
+    let scopeUnbounded = false;
+
+    function recentWindow() {
+      const to   = new Date();
+      const from = new Date();
+      from.setDate(to.getDate() - 30);
+      return { from, to };
+    }
+
+    function ymd(d) {
+      const y  = d.getFullYear();
+      const m  = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    }
+
+    // Fetch one slice of the list. Resolves to { entries } or { error } and
+    // never throws, so one broken slice can't blank the whole list.
+    async function fetchSlice(url, label) {
+      try {
+        const res = await fetch(url, { headers: authHeaders() });
+        let body = null;
+        try { body = await res.json(); } catch { /* non-JSON body */ }
+        if (!res.ok) {
+          const msg = (body && body.error) || `HTTP ${res.status}`;
+          console.error(`[quarry-sales] ${label} failed:`, msg, body);
+          return { error: msg };
+        }
+        return { entries: Array.isArray(body && body.entries) ? body.entries : [] };
+      } catch (err) {
+        console.error(`[quarry-sales] ${label} threw:`, err);
+        return { error: err && err.message ? err.message : 'network error' };
+      }
+    }
+
+    async function loadEntries() {
+      const list  = document.getElementById('entriesList');
+      const scope = document.getElementById('entriesScope');
+      const btn   = document.getElementById('toggleScopeBtn');
+      list.innerHTML = '<div class="entry-empty">Loading…</div>';
+
+      let entries = [];
+      const failures = [];
+
+      if (scopeUnbounded) {
+        const r = await fetchSlice('/api/quarry-sales-submissions', 'all-sales');
+        if (r.error) failures.push(r.error); else entries = r.entries;
+        scope.textContent = 'All sales';
+        if (btn) { btn.textContent = 'Show recent only'; btn.style.display = ''; }
+      } else {
+        const { from, to } = recentWindow();
+        const fromS = ymd(from), toS = ymd(to);
+        const [draftsR, recentR] = await Promise.all([
+          fetchSlice('/api/quarry-sales-submissions?status=draft', 'drafts'),
+          fetchSlice(`/api/quarry-sales-submissions?status=submitted&from=${fromS}&to=${toS}`, 'recent'),
+        ]);
+        const byId = new Map();
+        if (draftsR.error) failures.push(`drafts: ${draftsR.error}`);
+        else for (const e of draftsR.entries) byId.set(e.id, e);
+        if (recentR.error) failures.push(`recent: ${recentR.error}`);
+        else for (const e of recentR.entries) if (!byId.has(e.id)) byId.set(e.id, e);
+        entries = Array.from(byId.values());
+        scope.textContent = `${fmtScopeDate(from)} – ${fmtScopeDate(to)} (+ all drafts)`;
+        if (btn) { btn.textContent = 'Show older sales'; btn.style.display = ''; }
+      }
+
+      entries.sort((a, b) => (b.work_date || '').localeCompare(a.work_date || ''));
+      entriesCache = entries;
+
+      try {
+        renderEntries();
+      } catch (err) {
+        console.error('[quarry-sales] renderEntries threw:', err);
+        failures.push(`render: ${err && err.message ? err.message : 'render error'}`);
+      }
+
+      if (failures.length) {
+        const note = `<div class="entry-empty">Couldn't load some sales (${escapeHtml(failures.join('; '))}).</div>`;
+        if (!entriesCache.length) list.innerHTML = note;
+        else list.insertAdjacentHTML('beforeend', note);
+      }
+    }
+
+    function fmtScopeDate(d) {
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+
+    function toggleScope() {
+      scopeUnbounded = !scopeUnbounded;
+      loadEntries();
+    }
+
+    function renderEntries() {
+      const list = document.getElementById('entriesList');
+      if (!entriesCache.length) {
+        list.innerHTML = '<div class="entry-empty">No sales yet. Use the form above to record your first one.</div>';
+        return;
+      }
+      list.innerHTML = entriesCache.map(e => {
+        const isDraft = e.status === 'draft';
+        const who  = [e.customer_name, e.product_name].filter(Boolean).map(escapeHtml).join(' · ');
+        const site = [e.location_name, e.employee_name, e.payment].filter(Boolean).map(escapeHtml).join(' · ');
+        const meta = [who, site].filter(Boolean).join('<br />') || '—';
+        // A draft with nothing in the tons box shows no figure at all, rather
+        // than a 0 that reads as "nothing went out".
+        const tons  = e.tons != null ? `${Number(e.tons).toLocaleString(undefined, { maximumFractionDigits: 2 })} t` : '';
+        const amount = e.amount_charged != null ? money(e.amount_charged) : '';
+        // The price is the office's figure, so it is shown small and only once
+        // both halves of it exist — it is here to be checked, not read.
+        const price = e.price_per_ton != null ? `${money(e.price_per_ton)} / ton` : '';
+        const audit = entryAuditLine(e);
+        return `
+          <div class="entry ${isDraft ? 'draft' : ''}" ${isDraft ? `onclick="editEntry('${escapeHtml(e.id)}')"` : ''}>
+            <div class="entry-head">
+              <div class="entry-date">${prettyDate(e.work_date)}</div>
+              <span class="badge badge-${escapeHtml(e.status)}">${escapeHtml(e.status)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:flex-end">
+              <div class="entry-meta">${meta}</div>
+              <div style="text-align:right">
+                ${amount ? `<div class="entry-figure">${amount}</div>` : ''}
+                ${tons || price ? `<div class="entry-sub">${[tons, price].filter(Boolean).join(' · ')}</div>` : ''}
+              </div>
+            </div>
+            ${audit ? `<div class="entry-audit">${audit}</div>` : ''}
+          </div>`;
+      }).join('');
+    }
+
+    function entryAuditLine(e) {
+      if (!e || e.status === 'draft') return '';
+      const sub = fmtTs(e.submitted_at);
+      return sub ? `Submitted ${sub} · in Sales Tracking` : 'In Sales Tracking';
+    }
+
+    function fmtTs(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+
+    function prettyDate(s) {
+      if (!s) return '';
+      const d = new Date(s + 'T00:00:00');
+      return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    // ── Edit a draft ───────────────────────────────────────────────────────
+    function editEntry(id) {
+      const e = entriesCache.find(x => x.id === id);
+      if (!e) return;
+      if (blockedByWrite('open that draft')) return;
+      resetForm();
+      editingId = e.id;
+
+      for (const f of FIELDS) {
+        const node = el(f.id);
+        if (!node) continue;
+        if (!f.list) {
+          const v = e[f.key];
+          node.value = (v == null) ? '' : String(v);
+          continue;
+        }
+        const listId = e[f.key + '_id']   || '';
+        const name   = e[f.key + '_name'] || '';
+        // A list item deleted since the draft was saved would blank the picker
+        // and quietly rewrite the answer. Keep it as its own option so the
+        // draft still shows what was chosen.
+        if (listId && ![...node.options].some(o => o.value === listId)) {
+          const opt = document.createElement('option');
+          opt.value = listId;
+          opt.textContent = name || listId;
+          node.appendChild(opt);
+        }
+        node.value = listId;
+      }
+
+      updatePrice();
+      markEmpty([]);
+      markAsDraft();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function resetFormAction() {
+      if (blockedByWrite('reset the form')) return;
+      resetForm();
+    }
+
+    function resetForm() {
+      editingId = null;
+      document.getElementById('formTitle').textContent = 'New Sale';
+      document.getElementById('formBadge').style.display = 'none';
+      document.getElementById('row-delete').style.display = 'none';
+      // Re-rendered rather than blanked: editEntry may have appended options
+      // for list items that no longer exist, and those belong to that draft.
+      renderPickers();
+      for (const f of FIELDS) { const node = el(f.id); if (node) node.value = ''; }
+      markEmpty([]);
+      el('f-date').value = todayStr();
+      preselectEmployee();
+      updatePrice();
+      document.getElementById('formMsg').textContent = '';
+    }
+
+    function markAsDraft() {
+      document.getElementById('formTitle').textContent = 'Edit Draft';
+      const badge = document.getElementById('formBadge');
+      badge.textContent = 'draft';
+      badge.className = 'badge badge-draft';
+      badge.style.display = '';
+      document.getElementById('row-delete').style.display = '';
+    }
+
+    // ── Save / submit / delete ─────────────────────────────────────────────
+    // One write at a time, across every button that writes. A Save still in
+    // flight when Submit is pressed finds nothing pinned and posts the sale a
+    // second time; disabling one button never covered that, because the two
+    // presses are on different buttons.
+    let formWriting = false;
+    const WRITE_BUTTONS = ['btn-save', 'btn-submit', 'btn-reset', 'btn-delete-draft'];
+    function beginWrite() {
+      if (formWriting) return false;
+      formWriting = true;
+      for (const id of WRITE_BUTTONS) { const b = el(id); if (b) b.disabled = true; }
+      return true;
+    }
+    function endWrite() {
+      formWriting = false;
+      for (const id of WRITE_BUTTONS) { const b = el(id); if (b) b.disabled = false; }
+    }
+    function blockedByWrite(what) {
+      if (!formWriting) return false;
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg error';
+      msg.textContent = `Still saving — ${what} once it finishes.`;
+      return true;
+    }
+
+    // Write the form out as a draft row, creating it the first time and
+    // updating it after. Adopting the row id here means a later failure
+    // retries the same row instead of posting a duplicate.
+    async function writeDraft(data) {
+      const url = editingId
+        ? '/api/quarry-sales-submissions?id=' + encodeURIComponent(editingId)
+        : '/api/quarry-sales-submissions';
+      const res = await fetch(url, {
+        method: editingId ? 'PUT' : 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify(data),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+      editingId = j.entry.id;
+      return j.entry;
+    }
+
+    // Send the adopted draft in. Resolves to the parsed body either way — a
+    // refusal is something submitEntry has to READ (a duplicate is a question
+    // it puts back to the submitter), not something it can only catch.
+    async function postSubmit(confirmDuplicate) {
+      const res = await fetch(
+        '/api/quarry-sales-submissions?action=submit&id=' + encodeURIComponent(editingId) +
+        (confirmDuplicate ? '&confirm_duplicate=1' : ''),
+        { method: 'POST', headers: authHeaders() },
+      );
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok) return body;
+      return Object.assign({ ok: false, error: `HTTP ${res.status}` }, body, { ok: false });
+    }
+
+    async function saveDraft() {
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg';
+      // The date is the one thing a row cannot exist without, so it is the one
+      // thing a draft still has to have. Everything else can wait.
+      if (val('f-date') === '') {
+        msg.textContent = 'Pick a date before saving.';
+        msg.classList.add('error');
+        markEmpty(FIELDS.filter(f => f.id === 'f-date'));
+        return;
+      }
+      if (!beginWrite()) return;
+      try {
+        await writeDraft(buildPayload());
+        const short = emptyFields().length;
+        msg.textContent = short
+          ? `Saved as draft — ${short} field${short === 1 ? '' : 's'} still to fill in.`
+          : 'Saved as draft.';
+        msg.classList.add('success');
+        markAsDraft();
+        await loadEntries();
+      } catch (err) {
+        msg.textContent = err.message;
+        msg.classList.add('error');
+        await loadEntries();
+      } finally {
+        endWrite();
+      }
+    }
+
+    async function submitEntry() {
+      const msg = document.getElementById('formMsg');
+      msg.className = 'msg';
+
+      const empty = emptyFields();
+      markEmpty(empty);
+      if (empty.length) {
+        msg.textContent = `Fill in every field before submitting — still needed: ${empty.map(f => f.label).join(', ')}.`;
+        msg.classList.add('error');
+        const first = el(empty[0].id);
+        if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+
+      const price = pricePerTonFrom(val('f-amount'), val('f-tons'));
+      if (!confirm(
+        `Submit this sale at ${price === null ? 'no price' : money(price) + ' / ton'}?\n\n` +
+        'It goes straight into Quarry Sales Tracking, and only the quarry office can take it back out.'
+      )) return;
+      if (!beginWrite()) return;
+
+      try {
+        // Written out as a draft first, then submitted. The write adopts its
+        // row before anything else runs, so a submit that fails leaves the
+        // form pinned to that row — pressing Submit again retries it instead
+        // of posting the same load a second time.
+        await writeDraft(buildPayload());
+        let j = await postSubmit(false);
+        // An identical load earlier today is a QUESTION, not a refusal: four
+        // truckloads of the same stone to the same customer write four tickets
+        // that agree on every column. Only the person who wrote them knows
+        // whether they sold it twice or pressed the button twice.
+        if (j.code === 'duplicate') {
+          if (!confirm(`${j.error}\n\nChoose OK to send it as a second load, or Cancel to leave it as a draft.`)) {
+            markAsDraft();
+            msg.className = 'msg';
+            msg.textContent = 'Left as a draft — it is in the list below.';
+            await loadEntries();
+            return;
+          }
+          j = await postSubmit(true);
+        }
+        if (!j.ok) throw new Error(j.error || 'Submit failed');
+        resetForm();
+        msg.className = 'msg success';
+        msg.textContent = 'Submitted ✓ — it is in Sales Tracking now.';
+        await loadEntries();
+      } catch (err) {
+        // Say where the work went. "Submit failed" over a form that still
+        // looks unsaved is what makes people press the button again.
+        msg.className = 'msg error';
+        msg.textContent = editingId
+          ? `${err.message} — saved as a draft below; press Submit to try again.`
+          : err.message;
+        if (editingId) markAsDraft();
+        await loadEntries();
+      } finally {
+        endWrite();
+      }
+    }
+
+    async function deleteDraft() {
+      if (!editingId) return;
+      if (!confirm('Delete this draft sale? This cannot be undone.')) return;
+      if (blockedByWrite('delete') || !beginWrite()) return;
+      const msg = document.getElementById('formMsg');
+      try {
+        const res = await fetch('/api/quarry-sales-submissions?id=' + encodeURIComponent(editingId), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Delete failed');
+        resetForm();
+        await loadEntries();
+      } catch (err) {
+        msg.className = 'msg error';
+        msg.textContent = `${err.message} — the draft is still in the list below.`;
+        await loadEntries();
+      } finally {
+        endWrite();
+      }
+    }
+
+    function authHeaders(json) {
+      const h = { Authorization: `Bearer ${token}` };
+      if (json) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    function goToDivisions() { window.location.replace('divisions.html'); }
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+  </script>
+</body>
+</html>

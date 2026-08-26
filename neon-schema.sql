@@ -1609,3 +1609,67 @@ CREATE INDEX IF NOT EXISTS idx_tdr_company_date
     ON trucking_driver_reports(company_code, work_date DESC);
 CREATE INDEX IF NOT EXISTS idx_tdr_company_driver
     ON trucking_driver_reports(company_code, driver_name, work_date DESC);
+
+-- ─────────────────────────────────────────────────
+-- QUARRY SALES SUBMISSIONS
+-- The field side of the quarry's Sales Tracking tab. One row per load sold:
+-- the date, the pit, who sold it, the customer, the product, the tons and how
+-- it was paid — which is exactly the seven columns Sales Tracking opens with.
+--
+-- Two stages only, unlike Timesheet → Payroll and Fuel → Fuel Admin. There is
+-- no office queue to sit in: submitting posts the sale straight into the
+-- fct_quarry_sales blob (row id "qss-<id>-row") where the office prices it, so
+-- an 'approved' state would name a step nobody performs. A draft is the
+-- submitter's alone and can still be edited or thrown away.
+--
+-- The names are stored beside the ids on purpose. An id resolves against the
+-- quarry's Manage Lists, and a customer deleted from that list a year later
+-- would otherwise take the name off every sale ever made to them.
+--
+-- amount_charged is what the ticket said, and it is what the price per ton in
+-- Sales Tracking is worked out from: amount over tons. Stored rather than the
+-- price, because the amount is the figure that exists — nobody at a scale
+-- house knows a price per ton, they know what they charged — and because a
+-- division is lossy in the other direction.
+--
+-- row_id is which Sales Tracking row this submission owns. Derivable from id,
+-- and stored anyway: it is what a later sweep would key on, and a column is
+-- cheaper to read than a convention nobody can grep for.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS quarry_sales_submissions (
+    id             BIGSERIAL   PRIMARY KEY,
+    company_code   TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id        INTEGER     NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username       TEXT        NOT NULL,
+    status         TEXT        NOT NULL DEFAULT 'draft'
+                                CHECK (status IN ('draft','submitted')),
+
+    work_date      DATE        NOT NULL,
+    location_id    TEXT,
+    location_name  TEXT,
+    employee_id    TEXT,
+    employee_name  TEXT,
+    customer_id    TEXT,
+    customer_name  TEXT,
+    product_id     TEXT,
+    product_name   TEXT,
+    tons           NUMERIC(14,4),
+    amount_charged NUMERIC(14,2),
+    payment        TEXT,
+
+    row_id         TEXT,
+    submitted_at   TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_qss_company_user_date
+    ON quarry_sales_submissions(company_code, user_id, work_date DESC);
+CREATE INDEX IF NOT EXISTS idx_qss_company_status
+    ON quarry_sales_submissions(company_code, status, work_date DESC);
+CREATE INDEX IF NOT EXISTS idx_qss_company_customer
+    ON quarry_sales_submissions(company_code, customer_name, work_date DESC);
+
+-- Added after the table shipped, so it has to reach a database that already
+-- has the table — CREATE TABLE IF NOT EXISTS above would skip it there.
+ALTER TABLE quarry_sales_submissions ADD COLUMN IF NOT EXISTS amount_charged NUMERIC(14,2);

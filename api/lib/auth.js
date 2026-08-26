@@ -11,7 +11,10 @@ const jwt = require('jsonwebtoken');
 // 'driver' is the same again — the field side of trucking. A driver sees the
 // hauls the Scheduler gave them and reports back against them; the review side
 // is the trucking division's own Scheduler tab, so there is no second key.
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
+// 'quarry_sales' is the field side of the quarry. The scale house submits one
+// form per load and it posts straight into the quarry division's own Sales
+// Tracking tab, so — like driver — there is no second key for the review side.
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
 
 // Keys that are intentionally shared across every division within a company
 // (any logged-in user may read/write them regardless of their division roles).

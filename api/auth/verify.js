@@ -3,11 +3,11 @@
 const jwt        = require('jsonwebtoken');
 const { neon }   = require('@neondatabase/serverless');
 
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver'];
-// timesheet/payroll/fuel/fuel_admin require an explicit positive grant in
-// division_roles — they're never granted implicitly through user.divisions or
-// company.allowed_divisions.
-const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver']);
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
+// timesheet/payroll/fuel/fuel_admin/driver/quarry_sales require an explicit
+// positive grant in division_roles — they're never granted implicitly through
+// user.divisions or company.allowed_divisions.
+const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales']);
 
 /**
  * Verify the bearer token AND return the user's current division roles
