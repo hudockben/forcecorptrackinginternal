@@ -321,7 +321,7 @@
     .lists-backdrop.open { display: block; }
     .lists-panel {
       position: absolute; top: 0; right: 0;
-      width: 300px; background: var(--surface2);
+      width: 340px; background: var(--surface2);
       border-left: 1px solid var(--border);
       border-bottom: 1px solid var(--border);
       border-radius: 0 0 0 8px;
@@ -358,6 +358,7 @@
       border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; white-space: nowrap;
     }
     .lists-add-btn:hover { background: var(--orange-dim); }
+    .lists-add-btn:disabled { background: #3a3f4a; color: #8b909c; cursor: default; }
     .lists-items { display: flex; flex-direction: column; gap: 0.25rem; }
     .lists-item {
       display: flex; align-items: center; justify-content: space-between;
@@ -369,6 +370,68 @@
       font-size: 0.75rem; padding: 0 0.2rem; line-height: 1;
     }
     .lists-item-del:hover { color: var(--orange); }
+    /* A managed name and what rides with it: how many rows use it, and — for a
+       customer — the rate a new row bills at. Kept on one line at 340px, so the
+       name is what gives way when it is long. */
+    .li-name {
+      flex: 1; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    .li-count {
+      flex: none; color: var(--muted); font-size: 0.64rem;
+      font-variant-numeric: tabular-nums; margin-left: 0.35rem;
+    }
+    .li-rate {
+      flex: none; width: 62px; margin-left: 0.4rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 3px; color: var(--text); font-size: 0.72rem;
+      padding: 0.12rem 0.3rem; text-align: right; outline: none;
+      font-variant-numeric: tabular-nums;
+      -moz-appearance: textfield;
+    }
+    .li-rate::-webkit-outer-spin-button,
+    .li-rate::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .li-rate:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
+    .li-rate::placeholder { color: #5b6270; }
+    /* The merge form stands in for the row it belongs to, so it is boxed like
+       one and marked as the thing being acted on. */
+    .lists-merge {
+      background: var(--surface); border: 1px solid #2563eb;
+      border-radius: 4px; padding: 0.5rem 0.55rem 0.55rem;
+    }
+    .lists-merge-sel {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.78rem;
+      padding: 0.28rem 0.4rem; outline: none;
+    }
+    .lists-merge-sel:focus { border-color: #2563eb; }
+    .lists-hint {
+      font-size: 0.66rem; color: var(--muted); line-height: 1.45;
+      margin-bottom: 0.45rem;
+    }
+    .lists-link {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 0.66rem; padding: 0; text-decoration: underline;
+      text-underline-offset: 2px; font-family: inherit;
+    }
+    .lists-link:hover { color: var(--text); }
+    /* Undo sits where the eye already is — at the top of the panel, right
+       after the click that removed something. */
+    .lists-undo {
+      display: flex; align-items: baseline; gap: 0.5rem;
+      background: rgba(37,99,235,0.12); border: 1px solid rgba(37,99,235,0.4);
+      border-radius: 4px; padding: 0.35rem 0.55rem; margin-bottom: 0.8rem;
+      font-size: 0.72rem; color: var(--text);
+    }
+    /* Wraps rather than truncates: the half that gets cut — that the rows are
+       unchanged — is the half that answers "what did I just do?". */
+    .lists-undo .u-txt { flex: 1; min-width: 0; line-height: 1.45; }
+    .lists-undo button {
+      flex: none; background: none; border: none; color: #93b4fd;
+      font-size: 0.72rem; font-weight: 700; cursor: pointer; padding: 0;
+      font-family: inherit; text-decoration: underline; text-underline-offset: 2px;
+    }
+    .lists-undo button:hover { color: #fff; }
     .btn-manage-lists {
       font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em;
       text-transform: uppercase; color: var(--muted);
@@ -977,7 +1040,21 @@
     const API_BASE = '/api';
     let divEntries    = [];
     let divLists      = { employees: [], equipment: [] };
-    let divTruckLists = { drivers: [], customers: [], units: [], locations: [], materials: [] };
+    // `removed` is the roster of names the office deleted from a managed list.
+    // Drivers, customers and units are re-seeded from every stored entry on
+    // load (see _migrateExistingEntries), so without a record of the deletion
+    // a name that still appears on any historical row came straight back on
+    // the next load. Deleting a name never touches the rows that carry it —
+    // those keep their value and still read correctly — it only drops the name
+    // out of the pickers. Re-adding the same name un-suppresses it.
+    // `rates` is the haul fee a customer is billed at — { 'Kinkead': '121' } —
+    // and is what a new row's Haul Fee fills itself in from once the customer
+    // is named. Kept beside the customers list rather than on the row: the rate
+    // is a fact about the company, the row is what was actually billed, and a
+    // row already carrying a fee is never rewritten by a later rate change.
+    let divTruckLists = { drivers: [], customers: [], units: [], locations: [], materials: [],
+                          rates: {},
+                          removed: { drivers: [], customers: [], units: [], materials: [] } };
     let _saveTimer       = null;
     let _isSaved         = false;
     let icSentMap = new Map(); // source_id → full IC entry (trucking)
@@ -1449,6 +1526,155 @@
       }
     }
 
+    /* ── Deleted-name roster ──
+       A managed list is two things at once: what the office typed into it, and
+       whatever it swept up from the stored rows. The sweep is what makes a
+       deleted name reappear, and these keep the deletion on record so it
+       doesn't.
+
+       Names match on their trimmed text, case and all. This list carries
+       several spellings of the same company — "kovalchick", "Kovalchick",
+       "KOVALCHICK" — because each was typed onto a row and swept up as its own
+       entry, and deleting the duplicate has to leave the one being kept alone.
+       Trailing space is the exception: " Kinkead" and "Kinkead" are one entry
+       to anyone reading the panel, so they delete together. */
+    const _remKey = v => String(v == null ? '' : v).trim();
+
+    /* ── Customer rates ──
+       What a company is billed per hour. A rate is only ever read forward, onto
+       a row whose Haul Fee is still blank — correcting a rate must not silently
+       restate what was already invoiced.
+
+       Rates match on case as well as space, unlike the lists themselves. The
+       difference is what each thing is about: a list entry is a spelling, and
+       deleting the duplicate "kovalchick" has to leave "Kovalchick" alone,
+       while a rate is about the company — a haul typed in lower case bills the
+       same customer at the same price. */
+    const _rateKey = v => String(v == null ? '' : v).trim().toLowerCase();
+
+    function _normRates(r) {
+      const out = {};
+      if (r && typeof r === 'object') {
+        Object.keys(r).forEach(k => {
+          const name = String(k).trim();
+          const v    = String(r[k] == null ? '' : r[k]).trim();
+          if (name && v && !isNaN(parseFloat(v))) out[name] = v;
+        });
+      }
+      return out;
+    }
+
+    /** The stored rate for a customer, or '' — matched the way the list is. */
+    function customerRate(name) {
+      const k = _rateKey(name);
+      if (!k) return '';
+      const rates = divTruckLists.rates || {};
+      const hit = Object.keys(rates).find(n => _rateKey(n) === k);
+      return hit ? String(rates[hit]) : '';
+    }
+
+    /** Set or clear a customer's rate. Returns true if anything changed. */
+    function setCustomerRate(name, value) {
+      const k = _rateKey(name);
+      if (!k) return false;
+      if (!divTruckLists.rates || typeof divTruckLists.rates !== 'object') divTruckLists.rates = {};
+      const rates = divTruckLists.rates;
+      // Rewrite under whatever spelling is already stored, so a rate does not
+      // fork into two entries for the same company.
+      const key = Object.keys(rates).find(n => _rateKey(n) === k) || String(name).trim();
+      const v   = String(value == null ? '' : value).trim();
+      const cur = rates[key] == null ? '' : String(rates[key]);
+      const next = (v && !isNaN(parseFloat(v))) ? v : '';
+      if (cur === next) return false;
+      if (next) rates[key] = next; else delete rates[key];
+      return true;
+    }
+
+    /** The fee this customer's stored rows are actually billed at most often.
+     *  What the office would otherwise read off the rows by eye to fill a rate
+     *  in — 1,944 of them — so the panel offers it instead. */
+    function _historicRate(name) {
+      const k = _rateKey(name);
+      if (!k) return '';
+      const seen = new Map();
+      divEntries.forEach(e => {
+        if (_rateKey(e.customer) !== k) return;
+        const f = parseFloat(e.haul_fee);
+        if (!f) return;
+        const key = String(f);
+        seen.set(key, (seen.get(key) || 0) + 1);
+      });
+      let best = '', bestN = 0;
+      seen.forEach((n, v) => {
+        // Ties go to the higher fee — the rate more likely to be current.
+        if (n > bestN || (n === bestN && parseFloat(v) > parseFloat(best || '0'))) { best = v; bestN = n; }
+      });
+      return best;
+    }
+
+    /* A removed unit's number, kept with the removal. Everything else on these
+       lists is just a name; a unit is a name AND the number the office reads
+       beside it on every row, and dropping that on the way out means Put back
+       hands back half a unit. */
+    function _keepRemovedUnitNumber(name) {
+      const u = (divTruckLists.units || []).find(x => x && x.name === name);
+      if (!divTruckLists.removed || typeof divTruckLists.removed !== 'object') divTruckLists.removed = {};
+      const map = divTruckLists.removed.unitNumbers = divTruckLists.removed.unitNumbers || {};
+      map[String(name).trim()] = (u && u.number) || '';
+    }
+    function _removedUnitNumber(name) {
+      const map = (divTruckLists.removed || {}).unitNumbers || {};
+      const hit = Object.keys(map).find(n => _remKey(n) === _remKey(name));
+      return hit ? String(map[hit] == null ? '' : map[hit]) : '';
+    }
+    function _forgetRemovedUnitNumber(name) {
+      const map = (divTruckLists.removed || {}).unitNumbers;
+      if (!map) return;
+      Object.keys(map).forEach(n => { if (_remKey(n) === _remKey(name)) delete map[n]; });
+    }
+
+    /** Shape whatever the server hands back into the four string arrays, plus
+     *  the numbers of any units among them. */
+    function _normRemoved(r) {
+      const out = { drivers: [], customers: [], units: [], materials: [], unitNumbers: {} };
+      if (r && typeof r === 'object') {
+        ['drivers', 'customers', 'units', 'materials'].forEach(k => {
+          if (Array.isArray(r[k])) out[k] = r[k].map(v => String(v == null ? '' : v).trim()).filter(Boolean);
+        });
+        if (r.unitNumbers && typeof r.unitNumbers === 'object') {
+          Object.keys(r.unitNumbers).forEach(n => {
+            const name = String(n).trim();
+            if (name) out.unitNumbers[name] = String(r.unitNumbers[n] == null ? '' : r.unitNumbers[n]).trim();
+          });
+        }
+      }
+      return out;
+    }
+
+    function _removedSet(key) {
+      const r = divTruckLists.removed || {};
+      return new Set((Array.isArray(r[key]) ? r[key] : []).map(_remKey));
+    }
+
+    function _isRemovedName(key, val) {
+      const k = _remKey(val);
+      return !!k && _removedSet(key).has(k);
+    }
+
+    /** Record (on = true) or clear a deletion. Returns true if anything changed. */
+    function _setRemovedName(key, val, on) {
+      const k = _remKey(val);
+      if (!k) return false;
+      if (!divTruckLists.removed || typeof divTruckLists.removed !== 'object') divTruckLists.removed = {};
+      const cur = Array.isArray(divTruckLists.removed[key]) ? divTruckLists.removed[key] : [];
+      const has = cur.some(v => _remKey(v) === k);
+      if (on === has) return false;
+      divTruckLists.removed[key] = on
+        ? cur.concat(String(val).trim())
+        : cur.filter(v => _remKey(v) !== k);
+      return true;
+    }
+
     /* Fix entries that were saved before the CSV normalisation was in place.
        Safe to call on every load — no-op when data is already clean. */
     function _migrateExistingEntries() {
@@ -1456,8 +1682,10 @@
       let dataChanged  = false;
       let listsChanged = false;
 
-      const addStr = (arr, val) => {
+      const addStr = (key, arr, val) => {
         if (!val || arr.includes(val)) return arr;
+        // Deleted on purpose — the row keeps the name, the picker doesn't.
+        if (_isRemovedName(key, val)) return arr;
         listsChanged = true;
         return arr.concat(val);
       };
@@ -1480,19 +1708,33 @@
         if (th !== (e.total_hours || '')) { e.total_hours = th; dataChanged = true; }
 
         // Auto-populate managed lists from stored entries
-        divTruckLists.drivers   = addStr(divTruckLists.drivers,   e.driver);
-        divTruckLists.customers = addStr(divTruckLists.customers, e.customer);
-        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)) {
+        divTruckLists.drivers   = addStr('drivers',   divTruckLists.drivers,   e.driver);
+        divTruckLists.customers = addStr('customers', divTruckLists.customers, e.customer);
+        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)
+            && !_isRemovedName('units', e.unit)) {
           divTruckLists.units.push({ name: e.unit, number: '' });
           listsChanged = true;
         }
       });
 
+      // Converge on the deletions: a save from another tab (or one that raced a
+      // re-seed) can hand back a name this company already deleted, so drop it
+      // here rather than waiting for someone to delete it a second time.
+      ['drivers', 'customers', 'materials'].forEach(key => {
+        const arr = divTruckLists[key];
+        if (!Array.isArray(arr) || arr.length === 0) return;
+        const kept = arr.filter(v => !_isRemovedName(key, v));
+        if (kept.length !== arr.length) { divTruckLists[key] = kept; listsChanged = true; }
+      });
+      if (Array.isArray(divTruckLists.units) && divTruckLists.units.length) {
+        const keptU = divTruckLists.units.filter(u => !_isRemovedName('units', u && u.name));
+        if (keptU.length !== divTruckLists.units.length) { divTruckLists.units = keptU; listsChanged = true; }
+      }
+
       if (listsChanged) {
         divTruckLists.drivers.sort((a, b) => a.localeCompare(b));
         divTruckLists.customers.sort((a, b) => a.localeCompare(b));
         divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
-        listsChanged = true;
       }
       // Only save if the entry count didn't drop — guards against saving a
       // partially-loaded set that was pulled from a stale server blob.
@@ -1516,6 +1758,8 @@
         if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
         if (Array.isArray(tl.locations)) divTruckLists.locations = tl.locations;
         if (Array.isArray(tl.materials)) divTruckLists.materials = tl.materials;
+        if (tl.removed && typeof tl.removed === 'object') divTruckLists.removed = _normRemoved(tl.removed);
+        if (tl.rates   && typeof tl.rates   === 'object') divTruckLists.rates   = _normRates(tl.rates);
       }
       if (lists) {
         if (Array.isArray(lists.employees)) {
@@ -1697,7 +1941,18 @@
     }
 
     /* ── Manage Lists panel ── */
+    // The last removal, so it can be taken back from the panel itself, and
+    // which "N removed" strips are folded open. Both are view state: neither
+    // is saved, and opening the panel fresh starts with a clean slate.
+    let _listsUndo = null;
+    let _listsShowRemoved = new Set();
+    // The item whose merge form is open, as { key, from }. One at a time: the
+    // form replaces the row it belongs to, so it reads as that name's own.
+    let _listsMerge = null;
+
     function openManageLists() {
+      _listsUndo = null;
+      _listsMerge = null;
       document.getElementById('lists-backdrop').classList.add('open');
       renderListsPanel();
       // Fetched on first open rather than at page load: most visits to this
@@ -1715,6 +1970,138 @@
       const esc = s => String(s == null ? '' : s)
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
+      // A name reaches an onclick as a JS string literal inside an HTML
+      // attribute, so it needs both escapes — esc() alone leaves an apostrophe
+      // to break the call, and "Kinkead's" then refuses to delete.
+      const argEsc = v => esc(v).replace(/'/g, "\\'");
+
+      /* How many stored rows name each thing. A list this long is mostly
+         near-duplicates of the same company typed three ways, and the count is
+         what tells the office which spelling is the real one — and that
+         removing the other costs nothing. */
+      const uses = { drivers: new Map(), customers: new Map(), units: new Map() };
+      divEntries.forEach(e => {
+        const bump = (m, v) => { const k = _remKey(v); if (k) m.set(k, (m.get(k) || 0) + 1); };
+        bump(uses.drivers,   e.driver);
+        bump(uses.customers, e.customer);
+        bump(uses.units,     e.unit);
+      });
+      const useCount = (key, v) => (uses[key] ? uses[key].get(_remKey(v)) || 0 : 0);
+      const countChip = (key, v) => {
+        const n = useCount(key, v);
+        return n
+          ? `<span class="li-count" title="${n} stored row${n === 1 ? '' : 's'} name${n === 1 ? 's' : ''} this">${n}</span>`
+          : `<span class="li-count" title="No stored row names this — nothing depends on it" style="opacity:0.55">—</span>`;
+      };
+
+      /* The last removal, offered straight back. Deleting a name is safe and
+         reversible, and saying so where the click happened beats a dialog in
+         front of every one of them. */
+      const undoHTML = () => {
+        const u = _listsUndo;
+        if (!u) return '';
+        const txt = u.kind === 'merge'
+          ? `Merged <strong>${esc(u.from)}</strong> into <strong>${esc(u.to)}</strong> — ${
+              u.ids.length ? `${u.ids.length} row${u.ids.length === 1 ? '' : 's'} renamed` : 'no rows to rename'
+            }${u.locked ? `, ${u.locked} payroll row${u.locked === 1 ? '' : 's'} left alone (fix ${u.locked === 1 ? 'it' : 'those'} in Payroll)` : ''}.`
+          : `Removed <strong>${esc(u.value)}</strong>${
+              u.uses
+                ? ` — ${u.uses} row${u.uses === 1 ? '' : 's'} keep it and still total the same.`
+                : ' — no rows used it.'
+            }`;
+        return `
+          <div class="lists-undo">
+            <span class="u-txt">${txt}</span>
+            <button onclick="undoListChange()">Undo</button>
+          </div>`;
+      };
+
+      /* Names deleted from this list, offered back. Deletion is remembered
+         (see removeFromList) precisely so the loader can't re-seed them from
+         the stored rows — which also means this is the only way back. Folded
+         away by default: it is a recycle bin, not part of the list. */
+      const removedHTML = (key, label) => {
+        const bucket = (divTruckLists.removed || {})[key];
+        const gone = (Array.isArray(bucket) ? bucket : []).filter(Boolean);
+        if (gone.length === 0) return '';
+        const open = _listsShowRemoved.has(key);
+        return `
+          <div style="margin-top:0.5rem;padding-top:0.45rem;border-top:1px solid rgba(255,255,255,0.07)">
+            <button class="lists-link" onclick="toggleRemoved('${key}')">
+              ${open ? '&#9662;' : '&#9656;'} ${gone.length} removed ${label.toLowerCase()}
+            </button>
+            ${!open ? '' : `
+              <div class="lists-hint" style="margin:0.4rem 0 0.35rem">
+                Kept off the picker even though old rows still name ${gone.length === 1 ? 'it' : 'them'}.
+              </div>
+              <div class="lists-items">
+                ${gone.map(v => `
+                  <div class="lists-item" style="opacity:0.65">
+                    <span class="li-name">${esc(v)}</span>
+                    ${countChip(key, v)}
+                    <button class="lists-link" style="margin-left:0.5rem;flex:none"
+                      onclick="restoreToList('${key}','${argEsc(v)}')">Put back</button>
+                  </div>`).join('')}
+              </div>`}
+          </div>`;
+      };
+
+      const delBtn = (key, v) =>
+        `<button class="lists-item-del" style="margin-left:0.4rem"
+           onclick="removeFromList('${key}','${argEsc(v)}')"
+           title="Remove from the picker. Rows that already name it keep it and still total the same.">&#10005;</button>`;
+
+      /* Merging is the answer to two spellings of one company, so the button
+         only appears where there is something to merge into. */
+      const mergeBtn = (key, v) => {
+        const others = key === 'units'
+          ? (divTruckLists.units || []).map(u => u && u.name).filter(Boolean)
+          : (divTruckLists[key] || []);
+        if (others.filter(o => _remKey(o) !== _remKey(v)).length === 0) return '';
+        return `<button class="lists-item-del" style="margin-left:0.3rem"
+          onclick="openMerge('${key}','${argEsc(v)}')"
+          title="Merge into another name — renames it on the rows that carry it, then removes it from the picker.">&#8676;</button>`;
+      };
+
+      /* The form for one name, in the place that name sits. Says what it will
+         do — how many rows, and how many it cannot — before it is run.
+
+         Nothing is preselected unless it is obviously right. The list is
+         alphabetical, so a plain <select> would sit on whatever sorts first
+         and one stray click would fold a company into an unrelated one. */
+      const mergeForm = (key, v) => {
+        const others = (key === 'units'
+          ? (divTruckLists.units || []).map(u => u && u.name).filter(Boolean)
+          : (divTruckLists[key] || []))
+          .filter(o => _remKey(o) !== _remKey(v))
+          .sort((a, b) => String(a).localeCompare(String(b)));
+        const pick = _mergeSuggestion(key, v, others);
+        const { ids, locked } = _mergeTargets(key, v);
+        return `
+          <div class="lists-merge">
+            <div class="lists-hint" style="margin-bottom:0.35rem;color:var(--text)">
+              Merge <strong>${esc(v)}</strong> into:
+            </div>
+            <select id="lists-merge-into" class="lists-merge-sel"
+              onchange="var b=document.getElementById('lists-merge-go'); if(b) b.disabled = !this.value">
+              ${pick ? '' : '<option value="">— choose a name —</option>'}
+              ${others.map(o => `<option value="${esc(o)}"${o === pick ? ' selected' : ''}>${esc(o)}${
+                o === pick ? ' — same name, different spelling' : ''}</option>`).join('')}
+            </select>
+            <div class="lists-hint" style="margin:0.35rem 0 0.4rem">
+              ${ids.length
+                ? `Renames it on ${ids.length} row${ids.length === 1 ? '' : 's'}, then drops it from the picker.`
+                : `No rows carry it — this just drops it from the picker.`}
+              ${locked ? `<br><span style="color:var(--amber)">${locked} payroll row${locked === 1 ? '' : 's'} keep${locked === 1 ? 's' : ''} the old name — change ${locked === 1 ? 'it' : 'those'} in Payroll.</span>` : ''}
+            </div>
+            <div style="display:flex;gap:0.4rem;align-items:center">
+              <button class="lists-add-btn" id="lists-merge-go" onclick="confirmMerge()"${pick ? '' : ' disabled'}>Merge</button>
+              <button class="lists-link" onclick="cancelMerge()">Cancel</button>
+            </div>
+          </div>`;
+      };
+      const merging = (key, v) => !!(_listsMerge && _listsMerge.key === key && _remKey(_listsMerge.from) === _remKey(v));
+
       const section = (key, label, items) => `
         <div class="lists-section">
           <div class="lists-section-title">${label}</div>
@@ -1726,14 +2113,69 @@
           <div class="lists-items">
             ${items.length === 0
               ? `<span style="font-size:0.72rem;color:var(--muted)">No ${label.toLowerCase()} yet.</span>`
-              : items.map(v => `
+              : items.map(v => merging(key, v) ? mergeForm(key, v) : `
                   <div class="lists-item">
-                    <span>${esc(v)}</span>
-                    <button class="lists-item-del" onclick="removeFromList('${key}','${esc(v)}')" title="Remove">&#10005;</button>
+                    <span class="li-name">${esc(v)}</span>
+                    ${uses[key] ? countChip(key, v) : ''}
+                    ${uses[key] ? mergeBtn(key, v) : ''}
+                    ${delBtn(key, v)}
                   </div>`).join('')
             }
           </div>
+          ${removedHTML(key, label)}
         </div>`;
+
+      /* Customers carry a rate, so they get their own section rather than the
+         generic one: the number beside the name is what a new row bills at. */
+      const customersHTML = (() => {
+        const items   = divTruckLists.customers || [];
+        const fillable = items.filter(c => !customerRate(c) && _historicRate(c));
+        return `
+        <div class="lists-section">
+          <div class="lists-section-title">Customers &amp; Rates</div>
+          <div class="lists-hint">
+            The rate fills in a row's Haul Fee once you name the customer. A row that
+            already has a fee is left alone. Two spellings of one company?
+            <strong>&#8676;</strong> folds one into the other and renames its rows.
+          </div>
+          <div class="lists-add-row">
+            <input type="text" id="lists-new-customers" placeholder="Add customer…"
+              onkeydown="if(event.key==='Enter')addToList('customers')">
+            <input type="number" id="lists-new-customers-rate" class="li-rate" style="margin-left:0" step="0.01" min="0"
+              placeholder="rate" title="Rate — optional" onkeydown="if(event.key==='Enter')addToList('customers')">
+            <button class="lists-add-btn" onclick="addToList('customers')">Add</button>
+          </div>
+          ${fillable.length ? `
+            <div class="lists-hint" style="margin-bottom:0.5rem">
+              <button class="lists-link" onclick="fillRatesFromHistory()"
+                title="Sets each blank rate to the fee that customer's own rows are billed at most often">
+                Fill ${fillable.length} blank rate${fillable.length === 1 ? '' : 's'} from past rows
+              </button>
+            </div>` : ''}
+          <div class="lists-items">
+            ${items.length === 0
+              ? `<span style="font-size:0.72rem;color:var(--muted)">No customers yet.</span>`
+              : items.map(c => {
+                  if (merging('customers', c)) return mergeForm('customers', c);
+                  const rate = customerRate(c);
+                  const past = rate ? '' : _historicRate(c);
+                  return `
+                  <div class="lists-item">
+                    <span class="li-name" title="${esc(c)}">${esc(c)}</span>
+                    ${countChip('customers', c)}
+                    <input type="number" class="li-rate" step="0.01" min="0"
+                      value="${esc(rate)}" placeholder="${past ? esc(past) : 'rate'}"
+                      title="${past ? 'Usually billed at ' + esc(past) + ' on past rows' : 'Rate this customer is billed at'}"
+                      onchange="updateCustomerRate('${argEsc(c)}', this.value)">
+                    ${mergeBtn('customers', c)}
+                    ${delBtn('customers', c)}
+                  </div>`;
+                }).join('')
+            }
+          </div>
+          ${removedHTML('customers', 'customers')}
+        </div>`;
+      })();
 
       const locationsHTML = `
         <div class="lists-section">
@@ -1779,19 +2221,24 @@
           <div class="lists-items">
             ${divTruckLists.units.length === 0
               ? `<span style="font-size:0.72rem;color:var(--muted)">No units yet.</span>`
-              : divTruckLists.units.map(u => `
+              : divTruckLists.units.map(u => merging('units', u.name) ? mergeForm('units', u.name) : `
                   <div class="lists-item">
-                    <span>${esc(u.name)}<span style="color:var(--muted);font-size:0.7rem;margin-left:0.4rem">#${esc(u.number)}</span></span>
-                    <button class="lists-item-del" onclick="removeUnit('${esc(u.name)}')" title="Remove">&#10005;</button>
+                    <span class="li-name">${esc(u.name)}<span style="color:var(--muted);font-size:0.7rem;margin-left:0.4rem">#${esc(u.number)}</span></span>
+                    ${countChip('units', u.name)}
+                    ${mergeBtn('units', u.name)}
+                    <button class="lists-item-del" style="margin-left:0.4rem" onclick="removeUnit('${argEsc(u.name)}')"
+                      title="Remove from the picker. Rows that already name it keep it and still total the same.">&#10005;</button>
                   </div>`).join('')
             }
           </div>
+          ${removedHTML('units', 'Units')}
         </div>`;
 
       document.getElementById('lists-panel-body').innerHTML =
+        undoHTML() +
         section('drivers',   'Drivers',   divTruckLists.drivers) +
         driverLoginsHTML(esc) +
-        section('customers', 'Customers', divTruckLists.customers) +
+        customersHTML +
         section('materials', 'Materials', divTruckLists.materials) +
         locationsHTML +
         unitsHTML;
@@ -1801,7 +2248,20 @@
       const inp = document.getElementById('lists-new-' + key);
       if (!inp) return;
       const val = inp.value.trim();
-      if (!val || divTruckLists[key].includes(val)) { inp.value = ''; return; }
+      // A customer can be added with its rate in one go — the two boxes sit
+      // side by side, and typing the name only to go find it again in the list
+      // below is the long way round.
+      const rateInp = key === 'customers' ? document.getElementById('lists-new-customers-rate') : null;
+      if (val && rateInp && rateInp.value.trim()) setCustomerRate(val, rateInp.value);
+      if (rateInp) rateInp.value = '';
+      if (!val || divTruckLists[key].includes(val)) {
+        inp.value = '';
+        if (key === 'customers') { saveTruckLists(); renderListsPanel(); }
+        return;
+      }
+      // Typing a name back in is how a deleted one comes back.
+      _setRemovedName(key, val, false);
+      _listsUndo = null;
       divTruckLists[key].push(val);
       divTruckLists[key].sort((a, b) => a.localeCompare(b));
       saveTruckLists();
@@ -1812,7 +2272,231 @@
     }
 
     function removeFromList(key, val) {
+      // Recorded, not just filtered: the loader re-seeds drivers and customers
+      // from every stored row, so a name still on a historical row would
+      // otherwise be back the next time the page opened.
+      _setRemovedName(key, val, true);
       divTruckLists[key] = divTruckLists[key].filter(v => v !== val);
+      _listsUndo = { kind: 'remove', key, value: val, uses: _countRowsNaming(key, val) };
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /** How many stored rows name this thing. What the panel puts beside a name
+     *  so a deletion is a decision rather than a guess. */
+    function _countRowsNaming(key, val) {
+      const k = _remKey(val);
+      if (!k) return 0;
+      const field = key === 'customers' ? 'customer' : key === 'drivers' ? 'driver' : key === 'units' ? 'unit' : null;
+      if (!field) return 0;
+      return divEntries.filter(e => _remKey(e[field]) === k).length;
+    }
+
+    /** Take back the last change to a list, from the bar it put up. */
+    function undoListChange() {
+      const u = _listsUndo;
+      if (!u) return;
+      _listsUndo = null;
+      if (u.kind === 'merge') _undoMerge(u);
+      else restoreToList(u.key, u.value);
+    }
+
+    /** Open the merge form on one name, or shut it. */
+    function openMerge(key, val) {
+      _listsMerge = { key, from: String(val == null ? '' : val).trim() };
+      renderListsPanel();
+    }
+    function cancelMerge() {
+      _listsMerge = null;
+      renderListsPanel();
+    }
+    /** Run the merge the open form describes. */
+    function confirmMerge() {
+      if (!_listsMerge) return;
+      const sel = document.getElementById('lists-merge-into');
+      const to  = sel ? (sel.value || '').trim() : '';
+      if (!to) return;
+      mergeIntoName(_listsMerge.key, _listsMerge.from, to);
+    }
+
+    /** Fold a section's removed-names strip open or shut. */
+    function toggleRemoved(key) {
+      if (_listsShowRemoved.has(key)) _listsShowRemoved.delete(key);
+      else _listsShowRemoved.add(key);
+      renderListsPanel();
+    }
+
+    /** Rate box beside a customer. Blank clears it. */
+    function updateCustomerRate(name, value) {
+      if (!setCustomerRate(name, value)) return;
+      saveTruckLists();
+      renderListsPanel();
+    }
+
+    /** Fill every blank rate from what that customer's own rows are billed at
+     *  most often. The alternative is reading it off 1,944 rows by eye. */
+    function fillRatesFromHistory() {
+      let filled = 0;
+      (divTruckLists.customers || []).forEach(c => {
+        if (customerRate(c)) return;              // never overwrite a rate someone set
+        const past = _historicRate(c);
+        if (past && setCustomerRate(c, past)) filled++;
+      });
+      if (!filled) return;
+      saveTruckLists();
+      renderListsPanel();
+    }
+
+    /* ── Merging two spellings of the same thing ──
+       Deleting a duplicate tidies the picker and leaves the rows alone, which
+       is right for a name nobody should pick again. It is not enough for
+       "kovalchick" and "Kovalchick": the rows still say two different things,
+       so Analytics bills one company as two and the Scheduler boards it twice.
+       Merging is the other half — it renames the spelling on the rows that
+       carry it, then removes it from the picker.
+
+       What it will not touch is a payroll-injected row: its driver, unit and
+       customer come off an approved timesheet, and the server refuses this
+       tab's writes to them (api/lib/injected-blob-guard.js). Those are counted
+       and named rather than silently skipped — the fix for one is in Payroll. */
+    const MERGE_FIELD = { customers: 'customer', drivers: 'driver', units: 'unit' };
+
+    /** Rows naming `val` that this tab may rewrite, and the count of those it
+     *  may not. Exact spelling: merging is what joins two spellings, so it must
+     *  not quietly take a third along with them. */
+    function _mergeTargets(key, val) {
+      const field = MERGE_FIELD[key];
+      const k = _remKey(val);
+      const out = { ids: [], locked: 0 };
+      if (!field || !k) return out;
+      divEntries.forEach(e => {
+        if (_remKey(e[field]) !== k) return;
+        if (isPayrollRowId(e.id)) out.locked++;
+        else out.ids.push(e.id);
+      });
+      return out;
+    }
+
+    /** The name this one is obviously a spelling of, if there is exactly one:
+     *  same letters and digits, ignoring case, spaces and punctuation — which
+     *  is what separates "kovalchick" from "Kovalchick" and "Kinkead HC" from
+     *  "Kinkead". Ties go to the spelling more rows use, and anything less
+     *  clear-cut is left for the office to choose. */
+    function _mergeSuggestion(key, from, others) {
+      const norm = v => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const k = norm(from);
+      if (!k) return '';
+      const same = (others || []).filter(o => norm(o) === k);
+      if (same.length === 0) return '';
+      return same.reduce((best, o) =>
+        _countRowsNaming(key, o) > _countRowsNaming(key, best) ? o : best, same[0]);
+    }
+
+    /** Fold `from` into `to`: rename the rows, then drop `from` from the list. */
+    async function mergeIntoName(key, from, to) {
+      const field = MERGE_FIELD[key];
+      const src = String(from == null ? '' : from).trim();
+      const dst = String(to == null ? '' : to).trim();
+      if (!field || !src || !dst || _remKey(src) === _remKey(dst)) return;
+
+      const { ids, locked } = _mergeTargets(key, src);
+      const idSet = new Set(ids);
+      divEntries.forEach(e => { if (idSet.has(e.id)) e[field] = dst; });
+
+      // The picker loses the spelling, and the sweep is told so — a payroll row
+      // still naming it would otherwise put it straight back.
+      _setRemovedName(key, src, true);
+      if (key === 'units') {
+        _keepRemovedUnitNumber(src);
+        divTruckLists.units = (divTruckLists.units || []).filter(u => u && u.name !== src);
+      } else {
+        divTruckLists[key] = (divTruckLists[key] || []).filter(v => v !== src);
+      }
+
+      // A rate follows its company, but never over one already set: the
+      // surviving name's rate is the one the office chose to keep.
+      let rateMoved = false;
+      if (key === 'customers') {
+        const srcRate = customerRate(src);
+        if (srcRate && !customerRate(dst)) rateMoved = setCustomerRate(dst, srcRate);
+      }
+
+      // A sign-in points at a driver by name, so a merged name leaves the phone
+      // matching nothing and the driver seeing an empty board.
+      const logins = [];
+      if (key === 'drivers') {
+        Object.keys(driverLoginMap || {}).forEach(u => {
+          if (_remKey(driverLoginMap[u]) === _remKey(src)) { driverLoginMap[u] = dst; logins.push(u); }
+        });
+        if (logins.length) saveDriverLogins();
+      }
+
+      // The board names the same people and companies. Loaded first on purpose:
+      // renaming an empty board and marking it dirty is how a merge could cost
+      // someone their week's assignments.
+      const sched = [];
+      if (MERGE_FIELD[key] && (field === 'driver' || field === 'customer' || field === 'unit')) {
+        try { await schedEnsureLoaded(); } catch { /* board stays as it is */ }
+        if (_schedLoaded) {
+          Object.keys(schedAssignments || {}).forEach(d => {
+            (schedAssignments[d] || []).forEach(a => {
+              if (a && _remKey(a[field]) === _remKey(src)) { a[field] = dst; sched.push({ d, id: a.id }); }
+            });
+          });
+          if (sched.length) schedMarkDirty();
+        }
+      }
+
+      _listsUndo = { kind: 'merge', key, field, from: src, to: dst,
+                     ids, locked, rateMoved, logins, sched };
+      _listsMerge = null;
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /** Unpick a merge: every row, link and assignment it renamed carried the
+     *  same old name, so putting them back is setting that name again. */
+    function _undoMerge(u) {
+      const idSet = new Set(u.ids);
+      divEntries.forEach(e => { if (idSet.has(e.id)) e[u.field] = u.from; });
+      (u.logins || []).forEach(usr => { if (driverLoginMap) driverLoginMap[usr] = u.from; });
+      if ((u.logins || []).length) saveDriverLogins();
+      if ((u.sched || []).length && _schedLoaded) {
+        const back = new Set(u.sched.map(x => x.id));
+        Object.keys(schedAssignments || {}).forEach(d =>
+          (schedAssignments[d] || []).forEach(a => { if (a && back.has(a.id)) a[u.field] = u.from; }));
+        schedMarkDirty();
+      }
+      if (u.rateMoved) setCustomerRate(u.to, '');
+      // Last, because it is what saves the whole undo and redraws behind it.
+      restoreToList(u.key, u.from);
+    }
+
+    /** Put a deleted name back. Clears the record of the deletion and re-adds
+     *  the name, so the next load's re-seed leaves it alone either way. */
+    function restoreToList(key, val) {
+      const v = String(val == null ? '' : val).trim();
+      if (!v) return;
+      _setRemovedName(key, v, false);
+      if (_listsUndo && _listsUndo.key === key && _remKey(_listsUndo.value || _listsUndo.from) === _remKey(v)) _listsUndo = null;
+      if (key === 'units') {
+        // The number came off the list with the name. Putting a unit back
+        // without it leaves every row that names it showing a blank, so the
+        // number is kept with the removal and handed back here.
+        if (!divTruckLists.units.some(u => u && u.name === v)) {
+          divTruckLists.units.push({ name: v, number: _removedUnitNumber(v) });
+        }
+        _forgetRemovedUnitNumber(v);
+        divTruckLists.units.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      } else {
+        if (!Array.isArray(divTruckLists[key])) divTruckLists[key] = [];
+        if (!divTruckLists[key].includes(v)) divTruckLists[key].push(v);
+        divTruckLists[key].sort((a, b) => String(a).localeCompare(String(b)));
+      }
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
@@ -1861,6 +2545,7 @@
       const number = numInp.value.trim();
       if (!name) return;
       if (divTruckLists.units.some(u => u.name === name)) { nameInp.value = ''; numInp.value = ''; return; }
+      _setRemovedName('units', name, false);
       divTruckLists.units.push({ name, number });
       divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
       saveTruckLists();
@@ -1872,7 +2557,10 @@
     }
 
     function removeUnit(name) {
+      _setRemovedName('units', name, true);
+      _keepRemovedUnitNumber(name);
       divTruckLists.units = divTruckLists.units.filter(u => u.name !== name);
+      _listsUndo = { kind: 'remove', key: 'units', value: name, uses: _countRowsNaming('units', name) };
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
@@ -2150,6 +2838,21 @@
       });
     });
 
+    /** Re-total a row and keep its Intercompany Billing mirror in step. */
+    function _syncRowTotal(e) {
+      const tot = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
+      const el  = document.getElementById('td-tot-' + e.id);
+      if (el) el.textContent = '$' + tot.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const icIdx = icBillingArr.findIndex(x => x.source === 'trucking' && x.source_id === e.id);
+      if (icIdx >= 0) {
+        icBillingArr[icIdx].total_hours = e.total_hours;
+        icBillingArr[icIdx].haul_fee    = e.haul_fee;
+        icBillingArr[icIdx].total       = tot;
+        icSentMap.set(e.id, icBillingArr[icIdx]);
+        _icBillingDirty = true;
+      }
+    }
+
     function updateField(id, field, value) {
       const e = divEntries.find(e => e.id === id);
       if (!e) return;
@@ -2164,17 +2867,19 @@
         }
       }
 
-      if (['total_hours', 'haul_fee', 'actual_start', 'actual_end'].includes(field)) {
-        const tot = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
-        const el  = document.getElementById('td-tot-' + id);
-        if (el) el.textContent = '$' + tot.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const icIdx = icBillingArr.findIndex(x => x.source === 'trucking' && x.source_id === id);
-        if (icIdx >= 0) {
-          icBillingArr[icIdx].total_hours = e.total_hours;
-          icBillingArr[icIdx].haul_fee    = e.haul_fee;
-          icBillingArr[icIdx].total       = tot;
-          icSentMap.set(id, icBillingArr[icIdx]);
-          _icBillingDirty = true;
+      if (['total_hours', 'haul_fee', 'actual_start', 'actual_end'].includes(field)) _syncRowTotal(e);
+
+      if (field === 'customer') {
+        // The rate is a fact about the company, so a row that names one bills
+        // at it without anyone typing the number again. Only ever onto a blank
+        // fee: a row already carrying one was priced deliberately, and quietly
+        // restating an invoiced haul is the one thing this must not do.
+        const rate = customerRate(value);
+        if (rate && !(parseFloat(e.haul_fee) || 0)) {
+          e.haul_fee = rate;
+          const feeEl = document.getElementById('th-fee-' + id);
+          if (feeEl) feeEl.value = rate;
+          _syncRowTotal(e);
         }
       }
       if (field === 'unit') {
@@ -2236,8 +2941,8 @@
           `<option value="${esc(u.name)}"${u.name === cur ? ' selected' : ''}>${esc(u.name)}</option>`
         ).join('');
 
-      const inp = (id, field, type, placeholder, val) =>
-        `<input type="${type}" value="${esc(val || '')}"
+      const inp = (id, field, type, placeholder, val, elId) =>
+        `<input type="${type}"${elId ? ` id="${elId}"` : ''} value="${esc(val || '')}"
           placeholder="${placeholder}"
           onchange="updateField('${id}','${field}',this.value)"
           style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0">`;
@@ -2365,7 +3070,7 @@
                   <td style="min-width:90px"><input type="time" value="${esc(e.actual_start||'')}" oninput="_liveHours('${e.id}','actual_start',this.value)" onchange="updateField('${e.id}','actual_start',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
                   <td style="min-width:90px"><input type="time" value="${esc(e.actual_end||'')}" oninput="_liveHours('${e.id}','actual_end',this.value)" onchange="updateField('${e.id}','actual_end',this.value)" style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0"></td>
                   <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)"><input type="number" id="th-hrs-${e.id}" value="${esc(e.total_hours || '')}" placeholder="0" onchange="updateField('${e.id}','total_hours',this.value)" style="width:100%;background:transparent;border:none;color:#fbbf24;font-size:0.8rem;outline:none;padding:0.15rem 0;text-align:right;font-weight:600"></td>
-                  <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00',e.haul_fee)}</td>
+                  <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00',e.haul_fee,'th-fee-' + e.id)}</td>
                   <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
                   <td style="min-width:130px">${cbHtml(e.id, 'customer', e.customer || '')}</td>
                   <td style="min-width:160px">${inp(e.id,'description','text','Description',e.description)}</td>
@@ -5307,11 +6012,13 @@
 
       // Prepend so newly imported rows appear at the top
       divEntries.unshift(...newEntries);
-      const add = (arr, val) => val && !arr.includes(val) ? [...arr, val] : arr;
+      const add = (key, arr, val) =>
+        val && !arr.includes(val) && !_isRemovedName(key, val) ? [...arr, val] : arr;
       newEntries.forEach(e => {
-        divTruckLists.drivers   = add(divTruckLists.drivers,   e.driver);
-        divTruckLists.customers = add(divTruckLists.customers, e.customer);
-        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit))
+        divTruckLists.drivers   = add('drivers',   divTruckLists.drivers,   e.driver);
+        divTruckLists.customers = add('customers', divTruckLists.customers, e.customer);
+        if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)
+            && !_isRemovedName('units', e.unit))
           divTruckLists.units.push({ name: e.unit, number: '' });
       });
       divTruckLists.drivers.sort((a,b) => a.localeCompare(b));
@@ -5400,6 +6107,8 @@
           if (Array.isArray(tl.units))     divTruckLists.units     = tl.units;
           if (Array.isArray(tl.locations)) divTruckLists.locations = tl.locations;
           if (Array.isArray(tl.materials)) divTruckLists.materials = tl.materials;
+          if (tl.removed && typeof tl.removed === 'object') divTruckLists.removed = _normRemoved(tl.removed);
+          if (tl.rates   && typeof tl.rates   === 'object') divTruckLists.rates   = _normRates(tl.rates);
           const tab = _activeTabId();
           if (tab === 'dashboard')      renderDashboard();
           if (tab === 'truck-tracking') renderTrackingTab();
