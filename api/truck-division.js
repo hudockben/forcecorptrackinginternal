@@ -3,6 +3,10 @@
  * GET  /api/truck-division  — all entries + lists for the company
  * PUT  /api/truck-division  — full sync: { entries: [...], lists: { drivers, customers, units } }
  *
+ * `lists` is stored as-is in the blob, so what the page keeps alongside those
+ * three rosters — the record of deleted names, the per-customer rates — rides
+ * with them. The normalized tables mirror the three the rest of the app reads.
+ *
  * Source of truth: truck_division_entries + truck_division_units + dropdown_lists tables.
  * On first GET, if the normalized tables are empty, migrates from the legacy
  * app_data JSON blobs (fct_truck_division / fct_truck_division_lists).
@@ -218,8 +222,10 @@ module.exports = async (req, res) => {
             // The normalized tables hold no record of a name the office
             // deleted, and the page re-seeds its lists from the stored rows —
             // so without carrying this over from the blob, falling back to the
-            // tables would quietly undo every deletion.
+            // tables would quietly undo every deletion. Same for the per-customer
+            // rates: the tables store a customer as a bare name.
             removed:   (blobLists && blobLists.removed) || undefined,
+            rates:     (blobLists && blobLists.rates)   || undefined,
           },
         });
       }
