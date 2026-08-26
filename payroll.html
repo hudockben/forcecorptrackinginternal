@@ -4905,6 +4905,17 @@
     // The cost codes loaded for the entry this modal is open on. Empty until
     // the lookup lands, and empty for good on a job whose blob has no bid
     // items — every caller has to cope with both.
+    // Match a typed cost code against the job's bid items. Trimmed on both
+    // sides: these codes are typed at least as often as they are picked, and
+    // an exact match on a padded string silently produced an empty sub-code
+    // list rather than an error anyone could see.
+    function findCostCode(ccList, code) {
+      const want = String(code == null ? '' : code).trim();
+      if (!want) return null;
+      return (Array.isArray(ccList) ? ccList : [])
+        .find(c => c && String(c.cost_code || '').trim() === want) || null;
+    }
+
     function splitCcListNow() {
       if (!splitEntry) return [];
       const list = splitCcCache[`${splitEntry.division}::${splitEntry.job_id}`];
@@ -4924,9 +4935,9 @@
       const out = [];
       for (const c of (Array.isArray(ccList) ? ccList : [])) {
         if (!c) continue;
-        const cc   = String(c.cost_code || '');
+        const cc   = String(c.cost_code || '').trim();
         const subs = (Array.isArray(c.sub_codes) ? c.sub_codes : [])
-                       .map(x => String(x == null ? '' : x));
+                       .map(x => String(x == null ? '' : x).trim());
         const travelSubs = subs.filter(x => TRAVEL_CODE_RE.test(x));
         if (travelSubs.length) {
           for (const x of travelSubs) out.push({ cost_code: cc, sub_code: x });
@@ -5089,8 +5100,12 @@
         event.preventDefault();
         const pick = list[state.highlight];
         if (pick != null) input.value = pick;
-        cbCommit(input);
+        // Leave the field BEFORE committing. The commit repaints, and the
+        // repaint puts the cursor back where it finds it — which on Enter
+        // would drag it into the box the supervisor has just finished with,
+        // menu re-opened. Tab is the opposite case and wants it kept.
         input.blur();
+        cbCommit(input);
       } else if (event.key === 'Escape') {
         event.preventDefault();
         input.value = state.originalValue;
@@ -5167,7 +5182,16 @@
       cbClose(input);
       const rowIdx = parseInt(cb.dataset.row, 10);
       const field = cb.dataset.field;
-      if (!isNaN(rowIdx) && field) splitOnChange(rowIdx, field, input.value);
+      // Trimmed, and written back so the box shows what was stored. A stray
+      // space is invisible, but the code is matched against the job's bid
+      // items exactly: "Mobilization " found nothing, so the sub-code picker
+      // came back empty on a cost code that was otherwise perfectly good —
+      // and the padded string rode all the way onto the injected row. Safe
+      // here because a commit only happens on blur, Enter, Tab or a pick,
+      // never mid-word.
+      const value = String(input.value == null ? '' : input.value).trim();
+      if (input.value !== value) input.value = value;
+      if (!isNaN(rowIdx) && field) splitOnChange(rowIdx, field, value);
     }
     document.addEventListener('mousedown', (e) => {
       const opt = e.target.closest('.cb-opt');
@@ -5178,8 +5202,8 @@
         const input = menu.previousElementSibling;
         if (input) {
           input.value = opt.dataset.val || '';
+          input.blur();      // done with this field — same as Enter, above
           cbCommit(input);
-          input.blur();
         }
         return;
       }
@@ -5192,8 +5216,48 @@
       });
     });
 
+    // A repaint replaces every control in this table, so whatever the
+    // supervisor was standing on becomes a different DOM node and the cursor
+    // is left on the document body — where the next Tab restarts from the top
+    // of the page. The cost-code combobox makes that routine: it commits 120ms
+    // AFTER losing focus, so the repaint lands while they are already typing
+    // in the next cell.
+    //
+    // Identified by position rather than by node, because the node is exactly
+    // what does not survive.
+    function _splitFocusSnapshot() {
+      const el = document.activeElement;
+      const td = (el && el.closest) ? el.closest('#splitTbody td') : null;
+      const tr = td && td.parentElement;
+      if (!tr || !tr.parentElement) return null;
+      const row  = Array.prototype.indexOf.call(tr.parentElement.children, tr);
+      const cell = Array.prototype.indexOf.call(tr.children, td);
+      if (row < 0 || cell < 0) return null;
+      // Only text inputs have a selection; number and checkbox throw on read.
+      let start = null, end = null;
+      try { start = el.selectionStart; end = el.selectionEnd; } catch (_) { /* not a text field */ }
+      return { row, cell, start, end };
+    }
+
+    function _splitFocusRestore(snap) {
+      if (!snap) return;
+      const tbody = document.getElementById('splitTbody');
+      const tr = tbody && tbody.children[snap.row];
+      const td = tr && tr.children[snap.cell];
+      const el = td && td.querySelector('input');
+      if (!el) return;
+      // Focusing a combobox re-opens its menu and selects the text, which is
+      // what it looked like before the repaint; put the caret back after, so
+      // a half-typed code is not left selected and ready to be replaced.
+      el.focus();
+      if (snap.start != null) {
+        try { el.setSelectionRange(snap.start, snap.end); } catch (_) { /* not a text field */ }
+      }
+    }
+
     function renderSplitRows() {
       const tbody = document.getElementById('splitTbody');
+      const focus = _splitFocusSnapshot();
       if (!splitRows.length) {
         tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
         return;
@@ -5202,8 +5266,8 @@
       const ccCodes = ccList.map(c => c.cost_code);
       const eqOpts = (splitEquipmentList || []).slice();
       tbody.innerHTML = splitRows.map((r, i) => {
-        const found = ccList.find(c => c.cost_code === r.cost_code);
-        const subOpts = found ? found.sub_codes.slice() : [];
+        const found = findCostCode(ccList, r.cost_code);
+        const subOpts = (found && Array.isArray(found.sub_codes)) ? found.sub_codes.slice() : [];
         // A prefilled code is a guess off the job's bid items, not something
         // anyone checked. Dashed and labelled so it reads as one and gets
         // looked at before it is approved.
@@ -5227,6 +5291,7 @@
         </tr>
         `;
       }).join('');
+      _splitFocusRestore(focus);
     }
 
     function splitOnChange(idx, field, value) {
@@ -5283,18 +5348,10 @@
       }
       // Repaint so the dependent sub-code lists — and any row the prefill just
       // wrote to — come back from the new state.
-      if (repaint) {
-        renderSplitRows();
-        // The tick that triggered this is a live control the supervisor is
-        // still standing on, and the repaint replaced it with a new node. Put
-        // the cursor back on its replacement — otherwise focus drops to the
-        // body and the next Tab restarts from the top of the page.
-        if (field === 'is_travel') {
-          const box = document.querySelector(
-            `#splitTbody tr:nth-child(${idx + 1}) .travel-cell input`);
-          if (box) box.focus();
-        }
-      }
+      // renderSplitRows puts the cursor back where it was, so the tick that
+      // triggered this — and the cell the supervisor tabbed into while a
+      // cost-code commit was still pending — survive the repaint.
+      if (repaint) renderSplitRows();
       renderSplitTally();
     }
 
@@ -7859,12 +7916,14 @@
     function bulkTravelCostCode(idx, value) {
       const g = bulkGroups[idx];
       if (!g) return;
-      g.template.travel_cost_code = value;
+      // onchange, not oninput — this is the commit, so it is safe to trim.
+      const cc = String(value == null ? '' : value).trim();
+      g.template.travel_cost_code = cc;
       g.template.travel_sub_code  = '';
       g.template.travel_code_source = 'manual';
       // Typing the travel cost code by hand leaves the sub code open, and on a
       // paving job the task usually files exactly one travel line under it.
-      const subs = splitTravelSubsFor(g.ccList, value);
+      const subs = splitTravelSubsFor(g.ccList, cc);
       if (subs.length === 1) g.template.travel_sub_code = subs[0];
       renderBulkGroups();
       updateBulkRunBtn();
@@ -7897,7 +7956,8 @@
     function bulkCostCode(idx, value) {
       const g = bulkGroups[idx];
       if (!g) return;
-      g.template.cost_code = value;
+      // onchange, not oninput — this is the commit, so it is safe to trim.
+      g.template.cost_code = String(value == null ? '' : value).trim();
       g.template.sub_code  = '';   // sub codes are scoped to a cost code
       // While the travel leg has no cost code of its own it borrows this one,
       // so its sub code was picked from the list that just changed underneath
@@ -7998,12 +8058,12 @@
 
       if (g.type === 'split') {
         const ccCodes = (g.ccList || []).map(c => c.cost_code);
-        const found   = (g.ccList || []).find(c => c.cost_code === g.template.cost_code);
+        const found   = findCostCode(g.ccList, g.template.cost_code);
         const subOpts = found ? (found.sub_codes || []) : [];
         // The travel leg can book to its own code, so its sub codes come from
         // whichever cost code IT names — falling back to the work one.
-        const tFound  = (g.ccList || []).find(c => c.cost_code ===
-                          (String(g.template.travel_cost_code || '').trim() || g.template.cost_code));
+        const tFound  = findCostCode(g.ccList,
+                          String(g.template.travel_cost_code || '').trim() || g.template.cost_code);
         const travelSubOpts = tFound ? (tFound.sub_codes || []) : [];
         const anyTravel = g.entries.some(e => bulkR2(e.travel_hours) > 0);
         // Prefilled off the job's bid items rather than typed — dashed, so it

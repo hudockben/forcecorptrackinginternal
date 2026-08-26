@@ -50,9 +50,6 @@ const travelReSrc = (src.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0];
 if (!travelReSrc) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
 
 let repaints = 0;
-// Every selector splitOnChange reaches for after a repaint, so the focus
-// restore can be asserted without a browser.
-let refocused = [];
 const sandbox = {
   console,
   splitEntry: null,
@@ -60,7 +57,6 @@ const sandbox = {
   splitCcCache: {},
   renderSplitRows:  () => { repaints++; },
   renderSplitTally: () => {},
-  document: { querySelector: sel => { refocused.push(sel); return { focus() {} }; } },
 };
 vm.createContext(sandbox);
 vm.runInContext([
@@ -75,6 +71,7 @@ vm.runInContext([
     'splitApplyTravelPrefill() {',
     'splitAddRow(isTravel) {',
     'splitOnChange(idx, field, value) {',
+    'findCostCode(ccList, code) {',
   ].map(grab),
 ].join('\n\n'), sandbox);
 
@@ -343,23 +340,12 @@ console.log('\n[the Travel tick]');
   sandbox.splitCcCache['turf::J1'] = TURF;
   sandbox.splitRows = [sandbox._blankSplitRow(false), sandbox._blankSplitRow(false)];
 
-  refocused = [];
   sandbox.splitOnChange(1, 'is_travel', true);
   assert('ticking Travel on a blank row codes it',
     sandbox.splitRows[1].cost_code === 'Mobilization' && sandbox.splitRows[1].sub_code === 'Travel',
     JSON.stringify(sandbox.splitRows[1]));
-  // The repaint that shows those codes destroys the tick the supervisor is
-  // standing on. Without putting the cursor back, focus lands on the body and
-  // the next Tab restarts from the top of the page.
-  assert('and puts the cursor back on the tick it just replaced',
-    refocused.length === 1 &&
-    refocused[0] === '#splitTbody tr:nth-child(2) .travel-cell input',
-    JSON.stringify(refocused));
 
-  refocused = [];
   sandbox.splitOnChange(1, 'is_travel', false);
-  assert('unticking puts the cursor back too',
-    refocused.length === 1 && /nth-child\(2\)/.test(refocused[0]), JSON.stringify(refocused));
   assert('unticking takes the guessed codes back off',
     sandbox.splitRows[1].cost_code === '' && sandbox.splitRows[1].sub_code === '',
     JSON.stringify(sandbox.splitRows[1]));
@@ -395,12 +381,11 @@ console.log('\n[tabbing through a finished row]');
   sandbox.splitCcCache['turf::J1'] = TURF;
   sandbox.splitRows = [{ cost_code: 'Silt Sock', sub_code: '18inch', labor_hours: 8,
                          is_travel: false, code_source: 'manual' }];
-  repaints = 0; refocused = [];
+  repaints = 0;
   sandbox.splitOnChange(0, 'cost_code', 'Silt Sock');    // blur, nothing picked
   assert('re-committing the same cost code keeps the sub code',
     sandbox.splitRows[0].sub_code === '18inch', JSON.stringify(sandbox.splitRows[0]));
   assert('and does not repaint the table out from under the cursor', repaints === 0);
-  assert('and does not go grabbing the focus either', refocused.length === 0);
 
   sandbox.splitOnChange(0, 'cost_code', 'Turf Install'); // a real change
   assert('an actual change still clears it', sandbox.splitRows[0].sub_code === '');
@@ -478,7 +463,10 @@ console.log('\n[the prefilled cells read as prefilled]');
     splitEquipmentList: ['320 Excavator'],
     splitRows: [],
     num2: n => Number(n).toFixed(2),
-    document: { getElementById: id => (store[id] = store[id] || { innerHTML: '' }) },
+    // No focused cell in this fixture, so the snapshot comes back empty and
+    // the restore is a no-op — this section is about the markup.
+    document: { activeElement: null,
+                getElementById: id => (store[id] = store[id] || { innerHTML: '' }) },
   };
   vm.createContext(render);
   vm.runInContext([
@@ -486,7 +474,12 @@ console.log('\n[the prefilled cells read as prefilled]');
     ...[
       'numInputVal(n) {',
       'splitCcListNow() {',
+      'findCostCode(ccList, code) {',
       '_cbHtml(rowIdx, field, currentValue, options, placeholder, opts) {',
+      // renderSplitRows puts the cursor back after a repaint, so the two
+      // halves of that come across with it.
+      '_splitFocusSnapshot() {',
+      '_splitFocusRestore(snap) {',
       'renderSplitRows() {',
     ].map(grab),
   ].join('\n\n'), render);
@@ -621,6 +614,133 @@ console.log('\n[bulk approve]');
   const quarry = { type: 'quarry', ccList: TURF, entries: [], template: { travel_code_source: '' } };
   assert('a quarry group is left alone', bulk.bulkApplyTravelPrefill(quarry) === false);
   assert('and so is nothing at all',      bulk.bulkApplyTravelPrefill(null) === false);
+}
+
+// ── A repaint must not take the cursor with it ───────────────────────────
+// The cost-code combobox commits 120ms AFTER it loses focus, so its repaint
+// lands while the supervisor is already typing in the next cell — and a
+// repaint replaces every control in the table. Tabbing out of a cost code used
+// to leave the focus on the cost code itself (the default Tab had nothing left
+// to move from), so the next thing typed went straight back into the box they
+// had just left. Run against a real DOM, with the page's own combobox.
+console.log('\n[a repaint keeps the cursor where it was]');
+{
+  const { JSDOM } = require('jsdom');
+  const names = [
+    'isTravelSplitRow(r) {', '_blankSplitRow(isTravel) {', 'findCostCode(ccList, code) {',
+    'splitCcListNow() {', 'splitTravelCandidates(ccList) {', 'splitTravelSubsFor(ccList, costCode) {',
+    'splitPickTravelCodes(ccList, workCostCode) {', 'splitApplyTravelPrefill() {', 'numInputVal(n) {',
+    '_cbHtml(rowIdx, field, currentValue, options, placeholder, opts) {', '_cbReadOptions(input) {',
+    'cbOnFocus(input) {', 'cbOnInput(input) {', 'cbRenderMenu(input) {', 'cbPositionMenu(input) {',
+    'cbScrollHi(input) {', 'cbClose(input) {', 'cbCommit(input) {',
+    '_splitFocusSnapshot() {', '_splitFocusRestore(snap) {',
+    'renderSplitRows() {', 'splitOnChange(idx, field, value) {',
+  ];
+  const harness = [
+    travelReSrc,
+    (src.match(/const _cbEsc = [^\n]+/) || [])[0],
+    'const _cbState = new WeakMap();',
+    ...names.map(grab),
+    'function num2(n){ return Number(n).toFixed(2); }',
+    'function renderSplitTally(){}',
+    'function cbOnKey(){}  function cbOnBlur(){}',
+    "var splitEntry = { division: 'turf', job_id: 'J1', computed_hours: 6.5, travel_hours: 1.5 };",
+    "var splitCcCache = { 'turf::J1': " + JSON.stringify(TURF) + ' };',
+    'var splitEquipmentList = [];',
+    'var splitRows = [_blankSplitRow(false), _blankSplitRow(true)];',
+  ].join('\n\n');
+
+  const dom = new JSDOM(
+    '<!doctype html><body><table class="split-table"><tbody id="splitTbody"></tbody></table></body>',
+    { url: 'http://localhost/', runScripts: 'dangerously' });
+  const { window } = dom;
+  window.eval(harness);
+  const doc = window.document;
+  window.eval('renderSplitRows()');
+
+  const row  = i => doc.querySelectorAll('#splitTbody tr')[i];
+  const cell = (i, field) => row(i).querySelector(`.cb[data-field="${field}"] .cb-input`);
+  const opts = (i, field) => JSON.parse(row(i).querySelector(`.cb[data-field="${field}"]`).dataset.options);
+  const whereIsFocus = () => {
+    const el = doc.activeElement;
+    const cb = el && el.closest && el.closest('.cb');
+    if (cb) return `row${cb.dataset.row}/${cb.dataset.field}`;
+    return el === doc.body ? 'BODY' : 'other';
+  };
+
+  // The supervisor picks a cost code and moves on to the sub code. 120ms later
+  // the deferred commit fires and repaints the table underneath them.
+  cell(0, 'sub_code').focus();
+  assert('the supervisor is standing in the sub code', whereIsFocus() === 'row0/sub_code');
+  window.eval("splitOnChange(0, 'cost_code', 'Silt Sock')");
+  assert('and is still standing there after the repaint',
+    whereIsFocus() === 'row0/sub_code', whereIsFocus());
+  assert('with the sub codes of the cost code just picked',
+    opts(0, 'sub_code').join() === '12inch,18inch', JSON.stringify(opts(0, 'sub_code')));
+
+  // The caret survives a repaint that leaves the cell's value alone — which is
+  // most of them, since a repaint is triggered by a change to some OTHER row
+  // as often as by this one. Focusing a combobox selects all of its text, so
+  // without putting the caret back the next keystroke replaces the code
+  // instead of continuing it.
+  window.eval("splitRows[0].sub_code = '18inch'; renderSplitRows()");
+  const sc = cell(0, 'sub_code');
+  sc.focus(); sc.setSelectionRange(2, 2);
+  window.eval("splitOnChange(1, 'cost_code', 'Turf Install')");   // a repaint from another row
+  assert('the cell keeps its value across an unrelated repaint',
+    cell(0, 'sub_code').value === '18inch', cell(0, 'sub_code').value);
+  assert('and the caret is put back where it was, not left selecting everything',
+    doc.activeElement.selectionStart === 2 && doc.activeElement.selectionEnd === 2,
+    `${doc.activeElement.selectionStart}-${doc.activeElement.selectionEnd}`);
+
+  // Ticking Travel repaints from the checkbox itself. Nothing in this table
+  // repainted from a checkbox before the prefill existed.
+  window.eval('splitRows[1].is_travel = false; splitRows[1].cost_code = "";' +
+              'splitRows[1].sub_code = ""; splitRows[1].code_source = ""; renderSplitRows()');
+  row(1).querySelector('.travel-cell input').focus();
+  window.eval("splitOnChange(1, 'is_travel', true)");
+  assert('ticking Travel leaves the cursor on the tick',
+    doc.activeElement === row(1).querySelector('.travel-cell input'), whereIsFocus());
+  assert('and the row came back coded', window.eval('splitRows[1].cost_code') === 'Mobilization');
+
+  // Nothing focused inside the table — a repaint must not go grabbing.
+  doc.activeElement.blur();
+  window.eval("splitOnChange(0, 'cost_code', 'Silt Sock')");
+  assert('a repaint with nobody in the table leaves the focus alone',
+    whereIsFocus() === 'BODY', whereIsFocus());
+
+  // ── A trailing space is invisible and emptied the sub-code list ────────
+  // These codes are typed as often as picked. The commit stores what is in the
+  // box, and the sub-code list is looked up by exact cost code, so one stray
+  // space produced an empty picker on a code that was otherwise perfectly
+  // good — and rode along onto the injected row.
+  const cc = cell(0, 'cost_code');
+  cc.focus();
+  cc.value = '  Mobilization  ';
+  window.eval("cbCommit(document.querySelectorAll('#splitTbody tr')[0]" +
+              ".querySelector('.cb[data-field=\"cost_code\"] .cb-input'))");
+  assert('a padded cost code is stored trimmed',
+    window.eval('splitRows[0].cost_code') === 'Mobilization',
+    JSON.stringify(window.eval('splitRows[0].cost_code')));
+  assert('the box is cleaned up to match what was stored',
+    cell(0, 'cost_code').value === 'Mobilization', JSON.stringify(cell(0, 'cost_code').value));
+  assert('and its sub codes are found rather than coming back empty',
+    opts(0, 'sub_code').join() === ',Travel', JSON.stringify(opts(0, 'sub_code')));
+}
+
+// ── The lookup itself tolerates whatever the box holds ───────────────────
+console.log('\n[matching a typed code against the bid items]');
+{
+  const f = sandbox.findCostCode;
+  assert('an exact code is found',   (f(TURF, 'Mobilization') || {}).cost_code === 'Mobilization');
+  assert('a padded one is too',      (f(TURF, '  Mobilization ') || {}).cost_code === 'Mobilization');
+  assert('and a padded bid item as well',
+    ((f([{ cost_code: ' Mobilization ', sub_codes: ['Travel'] }], 'Mobilization') || {}).sub_codes || [])
+      .join() === 'Travel');
+  assert('a code the job does not carry is not found', f(TURF, 'Paint') === null);
+  assert('blank finds nothing rather than the first row', f(TURF, '   ') === null);
+  assert('and neither a missing list nor a missing code throws',
+    f(null, 'x') === null && f(TURF, null) === null);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
