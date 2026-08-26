@@ -71,6 +71,7 @@ vm.runInContext([
     'splitTravelSubsFor(ccList, costCode) {',
     'splitPickTravelCodes(ccList, workCostCode) {',
     'splitApplyTravelPrefill() {',
+    'splitFillTravelHours(row) {',
     'splitAddRow(isTravel) {',
     'splitOnChange(idx, field, value) {',
     'findCostCode(ccList, code) {',
@@ -370,6 +371,77 @@ console.log('\n[the Travel tick]');
     sandbox.splitRows[1].cost_code === 'Mobilization' && sandbox.splitRows[1].sub_code === 'Travel');
   sandbox.splitAddRow(false);
   assert('+ Add labor row does not', sandbox.splitRows[2].cost_code === '');
+}
+
+// ── The hours the entry already states ───────────────────────────────────
+// The entry says how much of the day was the drive, and the travel row is
+// where those hours go. On the ordinary day — one drive, one figure — that
+// leaves nothing to type there at all.
+console.log('\n[the travel row opens with its hours in]');
+{
+  sandbox.splitEntry = { division: 'turf', job_id: 'J1', computed_hours: 8, travel_hours: 2 };
+  sandbox.splitCcCache['turf::J1'] = TURF;
+  sandbox.splitRows = [sandbox._blankSplitRow(false), sandbox._blankSplitRow(true)];
+  sandbox.splitApplyTravelPrefill();
+  assert('the drive gets the hours the entry declares',
+    sandbox.splitFillTravelHours(sandbox.splitRows[1]) === true &&
+    sandbox.splitRows[1].labor_hours === 2, String(sandbox.splitRows[1].labor_hours));
+  assert('and the work row is left alone', sandbox.splitRows[0].labor_hours === 0);
+  assert('running it again does nothing',
+    sandbox.splitFillTravelHours(sandbox.splitRows[1]) === false &&
+    sandbox.splitRows[1].labor_hours === 2);
+
+  // A second drive row must not double the day's travel.
+  sandbox.splitAddRow(true);
+  assert('a second travel row gets what is left, which is nothing',
+    sandbox.splitRows[2].labor_hours === 0, String(sandbox.splitRows[2].labor_hours));
+  assert('so the travel hours still total what the entry says',
+    sandbox.splitRows.filter(r => r.is_travel)
+      .reduce((s, r) => s + r.labor_hours, 0) === 2);
+
+  // Split across two drives by hand, and the remainder is what is left.
+  sandbox.splitRows = [sandbox._blankSplitRow(false), sandbox._blankSplitRow(true),
+                       sandbox._blankSplitRow(true)];
+  sandbox.splitRows[1].labor_hours = 0.75;
+  assert('the second drive picks up the remainder',
+    sandbox.splitFillTravelHours(sandbox.splitRows[2]) === true &&
+    sandbox.splitRows[2].labor_hours === 1.25, String(sandbox.splitRows[2].labor_hours));
+
+  // A figure someone typed is never moved.
+  sandbox.splitRows = [sandbox._blankSplitRow(false), sandbox._blankSplitRow(true)];
+  sandbox.splitRows[1].labor_hours = 0.75;
+  assert('a figure already typed is left where it is',
+    sandbox.splitFillTravelHours(sandbox.splitRows[1]) === false &&
+    sandbox.splitRows[1].labor_hours === 0.75);
+
+  // Ticking Travel on a blank row fills the hours as well as the codes.
+  sandbox.splitRows = [sandbox._blankSplitRow(false), sandbox._blankSplitRow(false)];
+  sandbox.splitOnChange(1, 'is_travel', true);
+  assert('ticking Travel fills the hours too',
+    sandbox.splitRows[1].labor_hours === 2, String(sandbox.splitRows[1].labor_hours));
+  // Unticking takes the codes back but not the hours: a travel code on an
+  // unticked row is still priced as travel, which is why those are cleared —
+  // hours carry no such rule, they are part of the day either way, and the
+  // tally says so if the two stop agreeing.
+  sandbox.splitOnChange(1, 'is_travel', false);
+  assert('unticking clears the codes but keeps the hours',
+    sandbox.splitRows[1].cost_code === '' && sandbox.splitRows[1].labor_hours === 2,
+    JSON.stringify(sandbox.splitRows[1]));
+
+  // A day the entry says had no travel gets nothing.
+  sandbox.splitEntry = { division: 'turf', job_id: 'J1', computed_hours: 8, travel_hours: 0 };
+  sandbox.splitRows = [sandbox._blankSplitRow(false), sandbox._blankSplitRow(true)];
+  assert('a day with no travel is given no travel hours',
+    sandbox.splitFillTravelHours(sandbox.splitRows[1]) === false &&
+    sandbox.splitRows[1].labor_hours === 0);
+  assert('and neither a missing row nor a closed modal throws',
+    sandbox.splitFillTravelHours(null) === false);
+
+  // Edit Split reopens a posted split, whose hours are what was approved.
+  const openSrc2 = src.slice(src.indexOf('async function openSplitModal'),
+                             src.indexOf('function closeSplit()'));
+  assert('and a reopened split is never restated',
+    /mode !== 'resplit'[\s\S]{0,120}splitFillTravelHours/.test(openSrc2));
 }
 
 // ── Blurring a cost code must not wipe the sub code ──────────────────────
@@ -676,7 +748,8 @@ console.log('\n[a repaint keeps the cursor where it was]');
     'isTravelSplitRow(r) {', '_splitRowUid() {', '_blankSplitRow(isTravel) {',
     'findCostCode(ccList, code) {', 'cbCloseAll() {', 'splitDeleteRow(idx) {',
     'splitCcListNow() {', 'splitTravelCandidates(ccList) {', 'splitTravelSubsFor(ccList, costCode) {',
-    'splitPickTravelCodes(ccList, workCostCode) {', 'splitApplyTravelPrefill() {', 'numInputVal(n) {',
+    'splitPickTravelCodes(ccList, workCostCode) {', 'splitApplyTravelPrefill() {',
+    'splitFillTravelHours(row) {', 'numInputVal(n) {',
     '_cbHtml(rowIdx, field, currentValue, options, placeholder, opts) {', '_cbReadOptions(input) {',
     'cbOnFocus(input) {', 'cbOnInput(input) {', 'cbRenderMenu(input) {', 'cbPositionMenu(input) {',
     'cbScrollHi(input) {', 'cbClose(input) {', 'cbCommit(input) {',
@@ -1043,7 +1116,8 @@ console.log('\n[the form and the server agree on what is saveable]');
 
   const NAMES = ['isTravelSplitRow', '_splitRowUid', '_blankSplitRow', 'findCostCode',
     'splitCcListNow', 'splitTravelCandidates', 'splitTravelSubsFor', 'splitPickTravelCodes',
-    'splitApplyTravelPrefill', 'numInputVal', '_cbHtml', '_cbReadOptions', 'cbOnFocus',
+    'splitApplyTravelPrefill', 'splitFillTravelHours', 'numInputVal', '_cbHtml',
+    '_cbReadOptions', 'cbOnFocus',
     'cbOnInput', 'cbRenderMenu', 'cbPositionMenu', 'cbCloseAll', 'cbScrollHi', 'cbClose',
     'cbCommit', '_splitFocusSnapshot', '_splitFocusRestore', 'renderSplitRows',
     'splitOnChange', 'splitFlushPendingCommits'];

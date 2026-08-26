@@ -4868,6 +4868,10 @@
       // this form, and on most jobs the answer is not in doubt. Fill what the
       // job's own bid items settle; leave the rest.
       splitApplyTravelPrefill();
+      // And the hours, which the entry states outright. Only on a fresh
+      // approve: a split read back by Edit Split already carries the hours it
+      // was approved with, and those are not this modal's to restate.
+      if (mode !== 'resplit') splitRows.filter(r => r.is_travel).forEach(splitFillTravelHours);
       renderSplitRows();
       renderSplitTally();
     }
@@ -5046,9 +5050,33 @@
       return changed;
     }
 
+    // The entry already says how much of the day was the drive, and the travel
+    // row is where those hours go — so on the ordinary day, one drive and one
+    // figure, there is nothing to type. Filled at the moment a travel row comes
+    // into existence rather than on every prefill pass: a supervisor who clears
+    // this back to zero has said something, and a later cost-code change must
+    // not undo it.
+    //
+    // Only ever fills a row sitting at zero, and only what the entry has not
+    // already accounted for, so a second travel row cannot double the drive and
+    // a figure someone typed is never moved.
+    function splitFillTravelHours(row) {
+      if (!row || !splitEntry) return false;
+      if ((Number(row.labor_hours) || 0) > 0) return false;
+      const declared = Math.round((Number(splitEntry.travel_hours) || 0) * 100) / 100;
+      if (!(declared > 0)) return false;
+      const spoken = Math.round(splitRows.reduce((sum, r) =>
+        sum + ((r !== row && isTravelSplitRow(r)) ? (Number(r.labor_hours) || 0) : 0), 0) * 100) / 100;
+      const rest = Math.round((declared - spoken) * 100) / 100;
+      if (!(rest > 0)) return false;
+      row.labor_hours = rest;
+      return true;
+    }
+
     function splitAddRow(isTravel) {
-      splitRows.push(_blankSplitRow(isTravel));
-      if (isTravel) splitApplyTravelPrefill();
+      const row = _blankSplitRow(isTravel);
+      splitRows.push(row);
+      if (isTravel) { splitApplyTravelPrefill(); splitFillTravelHours(row); }
       renderSplitRows();
       renderSplitTally();
     }
@@ -5378,6 +5406,13 @@
         r.is_travel = !!value;
         if (r.is_travel) {
           repaint = splitApplyTravelPrefill() || repaint;
+          // Ticking Travel says these hours were the drive, and the entry
+          // already says how many that was. Unticking does not take them back:
+          // the codes are cleared because a travel code on an unticked row is
+          // still priced as travel, and hours carry no such rule — they are
+          // part of the day either way, and the tally says so if the two
+          // no longer agree.
+          repaint = splitFillTravelHours(r) || repaint;
         } else if (r.code_source === 'auto') {
           // Those codes were only there because the row was the drive. Taking
           // the tick off retracts that, and leaving them would keep the row
