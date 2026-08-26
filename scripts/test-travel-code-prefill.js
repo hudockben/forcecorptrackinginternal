@@ -61,8 +61,10 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext([
   travelReSrc,
+  'let _splitRowSeq = 0;',
   ...[
     'isTravelSplitRow(r) {',
+    '_splitRowUid() {',
     '_blankSplitRow(isTravel) {',
     'splitCcListNow() {',
     'splitTravelCandidates(ccList) {',
@@ -471,8 +473,10 @@ console.log('\n[the prefilled cells read as prefilled]');
   vm.createContext(render);
   vm.runInContext([
     cbEscSrc,
+    'let _splitRowSeq = 0;',
     ...[
       'numInputVal(n) {',
+      '_splitRowUid() {',
       'splitCcListNow() {',
       'findCostCode(ccList, code) {',
       '_cbHtml(rowIdx, field, currentValue, options, placeholder, opts) {',
@@ -526,11 +530,17 @@ console.log('\n[the prefilled cells read as prefilled]');
 // code as the work, for everybody, which is the thing this is meant to stop.
 console.log('\n[bulk approve]');
 {
+  // A repaint from a change handler has to wait for the cursor to land, so the
+  // deferral is part of what is under test: setTimeout is captured rather than
+  // run, and fired by hand.
+  let bulkRepaints = 0;
+  const deferred = [];
   const bulk = {
     console,
     bulkGroups: [],
     bulkR2: n => Math.round((Number(n) || 0) * 100) / 100,
-    renderBulkGroups: () => {},
+    renderBulkGroups: () => { bulkRepaints++; },
+    setTimeout: fn => { deferred.push(fn); return deferred.length; },
     updateBulkRunBtn: () => {},
   };
   vm.createContext(bulk);
@@ -541,6 +551,7 @@ console.log('\n[bulk approve]');
       'splitTravelSubsFor(ccList, costCode) {',
       'splitPickTravelCodes(ccList, workCostCode) {',
       'bulkApplyTravelPrefill(g) {',
+      'renderBulkGroupsSoon() {',
       'bulkCostCode(idx, value) {',
       'bulkTravelCostCode(idx, value) {',
       'bulkSet(idx, field, value) {',
@@ -597,6 +608,26 @@ console.log('\n[bulk approve]');
   assert('and a task with no drive leaves it blank',
     byHand.template.travel_sub_code === '', JSON.stringify(byHand.template));
 
+  // ── The bulk card repaints from a change handler ──────────────────────
+  // A change event on a text input fires in the gap between the old control
+  // losing focus and the new one gaining it, with activeElement parked on the
+  // body. Repainting inside that gap destroys the field the cursor was on its
+  // way to, so it ends up nowhere and the next Tab restarts from the top of
+  // the page.
+  const timed = group(TURF);
+  bulk.bulkGroups = [timed];
+  bulkRepaints = 0; deferred.length = 0;
+  bulk.bulkCostCode(0, 'Silt Sock');
+  assert('committing a cost code does not repaint inside the focus gap',
+    bulkRepaints === 0 && deferred.length === 1, `${bulkRepaints} repaints, ${deferred.length} deferred`);
+  deferred.forEach(fn => fn());
+  assert('it repaints once the cursor has landed', bulkRepaints === 1);
+  bulkRepaints = 0; deferred.length = 0;
+  bulk.bulkTravelCostCode(0, 'Mobilization');
+  assert('and the travel cost code waits the same way',
+    bulkRepaints === 0 && deferred.length === 1, `${bulkRepaints} repaints, ${deferred.length} deferred`);
+  deferred.forEach(fn => fn());
+
   // The card hides the travel fields when no day in the group has travel
   // hours. Filling them anyway would put a code into the approval that nobody
   // was shown.
@@ -627,7 +658,8 @@ console.log('\n[a repaint keeps the cursor where it was]');
 {
   const { JSDOM } = require('jsdom');
   const names = [
-    'isTravelSplitRow(r) {', '_blankSplitRow(isTravel) {', 'findCostCode(ccList, code) {',
+    'isTravelSplitRow(r) {', '_splitRowUid() {', '_blankSplitRow(isTravel) {',
+    'findCostCode(ccList, code) {', 'cbCloseAll() {', 'splitDeleteRow(idx) {',
     'splitCcListNow() {', 'splitTravelCandidates(ccList) {', 'splitTravelSubsFor(ccList, costCode) {',
     'splitPickTravelCodes(ccList, workCostCode) {', 'splitApplyTravelPrefill() {', 'numInputVal(n) {',
     '_cbHtml(rowIdx, field, currentValue, options, placeholder, opts) {', '_cbReadOptions(input) {',
@@ -640,10 +672,12 @@ console.log('\n[a repaint keeps the cursor where it was]');
     travelReSrc,
     (src.match(/const _cbEsc = [^\n]+/) || [])[0],
     'const _cbState = new WeakMap();',
+    'let _splitRowSeq = 0;',
     ...names.map(grab),
     'function num2(n){ return Number(n).toFixed(2); }',
     'function renderSplitTally(){}',
     'function cbOnKey(){}  function cbOnBlur(){}',
+    'function renderSplitTallyNoop(){}',
     "var splitEntry = { division: 'turf', job_id: 'J1', computed_hours: 6.5, travel_hours: 1.5 };",
     "var splitCcCache = { 'turf::J1': " + JSON.stringify(TURF) + ' };',
     'var splitEquipmentList = [];',
@@ -726,6 +760,109 @@ console.log('\n[a repaint keeps the cursor where it was]');
     cell(0, 'cost_code').value === 'Mobilization', JSON.stringify(cell(0, 'cost_code').value));
   assert('and its sub codes are found rather than coming back empty',
     opts(0, 'sub_code').join() === ',Travel', JSON.stringify(opts(0, 'sub_code')));
+
+  // ── A pending commit belongs to a ROW, not to a position ──────────────
+  // The commit is deferred 120ms past the blur so a click on a menu option is
+  // handled first. A single ordinary click that lands on another row's ✕
+  // deletes a row inside that window — and every row under it shifts up. Named
+  // by position, the pending edit landed on whichever row moved into the slot:
+  // a day's cost booked to the wrong task, with the table showing a perfectly
+  // plausible result.
+  window.eval("splitRows = ['A','B','C','D','E'].map(function (n) {" +
+              "  return Object.assign(_blankSplitRow(false), { cost_code: n }); });" +
+              'renderSplitRows()');
+  const rowC = cell(2, 'cost_code');            // the supervisor retypes row C
+  rowC.value = 'Turf Install';
+  window.eval('splitDeleteRow(0)');             // and the same click hits row A's ✕
+  window._pendingInput = rowC;                  // 120ms later the commit fires,
+  window.eval('cbCommit(window._pendingInput)');// on a node that is now detached
+  assert('a pending edit follows its row when the rows shift under it',
+    window.eval('splitRows.map(function (r) { return r.cost_code; }).join()') ===
+      'B,Turf Install,D,E',
+    window.eval('splitRows.map(function (r) { return r.cost_code; }).join()'));
+
+  // And an edit whose row is gone goes with it rather than landing on a
+  // stranger.
+  window.eval("splitRows = ['A','B','C'].map(function (n) {" +
+              '  return Object.assign(_blankSplitRow(false), { cost_code: n }); });' +
+              'renderSplitRows()');
+  const rowA = cell(0, 'cost_code');
+  rowA.value = 'Turf Install';
+  window.eval('splitDeleteRow(0)');
+  window._pendingInput = rowA;
+  window.eval('cbCommit(window._pendingInput)');
+  assert('and an edit whose row was deleted is dropped, not re-homed',
+    window.eval('splitRows.map(function (r) { return r.cost_code; }).join()') === 'B,C',
+    window.eval('splitRows.map(function (r) { return r.cost_code; }).join()'));
+
+  // ── One dropdown at a time ────────────────────────────────────────────
+  // A click closes the other menus through the document handler; Tab did not,
+  // and the cell being left keeps its menu open until its own deferred commit
+  // fires — so two dropdowns overlapped for that 120ms.
+  window.eval("splitRows = [_blankSplitRow(false), _blankSplitRow(true)]; renderSplitRows()");
+  cell(0, 'cost_code').focus();
+  assert('focusing a combobox opens its menu',
+    doc.querySelectorAll('.cb-menu:not([hidden])').length === 1);
+  cell(0, 'sub_code').focus();
+  assert('and focusing the next one leaves only that one open',
+    doc.querySelectorAll('.cb-menu:not([hidden])').length === 1,
+    String(doc.querySelectorAll('.cb-menu:not([hidden])').length));
+}
+
+// ── The bulk card puts the cursor back too ───────────────────────────────
+// Positional there rather than by id: the two repaints that change how many
+// controls a card carries (+ machine, and dropping one) are both fired from
+// buttons, so there is never an input focused across them.
+console.log('\n[the bulk card keeps the cursor too]');
+{
+  const { JSDOM } = require('jsdom');
+  const dom = new JSDOM('<!doctype html><body><div id="bulkGroupsWrap"></div></body>',
+    { url: 'http://localhost/', runScripts: 'dangerously' });
+  const { window } = dom;
+  window.eval([grab('_bulkFocusSnapshot() {'), grab('_bulkFocusRestore(snap) {')].join('\n\n'));
+  const doc = window.document;
+  const wrap = doc.getElementById('bulkGroupsWrap');
+  const paint = () => {
+    wrap.innerHTML = '<div class="card"><input id="a"><input id="b"><select id="c">' +
+                     '<option>work</option><option>travel</option></select></div>';
+  };
+  paint();
+  doc.getElementById('b').focus();
+  doc.getElementById('b').value = 'Silt Sock';
+  doc.getElementById('b').setSelectionRange(4, 4);
+  const snap = window._bulkFocusSnapshot();
+  paint();                                   // the repaint replaces every control
+  assert('the repaint drops the cursor on its own', doc.activeElement === doc.body);
+  doc.getElementById('b').value = 'Silt Sock';
+  window._bulkFocusRestore(snap);
+  assert('and the restore puts it back on the same field',
+    doc.activeElement === doc.getElementById('b'),
+    doc.activeElement && doc.activeElement.id);
+  assert('with the caret where it was', doc.activeElement.selectionStart === 4,
+    String(doc.activeElement.selectionStart));
+
+  // A <select> has no selection to read, and must not throw on the way past.
+  doc.getElementById('c').focus();
+  const selSnap = window._bulkFocusSnapshot();
+  paint();
+  window._bulkFocusRestore(selSnap);
+  assert('a select is restored without throwing on its missing selection',
+    doc.activeElement === doc.getElementById('c'), doc.activeElement && doc.activeElement.id);
+
+  // Nothing focused inside the card — the repaint must not go grabbing.
+  doc.activeElement.blur();
+  assert('a repaint with nobody in the card takes no snapshot',
+    window._bulkFocusSnapshot() === null);
+  window._bulkFocusRestore(null);
+  assert('and restoring nothing leaves the focus alone', doc.activeElement === doc.body);
+
+  // A control that is gone by the time the restore runs is simply not there.
+  doc.getElementById('a').focus();
+  const goneSnap = window._bulkFocusSnapshot();
+  wrap.innerHTML = '';
+  window._bulkFocusRestore(goneSnap);
+  assert('a field the repaint removed is left alone rather than mis-restored',
+    doc.activeElement === doc.body);
 }
 
 // ── The lookup itself tolerates whatever the box holds ───────────────────

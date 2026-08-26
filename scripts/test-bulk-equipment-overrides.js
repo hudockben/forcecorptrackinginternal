@@ -61,6 +61,11 @@ const sandbox = {
   num2:        n => Number(n).toFixed(2),
   updateBulkRunBtn: () => {},
   renderBulkGroups: () => {},   // adding/removing a machine repaints the card
+  // Committing a cost code defers its repaint past the browser's focus
+  // transition. Nothing here depends on that timing, so the deferral is run
+  // straight through — what these assertions read is the template state, which
+  // is written before it either way.
+  setTimeout: fn => { fn(); },
 };
 vm.createContext(sandbox);
 // The travel prefill runs off the same regex the tally and the server read a
@@ -85,6 +90,7 @@ vm.runInContext([
   'bulkRowSet(idx, entryId, itemIdx, field, value) {',
   'bulkRowEquipCommit(idx, entryId, itemIdx) {',
   'bulkRowLeg(idx, entryId, itemIdx, value) {',
+  'renderBulkGroupsSoon() {',
   'bulkTravelCostCode(idx, value) {',
   'bulkCostCode(idx, value) {',
   // Both validators below name the offending day through this, so it has to

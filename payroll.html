@@ -4839,6 +4839,7 @@
 
       if (mode === 'resplit' && existing && existing.length) {
         splitRows = existing.map(r => ({
+          _uid:        _splitRowUid(),
           cost_code:   r.cost_code   || '',
           sub_code:    r.sub_code    || '',
           quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
@@ -4885,8 +4886,17 @@
         || TRAVEL_CODE_RE.test(String(r.cost_code || ''));
     }
 
+    // A row's identity, stable across repaints and across other rows being
+    // deleted out from under it. The combobox commits 120ms after the blur, by
+    // which time a row's POSITION is no longer a safe way to name it.
+    let _splitRowSeq = 0;
+    function _splitRowUid() {
+      return `sr${++_splitRowSeq}`;
+    }
+
     function _blankSplitRow(isTravel) {
       return {
+        _uid:        _splitRowUid(),
         cost_code:   '',
         sub_code:    '',
         quantity:    0,
@@ -5049,7 +5059,10 @@
       const optsAttr = _cbEsc(JSON.stringify(Array.isArray(options) ? options : []));
       const cls   = o.className ? ' ' + o.className : '';
       const title = o.title ? ` title="${_cbEsc(o.title)}"` : '';
-      return `<div class="cb${cls}" data-row="${rowIdx}" data-field="${field}" data-options="${optsAttr}">` +
+      // The row index is kept for the inline handlers that fire synchronously;
+      // the uid is what the deferred commit addresses the row by.
+      const uid = _cbEsc((splitRows[rowIdx] || {})._uid || '');
+      return `<div class="cb${cls}" data-row="${rowIdx}" data-row-uid="${uid}" data-field="${field}" data-options="${optsAttr}">` +
         `<input type="text" class="cb-input${cls}"${title} value="${_cbEsc(currentValue || '')}" ` +
           `placeholder="${_cbEsc(placeholder || '')}" autocomplete="off" spellcheck="false" ` +
           `onfocus="cbOnFocus(this)" oninput="cbOnInput(this)" ` +
@@ -5068,6 +5081,11 @@
     }
     function cbOnFocus(input) {
       const options = _cbReadOptions(input);
+      // Close whatever menu was left open behind us. A click already does this
+      // through the document handler, but Tab did not — and the cell being
+      // left keeps its menu open until its own deferred commit fires, so two
+      // dropdowns overlapped for that 120ms.
+      cbCloseAll();
       _cbState.set(input, {
         options,
         filtered: options,
@@ -5180,8 +5198,20 @@
       const cb = input.closest('.cb');
       if (!cb) return;
       cbClose(input);
-      const rowIdx = parseInt(cb.dataset.row, 10);
       const field = cb.dataset.field;
+      if (!field) return;
+      // Addressed by the row's own id, not by where it sat when this cell was
+      // drawn. The commit below is deferred 120ms past the blur so that a click
+      // on a menu option is handled first — and a single ordinary click that
+      // lands on another row's ✕ deletes a row inside that window. Every row
+      // under it then shifts up, and a commit addressed by position wrote the
+      // supervisor's code onto whichever row moved into the slot: a day's cost
+      // booked to the wrong task, with the table showing a perfectly plausible
+      // result. A row that is gone takes its pending edit with it.
+      const uid = cb.dataset.rowUid;
+      const rowIdx = uid ? splitRows.findIndex(r => r && r._uid === uid)
+                         : parseInt(cb.dataset.row, 10);
+      if (!(rowIdx >= 0) || !splitRows[rowIdx]) return;
       // Trimmed, and written back so the box shows what was stored. A stray
       // space is invisible, but the code is matched against the job's bid
       // items exactly: "Mobilization " found nothing, so the sub-code picker
@@ -5191,7 +5221,7 @@
       // never mid-word.
       const value = String(input.value == null ? '' : input.value).trim();
       if (input.value !== value) input.value = value;
-      if (!isNaN(rowIdx) && field) splitOnChange(rowIdx, field, value);
+      splitOnChange(rowIdx, field, value);
     }
     document.addEventListener('mousedown', (e) => {
       const opt = e.target.closest('.cb-opt');
@@ -7925,7 +7955,7 @@
       // paving job the task usually files exactly one travel line under it.
       const subs = splitTravelSubsFor(g.ccList, cc);
       if (subs.length === 1) g.template.travel_sub_code = subs[0];
-      renderBulkGroups();
+      renderBulkGroupsSoon();
       updateBulkRunBtn();
     }
 
@@ -7967,7 +7997,7 @@
       // Paving files the drive under the task, so the work code is what makes
       // the travel leg fillable at all.
       bulkApplyTravelPrefill(g);
-      renderBulkGroups();
+      renderBulkGroupsSoon();
       updateBulkRunBtn();
     }
 
@@ -8196,11 +8226,54 @@
       </div>`;
     }
 
+    // Same problem the split table has, and the same answer: committing a cost
+    // code repaints every card, so the field the supervisor tabbed into is
+    // replaced and the cursor lands on the document body — where the next Tab
+    // restarts from the top of the page. Positional here rather than by id,
+    // because the two repaints that change how many controls a card has
+    // (+ machine, and dropping one) are both fired from buttons, so there is
+    // never an input focused across them.
+    function _bulkFocusSnapshot() {
+      const wrap = document.getElementById('bulkGroupsWrap');
+      const el = document.activeElement;
+      if (!wrap || !el || !wrap.contains(el)) return null;
+      const i = Array.prototype.indexOf.call(
+        wrap.querySelectorAll('input, select, textarea'), el);
+      if (i < 0) return null;
+      let start = null, end = null;
+      try { start = el.selectionStart; end = el.selectionEnd; } catch (_) { /* not a text field */ }
+      return { i, start, end };
+    }
+
+    function _bulkFocusRestore(snap) {
+      if (!snap) return;
+      const wrap = document.getElementById('bulkGroupsWrap');
+      const el = wrap && wrap.querySelectorAll('input, select, textarea')[snap.i];
+      if (!el) return;
+      el.focus();
+      if (snap.start != null) {
+        try { el.setSelectionRange(snap.start, snap.end); } catch (_) { /* not a text field */ }
+      }
+    }
+
+    // A change event on a text input fires in the GAP between the old control
+    // losing focus and the new one gaining it — Chrome parks activeElement on
+    // the body in between. Repainting from inside that gap destroys the
+    // control the cursor was on its way to, so it ends up nowhere and the next
+    // Tab restarts from the top of the page; and the snapshot above cannot
+    // help, because at that moment there is nothing to snapshot. One tick
+    // later the cursor has landed and the repaint can put it back.
+    function renderBulkGroupsSoon() {
+      setTimeout(renderBulkGroups, 0);
+    }
+
     function renderBulkGroups() {
       const wrap = document.getElementById('bulkGroupsWrap');
+      const focus = _bulkFocusSnapshot();
       const cards = bulkGroups.map((g, idx) => bulkGroupCard(g, idx));
       if (bulkSkipped.length) cards.push(bulkSkippedCard());
       wrap.innerHTML = cards.join('') || '<div class="bulk-note">Nothing to approve.</div>';
+      _bulkFocusRestore(focus);
     }
 
     function updateBulkRunBtn() {
