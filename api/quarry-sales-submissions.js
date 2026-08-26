@@ -388,7 +388,11 @@ async function injectSalesRow(sql, companyCode, sub) {
   };
 
   const next = arr.filter(r => !isMine(r));
-  next.push(row);
+  // Newest first, matching what "+ Add Row" does in the tab. Sales Tracking
+  // sorts on the date now so this no longer decides where the row appears,
+  // but a stored list whose order contradicts the tab's is a trap for the
+  // next thing to read it.
+  next.unshift(row);
   await writeBlobArray(sql, companyCode, QUARRY_SALES_BLOB, next);
   await syncForKey(sql, companyCode, QUARRY_SALES_BLOB, next);
   return row;

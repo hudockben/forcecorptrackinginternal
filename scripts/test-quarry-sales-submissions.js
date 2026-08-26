@@ -327,8 +327,10 @@ async function injectionTests() {
     const row = await injectSalesRow(makeSql(store), 'FCT', sub);
     const arr = store.get(KEY);
 
-    assert('the row is appended, not swapped in', arr.length === 2);
-    assert("the tab's own row is untouched", arr[0].id === 'typed-by-hand');
+    assert('the row is added, not swapped in', arr.length === 2);
+    assert("the tab's own row is untouched", arr.some(r => r.id === 'typed-by-hand'));
+    assert('and the sale lands at the top, where "+ Add Row" puts one',
+      arr[0].id === salesRowId(55), JSON.stringify(arr.map(r => r.id)));
     assert('the id names its submission', row.id === salesRowId(55), row.id);
     assert('and reads as an injected row',  isQuarrySalesRow(row));
     assert('the seven answers are carried across',
@@ -707,6 +709,50 @@ function pageTests() {
         !/formatMoney/.test(src[1]), src[1].trim());
       assert('and reads nothing off the price itself, so it cannot go stale',
         !/pricePerTon/.test(src[1]), src[1].trim());
+    }
+  }
+  // A submitted sale used to arrive at the BOTTOM of the grid — under three
+  // hundred rows, on a tab with no sort control — which reads exactly like it
+  // never arrived. The injector prepends now, but that alone is not enough:
+  // mergeInjectedRows appends any row a save never mentioned, so a sale landing
+  // while the tab is open goes to the end however it was stored. The table has
+  // to order itself.
+  assert('Sales Tracking orders itself by date, newest first',
+    /\.sort\(byDateDesc\)/.test(grid) && /function byDateDesc/.test(grid));
+  // Daily and Crushing have sorted newest-first since payroll started injecting
+  // into them, but off their own copies of the rule, which put an undated row
+  // at the BOTTOM where Sales puts it at the top. Three tabs, one comparator,
+  // so they cannot drift apart again.
+  assert('and so do Daily and Crushing, off the same comparator',
+    (grid.match(/\.sort\(byDateDesc\)/g) || []).length === 3,
+    String((grid.match(/\.sort\(byDateDesc\)/g) || []).length));
+  {
+    // Scoped to the three tracking grids — the ones that carry injected rows.
+    // Inventory's adjustment grid sorts by date too and is left alone: nothing
+    // is injected into it, so an undated row there means something else.
+    const blocks = [...grid.matchAll(/const visibleEntries = \w+Rows\n[\s\S]*?;\n/g)].map(m => m[0]);
+    assert('all three tracking grids build their rows the same way', blocks.length === 3,
+      String(blocks.length));
+    assert('and every one of them sorts with the shared comparator',
+      blocks.every(b => /\.sort\(byDateDesc\);\n$/.test(b)),
+      blocks.filter(b => !/\.sort\(byDateDesc\);\n$/.test(b)).join('\n---\n'));
+  }
+  {
+    const src = /function byDateDesc\(a, b\) \{([\s\S]*?)\n    \}/.exec(grid);
+    assert('and the comparator is lifted out where it can be read', !!src);
+    if (src) {
+      const cmp = new Function(`${src[0]}\nreturn byDateDesc;`)();
+      const rows = [
+        { row: { id: 'aug06', date: '2026-08-06' } },
+        { row: { id: 'aug26', date: '2026-08-26' } },
+        { row: { id: 'nodate', date: '' } },
+        { row: { id: 'aug10a', date: '2026-08-10' } },
+        { row: { id: 'aug10b', date: '2026-08-10' } },
+        { row: { id: 'sep02', date: '2026-09-02' } },
+      ];
+      const order = rows.slice().sort(cmp).map(e => e.row.id).join(',');
+      assert('newest first, undated at the top, same-date order kept',
+        order === 'nodate,sep02,aug26,aug10a,aug10b,aug06', order);
     }
   }
   assert('the filtered-delete tool skips it', /!isInjectedRow\(r\)/.test(grid));
