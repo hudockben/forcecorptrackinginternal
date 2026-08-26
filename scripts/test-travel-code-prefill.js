@@ -907,6 +907,20 @@ console.log('\n[a repaint keeps the cursor where it was]');
   assert('and a flush does not resurrect codes an untick just cleared',
     window.eval('splitRows[1].sub_code') === '', window.eval('splitRows[1].sub_code'));
 
+  // The modal opens before its lookups land, and its buttons are live the whole
+  // time. A supervisor who presses "+ Add labor row" while waiting had their
+  // row still sitting in splitRows when the defaults arrived on top of it: a
+  // form opening with three rows, one blank, and a tally that will not balance
+  // until they work out which to remove. Read off the source for the same
+  // reason as the flush below — openSplitModal is async and this file is not.
+  const openSrc = src.slice(src.indexOf('async function openSplitModal'),
+                            src.indexOf('function closeSplit()'));
+  assert('the modal opens on exactly its defaults, not on top of what is there',
+    openSrc.length > 0 && /splitRows = fresh;/.test(openSrc) &&
+    !/splitRows\.push\(_blankSplitRow/.test(openSrc));
+  assert('and a split read back from the server carries the same row shape',
+    /code_source: ''/.test(openSrc));
+
   // The flush only helps if the save runs it. Read off the source rather than
   // driven, because splitSave is async and this file is not — what has to hold
   // is that the call is there, ahead of the body it posts.

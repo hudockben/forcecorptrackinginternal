@@ -4847,11 +4847,22 @@
           labor_hours: r.labor_hours != null ? Number(r.labor_hours) : 0,
           equip_hours: r.equip_hours != null ? Number(r.equip_hours) : 0,
           is_travel:   !!r.is_travel,
+          // Nobody's guess — this is what was approved. Spelled out so every
+          // row in this array has the same shape.
+          code_source: '',
         }));
       } else {
-        // Sensible defaults: one labor row, and a travel row if travel > 0
-        splitRows.push(_blankSplitRow(false));
-        if (travel > 0) splitRows.push(_blankSplitRow(true));
+        // Sensible defaults: one labor row, and a travel row if travel > 0.
+        //
+        // Assigned, not pushed. The modal opens before these lookups land and
+        // its buttons are live the whole time, so a supervisor who pressed
+        // "+ Add labor row" while waiting had their row still sitting in
+        // splitRows when the defaults arrived on top of it — a form that opens
+        // with three rows, one of them blank, and a tally that does not
+        // balance until they work out which one to remove.
+        const fresh = [_blankSplitRow(false)];
+        if (travel > 0) fresh.push(_blankSplitRow(true));
+        splitRows = fresh;
       }
       // A travel row the supervisor has to code by hand is the slow half of
       // this form, and on most jobs the answer is not in doubt. Fill what the
