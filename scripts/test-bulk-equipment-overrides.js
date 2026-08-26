@@ -63,8 +63,19 @@ const sandbox = {
   renderBulkGroups: () => {},   // adding/removing a machine repaints the card
 };
 vm.createContext(sandbox);
+// The travel prefill runs off the same regex the tally and the server read a
+// row by, so it comes across with the functions that call it.
+const travelReSrc = (src.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0];
+if (!travelReSrc) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
+vm.runInContext(travelReSrc, sandbox);
 vm.runInContext([
   'buildBulkGroups(entries) {',
+  // Picking a cost code now also offers the travel leg its code, so the
+  // lookup behind that offer has to be here or bulkCostCode dies on it.
+  'splitTravelCandidates(ccList) {',
+  'splitTravelSubsFor(ccList, costCode) {',
+  'splitPickTravelCodes(ccList, workCostCode) {',
+  'bulkApplyTravelPrefill(g) {',
   '_blankMachine() {',
   '_bulkRowCell(g, entryId) {',
   '_bulkRowItem(g, entryId, itemIdx) {',
