@@ -169,8 +169,18 @@
       position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%);
       font-size: 1.35rem; font-weight: 700; color: var(--muted); pointer-events: none;
     }
-    /* The price the two figures work out to. Green once it resolves, because
-       it is the one number on this form nobody types and the office reads. */
+    /* A box the form fills in for you. Reads as an answer rather than as a
+       question — flat, in the accent colour, and visibly not typeable, so
+       nobody stands at a scale trying to correct a total the form worked out. */
+    input[readonly] {
+      background: var(--surface2);
+      color: var(--accent);
+      border-style: dashed;
+      cursor: default;
+    }
+    .figure-row input[readonly] { background: var(--bg); }
+    /* Says what the total is made of. Green once it resolves, because it is
+       the one number on this form nobody types and the office bills. */
     .field-note.calc { color: var(--green); font-weight: 600; }
 
     /* ── Action buttons ── */
@@ -337,22 +347,32 @@
       <div class="row figure-row">
         <label for="f-tons">Tons</label>
         <input type="number" id="f-tons" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
-               oninput="updatePrice()" onchange="updatePrice()" />
+               oninput="updateAmount()" onchange="updateAmount()" />
         <div class="field-note">Off the scale ticket, for this load only.</div>
       </div>
 
-      <!-- What the customer was charged. The office's grid works in price per
-           ton, which nobody at a scale house carries in their head — so the
-           ticket total is what is asked for, and the price is worked out from
-           it below, where the person holding the ticket can see it. -->
+      <div class="row figure-row">
+        <label for="f-price">Price / Ton</label>
+        <div class="amount-wrap">
+          <span class="amount-prefix" aria-hidden="true">$</span>
+          <input type="number" id="f-price" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+                 oninput="updateAmount()" onchange="updateAmount()" />
+        </div>
+        <div class="field-note">What this material sold at today.</div>
+      </div>
+
+      <!-- The total, worked out rather than asked for. It is the figure the
+           customer is billed and the figure Sales Tracking shows as Net Sales,
+           and both are the same multiplication of the same two numbers above —
+           so there is nothing here to type and nothing to disagree with. -->
       <div class="row figure-row">
         <label for="f-amount">Amount Charged</label>
         <div class="amount-wrap">
           <span class="amount-prefix" aria-hidden="true">$</span>
-          <input type="number" id="f-amount" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
-                 oninput="updatePrice()" onchange="updatePrice()" />
+          <input type="text" id="f-amount" readonly tabindex="-1" placeholder="0.00"
+                 aria-live="polite" aria-readonly="true" />
         </div>
-        <div class="field-note" id="priceNote"></div>
+        <div class="field-note" id="amountNote"></div>
       </div>
 
       <div class="row">
@@ -442,9 +462,13 @@
       { key: 'customer',  id: 'f-customer', label: 'Customer', list: 'customers' },
       { key: 'product',   id: 'f-product',  label: 'Product',  list: 'products'  },
       { key: 'tons',      id: 'f-tons',     label: 'Tons' },
-      { key: 'amount_charged', id: 'f-amount', label: 'Amount Charged' },
+      { key: 'price_per_ton', id: 'f-price', label: 'Price / Ton' },
       { key: 'payment',   id: 'f-payment',  label: 'Payment' },
     ];
+    // f-amount is deliberately not in FIELDS. It is worked out, not asked for,
+    // so it is never something the submitter can leave blank — and posting it
+    // would let this page bill a customer something other than tons x price.
+
 
     // Which Manage Lists panel a worker should be pointed at when a picker is
     // empty. Named the way the quarry page names them, so the message is an
@@ -462,57 +486,51 @@
     let entriesCache = [];
     let editingId    = null;    // id of the draft row this form is sitting on
 
-    // ── The price the ticket implies ────────────────────────────────────────
-    // Copy of pricePerTonFrom() in api/quarry-sales-submissions.js, which is
-    // canonical and recomputes this on the way into the grid.
+    // ── What the load comes to ──────────────────────────────────────────────
+    // Copy of amountFrom() in api/quarry-sales-submissions.js, which is
+    // canonical and recomputes this on every write.
     // scripts/test-quarry-sales-submissions.js runs both over the same table
-    // of tickets and fails if they disagree — a form that showed one figure
-    // and stored another is worse than a form that showed nothing.
-    //
-    // Four places, not two: it is a division and rarely lands on a cent, and
-    // $100 over 3 tons rounded to 33.33 bills 99.99 for a load charged 100.
-    function pricePerTonFrom(amount, tons) {
-      const a = Number(amount), t = Number(tons);
-      if (!Number.isFinite(a) || !Number.isFinite(t)) return null;
-      if (a <= 0 || t <= 0) return null;
-      return Math.round((a / t) * 10000) / 10000;
+    // of loads and fails if they disagree — a form that showed one total and
+    // stored another is worse than a form that showed nothing.
+    function amountFrom(tons, price) {
+      const t = Number(tons), p = Number(price);
+      if (!Number.isFinite(t) || !Number.isFinite(p)) return null;
+      if (t <= 0 || p <= 0) return null;
+      return Math.round(t * p * 100) / 100;
     }
 
     function money(n) {
       return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    // Show what the office will see. This is the whole safety net on the
-    // amount: no threshold could tell $441 from $4,410 for a quarry whose
-    // prices this page does not know, but $180.00 / ton on the screen of
-    // someone holding the ticket is unmissable.
-    function updatePrice() {
-      const note = el('priceNote');
-      if (!note) return;
-      const tons   = val('f-tons').trim();
-      const amount = val('f-amount').trim();
-      if (amount === '' && tons === '') {
+    // Fill the total in, and say what it is made of. This is the whole safety
+    // net on the two figures above: no threshold could tell 15.75 from 1575
+    // for a quarry whose prices this page does not know, but a $7,875 total on
+    // the screen of the person writing the ticket is unmissable.
+    function updateAmount() {
+      const box  = el('f-amount');
+      const note = el('amountNote');
+      if (!box || !note) return;
+      const tons  = val('f-tons').trim();
+      const price = val('f-price').trim();
+      const amount = amountFrom(tons, price);
+      if (amount === null) {
+        box.value = '';
         note.className = 'field-note';
-        note.textContent = 'The price per ton is worked out from this and the tonnage above.';
+        note.textContent = (tons === '' && price === '')
+          ? 'Worked out from the tonnage and the price above.'
+          : (tons === '' ? 'Fill in the tonnage above and this works itself out.'
+                         : 'Fill in the price above and this works itself out.');
         return;
       }
-      const price = pricePerTonFrom(amount, tons);
-      if (price === null) {
-        note.className = 'field-note';
-        note.textContent = tons === ''
-          ? 'Fill in the tonnage above and this works out the price per ton.'
-          : 'Fill in the amount and this works out the price per ton.';
-        return;
-      }
+      box.value = Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       note.className = 'field-note calc';
-      // Shown to the cent, which is how it reads on a price list. The figure
-      // stored keeps its four places so tons x price comes back to the amount.
-      note.textContent = `= ${money(price)} / ton`;
+      note.textContent = `${Number(tons)} tons × ${money(price)} / ton`;
     }
 
     async function init() {
       el('f-date').value = todayStr();
-      updatePrice();
+      updateAmount();
       // Clear a field's error outline as soon as it stops being empty, so the
       // form isn't still marking something the worker has already filled in.
       for (const f of FIELDS) {
@@ -609,6 +627,10 @@
     // A picked field posts its id AND the name showing against it. The server
     // re-resolves the name from the id, so the name is what carries the answer
     // through if the list item is ever deleted.
+    //
+    // Amount Charged is not sent at all — it is not in FIELDS. The server does
+    // the same multiplication from the same two numbers, so posting this
+    // page's copy could only ever be a way for the two to disagree.
     function buildPayload() {
       const data = {};
       for (const f of FIELDS) {
@@ -747,8 +769,8 @@
         // than a 0 that reads as "nothing went out".
         const tons  = e.tons != null ? `${Number(e.tons).toLocaleString(undefined, { maximumFractionDigits: 2 })} t` : '';
         const amount = e.amount_charged != null ? money(e.amount_charged) : '';
-        // The price is the office's figure, so it is shown small and only once
-        // both halves of it exist — it is here to be checked, not read.
+        // What the total is made of, shown small beneath it — there to be
+        // checked against the ticket, not read.
         const price = e.price_per_ton != null ? `${money(e.price_per_ton)} / ton` : '';
         const audit = entryAuditLine(e);
         return `
@@ -818,7 +840,7 @@
         node.value = listId;
       }
 
-      updatePrice();
+      updateAmount();
       markEmpty([]);
       markAsDraft();
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -841,7 +863,7 @@
       markEmpty([]);
       el('f-date').value = todayStr();
       preselectEmployee();
-      updatePrice();
+      updateAmount();
       document.getElementById('formMsg').textContent = '';
     }
 
@@ -955,9 +977,10 @@
         return;
       }
 
-      const price = pricePerTonFrom(val('f-amount'), val('f-tons'));
+      const amount = amountFrom(val('f-tons'), val('f-price'));
       if (!confirm(
-        `Submit this sale at ${price === null ? 'no price' : money(price) + ' / ton'}?\n\n` +
+        `Submit this sale for ${amount === null ? 'no charge' : money(amount)}?\n\n` +
+        `${Number(val('f-tons'))} tons at ${money(val('f-price'))} / ton. ` +
         'It goes straight into Quarry Sales Tracking, and only the quarry office can take it back out.'
       )) return;
       if (!beginWrite()) return;

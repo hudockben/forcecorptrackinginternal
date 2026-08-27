@@ -1626,11 +1626,17 @@ CREATE INDEX IF NOT EXISTS idx_tdr_company_driver
 -- quarry's Manage Lists, and a customer deleted from that list a year later
 -- would otherwise take the name off every sale ever made to them.
 --
--- amount_charged is what the ticket said, and it is what the price per ton in
--- Sales Tracking is worked out from: amount over tons. Stored rather than the
--- price, because the amount is the figure that exists — nobody at a scale
--- house knows a price per ton, they know what they charged — and because a
--- division is lossy in the other direction.
+-- price_per_ton is what the load sold at, and amount_charged is what that
+-- comes to: tons x price, rounded to the cent. Both are stored — the price
+-- because it is the figure typed, the amount because it is the figure the
+-- customer was billed and a multiplication is not worth re-deriving on every
+-- read.
+--
+-- This ran the other way round first: the form asked for the amount and the
+-- price was divided out of it. Multiplying is the better direction and not
+-- only because the pit thinks in prices — a division does not come back. $100
+-- over 3 tons is 33.3333 a ton, and 33.3333 times 3 is 99.9999, so the figure
+-- stored was never quite the figure charged.
 --
 -- row_id is which Sales Tracking row this submission owns. Derivable from id,
 -- and stored anyway: it is what a later sweep would key on, and a column is
@@ -1654,6 +1660,7 @@ CREATE TABLE IF NOT EXISTS quarry_sales_submissions (
     product_id     TEXT,
     product_name   TEXT,
     tons           NUMERIC(14,4),
+    price_per_ton  NUMERIC(14,4),
     amount_charged NUMERIC(14,2),
     payment        TEXT,
 
@@ -1670,6 +1677,17 @@ CREATE INDEX IF NOT EXISTS idx_qss_company_status
 CREATE INDEX IF NOT EXISTS idx_qss_company_customer
     ON quarry_sales_submissions(company_code, customer_name, work_date DESC);
 
--- Added after the table shipped, so it has to reach a database that already
--- has the table — CREATE TABLE IF NOT EXISTS above would skip it there.
+-- Added after the table shipped, so they have to reach a database that already
+-- has the table — CREATE TABLE IF NOT EXISTS above would skip them there.
 ALTER TABLE quarry_sales_submissions ADD COLUMN IF NOT EXISTS amount_charged NUMERIC(14,2);
+ALTER TABLE quarry_sales_submissions ADD COLUMN IF NOT EXISTS price_per_ton  NUMERIC(14,4);
+
+-- Sales recorded while the form asked for the amount instead of the price
+-- carry no price of their own. Divide it back out of what they were charged,
+-- which is exactly the figure their Sales Tracking row was already showing —
+-- so nothing on screen changes, the column simply stops being empty. Guarded
+-- on IS NULL so it is a no-op on every run after the first, and on tons > 0
+-- so it cannot divide by zero.
+UPDATE quarry_sales_submissions
+   SET price_per_ton = ROUND(amount_charged / tons, 4)
+ WHERE price_per_ton IS NULL AND amount_charged IS NOT NULL AND tons > 0;

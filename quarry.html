@@ -3097,10 +3097,14 @@
       if (item && item.taxable) return 'This customer is flagged taxable but has no rate set — enter one in Manage Lists → Customer.';
       return 'Customer is not flagged taxable — check the box in Manage Lists → Customer to charge tax.';
     }
-    // Where a submitted sale's price came from. It is a division — amount
-    // charged over tons — so it can carry four decimals, and someone seeing
-    // 33.3333 in a money column needs to know that is arithmetic rather than a
-    // mistyped rate.
+    // Where a submitted sale's price came from: the scale house typed it, and
+    // Net Sales beside it is that price times the tonnage — the same
+    // multiplication their form showed them as the total charged.
+    //
+    // A price of four decimals is possible and is not a mistyped rate: sales
+    // recorded while the form asked for the ticket total instead of the price
+    // had theirs divided back out of it, and 33.3333 a ton is what $100 over
+    // three tons comes to.
     //
     // Deliberately states no dollar figure. It used to name tons x price as
     // "charged on the ticket", which stopped being true the moment the office
@@ -3111,9 +3115,9 @@
     // renders either.
     function salesPriceTitle(row) {
       const t = Number(row.tons);
-      const over = (Number.isFinite(t) && t) ? `, over ${formatTons(t)} tons` : '';
-      return `Price per ton for this load. It arrives worked out from the ticket total the scale house entered${over} `
-           + '— a division, so it can run to four decimals. Type over it to re-price the load; '
+      const over = (Number.isFinite(t) && t) ? ` on ${formatTons(t)} tons` : '';
+      return `Price per ton for this load. The scale house entered it${over}, and Net Sales beside it is `
+           + 'the two multiplied — the same total their form showed them. Type over it to re-price the load; '
            + 'Sales Tax, Net Sales and Total Due all follow from it.';
     }
 
@@ -3797,7 +3801,7 @@
         if (isSalesSubmissionRow(row)) {
           const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
           return `
-            <tr class="qss-locked" title="Submitted on the Quarry Sales form. Price / Ton is worked out from the amount charged on the ticket — correct it here if the ticket was wrong; to take the sale back out, use the ✕.">
+            <tr class="qss-locked" title="Submitted on the Quarry Sales form. Price / Ton is the price the scale house sold at — correct it here if it was entered wrong; to take the sale back out, use the ✕.">
               <td class="col-date">${ro(row.date)}</td>
               <td>${ro(row.locationName)}</td>
               <td>${ro(row.employeeName)}</td>
@@ -4126,7 +4130,7 @@
     const TS_LOCK_BADGE =
       '<span class="ts-lock-badge" title="Injected from an approved timesheet — manage it in Payroll">🔒 TS</span>';
     const QSS_BADGE =
-      '<span class="qss-badge" title="Submitted on the Quarry Sales form — the pit, customer, product, tons and payment are the scale house\'s. Price / Ton came off their ticket total and is yours to correct.">✓ SALE</span>';
+      '<span class="qss-badge" title="Submitted on the Quarry Sales form — the pit, customer, product, tons, price and payment are the scale house\'s. Price / Ton is yours to correct.">✓ SALE</span>';
 
     function renderCrush(keepFilters) {
       const tbody = document.getElementById('crushTbody');

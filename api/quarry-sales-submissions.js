@@ -24,11 +24,16 @@
  * The names are re-resolved from that list on every write, so what lands in the
  * grid is spelled the way the list spells it however the page was cached.
  *
- * Price per ton is not asked for, because nobody at a scale house knows it —
- * they know what the ticket said. So the form asks for the amount charged and
- * the price is worked out from it: amount / tons, to four places, which is the
- * precision the mirror column carries. Multiply it back by the tonnage and you
- * get the amount charged to the cent, so Net Sales in the grid IS the ticket.
+ * The form asks what the load sold at, and the amount charged follows: tons x
+ * price, to the cent. Net Sales in the grid is that same product, so the two
+ * agree exactly.
+ *
+ * It ran the other way round first — the form asked for the amount and the
+ * price was divided out of it. Multiplying is the better direction, and not
+ * only because a pit thinks in prices: a division does not come back. $100
+ * over 3 tons is 33.3333 a ton, and 33.3333 x 3 is 99.9999, so the price
+ * stored never quite reproduced the money. There is no such gap this way
+ * round.
  *
  * The office still owns the column — pricePerTon is the one field of an
  * injected row a Sales Tracking save may write, and a submitted sale is never
@@ -63,9 +68,12 @@ const FIELDS = [
   { key: 'customer_name', label: 'Customer', list: 'customer',  pair: 'customer_id' },
   { key: 'product_name',  label: 'Product',  list: 'product',   pair: 'product_id'  },
   { key: 'tons',          label: 'Tons' },
-  { key: 'amount_charged', label: 'Amount Charged' },
+  { key: 'price_per_ton', label: 'Price / Ton' },
   { key: 'payment',       label: 'Payment' },
 ];
+// amount_charged is deliberately absent from FIELDS: it is not asked for and
+// so can never be "missing". It is tons x price, worked out on every write.
+
 
 // The heaviest load anyone has ever put across the scale in one go, with room
 // over it. Not a policy — a guard against the digit typed wrong that turns 24
@@ -73,13 +81,13 @@ const FIELDS = [
 // two loads.
 const MAX_TONS = 200;
 
-// Not a number of dollars anyone charges for one load — a pasted figure or a
-// row of digits held down. Deliberately far above any real ticket rather than
-// tuned to this quarry's prices: the guard against the ordinary typo (441
-// entered as 4410) is not a threshold anyone could pick, it is the price per
-// ton showing on the form as it is typed, where the person holding the ticket
-// can see it is wrong.
-const MAX_AMOUNT = 250000;
+// Not a price anyone charges for a ton of aggregate — a decimal point missed,
+// so 15.75 typed as 1575. Set far above this quarry's own prices (their
+// tickets run $9 to $27) rather than tuned to them, because a threshold tight
+// enough to catch every typo would refuse a specialty product nobody told this
+// file about. The real guard is the amount showing on the form as the price is
+// typed, where the person writing the ticket can see it is wrong.
+const MAX_PRICE = 1000;
 
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;
@@ -145,34 +153,36 @@ function parseTons(v) {
 }
 
 /**
- * What the customer was charged for the load. Blank stays blank so a draft can
- * be saved before the ticket is written up; anything present has to be money.
- * Returns { value } or { error }.
+ * What the load sold at, per ton. Blank stays blank so a draft can be saved
+ * before the ticket is written up; anything present has to be money.
+ *
+ * Kept to four decimal places rather than two, matching the NUMERIC(14,4) it
+ * lands in. Nobody types four, but a sale recorded before the form asked for a
+ * price carries one divided back out of its amount, and rounding those to the
+ * cent on the first edit would quietly move the money.
  */
-function parseAmount(v) {
+function parsePrice(v) {
   if (v === null || v === undefined || String(v).trim() === '') return { value: null };
   const n = Number(v);
-  if (!Number.isFinite(n)) return { error: 'Amount charged must be a number.' };
-  if (n <= 0)              return { error: 'Amount charged must be more than zero.' };
-  if (n > MAX_AMOUNT)      return { error: `Amount charged looks wrong — $${n} is over the $${MAX_AMOUNT.toLocaleString('en-US')} limit for one load.` };
-  return { value: Math.round(n * 100) / 100 };
+  if (!Number.isFinite(n)) return { error: 'Price per ton must be a number.' };
+  if (n <= 0)              return { error: 'Price per ton must be more than zero.' };
+  if (n > MAX_PRICE)       return { error: `Price per ton looks wrong — $${n} is over the $${MAX_PRICE.toLocaleString('en-US')} a ton limit. Check the decimal point.` };
+  return { value: Math.round(n * 10000) / 10000 };
 }
 
 /**
- * The price per ton a ticket implies. Null when either half is missing, so a
- * half-finished draft prices nothing.
+ * What the load comes to: tons x price, to the cent. Null when either half is
+ * missing, so a half-finished draft is charged nothing.
  *
- * Four decimal places, not two. It is a division, so it rarely lands on a
- * cent: $100 over 3 tons is 33.3333, and rounding that to 33.33 bills 99.99
- * for a load that was charged 100. quarry_sales_entries.price_per_ton is
- * NUMERIC(14,4), and at four places tons x price comes back to the amount
- * charged well inside the cent the grid rounds to.
+ * Two places, and exactly reproducible — this is the figure the customer is
+ * billed, and Net Sales in the grid is the same multiplication of the same two
+ * numbers.
  */
-function pricePerTonFrom(amount, tons) {
-  const a = Number(amount), t = Number(tons);
-  if (!Number.isFinite(a) || !Number.isFinite(t)) return null;
-  if (a <= 0 || t <= 0) return null;
-  return Math.round((a / t) * 10000) / 10000;
+function amountFrom(tons, price) {
+  const t = Number(tons), p = Number(price);
+  if (!Number.isFinite(t) || !Number.isFinite(p)) return null;
+  if (t <= 0 || p <= 0) return null;
+  return Math.round(t * p * 100) / 100;
 }
 
 /**
@@ -188,8 +198,8 @@ function normalizeBody(body) {
   const tons = parseTons(b.tons);
   if (tons.error) return { error: tons.error };
 
-  const amount = parseAmount(b.amount_charged);
-  if (amount.error) return { error: amount.error };
+  const price = parsePrice(b.price_per_ton);
+  if (price.error) return { error: price.error };
 
   const payment = safeStr(b.payment, 20);
   if (payment && !PAYMENT_OPTIONS.includes(payment)) {
@@ -208,7 +218,12 @@ function normalizeBody(body) {
       product_id:    safeStr(b.product_id, 80),
       product_name:  safeStr(b.product_name),
       tons: tons.value,
-      amount_charged: amount.value,
+      price_per_ton: price.value,
+      // Derived, never taken from the body. A client that posted its own
+      // figure could bill a customer something other than tons x price, and
+      // the grid — which multiplies the two itself — would disagree with the
+      // record without either side being able to say which was right.
+      amount_charged: amountFrom(tons.value, price.value),
       payment,
     },
   };
@@ -264,7 +279,7 @@ async function resolveListNames(sql, companyCode, data) {
 function missingFields(row) {
   return FIELDS.filter(f => {
     const v = row[f.key];
-    if (f.key === 'tons' || f.key === 'amount_charged') {
+    if (f.key === 'tons' || f.key === 'price_per_ton') {
       return v === null || v === undefined || v === '';
     }
     return !String(v == null ? '' : v).trim();
@@ -289,13 +304,14 @@ function dbToEntry(r) {
     product_id:    r.product_id    || '',
     product_name:  r.product_name  || '',
     tons:          r.tons === null || r.tons === undefined ? null : Number(r.tons),
-    amount_charged: r.amount_charged === null || r.amount_charged === undefined
-      ? null : Number(r.amount_charged),
+    price_per_ton: r.price_per_ton === null || r.price_per_ton === undefined
+      ? null : Number(r.price_per_ton),
     payment:       r.payment || '',
-    // What the two of them work out to. Handed back so the form can show the
-    // submitter the figure the office will see, rather than leaving the one
-    // number nobody typed to appear for the first time in someone else's grid.
-    price_per_ton: pricePerTonFrom(r.amount_charged, r.tons),
+    // What the two of them come to. Worked out here rather than read from the
+    // column so a row stored before the price was asked for — its amount is
+    // real, its price divided back out of it — still hands back a total that
+    // is the product of the two figures beside it.
+    amount_charged: amountFrom(r.tons, r.price_per_ton),
     row_id:        r.row_id || null,
     submitted_at:  r.submitted_at || null,
     created_at:    r.created_at || null,
@@ -328,15 +344,15 @@ async function writeBlobArray(sql, companyCode, blobKey, arr) {
  * Idempotent: any row this submission already owns is dropped first, so a
  * retried submit corrects the sale rather than posting it twice.
  *
- * The price is worked out from the ticket — amount charged over tons — every
- * time, so a draft corrected after a half-finished submit is corrected whole.
+ * The price is the one the form was given, every time, so a draft corrected
+ * after a half-finished submit is corrected whole.
  * See priced() for why nothing invoiced is at risk in that window.
  */
 /**
- * The price to write on the row: the one the ticket implies, and only if the
- * ticket cannot answer, whatever is already there.
+ * The price to write on the row: the one the form was given, and only if the
+ * form has none, whatever is already there.
  *
- * The ticket wins, and it has to. A row can only be re-injected while its
+ * The submission wins, and it has to. A row can only be re-injected while its
  * submission is still a DRAFT — submit refuses anything already sent — so the
  * only price this can be standing on is one an earlier, unfinished submit of
  * this same draft put there. Keeping it meant a submitter who caught a
@@ -351,15 +367,15 @@ async function writeBlobArray(sql, companyCode, blobKey, arr) {
  * write on an injected row (SALES_TAB_FIELDS).
  *
  * The fallback is defence rather than a path anyone walks — submit checks
- * completeness first, so tons and amount are both present by the time this
- * runs and pricePerTonFrom cannot return null. It is here so that a caller
+ * completeness first, so the price is present by the time this runs. It is
+ * here so that a caller
  * injecting an incomplete sale leaves a hand-typed price alone instead of
  * blanking it. '' counts as blank, because that is what an untouched cell
  * holds in the grid.
  */
 function priced(prior, sub) {
-  const computed = pricePerTonFrom(sub.amount_charged, sub.tons);
-  if (computed !== null) return computed;
+  const asked = Number(sub.price_per_ton);
+  if (Number.isFinite(asked) && asked > 0) return asked;
   const held = prior ? prior.pricePerTon : undefined;
   return (held === undefined || held === null) ? '' : held;
 }
@@ -510,14 +526,14 @@ module.exports = async (req, res) => {
           company_code, user_id, username, status, work_date,
           location_id, location_name, employee_id, employee_name,
           customer_id, customer_name, product_id, product_name,
-          tons, amount_charged, payment
+          tons, price_per_ton, amount_charged, payment
         ) VALUES (
           ${companyCode}, ${userId}, ${payload.username}, 'draft', ${data.work_date},
           ${data.location_id}, ${data.location_name},
           ${data.employee_id}, ${data.employee_name},
           ${data.customer_id}, ${data.customer_name},
           ${data.product_id},  ${data.product_name},
-          ${data.tons}, ${data.amount_charged}, ${data.payment}
+          ${data.tons}, ${data.price_per_ton}, ${data.amount_charged}, ${data.payment}
         )
         RETURNING *
       `;
@@ -558,6 +574,7 @@ module.exports = async (req, res) => {
           customer_id   = ${data.customer_id},   customer_name = ${data.customer_name},
           product_id    = ${data.product_id},    product_name  = ${data.product_name},
           tons          = ${data.tons},          payment       = ${data.payment},
+          price_per_ton  = ${data.price_per_ton},
           amount_charged = ${data.amount_charged},
           updated_at    = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
@@ -689,8 +706,8 @@ module.exports = async (req, res) => {
 // Exposed for scripts/test-quarry-sales-submissions.js, which exercises the
 // parsing and completeness rules directly rather than through a fake request.
 module.exports._test = {
-  FIELDS, MAX_TONS, MAX_AMOUNT, VALID_STATUSES,
-  safeDate, safeInt, safeStr, parseTons, parseAmount, pricePerTonFrom, priced,
+  FIELDS, MAX_TONS, MAX_PRICE, VALID_STATUSES,
+  safeDate, safeInt, safeStr, parseTons, parsePrice, amountFrom, priced,
   normalizeBody, missingFields,
   dbToEntry, resolveListNames, injectSalesRow, removeSalesRow,
 };

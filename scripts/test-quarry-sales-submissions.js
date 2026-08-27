@@ -25,14 +25,16 @@ process.env.TZ = 'Europe/Berlin';
  *    from Manage Lists on every write. Drop that and "Homer City" and "Homer
  *    city" become two pits in every report the quarry runs.
  *
- * 2. THE PRICE IS A DIVISION, AND IT HAS TO COME BACK. Nobody at a scale house
- *    knows a price per ton, so the form asks what the customer was charged and
- *    the price is worked out from it. Round that quotient to two places and a
- *    $100 load over 3 tons bills $99.99 — so it is carried to four, and tons
- *    times price has to return the amount charged inside the cent the grid
- *    rounds to. The form shows the same figure as it is typed, off its own copy
- *    of the rule, and a page that showed one number and stored another would be
- *    worse than a page that showed nothing.
+ * 2. THE TOTAL IS A MULTIPLICATION, AND ONLY ONE SIDE MAY DO IT. The form asks
+ *    the price and works the amount out: tons x price. The page shows the same
+ *    figure as it is typed, off its own copy of the rule, and never posts it —
+ *    the server multiplies the same two numbers again, so a page that could
+ *    send its own total would be a page that could bill a customer something
+ *    other than what its two figures say.
+ *
+ *    This ran the other way round first, and the reason it stopped is worth
+ *    keeping: a division does not come back. $100 over 3 tons is 33.3333 a ton,
+ *    and 33.3333 x 3 is 99.9999.
  *
  * 3. THE OFFICE'S PRICE SURVIVES. Price per ton is the one column of an
  *    injected row the office owns, and it is filled FORWARD ONLY — onto a cell
@@ -86,8 +88,8 @@ Module._load = function (request) {
 
 const handler = require(path.resolve(__dirname, '..', 'api', 'quarry-sales-submissions.js'));
 const {
-  FIELDS, MAX_TONS, MAX_AMOUNT, safeDate, parseTons, parseAmount,
-  pricePerTonFrom, priced, normalizeBody, missingFields,
+  FIELDS, MAX_TONS, MAX_PRICE, safeDate, parseTons, parsePrice,
+  amountFrom, priced, normalizeBody, missingFields,
   dbToEntry, resolveListNames, injectSalesRow, removeSalesRow,
 } = handler._test;
 const { PAYMENT_OPTIONS } = require(path.resolve(__dirname, '..', 'api', 'lib', 'quarry-sales-options.js'));
@@ -112,7 +114,7 @@ const FULL = {
   customer_id: 'cus1',  customer_name: 'Kinkead Aggregates',
   product_id:  'prd1',  product_name:  '2A Modified',
   tons: '24.5',
-  amount_charged: '441.00',
+  price_per_ton: '18.00',
   payment: 'Cash',
 };
 
@@ -125,23 +127,26 @@ const LISTS = {
   product:   [{ id: 'prd1', name: '2A Modified' }],
 };
 
-// Every ticket the price rule is measured against — the server's copy and the
+// Every load the total rule is measured against — the server's copy and the
 // form's. Kept as data so pageTests() can run the page's copy through exactly
 // the same cases and fail if the two ever disagree by so much as an edge.
-const PRICE_CASES = [
-  // [amount, tons, expected price/ton or null, what it is]
-  [441,      24.5,  18,        'an ordinary ticket that lands on the cent'],
-  [100,      3,     33.3333,   'a quotient that does not — four places, not two'],
-  [441.37,   24.5,  18.0151,   'an odd total over an ordinary weight'],
-  [1,        200,   0.005,     'a nominal charge over a full load'],
-  [441,      0,     null,      'no tonnage yet — a half-finished draft'],
-  [0,        24.5,  null,      'no charge yet'],
-  [null,     24.5,  null,      'the amount not filled in'],
-  [441,      null,  null,      'the tonnage not filled in'],
-  [-441,     24.5,  null,      'a negative total'],
-  [441,      -24.5, null,      'a negative weight'],
-  ['441.00', '24.5', 18,       'the strings a form actually posts'],
-  ['lots',   24.5,  null,      'nonsense'],
+const AMOUNT_CASES = [
+  // [tons, price, expected amount or null, what it is]
+  [24.5,   18,      441,      'an ordinary load'],
+  [3,      33.3333, 100,      'a price divided back out of an old ticket, multiplied home again'],
+  [20,     20,      400,      'the sale already in the table when this changed'],
+  [5.96,   15.75,   93.87,    'a real row off the grid'],
+  [45.41,  18,      817.38,   'another, to the cent'],
+  [24.5,   18.005,  441.12,   'a half-cent that has to round, not truncate'],
+  [200,    1000,    200000,   'the biggest load at the highest price both caps allow'],
+  [0,      18,      null,     'no tonnage yet — a half-finished draft'],
+  [24.5,   0,       null,     'no price yet'],
+  [null,   18,      null,     'the tonnage not filled in'],
+  [24.5,   null,    null,     'the price not filled in'],
+  [-24.5,  18,      null,     'a negative weight'],
+  [24.5,   -18,     null,     'a negative price'],
+  ['24.5', '18.00', 441,      'the strings a form actually posts'],
+  ['lots', 18,      null,     'nonsense'],
 ];
 
 // A tagged-template sql mock. `store` is the app_data table; anything else a
@@ -185,7 +190,9 @@ function parsingTests() {
     const { data, error } = normalizeBody(FULL);
     assert('a complete sale parses', !error, error);
     assert('tons come through as a number', data.tons === 24.5, String(data.tons));
-    assert('so does the amount charged', data.amount_charged === 441, String(data.amount_charged));
+    assert('so does the price', data.price_per_ton === 18, String(data.price_per_ton));
+    assert('and the total is worked out, not asked for',
+      data.amount_charged === 441, String(data.amount_charged));
     assert('and it counts as complete', missingFields(data).length === 0,
       JSON.stringify(missingFields(data)));
   }
@@ -193,9 +200,13 @@ function parsingTests() {
     const { data, error } = normalizeBody({ work_date: '2026-08-11' });
     assert('a date on its own parses', !error, error);
     assert('tons left blank stay null', data.tons === null);
+    assert('and with no tons and no price there is no total',
+      data.amount_charged === null, String(data.amount_charged));
     assert('and everything else is reported missing, in form order',
-      missingFields(data).join('|') === 'Location|Employee|Customer|Product|Tons|Amount Charged|Payment',
+      missingFields(data).join('|') === 'Location|Employee|Customer|Product|Tons|Price / Ton|Payment',
       missingFields(data).join('|'));
+    assert('the total is never "missing" — it is not something anyone fills in',
+      !missingFields(data).includes('Amount Charged'));
   }
 
   console.log('\n[tons]');
@@ -215,37 +226,38 @@ function parsingTests() {
     assert('and the refusal says so', !data && /more than zero/.test(error || ''), error);
   }
 
-  console.log('\n[amount charged]');
-  assert('blank is allowed',              parseAmount('').value === null && !parseAmount('').error);
-  assert('a real ticket is kept',         parseAmount('441.00').value === 441);
-  assert('cents are kept',                parseAmount('441.37').value === 441.37);
-  assert('a third decimal is rounded off', parseAmount('441.376').value === 441.38);
-  assert('zero is refused',               !!parseAmount('0').error);
-  assert('negative is refused',           !!parseAmount('-441').error);
-  assert('nonsense is refused',           !!parseAmount('four forty one').error);
-  assert(`over $${MAX_AMOUNT} is refused`, !!parseAmount(String(MAX_AMOUNT + 1)).error);
-  assert('the cap itself is allowed',     parseAmount(String(MAX_AMOUNT)).value === MAX_AMOUNT);
+  console.log('\n[price per ton]');
+  assert('blank is allowed',              parsePrice('').value === null && !parsePrice('').error);
+  assert('a real price is kept',          parsePrice('18.00').value === 18);
+  assert('cents are kept',                parsePrice('15.75').value === 15.75);
+  // Four places, not two. A sale recorded while the form asked for the ticket
+  // total carries a price divided back out of it, and rounding that to the
+  // cent on the first edit would quietly move the money.
+  assert('four decimals survive',         parsePrice('33.3333').value === 33.3333);
+  assert('a fifth is rounded off',        parsePrice('33.33335').value === 33.3334);
+  assert('zero is refused',               !!parsePrice('0').error);
+  assert('negative is refused',           !!parsePrice('-18').error);
+  assert('nonsense is refused',           !!parsePrice('eighteen').error);
+  assert(`over $${MAX_PRICE} a ton is refused`, !!parsePrice(String(MAX_PRICE + 1)).error);
+  assert('the cap itself is allowed',     parsePrice(String(MAX_PRICE)).value === MAX_PRICE);
+  assert('a missed decimal point is caught', !!parsePrice('1575').error);
   {
-    const { data, error } = normalizeBody(Object.assign({}, FULL, { amount_charged: '0' }));
+    const { data, error } = normalizeBody(Object.assign({}, FULL, { price_per_ton: '0' }));
     assert('and the refusal says what is wrong with it',
       !data && /more than zero/.test(error || ''), error);
   }
 
-  console.log('\n[the price the ticket implies]');
-  for (const [amount, tons, want, what] of PRICE_CASES) {
-    const got = pricePerTonFrom(amount, tons);
-    assert(`${what}`, got === want, `${amount} / ${tons} → ${got}, expected ${want}`);
+  console.log('\n[what the load comes to]');
+  for (const [tons, price, want, what] of AMOUNT_CASES) {
+    const got = amountFrom(tons, price);
+    assert(`${what}`, got === want, `${tons} x ${price} → ${got}, expected ${want}`);
   }
   {
-    // The point of four places. Multiply the stored price back by the tonnage
-    // and the customer's invoice has to come out where the ticket did — the
-    // grid's Net Sales column is exactly this product, rounded for display.
-    const off = PRICE_CASES
-      .filter(([a, t, want]) => want !== null && Number.isFinite(Number(a)) && Number.isFinite(Number(t)))
-      .map(([a, t, want]) => [a, t, Math.abs(Number(t) * want - Number(a))])
-      .filter(([, , delta]) => delta >= 0.005);
-    assert('tons x price returns the amount charged, inside the cent the grid shows',
-      off.length === 0, JSON.stringify(off));
+    // The server owns this multiplication. A body that carries its own total
+    // must not be able to bill a customer something other than tons x price.
+    const { data } = normalizeBody(Object.assign({}, FULL, { amount_charged: '99999.99' }));
+    assert('a total posted by the client is ignored, not trusted',
+      data.amount_charged === 441, String(data.amount_charged));
   }
 
   console.log('\n[payment]');
@@ -340,19 +352,19 @@ async function injectionTests() {
       JSON.stringify(row));
     assert('the ids ride along, so the grid filters work',
       row.locationId === 'loc1' && row.customerId === 'cus1' && row.productId === 'prd1');
-    assert('the price is worked out from the ticket', row.pricePerTon === 18, String(row.pricePerTon));
-    assert('and multiplied back it is the amount charged',
-      Math.abs(row.tons * row.pricePerTon - 441) < 0.005, String(row.tons * row.pricePerTon));
+    assert('the price is the one the form was given', row.pricePerTon === 18, String(row.pricePerTon));
+    assert('and tons x price is the total the submitter was shown',
+      row.tons * row.pricePerTon === 441, String(row.tons * row.pricePerTon));
     assert('and the normalized mirror is refreshed',
       SYNC_CALLS.some(c => c.key === 'fct_quarry_sales' && c.value.length === 2));
   }
   {
-    // A sale with no ticket total on it — every row posted before the form
-    // asked for one — still lands, unpriced, for the office to price by hand.
+    // A sale carrying no price still lands, unpriced, for the office to price
+    // by hand. Unreachable through submit, which checks completeness first.
     const store = new Map([[KEY, []]]);
     const row = await injectSalesRow(makeSql(store), 'FCT',
-      Object.assign({}, sub, { amount_charged: null }));
-    assert('a sale with no amount arrives with a blank price', row.pricePerTon === '',
+      Object.assign({}, sub, { price_per_ton: null }));
+    assert('a sale with no price arrives with a blank one', row.pricePerTon === '',
       String(row.pricePerTon));
   }
   {
@@ -361,47 +373,48 @@ async function injectionTests() {
     // can fix the total they fat-fingered and send it again.
     //
     // This regressed once and it regressed in the worst direction: the row kept
-    // the price the FIRST attempt worked out, so a load charged $441 went on
-    // billing $4,410 with amount_charged reading 441 and nothing on the row to
+    // the price the FIRST attempt carried, so a load priced at $18 went on
+    // billing at $180 with the submission reading 18 and nothing on the row to
     // say the two disagreed. Every column corrected except the money.
     const store = new Map([[KEY, []]]);
     const sql = makeSql(store);
-    await injectSalesRow(sql, 'FCT', Object.assign({}, sub, { amount_charged: 4410 }));
-    assert('the mistyped total prices the row first time round',
+    await injectSalesRow(sql, 'FCT', Object.assign({}, sub, { price_per_ton: 180 }));
+    assert('the mistyped price lands on the row first time round',
       store.get(KEY)[0].pricePerTon === 180, String(store.get(KEY)[0].pricePerTon));
 
-    await injectSalesRow(sql, 'FCT', Object.assign({}, sub, { tons: 26, amount_charged: 520 }));
+    await injectSalesRow(sql, 'FCT', Object.assign({}, sub, { tons: 26, price_per_ton: 20 }));
     const arr = store.get(KEY);
     assert('a correction replaces the row rather than adding a second',
       arr.length === 1, JSON.stringify(arr.map(r => r.id)));
     assert('the corrected tonnage lands', arr[0].tons === 26, String(arr[0].tons));
     assert('AND SO DOES THE CORRECTED PRICE', arr[0].pricePerTon === 20, String(arr[0].pricePerTon));
-    assert('so the grid bills what the corrected ticket said',
-      Math.abs(arr[0].tons * arr[0].pricePerTon - 520) < 0.005,
-      String(arr[0].tons * arr[0].pricePerTon));
+    assert('so the grid bills what the corrected sale says',
+      arr[0].tons * arr[0].pricePerTon === 520, String(arr[0].tons * arr[0].pricePerTon));
   }
   {
     // priced() states the rule on its own, because the whole of it is which of
     // two numbers wins and an off-by-one reading of "blank" decides it.
-    const t = { tons: 24.5, amount_charged: 441 };
-    assert('no prior row → the ticket prices it',    priced(null, t) === 18);
-    assert("a prior '' → the ticket prices it",      priced({ pricePerTon: '' }, t) === 18);
-    assert('a prior null → the ticket prices it',    priced({ pricePerTon: null }, t) === 18);
-    assert('a prior absent → the ticket prices it',  priced({}, t) === 18);
-    assert('a prior figure does NOT survive a ticket that disagrees',
+    const t = { tons: 24.5, price_per_ton: 18 };
+    assert('no prior row → the sale prices it',      priced(null, t) === 18);
+    assert("a prior '' → the sale prices it",        priced({ pricePerTon: '' }, t) === 18);
+    assert('a prior null → the sale prices it',      priced({ pricePerTon: null }, t) === 18);
+    assert('a prior absent → the sale prices it',    priced({}, t) === 18);
+    assert('a prior figure does NOT survive a sale that disagrees',
       priced({ pricePerTon: 180 }, t) === 18);
     assert('a prior 0 does not either',              priced({ pricePerTon: 0 }, t) === 18);
-    // The one case the fallback is for: no ticket to divide, so whatever is on
+    assert('a price posted as a string still counts',
+      priced({ pricePerTon: 180 }, { tons: 24.5, price_per_ton: '18.00' }) === 18);
+    // The one case the fallback is for: no price on the sale, so whatever is on
     // the row stays. Unreachable through submit, which checks completeness
     // first — it is here so an incomplete injection cannot blank a hand-typed
     // price.
-    const noTicket = { tons: 24.5, amount_charged: null };
-    assert('with no ticket, a hand-typed price is left alone',
-      priced({ pricePerTon: 18.75 }, noTicket) === 18.75);
-    assert('with no ticket and no prior, it stays blank',
-      priced(null, noTicket) === '');
-    assert("with no ticket, a prior '' stays ''",
-      priced({ pricePerTon: '' }, noTicket) === '');
+    const noPrice = { tons: 24.5, price_per_ton: null };
+    assert('with no price on the sale, a hand-typed one is left alone',
+      priced({ pricePerTon: 18.75 }, noPrice) === 18.75);
+    assert('with no price and no prior, it stays blank',
+      priced(null, noPrice) === '');
+    assert("with no price, a prior '' stays ''",
+      priced({ pricePerTon: '' }, noPrice) === '');
   }
   {
     // Removal has to reach the mirror table too: syncForKey short-circuits on
@@ -638,11 +651,11 @@ function pageTests() {
 
   // The seven questions, in order, on both sides.
   const serverLabels = FIELDS.map(f => f.label).join('|');
-  // Seven of the eight ARE the grid's columns. The eighth, Amount Charged,
-  // replaces the one column the grid has that the field cannot answer: it is
-  // asked here and divided into Price / Ton on the way in.
-  assert('the server asks for the seven Sales Tracking columns, plus the ticket total',
-    serverLabels === 'Date|Location|Employee|Customer|Product|Tons|Amount Charged|Payment',
+  // All eight ARE grid columns — the form asks for exactly the ones the scale
+  // house can answer, and the grid works out the rest (sales tax, net sales,
+  // total due) from them.
+  assert('the server asks for eight of Sales Tracking\'s own columns',
+    serverLabels === 'Date|Location|Employee|Customer|Product|Tons|Price / Ton|Payment',
     serverLabels);
   const formFields = /const FIELDS = \[([\s\S]*?)\n    \];/.exec(form);
   assert('the form declares its fields as data', !!formFields);
@@ -659,31 +672,35 @@ function pageTests() {
     !/'Cash'/.test(form) && !/"Cash"/.test(form));
   assert('the pickers are filled from the quarry\'s own Manage Lists',
     /\/api\/quarry-sales-lists/.test(form));
-  assert('tons and the ticket total are the two numbers typed in',
-    /<input type="number" id="f-tons"/.test(form) && /<input type="number" id="f-amount"/.test(form));
-  assert('and price per ton is asked for nowhere on it', !/id="f-price/.test(form));
+  assert('tons and the price are the two numbers typed in',
+    /<input type="number" id="f-tons"/.test(form) && /<input type="number" id="f-price"/.test(form));
+  // The total is filled in, not asked for. readonly rather than disabled: a
+  // disabled box is skipped by the browser's own focus order AND greyed to
+  // near-invisible on a phone, and this is the figure the customer is billed.
+  assert('and the total is a box the form fills in',
+    /<input type="text" id="f-amount" readonly/.test(form));
 
   // The form shows the price as it is typed, off its own copy of the rule. A
   // page that showed one figure and stored another is worse than one that
   // showed nothing, so both copies are run over the same tickets.
-  const pagePrice = (() => {
-    const start = form.indexOf('function pricePerTonFrom(');
-    assert('the form carries its own copy of the price rule', start >= 0);
+  const pageAmount = (() => {
+    const start = form.indexOf('function amountFrom(');
+    assert('the form carries its own copy of the total rule', start >= 0);
     if (start < 0) return null;
     let depth = 0;
     for (let j = form.indexOf('{', start); j < form.length; j++) {
       if (form[j] === '{') depth++;
       else if (form[j] === '}' && --depth === 0) {
-        return new Function(`${form.slice(start, j + 1)}\nreturn pricePerTonFrom;`)();
+        return new Function(`${form.slice(start, j + 1)}\nreturn amountFrom;`)();
       }
     }
     return null;
   })();
-  if (pagePrice) {
-    const off = PRICE_CASES.filter(([a, t, want]) => pagePrice(a, t) !== want);
-    assert(`the form agrees with the server on all ${PRICE_CASES.length} tickets`,
+  if (pageAmount) {
+    const off = AMOUNT_CASES.filter(([t, p, want]) => pageAmount(t, p) !== want);
+    assert(`the form agrees with the server on all ${AMOUNT_CASES.length} loads`,
       off.length === 0,
-      off.map(([a, t, want]) => `(${a},${t}) form=${pagePrice(a, t)} server=${want}`).join('; '));
+      off.map(([t, p, want]) => `(${t},${p}) form=${pageAmount(t, p)} server=${want}`).join('; '));
   }
 
   // The grid's own copy of the payment list is the one the injected row has to
@@ -838,33 +855,37 @@ async function browserTests() {
     window.submitEntry();
     await settle();
     assert('an incomplete form is refused, naming what is missing in form order',
-      /still needed: Location, Customer, Product, Tons, Amount Charged, Payment\./.test(sel('formMsg').textContent),
+      /still needed: Location, Customer, Product, Tons, Price \/ Ton, Payment\./.test(sel('formMsg').textContent),
       sel('formMsg').textContent);
     assert('and nothing is sent', calls.length === before);
   }
 
-  // The price readout is the only guard against a ticket total typed wrong, so
-  // it has to appear as the two figures are entered and not a moment later.
-  assert('the price reads as pending before anything is typed',
-    !/\$/.test(sel('priceNote').textContent) && sel('priceNote').textContent.length > 0,
-    sel('priceNote').textContent);
+  // The total is the only guard against a price typed wrong, so it has to fill
+  // in as the two figures are entered and not a moment later.
+  assert('the total box is empty before anything is typed', sel('f-amount').value === '',
+    sel('f-amount').value);
+  assert('and the note says where it will come from',
+    !/\$/.test(sel('amountNote').textContent) && sel('amountNote').textContent.length > 0,
+    sel('amountNote').textContent);
   sel('f-tons').value = '24.5';
-  window.updatePrice();
-  assert('and still pending with only the tonnage in',
-    !/\$/.test(sel('priceNote').textContent), sel('priceNote').textContent);
-  sel('f-amount').value = '441.00';
-  window.updatePrice();
-  assert('then works the price out as the ticket total is typed',
-    sel('priceNote').textContent === '= $18.00 / ton', sel('priceNote').textContent);
+  window.updateAmount();
+  assert('still empty with only the tonnage in', sel('f-amount').value === '', sel('f-amount').value);
+  sel('f-price').value = '18.00';
+  window.updateAmount();
+  assert('then fills the total in as the price is typed',
+    sel('f-amount').value === '441.00', sel('f-amount').value);
+  assert('and says what it is made of',
+    sel('amountNote').textContent === '24.5 tons × $18.00 / ton', sel('amountNote').textContent);
+  assert('and it cannot be typed into', sel('f-amount').readOnly === true);
   {
-    // The whole point: a digit typed wrong shows up here, on the screen of the
-    // person holding the ticket, because no threshold could catch it.
-    sel('f-amount').value = '4410.00';
-    window.updatePrice();
-    assert('a mistyped total is unmissable in it',
-      sel('priceNote').textContent === '= $180.00 / ton', sel('priceNote').textContent);
-    sel('f-amount').value = '441.00';
-    window.updatePrice();
+    // The whole point: a decimal point missed shows up here, on the screen of
+    // the person writing the ticket, because no threshold could catch it.
+    sel('f-price').value = '1800';
+    window.updateAmount();
+    assert('a missed decimal point is unmissable in it',
+      sel('f-amount').value === '44,100.00', sel('f-amount').value);
+    sel('f-price').value = '18.00';
+    window.updateAmount();
   }
 
   sel('f-location').value = 'loc2';
@@ -887,12 +908,12 @@ async function browserTests() {
       body.product_id  === 'prd2' && body.product_name  === 'AASHTO #1',
       JSON.stringify(body));
     assert('the three typed answers ride along',
-      body.tons === '24.5' && body.amount_charged === '441.00' && body.payment === 'Credit',
+      body.tons === '24.5' && body.price_per_ton === '18.00' && body.payment === 'Credit',
       JSON.stringify(body));
-    assert('and the price is NOT among them — the server does that division',
-      !('price_per_ton' in body) && !('pricePerTon' in body), Object.keys(body).join(','));
+    assert('and the TOTAL is not among them — the server does that multiplication',
+      !('amount_charged' in body), Object.keys(body).join(','));
     assert('and nothing else is sent', Object.keys(body).sort().join(',') ===
-      'amount_charged,customer_id,customer_name,employee_id,employee_name,location_id,location_name,payment,product_id,product_name,tons,work_date',
+      'customer_id,customer_name,employee_id,employee_name,location_id,location_name,payment,price_per_ton,product_id,product_name,tons,work_date',
       Object.keys(body).sort().join(','));
   }
   assert('then it is submitted against the row it just adopted',
@@ -926,7 +947,7 @@ async function browserTests() {
     const fill = () => {
       sel('f-location').value = 'loc2'; sel('f-employee').value = 'emp2';
       sel('f-customer').value = 'cus1'; sel('f-product').value  = 'prd2';
-      sel('f-tons').value = '24.5';     sel('f-amount').value   = '441.00';
+      sel('f-tons').value = '24.5';     sel('f-price').value    = '18.00';
       sel('f-payment').value = 'Credit';
     };
 
