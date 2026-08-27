@@ -836,6 +836,14 @@
     }
     .sched-sub-btn:hover { color: var(--text); }
     .sched-sub-btn.active { color: var(--orange); border-bottom-color: var(--orange); }
+    /* A dot on a board with work still unsaved. The status pill in the toolbar
+       only ever describes the board on screen, so without this a failed save
+       on the other one is invisible until you switch to it. */
+    .sched-sub-btn.unsaved::after, .sched-sub-btn.err::after {
+      content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      margin-left: 0.4rem; vertical-align: middle; background: var(--amber);
+    }
+    .sched-sub-btn.err::after { background: var(--orange); }
     .sched-board-panel { display: none; }
     .sched-board-panel.active { display: block; }
     .pdf-btn {
@@ -3914,9 +3922,27 @@
 
     function schedHiddenStr(board) { return JSON.stringify([...schedS(board).hidden].sort()); }
 
+    /** A dot on the sub-tab of any board carrying unsaved work. The toolbar's
+     *  status pill belongs to the board on screen, so this is the only thing
+     *  that can say a save failed on the one you are not looking at. */
+    function schedMarkSubTabs() {
+      document.querySelectorAll('.sched-sub-btn').forEach(btn => {
+        const st = _schedStates[btn.dataset.board];
+        if (!st) return;
+        const bad  = st.status === 'error';
+        const busy = st.status === 'pending' || st.status === 'saving';
+        btn.classList.toggle('err', bad);
+        btn.classList.toggle('unsaved', busy && !bad);
+        btn.title = bad  ? 'Changes on this board are not saved yet — still retrying'
+                  : busy ? 'Unsaved changes on this board'
+                  : '';
+      });
+    }
+
     function schedSetStatus(s, board) {
       const b = board || schedBoard;
       schedS(b).status = s;
+      schedMarkSubTabs();
       // Only the board on screen has a status pill in the DOM; the other one
       // picks its state up from st.status the next time it is drawn.
       if (!schedIsActive(b)) return;
@@ -4642,7 +4668,7 @@
         <body style="${_RP.wrap};padding:14px">
         <div style="${_RP.mast}">
           <div style="margin-bottom:5px">
-            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">${schedEsc(schedBoardCfg().noun)}</span>
+            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">Trucking</span>
           </div>
           <div style="${_RP.h1}">${schedEsc(schedSheetTitle(date))}</div>
           <div style="${_RP.subT}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
@@ -5101,7 +5127,7 @@
         </head><body style="${_RP.wrap};padding:18px">
         <div style="${_RP.mast}">
           <div style="margin-bottom:5px">
-            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">${schedEsc(schedBoardCfg().noun)}</span>
+            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">Trucking</span>
           </div>
           <div style="${_RP.h1}">${schedEsc(title)}</div>
           <div style="${_RP.subT}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
