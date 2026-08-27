@@ -1112,8 +1112,13 @@
     // is named. Kept beside the customers list rather than on the row: the rate
     // is a fact about the company, the row is what was actually billed, and a
     // row already carrying a fee is never rewritten by a later rate change.
+    // `notDrivers` is the other half of the drivers list: the sign-ins the
+    // office has said are not drivers at all — an office login, a shared
+    // account. Every other unlinked sign-in is offered as a name to add, and
+    // without somewhere to put the answer "no" the same office accounts get
+    // offered for ever.
     let divTruckLists = { drivers: [], customers: [], units: [], locations: [], materials: [],
-                          rates: {},
+                          rates: {}, notDrivers: [],
                           removed: { drivers: [], customers: [], units: [], materials: [] } };
     let _saveTimer       = null;
     let _isSaved         = false;
@@ -1693,6 +1698,21 @@
       Object.keys(map).forEach(n => { if (_remKey(n) === _remKey(name)) delete map[n]; });
     }
 
+    /** The dismissed sign-ins, as trimmed usernames with no repeats. Compared
+     *  case-insensitively throughout: usernames are created by hand and their
+     *  casing wanders, the same reason api/driver/logins.js sorts on LOWER(). */
+    function _normNotDrivers(v) {
+      const out = [], seen = new Set();
+      (Array.isArray(v) ? v : []).forEach(u => {
+        const s = String(u == null ? '' : u).trim();
+        const k = s.toLowerCase();
+        if (!s || seen.has(k)) return;
+        seen.add(k);
+        out.push(s);
+      });
+      return out;
+    }
+
     /** Shape whatever the server hands back into the four string arrays, plus
      *  the numbers of any units among them. */
     function _normRemoved(r) {
@@ -1820,6 +1840,7 @@
         if (Array.isArray(tl.materials)) divTruckLists.materials = tl.materials;
         if (tl.removed && typeof tl.removed === 'object') divTruckLists.removed = _normRemoved(tl.removed);
         if (tl.rates   && typeof tl.rates   === 'object') divTruckLists.rates   = _normRates(tl.rates);
+        if (Array.isArray(tl.notDrivers)) divTruckLists.notDrivers = _normNotDrivers(tl.notDrivers);
       }
       if (lists) {
         if (Array.isArray(lists.employees)) {
@@ -1940,6 +1961,80 @@
       renderListsPanel();
     }
 
+    /* ── Reading a sign-in against the drivers list ──
+       A username and a driver name are separate strings that nothing joins,
+       which is the gap the link above exists to close. These read the one
+       against the other well enough to propose a pairing. Nothing here ever
+       links on its own: a guess is shown beside the sign-in it came from and
+       the office clicks it, so being wrong costs a glance rather than sending
+       one driver's schedule to another. */
+    const _loginKey = v => String(v == null ? '' : v).toLowerCase().replace(/[^a-z]/g, '');
+
+    /** "Wetzel, John" → { last: 'wetzel', first: 'john' }. A name with no
+     *  comma is taken as a surname on its own, which is how the bare usernames
+     *  that reached the drivers list through a timesheet read. */
+    function _driverNameParts(name) {
+      const s = String(name == null ? '' : name);
+      const i = s.indexOf(',');
+      return i === -1
+        ? { last: _loginKey(s), first: '' }
+        : { last: _loginKey(s.slice(0, i)), first: _loginKey(s.slice(i + 1)) };
+    }
+
+    /** The driver a sign-in most likely belongs to, or '' for no guess.
+     *
+     *  The rule is the one this company's own usernames already follow —
+     *  surname, then the first name starting ("cribbsjon" → "Cribbs, Jonathan",
+     *  "barrmike" → "Barr, Michael") — so it wants the whole surname and, at
+     *  the least, the first initial after it. Anything looser starts pairing
+     *  people who merely share a few letters.
+     *
+     *  Ranked on the surname first, because matching eight characters of it is
+     *  far more evidence than matching four, and then on how much of the first
+     *  name agrees: "kirkdave" is Kirk, Dave rather than Kirk, Dan, which only
+     *  shares the initial. Two drivers still level on both are two people this
+     *  username genuinely cannot tell apart — that is left for the office to
+     *  say rather than settled by list order. */
+    function _guessDriverForLogin(username) {
+      const u = _loginKey(username);
+      if (!u) return '';
+      let best = '', bestLen = -1, bestFit = -1, tied = false;
+      (divTruckLists.drivers || []).forEach(d => {
+        const { last, first } = _driverNameParts(d);
+        if (!last || !u.startsWith(last)) return;
+        const rest = u.slice(last.length);
+        // A surname alone matches only the username that is exactly it —
+        // otherwise the remainder has to look like a first name starting.
+        // Whole first name either way round beats a shared initial: the
+        // username may shorten it ("jon" for Jonathan) or the list may
+        // ("Nick" against a longer sign-in).
+        const fit = !first ? (rest ? -1 : 1)
+          : !rest ? -1
+          : (first.startsWith(rest) || rest.startsWith(first)) ? 2
+          : rest[0] === first[0] ? 1
+          : -1;
+        if (fit < 0) return;
+        if (last.length > bestLen || (last.length === bestLen && fit > bestFit)) {
+          best = d; bestLen = last.length; bestFit = fit; tied = false;
+        } else if (last.length === bestLen && fit === bestFit && d !== best) {
+          tied = true;
+        }
+      });
+      return tied ? '' : best;
+    }
+
+    /** Sign-ins with no driver name behind them: every one of the company's
+     *  logins less the linked ones and the ones dismissed as not drivers.
+     *  Each comes back with the driver it looks like, when it looks like one. */
+    function _unlinkedLogins() {
+      const linked = new Set(Object.keys(driverLoginMap || {}).map(u => String(u).trim().toLowerCase()));
+      const said   = new Set((divTruckLists.notDrivers || []).map(u => String(u).trim().toLowerCase()));
+      return (driverLoginUsers || [])
+        .map(u => String((u && u.username) || '').trim())
+        .filter(u => u && !linked.has(u.toLowerCase()) && !said.has(u.toLowerCase()))
+        .map(u => ({ username: u, guess: _guessDriverForLogin(u) }));
+    }
+
     function driverLoginsHTML(esc) {
       if (!_driverLoginsLoaded) {
         return `
@@ -1960,6 +2055,9 @@
           <div class="lists-hint">
             Links a sign-in to a name on the drivers list, so the driver app can show
             that person their own hauls. An unlinked sign-in sees nothing.
+            ${free.length ? `A sign-in whose driver isn't on that list yet is added
+              from <button class="lists-link" onclick="listsOpenTab('drivers')">Drivers</button>,
+              which offers every one of them.` : ''}
           </div>
           <div class="lists-add-row" style="flex-wrap:wrap;gap:0.3rem">
             <select id="lists-login-user" style="flex:1;min-width:104px;background:var(--surface);
@@ -2116,7 +2214,9 @@
       const undoHTML = () => {
         const u = _listsUndo;
         if (!u) return '';
-        const txt = u.kind === 'merge'
+        const txt = u.kind === 'notdriver'
+          ? `<strong>${esc(u.value)}</strong> is not a driver — it won't be offered again.`
+          : u.kind === 'merge'
           ? `Merged <strong>${esc(u.from)}</strong> into <strong>${esc(u.to)}</strong> — ${
               u.ids.length ? `${u.ids.length} row${u.ids.length === 1 ? '' : 's'} renamed` : 'no rows to rename'
             }${u.locked ? `, ${u.locked} payroll row${u.locked === 1 ? '' : 's'} left alone (fix ${u.locked === 1 ? 'it' : 'those'} in Payroll)` : ''}.`
@@ -2129,6 +2229,91 @@
           <div class="lists-undo">
             <span class="u-txt">${txt}</span>
             <button onclick="undoListChange()">Undo</button>
+          </div>`;
+      };
+
+      /* Sign-ins with nobody behind them, offered straight onto the drivers
+         list. A login and a driver name are separate strings that nothing
+         joins (see api/driver/logins.js), so a new hire can have an account
+         and still not exist to the board — and the only symptom is a driver
+         who opens the app to an empty schedule. Sitting here, on the list that
+         is missing the name, is what makes that visible before it happens.
+
+         Offered, never taken: each one is a name the office types or a guess
+         it clicks, because the app matches a haul to a person by this exact
+         string and a wrong link shows one driver another's day. */
+      const unlinkedLoginsHTML = () => {
+        // Nothing is claimed until the sign-ins are actually in hand — an
+        // empty strip and one that hasn't loaded are different things.
+        if (!_driverLoginsLoaded) return '';
+        // The filter runs over this the way it runs over the list above it,
+        // matching on either half — the office knows some of these by username
+        // and some by the driver they belong to.
+        const pend = _unlinkedLogins().filter(c => _listsMatch(c.username) || _listsMatch(c.guess));
+        const said = (divTruckLists.notDrivers || []).filter(u => u && _listsMatch(u));
+        if (pend.length === 0 && said.length === 0) return '';
+
+        const rows = pend.map((c, i) => {
+          const uArg = argEsc(c.username);
+          const dismiss = `<button class="lists-item-del" style="flex:none"
+            onclick="dismissLoginCandidate('${uArg}')"
+            title="Not a driver — an office login. Stops offering it.">&#10005;</button>`;
+          // A guess is shown as the pairing it would make, both halves
+          // readable, so what the button does is on the button.
+          if (c.guess) {
+            return `
+              <div class="lists-item" style="gap:0.4rem">
+                <span class="li-name" style="flex:none;color:var(--muted)">${esc(c.username)}</span>
+                <span style="flex:none;color:var(--muted)">&rarr;</span>
+                <span class="li-name">${esc(c.guess)}</span>
+                <button class="lists-add-btn" style="flex:none"
+                  onclick="linkLoginToDriver('${uArg}','${argEsc(c.guess)}')"
+                  title="Link this sign-in to ${esc(c.guess)}">Link</button>
+                ${dismiss}
+              </div>`;
+          }
+          return `
+            <div class="lists-item" style="gap:0.4rem">
+              <span class="li-name" style="flex:none;color:var(--muted)">${esc(c.username)}</span>
+              <input type="text" id="lists-login-name-${i}" placeholder="Last, First"
+                onkeydown="if(event.key==='Enter')addDriverFromLogin('${uArg}',${i})"
+                style="flex:1;min-width:110px;background:var(--bg);border:1px solid var(--border);
+                  border-radius:4px;color:var(--text);font-size:0.76rem;
+                  padding:0.22rem 0.4rem;outline:none">
+              <button class="lists-add-btn" style="flex:none"
+                onclick="addDriverFromLogin('${uArg}',${i})"
+                title="Add the name to this list and give this sign-in to it">Add &amp; link</button>
+              ${dismiss}
+            </div>`;
+        }).join('');
+
+        // The answers already given, foldable. Small, but the only way back
+        // from a dismissal made a month ago.
+        const saidHTML = said.length === 0 ? '' : `
+          <div style="margin-top:${pend.length ? '0.5rem' : '0'}">
+            <button class="lists-link" onclick="toggleNotDrivers()">
+              ${_listsShowNotDrivers ? '&#9662;' : '&#9656;'} ${said.length} sign-in${said.length === 1 ? '' : 's'} marked not a driver
+            </button>
+            ${!_listsShowNotDrivers ? '' : `
+              <div style="display:flex;flex-direction:column;gap:0.3rem;max-width:560px;margin-top:0.4rem">
+                ${said.map(u => `
+                  <div class="lists-item" style="opacity:0.65;gap:0.4rem">
+                    <span class="li-name">${esc(u)}</span>
+                    <button class="lists-link" style="flex:none"
+                      onclick="restoreLoginCandidate('${argEsc(u)}')">Offer again</button>
+                  </div>`).join('')}
+              </div>`}
+          </div>`;
+
+        return `
+          <div style="margin-top:0.6rem;padding-top:0.5rem;border-top:1px solid rgba(255,255,255,0.07)">
+            ${pend.length === 0 ? '' : `
+              <div class="lists-hint" style="margin-bottom:0.45rem">
+                <span style="color:var(--amber)">${pend.length} sign-in${pend.length === 1 ? '' : 's'} with no name on this list.</span>
+                Until ${pend.length === 1 ? 'it is' : 'they are'} linked to a driver, that person opens the driver app to an empty schedule.
+              </div>
+              <div style="display:flex;flex-direction:column;gap:0.3rem;max-width:560px">${rows}</div>`}
+            ${saidHTML}
           </div>`;
       };
 
@@ -2246,6 +2431,7 @@
                   </div>`).join('')
             }
           </div>
+          ${key === 'drivers' ? unlinkedLoginsHTML() : ''}
           ${removedHTML(key, label)}
         </div>`;
       };
@@ -2376,10 +2562,19 @@
         tabsEl.innerHTML = LISTS_TABS.map(t => {
           const names = _listsNamesFor(t.key);
           const n = filtering ? names.filter(_listsMatch).length : names.length;
+          // Sign-ins with no driver name behind them, counted on the tab that
+          // fixes it. Nobody opens a list to check it is still complete, and
+          // the gap has no symptom on this screen — only on the driver's.
+          const gap = (t.key !== 'drivers' || !_driverLoginsLoaded) ? 0
+            : filtering
+              ? _unlinkedLogins().filter(c => _listsMatch(c.username) || _listsMatch(c.guess)).length
+              : _unlinkedLogins().length;
           return `<button class="lists-tab${t.key === _listsTab ? ' active' : ''}"
             onclick="listsOpenTab('${t.key}')"
-            title="${filtering ? n + ' of ' + names.length + ' match' : names.length + ' in this list'}">
-            ${esc(t.label)}<span class="n">${n}</span></button>`;
+            title="${filtering ? n + ' of ' + names.length + ' match' : names.length + ' in this list'}${
+              gap ? ` — ${gap} sign-in${gap === 1 ? '' : 's'} with no name here` : ''}">
+            ${esc(t.label)}<span class="n">${n}</span>${
+              gap ? `<span class="n" style="color:var(--amber);opacity:1">+${gap}</span>` : ''}</button>`;
         }).join('');
       }
 
@@ -2452,6 +2647,7 @@
       if (!u) return;
       _listsUndo = null;
       if (u.kind === 'merge') _undoMerge(u);
+      else if (u.kind === 'notdriver') restoreLoginCandidate(u.value);
       else restoreToList(u.key, u.value);
     }
 
@@ -2471,6 +2667,85 @@
       const to  = sel ? (sel.value || '').trim() : '';
       if (!to) return;
       mergeIntoName(_listsMerge.key, _listsMerge.from, to);
+    }
+
+    /* ── The unlinked sign-ins offered on the drivers list ──
+       Adding the name and linking the sign-in were always one job done in two
+       places, and doing only the first is what leaves a driver signing in to
+       an empty schedule with nothing to explain why. These do both. */
+
+    /** Put a name on the drivers list and hand this sign-in to it, in one go.
+     *  `idx` addresses the row's own box: usernames can differ by punctuation
+     *  alone, so the position in the strip is what identifies it. */
+    function addDriverFromLogin(username, idx) {
+      const u   = String(username == null ? '' : username).trim();
+      const inp = document.getElementById('lists-login-name-' + idx);
+      const d   = inp ? String(inp.value == null ? '' : inp.value).trim() : '';
+      if (!u || !d) { if (inp && inp.focus) inp.focus(); return; }
+      // Typing a name in is how a deleted one comes back — the same rule the
+      // add row above follows, and the reason a driver removed once can still
+      // be offered here.
+      _setRemovedName('drivers', d, false);
+      if (!Array.isArray(divTruckLists.drivers)) divTruckLists.drivers = [];
+      if (!divTruckLists.drivers.includes(d)) {
+        divTruckLists.drivers.push(d);
+        divTruckLists.drivers.sort((a, b) => String(a).localeCompare(String(b)));
+      }
+      _listsUndo = null;
+      driverLoginMap[u] = d;
+      saveTruckLists();
+      saveDriverLogins();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /** Take the guess: link a sign-in to a name already on the list. */
+    function linkLoginToDriver(username, driverName) {
+      const u = String(username == null ? '' : username).trim();
+      const d = String(driverName == null ? '' : driverName).trim();
+      if (!u || !d) return;
+      driverLoginMap[u] = d;
+      saveDriverLogins();
+      renderListsPanel();
+    }
+
+    /** "Not a driver" — an office login, and no amount of offering it will
+     *  make it one. Kept with the lists rather than per-browser so one
+     *  dispatcher's answer settles it for the rest. */
+    function dismissLoginCandidate(username) {
+      const u = String(username == null ? '' : username).trim();
+      if (!u) return;
+      if (!Array.isArray(divTruckLists.notDrivers)) divTruckLists.notDrivers = [];
+      const k = u.toLowerCase();
+      if (!divTruckLists.notDrivers.some(v => String(v).trim().toLowerCase() === k)) {
+        divTruckLists.notDrivers.push(u);
+      }
+      _listsUndo = { kind: 'notdriver', value: u };
+      saveTruckLists();
+      renderListsPanel();
+    }
+
+    /** Offer a dismissed sign-in again. */
+    function restoreLoginCandidate(username) {
+      const u = String(username == null ? '' : username).trim();
+      if (!u) return;
+      const k = u.toLowerCase();
+      divTruckLists.notDrivers = (divTruckLists.notDrivers || [])
+        .filter(v => String(v).trim().toLowerCase() !== k);
+      if (_listsUndo && _listsUndo.kind === 'notdriver'
+          && String(_listsUndo.value).trim().toLowerCase() === k) _listsUndo = null;
+      saveTruckLists();
+      renderListsPanel();
+    }
+
+    /** Fold the dismissed-sign-ins strip open or shut. Its own flag rather
+     *  than a key in _listsShowRemoved: that set is keyed by list name, and
+     *  this sits under the drivers list without being part of it. */
+    let _listsShowNotDrivers = false;
+    function toggleNotDrivers() {
+      _listsShowNotDrivers = !_listsShowNotDrivers;
+      renderListsPanel();
     }
 
     /** Fold a section's removed-names strip open or shut. */
