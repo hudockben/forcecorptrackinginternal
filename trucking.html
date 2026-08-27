@@ -4717,6 +4717,9 @@
       th:    'text-align:left;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;background:#f0f0f0;border:1px solid #ccc;padding:4px 7px',
       td:    'border:1px solid #ddd;padding:4px 7px;font-size:11.5px;vertical-align:top',
       tdT:   'border:1px solid #ddd;padding:4px 7px;font-size:11.5px;white-space:nowrap;font-weight:600',
+      // Where the driver is going. `pre-line` keeps the line breaks typed into
+      // the address box — a street and a suite stay on their own lines.
+      tdA:   'border:1px solid #ddd;padding:4px 7px;font-size:11px;line-height:1.35;vertical-align:top;white-space:pre-line',
       none:  'border:1px solid #ddd;padding:7px;font-size:11px;color:#888;text-align:center',
       open:  'font-size:10.5px;color:#666;margin:3px 0 0;line-height:1.5',
       // Masthead. Mirrors the app header — wordmark in the division red, the
@@ -4776,13 +4779,13 @@
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.end)) || '—'}</td>
             <td style="${_RP.td};font-weight:600">${schedEsc(a.driver)}</td>
             <td style="${_RP.td}">${schedRepCell(schedJobOf(a))}${
-              a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}${
-              a.address ? `<span style="display:block;color:#666;font-size:9.5px;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
+              a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}</td>
+            <td style="${_RP.tdA}">${schedRepCell(a.address)}</td>
             <td style="${_RP.td}">${schedRepCell(a.material)}</td>
             <td style="${_RP.td}">${schedRepCell(a.unit)}${clash ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`;
-        }).join('') : `<tr><td style="${_RP.none}" colspan="7">Nothing scheduled.</td></tr>`;
+        }).join('') : `<tr><td style="${_RP.none}" colspan="8">Nothing scheduled.</td></tr>`;
 
         // Drivers with no hours are listed on purpose — an empty day for
         // someone on the roster is the thing a dispatcher needs to notice.
@@ -4796,10 +4799,11 @@
 
         return `<div style="${_RP.h2}">${schedEsc(schedRepDayLabel(d))}</div>
           <table style="${_RP.tbl}"><thead><tr>
-            <th style="${_RP.th};width:62px">Start</th><th style="${_RP.th};width:62px">End</th>
-            <th style="${_RP.th};width:118px">Driver</th><th style="${_RP.th};width:145px">Project</th>
-            <th style="${_RP.th};width:92px">Material</th>
-            <th style="${_RP.th};width:80px">Truck</th><th style="${_RP.th}">Notes</th>
+            <th style="${_RP.th};width:58px">Start</th><th style="${_RP.th};width:58px">End</th>
+            <th style="${_RP.th};width:108px">Driver</th><th style="${_RP.th};width:130px">Project</th>
+            <th style="${_RP.th};width:140px">Address</th>
+            <th style="${_RP.th};width:84px">Material</th>
+            <th style="${_RP.th};width:72px">Truck</th><th style="${_RP.th}">Notes</th>
           </tr></thead><tbody>${rows}</tbody></table>
           ${open.length ? `<p style="${_RP.open}"><strong>No hauling hours (${open.length}):</strong> ${schedEsc(open.join(' · '))}</p>` : ''}`;
       }).join('');
@@ -4825,17 +4829,18 @@
             <td style="${_RP.tdT}">${schedEsc(schedRepDayShort(a._d))}</td>
             <td style="${_RP.tdT}">${schedEsc(schedWindow(a)) || '—'}</td>
             <td style="${_RP.td}">${schedRepCell(schedJobOf(a))}${
-              a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}${
-              a.address ? `<span style="display:block;color:#666;font-size:9.5px;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
+              a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}</td>
+            <td style="${_RP.tdA}">${schedRepCell(a.address)}</td>
             <td style="${_RP.td}">${schedRepCell(a.material)}</td>
             <td style="${_RP.td}">${schedRepCell(a.unit)}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`).join('');
         return `<div style="${_RP.h2}">${schedEsc(n)}</div>
           <table style="${_RP.tbl}"><thead><tr>
-            <th style="${_RP.th};width:96px">Day</th><th style="${_RP.th};width:118px">Hours</th>
-            <th style="${_RP.th};width:150px">Project</th><th style="${_RP.th};width:92px">Material</th>
-            <th style="${_RP.th};width:80px">Truck</th>
+            <th style="${_RP.th};width:90px">Day</th><th style="${_RP.th};width:110px">Hours</th>
+            <th style="${_RP.th};width:136px">Project</th><th style="${_RP.th};width:140px">Address</th>
+            <th style="${_RP.th};width:84px">Material</th>
+            <th style="${_RP.th};width:72px">Truck</th>
             <th style="${_RP.th}">Notes</th>
           </tr></thead><tbody>${rows}</tbody></table>`;
       }).join('');
