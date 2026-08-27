@@ -1697,9 +1697,15 @@ ALTER TABLE quarry_sales_submissions ADD COLUMN IF NOT EXISTS price_per_ton  NUM
 -- it. Those keep a NULL price and are asked for one, and their amount is
 -- untouched either way — dbToEntry hands back the figure they were charged
 -- when there is no price to multiply.
+-- NULLIF, not a bare tons > 0. Postgres does not promise to evaluate WHERE
+-- conditions in the order they are written — the planner may reach the
+-- division before the guard meant to protect it — so a single row with a zero
+-- tonnage could raise division_by_zero, and this statement runs inside the
+-- Vercel build. A schema step that throws takes the whole deploy with it.
+-- NULLIF makes the divisor NULL instead: the quotient is NULL, the comparison
+-- is NULL rather than true, and the row is simply not backfilled.
 UPDATE quarry_sales_submissions
-   SET price_per_ton = ROUND(amount_charged / tons, 4)
+   SET price_per_ton = ROUND(amount_charged / NULLIF(tons, 0), 4)
  WHERE price_per_ton IS NULL
    AND amount_charged IS NOT NULL AND amount_charged > 0
-   AND tons > 0
-   AND amount_charged / tons <= 1000;
+   AND amount_charged / NULLIF(tons, 0) <= 1000;

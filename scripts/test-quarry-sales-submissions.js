@@ -858,12 +858,19 @@ function pageTests() {
   // DRAFT nobody can save: every write re-parses it and parsePrice refuses it.
   {
     const schema = read('neon-schema.sql');
-    const m = /UPDATE quarry_sales_submissions[\s\S]*?amount_charged \/ tons <= (\d+)/.exec(schema);
+    const m = /UPDATE quarry_sales_submissions[\s\S]*?amount_charged \/ NULLIF\(tons, 0\) <= (\d+)/.exec(schema);
     assert('the backfill is bounded', !!m, 'no bound found on the backfill UPDATE');
     assert('and bounded by the same figure the form accepts',
       m && Number(m[1]) === MAX_PRICE, m && m[1]);
-    assert('it cannot divide by zero or write a zero price',
-      /tons > 0/.test(schema) && /amount_charged > 0/.test(schema));
+    // NULLIF rather than a bare tons > 0: Postgres does not promise to evaluate
+    // WHERE conditions in written order, so the guard cannot be relied on to
+    // run before the division it guards — and this statement executes inside
+    // the Vercel build, where a throw takes the deploy with it.
+    assert('it cannot divide by zero, whatever order the planner picks',
+      !/amount_charged \/ tons/.test(schema) &&
+      (schema.match(/amount_charged \/ NULLIF\(tons, 0\)/g) || []).length === 2,
+      (schema.match(/amount_charged \/ NULLIF\(tons, 0\)/g) || []).join(' | '));
+    assert('and it cannot write a zero or negative price', /amount_charged > 0/.test(schema));
     assert('and it is a no-op on every run after the first',
       /price_per_ton IS NULL/.test(schema));
   }
