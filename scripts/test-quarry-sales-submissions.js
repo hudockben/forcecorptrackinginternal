@@ -472,6 +472,26 @@ function legacyRowTests() {
     assert('a draft with neither has neither',
       e.amount_charged === null && e.price_per_ton === null, JSON.stringify(e));
   }
+
+  // Reading it back is only half of it. The total is DERIVED, so an ordinary
+  // Save Draft on one of these rows posts a body with no tonnage and no price,
+  // normalizeBody hands back amount_charged: null, and a plain assignment
+  // would write that over the figure the customer was charged — on the first
+  // save, with the number never having appeared on screen to be missed.
+  {
+    const { data } = normalizeBody({ work_date: '2026-08-11' });
+    assert('a save with nothing to multiply derives no total',
+      data.amount_charged === null, String(data.amount_charged));
+
+    const api = read('api/quarry-sales-submissions.js');
+    const upd = /UPDATE quarry_sales_submissions SET([\s\S]*?)RETURNING/.exec(api);
+    assert('and the UPDATE coalesces rather than assigning it', !!upd &&
+      /amount_charged = COALESCE\(\$\{data\.amount_charged\}::numeric, amount_charged\)/.test(upd[1]),
+      upd && upd[1]);
+    assert('while every other column assigns as normal', !!upd &&
+      /price_per_ton\s+= \$\{data\.price_per_ton\},/.test(upd[1]) &&
+      /tons\s+= \$\{data\.tons\},/.test(upd[1]));
+  }
 }
 
 // ── 4. A stale grid save cannot drop or rewrite the sale ────────────────────
@@ -711,6 +731,20 @@ function pageTests() {
     /\/api\/quarry-sales-lists/.test(form));
   assert('tons and the price are the two numbers typed in',
     /<input type="number" id="f-tons"/.test(form) && /<input type="number" id="f-price"/.test(form));
+  // parsePrice keeps four places so a price divided back out of an old ticket
+  // survives. At step="0.01" such a value is :invalid and one press of the
+  // spinner SNAPS it — 18.0151 becomes 18.02, re-pricing the load on a
+  // keystroke meant to nudge it.
+  {
+    const stepOf = re => { const m = re.exec(form); return m && m[1]; };
+    assert('the price input admits the precision the server stores',
+      stepOf(/<input type="number" id="f-price"[^>]*step="([\d.]+)"/) === '0.0001',
+      stepOf(/<input type="number" id="f-price"[^>]*step="([\d.]+)"/));
+    const grid2 = read('quarry.html');
+    assert("and matches the grid's own price cell",
+      /updateSalesNumber\(\$\{i\}, 'pricePerTon'/.test(grid2) &&
+      /step="0\.0001"[^>]*oninput="updateSalesNumber\(\$\{i\}, 'pricePerTon'/.test(grid2));
+  }
   // The total is filled in, not asked for. readonly rather than disabled: a
   // disabled box is skipped by the browser's own focus order AND greyed to
   // near-invisible on a phone, and this is the figure the customer is billed.
@@ -893,6 +927,10 @@ async function browserTests() {
   const d = window.document;
   const sel = id => d.getElementById(id);
   const settle = () => new Promise(r => setTimeout(r, 30));
+  // editEntry reads the page's own cache, which is filled by loadEntries from
+  // the network. Seeding it directly is how a single row gets in front of the
+  // form without standing up a whole fake listing endpoint.
+  const entriesCacheSeed = rows => window.eval(`entriesCache = ${JSON.stringify(rows)}`);
   await settle();
 
   assert('the page opens for a quarry_sales user',
@@ -944,6 +982,55 @@ async function browserTests() {
   // order, which was the last way a screen reader could get at it.
   assert('the total is still reachable by keyboard',
     !sel('f-amount').hasAttribute('tabindex'), sel('f-amount').getAttribute('tabindex'));
+
+  {
+    // The sum the live region states has to be TRUE. A price divided back out
+    // of an old ticket runs to four places, and shown to two it stops
+    // multiplying out — "3 tons × $33.33 / ton = $100.00" is wrong by a cent,
+    // stated by the form, in its own announcement.
+    sel('f-tons').value = '3';
+    sel('f-price').value = '33.3333';
+    window.updateAmount();
+    assert('a four-place price is shown to four places',
+      sel('amountNote').textContent === '3 tons × $33.3333 / ton = $100.00',
+      sel('amountNote').textContent);
+    assert('and the total it states is the product of what it states',
+      sel('f-amount').value === '100.00', sel('f-amount').value);
+    sel('f-price').value = '18.00';
+    window.updateAmount();
+    assert('an ordinary price still reads to two',
+      /\$18\.00 \/ ton/.test(sel('amountNote').textContent), sel('amountNote').textContent);
+    sel('f-tons').value = '24.5';
+    window.updateAmount();
+  }
+
+  {
+    // A draft recorded before the form asked for a price has a total and no
+    // price. The box shows tons x price and there is no price, so without
+    // carrying it the figure the customer was charged is invisible while the
+    // submitter decides what to type over it.
+    entriesCacheSeed([{ id: '77', status: 'draft', work_date: '2026-08-11',
+      location_id: 'loc2', location_name: 'Rossiter', employee_id: 'emp2', employee_name: 'Dale Wilson',
+      customer_id: 'cus1', customer_name: 'Kinkead Aggregates LLC',
+      product_id: 'prd2', product_name: 'AASHTO #1',
+      tons: null, price_per_ton: null, amount_charged: 400, payment: 'Cash' }]);
+    window.editEntry('77');
+    await settle();
+    assert('the recorded total is put on screen, not left blank',
+      sel('f-amount').value === '400.00', sel('f-amount').value);
+    assert('and the note says why there is no price behind it',
+      /Recorded at \$400\.00 before this form asked for a price/.test(sel('amountNote').textContent),
+      sel('amountNote').textContent);
+    sel('f-tons').value = '20';
+    sel('f-price').value = '20.00';
+    window.updateAmount();
+    assert('and pricing it takes the total back over',
+      sel('f-amount').value === '400.00' &&
+      sel('amountNote').textContent === '20 tons × $20.00 / ton = $400.00',
+      sel('amountNote').textContent);
+    window.resetForm();
+    assert('a reset clears the carried total', sel('f-amount').value === '', sel('f-amount').value);
+  }
 
   {
     // A 0 in the tonnage is not empty and is not a load either. Branching on

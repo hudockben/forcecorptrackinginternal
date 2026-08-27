@@ -355,7 +355,11 @@
         <label for="f-price">Price / Ton</label>
         <div class="amount-wrap">
           <span class="amount-prefix" aria-hidden="true">$</span>
-          <input type="number" id="f-price" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
+          <!-- step matches what parsePrice stores and what the grid's own price
+               cell uses. At 0.01 a backfilled price of 18.0151 was :invalid,
+               and one press of the spinner SNAPPED it to 18.02 — silently
+               re-pricing the load on a keystroke meant to nudge it. -->
+          <input type="number" id="f-price" inputmode="decimal" min="0" step="0.0001" placeholder="0.00"
                  oninput="updateAmount()" onchange="updateAmount()" />
         </div>
         <div class="field-note">What this material sold at today.</div>
@@ -492,6 +496,11 @@
     let lists        = { locations: [], employees: [], customers: [], products: [], payments: [] };
     let entriesCache = [];
     let editingId    = null;    // id of the draft row this form is sitting on
+    // The total a draft was recorded at before this form asked for a price.
+    // There is nothing on screen it could otherwise appear in — the box shows
+    // tons x price and there is no price — so without this the figure is
+    // invisible while the submitter decides what to type over it.
+    let recordedAmount = null;
 
     // ── What the load comes to ──────────────────────────────────────────────
     // Copy of amountFrom() in api/quarry-sales-submissions.js, which is
@@ -508,6 +517,17 @@
 
     function money(n) {
       return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    // A price, which is money but not to two places. Sales taken before this
+    // form asked for a price carry one divided back out of their ticket total,
+    // and $100 over 3 tons is 33.3333 a ton — rounded to $33.33 for display it
+    // stops multiplying out, and the form ends up stating a sum that is wrong
+    // by a cent in its own live region. Up to four, never fewer than two.
+    function priceText(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return '$0.00';
+      return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
     }
 
     // Fill the total in, and say what it is made of. This is the whole safety
@@ -531,6 +551,17 @@
       const price = val('f-price').trim();
       const amount = amountFrom(tons, price);
       if (amount === null) {
+        // Nothing to multiply. If this draft was recorded at a total before
+        // the form asked for a price, show that rather than an empty box:
+        // it is what the customer was charged, and it is the number whoever
+        // is finishing the draft needs in front of them to price it.
+        if (recordedAmount !== null) {
+          box.value = Number(recordedAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          note.className = 'field-note';
+          note.textContent = `Recorded at ${money(recordedAmount)} before this form asked for a price. `
+            + 'Enter the price it sold at and this works itself out again.';
+          return;
+        }
         box.value = '';
         note.className = 'field-note';
         // Which box to point at is decided by which one has no usable figure
@@ -549,7 +580,7 @@
       note.className = 'field-note calc';
       // Carries the total as well as the two figures behind it: this is the
       // form's live region, so what it says is what a screen reader hears.
-      note.textContent = `${Number(tons)} tons × ${money(price)} / ton = ${money(amount)}`;
+      note.textContent = `${Number(tons)} tons × ${priceText(price)} / ton = ${money(amount)}`;
     }
 
     async function init() {
@@ -795,7 +826,7 @@
         const amount = e.amount_charged != null ? money(e.amount_charged) : '';
         // What the total is made of, shown small beneath it — there to be
         // checked against the ticket, not read.
-        const price = e.price_per_ton != null ? `${money(e.price_per_ton)} / ton` : '';
+        const price = e.price_per_ton != null ? `${priceText(e.price_per_ton)} / ton` : '';
         const audit = entryAuditLine(e);
         return `
           <div class="entry ${isDraft ? 'draft' : ''}" ${isDraft ? `onclick="editEntry('${escapeHtml(e.id)}')"` : ''}>
@@ -864,6 +895,11 @@
         node.value = listId;
       }
 
+      // A draft carrying a total but no price predates the price column — the
+      // migration could not divide one out of it (no tonnage, or a figure over
+      // what this form accepts a ton). Keep the total so it stays on screen.
+      recordedAmount = (e.price_per_ton == null && e.amount_charged != null)
+        ? e.amount_charged : null;
       updateAmount();
       markEmpty([]);
       markAsDraft();
@@ -877,6 +913,7 @@
 
     function resetForm() {
       editingId = null;
+      recordedAmount = null;
       document.getElementById('formTitle').textContent = 'New Sale';
       document.getElementById('formBadge').style.display = 'none';
       document.getElementById('row-delete').style.display = 'none';
@@ -1004,7 +1041,7 @@
       const amount = amountFrom(val('f-tons'), val('f-price'));
       if (!confirm(
         `Submit this sale for ${amount === null ? 'no charge' : money(amount)}?\n\n` +
-        `${Number(val('f-tons'))} tons at ${money(val('f-price'))} / ton. ` +
+        `${Number(val('f-tons'))} tons at ${priceText(val('f-price'))} / ton. ` +
         'It goes straight into Quarry Sales Tracking, and only the quarry office can take it back out.'
       )) return;
       if (!beginWrite()) return;

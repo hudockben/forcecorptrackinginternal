@@ -315,7 +315,8 @@ function dbToEntry(r) {
     // of its amount by the migration, but not if that quotient came out above
     // MAX_PRICE — those keep a NULL price, and they were still charged what
     // they were charged. Returning null for them would blank a real figure out
-    // of the submitter's own list.
+    // of the submitter's own list, and the UPDATE above coalesces so a write
+    // cannot blank it out of the row either.
     amount_charged: amountFrom(r.tons, r.price_per_ton) ??
       (r.amount_charged === null || r.amount_charged === undefined
         ? null : Number(r.amount_charged)),
@@ -573,6 +574,14 @@ module.exports = async (req, res) => {
       if (!data.work_date) return res.status(400).json({ error: 'Pick a date before saving.' });
       await resolveListNames(sql, companyCode, data);
 
+      // amount_charged coalesces rather than assigning. It is derived, so it
+      // comes back NULL whenever there is no tonnage and price to multiply —
+      // and writing that NULL would erase the recorded total of a sale taken
+      // before this form asked for a price, on the first ordinary Save Draft,
+      // with the figure never having appeared on screen to be missed. Nothing
+      // else could restore it. A row that HAS both figures overwrites as
+      // normal, so this only ever holds a total that is no longer derivable;
+      // it cannot keep a stale one alongside a live price.
       const [updated] = await sql`
         UPDATE quarry_sales_submissions SET
           work_date     = ${data.work_date},
@@ -582,7 +591,7 @@ module.exports = async (req, res) => {
           product_id    = ${data.product_id},    product_name  = ${data.product_name},
           tons          = ${data.tons},          payment       = ${data.payment},
           price_per_ton  = ${data.price_per_ton},
-          amount_charged = ${data.amount_charged},
+          amount_charged = COALESCE(${data.amount_charged}::numeric, amount_charged),
           updated_at    = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
