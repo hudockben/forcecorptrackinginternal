@@ -286,6 +286,45 @@ for (const file of FILES) {
   assert('and the sheet says what a dashed bar means',
     /Dashed bar = drawn from the daily sheets, no dates entered/.test(gpdf));
 
+  console.log('  — the pace table');
+  const pace = extractFunction(src, 'renderScheduleProjectDetail');
+  assert('the two chips under the cost code are placed by the shared rule',
+    /const schedDates    = _schedBidDates\(bi, proj\.id\);/.test(pace) &&
+    /const startDateFmt  = schedDates\.start  \? _schedDFmt\(schedDates\.start\)  : null;/.test(pace) &&
+    /const targetDateFmt = schedDates\.target \? _schedDFmt\(schedDates\.target\) : null;/.test(pace));
+  assert('a date the sheets supplied says so and is dimmed',
+    /schedDates\.autoStart \? 'First worked' : 'Start'/.test(pace) &&
+    /schedDates\.autoTarget \? 'Last worked' : 'Target'/.test(pace) &&
+    (pace.match(/opacity:0\.6;font-style:italic/g) || []).length === 2);
+  assert('and its tooltip says what it is and what still measures the plan',
+    /No start date entered — this is the first day the crew booked work/.test(pace) &&
+    /never against this date/.test(pace));
+  // Everything else on the row scores the job against its deadline, so it has
+  // to stay on the typed target.
+  assert('the projected-finish column still compares against the plan',
+    /const deadlineToCompare = bi\.target_date \|\| deadline;/.test(pace));
+  // A not-started line carries a typed future start by definition, so the pill
+  // can read the resolved date without ever printing one off the sheets.
+  assert('the "Starts …" pill still reads a real start date',
+    /not-started">Starts \$\{startDateFmt \|\| '\?'\}/.test(pace));
+
+  console.log('  — the printed pace table');
+  const spdf = extractFunction(src, 'printSchedulePDF');
+  assert('it prints the same two dates the screen shows',
+    /const pdfDates = _schedBidDates\(bi, proj\.id\);/.test(spdf) &&
+    /\$\{pdfDates\.start \? `<div style="font-size:8px;color:#15803d/.test(spdf) &&
+    /\$\{pdfDates\.target \? `<div style="font-size:8px;color:#[0-9a-f]{6}/.test(spdf));
+  assert('a sheets-supplied date prints in italics and says which end it is',
+    (spdf.match(/font-style:italic;opacity:0\.8/g) || []).length === 2 &&
+    /pdfDates\.autoStart \? ' first worked' : ''/.test(spdf) &&
+    /pdfDates\.autoTarget \? ' last worked' : ''/.test(spdf));
+  assert('the projection still scores against the typed target',
+    /const pdfDeadlineCompare = bi\.target_date \|\| deadline;/.test(spdf) &&
+    /: status === 'not-started' \? `Starts \$\{bi\.start_date \|\| '\?'\}`/.test(spdf));
+  assert('and the sheet explains the italics under the table',
+    /A cost code with no date entered shows the daily sheets instead, in italics/.test(spdf) &&
+    /never against an italic date/.test(spdf));
+
   console.log('  — the job summary schedule page');
   const sched = extractFunction(src, '_jsBidScheduleHtml');
   assert('a worked line earns a place on the chart',

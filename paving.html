@@ -22554,12 +22554,19 @@ function renderScheduleProjectDetail(proj) {
         ? `<span style="color:var(--green)">▲ ${fmt(Math.abs(gap),2)}/d ahead</span>`
         : `<span style="color:${(gap / (bidQty||1)) > 0.05 ? 'var(--red)' : 'var(--yellow)'}">▼ ${fmt(gap,2)}/d needed</span>`;
 
-    const startDateFmt = bi.start_date
-      ? new Date(bi.start_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-      : null;
-    const targetDateFmt = bi.target_date
-      ? new Date(bi.target_date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-      : null;
+    // The two dates under the cost code follow the same rule the bid table and
+    // the Gantt do: the typed plan when there is one, the days the crew actually
+    // worked the line when there is not. Every other column on this row —
+    // required pace, days left, projected finish, status — is measured against
+    // the plan alone, so a date the sheets supplied is marked as one rather than
+    // quietly sitting where a commitment used to.
+    const schedDates    = _schedBidDates(bi, proj.id);
+    const _schedDFmt    = d => new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    // The "Starts …" pill below reads this too, and only ever on a not-started
+    // line — which by definition carries a typed start date in the future, so
+    // what it prints is that date, never one off the sheets.
+    const startDateFmt  = schedDates.start  ? _schedDFmt(schedDates.start)  : null;
+    const targetDateFmt = schedDates.target ? _schedDFmt(schedDates.target) : null;
 
     const ppDaysFmtSched = effectiveDaysLeft !== null && effectiveDaysLeft % 1 !== 0 ? effectiveDaysLeft.toFixed(1) : effectiveDaysLeft;
     const reqPaceCell = isLumpSum
@@ -22630,8 +22637,8 @@ function renderScheduleProjectDetail(proj) {
     return `<tr data-bikey="${biKey.replace(/"/g,'&quot;')}">
       <td>
         <div style="font-weight:600">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}${unit ? `<span style="font-size:0.65rem;color:var(--muted);font-weight:400;margin-left:0.35rem">${unit}</span>` : ''}</div>
-        ${startDateFmt ? `<div style="font-size:0.68rem;color:var(--green);margin-top:0.1rem">▶ Start: ${startDateFmt}</div>` : ''}
-        ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem">◼ Target: ${targetDateFmt}</div>` : ''}
+        ${startDateFmt ? `<div style="font-size:0.68rem;color:var(--green);margin-top:0.1rem${schedDates.autoStart ? ';opacity:0.6;font-style:italic' : ''}" title="${schedDates.autoStart ? 'No start date entered — this is the first day the crew booked work to this sub code. Enter a date on the bid line to plan it.' : 'Start date entered on the bid line.'}">▶ ${schedDates.autoStart ? 'First worked' : 'Start'}: ${startDateFmt}</div>` : ''}
+        ${targetDateFmt ? `<div style="font-size:0.68rem;color:var(--blue);margin-top:0.1rem${schedDates.autoTarget ? ';opacity:0.6;font-style:italic' : ''}" title="${schedDates.autoTarget ? 'No target date entered — this is the latest day the crew booked work to this sub code. Days left, required pace and projected finish are still measured against the project deadline, never against this date.' : 'Target date entered on the bid line — days left and projected finish are measured against it.'}">◼ ${schedDates.autoTarget ? 'Last worked' : 'Target'}: ${targetDateFmt}</div>` : ''}
         <div style="font-size:0.7rem;color:var(--muted);margin-top:0.1rem">${esc(employees)}</div>
         ${equipment !== '—' ? `<div style="font-size:0.7rem;color:var(--muted)">${esc(equipment)}</div>` : ''}
         <button onclick="toggleBidItemComplete('${projId}','${bi.id}')"
@@ -23393,7 +23400,12 @@ async function printSchedulePDF() {
       ${csDays >= 2 ? `<span style="font-size:8px;color:${csColor}">${csDays}d ${csLbl}</span>` : ''}
     </div>`;
 
-    // Projected finish
+    // Same two dates the screen shows: the typed plan, or the days the crew
+    // worked the line, italic and labelled when it is the second.
+    const pdfDates = _schedBidDates(bi, proj.id);
+
+    // Projected finish. Scored against the typed target only — the latest day
+    // worked is behind us, and everything would come out late against it.
     const pdfDeadlineCompare = bi.target_date || deadline;
     let projFinishTxt = '—';
     if (forcedComplete || pct >= 100) {
@@ -23438,8 +23450,8 @@ async function printSchedulePDF() {
 
     return `<tr>
       <td style="font-weight:600;white-space:nowrap">${esc(bi.cost_code||'—')}${bi.sub_code ? ' · ' + esc(bi.sub_code) : ''}${pdfUnit ? `<span style="font-size:7px;color:#888;font-weight:400;margin-left:4px">${pdfUnit}</span>` : ''}
-        ${bi.start_date ? `<div style="font-size:8px;color:#15803d">▶ ${bi.start_date}</div>` : ''}
-        ${bi.target_date ? `<div style="font-size:8px;color:#1d4ed8">◼ ${bi.target_date}</div>` : ''}
+        ${pdfDates.start ? `<div style="font-size:8px;color:#15803d${pdfDates.autoStart ? ';font-style:italic;opacity:0.8' : ''}">▶ ${pdfDates.start}${pdfDates.autoStart ? ' first worked' : ''}</div>` : ''}
+        ${pdfDates.target ? `<div style="font-size:8px;color:#1d4ed8${pdfDates.autoTarget ? ';font-style:italic;opacity:0.8' : ''}">◼ ${pdfDates.target}${pdfDates.autoTarget ? ' last worked' : ''}</div>` : ''}
       </td>
       <td style="text-align:right">${bidQty > 0 ? fmt(bidQty,1) : '—'}</td>
       <td style="text-align:right">${runningQty > 0 ? fmt(runningQty,1) : '—'}</td>
@@ -23549,6 +23561,7 @@ async function printSchedulePDF() {
     </tr></thead>
     <tbody>${tableRows || '<tr><td colspan="13" style="text-align:center;color:#888;padding:1rem">No bid items found.</td></tr>'}</tbody>
   </table>
+  <p style="margin-top:6px;font-size:8px;color:#666;line-height:1.5">▶ start and ◼ target come from the bid line. A cost code with no date entered shows the daily sheets instead, in italics: the first day work was booked to it, and the latest. Days left, required pace and projected finish are measured against the entered target date or the project deadline — never against an italic date.</p>
   <div style="margin-top:10px;padding-top:6px;border-top:1px solid #ddd;font-size:8px;color:#aaa;display:flex;justify-content:space-between">
     <span>DataWatch — Schedule Pacing Report</span>
     <span>Generated ${new Date().toLocaleString()}</span>
