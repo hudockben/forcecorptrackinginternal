@@ -1097,6 +1097,21 @@ async function browserTests() {
     /Sales Tracking/.test(sel('formMsg').textContent), sel('formMsg').textContent);
   assert('and clears for the next load', sel('formTitle').textContent === 'New Sale');
 
+  // ── Whose sales the list is showing ──────────────────────────────────────
+  // The toggle is offered only to someone who also works the quarry side,
+  // because the endpoint quietly scopes a field user's ?scope=all back to
+  // their own rows — for anyone else it would be a button that appears to do
+  // nothing. This user holds quarry_sales and nothing else.
+  {
+    assert('a field-only user is never offered the company view',
+      sel('whoToggle').hidden === true);
+    const before = calls.length;
+    window.setWho(false);
+    await settle();
+    assert('and calling it directly changes nothing',
+      calls.length === before, JSON.stringify(calls.slice(before).map(c => c.url)));
+  }
+
   // A second identical load. The endpoint asks; the form has to put the
   // question to the person holding the tickets and act on either answer.
   {
@@ -1154,6 +1169,97 @@ async function browserTests() {
   window.close();
 }
 
+// ── 7b. The company view, for someone who also works the quarry ─────────────
+// Two axes, not one: "everyone's, last 30 days" and "mine, all of them" are
+// both answers somebody wants, so the toggle and the window have to compose.
+// And the drafts slice stays the caller's own however it is set — an
+// unfinished sale of somebody else's is not something anyone here can act on.
+async function companyViewTests() {
+  console.log('\n[the company view]');
+
+  const { JSDOM } = require('jsdom');
+  const calls = [];
+  const dom = new JSDOM(read('quarry-sales.html'), {
+    runScripts: 'dangerously',
+    url: 'https://example.test/quarry-sales.html',
+    beforeParse(window) {
+      window.localStorage.setItem('fct_token', 'tok');
+      // Holds BOTH: submits sales and works Sales Tracking.
+      window.localStorage.setItem('fct_user', JSON.stringify({
+        username: 'office', companyCode: 'FCT',
+        allowedDivisions: ['quarry_sales', 'quarry'],
+        divisionRoles: { quarry_sales: 'level1', quarry: 'level3' },
+      }));
+      window.fetch = async (url) => {
+        const u = String(url);
+        calls.push(u);
+        if (u.startsWith('/api/quarry-sales-lists')) {
+          return { ok: true, status: 200, json: async () => ({ locations: [], employees: [], customers: [], products: [], payments: PAYMENT_OPTIONS.slice() }) };
+        }
+        if (u.includes('status=submitted')) {
+          return { ok: true, status: 200, json: async () => ({ entries: [{
+            id: '77', status: 'submitted', username: 'strickallen', work_date: '2026-08-26',
+            location_name: 'Homer City', employee_name: 'Steve Travis',
+            customer_name: 'CASH TAXABLE', product_name: '#3 Limestone',
+            tons: 20, price_per_ton: 20, amount_charged: 400, payment: 'Cash',
+            submitted_at: '2026-08-26T18:11:00Z',
+          }] }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ entries: [] }) };
+      };
+      window.confirm = () => true;
+      window.scrollTo = () => {};
+      window.Element.prototype.scrollIntoView = function () {};
+    },
+  });
+  const { window } = dom, d = window.document, sel = id => d.getElementById(id);
+  const settle = () => new Promise(r => setTimeout(r, 30));
+  const sent = () => calls.filter(u => u.includes('status=submitted'));
+  await settle();
+
+  assert('a quarry user IS offered the company view', sel('whoToggle').hidden === false);
+  assert('and it opens on their own sales',
+    sel('whoMine').classList.contains('is-on') &&
+    sel('entriesTitle').textContent === 'My Recent Sales');
+  assert('which is asked for without a scope',
+    sent().length === 1 && !sent()[0].includes('scope=all'), JSON.stringify(sent()));
+
+  window.setWho(false);
+  await settle();
+  assert('switching asks the company-wide question',
+    sent().slice(-1)[0].includes('scope=all'), sent().slice(-1)[0]);
+  assert('and keeps the window it was on',
+    /from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}/.test(sent().slice(-1)[0]), sent().slice(-1)[0]);
+  assert('the drafts slice stays the caller\'s own',
+    calls.filter(u => u.includes('status=draft')).every(u => !u.includes('scope=all')),
+    JSON.stringify(calls.filter(u => u.includes('status=draft'))));
+  assert('the heading says whose it is now',
+    sel('entriesTitle').textContent === 'Recent Sales · Everyone', sel('entriesTitle').textContent);
+  assert('and the scope line says the drafts are still only yours',
+    /everyone \(\+ my drafts\)/.test(sel('entriesScope').textContent), sel('entriesScope').textContent);
+  assert('somebody else\'s sale is named with who sent it',
+    /strickallen/.test(sel('entriesList').innerHTML), sel('entriesList').textContent.trim().slice(0, 120));
+  assert('and is not clickable, so it cannot be opened for editing',
+    !/onclick="editEntry/.test(sel('entriesList').innerHTML));
+
+  // The two axes have to compose.
+  window.toggleScope();
+  await settle();
+  const last = sent().slice(-1)[0];
+  assert('everyone + all time drops the window but keeps the scope',
+    last.includes('scope=all') && !last.includes('from='), last);
+  assert('and the scope line reflects both', /All sales · everyone/.test(sel('entriesScope').textContent),
+    sel('entriesScope').textContent);
+
+  window.setWho(true);
+  await settle();
+  const back = sent().slice(-1)[0];
+  assert('switching back drops the scope and keeps all-time',
+    !back.includes('scope=all') && !back.includes('from='), back);
+
+  window.close();
+}
+
 (async () => {
   console.log('Quarry Sales — the form, the endpoint and the grid it lands in');
   parsingTests();
@@ -1165,6 +1271,7 @@ async function browserTests() {
   await duplicateTests();
   pageTests();
   await browserTests();
+  await companyViewTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => { console.error('FATAL', err); process.exit(1); });

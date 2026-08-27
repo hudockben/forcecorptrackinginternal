@@ -258,6 +258,38 @@
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
+    /* Two states of one question, so they read as one control rather than as
+       two buttons that happen to sit together. */
+    .who-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      align-self: flex-start;
+    }
+    .who-btn {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.5rem 0.85rem;
+      cursor: pointer;
+      min-height: 40px;
+    }
+    .who-btn + .who-btn { border-left: 1px solid var(--border); }
+    .who-btn.is-on { background: var(--surface2); color: var(--accent); }
+
+    /* Who sent a sale in. Only rendered when the list is showing more than one
+       person's, where the name is the difference between two rows. */
+    .entry-who {
+      font-size: 0.7rem;
+      color: var(--accent);
+      font-weight: 600;
+    }
     .entry-empty {
       text-align: center;
       color: var(--muted);
@@ -406,8 +438,15 @@
     <!-- ── Past entries ── -->
     <section class="card">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:0.6rem;flex-wrap:wrap">
-        <div class="card-title">My Recent Sales</div>
+        <div class="card-title" id="entriesTitle">My Recent Sales</div>
         <div id="entriesScope" class="card-sub" style="font-size:0.72rem"></div>
+      </div>
+      <!-- Shown only to someone who also works the quarry side. The endpoint
+           quietly scopes a field user's ?scope=all back to their own rows, so
+           for anyone else this would be a button that appears to do nothing. -->
+      <div class="who-toggle" id="whoToggle" role="group" aria-label="Whose sales to show" hidden>
+        <button type="button" class="who-btn is-on" id="whoMine" onclick="setWho(true)"  aria-pressed="true">Mine</button>
+        <button type="button" class="who-btn"       id="whoAll"  onclick="setWho(false)" aria-pressed="false">Everyone's</button>
       </div>
       <div id="entriesList"><div class="entry-empty">Loading…</div></div>
       <div style="text-align:center">
@@ -436,6 +475,10 @@
     const allowedDivisions = Array.isArray(user && user.allowedDivisions) ? user.allowedDivisions : [];
     const hasSales         = isPlatformAdmin || allowedDivisions.includes('quarry_sales');
     const otherDivisions   = allowedDivisions.filter(d => d !== 'quarry_sales');
+    // Whoever works Sales Tracking may look at the whole company's sales here
+    // too. Mirrors canOffice on the endpoint — the same quarry role, so the
+    // toggle is offered exactly when ?scope=all will be honoured.
+    const canSeeCompany    = isPlatformAdmin || allowedDivisions.includes('quarry');
 
     if (!hasSales) {
       document.getElementById('mainContent').classList.add('hidden');
@@ -595,6 +638,7 @@
         node.addEventListener('input',  clear);
         node.addEventListener('change', clear);
       }
+      renderWhoToggle();
       await Promise.all([loadLists(), loadEntries()]);
     }
 
@@ -718,6 +762,10 @@
     // Drafts always load whatever their date, so an unfinished sale can never
     // quietly fall out of the window and become invisible.
     let scopeUnbounded = false;
+    // Whose sales the list is showing. Independent of the window above it —
+    // "everyone's, last 30 days" and "mine, all of them" are both answers
+    // somebody wants.
+    let scopeMine = true;
 
     function recentWindow() {
       const to   = new Date();
@@ -761,26 +809,41 @@
       let entries = [];
       const failures = [];
 
+      // Two slices, always. The drafts one is ALWAYS the caller's own, whoever
+      // they are and whichever way the toggle is set: an unfinished sale of
+      // somebody else's is not something anyone here can act on, and the only
+      // reason to load drafts at all is so you can finish yours. Everyone's
+      // means everyone's SUBMITTED sales.
+      const params = new URLSearchParams({ status: 'submitted' });
+      if (!scopeMine) params.set('scope', 'all');
+
+      let windowLabel;
       if (scopeUnbounded) {
-        const r = await fetchSlice('/api/quarry-sales-submissions', 'all-sales');
-        if (r.error) failures.push(r.error); else entries = r.entries;
-        scope.textContent = 'All sales';
-        if (btn) { btn.textContent = 'Show recent only'; btn.style.display = ''; }
+        windowLabel = 'All sales';
       } else {
         const { from, to } = recentWindow();
-        const fromS = ymd(from), toS = ymd(to);
-        const [draftsR, recentR] = await Promise.all([
-          fetchSlice('/api/quarry-sales-submissions?status=draft', 'drafts'),
-          fetchSlice(`/api/quarry-sales-submissions?status=submitted&from=${fromS}&to=${toS}`, 'recent'),
-        ]);
-        const byId = new Map();
-        if (draftsR.error) failures.push(`drafts: ${draftsR.error}`);
-        else for (const e of draftsR.entries) byId.set(e.id, e);
-        if (recentR.error) failures.push(`recent: ${recentR.error}`);
-        else for (const e of recentR.entries) if (!byId.has(e.id)) byId.set(e.id, e);
-        entries = Array.from(byId.values());
-        scope.textContent = `${fmtScopeDate(from)} – ${fmtScopeDate(to)} (+ all drafts)`;
-        if (btn) { btn.textContent = 'Show older sales'; btn.style.display = ''; }
+        params.set('from', ymd(from));
+        params.set('to',   ymd(to));
+        windowLabel = `${fmtScopeDate(from)} – ${fmtScopeDate(to)}`;
+      }
+
+      const [draftsR, sentR] = await Promise.all([
+        fetchSlice('/api/quarry-sales-submissions?status=draft', 'drafts'),
+        fetchSlice(`/api/quarry-sales-submissions?${params}`, 'submitted'),
+      ]);
+      const byId = new Map();
+      if (draftsR.error) failures.push(`drafts: ${draftsR.error}`);
+      else for (const e of draftsR.entries) byId.set(e.id, e);
+      if (sentR.error) failures.push(`submitted: ${sentR.error}`);
+      else for (const e of sentR.entries) if (!byId.has(e.id)) byId.set(e.id, e);
+      entries = Array.from(byId.values());
+
+      scope.textContent = scopeMine
+        ? `${windowLabel} (+ all drafts)`
+        : `${windowLabel} · everyone (+ my drafts)`;
+      if (btn) {
+        btn.textContent = scopeUnbounded ? 'Show recent only' : 'Show older sales';
+        btn.style.display = '';
       }
 
       entries.sort((a, b) => (b.work_date || '').localeCompare(a.work_date || ''));
@@ -809,10 +872,33 @@
       loadEntries();
     }
 
+    function setWho(mine) {
+      if (!canSeeCompany || mine === scopeMine) return;
+      scopeMine = mine;
+      renderWhoToggle();
+      loadEntries();
+    }
+
+    function renderWhoToggle() {
+      const wrap = el('whoToggle');
+      if (!wrap) return;
+      wrap.hidden = !canSeeCompany;
+      for (const [id, on] of [['whoMine', scopeMine], ['whoAll', !scopeMine]]) {
+        const b = el(id);
+        if (!b) continue;
+        b.classList.toggle('is-on', on);
+        b.setAttribute('aria-pressed', String(on));
+      }
+      const title = el('entriesTitle');
+      if (title) title.textContent = scopeMine ? 'My Recent Sales' : 'Recent Sales · Everyone';
+    }
+
     function renderEntries() {
       const list = document.getElementById('entriesList');
       if (!entriesCache.length) {
-        list.innerHTML = '<div class="entry-empty">No sales yet. Use the form above to record your first one.</div>';
+        list.innerHTML = `<div class="entry-empty">${scopeMine
+          ? 'No sales of yours here. Use the form above to record one — or switch to Everyone\'s to see what the rest of the pit has sent.'
+          : 'No sales from anyone in this window. Try Show older sales.'}</div>`;
         return;
       }
       list.innerHTML = entriesCache.map(e => {
@@ -820,6 +906,9 @@
         const who  = [e.customer_name, e.product_name].filter(Boolean).map(escapeHtml).join(' · ');
         const site = [e.location_name, e.employee_name, e.payment].filter(Boolean).map(escapeHtml).join(' · ');
         const meta = [who, site].filter(Boolean).join('<br />') || '—';
+        // Only while the list holds more than one person's sales. On your own
+        // list your own name against every row says nothing.
+        const sender = (!scopeMine && e.username) ? escapeHtml(e.username) : '';
         // A draft with nothing in the tons box shows no figure at all, rather
         // than a 0 that reads as "nothing went out".
         const tons  = e.tons != null ? `${Number(e.tons).toLocaleString(undefined, { maximumFractionDigits: 2 })} t` : '';
@@ -831,7 +920,7 @@
         return `
           <div class="entry ${isDraft ? 'draft' : ''}" ${isDraft ? `onclick="editEntry('${escapeHtml(e.id)}')"` : ''}>
             <div class="entry-head">
-              <div class="entry-date">${prettyDate(e.work_date)}</div>
+              <div class="entry-date">${prettyDate(e.work_date)}${sender ? ` <span class="entry-who">${sender}</span>` : ''}</div>
               <span class="badge badge-${escapeHtml(e.status)}">${escapeHtml(e.status)}</span>
             </div>
             <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:flex-end">
