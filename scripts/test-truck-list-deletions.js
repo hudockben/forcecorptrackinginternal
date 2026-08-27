@@ -64,8 +64,10 @@ const HELPERS = slice(TRUCKING, '    const _remKey =', '    function saveTruckLi
 const PANEL   = slice(TRUCKING, '    function addToList(key)', '    function schedSave()', 'panel handlers');
 const ROWEDIT = slice(TRUCKING, '    /** Re-total a row and keep', '\n    /* \u2550', 'updateField');
 // The panel's own markup, for the render smoke test below. Starts a little
-// earlier than PANEL so renderListsPanel and what it calls come along.
-const RENDER  = slice(TRUCKING, '    function driverLoginsHTML(esc)', '    function schedSave()', 'panel render');
+// earlier than PANEL so renderListsPanel and what it calls come along —
+// including the helpers that read a sign-in against the drivers list, which
+// the drivers section and the tab strip both call.
+const RENDER  = slice(TRUCKING, '    /* \u2500\u2500 Reading a sign-in against the drivers list', '    function schedSave()', 'panel render');
 
 function newPage(state) {
   const sandbox = {

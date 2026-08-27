@@ -248,6 +248,10 @@ module.exports = async (req, res) => {
             // rates: the tables store a customer as a bare name.
             removed:   (blobLists && blobLists.removed) || undefined,
             rates:     (blobLists && blobLists.rates)   || undefined,
+            // And the same again for the sign-ins the office has said are not
+            // drivers: no table records that answer, so dropping it here would
+            // put every office login back on the drivers tab as a name to add.
+            notDrivers: (blobLists && blobLists.notDrivers) || undefined,
           },
         });
       }
