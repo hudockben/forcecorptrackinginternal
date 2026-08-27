@@ -676,6 +676,10 @@
     }
     .bid-table td input:focus { background: #1e1e2e; }
     .bid-table td input.num { text-align: right; }
+    /* Start and Target Date fill themselves in from the days the crew booked
+       work to the sub code. Dimmed italic is that auto-fill; a date somebody
+       typed prints at full strength, because it outranks it. */
+    .bid-table td input.bid-date-auto { font-style: italic; opacity: 0.62; }
     .bid-table td.bid-calc {
       background: var(--calc); color: #86efac; text-align: right;
       padding: 0 0.6rem; font-variant-numeric: tabular-nums;
@@ -8329,6 +8333,71 @@ function _workDaySpanLabel(dates) {
   return dates.length === 1 ? lbl(dates[0]) : `${lbl(dates[0])} \u2013 ${lbl(dates[dates.length - 1])}`;
 }
 
+/* The two ends of a sub code's own record: the first day the crew booked work
+   to it and the latest one. Start Date and Target Date fill themselves in from
+   these rather than being typed a line at a time — nobody keeps two dates
+   current by hand down a 200-line estimate, and the daily sheets already know
+   the answer.
+
+   Read off the same work days the Days Worked column counts, so the three
+   cells at the end of the row can never disagree: "4 days · Jul 30 – Aug 4"
+   sitting next to a start of Jul 31 would look like a bug in one of them. That
+   rule is hours, equipment or quantity booked to the line — a material
+   delivery on its own is not a day on the job and does not start one.
+
+   Takes the dates already worked out for the row, so a caller that has them
+   doesn't scan the daily rows a second time. */
+function _autoBidDates(workDays) {
+  return { start: workDays[0] || '', target: workDays[workDays.length - 1] || '' };
+}
+
+function autoBidDates(b, projId) {
+  return _autoBidDates(_workDaysForItems([b], projId));
+}
+
+/* One of the two date boxes on a bid row. An auto date is shown but never
+   saved: the latest day worked moves every time the crew books another one, so
+   writing it down would freeze a figure that is meant to follow the job, and
+   the box would go stale the moment the next daily sheet came in. Only a typed
+   date is stored, and it outranks the auto one until it is cleared.
+
+   Nothing downstream reads the auto dates either — the projection and the
+   schedule treat start-and-target as a plan and measure the job against it, so
+   handing them the days already worked would have every line report itself
+   finished exactly on time. */
+function _bidDateCellHTML(projId, b, field, auto) {
+  const isStart = field === 'start_date';
+  const manual  = b[field] || '';
+  const val     = manual || auto || '';
+  const hue     = isStart ? 'var(--green)' : 'var(--blue)';
+  const which   = isStart ? 'first' : 'latest';
+  const tip     = manual
+    ? `Typed in, so it stands ahead of the daily sheets. Clear it to go back to the ${which} day work was booked to this sub code.`
+    : auto
+      ? `From the daily sheets — the ${which} day work was booked to this sub code. Type a date to set your own.`
+      : `Fills itself in from the ${which} day work is booked to this sub code. Type a date to set your own.`;
+  return `<td><input type="date" value="${esc(val)}" title="${esc(tip)}"${!manual && auto ? ' class="bid-date-auto"' : ''}
+             style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${val ? hue : 'var(--muted)'}"
+             onchange="_bidDateCommit(this,'${projId}','${b.id}','${field}')"></td>`;
+}
+
+/* Committing a date saves the typed one and nothing else. Clearing the box
+   hands the line back to the daily sheets, and the auto date has to come back
+   in the same breath: editing a bid item refreshes the row's calculated cells
+   rather than rebuilding the table, so nothing else would refill the box until
+   the next full re-render. */
+function _bidDateCommit(el, projId, itemId, field) {
+  updateBidItem(projId, itemId, field, el.value);
+  const p    = getProj(projId);
+  const item = p && (p.bidItems || []).find(b => b.id === itemId);
+  const auto = (!el.value && item)
+    ? autoBidDates(item, projId)[field === 'start_date' ? 'start' : 'target']
+    : '';
+  if (auto) el.value = auto;
+  el.classList.toggle('bid-date-auto', !!auto);
+  el.style.color = el.value ? (field === 'start_date' ? 'var(--green)' : 'var(--blue)') : 'var(--muted)';
+}
+
 // Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
 // actualForBidItem(), so on-bid spend is never miscounted as off-bid. Accepts a
 // project id or the project object itself.
@@ -9817,6 +9886,9 @@ function renderBidTable(projId, opts = {}) {
       // can show the span under the count.
       const _wDays  = _workDaysForItems([b], projId);
       const _dCount = _wDays.length;
+      // Start and Target Date come off the same days, so the end of the row
+      // tells one story instead of three.
+      const _auto   = _autoBidDates(_wDays);
       const _dTip   = _dCount
         ? _dCount + ' distinct day' + (_dCount !== 1 ? 's' : '') + ' worked on this sub code, '
           + _workDaySpanLabel(_wDays) + '. A date counts once however many crew or rows were booked '
@@ -9871,12 +9943,8 @@ function renderBidTable(projId, opts = {}) {
            <td class="bid-uc"><div class="bid-curr-wrap"><span class="curr-sym">$</span><input type="number" class="num" value="${esc(b.unit_cost)}" placeholder="0.00"
              oninput="updateBidItem('${projId}','${b.id}','unit_cost',this.value)"></div></td>
            ${calcCellsB}
-           <td><input type="date" value="${esc(b.start_date||'')}" title="Start date for this sub code"
-             style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.start_date ? 'var(--green)' : 'var(--muted)'}"
-             onchange="updateBidItem('${projId}','${b.id}','start_date',this.value);this.style.color=this.value?'var(--green)':'var(--muted)'"></td>
-           <td><input type="date" value="${esc(b.target_date||'')}" title="Target completion date for this sub code"
-             style="font-size:0.75rem;padding:0.2rem 0.4rem;color:${b.target_date ? 'var(--blue)' : 'var(--muted)'}"
-             onchange="updateBidItem('${projId}','${b.id}','target_date',this.value);this.style.color=this.value?'var(--blue)':'var(--muted)'"></td>
+           ${_bidDateCellHTML(projId, b, 'start_date',  _auto.start)}
+           ${_bidDateCellHTML(projId, b, 'target_date', _auto.target)}
            <td class="bid-calc" style="white-space:nowrap" title="${esc(_dTip)}">${
              _dCount
                ? `<div style="font-weight:600;color:var(--blue)">${_dCount} day${_dCount !== 1 ? 's' : ''}</div>`
@@ -17992,6 +18060,21 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   const r = (v, cls = '') => `<td class="num${cls ? ' '+cls : ''}">${v}</td>`;
   const dash = '—';
 
+  /* The report prints the same two dates the bid table shows: the one somebody
+     typed when there is one, otherwise the first / latest day the crew booked
+     work to the line. The auto ones print in italics, so the report says which
+     is which rather than passing the daily sheets off as a plan. */
+  const dateCells = b => {
+    const auto = autoBidDates(b, projId);
+    const cell = (manual, fallback) => {
+      const d = manual || fallback;
+      return d
+        ? r(new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }), manual ? '' : 'auto')
+        : r(dash);
+    };
+    return cell(b.start_date, auto.start) + cell(b.target_date, auto.target);
+  };
+
   visGroupOrder.forEach(costCode => {
     const gItems = groups[costCode];
     // Same roll-up the green cost-code row shows on screen, so the printed and
@@ -18045,8 +18128,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
         ${r(numLab || dash)}
         ${r(diffTxt, diffCls)}
         ${r((bidTot || proj) ? '$' + fmt(proj) : dash, bidTot ? projCls : '')}
-        ${r(b.start_date  ? new Date(b.start_date  + 'T12:00:00').toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : dash)}
-        ${r(b.target_date ? new Date(b.target_date + 'T12:00:00').toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : dash)}
+        ${dateCells(b)}
       </tr>`;
     });
 
@@ -18123,6 +18205,8 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     table { width: 100%; border-collapse: collapse; table-layout: auto; }
     th, td { border: 1px solid #ccc; padding: 3px 5px; }
     td.sub { min-width: 140px; white-space: normal; word-break: break-word; }
+    td.auto { color: #555; font-style: italic; }
+    p.note { font-size: 8px; color: #555; margin-top: 6px; }
     th { background: #f0f0f0; font-size: 8px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; }
     td.num, th.num { text-align: right; white-space: nowrap; }
     td.under { color: #166534; text-align: right; }
@@ -18162,6 +18246,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       ${r(dash)}${r(dash)}
     </tr></tfoot>
   </table>
+  <p class="note">Start and Target Date come from the daily sheets — the first and the latest day work was booked to the sub code. Dates in italics are the sheets'; a date in plain type was entered by hand and stands ahead of them.</p>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
