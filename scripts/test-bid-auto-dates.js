@@ -70,8 +70,10 @@ function load(src) {
     ${extractFunction(src, '_workDaySpanLabel')}
     ${extractFunction(src, '_autoBidDates')}
     ${extractFunction(src, 'autoBidDates')}
+    ${extractFunction(src, '_schedBidDates')}
     ${extractFunction(src, '_bidDateCellHTML')}
-    return { _workDaysForItems, _workDaySpanLabel, _autoBidDates, autoBidDates, _bidDateCellHTML, setProj };
+    return { _workDaysForItems, _workDaySpanLabel, _autoBidDates, autoBidDates,
+             _schedBidDates, _bidDateCellHTML, setProj };
   `)();
 }
 
@@ -87,7 +89,8 @@ const day = (date, sub = SUB, extra = {}) =>
 for (const file of FILES) {
   console.log(`\n[${file}]`);
   const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
-  const { _workDaysForItems, _workDaySpanLabel, _autoBidDates, autoBidDates, _bidDateCellHTML, setProj } = load(src);
+  const { _workDaysForItems, _workDaySpanLabel, _autoBidDates, autoBidDates,
+          _schedBidDates, _bidDateCellHTML, setProj } = load(src);
 
   const auto = (rows, item = ITEM) => { setProj({ id: 'p1', dailyRows: rows }); return autoBidDates(item, 'p1'); };
 
@@ -179,16 +182,133 @@ for (const file of FILES) {
     /const auto = \(!el\.value && item\)/.test(commit) && /if \(auto\) el\.value = auto;/.test(commit));
   assert('and re-marks it as auto-filled', /el\.classList\.toggle\('bid-date-auto', !!auto\);/.test(commit));
 
+  // ── Where a line sits on a calendar ──────────────────────────────────────
+  console.log('  — the dates a drawing places a line by');
+  const placed = (rows, b) => { setProj({ id: 'p1', dailyRows: rows }); return _schedBidDates(b, 'p1'); };
+  const WORKED = [day('2026-08-03'), day('2026-08-06')];
+
+  const planned = placed(WORKED, { ...ITEM, start_date: '2026-07-01', target_date: '2026-07-31' });
+  assert('a typed plan is used as the plan',
+    planned.start === '2026-07-01' && planned.target === '2026-07-31');
+  assert('and is not marked as coming from the sheets',
+    planned.auto === false && planned.autoStart === false && planned.autoTarget === false);
+
+  const fromSheets = placed(WORKED, ITEM);
+  assert('a line with no plan is placed by the days it was worked',
+    fromSheets.start === '2026-08-03' && fromSheets.target === '2026-08-06');
+  assert('and both ends are marked as the sheets\'',
+    fromSheets.auto === true && fromSheets.autoStart === true && fromSheets.autoTarget === true);
+
+  const halfStart = placed(WORKED, { ...ITEM, start_date: '2026-07-01' });
+  assert('a typed start keeps its end and the sheets fill the other',
+    halfStart.start === '2026-07-01' && halfStart.target === '2026-08-06');
+  assert('and only that other end is marked',
+    halfStart.autoStart === false && halfStart.autoTarget === true && halfStart.auto === true);
+
+  const halfTarget = placed(WORKED, { ...ITEM, target_date: '2026-09-30' });
+  assert('a typed target does the same the other way round',
+    halfTarget.start === '2026-08-03' && halfTarget.target === '2026-09-30' &&
+    halfTarget.autoStart === true && halfTarget.autoTarget === false);
+
+  const nowhere = placed([], ITEM);
+  assert('nothing typed and nothing worked → nowhere to draw it',
+    nowhere.start === '' && nowhere.target === '' && nowhere.auto === false);
+
+  // ── What must NOT read those dates ───────────────────────────────────────
+  console.log('  — what keeps measuring against the plan alone');
   // The projection scales spend by elapsed-vs-planned duration. Auto dates are
   // the days already worked, so that branch would divide a span by itself and
   // hand back the actual cost — every started line projecting in at exactly
-  // what it has spent. It has to keep reading the typed dates only.
+  // what it has spent.
   const proj = extractFunction(src, 'projForBidItem');
-  assert('the projection still reads only the typed dates',
-    /if \(b\.start_date && b\.target_date\) \{/.test(proj) && !/autoBidDates/.test(proj));
+  assert('the cost projection reads only the typed dates',
+    /if \(b\.start_date && b\.target_date\) \{/.test(proj) &&
+    !/autoBidDates|_schedBidDates/.test(proj));
+  // Pace, required rate and status all score the job against its deadline. The
+  // latest day worked is behind us, so feeding it in marks everything late or
+  // finished on the nose.
+  const calc = extractFunction(src, '_schedCalcRow');
+  assert('pace and status read only the typed dates',
+    /const biDeadline  = bi\.target_date \|\| deadline;/.test(calc) &&
+    !/autoBidDates|_schedBidDates/.test(calc));
+
+  // ── The Gantt chart ──────────────────────────────────────────────────────
+  console.log('  — the Gantt chart');
+  const gantt = extractFunction(src, '_renderGanttModal');
+  assert('every line is placed once, up front',
+    /const gDates = new Map\(\);/.test(gantt) &&
+    (gantt.match(/_schedBidDates\(bi, proj\.id\)/g) || []).length === 1);
+  assert('the chart window covers the days worked as well as the plans',
+    /if \(d\.start\)  allMs\.push/.test(gantt) && /if \(d\.target\) allMs\.push/.test(gantt));
+  assert('the bar is drawn between them',
+    /const barS   = gd\.start  \|\| todayStr;/.test(gantt) &&
+    /const barE   = gd\.target \|\| deadline;/.test(gantt));
+  assert('a bar the sheets supplied is dashed',
+    /const dash = gd\.auto \? ' stroke-dasharray="4 2\.5"' : '';/.test(gantt) &&
+    (gantt.match(/stroke-width="1"\$\{dash\}/g) || []).length === 3);
+  assert('the tooltip says which end is the sheets\'',
+    /gd\.autoStart  \? 'First Worked' : 'Start'/.test(gantt) &&
+    /gd\.autoTarget \? 'Last Worked'  : 'Target'/.test(gantt));
+  assert('the project deadline no longer poses as a target',
+    /\$\{gd\.target \? `<span class="lbl">/.test(gantt));
+  // The whole point of keeping the plan separate: nothing is late against a
+  // span that ends on the last day somebody worked.
+  assert('late and early are scored against the plan',
+    /const planE  = bi\.target_date \|\| deadline;/.test(gantt) &&
+    /const lateEarly = projFMs && planEMs/.test(gantt) &&
+    !/lateEarly = projFMs && barEMs/.test(gantt));
+  assert('and so is the projected-finish diamond',
+    /projFMs > \(planEMs \|\| todayMs\)/.test(gantt));
+  assert('the dashed bars are explained under the chart',
+    /const autoRows = bidItems\.filter\(bi => gDates\.get\(bi\)\.auto\)\.length;/.test(gantt) &&
+    /Dashed bars are drawn from the daily sheets/.test(gantt) &&
+    /container\.innerHTML = svg \+ caption;/.test(gantt));
+
+  console.log('  — the Gantt button');
+  const schedTab = extractFunction(src, 'renderScheduleTab');
+  assert('the chart opens for a job nobody has dated by hand',
+    /const hasGanttData = hasBidItems && \(proj\.bidItems \|\| \[\]\)\.some\(bi => _schedBidDates\(bi, proj\.id\)\.start\);/.test(schedTab));
+
+  console.log('  — the printed Gantt');
+  const gpdf = extractFunction(src, 'printGanttPDF');
+  assert('it places lines by the same rule as the screen',
+    /const gDates = new Map\(\);/.test(gpdf) &&
+    /const barStartStr = gd\.start  \|\| todayStr;/.test(gpdf) &&
+    /const barEndStr   = gd\.target \|\| deadline;/.test(gpdf));
+  assert('the range covers them too',
+    /if \(d\.start\)  allDates\.push/.test(gpdf) && /if \(d\.target\) allDates\.push/.test(gpdf));
+  assert('a sheets-supplied bar prints dashed',
+    /const dash = gd\.auto \? ' stroke-dasharray="3\.5 2"' : '';/.test(gpdf) &&
+    (gpdf.match(/stroke-width="1"\$\{dash\}/g) || []).length === 3);
+  assert('the diamond is still scored against the plan',
+    /const planEndStr  = bi\.target_date \|\| deadline;/.test(gpdf) &&
+    /projFinMs > \(planEndMs \|\| todayMs\)/.test(gpdf));
+  assert('and the sheet says what a dashed bar means',
+    /Dashed bar = drawn from the daily sheets, no dates entered/.test(gpdf));
+
+  console.log('  — the job summary schedule page');
   const sched = extractFunction(src, '_jsBidScheduleHtml');
-  assert('the schedule chart still plots only the typed dates',
-    /\.filter\(bi => bi\.start_date \|\| bi\.target_date\)/.test(sched) && !/autoBidDates/.test(sched));
+  assert('a worked line earns a place on the chart',
+    /\.map\(bi => \(\{ bi, d: _schedBidDates\(bi, proj\.id\) \}\)\)/.test(sched) &&
+    /\.filter\(x => x\.d\.start \|\| x\.d\.target\)/.test(sched));
+  assert('and is drawn between the dates it was placed by',
+    /startMs: d\.start  \? _jsMs\(d\.start\)  : null,/.test(sched) &&
+    /endMs:   d\.target \? _jsMs\(d\.target\) : \(deadline \? _jsMs\(deadline\) : null\),/.test(sched));
+  assert('the plan is carried separately for the scoring',
+    /planMs:  bi\.target_date \? _jsMs\(bi\.target_date\) : \(deadline \? _jsMs\(deadline\) : null\),/.test(sched) &&
+    /const col = r\.projMs > \(r\.planMs \|\| todayMs\) \? '#dc2626'/.test(sched) &&
+    /const lateFin = r\.projMs && r\.planMs && r\.projMs > r\.planMs;/.test(sched));
+  assert('a sheets-supplied span is dashed here as well',
+    /const dash = r\.d\.auto \? ' stroke-dasharray="3 2"' : '';/.test(sched) &&
+    (sched.match(/stroke-width="0\.9"\$\{dash\}/g) || []).length === 3);
+  assert('the detail table prints those dates in italics',
+    /<td\$\{r\.d\.autoStart  \? ' class="auto"' : ''\}>/.test(sched) &&
+    /<td\$\{r\.d\.autoTarget \? ' class="auto"' : ''\}>/.test(sched) &&
+    /\.sched-table td\.auto \{ color: #6b7280; font-style: italic; \}/.test(src));
+  assert('the legend and the note explain the dashed bars',
+    /Drawn from the daily sheets — no dates entered/.test(sched) &&
+    /dashed, across the first to the latest day the crew booked work to it/.test(sched) &&
+    /never against a dashed span/.test(sched));
 
   // ── The printed / emailed report ─────────────────────────────────────────
   console.log('  — the printed report');

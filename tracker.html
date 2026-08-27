@@ -8517,6 +8517,35 @@ function autoBidDates(b, projId) {
   return _autoBidDates(_workDaysForItems([b], projId));
 }
 
+/* Where a bid line sits on a calendar, for anything that draws one. A typed
+   start and target are a plan and are used as one; a line carrying neither is
+   placed from the daily sheets instead — the first and the latest day the crew
+   booked work to it — so a job nobody has dated by hand still shows where its
+   work actually falls. autoStart / autoTarget say which end came from where,
+   because the two are not the same claim: a plan says where the work is meant
+   to go, the sheets say where it has been, and a chart that draws them
+   identically is lying about one of them.
+
+   Only drawings read this. Pace, status and the cost projection measure the job
+   AGAINST start-and-target, and the latest day worked is behind us by
+   definition — hand it to them and every line reports itself finishing exactly
+   on time. Those keep reading bi.start_date / bi.target_date directly. */
+function _schedBidDates(bi, projId) {
+  const typedStart  = bi.start_date  || '';
+  const typedTarget = bi.target_date || '';
+  if (typedStart && typedTarget) {
+    return { start: typedStart, target: typedTarget, autoStart: false, autoTarget: false, auto: false };
+  }
+  const a = autoBidDates(bi, projId);
+  const autoStart  = !typedStart  && !!a.start;
+  const autoTarget = !typedTarget && !!a.target;
+  return {
+    start:  typedStart  || a.start,
+    target: typedTarget || a.target,
+    autoStart, autoTarget, auto: autoStart || autoTarget,
+  };
+}
+
 /* One of the two date boxes on a bid row. An auto date is shown but never
    saved: the latest day worked moves every time the crew books another one, so
    writing it down would freeze a figure that is meant to follow the job, and
@@ -17517,8 +17546,12 @@ const _jsDateLb = ms => new Date(ms).toLocaleDateString('en-US', { month: 'short
    emailed copy. Null when no bid item carries a start or target date, since
    then there is no timeline to draw. */
 function _jsBidScheduleHtml(proj) {
-  const items = (proj.bidItems || []).filter(bi => bi.start_date || bi.target_date);
-  if (!items.length) return null;
+  // A line earns a place on the chart when it has somewhere to sit: a typed
+  // plan, or the days the crew actually worked it.
+  const dated = (proj.bidItems || [])
+    .map(bi => ({ bi, d: _schedBidDates(bi, proj.id) }))
+    .filter(x => x.d.start || x.d.target);
+  if (!dated.length) return null;
 
   const deadline = _schedGetDeadline(proj);
   const daysLeft = _schedDaysRemaining(deadline);
@@ -17528,7 +17561,7 @@ function _jsBidScheduleHtml(proj) {
   const dash     = '—';
 
   // One pass per item: status, progress, and where the current pace lands it.
-  const rows = items.map(bi => {
+  const rows = dated.map(({ bi, d }) => {
     const c = _schedCalcRow(bi, agg, daysLeft, deadline);
     let projFin = null;
     if (!c.forcedComplete && c.pct < 100 && !c.isLumpSum) {
@@ -17536,9 +17569,12 @@ function _jsBidScheduleHtml(proj) {
       if (pace > 0 && c.unitsLeft > 0) projFin = _addWorkingDays(todayStr, c.unitsLeft / pace);
     }
     return {
-      bi, c, projFin,
-      startMs: bi.start_date  ? _jsMs(bi.start_date)  : null,
-      endMs:   bi.target_date ? _jsMs(bi.target_date) : (deadline ? _jsMs(deadline) : null),
+      bi, c, projFin, d,
+      startMs: d.start  ? _jsMs(d.start)  : null,
+      endMs:   d.target ? _jsMs(d.target) : (deadline ? _jsMs(deadline) : null),
+      // Early / late is scored against the plan only: a bar drawn from the
+      // daily sheets ends on the latest day worked, which is always behind us.
+      planMs:  bi.target_date ? _jsMs(bi.target_date) : (deadline ? _jsMs(deadline) : null),
       projMs:  projFin ? _jsMs(projFin) : null,
       name:    bi.sub_code || bi.cost_code || '(No Code)',
       sub:     [bi.sub_code ? bi.cost_code : '', (bi.unit || '').toUpperCase()].filter(Boolean).join(' · '),
@@ -17600,20 +17636,23 @@ function _jsBidScheduleHtml(proj) {
     }
 
     // Planned span; a date-less end gets a short start marker instead of a bar.
+    // A span the daily sheets supplied is dashed — it says where the work has
+    // been, not where it was planned to go.
     const s = r.startMs != null ? r.startMs : todayMs;
+    const dash = r.d.auto ? ' stroke-dasharray="3 2"' : '';
     if (r.endMs != null && r.endMs > s) {
       const x1 = clampX(X(s)), x2 = clampX(X(r.endMs)), bw = Math.max(2, x2 - x1);
-      p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="${bw.toFixed(1)}" height="${barH}" rx="3" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9" opacity="0.45"/>`);
+      p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="${bw.toFixed(1)}" height="${barH}" rx="3" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9"${dash} opacity="0.45"/>`);
       const pct = Math.max(0, Math.min(100, r.c.forcedComplete ? 100 : r.c.pct));
       if (pct > 0) {
-        p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="${(bw * pct / 100).toFixed(1)}" height="${barH}" rx="3" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9"/>`);
+        p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="${(bw * pct / 100).toFixed(1)}" height="${barH}" rx="3" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9"${dash}/>`);
       }
       if (bw > 34 && barH >= 10) {
         p.push(`<text x="${((x1 + x2) / 2).toFixed(1)}" y="${(y + barTop + barH / 2 + 3).toFixed(1)}" font-size="8" fill="${c.ink}" text-anchor="middle" font-weight="700">${Math.round(pct)}%</text>`);
       }
     } else {
       const x1 = clampX(X(s));
-      p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="7" height="${barH}" rx="2" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9"/>`);
+      p.push(`<rect x="${x1.toFixed(1)}" y="${(y + barTop).toFixed(1)}" width="7" height="${barH}" rx="2" fill="${c.fill}" stroke="${c.edge}" stroke-width="0.9"${dash}/>`);
     }
 
     // Where today's pace lands the code, when that is not the target itself.
@@ -17621,7 +17660,7 @@ function _jsBidScheduleHtml(proj) {
       const px = X(r.projMs);
       if (px >= LEFT && px <= W - RIGHT) {
         const cy = y + rowH / 2, d = Math.max(3.5, barH / 2.6);
-        const col = r.projMs > (r.endMs || todayMs) ? '#dc2626' : '#15803d';
+        const col = r.projMs > (r.planMs || todayMs) ? '#dc2626' : '#15803d';
         p.push(`<polygon points="${px.toFixed(1)},${(cy - d).toFixed(1)} ${(px + d).toFixed(1)},${cy.toFixed(1)} ${px.toFixed(1)},${(cy + d).toFixed(1)} ${(px - d).toFixed(1)},${cy.toFixed(1)}" fill="${col}"/>`);
       }
     }
@@ -17664,19 +17703,20 @@ function _jsBidScheduleHtml(proj) {
   const legend = Object.keys(_JS_BAR_COLORS).map(k => {
     const c = _JS_BAR_COLORS[k];
     return `<span><i style="background:${c.fill};border:1px solid ${c.edge}"></i>${c.label}</span>`;
-  }).join('') + '<span><i style="background:#dc2626;transform:rotate(45deg)"></i>Projected finish at current pace</span>';
+  }).join('') + '<span><i style="background:#dc2626;transform:rotate(45deg)"></i>Projected finish at current pace</span>'
+    + '<span><i style="background:none;border:1px dashed #6b7280"></i>Drawn from the daily sheets — no dates entered</span>';
 
   const qf = n => Number(Math.round(n * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
   const detail = rows.map(r => {
     const c = _jsBarColor(r.c.status);
     const pct = Math.round(Math.max(0, Math.min(100, r.c.forcedComplete ? 100 : r.c.pct)));
-    const lateFin = r.projMs && r.endMs && r.projMs > r.endMs;
+    const lateFin = r.projMs && r.planMs && r.projMs > r.planMs;
     return `<tr>
       <td>${_jsEsc(r.bi.cost_code) || dash}</td>
       <td class="sub">${_jsEsc(r.bi.sub_code) || dash}${r.bi.description ? `<span class="desc"> — ${_jsEsc(r.bi.description)}</span>` : ''}</td>
       <td class="ctr">${_jsEsc(r.bi.unit || '')}</td>
-      <td>${r.bi.start_date ? _jsDateLb(_jsMs(r.bi.start_date)) : dash}</td>
-      <td>${r.bi.target_date ? _jsDateLb(_jsMs(r.bi.target_date)) : dash}</td>
+      <td${r.d.autoStart  ? ' class="auto"' : ''}>${r.d.start  ? _jsDateLb(_jsMs(r.d.start))  : dash}</td>
+      <td${r.d.autoTarget ? ' class="auto"' : ''}>${r.d.target ? _jsDateLb(_jsMs(r.d.target)) : dash}</td>
       <td class="num">${r.c.bidQty ? qf(r.c.bidQty) : dash}</td>
       <td class="num">${r.c.runningQty ? qf(r.c.runningQty) : dash}</td>
       <td class="ctr">${pct}%</td>
@@ -17689,7 +17729,7 @@ function _jsBidScheduleHtml(proj) {
     <div class="sum-bar sched-bar">${kpis}</div>
     <div class="gantt-box">${chart}</div>
     <div class="sched-legend">${legend}</div>
-    <p class="note">Planned timeline from the bid items' start and target dates. Bars are shaded by schedule status and filled to percent complete; the dashed amber line marks today and the dashed red line the project deadline. A diamond marks where the current pace lands the code when that differs from its target.</p>
+    <p class="note">Timeline from the bid items' start and target dates. A cost code with no dates entered is drawn from the daily sheets instead — dashed, across the first to the latest day the crew booked work to it, and its dates print in italics in the table below. Bars are shaded by schedule status and filled to percent complete; the dashed amber line marks today and the dashed red line the project deadline. A diamond marks where the current pace lands the code when that differs from its target — measured against entered target dates only, never against a dashed span.</p>
 
     <h3 class="sched-detail-h">Schedule — Cost Code Detail</h3>
     <table class="sched-table">
@@ -18163,6 +18203,7 @@ async function exportJobSummary(projId, opts = {}) {
     .sched-table thead { display: table-header-group; }
     .sched-table td { font-size: 9px; }
     .sched-table td.sub { min-width: 130px; }
+    .sched-table td.auto { color: #6b7280; font-style: italic; }
     tr.ms-row td { background: #fdf6e7; }
     .crit { color: #dc2626; font-weight: 700; }
     .off, .ms { color: #b45309; font-weight: 700; }
@@ -24495,7 +24536,9 @@ async function renderScheduleTab() {
         body.innerHTML = `<div class="sched-no-data">Error rendering schedule detail.<br><span style="font-size:0.72rem;color:var(--muted)">${e.message || e}</span></div>`;
       }
       const hasBidItems = (proj.bidItems || []).length > 0;
-      const hasGanttData = hasBidItems && (proj.bidItems || []).some(bi => bi.start_date || bi.target_date);
+      // A line the crew has worked can be drawn without a date being entered,
+      // so the chart is offered for a job that has never been dated by hand.
+      const hasGanttData = hasBidItems && (proj.bidItems || []).some(bi => _schedBidDates(bi, proj.id).start);
       if (aiBtn)    aiBtn.style.display    = hasBidItems  ? '' : 'none';
       if (ppBtn)    ppBtn.style.display    = hasBidItems  ? '' : 'none';
       if (pmBtn)    pmBtn.style.display    = hasBidItems  ? '' : 'none';
@@ -25245,11 +25288,19 @@ function _renderGanttModal() {
     return;
   }
 
+  // Where each line sits on the calendar: its typed plan, or the days the crew
+  // actually worked it when it carries none. Worked out once and kept — the
+  // fallback reads every daily row on the job, and the chart window, the bars
+  // and the tooltips all have to agree on the same answer.
+  const gDates = new Map();
+  bidItems.forEach(bi => gDates.set(bi, _schedBidDates(bi, proj.id)));
+
   // Compute full date range
   const allMs = [todayMs];
   bidItems.forEach(bi => {
-    if (bi.start_date)  allMs.push(new Date(bi.start_date  + 'T12:00:00').getTime());
-    if (bi.target_date) allMs.push(new Date(bi.target_date + 'T12:00:00').getTime());
+    const d = gDates.get(bi);
+    if (d.start)  allMs.push(new Date(d.start  + 'T12:00:00').getTime());
+    if (d.target) allMs.push(new Date(d.target + 'T12:00:00').getTime());
   });
   if (deadline) allMs.push(new Date(deadline + 'T12:00:00').getTime());
   bidItems.forEach(bi => {
@@ -25356,9 +25407,16 @@ function _renderGanttModal() {
     const biKey  = (bi.cost_code || '') + '||' + (bi.sub_code || '');
     const c      = C[status] || C['no-data'];
 
-    // Bar dates
-    const barS   = bi.start_date  || todayStr;
-    const barE   = bi.target_date || deadline;
+    // Bar dates. A line with no plan is drawn across the days the crew has
+    // actually worked it, and that bar is dashed — a record of where the work
+    // has been, not a commitment to where it is going.
+    const gd     = gDates.get(bi);
+    const barS   = gd.start  || todayStr;
+    const barE   = gd.target || deadline;
+    // Late and early are measured against the plan alone. The latest day worked
+    // is behind us by definition, so scoring a projected finish against it would
+    // stamp every undated line late.
+    const planE  = bi.target_date || deadline;
     let projFinStr = null;
     if (!forcedComplete && pct < 100 && !isLumpSum) {
       const pace = recentPace > 0 ? recentPace : currentPace;
@@ -25367,6 +25425,7 @@ function _renderGanttModal() {
 
     const barSMs  = new Date(barS + 'T12:00:00').getTime();
     const barEMs  = barE ? new Date(barE + 'T12:00:00').getTime() : null;
+    const planEMs = planE ? new Date(planE + 'T12:00:00').getTime() : null;
     const projFMs = projFinStr ? new Date(projFinStr + 'T12:00:00').getTime() : null;
 
     // Tooltip HTML
@@ -25374,10 +25433,10 @@ function _renderGanttModal() {
     const eFmt  = barE ? new Date(barE + 'T12:00:00').toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }) : null;
     const pjFmt = projFinStr ? new Date(projFinStr + 'T12:00:00').toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }) : null;
     const hrsRem = hoursLeft !== null ? Math.round(hoursLeft) : null;
-    const lateEarly = projFMs && barEMs
-      ? (projFMs > barEMs
-          ? `<span style="color:#f87171"> (${_workingDaysBetween(barEMs > todayMs ? barEMs : todayMs, projFMs)}d late)</span>`
-          : `<span style="color:#4ade80"> (${_workingDaysBetween(projFMs, barEMs)}d early)</span>`)
+    const lateEarly = projFMs && planEMs
+      ? (projFMs > planEMs
+          ? `<span style="color:#f87171"> (${_workingDaysBetween(planEMs > todayMs ? planEMs : todayMs, projFMs)}d late)</span>`
+          : `<span style="color:#4ade80"> (${_workingDaysBetween(projFMs, planEMs)}d early)</span>`)
       : '';
     const tooltipHtml = `<strong style="font-size:0.82rem">${esc(label)}</strong>${unit ? `<span style="font-size:0.7rem;color:var(--muted);margin-left:0.35rem">${unit}</span>` : ''}<br>
       <div class="gantt-tt-grid">
@@ -25385,8 +25444,8 @@ function _renderGanttModal() {
         ${bidQty > 0 ? `<span class="lbl">Progress</span><span>${fmt(runningQty,1)} / ${fmt(bidQty,1)}${uLbl} (${fmtPct(pct)})</span>` : ''}
         ${daysWorked > 0 && currentPace > 0 ? `<span class="lbl">Curr. Pace</span><span>${fmt(currentPace,2)}${uLbl}/d${unitsPerHour !== null ? ` · ${fmt(unitsPerHour,2)}/hr` : ''}</span>` : ''}
         ${hrsRem !== null ? `<span class="lbl">Est. Hrs Rem.</span><span style="font-weight:700">~${hrsRem} hr${hrsRem !== 1 ? 's' : ''}</span>` : ''}
-        ${sFmt  ? `<span class="lbl">Start</span><span style="color:#86efac">${sFmt}</span>` : ''}
-        ${eFmt  ? `<span class="lbl">Target</span><span style="color:#93c5fd">${eFmt}</span>` : ''}
+        ${gd.start  ? `<span class="lbl">${gd.autoStart  ? 'First Worked' : 'Start'}</span><span style="color:#86efac">${sFmt}</span>` : ''}
+        ${gd.target ? `<span class="lbl">${gd.autoTarget ? 'Last Worked'  : 'Target'}</span><span style="color:#93c5fd">${eFmt}</span>` : ''}
         ${pjFmt ? `<span class="lbl">Proj. Finish</span><span>${pjFmt}${lateEarly}</span>` : ''}
       </div>
       <div style="margin-top:0.4rem;font-size:0.67rem;color:var(--muted);opacity:0.7">Click to jump to this item ↓</div>`;
@@ -25406,14 +25465,15 @@ function _renderGanttModal() {
     // Status dot
     parts.push(`<circle cx="${LEFT_PAD - 5}" cy="${y + ROW_H/2}" r="3.5" fill="${c.stroke}" style="pointer-events:none"/>`);
 
-    // Planned bar
+    // Planned bar — dashed when it is the crew's record standing in for a plan.
+    const dash = gd.auto ? ' stroke-dasharray="4 2.5"' : '';
     if (barEMs && barEMs > barSMs) {
       const x1 = xp(barSMs), x2 = xp(barEMs);
       const bw = Math.max(3, x2 - x1);
-      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y+BAR_YOF).toFixed(1)}" width="${bw.toFixed(1)}" height="${BAR_H}" rx="4" fill="${c.bg}" stroke="${c.stroke}" stroke-width="1" opacity="0.65" style="pointer-events:none"/>`);
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y+BAR_YOF).toFixed(1)}" width="${bw.toFixed(1)}" height="${BAR_H}" rx="4" fill="${c.bg}" stroke="${c.stroke}" stroke-width="1"${dash} opacity="0.65" style="pointer-events:none"/>`);
       if (pct > 0) {
         const fw = Math.min(bw, bw * pct / 100);
-        parts.push(`<rect x="${x1.toFixed(1)}" y="${(y+BAR_YOF).toFixed(1)}" width="${fw.toFixed(1)}" height="${BAR_H}" rx="4" fill="${c.prog}" stroke="${c.stroke}" stroke-width="1" style="pointer-events:none"/>`);
+        parts.push(`<rect x="${x1.toFixed(1)}" y="${(y+BAR_YOF).toFixed(1)}" width="${fw.toFixed(1)}" height="${BAR_H}" rx="4" fill="${c.prog}" stroke="${c.stroke}" stroke-width="1"${dash} style="pointer-events:none"/>`);
       }
       if (bw > 44 && pct > 0) {
         const mx = (x1 + x2) / 2;
@@ -25421,7 +25481,7 @@ function _renderGanttModal() {
       }
     } else if (!barEMs) {
       const x1 = xp(barSMs);
-      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y+BAR_YOF).toFixed(1)}" width="10" height="${BAR_H}" rx="3" fill="${c.prog}" stroke="${c.stroke}" stroke-width="1" style="pointer-events:none"/>`);
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y+BAR_YOF).toFixed(1)}" width="10" height="${BAR_H}" rx="3" fill="${c.prog}" stroke="${c.stroke}" stroke-width="1"${dash} style="pointer-events:none"/>`);
     }
 
     // Projected finish diamond (only when meaningfully different from target)
@@ -25430,7 +25490,7 @@ function _renderGanttModal() {
       if (px >= LEFT_PAD && px <= W - RIGHT_PAD) {
         const cy  = y + ROW_H / 2;
         const s   = 6;
-        const col = projFMs > (barEMs || todayMs) ? '#ef4444' : '#22c55e';
+        const col = projFMs > (planEMs || todayMs) ? '#ef4444' : '#22c55e';
         parts.push(`<polygon points="${px},${cy-s} ${px+s},${cy} ${px},${cy+s} ${px-s},${cy}" fill="${col}" opacity="0.9" style="pointer-events:none"/>`);
       }
     }
@@ -25473,8 +25533,18 @@ function _renderGanttModal() {
     ${legSvg}
   </svg>`;
 
+  // A key for the dashed bars. It goes under the chart rather than into the
+  // legend row, which already runs off the end of a narrow chart.
+  const autoRows = bidItems.filter(bi => gDates.get(bi).auto).length;
+  const caption = autoRows
+    ? `<div style="padding:0.6rem 0.2rem 0;font-size:0.7rem;color:var(--muted);line-height:1.5">
+        <span style="display:inline-block;width:22px;height:8px;border:1px dashed #9ca3af;border-radius:2px;vertical-align:0;margin-right:0.4rem"></span>
+        Dashed bars are drawn from the daily sheets: ${autoRows} cost code${autoRows !== 1 ? 's have' : ' has'} no start or target date entered, so ${autoRows !== 1 ? 'they are' : 'it is'} laid across the days the crew actually worked ${autoRows !== 1 ? 'them' : 'it'}. Enter dates on the bid line to plan ${autoRows !== 1 ? 'them' : 'it'} instead.
+      </div>`
+    : '';
+
   if (container) {
-    container.innerHTML = svg;
+    container.innerHTML = svg + caption;
     _attachGanttEvents();
   }
 }
@@ -25563,10 +25633,16 @@ function printGanttPDF() {
   const todayMs   = new Date(todayStr + 'T12:00:00').getTime();
 
   // ── Compute date range ────────────────────────────────────────────────────
+  // Same rule the on-screen chart draws by: the typed plan, or the days the
+  // crew worked the line when it carries none. Worked out once for both.
+  const gDates = new Map();
+  bidItems.forEach(bi => gDates.set(bi, _schedBidDates(bi, proj.id)));
+
   const allDates = [];
   bidItems.forEach(bi => {
-    if (bi.start_date)  allDates.push(new Date(bi.start_date  + 'T12:00:00').getTime());
-    if (bi.target_date) allDates.push(new Date(bi.target_date + 'T12:00:00').getTime());
+    const d = gDates.get(bi);
+    if (d.start)  allDates.push(new Date(d.start  + 'T12:00:00').getTime());
+    if (d.target) allDates.push(new Date(d.target + 'T12:00:00').getTime());
   });
   if (deadline) allDates.push(new Date(deadline + 'T12:00:00').getTime());
   allDates.push(todayMs);
@@ -25652,9 +25728,15 @@ function printGanttPDF() {
     const y = HEADER_H + i * ROW_H;
     const rowBg = i % 2 === 0 ? '#1a1a2e' : '#16213e';
 
-    // Determine bar start/end
-    const barStartStr = bi.start_date || todayStr;
-    const barEndStr   = bi.target_date || deadline;
+    // Determine bar start/end. A line with no plan is drawn across the days the
+    // crew worked it, dashed, so the sheet does not read it back as a schedule
+    // somebody committed to.
+    const gd          = gDates.get(bi);
+    const barStartStr = gd.start  || todayStr;
+    const barEndStr   = gd.target || deadline;
+    // The projected-finish marker is scored against the plan only — the latest
+    // day worked is behind us, and everything would come out late against it.
+    const planEndStr  = bi.target_date || deadline;
     let projFinishStr = null;
     if (!forcedComplete && pct < 100 && !isLumpSum) {
       const pace = recentPace > 0 ? recentPace : currentPace;
@@ -25665,6 +25747,7 @@ function printGanttPDF() {
 
     const barStartMs = new Date(barStartStr + 'T12:00:00').getTime();
     const barEndMs   = barEndStr ? new Date(barEndStr + 'T12:00:00').getTime() : null;
+    const planEndMs  = planEndStr ? new Date(planEndStr + 'T12:00:00').getTime() : null;
     const projFinMs  = projFinishStr ? new Date(projFinishStr + 'T12:00:00').getTime() : null;
 
     const c = barColors[status] || barColors['no-data'];
@@ -25685,16 +25768,17 @@ function printGanttPDF() {
     }
 
     // Planned bar (start → target)
+    const dash = gd.auto ? ' stroke-dasharray="3.5 2"' : '';
     if (barEndMs && barEndMs > barStartMs) {
       const x1 = Math.max(LEFT_PAD, xPos(barStartMs));
       const x2 = Math.min(SVG_W - RIGHT_PAD, xPos(barEndMs));
       const bw = Math.max(2, x2 - x1);
-      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="${bw.toFixed(1)}" height="${BAR_H}" rx="3" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1" opacity="0.55"/>`);
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="${bw.toFixed(1)}" height="${BAR_H}" rx="3" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1"${dash} opacity="0.55"/>`);
 
       // Progress fill
       if (pct > 0) {
         const fillW = Math.min(bw, bw * (pct / 100));
-        parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="${fillW.toFixed(1)}" height="${BAR_H}" rx="3" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1" opacity="0.95"/>`);
+        parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="${fillW.toFixed(1)}" height="${BAR_H}" rx="3" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1"${dash} opacity="0.95"/>`);
       }
 
       // % label inside bar if wide enough
@@ -25705,7 +25789,7 @@ function printGanttPDF() {
     } else if (!barEndMs) {
       // No end date — draw a short marker at start
       const x1 = Math.max(LEFT_PAD, xPos(barStartMs));
-      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="8" height="${BAR_H}" rx="2" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1"/>`);
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(y + BAR_Y_OFF).toFixed(1)}" width="8" height="${BAR_H}" rx="2" fill="${c.fill}" stroke="${c.stroke}" stroke-width="1"${dash}/>`);
     }
 
     // Projected finish marker (diamond) if different from target
@@ -25714,7 +25798,7 @@ function printGanttPDF() {
       if (px >= LEFT_PAD && px <= SVG_W - RIGHT_PAD) {
         const cy = y + ROW_H / 2;
         const s  = 5;
-        const pfColor = projFinMs > (barEndMs || todayMs) ? '#ef4444' : '#22c55e';
+        const pfColor = projFinMs > (planEndMs || todayMs) ? '#ef4444' : '#22c55e';
         parts.push(`<polygon points="${px},${cy - s} ${px + s},${cy} ${px},${cy + s} ${px - s},${cy}" fill="${pfColor}" opacity="0.9"/>`);
       }
     }
@@ -25799,7 +25883,7 @@ function printGanttPDF() {
   <div class="chart-wrap">${svgContent}</div>
   <div class="footer">
     <span>DataWatch — Schedule Gantt</span>
-    <span>Bars = planned schedule · Diamond = projected finish at current pace · Dashed amber = today · Dashed red = deadline</span>
+    <span>Solid bar = planned schedule · Dashed bar = drawn from the daily sheets, no dates entered · Diamond = projected finish at current pace · Dashed amber = today · Dashed red = deadline</span>
   </div>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
