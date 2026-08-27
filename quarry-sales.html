@@ -169,8 +169,18 @@
       position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%);
       font-size: 1.35rem; font-weight: 700; color: var(--muted); pointer-events: none;
     }
-    /* The price the two figures work out to. Green once it resolves, because
-       it is the one number on this form nobody types and the office reads. */
+    /* A box the form fills in for you. Reads as an answer rather than as a
+       question — flat, in the accent colour, and visibly not typeable, so
+       nobody stands at a scale trying to correct a total the form worked out. */
+    input[readonly] {
+      background: var(--surface2);
+      color: var(--accent);
+      border-style: dashed;
+      cursor: default;
+    }
+    .figure-row input[readonly] { background: var(--bg); }
+    /* Says what the total is made of. Green once it resolves, because it is
+       the one number on this form nobody types and the office bills. */
     .field-note.calc { color: var(--green); font-weight: 600; }
 
     /* ── Action buttons ── */
@@ -247,6 +257,38 @@
       color: var(--muted);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
+    }
+    /* Two states of one question, so they read as one control rather than as
+       two buttons that happen to sit together. */
+    .who-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      align-self: flex-start;
+    }
+    .who-btn {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.5rem 0.85rem;
+      cursor: pointer;
+      min-height: 40px;
+    }
+    .who-btn + .who-btn { border-left: 1px solid var(--border); }
+    .who-btn.is-on { background: var(--surface2); color: var(--accent); }
+
+    /* Who sent a sale in. Only rendered when the list is showing more than one
+       person's, where the name is the difference between two rows. */
+    .entry-who {
+      font-size: 0.7rem;
+      color: var(--accent);
+      font-weight: 600;
     }
     .entry-empty {
       text-align: center;
@@ -337,22 +379,43 @@
       <div class="row figure-row">
         <label for="f-tons">Tons</label>
         <input type="number" id="f-tons" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
-               oninput="updatePrice()" onchange="updatePrice()" />
+               oninput="updateAmount()" onchange="updateAmount()" />
         <div class="field-note">Off the scale ticket, for this load only.</div>
       </div>
 
-      <!-- What the customer was charged. The office's grid works in price per
-           ton, which nobody at a scale house carries in their head — so the
-           ticket total is what is asked for, and the price is worked out from
-           it below, where the person holding the ticket can see it. -->
+      <div class="row figure-row">
+        <label for="f-price">Price / Ton</label>
+        <div class="amount-wrap">
+          <span class="amount-prefix" aria-hidden="true">$</span>
+          <!-- step matches what parsePrice stores and what the grid's own price
+               cell uses. At 0.01 a backfilled price of 18.0151 was :invalid,
+               and one press of the spinner SNAPPED it to 18.02 — silently
+               re-pricing the load on a keystroke meant to nudge it. -->
+          <input type="number" id="f-price" inputmode="decimal" min="0" step="0.0001" placeholder="0.00"
+                 oninput="updateAmount()" onchange="updateAmount()" />
+        </div>
+        <div class="field-note">What this material sold at today.</div>
+      </div>
+
+      <!-- The total, worked out rather than asked for. It is the figure the
+           customer is billed and the figure Sales Tracking shows as Net Sales,
+           and both are the same multiplication of the same two numbers above —
+           so there is nothing here to type and nothing to disagree with.
+
+           readonly, but still in the tab order. It carried tabindex="-1" and
+           an aria-live of its own, which between them meant a screen reader
+           never got the total at all: aria-live does not fire for an input's
+           VALUE changing, and the negative tabindex took away the one way left
+           to reach it. The live region belongs on the note below, which is a
+           div and does announce, and it carries the total in its text so the
+           announcement is the whole sum rather than half of it. -->
       <div class="row figure-row">
         <label for="f-amount">Amount Charged</label>
         <div class="amount-wrap">
           <span class="amount-prefix" aria-hidden="true">$</span>
-          <input type="number" id="f-amount" inputmode="decimal" min="0" step="0.01" placeholder="0.00"
-                 oninput="updatePrice()" onchange="updatePrice()" />
+          <input type="text" id="f-amount" readonly placeholder="0.00" />
         </div>
-        <div class="field-note" id="priceNote"></div>
+        <div class="field-note" id="amountNote" aria-live="polite"></div>
       </div>
 
       <div class="row">
@@ -375,8 +438,15 @@
     <!-- ── Past entries ── -->
     <section class="card">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:0.6rem;flex-wrap:wrap">
-        <div class="card-title">My Recent Sales</div>
+        <div class="card-title" id="entriesTitle">My Recent Sales</div>
         <div id="entriesScope" class="card-sub" style="font-size:0.72rem"></div>
+      </div>
+      <!-- Shown only to someone who also works the quarry side. The endpoint
+           quietly scopes a field user's ?scope=all back to their own rows, so
+           for anyone else this would be a button that appears to do nothing. -->
+      <div class="who-toggle" id="whoToggle" role="group" aria-label="Whose sales to show" hidden>
+        <button type="button" class="who-btn is-on" id="whoMine" onclick="setWho(true)"  aria-pressed="true">Mine</button>
+        <button type="button" class="who-btn"       id="whoAll"  onclick="setWho(false)" aria-pressed="false">Everyone's</button>
       </div>
       <div id="entriesList"><div class="entry-empty">Loading…</div></div>
       <div style="text-align:center">
@@ -405,6 +475,10 @@
     const allowedDivisions = Array.isArray(user && user.allowedDivisions) ? user.allowedDivisions : [];
     const hasSales         = isPlatformAdmin || allowedDivisions.includes('quarry_sales');
     const otherDivisions   = allowedDivisions.filter(d => d !== 'quarry_sales');
+    // Whoever works Sales Tracking may look at the whole company's sales here
+    // too. Mirrors canOffice on the endpoint — the same quarry role, so the
+    // toggle is offered exactly when ?scope=all will be honoured.
+    const canSeeCompany    = isPlatformAdmin || allowedDivisions.includes('quarry');
 
     if (!hasSales) {
       document.getElementById('mainContent').classList.add('hidden');
@@ -442,9 +516,13 @@
       { key: 'customer',  id: 'f-customer', label: 'Customer', list: 'customers' },
       { key: 'product',   id: 'f-product',  label: 'Product',  list: 'products'  },
       { key: 'tons',      id: 'f-tons',     label: 'Tons' },
-      { key: 'amount_charged', id: 'f-amount', label: 'Amount Charged' },
+      { key: 'price_per_ton', id: 'f-price', label: 'Price / Ton' },
       { key: 'payment',   id: 'f-payment',  label: 'Payment' },
     ];
+    // f-amount is deliberately not in FIELDS. It is worked out, not asked for,
+    // so it is never something the submitter can leave blank — and posting it
+    // would let this page bill a customer something other than tons x price.
+
 
     // Which Manage Lists panel a worker should be pointed at when a picker is
     // empty. Named the way the quarry page names them, so the message is an
@@ -461,58 +539,96 @@
     let lists        = { locations: [], employees: [], customers: [], products: [], payments: [] };
     let entriesCache = [];
     let editingId    = null;    // id of the draft row this form is sitting on
+    // The total a draft was recorded at before this form asked for a price.
+    // There is nothing on screen it could otherwise appear in — the box shows
+    // tons x price and there is no price — so without this the figure is
+    // invisible while the submitter decides what to type over it.
+    let recordedAmount = null;
 
-    // ── The price the ticket implies ────────────────────────────────────────
-    // Copy of pricePerTonFrom() in api/quarry-sales-submissions.js, which is
-    // canonical and recomputes this on the way into the grid.
+    // ── What the load comes to ──────────────────────────────────────────────
+    // Copy of amountFrom() in api/quarry-sales-submissions.js, which is
+    // canonical and recomputes this on every write.
     // scripts/test-quarry-sales-submissions.js runs both over the same table
-    // of tickets and fails if they disagree — a form that showed one figure
-    // and stored another is worse than a form that showed nothing.
-    //
-    // Four places, not two: it is a division and rarely lands on a cent, and
-    // $100 over 3 tons rounded to 33.33 bills 99.99 for a load charged 100.
-    function pricePerTonFrom(amount, tons) {
-      const a = Number(amount), t = Number(tons);
-      if (!Number.isFinite(a) || !Number.isFinite(t)) return null;
-      if (a <= 0 || t <= 0) return null;
-      return Math.round((a / t) * 10000) / 10000;
+    // of loads and fails if they disagree — a form that showed one total and
+    // stored another is worse than a form that showed nothing.
+    function amountFrom(tons, price) {
+      const t = Number(tons), p = Number(price);
+      if (!Number.isFinite(t) || !Number.isFinite(p)) return null;
+      if (t <= 0 || p <= 0) return null;
+      return Math.round(t * p * 100) / 100;
     }
 
     function money(n) {
       return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    // Show what the office will see. This is the whole safety net on the
-    // amount: no threshold could tell $441 from $4,410 for a quarry whose
-    // prices this page does not know, but $180.00 / ton on the screen of
-    // someone holding the ticket is unmissable.
-    function updatePrice() {
-      const note = el('priceNote');
-      if (!note) return;
-      const tons   = val('f-tons').trim();
-      const amount = val('f-amount').trim();
-      if (amount === '' && tons === '') {
+    // A price, which is money but not to two places. Sales taken before this
+    // form asked for a price carry one divided back out of their ticket total,
+    // and $100 over 3 tons is 33.3333 a ton — rounded to $33.33 for display it
+    // stops multiplying out, and the form ends up stating a sum that is wrong
+    // by a cent in its own live region. Up to four, never fewer than two.
+    function priceText(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return '$0.00';
+      return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    }
+
+    // Fill the total in, and say what it is made of. This is the whole safety
+    // net on the two figures above: no threshold could tell 15.75 from 1575
+    // for a quarry whose prices this page does not know, but a $7,875 total on
+    // the screen of the person writing the ticket is unmissable.
+    // A figure this form can multiply: present, a number, and above zero. The
+    // same test the server's parseTons and parsePrice apply, which is why a 0
+    // has to read as "not filled in" here — the server refuses it either way.
+    function usableFigure(v) {
+      if (v === null || v === undefined || String(v).trim() === '') return false;
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0;
+    }
+
+    function updateAmount() {
+      const box  = el('f-amount');
+      const note = el('amountNote');
+      if (!box || !note) return;
+      const tons  = val('f-tons').trim();
+      const price = val('f-price').trim();
+      const amount = amountFrom(tons, price);
+      if (amount === null) {
+        // Nothing to multiply. If this draft was recorded at a total before
+        // the form asked for a price, show that rather than an empty box:
+        // it is what the customer was charged, and it is the number whoever
+        // is finishing the draft needs in front of them to price it.
+        if (recordedAmount !== null) {
+          box.value = Number(recordedAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          note.className = 'field-note';
+          note.textContent = `Recorded at ${money(recordedAmount)} before this form asked for a price. `
+            + 'Enter the price it sold at and this works itself out again.';
+          return;
+        }
+        box.value = '';
         note.className = 'field-note';
-        note.textContent = 'The price per ton is worked out from this and the tonnage above.';
+        // Which box to point at is decided by which one has no usable figure
+        // in it, not by which one is EMPTY. A 0 in the tonnage is not empty
+        // and is not a load either, and branching on emptiness pointed at the
+        // price instead — telling someone to fill in a box they had just
+        // filled in, while the wrong one sat there with a 0 in it.
+        const missing = !usableFigure(tons);
+        note.textContent = (!usableFigure(tons) && !usableFigure(price))
+          ? 'Worked out from the tonnage and the price above.'
+          : (missing ? 'Fill in the tonnage above and this works itself out.'
+                     : 'Fill in the price above and this works itself out.');
         return;
       }
-      const price = pricePerTonFrom(amount, tons);
-      if (price === null) {
-        note.className = 'field-note';
-        note.textContent = tons === ''
-          ? 'Fill in the tonnage above and this works out the price per ton.'
-          : 'Fill in the amount and this works out the price per ton.';
-        return;
-      }
+      box.value = Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       note.className = 'field-note calc';
-      // Shown to the cent, which is how it reads on a price list. The figure
-      // stored keeps its four places so tons x price comes back to the amount.
-      note.textContent = `= ${money(price)} / ton`;
+      // Carries the total as well as the two figures behind it: this is the
+      // form's live region, so what it says is what a screen reader hears.
+      note.textContent = `${Number(tons)} tons × ${priceText(price)} / ton = ${money(amount)}`;
     }
 
     async function init() {
       el('f-date').value = todayStr();
-      updatePrice();
+      updateAmount();
       // Clear a field's error outline as soon as it stops being empty, so the
       // form isn't still marking something the worker has already filled in.
       for (const f of FIELDS) {
@@ -522,6 +638,7 @@
         node.addEventListener('input',  clear);
         node.addEventListener('change', clear);
       }
+      renderWhoToggle();
       await Promise.all([loadLists(), loadEntries()]);
     }
 
@@ -609,6 +726,10 @@
     // A picked field posts its id AND the name showing against it. The server
     // re-resolves the name from the id, so the name is what carries the answer
     // through if the list item is ever deleted.
+    //
+    // Amount Charged is not sent at all — it is not in FIELDS. The server does
+    // the same multiplication from the same two numbers, so posting this
+    // page's copy could only ever be a way for the two to disagree.
     function buildPayload() {
       const data = {};
       for (const f of FIELDS) {
@@ -641,6 +762,10 @@
     // Drafts always load whatever their date, so an unfinished sale can never
     // quietly fall out of the window and become invisible.
     let scopeUnbounded = false;
+    // Whose sales the list is showing. Independent of the window above it —
+    // "everyone's, last 30 days" and "mine, all of them" are both answers
+    // somebody wants.
+    let scopeMine = true;
 
     function recentWindow() {
       const to   = new Date();
@@ -684,26 +809,41 @@
       let entries = [];
       const failures = [];
 
+      // Two slices, always. The drafts one is ALWAYS the caller's own, whoever
+      // they are and whichever way the toggle is set: an unfinished sale of
+      // somebody else's is not something anyone here can act on, and the only
+      // reason to load drafts at all is so you can finish yours. Everyone's
+      // means everyone's SUBMITTED sales.
+      const params = new URLSearchParams({ status: 'submitted' });
+      if (!scopeMine) params.set('scope', 'all');
+
+      let windowLabel;
       if (scopeUnbounded) {
-        const r = await fetchSlice('/api/quarry-sales-submissions', 'all-sales');
-        if (r.error) failures.push(r.error); else entries = r.entries;
-        scope.textContent = 'All sales';
-        if (btn) { btn.textContent = 'Show recent only'; btn.style.display = ''; }
+        windowLabel = 'All sales';
       } else {
         const { from, to } = recentWindow();
-        const fromS = ymd(from), toS = ymd(to);
-        const [draftsR, recentR] = await Promise.all([
-          fetchSlice('/api/quarry-sales-submissions?status=draft', 'drafts'),
-          fetchSlice(`/api/quarry-sales-submissions?status=submitted&from=${fromS}&to=${toS}`, 'recent'),
-        ]);
-        const byId = new Map();
-        if (draftsR.error) failures.push(`drafts: ${draftsR.error}`);
-        else for (const e of draftsR.entries) byId.set(e.id, e);
-        if (recentR.error) failures.push(`recent: ${recentR.error}`);
-        else for (const e of recentR.entries) if (!byId.has(e.id)) byId.set(e.id, e);
-        entries = Array.from(byId.values());
-        scope.textContent = `${fmtScopeDate(from)} – ${fmtScopeDate(to)} (+ all drafts)`;
-        if (btn) { btn.textContent = 'Show older sales'; btn.style.display = ''; }
+        params.set('from', ymd(from));
+        params.set('to',   ymd(to));
+        windowLabel = `${fmtScopeDate(from)} – ${fmtScopeDate(to)}`;
+      }
+
+      const [draftsR, sentR] = await Promise.all([
+        fetchSlice('/api/quarry-sales-submissions?status=draft', 'drafts'),
+        fetchSlice(`/api/quarry-sales-submissions?${params}`, 'submitted'),
+      ]);
+      const byId = new Map();
+      if (draftsR.error) failures.push(`drafts: ${draftsR.error}`);
+      else for (const e of draftsR.entries) byId.set(e.id, e);
+      if (sentR.error) failures.push(`submitted: ${sentR.error}`);
+      else for (const e of sentR.entries) if (!byId.has(e.id)) byId.set(e.id, e);
+      entries = Array.from(byId.values());
+
+      scope.textContent = scopeMine
+        ? `${windowLabel} (+ all drafts)`
+        : `${windowLabel} · everyone (+ my drafts)`;
+      if (btn) {
+        btn.textContent = scopeUnbounded ? 'Show recent only' : 'Show older sales';
+        btn.style.display = '';
       }
 
       entries.sort((a, b) => (b.work_date || '').localeCompare(a.work_date || ''));
@@ -732,10 +872,33 @@
       loadEntries();
     }
 
+    function setWho(mine) {
+      if (!canSeeCompany || mine === scopeMine) return;
+      scopeMine = mine;
+      renderWhoToggle();
+      loadEntries();
+    }
+
+    function renderWhoToggle() {
+      const wrap = el('whoToggle');
+      if (!wrap) return;
+      wrap.hidden = !canSeeCompany;
+      for (const [id, on] of [['whoMine', scopeMine], ['whoAll', !scopeMine]]) {
+        const b = el(id);
+        if (!b) continue;
+        b.classList.toggle('is-on', on);
+        b.setAttribute('aria-pressed', String(on));
+      }
+      const title = el('entriesTitle');
+      if (title) title.textContent = scopeMine ? 'My Recent Sales' : 'Recent Sales · Everyone';
+    }
+
     function renderEntries() {
       const list = document.getElementById('entriesList');
       if (!entriesCache.length) {
-        list.innerHTML = '<div class="entry-empty">No sales yet. Use the form above to record your first one.</div>';
+        list.innerHTML = `<div class="entry-empty">${scopeMine
+          ? 'No sales of yours here. Use the form above to record one — or switch to Everyone\'s to see what the rest of the pit has sent.'
+          : 'No sales from anyone in this window. Try Show older sales.'}</div>`;
         return;
       }
       list.innerHTML = entriesCache.map(e => {
@@ -743,18 +906,21 @@
         const who  = [e.customer_name, e.product_name].filter(Boolean).map(escapeHtml).join(' · ');
         const site = [e.location_name, e.employee_name, e.payment].filter(Boolean).map(escapeHtml).join(' · ');
         const meta = [who, site].filter(Boolean).join('<br />') || '—';
+        // Only while the list holds more than one person's sales. On your own
+        // list your own name against every row says nothing.
+        const sender = (!scopeMine && e.username) ? escapeHtml(e.username) : '';
         // A draft with nothing in the tons box shows no figure at all, rather
         // than a 0 that reads as "nothing went out".
         const tons  = e.tons != null ? `${Number(e.tons).toLocaleString(undefined, { maximumFractionDigits: 2 })} t` : '';
         const amount = e.amount_charged != null ? money(e.amount_charged) : '';
-        // The price is the office's figure, so it is shown small and only once
-        // both halves of it exist — it is here to be checked, not read.
-        const price = e.price_per_ton != null ? `${money(e.price_per_ton)} / ton` : '';
+        // What the total is made of, shown small beneath it — there to be
+        // checked against the ticket, not read.
+        const price = e.price_per_ton != null ? `${priceText(e.price_per_ton)} / ton` : '';
         const audit = entryAuditLine(e);
         return `
           <div class="entry ${isDraft ? 'draft' : ''}" ${isDraft ? `onclick="editEntry('${escapeHtml(e.id)}')"` : ''}>
             <div class="entry-head">
-              <div class="entry-date">${prettyDate(e.work_date)}</div>
+              <div class="entry-date">${prettyDate(e.work_date)}${sender ? ` <span class="entry-who">${sender}</span>` : ''}</div>
               <span class="badge badge-${escapeHtml(e.status)}">${escapeHtml(e.status)}</span>
             </div>
             <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:flex-end">
@@ -818,7 +984,12 @@
         node.value = listId;
       }
 
-      updatePrice();
+      // A draft carrying a total but no price predates the price column — the
+      // migration could not divide one out of it (no tonnage, or a figure over
+      // what this form accepts a ton). Keep the total so it stays on screen.
+      recordedAmount = (e.price_per_ton == null && e.amount_charged != null)
+        ? e.amount_charged : null;
+      updateAmount();
       markEmpty([]);
       markAsDraft();
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -831,6 +1002,7 @@
 
     function resetForm() {
       editingId = null;
+      recordedAmount = null;
       document.getElementById('formTitle').textContent = 'New Sale';
       document.getElementById('formBadge').style.display = 'none';
       document.getElementById('row-delete').style.display = 'none';
@@ -841,7 +1013,7 @@
       markEmpty([]);
       el('f-date').value = todayStr();
       preselectEmployee();
-      updatePrice();
+      updateAmount();
       document.getElementById('formMsg').textContent = '';
     }
 
@@ -955,9 +1127,10 @@
         return;
       }
 
-      const price = pricePerTonFrom(val('f-amount'), val('f-tons'));
+      const amount = amountFrom(val('f-tons'), val('f-price'));
       if (!confirm(
-        `Submit this sale at ${price === null ? 'no price' : money(price) + ' / ton'}?\n\n` +
+        `Submit this sale for ${amount === null ? 'no charge' : money(amount)}?\n\n` +
+        `${Number(val('f-tons'))} tons at ${priceText(val('f-price'))} / ton. ` +
         'It goes straight into Quarry Sales Tracking, and only the quarry office can take it back out.'
       )) return;
       if (!beginWrite()) return;
