@@ -3106,19 +3106,23 @@
     // had theirs divided back out of it, and 33.3333 a ton is what $100 over
     // three tons comes to.
     //
-    // Deliberately states no dollar figure. It used to name tons x price as
-    // "charged on the ticket", which stopped being true the moment the office
-    // re-priced the row: the tooltip then quoted a total nobody was ever
-    // charged. Everything it says now is about where the cell STARTED, which
-    // an edit cannot falsify — and since the tonnage beside it is read-only on
-    // one of these rows, there is nothing left in here to go stale between
-    // renders either.
+    // Says nothing an edit can falsify. This has now been got wrong twice, the
+    // same way both times: first by naming tons x price as "charged on the
+    // ticket", then by promising Net Sales was "the same total their form
+    // showed them". Both are true of the row as it ARRIVES and false the
+    // moment the office re-prices it — at which point the tooltip is quoting a
+    // figure nobody was ever charged, on the one cell in the grid whose whole
+    // job is to be corrected. So it describes where the cell started and what
+    // depends on it, and asserts nothing about what the number is now.
+    //
+    // Reading nothing off the price also keeps it from going stale between
+    // renders: the tonnage beside it is read-only on one of these rows, so
+    // there is nothing left in here that changes.
     function salesPriceTitle(row) {
       const t = Number(row.tons);
       const over = (Number.isFinite(t) && t) ? ` on ${formatTons(t)} tons` : '';
-      return `Price per ton for this load. The scale house entered it${over}, and Net Sales beside it is `
-           + 'the two multiplied — the same total their form showed them. Type over it to re-price the load; '
-           + 'Sales Tax, Net Sales and Total Due all follow from it.';
+      return `Price per ton for this load. The scale house entered it${over}. `
+           + 'Type over it to re-price the load; Sales Tax, Net Sales and Total Due all follow from it.';
     }
 
     function formatMoney(n) {
@@ -3793,11 +3797,11 @@
         // A sale the scale house submitted on the Quarry Sales form. Everything
         // the form asked for is theirs and renders read-only.
         //
-        // Price / Ton arrives worked out — the form asks what the customer was
-        // charged and the server divides it by the tonnage, so Net Sales here
-        // IS the ticket. It stays a live input because it stays the office's
-        // column: a ticket total typed wrong is corrected here, and nothing
-        // the field does afterwards overwrites the correction.
+        // Price / Ton is the price the scale house sold at — their form asks for
+        // it and works the total out as tons x price, which is the same
+        // multiplication Net Sales is. It stays a live input because it stays
+        // the office's column: a price entered wrong is corrected here, and
+        // nothing the field does afterwards overwrites the correction.
         if (isSalesSubmissionRow(row)) {
           const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
           return `

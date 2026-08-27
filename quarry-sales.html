@@ -364,15 +364,22 @@
       <!-- The total, worked out rather than asked for. It is the figure the
            customer is billed and the figure Sales Tracking shows as Net Sales,
            and both are the same multiplication of the same two numbers above —
-           so there is nothing here to type and nothing to disagree with. -->
+           so there is nothing here to type and nothing to disagree with.
+
+           readonly, but still in the tab order. It carried tabindex="-1" and
+           an aria-live of its own, which between them meant a screen reader
+           never got the total at all: aria-live does not fire for an input's
+           VALUE changing, and the negative tabindex took away the one way left
+           to reach it. The live region belongs on the note below, which is a
+           div and does announce, and it carries the total in its text so the
+           announcement is the whole sum rather than half of it. -->
       <div class="row figure-row">
         <label for="f-amount">Amount Charged</label>
         <div class="amount-wrap">
           <span class="amount-prefix" aria-hidden="true">$</span>
-          <input type="text" id="f-amount" readonly tabindex="-1" placeholder="0.00"
-                 aria-live="polite" aria-readonly="true" />
+          <input type="text" id="f-amount" readonly placeholder="0.00" />
         </div>
-        <div class="field-note" id="amountNote"></div>
+        <div class="field-note" id="amountNote" aria-live="polite"></div>
       </div>
 
       <div class="row">
@@ -507,6 +514,15 @@
     // net on the two figures above: no threshold could tell 15.75 from 1575
     // for a quarry whose prices this page does not know, but a $7,875 total on
     // the screen of the person writing the ticket is unmissable.
+    // A figure this form can multiply: present, a number, and above zero. The
+    // same test the server's parseTons and parsePrice apply, which is why a 0
+    // has to read as "not filled in" here — the server refuses it either way.
+    function usableFigure(v) {
+      if (v === null || v === undefined || String(v).trim() === '') return false;
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0;
+    }
+
     function updateAmount() {
       const box  = el('f-amount');
       const note = el('amountNote');
@@ -517,15 +533,23 @@
       if (amount === null) {
         box.value = '';
         note.className = 'field-note';
-        note.textContent = (tons === '' && price === '')
+        // Which box to point at is decided by which one has no usable figure
+        // in it, not by which one is EMPTY. A 0 in the tonnage is not empty
+        // and is not a load either, and branching on emptiness pointed at the
+        // price instead — telling someone to fill in a box they had just
+        // filled in, while the wrong one sat there with a 0 in it.
+        const missing = !usableFigure(tons);
+        note.textContent = (!usableFigure(tons) && !usableFigure(price))
           ? 'Worked out from the tonnage and the price above.'
-          : (tons === '' ? 'Fill in the tonnage above and this works itself out.'
-                         : 'Fill in the price above and this works itself out.');
+          : (missing ? 'Fill in the tonnage above and this works itself out.'
+                     : 'Fill in the price above and this works itself out.');
         return;
       }
       box.value = Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       note.className = 'field-note calc';
-      note.textContent = `${Number(tons)} tons × ${money(price)} / ton`;
+      // Carries the total as well as the two figures behind it: this is the
+      // form's live region, so what it says is what a screen reader hears.
+      note.textContent = `${Number(tons)} tons × ${money(price)} / ton = ${money(amount)}`;
     }
 
     async function init() {

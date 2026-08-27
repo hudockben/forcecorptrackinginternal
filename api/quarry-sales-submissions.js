@@ -307,11 +307,18 @@ function dbToEntry(r) {
     price_per_ton: r.price_per_ton === null || r.price_per_ton === undefined
       ? null : Number(r.price_per_ton),
     payment:       r.payment || '',
-    // What the two of them come to. Worked out here rather than read from the
-    // column so a row stored before the price was asked for — its amount is
-    // real, its price divided back out of it — still hands back a total that
-    // is the product of the two figures beside it.
-    amount_charged: amountFrom(r.tons, r.price_per_ton),
+    // What the two of them come to, so the total is always the product of the
+    // two figures beside it.
+    //
+    // Falls back to the stored column when there is no price to multiply. A
+    // sale recorded before the form asked for a price has one divided back out
+    // of its amount by the migration, but not if that quotient came out above
+    // MAX_PRICE — those keep a NULL price, and they were still charged what
+    // they were charged. Returning null for them would blank a real figure out
+    // of the submitter's own list.
+    amount_charged: amountFrom(r.tons, r.price_per_ton) ??
+      (r.amount_charged === null || r.amount_charged === undefined
+        ? null : Number(r.amount_charged)),
     row_id:        r.row_id || null,
     submitted_at:  r.submitted_at || null,
     created_at:    r.created_at || null,

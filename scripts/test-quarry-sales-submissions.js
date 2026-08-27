@@ -437,6 +437,43 @@ async function injectionTests() {
   }
 }
 
+// ── 3b. Sales that predate the price column ─────────────────────────────────
+// The form asked for the ticket total before it asked for a price, so rows
+// exist with an amount and no price. The migration divides one back out where
+// it can; where the quotient is above what the form accepts it leaves NULL
+// rather than writing a figure that would lock the row's own draft.
+function legacyRowTests() {
+  console.log('\n[a sale recorded before the price was asked for]');
+
+  const row = over => Object.assign({
+    id: 9, status: 'submitted', username: 'strickallen', user_id: 7,
+    work_date: '2026-08-26', tons: '20', price_per_ton: null, amount_charged: '400.00',
+    payment: 'Cash',
+  }, over);
+
+  {
+    // Backfilled: 400 over 20 tons is 20 a ton, which is what its Sales
+    // Tracking row was already showing.
+    const e = dbToEntry(row({ price_per_ton: '20.0000' }));
+    assert('a backfilled price comes back as a number', e.price_per_ton === 20, String(e.price_per_ton));
+    assert('and the total is the product of the two', e.amount_charged === 400, String(e.amount_charged));
+  }
+  {
+    // Not backfilled — the quotient was over the cap. It was still charged
+    // what it was charged, and blanking that out of the submitter's own list
+    // would lose a real figure.
+    const e = dbToEntry(row({ tons: '1', price_per_ton: null, amount_charged: '1200.00' }));
+    assert('a row left unpriced keeps the amount it was charged',
+      e.amount_charged === 1200, String(e.amount_charged));
+    assert('and reports no price rather than inventing one', e.price_per_ton === null);
+  }
+  {
+    const e = dbToEntry(row({ tons: null, price_per_ton: null, amount_charged: null }));
+    assert('a draft with neither has neither',
+      e.amount_charged === null && e.price_per_ton === null, JSON.stringify(e));
+  }
+}
+
 // ── 4. A stale grid save cannot drop or rewrite the sale ────────────────────
 function guardTests() {
   console.log('\n[Sales Tracking saves the whole grid, and it is stale]');
@@ -710,6 +747,9 @@ function pageTests() {
     !!gridPayments && gridPayments[1].replace(/['\s]/g, '') === PAYMENT_OPTIONS.join(','),
     gridPayments && gridPayments[1]);
 
+  // The price tooltip has been got wrong twice, both times by asserting
+  // something an office re-price falsifies. Nothing it says may depend on the
+  // price, and it may not name a dollar figure at all.
   assert('the grid recognises a submitted sale', /function isSalesSubmissionRow/.test(grid));
   assert('and renders it locked', /class="qss-locked"/.test(grid));
   assert('leaving price per ton editable on it',
@@ -777,6 +817,22 @@ function pageTests() {
     /if \(isInjectedRow\(salesRows\[index\]\)\) return;/.test(grid));
   assert('and removal goes through the endpoint, which takes the submission too',
     /deleteSubmittedSale[\s\S]{0,1200}\/api\/quarry-sales-submissions\?id=/.test(grid));
+
+  // The migration divides a price back out of every sale recorded before the
+  // form asked for one — but only where the quotient is a price the form would
+  // accept. Above the cap it leaves NULL, because a row it wrote there is a
+  // DRAFT nobody can save: every write re-parses it and parsePrice refuses it.
+  {
+    const schema = read('neon-schema.sql');
+    const m = /UPDATE quarry_sales_submissions[\s\S]*?amount_charged \/ tons <= (\d+)/.exec(schema);
+    assert('the backfill is bounded', !!m, 'no bound found on the backfill UPDATE');
+    assert('and bounded by the same figure the form accepts',
+      m && Number(m[1]) === MAX_PRICE, m && m[1]);
+    assert('it cannot divide by zero or write a zero price',
+      /tons > 0/.test(schema) && /amount_charged > 0/.test(schema));
+    assert('and it is a no-op on every run after the first',
+      /price_per_ton IS NULL/.test(schema));
+  }
 
   assert('the division is on the selector', /quarry_sales: \{/.test(divs));
   assert('with a page to open',             /href:\s*'quarry-sales\.html'/.test(divs));
@@ -874,9 +930,40 @@ async function browserTests() {
   window.updateAmount();
   assert('then fills the total in as the price is typed',
     sel('f-amount').value === '441.00', sel('f-amount').value);
-  assert('and says what it is made of',
-    sel('amountNote').textContent === '24.5 tons × $18.00 / ton', sel('amountNote').textContent);
+  // The note is the form's live region — an aria-live on the INPUT never fires
+  // for a value change — so what it says is the whole sum a screen reader
+  // hears, total included, not just the two figures behind it.
+  assert('and says what it is made of, total and all',
+    sel('amountNote').textContent === '24.5 tons × $18.00 / ton = $441.00',
+    sel('amountNote').textContent);
+  assert('the live region is the note, not the box',
+    sel('amountNote').getAttribute('aria-live') === 'polite' &&
+    !sel('f-amount').hasAttribute('aria-live'));
   assert('and it cannot be typed into', sel('f-amount').readOnly === true);
+  // readonly but reachable: a negative tabindex took the total out of the tab
+  // order, which was the last way a screen reader could get at it.
+  assert('the total is still reachable by keyboard',
+    !sel('f-amount').hasAttribute('tabindex'), sel('f-amount').getAttribute('tabindex'));
+
+  {
+    // A 0 in the tonnage is not empty and is not a load either. Branching on
+    // emptiness pointed at the price — telling someone to fill in a box they
+    // had just filled in, while the wrong one sat there with a 0 in it.
+    const hintFor = (tons, price) => {
+      sel('f-tons').value = tons; sel('f-price').value = price;
+      window.updateAmount();
+      return sel('amountNote').textContent;
+    };
+    assert('a zero tonnage points at the tonnage',
+      /Fill in the tonnage/.test(hintFor('0', '18.00')), hintFor('0', '18.00'));
+    assert('a negative tonnage does too',
+      /Fill in the tonnage/.test(hintFor('-5', '18.00')), hintFor('-5', '18.00'));
+    assert('a zero price points at the price',
+      /Fill in the price/.test(hintFor('24.5', '0')), hintFor('24.5', '0'));
+    assert('and neither usable asks for both',
+      /tonnage and the price/.test(hintFor('0', '0')), hintFor('0', '0'));
+    hintFor('24.5', '18.00');
+  }
   {
     // The whole point: a decimal point missed shows up here, on the screen of
     // the person writing the ticket, because no threshold could catch it.
@@ -985,6 +1072,7 @@ async function browserTests() {
   parsingTests();
   await spellingTests();
   await injectionTests();
+  legacyRowTests();
   guardTests();
   await accessTests();
   await duplicateTests();

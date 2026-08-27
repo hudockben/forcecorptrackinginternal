@@ -1688,6 +1688,18 @@ ALTER TABLE quarry_sales_submissions ADD COLUMN IF NOT EXISTS price_per_ton  NUM
 -- so nothing on screen changes, the column simply stops being empty. Guarded
 -- on IS NULL so it is a no-op on every run after the first, and on tons > 0
 -- so it cannot divide by zero.
+--
+-- Bounded by the same $1000 a ton the form accepts (MAX_PRICE in
+-- api/quarry-sales-submissions.js — scripts/test-quarry-sales-submissions.js
+-- fails if the two drift apart). A small enough tonnage divides out to a price
+-- above that cap, and writing one in would leave a DRAFT the submitter can
+-- neither save nor send: every write re-parses the row, and parsePrice refuses
+-- it. Those keep a NULL price and are asked for one, and their amount is
+-- untouched either way — dbToEntry hands back the figure they were charged
+-- when there is no price to multiply.
 UPDATE quarry_sales_submissions
    SET price_per_ton = ROUND(amount_charged / tons, 4)
- WHERE price_per_ton IS NULL AND amount_charged IS NOT NULL AND tons > 0;
+ WHERE price_per_ton IS NULL
+   AND amount_charged IS NOT NULL AND amount_charged > 0
+   AND tons > 0
+   AND amount_charged / tons <= 1000;
