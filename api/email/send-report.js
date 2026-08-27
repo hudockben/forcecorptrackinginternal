@@ -54,6 +54,9 @@ const REPORT_TYPES = {
   dust_tracking_summary:{ division: 'dust',      label: 'Dust Control Tracking Report'        },
   scheduler_dispatch:   { division: 'scheduler', label: 'Crew Dispatch Schedule'              },
   trucking_dispatch:    { division: 'trucking',  label: 'Trucking Dispatch Schedule'          },
+  // The Scheduler tab's second board. Same division — it is the trucking
+  // office's own labor board — so the same access check applies.
+  trucking_labor_dispatch: { division: 'trucking', label: 'Labor Dispatch Schedule'           },
 };
 
 module.exports = async (req, res) => {

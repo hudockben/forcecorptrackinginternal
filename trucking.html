@@ -822,6 +822,22 @@
     .sub-tab-btn.active { color: var(--orange); border-bottom-color: var(--orange); }
     .sub-tab-panel { display: none; }
     .sub-tab-panel.active { display: block; }
+
+    /* ── Scheduler sub-tabs (Trucking / Labor boards) ──
+       Their own classes rather than Analytics' .sub-tab-btn: that handler
+       toggles every .sub-tab-panel on the page, so sharing the class would
+       make picking an Analytics sub-tab blank a schedule board. */
+    .sched-sub-btn {
+      padding: 0.55rem 1.1rem;
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); background: none; border: none;
+      border-bottom: 2px solid transparent; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s; white-space: nowrap;
+    }
+    .sched-sub-btn:hover { color: var(--text); }
+    .sched-sub-btn.active { color: var(--orange); border-bottom-color: var(--orange); }
+    .sched-board-panel { display: none; }
+    .sched-board-panel.active { display: block; }
     .pdf-btn {
       margin-left: auto; padding: 0.3rem 0.75rem;
       font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
@@ -942,8 +958,9 @@
     onchange="handleCSVUpload(this)">
 
   <!-- ── Scheduler assignment editor ──
-       Lives outside #tab-scheduler on purpose: renderScheduler() replaces that
-       panel's innerHTML, which would tear the dialog out mid-edit. -->
+       Lives outside the board panels on purpose: renderScheduler() replaces a
+       panel's innerHTML, which would tear the dialog out mid-edit. Shared by
+       both boards — schedCtx records which one it was opened from. -->
   <div class="sch-backdrop" id="sched-backdrop" onclick="schedCloseEditor(event)">
     <div class="sch-modal" id="sched-modal" onclick="event.stopPropagation()">
       <h3 id="sched-modal-title"></h3>
@@ -1013,9 +1030,18 @@
   </div>
 
   <!-- ══════════════════════════════════════════════
-       SCHEDULER TAB
+       SCHEDULER TAB — two boards, one tool
+       Trucking and Labor are the same board pointed at different blobs.
+       Only the selected one is drawn; the other panel is emptied on the way
+       out so no element id exists twice in the document.
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-scheduler">
+    <div class="sub-tab-bar">
+      <button class="sched-sub-btn active" data-board="trucking">Trucking Schedule</button>
+      <button class="sched-sub-btn" data-board="labor">Labor Schedule</button>
+    </div>
+    <div class="sched-board-panel active" id="sched-board-trucking"></div>
+    <div class="sched-board-panel" id="sched-board-labor"></div>
   </div>
 
   <script>
@@ -1059,6 +1085,11 @@
           else renderCustomerData();
         }
       });
+    });
+
+    /* ── Scheduler sub-tab switching ── */
+    document.querySelectorAll('.sched-sub-btn').forEach(btn => {
+      btn.addEventListener('click', () => schedSwitchBoard(btn.dataset.board));
     });
 
     /* ── Analytics sub-tab switching ── */
@@ -2860,19 +2891,25 @@
         if (logins.length) saveDriverLogins();
       }
 
-      // The board names the same people and companies. Loaded first on purpose:
-      // renaming an empty board and marking it dirty is how a merge could cost
-      // someone their week's assignments.
+      // The boards name the same people and companies — both of them, so the
+      // rename is applied to each rather than to whichever sub-tab happens to
+      // be open. Loaded first on purpose: renaming an empty board and marking
+      // it dirty is how a merge could cost someone their week's assignments.
       const sched = [];
       if (MERGE_FIELD[key] && (field === 'driver' || field === 'customer' || field === 'unit')) {
-        try { await schedEnsureLoaded(); } catch { /* board stays as it is */ }
-        if (_schedLoaded) {
-          Object.keys(schedAssignments || {}).forEach(d => {
-            (schedAssignments[d] || []).forEach(a => {
-              if (a && _remKey(a[field]) === _remKey(src)) { a[field] = dst; sched.push({ d, id: a.id }); }
+        for (const cfg of SCHED_BOARDS) {
+          try { await schedEnsureLoaded(cfg.id); } catch { /* board stays as it is */ }
+          const st = schedS(cfg.id);
+          if (!st.loaded) continue;
+          let hit = 0;
+          Object.keys(st.assignments || {}).forEach(d => {
+            (st.assignments[d] || []).forEach(a => {
+              if (a && _remKey(a[field]) === _remKey(src)) {
+                a[field] = dst; hit++; sched.push({ board: cfg.id, d, id: a.id });
+              }
             });
           });
-          if (sched.length) schedMarkDirty();
+          if (hit) schedMarkDirty(cfg.id);
         }
       }
 
@@ -2892,12 +2929,17 @@
       divEntries.forEach(e => { if (idSet.has(e.id)) e[u.field] = u.from; });
       (u.logins || []).forEach(usr => { if (driverLoginMap) driverLoginMap[usr] = u.from; });
       if ((u.logins || []).length) saveDriverLogins();
-      if ((u.sched || []).length && _schedLoaded) {
-        const back = new Set(u.sched.map(x => x.id));
-        Object.keys(schedAssignments || {}).forEach(d =>
-          (schedAssignments[d] || []).forEach(a => { if (a && back.has(a.id)) a[u.field] = u.from; }));
-        schedMarkDirty();
-      }
+      // Grouped by board: an undo written before the labor board existed has
+      // no board on its rows, so those go back to the trucking board.
+      SCHED_BOARDS.forEach(cfg => {
+        const ids = (u.sched || []).filter(x => (x.board || 'trucking') === cfg.id);
+        const st  = schedS(cfg.id);
+        if (!ids.length || !st.loaded) return;
+        const back = new Set(ids.map(x => x.id));
+        Object.keys(st.assignments || {}).forEach(d =>
+          (st.assignments[d] || []).forEach(a => { if (a && back.has(a.id)) a[u.field] = u.from; }));
+        schedMarkDirty(cfg.id);
+      });
       if (u.rateMoved) setCustomerRate(u.to, '');
       // Last, because it is what saves the whole undo and redraws behind it.
       restoreToList(u.key, u.from);
@@ -3621,39 +3663,70 @@
        timesheet entries (api/lib/truck-injected.js), locked, and swept back
        out on un-approval. It only ever describes work that already happened.
        The schedule is the opposite — what we intend to run — so it lives in
-       its own blob (fct_trucking_schedule) rather than in divEntries, where
-       the payroll sweep would fight it and unworked hauls would land in the
-       revenue and hours analytics.
+       its own blob rather than in divEntries, where the payroll sweep would
+       fight it and unworked hauls would land in the revenue and hours
+       analytics.
 
        The two are deliberately the same shape. A tracking row carries
        actual_date / actual_start; an assignment carries date / start against
        the same driver, unit and customer lists, so plan-vs-actual is a join
        on (date, driver) whenever we want to add it.
     ═══════════════════════════════════════════ */
-    const SCHED_KEY = 'fct_trucking_schedule';
+    /* Two boards live under the Scheduler tab and share every line of this
+       code: the trucking board that has always been here, and a labor board
+       that is the same tool pointed at a second blob. Only the key they save
+       to differs, so a haul and a labor call can never land on one another's
+       board. The trucking key is unchanged, so everything already scheduled
+       opens exactly where it was left. */
+    const SCHED_BOARDS = [
+      { id: 'trucking', label: 'Trucking Schedule', noun: 'Trucking',
+        key: 'fct_trucking_schedule',       reportType: 'trucking_dispatch'       },
+      { id: 'labor',    label: 'Labor Schedule',    noun: 'Labor',
+        key: 'fct_trucking_labor_schedule', reportType: 'trucking_labor_dispatch' },
+    ];
+    let schedBoard = 'trucking';    // which sub-tab is showing
 
-    let schedAssignments = {};      // { 'YYYY-MM-DD': [ {id,driver,customer,unit,start,notes} ] }
-    let schedView        = 'day';   // 'week' | 'day' — opens on the day being dispatched
-    let schedAnchor      = null;    // the focused date; week view shows the week around it
-    let schedCtx         = null;    // open editor: { date, id|null }
-    let _schedBaseline   = '{}';    // server state as of last successful read/write
-    let _schedDirty      = false;
-    let _schedSaveTimer  = null;
-    let _schedFlushing   = false;
-    let _schedLoaded     = false;
-    let _schedLoading    = false;
-    let _schedLoadError  = null;
-    let _schedStatus     = 'saved'; // 'saved' | 'pending' | 'saving' | 'error'
-    // Drivers hidden from the board. The managed drivers list is shared with
-    // Truck Tracking and re-seeded from every stored entry on load, so a name
-    // that reached it via a timesheet entry (a username like an office login)
-    // cannot be removed there — deleting it just comes back on the next load,
-    // and it is still wanted in Tracking's dropdown for the historical rows.
-    // Hiding is therefore the Scheduler's own view setting. Stored with the
-    // schedule rather than per-browser so every dispatcher sees one board.
-    let schedHidden          = new Set();
-    let _schedHiddenBaseline = '[]';
-    let _schedPickQuery      = '';
+    function schedBoardCfg(board) {
+      return SCHED_BOARDS.find(b => b.id === (board || schedBoard)) || SCHED_BOARDS[0];
+    }
+
+    function _schedNewState() {
+      return {
+        assignments: {},   // { 'YYYY-MM-DD': [ {id,driver,customer,unit,start,notes} ] }
+        view:      'day',  // 'week' | 'day' — opens on the day being dispatched
+        anchor:    null,   // the focused date; week view shows the week around it
+        baseline:  '{}',   // server state as of last successful read/write
+        dirty:     false,
+        saveTimer: null,
+        flushing:  false,
+        loaded:    false,
+        loading:   false,
+        loadError: null,
+        status:    'saved', // 'saved' | 'pending' | 'saving' | 'error'
+        // Drivers hidden from the board. The managed drivers list is shared with
+        // Truck Tracking and re-seeded from every stored entry on load, so a name
+        // that reached it via a timesheet entry (a username like an office login)
+        // cannot be removed there — deleting it just comes back on the next load,
+        // and it is still wanted in Tracking's dropdown for the historical rows.
+        // Hiding is therefore the board's own view setting, and each board keeps
+        // its own — the people on the labor board are not the people on the
+        // trucking one. Stored with the schedule rather than per-browser so every
+        // dispatcher sees one board.
+        hidden:         new Set(),
+        hiddenBaseline: '[]',
+        pickQuery:      '',
+      };
+    }
+    const _schedStates = {};
+    SCHED_BOARDS.forEach(b => { _schedStates[b.id] = _schedNewState(); });
+
+    /** One board's state — the board on screen unless another is named.
+     *  Everything asynchronous captures its board on the way in and passes it
+     *  down, so a save still in flight can never write one board's rows under
+     *  the other's key. */
+    function schedS(board) { return _schedStates[board] || _schedStates[schedBoard]; }
+
+    let schedCtx = null;   // open editor: { board, date, id|null }
 
     const schedEsc = s => String(s == null ? '' : s)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -3671,7 +3744,7 @@
       return schedStr(d);
     }
     function schedWeekDates() {
-      const m = schedMonday(schedAnchor);
+      const m = schedMonday(schedS().anchor);
       return Array.from({ length: 7 }, (_, i) => schedAddDays(m, i));
     }
     function schedTime12(hhmm) {
@@ -3699,9 +3772,14 @@
       return h * 60 + mi;
     }
 
-    function schedIsActive() {
+    /** True when the named board is the one on screen: the Scheduler tab is
+     *  showing and that board's sub-tab is the selected one. Work that
+     *  finishes for the other board updates its state and leaves the DOM
+     *  alone — its panel is drawn from scratch when it is picked. */
+    function schedIsActive(board) {
       const b = document.querySelector('.tab-btn.active');
-      return !!b && b.dataset.tab === 'scheduler';
+      if (!b || b.dataset.tab !== 'scheduler') return false;
+      return (board || schedBoard) === schedBoard;
     }
 
     /* ── Roster. The managed driver list is the roster, but any driver who
@@ -3711,29 +3789,29 @@
       // Anyone holding an assignment in view is shown whatever their settings —
       // hiding a driver must never make scheduled work disappear with them.
       const assigned = new Set();
-      (dates || []).forEach(d => (schedAssignments[d] || []).forEach(a => { if (a.driver) assigned.add(a.driver); }));
+      (dates || []).forEach(d => (schedS().assignments[d] || []).forEach(a => { if (a.driver) assigned.add(a.driver); }));
       const set = new Set(assigned);
-      (divTruckLists.drivers || []).forEach(n => { if (n && !schedHidden.has(n)) set.add(n); });
+      (divTruckLists.drivers || []).forEach(n => { if (n && !schedS().hidden.has(n)) set.add(n); });
       return [...set].sort((a, b) => String(a).localeCompare(String(b)));
     }
     /** Every name the picker can offer: the managed list plus anyone who
      *  holds an assignment on any date, hidden or not. */
     function schedAllDrivers() {
       const set = new Set((divTruckLists.drivers || []).filter(Boolean));
-      Object.keys(schedAssignments).forEach(d =>
-        (schedAssignments[d] || []).forEach(a => { if (a.driver) set.add(a.driver); }));
+      Object.keys(schedS().assignments).forEach(d =>
+        (schedS().assignments[d] || []).forEach(a => { if (a.driver) set.add(a.driver); }));
       return [...set].sort((a, b) => String(a).localeCompare(String(b)));
     }
     /** Assignments per driver across every date — shown in the picker so it is
      *  clear before hiding someone whether they carry any work. */
     function schedTotalsByDriver() {
       const m = new Map();
-      Object.keys(schedAssignments).forEach(d =>
-        (schedAssignments[d] || []).forEach(a => { if (a.driver) m.set(a.driver, (m.get(a.driver) || 0) + 1); }));
+      Object.keys(schedS().assignments).forEach(d =>
+        (schedS().assignments[d] || []).forEach(a => { if (a.driver) m.set(a.driver, (m.get(a.driver) || 0) + 1); }));
       return m;
     }
     function schedFor(date, driver) {
-      return (schedAssignments[date] || [])
+      return (schedS().assignments[date] || [])
         .filter(a => a.driver === driver)
         .sort((a, b) => String(a.start || '~').localeCompare(String(b.start || '~')));
     }
@@ -3750,7 +3828,7 @@
      *  disprove, never hides one we can't. */
     function schedUnitConflicts(date) {
       const byUnit = new Map();
-      (schedAssignments[date] || []).forEach(a => {
+      (schedS().assignments[date] || []).forEach(a => {
         const u = (a.unit || '').trim();
         if (!u) return;
         if (!byUnit.has(u)) byUnit.set(u, []);
@@ -3797,40 +3875,51 @@
       return _schedUnflat(res);
     }
 
-    async function schedEnsureLoaded() {
-      if (_schedLoaded || _schedLoading) return;
-      _schedLoading = true;
-      _schedLoadError = null;
+    async function schedEnsureLoaded(board) {
+      const b  = board || schedBoard;
+      const st = schedS(b);
+      if (st.loaded || st.loading) return;
+      st.loading = true;
+      st.loadError = null;
       try {
-        const r = await fetch(`${API_BASE}/data/${SCHED_KEY}`, {
+        const r = await fetch(`${API_BASE}/data/${schedBoardCfg(b).key}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const { value } = await r.json();
         const a = value && typeof value === 'object' ? value.assignments : null;
-        schedAssignments = (a && typeof a === 'object' && !Array.isArray(a)) ? a : {};
-        _schedBaseline = JSON.stringify(schedAssignments);
+        st.assignments = (a && typeof a === 'object' && !Array.isArray(a)) ? a : {};
+        st.baseline = JSON.stringify(st.assignments);
         const h = value && typeof value === 'object' ? value.hidden : null;
-        schedHidden = new Set(Array.isArray(h) ? h.filter(x => typeof x === 'string') : []);
-        _schedHiddenBaseline = schedHiddenStr();
-        _schedLoaded = true;
+        st.hidden = new Set(Array.isArray(h) ? h.filter(x => typeof x === 'string') : []);
+        st.hiddenBaseline = schedHiddenStr(b);
+        st.loaded = true;
       } catch (err) {
         // Surfaced as a retryable error rather than an empty board: an empty
         // week and a failed read look identical, and only one of them is safe
         // to start typing into.
-        _schedLoadError = err && err.message ? err.message : 'Could not load the schedule.';
+        st.loadError = err && err.message ? err.message : 'Could not load the schedule.';
       } finally {
-        _schedLoading = false;
-        if (schedIsActive()) renderScheduler();
+        st.loading = false;
+        if (schedIsActive(b)) renderScheduler(b);
       }
     }
 
-    function schedRetryLoad() { _schedLoadError = null; renderScheduler(); schedEnsureLoaded(); }
+    function schedRetryLoad(board) {
+      const b = board || schedBoard;
+      schedS(b).loadError = null;
+      renderScheduler(b);
+      schedEnsureLoaded(b);
+    }
 
-    function schedHiddenStr() { return JSON.stringify([...schedHidden].sort()); }
+    function schedHiddenStr(board) { return JSON.stringify([...schedS(board).hidden].sort()); }
 
-    function schedSetStatus(s) {
-      _schedStatus = s;
+    function schedSetStatus(s, board) {
+      const b = board || schedBoard;
+      schedS(b).status = s;
+      // Only the board on screen has a status pill in the DOM; the other one
+      // picks its state up from st.status the next time it is drawn.
+      if (!schedIsActive(b)) return;
       const el = document.getElementById('sched-status');
       if (!el) return;
       const txt = { saved: 'All changes saved', pending: 'Unsaved changes…', saving: 'Saving…', error: '⚠ Not saved — retrying' };
@@ -3838,64 +3927,69 @@
       el.classList.toggle('err', s === 'error');
     }
 
-    function schedMarkDirty() {
-      _schedDirty = true;
-      schedSetStatus('pending');
-      clearTimeout(_schedSaveTimer);
-      _schedSaveTimer = setTimeout(schedFlush, 600);
+    function schedMarkDirty(board) {
+      const b  = board || schedBoard;
+      const st = schedS(b);
+      st.dirty = true;
+      schedSetStatus('pending', b);
+      clearTimeout(st.saveTimer);
+      st.saveTimer = setTimeout(() => schedFlush(b), 600);
     }
 
-    async function schedFlush() {
-      clearTimeout(_schedSaveTimer);
-      _schedSaveTimer = null;
-      if (!_schedDirty) return;
+    async function schedFlush(board) {
+      const b   = board || schedBoard;
+      const st  = schedS(b);
+      const KEY = schedBoardCfg(b).key;
+      clearTimeout(st.saveTimer);
+      st.saveTimer = null;
+      if (!st.dirty) return;
       // A flush already in flight owns the merge; queue behind it rather than
       // racing a second read-modify-write against the same key.
-      if (_schedFlushing) { _schedSaveTimer = setTimeout(schedFlush, 300); return; }
-      _schedFlushing = true;
-      schedSetStatus('saving');
+      if (st.flushing) { st.saveTimer = setTimeout(() => schedFlush(b), 300); return; }
+      st.flushing = true;
+      schedSetStatus('saving', b);
       try {
-        const r0 = await fetch(`${API_BASE}/data/${SCHED_KEY}`, {
+        const r0 = await fetch(`${API_BASE}/data/${KEY}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (r0.ok) {
           const { value } = await r0.json();
           const a = value && typeof value === 'object' ? value.assignments : null;
           const theirs = (a && typeof a === 'object' && !Array.isArray(a)) ? a : {};
-          if (JSON.stringify(theirs) !== _schedBaseline) {
-            schedAssignments = schedMerge(_schedBaseline, schedAssignments, theirs);
-            if (schedIsActive()) renderScheduler();
+          if (JSON.stringify(theirs) !== st.baseline) {
+            st.assignments = schedMerge(st.baseline, st.assignments, theirs);
+            if (schedIsActive(b)) renderScheduler(b);
           }
           // The hidden set is one small list rather than keyed rows, so there is
           // nothing to merge per-item: whoever last changed it wins. If we have
           // not touched ours since the last read, theirs is the newer answer.
           const h = value && typeof value === 'object' ? value.hidden : null;
-          if (Array.isArray(h) && schedHiddenStr() === _schedHiddenBaseline) {
+          if (Array.isArray(h) && schedHiddenStr(b) === st.hiddenBaseline) {
             const next = new Set(h.filter(x => typeof x === 'string'));
-            if (JSON.stringify([...next].sort()) !== _schedHiddenBaseline) {
-              schedHidden = next;
-              if (schedIsActive()) renderScheduler();
+            if (JSON.stringify([...next].sort()) !== st.hiddenBaseline) {
+              st.hidden = next;
+              if (schedIsActive(b)) renderScheduler(b);
             }
           }
         }
-        const r = await fetch(`${API_BASE}/data/${SCHED_KEY}`, {
+        const r = await fetch(`${API_BASE}/data/${KEY}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ value: { version: 1, assignments: schedAssignments, hidden: [...schedHidden].sort() } })
+          body: JSON.stringify({ value: { version: 1, assignments: st.assignments, hidden: [...st.hidden].sort() } })
         });
         await _handleSaveResponse(r, 'schedFlush');
         if (!r.ok) throw new Error('HTTP ' + r.status);
-        _schedBaseline = JSON.stringify(schedAssignments);
-        _schedHiddenBaseline = schedHiddenStr();
-        _schedDirty = false;
-        schedSetStatus('saved');
+        st.baseline = JSON.stringify(st.assignments);
+        st.hiddenBaseline = schedHiddenStr(b);
+        st.dirty = false;
+        schedSetStatus('saved', b);
       } catch {
         // Left dirty on purpose so the next edit — or the retry below — picks
         // it back up instead of the change being silently dropped.
-        schedSetStatus('error');
-        _schedSaveTimer = setTimeout(schedFlush, 5000);
+        schedSetStatus('error', b);
+        st.saveTimer = setTimeout(() => schedFlush(b), 5000);
       } finally {
-        _schedFlushing = false;
+        st.flushing = false;
       }
     }
 
@@ -3903,16 +3997,22 @@
     // keepalive lets the PUT outlive the page; the merge is skipped because it
     // needs a GET the browser will not reliably run mid-unload.
     function schedFlushKeepalive() {
-      if (!_schedDirty) return;
-      clearTimeout(_schedSaveTimer);
-      _schedSaveTimer = null;
-      try {
-        fetch(`${API_BASE}/data/${SCHED_KEY}`, {
-          method: 'PUT', keepalive: true,
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ value: { version: 1, assignments: schedAssignments, hidden: [...schedHidden].sort() } })
-        }).catch(() => {});
-      } catch { /* best-effort */ }
+      // Both boards, not just the one on screen: an edit on the trucking board
+      // is still unsaved after switching to labor, and the page can be left
+      // from either.
+      SCHED_BOARDS.forEach(cfg => {
+        const st = schedS(cfg.id);
+        if (!st.dirty) return;
+        clearTimeout(st.saveTimer);
+        st.saveTimer = null;
+        try {
+          fetch(`${API_BASE}/data/${cfg.key}`, {
+            method: 'PUT', keepalive: true,
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ value: { version: 1, assignments: st.assignments, hidden: [...st.hidden].sort() } })
+          }).catch(() => {});
+        } catch { /* best-effort */ }
+      });
     }
     window.addEventListener('beforeunload', schedFlushKeepalive);
     document.addEventListener('visibilitychange', () => {
@@ -3921,70 +4021,100 @@
 
     /* ═══════ Navigation ═══════ */
     function schedStep(n) {
-      schedAnchor = schedAddDays(schedAnchor, schedView === 'week' ? n * 7 : n);
+      schedS().anchor = schedAddDays(schedS().anchor, schedS().view === 'week' ? n * 7 : n);
       renderScheduler();
     }
-    function schedGoToday() { schedAnchor = schedTodayStr(); renderScheduler(); }
-    function schedSetView(v) { schedView = v; renderScheduler(); }
-    function schedGoDay(date) { schedAnchor = date; schedView = 'day'; renderScheduler(); }
+    function schedGoToday() { schedS().anchor = schedTodayStr(); renderScheduler(); }
+    function schedSetView(v) { schedS().view = v; renderScheduler(); }
+    function schedGoDay(date) { schedS().anchor = date; schedS().view = 'day'; renderScheduler(); }
 
-    /* ═══════ Render ═══════ */
-    function renderScheduler() {
-      const root = document.getElementById('tab-scheduler');
+    /* ═══════ Render ═══════
+       Only the board whose sub-tab is selected is ever drawn, and the other
+       panel is emptied on the way out — every id in here (the status pill, the
+       sheet message) would otherwise exist twice in the document, and
+       getElementById would start answering for the board nobody is looking
+       at. Everything below reads schedS() for that reason: it is always the
+       board being drawn. */
+    function renderScheduler(board) {
+      const b = board || schedBoard;
+      if (b !== schedBoard) return;
+      const st   = schedS(b);
+      const cfg  = schedBoardCfg(b);
+      const root = document.getElementById('sched-board-' + b);
       if (!root) return;
-      if (!schedAnchor) schedAnchor = schedTodayStr();
+      if (!st.anchor) st.anchor = schedTodayStr();
 
-      if (_schedLoadError) {
+      if (st.loadError) {
         root.innerHTML = `
           <div style="padding:1.25rem;max-width:1600px">
-            <p class="home-section-title">Scheduler</p>
+            <p class="home-section-title">${schedEsc(cfg.label)}</p>
             <div style="border:1px solid var(--border);border-radius:6px;padding:2.5rem 1.5rem;text-align:center">
               <div style="color:var(--orange);font-size:0.85rem;margin-bottom:0.25rem">Could not load the schedule.</div>
-              <div style="color:var(--muted);font-size:0.75rem;margin-bottom:1rem">${schedEsc(_schedLoadError)}</div>
+              <div style="color:var(--muted);font-size:0.75rem;margin-bottom:1rem">${schedEsc(st.loadError)}</div>
               <button class="sch-btn" onclick="schedRetryLoad()">Retry</button>
             </div>
           </div>`;
         return;
       }
-      if (!_schedLoaded) {
-        schedEnsureLoaded();
+      if (!st.loaded) {
+        schedEnsureLoaded(b);
         root.innerHTML = `
           <div style="padding:1.25rem;max-width:1600px">
-            <p class="home-section-title">Scheduler</p>
+            <p class="home-section-title">${schedEsc(cfg.label)}</p>
             <div style="border:1px solid var(--border);border-radius:6px;padding:3rem 1.5rem;
                         text-align:center;color:var(--muted);font-size:0.85rem;">Loading schedule…</div>
           </div>`;
         return;
       }
 
-      const rng = schedView === 'week' ? schedWeekDates() : [schedAnchor];
+      const rng = st.view === 'week' ? schedWeekDates() : [st.anchor];
       schedLoadReports(rng[0], rng[rng.length - 1]);
 
       root.innerHTML = `
         <div style="padding:1.25rem;max-width:1600px">
           ${schedToolbarHTML()}
-          ${schedView === 'week' ? schedWeekHTML() : schedDayHTML()}
+          ${st.view === 'week' ? schedWeekHTML() : schedDayHTML()}
         </div>`;
-      schedSetStatus(_schedStatus);
+      schedSetStatus(st.status, b);
+    }
+
+    /* ═══════ Sub-tabs ═══════
+       Switching boards closes anything the old board had open — the editor,
+       the picker, the report dialog all sit outside the panels and would
+       otherwise save into whichever board came next — and blanks the panel
+       being left so no id is in the document twice. */
+    function schedSwitchBoard(board) {
+      if (!_schedStates[board]) return;
+      schedCloseEditor();
+      schedClosePicker();
+      schedCloseReport();
+      const prev = document.getElementById('sched-board-' + schedBoard);
+      if (prev && board !== schedBoard) prev.innerHTML = '';
+      schedBoard = board;
+      document.querySelectorAll('.sched-sub-btn').forEach(btn =>
+        btn.classList.toggle('active', btn.dataset.board === board));
+      document.querySelectorAll('.sched-board-panel').forEach(pnl =>
+        pnl.classList.toggle('active', pnl.id === 'sched-board-' + board));
+      renderScheduler(board);
     }
 
     function schedToolbarHTML() {
-      const dates = schedView === 'week' ? schedWeekDates() : [schedAnchor];
+      const dates = schedS().view === 'week' ? schedWeekDates() : [schedS().anchor];
       let label;
-      if (schedView === 'week') {
+      if (schedS().view === 'week') {
         const a = schedParse(dates[0]), b = schedParse(dates[6]);
         const opt = { month: 'short', day: 'numeric' };
         label = a.toLocaleDateString(undefined, opt) + ' – ' +
                 b.toLocaleDateString(undefined, opt) + ', ' + b.getFullYear();
       } else {
-        label = schedParse(schedAnchor)
+        label = schedParse(schedS().anchor)
           .toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
       }
       const conflicts = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
-      const planned   = dates.reduce((n, d) => n + (schedAssignments[d] || []).length, 0);
+      const planned   = dates.reduce((n, d) => n + (schedS().assignments[d] || []).length, 0);
       const roster    = schedAllDrivers();
       const total     = roster.length;
-      const shown     = roster.filter(n => !schedHidden.has(n)).length;
+      const shown     = roster.filter(n => !schedS().hidden.has(n)).length;
 
       return `
         <div class="sch-toolbar">
@@ -3995,8 +4125,8 @@
           </div>
           <div class="sch-label">${schedEsc(label)}</div>
           <div class="sch-viewtoggle">
-            <button class="sch-viewbtn${schedView === 'week' ? ' active' : ''}" onclick="schedSetView('week')">Week</button>
-            <button class="sch-viewbtn${schedView === 'day'  ? ' active' : ''}" onclick="schedSetView('day')">Day</button>
+            <button class="sch-viewbtn${schedS().view === 'week' ? ' active' : ''}" onclick="schedSetView('week')">Week</button>
+            <button class="sch-viewbtn${schedS().view === 'day'  ? ' active' : ''}" onclick="schedSetView('day')">Day</button>
           </div>
           <span style="font-size:0.7rem;color:var(--muted)">${planned} assigned</span>
           ${conflicts ? `<span class="sch-warn" title="A truck is booked by two drivers over the same hours \u2014 or over hours we can\u2019t compare, because a start or end time is missing">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
@@ -4070,7 +4200,7 @@
         // A hidden driver still appears on the days they hold work. Marked so
         // that reads as "kept because it is scheduled" rather than as the hide
         // having failed to apply.
-        const hid = schedHidden.has(dr);
+        const hid = schedS().hidden.has(dr);
         return `<tr>
           <td class="sch-driver-cell${hid ? ' is-hidden' : ''}"${hid
             ? ' title="Hidden from the board — still listed because they have assignments this week"' : ''}>
@@ -4198,7 +4328,7 @@
     function schedTimelineHTML(date, drivers, bad) {
       const byDriver = new Map(drivers.map(d => [d, []]));
       const unplaced = [];
-      (schedAssignments[date] || []).forEach(a => {
+      (schedS().assignments[date] || []).forEach(a => {
         if (!byDriver.has(a.driver)) return;
         if (schedMins(a.start) === null) unplaced.push(a);   // no start — nothing to draw
         else byDriver.get(a.driver).push(a);
@@ -4248,7 +4378,7 @@
           </div>`;
         }).join('');
         const isOpen = !p.placed.length;
-        const hid    = schedHidden.has(p.driver);
+        const hid    = schedS().hidden.has(p.driver);
         return `
           <div class="sch-tl-row">
             <div class="sch-tl-name${hid ? ' is-hidden' : isOpen ? ' is-open' : ''}">
@@ -4276,15 +4406,15 @@
     function schedTimelineAdd(ev, driverIdx, h0) {
       const r = ev.currentTarget.getBoundingClientRect();
       const h = h0 + Math.floor((ev.clientX - r.left) / SCH_HOUR_W);
-      schedAddAssign(schedAnchor, driverIdx, schedPad(Math.max(0, Math.min(23, h))) + ':00');
+      schedAddAssign(schedS().anchor, driverIdx, schedPad(Math.max(0, Math.min(23, h))) + ':00');
     }
 
     function schedDayHTML() {
-      const date    = schedAnchor;
+      const date    = schedS().anchor;
       const drivers = schedDrivers([date]);
       if (!drivers.length) return schedNoDriversHTML();
       const bad   = schedUnitConflicts(date);
-      const items = (schedAssignments[date] || []).slice().sort((a, b) =>
+      const items = (schedS().assignments[date] || []).slice().sort((a, b) =>
         String(a.start || '~').localeCompare(String(b.start || '~')) ||
         String(a.driver || '').localeCompare(String(b.driver || '')));
 
@@ -4302,7 +4432,7 @@
           <td style="${G}">${rep && rep.actual_start ? schedEsc(schedTime12(rep.actual_start)) : DASH}</td>
           <td style="${G}">${rep && rep.actual_end   ? schedEsc(schedTime12(rep.actual_end))   : DASH}</td>
           <td style="text-align:right;${G}">${hrs ? schedEsc(hrs) : DASH}</td>
-          <td style="font-weight:600">${schedEsc(a.driver)}${schedHidden.has(a.driver)
+          <td style="font-weight:600">${schedEsc(a.driver)}${schedS().hidden.has(a.driver)
             ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}</td>
           <td style="color:var(--muted);white-space:nowrap">${schedEsc(schedDivLabel(a.division)) || '—'}</td>
           <td>${schedEsc(schedJobOf(a)) || '<span style="color:var(--muted)">—</span>'}${
@@ -4459,7 +4589,9 @@
 
     function schedSheetRows(date) { return schedRepItems(date).map(schedSheetRow); }
 
-    function schedSheetTitle(date) { return 'Dispatch Sheet — ' + schedRepDayLabel(date); }
+    function schedSheetTitle(date) {
+      return schedBoardCfg().noun + ' Dispatch Sheet — ' + schedRepDayLabel(date);
+    }
 
     /** The sheet as a table, for the print window and the email alike —
      *  sectioned and subtotalled the same way the screen shows it. */
@@ -4490,7 +4622,7 @@
     }
 
     function schedSheetPrint() {
-      const date = schedAnchor;
+      const date = schedS().anchor;
       const w = window.open('', '_blank');
       const msg = document.getElementById('sched-sheet-msg');
       if (!w) {
@@ -4510,7 +4642,7 @@
         <body style="${_RP.wrap};padding:14px">
         <div style="${_RP.mast}">
           <div style="margin-bottom:5px">
-            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">Trucking</span>
+            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">${schedEsc(schedBoardCfg().noun)}</span>
           </div>
           <div style="${_RP.h1}">${schedEsc(schedSheetTitle(date))}</div>
           <div style="${_RP.subT}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
@@ -4673,12 +4805,12 @@
     }
 
     function schedSheetDownload() {
-      const date = schedAnchor;
+      const date = schedS().anchor;
       const blob = new Blob([schedSheetXlsx(date)],
         { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'dispatch-' + date + '.xlsx';
+      a.download = schedBoard + '-dispatch-' + date + '.xlsx';
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -4702,7 +4834,7 @@
        send-report sanitizer keeps <style> blocks, but Outlook and Gmail
        largely ignore them. Light palette throughout: the board is dark, and
        nobody wants that on paper. */
-    const SCHED_REPORT_TYPE = 'trucking_dispatch';
+    function schedReportType() { return schedBoardCfg().reportType; }
     let _schedRepGroups = [];
     // Set by the dispatch sheet's Email button; cleared when the modal opens
     // from the toolbar, so the two never send each other's content.
@@ -4740,19 +4872,20 @@
     }
 
     function schedRepTitle(scope) {
+      const head = schedBoardCfg().noun + ' Dispatch — ';
       return scope === 'week'
         ? (() => { const d = schedWeekDates();
-            return 'Trucking Dispatch — Week of ' +
+            return head + 'Week of ' +
               schedParse(d[0]).toLocaleDateString('en-US', { month: 'long', day: 'numeric' }) +
               '–' + schedParse(d[6]).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }); })()
-        : 'Trucking Dispatch — ' + schedRepDayLabel(schedAnchor);
+        : head + schedRepDayLabel(schedS().anchor);
     }
 
-    function schedRepDates(scope) { return scope === 'week' ? schedWeekDates() : [schedAnchor]; }
+    function schedRepDates(scope) { return scope === 'week' ? schedWeekDates() : [schedS().anchor]; }
 
     /** Rows for one date, in run order. */
     function schedRepItems(date) {
-      return (schedAssignments[date] || []).slice().sort((a, b) =>
+      return (schedS().assignments[date] || []).slice().sort((a, b) =>
         String(a.start || '~').localeCompare(String(b.start || '~')) ||
         String(a.driver || '').localeCompare(String(b.driver || '')));
     }
@@ -4857,9 +4990,9 @@
 
     function schedRepBody(scope, layout) {
       const dates  = schedRepDates(scope);
-      const total  = dates.reduce((n, d) => n + (schedAssignments[d] || []).length, 0);
+      const total  = dates.reduce((n, d) => n + (schedS().assignments[d] || []).length, 0);
       const busy   = new Set();
-      dates.forEach(d => (schedAssignments[d] || []).forEach(a => busy.add(a.driver)));
+      dates.forEach(d => (schedS().assignments[d] || []).forEach(a => busy.add(a.driver)));
       const roster = schedDrivers(dates);
       const clash  = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
 
@@ -4873,14 +5006,14 @@
     }
 
     function schedRepHasWork(scope) {
-      return schedRepDates(scope).some(d => (schedAssignments[d] || []).length);
+      return schedRepDates(scope).some(d => (schedS().assignments[d] || []).length);
     }
 
     /* ── Modal ── */
     function schedOpenPlanReport() { _schedRepSheetMode = false; schedOpenReport(); }
 
     async function schedOpenReport() {
-      const scope = schedView === 'week' ? 'week' : 'day';
+      const scope = schedS().view === 'week' ? 'week' : 'day';
       const sheet = _schedRepSheetMode;
       document.getElementById('sched-rep-body').innerHTML = `
         ${sheet ? `
@@ -4888,14 +5021,14 @@
         <input type="hidden" id="sched-rep-layout" value="day">
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;
                     padding:0.6rem 0.7rem;margin-bottom:0.9rem;font-size:0.78rem">
-          <strong>${schedEsc(schedSheetTitle(schedAnchor))}</strong>
+          <strong>${schedEsc(schedSheetTitle(schedS().anchor))}</strong>
           <span style="display:block;color:var(--muted);font-size:0.7rem;margin-top:0.15rem">
             The full sheet, reported figures included.</span>
         </div>` : `
         <div class="sch-fld">
           <label for="sched-rep-scope">Range</label>
           <select id="sched-rep-scope" onchange="schedRepPreviewNote()">
-            <option value="day"${scope === 'day' ? ' selected' : ''}>This day — ${schedEsc(schedRepDayLabel(schedAnchor))}</option>
+            <option value="day"${scope === 'day' ? ' selected' : ''}>This day — ${schedEsc(schedRepDayLabel(schedS().anchor))}</option>
             <option value="week"${scope === 'week' ? ' selected' : ''}>This week</option>
           </select>
         </div>
@@ -4932,7 +5065,7 @@
       schedRepPreviewNote();
 
       try {
-        const r = await fetch(`${API_BASE}/email/recipient-groups?report_type=${SCHED_REPORT_TYPE}`,
+        const r = await fetch(`${API_BASE}/email/recipient-groups?report_type=${schedReportType()}`,
           { headers: { 'Authorization': `Bearer ${token}` } });
         _schedRepGroups = r.ok ? ((await r.json()).groups || []) : [];
       } catch { _schedRepGroups = []; }
@@ -4951,7 +5084,7 @@
       if (!el) return;   // absent in sheet mode, which states its own scope
       const scope = (document.getElementById('sched-rep-scope') || {}).value || 'day';
       const dates = schedRepDates(scope);
-      const total = dates.reduce((n, d) => n + (schedAssignments[d] || []).length, 0);
+      const total = dates.reduce((n, d) => n + (schedS().assignments[d] || []).length, 0);
       el.textContent = total
         ? `${total} assignment${total === 1 ? '' : 's'} across ${dates.length} day${dates.length === 1 ? '' : 's'}.`
         : 'Nothing scheduled in this range yet.';
@@ -4968,7 +5101,7 @@
         </head><body style="${_RP.wrap};padding:18px">
         <div style="${_RP.mast}">
           <div style="margin-bottom:5px">
-            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">Trucking</span>
+            <span style="${_RP.brand}">DataWatch</span><span style="${_RP.dvsn}">${schedEsc(schedBoardCfg().noun)}</span>
           </div>
           <div style="${_RP.h1}">${schedEsc(title)}</div>
           <div style="${_RP.subT}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
@@ -5011,7 +5144,7 @@
       result.style.color = '';
       if (!to.length) { result.textContent = 'Pick a saved list or type at least one email address.'; return; }
       const hasWork = _schedRepSheetMode
-        ? schedRepItems(schedAnchor).length > 0
+        ? schedRepItems(schedS().anchor).length > 0
         : schedRepHasWork(scope);
       if (!hasWork) { result.textContent = 'Nothing scheduled in this range to send.'; return; }
 
@@ -5023,11 +5156,11 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({
-            report_type: SCHED_REPORT_TYPE,
-            subject:     _schedRepSheetMode ? schedSheetTitle(schedAnchor) : schedRepTitle(scope),
+            report_type: schedReportType(),
+            subject:     _schedRepSheetMode ? schedSheetTitle(schedS().anchor) : schedRepTitle(scope),
             note:        document.getElementById('sched-rep-msg').value || '',
             recipients:  to,
-            html:        _schedRepSheetMode ? schedSheetHTML(schedAnchor) : schedRepBody(scope, layout),
+            html:        _schedRepSheetMode ? schedSheetHTML(schedS().anchor) : schedRepBody(scope, layout),
           }),
         });
         const j = await r.json().catch(() => ({}));
@@ -5049,7 +5182,7 @@
        came in on a timesheet cannot be removed from the list, only hidden
        from this board. */
     function schedOpenPicker() {
-      _schedPickQuery = '';
+      schedS().pickQuery = '';
       schedRenderPicker();
       document.getElementById('sched-pick-backdrop').classList.add('open');
       const q = document.getElementById('sched-pick-search');
@@ -5064,26 +5197,26 @@
     function schedRenderPicker() {
       const all    = schedAllDrivers();
       const totals = schedTotalsByDriver();
-      const q      = _schedPickQuery.trim().toLowerCase();
+      const q      = schedS().pickQuery.trim().toLowerCase();
       const rows   = all.filter(n => !q || n.toLowerCase().includes(q));
-      const shown  = all.filter(n => !schedHidden.has(n)).length;
+      const shown  = all.filter(n => !schedS().hidden.has(n)).length;
 
       const list = rows.length ? rows.map(n => {
         const i = all.indexOf(n);
         const c = totals.get(n) || 0;
         return `
           <label class="sch-pick-row" title="${schedEsc(n)}">
-            <input type="checkbox" ${schedHidden.has(n) ? '' : 'checked'} onchange="schedTogglePick(${i})">
+            <input type="checkbox" ${schedS().hidden.has(n) ? '' : 'checked'} onchange="schedTogglePick(${i})">
             <span class="nm">${schedEsc(n)}</span>
             ${c ? `<span class="ct" title="${c} assignment${c === 1 ? '' : 's'} on the board">${c}</span>` : ''}
           </label>`;
       }).join('')
-        : `<div style="padding:1rem;text-align:center;color:var(--muted);font-size:0.78rem">No driver matches “${schedEsc(_schedPickQuery)}”.</div>`;
+        : `<div style="padding:1rem;text-align:center;color:var(--muted);font-size:0.78rem">No driver matches “${schedEsc(schedS().pickQuery)}”.</div>`;
 
       document.getElementById('sched-pick-body').innerHTML = `
         <div class="sch-fld" style="margin-bottom:0.5rem">
           <input type="text" id="sched-pick-search" placeholder="Filter drivers…" autocomplete="off"
-                 value="${schedEsc(_schedPickQuery)}" oninput="schedPickSearch(this.value)">
+                 value="${schedEsc(schedS().pickQuery)}" oninput="schedPickSearch(this.value)">
         </div>
         <div class="sch-pick-bulk">
           <button class="sch-btn" onclick="schedPickAll(true)">Show all</button>
@@ -5102,7 +5235,7 @@
     }
 
     function schedPickSearch(v) {
-      _schedPickQuery = v;
+      schedS().pickQuery = v;
       schedRenderPicker();
       // innerHTML was replaced, so the box the user is typing in is a new node.
       const q = document.getElementById('sched-pick-search');
@@ -5114,7 +5247,7 @@
     function schedTogglePick(i) {
       const name = schedAllDrivers()[i];
       if (!name) return;
-      if (schedHidden.has(name)) schedHidden.delete(name); else schedHidden.add(name);
+      if (schedS().hidden.has(name)) schedS().hidden.delete(name); else schedS().hidden.add(name);
       schedMarkDirty();
       schedRenderPicker();
       renderScheduler();
@@ -5122,11 +5255,11 @@
 
     function schedPickAll(show) {
       const all = schedAllDrivers();
-      const q   = _schedPickQuery.trim().toLowerCase();
+      const q   = schedS().pickQuery.trim().toLowerCase();
       // Applies to what the search is showing, so "hide all" after a search
       // hides that subset rather than the whole roster.
       all.filter(n => !q || n.toLowerCase().includes(q))
-         .forEach(n => { if (show) schedHidden.delete(n); else schedHidden.add(n); });
+         .forEach(n => { if (show) schedS().hidden.delete(n); else schedS().hidden.add(n); });
       schedMarkDirty();
       schedRenderPicker();
       renderScheduler();
@@ -5225,20 +5358,20 @@
        Driver is passed by roster index rather than by name so a name carrying
        a quote or an ampersand can't break out of the inline handler. */
     function schedAddAssign(date, driverIdx, startHint) {
-      const roster = schedDrivers(schedView === 'week' ? schedWeekDates() : [date]);
+      const roster = schedDrivers(schedS().view === 'week' ? schedWeekDates() : [date]);
       const driver = driverIdx >= 0 ? (roster[driverIdx] || '') : '';
       schedOpenEditor(date, null, driver, startHint);
     }
     function schedEditAssign(date, id) { schedOpenEditor(date, id, ''); }
 
     function schedOpenEditor(date, id, driverHint, startHint) {
-      const a = id ? (schedAssignments[date] || []).find(x => x.id === id) : null;
+      const a = id ? (schedS().assignments[date] || []).find(x => x.id === id) : null;
       if (id && !a) return;
-      schedCtx = { date, id: id || null };
+      schedCtx = { board: schedBoard, date, id: id || null };
 
       // Hidden drivers stay out of the picker list, except the one already on
       // the assignment being edited — it must remain selectable to be saved.
-      const roster    = schedDrivers([date]).filter(n => !schedHidden.has(n) || (a && n === a.driver));
+      const roster    = schedDrivers([date]).filter(n => !schedS().hidden.has(n) || (a && n === a.driver));
       const driver    = a ? a.driver : driverHint;
       const customers = (divTruckLists.customers || []).filter(Boolean);
       const locs      = (divTruckLists.locations || []).filter(l => l && l.name);
@@ -5348,6 +5481,10 @@
 
     function schedSaveEditor() {
       if (!schedCtx) return;
+      // The board the editor was opened from, not whichever is showing now —
+      // switching sub-tabs closes it, so these agree, and saying so here is
+      // what keeps them agreeing.
+      const st   = schedS(schedCtx.board);
       const v    = id => (document.getElementById(id) || {}).value || '';
       const err  = document.getElementById('sched-modal-err');
       const date = v('sched-f-date').trim();
@@ -5356,7 +5493,7 @@
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { if (err) err.textContent = 'Pick a valid date.'; return; }
 
       const prevRec  = schedCtx.id
-        ? (schedAssignments[schedCtx.date] || []).find(x => x.id === schedCtx.id)
+        ? (st.assignments[schedCtx.date] || []).find(x => x.id === schedCtx.id)
         : null;
       const projLabel = schedProjectLabel();
 
@@ -5381,28 +5518,29 @@
       };
       // Remove first, then re-add: the date field is editable, so an edit can
       // move the assignment to a different day's list.
-      if (schedCtx.id) schedRemoveById(schedCtx.date, schedCtx.id);
-      (schedAssignments[date] = schedAssignments[date] || []).push(rec);
+      if (schedCtx.id) schedRemoveById(schedCtx.date, schedCtx.id, schedCtx.board);
+      (st.assignments[date] = st.assignments[date] || []).push(rec);
 
-      schedMarkDirty();
+      schedMarkDirty(schedCtx.board);
       schedCloseEditor();
       renderScheduler();
     }
 
     function schedDeleteEditor() {
       if (!schedCtx || !schedCtx.id) return;
-      schedRemoveById(schedCtx.date, schedCtx.id);
-      schedMarkDirty();
+      schedRemoveById(schedCtx.date, schedCtx.id, schedCtx.board);
+      schedMarkDirty(schedCtx.board);
       schedCloseEditor();
       renderScheduler();
     }
 
-    function schedRemoveById(date, id) {
-      const list = schedAssignments[date];
+    function schedRemoveById(date, id, board) {
+      const st   = schedS(board);
+      const list = st.assignments[date];
       if (!list) return;
       const next = list.filter(a => a.id !== id);
-      if (next.length) schedAssignments[date] = next;
-      else delete schedAssignments[date];   // keep the blob free of empty days
+      if (next.length) st.assignments[date] = next;
+      else delete st.assignments[date];   // keep the blob free of empty days
     }
 
     /* ═══════════════════════════════════════════

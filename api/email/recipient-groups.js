@@ -34,6 +34,7 @@ const VALID_REPORT_TYPES = new Set([
   'dust_tracking_summary',
   'scheduler_dispatch',
   'trucking_dispatch',
+  'trucking_labor_dispatch',
 ]);
 const MAX_NAME_LEN     = 120;
 const MAX_EMAILS       = 50;
