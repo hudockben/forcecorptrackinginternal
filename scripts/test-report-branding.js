@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Tests for the DataWatch header stamped on printed / emailed reports.
+ * Tests for the DataWatch wordmark stamped on printed / emailed reports.
  *
  * Run: node scripts/test-report-branding.js
  *
@@ -9,14 +9,14 @@
  *   1. Structural — every page that calls dwWrite() also loads
  *      report-branding.js, and no page still writes a report document
  *      straight to a popup (which would print unbranded).
- *   2. The embedded mark — a real PNG data URI, and small enough to ride
- *      along in every report without eating the send-report HTML budget.
- *   3. dwBrand behaviour in jsdom — injection point, idempotency, the
- *      company line, escaping, and pass-through for non-documents.
+ *   2. Text only — the band carries no image and nothing user-supplied, so it
+ *      costs nothing in the report HTML (which /api/email/send-report caps at
+ *      1.5MB) and can't smuggle markup into a report other people receive.
+ *   3. dwBrand behaviour in jsdom — injection point, idempotency, and
+ *      pass-through for anything that isn't a report document.
  *   4. The header survives the email path: sanitizeReportHtml must not strip
- *      the data: URI, and a real headless-Chrome render must draw it (that
- *      renderer blocks every non-data: request, so a file reference would
- *      silently vanish). Skipped, not failed, with no browser on the box.
+ *      it, and a real headless-Chrome render must still produce a text-only
+ *      PDF. Skipped, not failed, with no browser on the box.
  */
 
 const fs   = require('fs');
@@ -54,23 +54,15 @@ const pagesWithReports = htmlFiles.filter(f =>
 assert('the transform actually reached the report pages',
   pagesWithReports.length >= 7, `${pagesWithReports.length} pages: ${pagesWithReports.join(', ')}`);
 
-// ── 2. The embedded mark ───────────────────────────────────────────────────
-console.log('\nthe embedded DataWatch mark');
+// ── 2. Text only ───────────────────────────────────────────────────────────
+console.log('\nthe band is text, not an image');
 
 const brandingSrc = fs.readFileSync(path.join(ROOT, 'report-branding.js'), 'utf8');
-const logoMatch = brandingSrc.match(/const LOGO = '(data:image\/png;base64,[A-Za-z0-9+/=]+)'/);
-assert('the module embeds a PNG data URI', Boolean(logoMatch));
-if (logoMatch) {
-  const bytes = Buffer.from(logoMatch[1].split(',')[1], 'base64');
-  assert('it decodes to a real PNG',
-    bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])));
-  // It rides along in every report body, which the send endpoint caps at 1.5MB.
-  assert('it stays small enough to embed in every report',
-    bytes.length < 40_000, `${(bytes.length / 1024).toFixed(1)}KB`);
-  // ~3x the 30px it draws at, so print stays sharp.
-  assert('it is rendered at print resolution, not screen',
-    bytes.readUInt32BE(20) >= 72, `${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`);
-}
+assert('no image is embedded', !brandingSrc.includes('data:image/'));
+assert('no <img> tag is emitted', !/<img\b/i.test(brandingSrc));
+// It rides along in every report body; the send endpoint caps HTML at 1.5MB.
+assert('the whole module stays tiny', brandingSrc.length < 8_000,
+  `${(brandingSrc.length / 1024).toFixed(1)}KB`);
 
 // ── 3. dwBrand in jsdom ────────────────────────────────────────────────────
 console.log('\ndwBrand — injecting the header');
@@ -86,8 +78,6 @@ const { dwBrand, dwBrandHeaderHtml } = sandbox.window;
 assert('dwBrand is exported', typeof dwBrand === 'function');
 assert('dwWrite is exported', typeof sandbox.window.dwWrite === 'function');
 
-dom.window.localStorage.setItem('fct_user', JSON.stringify({ companyName: 'Force Corp' }));
-
 const report = '<!DOCTYPE html><html><head><style>body{padding:20px}</style></head>'
   + '<body><h2>Bid Line Items vs Actuals</h2><table><tr><td>x</td></tr></table></body></html>';
 const branded = dwBrand(report);
@@ -96,41 +86,32 @@ assert('the header is injected', branded.includes('data-dw-brand'));
 assert('it lands immediately after <body>, above the report title',
   branded.indexOf('data-dw-brand') > branded.indexOf('<body>')
   && branded.indexOf('data-dw-brand') < branded.indexOf('<h2>'));
-assert('the wordmark is present', branded.includes('DataWatch'));
-assert('the company line comes from the signed-in user', branded.includes('Force Corp'));
-assert('the mark is embedded, not linked', branded.includes('src="data:image/png;base64,'));
+assert('it renders the word DataWatch', />DataWatch</.test(branded));
 assert('the report body is otherwise untouched',
   branded.includes('<h2>Bid Line Items vs Actuals</h2>') && branded.includes('<table><tr><td>x</td></tr></table>'));
 assert('styling is inline, so report stylesheets cannot override it',
   !/<div data-dw-brand[^>]*class=/.test(branded));
+
+// Nothing user-supplied reaches the band, so a hostile profile can't inject
+// markup into a report that goes out to other people.
+dom.window.localStorage.setItem('fct_user', JSON.stringify({ companyName: '<img src=x onerror=alert(1)>' }));
+assert('the header carries nothing from the signed-in user',
+  dwBrandHeaderHtml() === dwBrandHeaderHtml() && !dwBrandHeaderHtml().includes('img src=x'));
+dom.window.localStorage.removeItem('fct_user');
+assert('a missing fct_user changes nothing', typeof dwBrandHeaderHtml() === 'string');
 
 assert('branding twice does not stack two headers', dwBrand(branded) === branded);
 assert('a fragment with no <body> passes through', dwBrand('<p>hi</p>') === '<p>hi</p>');
 assert('a non-string passes through', dwBrand(null) === null && dwBrand(undefined) === undefined);
 assert('an empty string passes through', dwBrand('') === '');
 
-// A company name is user-controlled data reaching a report others receive.
-dom.window.localStorage.setItem('fct_user', JSON.stringify({ companyName: '<img src=x onerror=alert(1)>' }));
-const xss = dwBrandHeaderHtml();
-assert('the company name is HTML-escaped', !xss.includes('<img src=x') && xss.includes('&lt;img'));
-
-// No company on file: show the mark alone rather than inventing a name.
-dom.window.localStorage.setItem('fct_user', '{}');
-const noCo = dwBrandHeaderHtml();
-assert('a missing company leaves the sub-line off',
-  noCo.includes('DataWatch') && !/margin-top:3px/.test(noCo));
-dom.window.localStorage.removeItem('fct_user');
-assert('a missing fct_user does not throw', typeof dwBrandHeaderHtml() === 'string');
-
 // ── 4. The header survives the email path ──────────────────────────────────
 console.log('\nthe header survives sanitizing and the PDF renderer');
 
 const { sanitizeReportHtml } = require(path.join(ROOT, 'api/lib/email.js'));
-dom.window.localStorage.setItem('fct_user', JSON.stringify({ companyName: 'Force Corp' }));
-const brandedAgain = dwBrand(report);
-const sanitized = sanitizeReportHtml(brandedAgain);
+const sanitized = sanitizeReportHtml(branded);
 assert('sanitizeReportHtml keeps the header', sanitized.includes('data-dw-brand'));
-assert('sanitizeReportHtml keeps the embedded mark', sanitized.includes('data:image/png;base64,'));
+assert('sanitizeReportHtml keeps the wordmark', />DataWatch</.test(sanitized));
 
 function findChrome() {
   const fromEnv = process.env.CHROME_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -145,19 +126,50 @@ function findChrome() {
 (async () => {
   const chrome = findChrome();
   if (!chrome) {
-    skip('the mark is drawn into the rendered PDF', 'no Chrome/Chromium on this box');
+    skip('a branded report renders to a text-only PDF', 'no Chrome/Chromium on this box');
   } else {
     process.env.CHROME_EXECUTABLE_PATH = chrome;
     const { renderHtmlToPdf } = require(path.join(ROOT, 'api/lib/pdf.js'));
     const r = await renderHtmlToPdf(sanitized);
     assert('a branded report still renders', r.ok, r.error);
     if (r.ok) {
-      // The renderer aborts every non-data: request, so an image that survives
-      // to the PDF proves the mark is genuinely embedded rather than linked.
-      assert('the mark is drawn into the rendered PDF',
-        r.buffer.toString('latin1').includes('/Subtype /Image'),
-        'no image XObject in the output');
+      assert('a branded report renders to a text-only PDF',
+        !r.buffer.toString('latin1').includes('/Subtype /Image'),
+        'the band should not put a raster image in the output');
     }
+
+    // The band must actually paint, not just be present in the markup.
+    const puppeteer = (await import('puppeteer-core')).default;
+    const browser = await puppeteer.launch({
+      executablePath: chrome, headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setContent(branded, { waitUntil: 'load' });
+      const band = await page.evaluate(() => {
+        const el = document.querySelector('[data-dw-brand]');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const title = document.querySelector('h2').getBoundingClientRect();
+        // The report sets its own body padding, so "top left" means flush with
+        // where the report's own content starts, not flush with the page edge.
+        const body = document.body.getBoundingClientRect();
+        const bs = getComputedStyle(document.body);
+        return {
+          text: el.textContent.trim(),
+          color: getComputedStyle(el).color,
+          first: document.body.firstElementChild === el,
+          flushLeft: Math.round(r.left) === Math.round(body.left + parseFloat(bs.paddingLeft)),
+          aboveTitle: r.bottom <= title.top,
+        };
+      });
+      assert('the band paints the wordmark', band && band.text === 'DataWatch', JSON.stringify(band));
+      assert('it is brand green', band && band.color === 'rgb(22, 163, 74)', band && band.color);
+      assert('it is the first thing in the report', band && band.first, JSON.stringify(band));
+      assert('it is flush with the report\'s left margin', band && band.flushLeft, JSON.stringify(band));
+      assert('it sits above the report title', band && band.aboveTitle, JSON.stringify(band));
+    } finally { await browser.close(); }
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${skipped} skipped`);
