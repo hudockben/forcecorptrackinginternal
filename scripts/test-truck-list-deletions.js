@@ -94,11 +94,21 @@ function newPage(state) {
     _schedLoaded: !!state.schedLoaded, schedDirty: 0,
     schedMarkDirty() { sandbox.schedDirty++; },
     schedEnsureLoaded: () => Promise.resolve(),
+    // There are two boards now — trucking and labor — and a rename walks both
+    // rather than the one the office happens to be looking at. The trucking
+    // board hands back the same assignments object the cases below read, so
+    // what the page wrote is what they assert on.
+    SCHED_BOARDS: [{ id: 'trucking' }, { id: 'labor' }],
+    schedS: board => sandbox._schedStates[board || 'trucking'],
     // Panel view state, declared with the panel rather than with the lists.
-    _listsUndo: null, _listsShowRemoved: new Set(), _listsMerge: null,
+    _listsUndo: null, _listsShowRemoved: new Set(), _listsMerge: null, _listsNote: '',
     // The panel reads its input boxes and updateField writes the row's cells
     // back; neither is what these cases are about, so there is no DOM here.
     document: { getElementById: () => null },
+  };
+  sandbox._schedStates = {
+    trucking: { get loaded() { return sandbox._schedLoaded; }, assignments: sandbox.schedAssignments },
+    labor:    { loaded: false, assignments: {} },
   };
   vm.createContext(sandbox);
   vm.runInContext(HELPERS + '\n' + PANEL + '\n' + ROWEDIT, sandbox, { filename: 'trucking.html' });

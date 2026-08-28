@@ -15,7 +15,7 @@
  *
  * Verifies:
  *   - it answers with lists ONLY, never entries,
- *   - units keep their {name, number} shape from the normalized table,
+ *   - units keep their {name, number, type} shape from the normalized table,
  *   - the blob wins when it holds anything (the trucking page writes it
  *     synchronously; the tables are synced fire-and-forget and lag),
  *   - an empty blob falls back to the tables rather than answering nothing,
@@ -91,11 +91,16 @@ async function get(query) {
   return res;
 }
 
+// What kind of truck a unit is comes off the table with it: the dispatch
+// sheet is sectioned by it, and a unit that arrives without one is a tri-axle
+// filed under Other on every sheet that goes out.
 const UNIT_ROWS = [
-  { name: '2773', number: '17' },
-  { name: '635',  number: '04' },
-  { name: '1000', number: '21' },
+  { name: '2773', number: '17', type: 'triaxle' },
+  { name: '635',  number: '04', type: 'lowboy'  },
+  { name: '1000', number: '21', type: null      },
 ];
+// Same rows as the route hands them back — a missing type reads as blank.
+const UNIT_LIST = UNIT_ROWS.map(u => ({ name: u.name, number: u.number, type: u.type || '' }));
 
 (async () => {
   console.log('GET /api/truck-division?lists=1\n');
@@ -109,8 +114,8 @@ const UNIT_ROWS = [
     // The whole point of the branch: payroll must not have to download the
     // tracking blob to populate one dropdown.
     assert('and no entries at all', !('entries' in (r.body || {})), Object.keys(r.body || {}).join(','));
-    assert('units keep their name + number',
-      JSON.stringify(r.body.lists.units) === JSON.stringify(UNIT_ROWS), JSON.stringify(r.body.lists.units));
+    assert('units keep their name, number and type',
+      JSON.stringify(r.body.lists.units) === JSON.stringify(UNIT_LIST), JSON.stringify(r.body.lists.units));
     assert('drivers come along', r.body.lists.drivers[0] === 'Barr, Mike', JSON.stringify(r.body.lists.drivers));
     assert('customers too', r.body.lists.customers[0] === 'CNX', JSON.stringify(r.body.lists.customers));
   }
