@@ -584,9 +584,14 @@ CREATE TABLE IF NOT EXISTS truck_division_units (
     company_code TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
     name         TEXT          NOT NULL,
     number       TEXT,
+    -- What kind of truck it is (triaxle, lowboy, spray…). The dispatch sheet
+    -- is sectioned by it; without one it falls back to reading the unit's name.
+    type         TEXT,
     sort_order   INTEGER       NOT NULL DEFAULT 0,
     UNIQUE (company_code, name)
 );
+
+ALTER TABLE truck_division_units ADD COLUMN IF NOT EXISTS type TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_tdu_company ON truck_division_units(company_code);
 

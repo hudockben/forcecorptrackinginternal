@@ -102,7 +102,7 @@ module.exports = async (req, res) => {
         sql`SELECT value FROM dropdown_lists
             WHERE company_code = ${companyCode} AND list_name = 'truck_customers'
             ORDER BY sort_order, value`,
-        sql`SELECT name, number FROM truck_division_units
+        sql`SELECT name, number, type FROM truck_division_units
             WHERE company_code = ${companyCode} ORDER BY sort_order, name`,
       ]);
 
@@ -143,7 +143,7 @@ module.exports = async (req, res) => {
           : {
               drivers:   driverRows.map(r => r.value),
               customers: customerRows.map(r => r.value),
-              units:     unitRows.map(r => ({ name: r.name, number: r.number || '' })),
+              units:     unitRows.map(r => ({ name: r.name, number: r.number || '', type: r.type || '' })),
               rates,
             },
       });
@@ -160,7 +160,7 @@ module.exports = async (req, res) => {
         sql`SELECT value FROM dropdown_lists
             WHERE company_code = ${companyCode} AND list_name = 'truck_customers'
             ORDER BY sort_order, value`,
-        sql`SELECT name, number FROM truck_division_units
+        sql`SELECT name, number, type FROM truck_division_units
             WHERE company_code = ${companyCode} ORDER BY sort_order, name`,
       ]);
 
@@ -240,7 +240,10 @@ module.exports = async (req, res) => {
           lists: {
             drivers:   driverRows.map(r => r.value),
             customers: customerRows.map(r => r.value),
-            units:     unitRows.map(r => ({ name: r.name, number: r.number || '' })),
+            // The type is what sections the dispatch sheet — a unit that comes
+            // back without one is a tri-axle filed under Other on every sheet
+            // that goes out, so it rides with the name and number.
+            units:     unitRows.map(r => ({ name: r.name, number: r.number || '', type: r.type || '' })),
             // The normalized tables hold no record of a name the office
             // deleted, and the page re-seeds its lists from the stored rows —
             // so without carrying this over from the blob, falling back to the
@@ -447,10 +450,11 @@ async function _syncLists(sql, companyCode, lists) {
     const u = units[i];
     if (!u || !u.name) continue;
     await sql`
-      INSERT INTO truck_division_units (company_code, name, number, sort_order)
-      VALUES (${companyCode}, ${u.name}, ${u.number || null}, ${i})
+      INSERT INTO truck_division_units (company_code, name, number, type, sort_order)
+      VALUES (${companyCode}, ${u.name}, ${u.number || null}, ${u.type || null}, ${i})
       ON CONFLICT (company_code, name) DO UPDATE SET
         number     = EXCLUDED.number,
+        type       = EXCLUDED.type,
         sort_order = EXCLUDED.sort_order
     `;
   }

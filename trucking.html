@@ -445,6 +445,43 @@
     .li-rate::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     .li-rate:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
     .li-rate::placeholder { color: #5b6270; }
+    /* A unit is three facts — what it is called, the number painted on it and
+       what kind of truck it is — and all three were read-only text until the
+       only way to fix a typo was to delete the unit and add it again, which
+       cost every row that named it. They are fields now. Styled to read as the
+       row they sit in rather than as a form: a box only on hover or focus, so
+       a list of thirty units is still a list. */
+    .li-edit, .li-num, .li-type {
+      background: transparent; border: 1px solid transparent; border-radius: 3px;
+      color: var(--text); font-family: inherit; font-size: 0.78rem;
+      padding: 0.12rem 0.3rem; outline: none; min-width: 0;
+    }
+    .li-edit { flex: 1; }
+    .li-num  { flex: none; width: 62px; text-align: right; font-size: 0.72rem;
+               color: var(--muted); font-variant-numeric: tabular-nums; }
+    .li-type { flex: none; max-width: 118px; font-size: 0.7rem; color: var(--muted); }
+    /* A type the office set is a fact about the truck; a blank one is the
+       report reading the name, so it stays quiet. */
+    .li-type.set { color: var(--text); }
+    .li-edit:hover, .li-num:hover, .li-type:hover { border-color: var(--border); }
+    .li-edit:focus, .li-num:focus, .li-type:focus {
+      background: var(--surface2); border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33;
+      color: var(--text);
+    }
+    .li-num::placeholder { color: #5b6270; }
+    .li-type option { background: var(--surface2); color: var(--text); }
+    /* Three fields and three buttons do not fit the column width the name-only
+       lists use, so the units list gets a wider one rather than a second line
+       per unit. */
+    .lists-items.wide { grid-template-columns: repeat(auto-fill, minmax(392px, 1fr)); }
+    /* Said, not done — the one thing the panel refuses (a rename onto a name
+       already in the list), in the place the undo bar would have been. */
+    .lists-note {
+      display: flex; align-items: baseline; gap: 0.5rem; max-width: 70ch;
+      background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.4);
+      border-radius: 4px; padding: 0.35rem 0.55rem; margin-bottom: 0.8rem;
+      font-size: 0.72rem; color: var(--text); line-height: 1.45;
+    }
     /* The merge form stands in for the row it belongs to, so it is boxed like
        one and marked as the thing being acted on. */
     .lists-merge {
@@ -1717,25 +1754,102 @@
       return best;
     }
 
-    /* A removed unit's number, kept with the removal. Everything else on these
+    /* What a removed unit was, kept with the removal. Everything else on these
        lists is just a name; a unit is a name AND the number the office reads
-       beside it on every row, and dropping that on the way out means Put back
-       hands back half a unit. */
-    function _keepRemovedUnitNumber(name) {
-      const u = (divTruckLists.units || []).find(x => x && x.name === name);
+       beside it on every row AND what kind of truck it is, and dropping those
+       on the way out means Put back hands back half a unit. */
+    function _keepRemovedUnit(name) {
+      const u   = (divTruckLists.units || []).find(x => x && x.name === name);
       if (!divTruckLists.removed || typeof divTruckLists.removed !== 'object') divTruckLists.removed = {};
-      const map = divTruckLists.removed.unitNumbers = divTruckLists.removed.unitNumbers || {};
-      map[String(name).trim()] = (u && u.number) || '';
+      const key = String(name).trim();
+      const nums  = divTruckLists.removed.unitNumbers = divTruckLists.removed.unitNumbers || {};
+      const types = divTruckLists.removed.unitTypes   = divTruckLists.removed.unitTypes   || {};
+      nums[key]  = (u && u.number) || '';
+      types[key] = (u && u.type)   || '';
     }
-    function _removedUnitNumber(name) {
-      const map = (divTruckLists.removed || {}).unitNumbers || {};
-      const hit = Object.keys(map).find(n => _remKey(n) === _remKey(name));
-      return hit ? String(map[hit] == null ? '' : map[hit]) : '';
+    function _removedUnitFact(map, name) {
+      const m = (divTruckLists.removed || {})[map] || {};
+      const hit = Object.keys(m).find(n => _remKey(n) === _remKey(name));
+      return hit ? String(m[hit] == null ? '' : m[hit]) : '';
     }
-    function _forgetRemovedUnitNumber(name) {
-      const map = (divTruckLists.removed || {}).unitNumbers;
-      if (!map) return;
-      Object.keys(map).forEach(n => { if (_remKey(n) === _remKey(name)) delete map[n]; });
+    function _removedUnitNumber(name) { return _removedUnitFact('unitNumbers', name); }
+    function _removedUnitType(name) {
+      const t = _removedUnitFact('unitTypes', name);
+      return UNIT_TYPE_LABEL[t] ? t : '';
+    }
+    function _forgetRemovedUnit(name) {
+      ['unitNumbers', 'unitTypes'].forEach(k => {
+        const map = (divTruckLists.removed || {})[k];
+        if (!map) return;
+        Object.keys(map).forEach(n => { if (_remKey(n) === _remKey(name)) delete map[n]; });
+      });
+    }
+
+    /* ── What kind of truck a unit is ──
+       The dispatch report reads as sections — the tri-axles, then the lowboys
+       — and it used to work that out from the unit's NAME, which only ever
+       worked for the two units actually called TriAxle and Lowboy. 2757 is a
+       tri-axle to everyone in the yard and "Other" to the report.
+
+       So a unit carries its type, set once in Manage Lists, and every sheet
+       that goes out says what the haul went out on. The name is still read
+       when nobody has set one — a company that never opens the panel keeps the
+       report it had — but what the office types always wins.
+
+       Kept with the lists rather than with the scheduler because the panel and
+       the report both need it, and they must not disagree about what a
+       tri-axle is. */
+    const UNIT_TYPES = [
+      { key: 'triaxle', label: 'Tri-Axle'         },
+      { key: 'quad',    label: 'Quad-Axle'        },
+      { key: 'tractor', label: 'Tractor Trailer'  },
+      { key: 'lowboy',  label: 'Lowboy'           },
+      { key: 'flatbed', label: 'Flatbed'          },
+      { key: 'spray',   label: 'Spray Truck'      },
+      { key: 'winch',   label: 'Winch Truck'      },
+      { key: 'pickup',  label: 'Pickup / Service' },
+    ];
+    const UNIT_TYPE_LABEL = UNIT_TYPES.reduce((m, t) => { m[t.key] = t.label; return m; }, {});
+
+    /** The type a unit's name gives away, for a unit nobody has typed one on.
+     *  `lowboy` and `tri` are the two words intercompany.html already sorts
+     *  trucking cost by, so a guess here and the billing rollup cannot end up
+     *  calling the same truck different things. Tri last: it is the loosest
+     *  match of the lot and would otherwise swallow anything with "tri" in it. */
+    function _guessUnitType(name) {
+      const u = String(name == null ? '' : name).toLowerCase();
+      if (!u) return '';
+      if (u.includes('lowboy'))  return 'lowboy';
+      if (u.includes('spray'))   return 'spray';
+      if (u.includes('winch'))   return 'winch';
+      if (u.includes('quad'))    return 'quad';
+      if (u.includes('flat'))    return 'flatbed';
+      if (u.includes('tractor') || u.includes('trailer')) return 'tractor';
+      if (u.includes('pickup')  || u.includes('service')) return 'pickup';
+      if (u.includes('tri'))     return 'triaxle';
+      return '';
+    }
+
+    /** The unit behind a name, however the row spells it. */
+    function unitRecord(name) {
+      const k = _remKey(name);
+      if (!k) return null;
+      return (divTruckLists.units || []).find(u => u && _remKey(u.name) === k) || null;
+    }
+
+    /** What kind of truck a haul went out on: what the office set on the unit,
+     *  and only failing that what its name suggests. '' when neither says —
+     *  an unrecognised unit is never dropped, it lands in Other. */
+    function unitType(name) {
+      const rec = unitRecord(name);
+      const set = rec && String(rec.type == null ? '' : rec.type).trim();
+      if (set && UNIT_TYPE_LABEL[set]) return set;
+      return _guessUnitType(rec ? rec.name : name);
+    }
+
+    function unitTypeLabel(name) {
+      const t = unitType(name);
+      return t ? UNIT_TYPE_LABEL[t] : '';
     }
 
     /** The dismissed sign-ins, as trimmed usernames with no repeats. Compared
@@ -1754,19 +1868,20 @@
     }
 
     /** Shape whatever the server hands back into the four string arrays, plus
-     *  the numbers of any units among them. */
+     *  the numbers and types of any units among them. */
     function _normRemoved(r) {
-      const out = { drivers: [], customers: [], units: [], materials: [], unitNumbers: {} };
+      const out = { drivers: [], customers: [], units: [], materials: [], unitNumbers: {}, unitTypes: {} };
       if (r && typeof r === 'object') {
         ['drivers', 'customers', 'units', 'materials'].forEach(k => {
           if (Array.isArray(r[k])) out[k] = r[k].map(v => String(v == null ? '' : v).trim()).filter(Boolean);
         });
-        if (r.unitNumbers && typeof r.unitNumbers === 'object') {
-          Object.keys(r.unitNumbers).forEach(n => {
+        ['unitNumbers', 'unitTypes'].forEach(k => {
+          if (!r[k] || typeof r[k] !== 'object') return;
+          Object.keys(r[k]).forEach(n => {
             const name = String(n).trim();
-            if (name) out.unitNumbers[name] = String(r.unitNumbers[n] == null ? '' : r.unitNumbers[n]).trim();
+            if (name) out[k][name] = String(r[k][n] == null ? '' : r[k][n]).trim();
           });
-        }
+        });
       }
       return out;
     }
@@ -1832,7 +1947,7 @@
         divTruckLists.customers = addStr('customers', divTruckLists.customers, e.customer);
         if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)
             && !_isRemovedName('units', e.unit)) {
-          divTruckLists.units.push({ name: e.unit, number: '' });
+          divTruckLists.units.push({ name: e.unit, number: '', type: '' });
           listsChanged = true;
         }
       });
@@ -2147,6 +2262,11 @@
     // is saved, and opening the panel fresh starts with a clean slate.
     let _listsUndo = null;
     let _listsShowRemoved = new Set();
+    // The one thing the panel refuses rather than does: a unit renamed onto a
+    // name already in the list. Said where the undo bar would have been, then
+    // dropped on the next action — it is an answer to what just happened, not
+    // a state the panel sits in.
+    let _listsNote = '';
     // Which list is open, and what is being looked for in it. Six lists stacked
     // in one column is what made this hard to work in; one at a time, filtered,
     // is what replaced it.
@@ -2185,6 +2305,7 @@
     function listsOpenTab(key) {
       _listsTab = key;
       _listsMerge = null;   // a form open on another list is not this one's
+      _listsNote = '';
       renderListsPanel();
     }
     // The item whose merge form is open, as { key, from }. One at a time: the
@@ -2194,6 +2315,7 @@
     function openManageLists() {
       _listsUndo = null;
       _listsMerge = null;
+      _listsNote = '';
       _listsFilter = '';
       const q = document.getElementById('lists-search');
       if (q) q.value = '';
@@ -2251,11 +2373,20 @@
       /* The last removal, offered straight back. Deleting a name is safe and
          reversible, and saying so where the click happened beats a dialog in
          front of every one of them. */
+      const noteHTML = () => _listsNote
+        ? `<div class="lists-note">${esc(_listsNote)}</div>`
+        : '';
+
       const undoHTML = () => {
         const u = _listsUndo;
         if (!u) return '';
         const txt = u.kind === 'notdriver'
           ? `<strong>${esc(u.value)}</strong> is not a driver — it won't be offered again.`
+          : u.kind === 'rename'
+          ? `Renamed <strong>${esc(u.from)}</strong> to <strong>${esc(u.to)}</strong> — ${
+              u.ids.length ? `${u.ids.length} row${u.ids.length === 1 ? '' : 's'}` : 'no rows'
+            }${u.sched.length ? ` and ${u.sched.length} assignment${u.sched.length === 1 ? '' : 's'}` : ''} renamed with it${
+              u.locked ? `, ${u.locked} payroll row${u.locked === 1 ? '' : 's'} left alone (fix ${u.locked === 1 ? 'it' : 'those'} in Payroll)` : ''}.`
           : u.kind === 'merge'
           ? `Merged <strong>${esc(u.from)}</strong> into <strong>${esc(u.to)}</strong> — ${
               u.ids.length ? `${u.ids.length} row${u.ids.length === 1 ? '' : 's'} renamed` : 'no rows to rename'
@@ -2562,26 +2693,62 @@
         </div>`;
       };
 
+      /* The type picker, on the add row and on every unit. The blank option is
+         not "no type" — it is what the report will call this truck if nobody
+         says, which for a unit named 3999 SPRAY is Spray Truck and for one
+         named 2757 is Other. Saying so on the option is what keeps a whole
+         list of blanks from looking like a job left half done. */
+      const unitTypeOpts = (cur, name) => {
+        const set   = String(cur == null ? '' : cur).trim();
+        const known = UNIT_TYPE_LABEL[set] ? set : '';
+        const guess = known ? '' : _guessUnitType(name);
+        return `<option value="">${guess ? esc(UNIT_TYPE_LABEL[guess]) + ' (from the name)' : '— no type —'}</option>` +
+          UNIT_TYPES.map(t =>
+            `<option value="${t.key}"${t.key === known ? ' selected' : ''}>${esc(t.label)}</option>`).join('');
+      };
+
       const unitsHTML = () => {
         const all   = divTruckLists.units || [];
         const items = all.filter(u => u && _listsMatch(u.name));
         return `
         <div class="lists-section">
-          <div class="lists-add-row" style="flex-wrap:wrap;gap:0.3rem">
+          <div class="lists-hint">
+            A unit's name, its number and what kind of truck it is are all fields — fix a
+            typo here and the rows and assignments that carry it are renamed with it.
+            The type is what sections the <strong>dispatch sheet</strong>: set it and 2757
+            reads as a tri-axle instead of landing in Other.
+          </div>
+          <div class="lists-add-row" style="flex-wrap:wrap;gap:0.3rem;max-width:560px">
             <input type="text" id="lists-new-unit-name" placeholder="Unit Name…"
               style="flex:1;min-width:90px"
               onkeydown="if(event.key==='Enter')addUnit()">
             <input type="text" id="lists-new-unit-number" placeholder="# Number…"
               style="flex:1;min-width:75px"
               onkeydown="if(event.key==='Enter')addUnit()">
+            <select id="lists-new-unit-type" class="li-type" style="max-width:130px"
+              title="What kind of truck this is — the dispatch sheet groups by it">
+              ${unitTypeOpts('', '')}
+            </select>
             <button class="lists-add-btn" onclick="addUnit()">Add</button>
           </div>
-          <div class="lists-items">
+          <div class="lists-items wide">
             ${items.length === 0
               ? emptyHTML('Units', all.length)
               : items.map(u => merging('units', u.name) ? mergeForm('units', u.name) : `
                   <div class="lists-item">
-                    <span class="li-name">${esc(u.name)}<span style="color:var(--muted);font-size:0.7rem;margin-left:0.4rem">#${esc(u.number)}</span></span>
+                    <input type="text" class="li-edit" value="${esc(u.name)}"
+                      title="Unit name — renaming it renames the rows and assignments that carry it"
+                      onkeydown="if(event.key==='Enter')this.blur()"
+                      onchange="renameUnit('${argEsc(u.name)}',this.value)">
+                    <input type="text" class="li-num" value="${esc(u.number)}" placeholder="#"
+                      title="The number the office reads beside this unit on a row"
+                      onkeydown="if(event.key==='Enter')this.blur()"
+                      onchange="updateUnitNumber('${argEsc(u.name)}',this.value)">
+                    <select class="li-type${UNIT_TYPE_LABEL[String(u.type || '').trim()] ? ' set' : ''}"
+                      title="What kind of truck this is — the dispatch sheet groups by it"
+                      onchange="updateUnitType('${argEsc(u.name)}',this.value)">
+                      ${unitTypeOpts(u.type, u.name)}
+                    </select>
                     ${countChip('units', u.name)}
                     ${mergeBtn('units', u.name)}
                     <button class="lists-item-del" style="margin-left:0.4rem" onclick="removeUnit('${argEsc(u.name)}')"
@@ -2628,7 +2795,7 @@
       };
       const render = bodyFor[_listsTab] || bodyFor.drivers;
 
-      document.getElementById('lists-panel-body').innerHTML = undoHTML() + render();
+      document.getElementById('lists-panel-body').innerHTML = noteHTML() + undoHTML() + render();
     }
 
     function addToList(key) {
@@ -2687,6 +2854,7 @@
       if (!u) return;
       _listsUndo = null;
       if (u.kind === 'merge') _undoMerge(u);
+      else if (u.kind === 'rename') _undoRename(u);
       else if (u.kind === 'notdriver') restoreLoginCandidate(u.value);
       else restoreToList(u.key, u.value);
     }
@@ -2876,7 +3044,7 @@
       // still naming it would otherwise put it straight back.
       _setRemovedName(key, src, true);
       if (key === 'units') {
-        _keepRemovedUnitNumber(src);
+        _keepRemovedUnit(src);
         divTruckLists.units = (divTruckLists.units || []).filter(u => u && u.name !== src);
       } else {
         divTruckLists[key] = (divTruckLists[key] || []).filter(v => v !== src);
@@ -2962,13 +3130,14 @@
       _setRemovedName(key, v, false);
       if (_listsUndo && _listsUndo.key === key && _remKey(_listsUndo.value || _listsUndo.from) === _remKey(v)) _listsUndo = null;
       if (key === 'units') {
-        // The number came off the list with the name. Putting a unit back
-        // without it leaves every row that names it showing a blank, so the
-        // number is kept with the removal and handed back here.
+        // The number and the type came off the list with the name. Putting a
+        // unit back without them leaves every row that names it showing a
+        // blank and the dispatch sheet filing it under Other, so both are kept
+        // with the removal and handed back here.
         if (!divTruckLists.units.some(u => u && u.name === v)) {
-          divTruckLists.units.push({ name: v, number: _removedUnitNumber(v) });
+          divTruckLists.units.push({ name: v, number: _removedUnitNumber(v), type: _removedUnitType(v) });
         }
-        _forgetRemovedUnitNumber(v);
+        _forgetRemovedUnit(v);
         divTruckLists.units.sort((a, b) => String(a.name).localeCompare(String(b.name)));
       } else {
         if (!Array.isArray(divTruckLists[key])) divTruckLists[key] = [];
@@ -3018,17 +3187,28 @@
     function addUnit() {
       const nameInp = document.getElementById('lists-new-unit-name');
       const numInp  = document.getElementById('lists-new-unit-number');
+      const typeInp = document.getElementById('lists-new-unit-type');
       if (!nameInp || !numInp) return;
       const name   = nameInp.value.trim();
       const number = numInp.value.trim();
+      // A unit goes onto the list with its type in one go — the three boxes sit
+      // side by side, and typing the name only to go find it again in the list
+      // below is the long way round.
+      const type   = typeInp ? String(typeInp.value || '').trim() : '';
       if (!name) return;
-      if (divTruckLists.units.some(u => u.name === name)) { nameInp.value = ''; numInp.value = ''; return; }
+      if (divTruckLists.units.some(u => u.name === name)) {
+        nameInp.value = ''; numInp.value = '';
+        if (typeInp) typeInp.value = '';
+        return;
+      }
       _setRemovedName('units', name, false);
-      divTruckLists.units.push({ name, number });
+      _listsNote = '';
+      divTruckLists.units.push({ name, number, type: UNIT_TYPE_LABEL[type] ? type : '' });
       divTruckLists.units.sort((a, b) => a.name.localeCompare(b.name));
       saveTruckLists();
       nameInp.value = '';
       numInp.value  = '';
+      if (typeInp) typeInp.value = '';
       renderListsPanel();
       renderTrackingTab();
       if (schedIsActive()) renderScheduler();
@@ -3036,9 +3216,125 @@
 
     function removeUnit(name) {
       _setRemovedName('units', name, true);
-      _keepRemovedUnitNumber(name);
+      _keepRemovedUnit(name);
       divTruckLists.units = divTruckLists.units.filter(u => u.name !== name);
+      _listsNote = '';
       _listsUndo = { kind: 'remove', key: 'units', value: name, uses: _countRowsNaming('units', name) };
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /** The number painted on the truck. Nothing else carries it — a row shows
+     *  whatever the unit says today — so this is a list edit and no more. */
+    function updateUnitNumber(name, value) {
+      const rec = unitRecord(name);
+      if (!rec) return;
+      const next = String(value == null ? '' : value).trim();
+      if (next === String(rec.number == null ? '' : rec.number).trim()) return;
+      rec.number = next;
+      _listsNote = '';
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /** What kind of truck this is. Redraws the scheduler because the dispatch
+     *  sheet is sectioned by it — the change is on the sheet, not just here. */
+    function updateUnitType(name, value) {
+      const rec = unitRecord(name);
+      if (!rec) return;
+      const raw  = String(value == null ? '' : value).trim();
+      const next = UNIT_TYPE_LABEL[raw] ? raw : '';
+      if (next === String(rec.type == null ? '' : rec.type).trim()) return;
+      rec.type = next;
+      _listsNote = '';
+      saveTruckLists();
+      renderListsPanel();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /* Renaming a unit is not a list edit. Every row and assignment stores the
+       unit as the plain string it was typed as, so changing the name here
+       alone would leave them naming a unit that no longer exists — and the
+       loader's sweep, which re-seeds any unit name it finds on a row, would
+       put the old one straight back as a second unit. The rows come too. */
+    async function renameUnit(oldName, value) {
+      const rec  = unitRecord(oldName);
+      if (!rec) return;
+      const from = _remKey(rec.name);
+      const to   = _remKey(value);
+      // An empty box or the same name again is a field the office tabbed
+      // through. Redrawn rather than left as typed, so the row shows what is
+      // actually stored.
+      if (!to || to === from) { renderListsPanel(); return; }
+
+      // Two units cannot share a name, and folding one into the other is a
+      // different operation with different consequences — it rewrites stored
+      // rows onto a unit that already has its own history. Said, not guessed.
+      if ((divTruckLists.units || []).some(u => u && u !== rec && _remKey(u.name) === to)) {
+        _listsNote = `There is already a unit named ${to} — use \u21e4 on ${from} to fold it into ${to} instead.`;
+        renderListsPanel();
+        return;
+      }
+
+      // Payroll owns its own rows; they keep the old name and are counted out
+      // loud rather than rewritten from here.
+      const { ids, locked } = _mergeTargets('units', from);
+      const idSet = new Set(ids);
+      divEntries.forEach(e => { if (idSet.has(e.id)) e.unit = to; });
+
+      // Both boards name the truck. Loaded first on purpose: renaming an empty
+      // board and marking it dirty is how this could cost a week of work.
+      const sched = [];
+      for (const cfg of SCHED_BOARDS) {
+        try { await schedEnsureLoaded(cfg.id); } catch { /* board stays as it is */ }
+        const st = schedS(cfg.id);
+        if (!st.loaded) continue;
+        let hit = 0;
+        Object.keys(st.assignments || {}).forEach(d => {
+          (st.assignments[d] || []).forEach(a => {
+            if (a && _remKey(a.unit) === from) { a.unit = to; hit++; sched.push({ board: cfg.id, d, id: a.id }); }
+          });
+        });
+        if (hit) schedMarkDirty(cfg.id);
+      }
+
+      rec.name = to;
+      divTruckLists.units.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      // Only when something the rename could not reach still names it: the
+      // sweep would otherwise read that payroll row and hand the old name back
+      // as a unit of its own on the next load. The number goes with the record
+      // of it, the same as a removal, so Put back hands back a whole unit.
+      if (locked) { _keepRemovedUnit(from); _setRemovedName('units', from, true); }
+      _listsNote = '';
+      _listsUndo = { kind: 'rename', key: 'units', field: 'unit', from, to, ids, locked, sched, removed: !!locked };
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
+      if (schedIsActive()) renderScheduler();
+    }
+
+    /** Put a rename back: the rows, the assignments and the unit itself all
+     *  carried one string, so undoing it is setting that string again. */
+    function _undoRename(u) {
+      const idSet = new Set(u.ids);
+      divEntries.forEach(e => { if (idSet.has(e.id)) e[u.field] = u.from; });
+      SCHED_BOARDS.forEach(cfg => {
+        const ids = (u.sched || []).filter(x => (x.board || 'trucking') === cfg.id);
+        const st  = schedS(cfg.id);
+        if (!ids.length || !st.loaded) return;
+        const back = new Set(ids.map(x => x.id));
+        Object.keys(st.assignments || {}).forEach(d =>
+          (st.assignments[d] || []).forEach(a => { if (a && back.has(a.id)) a[u.field] = u.from; }));
+        schedMarkDirty(cfg.id);
+      });
+      const rec = unitRecord(u.to);
+      if (rec) rec.name = u.from;
+      if (u.removed) { _setRemovedName('units', u.from, false); _forgetRemovedUnit(u.from); }
+      (divTruckLists.units || []).sort((a, b) => String(a.name).localeCompare(String(b.name)));
       saveTruckLists();
       renderListsPanel();
       renderTrackingTab();
@@ -3824,38 +4120,83 @@
         .filter(a => a.driver === driver)
         .sort((a, b) => String(a.start || '~').localeCompare(String(b.start || '~')));
     }
-    /** Units double-booked on a date — the same truck under two different
-     *  drivers. Two hauls for one driver in a day is normal here, so the
-     *  driver is not the thing that conflicts; the truck is.
-     *
-     *  Now that an assignment can carry an end time, a truck handed between
-     *  shifts — 6a-2p then 2p-10p — is not a conflict, so the flag is only
-     *  raised where the windows actually collide. The proof has to be
-     *  complete to clear it: if any assignment on that truck is missing a
-     *  usable window, we cannot show the two don't overlap, so the day-level
-     *  rule stands. That way the change only ever removes a flag we can
-     *  disprove, never hides one we can't. */
-    function schedUnitConflicts(date) {
-      const byUnit = new Map();
-      (schedS().assignments[date] || []).forEach(a => {
-        const u = (a.unit || '').trim();
-        if (!u) return;
-        if (!byUnit.has(u)) byUnit.set(u, []);
-        byUnit.get(u).push(a);
+    /* ═══════ Double-booking ═══════
+       Two things on this board are impossible rather than merely untidy: one
+       driver on two hauls at the same time, and one truck on two hauls at the
+       same time. Those are what the flag is for.
+
+       It used to be neither of them. The rule was "this truck appears on two
+       drivers' rows today", which on a board of twenty-six drivers fired on
+       every truck that changed hands between shifts, and said nothing at all
+       about a driver booked twice over the same hours — the one a dispatcher
+       most needs to see. A flag that goes up on the normal case is a flag
+       people learn to scroll past.
+
+       An overlap now has to be a real overlap in time, and it is checked on
+       both keys. A truck handed over at 2pm — 6a–2p, then 2p–10p — is not a
+       conflict on either.
+
+       A window with no end is read as the instant it starts. It clashes with a
+       haul already running at that moment, or with another starting on the
+       same minute, and otherwise says nothing: we do not know how long it runs
+       and guessing is what put warnings on the board that nobody could act
+       on. */
+    function _schedSpan(a) {
+      const s = schedMins(a && a.start);
+      if (s === null) return null;
+      const e = schedMins(a && a.end);
+      // An end that runs backwards (a haul booked past midnight) tells us
+      // nothing beyond when it started.
+      return [s, e !== null && e > s ? e : s];
+    }
+
+    function _schedOverlap(x, y) {
+      // The same starting minute is the one thing a zero-length window can
+      // prove: nobody starts two hauls at once, and no truck leaves twice.
+      if (x[0] === y[0]) return true;
+      return x[0] < y[1] && y[0] < x[1];
+    }
+
+    /** The day's double-bookings: which assignments are caught in one, and
+     *  what each of them is — `{ ids: Map<id, {driver, unit}>, drivers: Set,
+     *  units: Set }`. The sets are the names involved, which is what the
+     *  toolbar counts; the map is what each row, chip and bar reads. */
+    function schedConflicts(date) {
+      const items = (schedS().assignments[date] || []).filter(a => a && a.id);
+      const out = { ids: new Map(), drivers: new Set(), units: new Set() };
+      ['driver', 'unit'].forEach(field => {
+        const by = new Map();
+        items.forEach(a => {
+          const k = _remKey(a[field]);
+          if (!k) return;
+          if (!by.has(k)) by.set(k, []);
+          by.get(k).push(a);
+        });
+        by.forEach((list, k) => {
+          const spans = list.map(a => ({ a, span: _schedSpan(a) })).filter(x => x.span);
+          for (let i = 0; i < spans.length; i++) {
+            for (let j = i + 1; j < spans.length; j++) {
+              if (!_schedOverlap(spans[i].span, spans[j].span)) continue;
+              [spans[i].a, spans[j].a].forEach(x => {
+                const cur = out.ids.get(x.id) || { driver: false, unit: false };
+                cur[field] = true;
+                out.ids.set(x.id, cur);
+              });
+              (field === 'driver' ? out.drivers : out.units).add(k);
+            }
+          }
+        });
       });
-      const bad = new Set();
-      byUnit.forEach((list, u) => {
-        if (new Set(list.map(a => a.driver)).size < 2) return;
-        const spans = list.map(a => [schedMins(a.start), schedMins(a.end)]);
-        // A window that is missing an end, or that runs backwards (a haul
-        // booked past midnight), is not something we can compare.
-        if (spans.some(([s0, e0]) => s0 === null || e0 === null || e0 <= s0)) { bad.add(u); return; }
-        spans.sort((x, y) => x[0] - y[0]);
-        for (let i = 1; i < spans.length; i++) {
-          if (spans[i][0] < spans[i - 1][1]) { bad.add(u); return; }
-        }
-      });
-      return bad;
+      return out;
+    }
+
+    /** What a flagged assignment is flagged for, in words — the same sentence
+     *  on the chip, the bar, the row and the printed sheet. */
+    function schedClashNote(c) {
+      if (!c) return '';
+      if (c.driver && c.unit) return 'this driver and this truck are both booked on another haul over the same hours';
+      if (c.driver)           return 'this driver is booked on another haul over the same hours';
+      return 'this truck is booked on another haul over the same hours';
     }
 
     /* ═══════ Persistence ═══════
@@ -4137,7 +4478,14 @@
         label = schedParse(schedS().anchor)
           .toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
       }
-      const conflicts = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
+      // Counted as the people and the trucks involved, not as the rows: two
+      // hauls booked over each other are one problem to sort out.
+      const clash = dates.reduce((acc, d) => {
+        const c = schedConflicts(d);
+        c.drivers.forEach(v => acc.drivers.add(d + '|' + v));
+        c.units.forEach(v => acc.units.add(d + '|' + v));
+        return acc;
+      }, { drivers: new Set(), units: new Set() });
       const planned   = dates.reduce((n, d) => n + (schedS().assignments[d] || []).length, 0);
       const roster    = schedAllDrivers();
       const total     = roster.length;
@@ -4156,7 +4504,10 @@
             <button class="sch-viewbtn${schedS().view === 'day'  ? ' active' : ''}" onclick="schedSetView('day')">Day</button>
           </div>
           <span style="font-size:0.7rem;color:var(--muted)">${planned} assigned</span>
-          ${conflicts ? `<span class="sch-warn" title="A truck is booked by two drivers over the same hours \u2014 or over hours we can\u2019t compare, because a start or end time is missing">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
+          ${clash.drivers.size ? `<span class="sch-warn" title="A driver is booked on two hauls over the same hours">${
+            clash.drivers.size} driver${clash.drivers.size === 1 ? '' : 's'} double-booked</span>` : ''}
+          ${clash.units.size ? `<span class="sch-warn" title="A truck is booked on two hauls over the same hours">${
+            clash.units.size} truck conflict${clash.units.size === 1 ? '' : 's'}</span>` : ''}
           <span style="flex:1"></span>
           <span id="sched-status" class="sch-status"></span>
           <button class="btn-manage-lists" onclick="schedOpenPlanReport()"
@@ -4176,18 +4527,23 @@
         </div>`;
     }
 
-    function schedChipHTML(a, conflicted) {
+    /** One assignment on the week board. `clash` is that assignment's entry in
+     *  schedConflicts(date).ids, or undefined when it is not double-booked. */
+    function schedChipHTML(a, clash) {
       const bits = [];
       if (a.unit)     bits.push(schedEsc(a.unit));
       if (a.material) bits.push(schedEsc(a.material));
       if (a.notes)    bits.push(schedEsc(a.notes));
+      const unitBit = a.unit
+        ? a.unit + (unitTypeLabel(a.unit) ? ' (' + unitTypeLabel(a.unit) + ')' : '')
+        : '';
       const tipBits = [schedWindow(a), schedDivLabel(a.division), schedJobOf(a), a.address,
-        a.unit, a.material, a.notes].filter(Boolean).join(' \u00b7 ');
-      const title = ' title="' + schedEsc(tipBits + (conflicted
-        ? ' \u2014 this truck overlaps another driver\u2019s on this day' : '')) + '"';
+        unitBit, a.material, a.notes].filter(Boolean).join(' \u00b7 ');
+      const title = ' title="' + schedEsc(tipBits + (clash
+        ? ' \u2014 ' + schedClashNote(clash) : '')) + '"';
       const win   = schedWindow(a);
       return `
-        <div class="sch-chip${conflicted ? ' conflict' : ''}"${title}
+        <div class="sch-chip${clash ? ' conflict' : ''}"${title}
              onclick="event.stopPropagation();schedEditAssign('${a._d}','${a.id}')">
           <span class="cust">${win ? `<span class="start">${schedEsc(win)}</span> ` : ''}${schedEsc(schedJobOf(a) || '—')}</span>
           ${bits.length ? `<span class="meta">${bits.join(' · ')}</span>` : ''}
@@ -4200,7 +4556,7 @@
       if (!drivers.length) return schedNoDriversHTML();
       const today = schedTodayStr();
       const conflictsByDate = {};
-      dates.forEach(d => { conflictsByDate[d] = schedUnitConflicts(d); });
+      dates.forEach(d => { conflictsByDate[d] = schedConflicts(d); });
 
       const head = dates.map(d => {
         const dd = schedParse(d);
@@ -4216,9 +4572,9 @@
           const dow  = schedParse(d).getDay();
           const cls  = [ 'sch-cell', d === today ? 'is-today' : '', (dow === 0 || dow === 6) ? 'is-weekend' : '' ]
                          .filter(Boolean).join(' ');
-          const bad  = conflictsByDate[d];
+          const clashes = conflictsByDate[d];
           const rows = schedFor(d, dr)
-            .map(a => schedChipHTML({ ...a, _d: d }, bad.has((a.unit || '').trim())))
+            .map(a => schedChipHTML({ ...a, _d: d }, clashes.ids.get(a.id)))
             .join('');
           return `<td class="${cls}" onclick="schedAddAssign('${d}',${di})">
             ${rows}<button class="sch-add" onclick="event.stopPropagation();schedAddAssign('${d}',${di})">+</button>
@@ -4352,7 +4708,7 @@
       return h12 + ':00 ' + ap;
     }
 
-    function schedTimelineHTML(date, drivers, bad) {
+    function schedTimelineHTML(date, drivers, clashes) {
       const byDriver = new Map(drivers.map(d => [d, []]));
       const unplaced = [];
       (schedS().assignments[date] || []).forEach(a => {
@@ -4389,14 +4745,15 @@
         const bars = p.placed.map(it => {
           const a = it.a;
           const left = x(it.s), w = Math.max(26, x(Math.min(it.e, h1 * 60)) - left);
-          const conflicted = bad.has((a.unit || '').trim());
+          const clash = clashes.ids.get(a.id);
           const rep = schedReports.get(a.id);
           const tip = [schedWindow(a) || 'no time set', schedDivLabel(a.division), schedJobOf(a),
             a.address, a.unit, a.material, a.notes]
             .filter(Boolean).join(' · ') + (it.openEnd ? ' · no end time yet' : '')
+            + (clash ? ' · ' + schedClashNote(clash) : '')
             + (rep ? '\nReported: ' + (schedReportSummary(rep) || 'yes')
                    + [rep.tickets, rep.notes].filter(Boolean).map(x => ' · ' + x).join('') : '');
-          return `<div class="sch-tl-bar${conflicted ? ' conflict' : ''}${it.openEnd ? ' open-end' : ''}"
+          return `<div class="sch-tl-bar${clash ? ' conflict' : ''}${it.openEnd ? ' open-end' : ''}"
             style="left:${left}px;width:${w}px;top:${SCH_LANE_G + it.lane * (SCH_BAR_H + SCH_LANE_G)}px;height:${SCH_BAR_H}px"
             title="${schedEsc(tip)}" onclick="event.stopPropagation();schedEditAssign('${date}','${a.id}')">
             ${rep ? '<span class="b-rep" title="Reported by the driver">&#10003;</span>' : ''}
@@ -4440,7 +4797,7 @@
       const date    = schedS().anchor;
       const drivers = schedDrivers([date]);
       if (!drivers.length) return schedNoDriversHTML();
-      const bad   = schedUnitConflicts(date);
+      const clashes = schedConflicts(date);
       const items = (schedS().assignments[date] || []).slice().sort((a, b) =>
         String(a.start || '~').localeCompare(String(b.start || '~')) ||
         String(a.driver || '').localeCompare(String(b.driver || '')));
@@ -4450,22 +4807,25 @@
       const G   = 'color:var(--green);font-weight:600;white-space:nowrap';
       const DASH = '<span style="color:var(--muted)">—</span>';
       const oneRow = a => {
-        const conflicted = bad.has((a.unit || '').trim());
+        const clash = clashes.ids.get(a.id);
         const rep = schedReports.get(a.id) || null;
         const hrs = rep ? schedHoursBetween(rep.actual_start, rep.actual_end) : '';
-        return `<tr class="${conflicted ? 'conflict' : ''}" onclick="schedEditAssign('${date}','${a.id}')" style="cursor:pointer">
+        return `<tr class="${clash ? 'conflict' : ''}" onclick="schedEditAssign('${date}','${a.id}')" style="cursor:pointer">
           <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.start)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
           <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.end)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
           <td style="${G}">${rep && rep.actual_start ? schedEsc(schedTime12(rep.actual_start)) : DASH}</td>
           <td style="${G}">${rep && rep.actual_end   ? schedEsc(schedTime12(rep.actual_end))   : DASH}</td>
           <td style="text-align:right;${G}">${hrs ? schedEsc(hrs) : DASH}</td>
           <td style="font-weight:600">${schedEsc(a.driver)}${schedS().hidden.has(a.driver)
-            ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}</td>
+            ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}${
+            clash && clash.driver ? ' <span class="sch-warn" style="font-size:0.6rem" title="Booked on another haul over the same hours">double-booked</span>' : ''}</td>
           <td style="color:var(--muted);white-space:nowrap">${schedEsc(schedDivLabel(a.division)) || '—'}</td>
           <td>${schedEsc(schedJobOf(a)) || '<span style="color:var(--muted)">—</span>'}${
             a.address ? `<span style="display:block;color:var(--muted);font-size:0.7rem;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
           <td>${schedEsc(a.material) || '<span style="color:var(--muted)">—</span>'}</td>
-          <td>${schedEsc(a.unit) || DASH}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem" title="Overlaps another driver on this truck">overlap</span>' : ''}</td>
+          <td>${schedEsc(a.unit) || DASH}${clash && clash.unit
+            ? ' <span class="sch-warn" style="font-size:0.6rem" title="This truck is booked on another haul over the same hours">overlap</span>' : ''}</td>
+          <td style="color:var(--muted);white-space:nowrap">${schedEsc(unitTypeLabel(a.unit)) || DASH}</td>
           <td style="text-align:right;${G}">${rep && rep.tons != null
             ? schedEsc(Number(rep.tons).toLocaleString('en-US', { maximumFractionDigits: 2 })) : DASH}</td>
           <td style="text-align:right;${G}">${rep && rep.loads != null ? schedEsc(rep.loads) : DASH}</td>
@@ -4479,18 +4839,18 @@
       // with the totals that get read off the bottom of a group.
       const groups = schedGroupedItems(date);
       const rows = groups.length ? groups.map(g => `
-          <tr class="sch-grp"><td colspan="14">${schedEsc(g.label)}
+          <tr class="sch-grp"><td colspan="15">${schedEsc(g.label)}
             <span class="ct">${g.rows.length} haul${g.rows.length === 1 ? '' : 's'}</span></td></tr>
           ${g.rows.map(oneRow).join('')}
           <tr class="sch-sub">
             <td colspan="4"></td>
             <td style="text-align:right">${g.hours ? schedEsc(schedNum(g.hours, 2)) : ''}</td>
-            <td colspan="5" style="color:var(--muted)">${schedEsc(g.label)} total</td>
+            <td colspan="6" style="color:var(--muted)">${schedEsc(g.label)} total</td>
             <td style="text-align:right">${g.tons  ? schedEsc(schedNum(g.tons))  : ''}</td>
             <td style="text-align:right">${g.loads ? schedEsc(schedNum(g.loads, 0)) : ''}</td>
             <td colspan="2"></td>
           </tr>`).join('')
-        : `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
+        : `<tr><td colspan="15" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Nothing scheduled for this day.</td></tr>`;
 
       const assigned = new Set(items.map(a => a.driver));
       const open     = drivers.filter(d => !assigned.has(d));
@@ -4500,7 +4860,7 @@
           <button class="sch-btn primary" onclick="schedAddAssign('${date}',-1)">+ Add assignment</button>
           <span style="font-size:0.7rem;color:var(--muted)">Click a driver's row at the hour you want to start them.</span>
         </div>
-        ${schedTimelineHTML(date, drivers, bad)}
+        ${schedTimelineHTML(date, drivers, clashes)}
         <p class="home-section-title">Dispatch Sheet</p>
         <div style="display:flex;align-items:center;gap:0.5rem;margin:-0.35rem 0 0.6rem;flex-wrap:wrap">
           <button class="sch-btn" onclick="schedSheetPrint()">Print / PDF</button>
@@ -4514,7 +4874,8 @@
             <thead><tr>
               <th>Start</th><th>End</th>
               <th>Act. Start</th><th>Act. End</th><th>Hours</th>
-              <th>Driver</th><th>Division</th><th>Project</th><th>Material</th><th>Truck</th>
+              <th>Driver</th><th>Division</th><th>Project</th><th>Material</th>
+              <th>Truck</th><th>Truck Type</th>
               <th>Tons</th><th>Loads</th><th>Tickets</th><th>Notes</th>
             </tr></thead>
             <tbody>${rows}</tbody>
@@ -4538,26 +4899,23 @@
 
        Dust Control is decided before the truck type because that is how the
        report reads: work for dust is called out on its own whatever it went
-       out on, rather than being split across the two truck sections.
+       out on, rather than being split across the truck sections.
 
-       Truck type comes from the unit's name, matched the way
-       intercompany.html already classifies trucking cost (`lowboy`, `tri`),
-       so the board and the billing rollup can never disagree about what a
-       tri-axle is. Anything that matches neither lands in Other — a haul is
-       never dropped for want of a recognisable unit name. */
+       The truck type is the unit's own (see UNIT_TYPES, set in Manage Lists),
+       falling back to what its name gives away for a unit nobody has typed one
+       on. It used to be only the name, which meant a unit called 2757 — a
+       tri-axle to everyone in the yard — was filed under Other on every sheet
+       that went out. Anything still unrecognised lands in Other: a haul is
+       never dropped for want of a type. */
     const SCHED_GROUPS = [
-      { key: 'triaxle', label: 'Tri-Axle'     },
-      { key: 'lowboy',  label: 'Lowboy'       },
-      { key: 'dust',    label: 'Dust Control' },
-      { key: 'other',   label: 'Other'        },
+      ...UNIT_TYPES.map(t => ({ key: t.key, label: t.label })),
+      { key: 'dust',  label: 'Dust Control' },
+      { key: 'other', label: 'Other'        },
     ];
 
     function schedTruckGroup(a) {
       if ((a && a.division) === 'dust') return 'dust';
-      const u = ((a && a.unit) || '').toLowerCase();
-      if (u.includes('lowboy')) return 'lowboy';
-      if (u.includes('tri'))    return 'triaxle';
-      return 'other';
+      return unitType(a && a.unit) || 'other';
     }
 
     /** The day's hauls as report sections, empty ones dropped, each carrying
@@ -4593,8 +4951,8 @@
      *  and the workbook can never disagree about what the sheet said. */
     const SCHED_SHEET_COLS = [
       'Start', 'End', 'Act. Start', 'Act. End', 'Hours', 'Driver', 'Division',
-      'Project', 'Address', 'Material', 'Truck', 'Tons', 'Loads', 'Tickets',
-      'Notes', 'Driver notes',
+      'Project', 'Address', 'Material', 'Truck', 'Truck Type', 'Tons', 'Loads',
+      'Tickets', 'Notes', 'Driver notes',
     ];
 
     function schedSheetRow(a) {
@@ -4605,7 +4963,7 @@
         rep ? schedTime12(rep.actual_end)   : '',
         rep ? schedHoursBetween(rep.actual_start, rep.actual_end) : '',
         a.driver || '', schedDivLabel(a.division), schedJobOf(a), a.address || '',
-        a.material || '', a.unit || '',
+        a.material || '', a.unit || '', unitTypeLabel(a.unit),
         rep && rep.tons  != null ? rep.tons  : '',
         rep && rep.loads != null ? rep.loads : '',
         rep ? (rep.tickets || '') : '',
@@ -4624,7 +4982,7 @@
      *  sectioned and subtotalled the same way the screen shows it. */
     function schedSheetHTML(date) {
       // Tons and loads read as figures, so they are right-aligned like figures.
-      const numeric = new Set([4, 11, 12]);
+      const numeric = new Set([4, 12, 13]);
       const N = SCHED_SHEET_COLS.length;
       const band = 'background:#e9e9e9;border:1px solid #ccc;padding:4px 7px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:#111';
       const subt = 'border:1px solid #ddd;padding:4px 7px;font-size:10.5px;font-weight:700;background:#f7f7f7';
@@ -4637,7 +4995,7 @@
           <tr>
             <td style="${subt}" colspan="4"></td>
             <td style="${subt};text-align:right">${g.hours ? schedEsc(schedNum(g.hours, 2)) : ''}</td>
-            <td style="${subt};color:#555" colspan="6">${schedEsc(g.label)} total</td>
+            <td style="${subt};color:#555" colspan="7">${schedEsc(g.label)} total</td>
             <td style="${subt};text-align:right">${g.tons  ? schedEsc(schedNum(g.tons))  : ''}</td>
             <td style="${subt};text-align:right">${g.loads ? schedEsc(schedNum(g.loads, 0)) : ''}</td>
             <td style="${subt}" colspan="3"></td>
@@ -4660,7 +5018,7 @@
       const ts = new Date().toLocaleString('en-US',
         { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
       const co = (user && (user.companyName || user.companyCode)) || 'Force Corp';
-      // Sixteen columns will not fit a portrait page, so this one asks for
+      // Seventeen columns will not fit a portrait page, so this one asks for
       // landscape and a smaller body than the plan report uses.
       dwWrite(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${schedEsc(schedSheetTitle(date))}</title>
         <style>@page{size:landscape;margin:10mm}body{margin:0}
@@ -4749,7 +5107,7 @@
 
     function schedSheetXlsx(date) {
       const header = SCHED_SHEET_COLS;
-      const numeric = new Set([4, 11, 12]);   // hours, tons, loads
+      const numeric = new Set([4, 12, 13]);   // hours, tons, loads
 
       const cell = (r, c, v, isHeader) => {
         const ref = _colName(c) + (r + 1);
@@ -4774,13 +5132,13 @@
         out.push(`<row r="${r}">` +
           cell(r - 1, 4, g.hours ? Number(g.hours.toFixed(2)) : '', true) +
           cell(r - 1, 5, g.label + ' total', true) +
-          cell(r - 1, 11, g.tons  ? Number(g.tons.toFixed(2)) : '', true) +
-          cell(r - 1, 12, g.loads || '', true) +
+          cell(r - 1, 12, g.tons  ? Number(g.tons.toFixed(2)) : '', true) +
+          cell(r - 1, 13, g.loads || '', true) +
           `</row>`);
       });
       const sheetRows = out.join('');
 
-      const widths = [9, 9, 11, 10, 8, 18, 12, 30, 30, 16, 14, 8, 8, 16, 26, 26];
+      const widths = [9, 9, 11, 10, 8, 18, 12, 30, 30, 16, 14, 14, 8, 8, 16, 26, 26];
       const cols = `<cols>${widths.map((w, i) =>
         `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`;
 
@@ -4931,18 +5289,20 @@
     function schedRepByDay(dates) {
       return dates.map(d => {
         const items = schedRepItems(d);
-        const bad   = schedUnitConflicts(d);
+        const clashes = schedConflicts(d);
         const rows  = items.length ? items.map(a => {
-          const clash = bad.has((a.unit || '').trim());
+          const clash = clashes.ids.get(a.id) || {};
           return `<tr>
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.start)) || '—'}</td>
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.end)) || '—'}</td>
-            <td style="${_RP.td};font-weight:600">${schedEsc(a.driver)}</td>
+            <td style="${_RP.td};font-weight:600">${schedEsc(a.driver)}${
+              clash.driver ? ' <span style="color:#b45309;font-weight:700">(double-booked)</span>' : ''}</td>
             <td style="${_RP.td}">${schedRepCell(schedJobOf(a))}${
               a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}</td>
             <td style="${_RP.tdA}">${schedRepCell(a.address)}</td>
             <td style="${_RP.td}">${schedRepCell(a.material)}</td>
-            <td style="${_RP.td}">${schedRepCell(a.unit)}${clash ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}</td>
+            <td style="${_RP.td}">${schedRepCell(a.unit)}${clash.unit ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}${
+              unitTypeLabel(a.unit) ? `<span style="display:block;color:#888;font-size:9px">${schedEsc(unitTypeLabel(a.unit))}</span>` : ''}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`;
         }).join('') : `<tr><td style="${_RP.none}" colspan="8">Nothing scheduled.</td></tr>`;
@@ -4973,9 +5333,14 @@
     function schedRepByDriver(dates) {
       const roster = schedDrivers(dates);
       const byDriver = new Map(roster.map(n => [n, []]));
-      dates.forEach(d => schedRepItems(d).forEach(a => {
-        if (byDriver.has(a.driver)) byDriver.get(a.driver).push({ ...a, _d: d });
-      }));
+      dates.forEach(d => {
+        // The sheet a driver is handed is where their own double-booking has
+        // to be visible — it is the one they cannot work.
+        const clashes = schedConflicts(d);
+        schedRepItems(d).forEach(a => {
+          if (byDriver.has(a.driver)) byDriver.get(a.driver).push({ ...a, _d: d, _clash: clashes.ids.get(a.id) || {} });
+        });
+      });
 
       // Only a driver with work gets a table. An empty one used to get a full
       // bordered table with column headers just to say "none", which on a
@@ -4987,12 +5352,15 @@
       const blocks = working.map(n => {
         const rows = (byDriver.get(n) || []).map(a => `<tr>
             <td style="${_RP.tdT}">${schedEsc(schedRepDayShort(a._d))}</td>
-            <td style="${_RP.tdT}">${schedEsc(schedWindow(a)) || '—'}</td>
+            <td style="${_RP.tdT}">${schedEsc(schedWindow(a)) || '—'}${
+              a._clash.driver ? '<span style="display:block;color:#b45309;font-weight:700;font-size:9px">double-booked</span>' : ''}</td>
             <td style="${_RP.td}">${schedRepCell(schedJobOf(a))}${
               a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}</td>
             <td style="${_RP.tdA}">${schedRepCell(a.address)}</td>
             <td style="${_RP.td}">${schedRepCell(a.material)}</td>
-            <td style="${_RP.td}">${schedRepCell(a.unit)}</td>
+            <td style="${_RP.td}">${schedRepCell(a.unit)}${
+              a._clash.unit ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}${
+              unitTypeLabel(a.unit) ? `<span style="display:block;color:#888;font-size:9px">${schedEsc(unitTypeLabel(a.unit))}</span>` : ''}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`).join('');
         return `<div style="${_RP.h2}">${schedEsc(n)}</div>
@@ -5021,12 +5389,20 @@
       const busy   = new Set();
       dates.forEach(d => (schedS().assignments[d] || []).forEach(a => busy.add(a.driver)));
       const roster = schedDrivers(dates);
-      const clash  = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
+      const clash  = dates.reduce((acc, d) => {
+        const c = schedConflicts(d);
+        c.drivers.forEach(v => acc.drivers.add(d + '|' + v));
+        c.units.forEach(v => acc.units.add(d + '|' + v));
+        return acc;
+      }, { drivers: new Set(), units: new Set() });
 
       const summary = `<p style="${_RP.sub}">
         ${total} assignment${total === 1 ? '' : 's'} ·
         ${busy.size} of ${roster.length} driver${roster.length === 1 ? '' : 's'} with hauling hours
-        ${clash ? ` · <strong style="color:#b45309">${clash} truck overlap${clash === 1 ? '' : 's'}</strong>` : ''}
+        ${clash.drivers.size ? ` · <strong style="color:#b45309">${clash.drivers.size} driver${
+          clash.drivers.size === 1 ? '' : 's'} double-booked</strong>` : ''}
+        ${clash.units.size ? ` · <strong style="color:#b45309">${clash.units.size} truck overlap${
+          clash.units.size === 1 ? '' : 's'}</strong>` : ''}
       </p>`;
 
       return summary + (layout === 'driver' ? schedRepByDriver(dates) : schedRepByDay(dates));
@@ -5488,7 +5864,10 @@
           <label for="sched-f-unit">Truck / unit</label>
           <input type="text" id="sched-f-unit" list="sched-dl-units" autocomplete="off"
                  placeholder="Unit" value="${schedEsc(a ? (a.unit || '') : '')}">
-          <datalist id="sched-dl-units">${units.map(u => `<option value="${schedEsc(u)}"></option>`).join('')}</datalist>
+          <!-- The type rides along in the option's label: a list of unit numbers
+               says nothing about which of them is the lowboy. -->
+          <datalist id="sched-dl-units">${units.map(u =>
+            `<option value="${schedEsc(u)}">${schedEsc(unitTypeLabel(u))}</option>`).join('')}</datalist>
         </div>
         <div class="sch-fld">
           <label for="sched-f-material">Material</label>
@@ -6641,7 +7020,7 @@
         divTruckLists.customers = add('customers', divTruckLists.customers, e.customer);
         if (e.unit && !divTruckLists.units.some(u => u.name === e.unit)
             && !_isRemovedName('units', e.unit))
-          divTruckLists.units.push({ name: e.unit, number: '' });
+          divTruckLists.units.push({ name: e.unit, number: '', type: '' });
       });
       divTruckLists.drivers.sort((a,b) => a.localeCompare(b));
       divTruckLists.customers.sort((a,b) => a.localeCompare(b));
