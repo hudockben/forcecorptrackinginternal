@@ -2351,6 +2351,7 @@
   </div>
 
   <!-- Shared "Email Report" modal (recipients, saved groups, send) -->
+  <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
 
   <script>
@@ -5961,7 +5962,7 @@
         return;
       }
       w.document.open();
-      w.document.write(html);
+      dwWrite(w, html);
       w.document.close();
       w.focus();
       // Let the new document lay out before opening the print dialog.

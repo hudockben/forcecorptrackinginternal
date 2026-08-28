@@ -13,6 +13,9 @@
  *                        //   inline images referenced from HTML via <img src="cid:contentId">
  *   });
  *
+ * Pairs with report-branding.js, which stamps the DataWatch header on the
+ * report before it is sent — the same header the print path uses.
+ *
  * The modal is appended to <body> on demand, fetches saved recipient
  * groups from /api/email/recipient-groups, and POSTs to
  * /api/email/send-report. All visual styling is inline so this file can
@@ -372,6 +375,11 @@
     try { html = state.getHTML ? state.getHTML() : ''; }
     catch (err) { setStatus('Couldn’t build report HTML: ' + err.message, 'error'); return; }
     if (!html) { setStatus('Report HTML is empty — try regenerating the report.', 'error'); return; }
+
+    // Same DataWatch header the print path stamps on, so an emailed report and
+    // a printed one are the same document. No-ops if report-branding.js is
+    // missing, and is idempotent if the builder already applied it.
+    html = (window.dwBrand || String)(html);
 
     // Optional inline attachments (e.g. a rendered Gantt PNG referenced from the
     // HTML via <img src="cid:...">). Non-fatal — send text-only if it throws.

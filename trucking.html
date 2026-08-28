@@ -926,6 +926,7 @@
     .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
     .cb-opt-empty { padding: 0.3rem 0.5rem; font-size: 0.74rem; color: #6b7280; font-style: italic; }
   </style>
+<script src="report-branding.js" defer></script>
 </head>
 <body>
 
@@ -4661,7 +4662,7 @@
       const co = (user && (user.companyName || user.companyCode)) || 'Force Corp';
       // Sixteen columns will not fit a portrait page, so this one asks for
       // landscape and a smaller body than the plan report uses.
-      w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${schedEsc(schedSheetTitle(date))}</title>
+      dwWrite(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${schedEsc(schedSheetTitle(date))}</title>
         <style>@page{size:landscape;margin:10mm}body{margin:0}
         table{page-break-inside:auto;font-size:9.5px}tr{page-break-inside:avoid}thead{display:table-header-group}
         th,td{font-size:9.5px !important}</style></head>
@@ -5142,7 +5143,7 @@
       const w = window.open('', '_blank');
       if (!w) { result.textContent = 'Allow pop-ups for this site to open the print view.'; return; }
       result.textContent = '';
-      w.document.write(schedRepShell(schedRepTitle(scope), schedRepBody(scope, layout)));
+      dwWrite(w, schedRepShell(schedRepTitle(scope), schedRepBody(scope, layout)));
       w.document.close();
       w.focus();
       setTimeout(() => { try { w.print(); } catch { /* the user can still print manually */ } }, 350);

@@ -2532,6 +2532,7 @@
     </div>
   </div>
 
+  <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
   <script>
     // ── Auth guard ──────────────────────────────────────────────
@@ -7203,7 +7204,7 @@
         return;
       }
       const basisTxt = quarryInventory.basis === 'crusher' ? 'tons to crusher' : 'final screen tons';
-      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+      dwWrite(doc, `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Quarry Inventory — ${escapeHtml(asOfTxt)}</title>
 <style>
   body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
@@ -8858,7 +8859,7 @@ ${sections}
         alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
         return;
       }
-      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+      dwWrite(doc, `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Quarry Analytics — ${yrTitle}</title>
 <style>
   body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
@@ -9058,7 +9059,7 @@ ${sections}
         alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
         return;
       }
-      doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">`
+      dwWrite(doc, `<!DOCTYPE html><html><head><meta charset="utf-8">`
         + `<title>Quarry Break-Even — ${yrTitle}</title></head>`
         + `<body style="margin:0;padding:16px;background:#fff;">${html}`
         + `<` + `script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>`
@@ -9154,7 +9155,7 @@ ${sections}
         alert('Pop-up blocked. Allow pop-ups for this site to print the report.');
         return;
       }
-      w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">`
+      dwWrite(w, `<!DOCTYPE html><html><head><meta charset="utf-8">`
         + `<title>${escapeHtml(title)}</title><style>${RPT_PRINT_CSS}</style></head><body>${html}`
         + `<` + `script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>`
         + `</body></html>`);
