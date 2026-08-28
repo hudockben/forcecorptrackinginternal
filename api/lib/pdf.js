@@ -75,8 +75,19 @@ function inlineCidImages(html, attachments) {
   });
 }
 
-function launchBrowser() {
-  const puppeteer = require('puppeteer-core');
+// Both puppeteer-core and @sparticuz/chromium ship as ESM ("type": "module"),
+// so require() throws ERR_REQUIRE_ESM on the serverless Node runtime — even
+// though it happens to succeed on a Node build with require(esm) enabled,
+// which is why this only showed up in production. import() works from
+// CommonJS either way. The namespace fallback covers a build that exposes the
+// API directly rather than under .default.
+async function loadEsm(name) {
+  const mod = await import(name);
+  return mod.default ?? mod;
+}
+
+async function launchBrowser() {
+  const puppeteer = await loadEsm('puppeteer-core');
 
   // Local dev / self-hosted: use whatever Chrome the box already has.
   const localPath = process.env.CHROME_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '';
@@ -89,16 +100,16 @@ function launchBrowser() {
   }
 
   // Serverless: the bundled Chromium build.
-  const chromium = require('@sparticuz/chromium');
+  const chromium = await loadEsm('@sparticuz/chromium');
   // Reports are text and tables — no WebGL, no canvas compositing. Skipping
   // the software GL stack cuts a noticeable chunk off cold start.
   chromium.setGraphicsMode = false;
-  return chromium.executablePath().then(executablePath => puppeteer.launch({
-    executablePath,
+  return puppeteer.launch({
+    executablePath: await chromium.executablePath(),
     args: chromium.args,
     headless: chromium.headless ?? true,
     defaultViewport: { width: 1280, height: 1696, deviceScaleFactor: 1 },
-  }));
+  });
 }
 
 // Render a full HTML document to a PDF buffer.

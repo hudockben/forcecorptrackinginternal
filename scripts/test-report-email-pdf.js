@@ -387,6 +387,35 @@ function findChrome() {
     res3.body && res3.body.ok === true && res3.body.pdfAttached === false && !res3.body.warning
     && sentPayload.html.includes('Silt Sock 12inch'), JSON.stringify(res3.body));
 
+  // ── 5. ESM loading on a runtime without require(esm) ─────────────────────
+  console.log('\nESM loading — the deps are ESM-only, so require() must not come back');
+
+  assert('pdf.js does not require() the ESM-only deps',
+    !/require\(\s*['"](puppeteer-core|@sparticuz\/chromium)['"]\s*\)/
+      .test(fs.readFileSync(path.join(ROOT, 'api/lib/pdf.js'), 'utf8')));
+
+  if (!chrome) {
+    skip('renders with require(esm) disabled, as production does', 'no Chrome/Chromium on this box');
+  } else {
+    // Node 22 enables require(esm) by default, which is exactly why this broke
+    // only once deployed. Turn it off to get the production runtime's behaviour.
+    const { execFileSync } = require('child_process');
+    const probe = `
+      process.env.CHROME_EXECUTABLE_PATH = ${JSON.stringify(chrome)};
+      const { renderHtmlToPdf } = require(${JSON.stringify(path.join(ROOT, 'api/lib/pdf.js'))});
+      renderHtmlToPdf('<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><p>hi</p></body></html>')
+        .then(r => { console.log(r.ok ? 'OK' : 'ERR:' + r.error); })
+        .catch(e => { console.log('THREW:' + e.message); });
+    `;
+    let out = '';
+    try {
+      out = execFileSync(process.execPath, ['--no-experimental-require-module', '-e', probe],
+        { encoding: 'utf8', timeout: 90_000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    } catch (err) { out = 'SPAWN FAILED: ' + (err.message || ''); }
+    assert('renders with require(esm) disabled, as production does',
+      out.split('\n').pop() === 'OK', out.slice(0, 300));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${skipped} skipped`);
   process.exit(failed ? 1 : 0);
 })();
