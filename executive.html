@@ -99,19 +99,6 @@
       align-items: center;
       gap: 0.85rem;
     }
-    .page-title-logo {
-      width: 44px;
-      height: 44px;
-      border-radius: 10px;
-      background: var(--surface2);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      flex-shrink: 0;
-    }
-    .page-title-logo img,
-    .page-title-logo svg { width: 34px; height: 34px; object-fit: contain; color: var(--purple); }
     .page-title-text { display: flex; flex-direction: column; gap: 0.2rem; }
     .page-title-eyebrow {
       font-size: 0.55rem;
@@ -839,6 +826,7 @@
       .report { padding: 0 1rem; }
     }
   </style>
+  <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
 </head>
 <body>
@@ -856,7 +844,6 @@
 
   <div class="action-bar">
     <div class="page-title">
-      <div class="page-title-logo"><img src="datawatch-tower.png" alt="" /></div>
       <div class="page-title-text">
         <div class="page-title-eyebrow">Cross-Division Roll-Up</div>
         <div class="page-title-h">Executive Report</div>

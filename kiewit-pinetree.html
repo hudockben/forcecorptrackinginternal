@@ -2524,6 +2524,7 @@
     .cs-tablewrap::-webkit-scrollbar-corner { background: transparent; }
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
+  <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
   <script src="documents.js" defer></script>
 </head>
@@ -7470,7 +7471,7 @@ function downloadInvPDF(year) {
 
   const doc = window.open('', '_blank', 'width=1100,height=800');
   if (!doc) return;
-  doc.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  dwWrite(doc, `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>Mobile Home Inventory — ${year}</title>
   <style>
     body { font-family: Arial, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.5rem; }
@@ -14909,7 +14910,7 @@ function exportEquipPDF() {
   </body></html>`;
 
   const win = window.open('', '_blank');
-  win.document.write(html);
+  dwWrite(win, html);
   win.document.close();
 }
 
@@ -16416,7 +16417,7 @@ function _printSoEDetail(detId) {
   const dateStr   = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
 
   const win = window.open('', '_blank');
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  dwWrite(win, `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>Scale of Economy Detail</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -17564,7 +17565,7 @@ async function exportJobSummary(projId, opts = {}) {
   const win = (opts && opts.returnHtml) ? null : window.open('', '_blank');
   if (win) {
     try {
-      win.document.write('<!DOCTYPE html><meta charset="utf-8"><title>Job Summary</title>'
+      dwWrite(win, '<!DOCTYPE html><meta charset="utf-8"><title>Job Summary</title>'
         + '<body style="font:13px/1.5 system-ui,sans-serif;color:#475569;padding:26px">Building the job summary report&hellip;');
     } catch (e) { /* not writable yet — the real write below still lands */ }
   }
@@ -17884,7 +17885,7 @@ async function exportJobSummary(projId, opts = {}) {
   if (opts && opts.returnHtml) {
     return { html: _html, name, jobNo, ganttPng: schedule.png };
   }
-  if (win) { win.document.open(); win.document.write(_html); win.document.close(); }
+  if (win) { win.document.open(); dwWrite(win, _html); win.document.close(); }
   return null;
 }
 
@@ -18118,7 +18119,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     return { html: _html, name, jobNo };
   }
   const win = window.open('', '_blank');
-  win.document.write(_html);
+  dwWrite(win, _html);
   win.document.close();
   return null;
 }
@@ -18575,7 +18576,7 @@ function printFinancials() {
 
   const win = window.open('', '_blank');
   if (!win) { alert('Your browser blocked the print window. Allow pop-ups for this site and try again.'); return; }
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+  dwWrite(win, `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>Financials — ${esc2(_finDivisionLabel())}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -19239,7 +19240,7 @@ function exportSubCodePDF() {
 
   const win = window.open('', '_blank');
   if (!win) { alert('Pop-up blocked — please allow pop-ups for this site and try again.'); return; }
-  win.document.write(html);
+  dwWrite(win, html);
   win.document.close();
 }
 
@@ -19858,7 +19859,7 @@ function exportCrewSignInPDF(date) {
   </body></html>`;
 
   const win = window.open('', '_blank');
-  win.document.write(html);
+  dwWrite(win, html);
   win.document.close();
 }
 
@@ -20216,7 +20217,7 @@ function exportDailySummaryPDF(projVal, startDate, endDate, opts) {
     return { html: _html, titleStr, startDate, endDate, projVal };
   }
   const win = window.open('', '_blank');
-  win.document.write(_html);
+  dwWrite(win, _html);
   win.document.close();
   return null;
 }
@@ -20994,7 +20995,7 @@ function exportProdSubCodePDF(panelId, projName, cc, sc) {
   const dateStr = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
 
   const win = window.open('', '_blank');
-  win.document.write(`<!DOCTYPE html>
+  dwWrite(win, `<!DOCTYPE html>
 <html><head>
   <meta charset="UTF-8"/>
   <title>${projName} — ${cc} / ${sc} Production Report</title>
@@ -23166,7 +23167,7 @@ function printDailyPMReport(opts) {
   </body></html>`;
 
   const win = window.open('', '_blank');
-  win.document.write(html);
+  dwWrite(win, html);
   win.document.close();
 }
 
@@ -23401,7 +23402,7 @@ async function printSchedulePDF() {
   }
 
   const win = window.open('', '_blank');
-  win.document.write(html);
+  dwWrite(win, html);
   win.document.close();
   return null;
 }
@@ -24122,7 +24123,7 @@ function printGanttPDF() {
   </body></html>`;
 
   const win = window.open('', '_blank');
-  win.document.write(html);
+  dwWrite(win, html);
   win.document.close();
 }
 
@@ -26878,7 +26879,7 @@ function _csExportPdf() {
 
   const win = window.open('', '_blank');
   if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Construction Schedule — ${esc(titleTxt)}</title>
+  dwWrite(win, `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Construction Schedule — ${esc(titleTxt)}</title>
   <style>
     :root{--border:#d5d8dd;--muted:#666;--fg:#111;--surface:#f4f4f4;--red:#dc2626;--blue:#b8860b}
     *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
