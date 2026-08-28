@@ -12,6 +12,7 @@ const MAX_RECIPIENTS = 50;          // hard cap per send
 const MAX_HTML_BYTES = 1_500_000;   // ~1.5 MB raw HTML; Resend itself caps higher
 const MAX_ATTACHMENTS = 6;          // per send
 const MAX_ATTACH_BYTES = 8_000_000; // ~8 MB total decoded; Resend caps at 40 MB/message
+const MAX_SUMMARY_METRICS = 8;      // key figures shown above the attachment note
 const EMAIL_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
 
 // Inline images / small docs only — keeps the endpoint from relaying arbitrary
@@ -107,13 +108,38 @@ function sanitizeReportHtml(html) {
   return out;
 }
 
+// Normalize caller-supplied summary metrics into at most MAX_SUMMARY_METRICS
+// { label, value } pairs. These are the key figures the report already shows in
+// its own header strip (Bid Budget, Actual Cost, ...) — the client lifts them
+// out of the report HTML so the email body stays skimmable on a phone while
+// the full table travels as the PDF.
+function normalizeSummary(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const m of raw) {
+    if (!m || typeof m !== 'object') continue;
+    const label = String(m.label ?? '').trim().slice(0, 40);
+    const value = String(m.value ?? '').trim().slice(0, 60);
+    if (!label || !value) continue;
+    out.push({ label, value });
+    if (out.length >= MAX_SUMMARY_METRICS) break;
+  }
+  return out;
+}
+
 // Wrap the sanitized report body in a basic email shell. Adds a header with
 // the report title and an optional caller note, plus a footer. Inline styles
 // only — email clients ignore most <head>/<style> blocks.
-function buildEmailHtml({ title, note, bodyHtml, companyName, generatedAt }) {
+//
+// When the report rides along as a PDF, `bodyHtml` is left empty and the body
+// carries just the note, the `summary` figures and `attachmentNote` instead of
+// the full table — which is the whole point, since that table is what email
+// clients mangle.
+function buildEmailHtml({ title, note, bodyHtml, companyName, generatedAt, summary, attachmentNote }) {
   const safeTitle = String(title || 'Report').slice(0, 200);
   const safeNote  = note ? String(note).slice(0, 2000) : '';
   const company   = companyName ? String(companyName).slice(0, 120) : '';
+  const metrics   = normalizeSummary(summary);
   const ts        = generatedAt || new Date().toLocaleString('en-US', {
     weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit',
@@ -127,6 +153,32 @@ function buildEmailHtml({ title, note, bodyHtml, companyName, generatedAt }) {
     ? `<div style="background:#f8f9fa;border-left:3px solid #0ea5e9;padding:10px 14px;margin-bottom:18px;font-size:13px;color:#374151;white-space:pre-wrap">${esc(safeNote)}</div>`
     : '';
 
+  // Laid out as a table, two metrics per row: flexbox and CSS grid are both
+  // unreliable in Outlook, and a table degrades to a readable stack on mobile.
+  let summaryBlock = '';
+  if (metrics.length) {
+    const cells = metrics.map(m => `
+        <td width="50%" style="padding:8px 12px;vertical-align:top;">
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6b7280;">${esc(m.label)}</div>
+          <div style="font-size:17px;font-weight:800;color:#111;margin-top:2px;">${esc(m.value)}</div>
+        </td>`);
+    if (cells.length % 2) cells.push('<td width="50%"></td>');
+    const rows = [];
+    for (let i = 0; i < cells.length; i += 2) {
+      rows.push(`<tr>${cells[i]}${cells[i + 1]}</tr>`);
+    }
+    summaryBlock = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+      style="border-collapse:separate;background:#f3f9f4;border:1px solid #c6e0cb;border-radius:6px;margin-bottom:18px;">
+      ${rows.join('')}
+    </table>`;
+  }
+
+  const attachBlock = attachmentNote
+    ? `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 14px;font-size:13px;color:#1e40af;font-weight:600;">
+         &#128206; ${esc(String(attachmentNote).slice(0, 200))}
+       </div>`
+    : '';
+
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(safeTitle)}</title></head>
 <body style="margin:0;padding:0;background:#f3f4f6;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#111;">
   <div style="max-width:920px;margin:0 auto;background:#fff;">
@@ -137,10 +189,12 @@ function buildEmailHtml({ title, note, bodyHtml, companyName, generatedAt }) {
     </div>
     <div style="padding:18px 24px;">
       ${noteBlock}
-      ${bodyHtml}
+      ${summaryBlock}
+      ${attachBlock}
+      ${bodyHtml || ''}
     </div>
     <div style="padding:14px 24px;border-top:1px solid #e5e7eb;background:#fafafa;font-size:11px;color:#9ca3af;text-align:center;">
-      Sent via DataWatch · Force Corp Tracking
+      Sent via DataWatch &middot; Force Corp Tracking
     </div>
   </div>
 </body></html>`;
@@ -187,7 +241,9 @@ module.exports = {
   MAX_HTML_BYTES,
   MAX_ATTACHMENTS,
   MAX_ATTACH_BYTES,
+  MAX_SUMMARY_METRICS,
   isValidEmail,
+  normalizeSummary,
   sanitizeReportHtml,
   normalizeAttachments,
   buildEmailHtml,

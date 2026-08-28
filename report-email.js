@@ -48,6 +48,76 @@
     ));
   }
 
+  // ── Key figures ─────────────────────────────────────────────────────
+  // Every report opens with a strip of headline numbers — Bid Budget / Actual
+  // Cost / Projected Cost / Project Complete on the bid reports, Total Cost /
+  // Labor Hours / Projects on the dailies. The markup differs per report but
+  // the shape doesn't: a label element next to a value element, both inside a
+  // per-metric wrapper, all inside one strip. Rather than make all 17 call
+  // sites pass the figures down, lift them back out of the HTML they already
+  // built.
+  const LABEL_RE = /(?:^|[-_])(?:label|lbl)$/;
+  const VALUE_RE = /(?:^|[-_])(?:val|value|num)$/;
+
+  function classMatches(el, re) {
+    if (!el || !el.classList) return false;
+    for (const c of el.classList) if (re.test(c)) return true;
+    return false;
+  }
+
+  function metricText(el) {
+    return String(el && el.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  // Find the value element paired with a label: usually the next sibling,
+  // sometimes the previous one (value-above-label layouts), otherwise any
+  // other child of the shared per-metric wrapper.
+  function valueFor(lab) {
+    if (classMatches(lab.nextElementSibling, VALUE_RE))     return lab.nextElementSibling;
+    if (classMatches(lab.previousElementSibling, VALUE_RE)) return lab.previousElementSibling;
+    const par = lab.parentElement;
+    if (par) for (const c of par.children) if (c !== lab && classMatches(c, VALUE_RE)) return c;
+    return null;
+  }
+
+  function extractSummary(html) {
+    let doc;
+    try { doc = new DOMParser().parseFromString(html, 'text/html'); }
+    catch { return []; }
+    if (!doc || !doc.body) return [];
+
+    // Bucket metrics by their strip (the wrapper's wrapper), preserving order.
+    const groups = new Map();
+    let labels;
+    try { labels = doc.body.querySelectorAll('[class*="label"],[class*="lbl"]'); }
+    catch { return []; }
+
+    for (const lab of labels) {
+      if (!classMatches(lab, LABEL_RE)) continue;
+      const val = valueFor(lab);
+      if (!val) continue;
+      const label = metricText(lab);
+      const value = metricText(val);
+      if (!label || !value) continue;
+      if (value === '—' || value === '-') continue;   // an em-dash placeholder is not a figure
+      const strip = (lab.parentElement && lab.parentElement.parentElement) || lab.parentElement;
+      if (!strip) continue;
+      if (!groups.has(strip)) groups.set(strip, []);
+      groups.get(strip).push({ label, value });
+    }
+
+    // A report can open with more than one strip (the bid report shows a $/SF
+    // bar above the cost roll-up). Prefer the bigger strip, and among equals
+    // the one carrying dollars and percentages — that's the cost roll-up.
+    let best = null;
+    for (const list of groups.values()) {
+      if (list.length < 2) continue;
+      const score = list.length + list.filter(m => /[$%]/.test(m.value)).length * 2;
+      if (!best || score > best.score) best = { score, list };
+    }
+    return best ? best.list.slice(0, 6) : [];
+  }
+
   // ── State (one modal at a time) ─────────────────────────────────────
   let state = null;
   function resetState() { state = null; }
@@ -311,8 +381,21 @@
       if (Array.isArray(a)) attachments = a.filter(Boolean);
     } catch (err) { attachments = []; }
 
+    const attachPdf = Boolean(document.getElementById('rem-pdf')?.checked);
+
+    // Key figures for the email body. A caller-supplied list wins; otherwise
+    // read them back out of the report HTML. Never fatal — an email with no
+    // summary strip is still a fine email.
+    let summary = [];
+    try {
+      const s = state.getSummary ? state.getSummary() : null;
+      summary = Array.isArray(s) && s.length ? s : extractSummary(html);
+    } catch (err) { summary = []; }
+
     state.sending = true;
-    setStatus('Sending…');
+    // Chrome has to boot and lay the report out, which on a cold serverless
+    // container is a few seconds — say so rather than looking hung.
+    setStatus(attachPdf ? 'Rendering PDF and sending…' : 'Sending…');
     const sendBtn = document.getElementById('rem-send');
     if (sendBtn) { sendBtn.disabled = true; sendBtn.style.opacity = '0.6'; }
 
@@ -328,13 +411,28 @@
           subject,
           note,
           html,
+          attach_pdf:   attachPdf,
+          ...(summary.length ? { summary } : {}),
           ...(attachments.length ? { attachments } : {}),
         }),
       });
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP ' + r.status));
-      setStatus(`Sent to ${j.recipientCount} recipient${j.recipientCount === 1 ? '' : 's'}.`, 'ok');
-      setTimeout(close, 1100);
+      const who = `${j.recipientCount} recipient${j.recipientCount === 1 ? '' : 's'}`;
+      if (j.warning) {
+        // The email did go out, just not the way they asked. Leave the warning
+        // on screen instead of auto-closing — but keep Send disabled, or a
+        // second click sends a duplicate. Cancel becomes the way out.
+        setStatus(`Sent to ${who}. ${j.warning}`, 'error');
+        const cancelBtn = document.getElementById('rem-cancel');
+        if (cancelBtn) cancelBtn.textContent = 'Close';
+        return;
+      }
+      const pdfNote = j.pdfAttached
+        ? ` PDF attached${j.pdfPages ? ` (${j.pdfPages} page${j.pdfPages === 1 ? '' : 's'})` : ''}.`
+        : '';
+      setStatus(`Sent to ${who}.${pdfNote}`, 'ok');
+      setTimeout(close, 1400);
     } catch (err) {
       setStatus('Send failed: ' + err.message, 'error');
       state.sending = false;
@@ -392,6 +490,14 @@
           <label style="display:block;font-size:0.72rem;color:#9ca3af;margin-top:0.85rem;margin-bottom:0.25rem;">Note (optional)</label>
           <textarea id="rem-note" rows="3" placeholder="Optional message prepended above the report…"
             style="width:100%;background:#020617;color:#e5e7eb;border:1px solid #1f2937;border-radius:6px;padding:0.45rem 0.6rem;font-size:0.85rem;outline:none;resize:vertical;font-family:inherit;"></textarea>
+
+          <label for="rem-pdf" style="display:flex;align-items:flex-start;gap:0.5rem;margin-top:0.85rem;padding:0.55rem 0.65rem;background:#020617;border:1px solid #1f2937;border-radius:6px;cursor:pointer;">
+            <input id="rem-pdf" type="checkbox" checked style="margin-top:0.15rem;accent-color:#047857;cursor:pointer;">
+            <span>
+              <span style="display:block;font-size:0.82rem;color:#e5e7eb;font-weight:600;">Attach the report as a PDF</span>
+              <span style="display:block;font-size:0.7rem;color:#9ca3af;margin-top:0.12rem;">The email body keeps the note and key figures; the full report rides along as a PDF that reads the same on every device. Uncheck to put the whole report in the body instead.</span>
+            </span>
+          </label>
         </div>
 
         <div style="padding:0.7rem 1.1rem;border-top:1px solid #1f2937;display:flex;align-items:center;gap:0.6rem;">
@@ -467,6 +573,7 @@
       defaultSubject: opts.defaultSubject || REPORT_LABELS[opts.reportType] || 'Report',
       getHTML:        typeof opts.getHTML === 'function' ? opts.getHTML : null,
       getAttachments: typeof opts.getAttachments === 'function' ? opts.getAttachments : null,
+      getSummary:     typeof opts.getSummary === 'function' ? opts.getSummary : null,
       recipients:     [],
       groups:         [],
       serverIsAdmin:  false,

@@ -2,11 +2,22 @@
 
 // POST /api/email/send-report
 //
-// Sends a report HTML body to one or more recipients via Resend.
+// Sends a report to one or more recipients via Resend.
 // Auth-gated to any logged-in user with access to the report's source
 // division. The caller supplies the rendered HTML (the same HTML the
-// existing print/PDF flow produces); the server sanitizes it, wraps it
-// in an email shell, and dispatches.
+// existing print/PDF flow produces); the server sanitizes it, renders it
+// to a PDF through headless Chrome, and sends a short summary email with
+// that PDF attached.
+//
+// Attaching rather than inlining is the point: these reports are wide
+// landscape tables built with <style> blocks and @page rules, and email
+// clients honor neither — inlined, they arrive clipped and ragged. The PDF
+// is what the sender would have gotten from Print → Save as PDF, and it
+// reads the same on every client and screen size.
+//
+// If the renderer is unavailable the send still goes out with the report
+// inlined the old way, and the response carries a `warning` the caller
+// surfaces — a broken renderer degrades the email instead of dropping it.
 //
 // Body:
 //   {
@@ -16,22 +27,39 @@
 //     recipients:   string[],      // 1..MAX_RECIPIENTS emails
 //     subject:      string,        // email subject
 //     note?:        string,        // optional caller note prepended above the report
-//     html:         string         // report body HTML (inline-styled is best)
+//     html:         string,        // report body HTML (inline-styled is best)
+//     attach_pdf?:  boolean,       // default true — render `html` to an attached PDF
+//     summary?:     [{ label, value }]  // key figures shown in the email body
 //   }
 //
 // Response:
-//   { ok: true, id: '<resend-id>' } | { ok: false, error: '...' }
+//   { ok: true, id, recipientCount, pdfAttached, pdfPages?, warning? }
+//   | { ok: false, error: '...' }
 
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
 const {
   MAX_RECIPIENTS,
   MAX_HTML_BYTES,
+  MAX_ATTACHMENTS,
+  MAX_ATTACH_BYTES,
   isValidEmail,
   sanitizeReportHtml,
   normalizeAttachments,
   buildEmailHtml,
   sendEmail,
 } = require('../lib/email');
+const { inlineCidImages, renderHtmlToPdf } = require('../lib/pdf');
+
+// Build a filename from the resolved subject, so a recipient saving three of
+// these to a desktop ends up with three distinguishable files.
+function pdfFilenameFor(subject) {
+  const slug = String(subject || 'report')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'report';
+  return `${slug}-${new Date().toISOString().slice(0, 10)}.pdf`;
+}
 
 // Each report type → which division the caller must have access to.
 const REPORT_TYPES = {
@@ -79,7 +107,9 @@ module.exports = async (req, res) => {
     note,
     html,
     attachments,
+    summary,
   } = body;
+  const attachPdf = body.attach_pdf !== false;
 
   // Validate report type + division access.
   const cfg = REPORT_TYPES[report_type];
@@ -134,10 +164,57 @@ module.exports = async (req, res) => {
   }
   finalSubject = finalSubject.slice(0, 200);
 
+  // Render the report to a PDF. `safeBody` is already stripped of <script>
+  // (including the reports' own window.print() bootstrap), so what Chrome
+  // loads is inert markup plus the report's own CSS.
+  let pdfAttachment = null;
+  let pdfPages      = null;
+  let warning       = null;
+
+  if (attachPdf) {
+    const rendered = await renderHtmlToPdf(inlineCidImages(safeBody, att.attachments));
+    if (rendered.ok) {
+      pdfAttachment = {
+        filename:    pdfFilenameFor(finalSubject),
+        content:     rendered.buffer.toString('base64'),
+        contentType: 'application/pdf',
+      };
+      pdfPages = rendered.pageCount;
+    } else {
+      warning = `The report was sent inline — PDF rendering failed: ${rendered.error}`;
+      console.error('[email/send-report] pdf render failed:', rendered.error,
+        'user=' + payload.username, 'report=' + report_type);
+    }
+  }
+
+  // With the PDF attached, the caller's own attachments that existed only to
+  // back an <img src="cid:..."> in the inline body have no referent any more —
+  // they're baked into the PDF — so drop them rather than have them surface as
+  // stray files. Anything the caller meant as a real attachment (no contentId)
+  // still rides along.
+  const carried = pdfAttachment
+    ? att.attachments.filter(a => !a.inlineContentId)
+    : att.attachments;
+  const finalAttachments = pdfAttachment ? [...carried, pdfAttachment] : carried;
+
+  if (finalAttachments.length > MAX_ATTACHMENTS) {
+    return res.status(400).json({ ok: false, error: `Too many attachments (max ${MAX_ATTACHMENTS})` });
+  }
+  const attachBytes = finalAttachments.reduce(
+    (n, a) => n + Buffer.byteLength(String(a.content || ''), 'base64'), 0);
+  if (attachBytes > MAX_ATTACH_BYTES) {
+    return res.status(413).json({ ok: false, error: 'The report is too large to attach — narrow the date range or cost codes and try again.' });
+  }
+
   const wrapped = buildEmailHtml({
     title:        finalSubject,
     note,
-    bodyHtml:     safeBody,
+    // The full table goes in the body only when there's no PDF carrying it.
+    bodyHtml:     pdfAttachment ? '' : safeBody,
+    summary,
+    attachmentNote: pdfAttachment
+      ? `Full report attached as PDF${pdfPages ? ` (${pdfPages} page${pdfPages === 1 ? '' : 's'})` : ''}.`
+      : null,
     companyName:  payload.companyName,
     generatedAt:  new Date().toLocaleString('en-US', {
       weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
@@ -149,7 +226,7 @@ module.exports = async (req, res) => {
     to:          cleaned,
     subject:     finalSubject,
     html:        wrapped,
-    attachments: att.attachments,
+    attachments: finalAttachments,
   });
 
   if (!result.ok) {
@@ -167,8 +244,16 @@ module.exports = async (req, res) => {
     'user=' + payload.username,
     'company=' + payload.companyCode,
     'report=' + report_type,
-    'recipients=' + cleaned.length
+    'recipients=' + cleaned.length,
+    'pdf=' + (pdfAttachment ? (pdfPages ? pdfPages + 'p' : 'yes') : 'no')
   );
 
-  return res.json({ ok: true, id: result.id, recipientCount: cleaned.length });
+  return res.json({
+    ok:             true,
+    id:             result.id,
+    recipientCount: cleaned.length,
+    pdfAttached:    Boolean(pdfAttachment),
+    ...(pdfPages ? { pdfPages } : {}),
+    ...(warning ? { warning } : {}),
+  });
 };

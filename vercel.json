@@ -3,6 +3,11 @@
   "buildCommand": "node scripts/run-schema.js",
   "outputDirectory": ".",
   "functions": {
+    "api/email/send-report.js": {
+      "includeFiles": "api/**",
+      "memory": 2048,
+      "maxDuration": 60
+    },
     "api/**/*.js": {
       "includeFiles": "api/**"
     }
