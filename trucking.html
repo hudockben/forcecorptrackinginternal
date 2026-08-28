@@ -5083,6 +5083,13 @@
           <label for="sched-rep-msg">Note (optional)</label>
           <textarea id="sched-rep-msg" placeholder="e.g. Updated plan — check your trucks before 6."></textarea>
         </div>
+        <label style="display:flex;align-items:flex-start;gap:0.5rem;margin:0.1rem 0 0.7rem;cursor:pointer">
+          <input type="checkbox" id="sched-rep-pdf" checked style="margin-top:0.15rem;cursor:pointer">
+          <span>
+            <span style="display:block;font-size:0.78rem;font-weight:600">Attach the schedule as a PDF</span>
+            <span style="display:block;font-size:0.68rem;color:var(--muted);margin-top:0.1rem">Reads the same on every device. Uncheck to put the schedule in the email body instead.</span>
+          </span>
+        </label>
         <div class="sch-modal-err" id="sched-rep-result"></div>
         <div class="sch-modal-actions">
           <button class="sch-btn primary" id="sched-rep-send" onclick="schedEmailReport()">Send email</button>
@@ -5175,9 +5182,12 @@
         : schedRepHasWork(scope);
       if (!hasWork) { result.textContent = 'Nothing scheduled in this range to send.'; return; }
 
+      const attachPdf = !!(document.getElementById('sched-rep-pdf') || {}).checked;
       btn.disabled = true;
       result.style.color = 'var(--muted)';
-      result.textContent = 'Sending…';
+      // Chrome has to boot and lay the schedule out, which on a cold
+      // serverless container is a few seconds — say so rather than look hung.
+      result.textContent = attachPdf ? 'Rendering PDF and sending…' : 'Sending…';
       try {
         const r = await fetch(`${API_BASE}/email/send-report`, {
           method: 'POST',
@@ -5192,12 +5202,23 @@
             // report-email.js.
             html:        (window.dwBrand || String)(
               _schedRepSheetMode ? schedSheetHTML(schedS().anchor) : schedRepBody(scope, layout)),
+            attach_pdf:  attachPdf,
           }),
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
-        result.style.color = 'var(--green)';
-        result.textContent = '✓ Sent to ' + (j.recipientCount || to.length) + ' recipient(s).';
+        const who = (j.recipientCount || to.length) + ' recipient(s)';
+        if (j.warning) {
+          // It went out, just not as a PDF — say so rather than claiming success.
+          result.style.color = 'var(--orange)';
+          result.textContent = 'Sent to ' + who + '. ' + j.warning;
+        } else {
+          result.style.color = 'var(--green)';
+          result.textContent = '✓ Sent to ' + who + '.'
+            + (j.pdfAttached
+                ? ' PDF attached' + (j.pdfPages ? ' (' + j.pdfPages + ' page' + (j.pdfPages === 1 ? '' : 's') + ')' : '') + '.'
+                : '');
+        }
       } catch (err) {
         result.style.color = 'var(--orange)';
         result.textContent = 'Could not send: ' + (err.message || 'unknown error');
