@@ -1184,6 +1184,10 @@ function dispatchModalHtml(groupOptions) {
     '<label class="fld">Saved distribution list</label><select class="full" id="dpGroup">'+groupOptions+'</select>'+
     '<label class="fld">Additional emails (comma / space separated)</label><input type="text" class="full" id="dpEmails" placeholder="foreman@…, super@…" autocomplete="off">'+
     '<label class="fld">Note (optional)</label><textarea class="full" id="dpNote" style="min-height:54px" placeholder="e.g. Updated plan — please check your assignments for the week."></textarea>'+
+    '<label style="display:flex;align-items:flex-start;gap:0.5rem;margin-top:0.7rem;cursor:pointer">'+
+      '<input type="checkbox" id="dpPdf" checked style="margin-top:0.15rem;cursor:pointer">'+
+      '<span><span style="display:block;font-size:0.78rem;font-weight:600">Attach the schedule as a PDF</span>'+
+      '<span style="display:block;font-size:0.68rem;color:var(--muted);margin-top:0.1rem">Reads the same on every device. Uncheck to put the schedule in the email body instead.</span></span></label>'+
     '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" id="dpSend" style="flex:1" onclick="doEmail()">✉ Send email</button><button class="btn" onclick="closeDispatch()">Close</button></div>'+
     '<div id="dpResult" style="font-size:0.72rem;margin-top:0.5rem"></div></div></div>';
 }
@@ -1208,12 +1212,24 @@ async function doEmail() {
   recipients = recipients.concat(parseEmails(document.getElementById('dpEmails').value));
   recipients = [...new Set(recipients.map(e => e.toLowerCase()))];
   if (!recipients.length) { result.style.color = 'var(--red)'; result.textContent = 'Add a saved list or at least one email address.'; return; }
-  const body = buildDispatchBody(layout, dispatchDates(scope));
+  // Stamp the DataWatch header, same as the print path and the shared email
+  // modal — this page rolls its own send rather than using report-email.js.
+  const body = (window.dwBrand || String)(buildDispatchBody(layout, dispatchDates(scope)));
   if (body.indexOf('No assignments') !== -1) { result.style.color = 'var(--amber)'; result.textContent = 'Nothing scheduled in this range to send.'; return; }
   btn.disabled = true; result.style.color = 'var(--muted)'; result.textContent = 'Sending…';
   try {
-    const r = await api('/api/email/send-report', { method:'POST', body: JSON.stringify({ report_type:'scheduler_dispatch', subject: dispatchTitle(scope), note: document.getElementById('dpNote').value || '', recipients, html: body }) });
-    result.style.color = 'var(--green)'; result.textContent = '✓ Sent to ' + (r.recipientCount || recipients.length) + ' recipient(s).'; btn.disabled = false; toast('Dispatch emailed');
+    const attachPdf = !!(document.getElementById('dpPdf') || {}).checked;
+    result.textContent = attachPdf ? 'Rendering PDF and sending…' : 'Sending…';
+    const r = await api('/api/email/send-report', { method:'POST', body: JSON.stringify({ report_type:'scheduler_dispatch', subject: dispatchTitle(scope), note: document.getElementById('dpNote').value || '', recipients, html: body, attach_pdf: attachPdf }) });
+    const who = (r.recipientCount || recipients.length) + ' recipient(s)';
+    if (r.warning) {
+      // It went out, just not as a PDF — say so rather than claiming success.
+      result.style.color = 'var(--red)'; result.textContent = 'Sent to ' + who + '. ' + r.warning;
+    } else {
+      result.style.color = 'var(--green)';
+      result.textContent = '✓ Sent to ' + who + '.' + (r.pdfAttached ? ' PDF attached' + (r.pdfPages ? ' (' + r.pdfPages + ' page' + (r.pdfPages === 1 ? '' : 's') + ')' : '') + '.' : '');
+    }
+    btn.disabled = false; toast('Dispatch emailed');
   } catch (err) { result.style.color = 'var(--red)'; result.textContent = 'Failed: ' + err.message; btn.disabled = false; }
 }
 

@@ -54,6 +54,33 @@ const pagesWithReports = htmlFiles.filter(f =>
 assert('the transform actually reached the report pages',
   pagesWithReports.length >= 7, `${pagesWithReports.length} pages: ${pagesWithReports.join(', ')}`);
 
+// Most reports email through report-email.js, which brands on the way out.
+// Scheduler and the Trucking board roll their own send straight to the
+// endpoint, so they have to brand themselves — and any future page that does
+// the same must too, or its emails go out bare.
+const directSenders = htmlFiles.filter(f =>
+  /email\/send-report/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+const unbranded = directSenders.filter(f => {
+  const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  return !/\(window\.dwBrand\s*\|\|\s*String\)/.test(s);
+});
+assert('every page POSTing to send-report itself brands its HTML first',
+  unbranded.length === 0, unbranded.join(', '));
+assert('the direct senders were actually found',
+  directSenders.length >= 2, directSenders.join(', '));
+
+const noToggle = directSenders.filter(f =>
+  !/attach_pdf\s*:/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+assert('every direct sender offers the PDF toggle',
+  noToggle.length === 0, noToggle.join(', '));
+
+// A failed render still sends the email inline; if the page ignores the
+// warning it reports a clean success for something that didn't happen.
+const noWarning = directSenders.filter(f =>
+  !/\bwarning\b/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+assert('every direct sender surfaces a failed-render warning',
+  noWarning.length === 0, noWarning.join(', '));
+
 // ── 2. Text only ───────────────────────────────────────────────────────────
 console.log('\nthe band is text, not an image');
 
@@ -101,7 +128,12 @@ dom.window.localStorage.removeItem('fct_user');
 assert('a missing fct_user changes nothing', typeof dwBrandHeaderHtml() === 'string');
 
 assert('branding twice does not stack two headers', dwBrand(branded) === branded);
-assert('a fragment with no <body> passes through', dwBrand('<p>hi</p>') === '<p>hi</p>');
+// The Scheduler and Trucking dispatch emails send a bare fragment for the
+// server to wrap, so a fragment has to get the band too — not pass through.
+const frag = dwBrand('<table><tr><td>Tue 8/28 — Hauling</td></tr></table>');
+assert('a fragment gets the header prepended', frag.includes('data-dw-brand'));
+assert('the header comes first in a fragment', frag.indexOf('data-dw-brand') < frag.indexOf('<table>'));
+assert('branding a fragment twice does not stack', dwBrand(frag) === frag);
 assert('a non-string passes through', dwBrand(null) === null && dwBrand(undefined) === undefined);
 assert('an empty string passes through', dwBrand('') === '');
 

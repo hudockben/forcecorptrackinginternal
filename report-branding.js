@@ -41,14 +41,15 @@
       + '">DataWatch</div>';
   }
 
-  // Inject the band immediately after the opening <body> tag. Returns the input
-  // untouched for anything that isn't a report document, and is idempotent so a
-  // report that passes through twice doesn't get two headers.
+  // Put the band at the top of the HTML: just inside <body> for a full print
+  // document, or in front of the markup for a fragment — the Scheduler and
+  // Trucking dispatch emails send a bare fragment for the server to wrap.
+  // Idempotent, so HTML that passes through twice doesn't get two headers.
   function dwBrand(html) {
     if (typeof html !== 'string' || !html) return html;
     if (html.indexOf('data-dw-brand') !== -1) return html;
     const m = /<body\b[^>]*>/i.exec(html);
-    if (!m) return html;
+    if (!m) return headerHtml() + html;
     const at = m.index + m[0].length;
     return html.slice(0, at) + headerHtml() + html.slice(at);
   }
