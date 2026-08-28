@@ -4,16 +4,23 @@
  * POST /api/driver/schedule   { assignment_id, tons, loads, actual_start,
  *                               actual_end, tickets, notes }
  *
- * The driver's side of the Trucking Scheduler: the hauls assigned to whoever
- * is signed in, and what they report back against them.
+ * The driver's side of the Trucking Scheduler: the work assigned to whoever is
+ * signed in, and what they report back against it.
+ *
+ * The Scheduler runs two boards under one tab — the trucking board and the
+ * labor board — and they are the same tool pointed at two blobs, so a person
+ * can be dispatched on either. Both are read here and merged into one day, or
+ * a labor call would be scheduled on a board nobody carrying it can see. Each
+ * assignment says which board it came from so the phone can label it; nothing
+ * else about the shape differs, which is why one merge is all it takes.
  *
  * Everything is resolved server-side on purpose. A driver has the 'driver'
- * division and nothing else, which means no read of fct_trucking_schedule (the
- * whole company's board, every driver, every customer) and no read of
- * fct_truck_division (the division's rates, invoices and revenue). This
- * endpoint opens both with the server's credentials and hands back only the
- * rows that name the caller — so the phone never holds anything it should not,
- * whatever the page asks for.
+ * division and nothing else, which means no read of either scheduler blob (the
+ * whole company's boards, every driver, every customer) and no read of
+ * fct_truck_division (the division's rates, invoices and revenue) — all three
+ * gate on 'trucking'. This endpoint opens them with the server's credentials
+ * and hands back only the rows that name the caller — so the phone never holds
+ * anything it should not, whatever the page asks for.
  *
  * Identity comes from the username → driver map the trucking office keeps at
  * fct_trucking_driver_logins. A login the office has not mapped resolves to no
@@ -27,8 +34,14 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
 
-const SCHEDULE_KEY = 'fct_trucking_schedule';
-const LOGINS_KEY   = 'fct_trucking_driver_logins';
+/* The Scheduler's boards, in the order a day should read. Mirrors
+   SCHED_BOARDS in trucking.html — a board added there has to be added here
+   too, or its assignments stop at the office. */
+const BOARDS = [
+  { id: 'trucking', key: 'fct_trucking_schedule'       },
+  { id: 'labor',    key: 'fct_trucking_labor_schedule' },
+];
+const LOGINS_KEY = 'fct_trucking_driver_logins';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -60,17 +73,60 @@ async function resolveDriver(sql, companyCode, username) {
   return null;
 }
 
-/** { date → [assignment] } for one driver, within [from, to]. */
+/** Every board's blob, read once, in BOARDS order. */
+function readBoards(sql, companyCode) {
+  return Promise.all(BOARDS.map(b => readBlob(sql, companyCode, b.key)));
+}
+
+/** The assignments a blob holds on one date, as a plain array. */
+function rowsOn(blob, date) {
+  const all = blob && blob.assignments && typeof blob.assignments === 'object' ? blob.assignments : {};
+  return Array.isArray(all[date]) ? all[date] : [];
+}
+
+/** { date → [assignment] } for one driver across every board, within
+ *  [from, to]. Each row carries the board it was dispatched from.
+ *
+ *  An id is taken once, from the first board that holds it: the boards are
+ *  separate blobs with no shared id space, so a duplicate means the same work
+ *  was copied between them, and a driver should be shown one job to report
+ *  against rather than two rows that write to the same report. */
 async function assignmentsFor(sql, companyCode, driver, from, to) {
-  const blob = await readBlob(sql, companyCode, SCHEDULE_KEY);
-  const all  = blob && blob.assignments && typeof blob.assignments === 'object' ? blob.assignments : {};
-  const out  = {};
-  Object.keys(all).forEach(date => {
-    if (!DATE_RE.test(date) || date < from || date > to) return;
-    const mine = (Array.isArray(all[date]) ? all[date] : []).filter(a => a && a.driver === driver);
-    if (mine.length) out[date] = mine;
+  const blobs = await readBoards(sql, companyCode);
+  const out   = {};
+  const seen  = new Set();
+  blobs.forEach((blob, i) => {
+    const all = blob && blob.assignments && typeof blob.assignments === 'object' ? blob.assignments : {};
+    Object.keys(all).forEach(date => {
+      if (!DATE_RE.test(date) || date < from || date > to) return;
+      rowsOn(blob, date).forEach(a => {
+        if (!a || a.driver !== driver) return;
+        const id = String(a.id || '');
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        (out[date] = out[date] || []).push({ ...a, board: BOARDS[i].id });
+      });
+    });
   });
   return out;
+}
+
+/** Where an assignment id sits: { date, board }, or null when no board has it
+ *  under this driver's name. Answering null for an id that exists but belongs
+ *  to somebody else is the point — it is what stops one person filing against
+ *  another's work. */
+async function locateAssignment(sql, companyCode, driver, id) {
+  const blobs = await readBoards(sql, companyCode);
+  for (let i = 0; i < blobs.length; i++) {
+    const blob = blobs[i];
+    const all  = blob && blob.assignments && typeof blob.assignments === 'object' ? blob.assignments : {};
+    for (const date of Object.keys(all)) {
+      if (!DATE_RE.test(date)) continue;
+      const hit = rowsOn(blob, date).find(a => a && a.id === id);
+      if (hit) return hit.driver === driver ? { date, board: BOARDS[i].id } : null;
+    }
+  }
+  return null;
 }
 
 function num(v, { int = false } = {}) {
@@ -141,6 +197,7 @@ module.exports = async (req, res) => {
           .sort((a, b) => String(a.start || '~').localeCompare(String(b.start || '~')))
           .map(a => ({
             id:       a.id,
+            board:    a.board,
             start:    a.start || '',
             end:      a.end || '',
             // project/division/material are what an assignment says now;
@@ -171,20 +228,14 @@ module.exports = async (req, res) => {
       const id   = String(body.assignment_id || '').trim();
       if (!id) return res.status(400).json({ error: 'assignment_id is required' });
 
-      // The assignment has to exist, be on the schedule, and be this driver's.
-      // Checked against the board rather than trusting the id in the request,
-      // so one driver cannot file tons against another's haul.
-      const blob = await readBlob(sql, companyCode, SCHEDULE_KEY);
-      const all  = blob && blob.assignments && typeof blob.assignments === 'object' ? blob.assignments : {};
-      let workDate = null;
-      for (const date of Object.keys(all)) {
-        if (!DATE_RE.test(date)) continue;
-        const hit = (Array.isArray(all[date]) ? all[date] : []).find(a => a && a.id === id);
-        if (hit) { workDate = hit.driver === driver ? date : null; break; }
+      // The assignment has to exist on one of the boards and be this driver's.
+      // Checked against the boards rather than trusting the id in the request,
+      // so one driver cannot file tons against another's work.
+      const found = await locateAssignment(sql, companyCode, driver, id);
+      if (!found) {
+        return res.status(404).json({ error: 'That assignment is not on your schedule.' });
       }
-      if (!workDate) {
-        return res.status(404).json({ error: 'That haul is not on your schedule.' });
-      }
+      const workDate = found.date;
 
       const row = {
         tons:   num(body.tons),
@@ -216,7 +267,7 @@ module.exports = async (req, res) => {
            submitted_at = NOW(),
            updated_at   = NOW()`;
 
-      return res.json({ ok: true, assignment_id: id, work_date: workDate, driver });
+      return res.json({ ok: true, assignment_id: id, work_date: workDate, board: found.board, driver });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
