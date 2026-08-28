@@ -4120,38 +4120,83 @@
         .filter(a => a.driver === driver)
         .sort((a, b) => String(a.start || '~').localeCompare(String(b.start || '~')));
     }
-    /** Units double-booked on a date — the same truck under two different
-     *  drivers. Two hauls for one driver in a day is normal here, so the
-     *  driver is not the thing that conflicts; the truck is.
-     *
-     *  Now that an assignment can carry an end time, a truck handed between
-     *  shifts — 6a-2p then 2p-10p — is not a conflict, so the flag is only
-     *  raised where the windows actually collide. The proof has to be
-     *  complete to clear it: if any assignment on that truck is missing a
-     *  usable window, we cannot show the two don't overlap, so the day-level
-     *  rule stands. That way the change only ever removes a flag we can
-     *  disprove, never hides one we can't. */
-    function schedUnitConflicts(date) {
-      const byUnit = new Map();
-      (schedS().assignments[date] || []).forEach(a => {
-        const u = (a.unit || '').trim();
-        if (!u) return;
-        if (!byUnit.has(u)) byUnit.set(u, []);
-        byUnit.get(u).push(a);
+    /* ═══════ Double-booking ═══════
+       Two things on this board are impossible rather than merely untidy: one
+       driver on two hauls at the same time, and one truck on two hauls at the
+       same time. Those are what the flag is for.
+
+       It used to be neither of them. The rule was "this truck appears on two
+       drivers' rows today", which on a board of twenty-six drivers fired on
+       every truck that changed hands between shifts, and said nothing at all
+       about a driver booked twice over the same hours — the one a dispatcher
+       most needs to see. A flag that goes up on the normal case is a flag
+       people learn to scroll past.
+
+       An overlap now has to be a real overlap in time, and it is checked on
+       both keys. A truck handed over at 2pm — 6a–2p, then 2p–10p — is not a
+       conflict on either.
+
+       A window with no end is read as the instant it starts. It clashes with a
+       haul already running at that moment, or with another starting on the
+       same minute, and otherwise says nothing: we do not know how long it runs
+       and guessing is what put warnings on the board that nobody could act
+       on. */
+    function _schedSpan(a) {
+      const s = schedMins(a && a.start);
+      if (s === null) return null;
+      const e = schedMins(a && a.end);
+      // An end that runs backwards (a haul booked past midnight) tells us
+      // nothing beyond when it started.
+      return [s, e !== null && e > s ? e : s];
+    }
+
+    function _schedOverlap(x, y) {
+      // The same starting minute is the one thing a zero-length window can
+      // prove: nobody starts two hauls at once, and no truck leaves twice.
+      if (x[0] === y[0]) return true;
+      return x[0] < y[1] && y[0] < x[1];
+    }
+
+    /** The day's double-bookings: which assignments are caught in one, and
+     *  what each of them is — `{ ids: Map<id, {driver, unit}>, drivers: Set,
+     *  units: Set }`. The sets are the names involved, which is what the
+     *  toolbar counts; the map is what each row, chip and bar reads. */
+    function schedConflicts(date) {
+      const items = (schedS().assignments[date] || []).filter(a => a && a.id);
+      const out = { ids: new Map(), drivers: new Set(), units: new Set() };
+      ['driver', 'unit'].forEach(field => {
+        const by = new Map();
+        items.forEach(a => {
+          const k = _remKey(a[field]);
+          if (!k) return;
+          if (!by.has(k)) by.set(k, []);
+          by.get(k).push(a);
+        });
+        by.forEach((list, k) => {
+          const spans = list.map(a => ({ a, span: _schedSpan(a) })).filter(x => x.span);
+          for (let i = 0; i < spans.length; i++) {
+            for (let j = i + 1; j < spans.length; j++) {
+              if (!_schedOverlap(spans[i].span, spans[j].span)) continue;
+              [spans[i].a, spans[j].a].forEach(x => {
+                const cur = out.ids.get(x.id) || { driver: false, unit: false };
+                cur[field] = true;
+                out.ids.set(x.id, cur);
+              });
+              (field === 'driver' ? out.drivers : out.units).add(k);
+            }
+          }
+        });
       });
-      const bad = new Set();
-      byUnit.forEach((list, u) => {
-        if (new Set(list.map(a => a.driver)).size < 2) return;
-        const spans = list.map(a => [schedMins(a.start), schedMins(a.end)]);
-        // A window that is missing an end, or that runs backwards (a haul
-        // booked past midnight), is not something we can compare.
-        if (spans.some(([s0, e0]) => s0 === null || e0 === null || e0 <= s0)) { bad.add(u); return; }
-        spans.sort((x, y) => x[0] - y[0]);
-        for (let i = 1; i < spans.length; i++) {
-          if (spans[i][0] < spans[i - 1][1]) { bad.add(u); return; }
-        }
-      });
-      return bad;
+      return out;
+    }
+
+    /** What a flagged assignment is flagged for, in words — the same sentence
+     *  on the chip, the bar, the row and the printed sheet. */
+    function schedClashNote(c) {
+      if (!c) return '';
+      if (c.driver && c.unit) return 'this driver and this truck are both booked on another haul over the same hours';
+      if (c.driver)           return 'this driver is booked on another haul over the same hours';
+      return 'this truck is booked on another haul over the same hours';
     }
 
     /* ═══════ Persistence ═══════
@@ -4433,7 +4478,14 @@
         label = schedParse(schedS().anchor)
           .toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
       }
-      const conflicts = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
+      // Counted as the people and the trucks involved, not as the rows: two
+      // hauls booked over each other are one problem to sort out.
+      const clash = dates.reduce((acc, d) => {
+        const c = schedConflicts(d);
+        c.drivers.forEach(v => acc.drivers.add(d + '|' + v));
+        c.units.forEach(v => acc.units.add(d + '|' + v));
+        return acc;
+      }, { drivers: new Set(), units: new Set() });
       const planned   = dates.reduce((n, d) => n + (schedS().assignments[d] || []).length, 0);
       const roster    = schedAllDrivers();
       const total     = roster.length;
@@ -4452,7 +4504,10 @@
             <button class="sch-viewbtn${schedS().view === 'day'  ? ' active' : ''}" onclick="schedSetView('day')">Day</button>
           </div>
           <span style="font-size:0.7rem;color:var(--muted)">${planned} assigned</span>
-          ${conflicts ? `<span class="sch-warn" title="A truck is booked by two drivers over the same hours \u2014 or over hours we can\u2019t compare, because a start or end time is missing">${conflicts} truck conflict${conflicts === 1 ? '' : 's'}</span>` : ''}
+          ${clash.drivers.size ? `<span class="sch-warn" title="A driver is booked on two hauls over the same hours">${
+            clash.drivers.size} driver${clash.drivers.size === 1 ? '' : 's'} double-booked</span>` : ''}
+          ${clash.units.size ? `<span class="sch-warn" title="A truck is booked on two hauls over the same hours">${
+            clash.units.size} truck conflict${clash.units.size === 1 ? '' : 's'}</span>` : ''}
           <span style="flex:1"></span>
           <span id="sched-status" class="sch-status"></span>
           <button class="btn-manage-lists" onclick="schedOpenPlanReport()"
@@ -4472,7 +4527,9 @@
         </div>`;
     }
 
-    function schedChipHTML(a, conflicted) {
+    /** One assignment on the week board. `clash` is that assignment's entry in
+     *  schedConflicts(date).ids, or undefined when it is not double-booked. */
+    function schedChipHTML(a, clash) {
       const bits = [];
       if (a.unit)     bits.push(schedEsc(a.unit));
       if (a.material) bits.push(schedEsc(a.material));
@@ -4482,11 +4539,11 @@
         : '';
       const tipBits = [schedWindow(a), schedDivLabel(a.division), schedJobOf(a), a.address,
         unitBit, a.material, a.notes].filter(Boolean).join(' \u00b7 ');
-      const title = ' title="' + schedEsc(tipBits + (conflicted
-        ? ' \u2014 this truck overlaps another driver\u2019s on this day' : '')) + '"';
+      const title = ' title="' + schedEsc(tipBits + (clash
+        ? ' \u2014 ' + schedClashNote(clash) : '')) + '"';
       const win   = schedWindow(a);
       return `
-        <div class="sch-chip${conflicted ? ' conflict' : ''}"${title}
+        <div class="sch-chip${clash ? ' conflict' : ''}"${title}
              onclick="event.stopPropagation();schedEditAssign('${a._d}','${a.id}')">
           <span class="cust">${win ? `<span class="start">${schedEsc(win)}</span> ` : ''}${schedEsc(schedJobOf(a) || '—')}</span>
           ${bits.length ? `<span class="meta">${bits.join(' · ')}</span>` : ''}
@@ -4499,7 +4556,7 @@
       if (!drivers.length) return schedNoDriversHTML();
       const today = schedTodayStr();
       const conflictsByDate = {};
-      dates.forEach(d => { conflictsByDate[d] = schedUnitConflicts(d); });
+      dates.forEach(d => { conflictsByDate[d] = schedConflicts(d); });
 
       const head = dates.map(d => {
         const dd = schedParse(d);
@@ -4515,9 +4572,9 @@
           const dow  = schedParse(d).getDay();
           const cls  = [ 'sch-cell', d === today ? 'is-today' : '', (dow === 0 || dow === 6) ? 'is-weekend' : '' ]
                          .filter(Boolean).join(' ');
-          const bad  = conflictsByDate[d];
+          const clashes = conflictsByDate[d];
           const rows = schedFor(d, dr)
-            .map(a => schedChipHTML({ ...a, _d: d }, bad.has((a.unit || '').trim())))
+            .map(a => schedChipHTML({ ...a, _d: d }, clashes.ids.get(a.id)))
             .join('');
           return `<td class="${cls}" onclick="schedAddAssign('${d}',${di})">
             ${rows}<button class="sch-add" onclick="event.stopPropagation();schedAddAssign('${d}',${di})">+</button>
@@ -4651,7 +4708,7 @@
       return h12 + ':00 ' + ap;
     }
 
-    function schedTimelineHTML(date, drivers, bad) {
+    function schedTimelineHTML(date, drivers, clashes) {
       const byDriver = new Map(drivers.map(d => [d, []]));
       const unplaced = [];
       (schedS().assignments[date] || []).forEach(a => {
@@ -4688,14 +4745,15 @@
         const bars = p.placed.map(it => {
           const a = it.a;
           const left = x(it.s), w = Math.max(26, x(Math.min(it.e, h1 * 60)) - left);
-          const conflicted = bad.has((a.unit || '').trim());
+          const clash = clashes.ids.get(a.id);
           const rep = schedReports.get(a.id);
           const tip = [schedWindow(a) || 'no time set', schedDivLabel(a.division), schedJobOf(a),
             a.address, a.unit, a.material, a.notes]
             .filter(Boolean).join(' · ') + (it.openEnd ? ' · no end time yet' : '')
+            + (clash ? ' · ' + schedClashNote(clash) : '')
             + (rep ? '\nReported: ' + (schedReportSummary(rep) || 'yes')
                    + [rep.tickets, rep.notes].filter(Boolean).map(x => ' · ' + x).join('') : '');
-          return `<div class="sch-tl-bar${conflicted ? ' conflict' : ''}${it.openEnd ? ' open-end' : ''}"
+          return `<div class="sch-tl-bar${clash ? ' conflict' : ''}${it.openEnd ? ' open-end' : ''}"
             style="left:${left}px;width:${w}px;top:${SCH_LANE_G + it.lane * (SCH_BAR_H + SCH_LANE_G)}px;height:${SCH_BAR_H}px"
             title="${schedEsc(tip)}" onclick="event.stopPropagation();schedEditAssign('${date}','${a.id}')">
             ${rep ? '<span class="b-rep" title="Reported by the driver">&#10003;</span>' : ''}
@@ -4739,7 +4797,7 @@
       const date    = schedS().anchor;
       const drivers = schedDrivers([date]);
       if (!drivers.length) return schedNoDriversHTML();
-      const bad   = schedUnitConflicts(date);
+      const clashes = schedConflicts(date);
       const items = (schedS().assignments[date] || []).slice().sort((a, b) =>
         String(a.start || '~').localeCompare(String(b.start || '~')) ||
         String(a.driver || '').localeCompare(String(b.driver || '')));
@@ -4749,22 +4807,24 @@
       const G   = 'color:var(--green);font-weight:600;white-space:nowrap';
       const DASH = '<span style="color:var(--muted)">—</span>';
       const oneRow = a => {
-        const conflicted = bad.has((a.unit || '').trim());
+        const clash = clashes.ids.get(a.id);
         const rep = schedReports.get(a.id) || null;
         const hrs = rep ? schedHoursBetween(rep.actual_start, rep.actual_end) : '';
-        return `<tr class="${conflicted ? 'conflict' : ''}" onclick="schedEditAssign('${date}','${a.id}')" style="cursor:pointer">
+        return `<tr class="${clash ? 'conflict' : ''}" onclick="schedEditAssign('${date}','${a.id}')" style="cursor:pointer">
           <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.start)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
           <td style="white-space:nowrap;color:var(--amber);font-weight:600">${schedEsc(schedTime12(a.end)) || '<span style="color:var(--muted);font-weight:400">—</span>'}</td>
           <td style="${G}">${rep && rep.actual_start ? schedEsc(schedTime12(rep.actual_start)) : DASH}</td>
           <td style="${G}">${rep && rep.actual_end   ? schedEsc(schedTime12(rep.actual_end))   : DASH}</td>
           <td style="text-align:right;${G}">${hrs ? schedEsc(hrs) : DASH}</td>
           <td style="font-weight:600">${schedEsc(a.driver)}${schedS().hidden.has(a.driver)
-            ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}</td>
+            ? '<span class="sch-hidtag" title="Hidden from the board — still listed because they are scheduled">hidden</span>' : ''}${
+            clash && clash.driver ? ' <span class="sch-warn" style="font-size:0.6rem" title="Booked on another haul over the same hours">double-booked</span>' : ''}</td>
           <td style="color:var(--muted);white-space:nowrap">${schedEsc(schedDivLabel(a.division)) || '—'}</td>
           <td>${schedEsc(schedJobOf(a)) || '<span style="color:var(--muted)">—</span>'}${
             a.address ? `<span style="display:block;color:var(--muted);font-size:0.7rem;line-height:1.3">${schedEsc(a.address)}</span>` : ''}</td>
           <td>${schedEsc(a.material) || '<span style="color:var(--muted)">—</span>'}</td>
-          <td>${schedEsc(a.unit) || DASH}${conflicted ? ' <span class="sch-warn" style="font-size:0.6rem" title="Overlaps another driver on this truck">overlap</span>' : ''}</td>
+          <td>${schedEsc(a.unit) || DASH}${clash && clash.unit
+            ? ' <span class="sch-warn" style="font-size:0.6rem" title="This truck is booked on another haul over the same hours">overlap</span>' : ''}</td>
           <td style="color:var(--muted);white-space:nowrap">${schedEsc(unitTypeLabel(a.unit)) || DASH}</td>
           <td style="text-align:right;${G}">${rep && rep.tons != null
             ? schedEsc(Number(rep.tons).toLocaleString('en-US', { maximumFractionDigits: 2 })) : DASH}</td>
@@ -4800,7 +4860,7 @@
           <button class="sch-btn primary" onclick="schedAddAssign('${date}',-1)">+ Add assignment</button>
           <span style="font-size:0.7rem;color:var(--muted)">Click a driver's row at the hour you want to start them.</span>
         </div>
-        ${schedTimelineHTML(date, drivers, bad)}
+        ${schedTimelineHTML(date, drivers, clashes)}
         <p class="home-section-title">Dispatch Sheet</p>
         <div style="display:flex;align-items:center;gap:0.5rem;margin:-0.35rem 0 0.6rem;flex-wrap:wrap">
           <button class="sch-btn" onclick="schedSheetPrint()">Print / PDF</button>
@@ -5229,18 +5289,19 @@
     function schedRepByDay(dates) {
       return dates.map(d => {
         const items = schedRepItems(d);
-        const bad   = schedUnitConflicts(d);
+        const clashes = schedConflicts(d);
         const rows  = items.length ? items.map(a => {
-          const clash = bad.has((a.unit || '').trim());
+          const clash = clashes.ids.get(a.id) || {};
           return `<tr>
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.start)) || '—'}</td>
             <td style="${_RP.tdT}">${schedEsc(schedTime12(a.end)) || '—'}</td>
-            <td style="${_RP.td};font-weight:600">${schedEsc(a.driver)}</td>
+            <td style="${_RP.td};font-weight:600">${schedEsc(a.driver)}${
+              clash.driver ? ' <span style="color:#b45309;font-weight:700">(double-booked)</span>' : ''}</td>
             <td style="${_RP.td}">${schedRepCell(schedJobOf(a))}${
               a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}</td>
             <td style="${_RP.tdA}">${schedRepCell(a.address)}</td>
             <td style="${_RP.td}">${schedRepCell(a.material)}</td>
-            <td style="${_RP.td}">${schedRepCell(a.unit)}${clash ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}${
+            <td style="${_RP.td}">${schedRepCell(a.unit)}${clash.unit ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}${
               unitTypeLabel(a.unit) ? `<span style="display:block;color:#888;font-size:9px">${schedEsc(unitTypeLabel(a.unit))}</span>` : ''}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`;
@@ -5272,9 +5333,14 @@
     function schedRepByDriver(dates) {
       const roster = schedDrivers(dates);
       const byDriver = new Map(roster.map(n => [n, []]));
-      dates.forEach(d => schedRepItems(d).forEach(a => {
-        if (byDriver.has(a.driver)) byDriver.get(a.driver).push({ ...a, _d: d });
-      }));
+      dates.forEach(d => {
+        // The sheet a driver is handed is where their own double-booking has
+        // to be visible — it is the one they cannot work.
+        const clashes = schedConflicts(d);
+        schedRepItems(d).forEach(a => {
+          if (byDriver.has(a.driver)) byDriver.get(a.driver).push({ ...a, _d: d, _clash: clashes.ids.get(a.id) || {} });
+        });
+      });
 
       // Only a driver with work gets a table. An empty one used to get a full
       // bordered table with column headers just to say "none", which on a
@@ -5286,12 +5352,14 @@
       const blocks = working.map(n => {
         const rows = (byDriver.get(n) || []).map(a => `<tr>
             <td style="${_RP.tdT}">${schedEsc(schedRepDayShort(a._d))}</td>
-            <td style="${_RP.tdT}">${schedEsc(schedWindow(a)) || '—'}</td>
+            <td style="${_RP.tdT}">${schedEsc(schedWindow(a)) || '—'}${
+              a._clash.driver ? '<span style="display:block;color:#b45309;font-weight:700;font-size:9px">double-booked</span>' : ''}</td>
             <td style="${_RP.td}">${schedRepCell(schedJobOf(a))}${
               a.division ? `<span style="display:block;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.05em">${schedEsc(schedDivLabel(a.division))}</span>` : ''}</td>
             <td style="${_RP.tdA}">${schedRepCell(a.address)}</td>
             <td style="${_RP.td}">${schedRepCell(a.material)}</td>
             <td style="${_RP.td}">${schedRepCell(a.unit)}${
+              a._clash.unit ? ' <span style="color:#b45309;font-weight:700">(overlap)</span>' : ''}${
               unitTypeLabel(a.unit) ? `<span style="display:block;color:#888;font-size:9px">${schedEsc(unitTypeLabel(a.unit))}</span>` : ''}</td>
             <td style="${_RP.td};color:#555">${schedEsc(a.notes)}</td>
           </tr>`).join('');
@@ -5321,12 +5389,20 @@
       const busy   = new Set();
       dates.forEach(d => (schedS().assignments[d] || []).forEach(a => busy.add(a.driver)));
       const roster = schedDrivers(dates);
-      const clash  = dates.reduce((n, d) => n + schedUnitConflicts(d).size, 0);
+      const clash  = dates.reduce((acc, d) => {
+        const c = schedConflicts(d);
+        c.drivers.forEach(v => acc.drivers.add(d + '|' + v));
+        c.units.forEach(v => acc.units.add(d + '|' + v));
+        return acc;
+      }, { drivers: new Set(), units: new Set() });
 
       const summary = `<p style="${_RP.sub}">
         ${total} assignment${total === 1 ? '' : 's'} ·
         ${busy.size} of ${roster.length} driver${roster.length === 1 ? '' : 's'} with hauling hours
-        ${clash ? ` · <strong style="color:#b45309">${clash} truck overlap${clash === 1 ? '' : 's'}</strong>` : ''}
+        ${clash.drivers.size ? ` · <strong style="color:#b45309">${clash.drivers.size} driver${
+          clash.drivers.size === 1 ? '' : 's'} double-booked</strong>` : ''}
+        ${clash.units.size ? ` · <strong style="color:#b45309">${clash.units.size} truck overlap${
+          clash.units.size === 1 ? '' : 's'}</strong>` : ''}
       </p>`;
 
       return summary + (layout === 'driver' ? schedRepByDriver(dates) : schedRepByDay(dates));
