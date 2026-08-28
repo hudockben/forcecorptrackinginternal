@@ -5187,7 +5187,11 @@
             subject:     _schedRepSheetMode ? schedSheetTitle(schedS().anchor) : schedRepTitle(scope),
             note:        document.getElementById('sched-rep-msg').value || '',
             recipients:  to,
-            html:        _schedRepSheetMode ? schedSheetHTML(schedS().anchor) : schedRepBody(scope, layout),
+            // Stamp the DataWatch header, same as the print path and the shared
+            // email modal — this board rolls its own send rather than using
+            // report-email.js.
+            html:        (window.dwBrand || String)(
+              _schedRepSheetMode ? schedSheetHTML(schedS().anchor) : schedRepBody(scope, layout)),
           }),
         });
         const j = await r.json().catch(() => ({}));

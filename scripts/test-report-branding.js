@@ -54,6 +54,21 @@ const pagesWithReports = htmlFiles.filter(f =>
 assert('the transform actually reached the report pages',
   pagesWithReports.length >= 7, `${pagesWithReports.length} pages: ${pagesWithReports.join(', ')}`);
 
+// Most reports email through report-email.js, which brands on the way out.
+// Scheduler and the Trucking board roll their own send straight to the
+// endpoint, so they have to brand themselves — and any future page that does
+// the same must too, or its emails go out bare.
+const directSenders = htmlFiles.filter(f =>
+  /email\/send-report/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+const unbranded = directSenders.filter(f => {
+  const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  return !/\(window\.dwBrand\s*\|\|\s*String\)/.test(s);
+});
+assert('every page POSTing to send-report itself brands its HTML first',
+  unbranded.length === 0, unbranded.join(', '));
+assert('the direct senders were actually found',
+  directSenders.length >= 2, directSenders.join(', '));
+
 // ── 2. Text only ───────────────────────────────────────────────────────────
 console.log('\nthe band is text, not an image');
 

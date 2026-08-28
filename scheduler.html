@@ -1208,7 +1208,9 @@ async function doEmail() {
   recipients = recipients.concat(parseEmails(document.getElementById('dpEmails').value));
   recipients = [...new Set(recipients.map(e => e.toLowerCase()))];
   if (!recipients.length) { result.style.color = 'var(--red)'; result.textContent = 'Add a saved list or at least one email address.'; return; }
-  const body = buildDispatchBody(layout, dispatchDates(scope));
+  // Stamp the DataWatch header, same as the print path and the shared email
+  // modal — this page rolls its own send rather than using report-email.js.
+  const body = (window.dwBrand || String)(buildDispatchBody(layout, dispatchDates(scope)));
   if (body.indexOf('No assignments') !== -1) { result.style.color = 'var(--amber)'; result.textContent = 'Nothing scheduled in this range to send.'; return; }
   btn.disabled = true; result.style.color = 'var(--muted)'; result.textContent = 'Sending…';
   try {
