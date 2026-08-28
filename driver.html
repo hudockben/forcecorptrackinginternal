@@ -63,7 +63,10 @@
     .haul-when .t { font-size:0.9rem; font-weight:800; color:var(--amber); font-variant-numeric:tabular-nums; }
     .haul-when .t2 { font-size:0.68rem; color:var(--muted); font-variant-numeric:tabular-nums; }
     .haul-what { flex:1; min-width:0; }
-    .haul-what .cust { font-size:0.95rem; font-weight:700; }
+    .haul-what .cust {
+      display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap;
+      font-size:0.95rem; font-weight:700;
+    }
     .haul-what .meta { font-size:0.75rem; color:var(--muted); margin-top:1px; }
     .haul-what .note { font-size:0.75rem; color:var(--blue); margin-top:3px; }
     /* What is on the truck. Given its own line rather than folded into the
@@ -95,6 +98,15 @@
     }
     .chev { flex:none; color:var(--muted); font-size:0.85rem; align-self:center; transition:transform .15s; }
     .haul.open .chev { transform:rotate(90deg); }
+
+    /* Which board the office dispatched this from. Only labor calls are
+       tagged — a haul is what this screen has always shown, so tagging both
+       would just add a word to every card. */
+    .tag {
+      flex:none; font-size:0.58rem; font-weight:700; letter-spacing:0.09em;
+      text-transform:uppercase; padding:0.12rem 0.36rem; border-radius:4px;
+      color:var(--blue); background:rgba(96,165,250,0.13);
+    }
 
     .badge {
       display:inline-block; font-size:0.6rem; font-weight:700; letter-spacing:0.07em;
@@ -322,7 +334,13 @@
       const done = !!rep;
       const open = state.open.has(a.id);
       const val  = (k, fallback) => esc(rep && rep[k] != null && rep[k] !== '' ? rep[k] : (fallback || ''));
-      const meta = [a.unit, a.customer ? null : null].filter(Boolean);
+      const labor = a.board === 'labor';
+
+      // Division, then the truck. "No truck set" is a prompt to the office on a
+      // haul, which is why it is spelled out there — on a labor call there is
+      // no truck to set, so an unset one is simply left off.
+      const meta = [a.division ? DIV_LABEL[a.division] || a.division : '',
+                    a.unit || (labor ? '' : 'No truck set')].filter(Boolean);
 
       return `
         <div class="haul${done ? ' done' : ''}${open ? ' open' : ''}">
@@ -332,9 +350,9 @@
               ${a.end ? `<div class="t2">to ${esc(t12(a.end))}</div>` : ''}
             </div>
             <div class="haul-what">
-              <div class="cust">${esc(a.project || a.customer) || 'No project set'}</div>
-              <div class="meta">${[a.division ? DIV_LABEL[a.division] || a.division : '', a.unit || 'No truck set']
-                .filter(Boolean).map(esc).join(' · ')}</div>
+              <div class="cust"><span>${esc(a.project || a.customer) || 'No project set'}</span>${
+                labor ? '<span class="tag">Labor</span>' : ''}</div>
+              <div class="meta">${meta.map(esc).join(' · ')}</div>
               ${a.material ? `<div class="mat">${esc(a.material)}</div>` : ''}
               ${a.address ? `<a class="addr" href="${esc(mapsHref(a.address))}"${mapsTarget()}
                 onclick="event.stopPropagation()"
@@ -414,7 +432,7 @@
       main.innerHTML = dayBarHTML() + (hauls.length
         ? hauls.map(haulHTML).join('')
         : `<div class="empty"><strong>Nothing scheduled.</strong>
-             You have no hauls on this day. Check with the office if that looks wrong.</div>`);
+             You have no work on this day. Check with the office if that looks wrong.</div>`);
     }
 
     /* ═══════ Nav ═══════ */
