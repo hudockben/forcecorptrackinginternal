@@ -33,12 +33,12 @@ const digests = require('./mathis-digests');
 
 // Divisions with a digest behind them. Anything else is answered by saying
 // what is missing, not by a tool that returns an apology as if it were data.
-const SUPPORTED = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking', 'intercompany', 'payroll'];
+const SUPPORTED = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking', 'intercompany', 'payroll', 'scheduler'];
 
 const HUMAN = {
   turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree',
   quarry: 'Quarry', dust: 'Dust Control', trucking: 'Trucking',
-  intercompany: 'Intercompany', payroll: 'Payroll',
+  intercompany: 'Intercompany', payroll: 'Payroll', scheduler: 'Scheduler',
 };
 
 const MAX_LIMIT = digests.MAX_JOB_ROWS;

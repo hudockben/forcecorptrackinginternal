@@ -34,6 +34,7 @@ const dustCost = require('./dust-cost-metrics');
 const truckM   = require('./trucking-metrics');
 const icM      = require('./ic-metrics');
 const payrollM = require('./payroll-metrics');
+const schedBoard = require('../scheduler/board');
 
 const { readBlob, safeText, money } = ctx;
 
@@ -486,6 +487,112 @@ async function payrollDigest(c) {
   };
 }
 
+// ── Scheduler ──────────────────────────────────────────────────────────────
+
+const SCHEDULER_LIMITS = [
+  'A sub-code\'s status comes from its pace against its remaining working days. "no-data" means there is no bid quantity to measure against — it is not on track, it is unmeasured. Say so rather than counting it as either.',
+  'A conflict is one person or machine booked on two different jobs on the SAME DAY. It is decided per day, not per hour, so a genuine morning-on-one-job, afternoon-on-another split appears here as a conflict. Say what it means before calling it a problem.',
+  'Only the divisions that run jobs feed this board. Trucking dispatch is a separate board with its own drivers and trucks, and none of it is here.',
+  'addlLaborersNeeded is arithmetic — the extra bodies the pace implies — not a decision about who is available. Never present it as a staffing instruction.',
+  'These figures are the plan as it stands today. There is no history here, so nothing about how the schedule has moved over time can be answered.',
+];
+
+const SCHED_BAD = ['behind', 'at-risk'];
+
+async function schedulerDigest(c, opts = {}) {
+  const today = (opts && opts.today) || new Date().toISOString().slice(0, 10);
+
+  let board;
+  try {
+    // The Scheduler page's own builder, not a second reading of the same
+    // blobs — the assistant has to say what that page says.
+    board = await schedBoard.buildBoard(c.sql, c.companyCode, today);
+  } catch (err) {
+    console.error('[mathis] scheduler board failed:', err.message);
+    return { division: 'scheduler', kind: 'scheduler', error: true, limits: SCHEDULER_LIMITS };
+  }
+
+  const counts = { behind: 0, atRisk: 0, onTrack: 0, complete: 0, noData: 0 };
+  let addlLaborersNeeded = 0, unstaffed = 0;
+  const problems = [];
+
+  for (const j of board.jobs || []) {
+    for (const sc of j.subCodes || []) {
+      if (sc.status === 'behind')        counts.behind++;
+      else if (sc.status === 'at-risk')  counts.atRisk++;
+      else if (sc.status === 'on-track') counts.onTrack++;
+      else if (sc.status === 'complete') counts.complete++;
+      else                               counts.noData++;
+
+      if (!SCHED_BAD.includes(sc.status)) continue;
+      addlLaborersNeeded += Number(sc.addlLaborersNeeded) || 0;
+      const crewSize = (sc.crew || []).length;
+      if (!crewSize) unstaffed++;
+      problems.push({
+        job:        safeText(j.name),
+        jobNumber:  safeText(j.jobNumber, 40),
+        division:   j.division,
+        costCode:   safeText(sc.costCode, 20),
+        subCode:    safeText(sc.subCode, 20),
+        status:     sc.status,
+        pctComplete: round2(sc.pctComplete),
+        daysLeft:   sc.effectiveDaysLeft === null || sc.effectiveDaysLeft === undefined ? null : Number(sc.effectiveDaysLeft),
+        addlLaborersNeeded: Number(sc.addlLaborersNeeded) || 0,
+        crewSize,
+        deadline:   j.deadline || null,
+      });
+    }
+  }
+  // Worst first: behind before at-risk, then whatever needs the most bodies.
+  problems.sort((a, b) =>
+    (a.status === b.status ? 0 : a.status === 'behind' ? -1 : 1)
+    || b.addlLaborersNeeded - a.addlLaborersNeeded);
+
+  // Double-bookings, by the rule the Scheduler page itself uses
+  // (scheduler.html conflictResourcesOn): one resource, two distinct jobs, one
+  // day. Read from the dispatcher's own saved board rather than from the
+  // planner-derived assignments, because what was actually placed is what a
+  // dispatcher is asking about.
+  const saved = await blobValue(c, 'fct_scheduler_assignments');
+  const byDate = (saved && saved.assignments && typeof saved.assignments === 'object') ? saved.assignments : {};
+  const conflicts = [];
+  for (const date of Object.keys(byDate).sort()) {
+    if (date < today) continue;                       // behind us is not a plan
+    const byResource = new Map();
+    for (const a of (Array.isArray(byDate[date]) ? byDate[date] : [])) {
+      if (!a || !a.resource) continue;
+      const key = String(a.resource);
+      if (!byResource.has(key)) byResource.set(key, new Set());
+      byResource.get(key).add(`${a.division}::${a.jobId}`);
+    }
+    for (const [resource, jobsOn] of byResource) {
+      if (jobsOn.size > 1) {
+        conflicts.push({ date, resource: safeText(resource, 60), jobs: jobsOn.size });
+      }
+    }
+  }
+
+  const off = Object.keys((board.timeOff && typeof board.timeOff === 'object') ? board.timeOff : {});
+
+  return {
+    division: 'scheduler',
+    divisionName: 'Scheduler',
+    kind: 'scheduler',
+    today: board.today,
+    sourceDivisions: board.sourceDivisions || [],
+    activeJobs: (board.jobs || []).length,
+    subCodes: counts,
+    addlLaborersNeeded,
+    unstaffedAtRisk: unstaffed,
+    crewSize: (board.employees || []).length,
+    equipmentCount: (board.equipment || []).length,
+    problems: capList(problems),
+    conflicts: capList(conflicts),
+    timeOff: capList(off.map(n => ({ name: safeText(n, 60) }))),
+    limits: SCHEDULER_LIMITS,
+  };
+}
+
 // ── Personal mode ──────────────────────────────────────────────────────────
 
 const PERSONAL_LIMITS = ctx.PERSONAL_LIMITS;
@@ -543,6 +650,7 @@ async function personalDigest(c) {
 // ── The router ─────────────────────────────────────────────────────────────
 
 const BUILDERS = {
+  scheduler:    schedulerDigest,
   quarry:       quarryDigest,
   dust:         dustDigest,
   trucking:     truckingDigest,
@@ -584,6 +692,7 @@ module.exports = {
   MAX_JOB_ROWS,
   LIST_CAP,
   QUARRY_LIMITS,
+  SCHEDULER_LIMITS,
   DUST_LIMITS,
   TRUCKING_LIMITS,
   IC_LIMITS,
@@ -593,6 +702,7 @@ module.exports = {
   jobDigest,
   personalDigest,
   quarryDigest,
+  schedulerDigest,
   dustDigest,
   truckingDigest,
   icDigest,

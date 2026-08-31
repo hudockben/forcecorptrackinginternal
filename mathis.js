@@ -61,6 +61,13 @@
     'quarry-sales.html':     'quarry_sales'
   };
 
+  /* Divisions Mathis has figures for. Kept here so the panel can say what it
+   * cannot do BEFORE somebody spends a question finding out — the greeting is
+   * free, an answer is not. scripts/test-mathis.js fails if this drifts from
+   * the server's own list. */
+  var HAS_FIGURES = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
+                     'intercompany', 'payroll', 'scheduler'];
+
   function division() {
     try { if (typeof DIVISION !== 'undefined' && DIVISION) return String(DIVISION); } catch (e) {}
     var file = (location.pathname || '').split('/').pop() || '';
@@ -216,9 +223,17 @@
 
   function greet() {
     var d = division();
-    add('it', (d && !isPersonalPage())
-      ? 'Ask me about ' + d.replace(/_/g, ' ') + ' — I answer from this division\'s own figures, and I will tell you when something is not tracked.'
-      : 'Ask me about your own timesheet entries — hours logged, what is still in draft.');
+    if (!d || isPersonalPage()) {
+      add('it', 'Ask me about your own timesheet entries — hours logged, what is still in draft.');
+      return;
+    }
+    if (HAS_FIGURES.indexOf(d) < 0) {
+      add('it', 'I don\'t have ' + d.replace(/_/g, ' ') + ' figures yet — that part is not built. ' +
+                'I can still answer about your own timesheet, or about another division you have access to.');
+      return;
+    }
+    add('it', 'Ask me about ' + d.replace(/_/g, ' ') +
+              ' — I answer from this division\'s own figures, and I will tell you when something is not tracked.');
   }
 
   function add(kind, text) {
@@ -293,7 +308,8 @@
       dust:         renderDust,
       trucking:     renderTrucking,
       intercompany: renderIc,
-      payroll:      renderPayroll
+      payroll:      renderPayroll,
+      scheduler:    renderScheduler
     };
     var fn = by[digest.kind];
     if (fn) fn(digest);
@@ -390,6 +406,34 @@
     }, 'companies');
     var notes = ['Intercompany billing — what one division bills another, not customer revenue.'];
     if (d.duplicatesCollapsed) notes.push(d.duplicatesCollapsed + ' duplicate entries were collapsed.');
+    post(html, notes);
+  }
+
+  function renderScheduler(d) {
+    var c = d.subCodes || {};
+    var html = kv([
+      ['Active jobs',        num(d.activeJobs, 0)],
+      ['Behind',             num(c.behind, 0)],
+      ['At risk',            num(c.atRisk, 0)],
+      ['On track',           num(c.onTrack, 0)],
+      ['Unmeasured',         num(c.noData, 0)],
+      ['Extra laborers implied', num(d.addlLaborersNeeded, 0)],
+      ['At risk with no crew',   num(d.unstaffedAtRisk, 0)],
+      ['Double-bookings ahead',  num((d.conflicts || {}).total, 0)]
+    ]);
+    html += breakdown(['Job', 'Code', 'Done', 'Days left', 'Need'], d.problems, function (p) {
+      return text(p.job + ' · ' + p.status) +
+        text((p.costCode || '') + (p.subCode ? '-' + p.subCode : '')) +
+        num(p.pctComplete, 1) + num(p.daysLeft, 0) + num(p.addlLaborersNeeded, 0);
+    }, 'sub-codes');
+    html += breakdown(['Double-booked', 'Date', 'Jobs'], d.conflicts, function (x) {
+      return text(x.resource) + text(x.date) + num(x.jobs, 0);
+    }, 'conflicts');
+    var notes = ['Behind and at-risk are pace against remaining working days. "Unmeasured" has no bid quantity to measure — it is not on track.'];
+    if ((d.conflicts || {}).total) {
+      notes.push('A double-booking is one resource on two jobs the same DAY, not the same hour.');
+    }
+    if ((d.timeOff || {}).total) notes.push((d.timeOff.total) + ' on time off.');
     post(html, notes);
   }
 

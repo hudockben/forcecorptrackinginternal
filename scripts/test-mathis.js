@@ -135,9 +135,26 @@ const USER_ID = 7;
 
 // One paving job with a contract, one without — the second is the case that
 // must come back as unknown rather than as a loss.
+// p1 also carries what the Scheduler board reads — a deadline, dated bid items
+// and daily rows — so the scheduler digest runs against a job that is
+// measurably behind rather than an empty board, where every count is zero and
+// every assertion about them passes for the wrong reason.
+//
+// Dated RELATIVE to the day the test runs. Fixed dates made the same fixture
+// on-track today and behind next month, which is a test that reports the
+// calendar rather than the code.
+const daysOut = n => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+const P1_TARGET = daysOut(7);        // a week out, with 96 of 100 units to go
+
 const PROJECTS = {
   'p1': { id: 'p1', 'project-name': 'Atwood Borough', 'job-number': '26040', status: 'In Progress',
-          'contract-amount': '123894', bidItems: [{ cost_code: '2100', sub_code: 'A', quantity: 100, unit_cost: 1066.16 }] },
+          'contract-amount': '123894', 'end-date': P1_TARGET,
+          bidItems: [{ cost_code: '2100', sub_code: 'A', quantity: 100, unit_cost: 1066.16,
+                       description: 'Base repair', start_date: daysOut(-120), target_date: P1_TARGET }],
+          dailyRows: [
+            { cost_code: '2100', sub_code: 'A', date: daysOut(-60), quantity: 6, labor_hours: 8, employee: 'R. Diaz', equipment: 'Roller 3' },
+            { cost_code: '2100', sub_code: 'A', date: daysOut(-30), quantity: 4, labor_hours: 8, employee: 'R. Diaz', equipment: '' },
+          ] },
   'p2': { id: 'p2', 'project-name': 'Moon Township', 'job-number': '26004', status: 'In Progress',
           bidItems: [{ cost_code: '2100', sub_code: 'B', quantity: 50, unit_cost: 900 }] },
 };
@@ -171,6 +188,19 @@ const BLOBS = {
   'dust_ees_other_rows': [],
   // A batch that makes 1,000 gal of concentrate, sprayed at 1:8, charged at
   // a flat $3.75 — enough for the margin to be a real number rather than null.
+  'fct_scheduler_assignments': { version: 1, assignments: {
+    [daysOut(30)]: [
+      { resource: 'R. Diaz',  kind: 'emp',   division: 'paving', jobId: 'p1' },
+      { resource: 'R. Diaz',  kind: 'emp',   division: 'paving', jobId: 'p2' },
+      { resource: 'M. Poole', kind: 'emp',   division: 'paving', jobId: 'p1' },
+      { resource: 'Roller 3', kind: 'equip', division: 'paving', jobId: 'p1' },
+      { resource: 'Roller 3', kind: 'equip', division: 'paving', jobId: 'p1' },
+    ],
+    [daysOut(-30)]: [
+      { resource: 'Long Gone', kind: 'emp', division: 'paving', jobId: 'p1' },
+      { resource: 'Long Gone', kind: 'emp', division: 'paving', jobId: 'p2' },
+    ],
+  } },
   'dust_settings': { profit_margin: {
     base_gal: 600, base_rate: 1.85, soap_gal: 40, soap_rate: 12.50,
     water_gal: 360, water_rate: 0.02, mix_parts: 8,
@@ -799,6 +829,55 @@ console.log('\n══════════ intercompany ═══════
     /mirrored table over-reports/.test(JSON.stringify(sent[sent.length - 1])));
 }
 
+// ── 10e2. Scheduler ────────────────────────────────────────────────────────
+console.log('\n══════════ scheduler ══════════');
+{
+  const res = await call({ message: 'who is behind and who is double-booked', division: 'scheduler' },
+    { token: tokenFor({ divisionRoles: { scheduler: 'level3' } }),
+      sqlOpts: { divisionRoles: { scheduler: 'level3' } } });
+  assert('a scheduler user gets an answer', res.statusCode === 200, String(res.statusCode));
+  const d = res.body.digest;
+  assert('  from the scheduler digest', d && d.kind === 'scheduler', JSON.stringify(d && d.kind));
+  assert('  over a board that actually has jobs on it',
+    d && d.activeJobs === 2, `${d && d.activeJobs} active jobs`);
+  const total = d && Object.values(d.subCodes).reduce((a, b) => a + b, 0);
+  assert('  counting every sub-code by status', total === 2, `${total} sub-codes`);
+  assert('  and a job behind its pace is reported as behind',
+    d.subCodes.behind >= 1, JSON.stringify(d.subCodes));
+  assert('  with the job named and how far along it is',
+    d.problems.rows.length >= 1 && d.problems.rows[0].job === 'Atwood Borough'
+      && d.problems.rows[0].pctComplete === 10,
+    JSON.stringify(d.problems.rows[0]));
+  assert('  and the sub-code with no dates to measure counted as unmeasured, not on track',
+    d.subCodes.noData === 1 && d.subCodes.onTrack === 0, JSON.stringify(d.subCodes));
+  assert('  reading the source divisions off the board rather than assuming them',
+    Array.isArray(d.sourceDivisions) && d.sourceDivisions.length > 0,
+    JSON.stringify(d && d.sourceDivisions));
+
+  const conflicts = (d && d.conflicts && d.conflicts.rows) || [];
+  assert('one person on two jobs the same day is a double-booking',
+    conflicts.some(x => x.resource === 'R. Diaz' && x.date === daysOut(30)),
+    JSON.stringify(conflicts));
+  assert('  but the same resource twice on ONE job is not',
+    !conflicts.some(x => x.resource === 'Roller 3'),
+    'two entries on one job is a duplicate row, not an impossibility');
+  assert('  and a day already past is not a plan to fix',
+    !conflicts.some(x => x.date === daysOut(-30)), JSON.stringify(conflicts));
+
+  const prompt = JSON.stringify(sent[sent.length - 1]);
+  assert('the model is told a conflict is per day, not per hour',
+    /SAME DAY/.test(prompt) && /not per hour/.test(prompt));
+  assert('  that unmeasured is not on track', /it is unmeasured/.test(prompt));
+  assert('  and that trucking dispatch is a different board entirely',
+    /Trucking dispatch is a separate board/.test(prompt));
+  assert('  and that the laborer figure is arithmetic, not a staffing decision',
+    /not a decision about who is available/.test(prompt));
+}
+{
+  const res = await call({ message: 'who is behind', division: 'scheduler' });   // paving-only token
+  assert('a paving-only user cannot reach the scheduler', res.statusCode === 403, String(res.statusCode));
+}
+
 // ── 10f. Access still holds for every one of them ──────────────────────────
 console.log('\n══════════ Phase 2 divisions are still gated ══════════');
 for (const div of ['quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
@@ -829,8 +908,10 @@ console.log('\n══════════ what is still not built ═══�
   for (const div of ['quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
     assert(`${div} is no longer listed as unbuilt`, !(div in ctxlib.NOT_YET));
   }
-  assert('scheduler and fuel admin still are',
-    'scheduler' in ctxlib.NOT_YET && 'fuel_admin' in ctxlib.NOT_YET);
+  assert('scheduler is no longer unbuilt either', !('scheduler' in ctxlib.NOT_YET));
+  assert('  what is left is the executive rollup and the field queues',
+    ['executive', 'fuel_admin', 'fuel', 'driver', 'quarry_sales']
+      .every(d => d in ctxlib.NOT_YET), Object.keys(ctxlib.NOT_YET).join(', '));
 }
 
 // ── 10h. Every digest states what it cannot answer ─────────────────────────
@@ -907,8 +988,13 @@ console.log('\n══════════ wiring ═════════
   const PAGES = [
     'tracker.html', 'paving.html', 'kiewit-pinetree.html',      // job divisions
     'quarry.html', 'dust.html', 'trucking.html',
-    'intercompany.html', 'payroll.html',                        // Phase 2
+    'intercompany.html', 'payroll.html', 'scheduler.html',      // Phase 2
     'timesheet.html',                                           // personal mode
+    // No figures yet, and carried anyway: a page with no launcher cannot log
+    // a gap, and a division nobody can ask about never earns its turn in the
+    // queue. The panel says so before a question is spent.
+    'executive.html', 'fuel-admin.html', 'fuel.html',
+    'driver.html', 'quarry-sales.html',
   ];
   const missing = PAGES.filter(f => !fs.readFileSync(root(f), 'utf8').includes('mathis.js'));
   assert('every page Mathis is meant to be on loads it', missing.length === 0, missing.join(', '));
@@ -949,6 +1035,15 @@ console.log('\n══════════ wiring ═════════
     !/const DIVISION\s*=/.test(fs.readFileSync(root(f), 'utf8')) && !PAGE_DIVISION[f]);
   assert('no page carries the widget without a division to answer about',
     orphan.length === 0, orphan.join(', '));
+  // The widget greets differently on a division it has no figures for. That
+  // list living in two places is fine; the two disagreeing is not — the panel
+  // would promise figures the server cannot produce, or hide ones it can.
+  const hasFigSrc = (code.match(/var HAS_FIGURES = \[([\s\S]*?)\];/) || [])[1] || '';
+  const hasFigures = [...hasFigSrc.matchAll(/'([a-z_]+)'/g)].map(m => m[1]);
+  assert('the widget knows which divisions have figures',
+    hasFigures.length > 0 && hasFigures.slice().sort().join(',') === tools_.SUPPORTED.slice().sort().join(','),
+    `widget=[${hasFigures}] server=[${tools_.SUPPORTED}]`);
+
   assert('  and the pages with nothing to answer about do not carry it',
     !tagged.includes('index.html') && !tagged.includes('divisions.html') && !tagged.includes('admin.html'),
     tagged.join(', '));

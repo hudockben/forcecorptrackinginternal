@@ -208,7 +208,6 @@ const PERSONAL_LIMITS = [
 // true answer, while quoting trucking revenue as if it were profit is not.
 const NOT_YET = {
   executive:    'The cross-division executive rollup is not wired into Mathis yet. Each division can be asked about on its own page.',
-  scheduler:    'Scheduling, pacing and crew conflicts are not wired into Mathis yet.',
   fuel_admin:   'Fuel administration — fleet economy, unbalanced gallons, statement variance — is not wired into Mathis yet.',
   fuel:         'The fuel submission queue is not wired into Mathis yet.',
   driver:       'The driver dispatch view is not wired into Mathis yet.',

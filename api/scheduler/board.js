@@ -312,6 +312,79 @@ async function readTimeOff(sql, companyCode, todayStr) {
   } catch (err) { console.warn('[scheduler/board] time-off read failed:', err.message); return {}; }
 }
 
+/**
+ * Build the whole board. Lifted out of the handler when api/ai/mathis.js became
+ * a second caller: the assistant has to say what the Scheduler page says about
+ * who is behind and who is double-booked, and the only way to guarantee that is
+ * to run the same function rather than a second reading of the same blobs.
+ */
+async function buildBoard(sql, companyCode, todayStr) {
+  const [employees, equipment, timeOff, ...divisionProjects] = await Promise.all([
+    readEmployees(sql, companyCode),
+    readEquipment(sql, companyCode),
+    readTimeOff(sql, companyCode, todayStr),
+    ...SOURCE_DIVISIONS.map(s => readProjects(sql, companyCode, s.prefix, s.index)),
+  ]);
+
+  const jobs = [];
+  const plannedAssignments = [];
+  const rosterEmp = new Set(employees.map(e => e.name));
+  const rosterEquip = new Set(equipment);
+
+  SOURCE_DIVISIONS.forEach((src, i) => {
+    (divisionProjects[i] || []).forEach(proj => {
+      const name = (proj['project-name'] || proj.name || '').trim();
+      if (!name) return;
+      const status = (proj.status || '').trim();
+      if (status && !ACTIVE_PROJECT_STATUSES.includes(status)) return;
+
+      const id = String(proj.id || '');
+      const deadline = proj['end-date'] || null;
+      const ppSchedule = (proj.ppSchedule && typeof proj.ppSchedule === 'object') ? proj.ppSchedule : {};
+      const agg = aggregateDailyRows(proj.dailyRows || []);
+
+      const subCodes = (proj.bidItems || []).map(bi => {
+        const k = (bi.cost_code || '') + '||' + (bi.sub_code || '');
+        return buildSubCode(bi, agg[k] || null, ppSchedule[k] || null, deadline, todayStr);
+      });
+
+      const jobMeta = { division: src.division, id, name };
+      plannedAssignments.push(...plannedAssignmentsFromSchedule(ppSchedule, todayStr, jobMeta));
+
+      // Fold any crew/equipment seen on this job into the roster so the
+      // scheduler always shows everyone actually working, even if a name
+      // never made it into the canonical roster tables.
+      (proj.assigned_employees || []).forEach(n => n && rosterEmp.add(String(n).trim()));
+      (proj.assigned_equipment || []).forEach(n => n && rosterEquip.add(String(n).trim()));
+      subCodes.forEach(sc => { sc.crew.forEach(n => rosterEmp.add(n)); sc.equipment.forEach(n => rosterEquip.add(n)); });
+
+      jobs.push({
+        division: src.division, id, name,
+        jobNumber: String(proj['job-number'] || proj.job_number || '').trim(),
+        status: status || 'Active', deadline, subCodes,
+        bidValue: subCodes.reduce((s, c) => s + (c.bidValue || 0), 0),
+      });
+    });
+  });
+
+  // Merge project-derived names that aren't in the roster tables.
+  const knownEmp = new Set(employees.map(e => e.name));
+  rosterEmp.forEach(n => { if (n && !knownEmp.has(n)) employees.push({ name: n, jobClass: '', isSupervisor: false, rateStd: 0, ratePw: 0 }); });
+  const equipOut = [...rosterEquip].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  employees.sort((a, b) => a.name.localeCompare(b.name));
+  jobs.sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    today: todayStr,
+    employees,
+    equipment: equipOut,
+    jobs,
+    plannedAssignments,
+    timeOff,
+    sourceDivisions: SOURCE_DIVISIONS.map(s => s.division),
+  };
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -331,74 +404,13 @@ module.exports = async (req, res) => {
   const companyCode = payload.companyCode;
 
   try {
-    const [employees, equipment, timeOff, ...divisionProjects] = await Promise.all([
-      readEmployees(sql, companyCode),
-      readEquipment(sql, companyCode),
-      readTimeOff(sql, companyCode, todayStr),
-      ...SOURCE_DIVISIONS.map(s => readProjects(sql, companyCode, s.prefix, s.index)),
-    ]);
-
-    const jobs = [];
-    const plannedAssignments = [];
-    const rosterEmp = new Set(employees.map(e => e.name));
-    const rosterEquip = new Set(equipment);
-
-    SOURCE_DIVISIONS.forEach((src, i) => {
-      (divisionProjects[i] || []).forEach(proj => {
-        const name = (proj['project-name'] || proj.name || '').trim();
-        if (!name) return;
-        const status = (proj.status || '').trim();
-        if (status && !ACTIVE_PROJECT_STATUSES.includes(status)) return;
-
-        const id = String(proj.id || '');
-        const deadline = proj['end-date'] || null;
-        const ppSchedule = (proj.ppSchedule && typeof proj.ppSchedule === 'object') ? proj.ppSchedule : {};
-        const agg = aggregateDailyRows(proj.dailyRows || []);
-
-        const subCodes = (proj.bidItems || []).map(bi => {
-          const k = (bi.cost_code || '') + '||' + (bi.sub_code || '');
-          return buildSubCode(bi, agg[k] || null, ppSchedule[k] || null, deadline, todayStr);
-        });
-
-        const jobMeta = { division: src.division, id, name };
-        plannedAssignments.push(...plannedAssignmentsFromSchedule(ppSchedule, todayStr, jobMeta));
-
-        // Fold any crew/equipment seen on this job into the roster so the
-        // scheduler always shows everyone actually working, even if a name
-        // never made it into the canonical roster tables.
-        (proj.assigned_employees || []).forEach(n => n && rosterEmp.add(String(n).trim()));
-        (proj.assigned_equipment || []).forEach(n => n && rosterEquip.add(String(n).trim()));
-        subCodes.forEach(sc => { sc.crew.forEach(n => rosterEmp.add(n)); sc.equipment.forEach(n => rosterEquip.add(n)); });
-
-        jobs.push({
-          division: src.division, id, name,
-          jobNumber: String(proj['job-number'] || proj.job_number || '').trim(),
-          status: status || 'Active', deadline, subCodes,
-          bidValue: subCodes.reduce((s, c) => s + (c.bidValue || 0), 0),
-        });
-      });
-    });
-
-    // Merge project-derived names that aren't in the roster tables.
-    const knownEmp = new Set(employees.map(e => e.name));
-    rosterEmp.forEach(n => { if (n && !knownEmp.has(n)) employees.push({ name: n, jobClass: '', isSupervisor: false, rateStd: 0, ratePw: 0 }); });
-    const equipOut = [...rosterEquip].filter(Boolean).sort((a, b) => a.localeCompare(b));
-    employees.sort((a, b) => a.name.localeCompare(b.name));
-
-    jobs.sort((a, b) => a.name.localeCompare(b.name));
-
-    return res.json({
-      generatedAt: new Date().toISOString(),
-      today: todayStr,
-      employees,
-      equipment: equipOut,
-      jobs,
-      plannedAssignments,
-      timeOff,
-      sourceDivisions: SOURCE_DIVISIONS.map(s => s.division),
-    });
+    const board = await buildBoard(sql, companyCode, todayStr);
+    return res.json({ generatedAt: new Date().toISOString(), ...board });
   } catch (err) {
     console.error('[scheduler/board]', err.message);
     return res.status(500).json({ error: 'Failed to build schedule board', detail: err.message });
   }
 };
+
+module.exports.buildBoard = buildBoard;
+module.exports.schedStatus = schedStatus;
