@@ -37,12 +37,25 @@ const CRUSH = [
     hourlyRate: 26, hours: 8.5 },
   { id: 'c3', date: '2026-08-27', locationName: 'Homer City', employeeName: 'Nick Detwiler',
     hourlyRate: 26, hours: 8 },
-  // The one row with a product on it — the crew's rows carry none, which is
-  // what lets the Product filter cut a day in half.
-  { id: 'c4', date: '2026-08-27', locationName: 'Homer City', employeeName: 'boringjamey',
+  // The row that ran the crusher came in from an approved timesheet ("tsq-"),
+  // so this day is a mix of typed and payroll-injected rows — the shape the
+  // pit actually reported. It is also the only row with a product on it: the
+  // crew's rows carry none, which is what lets the Product filter cut a day
+  // in half (payroll never sets one either — see api/timesheet-entries.js).
+  { id: 'tsq-4412-1756312800000', date: '2026-08-27', locationName: 'Homer City', employeeName: 'boringjamey',
     productName: '2A Modified', hourlyRate: 26, hours: 9, fuelGallons: 184, fuelCost: 0.0245,
     loadsToCrusher: 27, tonsPerLoad: 30, hoursCrushing: 6,
     comments: 'The Cone broke down first thing in the morning' },
+  // A day where EVERY row came through the timesheet. Payroll appends one row
+  // per approved entry, so a three-man day arrives as three rows and only one
+  // of them carries the loads — the same split, with nothing typed by hand.
+  { id: 'tsq-5001-1756200000000', date: '2026-08-19', locationName: 'McGees Mills', employeeName: 'Shane Glatt',
+    hourlyRate: 26, hours: 8 },
+  { id: 'tsq-5002-1756200000001', date: '2026-08-19', locationName: 'McGees Mills', employeeName: 'Jacob Himes',
+    hourlyRate: 26, hours: 8 },
+  { id: 'tsq-5003-1756200000002', date: '2026-08-19', locationName: 'McGees Mills', employeeName: 'Steve Travis',
+    hourlyRate: 26, hours: 9, fuelGallons: 100, fuelCost: 4.5,
+    loadsToCrusher: 20, tonsPerLoad: 30, hoursCrushing: 7 },
   // Same DAY, other pit — must be its own group, never blended with Homer City.
   { id: 'c5', date: '2026-08-27', locationName: 'McGees Mills', employeeName: 'Steve Travis',
     hourlyRate: 26, hours: 10, loadsToCrusher: 10, tonsPerLoad: 20 },
@@ -155,8 +168,9 @@ async function main() {
   // ── The grouping itself ──
   console.log('\n— Day groups —');
   check('every crushing row still renders', entryRows().length, CRUSH.length);
-  // 8/27 Homer City, 8/27 McGees Mills, 8/20 Homer City, 7/22 Homer City.
-  check('one group per date + pit', dayRows().length, 4);
+  // 8/27 Homer City, 8/27 McGees Mills, 8/20 Homer City, 8/19 McGees Mills,
+  // 7/22 Homer City.
+  check('one group per date + pit', dayRows().length, 5);
   const hc = dayFor('2026-08-27|homer city');
   const mm = dayFor('2026-08-27|mcgees mills');
   check('the reported day has its own group', !!hc, true);
@@ -189,6 +203,43 @@ async function main() {
     }, { on: false, vals: [] }).vals;
   check('the day\'s rows all carry the day\'s figure', hcRowCpt.join(','), Array(4).fill('$1.10').join(','));
   check('a labor-only row is no longer $0.00 against no tons', hcRowCpt[0], '$1.10');
+
+  // ── Rows payroll injected ──
+  // A crushing row minted by an approved timesheet ("tsq-") is read-only here
+  // and carries no product, but it is a row of its day like any other: the
+  // grouping reads the row's date and pit, not where the row came from.
+  // api/timesheet-entries.js resolves locationName off the canonical
+  // quarry_locations row and writes date as ISO, so both halves of the key
+  // match what the tab itself types.
+  console.log('\n— Rows payroll injected —');
+  const tsRows = [...doc.querySelectorAll('#crushTbody tr.ts-locked')];
+  check('the injected rows render as timesheet-owned', tsRows.length, 4);
+  check('and stay read-only', tsRows.every(tr => !tr.querySelector('input')), true);
+  // Walk the rows printed under the 8/27 Homer City header: the injected row
+  // has to be one of them, sitting with the three typed rows it worked beside.
+  const rowsUnder = (key) => {
+    const out = [];
+    let tr = dayFor(key).nextElementSibling;
+    while (tr && !tr.classList.contains('crush-day')) { out.push(tr); tr = tr.nextElementSibling; }
+    return out;
+  };
+  const hcRows = rowsUnder('2026-08-27|homer city');
+  check('the injected row sits in the typed day it worked',
+    hcRows.length === 4 && hcRows.filter(tr => tr.classList.contains('ts-locked')).length, 1);
+  check('and reads the day it is part of, not its own $0.29',
+    tsRows[0].querySelector('[id^="crush-costPerTon-"]').textContent.trim(), '$1.10');
+
+  // A day where nothing was typed at all: three approved timesheets, one of
+  // them carrying the loads. 26×8 + 26×8 + 26×9 + 100×4.5 = 1,100 over
+  // 20 × 30 = 600 tons.
+  const allTs = dayFor('2026-08-19|mcgees mills');
+  check('a day made entirely of timesheet rows is one group', !!allTs, true);
+  check('it counts every entry payroll sent',
+    allTs.querySelector('.crush-day-meta').textContent.replace(/\s+/g, ' ').trim(),
+    '· McGees Mills · 3 entries');
+  check('its cost is all three rows', cellOf(allTs, 'cost'), money(26 * 8 + 26 * 8 + 26 * 9 + 100 * 4.5));
+  check('and its cost / ton is the day, not the one row with tons',
+    allTs.querySelector('.crush-day-cpt').textContent.trim(), money(1100 / 600));
 
   // ── A day with cost and no tons ──
   console.log('\n— A day that crushed nothing —');
@@ -240,6 +291,7 @@ async function main() {
   // ── Typing re-blends the day, without a re-render ──
   console.log('\n— Live update —');
   const idxOf = (id) => win.eval(`crushRows.findIndex(r => r.id === ${JSON.stringify(id)})`);
+  const TS_TONS_ROW = 'tsq-4412-1756312800000';
   const shane = idxOf('c1');
   const beforeInput = doc.querySelectorAll('#crushTbody input').length;
   win.updateCrushNumber(shane, 'hours', '10');           // 8.5 → 10 hrs, +$39
@@ -247,8 +299,8 @@ async function main() {
   check('the day header re-totals on a keystroke',
     dayFor('2026-08-27|homer city').querySelector('.crush-day-cpt').textContent.trim(),
     money(NEW_COST / HC_TONS));
-  check('the day\'s other rows follow it',
-    doc.getElementById('crush-costPerTon-' + idxOf('c4')).textContent.trim(),
+  check('the day\'s other rows follow it, timesheet rows included',
+    doc.getElementById('crush-costPerTon-' + idxOf(TS_TONS_ROW)).textContent.trim(),
     money(NEW_COST / HC_TONS));
   check('the other pit\'s day is untouched',
     dayFor('2026-08-27|mcgees mills').querySelector('.crush-day-cpt').textContent.trim(),
@@ -273,7 +325,8 @@ async function main() {
   // ── The summary bar is unchanged: it blends the whole filtered set ──
   console.log('\n— Summary bar —');
   const summary = doc.getElementById('crushSummary').textContent;
-  check('summary still totals every filtered row', /Rows\s*7/.test(summary.replace(/\s+/g, ' ')), true);
+  check('summary still totals every filtered row',
+    new RegExp(`Rows\\s*${CRUSH.length}`).test(summary.replace(/\s+/g, ' ')), true);
 
   const endErrors = (win.__errors || []).filter(Boolean);
   check('no uncaught script errors after interaction', endErrors.length ? endErrors.join(' | ') : 0, 0);
