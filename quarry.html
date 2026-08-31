@@ -884,6 +884,40 @@
     }
     .cell-readonly.is-calc.is-zero { color: var(--muted); }
 
+    /* Crushing day group — one subtotal line per date + pit, opening the rows
+       it totals. Cost / Ton is only true at this level (see crushDayKey), so
+       it leads in accent here and repeats, muted, down the day's rows. */
+    tr.crush-day td {
+      background: var(--surface2);
+      border-top: 2px solid rgba(249,115,22,0.35);
+      border-bottom: 1px solid var(--border);
+      padding: 0.4rem 0.7rem;
+      font-size: 0.7rem; font-variant-numeric: tabular-nums;
+      color: var(--muted); white-space: nowrap;
+    }
+    .sales-table tbody tr.crush-day:hover td { background: var(--surface2); }
+    tr.crush-day td.col-num,
+    tr.crush-day td.col-total { text-align: right; }
+    tr.crush-day .crush-day-title {
+      color: var(--text); font-weight: 700; font-size: 0.74rem;
+    }
+    tr.crush-day .crush-day-meta { color: var(--muted); }
+    tr.crush-day td.crush-day-cpt {
+      color: var(--accent); font-weight: 700; font-size: 0.76rem;
+    }
+    tr.crush-day td.crush-day-cpt.is-zero { color: var(--muted); font-weight: 600; }
+    /* The two figures the day's cost per ton is made of, bright enough to
+       check it against; the rest of the subtotal line stays quiet. */
+    tr.crush-day td.crush-day-basis { color: var(--text); font-weight: 600; }
+    tr.crush-day td.crush-day-note { color: var(--muted); font-size: 0.64rem; }
+    /* The day's blend, repeated on the row so the column always reads the
+       same number for the same day. Dimmer than a row's own arithmetic —
+       it is the day speaking, not this row. */
+    .cell-readonly.is-calc.is-day-blend {
+      background: rgba(249,115,22,0.02);
+      color: var(--muted);
+    }
+
     /* ── Bulk Upload ── */
     .btn-bulk-upload {
       background: rgba(249,115,22,0.07); color: var(--accent);
@@ -3990,6 +4024,9 @@
     let crushSavePending = null;
     let crushSaveInFlight = false;
     let crushFetchedOnce = false;
+    // Row index → the day group it is in, as the grid last rendered it, so a
+    // keystroke can re-blend that day without a re-render.
+    let crushDayByRow = new Map();
 
     const CRUSH_NUM_FIELDS = [
       'hourlyRate', 'hours', 'fuelGallons', 'fuelCost',
@@ -4137,9 +4174,179 @@
     const QSS_BADGE =
       '<span class="qss-badge" title="Submitted on the Quarry Sales form — the pit, customer, product, tons, price and payment are the scale house\'s. Price / Ton is yours to correct.">✓ SALE</span>';
 
+    // ── Crushing days ───────────────────────────────────────────
+    // A day of crushing is one operation, not one row per person. Each of the
+    // crew gets a row carrying their hours and rate, ONE row carries the loads
+    // that actually went to the crusher, and the fuel lands wherever it was
+    // typed. Divide a single row's cost by a single row's tons and the answer
+    // is to a question nobody asked: on 8/27 at Homer City the operator's own
+    // $238.51 over the day's 810 tons read $0.29/ton, while the other three
+    // rows' $650 of labor was counted against no tons at all.
+    //
+    // So Cost / Ton is a DAY figure — the day's whole cost ÷ the day's whole
+    // tons — shown on the day's header and repeated on each of its rows.
+    //
+    // The key is date + pit, never date alone: Homer City and McGees Mills run
+    // separate setups and nothing in this app blends across pits (see
+    // computeByLocation). Product is deliberately NOT in the key — the crew's
+    // rows carry no product, so keying on it would strand the day's labor in a
+    // group of its own and put the $0.29 straight back.
+    const CRUSH_NO_LOCATION = '— No location —';   // matches the dashboards' label
+    function crushDayKey(row) {
+      const date = (row && typeof row.date === 'string' ? row.date : '').trim();
+      const loc  = (row && row.locationName ? String(row.locationName) : '').trim().toLowerCase();
+      return date + '|' + loc;
+    }
+    // Tiebreak for rows sharing a date, so each day+pit is one contiguous run.
+    function crushByLocation(a, b) {
+      const la = ((a.row && a.row.locationName) || '').trim().toLowerCase();
+      const lb = ((b.row && b.row.locationName) || '').trim().toLowerCase();
+      return la === lb ? 0 : (la < lb ? -1 : 1);
+    }
+    // Every row of every day, by day key — the day as it actually happened,
+    // which is not the same as the rows on screen. Year, Month and Location
+    // are all-or-nothing for a day (each is part of the day key, or derived
+    // from it), but Product is not: the crew's rows carry no product, so
+    // filtering to one hides the day's labor, and a day total taken off what
+    // survives that filter is the $0.29 all over again. A day's cost per ton
+    // is the day's; the header says how much of the day is on screen.
+    function crushDayMembers() {
+      const members = new Map();
+      crushRows.forEach((row, idx) => {
+        const key = crushDayKey(row);
+        const list = members.get(key);
+        if (list) list.push(idx); else members.set(key, [idx]);
+      });
+      return members;
+    }
+    // Sorted, filtered entries → day groups, in the order they first appear.
+    // Keyed rather than run-length grouped, so a row that somehow sorts away
+    // from its day still totals into it instead of opening a second group.
+    // `entries` are the rows to print; `memberIdx` is the whole day behind them.
+    function crushGroupByDay(entries, members) {
+      const groups = [];
+      const byKey = new Map();
+      entries.forEach(entry => {
+        const key = crushDayKey(entry.row);
+        let g = byKey.get(key);
+        if (!g) {
+          g = {
+            key,
+            gid: 'g' + groups.length,
+            date: (entry.row && entry.row.date) || '',
+            location: ((entry.row && entry.row.locationName) || '').trim(),
+            entries: [],
+            memberIdx: (members.get(key) || []).slice(),
+          };
+          byKey.set(key, g);
+          groups.push(g);
+        }
+        g.entries.push(entry);
+      });
+      return groups;
+    }
+    // Totals for one day, over the rows the grid is actually showing — so a
+    // group always foots to the rows printed under it, and to the summary bar,
+    // which totals the same filtered set.
+    function crushDayTotals(rows) {
+      const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
+      const t = {
+        payroll: 0, fuel: 0, fuelGallons: 0, hours: 0,
+        loads: 0, tons: 0, hoursCrushing: 0, cost: 0,
+      };
+      (rows || []).forEach(r => {
+        if (!r) return;
+        const c = crushCalc(r);
+        t.payroll       += c.totalPayroll;
+        t.fuel          += c.totalFuel;
+        t.cost          += c.totalCost;
+        t.tons          += c.estimatedTons;
+        t.fuelGallons   += num(r.fuelGallons);
+        t.hours         += num(r.hours);
+        t.loads         += num(r.loadsToCrusher);
+        t.hoursCrushing += num(r.hoursCrushing);
+      });
+      t.tonsPerHour = t.hoursCrushing > 0 ? t.tons / t.hoursCrushing : 0;
+      // A per-ton cost needs a denominator. A day that crushed nothing has
+      // none, and shows "—" rather than a $0.00 that reads like free rock —
+      // same rule the location cards and the Analytics table follow.
+      t.hasTons    = t.tons > 0;
+      t.costPerTon = t.hasTons ? t.cost / t.tons : 0;
+      return t;
+    }
+    function crushDayCptText(day) {
+      return day.hasTons ? formatMoney(day.costPerTon) : '—';
+    }
+    function crushDayCptTitle(g, day) {
+      const where = `${crushDayLabel(g.date)} · ${g.location || CRUSH_NO_LOCATION}`;
+      if (!day.hasTons) {
+        return `${where}: ${formatMoney(day.cost)} of cost and no tons crushed, so there is no cost per ton yet. `
+             + 'Enter the loads and tons per load on the row that ran the crusher.';
+      }
+      return `${where}: ${formatMoney(day.cost)} ÷ ${formatTons(day.tons)} tons. `
+           + 'Every row of this day at this pit shows the day’s blended cost per ton, not its own — '
+           + 'the crew’s hours and the tons they crushed are on different rows. '
+           + 'The day totals every one of its rows, including any the filters above are hiding.';
+    }
+    // "2026-08-27" → "Thu, Aug 27, 2026". Parsed by hand: new Date() on a bare
+    // ISO date reads it as UTC midnight, which prints as the day before west
+    // of London — and this label sits directly above that same date typed
+    // into the row, where an off-by-one day would be very hard to trust again.
+    const CRUSH_DAY_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const CRUSH_DAY_DOW    = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    function crushDayLabel(dateStr) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr == null ? '' : dateStr).trim());
+      if (!m) return 'No date';
+      const y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]);
+      if (mo < 0 || mo > 11) return String(dateStr);
+      const dt = new Date(y, mo, d);
+      const dow = Number.isFinite(dt.getTime()) ? CRUSH_DAY_DOW[dt.getDay()] + ', ' : '';
+      return `${dow}${CRUSH_DAY_MONTHS[mo]} ${d}, ${y}`;
+    }
+    // Re-blend the day a row belongs to and repaint everything showing it: the
+    // day header's totals, and the Cost / Ton cell on each of the day's rows.
+    // The typing path calls this instead of re-rendering, which would pull the
+    // focus out of the cell mid-keystroke.
+    function refreshCrushDay(index) {
+      const g = crushDayByRow.get(index);
+      if (!g) return;
+      const day = crushDayTotals(g.memberIdx.map(i => crushRows[i]));
+      const set = (key, txt) => {
+        const el = document.getElementById('crush-day-' + g.gid + '-' + key);
+        if (el) el.textContent = txt;
+      };
+      set('hours',         formatTons(day.hours));
+      set('payroll',       formatMoney(day.payroll));
+      set('fuelGallons',   formatTons(day.fuelGallons));
+      set('fuel',          formatMoney(day.fuel));
+      set('loads',         formatTons(day.loads));
+      set('tons',          formatTons(day.tons));
+      set('hoursCrushing', formatTons(day.hoursCrushing));
+      set('tonsPerHour',   formatTons(day.tonsPerHour));
+      set('cost',          formatMoney(day.cost));
+      const cptTxt   = crushDayCptText(day);
+      const cptTitle = crushDayCptTitle(g, day);
+      const head = document.getElementById('crush-day-' + g.gid + '-costPerTon');
+      if (head) {
+        head.textContent = cptTxt;
+        head.title = cptTitle;
+        head.classList.toggle('is-zero', !day.hasTons);
+      }
+      g.memberIdx.forEach(i => {
+        const el = document.getElementById('crush-costPerTon-' + i);
+        if (!el) return;
+        el.textContent = cptTxt;
+        el.title = cptTitle;
+        el.classList.toggle('is-zero', !day.hasTons);
+      });
+    }
+
     function renderCrush(keepFilters) {
       const tbody = document.getElementById('crushTbody');
       if (!tbody) return;
+      // Cleared up front so the early returns below can't leave the index
+      // pointing at day cells that are no longer on the page.
+      crushDayByRow = new Map();
       const addBtn = document.getElementById('crushAddBtn');
       if (addBtn) addBtn.disabled = !crushLoaded;
       const bulkBtn = document.getElementById('crushBulkBtn');
@@ -4164,72 +4371,123 @@
         .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row) && rowMatchesProduct('crushing', row))
         // Newest first so payroll-injected (tsq-) rows surface at the top rather
         // than being appended out of sight. Shared with Daily and Sales — see
-        // byDateDesc.
-        .sort(byDateDesc);
+        // byDateDesc. The pit tiebreak after it is this tab's own: a day's rows
+        // have to sit together for its group below to be one contiguous block.
+        .sort((a, b) => byDateDesc(a, b) || crushByLocation(a, b));
       if (!visibleEntries.length) {
         tbody.innerHTML = `<tr><td colspan="19" class="sales-empty">No crushing entries for ${escapeHtml(yearFilterLabel('crushing'))} · ${escapeHtml(monthFilterLabel('crushing'))} · ${escapeHtml(locationFilterLabel('crushing'))} · ${escapeHtml(productFilterLabel('crushing'))}. Adjust the filters above.</td></tr>`;
         updateCrushSummary();
         return;
       }
 
-      tbody.innerHTML = visibleEntries.map(({ row, originalIdx: i }) => {
-        const c = crushCalc(row);
-        // Crushing row dropdowns are typeahead comboboxes (see cbHtml).
-        const calcCell = (id, val, money) => {
-          const z = !val ? ' is-zero' : '';
-          const txt = money ? formatMoney(val) : formatTons(val);
-          return `<div class="cell-readonly is-calc${z}" id="${id}-${i}">${txt}</div>`;
-        };
-        // Timesheet-injected crushing rows are Payroll-owned — read-only here.
-        if (isTimesheetRow(row)) {
-          const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
-          return `
-            <tr class="ts-locked" title="Injected from an approved timesheet entry — edit or remove it in Payroll, not here.">
-              <td class="col-date">${ro(row.date)}</td>
-              <td>${ro(row.locationName)}</td>
-              <td>${ro(row.employeeName)}</td>
-              <td>${ro(row.productName)}</td>
-              <td class="col-num">${ro(row.hourlyRate)}</td>
-              <td class="col-num">${ro(row.hours)}</td>
-              <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
-              <td class="col-num">${ro(row.fuelGallons)}</td>
-              <td class="col-num">${ro(row.fuelCost)}</td>
-              <td class="col-total">${calcCell('crush-totalFuel', c.totalFuel, true)}</td>
-              <td class="col-num">${ro(row.loadsToCrusher)}</td>
-              <td class="col-num">${ro(row.tonsPerLoad)}</td>
-              <td class="col-total">${calcCell('crush-estimatedTons', c.estimatedTons, false)}</td>
-              <td class="col-num">${ro(row.hoursCrushing)}</td>
-              <td class="col-total">${calcCell('crush-tonsPerHour', c.tonsPerHour, false)}</td>
-              <td class="col-total">${calcCell('crush-totalCost', c.totalCost, true)}</td>
-              <td class="col-total">${calcCell('crush-costPerTon', c.costPerTon, true)}</td>
-              <td class="col-comments">${ro(row.comments)}</td>
-              <td class="col-actions">${TS_LOCK_BADGE}</td>
-            </tr>`;
-        }
-        return `
-          <tr>
-            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
-            <td>${cbHtml('crush:' + i, 'location', row.locationName || '')}</td>
-            <td>${cbHtml('crush:' + i, 'employee', row.employeeName || '')}</td>
-            <td>${cbHtml('crush:' + i, 'product',  row.productName  || '')}</td>
-            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hourlyRate === '' ? '' : row.hourlyRate}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'hourlyRate', this.value)" /></td>
-            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateCrushNumber(${i}, 'hours', this.value)" /></td>
-            <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
-            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.fuelGallons === '' ? '' : row.fuelGallons}" placeholder="0" oninput="updateCrushNumber(${i}, 'fuelGallons', this.value)" /></td>
-            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.001" value="${row.fuelCost === '' ? '' : row.fuelCost}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'fuelCost', this.value)" /></td>
-            <td class="col-total">${calcCell('crush-totalFuel', c.totalFuel, true)}</td>
-            <td class="col-num"><input class="cell-input" type="number" min="0" step="1" value="${row.loadsToCrusher === '' ? '' : row.loadsToCrusher}" placeholder="0" oninput="updateCrushNumber(${i}, 'loadsToCrusher', this.value)" /></td>
-            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.tonsPerLoad === '' ? '' : row.tonsPerLoad}" placeholder="0" oninput="updateCrushNumber(${i}, 'tonsPerLoad', this.value)" /></td>
-            <td class="col-total">${calcCell('crush-estimatedTons', c.estimatedTons, false)}</td>
-            <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hoursCrushing === '' ? '' : row.hoursCrushing}" placeholder="0" oninput="updateCrushNumber(${i}, 'hoursCrushing', this.value)" /></td>
-            <td class="col-total">${calcCell('crush-tonsPerHour', c.tonsPerHour, false)}</td>
-            <td class="col-total">${calcCell('crush-totalCost', c.totalCost, true)}</td>
-            <td class="col-total">${calcCell('crush-costPerTon', c.costPerTon, true)}</td>
-            <td class="col-comments"><input class="cell-input" type="text" value="${escapeHtml(row.comments)}" placeholder="Notes…" oninput="updateCrushCell(${i}, 'comments', this.value)" /></td>
-            <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteCrushRow(${i})">✕</button></td>
-          </tr>`;
+      // A day at a pit is the unit that has a cost per ton — see crushDayKey.
+      // Hold on to the grouping: the typing path re-blends a day through it
+      // rather than re-rendering, which would take focus out of the cell.
+      const groups = crushGroupByDay(visibleEntries, crushDayMembers());
+      groups.forEach(g => g.memberIdx.forEach(idx => crushDayByRow.set(idx, g)));
+
+      tbody.innerHTML = groups.map(g => {
+        const day = crushDayTotals(g.memberIdx.map(idx => crushRows[idx]));
+        return crushDayHeadHtml(g, day)
+             + g.entries.map(({ row, originalIdx: i }) => crushRowHtml(row, i, g, day)).join('');
       }).join('');
       updateCrushSummary();
+    }
+
+    // The subtotal line that opens a day. Its cells sit under the columns they
+    // total, so the day foots against the rows printed beneath it, and Cost /
+    // Ton — the one figure that is only true at this level — leads in accent.
+    function crushDayHeadHtml(g, day) {
+      const cell = (key, cls, txt) =>
+        `<td class="${cls}" id="crush-day-${g.gid}-${key}">${txt}</td>`;
+      const basis = (key, txt) => cell(key, 'col-total crush-day-basis', txt);
+      // A filter can hide some of a day's rows; the day still totals whole.
+      const hidden = g.entries.length !== g.memberIdx.length;
+      const cptTitle = crushDayCptTitle(g, day);
+      return `
+        <tr class="crush-day" data-day-key="${escapeHtml(g.key)}">
+          <td colspan="4">
+            <span class="crush-day-title">${escapeHtml(crushDayLabel(g.date))}</span>
+            <span class="crush-day-meta"> · ${escapeHtml(g.location || CRUSH_NO_LOCATION)} · ${g.memberIdx.length} ${g.memberIdx.length === 1 ? 'entry' : 'entries'}${hidden ? ` · ${g.entries.length} shown` : ''}</span>
+          </td>
+          <td></td>
+          ${cell('hours',         'col-num',   formatTons(day.hours))}
+          ${cell('payroll',       'col-total', formatMoney(day.payroll))}
+          ${cell('fuelGallons',   'col-num',   formatTons(day.fuelGallons))}
+          <td></td>
+          ${cell('fuel',          'col-total', formatMoney(day.fuel))}
+          ${cell('loads',         'col-num',   formatTons(day.loads))}
+          <td></td>
+          ${basis('tons',         formatTons(day.tons))}
+          ${cell('hoursCrushing', 'col-num',   formatTons(day.hoursCrushing))}
+          ${cell('tonsPerHour',   'col-total', formatTons(day.tonsPerHour))}
+          ${basis('cost',         formatMoney(day.cost))}
+          <td class="col-total crush-day-cpt${day.hasTons ? '' : ' is-zero'}" id="crush-day-${g.gid}-costPerTon" title="${escapeHtml(cptTitle)}">${crushDayCptText(day)}</td>
+          <td class="col-comments crush-day-note">${hidden ? 'Whole day · cost ÷ tons' : 'Day total · cost ÷ tons'}</td>
+          <td class="col-actions"></td>
+        </tr>`;
+    }
+
+    // One entry row. `day` is the blend its Cost / Ton cell shows; every row of
+    // the day shows the same figure, because the day is what the figure is of.
+    function crushRowHtml(row, i, g, day) {
+      const c = crushCalc(row);
+      // Crushing row dropdowns are typeahead comboboxes (see cbHtml).
+      const calcCell = (id, val, money) => {
+        const z = !val ? ' is-zero' : '';
+        const txt = money ? formatMoney(val) : formatTons(val);
+        return `<div class="cell-readonly is-calc${z}" id="${id}-${i}">${txt}</div>`;
+      };
+      const cptCell = () =>
+        `<div class="cell-readonly is-calc is-day-blend${day.hasTons ? '' : ' is-zero'}" id="crush-costPerTon-${i}" title="${escapeHtml(crushDayCptTitle(g, day))}">${crushDayCptText(day)}</div>`;
+      // Timesheet-injected crushing rows are Payroll-owned — read-only here.
+      if (isTimesheetRow(row)) {
+        const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
+        return `
+          <tr class="ts-locked" title="Injected from an approved timesheet entry — edit or remove it in Payroll, not here.">
+            <td class="col-date">${ro(row.date)}</td>
+            <td>${ro(row.locationName)}</td>
+            <td>${ro(row.employeeName)}</td>
+            <td>${ro(row.productName)}</td>
+            <td class="col-num">${ro(row.hourlyRate)}</td>
+            <td class="col-num">${ro(row.hours)}</td>
+            <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
+            <td class="col-num">${ro(row.fuelGallons)}</td>
+            <td class="col-num">${ro(row.fuelCost)}</td>
+            <td class="col-total">${calcCell('crush-totalFuel', c.totalFuel, true)}</td>
+            <td class="col-num">${ro(row.loadsToCrusher)}</td>
+            <td class="col-num">${ro(row.tonsPerLoad)}</td>
+            <td class="col-total">${calcCell('crush-estimatedTons', c.estimatedTons, false)}</td>
+            <td class="col-num">${ro(row.hoursCrushing)}</td>
+            <td class="col-total">${calcCell('crush-tonsPerHour', c.tonsPerHour, false)}</td>
+            <td class="col-total">${calcCell('crush-totalCost', c.totalCost, true)}</td>
+            <td class="col-total">${cptCell()}</td>
+            <td class="col-comments">${ro(row.comments)}</td>
+            <td class="col-actions">${TS_LOCK_BADGE}</td>
+          </tr>`;
+      }
+      return `
+        <tr>
+          <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
+          <td>${cbHtml('crush:' + i, 'location', row.locationName || '')}</td>
+          <td>${cbHtml('crush:' + i, 'employee', row.employeeName || '')}</td>
+          <td>${cbHtml('crush:' + i, 'product',  row.productName  || '')}</td>
+          <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hourlyRate === '' ? '' : row.hourlyRate}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'hourlyRate', this.value)" /></td>
+          <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateCrushNumber(${i}, 'hours', this.value)" /></td>
+          <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
+          <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.fuelGallons === '' ? '' : row.fuelGallons}" placeholder="0" oninput="updateCrushNumber(${i}, 'fuelGallons', this.value)" /></td>
+          <td class="col-num"><input class="cell-input" type="number" min="0" step="0.001" value="${row.fuelCost === '' ? '' : row.fuelCost}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'fuelCost', this.value)" /></td>
+          <td class="col-total">${calcCell('crush-totalFuel', c.totalFuel, true)}</td>
+          <td class="col-num"><input class="cell-input" type="number" min="0" step="1" value="${row.loadsToCrusher === '' ? '' : row.loadsToCrusher}" placeholder="0" oninput="updateCrushNumber(${i}, 'loadsToCrusher', this.value)" /></td>
+          <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.tonsPerLoad === '' ? '' : row.tonsPerLoad}" placeholder="0" oninput="updateCrushNumber(${i}, 'tonsPerLoad', this.value)" /></td>
+          <td class="col-total">${calcCell('crush-estimatedTons', c.estimatedTons, false)}</td>
+          <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hoursCrushing === '' ? '' : row.hoursCrushing}" placeholder="0" oninput="updateCrushNumber(${i}, 'hoursCrushing', this.value)" /></td>
+          <td class="col-total">${calcCell('crush-tonsPerHour', c.tonsPerHour, false)}</td>
+          <td class="col-total">${calcCell('crush-totalCost', c.totalCost, true)}</td>
+          <td class="col-total">${cptCell()}</td>
+          <td class="col-comments"><input class="cell-input" type="text" value="${escapeHtml(row.comments)}" placeholder="Notes…" oninput="updateCrushCell(${i}, 'comments', this.value)" /></td>
+          <td class="col-actions"><button class="row-del-btn" title="Delete row" onclick="deleteCrushRow(${i})">✕</button></td>
+        </tr>`;
     }
 
     function updateCrushSummary() {
@@ -4269,6 +4527,11 @@
       if (!crushLoaded || !crushRows[index]) return;
       crushRows[index][field] = value;
       scheduleCrushSave();
+      // A row's date decides which day it belongs to, so re-date it and both
+      // days have to re-blend — a re-render is the honest way to move it. Safe
+      // here only because the date cell commits on change; comments come
+      // through this same setter on every keystroke and must not re-render.
+      if (field === 'date') renderCrush();
     }
     function updateCrushEmployee(index, selectEl) {
       if (!crushLoaded || !crushRows[index]) return;
@@ -4317,7 +4580,9 @@
       setCalc('estimatedTons',  c.estimatedTons,  false);
       setCalc('tonsPerHour',    c.tonsPerHour,    false);
       setCalc('totalCost',      c.totalCost,      true);
-      setCalc('costPerTon',     c.costPerTon,     true);
+      // Cost / Ton is the day's, not the row's, so this keystroke moves it on
+      // the day header and on every row of the day — see crushDayKey.
+      refreshCrushDay(index);
       updateCrushSummary();
       scheduleCrushSave();
     }
