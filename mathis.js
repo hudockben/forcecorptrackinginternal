@@ -86,6 +86,23 @@
 
   var state = { open: false, busy: false, threadId: null, division: null, turnsRemaining: null };
 
+  /* The thread id, kept per division for the life of the tab. A reload should
+   * carry on the conversation rather than silently start a new one — the
+   * server would answer either way, but the user would be the only one who
+   * knew the context was gone. sessionStorage rather than localStorage: a new
+   * tab is a new conversation, which matches what people expect of one.
+   *
+   * Only the id is stored. The transcript lives on the server, keyed to this
+   * user, and nothing about it belongs in the browser. */
+  function threadKey(d) { return 'fct_mathis_thread_' + (d || 'personal'); }
+  function loadThread(d) {
+    try { return Number(sessionStorage.getItem(threadKey(d))) || null; } catch (e) { return null; }
+  }
+  function rememberThread(id) {
+    state.threadId = id;
+    try { sessionStorage.setItem(threadKey(state.division), String(id)); } catch (e) {}
+  }
+
   // ── Styles ───────────────────────────────────────────────────────────────
   // Theme variables with fallbacks: these pages define --bg/--text/--border,
   // but a page that does not still has to render legibly rather than
@@ -181,7 +198,18 @@
       // A new division is a new conversation: replaying paving history into a
       // quarry answer would invite exactly the cross-division confusion the
       // server-side scoping exists to prevent.
-      if (state.division !== d) { state.division = d; state.threadId = null; log.innerHTML = ''; greet(); }
+      if (state.division !== d) {
+        state.division = d;
+        state.threadId = loadThread(d);
+        log.innerHTML = '';
+        greet();
+        // The transcript is not restored — only the id — so say so rather than
+        // let an empty panel imply Mathis has forgotten what was said.
+        if (state.threadId) {
+          add('it', 'Picking up where we left off — I still have the earlier questions in mind.')
+            .classList.add('mathis-note');
+        }
+      }
       input.focus();
     }
   }
@@ -286,6 +314,7 @@
       return text(r.name) + money(r.totalSales) + num(r.tonsSold) + money(r.crushCost);
     }, 'pits');
     var notes = ['Contribution per ton — this is not profit on a job.'];
+    if (be.status && be.status.state) notes.push('Break-even: ' + be.status.state + ' — ' + (be.status.note || ''));
     if (d.stockAlert && d.stockAlert.note) notes.push(d.stockAlert.pit + ': ' + d.stockAlert.note);
     post(html, notes);
   }
@@ -414,6 +443,18 @@
     post(html, ['Your own entries, ' + (d.window || 'recent') + '. Hours only — this data carries no pay rate.']);
   }
 
+  /* One question, over the event stream.
+   *
+   * The stream exists because a tool loop is two or three model calls, and a
+   * spinner for fifteen seconds with nothing behind it reads as broken. Step
+   * events say what is being read while it is being read, and the answer
+   * arrives as it is written.
+   *
+   * If the stream cannot be had — an old browser, a proxy that will not pass
+   * text/event-stream, a server that answered with JSON — the same request is
+   * made again for a single JSON body. The retry only happens when NOTHING has
+   * been shown yet: falling back after half an answer has been painted would
+   * print it twice. */
   function send() {
     if (state.busy) return;
     var q = (input.value || '').trim();
@@ -425,40 +466,147 @@
     add('me', q);
     state.busy = true;
     sendBtn.disabled = true;
-    var pending = add('it', 'Thinking…');
-    pending.classList.add('mathis-note');
 
-    fetch('/api/ai/mathis', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() },
-      body: JSON.stringify({ message: q, division: division() || undefined, threadId: state.threadId })
-    }).then(function (r) {
-      return r.json().catch(function () { return { error: 'Mathis returned an unreadable response.' }; })
-        .then(function (j) { return { ok: r.ok, body: j }; });
-    }).then(function (res) {
-      pending.remove();
-      if (!res.ok || !res.body || res.body.error) {
-        add('err', (res.body && res.body.error) || 'Something went wrong.');
-        return;
-      }
-      var b = res.body;
-      if (b.threadId) state.threadId = b.threadId;
-      state.turnsRemaining = b.turnsRemaining;
-      add('it', b.answer);
-      renderFigures(b.digest);
-      if (b.answerTruncated) add('err', 'That answer was cut short — try a narrower question.');
-      if (typeof b.turnsRemaining === 'number' && b.turnsRemaining <= 5) {
-        add('it', b.turnsRemaining + ' question' + (b.turnsRemaining === 1 ? '' : 's') + ' left today.')
-          .classList.add('mathis-note');
-      }
-    }).catch(function () {
-      pending.remove();
-      add('err', 'Could not reach Mathis. Check your connection and try again.');
-    }).then(function () {
-      state.busy = false;
-      sendBtn.disabled = false;
-      input.focus();
+    var status = add('it', 'Thinking…');
+    status.classList.add('mathis-note');
+    var shown = { any: false };
+
+    ask(q, status, shown, true)
+      .catch(function (err) {
+        if (shown.any) throw err;         // half an answer is on screen already
+        return ask(q, status, shown, false);
+      })
+      .catch(function () {
+        if (status.parentNode) status.remove();
+        add('err', 'Could not reach Mathis. Check your connection and try again.');
+      })
+      .then(function () {
+        if (status.parentNode) status.remove();
+        state.busy = false;
+        sendBtn.disabled = false;
+        input.focus();
+      });
+  }
+
+  function body(q) {
+    return JSON.stringify({
+      message: q,
+      division: division() || undefined,
+      threadId: state.threadId
     });
+  }
+
+  function ask(q, status, shown, streaming) {
+    return fetch('/api/ai/mathis', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: streaming ? 'text/event-stream' : 'application/json',
+        Authorization: 'Bearer ' + token()
+      },
+      body: body(q)
+    }).then(function (r) {
+      var ct = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
+      var canStream = streaming && r.ok && ct.indexOf('text/event-stream') >= 0
+        && r.body && typeof r.body.getReader === 'function'
+        && typeof TextDecoder !== 'undefined';
+      if (canStream) return readStream(r.body.getReader(), status, shown);
+      // Every guard on the server answers before the stream opens, so an error
+      // is still an ordinary status code with a JSON body.
+      return r.json().catch(function () {
+        return { error: 'Mathis returned an unreadable response.' };
+      }).then(function (j) {
+        if (!r.ok || !j || j.error) {
+          shown.any = true;             // an error IS a result; do not retry it
+          add('err', (j && j.error) || 'Something went wrong.');
+          return;
+        }
+        finish(j, j.answer, shown);
+      });
+    });
+  }
+
+  /* Frames are separated by a blank line, so the buffer is split on that and
+   * the trailing fragment kept for the next chunk. A frame split across two
+   * network reads is the normal case, not the edge one. */
+  function readStream(reader, status, shown) {
+    var dec = new TextDecoder();
+    var buf = '';
+    var answerEl = null;
+    var payload = null;
+
+    function frame(raw) {
+      var ev = null, data = null;
+      raw.split('\n').forEach(function (line) {
+        if (line.indexOf('event: ') === 0) ev = line.slice(7).trim();
+        else if (line.indexOf('data: ') === 0) {
+          try { data = JSON.parse(line.slice(6)); } catch (e) { data = null; }
+        }
+      });
+      if (!ev) return;
+
+      if (ev === 'step' && data) {
+        status.textContent = data.label + '…';
+      } else if (ev === 'text' && data && data.text) {
+        shown.any = true;
+        if (!answerEl) { answerEl = add('it', ''); }
+        answerEl.textContent += data.text;
+        log.scrollTop = log.scrollHeight;
+      } else if (ev === 'figures' && data) {
+        shown.any = true;
+        renderFigures(data);
+      } else if (ev === 'error' && data) {
+        shown.any = true;
+        add('err', data.error || 'Something went wrong.');
+      } else if (ev === 'done') {
+        payload = data || {};
+      }
+    }
+
+    function pump() {
+      return reader.read().then(function (res) {
+        if (res.done) {
+          if (buf.trim()) frame(buf);
+          if (payload) { finish(payload, null, shown); return; }
+          // The stream ended without a done frame: the function hit its
+          // duration ceiling, or something between here and it gave up. If
+          // nothing was painted, throwing hands this to the JSON retry. If
+          // half an answer is already on screen, a retry would print it twice,
+          // so say what happened instead of leaving it looking finished.
+          if (!shown.any) throw new Error('stream ended before it finished');
+          add('err', 'The connection ended early — that answer may be incomplete.');
+          return;
+        }
+        buf += dec.decode(res.value, { stream: true });
+        var parts = buf.split('\n\n');
+        buf = parts.pop();
+        for (var i = 0; i < parts.length; i++) frame(parts[i]);
+        return pump();
+      });
+    }
+    return pump();
+  }
+
+  /* Shared tail for both paths. `answer` is passed only by the JSON path —
+   * the stream has already painted its text. */
+  function finish(payload, answer, shown) {
+    if (payload.threadId) rememberThread(payload.threadId);
+    state.turnsRemaining = payload.turnsRemaining;
+
+    if (answer) { shown.any = true; add('it', answer); }
+    // The JSON path carries every digest at once; the stream has already
+    // rendered each as it arrived, so this runs for the JSON path only —
+    // keyed on which path called, not on whether the answer text was empty.
+    if (answer !== null && payload.digests && payload.digests.length) {
+      shown.any = true;
+      payload.digests.forEach(renderFigures);
+    }
+    if (payload.answerTruncated) add('err', 'That answer was cut short — try a narrower question.');
+    if (typeof payload.turnsRemaining === 'number' && payload.turnsRemaining <= 5) {
+      add('it', payload.turnsRemaining + ' question' +
+        (payload.turnsRemaining === 1 ? '' : 's') + ' left today.')
+        .classList.add('mathis-note');
+    }
   }
 
   // Only for signed-in users: the login page has no token and no division, and

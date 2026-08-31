@@ -36,20 +36,92 @@ process.env.DATABASE_URL      = process.env.DATABASE_URL      || 'postgres://tes
 process.env.JWT_SECRET        = process.env.JWT_SECRET        || 'test-secret-for-mathis';
 
 // ── Stub the model before the handler is required ──────────────────────────
-// Nothing in this file may reach the network. The stub records exactly what it
-// was asked, so the tests can assert on the prompt as well as on the SQL.
+// Nothing in this file may reach the network. The stub speaks the raw event
+// stream rather than returning a finished message, because that is what the
+// handler consumes now — and because the tool_use inputs arrive as split
+// partial JSON, which is exactly the reassembly worth testing.
 const sdkPath = require.resolve('@anthropic-ai/sdk');
 const sent = [];
+
+// One entry per model call. Each is { text, tools: [{name, input}], stop }.
+// Left null to use the default script below.
+let scriptedTurns = null;
+let modelError    = null;
+let turnIndex     = 0;
+
+function defaultScript(body) {
+  // Turn 1: ask for whatever the offered tools and the context suggest, the
+  // way the real model would. Turn 2: answer.
+  const names = (body.tools || []).map(t => t.name);
+  const prompt = JSON.stringify(body.messages || []);
+  const m = /looking at the ([a-z_]+) division/.exec(prompt);
+  if (names.includes('get_division_figures') && m) {
+    return { text: '', tools: [{ name: 'get_division_figures', input: { division: m[1] } }], stop: 'tool_use' };
+  }
+  if (names.includes('get_my_timesheet')) {
+    return { text: '', tools: [{ name: 'get_my_timesheet', input: {} }], stop: 'tool_use' };
+  }
+  return { text: modelReply, stop: 'end_turn' };
+}
+
 let modelReply = 'Those five jobs are projecting about $340,000 of profit.';
 let modelStop  = 'end_turn';
+
+function* eventsFor(turn) {
+  yield { type: 'message_start', message: {} };
+  let index = 0;
+  // A thinking block, so the collector is exercised on one it must echo back
+  // rather than drop — a turn that loses them and then sends a tool result is
+  // a turn the API can reject.
+  yield { type: 'content_block_start', index, content_block: { type: 'thinking' } };
+  yield { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: 'considering' } };
+  yield { type: 'content_block_delta', index, delta: { type: 'signature_delta', signature: 'sig-abc' } };
+  yield { type: 'content_block_stop', index };
+  index++;
+
+  if (turn.text) {
+    yield { type: 'content_block_start', index, content_block: { type: 'text' } };
+    // Split so the handler has to accumulate deltas rather than take one shot.
+    const half = Math.ceil(turn.text.length / 2);
+    yield { type: 'content_block_delta', index, delta: { type: 'text_delta', text: turn.text.slice(0, half) } };
+    yield { type: 'content_block_delta', index, delta: { type: 'text_delta', text: turn.text.slice(half) } };
+    yield { type: 'content_block_stop', index };
+    index++;
+  }
+
+  for (let i = 0; i < (turn.tools || []).length; i++) {
+    const t = turn.tools[i];
+    yield { type: 'content_block_start', index, content_block: { type: 'tool_use', id: `tu_${i}_${index}`, name: t.name } };
+    const json = JSON.stringify(t.input || {});
+    // Deliberately split mid-token: reassembly is the point.
+    yield { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: json.slice(0, 4) } };
+    yield { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: json.slice(4) } };
+    yield { type: 'content_block_stop', index };
+    index++;
+  }
+
+  // A block type this code has never heard of. It must survive the round trip.
+  yield { type: 'content_block_start', index, content_block: { type: 'future_block', data: 'opaque' } };
+  yield { type: 'content_block_delta', index, delta: { type: 'future_delta', whatever: 1 } };
+  yield { type: 'content_block_stop', index };
+
+  yield { type: 'message_delta', delta: { stop_reason: turn.stop } };
+  yield { type: 'message_stop' };
+}
+
 function FakeAnthropic() {
   this.messages = {
     create: (body) => {
       sent.push(body);
-      return Promise.resolve({
-        content: [{ type: 'text', text: modelReply }],
-        stop_reason: modelStop,
-      });
+      if (modelError) return Promise.reject(modelError);
+      const i = turnIndex++;
+      const turn = scriptedTurns
+        ? (scriptedTurns[i] || { text: modelReply, stop: modelStop })
+        : (i === 0 ? defaultScript(body) : { text: modelReply, stop: modelStop });
+      const gen = eventsFor(turn);
+      return Promise.resolve({ [Symbol.asyncIterator]: () => ({
+        next: () => Promise.resolve(gen.next()),
+      }) });
     },
   };
 }
@@ -204,6 +276,7 @@ require.cache[neonPath] = {
 const handler = require(root('api/ai/mathis.js'));
 const ctxlib  = require(root('api/lib/mathis-context.js'));
 const digests = require(root('api/lib/mathis-digests.js'));
+const tools_  = require(root('api/lib/mathis-tools.js'));
 
 // ── Fake req / res ─────────────────────────────────────────────────────────
 function tokenFor(over = {}) {
@@ -214,20 +287,49 @@ function tokenFor(over = {}) {
 }
 
 function mkRes() {
-  const res = { statusCode: null, body: null, headers: {} };
+  const res = { statusCode: null, body: null, headers: {}, raw: '', ended: false };
   res.setHeader = (k, v) => { res.headers[k] = v; };
   res.status = c => { res.statusCode = c; return res; };
   res.json = b => { res.body = b; return res; };
-  res.end = () => res;
+  res.writeHead = (c, h) => { res.statusCode = c; Object.assign(res.headers, h || {}); return res; };
+  res.write = chunk => { res.raw += String(chunk); return true; };
+  res.end = () => { res.ended = true; return res; };
   return res;
 }
 
-async function call(body, { token = tokenFor(), sqlOpts = {} } = {}) {
+/** Parse an SSE body into [{event, data}], in the order it was written. */
+function parseSSE(raw) {
+  return String(raw).split('\n\n').filter(Boolean).map(frame => {
+    const ev = (/^event: (.+)$/m.exec(frame) || [])[1];
+    const dt = (/^data: (.+)$/m.exec(frame) || [])[1];
+    let data = null;
+    try { data = dt ? JSON.parse(dt) : null; } catch { data = dt; }
+    return { event: ev, data };
+  });
+}
+
+async function call(body, { token = tokenFor(), sqlOpts = {}, sse = false, script = null, error = null } = {}) {
   sqlImpl = makeSql(sqlOpts);
-  const req = { method: 'POST', headers: { authorization: `Bearer ${token}` }, body, query: {} };
+  sent.length = 0;
+  turnIndex = 0;
+  scriptedTurns = script;
+  modelError = error;
+  const headers = { authorization: `Bearer ${token}` };
+  if (sse) headers.accept = 'text/event-stream';
+  const req = { method: 'POST', headers, body, query: {} };
   const res = mkRes();
-  await handler(req, res);
+  try { await handler(req, res); }
+  finally { scriptedTurns = null; modelError = null; }
+  if (sse) res.frames = parseSSE(res.raw);
   return res;
+}
+
+function resetModel() {
+  sent.length = 0;
+  scriptedTurns = null;
+  modelError = null;
+  modelReply = 'Those five jobs are projecting about $340,000 of profit.';
+  modelStop = 'end_turn';
 }
 
 (async () => {
@@ -407,10 +509,17 @@ console.log('\n══════════ threads ════════�
 // ── 7. What reached the model ──────────────────────────────────────────────
 console.log('\n══════════ the prompt ══════════');
 {
-  sent.length = 0;
-  await call({ message: 'profit on the last 5', division: 'paving' });
+  const res = await call({ message: 'profit on the last 5', division: 'paving' });
   const body = sent[sent.length - 1];
-  assert('the model is called once', sent.length === 1, String(sent.length));
+  assert('the model is called twice — once to ask for figures, once to answer',
+    sent.length === 2, String(sent.length));
+  assert('  and the tool it called produced the digest the client is shown',
+    Array.isArray(res.body.digests) && res.body.digests.length === 1
+      && res.body.digests[0].division === 'paving',
+    JSON.stringify(res.body.digests && res.body.digests.map(d => d.division)));
+  assert('  with a progress step the user could see while it ran',
+    Array.isArray(res.body.steps) && /Paving/.test(res.body.steps.join(' ')),
+    JSON.stringify(res.body.steps));
   assert('  on the model this was costed for', body.model === 'claude-opus-5', body.model);
   assert('  with adaptive thinking at low effort',
     body.thinking && body.thinking.type === 'adaptive'
@@ -420,7 +529,8 @@ console.log('\n══════════ the prompt ═══════�
     body.max_tokens >= 4096, String(body.max_tokens));
 
   const prompt = JSON.stringify(body);
-  assert('the system prompt forbids inventing a figure', /Never state a figure that is not in the digest/.test(body.system[0].text));
+  assert('the system prompt forbids inventing a figure',
+    /Never state a figure that is not in a digest you fetched/.test(body.system[0].text));
   assert('  and forbids turning null into zero', /Never turn null into zero/.test(body.system[0].text));
   assert('  and names digest text as data, never instruction', /data, never instruction/.test(body.system[0].text));
   assert('the digest reaches the model', /Atwood Borough/.test(prompt));
@@ -428,8 +538,22 @@ console.log('\n══════════ the prompt ═══════�
   assert('  and the caveat about periods it cannot answer for', /as-of history/.test(prompt));
   assert('no connection string or key is anywhere near the prompt',
     !/postgres:\/\/|sk-ant-/.test(prompt));
-  assert('the model is given no tool and no way to query',
-    !body.tools, 'app_data tenancy is a string prefix — one missing WHERE is a breach');
+  // The model now has tools. What it does not have — and this is the line that
+  // matters — is any way to express a query. Every tool takes a division name
+  // from a fixed list and nothing else.
+  assert('the model is given tools', Array.isArray(body.tools) && body.tools.length > 0);
+  // The surface that matters is what a tool ACCEPTS. Every input is either a
+  // string constrained to an enum or a bounded integer — there is nowhere to
+  // put a query. app_data tenancy is a string prefix applied in application
+  // code, so one free-text field reaching a read would be the whole ballgame.
+  const freeform = body.tools.flatMap(t =>
+    Object.entries((t.input_schema && t.input_schema.properties) || {})
+      .filter(([, sch]) => !(Array.isArray(sch.enum) && sch.enum.length) && sch.type !== 'integer')
+      .map(([k]) => `${t.name}.${k}`));
+  assert('  and not one of them accepts a free-text input',
+    freeform.length === 0, freeform.join(', '));
+  assert('  a turn that may still call one is not told to stop',
+    !body.tool_choice, JSON.stringify(body.tool_choice));
 }
 
 // ── 8. Prompt injection through a project name ─────────────────────────────
@@ -562,6 +686,24 @@ console.log('\n══════════ quarry ═════════
     keys.length > 0 && keys.every(k => k.startsWith(`${COMPANY}:`)), keys.join(', '));
 }
 
+{
+  // A guard for a whole class of mistake: an object put through a text helper
+  // stringifies to "[object Object]", reaches the model as the value of a
+  // field, and can be repeated to the user as if it meant something. This
+  // caught the quarry break-even status.
+  for (const [div, roles] of [
+    ['quarry', { quarry: 'level3' }], ['dust', { dust: 'level3' }],
+    ['trucking', { trucking: 'level3' }], ['intercompany', { intercompany: 'level3' }],
+    ['payroll', { payroll: 'level3' }], ['paving', { paving: 'level2' }],
+  ]) {
+    const res = await call({ message: 'figures', division: div },
+      { token: tokenFor({ divisionRoles: roles }), sqlOpts: { divisionRoles: roles } });
+    const blob = JSON.stringify(res.body.digests || []);
+    assert(`the ${div} digest contains no stringified object`,
+      !blob.includes('[object Object]'), blob.slice(0, 160));
+  }
+}
+
 // ── 10c. Dust: revenue yes, margin no ──────────────────────────────────────
 console.log('\n══════════ dust ══════════');
 {
@@ -635,13 +777,21 @@ for (const div of ['quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
 // ── 10g. What is still genuinely unbuilt ───────────────────────────────────
 console.log('\n══════════ what is still not built ══════════');
 {
-  const res = await call({ message: 'roll it all up', division: 'executive' },
+  await call({ message: 'roll it all up', division: 'executive' },
     { token: tokenFor({ divisionRoles: { executive: 'level3' } }),
       sqlOpts: { divisionRoles: { executive: 'level3' } } });
-  assert('executive says plainly that it is not wired up yet',
-    res.body.digest && res.body.digest.kind === 'unsupported', JSON.stringify(res.body.digest));
-  assert('  and the model is told not to substitute another division',
-    /Do not substitute a figure from another division/.test(JSON.stringify(sent[sent.length - 1])));
+  const first = sent[0];
+  assert('no division tool is offered for a division with no digest',
+    !(first.tools || []).some(t => t.name === 'get_division_figures'),
+    'offering a tool that can only fail is worse than offering none');
+  const prompt = JSON.stringify(first);
+  assert('  and the model is told it has no figures for it, and why',
+    /You have NO figures for the executive division/.test(prompt)
+      && /not wired into Mathis yet/.test(prompt));
+  assert('  and told not to answer with something else instead',
+    /Do not substitute a figure from another division/.test(prompt)
+      && /do not answer with their timesheet instead/.test(prompt),
+    'with no tool for the page it is on, the nearest tool is the tempting wrong answer');
 }
 {
   for (const div of ['quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
@@ -789,6 +939,225 @@ console.log('\n══════════ wiring ═════════
     /unknown, not zero/.test(widget) && /—/.test(widget));
 }
 
+// ── 12a. The tool enum is built from this caller's scope ───────────────────
+console.log('\n══════════ the tool enum ══════════');
+{
+  await call({ message: 'x', division: 'paving' });
+  const tool = (sent[0].tools || []).find(t => t.name === 'get_division_figures');
+  assert('a one-division user gets a one-entry enum',
+    tool && tool.input_schema.properties.division.enum.join(',') === 'paving',
+    tool && JSON.stringify(tool.input_schema.properties.division.enum));
+  assert('  and the schema names no division they cannot reach',
+    !JSON.stringify(sent[0].tools).match(/quarry|trucking|intercompany|kiewit/),
+    'the tool schema is prompt text the model can quote back');
+}
+{
+  await call({ message: 'x', division: 'paving' },
+    { token: tokenFor({ divisionRoles: { paving: 'level2', quarry: 'level3' } }),
+      sqlOpts: { divisionRoles: { paving: 'level2', quarry: 'level3' } } });
+  const tool = (sent[0].tools || []).find(t => t.name === 'get_division_figures');
+  assert('someone holding two divisions can reach both',
+    tool && tool.input_schema.properties.division.enum.slice().sort().join(',') === 'paving,quarry',
+    tool && JSON.stringify(tool.input_schema.properties.division.enum));
+}
+{
+  await call({ message: 'x', division: 'paving' },
+    { token: tokenFor({ isPlatformAdmin: true }), sqlOpts: { isPlatformAdmin: true } });
+  const tool = (sent[0].tools || []).find(t => t.name === 'get_division_figures');
+  assert('a platform admin reaches every division that has a digest',
+    tool && tool.input_schema.properties.division.enum.length === tools_.SUPPORTED.length,
+    tool && String(tool.input_schema.properties.division.enum.length));
+  assert('  but still none that does not',
+    tool && !tool.input_schema.properties.division.enum.includes('executive'));
+}
+{
+  await call({ message: 'hours?', division: 'paving' },
+    { token: tokenFor({ divisionRoles: { timesheet: 'level1' } }),
+      sqlOpts: { divisionRoles: { timesheet: 'level1' } } });
+  const names = (sent[0].tools || []).map(t => t.name);
+  assert('a field employee is offered their own timesheet and nothing else',
+    names.join(',') === 'get_my_timesheet', names.join(','));
+}
+
+// ── 12b. The enum is a hint; the check is the check ────────────────────────
+console.log('\n══════════ a tool call is re-authorised ══════════');
+{
+  // A model can emit any string. The enum said paving; this asks for quarry.
+  const res = await call({ message: 'quarry margin?', division: 'paving' }, {
+    script: [
+      { text: '', tools: [{ name: 'get_division_figures', input: { division: 'quarry' } }], stop: 'tool_use' },
+      { text: 'I cannot see the quarry.', stop: 'end_turn' },
+    ],
+  });
+  assert('a tool call naming an unauthorised division is refused', res.statusCode === 200);
+  const readKeys = queries.filter(q => /app_data|dust_|quarry_|timesheet_entries/.test(q.text))
+    .map(q => JSON.stringify(q.values));
+  assert('  no quarry data is read',
+    !readKeys.some(v => /quarry/i.test(v)),
+    'the enum is a hint to the model, not a constraint on the bytes');
+  assert('  and no digest reaches the client',
+    Array.isArray(res.body.digests) && res.body.digests.length === 0,
+    JSON.stringify(res.body.digests));
+
+  const results = sent[1].messages[sent[1].messages.length - 1].content;
+  assert('  the model is told so, as a tool error rather than a thrown turn',
+    results[0].type === 'tool_result' && results[0].is_error === true
+      && /not available to this user/.test(results[0].content), JSON.stringify(results[0]));
+  assert('  and told not to name the divisions they do hold',
+    /do not name other divisions/i.test(results[0].content));
+}
+{
+  const res = await call({ message: 'x', division: 'paving' }, {
+    script: [
+      { text: '', tools: [{ name: 'drop_tables', input: {} }], stop: 'tool_use' },
+      { text: 'ok', stop: 'end_turn' },
+    ],
+  });
+  const results = sent[1].messages[sent[1].messages.length - 1].content;
+  assert('a tool that does not exist is an error, not a crash',
+    res.statusCode === 200 && results[0].is_error === true
+      && /no tool called/i.test(results[0].content), JSON.stringify(results[0]));
+}
+
+// ── 12c. The loop stops ────────────────────────────────────────────────────
+console.log('\n══════════ the loop has ceilings ══════════');
+{
+  const oneCall = { text: '', tools: [{ name: 'get_division_figures', input: { division: 'paving' } }], stop: 'tool_use' };
+  const res = await call({ message: 'keep going', division: 'paving' }, {
+    script: [oneCall, oneCall, oneCall, { text: 'Done.', stop: 'end_turn' }, oneCall, oneCall],
+  });
+  assert('the model is called at most MAX_MODEL_CALLS times',
+    sent.length === handler.MAX_MODEL_CALLS, `${sent.length} of ${handler.MAX_MODEL_CALLS}`);
+  assert('  and the final turn keeps its tools but is told to stop calling them',
+    (sent[sent.length - 1].tools || []).length > 0
+      && sent[sent.length - 1].tool_choice
+      && sent[sent.length - 1].tool_choice.type === 'none',
+    'dropping tools while tool_use sits in the history is a 400, and a cache miss besides');
+  assert('  the answer still comes back', res.statusCode === 200 && /Done\./.test(res.body.answer));
+}
+{
+  const three = {
+    text: '',
+    tools: [
+      { name: 'get_division_figures', input: { division: 'paving' } },
+      { name: 'get_division_figures', input: { division: 'paving' } },
+      { name: 'get_division_figures', input: { division: 'paving' } },
+    ],
+    stop: 'tool_use',
+  };
+  const four = { text: '', tools: three.tools.concat([{ name: 'get_my_timesheet', input: {} }]), stop: 'tool_use' };
+  const res = await call({ message: 'everything', division: 'paving' }, {
+    script: [three, four, { text: 'Done.', stop: 'end_turn' }],
+  });
+  assert('no more than MAX_TOOL_CALLS tools run',
+    res.body.toolCallsUsed === handler.MAX_TOOL_CALLS,
+    `${res.body.toolCallsUsed} of ${handler.MAX_TOOL_CALLS}`);
+  const results = sent[2].messages[sent[2].messages.length - 1].content;
+  const spent = results.filter(r => /budget for this question is spent/.test(String(r.content)));
+  assert('  and the one over the line is told the budget is spent, not silently dropped',
+    spent.length === 1, `${spent.length} of ${results.length} results`);
+}
+
+// ── 12d. What goes back into the conversation ──────────────────────────────
+console.log('\n══════════ the turn that is replayed ══════════');
+{
+  await call({ message: 'x', division: 'paving' });
+  const msgs = sent[1].messages;
+  const assistant = msgs[msgs.length - 2];
+  const toolMsg   = msgs[msgs.length - 1];
+
+  assert('the assistant turn is replayed with its thinking block intact',
+    assistant.role === 'assistant'
+      && assistant.content.some(b => b.type === 'thinking' && b.signature === 'sig-abc'),
+    'a turn that drops them and then sends a tool result can be rejected');
+  assert('  a block type this code has never heard of survives untouched',
+    assistant.content.some(b => b.type === 'future_block' && b.data === 'opaque'),
+    'echoed rather than guessed at');
+  assert('  and the tool_use input was reassembled from split partial JSON',
+    assistant.content.some(b => b.type === 'tool_use' && b.input && b.input.division === 'paving'),
+    JSON.stringify(assistant.content.filter(b => b.type === 'tool_use')));
+
+  assert('every tool result goes back in ONE user message',
+    toolMsg.role === 'user' && Array.isArray(toolMsg.content)
+      && toolMsg.content.every(b => b.type === 'tool_result'),
+    'splitting them trains the model out of asking for more than one thing');
+}
+
+// ── 12e. More than one division in one answer ──────────────────────────────
+console.log('\n══════════ two divisions, one answer ══════════');
+{
+  const res = await call({ message: 'compare paving and the quarry', division: 'paving' }, {
+    token: tokenFor({ divisionRoles: { paving: 'level2', quarry: 'level3' } }),
+    sqlOpts: { divisionRoles: { paving: 'level2', quarry: 'level3' } },
+    script: [
+      { text: '', stop: 'tool_use', tools: [
+        { name: 'get_division_figures', input: { division: 'paving' } },
+        { name: 'get_division_figures', input: { division: 'quarry' } },
+      ] },
+      { text: 'Paving is ahead.', stop: 'end_turn' },
+    ],
+  });
+  assert('both divisions come back as digests', res.body.digests.length === 2,
+    JSON.stringify(res.body.digests.map(d => d.division)));
+  assert('  one of each', res.body.digests.map(d => d.division).sort().join(',') === 'paving,quarry');
+  assert('  and the user saw a step for each', res.body.steps.length === 2, JSON.stringify(res.body.steps));
+  assert('  with the first digest still under its old name for an older client',
+    res.body.digest && res.body.digest.division === res.body.digests[0].division);
+}
+
+// ── 12f. The event stream ──────────────────────────────────────────────────
+console.log('\n══════════ streaming ══════════');
+{
+  const res = await call({ message: 'profit?', division: 'paving' }, { sse: true });
+  assert('the stream is announced as one', res.statusCode === 200
+    && /text\/event-stream/.test(res.headers['Content-Type'] || ''), JSON.stringify(res.headers));
+  assert('  and asks proxies not to buffer it',
+    res.headers['X-Accel-Buffering'] === 'no' && /no-transform/.test(res.headers['Cache-Control'] || ''),
+    'a buffered stream is a slow non-stream that cost the complexity of streaming');
+  assert('  the response is closed when it ends', res.ended === true);
+
+  const kinds = res.frames.map(f => f.event);
+  assert('a step arrives before the figures it produced',
+    kinds.indexOf('step') >= 0 && kinds.indexOf('step') < kinds.indexOf('figures'),
+    kinds.join(','));
+  assert('  the figures arrive before done', kinds.indexOf('figures') < kinds.indexOf('done'));
+  assert('  done is last and arrives once',
+    kinds[kinds.length - 1] === 'done' && kinds.filter(k => k === 'done').length === 1, kinds.join(','));
+
+  const text = res.frames.filter(f => f.event === 'text').map(f => f.data.text).join('');
+  assert('the answer streams as deltas rather than one lump',
+    res.frames.filter(f => f.event === 'text').length >= 2 && text.length > 0,
+    `${res.frames.filter(f => f.event === 'text').length} text frames`);
+
+  const figures = res.frames.find(f => f.event === 'figures');
+  assert('  the figures frame carries a real digest',
+    figures && figures.data.division === 'paving' && Array.isArray(figures.data.rows));
+  assert('  with the model guidance stripped, as in the JSON path',
+    figures && figures.data.limits === undefined);
+
+  const done = res.frames[res.frames.length - 1].data;
+  assert('  and done carries what the client needs to continue',
+    typeof done.threadId === 'number' && typeof done.turnsRemaining === 'number',
+    JSON.stringify(done));
+}
+{
+  // A failure after the headers are out has no status code left to send, so it
+  // has to arrive as an event.
+  const err = Object.assign(new Error('upstream exploded'), { status: 500 });
+  const res = await call({ message: 'x', division: 'paving' }, { sse: true, error: err });
+  const last = res.frames[res.frames.length - 1];
+  assert('a mid-stream failure arrives as an error event, not a dead connection',
+    last && last.event === 'error' && /could not answer/i.test(last.data.error),
+    JSON.stringify(res.frames));
+  assert('  and the stream is closed', res.ended === true);
+}
+{
+  // The guards run before the stream opens, so they can still be HTTP errors.
+  const res = await call({ message: 'x', division: 'quarry' }, { sse: true });
+  assert('a refusal is still a 403, not a 200 carrying an error frame',
+    res.statusCode === 403 && res.raw === '', `${res.statusCode} / ${res.raw.slice(0, 60)}`);
+}
+
 // ── 13b. Every digest kind actually renders ────────────────────────────────
 // The gap this exists to close: Phase 2 added five digest kinds while the
 // widget still rendered two. The endpoint answered, the model talked about
@@ -829,7 +1198,7 @@ console.log('\n══════════ every digest kind renders ══�
       win.localStorage.setItem('fct_token', 'test-token');
       win.fetch = () => Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ ok: true, threadId: 1, answer, digest, turnsRemaining: 20 }),
+        json: () => Promise.resolve({ ok: true, threadId: 1, answer, digests: [digest], turnsRemaining: 20 }),
       });
       // The widget defers to DOMContentLoaded. Evaluating it before the
       // document settles registers a listener for an event that has already
@@ -899,6 +1268,185 @@ console.log('\n══════════ every digest kind renders ══�
     assert('a truncated breakdown says how many it is showing', /Top 15 of 42/.test(cap));
     assert('  and an unreadable book is called out as a floor',
       /Could not read: Other Billing/.test(cap) && /floor/.test(cap));
+  }
+}
+
+// ── 13d. The widget reads the stream ───────────────────────────────────────
+{
+  let JSDOM = null;
+  try { ({ JSDOM } = require('jsdom')); } catch { /* optional dev dependency */ }
+  if (!JSDOM) {
+    console.log('  ~ browser streaming (skipped: jsdom not installed)');
+  } else {
+    console.log('\n══════════ the widget reads the stream ══════════');
+    const widget = fs.readFileSync(root('mathis.js'), 'utf8');
+
+    const FRAMES = [
+      'event: step\ndata: {"label":"Reading Paving figures"}',
+      'event: text\ndata: {"text":"Those five jobs are "}',
+      'event: text\ndata: {"text":"projecting $340,000."}',
+      'event: figures\ndata: ' + JSON.stringify({
+        kind: 'jobs', division: 'paving', totalProjects: 2, includedProjects: 1, truncated: false,
+        rows: [{ name: 'Atwood Borough', jobNumber: '26040', contract: 123894,
+                 actualCost: 51390, projectedFinalCost: 84285, projectedProfit: 39609 }],
+      }),
+      'event: done\ndata: {"threadId":4242,"turnsRemaining":19,"turnsUsed":11}',
+    ].join('\n\n') + '\n\n';
+
+    // Split at a point that lands mid-frame, because a frame arriving across
+    // two reads is the normal case rather than the edge one.
+    const cut = FRAMES.indexOf('projecting') + 4;
+    const CHUNKS = [FRAMES.slice(0, cut), FRAMES.slice(cut)];
+
+    const boot = async (fetchImpl) => {
+      const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+        url: 'https://example.test/paving.html', runScripts: 'dangerously', pretendToBeVisual: true,
+      });
+      const win = dom.window;
+      if (!win.TextDecoder) win.TextDecoder = TextDecoder;
+      if (!win.TextEncoder) win.TextEncoder = TextEncoder;
+      win.localStorage.setItem('fct_token', 'test-token');
+      win.fetch = fetchImpl(win);
+      await new Promise(r => {
+        if (win.document.readyState === 'complete') r();
+        else win.addEventListener('load', r);
+      });
+      win.eval(widget);
+      win.document.getElementById('mathis-launch').click();
+      win.document.getElementById('mathis-input').value = 'profit on the last 5';
+      win.document.getElementById('mathis-send').click();
+      for (let i = 0; i < 40; i++) await new Promise(r => setImmediate(r));
+      return { win, html: win.document.getElementById('mathis-log').innerHTML };
+    };
+
+    const streamFetch = win => (url, opts) => {
+      streamFetch.lastAccept = opts.headers.Accept;
+      streamFetch.lastBody = JSON.parse(opts.body);
+      const enc = new TextEncoder();
+      let i = 0;
+      return Promise.resolve({
+        ok: true,
+        headers: { get: () => 'text/event-stream; charset=utf-8' },
+        body: { getReader: () => ({
+          read: () => Promise.resolve(i < CHUNKS.length
+            ? { done: false, value: enc.encode(CHUNKS[i++]) }
+            : { done: true }),
+        }) },
+      });
+    };
+
+    const { win, html } = await boot(streamFetch);
+    assert('the widget asks for the event stream', streamFetch.lastAccept === 'text/event-stream',
+      String(streamFetch.lastAccept));
+    assert('the streamed answer is assembled from its deltas',
+      /Those five jobs are projecting \$340,000\./.test(html), html.slice(0, 240));
+    assert('  even though a frame was split across two reads',
+      !/projecting$/.test(html) && html.indexOf('$340,000') > 0);
+    assert('the figures render from the figures frame',
+      /Atwood Borough/.test(html) && /\$123,894/.test(html));
+    assert('  and the progress step is gone once the answer is in',
+      !/Reading Paving figures/.test(html), 'a step is a status, not a message');
+
+    assert('the thread id from done is kept for the next question',
+      win.sessionStorage.getItem('fct_mathis_thread_paving') === '4242',
+      win.sessionStorage.getItem('fct_mathis_thread_paving'));
+
+    // A reload in the same tab picks the conversation back up.
+    const dom2 = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+      url: 'https://example.test/paving.html', runScripts: 'dangerously',
+    });
+    dom2.window.localStorage.setItem('fct_token', 'test-token');
+    dom2.window.sessionStorage.setItem('fct_mathis_thread_paving', '4242');
+    await new Promise(r => {
+      if (dom2.window.document.readyState === 'complete') r();
+      else dom2.window.addEventListener('load', r);
+    });
+    dom2.window.eval(widget);
+    dom2.window.document.getElementById('mathis-launch').click();
+    const opened = dom2.window.document.getElementById('mathis-log').innerHTML;
+    assert('reopening on the same division says the earlier questions are remembered',
+      /Picking up where we left off/.test(opened),
+      'an empty panel would imply Mathis had forgotten');
+
+    // ── Falling back ──────────────────────────────────────────────────────
+    let calls = 0;
+    const jsonOnly = () => (url, opts) => {
+      calls++;
+      return Promise.resolve({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: () => Promise.resolve({
+          ok: true, threadId: 7, answer: 'Fell back cleanly.', turnsRemaining: 12,
+          digests: [{ kind: 'jobs', division: 'paving', rows: [{ name: 'Atwood Borough', contract: 1 }] }],
+        }),
+      });
+    };
+    const fb = await boot(jsonOnly);
+    assert('a server that answers with JSON is handled without a second request',
+      calls === 1 && /Fell back cleanly\./.test(fb.html), `${calls} calls`);
+    assert('  and its digests still render', /Atwood Borough/.test(fb.html));
+
+    // A stream that dies before anything is shown is retried once as JSON.
+    let attempts = 0;
+    const dyingThenJson = () => (url, opts) => {
+      attempts++;
+      if (opts.headers.Accept === 'text/event-stream') return Promise.reject(new Error('proxy refused'));
+      return Promise.resolve({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: () => Promise.resolve({ ok: true, threadId: 9, answer: 'Recovered.', turnsRemaining: 8, digests: [] }),
+      });
+    };
+    const rec = await boot(dyingThenJson);
+    assert('a stream that fails before showing anything is retried as JSON',
+      attempts === 2 && /Recovered\./.test(rec.html), `${attempts} attempts`);
+
+    // An error the server reports is a result, not a reason to ask again.
+    let errCalls = 0;
+    const errorFrame = () => (url, opts) => {
+      errCalls++;
+      const enc = new TextEncoder();
+      let done = false;
+      return Promise.resolve({
+        ok: true,
+        headers: { get: () => 'text/event-stream' },
+        body: { getReader: () => ({
+          read: () => {
+            if (done) return Promise.resolve({ done: true });
+            done = true;
+            return Promise.resolve({ done: false,
+              value: enc.encode('event: error\ndata: {"error":"Mathis is busy right now."}\n\n') });
+          },
+        }) },
+      });
+    };
+    const errRes = await boot(errorFrame);
+    assert('an error event is shown and not retried',
+      errCalls === 1 && /Mathis is busy right now\./.test(errRes.html), `${errCalls} calls`);
+
+    // A function that hits its duration ceiling mid-answer closes the socket
+    // with no done frame. Silence there looks exactly like a finished answer.
+    let cutCalls = 0;
+    const cutOff = () => (url, opts) => {
+      cutCalls++;
+      if (opts.headers.Accept !== 'text/event-stream') {
+        return Promise.resolve({ ok: true, headers: { get: () => 'application/json' },
+          json: () => Promise.resolve({ ok: true, threadId: 3, answer: 'Second time lucky.', digests: [] }) });
+      }
+      const enc = new TextEncoder();
+      let n = 0;
+      return Promise.resolve({
+        ok: true, headers: { get: () => 'text/event-stream' },
+        body: { getReader: () => ({ read: () => Promise.resolve(
+          n++ === 0 ? { done: false, value: enc.encode('event: text\ndata: {"text":"Half an ans"}\n\n') }
+                    : { done: true }) }) },
+      });
+    };
+    const cutRes = await boot(cutOff);
+    assert('a stream cut off after some text says so rather than looking finished',
+      /connection ended early/i.test(cutRes.html), cutRes.html.slice(-200));
+    assert('  and is not retried, which would print the half twice',
+      cutCalls === 1 && (cutRes.html.match(/Half an ans/g) || []).length === 1, `${cutCalls} calls`);
   }
 }
 

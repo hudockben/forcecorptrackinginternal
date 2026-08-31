@@ -192,7 +192,14 @@ async function quarryDigest(c, opts = {}) {
       contributionPerTon: money(m.breakEven.contribution),
       monthlyFixedCost:   money(m.breakEven.monthlyFixed),
       breakEvenTons:  m.breakEven.breakEvenTons === null ? null : round2(m.breakEven.breakEvenTons),
-      status:         safeText(m.breakEven.status, 60),
+      // breakEvenStatus returns {tone, value, sub}, not a string. Passing the
+      // object through safeText stringified it to "[object Object]" — which
+      // the model would have read as the status and could have repeated.
+      status: m.breakEven.status ? {
+        state: safeText(m.breakEven.status.value, 40),
+        note:  safeText(m.breakEven.status.sub, 120),
+        tone:  safeText(m.breakEven.status.tone, 12),
+      } : null,
     } : null,
     limits: QUARRY_LIMITS,
   };
