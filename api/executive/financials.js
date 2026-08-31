@@ -15,15 +15,11 @@ const { neon }                           = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
 const report                             = require('./report');
 
-// Divisions that carry bid items and a contract value. Trucking, dust and
-// quarry have neither jobs nor bids, so a job financials row cannot exist.
-const DIVISIONS = [
-  { key: 'turf',   name: 'Turf',   read: report.readTurfProjects },
-  { key: 'paving', name: 'Paving', read: report.readPavingProjects },
-  { key: 'kiewit', name: 'Kiewit', read: report.readKiewitProjects },
-];
-
-const num = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
+// The division list and the row/summary shaping live in ../lib/job-financials
+// so that anything else answering questions about profit — api/ai/mathis.js
+// among them — means exactly what this report means by the word, instead of
+// becoming the fourth copy this file's header warns about.
+const { JOB_DIVISIONS: DIVISIONS, rowsFor, summarise } = require('../lib/job-financials');
 
 // Only a literal YYYY-MM-DD is accepted. Anything else is treated as absent
 // rather than passed down as a half-understood bound, so a malformed date
@@ -31,66 +27,6 @@ const num = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
 // nobody asked for.
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const asDate = v => (typeof v === 'string' && ISO_DATE.test(v) && !isNaN(Date.parse(v + 'T00:00:00Z'))) ? v : null;
-
-function rowsFor(division, projects, fin, ranged) {
-  return projects.map(p => {
-    const f         = (fin && fin.perProject && fin.perProject.get(p.id)) || {};
-    const contract  = num(report.projContract(p));
-    const bid       = num(f.bid);
-    const actual    = num(f.actual);
-    const projected = num(f.projected);
-    const status    = report.projStatus(p) || '';
-    return {
-      id:        p.id,
-      name:      report.projName(p),
-      jobNumber: report.projJob(p) || '',
-      division:  division.key,
-      divisionName: division.name,
-      status,
-      inProgress: status === 'In Progress',
-      complete:   report.projIsComplete(p),
-      contract, bid, actual, projected,
-      // Only present when a window was asked for, so a client that sent no
-      // dates cannot mistake a lifetime figure for a windowed one.
-      ...(ranged ? { rangeActual: num(f.rangeActual), rangeRows: num(f.rangeRows) } : {}),
-      variance: bid - actual,
-      // A job with no contract has no revenue to subtract a cost from, so its
-      // profit is unknown rather than negative. null, not 0.
-      profit:    contract ? contract - projected : null,
-      // Realised profit needs spend behind it as well as a contract; contract
-      // minus nothing would post an unstarted job as pure margin.
-      actProfit: (contract && actual) ? contract - actual : null,
-    };
-  });
-}
-
-// Same shape as the division home strips: the live figures describe work in
-// progress, Actual Profit describes finished work.
-function summarise(rows) {
-  const live = rows.filter(r => r.inProgress);
-  const done = rows.filter(r => r.complete && r.actProfit !== null);
-  const sum  = (list, k) => list.reduce((s, r) => s + (r[k] || 0), 0);
-  const withContract = live.filter(r => r.profit !== null);
-  const ranged = rows.some(r => r.rangeActual !== undefined);
-  return {
-    // Windowed spend totals every job that booked cost in the window, not just
-    // the live ones — money spent on a job that has since finished was still
-    // spent in that period.
-    ...(ranged ? { rangeActual: sum(rows, 'rangeActual'),
-                   rangeJobs:   rows.filter(r => (r.rangeRows || 0) > 0).length } : {}),
-    activeProjects: live.length,
-    totalProjects:  rows.length,
-    contract:  sum(live, 'contract'),
-    bid:       sum(live, 'bid'),
-    actual:    sum(live, 'actual'),
-    variance:  sum(live, 'bid') - sum(live, 'actual'),
-    projProfit:     withContract.length ? sum(withContract, 'profit') : null,
-    projProfitBase: sum(withContract, 'contract'),
-    actProfit:      done.length ? sum(done, 'actProfit') : null,
-    actProfitBase:  sum(done, 'contract'),
-    completedJobs:  done.length,
-  };
-}
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');

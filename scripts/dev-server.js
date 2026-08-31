@@ -126,6 +126,15 @@ function isLegacyKey(k) {
     || /^fct_crm_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_lucius_[a-zA-Z0-9_-]+$/.test(k)
     || /^fct_conschedule_[a-zA-Z0-9_-]+$/.test(k)
+    // Mirrors the prefixes api/data/[key].js allows. Without these the paving,
+    // kiewit, quarry, intercompany and scheduler blobs 400 locally, so the
+    // division most of this app's job financials live in could not be
+    // exercised on a dev box at all.
+    || /^fct_paving_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_kiewit_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_quarry_[a-zA-Z0-9_-]+$/.test(k)
+    || /^fct_intercompany[_a-zA-Z0-9-]*$/.test(k)
+    || /^fct_scheduler[_a-zA-Z0-9-]*$/.test(k)
     || /^dust_[a-zA-Z0-9_-]+$/.test(k);
 }
 

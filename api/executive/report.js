@@ -104,14 +104,23 @@ function fmtTons(n) {
 // pre-dates those columns. Reading the blob is what the home pages do
 // and is therefore the only source guaranteed to match what the user
 // sees on screen.
-async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legacyArrayKey) {
+// `opts.limit` caps how many projects are read. The index is maintained
+// pinned-first / most-recent-first by the home pages, so the first N are the
+// N most recently worked jobs — which is what "the last 5 projects" means to
+// the people who maintain that list. Without it every caller pays for every
+// project blob a company has ever had, and a five-row answer would read four
+// hundred blobs to build itself. Omitting it reads everything, unchanged.
+async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legacyArrayKey, opts) {
+  const rawLimit = opts && opts.limit;
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : null;
   const idxRow = await sql`
     SELECT value FROM app_data WHERE key = ${`${companyCode}:${indexKey}`}
   `;
   const idx = idxRow[0]?.value;
-  const ids = Array.isArray(idx)
+  const allIds = Array.isArray(idx)
     ? idx
     : (idx && Array.isArray(idx.ids) ? idx.ids : []);
+  const ids = limit ? allIds.slice(0, limit) : allIds;
 
   if (ids.length) {
     const keys = ids.map(id => `${companyCode}:${projKeyPrefix}${id}`);
@@ -130,14 +139,15 @@ async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legac
       SELECT value FROM app_data WHERE key = ${`${companyCode}:${legacyArrayKey}`}
     `;
     const v = r[0]?.value;
-    return Array.isArray(v) ? v.filter(p => p && typeof p === 'object') : [];
+    const list = Array.isArray(v) ? v.filter(p => p && typeof p === 'object') : [];
+    return limit ? list.slice(0, limit) : list;
   }
   return [];
 }
 
-const readTurfProjects   = (sql, cc) => readProjectBlobs(sql, cc, 'fct_projects_index',        'fct_project_',        'fct_projects');
-const readPavingProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_paving_projects_index', 'fct_paving_project_', 'fct_paving_projects');
-const readKiewitProjects = (sql, cc) => readProjectBlobs(sql, cc, 'fct_kiewit_projects_index', 'fct_kiewit_project_', 'fct_kiewit_projects');
+const readTurfProjects   = (sql, cc, opts) => readProjectBlobs(sql, cc, 'fct_projects_index',        'fct_project_',        'fct_projects',        opts);
+const readPavingProjects = (sql, cc, opts) => readProjectBlobs(sql, cc, 'fct_paving_projects_index', 'fct_paving_project_', 'fct_paving_projects', opts);
+const readKiewitProjects = (sql, cc, opts) => readProjectBlobs(sql, cc, 'fct_kiewit_projects_index', 'fct_kiewit_project_', 'fct_kiewit_projects', opts);
 
 // The divisions that run jobs: each has projects, bid items and a contract
 // value, and each has a home page whose layout this report mirrors. Trucking,

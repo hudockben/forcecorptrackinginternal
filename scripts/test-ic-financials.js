@@ -35,29 +35,51 @@ console.log('\n══════════ api/executive/financials.js ══
 const fin    = require(root('api/executive/financials.js'));
 const report = require(root('api/executive/report.js'));
 const finSrc = fs.readFileSync(root('api/executive/financials.js'), 'utf8');
+// rowsFor/summarise moved to api/lib/job-financials.js when api/ai/mathis.js
+// became a second caller. They are required here rather than scraped out of
+// the source, so these tests now drive the same function the endpoint runs.
+const jobFin    = require(root('api/lib/job-financials.js'));
+const jobFinSrc = fs.readFileSync(root('api/lib/job-financials.js'), 'utf8');
 
 console.log('\n[it reuses the cost logic rather than copying it]');
-for (const fn of ['readTurfProjects', 'readPavingProjects', 'readKiewitProjects', 'buildFinancials']) {
+for (const fn of ['readTurfProjects', 'readPavingProjects', 'readKiewitProjects', 'buildFinancials', 'projContract']) {
   assert(`report.js exports ${fn}`, typeof report[fn] === 'function');
 }
+// projContract reads the contract value off the blob. It is the reason nothing
+// here touches projects.contract_amount — that column is TEXT and always empty,
+// and paving/kiewit have no projects row at all, so a reader that trusted it
+// would report every job as unprofitable rather than as unknown.
+assert('  and projContract reads the blob, not the empty contract_amount column',
+  report.projContract({ 'contract-amount': '1,250,000' }) === 1250000
+  && report.projContract({ 'revised-amount': '900000', 'contract-amount': '800000' }) === 900000
+  && report.projContract({}) === 0);
 assert('the endpoint requires report.js', /require\('\.\/report'\)/.test(finSrc));
+assert('  and the shared lib does too', /require\('\.\.\/executive\/report'\)/.test(jobFinSrc));
+assert('  the row and summary shaping is shared, not inlined in the endpoint',
+  /require\('\.\.\/lib\/job-financials'\)/.test(finSrc)
+  && !/function rowsFor|function summarise/.test(finSrc),
+  'a private copy here is how the profit column drifted between pages before');
 assert('  and does not reimplement the projection',
   !/projForBidItem|running_item_cost|elapsed/.test(finSrc),
   'a second copy of the projection is how the division pages drifted apart');
 
 console.log('\n[every division that runs jobs is covered]');
 for (const d of ['turf', 'paving', 'kiewit']) {
-  assert(`${d} is read`, new RegExp(`key: '${d}'`).test(finSrc));
+  assert(`${d} is read`, new RegExp(`key: '${d}'`).test(jobFinSrc));
+  assert(`  and ${d} is reachable by key`, jobFin.jobDivision(d) && jobFin.jobDivision(d).key === d);
 }
 assert('trucking, dust and quarry are not — they have no bids or contracts',
-  !/'trucking'|'dust'|'quarry'/.test(finSrc));
+  !/'trucking'|'dust'|'quarry'/.test(jobFinSrc));
+assert('  and asking for one by key gets nothing rather than a turf answer',
+  jobFin.jobDivision('trucking') === null && jobFin.jobDivision('quarry') === null,
+  'a silent fallback here would answer a trucking profit question with turf jobs');
 
 console.log('\n[it is not the curated executive portfolio]');
 assert('no 12-project cap', !/slice\(0, ?12\)/.test(finSrc));
 assert('no executive job-number cutoff', !/projMeetsExecCutoff/.test(finSrc));
 assert('completed jobs are kept, since Actual Profit is about them',
-  /complete:\s*report\.projIsComplete/.test(finSrc)
-  && !/!projIsComplete\(p\)/.test(finSrc));
+  /complete:\s*report\.projIsComplete/.test(jobFinSrc)
+  && !/!projIsComplete\(p\)/.test(jobFinSrc));
 assert('it is gated on intercompany access, not executive',
   /hasDivisionAccess\(payload, 'intercompany'\)/.test(finSrc));
 assert('  and rejects a caller without it', /403/.test(finSrc));
@@ -68,16 +90,7 @@ assert('each division read is caught individually',
 
 // summarise() is the arithmetic the report leans on, so drive it directly.
 console.log('\n[the summary splits live work from finished work]');
-const summarise = (() => {
-  const start = finSrc.indexOf('function summarise(');
-  let depth = 0;
-  for (let j = finSrc.indexOf('{', start); j < finSrc.length; j++) {
-    if (finSrc[j] === '{') depth++;
-    else if (finSrc[j] === '}' && --depth === 0) {
-      return new Function(`${finSrc.slice(start, j + 1)}; return summarise;`)();
-    }
-  }
-})();
+const { summarise } = jobFin;
 const row = o => ({
   inProgress: o.status === 'In Progress', complete: o.status === 'Complete',
   contract: o.contract, bid: o.bid, actual: o.actual, projected: o.projected,

@@ -8,6 +8,11 @@
       "memory": 2048,
       "maxDuration": 60
     },
+    "api/ai/mathis.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 60
+    },
     "api/**/*.js": {
       "includeFiles": "api/**"
     }
@@ -25,6 +30,12 @@
     },
     {
       "source": "/:path*.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "private, max-age=300, stale-while-revalidate=600" }
+      ]
+    },
+    {
+      "source": "/:path*.js",
       "headers": [
         { "key": "Cache-Control", "value": "private, max-age=300, stale-while-revalidate=600" }
       ]
