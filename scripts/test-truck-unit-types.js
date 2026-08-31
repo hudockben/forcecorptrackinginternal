@@ -366,7 +366,7 @@ function renderPanel(state, drive) {
     const groups = r.schedGroupedItems('2026-08-27');
     const labels = groups.map(g => g.label);
     assert('the sheet reads as sections, empty ones dropped',
-      labels.join(' | ') === 'Tri-Axle | Lowboy | Dust Control | Other', labels.join(' | '));
+      labels.join(' | ') === 'Tri-Axle | Lowboy | EES | Other', labels.join(' | '));
     assert('and the tri-axles are together — the point of the whole thing',
       groups[0].rows.map(a => a.id).join(',') === '1,3', groups[0].rows.map(a => a.id).join(','));
     assert('every haul is in exactly one section',
