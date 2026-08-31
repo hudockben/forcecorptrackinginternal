@@ -183,8 +183,39 @@ const FOREIGN_TRUCK_ENTRIES = [
     driver: 'Someone Else', customer: 'Another Company', invoice_sent_date: null, date_paid: null },
 ];
 
+// Purchase orders, as api/purchase-orders.js stores them: value lives on the
+// lines, not on the PO. po1 is 100 x 12.50 + 40 tax, plus 20 x 5 = 1,390.
+// po2 is 3 x 1,000 + 60 = 3,060 and points at a project outside the window
+// this digest reads. po3 is 2 x 250 = 500. Total 4,950.
+//
+// The note on po1 is the point of the redaction assertion: it is free text a
+// colleague typed, it carries somebody's phone number, and no question about
+// a purchase order needs it.
+const PURCHASE_ORDERS = [
+  { id: 'po1', po_number: 'PO-1041', date_created: '2026-05-02', project_id: 'p1',
+    cost_code: '2100', sub_code: 'A', title: 'Base stone', supplier: 'Fisher Quarry',
+    status: 'Received', notes: 'call Dave about the short load, cell 555-0134',
+    lines: [{ qty: 100, unit_cost: 12.5, tax: 40 }, { qty: 20, unit_cost: 5, tax: 0 }] },
+  { id: 'po2', po_number: 'PO-1042', date_created: '2026-05-09', project_id: 'p9',
+    cost_code: '2200', sub_code: '', title: 'Tack coat', supplier: 'Fisher Quarry',
+    status: 'Open', notes: '', lines: [{ qty: 3, unit_cost: 1000, tax: 60 }] },
+  { id: 'po3', po_number: 'PO-1043', date_created: '2026-05-11', project_id: 'p2',
+    title: 'Guide rail', supplier: 'Keystone Steel', status: 'Open',
+    lines: [{ qty: 2, unit_cost: 250, tax: 0 }] },
+];
+
+// The cost-code catalogue: what the division bids against. Not spend.
+const COST_ROWS = [
+  { cost_code: '2100', sub_code: 'A', description: 'Base repair', quantity: 100,
+    bid_item_cost: 1066.16, status: 'Active' },
+  { cost_code: '2200', sub_code: '', description: 'Tack coat', quantity: 40,
+    bid_item_cost: 55, status: 'Active' },
+];
+
 const BLOBS = {
   'fct_paving_projects_index': { ids: ['p1', 'p2'] },
+  'fct_purchase_orders:paving': PURCHASE_ORDERS,
+  'fct_paving_cost_rows': COST_ROWS,
   'fct_truck_division': TRUCK_ENTRIES,
   'fct_intercompany_billing_entries': [],
   'fct_intercompany_rates': {},
@@ -1246,6 +1277,138 @@ console.log('\n══════════ what a digest is about ═══�
     JSON.stringify(d && d.covers));
 }
 
+// ── 11c. Purchase orders and the cost-code catalogue ───────────────────────
+// A job division is not only its jobs. What was ordered, from whom, against
+// which job, and which codes the division bids against are all questions
+// somebody asks standing on the same page — and until now every one of them
+// got a projected-profit answer, because profit was all the digest held.
+console.log('\n══════════ purchase orders and cost codes ══════════');
+{
+  const res = await call({ message: 'what have we ordered', division: 'paving' });
+  const d = res.body.digest;
+  const po = d && d.purchaseOrders;
+  // `limits` is stripped before the digest reaches the browser — it is
+  // guidance addressed to the model — so the limit assertions below read what
+  // the model was actually sent, which is the thing that has to be true.
+  const modelSaw = JSON.stringify(sent[sent.length - 1]);
+
+  // The whole reason readScopedBlob exists. The key is
+  // 'fct_purchase_orders:paving', which starts with no prefix divisionForKey
+  // knows, so deriving the check from the key would resolve it to turf and
+  // refuse a paving foreman their own division's purchase orders.
+  assert('a paving user gets paving\'s purchase orders',
+    po && po.count === 3, JSON.stringify(d && Object.keys(d)));
+
+  assert('  a PO is worth quantity x unit cost, plus tax, across its lines',
+    po && po.rows.rows.find(r => r.poNumber === 'PO-1041').value === 1390,
+    JSON.stringify(po && po.rows.rows));
+  assert('  and the division total is the sum of them',
+    po && po.totalValue === 4950, String(po && po.totalValue));
+  assert('  ordered biggest first, so "the largest PO" is answerable',
+    po && po.rows.rows[0].poNumber === 'PO-1042',
+    JSON.stringify(po && po.rows.rows.map(r => r.poNumber)));
+  assert('  a supplier\'s POs are added up, so "who did we order most from" is too',
+    po && po.bySupplier.rows[0].supplier === 'Fisher Quarry'
+       && po.bySupplier.rows[0].value === 4450,
+    JSON.stringify(po && po.bySupplier.rows));
+  assert('  and counted by status, so "what is still open" is too',
+    po && po.byStatus.Open === 2 && po.byStatus.Received === 1,
+    JSON.stringify(po && po.byStatus));
+  assert('  a PO says which job it is against, by name rather than by id',
+    po && po.rows.rows.find(r => r.poNumber === 'PO-1041').job === 'Atwood Borough',
+    JSON.stringify(po && po.rows.rows.map(r => r.job)));
+  assert('  and a job outside the window is null, not a raw id',
+    po && po.rows.rows.find(r => r.poNumber === 'PO-1042').job === null,
+    'an id nobody can read is worse than nothing');
+  assert('  which the limits say plainly, so null is not read as unassigned',
+    /outside the window/i.test(modelSaw) && /not that the PO is unassigned/i.test(modelSaw),
+    'a null job read as unassigned is a wrong answer about a real PO');
+
+  // Free text a colleague typed, carrying a phone number, answering nothing.
+  assert('  the free-text note never leaves the database',
+    !/555-0134/.test(JSON.stringify(d)) && !/notes/.test(JSON.stringify(po)),
+    'every field that reaches the model is surface, and this one buys nothing');
+
+  const cc = d && d.costCodes;
+  assert('the cost-code catalogue reaches the digest', cc && cc.count === 2,
+    JSON.stringify(cc));
+  assert('  with the description, so a code can be named in words',
+    cc && cc.rows.rows.find(r => r.costCode === '2100').description === 'Base repair',
+    JSON.stringify(cc && cc.rows.rows));
+  assert('  and its quantity and unit cost',
+    cc && cc.rows.rows.find(r => r.costCode === '2100').unitCost === 1066.16);
+
+  assert('the digest says it covers both, so the rule lets it answer about them',
+    d.covers.some(c => /purchase order/i.test(c)) && d.covers.some(c => /cost-code/i.test(c)),
+    JSON.stringify(d.covers));
+
+  // The failure this is here to stop: a PO added to actual cost double-counts
+  // the same concrete, once when it was ordered and once when it was placed.
+  assert('  and the limits say a PO is what was ordered, never what was spent',
+    /never be added to a job/i.test(modelSaw) && /already counts the delivered material/i.test(modelSaw),
+    'adding a PO to actual cost counts the same concrete twice');
+  assert('  and that the catalogue is a catalogue, not spend',
+    /catalogue, not spend/i.test(modelSaw));
+}
+{
+  // Absent and empty are different answers. "None on file" is a fact; "I do
+  // not have purchase orders" is wrong when the division simply has none yet.
+  const res = await call({ message: 'any POs?', division: 'paving' },
+    { sqlOpts: { emptyBlobs: ['fct_purchase_orders:paving', 'fct_paving_cost_rows'] } });
+  const d = res.body.digest;
+  assert('a division with no POs on file reports none rather than silence',
+    d.purchaseOrders && d.purchaseOrders.count === 0
+      && d.covers.some(c => /purchase order/i.test(c)),
+    JSON.stringify(d.purchaseOrders));
+  assert('  and the same for an empty cost-code catalogue',
+    d.costCodes && d.costCodes.count === 0);
+}
+{
+  // A read that fails is not a zero. Claiming to cover a subject whose figures
+  // never arrived is how a database outage becomes "we have no POs".
+  const res = await call({ message: 'any POs?', division: 'paving' },
+    { sqlOpts: { unreadableBlobs: ['fct_purchase_orders:paving'] } });
+  const d = res.body.digest;
+  assert('a failed read drops the subject instead of reporting zero',
+    !d.purchaseOrders && !d.covers.some(c => /purchase order/i.test(c)),
+    JSON.stringify(d.covers));
+}
+{
+  // The authorisation readScopedBlob does itself. Its own caller always passes
+  // an authorised division, so this asserts the guard directly: the day
+  // somebody wires a raw client value through it, the read has to fail.
+  const digests = require(root('api/lib/mathis-digests.js'));
+  sqlImpl = makeSql({});
+  const c = { sql: sqlImpl, companyCode: COMPANY, authz: { divisionRoles: { paving: 'level2' } } };
+  const key = d => `fct_purchase_orders:${d}`;
+
+  const mine = await digests.readScopedBlob(c, key, 'paving');
+  assert('readScopedBlob serves a division the caller holds', mine.status === 'ok',
+    JSON.stringify(mine));
+  const theirs = await digests.readScopedBlob(c, key, 'kiewit');
+  assert('  and refuses one they do not', theirs.status === 'denied', JSON.stringify(theirs));
+  assert('  without ever running the query',
+    !queries.some(q => /fct_purchase_orders:kiewit/.test(JSON.stringify(q.values))),
+    'a denied read must not touch the row at all');
+
+  // The key is built from the division the check RETURNED, not from anything
+  // the caller carried alongside it. Handing those in separately is how a read
+  // ends up authorised for one division and pointed at another's row; here
+  // that combination cannot be written. The path-ish string below normalises
+  // to 'paving' — so the read must go to paving's own row and nowhere else.
+  sqlImpl = makeSql({});
+  const c2 = { sql: sqlImpl, companyCode: COMPANY, authz: { divisionRoles: { paving: 'level2' } } };
+  const odd = await digests.readScopedBlob(c2, key, '../../paving');
+  assert('  and a read cannot be steered away from the division it was cleared for',
+    odd.division === 'paving'
+      && queries.every(q => !/fct_purchase_orders:(?!paving)/.test(JSON.stringify(q.values))),
+    JSON.stringify(queries.map(q => q.values)));
+
+  const nonsense = await digests.readScopedBlob(c2, key, 'not_a_division');
+  assert('  and a name that is no division at all is refused',
+    nonsense.status === 'denied' && nonsense.division === null, JSON.stringify(nonsense));
+}
+
 // ── 12a. The tool enum is built from this caller's scope ───────────────────
 console.log('\n══════════ the tool enum ══════════');
 {
@@ -1913,6 +2076,125 @@ console.log('\n══════════ every digest kind renders ══�
     assert('  clicking again does not post twice', posted.length === 1, `${posted.length} posts`);
     assert('  and the other verdict is closed off too',
       acts.find(b => /good answer/.test(b.textContent)).disabled === true);
+  }
+}
+
+// ── 13e2. The sections a job digest now carries ────────────────────────────
+// The digest holds four subjects at once — jobs, rubber, purchase orders, the
+// cost-code catalogue — because the next question could be about any of them
+// and a second round-trip to find out is a second round-trip. Two failures
+// follow from that, and both are in the DOM rather than the server:
+//
+//   Painting nothing. Until now renderJobs returned early on an empty rows
+//   array, so a turf digest whose jobs list was empty painted no rubber, and
+//   every figure the user got came from the model's prose instead.
+//
+//   Painting everything. Four tables under an answer about profit buries the
+//   one that was asked for.
+{
+  let JSDOM = null;
+  try { ({ JSDOM } = require('jsdom')); } catch { /* optional dev dependency */ }
+  if (!JSDOM) {
+    console.log('  ~ job-digest sections (skipped: jsdom not installed)');
+  } else {
+    console.log('\n══════════ the sections under an answer ══════════');
+    const widget = fs.readFileSync(root('mathis.js'), 'utf8');
+    const SUPPLIER = '<b>Fisher</b> "Quarry"';
+    const DIGEST = {
+      kind: 'jobs', division: 'turf', totalProjects: 1, includedProjects: 1,
+      covers: ['per-job figures', 'purchase orders', 'the cost-code catalogue'],
+      rows: [{ name: 'Atwood Borough', jobNumber: '26040', contract: 123894,
+               actualCost: 51390, projectedFinalCost: 84285, projectedProfit: 39609 }],
+      rubberInventory: { rows: [{ rubberType: 'Crumb', produced: 40, used: 12, inStock: 28 }],
+                         total: 1, truncated: false },
+      purchaseOrders: {
+        count: 2, totalValue: 4450, byStatus: { Open: 1, Received: 1 },
+        bySupplier: { rows: [{ supplier: SUPPLIER, value: 4450 }], total: 1, truncated: false },
+        rows: { rows: [
+          { poNumber: 'PO-1042', title: 'Tack coat', supplier: SUPPLIER, status: 'Open',
+            job: null, value: 3060 },
+          { poNumber: 'PO-1041', title: 'Base stone', supplier: SUPPLIER, status: 'Received',
+            job: 'Atwood Borough', value: 1390 },
+        ], total: 2, truncated: false },
+      },
+      costCodes: { count: 1, rows: {
+        rows: [{ costCode: '2100', subCode: 'A', description: 'Base repair',
+                 quantity: 100, unitCost: 1066.16, status: 'Active' }],
+        total: 1, truncated: false } },
+    };
+
+    const boot = async digest => {
+      const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+        url: 'https://example.test/turf.html', runScripts: 'dangerously', pretendToBeVisual: true,
+      });
+      const win = dom.window;
+      win.localStorage.setItem('fct_token', 'test-token');
+      win.fetch = () => Promise.resolve({
+        ok: true, headers: { get: () => 'application/json' },
+        json: () => Promise.resolve({
+          ok: true, threadId: 1, answer: 'Here you go.', digests: [digest], turnsRemaining: 20,
+        }),
+      });
+      await new Promise(r => {
+        if (win.document.readyState === 'complete') r();
+        else win.addEventListener('load', r);
+      });
+      win.eval(widget);
+      win.document.getElementById('mathis-launch').click();
+      win.document.getElementById('mathis-input').value = 'what did we order';
+      win.document.getElementById('mathis-send').click();
+      for (let i = 0; i < 30; i++) await new Promise(r => setImmediate(r));
+      return win.document;
+    };
+
+    const doc = await boot(DIGEST);
+    const secs = [...doc.querySelectorAll('.mathis-sec')];
+    const titles = secs.map(d => d.querySelector('summary').textContent);
+    assert('every subject the digest carries gets a section on screen',
+      secs.length === 3 && /Rubber/.test(titles[0]) && /Purchase orders/.test(titles[1])
+        && /Cost codes/.test(titles[2]), JSON.stringify(titles));
+    assert('  each one closed, so the answer that was asked for stays first',
+      secs.every(d => !d.open),
+      'four tables under a profit question buries the profit');
+    assert('  and the jobs table, which was asked for, is not one of them',
+      !/Job/.test(titles.join(' ')) && /Atwood Borough/.test(doc.body.textContent));
+
+    const poSec = secs[1];
+    assert('a PO section shows what was ordered, from the digest',
+      /3,060/.test(poSec.textContent) && /4,450/.test(poSec.textContent),
+      poSec.textContent.slice(0, 160));
+    assert('  and says plainly that ordered is not spent',
+      /not spend/i.test(doc.body.textContent),
+      'a reader adding a PO to actual cost counts the same concrete twice');
+    assert('  and that a blank job is a window, not an unassigned PO',
+      /outside the window/i.test(doc.body.textContent));
+    assert('  with the supplier escaped — it is free text a colleague typed',
+      poSec.textContent.includes('<b>Fisher</b>') && !poSec.innerHTML.includes('<b>Fisher</b>'),
+      poSec.innerHTML.slice(0, 200));
+    assert('a cost code is shown with its sub-code, as the page writes it',
+      /2100-A/.test(secs[2].textContent), secs[2].textContent.slice(0, 120));
+    assert('rubber stock is a figure on screen, not a sentence from the model',
+      /Crumb/.test(secs[0].textContent) && /28/.test(secs[0].textContent));
+
+    // The early return this replaced: a turf digest with no open jobs painted
+    // nothing at all, so the rubber figures existed only in the model's prose.
+    const noJobs = await boot(Object.assign({}, DIGEST, {
+      rows: [], totalProjects: 0, includedProjects: 0, purchaseOrders: null, costCodes: null,
+    }));
+    assert('a division with no open jobs still shows the stock it holds',
+      /Crumb/.test(noJobs.body.textContent),
+      'returning early on an empty jobs list dropped every other figure with it');
+
+    // And nothing invented: a digest carrying only jobs must paint only jobs.
+    const jobsOnly = await boot({
+      kind: 'jobs', division: 'paving', totalProjects: 1, includedProjects: 1,
+      rows: [{ name: 'Moon Township', contract: 1000, actualCost: 100,
+               projectedFinalCost: 400, projectedProfit: 600 }],
+    });
+    assert('  and a digest with none of them paints no empty sections',
+      jobsOnly.querySelectorAll('.mathis-sec').length === 0
+        && /Moon Township/.test(jobsOnly.body.textContent),
+      'an empty "Purchase orders" heading reads as "we have none"');
   }
 }
 

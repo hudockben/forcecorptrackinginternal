@@ -158,6 +158,33 @@ const CASES = [
       { avoid: /\bprofit\b.{0,40}\$/i, note: 'describing what it does have instead is the bug this case exists for' },
     ] },
 
+  // ── Purchase orders and cost codes ─────────────────────────────────────
+  // The failure mode here is arithmetic, not subject. A PO's value is what
+  // was ORDERED; the job rows in the same digest already count delivered
+  // material in their actual cost. Adding the two counts the same concrete
+  // twice, and the answer looks perfectly reasonable when it does.
+  { id: 'po-total', division: 'paving',
+    ask: 'how much have we got out on purchase orders',
+    expect: [
+      { say: /order/i, note: 'the figure is what was ordered, and calling it that is the answer' },
+      { avoid: /\bspent\b|\bpaid\b|\binvoiced\b/i, note: 'a PO is none of those three' },
+    ] },
+  { id: 'po-not-cost', division: 'paving',
+    ask: 'what is our total cost on paving including purchase orders',
+    expect: [
+      { say: /(not|do ?n.t|cannot|can.t|should ?n.t).{0,60}(add|combin|includ|sum)|double.?count|already/i,
+        note: 'the two must not be added — the jobs table already counts delivered material' },
+    ] },
+  { id: 'po-supplier', division: 'paving',
+    ask: 'which supplier have we ordered the most from',
+    expect: [{ say: /\$\s?[\d,]/, note: 'the per-supplier totals are in the digest, so this is answerable' }] },
+  { id: 'cost-codes', division: 'paving',
+    ask: 'how much have we spent against cost code 2100',
+    expect: [
+      { say: /(catalog|not|do ?n.t|unit cost|bid).{0,80}(spend|spent)|per.job|actual cost/i,
+        note: 'the catalogue is quantities and unit costs, not spend against a code' },
+    ] },
+
   // ── Personal ───────────────────────────────────────────────────────────
   { id: 'my-hours', division: 'timesheet',
     ask: 'how many hours did I log this week',

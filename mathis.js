@@ -148,6 +148,11 @@
     '.mathis-tbl .pos{color:var(--green,#22c55e)}.mathis-tbl .neg{color:var(--red,#ef4444)}',
     '.mathis-tbl .unk{color:var(--muted,#8b8b9a)}',
     '.mathis-wrap{overflow-x:auto}',
+    '.mathis-sec{margin-top:9px}',
+    '.mathis-sec>summary{cursor:pointer;font-size:11.5px;color:var(--text,#e0e0e0);list-style:none;padding:2px 0}',
+    '.mathis-sec>summary::-webkit-details-marker{display:none}',
+    '.mathis-sec>summary:before{content:"\\25B8 ";color:var(--muted,#8b8b9a)}',
+    '.mathis-sec[open]>summary:before{content:"\\25BE "}',
     '.mathis-foot{flex:0 0 auto;border-top:1px solid var(--border,#2a2a35);padding:9px;display:flex;gap:7px;align-items:flex-end}',
     '#mathis-input{flex:1;resize:none;min-height:36px;max-height:110px;padding:8px 9px;border-radius:8px;',
     'border:1px solid var(--border,#2a2a35);background:var(--bg,#0a0a0f);color:var(--text,#e0e0e0);font:13px/1.4 inherit}',
@@ -307,6 +312,21 @@
       : '';
     return '<div class="mathis-wrap"><table class="mathis-tbl"><thead><tr>' + head +
       '</tr></thead><tbody>' + body + '</tbody></table></div>' + note;
+  }
+
+  /* A section that is present without being in the way.
+   *
+   * A turf digest now carries the jobs, the rubber inventory, the purchase
+   * orders and the cost-code catalogue at once, because the next question
+   * could be about any of them and a second round-trip to find out is a
+   * second round-trip. Painting four tables under an answer about profit
+   * buries the one that was asked for. <details> keeps the figures on screen
+   * and one click away, so they can still be checked against the page. */
+  function section(title, sub, html) {
+    if (!html) return '';
+    return '<details class="mathis-sec"><summary>' + esc(title) +
+      (sub ? ' <span class="mathis-note">' + esc(sub) + '</span>' : '') +
+      '</summary>' + html + '</details>';
   }
 
   function post(html, notes) {
@@ -659,27 +679,81 @@
     return '<td class="n ' + (v < 0 ? 'neg' : 'pos') + '">' + esc(fmtMoney(v)) + '</td>';
   }
 
+  /* Turf's own. Bags, not dollars — nothing here is a cost. */
+  function renderRubber(d) {
+    var inv = d.rubberInventory;
+    var tbl = breakdown(['Rubber', 'Produced', 'Used', 'In stock'], inv, function (r) {
+      return text(r.rubberType) + num(r.produced) + num(r.used) + num(r.inStock);
+    }, 'types');
+    return section('Rubber inventory', inv && inv.total ? inv.total + ' types' : '', tbl);
+  }
+
+  /* What was ORDERED. Never what was spent — the jobs table above already
+   * counts delivered material in its actual cost, and adding a PO to it
+   * would count the same concrete twice. */
+  function renderPOs(d) {
+    var po = d.purchaseOrders;
+    if (!po || !po.count) return '';
+    var st = Object.keys(po.byStatus || {}).map(function (k) {
+      return k + ' ' + po.byStatus[k];
+    }).join(', ');
+    var html = kv([
+      ['Purchase orders', '<td class="n">' + esc(po.count) + '</td>'],
+      ['Value ordered',   money(po.totalValue)]
+    ]);
+    html += breakdown(['PO', 'Supplier', 'Job', 'Status', 'Value'], po.rows, function (r) {
+      return text(r.poNumber || r.title) + text(r.supplier) + text(r.job) +
+        text(r.status) + money(r.value);
+    }, 'purchase orders');
+    html += breakdown(['Supplier', 'Value ordered'], po.bySupplier, function (r) {
+      return text(r.supplier) + money(r.value);
+    }, 'suppliers');
+    return section('Purchase orders', st, html) +
+      '<div class="mathis-note">' + esc('Value ordered is quantity \u00d7 unit cost plus tax. ' +
+        'It is not spend — the jobs table already counts delivered material. ' +
+        'A blank job means the job is outside the window above, not that the PO is unassigned.') +
+      '</div>';
+  }
+
+  /* The catalogue of codes, not what has been spent against them. */
+  function renderCostCodes(d) {
+    var cc = d.costCodes;
+    if (!cc || !cc.count) return '';
+    var tbl = breakdown(['Code', 'Description', 'Qty', 'Unit cost'], cc.rows, function (r) {
+      return text((r.costCode || '') + (r.subCode ? '-' + r.subCode : '')) +
+        text(r.description) + num(r.quantity) + money(r.unitCost);
+    }, 'cost codes');
+    return section('Cost codes', cc.count + ' on file', tbl);
+  }
+
   function renderJobs(d) {
     var rows = d.rows || [];
-    if (!rows.length) return;
-    var html = '<div class="mathis-wrap"><table class="mathis-tbl"><thead><tr>' +
-      '<th>Job</th><th>Contract</th><th>Spent</th><th>Proj. cost</th><th>Proj. profit</th>' +
-      '</tr></thead><tbody>';
-    rows.forEach(function (r) {
-      html += '<tr><td>' + esc(r.name) +
-        (r.jobNumber ? '<br><span class="mathis-note">' + esc(r.jobNumber) + '</span>' : '') + '</td>' +
-        moneyCell(r.contract) + moneyCell(r.actualCost) + moneyCell(r.projectedFinalCost) +
-        moneyCell(r.projectedProfit, true) + '</tr>';
-    });
-    html += '</tbody></table></div>';
+    var notes = [];
+    var html = '';
+    if (rows.length) {
+      html = '<div class="mathis-wrap"><table class="mathis-tbl"><thead><tr>' +
+        '<th>Job</th><th>Contract</th><th>Spent</th><th>Proj. cost</th><th>Proj. profit</th>' +
+        '</tr></thead><tbody>';
+      rows.forEach(function (r) {
+        html += '<tr><td>' + esc(r.name) +
+          (r.jobNumber ? '<br><span class="mathis-note">' + esc(r.jobNumber) + '</span>' : '') + '</td>' +
+          moneyCell(r.contract) + moneyCell(r.actualCost) + moneyCell(r.projectedFinalCost) +
+          moneyCell(r.projectedProfit, true) + '</tr>';
+      });
+      html += '</tbody></table></div>';
 
-    var notes = ['Projected profit is contract minus projected final cost.'];
-    if (d.truncated) {
-      notes.push('Showing the ' + rows.length + ' most recent of ' + d.totalProjects + ' jobs.');
+      notes.push('Projected profit is contract minus projected final cost.');
+      if (d.truncated) {
+        notes.push('Showing the ' + rows.length + ' most recent of ' + d.totalProjects + ' jobs.');
+      }
+      if (rows.some(function (r) { return r.projectedProfit === null; })) {
+        notes.push('A dash means no contract value is on file — unknown, not zero.');
+      }
     }
-    if (rows.some(function (r) { return r.projectedProfit === null; })) {
-      notes.push('A dash means no contract value is on file — unknown, not zero.');
-    }
+
+    // Collapsed, and after the jobs table: a digest carries all of these
+    // whatever was asked, so the answer to the actual question stays first.
+    html += renderRubber(d) + renderPOs(d) + renderCostCodes(d);
     post(html, notes);
   }
 
