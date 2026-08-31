@@ -588,8 +588,13 @@ async function main() {
   const crushHeaders = [...doc.querySelectorAll('.crush-table thead th')].map(th => th.textContent.trim());
   check('crushing has a Product column', crushHeaders.includes('Product'), true);
   check('Product sits after Employee', crushHeaders.indexOf('Product'), crushHeaders.indexOf('Employee') + 1);
+  // The grid opens each date + pit with a day-group subtotal row (see
+  // scripts/test-crush-day-grouping.js), so an ENTRY row is the one that
+  // carries a cell per header.
   check('every crushing row renders a cell per header',
-    doc.querySelector('#crushTbody tr').children.length, crushHeaders.length);
+    doc.querySelector('#crushTbody tr:not(.crush-day)').children.length, crushHeaders.length);
+  check('crushing rows are grouped by day',
+    doc.querySelectorAll('#crushTbody tr.crush-day').length > 0, true);
   checkIncludes('crushing gained a Product filter',
     doc.getElementById('crushingProductFilter').innerHTML, 'All Products');
   check('CSV template offers a Product column',
