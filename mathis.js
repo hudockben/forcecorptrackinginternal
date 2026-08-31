@@ -320,8 +320,14 @@
   }
 
   function renderDust(d) {
-    var r = d.revenue || {}, i = d.invoices || {};
+    var r = d.revenue || {}, i = d.invoices || {}, pm = d.productMargin || {};
     var html = kv([
+      ['Cost to make / gal',  money(pm.costToMakePerGal)],
+      ['Charged / gal',       money(pm.chargePerGal)],
+      ['Profit / gal',        money(pm.profitPerGal)],
+      ['Margin',              pm.marginPct === null || pm.marginPct === undefined
+        ? '<td class="n unk" title="The batch has not been entered on the Product Cost page. Unknown, not break-even.">—</td>'
+        : '<td class="n ' + (pm.marginPct < 0 ? 'neg' : 'pos') + '">' + esc(pm.marginPct.toFixed(1)) + '%</td>'],
       ['Revenue — Tracking',      money(r.tracking)],
       ['Revenue — Other Billing', money(r.other)],
       ['Revenue — EES Other',     money(r.ees)],
@@ -333,7 +339,13 @@
     html += breakdown(['Customer', 'Revenue', 'Jobs'], d.customers, function (x) {
       return text(x.name) + money(x.revenue) + num(x.jobs, 0);
     }, 'customers');
-    var notes = ['Revenue only — dust margin is calculated on the Product Cost page and is not available here.'];
+    var notes = [];
+    if (pm.ready) {
+      notes.push('Margin is per sprayed gallon, charged on the ' + (pm.chargeBasis || 'invoice') +
+        ' basis — not a margin on a job or a customer.');
+    } else {
+      notes.push('Margin needs the batch entered on the Product Cost page.');
+    }
     if (d.unavailableBooks && d.unavailableBooks.length) {
       notes.push('Could not read: ' + d.unavailableBooks.join(', ') +
         '. The totals above are a floor, not the division\'s earnings.');

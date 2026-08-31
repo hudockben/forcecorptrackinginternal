@@ -1764,3 +1764,36 @@ CREATE TABLE IF NOT EXISTS mathis_usage (
     turns         INTEGER       NOT NULL DEFAULT 0,
     PRIMARY KEY (company_code, user_id, day)
 );
+
+-- ─────────────────────────────────────────────────
+-- MATHIS GAPS — the questions it could not answer
+--
+-- One row per turn that ran into something missing: a division with no digest
+-- behind it, a tool refused, a tool that failed. The plan for filling those
+-- gaps was always "don't build speculatively, log what people actually ask" —
+-- this is that log, and the order to work in is:
+--
+--   SELECT kind, division, count(*) AS hits, max(created_at) AS last_seen
+--     FROM mathis_gaps
+--    WHERE company_code = 'YOURCODE' AND created_at > NOW() - INTERVAL '30 days'
+--    GROUP BY kind, division
+--    ORDER BY hits DESC
+--
+-- `asked` is the user's own question, which is the part worth reading: two
+-- people hitting the same division for completely different reasons is a
+-- different piece of work from twenty people asking the same thing.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mathis_gaps (
+    id            BIGSERIAL     PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id       INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- 'division_unsupported' | 'tool_refused' | 'tool_error'
+    kind          TEXT          NOT NULL,
+    division      TEXT,
+    detail        TEXT,
+    asked         TEXT,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mathis_gaps_rollup
+    ON mathis_gaps (company_code, kind, division, created_at DESC);

@@ -30,6 +30,7 @@ const jobFin   = require('./job-financials');
 const ctx      = require('./mathis-context');
 const quarryM  = require('./quarry-metrics');
 const dustM    = require('./dust-metrics');
+const dustCost = require('./dust-cost-metrics');
 const truckM   = require('./trucking-metrics');
 const icM      = require('./ic-metrics');
 const payrollM = require('./payroll-metrics');
@@ -208,7 +209,9 @@ async function quarryDigest(c, opts = {}) {
 // ── Dust control ───────────────────────────────────────────────────────────
 
 const DUST_LIMITS = [
-  'These are REVENUE figures. Dust margin and cost per gallon are calculated only in the browser, on the Product Cost page, and reach no server-side figure. If asked about margin, cost per gallon, or profit for dust, say plainly that it is not available here — do not compute one and do not offer revenue in its place.',
+  'productMargin is a PRODUCT margin: what one sprayed gallon costs to make against what one gallon is charged. It is not a margin on a job, a customer or a season, and it must never be described as one.',
+  'It is only as good as the batch entered on the Product Cost page. When productMargin.ready is false, marginPct and profitPerGal are null — that is unknown, not break-even. Say the batch has not been entered.',
+  'Always state which charge basis it used. "invoice" is invoice total over gallons, "ub" is UB revenue over gallons, "custom" is a figure somebody typed in. The three give different margins on the same product and the division picks one.',
   'A book shown as unavailable could not be read. Its revenue is missing from the totals, so the totals are a floor, not the division\'s earnings. Say so rather than reporting the smaller figure as if it were complete.',
   'Revenue spans three books: pad Tracking, Other Billing and EES Other. "Jobs" counts pad visits only, so job counts and revenue are not two views of the same rows.',
 ];
@@ -248,6 +251,13 @@ async function dustDigest(c) {
     bookOf('dust_ees_other_rows'),
   ]);
 
+  // profit_margin has no normalized column — api/dust-config.js says so — and
+  // lives in the dust_settings blob. Read through readBlob, which prefixes the
+  // company: dust-config.js also falls back to an UNPREFIXED 'dust_settings'
+  // key, and that row belongs to whichever tenant wrote it last.
+  const settings = await blobValue(c, 'dust_settings');
+  const pm = (settings && typeof settings === 'object') ? settings.profit_margin : null;
+
   const m = dustM.dustMetrics({
     rows, obRows, eesRows,
     companies: companies || [],
@@ -259,11 +269,16 @@ async function dustDigest(c) {
   if (obRows === null)  unavailable.push('Other Billing');
   if (eesRows === null) unavailable.push('EES Other');
 
+  // The panel narrows its charge to the year the user picked; the rest of this
+  // digest is year-to-date, so the same year keeps the two consistent.
+  const margin = dustProductMarginFor(pm, rows, ubRate, companies, m.year);
+
   return {
     division: 'dust',
     divisionName: 'Dust Control',
     kind: 'dust',
     year: m.year,
+    productMargin: margin,
     unavailableBooks: unavailable,
     revenue: m.revenue,
     revenueYtd: money(m.revenueYtd),
@@ -280,6 +295,38 @@ async function dustDigest(c) {
       jobs:    x.jobs,
     }))),
     limits: DUST_LIMITS,
+  };
+}
+
+/**
+ * The product-cost margin, or an explicit "nothing entered" rather than a
+ * pile of zeros. `rows` may be null when the Tracking book could not be read,
+ * in which case an invoice- or UB-based charge has nothing behind it.
+ */
+function dustProductMarginFor(pm, rows, ubRate, companies, year) {
+  const out = dustCost.dustProductMargin({
+    pm, rows: Array.isArray(rows) ? rows : [], ubRate: ubRate || 0,
+    companies: companies || [], year,
+  });
+  return {
+    ready:            out.ready,
+    costToMakePerGal: out.costToMakePerGal || null,
+    chargePerGal:     out.chargePerGal || null,
+    chargeBasis:      out.chargeBasis,
+    profitPerGal:     out.profitPerGal,
+    marginPct:        out.marginPct,
+    markupPct:        out.markupPct,
+    mixParts:         out.mixParts || null,
+    concentratePerGal: out.concentratePerGal || null,
+    batchTotalCost:   out.batch.totalCost || null,
+    batchGallons:     out.batch.totalGallons || null,
+    fromTracking: {
+      jobs:          out.tracking.jobs,
+      gallons:       out.tracking.gallons,
+      perGalInvoice: out.tracking.perGalInvoice,
+      perGalUb:      out.tracking.perGalUb,
+      year:          out.tracking.year,
+    },
   };
 }
 

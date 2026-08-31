@@ -286,6 +286,18 @@ module.exports = async (req, res) => {
   let refused = false;
   let answerTruncated = false;
 
+  // What this turn could not answer. Recorded so the order of the remaining
+  // work is decided by what people actually ask rather than by what seems
+  // likely — see the note above mathis_gaps in neon-schema.sql. Capped so a
+  // model that retries a failing call cannot write a hundred rows about it.
+  const gaps = [];
+  const noteGap = (kind, div, detail) => {
+    if (gaps.length >= 5) return;
+    if (gaps.some(g => g.kind === kind && g.division === div)) return;
+    gaps.push({ kind, division: div || null, detail: String(detail || '').slice(0, 500) });
+  };
+  if (unsupported) noteGap('division_unsupported', division, mathis.NOT_YET[division]);
+
   try {
     for (let call = 0; call < MAX_MODEL_CALLS; call++) {
       // Tools stay in the request even when no more may be called. Removing
@@ -342,8 +354,10 @@ module.exports = async (req, res) => {
           sink.figures(clientDigest(out.digest));
           results.push({ type: 'tool_result', tool_use_id: t.id, content: JSON.stringify(out.digest) });
         } else {
-          results.push({ type: 'tool_result', tool_use_id: t.id, is_error: true,
-            content: String((out && out.error) || 'No data.') });
+          const why = String((out && out.error) || 'No data.');
+          noteGap(/not available to this user/.test(why) ? 'tool_refused' : 'tool_error',
+            (t.input && t.input.division) || null, why);
+          results.push({ type: 'tool_result', tool_use_id: t.id, is_error: true, content: why });
         }
       }
       messages.push({ role: 'user', content: results });
@@ -359,6 +373,20 @@ module.exports = async (req, res) => {
     sink.text(answer);
   } else if (!answer.trim()) {
     return sink.error('Mathis returned an empty answer — try asking again.', 502);
+  }
+
+  if (gaps.length) {
+    try {
+      for (const g of gaps) {
+        await sql`
+          INSERT INTO mathis_gaps (company_code, user_id, kind, division, detail, asked)
+          VALUES (${authz.companyCode}, ${authz.userId}, ${g.kind}, ${g.division}, ${g.detail}, ${message})
+        `;
+      }
+    } catch (err) {
+      // A log that cannot be written is not a reason to lose an answer.
+      console.error('[mathis] gap log failed:', err.message);
+    }
   }
 
   // Persisted after the fact so a failed turn does not leave a question in the

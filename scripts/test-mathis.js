@@ -169,6 +169,13 @@ const BLOBS = {
   'fct_intercompany_rates': {},
   'dust_other_billing_rows': [],
   'dust_ees_other_rows': [],
+  // A batch that makes 1,000 gal of concentrate, sprayed at 1:8, charged at
+  // a flat $3.75 — enough for the margin to be a real number rather than null.
+  'dust_settings': { profit_margin: {
+    base_gal: 600, base_rate: 1.85, soap_gal: 40, soap_rate: 12.50,
+    water_gal: 360, water_rate: 0.02, mix_parts: 8,
+    charge_basis: 'custom', charge: 3.75,
+  } },
   'fct_quarry_sales': [], 'fct_quarry_daily': [], 'fct_quarry_crushing': [],
   'fct_quarry_inventory': {}, 'fct_quarry_loss_pct': {},
   'fct_quarry_monthly_fixed': {}, 'fct_quarry_royalty': {}, 'fct_quarry_lists': {},
@@ -198,6 +205,10 @@ function makeSql(opts = {}) {
     if (/SELECT id FROM mathis_threads/.test(text)) {
       if (opts.threadCheckThrows) return Promise.reject(new Error('connection lost'));
       return Promise.resolve(opts.threadOwned ? [{ id: values[0] }] : []);
+    }
+    if (/INSERT INTO mathis_gaps/.test(text)) {
+      if (opts.gapWriteThrows) return Promise.reject(new Error('gap log unavailable'));
+      return Promise.resolve([]);
     }
     if (/INSERT INTO mathis_threads/.test(text)) return Promise.resolve([{ id: 999 }]);
     if (/FROM mathis_messages/.test(text))       return Promise.resolve(opts.history || []);
@@ -713,12 +724,33 @@ console.log('\n══════════ dust ═════════�
   assert('a dust user gets an answer', res.statusCode === 200, String(res.statusCode));
   const d = res.body.digest;
   assert('  from the dust digest with revenue on it', d && d.kind === 'dust' && 'revenue' in d);
-  assert('  and no margin figure anywhere in it',
-    d && !JSON.stringify(d).match(/"(margin|costPerGallon|profit)"/i),
-    'dust margin is calculated only in the browser');
+  const pm = d && d.productMargin;
+  assert('  and a product margin, ported from the page that used to own it',
+    pm && pm.ready === true && typeof pm.marginPct === 'number',
+    JSON.stringify(pm));
+  assert('  costing a sprayed gallon, not a concentrate one',
+    pm && pm.costToMakePerGal < pm.concentratePerGal,
+    `${pm && pm.costToMakePerGal} vs ${pm && pm.concentratePerGal}`);
+  assert('  and saying which basis the charge came from',
+    pm && pm.chargeBasis === 'custom', pm && pm.chargeBasis);
+
   const prompt = JSON.stringify(sent[sent.length - 1]);
-  assert('the model is told dust margin is browser-only and must not be computed',
-    /only in the browser/.test(prompt) && /do not compute one/.test(prompt));
+  assert('the model is told this is a product margin, not a job or customer one',
+    /PRODUCT margin/.test(prompt) && /never be described as one/.test(prompt));
+  assert('  and told to state which charge basis it used', /which charge basis/.test(prompt));
+}
+{
+  // With no batch entered the answer is unknown. Zero would be a claim the
+  // division breaks even exactly on every gallon it sprays.
+  const res = await call({ message: 'margin?', division: 'dust' },
+    { token: tokenFor({ divisionRoles: { dust: 'level3' } }),
+      sqlOpts: { divisionRoles: { dust: 'level3' }, emptyBlobs: ['dust_settings'] } });
+  const pm = res.body.digest && res.body.digest.productMargin;
+  assert('with no batch entered, margin is null rather than zero',
+    pm && pm.ready === false && pm.marginPct === null && pm.profitPerGal === null,
+    JSON.stringify(pm));
+  assert('  and the model is told that is unknown, not break-even',
+    /that is unknown, not break-even/.test(JSON.stringify(sent[sent.length - 1])));
 }
 {
   // A book that cannot be read must not be counted as billing nothing: the
@@ -1158,6 +1190,56 @@ console.log('\n══════════ streaming ════════
     res.statusCode === 403 && res.raw === '', `${res.statusCode} / ${res.raw.slice(0, 60)}`);
 }
 
+// ── 12g. What it could not answer is written down ──────────────────────────
+// The plan for the remaining divisions was always "do not build speculatively,
+// log what people actually ask". This is that log, so the order of the rest of
+// the work is decided by evidence.
+console.log('\n══════════ the gap log ══════════');
+const gapRows = () => queries.filter(q => /INSERT INTO mathis_gaps/.test(q.text)).map(q => q.values);
+{
+  await call({ message: 'roll up every division for the board', division: 'executive' },
+    { token: tokenFor({ divisionRoles: { executive: 'level3' } }),
+      sqlOpts: { divisionRoles: { executive: 'level3' } } });
+  const rows = gapRows();
+  assert('a division with no digest is logged as a gap', rows.length === 1, `${rows.length} rows`);
+  assert('  naming the kind and the division',
+    rows[0].includes('division_unsupported') && rows[0].includes('executive'), JSON.stringify(rows[0]));
+  assert('  with the question that hit it, which is the part worth reading',
+    rows[0].includes('roll up every division for the board'), JSON.stringify(rows[0]));
+  assert('  scoped to the company and the user who asked',
+    rows[0].includes(COMPANY) && rows[0].includes(USER_ID));
+}
+{
+  await call({ message: 'quarry margin?', division: 'paving' }, {
+    script: [
+      { text: '', tools: [{ name: 'get_division_figures', input: { division: 'quarry' } }], stop: 'tool_use' },
+      { text: 'I cannot see the quarry.', stop: 'end_turn' },
+    ],
+  });
+  const rows = gapRows();
+  assert('a refused tool call is logged as a refusal, not an error',
+    rows.length === 1 && rows[0].includes('tool_refused'), JSON.stringify(rows));
+}
+{
+  await call({ message: 'profit on the last 5', division: 'paving' });
+  assert('an answer that worked logs nothing', gapRows().length === 0, JSON.stringify(gapRows()));
+}
+{
+  // A model that keeps retrying the same failing call must not fill the table.
+  const bad = { text: '', stop: 'tool_use',
+    tools: [{ name: 'get_division_figures', input: { division: 'quarry' } }] };
+  await call({ message: 'quarry?', division: 'paving' }, { script: [bad, bad, bad, { text: 'No.', stop: 'end_turn' }] });
+  assert('the same gap hit repeatedly is written once',
+    gapRows().length === 1, `${gapRows().length} rows`);
+}
+{
+  const res = await call({ message: 'roll it up', division: 'executive' },
+    { token: tokenFor({ divisionRoles: { executive: 'level3' } }),
+      sqlOpts: { divisionRoles: { executive: 'level3' }, gapWriteThrows: true } });
+  assert('a log that cannot be written does not cost the answer',
+    res.statusCode === 200 && res.body.ok === true, String(res.statusCode));
+}
+
 // ── 13b. Every digest kind actually renders ────────────────────────────────
 // The gap this exists to close: Phase 2 added five digest kinds while the
 // widget still rendered two. The endpoint answered, the model talked about
@@ -1464,7 +1546,7 @@ console.log('\n══════════ deployment ═══════�
   assert('  and so is JWT_SECRET, which every endpoint needs', /JWT_SECRET/.test(env));
 
   const schema = fs.readFileSync(root('neon-schema.sql'), 'utf8');
-  for (const t of ['mathis_threads', 'mathis_messages', 'mathis_usage']) {
+  for (const t of ['mathis_threads', 'mathis_messages', 'mathis_usage', 'mathis_gaps']) {
     assert(`${t} is in the schema`, new RegExp(`CREATE TABLE IF NOT EXISTS ${t}`).test(schema));
   }
   assert('  transcripts are keyed by user, not just by company',
