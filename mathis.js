@@ -576,8 +576,9 @@
     var html = '<div class="mathis-wrap"><table class="mathis-tbl"><thead><tr>' +
       '<th>Division</th><th>Headline is</th><th style="text-align:right">Figure</th>' +
       '</tr></thead><tbody>' + body + '</tbody></table></div>';
-    var notes = ['Covers ' + (d.covers || []).length + ' division' +
-      ((d.covers || []).length === 1 ? '' : 's') + ' you have access to — not the whole company.'];
+    var spans = d.coversDivisions || [];
+    var notes = ['Covers ' + spans.length + ' division' +
+      (spans.length === 1 ? '' : 's') + ' you have access to — not the whole company.'];
     if ((d.notCovered || []).length) notes.push('Not shown: ' + d.notCovered.join(', ') + '.');
     notes.push('Each row is a different measure. They cannot be added together.');
     post(html, notes);

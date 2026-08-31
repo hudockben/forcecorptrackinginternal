@@ -192,6 +192,12 @@ const BLOBS = {
   'dust_ees_other_rows': [],
   // A batch that makes 1,000 gal of concentrate, sprayed at 1:8, charged at
   // a flat $3.75 — enough for the margin to be a real number rather than null.
+  'fct_inventory': [
+    { rubber_type: 'Crumb', bags_produced: 40, total_poundage: 8000 },
+    { rubber_type: 'Crumb', bags_produced: 12, project_id: 'p1' },
+    { rubber_type: 'Buffings', bags_produced: 25, total_poundage: 5000 },
+  ],
+  'fct_projects_index': { ids: [] },
   'fct_trucking_driver_logins': { 'jsmith': 'R. Diaz' },
   'fct_trucking_schedule': { assignments: {} },
   'fct_trucking_labor_schedule': { assignments: {} },
@@ -967,7 +973,8 @@ console.log('\n══════════ what is still not built ═══�
   const d = res.body.digest;
   assert('an executive gets a rollup', d && d.kind === 'executive', JSON.stringify(d && d.kind));
   assert('  covering exactly the divisions they hold',
-    d && d.covers.slice().sort().join(',') === 'paving,trucking', JSON.stringify(d && d.covers));
+    d && d.coversDivisions.slice().sort().join(',') === 'paving,trucking',
+    JSON.stringify(d && d.coversDivisions));
   assert('  and naming the ones it does not cover, so a partial view cannot read as the company',
     d && d.notCovered.includes('quarry') && d.notCovered.includes('dust'),
     JSON.stringify(d && d.notCovered));
@@ -1171,6 +1178,72 @@ console.log('\n══════════ wiring ═════════
     'a job name is free text any colleague can write');
   assert('an unknown figure renders as a dash that says it is unknown, not as $0',
     /unknown, not zero/.test(widget) && /—/.test(widget));
+}
+
+// ── 11b. Answering a question the digest cannot answer ─────────────────────
+// The bug this exists for: asked about rubber inventory on turf, Mathis
+// returned projected profit. It described what it had, because nothing told it
+// what it did not have — and a blob of job rows beside any question invites a
+// summary of the blob. A wrong-SUBJECT answer is worse than a wrong figure,
+// because it looks like an answer and there is no way to tell.
+console.log('\n══════════ what a digest is about ══════════');
+{
+  const res = await call({ message: 'x', division: 'paving' });
+  const d = res.body.digest;
+  assert('a digest says what it is about, not only how it could be misread',
+    d && Array.isArray(d.covers) && d.covers.length > 0, JSON.stringify(d && d.covers));
+
+  const prompt = JSON.stringify(sent[sent.length - 1]);
+  assert('  and the model is told to answer only what that list mentions',
+    /ANSWER ONLY WHAT THE DIGEST COVERS/.test(prompt));
+  assert('  and told plainly not to describe something else instead',
+    /Do NOT describe what the digest does contain instead/.test(prompt)
+      && /worse than no answer/.test(prompt),
+    'this is the rule that was missing');
+}
+{
+  // Every kind the server can emit has to declare one, or the rule above has
+  // nothing to check the question against.
+  for (const [div, roles] of [
+    ['paving', { paving: 'level2' }], ['quarry', { quarry: 'level3' }],
+    ['dust', { dust: 'level3' }], ['trucking', { trucking: 'level3' }],
+    ['intercompany', { intercompany: 'level3' }], ['payroll', { payroll: 'level3' }],
+    ['scheduler', { scheduler: 'level3' }], ['fuel_admin', { fuel_admin: 'level3' }],
+    ['executive', { executive: 'level3', paving: 'level2' }],
+    ['timesheet', { timesheet: 'level1' }], ['driver', { driver: 'level1' }],
+    ['fuel', { fuel: 'level1' }], ['quarry_sales', { quarry_sales: 'level1' }],
+  ]) {
+    const res = await call({ message: 'figures', division: div },
+      { token: tokenFor({ username: 'jsmith', divisionRoles: roles }), sqlOpts: { divisionRoles: roles } });
+    const d = res.body.digest;
+    assert(`the ${div} digest declares what it covers`,
+      d && Array.isArray(d.covers) && d.covers.length > 0,
+      JSON.stringify(d && Object.keys(d)));
+  }
+}
+{
+  // The specific thing that was asked for and was not there.
+  const res = await call({ message: 'how much rubber is in stock', division: 'turf' },
+    { token: tokenFor({ divisionRoles: { turf: 'level3' } }),
+      sqlOpts: { divisionRoles: { turf: 'level3' } } });
+  const d = res.body.digest;
+  assert('turf now carries rubber inventory', d && d.rubberInventory,
+    JSON.stringify(d && Object.keys(d)));
+  assert('  produced minus used is what is in stock',
+    d && d.rubberInventory.rows.find(r => r.rubberType === 'Crumb').inStock === 28,
+    JSON.stringify(d && d.rubberInventory.rows));
+  assert('  a bag against a project is used, not produced',
+    d && d.rubberInventory.rows.find(r => r.rubberType === 'Crumb').used === 12);
+  assert('  and the digest says it covers inventory now, so the rule lets it answer',
+    d && d.covers.some(c => /inventory/i.test(c)), JSON.stringify(d && d.covers));
+}
+{
+  // Paving has no rubber, so it must not claim to cover it.
+  const res = await call({ message: 'rubber in stock?', division: 'paving' });
+  const d = res.body.digest;
+  assert('a division without inventory does not claim to cover it',
+    d && !d.covers.some(c => /inventory/i.test(c)) && !d.rubberInventory,
+    JSON.stringify(d && d.covers));
 }
 
 // ── 12a. The tool enum is built from this caller's scope ───────────────────

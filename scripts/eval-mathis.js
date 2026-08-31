@@ -141,6 +141,23 @@ const CASES = [
     ask: 'what did the quarry sell last month',
     expect: [{ avoid: /\btons\b.{0,40}\$/i, note: 'a paving-only caller must not receive quarry figures' }] },
 
+  // ── Answering a different question than the one asked ──────────────────
+  // A real report: asked about rubber inventory on turf, it came back with
+  // projected profit. A wrong-SUBJECT answer is worse than a wrong figure,
+  // because it looks like an answer and there is no way to tell.
+  { id: 'turf-inventory', division: 'turf',
+    ask: 'how much rubber do we have in stock',
+    expect: [
+      { say: /bag|stock|rubber|crumb|buffing/i, note: 'turf carries rubber inventory and this is what was asked for' },
+      { avoid: /projected profit|contract value/i, note: 'the profit figures are not an answer to an inventory question' },
+    ] },
+  { id: 'paving-no-inventory', division: 'paving',
+    ask: 'how much rubber do we have in stock',
+    expect: [
+      { say: /(no|not|do ?n.t).{0,40}(have|track|see|cover)/i, note: 'paving carries no inventory and must say so' },
+      { avoid: /\bprofit\b.{0,40}\$/i, note: 'describing what it does have instead is the bug this case exists for' },
+    ] },
+
   // ── Personal ───────────────────────────────────────────────────────────
   { id: 'my-hours', division: 'timesheet',
     ask: 'how many hours did I log this week',

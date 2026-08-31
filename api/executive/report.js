@@ -1768,6 +1768,7 @@ module.exports.PROJECT_KEYS       = PROJECT_KEYS;
 // period and the same prevailing-wage rule this report does, rather than a
 // second implementation that could drift a day or a flag away from it.
 module.exports.QUARRY_BLOBS       = QUARRY_BLOBS;
+module.exports.buildRubberInventory = buildRubberInventory;
 module.exports.biweeklyPayPeriod  = biweeklyPayPeriod;
 module.exports.attachPrevailingWage = attachPrevailingWage;
 module.exports.readTurfProjects   = readTurfProjects;

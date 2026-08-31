@@ -59,6 +59,35 @@ function capList(list, cap = LIST_CAP) {
   };
 }
 
+/* What a digest is ABOUT, in plain words.
+ *
+ * `limits` says how the figures inside could be misread. This says whether the
+ * question is even in the building. They are different failures and only one
+ * of them was guarded: asked about rubber inventory on turf, Mathis returned
+ * projected profit — it described what it had, because nothing told it what it
+ * did not have, and a blob of job rows next to any question invites a summary
+ * of the blob.
+ *
+ * A closed list of everything a division does NOT hold is impossible to keep
+ * true. A short list of what it DOES hold is easy to keep true, and the prompt
+ * turns anything outside it into "I don't have that".
+ */
+const COVERS = {
+  jobs: ['per-job contract value, bid budget, actual cost to date, projected final cost, projected and actual profit, and variance'],
+  quarry: ['sales, tons sold and crushed, cost per pit, tons on hand, and per-ton contribution against break-even'],
+  dust: ['revenue across the three billing books, gallons, invoice ageing, and the product margin on a sprayed gallon'],
+  trucking: ['haul revenue, hours, active units and drivers, and invoice state'],
+  intercompany: ['what each division billed another, hours, and what is uninvoiced or aged'],
+  payroll: ['hours for the current pay period, by employee and by status'],
+  scheduler: ['sub-code pace and status, extra laborers implied, double-bookings and time off'],
+  fuel_admin: ['fill-ups, gallons, fleet and per-truck economy, balancing state, and statement variance'],
+  executive: ['one headline figure per division the user can reach'],
+  personal: ['the asking user\'s own timesheet entries and hours'],
+  own_fuel: ['the asking user\'s own fuel fill-ups'],
+  own_driver: ['the hauls assigned to the asking user'],
+  own_quarry_sales: ['the asking user\'s own scale-house loads'],
+};
+
 const asArray = v => (Array.isArray(v) ? v : []);
 const round2  = v => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 100) / 100 : null);
 
@@ -95,6 +124,27 @@ function pickJobRow(r) {
   };
 }
 
+/**
+ * Rubber inventory, turf's own. This is what somebody asked about first and
+ * got projected profit for instead, because the digest held nothing else.
+ * buildRubberInventory is the executive report's reader, not a second one.
+ */
+async function rubberInventory(c) {
+  try {
+    const inv = await report.buildRubberInventory(c.sql, c.companyCode);
+    return capList((Array.isArray(inv) ? inv : []).map(r => ({
+      rubberType: safeText(r.rubber_type || r.type, 60),
+      produced:   round2(r.produced),
+      used:       round2(r.used),
+      inStock:    round2(r.in_stock),
+      poundsProduced: round2(r.lbs_total),
+    })));
+  } catch (err) {
+    console.error('[mathis] rubber inventory failed:', err.message);
+    return null;
+  }
+}
+
 async function jobDigest(c, division, opts = {}) {
   const div = jobFin.jobDivision(division);
   if (!div) return null;
@@ -106,10 +156,17 @@ async function jobDigest(c, division, opts = {}) {
   if (idx.status === 'denied') return { division, kind: 'denied' };
   const totalProjects = countIds(idx.value);
 
+  // Read before the empty-projects branch: rubber stock exists whether or not
+  // a single job is open, and returning early skipped it entirely.
+  const inventory = division === 'turf' ? await rubberInventory(c) : null;
+  const invCovers = inventory ? ['rubber inventory by type: bags produced, used and in stock'] : [];
+
   const projects = (await div.read(c.sql, c.companyCode, { limit })).filter(Boolean);
   if (!projects.length) {
     return {
       division, divisionName: div.name, kind: 'jobs',
+      covers: COVERS.jobs.concat(invCovers),
+      ...(inventory ? { rubberInventory: inventory } : {}),
       totalProjects, includedProjects: 0, rows: [], summary: null,
       ordering: 'none — this division has no projects on file',
       limits: JOB_LIMITS,
@@ -123,6 +180,8 @@ async function jobDigest(c, division, opts = {}) {
     division,
     divisionName: div.name,
     kind: 'jobs',
+    covers: COVERS.jobs.concat(invCovers),
+    ...(inventory ? { rubberInventory: inventory } : {}),
     totalProjects,
     includedProjects: rows.length,
     truncated: totalProjects > rows.length,
@@ -175,6 +234,7 @@ async function quarryDigest(c, opts = {}) {
     division: 'quarry',
     divisionName: 'Quarry',
     kind: 'quarry',
+    covers: COVERS.quarry,
     year: m.year,
     cutoff: m.cutoff,
     entryCount: m.entryCount,
@@ -279,6 +339,7 @@ async function dustDigest(c) {
     division: 'dust',
     divisionName: 'Dust Control',
     kind: 'dust',
+    covers: COVERS.dust,
     year: m.year,
     productMargin: margin,
     unavailableBooks: unavailable,
@@ -352,6 +413,7 @@ async function truckingDigest(c) {
     division: 'trucking',
     divisionName: 'Trucking',
     kind: 'trucking',
+    covers: COVERS.trucking,
     year: m.year,
     entryCount: m.entryCount,
     revenue: money(m.revenue),
@@ -405,6 +467,7 @@ async function icDigest(c) {
     division: 'intercompany',
     divisionName: 'Intercompany',
     kind: 'intercompany',
+    covers: COVERS.intercompany,
     year: m.year,
     entryCount: m.entryCount,
     duplicatesCollapsed: m.duplicates,
@@ -453,7 +516,7 @@ async function payrollDigest(c) {
     `;
   } catch (err) {
     console.error('[mathis] payroll entries failed:', err.message);
-    return { division: 'payroll', kind: 'payroll', error: true, limits: PAYROLL_LIMITS };
+    return { division: 'payroll', kind: 'payroll', covers: COVERS.payroll, error: true, limits: PAYROLL_LIMITS };
   }
 
   const entries = rows || [];
@@ -471,6 +534,7 @@ async function payrollDigest(c) {
     division: 'payroll',
     divisionName: 'Payroll',
     kind: 'payroll',
+    covers: COVERS.payroll,
     periodStart: m.periodStart,
     periodEnd: m.periodEnd,
     totals: m.totals,
@@ -510,7 +574,7 @@ async function schedulerDigest(c, opts = {}) {
     board = await schedBoard.buildBoard(c.sql, c.companyCode, today);
   } catch (err) {
     console.error('[mathis] scheduler board failed:', err.message);
-    return { division: 'scheduler', kind: 'scheduler', error: true, limits: SCHEDULER_LIMITS };
+    return { division: 'scheduler', kind: 'scheduler', covers: COVERS.scheduler, error: true, limits: SCHEDULER_LIMITS };
   }
 
   const counts = { behind: 0, atRisk: 0, onTrack: 0, complete: 0, noData: 0 };
@@ -579,6 +643,7 @@ async function schedulerDigest(c, opts = {}) {
     division: 'scheduler',
     divisionName: 'Scheduler',
     kind: 'scheduler',
+    covers: COVERS.scheduler,
     today: board.today,
     sourceDivisions: board.sourceDivisions || [],
     activeJobs: (board.jobs || []).length,
@@ -630,7 +695,7 @@ async function fuelAdminDigest(c, opts = {}) {
     ]);
   } catch (err) {
     console.error('[mathis] fuel admin digest failed:', err.message);
-    return { division: 'fuel_admin', kind: 'fuel_admin', error: true, limits: FUEL_ADMIN_LIMITS };
+    return { division: 'fuel_admin', kind: 'fuel_admin', covers: COVERS.fuel_admin, error: true, limits: FUEL_ADMIN_LIMITS };
   }
 
   const byStatus = {}, byBalance = {};
@@ -665,6 +730,7 @@ async function fuelAdminDigest(c, opts = {}) {
     division: 'fuel_admin',
     divisionName: 'Fuel Administration',
     kind: 'fuel_admin',
+    covers: COVERS.fuel_admin,
     windowDays: days,
     fillUps: rows.length,
     gallons: round2(gallons),
@@ -765,7 +831,8 @@ async function executiveDigest(c, opts = {}) {
     division: 'executive',
     divisionName: 'Executive',
     kind: 'executive',
-    covers: covered,
+    covers: COVERS.executive,
+    coversDivisions: covered,
     // Named so an answer cannot quietly present a partial view as the company.
     notCovered: EXEC_DIVISIONS.filter(d => !covered.includes(d)),
     divisions: parts,
@@ -795,7 +862,7 @@ async function fuelOwnDigest(c) {
     `;
   } catch (err) {
     console.error('[mathis] own fuel digest failed:', err.message);
-    return { division: 'fuel', kind: 'own_fuel', error: true, limits: OWN_LIMITS };
+    return { division: 'fuel', kind: 'own_fuel', covers: COVERS.own_fuel, error: true, limits: OWN_LIMITS };
   }
   const byStatus = {};
   let gallons = 0;
@@ -805,6 +872,7 @@ async function fuelOwnDigest(c) {
   }
   return {
     division: 'fuel', kind: 'own_fuel', window: 'the last 90 days',
+    covers: COVERS.own_fuel,
     fillUps: rows.length, gallons: round2(gallons), byStatus,
     rows: capList(rows.map(r => ({
       workDate: r.work_date, status: safeText(r.status, 20),
@@ -829,13 +897,13 @@ async function driverOwnDigest(c) {
     // else's row — it is the check that keeps one driver out of another's work.
     const driver = await driverSched.resolveDriver(c.sql, c.companyCode, c.authz.username);
     if (!driver) {
-      return { division: 'driver', kind: 'own_driver', unlinked: true, assignments: capList([]),
+      return { division: 'driver', kind: 'own_driver', covers: COVERS.own_driver, unlinked: true, assignments: capList([]),
         limits: OWN_LIMITS.concat(['This login is not linked to a driver on the board, so there are no hauls to show. Say that rather than saying they have none scheduled.']) };
     }
     byDate = await driverSched.assignmentsFor(c.sql, c.companyCode, driver, today, to);
   } catch (err) {
     console.error('[mathis] own driver digest failed:', err.message);
-    return { division: 'driver', kind: 'own_driver', error: true, limits: OWN_LIMITS };
+    return { division: 'driver', kind: 'own_driver', covers: COVERS.own_driver, error: true, limits: OWN_LIMITS };
   }
 
   const out = [];
@@ -855,6 +923,7 @@ async function driverOwnDigest(c) {
   }
   return {
     division: 'driver', kind: 'own_driver',
+    covers: COVERS.own_driver,
     window: 'today through the next 14 days',
     assignments: capList(out),
     limits: OWN_LIMITS.concat([
@@ -879,7 +948,7 @@ async function quarrySalesOwnDigest(c) {
     `;
   } catch (err) {
     console.error('[mathis] own quarry sales digest failed:', err.message);
-    return { division: 'quarry_sales', kind: 'own_quarry_sales', error: true, limits: OWN_LIMITS };
+    return { division: 'quarry_sales', kind: 'own_quarry_sales', covers: COVERS.own_quarry_sales, error: true, limits: OWN_LIMITS };
   }
   const byStatus = {};
   let tons = 0, charged = 0;
@@ -890,6 +959,7 @@ async function quarrySalesOwnDigest(c) {
   }
   return {
     division: 'quarry_sales', kind: 'own_quarry_sales', window: 'the last 45 days',
+    covers: COVERS.own_quarry_sales,
     loads: rows.length, tons: round2(tons), charged: money(charged), byStatus,
     rows: capList(rows.map(r => ({
       workDate: r.work_date, status: safeText(r.status, 20),
@@ -924,7 +994,7 @@ async function personalDigest(c) {
     `;
   } catch (err) {
     console.error('[mathis] personal digest failed:', err.message);
-    return { division: null, kind: 'personal', rows: [], byStatus: {}, error: true, limits: PERSONAL_LIMITS };
+    return { division: null, kind: 'personal', covers: COVERS.personal, rows: [], byStatus: {}, error: true, limits: PERSONAL_LIMITS };
   }
 
   const byStatus = {};
@@ -944,6 +1014,7 @@ async function personalDigest(c) {
     division: null,
     kind: 'personal',
     window: 'the last 45 days',
+    covers: COVERS.personal,
     rows: rows.map(r => ({
       workDate:  r.work_date instanceof Date ? r.work_date.toISOString().slice(0, 10) : String(r.work_date || ''),
       status:    safeText(r.status, 20),
@@ -1004,6 +1075,7 @@ async function buildDigest(c, division, opts = {}) {
 }
 
 module.exports = {
+  COVERS,
   DEFAULT_JOB_ROWS,
   MAX_JOB_ROWS,
   LIST_CAP,
@@ -1021,6 +1093,7 @@ module.exports = {
   buildDigest,
   jobDigest,
   personalDigest,
+  rubberInventory,
   quarryDigest,
   schedulerDigest,
   executiveDigest,
