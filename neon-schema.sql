@@ -1714,3 +1714,122 @@ UPDATE quarry_sales_submissions
  WHERE price_per_ton IS NULL
    AND amount_charged IS NOT NULL AND amount_charged > 0
    AND amount_charged / NULLIF(tons, 0) <= 1000;
+
+-- ─────────────────────────────────────────────────
+-- MATHIS — the division-aware assistant (api/ai/mathis.js)
+--
+-- Deliberately real tables rather than app_data blobs. An fct_mathis_* key
+-- would be reachable through /api/data/[key].js, and divisionForKey() has no
+-- prefix for it, so it would resolve to turf: every turf user in the company
+-- could read every colleague's conversation, while a timesheet-only field
+-- employee could not read their own. Scoping by (company_code, user_id) is
+-- the property that makes a transcript private, and only a table has it.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mathis_threads (
+    id            BIGSERIAL     PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id       INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- The division the thread was opened in. Null means personal mode: a field
+    -- employee asking about their own rows rather than about a division.
+    division      TEXT,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mathis_threads_owner
+    ON mathis_threads (company_code, user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS mathis_messages (
+    id          BIGSERIAL     PRIMARY KEY,
+    thread_id   BIGINT        NOT NULL REFERENCES mathis_threads(id) ON DELETE CASCADE,
+    role        TEXT          NOT NULL CHECK (role IN ('user', 'assistant')),
+    content     TEXT          NOT NULL,
+    -- Stamped per message, not just per thread: a user can walk from paving to
+    -- the quarry with the panel open, and an answer has to stay attributable
+    -- to the division whose data actually produced it.
+    division    TEXT,
+    created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mathis_messages_thread
+    ON mathis_messages (thread_id, id);
+
+-- Spend cap. One row per user per day, incremented atomically BEFORE the model
+-- is called. A read-then-write counter is a race every concurrent serverless
+-- instance wins at once, which is exactly the case a cap exists for.
+CREATE TABLE IF NOT EXISTS mathis_usage (
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id       INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    day           DATE          NOT NULL,
+    turns         INTEGER       NOT NULL DEFAULT 0,
+    PRIMARY KEY (company_code, user_id, day)
+);
+
+-- ─────────────────────────────────────────────────
+-- MATHIS GAPS — the questions it could not answer
+--
+-- One row per turn that ran into something missing: a division with no digest
+-- behind it, a tool refused, a tool that failed. The plan for filling those
+-- gaps was always "don't build speculatively, log what people actually ask" —
+-- this is that log, and the order to work in is:
+--
+--   SELECT kind, division, count(*) AS hits, max(created_at) AS last_seen
+--     FROM mathis_gaps
+--    WHERE company_code = 'YOURCODE' AND created_at > NOW() - INTERVAL '30 days'
+--    GROUP BY kind, division
+--    ORDER BY hits DESC
+--
+-- `asked` is the user's own question, which is the part worth reading: two
+-- people hitting the same division for completely different reasons is a
+-- different piece of work from twenty people asking the same thing.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mathis_gaps (
+    id            BIGSERIAL     PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id       INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- 'division_unsupported' | 'tool_refused' | 'tool_error'
+    kind          TEXT          NOT NULL,
+    division      TEXT,
+    detail        TEXT,
+    asked         TEXT,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mathis_gaps_rollup
+    ON mathis_gaps (company_code, kind, division, created_at DESC);
+
+-- ─────────────────────────────────────────────────
+-- MATHIS FEEDBACK — was that answer any good
+--
+-- mathis_gaps records what Mathis could not answer. This records what it
+-- answered badly, which is the harder half: a wrong answer looks exactly like
+-- a right one until somebody who knows the jobs says otherwise.
+--
+-- The digests are stored alongside the reply on purpose. "This answer was
+-- wrong" is nearly useless on its own — what makes it fixable is knowing
+-- whether the figures it was given were wrong (a digest problem) or the
+-- figures were right and it described them badly (a prompt problem). Those
+-- have completely different fixes and the reply alone cannot tell them apart.
+--
+--   SELECT verdict, division, count(*) FROM mathis_feedback
+--    WHERE company_code = 'YOURCODE' GROUP BY verdict, division
+--
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mathis_feedback (
+    id            BIGSERIAL     PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id       INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    thread_id     BIGINT        REFERENCES mathis_threads(id) ON DELETE SET NULL,
+    verdict       TEXT          NOT NULL CHECK (verdict IN ('up', 'down')),
+    division      TEXT,
+    asked         TEXT,
+    answered      TEXT,
+    -- What the answer was built from. Capped by the endpoint before it gets
+    -- here; a digest is bounded, but a bounded thing stored forever is not.
+    digests       JSONB,
+    note          TEXT,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mathis_feedback_rollup
+    ON mathis_feedback (company_code, verdict, created_at DESC);

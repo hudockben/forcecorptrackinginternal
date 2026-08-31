@@ -276,3 +276,10 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: 'Could not load the schedule' });
   }
 };
+
+// Shared with api/lib/mathis-digests.js so a driver asking Mathis what they
+// are hauling gets the same answer their own schedule page gives — including
+// resolveDriver, which is what maps a login to the name on the board and is
+// therefore what keeps one driver out of another's work.
+module.exports.assignmentsFor = assignmentsFor;
+module.exports.resolveDriver  = resolveDriver;

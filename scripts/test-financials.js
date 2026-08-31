@@ -27,6 +27,18 @@
 const fs   = require('fs');
 const path = require('path');
 
+// The print path calls dwWrite(), which report-branding.js defines on window.
+// The real module is loaded rather than stubbed: printFinancials() produces a
+// document a person receives on paper, and a fake dwWrite would let this file
+// and scripts/test-report-branding.js drift apart over what branding actually
+// does to it. The IIFE only reads `window`, so a bare object is enough.
+const BRANDING = (() => {
+  const win = {};
+  new Function('window', fs.readFileSync(path.resolve(__dirname, '..', 'report-branding.js'), 'utf8'))(win);
+  if (typeof win.dwWrite !== 'function') throw new Error('report-branding.js no longer defines dwWrite');
+  return win;
+})();
+
 const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
 const FIN_HEADERS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
 
@@ -74,7 +86,7 @@ function loadFinancials(file, projects) {
   const bar = { innerHTML: '' }, table = { innerHTML: '' };
   // rowCost counts how often the per-project cost walk runs, which is how the
   // cost of a re-render is measured below.
-  const captured = { csv: null, print: null, alerts: [], download: null, rowCost: 0 };
+  const captured = { csv: null, print: '', alerts: [], download: null, rowCost: 0 };
   // Enough of the job-name dropdown for its real open/apply/clear to run.
   const dd = {
     panel:  { style: { display: 'none' } },
@@ -88,6 +100,7 @@ function loadFinancials(file, projects) {
     'projectsList', 'document', 'window', 'alert', 'Blob', 'URL',
     'dailyRowCost', 'fmt', 'esc',
     'actualForBidItem', 'runningQtyForBidItem', 'bidItemComplete', 'getProj',
+    'dwWrite', 'dwBrand',
     `${code}
      return {
        renderFinancials, exportFinancialsCSV, printFinancials,
@@ -116,7 +129,7 @@ function loadFinancials(file, projects) {
       querySelectorAll: sel => (sel === '.finff-val-cb' ? dd.boxes : []),
       createElement: () => ({ href: '', download: '', click() { captured.download = this.download; } }),
     },
-    { open: () => ({ document: { write: h => { captured.print = h; }, close() {} } }) },
+    { open: () => ({ document: { write: (...chunks) => { captured.print += chunks.join(''); }, close() {} } }) },
     m => captured.alerts.push(m),
     function (parts) { captured.csv = parts.join(''); },
     { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} },
@@ -127,6 +140,7 @@ function loadFinancials(file, projects) {
     (b, id) => (b._rqty || 0),
     (b, id) => !!b._done,
     () => null,
+    BRANDING.dwWrite, BRANDING.dwBrand,
   );
 
   return {
@@ -513,6 +527,14 @@ for (const file of FILES) {
   pr.printFinancials();
   const doc = pr.captured.print;
   assert('the print view opens a document', !!doc && doc.includes('<!DOCTYPE html>'));
+  // The reason this whole section could not run before: printFinancials goes
+  // through dwWrite, so the harness has to supply the real report-branding.js
+  // rather than a stub. Pinning the band here keeps that wiring load-bearing —
+  // a fake dwWrite would satisfy every other assertion below and quietly send
+  // an unbranded report to the printer.
+  assert('  and it goes out branded, as the print path brands it',
+    /data-dw-brand/.test(doc) && /DataWatch/.test(doc),
+    'printFinancials writes through dwWrite');
   assert('  it prints itself on load', /window\.print\(\)/.test(doc));
   assert('  it carries every column', FIN_HEADERS.every(h => doc.includes(`>${h}</th>`)));
   assert('  every job is on it', JOBS.every(j => doc.includes(j['project-name'])));

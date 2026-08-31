@@ -16,6 +16,9 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const HTML_PATH = path.join(__dirname, '..', 'quarry.html');
+// quarry.html loads this with <script src>, and jsdom does not fetch external
+// resources — so its print path, which calls dwWrite(), threw on every export.
+const BRANDING_PATH = path.join(__dirname, '..', 'report-branding.js');
 const AS_OF     = '2026-07-30';
 
 // ── Fixture ────────────────────────────────────────────────────────────────
@@ -119,6 +122,10 @@ function loadPage(blobs, writes, gate) {
     url: 'https://example.test/quarry.html',
     pretendToBeVisual: true,
     beforeParse(win) {
+      // Stand in for the <script src="report-branding.js"> the page carries.
+      // Running the real file, as the browser does, rather than stubbing the
+      // two globals it exports.
+      win.eval(fs.readFileSync(BRANDING_PATH, 'utf8'));
       win.localStorage.setItem('fct_token', 'test-token');
       win.localStorage.setItem('fct_user', JSON.stringify({
         userId: 1, username: 'tester', name: 'Test User', companyCode: 'TEST', companyName: 'Test Co',
