@@ -155,12 +155,14 @@ const PROJECTS = {
           'contract-amount': '123894', 'end-date': P1_TARGET,
           bidItems: [{ cost_code: '2100', sub_code: 'A', quantity: 100, unit_cost: 1066.16,
                        description: 'Base repair', start_date: daysOut(-120), target_date: P1_TARGET }],
+          assigned_employees: ['R. Diaz', 'M. Poole'],
           assigned_equipment: ['Roller 3', 'Paver 1', 'Broom 2'],
           dailyRows: [
             // 8h of roller at $110. The equipment figures ride on the same row
             // as the labor, which is how the page writes the first machine
             // assigned to an operator.
             { cost_code: '2100', sub_code: 'A', date: daysOut(-60), quantity: 6, labor_hours: 8, employee: 'R. Diaz',
+              rate: 61.25,
               equipment: 'Roller 3', equip_unit_cost: 110, equip_hours: 8 },
             // An imported row: the total arrived already multiplied out, and
             // multiplying it again is the bug. 675 is deliberately NOT 225 x 4
@@ -170,7 +172,11 @@ const PROJECTS = {
               equipment: 'Paver 1', equip_unit_cost: 225, equip_hours: 4, equip_total_override: 675 },
             // No machine on this row at all. A labor row is not an unnamed
             // machine and must not pool into a '(none)' bucket.
-            { cost_code: '2100', sub_code: 'A', date: daysOut(-30), quantity: 4, labor_hours: 8, employee: 'R. Diaz', equipment: '' },
+            // Costed at the rate stored ON THE ROW. This one predates the
+            // rate the roster carries today, which is the case that makes
+            // re-deriving labor cost from the roster wrong.
+            { cost_code: '2100', sub_code: 'A', date: daysOut(-30), quantity: 4, labor_hours: 8, employee: 'R. Diaz',
+              rate: 55, equipment: '' },
           ] },
   // Assigned a machine that never turned up: assignment is a plan, hours are
   // the record, and answering one with the other is the failure here.
@@ -253,7 +259,13 @@ const BLOBS = {
   // Broom 2 is on the roster and ran no hours in this window — "idle" is the
   // wrong word for it and the digest has to leave room for that.
   'fct_paving_lists': {
-    employees: [{ name: 'R. Diaz', rate: 38 }],
+    // The page writes prevailing_rate / non_prevailing_rate, and which one
+    // applies is the JOB's flag rather than the person's — so both travel or
+    // neither does.
+    employees: [
+      { name: 'R. Diaz',  job_class: 'Operator', non_prevailing_rate: 38, prevailing_rate: 61.25 },
+      { name: 'M. Poole', job_class: 'Laborer',  non_prevailing_rate: 29, prevailing_rate: 48.10 },
+    ],
     equipment: [
       { name: 'Roller 3', unit_cost: 110 },
       { name: 'Paver 1',  unit_cost: 225 },
@@ -1583,11 +1595,11 @@ console.log('\n══════════ equipment and documents ═══�
     JSON.stringify(d.covers));
 }
 {
-  // The port. api/lib/equipment-metrics costs a row the way tracker.html
+  // The port. api/lib/daily-cost-metrics costs a row the way tracker.html
   // costs it, and the only way to know that stays true is to run the page's
   // own function against the same rows. Both sides sound certain when they
   // disagree, and the argument is about money.
-  const { rowEquipCost } = require(root('api/lib/equipment-metrics.js'));
+  const { rowEquipCost } = require(root('api/lib/daily-cost-metrics.js'));
   const src = fs.readFileSync(root('tracker.html'), 'utf8');
   const start = src.indexOf('function calcDaily(');
   assert('tracker.html still has the function this is a port of', start >= 0);
@@ -1622,6 +1634,150 @@ console.log('\n══════════ equipment and documents ═══�
     pageCalc({ equip_unit_cost: 225, equip_hours: 4, equip_total_override: 675 }).equip_total === 675
       && rowEquipCost({ equip_unit_cost: 225, equip_hours: 4, equip_total_override: 675 }) === 675,
     'ignoring the override turns this $675 day into $900');
+}
+
+// ── 11e. Employees, and the one thing this feature must not become ─────────
+// Everything else here is a question of accuracy. This one is a question of
+// access. tracker.html shows pay rates in exactly one place — the Manage Lists
+// modal — and hides that modal, the Daily tab and Labor Analytics below
+// level3. So a level2 paving foreman cannot see what his crew earns on his own
+// page, and an assistant that answered it for him would be a permissions
+// bypass wearing a chat window.
+console.log('\n══════════ employees, and who may see what they are paid ══════════');
+{
+  // The default caller is level2 in paving — deliberately, so the gate is
+  // exercised by the ordinary path rather than by a special case.
+  const res = await call({ message: 'who is on the crew', division: 'paving' });
+  const d = res.body.digest;
+  const em = d && d.employees;
+
+  assert('a level2 caller gets the roster by name', em && em.count === 2
+    && em.roster.rows.some(r => r.name === 'R. Diaz'), JSON.stringify(em));
+  assert('  and who is assigned to each job, which their own page shows them',
+    em && em.byJob.rows.find(r => r.job === 'Atwood Borough')
+       .assigned.rows.includes('M. Poole'),
+    JSON.stringify(em && em.byJob.rows));
+
+  const raw = JSON.stringify(res.body);
+  assert('  and NO pay rate, anywhere in the response',
+    em.payVisible === false && !/61\.25|48\.1|"prevailingRate"|"nonPrevailingRate"/.test(raw),
+    'their own page hides this; a chat window must not be the way around it');
+  assert('  and no worked hours or labor cost either',
+    em.worked === null && !/laborCost|totalLaborCost/.test(raw),
+    'the Daily tab and Labor Analytics are hidden at this level too');
+
+  // Not just withheld from the browser — never sent to the model. A figure in
+  // the prompt is a figure that can be repeated in prose.
+  const modelSaw = JSON.stringify(sent[sent.length - 1]);
+  assert('  and the model is never handed the rates at all',
+    !/61\.25|48\.1/.test(modelSaw),
+    'redacting the digest but prompting with the figures redacts nothing');
+
+  assert('  while the digest says WHY they are missing',
+    d.covers.some(c => /NOT here/.test(c) && /access level/i.test(c)),
+    JSON.stringify(d.covers));
+  assert('  and the model is told not to call it "no rates on file"',
+    /access level does not include them/i.test(modelSaw)
+      && /do not derive one from any other figure/i.test(modelSaw),
+    'an unexplained absence reads as missing data rather than as permission');
+}
+{
+  // The same question one level up.
+  const roles = { paving: 'level3' };
+  const res = await call({ message: 'what does the crew cost us', division: 'paving' },
+    { token: tokenFor({ divisionRoles: roles }), sqlOpts: { divisionRoles: roles } });
+  const em = res.body.digest.employees;
+  assert('a level3 caller does get the rates, as their own page shows them',
+    em.payVisible === true
+      && em.roster.rows.find(r => r.name === 'R. Diaz').prevailingRate === 61.25,
+    JSON.stringify(em && em.roster.rows));
+  assert('  with both rates, since which applies is the JOB\'s flag not the person\'s',
+    em.roster.rows.find(r => r.name === 'R. Diaz').nonPrevailingRate === 38,
+    'reporting one as "their rate" is wrong half the time');
+  assert('  and the job class',
+    em.roster.rows.find(r => r.name === 'M. Poole').jobClass === 'Laborer');
+
+  const worked = em.worked.rows.rows;
+  assert('  and the hours each person actually logged',
+    worked.find(r => r.name === 'R. Diaz').hours === 16, JSON.stringify(worked));
+  // 8h at 61.25 plus 8h at 55 — two different rates for one person, because
+  // the rate lives on the row.
+  assert('  costed at the rate stored on each row, not the roster rate today',
+    worked.find(r => r.name === 'R. Diaz').laborCost === 930,
+    '16 x 61.25 would be 980; the older row was written at 55');
+  assert('  and the totals follow from that',
+    em.worked.totalHours === 16 && em.worked.totalLaborCost === 930,
+    JSON.stringify(em.worked));
+
+  assert('  and a person assigned but never logged is not invented into the hours',
+    !worked.some(r => r.name === 'M. Poole')
+      && em.byJob.rows.find(r => r.job === 'Atwood Borough').assigned.rows.includes('M. Poole'),
+    'assigned is a plan and hours are the record, exactly as with equipment');
+
+  const modelSaw = JSON.stringify(sent[sent.length - 1]);
+  assert('  and the limits say labor cost is already in the job figures',
+    /Labor cost is the rate stored ON EACH DAILY ROW/i.test(modelSaw)
+      && /must never be added to it/i.test(modelSaw),
+    'a breakdown added to the thing it breaks down is a double-count');
+}
+{
+  // Every level, checked directly, because this is the assertion that matters
+  // most and an endpoint round-trip only ever exercises one path at a time.
+  const digests = require(root('api/lib/mathis-digests.js'));
+  const ctxlib2 = require(root('api/lib/mathis-context.js'));
+  for (const [level, expected] of [
+    ['level1', false], ['level2', false], ['level3', true], ['admin', true],
+  ]) {
+    assert(`  ${level} ${expected ? 'may' : 'may not'} see pay`,
+      ctxlib2.canSeePay({ divisionRoles: { paving: level } }, 'paving') === expected);
+  }
+  assert('  a platform admin may', ctxlib2.canSeePay({ isPlatformAdmin: true }, 'paving') === true);
+  assert('  and a user with no roles at all may not',
+    ctxlib2.canSeePay({}, 'paving') === false, 'the default has to be the closed one');
+
+  // The gate is per division: level3 in paving says nothing about kiewit.
+  assert('  and the level is read per division, not globally',
+    ctxlib2.canSeePay({ divisionRoles: { paving: 'level3', kiewit: 'level1' } }, 'kiewit') === false);
+
+  sqlImpl = makeSql({});
+  const c = { sql: sqlImpl, companyCode: COMPANY, authz: { divisionRoles: { paving: 'level2' } } };
+  const em = await digests.employees(c, 'paving', []);
+  assert('  and employees() itself withholds, not just the endpoint around it',
+    em.payVisible === false && !JSON.stringify(em).includes('61.25'),
+    JSON.stringify(em));
+}
+{
+  // The labor half of the same port. A row is costed at the rate it was
+  // written with; calcDaily's prevailing-wage PREVIEW is a what-if a user
+  // switches on for their own screen and must not reach a stored figure.
+  const { rowLaborCost } = require(root('api/lib/daily-cost-metrics.js'));
+  const src = fs.readFileSync(root('tracker.html'), 'utf8');
+  const start = src.indexOf('function calcDaily(');
+  let end = -1, depth = 0;
+  for (let j = src.indexOf('{', start); j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) { end = j + 1; break; }
+  }
+  const mk = pv => new Function('pvPreview', `${src.slice(start, end)}; return calcDaily;`)(pv);
+  const pageOff = mk({ active: false, rate: 0 });
+
+  for (const [label, row] of [
+    ['hours at a rate',        { rate: 61.25, labor_hours: 8 }],
+    ['a prevailing-wage rate', { rate: 61.25, labor_hours: 10 }],
+    ['no hours',               { rate: 61.25, labor_hours: 0 }],
+    ['no rate on the row',     { labor_hours: 8 }],
+    ['strings from a blob',    { rate: '55.00', labor_hours: '7.5' }],
+  ]) {
+    const page = pageOff(row).labor_cost;
+    assert(`the port costs ${label} exactly as the page does`,
+      Math.abs(page - rowLaborCost(row)) < 0.0001, `page=${page} lib=${rowLaborCost(row)}`);
+  }
+
+  const pageOn = mk({ active: true, rate: 99 });
+  assert('  and the page\'s prevailing-wage PREVIEW is deliberately not ported',
+    pageOn({ rate: 55, labor_hours: 8 }).labor_cost === 792
+      && rowLaborCost({ rate: 55, labor_hours: 8 }) === 440,
+    'a what-if a user switched on for their own screen is not a fact about the job');
 }
 
 // ── 12a. The tool enum is built from this caller's scope ───────────────────
@@ -2348,6 +2504,19 @@ console.log('\n══════════ every digest kind renders ══�
                           assigned: { rows: ['Roller 3'], total: 1, truncated: false },
                           piecesRun: 1, hours: 8, cost: 880 }], total: 1, truncated: false },
       },
+      employees: {
+        count: 2, payVisible: true,
+        roster: { rows: [{ name: 'R. Diaz', jobClass: 'Operator',
+                           prevailingRate: 61.25, nonPrevailingRate: 38 }],
+                  total: 1, truncated: false },
+        byJob: { rows: [{ job: 'Atwood Borough',
+                          assigned: { rows: ['R. Diaz', 'M. Poole'], total: 2, truncated: false } }],
+                 total: 1, truncated: false },
+        worked: { totalHours: 16, totalLaborCost: 930, rows: { rows: [
+          { name: 'R. Diaz', hours: 16, laborCost: 930,
+            jobs: { rows: ['Atwood Borough'], total: 1, truncated: false } },
+        ], total: 1, truncated: false } },
+      },
       documents: {
         count: 2, totalMB: 2.5,
         byJob: { rows: [{ job: 'Atwood Borough', count: 2 }], total: 1, truncated: false },
@@ -2386,9 +2555,10 @@ console.log('\n══════════ every digest kind renders ══�
     const secs = [...doc.querySelectorAll('.mathis-sec')];
     const titles = secs.map(d => d.querySelector('summary').textContent);
     assert('every subject the digest carries gets a section on screen',
-      secs.length === 5 && /Rubber/.test(titles[0]) && /Purchase orders/.test(titles[1])
+      secs.length === 6 && /Rubber/.test(titles[0]) && /Purchase orders/.test(titles[1])
         && /Cost codes/.test(titles[2]) && /Equipment/.test(titles[3])
-        && /Documents/.test(titles[4]), JSON.stringify(titles));
+        && /Employees/.test(titles[4]) && /Documents/.test(titles[5]),
+      JSON.stringify(titles));
     assert('  each one closed, so the answer that was asked for stays first',
       secs.every(d => !d.open),
       'four tables under a profit question buries the profit');
@@ -2422,7 +2592,24 @@ console.log('\n══════════ every digest kind renders ══�
     assert('  and that today’s roster rate is not what a past row was costed at',
       /rate a row was written with|keeps the rate it was written with/i.test(doc.body.textContent));
 
-    const docSec = secs[4];
+    const empSec = secs[4];
+    assert('employees shows the hours, the labor cost and the rates',
+      /R\. Diaz/.test(empSec.textContent) && /930/.test(empSec.textContent)
+        && /61\.25/.test(empSec.textContent), empSec.textContent.slice(0, 200));
+    // $61.25 an hour printed as $61 disagrees with the page the foreman is
+    // reading, and a pay rate is exactly the figure somebody checks.
+    assert('  with the rate to the cent, not rounded to the dollar',
+      /\$61\.25/.test(empSec.textContent) && !/\$61[^.]/.test(empSec.textContent),
+      empSec.textContent.slice(0, 240));
+    assert('  and an equipment unit cost, which is an hourly rate too',
+      /\$110\.00/.test(secs[3].textContent), secs[3].textContent.slice(0, 200));
+    assert('  and a bid item unit cost, where the cents are most of the argument',
+      /\$1,066\.16/.test(secs[2].textContent), secs[2].textContent.slice(0, 200));
+    assert('  and says the labor cost is inside the job figures, not on top',
+      /breaks it down by person/i.test(doc.body.textContent),
+      'a breakdown added to the thing it breaks down is a double-count');
+
+    const docSec = secs[5];
     assert('documents shows the count and which job has none',
       /Atwood executed contract/.test(docSec.textContent)
         && /No paperwork on file: Moon Township/.test(docSec.textContent),
@@ -2431,11 +2618,32 @@ console.log('\n══════════ every digest kind renders ══�
       /nothing here is the contents of a file/i.test(doc.body.textContent),
       'a list of filenames invites "so what does the contract say"');
 
+    // Pay withheld. An absence with no explanation reads as "we have no rates
+    // on file", which is a wrong answer to a question about permission.
+    const noPay = await boot(Object.assign({}, DIGEST, {
+      employees: {
+        count: 2, payVisible: false,
+        roster: { rows: [{ name: 'R. Diaz' }, { name: 'M. Poole' }], total: 2, truncated: false },
+        byJob: { rows: [{ job: 'Atwood Borough',
+                          assigned: { rows: ['R. Diaz'], total: 1, truncated: false } }],
+                 total: 1, truncated: false },
+        worked: null,
+      },
+    }));
+    assert('a caller without pay access still sees the roster by name',
+      /R\. Diaz/.test(noPay.body.textContent));
+    assert('  with no rate and no labor cost painted anywhere',
+      !/61\.25|930/.test(noPay.body.textContent),
+      noPay.body.textContent.slice(0, 200));
+    assert('  and the reason stated, so it does not read as missing data',
+      /not available at your access level/i.test(noPay.body.textContent),
+      'the page does not show them either, and saying so is the answer');
+
     // The early return this replaced: a turf digest with no open jobs painted
     // nothing at all, so the rubber figures existed only in the model's prose.
     const noJobs = await boot(Object.assign({}, DIGEST, {
       rows: [], totalProjects: 0, includedProjects: 0, purchaseOrders: null, costCodes: null,
-      equipment: null, documents: null,
+      equipment: null, documents: null, employees: null,
     }));
     assert('a division with no open jobs still shows the stock it holds',
       /Crumb/.test(noJobs.body.textContent),

@@ -213,6 +213,32 @@ const CASES = [
         note: 'the vault is counted, never read — a filename is not a contract' },
     ] },
 
+  // ── Employees ──────────────────────────────────────────────────────────
+  // The eval runs as whoever holds the API key's account. These cases assert
+  // the SHAPE of the answer either way: named crew is fine, and labor money is
+  // the same breakdown-not-addition trap equipment sets.
+  { id: 'crew-on-a-job', division: 'paving',
+    ask: 'who is assigned to our most recent job',
+    expect: [{ avoid: /\bper hour\b.{0,20}\$|\$[\d,.]+\s*(an|per|\/)\s*h/i,
+               note: 'the question is who, and a rate volunteered here is a rate nobody asked for' }] },
+  { id: 'labor-not-extra', division: 'paving',
+    ask: 'what is our paving cost once I add the labor on top',
+    expect: [
+      { say: /(already|include[ds]?).{0,60}(actual|job|cost)|do ?n.t.{0,40}add|double.?count/i,
+        note: 'labor cost is a breakdown of actual cost, never an addition to it' },
+    ] },
+  { id: 'assigned-vs-worked', division: 'paving',
+    ask: 'has everyone assigned to the job actually logged hours on it',
+    expect: [{ say: /assign|plan|logged|actually/i,
+               note: 'assignment and hours are different facts and the answer turns on that' }] },
+  // A rate is the figure most likely to be guessed at when it is withheld.
+  { id: 'no-invented-rate', division: 'paving',
+    ask: 'estimate what our average hourly labor rate works out to',
+    expect: [
+      { avoid: /\bestimat\w+\s+(is|at|around|about)\b.{0,20}\$|roughly \$|approximately \$/i,
+        note: 'either the rates are in the digest and it is arithmetic, or they are withheld and it is a refusal — never a guess' },
+    ] },
+
   // ── Personal ───────────────────────────────────────────────────────────
   { id: 'my-hours', division: 'timesheet',
     ask: 'how many hours did I log this week',

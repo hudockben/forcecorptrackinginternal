@@ -95,7 +95,7 @@ function toolsFor(scope) {
         // Naming turf, paving and kiewit here to explain `limit` would tell a
         // quarry foreman those divisions exist. The sentence is division-free
         // for the same reason the enum is scoped.
-        + '. A division that runs jobs returns per-job financials, its purchase orders, its cost-code catalogue, its equipment roster and hours, and a count of the paperwork on file — file names only, never contents. `limit` sets how many of the most recent jobs to read.',
+        + '. A division that runs jobs returns per-job financials, its purchase orders, its cost-code catalogue, its equipment roster and hours, its employee roster and job assignments, and a count of the paperwork on file — file names only, never contents. Pay rates and worked hours come back only for callers whose access level includes them; the digest says which. `limit` sets how many of the most recent jobs to read.',
       input_schema: {
         type: 'object',
         properties: {

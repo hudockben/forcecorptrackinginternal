@@ -291,6 +291,16 @@
   }
   function text(v) { return '<td>' + esc(v == null || v === '' ? '—' : v) + '</td>'; }
 
+  /* Money to the cent. Whole dollars are right for a contract and wrong for a
+   * rate: $61.25 an hour printed as $61 disagrees with the page a foreman is
+   * looking at, and a rate is exactly the figure somebody will check. */
+  function rate(v) {
+    if (v === null || v === undefined || !isFinite(v)) return CELL_UNKNOWN;
+    return '<td class="n">' + esc(Number(v).toLocaleString('en-US',
+      { style: 'currency', currency: 'USD', minimumFractionDigits: 2,
+        maximumFractionDigits: 2 })) + '</td>';
+  }
+
   /* A label/value strip. Each pair is [label, cellHtml]. */
   function kv(pairs) {
     var body = pairs.map(function (p) {
@@ -721,7 +731,7 @@
     if (!cc || !cc.count) return '';
     var tbl = breakdown(['Code', 'Description', 'Qty', 'Unit cost'], cc.rows, function (r) {
       return text((r.costCode || '') + (r.subCode ? '-' + r.subCode : '')) +
-        text(r.description) + num(r.quantity) + money(r.unitCost);
+        text(r.description) + num(r.quantity) + rate(r.unitCost);
     }, 'cost codes');
     return section('Cost codes', cc.count + ' on file', tbl);
   }
@@ -744,13 +754,52 @@
         text((r.jobs && r.jobs.rows || []).join(', '));
     }, 'machines');
     html += breakdown(['Machine', 'Unit cost'], eq.catalogue, function (r) {
-      return text(r.name) + money(r.unitCost);
+      // A unit cost is an hourly rate too, and rounds the same way.
+      return text(r.name) + rate(r.unitCost);
     }, 'machines on the roster');
     return section('Equipment', eq.count ? eq.count + ' on the roster' : '', html) +
       '<div class="mathis-note">' + esc('Equipment cost is already inside each job\u2019s spent figure above ' +
         '\u2014 this breaks it down by machine, it does not add to it. Hours cover only the jobs shown. ' +
         'The roster\u2019s unit cost is today\u2019s rate; a row keeps the rate it was written with.') +
       '</div>';
+  }
+
+  /* Names and assignments for everyone with the division; pay and hours only
+   * for the levels whose own page shows them. When they are withheld the panel
+   * says so, because an absence with no explanation reads as "we have no rates
+   * on file" — a wrong answer to a question that was really about permission. */
+  function renderEmployees(d) {
+    var em = d.employees;
+    if (!em || (!em.count && !(em.byJob && em.byJob.rows.length))) return '';
+    var html = '';
+    if (em.payVisible && em.worked) {
+      html += kv([
+        ['Hours worked', num(em.worked.totalHours)],
+        ['Labor cost of those hours', money(em.worked.totalLaborCost)]
+      ]);
+      html += breakdown(['Employee', 'Hours', 'Labor cost', 'Jobs'], em.worked.rows, function (r) {
+        return text(r.name) + num(r.hours) + money(r.laborCost) +
+          text((r.jobs && r.jobs.rows || []).join(', '));
+      }, 'people');
+    }
+    html += breakdown(em.payVisible ? ['Employee', 'Class', 'Non-PW', 'PW'] : ['Employee'],
+      em.roster, function (r) {
+        return em.payVisible
+          ? text(r.name) + text(r.jobClass) + rate(r.nonPrevailingRate) + rate(r.prevailingRate)
+          : text(r.name);
+      }, 'people on the roster');
+    html += breakdown(['Job', 'Assigned'], em.byJob, function (r) {
+      return text(r.job) + text((r.assigned && r.assigned.rows || []).join(', '));
+    }, 'jobs');
+
+    var note = em.payVisible
+      ? 'Labor cost is already inside each job\u2019s spent figure above \u2014 this breaks it down by person, ' +
+        'it does not add to it. A row keeps the rate it was written with, which on a prevailing-wage job is the PW rate. ' +
+        'Assigned is who was put on the job; hours are who actually worked.'
+      : 'Pay rates and worked hours are not available at your access level \u2014 the division page does not show them either. ' +
+        'Names and job assignments only.';
+    return section('Employees', em.count ? em.count + ' on the roster' : '', html) +
+      '<div class="mathis-note">' + esc(note) + '</div>';
   }
 
   /* Counted, never read. There is no file content anywhere in this digest, and
@@ -808,7 +857,7 @@
     // Collapsed, and after the jobs table: a digest carries all of these
     // whatever was asked, so the answer to the actual question stays first.
     html += renderRubber(d) + renderPOs(d) + renderCostCodes(d) +
-      renderEquipment(d) + renderDocuments(d);
+      renderEquipment(d) + renderEmployees(d) + renderDocuments(d);
     post(html, notes);
   }
 

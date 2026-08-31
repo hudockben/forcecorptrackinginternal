@@ -36,7 +36,7 @@
 // Deliberately the only require: this file decides who may read what, and
 // depending on nothing that reads keeps ./mathis-digests.js free to require it
 // without a cycle.
-const { ALL_DIVISIONS, hasDivisionAccess, normalizeDivision, divisionForKey } = require('./auth');
+const { ALL_DIVISIONS, hasDivisionAccess, normalizeDivision, divisionForKey, levelFor } = require('./auth');
 
 // Divisions with no data of their own — a submit side whose review side is
 // another division's tab. A user holding only these is a field employee, and
@@ -161,6 +161,26 @@ function resolveDivision(requested, authz) {
   return hasDivisionAccess(authz, division) ? division : null;
 }
 
+/**
+ * Whether this user may see what people are paid, and the hours behind it.
+ *
+ * Not a rule invented here. tracker.html shows employee rates in exactly one
+ * place — the Manage Lists modal — and that modal hangs off the Admin
+ * dropdown, which the page hides outright below level3. The Daily tab and
+ * Labor Analytics, the only other views carrying per-person hours and labor
+ * cost, are hidden for level1 and level2 by the same `visibleTabs` set.
+ *
+ * So a paving foreman cannot see what his crew earns on his own page, and an
+ * assistant that answered it for him would be a permissions bypass wearing a
+ * chat window — the single easiest way for this feature to do real damage.
+ * The roster of NAMES and who is assigned where stays available to everyone
+ * with the division, because the project card already shows both.
+ */
+function canSeePay(authz, division) {
+  const level = levelFor(authz, division);
+  return level === 'admin' || level === 'level3';
+}
+
 /** True when the user holds nothing but field-side divisions. */
 function isFieldOnly(scope) {
   return scope.length > 0 && scope.every(d => FIELD_ONLY.has(d));
@@ -223,6 +243,8 @@ module.exports = {
   refreshAuthz,
   divisionScope,
   resolveDivision,
+  canSeePay,
+  levelFor,
   isFieldOnly,
   readBlob,
 };

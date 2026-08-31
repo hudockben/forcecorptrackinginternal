@@ -31,7 +31,7 @@ const ctx      = require('./mathis-context');
 const quarryM  = require('./quarry-metrics');
 const dustM    = require('./dust-metrics');
 const dustCost = require('./dust-cost-metrics');
-const equipM   = require('./equipment-metrics');
+const dailyM   = require('./daily-cost-metrics');
 const truckM   = require('./trucking-metrics');
 const icM      = require('./ic-metrics');
 const payrollM = require('./payroll-metrics');
@@ -137,6 +137,9 @@ const JOB_LIMITS = ctx.JOB_LIMITS.concat([
   'The equipment roster\'s unit cost is the rate the list carries TODAY. A row costed last year kept the rate it was written with, so the two can differ and the row is the one that was paid.',
   'Equipment assigned to a job is a plan, not a record. A machine can be assigned and never turn up, or turn up without being assigned; `hours` is what actually ran and `assigned` is what somebody intended.',
   'Equipment hours cover only the jobs in this digest. A machine showing no hours may well have run on an older job — say the window rather than calling it idle.',
+  'Labor cost is the rate stored ON EACH DAILY ROW times its hours — not the roster rate today, because a prevailing-wage job is costed at a different rate and a closed job keeps what it was written with. Like equipment, it is ALREADY part of that job\'s actualCost and must never be added to it.',
+  'Employees assigned to a job are a plan, not a record, exactly as with equipment. `byJob.assigned` is who somebody put on the job; `worked` is who actually logged hours.',
+  'When `employees.payVisible` is false there are no pay rates and no worked hours in this digest, because the asking user\'s access level does not include them — the division page hides them too. Say they are not available at this access level. Do NOT estimate a rate, do not derive one from any other figure, and do not describe the absence as "no rates on file".',
   'The document vault is counted, never read. There is no file content here of any kind: a question about what a contract, permit or change order SAYS cannot be answered from this, only how many such files exist and when they were uploaded.',
   'Deleted documents are excluded, including any still inside the 30-day trash window. "No documents" for a job means none on file now.',
   'The document read stops at 500 files. When `documents.truncated` is true the counts are a floor, not a total — say so rather than reporting them as the whole vault.',
@@ -297,7 +300,7 @@ async function equipment(c, division, projects) {
         unitCost: money(e && (e.unit_cost != null ? e.unit_cost : e.unitCost)) }
   )).filter(e => e.name);
 
-  const usage = equipM.equipmentUsage(projects, report.projName);
+  const usage = dailyM.equipmentUsage(projects, report.projName);
 
   // What a PM assigned to the job, which is a plan and not a record: a machine
   // can be assigned and never turn up, and turn up without being assigned.
@@ -330,6 +333,73 @@ async function equipment(c, division, projects) {
     },
     byJob: capList(byJob),
   };
+}
+
+/**
+ * Employees: the roster, who is on which job, and — for those allowed to see
+ * it — what people are paid and the hours behind the labor cost.
+ *
+ * This is the one block here with a check inside it beyond "which division".
+ * tracker.html shows pay rates only in the Manage Lists modal, and hides that
+ * modal, the Daily tab and Labor Analytics below level3. A level2 foreman
+ * therefore cannot see what his crew earns on his own page, and answering it
+ * in a chat window would make this feature a permissions bypass. Names and
+ * assignments stay open to everyone with the division, because the project
+ * card already shows both.
+ *
+ * `payVisible` travels with the digest so the model can say WHY a rate is
+ * missing. Without it the absence looks like no data, and "we have no rates on
+ * file" is a wrong answer to a question that was really about permission.
+ */
+async function employees(c, division, projects) {
+  const key = LISTS_KEYS[division];
+  if (!key) return null;
+  const r = await readBlob(c, key);
+  if (r.status === 'denied' || r.status === 'error') return null;
+
+  const payVisible = ctx.canSeePay(c.authz, division);
+  const lists = r.value && typeof r.value === 'object' ? r.value : {};
+
+  const roster = asArray(lists.employees).map(e => {
+    const name = safeText(typeof e === 'string' ? e : (e && e.name), 80);
+    if (!name) return null;
+    if (!payVisible) return { name };
+    const o = typeof e === 'object' && e ? e : {};
+    return {
+      name,
+      jobClass: safeText(o.job_class || o.jobClass, 60),
+      // Both rates, because which one applies is the JOB's prevailing-wage
+      // flag and not the person's — reporting one as "their rate" is wrong
+      // half the time.
+      prevailingRate:    money(o.prevailing_rate    != null ? o.prevailing_rate    : o.pw_rate),
+      nonPrevailingRate: money(o.non_prevailing_rate != null ? o.non_prevailing_rate : o.non_pw_rate),
+    };
+  }).filter(Boolean);
+
+  // Assignment is a plan and visible to everyone; hours are the record and
+  // are not. Keeping them in separate fields is what stops one being answered
+  // with the other.
+  const byJob = [];
+  for (const proj of projects) {
+    const assigned = asArray(proj && proj.assigned_employees)
+      .map(n => safeText(n, 80)).filter(Boolean);
+    if (!assigned.length) continue;
+    byJob.push({ job: report.projName(proj), assigned: capList(assigned) });
+  }
+
+  let worked = null;
+  if (payVisible) {
+    const u = dailyM.laborUsage(projects, report.projName);
+    worked = {
+      totalHours: u.totalHours,
+      totalLaborCost: money(u.totalCost),
+      rows: capList(u.rows.map(x => ({
+        name: x.name, hours: x.hours, laborCost: money(x.cost), jobs: capList(x.jobs),
+      }))),
+    };
+  }
+
+  return { count: roster.length, payVisible, roster: capList(roster), byJob: capList(byJob), worked };
 }
 
 /**
@@ -445,11 +515,12 @@ async function jobDigest(c, division, opts = {}) {
   // Named so a PO can say which job it is against instead of an opaque id.
   const projectNames = new Map(projects.map(p => [String(p.id || ''), report.projName(p)]));
 
-  const [pos, codes, equip, docs] = await Promise.all([
+  const [pos, codes, equip, docs, crew] = await Promise.all([
     purchaseOrders(c, division, projectNames),
     costCodes(c, division),
     equipment(c, division, projects),
     documents(c, division, projects),
+    employees(c, division, projects),
   ]);
 
   const extraCovers = [];
@@ -458,12 +529,16 @@ async function jobDigest(c, division, opts = {}) {
   if (codes) extraCovers.push('the cost-code catalogue: which codes this division uses, their quantities and unit costs');
   if (equip) extraCovers.push('equipment: the roster and its unit costs, what is assigned to each job, and the hours each machine ran');
   if (docs)  extraCovers.push('the document vault: how many files each job has, who uploaded them and when — file names only, never their contents');
+  if (crew)  extraCovers.push(crew.payVisible
+    ? 'employees: the roster with job classes and pay rates, who is assigned to each job, and the hours each person worked with the labor cost of those hours'
+    : 'employees: the roster by NAME and who is assigned to each job — pay rates and worked hours are NOT here, because this user\'s access level does not include them');
   const extras = {
     ...(inventory ? { rubberInventory: inventory } : {}),
     ...(pos   ? { purchaseOrders: pos } : {}),
     ...(codes ? { costCodes: codes } : {}),
     ...(equip ? { equipment: equip } : {}),
     ...(docs  ? { documents: docs } : {}),
+    ...(crew  ? { employees: crew } : {}),
   };
   if (!projects.length) {
     return {
@@ -1401,6 +1476,7 @@ module.exports = {
   costCodes,
   equipment,
   documents,
+  employees,
   readScopedBlob,
   quarryDigest,
   schedulerDigest,
