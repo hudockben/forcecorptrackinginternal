@@ -28,14 +28,49 @@
 
   function token() { return localStorage.getItem('fct_token') || ''; }
 
-  /* The host page declares `const DIVISION = 'paving'` at top level. A
+  /* Which division the user is standing in.
+   *
+   * The three job pages declare `const DIVISION = 'paving'` at top level. A
    * top-level const lives in the script scope, not on window, so `DIVISION`
    * resolves but `window.DIVISION` does not — hence the typeof guard rather
-   * than a property read. Resolved lazily, on send, so this file can be tagged
-   * anywhere in the page without depending on script order. */
+   * than a property read. The other division pages declare no such constant,
+   * so the filename answers for them.
+   *
+   * Whatever this returns is a REQUEST, not a permission. The server resolves
+   * it against roles it re-reads from the database and refuses anything the
+   * user does not hold, so a wrong answer here costs an error message, never
+   * a figure someone should not see.
+   *
+   * Resolved lazily, on send, so this file can be tagged anywhere in the page
+   * without depending on script order. */
+  var PAGE_DIVISION = {
+    'tracker.html':          'turf',
+    'paving.html':           'paving',
+    'kiewit-pinetree.html':  'kiewit',
+    'quarry.html':           'quarry',
+    'dust.html':             'dust',
+    'trucking.html':         'trucking',
+    'intercompany.html':     'intercompany',
+    'payroll.html':          'payroll',
+    'timesheet.html':        'timesheet',
+    'executive.html':        'executive',
+    'scheduler.html':        'scheduler',
+    'fuel.html':             'fuel',
+    'fuel-admin.html':       'fuel_admin',
+    'driver.html':           'driver',
+    'quarry-sales.html':     'quarry_sales'
+  };
+
   function division() {
     try { if (typeof DIVISION !== 'undefined' && DIVISION) return String(DIVISION); } catch (e) {}
+    var file = (location.pathname || '').split('/').pop() || '';
+    if (PAGE_DIVISION[file]) return PAGE_DIVISION[file];
     try { return localStorage.getItem('fct_division') || ''; } catch (e) { return ''; }
+  }
+
+  /* Pages where the honest subject is the person, not the division. */
+  function isPersonalPage() {
+    return division() === 'timesheet';
   }
 
   function esc(s) {
@@ -142,7 +177,7 @@
     panel.classList.toggle('on', state.open);
     if (state.open) {
       var d = division();
-      whereEl.textContent = d ? d.replace(/_/g, ' ') : 'your entries';
+      whereEl.textContent = (d && !isPersonalPage()) ? d.replace(/_/g, ' ') : 'your entries';
       // A new division is a new conversation: replaying paving history into a
       // quarry answer would invite exactly the cross-division confusion the
       // server-side scoping exists to prevent.
@@ -153,8 +188,8 @@
 
   function greet() {
     var d = division();
-    add('it', d
-      ? 'Ask me about ' + d.replace(/_/g, ' ') + ' — jobs, costs, what a project is projecting. I answer from this division\'s own figures.'
+    add('it', (d && !isPersonalPage())
+      ? 'Ask me about ' + d.replace(/_/g, ' ') + ' — I answer from this division\'s own figures, and I will tell you when something is not tracked.'
       : 'Ask me about your own timesheet entries — hours logged, what is still in draft.');
   }
 
@@ -167,19 +202,179 @@
     return el;
   }
 
+  /* ── Rendering ────────────────────────────────────────────────────────
+   * Everything below builds from the server's digest. Nothing here reads the
+   * model's reply. Each division gets its own renderer because each one means
+   * something different by its figures — and a division whose figures do not
+   * exist (trucking cost) must show that as an absence, not as a zero. */
+
+  var CELL_UNKNOWN = '<td class="n unk" title="No value on file. This is unknown, not zero.">—</td>';
+
+  function money(v) {
+    if (v === null || v === undefined) return CELL_UNKNOWN;
+    var t = fmtMoney(v);
+    return t === null ? CELL_UNKNOWN : '<td class="n">' + esc(t) + '</td>';
+  }
+  function num(v, digits) {
+    if (v === null || v === undefined || !isFinite(v)) return CELL_UNKNOWN;
+    return '<td class="n">' + esc(Number(v).toLocaleString('en-US',
+      { maximumFractionDigits: digits === undefined ? 2 : digits })) + '</td>';
+  }
+  function text(v) { return '<td>' + esc(v == null || v === '' ? '—' : v) + '</td>'; }
+
+  /* A label/value strip. Each pair is [label, cellHtml]. */
+  function kv(pairs) {
+    var body = pairs.map(function (p) {
+      return '<tr><td>' + esc(p[0]) + '</td>' + p[1] + '</tr>';
+    }).join('');
+    return '<table class="mathis-tbl"><tbody>' + body + '</tbody></table>';
+  }
+
+  /* A capped breakdown. `capped` is the {rows,total,truncated} shape the
+   * server sends; the truncation is stated rather than silently applied. */
+  function breakdown(headers, capped, cells, label) {
+    if (!capped || !capped.rows || !capped.rows.length) return '';
+    var head = headers.map(function (h, i) {
+      return '<th' + (i ? ' style="text-align:right"' : '') + '>' + esc(h) + '</th>';
+    }).join('');
+    var body = capped.rows.map(function (r) { return '<tr>' + cells(r) + '</tr>'; }).join('');
+    var note = capped.truncated
+      ? '<div class="mathis-note">' + esc('Top ' + capped.rows.length + ' of ' + capped.total + ' ' + (label || 'rows') + '.') + '</div>'
+      : '';
+    return '<div class="mathis-wrap"><table class="mathis-tbl"><thead><tr>' + head +
+      '</tr></thead><tbody>' + body + '</tbody></table></div>' + note;
+  }
+
+  function post(html, notes) {
+    if (!html) return;
+    var el = document.createElement('div');
+    el.className = 'mathis-msg it';
+    el.innerHTML = html + (notes && notes.length
+      ? '<div class="mathis-note">' + esc(notes.join(' ')) + '</div>' : '');
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+  }
+
   /* Built from the server's digest, never from the reply text. */
   function renderFigures(digest) {
     if (!digest) return;
-    if (digest.kind === 'jobs') return renderJobs(digest);
-    if (digest.kind === 'personal') return renderPersonal(digest);
+    var by = {
+      jobs:         renderJobs,
+      personal:     renderPersonal,
+      quarry:       renderQuarry,
+      dust:         renderDust,
+      trucking:     renderTrucking,
+      intercompany: renderIc,
+      payroll:      renderPayroll
+    };
+    var fn = by[digest.kind];
+    if (fn) fn(digest);
   }
 
-  function moneyCell(v, colour) {
-    if (v === null || v === undefined) {
-      return '<td class="n unk" title="No value on file. This is unknown, not zero.">—</td>';
+  function renderQuarry(d) {
+    var t = d.total || {}, be = d.breakEven || {}, inv = d.inventory || {};
+    var html = kv([
+      ['Sales',               money(t.totalSales)],
+      ['Tons sold',           num(t.tonsSold)],
+      ['Tons on hand',        num(inv.onHand)],
+      ['Avg price / ton',     money(be.avgPricePerTon)],
+      ['Variable cost / ton', money(be.varCostPerTon)],
+      ['Contribution / ton',  money(be.contributionPerTon)],
+      ['Break-even tons',     num(be.breakEvenTons)]
+    ]);
+    html += breakdown(['Pit', 'Sales', 'Tons sold', 'Crush cost'], d.locations, function (r) {
+      return text(r.name) + money(r.totalSales) + num(r.tonsSold) + money(r.crushCost);
+    }, 'pits');
+    var notes = ['Contribution per ton — this is not profit on a job.'];
+    if (d.stockAlert && d.stockAlert.note) notes.push(d.stockAlert.pit + ': ' + d.stockAlert.note);
+    post(html, notes);
+  }
+
+  function renderDust(d) {
+    var r = d.revenue || {}, i = d.invoices || {};
+    var html = kv([
+      ['Revenue — Tracking',      money(r.tracking)],
+      ['Revenue — Other Billing', money(r.other)],
+      ['Revenue — EES Other',     money(r.ees)],
+      ['Revenue — total',         money(r.total)],
+      ['Gallons',                 num(d.gallonsYtd)],
+      ['Overdue invoices',        money(i.overdue && i.overdue.amount)],
+      ['Outstanding invoices',    money(i.outstanding && i.outstanding.amount)]
+    ]);
+    html += breakdown(['Customer', 'Revenue', 'Jobs'], d.customers, function (x) {
+      return text(x.name) + money(x.revenue) + num(x.jobs, 0);
+    }, 'customers');
+    var notes = ['Revenue only — dust margin is calculated on the Product Cost page and is not available here.'];
+    if (d.unavailableBooks && d.unavailableBooks.length) {
+      notes.push('Could not read: ' + d.unavailableBooks.join(', ') +
+        '. The totals above are a floor, not the division\'s earnings.');
     }
-    var cls = colour ? (v < 0 ? ' neg' : ' pos') : '';
-    return '<td class="n' + cls + '">' + esc(fmtMoney(v)) + '</td>';
+    post(html, notes);
+  }
+
+  function renderTrucking(d) {
+    var i = d.invoices || {};
+    var html = kv([
+      ['Revenue',          money(d.revenue)],
+      ['Hours',            num(d.hours)],
+      ['Avg haul fee',     money(d.avgHaulFee)],
+      ['Active units',     num(d.activeUnits, 0)],
+      ['Active drivers',   num(d.activeDrivers, 0)],
+      ['To invoice',       money(i.uninvoiced && i.uninvoiced.amount)],
+      ['Awaiting payment', money(i.awaiting && i.awaiting.amount)],
+      // Shown, and shown as absent. Leaving these rows out would let revenue
+      // read as the bottom line on a page where there is no bottom line.
+      ['Cost',             '<td class="n unk" title="Trucking cost is not captured anywhere in this system.">not tracked</td>'],
+      ['Profit',           '<td class="n unk" title="Without cost there is no profit to compute.">not tracked</td>']
+    ]);
+    html += breakdown(['Customer', 'Revenue', 'Hours'], d.customers, function (x) {
+      return text(x.name) + money(x.revenue) + num(x.hours);
+    }, 'customers');
+    post(html, ['Revenue is hours x haul fee, worked out at read time. No haul cost is recorded, so there is no profit figure.']);
+  }
+
+  function renderIc(d) {
+    var b = d.billed || {};
+    var html = kv([
+      ['Billed — total',    money(b.total)],
+      ['Billed — trucking', money(b.truck)],
+      ['Billed — dust',     money(b.dust)],
+      ['Hours',             num(d.totalHours)],
+      ['Not invoiced',      money(d.notInvoiced && d.notInvoiced.amount)],
+      ['Awaiting payment',  money(d.awaitingPayment && d.awaitingPayment.amount)],
+      ['Aged',              money(d.aged && d.aged.amount)]
+    ]);
+    html += breakdown(['Company', 'Billed'], d.companies, function (x) {
+      return text(x.name) + money(x.amount);
+    }, 'companies');
+    var notes = ['Intercompany billing — what one division bills another, not customer revenue.'];
+    if (d.duplicatesCollapsed) notes.push(d.duplicatesCollapsed + ' duplicate entries were collapsed.');
+    post(html, notes);
+  }
+
+  function renderPayroll(d) {
+    var t = d.totals || {};
+    var html = kv([
+      ['Employees',      num(t.employees, 0)],
+      ['Total hours',    num(t.totalHours)],
+      ['Approved hours', num(t.approvedHours)],
+      ['Pending hours',  num(t.pendingHours)],
+      ['Travel hours',   num(t.travelHours)],
+      ['Prevailing-wage hours', num(t.pwHours)]
+    ]);
+    html += breakdown(['Employee', 'Worked', 'Travel', 'Approved'], d.employees, function (e) {
+      return text(e.name) + num(e.workHours) + num(e.travelHours) + num(e.approvedHours);
+    }, 'employees');
+    post(html, ['Pay period ' + (d.periodStart || '?') + ' to ' + (d.periodEnd || '?') +
+      '. Hours only — this data carries no pay rate.']);
+  }
+
+  /* Profit is the one figure worth colouring: a negative one should not have
+   * to be read carefully to be noticed. */
+  function moneyCell(v, colour) {
+    if (!colour) return money(v);
+    if (v === null || v === undefined) return CELL_UNKNOWN;
+    return '<td class="n ' + (v < 0 ? 'neg' : 'pos') + '">' + esc(fmtMoney(v)) + '</td>';
   }
 
   function renderJobs(d) {
@@ -203,13 +398,7 @@
     if (rows.some(function (r) { return r.projectedProfit === null; })) {
       notes.push('A dash means no contract value is on file — unknown, not zero.');
     }
-    html += '<div class="mathis-note">' + esc(notes.join(' ')) + '</div>';
-
-    var el = document.createElement('div');
-    el.className = 'mathis-msg it';
-    el.innerHTML = html;
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
+    post(html, notes);
   }
 
   function renderPersonal(d) {
@@ -221,12 +410,8 @@
       html += '<tr><td>' + esc(k) + '</td><td class="n">' + esc(by[k].entries) +
         '</td><td class="n">' + esc(by[k].hours) + '</td><td class="n">' + esc(by[k].travelHours) + '</td></tr>';
     });
-    html += '</tbody></table><div class="mathis-note">' + esc('Your own entries, ' + (d.window || 'recent') + '. Hours only — this data carries no pay rate.') + '</div>';
-    var el = document.createElement('div');
-    el.className = 'mathis-msg it';
-    el.innerHTML = html;
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
+    html += '</tbody></table>';
+    post(html, ['Your own entries, ' + (d.window || 'recent') + '. Hours only — this data carries no pay rate.']);
   }
 
   function send() {

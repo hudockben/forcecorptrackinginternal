@@ -1,5 +1,9 @@
 'use strict';
-/* Mathis — the guard and digest layer.
+/* Mathis — the guard layer.
+ *
+ * Who the caller is, which division they may look at, and the one function
+ * that reads a blob on their behalf. The digests themselves live in
+ * ./mathis-digests.js, which reads exclusively through readBlob below.
  *
  * Every read the assistant makes goes through this file. That is the whole
  * point of it: the model never sees a row this module did not fetch and
@@ -29,20 +33,15 @@
  *      exactly like a real one".
  */
 
+// Deliberately the only require: this file decides who may read what, and
+// depending on nothing that reads keeps ./mathis-digests.js free to require it
+// without a cycle.
 const { ALL_DIVISIONS, hasDivisionAccess, normalizeDivision, divisionForKey } = require('./auth');
-const report = require('../executive/report');
-const jobFin = require('./job-financials');
 
 // Divisions with no data of their own — a submit side whose review side is
 // another division's tab. A user holding only these is a field employee, and
 // Mathis answers about their own rows rather than about a division.
 const FIELD_ONLY = new Set(['timesheet', 'fuel', 'driver', 'quarry_sales']);
-
-// How many projects a digest carries. Reading every blob a company has ever
-// had to answer a five-row question is what the limit on readProjectBlobs
-// exists to avoid; this is the ceiling when the question does not say.
-const DEFAULT_JOB_ROWS = 12;
-const MAX_JOB_ROWS     = 40;
 
 // How much of any string a colleague typed reaches the model.
 const TEXT_CAP = 120;
@@ -191,34 +190,6 @@ async function readBlob(ctx, key) {
   return { status: 'ok', value: rows[0].value, division };
 }
 
-const countIds = v => {
-  if (Array.isArray(v)) return v.length;
-  if (v && Array.isArray(v.ids)) return v.ids.length;
-  return 0;
-};
-
-// The only fields of a financial row that reach the model. Everything absent
-// is absent on purpose: a profit answer needs no notes, no descriptions, no
-// material text. Deleting the free-text surface beats defending it.
-function pickRow(r) {
-  return {
-    name:       safeText(r.name),
-    jobNumber:  safeText(r.jobNumber, 40),
-    status:     safeText(r.status, 40),
-    complete:   !!r.complete,
-    inProgress: !!r.inProgress,
-    contract:   money(r.contract),
-    bid:        money(r.bid),
-    actualCost: money(r.actual),
-    projectedFinalCost: money(r.projected),
-    variance:   money(r.variance),
-    projectedProfit: r.profit    === null ? null : money(r.profit),
-    actualProfit:    r.actProfit === null ? null : money(r.actProfit),
-  };
-}
-
-// Stated on every job digest, because each one is a way an answer could be
-// confidently wrong rather than merely incomplete.
 const JOB_LIMITS = [
   'Profit means PROJECTED profit: contract minus projected FINAL cost. That is what every page in this application means by the word. Cost-to-date would flatter a half-spent job into looking twice as profitable as it will finish.',
   'Actual profit is contract minus money actually spent, and is only meaningful on a job that is complete.',
@@ -227,162 +198,34 @@ const JOB_LIMITS = [
   'These figures may differ from the Executive report, which applies a job-number floor, a per-project exclusion flag and a portfolio cap that this data does not. If the user cites a different number from that page, both can be right.',
 ];
 
-/**
- * The job-financials digest — turf, paving and kiewit.
- *
- * Reads at most `limit` projects in index order. The home pages keep that
- * index pinned-first then most-recently-added, so the head of it is the
- * defensible reading of "the last N jobs" — and the digest says so, along with
- * how many projects exist in total, because a summary built from 12 of 47 jobs
- * that does not admit it is a wrong answer rather than a partial one.
- */
-async function jobDigest(ctx, division, opts = {}) {
-  const div = jobFin.jobDivision(division);
-  if (!div) return null;
-
-  const want = Number(opts.limit);
-  const limit = Number.isFinite(want) && want > 0 ? Math.min(Math.floor(want), MAX_JOB_ROWS) : DEFAULT_JOB_ROWS;
-
-  // Count from the index rather than by reading every blob.
-  const idx = await readBlob(ctx, report.PROJECT_KEYS[division].index);
-  if (idx.status === 'denied') return { division, kind: 'denied' };
-  const totalProjects = countIds(idx.value);
-
-  const projects = (await div.read(ctx.sql, ctx.companyCode, { limit })).filter(Boolean);
-  if (!projects.length) {
-    return {
-      division, divisionName: div.name, kind: 'jobs',
-      totalProjects, includedProjects: 0, rows: [], summary: null,
-      ordering: 'none — this division has no projects on file',
-      limits: JOB_LIMITS,
-    };
-  }
-
-  const fin  = await report.buildFinancials(ctx.sql, ctx.companyCode, division, projects, null);
-  const rows = jobFin.rowsFor(div, projects, fin, false);
-
-  return {
-    division,
-    divisionName: div.name,
-    kind: 'jobs',
-    totalProjects,
-    includedProjects: rows.length,
-    truncated: totalProjects > rows.length,
-    ordering: 'Most recent first, as the division page orders its own project list (pinned jobs lead). There is no created-at date on a project, so this is the ordering "the last N jobs" refers to; say which ordering you used.',
-    rows: rows.map(pickRow),
-    summary: jobFin.summarise(rows),
-    limits: JOB_LIMITS,
-  };
-}
-
 const PERSONAL_LIMITS = [
   'These are only this user\'s own timesheet entries, for the last 45 days. No other employee\'s hours are available and none should be described.',
   'Hours are hours. This data carries no pay rate and no dollar figure of any kind, so no question about pay, wages or labour cost can be answered from it.',
 ];
 
-/**
- * The personal digest — a field employee's own rows and nothing else.
- *
- * Scoped by user_id as well as company_code, so this is the one digest that
- * stays correct for someone who holds no division at all. notes is read by
- * nobody: it is free text that would reach the model for no benefit.
- */
-async function personalDigest(ctx) {
-  let rows = [];
-  try {
-    rows = await ctx.sql`
-      SELECT work_date, status, entry_type, time_off_type, job_label,
-             COALESCE(computed_hours, 0)::float AS hours,
-             COALESCE(travel_hours, 0)::float   AS travel_hours
-      FROM   timesheet_entries
-      WHERE  company_code = ${ctx.companyCode}
-        AND  user_id      = ${ctx.authz.userId}
-        AND  work_date   >= CURRENT_DATE - INTERVAL '45 days'
-      ORDER  BY work_date DESC
-      LIMIT  120
-    `;
-  } catch (err) {
-    console.error('[mathis] personal digest failed:', err.message);
-    return { division: null, kind: 'personal', rows: [], byStatus: {}, error: true, limits: PERSONAL_LIMITS };
-  }
-
-  const byStatus = {};
-  for (const r of rows) {
-    const k = r.status || 'draft';
-    byStatus[k] = byStatus[k] || { entries: 0, hours: 0, travelHours: 0 };
-    byStatus[k].entries += 1;
-    byStatus[k].hours   += Number(r.hours) || 0;
-    byStatus[k].travelHours += Number(r.travel_hours) || 0;
-  }
-  for (const v of Object.values(byStatus)) {
-    v.hours = Math.round(v.hours * 100) / 100;
-    v.travelHours = Math.round(v.travelHours * 100) / 100;
-  }
-
-  return {
-    division: null,
-    kind: 'personal',
-    window: 'the last 45 days',
-    rows: rows.map(r => ({
-      workDate:  r.work_date instanceof Date ? r.work_date.toISOString().slice(0, 10) : String(r.work_date || ''),
-      status:    safeText(r.status, 20),
-      entryType: safeText(r.entry_type, 20),
-      timeOffType: r.time_off_type ? safeText(r.time_off_type, 20) : null,
-      job:       safeText(r.job_label),
-      hours:     Math.round((Number(r.hours) || 0) * 100) / 100,
-      travelHours: Math.round((Number(r.travel_hours) || 0) * 100) / 100,
-    })),
-    byStatus,
-    limits: PERSONAL_LIMITS,
-  };
-}
-
 // Divisions Mathis can answer about today, and what to say about the rest.
 // Naming the gap is the point: "we do not capture what a haul costs" is a
 // true answer, while quoting trucking revenue as if it were profit is not.
 const NOT_YET = {
-  quarry:       'The quarry\'s margin, cost per ton and break-even figures exist but are not wired into Mathis yet.',
-  dust:         'Dust revenue is available but its margin is calculated only in the browser, so Mathis cannot answer margin questions for dust at all yet.',
-  trucking:     'Trucking captures revenue but NO cost anywhere in the system, so trucking profit does not exist as a number. Never present trucking revenue as profit.',
-  intercompany: 'Intercompany billing figures are not wired into Mathis yet.',
-  executive:    'The cross-division executive rollup is not wired into Mathis yet.',
-  scheduler:    'Scheduling and pacing are not wired into Mathis yet.',
-  payroll:      'Payroll carries hours only — never dollars — and is not wired into Mathis yet.',
-  fuel_admin:   'Fuel administration is not wired into Mathis yet.',
+  executive:    'The cross-division executive rollup is not wired into Mathis yet. Each division can be asked about on its own page.',
+  scheduler:    'Scheduling, pacing and crew conflicts are not wired into Mathis yet.',
+  fuel_admin:   'Fuel administration — fleet economy, unbalanced gallons, statement variance — is not wired into Mathis yet.',
+  fuel:         'The fuel submission queue is not wired into Mathis yet.',
+  driver:       'The driver dispatch view is not wired into Mathis yet.',
+  quarry_sales: 'The scale-house sales queue is not wired into Mathis yet. The quarry division itself can be asked about on the quarry page.',
 };
-
-/**
- * Assemble the one digest this turn is allowed to see. Exactly one division,
- * resolved and authorised server-side. Cross-division comparison is not a
- * feature that was left out; the single-division digest is the property that
- * makes the whole thing defensible.
- */
-async function buildDigest(ctx, division, opts = {}) {
-  if (!division) return await personalDigest(ctx);
-  if (jobFin.jobDivision(division)) return await jobDigest(ctx, division, opts);
-  return {
-    division,
-    kind: 'unsupported',
-    reason: NOT_YET[division] || 'This division is not wired into Mathis yet.',
-    limits: ['Answer only that this division is not available yet, and say plainly what is missing. Do not substitute a figure from another division or from another metric.'],
-  };
-}
 
 module.exports = {
   FIELD_ONLY,
-  DEFAULT_JOB_ROWS,
-  MAX_JOB_ROWS,
   TEXT_CAP,
   JOB_LIMITS,
   PERSONAL_LIMITS,
   NOT_YET,
   safeText,
+  money,
   refreshAuthz,
   divisionScope,
   resolveDivision,
   isFieldOnly,
   readBlob,
-  buildDigest,
-  jobDigest,
-  personalDigest,
 };

@@ -39,6 +39,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { neon }  = require('@neondatabase/serverless');
 const { requireAuth } = require('../lib/auth');
 const mathis    = require('../lib/mathis-context');
+const digests   = require('../lib/mathis-digests');
 
 const MODEL             = 'claude-opus-5';
 // A cap, not a charge — only tokens actually produced are billed, so the
@@ -183,7 +184,7 @@ module.exports = async (req, res) => {
   // ── The one digest this turn may see ─────────────────────────────────────
   let digest;
   try {
-    digest = await mathis.buildDigest(
+    digest = await digests.buildDigest(
       { sql, companyCode: authz.companyCode, authz },
       division,
       { limit: body.limit }

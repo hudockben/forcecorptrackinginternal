@@ -70,6 +70,38 @@ const PROJECTS = {
           bidItems: [{ cost_code: '2100', sub_code: 'B', quantity: 50, unit_cost: 900 }] },
 };
 
+// Two hauls: 8h and 6h at $95. Revenue is hours x fee (there is no stored
+// revenue column), so 1,330 — and no cost field exists anywhere on the shape,
+// which is the point the trucking assertions below turn on.
+const TRUCK_ENTRIES = [
+  { id: 't1', actual_date: '2026-05-04', total_hours: 8, haul_fee: 95, unit: '412',
+    driver: 'R. Diaz', customer: 'Kiewit', invoice_sent_date: '2026-05-20', date_paid: null },
+  { id: 't2', actual_date: '2026-05-06', total_hours: 6, haul_fee: 95, unit: '408',
+    driver: 'M. Poole', customer: 'Kiewit', invoice_sent_date: null, date_paid: null },
+];
+
+// Keyed WITHOUT the company prefix; the fake sql strips it before looking up,
+// so a read that forgot to prefix finds nothing and the assertions catch it.
+// The unprefixed key another tenant wrote. app_data has no company_code
+// column, so this row is visible to every company in the database — reading it
+// is the cross-tenant leak, and $99,000 of revenue is how the test sees it.
+const FOREIGN_TRUCK_ENTRIES = [
+  { id: 'x1', actual_date: '2026-05-04', total_hours: 100, haul_fee: 990, unit: 'NOT-OURS',
+    driver: 'Someone Else', customer: 'Another Company', invoice_sent_date: null, date_paid: null },
+];
+
+const BLOBS = {
+  'fct_paving_projects_index': { ids: ['p1', 'p2'] },
+  'fct_truck_division': TRUCK_ENTRIES,
+  'fct_intercompany_billing_entries': [],
+  'fct_intercompany_rates': {},
+  'dust_other_billing_rows': [],
+  'dust_ees_other_rows': [],
+  'fct_quarry_sales': [], 'fct_quarry_daily': [], 'fct_quarry_crushing': [],
+  'fct_quarry_inventory': {}, 'fct_quarry_loss_pct': {},
+  'fct_quarry_monthly_fixed': {}, 'fct_quarry_royalty': {}, 'fct_quarry_lists': {},
+};
+
 let queries = [];
 function makeSql(opts = {}) {
   queries = [];
@@ -100,17 +132,49 @@ function makeSql(opts = {}) {
     if (/INSERT INTO mathis_messages/.test(text)) return Promise.resolve([]);
     if (/UPDATE mathis_threads/.test(text))       return Promise.resolve([]);
     if (/FROM timesheet_entries/.test(text)) {
-      return Promise.resolve(opts.timesheet || [
-        { work_date: '2026-08-28', status: 'submitted', entry_type: 'daily',
-          time_off_type: null, job_label: 'Atwood', hours: 8.5, travel_hours: 0.75 },
+      // The personal digest aliases hours; the payroll one selects the real
+      // column names for a whole pay period.
+      if (/AS hours/.test(text)) {
+        return Promise.resolve(opts.timesheet || [
+          { work_date: '2026-08-28', status: 'submitted', entry_type: 'daily',
+            time_off_type: null, job_label: 'Atwood', hours: 8.5, travel_hours: 0.75 },
+        ]);
+      }
+      return Promise.resolve([
+        { user_id: 7, username: 'jsmith', entry_type: 'daily', status: 'approved',
+          division: 'paving', job_id: 'p1', work_date: '2026-08-28',
+          computed_hours: 8.5, travel_hours: 0.75,
+          travel_to_site_hours: 0.5, travel_to_shop_hours: 0.25 },
       ]);
     }
-    // app_data: the project index, then the project blobs.
+    // app_data. Only a key carrying this company's prefix resolves — an
+    // unprefixed read gets nothing, which is how the trucking test proves the
+    // cross-tenant legacy fallback was not inherited.
     if (/SELECT value FROM app_data/.test(text)) {
-      const key = values[0];
-      if (/projects_index$/.test(String(key))) return Promise.resolve([{ value: { ids: ['p1', 'p2'] } }]);
-      return Promise.resolve([]);
+      const key = String(values[0] || '');
+      if (!key.startsWith(`${COMPANY}:`)) {
+        // Unprefixed. Serve the honeypot rather than nothing, so a read that
+        // forgot the prefix produces a visibly foreign figure instead of a
+        // harmless empty result that no assertion could tell apart.
+        return Promise.resolve(key === 'fct_truck_division' ? [{ value: FOREIGN_TRUCK_ENTRIES }] : []);
+      }
+      const bare = key.slice(COMPANY.length + 1);
+      if (opts.emptyBlobs && opts.emptyBlobs.includes(bare)) return Promise.resolve([]);
+      if (opts.unreadableBlobs && opts.unreadableBlobs.includes(bare)) {
+        return Promise.reject(new Error('blob read failed'));
+      }
+      return Promise.resolve(bare in BLOBS ? [{ value: BLOBS[bare] }] : []);
     }
+    if (/FROM dust_control_entries/.test(text)) {
+      if (opts.dustRowsThrow) return Promise.reject(new Error('dust rows unavailable'));
+      return Promise.resolve([{
+        date: '2026-05-11', company: 'Kiewit', location: 'Pit 4', state: 'PA',
+        start_time: '07:00', end_time: '15:00', v1_rate: 120, v2_rate: 0,
+        gallons_ub: 4200, inv_sent: null, inv_received: null, inv_status: '',
+      }]);
+    }
+    if (/FROM dust_companies/.test(text))  return Promise.resolve([{ name: 'Kiewit', ub_rate: 0.42 }]);
+    if (/FROM dust_settings/.test(text))   return Promise.resolve([{ v: 0.4 }]);
     if (/SELECT key, value FROM app_data/.test(text)) {
       const keys = values[0] || [];
       return Promise.resolve(keys.map(k => {
@@ -139,6 +203,7 @@ require.cache[neonPath] = {
 
 const handler = require(root('api/ai/mathis.js'));
 const ctxlib  = require(root('api/lib/mathis-context.js'));
+const digests = require(root('api/lib/mathis-digests.js'));
 
 // ── Fake req / res ─────────────────────────────────────────────────────────
 function tokenFor(over = {}) {
@@ -421,25 +486,189 @@ console.log('\n══════════ personal mode ══════�
     res.statusCode === 403, String(res.statusCode));
 }
 
-// ── 10. Divisions whose data does not exist ────────────────────────────────
-console.log('\n══════════ what it must refuse ══════════');
+// ── 10. Trucking: revenue exists, profit does not ──────────────────────────
+console.log('\n══════════ trucking ══════════');
 {
   const res = await call({ message: 'profit on the last 5 hauls', division: 'trucking' },
     { token: tokenFor({ divisionRoles: { trucking: 'level3' } }),
       sqlOpts: { divisionRoles: { trucking: 'level3' } } });
-  assert('a trucking user is not refused outright', res.statusCode === 200, String(res.statusCode));
-  assert('  but the digest says trucking profit does not exist',
-    res.body.digest && res.body.digest.kind === 'unsupported', JSON.stringify(res.body.digest));
-  assert('  and the model is told never to pass revenue off as profit',
-    /Never present trucking revenue as profit/.test(JSON.stringify(sent[sent.length - 1])));
-  assert('  with no figures rendered, since there are none',
-    !res.body.digest.rows);
+  assert('a trucking user gets an answer', res.statusCode === 200, String(res.statusCode));
+  const d = res.body.digest;
+  assert('  revenue is reported', d && near(d.revenue, 1330), d && d.revenue);
+  assert('  and hours behind it', d && near(d.hours, 14), d && d.hours);
+  assert('cost and profit are present and explicitly null, not absent',
+    d && 'cost' in d && 'profit' in d && d.cost === null && d.profit === null,
+    'a missing key reads as an oversight; an explicit null is a statement');
+
+  const prompt = JSON.stringify(sent[sent.length - 1]);
+  assert('the model is told no trucking cost exists anywhere',
+    /NO TRUCKING COST ANYWHERE IN THIS SYSTEM/.test(prompt));
+  assert('  and told never to offer revenue as the answer to a profit question',
+    /[Nn]ever (offer revenue|call revenue profit)/.test(prompt));
+  assert('  and that revenue is computed, not stored',
+    /hours multiplied by the haul fee/.test(prompt));
 }
 {
-  assert('dust is named as margin-in-the-browser rather than answered',
-    /browser/.test(ctxlib.NOT_YET.dust));
-  assert('payroll is named as hours-only',
-    /hours only|never dollars/i.test(ctxlib.NOT_YET.payroll));
+  // report.js reads the UNPREFIXED 'fct_truck_division' when a company's own
+  // blob is empty. app_data has no company_code column, so that row belongs to
+  // whichever tenant wrote it last. Mathis must not inherit that read.
+  const res = await call({ message: 'revenue?', division: 'trucking' },
+    { token: tokenFor({ divisionRoles: { trucking: 'level3' } }),
+      sqlOpts: { divisionRoles: { trucking: 'level3' } } });
+  const keys = queries.filter(q => /app_data/.test(q.text))
+    .flatMap(q => (Array.isArray(q.values[0]) ? q.values[0] : [q.values[0]]))
+    .filter(Boolean).map(String);
+  assert('the unprefixed legacy trucking key is never read',
+    !keys.includes('fct_truck_division'),
+    'that row is shared by every tenant in the database');
+  assert('  only the company-scoped one is', keys.includes(`${COMPANY}:fct_truck_division`), keys.join(', '));
+  assert('  and a trucking user still cannot reach paving',
+    res.statusCode === 200 && !keys.some(k => /paving/.test(k)));
+}
+{
+  // The case that actually exercises the fallback: a company with no hauls of
+  // its own. report.js reads the shared unprefixed row here, and reporting
+  // another tenant's revenue as this one's is the whole hazard.
+  const res = await call({ message: 'revenue?', division: 'trucking' },
+    { token: tokenFor({ divisionRoles: { trucking: 'level3' } }),
+      sqlOpts: { divisionRoles: { trucking: 'level3' }, emptyBlobs: ['fct_truck_division'] } });
+  const d = res.body.digest;
+  assert('a company with no hauls of its own reads as having none',
+    d && d.revenue === 0 && d.entryCount === 0,
+    `revenue ${d && d.revenue} — another tenant's hauls would show as 99,000`);
+  const keys = queries.filter(q => /app_data/.test(q.text)).map(q => String(q.values[0] || ''));
+  assert('  and the shared row is not consulted even then',
+    !keys.includes('fct_truck_division'),
+    'an empty own-blob is exactly when the legacy fallback fires');
+}
+
+// ── 10b. Quarry: a per-ton contribution, never job profit ──────────────────
+console.log('\n══════════ quarry ══════════');
+{
+  const res = await call({ message: 'what is our margin', division: 'quarry' },
+    { token: tokenFor({ divisionRoles: { quarry: 'level3' } }),
+      sqlOpts: { divisionRoles: { quarry: 'level3' } } });
+  assert('a quarry user gets an answer', res.statusCode === 200, String(res.statusCode));
+  assert('  from the quarry digest', res.body.digest && res.body.digest.kind === 'quarry');
+  assert('  carrying break-even and per-ton economics',
+    res.body.digest && 'breakEven' in res.body.digest && 'inventory' in res.body.digest);
+  const prompt = JSON.stringify(sent[sent.length - 1]);
+  assert('the model is told quarry margin is per-ton contribution, not job profit',
+    /per-ton contribution/.test(prompt) && /never be described as profit on a project/.test(prompt));
+  assert('  and that sales tax is not available server-side', /[Ss]ales tax/.test(prompt));
+
+  const keys = queries.filter(q => /app_data/.test(q.text)).map(q => String(q.values[0] || ''));
+  assert('every quarry blob it reads is company-prefixed',
+    keys.length > 0 && keys.every(k => k.startsWith(`${COMPANY}:`)), keys.join(', '));
+}
+
+// ── 10c. Dust: revenue yes, margin no ──────────────────────────────────────
+console.log('\n══════════ dust ══════════');
+{
+  const res = await call({ message: 'what is our margin on a gallon of UB', division: 'dust' },
+    { token: tokenFor({ divisionRoles: { dust: 'level3' } }),
+      sqlOpts: { divisionRoles: { dust: 'level3' } } });
+  assert('a dust user gets an answer', res.statusCode === 200, String(res.statusCode));
+  const d = res.body.digest;
+  assert('  from the dust digest with revenue on it', d && d.kind === 'dust' && 'revenue' in d);
+  assert('  and no margin figure anywhere in it',
+    d && !JSON.stringify(d).match(/"(margin|costPerGallon|profit)"/i),
+    'dust margin is calculated only in the browser');
+  const prompt = JSON.stringify(sent[sent.length - 1]);
+  assert('the model is told dust margin is browser-only and must not be computed',
+    /only in the browser/.test(prompt) && /do not compute one/.test(prompt));
+}
+{
+  // A book that cannot be read must not be counted as billing nothing: the
+  // smaller total looks exactly like a real one.
+  const res = await call({ message: 'revenue?', division: 'dust' },
+    { token: tokenFor({ divisionRoles: { dust: 'level3' } }),
+      sqlOpts: { divisionRoles: { dust: 'level3' },
+                 unreadableBlobs: ['dust_other_billing_rows'] } });
+  const d = res.body.digest;
+  assert('an unreadable book is named as unavailable, not counted as zero',
+    d && Array.isArray(d.unavailableBooks) && d.unavailableBooks.includes('Other Billing'),
+    JSON.stringify(d && d.unavailableBooks));
+  assert('  and the model is told the total is a floor, not the earnings',
+    /a floor, not the division/.test(JSON.stringify(sent[sent.length - 1])));
+}
+
+// ── 10d. Payroll: hours, and never a dollar ────────────────────────────────
+console.log('\n══════════ payroll ══════════');
+{
+  const res = await call({ message: 'what did we spend on labour this period', division: 'payroll' },
+    { token: tokenFor({ divisionRoles: { payroll: 'level3' } }),
+      sqlOpts: { divisionRoles: { payroll: 'level3' } } });
+  assert('a payroll user gets an answer', res.statusCode === 200, String(res.statusCode));
+  const d = res.body.digest;
+  assert('  from the payroll digest', d && d.kind === 'payroll');
+  assert('  covering a pay period', d && !!d.periodStart && !!d.periodEnd);
+  assert('  with hours on it', d && d.totals && 'totalHours' in d.totals);
+  assert('no rate, pay or dollar field reaches the digest',
+    d && !JSON.stringify(d).match(/"[^"]*(rate|pay|wage|dollar|cost|amount)[^"]*":/i),
+    JSON.stringify(d && d.totals));
+  assert('the model is told the data carries no pay rate at all',
+    /NO PAY RATE AND NO DOLLAR FIGURE/.test(JSON.stringify(sent[sent.length - 1])));
+}
+
+// ── 10e. Intercompany ──────────────────────────────────────────────────────
+console.log('\n══════════ intercompany ══════════');
+{
+  const res = await call({ message: 'what have we billed across', division: 'intercompany' },
+    { token: tokenFor({ divisionRoles: { intercompany: 'level3' } }),
+      sqlOpts: { divisionRoles: { intercompany: 'level3' } } });
+  assert('an intercompany user gets an answer', res.statusCode === 200, String(res.statusCode));
+  assert('  from the intercompany digest', res.body.digest && res.body.digest.kind === 'intercompany');
+  assert('  with billed totals split by source',
+    res.body.digest && res.body.digest.billed && 'truck' in res.body.digest.billed);
+  assert('the model is told the blob is authoritative over the mirror table',
+    /mirrored table over-reports/.test(JSON.stringify(sent[sent.length - 1])));
+}
+
+// ── 10f. Access still holds for every one of them ──────────────────────────
+console.log('\n══════════ Phase 2 divisions are still gated ══════════');
+for (const div of ['quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
+  const res = await call({ message: 'figures please', division: div });   // paving-only token
+  assert(`a paving-only user cannot reach ${div}`, res.statusCode === 403, String(res.statusCode));
+}
+
+// ── 10g. What is still genuinely unbuilt ───────────────────────────────────
+console.log('\n══════════ what is still not built ══════════');
+{
+  const res = await call({ message: 'roll it all up', division: 'executive' },
+    { token: tokenFor({ divisionRoles: { executive: 'level3' } }),
+      sqlOpts: { divisionRoles: { executive: 'level3' } } });
+  assert('executive says plainly that it is not wired up yet',
+    res.body.digest && res.body.digest.kind === 'unsupported', JSON.stringify(res.body.digest));
+  assert('  and the model is told not to substitute another division',
+    /Do not substitute a figure from another division/.test(JSON.stringify(sent[sent.length - 1])));
+}
+{
+  for (const div of ['quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
+    assert(`${div} is no longer listed as unbuilt`, !(div in ctxlib.NOT_YET));
+  }
+  assert('scheduler and fuel admin still are',
+    'scheduler' in ctxlib.NOT_YET && 'fuel_admin' in ctxlib.NOT_YET);
+}
+
+// ── 10h. Every digest states what it cannot answer ─────────────────────────
+console.log('\n══════════ every digest names its limits ══════════');
+for (const [name, limits] of [
+  ['job',      ctxlib.JOB_LIMITS],       ['personal', ctxlib.PERSONAL_LIMITS],
+  ['quarry',   digests.QUARRY_LIMITS],   ['dust',     digests.DUST_LIMITS],
+  ['trucking', digests.TRUCKING_LIMITS], ['intercompany', digests.IC_LIMITS],
+  ['payroll',  digests.PAYROLL_LIMITS],
+]) {
+  assert(`${name} carries limits`, Array.isArray(limits) && limits.length > 0);
+}
+{
+  // A per-thing breakdown that silently drops its tail invites an answer about
+  // "all our customers" built from fifteen of them.
+  const capped = digests.capList(Array.from({ length: 40 }, (_, i) => i));
+  assert('a long breakdown is capped and says it was',
+    capped.rows.length === digests.LIST_CAP && capped.total === 40 && capped.truncated === true);
+  const short = digests.capList([1, 2]);
+  assert('  and a short one is not marked truncated', short.truncated === false);
 }
 
 // ── 11. Refusals and truncation are surfaced, not swallowed ────────────────
@@ -491,21 +720,56 @@ console.log('\n══════════ wiring ═════════
   // by a comment explaining it. The header of mathis.js discusses
   // window.DIVISION precisely to say it is the wrong thing to read.
   const code = widget.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  const PAGES  = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
+  const { ALL_DIVISIONS } = require(root('api/lib/auth.js'));
+
+  const PAGES = [
+    'tracker.html', 'paving.html', 'kiewit-pinetree.html',      // job divisions
+    'quarry.html', 'dust.html', 'trucking.html',
+    'intercompany.html', 'payroll.html',                        // Phase 2
+    'timesheet.html',                                           // personal mode
+  ];
   const missing = PAGES.filter(f => !fs.readFileSync(root(f), 'utf8').includes('mathis.js'));
   assert('every page Mathis is meant to be on loads it', missing.length === 0, missing.join(', '));
 
-  const noDivision = PAGES.filter(f => !/const DIVISION\s*=/.test(fs.readFileSync(root(f), 'utf8')));
-  assert('  and every one of them declares the DIVISION it would answer about',
-    noDivision.length === 0, noDivision.join(', '));
+  // The widget's own map, read out of the source rather than reimplemented, so
+  // this cannot pass against a map that has drifted from the pages.
+  const mapSrc = (code.match(/var PAGE_DIVISION = \{([\s\S]*?)\};/) || [])[1] || '';
+  const PAGE_DIVISION = {};
+  for (const m of mapSrc.matchAll(/'([\w.-]+\.html)':\s*'([a-z_]+)'/g)) PAGE_DIVISION[m[1]] = m[2];
+  assert('the widget carries a page-to-division map', Object.keys(PAGE_DIVISION).length >= PAGES.length,
+    `${Object.keys(PAGE_DIVISION).length} entries`);
 
-  // A page that carries the widget but no DIVISION would silently answer in
-  // personal mode. Nothing on screen would say so.
+  // A typo here does not throw — it sends a division the server has never
+  // heard of, and every question on that page comes back 403.
+  const bogus = Object.entries(PAGE_DIVISION).filter(([, d]) => !ALL_DIVISIONS.includes(d));
+  assert('  and every division it names is a real one',
+    bogus.length === 0, bogus.map(([f, d]) => `${f}=${d}`).join(', '));
+
+  const unresolvable = PAGES.filter(f =>
+    !/const DIVISION\s*=/.test(fs.readFileSync(root(f), 'utf8')) && !PAGE_DIVISION[f]);
+  assert('  and every page it is on resolves to one, by const or by map',
+    unresolvable.length === 0, unresolvable.join(', '));
+
+  // Where a page declares a DIVISION const AND appears in the map, the two must
+  // agree — the const wins at runtime, so a disagreement is a silent wrong answer.
+  const disagree = PAGES.map(f => {
+    const m = /const DIVISION\s*=\s*'([a-z_]+)'/.exec(fs.readFileSync(root(f), 'utf8'));
+    return (m && PAGE_DIVISION[f] && m[1] !== PAGE_DIVISION[f]) ? `${f}: ${m[1]} vs ${PAGE_DIVISION[f]}` : null;
+  }).filter(Boolean);
+  assert('  and the const and the map agree wherever both exist',
+    disagree.length === 0, disagree.join(', '));
+
+  // A page with no division at all — the login screen, the launcher, admin —
+  // would float a chat launcher over a screen that has nothing to answer about.
   const all = fs.readdirSync(root('.')).filter(f => f.endsWith('.html'));
   const tagged = all.filter(f => fs.readFileSync(root(f), 'utf8').includes('mathis.js'));
-  const orphan = tagged.filter(f => !/const DIVISION\s*=/.test(fs.readFileSync(root(f), 'utf8')));
+  const orphan = tagged.filter(f =>
+    !/const DIVISION\s*=/.test(fs.readFileSync(root(f), 'utf8')) && !PAGE_DIVISION[f]);
   assert('no page carries the widget without a division to answer about',
     orphan.length === 0, orphan.join(', '));
+  assert('  and the pages with nothing to answer about do not carry it',
+    !tagged.includes('index.html') && !tagged.includes('divisions.html') && !tagged.includes('admin.html'),
+    tagged.join(', '));
 
   assert('the widget reads its own token, like the other drop-in modules',
     /localStorage\.getItem\('fct_token'\)/.test(code));
@@ -523,6 +787,119 @@ console.log('\n══════════ wiring ═════════
     'a job name is free text any colleague can write');
   assert('an unknown figure renders as a dash that says it is unknown, not as $0',
     /unknown, not zero/.test(widget) && /—/.test(widget));
+}
+
+// ── 13b. Every digest kind actually renders ────────────────────────────────
+// The gap this exists to close: Phase 2 added five digest kinds while the
+// widget still rendered two. The endpoint answered, the model talked about
+// figures, and no table appeared — which puts every number in the model's
+// prose, the one place this design says it must never be.
+console.log('\n══════════ every digest kind renders ══════════');
+{
+  const widget = fs.readFileSync(root('mathis.js'), 'utf8');
+  const mapSrc = (widget.match(/var by = \{([\s\S]*?)\};/) || [])[1] || '';
+  const rendered = new Set([...mapSrc.matchAll(/(\w+):\s*render\w+/g)].map(m => m[1]));
+
+  // Every kind the server can put on the wire.
+  const KINDS = ['jobs', 'personal', 'quarry', 'dust', 'trucking', 'intercompany', 'payroll'];
+  const unrendered = KINDS.filter(k => !rendered.has(k));
+  assert('every digest kind the server emits has a renderer',
+    unrendered.length === 0, unrendered.join(', '));
+
+  // 'unsupported' and 'denied' deliberately have none — there are no figures.
+  assert('  and the kinds with no figures deliberately have none',
+    !rendered.has('unsupported') && !rendered.has('denied'));
+}
+
+// ── 13c. The render path, driven end to end in a browser ───────────────────
+{
+  let JSDOM = null;
+  try { ({ JSDOM } = require('jsdom')); } catch { /* optional dev dependency */ }
+  if (!JSDOM) {
+    console.log('  ~ browser render (skipped: jsdom not installed)');
+  } else {
+    const widget = fs.readFileSync(root('mathis.js'), 'utf8');
+    const nasty  = '<img src=x onerror=alert(1)>Pit "A"';
+
+    const run = async (page, digest, answer) => {
+      const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+        url: `https://example.test/${page}`, runScripts: 'dangerously', pretendToBeVisual: true,
+      });
+      const win = dom.window;
+      win.localStorage.setItem('fct_token', 'test-token');
+      win.fetch = () => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ok: true, threadId: 1, answer, digest, turnsRemaining: 20 }),
+      });
+      // The widget defers to DOMContentLoaded. Evaluating it before the
+      // document settles registers a listener for an event that has already
+      // fired, and nothing is ever built.
+      await new Promise(r => {
+        if (win.document.readyState === 'complete') r();
+        else win.addEventListener('load', r);
+      });
+      win.eval(widget);
+      const launch = win.document.getElementById('mathis-launch');
+      if (!launch) throw new Error('the widget built no launcher');
+      launch.click();
+      win.document.getElementById('mathis-input').value = 'figures please';
+      win.document.getElementById('mathis-send').click();
+      for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+      return { win, html: win.document.getElementById('mathis-log').innerHTML };
+    };
+
+    const { html: q } = await run('quarry.html', {
+      kind: 'quarry', division: 'quarry',
+      total: { totalSales: 148000, tonsSold: 12400, crushCost: 41000 },
+      breakEven: { avgPricePerTon: 11.94, varCostPerTon: 3.31, contributionPerTon: 8.63, breakEvenTons: null },
+      inventory: { onHand: 655, byLocation: { rows: [], total: 0, truncated: false } },
+      locations: { rows: [{ name: nasty, totalSales: 148000, tonsSold: 12400, crushCost: 41000 }],
+                   total: 1, truncated: false },
+      stockAlert: null,
+    }, 'Contribution is $8.63 a ton.');
+
+    assert('a quarry answer renders its figures as a table', /\$148,000/.test(q) && /8\.63/.test(q), q.slice(0, 200));
+    assert('  a null figure renders as a dash that says it is unknown',
+      /unknown, not zero/.test(q) && /—/.test(q));
+    assert('  and a hostile pit name is escaped, not executed',
+      q.includes('&lt;img') && !q.includes('<img src=x'), 'a name is free text any colleague can write');
+    assert('  the caption says contribution is not job profit', /not profit on a job/.test(q));
+
+    const { html: t } = await run('trucking.html', {
+      kind: 'trucking', division: 'trucking', revenue: 1330, hours: 14,
+      avgHaulFee: 95, activeUnits: 2, activeDrivers: 2,
+      invoices: { uninvoiced: { amount: 570 }, awaiting: { amount: 760 } },
+      customers: { rows: [], total: 0, truncated: false },
+      cost: null, profit: null,
+    }, 'Revenue was $1,330.');
+
+    assert('a trucking answer renders revenue', /\$1,330/.test(t));
+    assert('  and shows cost and profit as not tracked, rather than omitting them',
+      (t.match(/not tracked/g) || []).length >= 2,
+      'leaving them out lets revenue read as the bottom line');
+    assert('  never printing $0 for either', !/\$0(?!\.\d)/.test(t));
+
+    const { html: p2 } = await run('payroll.html', {
+      kind: 'payroll', division: 'payroll', periodStart: '2026-08-17', periodEnd: '2026-08-30',
+      totals: { employees: 3, totalHours: 214.5, approvedHours: 190, pendingHours: 24.5,
+                travelHours: 12, pwHours: 88 },
+      employees: { rows: [{ name: 'R. Diaz', workHours: 78, travelHours: 4, approvedHours: 78 }],
+                   total: 1, truncated: false },
+    }, 'Two hundred and fourteen hours.');
+
+    assert('a payroll answer renders hours', /214\.5/.test(p2));
+    assert('  and never a dollar sign', !p2.includes('$'), 'payroll data carries no rate');
+
+    const { html: cap } = await run('dust.html', {
+      kind: 'dust', division: 'dust', revenue: { tracking: 10, other: 0, ees: 0, total: 10 },
+      gallonsYtd: 100, invoices: {}, unavailableBooks: ['Other Billing'],
+      customers: { rows: Array.from({ length: 15 }, (_, i) => ({ name: `C${i}`, revenue: i, jobs: 1 })),
+                   total: 42, truncated: true },
+    }, 'Revenue was $10.');
+    assert('a truncated breakdown says how many it is showing', /Top 15 of 42/.test(cap));
+    assert('  and an unreadable book is called out as a floor',
+      /Could not read: Other Billing/.test(cap) && /floor/.test(cap));
+  }
 }
 
 // ── 14. Config that costs money if it drifts ───────────────────────────────

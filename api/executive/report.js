@@ -1764,6 +1764,12 @@ module.exports = async (req, res) => {
 };
 
 module.exports.PROJECT_KEYS       = PROJECT_KEYS;
+// Shared with api/lib/mathis-digests.js so the assistant reads the same pay
+// period and the same prevailing-wage rule this report does, rather than a
+// second implementation that could drift a day or a flag away from it.
+module.exports.QUARRY_BLOBS       = QUARRY_BLOBS;
+module.exports.biweeklyPayPeriod  = biweeklyPayPeriod;
+module.exports.attachPrevailingWage = attachPrevailingWage;
 module.exports.readTurfProjects   = readTurfProjects;
 module.exports.readPavingProjects = readPavingProjects;
 module.exports.readKiewitProjects = readKiewitProjects;
