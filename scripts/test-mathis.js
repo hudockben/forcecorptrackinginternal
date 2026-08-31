@@ -1747,6 +1747,214 @@ console.log('\n══════════ every digest kind renders ══�
   }
 }
 
+// ── 13e. The inspector and the verdict ─────────────────────────────────────
+// The two things that make a bad answer fixable: seeing what it was built
+// from, and being able to say it was wrong.
+{
+  let JSDOM = null;
+  try { ({ JSDOM } = require('jsdom')); } catch { /* optional dev dependency */ }
+  if (!JSDOM) {
+    console.log('  ~ inspector and feedback (skipped: jsdom not installed)');
+  } else {
+    console.log('\n══════════ checking the answer ══════════');
+    const widget = fs.readFileSync(root('mathis.js'), 'utf8');
+    const NASTY = '<img src=x onerror=alert(1)>Pit "A"';
+    const DIGEST = {
+      kind: 'jobs', division: 'paving', totalProjects: 2, includedProjects: 1,
+      rows: [{ name: NASTY, jobNumber: '26040', contract: 123894,
+               actualCost: 51390, projectedFinalCost: 84285, projectedProfit: 39609 }],
+    };
+
+    const posted = [];
+    const boot = async () => {
+      const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+        url: 'https://example.test/paving.html', runScripts: 'dangerously', pretendToBeVisual: true,
+      });
+      const win = dom.window;
+      win.localStorage.setItem('fct_token', 'test-token');
+      win.fetch = (url, opts) => {
+        if (String(url).includes('mathis-feedback')) {
+          posted.push(JSON.parse(opts.body));
+          return Promise.resolve({ ok: true, headers: { get: () => 'application/json' },
+            json: () => Promise.resolve({ ok: true }) });
+        }
+        return Promise.resolve({
+          ok: true, headers: { get: () => 'application/json' },
+          json: () => Promise.resolve({
+            ok: true, threadId: 4242, answer: 'Those five are projecting $340,000.',
+            digests: [DIGEST], turnsRemaining: 20,
+          }),
+        });
+      };
+      await new Promise(r => {
+        if (win.document.readyState === 'complete') r();
+        else win.addEventListener('load', r);
+      });
+      win.eval(widget);
+      win.document.getElementById('mathis-launch').click();
+      win.document.getElementById('mathis-input').value = 'profit on the last 5';
+      win.document.getElementById('mathis-send').click();
+      for (let i = 0; i < 30; i++) await new Promise(r => setImmediate(r));
+      return win;
+    };
+
+    const win = await boot();
+    const doc = win.document;
+    const acts = [...doc.querySelectorAll('.mathis-act')];
+    assert('every answer offers a way to check it and a way to judge it',
+      acts.length === 3, `${acts.length} controls`);
+
+    const inspect = acts.find(b => /show the figures/.test(b.textContent));
+    assert('the inspector is offered', !!inspect);
+    assert('  and nothing is dumped until it is asked for',
+      !doc.querySelector('.mathis-raw'), 'a wall of JSON under every answer is noise');
+
+    inspect.click();
+    const raw = doc.querySelector('.mathis-raw');
+    assert('opening it shows the digest the answer was built from',
+      raw && /"projectedProfit": 39609/.test(raw.textContent), raw && raw.textContent.slice(0, 120));
+    assert('  including the fields the table does not show, which is the point',
+      raw && /"totalProjects": 2/.test(raw.textContent));
+    assert('  written as text, not markup — this is unvetted data by definition',
+      raw && raw.textContent.includes('<img src=x') && !raw.innerHTML.includes('<img src=x'),
+      'the dump exists precisely because nobody has checked what is in it');
+    inspect.click();
+    assert('  and it closes again', doc.querySelector('.mathis-raw').hidden === true);
+
+    const down = acts.find(b => /wrong or unhelpful/.test(b.textContent));
+    down.click();
+    await new Promise(r => setImmediate(r));
+    assert('a verdict is recorded', posted.length === 1 && posted[0].verdict === 'down',
+      JSON.stringify(posted));
+    assert('  carrying the question and the answer it is about',
+      posted[0].asked === 'profit on the last 5'
+        && /\$340,000/.test(posted[0].answered), JSON.stringify(posted[0]).slice(0, 200));
+    assert('  and the digests, which is what says whether the FIGURES were wrong',
+      Array.isArray(posted[0].digests) && posted[0].digests[0].division === 'paving',
+      'without them a thumbs-down cannot be told from a prompt problem');
+    assert('  and the thread, so it can be read back in context',
+      posted[0].threadId === 4242);
+
+    down.click();
+    await new Promise(r => setImmediate(r));
+    assert('  clicking again does not post twice', posted.length === 1, `${posted.length} posts`);
+    assert('  and the other verdict is closed off too',
+      acts.find(b => /good answer/.test(b.textContent)).disabled === true);
+  }
+}
+
+// ── 13f. The feedback endpoint ─────────────────────────────────────────────
+console.log('\n══════════ the feedback endpoint ══════════');
+{
+  const feedback = require(root('api/ai/mathis-feedback.js'));
+  const fbCall = async (body, opts = {}) => {
+    sqlImpl = makeSql(opts.sqlOpts || {});
+    const req = { method: 'POST', headers: { authorization: `Bearer ${opts.token || tokenFor()}` }, body, query: {} };
+    const res = mkRes();
+    await feedback(req, res);
+    return res;
+  };
+  const fbRows = () => queries.filter(q => /INSERT INTO mathis_feedback/.test(q.text)).map(q => q.values);
+
+  {
+    const res = await fbCall({ verdict: 'down', threadId: 4242, division: 'paving',
+      asked: 'profit?', answered: 'about $340k', digests: [{ division: 'paving' }] },
+      { sqlOpts: { threadOwned: true } });
+    assert('a verdict is stored', res.statusCode === 200 && fbRows().length === 1, String(res.statusCode));
+    assert('  scoped to the company and the user who gave it',
+      fbRows()[0].includes(COMPANY) && fbRows()[0].includes(USER_ID));
+    assert('  with the thread it belongs to', fbRows()[0].includes(4242));
+  }
+  {
+    const res = await fbCall({ verdict: 'sideways' });
+    assert('a verdict that is neither up nor down is refused', res.statusCode === 400);
+  }
+  {
+    // A thread id is a claim of ownership. Unverified it is dropped, not
+    // refused: the feedback is still worth keeping, it just does not get to
+    // point at somebody else's conversation.
+    const res = await fbCall({ verdict: 'up', threadId: 999999, asked: 'x', answered: 'y' },
+      { sqlOpts: { threadOwned: false } });
+    assert('feedback on a thread that is not theirs is still kept', res.statusCode === 200);
+    assert('  but not attached to that thread',
+      fbRows()[0].includes(null) && !fbRows()[0].includes(999999), JSON.stringify(fbRows()[0]));
+  }
+  {
+    const res = await fbCall({ verdict: 'up' }, { sqlOpts: { userMissing: true } });
+    assert('a user who cannot be verified is refused, as everywhere else',
+      res.statusCode === 401, String(res.statusCode));
+  }
+  {
+    const huge = [{ blob: 'x'.repeat(feedback.MAX_DIGESTS + 100) }];
+    const res = await fbCall({ verdict: 'down', asked: 'x', answered: 'y', digests: huge });
+    const stored = JSON.parse(fbRows()[0].find(v => typeof v === 'string' && /truncated/.test(v)) || '{}');
+    assert('an oversized digest is recorded as truncated rather than stored whole',
+      res.statusCode === 200 && stored.truncated === true, JSON.stringify(stored).slice(0, 80));
+  }
+  {
+    const res = await fbCall({ verdict: 'up', division: '../../etc/passwd', asked: 'x', answered: 'y' });
+    assert('the division is normalised, so the column stays groupable',
+      res.statusCode === 200 && fbRows()[0].includes(null),
+      JSON.stringify(fbRows()[0]));
+  }
+  {
+    // Behaviour, not prose: the header comment mentions GET precisely to say
+    // there is not one, and an assertion that reads comments is an assertion
+    // a rewording breaks and a real regression would not.
+    const src = fs.readFileSync(root('api/ai/mathis-feedback.js'), 'utf8');
+    assert('the endpoint never reads feedback back out',
+      !/SELECT[\s\S]{0,80}mathis_feedback/i.test(src),
+      'one user must not be able to read another\'s feedback through it');
+
+    sqlImpl = makeSql({});
+    const res = mkRes();
+    await feedback({ method: 'GET', headers: { authorization: `Bearer ${tokenFor()}` }, query: {} }, res);
+    assert('  and refuses anything that is not a POST', res.statusCode === 405, String(res.statusCode));
+  }
+}
+
+// ── 13g. The eval set does not rot ─────────────────────────────────────────
+// The eval itself costs money and needs real data, so it cannot run here. What
+// CAN be checked for free is that it still parses, still refuses to run by
+// accident, and still covers the refusals that matter — a case quietly deleted
+// is a regression nobody would notice until the answer was already wrong.
+console.log('\n══════════ the eval set ══════════');
+{
+  const { execFileSync } = require('child_process');
+  const run = args => {
+    try { return execFileSync('node', [root('scripts/eval-mathis.js'), ...args], { encoding: 'utf8' }); }
+    catch (e) { return String(e.stdout || '') + String(e.stderr || ''); }
+  };
+
+  const listed = run(['--list']);
+  assert('the eval set lists without spending anything', /cases/.test(listed), listed.slice(0, 120));
+
+  const guarded = run([]);
+  assert('  and refuses to run without being told to',
+    /costs money/.test(guarded) && !/passed/.test(guarded),
+    'an eval that runs by accident is a bill nobody expected');
+
+  const src = fs.readFileSync(root('scripts/eval-mathis.js'), 'utf8');
+  const ids = [...src.matchAll(/\{ id: '([\w-]+)', division: '([a-z_]+)'/g)].map(m => ({ id: m[1], div: m[2] }));
+  assert('  over a real set of cases', ids.length >= 15, `${ids.length} cases`);
+
+  const { ALL_DIVISIONS: ALL } = require(root('api/lib/auth.js'));
+  const bogus = ids.filter(c => !ALL.includes(c.div));
+  assert('  every one of them naming a real division', bogus.length === 0,
+    bogus.map(c => `${c.id}=${c.div}`).join(', '));
+
+  // The two questions with no answer at all. If either case is ever removed,
+  // nothing would catch Mathis starting to answer them.
+  for (const id of ['trucking-profit', 'payroll-dollars']) {
+    assert(`  and still covering ${id}, which has no answer to give`,
+      ids.some(c => c.id === id), ids.map(c => c.id).join(', '));
+  }
+  assert('  with those two asserting that no money figure comes back',
+    /trucking-profit[\s\S]{0,600}avoid: MONEY/.test(src)
+      && /payroll-dollars[\s\S]{0,600}avoid: MONEY/.test(src),
+    'a refusal that still quotes a dollar figure is not a refusal');
+}
+
 // ── 14. Config that costs money if it drifts ───────────────────────────────
 console.log('\n══════════ deployment ══════════');
 {
@@ -1761,7 +1969,7 @@ console.log('\n══════════ deployment ═══════�
   assert('  and so is JWT_SECRET, which every endpoint needs', /JWT_SECRET/.test(env));
 
   const schema = fs.readFileSync(root('neon-schema.sql'), 'utf8');
-  for (const t of ['mathis_threads', 'mathis_messages', 'mathis_usage', 'mathis_gaps']) {
+  for (const t of ['mathis_threads', 'mathis_messages', 'mathis_usage', 'mathis_gaps', 'mathis_feedback']) {
     assert(`${t} is in the schema`, new RegExp(`CREATE TABLE IF NOT EXISTS ${t}`).test(schema));
   }
   assert('  transcripts are keyed by user, not just by company',

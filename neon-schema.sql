@@ -1797,3 +1797,39 @@ CREATE TABLE IF NOT EXISTS mathis_gaps (
 
 CREATE INDEX IF NOT EXISTS idx_mathis_gaps_rollup
     ON mathis_gaps (company_code, kind, division, created_at DESC);
+
+-- ─────────────────────────────────────────────────
+-- MATHIS FEEDBACK — was that answer any good
+--
+-- mathis_gaps records what Mathis could not answer. This records what it
+-- answered badly, which is the harder half: a wrong answer looks exactly like
+-- a right one until somebody who knows the jobs says otherwise.
+--
+-- The digests are stored alongside the reply on purpose. "This answer was
+-- wrong" is nearly useless on its own — what makes it fixable is knowing
+-- whether the figures it was given were wrong (a digest problem) or the
+-- figures were right and it described them badly (a prompt problem). Those
+-- have completely different fixes and the reply alone cannot tell them apart.
+--
+--   SELECT verdict, division, count(*) FROM mathis_feedback
+--    WHERE company_code = 'YOURCODE' GROUP BY verdict, division
+--
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mathis_feedback (
+    id            BIGSERIAL     PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id       INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    thread_id     BIGINT        REFERENCES mathis_threads(id) ON DELETE SET NULL,
+    verdict       TEXT          NOT NULL CHECK (verdict IN ('up', 'down')),
+    division      TEXT,
+    asked         TEXT,
+    answered      TEXT,
+    -- What the answer was built from. Capped by the endpoint before it gets
+    -- here; a digest is bounded, but a bounded thing stored forever is not.
+    digests       JSONB,
+    note          TEXT,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mathis_feedback_rollup
+    ON mathis_feedback (company_code, verdict, created_at DESC);

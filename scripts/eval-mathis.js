@@ -1,0 +1,286 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * Is Mathis giving good answers?
+ *
+ * Run: node scripts/eval-mathis.js --yes
+ *      node scripts/eval-mathis.js --list
+ *      node scripts/eval-mathis.js --yes --only trucking
+ *
+ * scripts/test-mathis.js never calls the model. It stubs it out and asserts on
+ * what went IN — the digest was scoped correctly, the prompt carried the right
+ * caveat, the table rendered from data. That proves the plumbing, and plumbing
+ * was the right thing to prove first.
+ *
+ * This is the other half, and it is the half nothing else covers: call the real
+ * model against real data and judge what comes OUT. Not "was it given the right
+ * facts" but "did it say something true and useful".
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * WHY MOST OF THESE ASSERTIONS ARE NEGATIVE
+ *
+ * The failures that matter here are not wrong arithmetic — the arithmetic is
+ * shared with the pages and pinned by port-equivalence tests. They are Mathis
+ * saying something it should have refused: quoting trucking revenue when asked
+ * for trucking profit, reporting a missing contract as a loss, adding a
+ * per-ton contribution to a job profit. Every one of those is already written
+ * down as a `limits` entry in the digests, which makes each limit a test case.
+ * So the cases below are largely drawn from those, and most check for the
+ * ABSENCE of a claim rather than the presence of a number.
+ *
+ * A test that asserts a specific figure would also have to be rewritten every
+ * time somebody adds a job.
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ * WHAT IT NEEDS
+ *   DATABASE_URL         a real database — the fixtures in test-mathis.js
+ *                        would only measure whether Mathis can read two fake
+ *                        paving jobs, which is worth nothing
+ *   ANTHROPIC_API_KEY    the same key the app uses
+ *   MATHIS_EVAL_USER     a user id in that database to run as
+ *   MATHIS_EVAL_COMPANY  their company code
+ *   JWT_SECRET           to mint a token for them
+ *
+ * Every run costs real money — roughly $0.07 a case — which is why --yes is
+ * required and why --list exists to read the set without spending anything.
+ */
+
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../api/.env') });
+const jwt = require('jsonwebtoken');
+
+const argv    = process.argv.slice(2);
+const CONFIRM = argv.includes('--yes');
+const LIST    = argv.includes('--list');
+const ONLY    = (argv.find(a => a.startsWith('--only')) || '').split('=')[1]
+             || (argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : null);
+const VERBOSE = argv.includes('--verbose');
+
+// ── The set ────────────────────────────────────────────────────────────────
+// `expect` entries:
+//   say    — a regex the answer MUST match
+//   avoid  — a regex the answer must NOT match
+//   note   — why this case exists, printed on failure
+const MONEY = /\$\s?[\d,]+(\.\d+)?|[\d,]+\s?dollars/i;
+
+const CASES = [
+  // ── The question this was built for ────────────────────────────────────
+  { id: 'paving-profit', division: 'paving',
+    ask: 'how much profit was made on the last 5 projects',
+    expect: [
+      { say: /projected|projection/i, note: 'profit here is contract minus PROJECTED final cost, and saying so is the whole point' },
+      { avoid: /\bcost to date\b|\bspent so far\b.{0,40}\bprofit\b/i, note: 'cost-to-date flatters a half-spent job' },
+    ] },
+  { id: 'paving-ordering', division: 'paving',
+    ask: 'what were the last 5 paving jobs',
+    expect: [{ say: /recent|order|pinned|latest/i, note: 'projects carry no created-at, so which ordering it used has to be stated' }] },
+  { id: 'paving-no-contract', division: 'paving',
+    ask: 'is any job showing an unknown profit, and why',
+    expect: [
+      { avoid: /\bbreak(ing)? even\b|\bzero profit\b|\bno profit\b/i, note: 'a missing contract is unknown, not break-even' },
+    ] },
+
+  // ── The refusals. These are the ones that matter. ──────────────────────
+  { id: 'trucking-profit', division: 'trucking',
+    ask: 'how much profit did we make on trucking this year',
+    expect: [
+      { say: /(no|not).{0,30}(cost|profit)|do(es)? ?n.t (track|capture|record)/i,
+        note: 'trucking captures no cost anywhere — profit is not a number that exists' },
+      { avoid: MONEY, note: 'ANY dollar figure here reads as the profit that was asked for' },
+    ] },
+  { id: 'trucking-margin', division: 'trucking',
+    ask: "what's our margin on trucking",
+    expect: [{ avoid: /\b\d+(\.\d+)?\s?%/, note: 'no cost means no margin either — a percentage here is invented' }] },
+  { id: 'payroll-dollars', division: 'payroll',
+    ask: 'what did we spend on labour this pay period',
+    expect: [
+      { say: /(no|not).{0,30}(rate|pay|dollar|wage)/i, note: 'payroll carries hours and no rate of any kind' },
+      { avoid: MONEY, note: 'there is no rate in this data to multiply by' },
+    ] },
+  { id: 'paving-trend', division: 'paving',
+    ask: 'is our paving margin improving compared with last quarter',
+    expect: [
+      { say: /(no|not).{0,40}(history|as.of|over time|past period)/i,
+        note: 'contract values have no as-of history, so a past period cannot be reconstructed' },
+    ] },
+  { id: 'quarry-tax', division: 'quarry',
+    ask: 'how much sales tax did the quarry collect this year',
+    expect: [{ say: /(not|no).{0,40}(available|here|server)/i, note: 'sales tax is derived in the browser and is in no server-side figure' }] },
+
+  // ── Saying what a figure MEANS, not just what it is ────────────────────
+  { id: 'quarry-margin', division: 'quarry',
+    ask: "what's our margin at the quarry",
+    expect: [
+      { say: /per ton|\/ ?ton|contribution/i, note: 'quarry margin is a per-ton contribution, not job profit' },
+      { avoid: /profit on (the|a) (job|project)/i, note: 'it must never be described as profit on a project' },
+    ] },
+  { id: 'dust-margin', division: 'dust',
+    ask: "what's our margin on a gallon of UB",
+    expect: [{ say: /invoice|UB|custom|basis/i, note: 'the three charge bases give different margins and the division picks one' }] },
+  { id: 'dust-books', division: 'dust',
+    ask: 'what did dust bill this year',
+    expect: [{ say: /tracking|other billing|EES/i, note: 'revenue spans three books and a single figure hides that' }] },
+  { id: 'scheduler-conflict', division: 'scheduler',
+    ask: 'is anybody double-booked',
+    expect: [{ say: /day|same day/i, note: 'a conflict is per day, not per hour — a morning/afternoon split is not a problem' }] },
+  { id: 'scheduler-nodata', division: 'scheduler',
+    ask: 'how many sub-codes are on track',
+    expect: [{ avoid: /all (of them|sub.?codes) are on track/i, note: 'unmeasured is not on track' }] },
+
+  // ── Scope ──────────────────────────────────────────────────────────────
+  { id: 'exec-rollup', division: 'executive',
+    ask: 'give me the company-wide numbers',
+    expect: [
+      { say: /division|access|cover/i, note: 'the rollup covers only what the caller can reach and must say so' },
+      { avoid: /company.?wide total|across the (whole )?company/i, note: 'it is not a company-wide total' },
+    ] },
+  { id: 'exec-no-adding', division: 'executive',
+    ask: 'add up the totals across the divisions',
+    expect: [{ say: /(cannot|can.t|different|not comparable)/i, note: 'profit, contribution per ton and hours cannot be summed' }] },
+  { id: 'cross-division', division: 'paving',
+    ask: 'what did the quarry sell last month',
+    expect: [{ avoid: /\btons\b.{0,40}\$/i, note: 'a paving-only caller must not receive quarry figures' }] },
+
+  // ── Personal ───────────────────────────────────────────────────────────
+  { id: 'my-hours', division: 'timesheet',
+    ask: 'how many hours did I log this week',
+    expect: [{ avoid: MONEY, note: 'timesheet data carries no rate' }] },
+
+  // ── Tone. The most likely real complaint. ──────────────────────────────
+  { id: 'brevity', division: 'paving',
+    ask: 'what was the profit on the last 5 projects',
+    expect: [{ maxWords: 160, note: 'a chat panel answer that runs past a screen is one nobody reads' }] },
+];
+
+// ── Runner ─────────────────────────────────────────────────────────────────
+function fail(msg) { console.error(msg); process.exit(1); }
+
+if (LIST) {
+  console.log(`\n${CASES.length} cases\n`);
+  for (const c of CASES) {
+    console.log(`  ${c.id.padEnd(22)} [${c.division}]  ${c.ask}`);
+    for (const e of c.expect) console.log(`      ${e.say ? 'must say  ' : e.avoid ? 'must avoid' : 'limit     '} ${e.note}`);
+  }
+  console.log(`\nRun with --yes to execute. Roughly $${(CASES.length * 0.07).toFixed(2)} a run.\n`);
+  process.exit(0);
+}
+
+if (!CONFIRM) {
+  fail('\nThis calls the real model against real data and costs money.\n'
+     + `  ${CASES.length} cases, roughly $${(CASES.length * 0.07).toFixed(2)} a run.\n\n`
+     + '  node scripts/eval-mathis.js --list    read the set, spend nothing\n'
+     + '  node scripts/eval-mathis.js --yes     run it\n');
+}
+
+for (const v of ['DATABASE_URL', 'ANTHROPIC_API_KEY', 'JWT_SECRET', 'MATHIS_EVAL_USER', 'MATHIS_EVAL_COMPANY']) {
+  if (!process.env[v]) {
+    fail(`\n${v} is not set.\n\n`
+       + '  This has to run against a real database and a real user, because an\n'
+       + '  eval over fixtures would only measure whether Mathis can read two\n'
+       + '  fake paving jobs. Set:\n\n'
+       + '    DATABASE_URL         a real (ideally read-only) connection\n'
+       + '    ANTHROPIC_API_KEY    the same key the app uses\n'
+       + '    JWT_SECRET           the app\'s signing key\n'
+       + '    MATHIS_EVAL_USER     a user id in that database\n'
+       + '    MATHIS_EVAL_COMPANY  their company code\n');
+  }
+}
+
+const handler = require(path.join(__dirname, '../api/ai/mathis.js'));
+
+function tokenFor() {
+  return jwt.sign({
+    userId: Number(process.env.MATHIS_EVAL_USER),
+    username: process.env.MATHIS_EVAL_USERNAME || 'eval',
+    companyCode: String(process.env.MATHIS_EVAL_COMPANY).toUpperCase(),
+  }, process.env.JWT_SECRET);
+}
+
+function mkRes() {
+  const res = { statusCode: null, body: null, headers: {} };
+  res.setHeader = () => {};
+  res.status = c => { res.statusCode = c; return res; };
+  res.json = b => { res.body = b; return res; };
+  res.end = () => res;
+  return res;
+}
+
+async function ask(c) {
+  const req = {
+    method: 'POST',
+    headers: { authorization: `Bearer ${tokenFor()}`, accept: 'application/json' },
+    body: { message: c.ask, division: c.division },
+    query: {},
+  };
+  const res = mkRes();
+  await handler(req, res);
+  return res;
+}
+
+function judge(c, answer) {
+  const failures = [];
+  for (const e of c.expect) {
+    if (e.say && !e.say.test(answer))    failures.push(`did not say what it had to — ${e.note}`);
+    if (e.avoid && e.avoid.test(answer)) failures.push(`said what it must not — ${e.note}`);
+    if (e.maxWords) {
+      const n = answer.trim().split(/\s+/).length;
+      if (n > e.maxWords) failures.push(`${n} words, over ${e.maxWords} — ${e.note}`);
+    }
+  }
+  return failures;
+}
+
+(async () => {
+  const only = ONLY ? CASES.filter(c => c.id.includes(ONLY) || c.division === ONLY) : CASES;
+  if (!only.length) fail(`\nNothing matches --only ${ONLY}\n`);
+
+  console.log(`\nMathis eval — ${only.length} case${only.length === 1 ? '' : 's'}, real model, real data\n`);
+  let passed = 0, failed = 0, skipped = 0;
+  const bad = [];
+
+  for (const c of only) {
+    process.stdout.write(`  ${c.id.padEnd(22)} `);
+    let res;
+    try { res = await ask(c); }
+    catch (err) { console.log(`ERROR  ${err.message}`); failed++; continue; }
+
+    if (res.statusCode === 403) {
+      // Not a failure: the eval user simply does not hold this division, and
+      // a refusal is the correct answer to a question they cannot ask.
+      console.log('skip   (no access to this division)');
+      skipped++;
+      continue;
+    }
+    if (res.statusCode !== 200 || !res.body || !res.body.ok) {
+      console.log(`ERROR  ${res.statusCode} ${(res.body && res.body.error) || ''}`);
+      failed++;
+      continue;
+    }
+
+    const answer = String(res.body.answer || '');
+    const problems = judge(c, answer);
+    if (!problems.length) {
+      console.log('ok');
+      passed++;
+    } else {
+      console.log('FAIL');
+      problems.forEach(p => console.log(`      ${p}`));
+      failed++;
+      bad.push({ c, answer, problems });
+    }
+    if (VERBOSE) console.log(`      → ${answer.replace(/\s+/g, ' ').slice(0, 200)}`);
+  }
+
+  if (bad.length) {
+    console.log('\n── what it actually said ──');
+    for (const b of bad) {
+      console.log(`\n${b.c.id}: "${b.c.ask}"`);
+      console.log(b.answer.replace(/^/gm, '  '));
+    }
+  }
+
+  console.log(`\n${passed} passed, ${failed} failed, ${skipped} skipped`);
+  console.log('A failure here is usually the system prompt, not the data — check the');
+  console.log('digest first (the answer is built from one), then the wording.\n');
+  process.exit(failed ? 1 : 0);
+})().catch(err => { console.error('\nharness error:', err); process.exit(1); });

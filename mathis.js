@@ -95,6 +95,11 @@
 
   var state = { open: false, busy: false, threadId: null, division: null, turnsRemaining: null };
 
+  /* What the answer on screen was built from. Collected as the digests arrive
+   * so the inspector and the feedback both describe THIS answer rather than
+   * whatever happened to be last. Reset at the start of each question. */
+  var turn = { asked: '', answer: '', digests: [] };
+
   /* The thread id, kept per division for the life of the tab. A reload should
    * carry on the conversation rather than silently start a new one — the
    * server would answer either way, but the user would be the only one who
@@ -149,6 +154,14 @@
     '#mathis-input:focus{outline:none;border-color:var(--green,#22c55e)}',
     '#mathis-send{padding:8px 13px;border-radius:8px;border:none;background:var(--green,#22c55e);color:#08130c;font:600 12px system-ui;cursor:pointer}',
     '#mathis-send[disabled]{opacity:.5;cursor:default}',
+    '.mathis-acts{display:flex;gap:10px;align-items:center;margin-top:7px}',
+    '.mathis-act{background:none;border:none;padding:0;cursor:pointer;font:11px system-ui;color:var(--muted,#8b8b9a)}',
+    '.mathis-act:hover{color:var(--text,#e0e0e0)}',
+    '.mathis-act.on{color:var(--green,#22c55e)}',
+    '.mathis-act.off{color:var(--red,#ef4444)}',
+    '.mathis-raw{margin-top:7px;max-height:260px;overflow:auto;padding:8px;border-radius:6px;',
+    'background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a35);',
+    'font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;color:var(--text,#e0e0e0)}',
     '@media(max-width:520px){#mathis-panel{right:8px;left:8px;width:auto;bottom:74px}}'
   ].join('');
 
@@ -306,9 +319,98 @@
     log.scrollTop = log.scrollHeight;
   }
 
+  /* The two things that make a bad answer fixable.
+   *
+   * The inspector is not a debug toy. Every figure on screen came from a
+   * digest this server fetched, and until now the only way to check one
+   * against the page behind it was to trust the table. Dumping the digest
+   * turns "is that right?" into a comparison anybody can do.
+   *
+   * The verdict is the other half. A wrong answer looks exactly like a right
+   * one, so without somewhere to say otherwise, "the answers aren't great"
+   * stays an impression and every prompt change after it is a guess. The
+   * digests go with it, because that is what says whether the FIGURES were
+   * wrong or the words describing them were. */
+  function addActions() {
+    if (!turn.digests.length && !turn.answer) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'mathis-msg it';
+
+    var acts = document.createElement('div');
+    acts.className = 'mathis-acts';
+
+    if (turn.digests.length) {
+      var showing = false, raw = null;
+      var inspect = document.createElement('button');
+      inspect.type = 'button';
+      inspect.className = 'mathis-act';
+      inspect.textContent = 'show the figures I used';
+      inspect.onclick = function () {
+        showing = !showing;
+        inspect.textContent = showing ? 'hide the figures' : 'show the figures I used';
+        if (!raw) {
+          raw = document.createElement('div');
+          raw.className = 'mathis-raw';
+          // textContent, not innerHTML: this is a dump of data written by
+          // colleagues, and it is being shown precisely because nobody has
+          // vetted it.
+          raw.textContent = JSON.stringify(
+            turn.digests.length === 1 ? turn.digests[0] : turn.digests, null, 2);
+          wrap.appendChild(raw);
+        }
+        raw.hidden = !showing;
+        log.scrollTop = log.scrollHeight;
+      };
+      acts.appendChild(inspect);
+    }
+
+    var snap = { asked: turn.asked, answer: turn.answer, digests: turn.digests.slice() };
+    var up = document.createElement('button');
+    var down = document.createElement('button');
+    var done = false;
+    function verdict(v, btn) {
+      return function () {
+        if (done) return;
+        done = true;
+        up.disabled = down.disabled = true;
+        btn.classList.add(v === 'up' ? 'on' : 'off');
+        btn.textContent = v === 'up' ? 'thanks' : 'noted — thanks';
+        sendVerdict(v, snap);
+      };
+    }
+    up.type = down.type = 'button';
+    up.className = down.className = 'mathis-act';
+    up.textContent = 'good answer';
+    down.textContent = 'wrong or unhelpful';
+    up.onclick = verdict('up', up);
+    down.onclick = verdict('down', down);
+    acts.appendChild(up);
+    acts.appendChild(down);
+
+    wrap.appendChild(acts);
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function sendVerdict(v, snap) {
+    // Fire and forget. Feedback that interrupts the person giving it is
+    // feedback nobody gives twice.
+    try {
+      fetch('/api/ai/mathis-feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() },
+        body: JSON.stringify({
+          verdict: v, threadId: state.threadId, division: division() || undefined,
+          asked: snap.asked, answered: snap.answer, digests: snap.digests
+        })
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
   /* Built from the server's digest, never from the reply text. */
   function renderFigures(digest) {
     if (!digest) return;
+    turn.digests.push(digest);
     var by = {
       jobs:         renderJobs,
       personal:     renderPersonal,
@@ -620,6 +722,7 @@
     var status = add('it', 'Thinking…');
     status.classList.add('mathis-note');
     var shown = { any: false };
+    turn = { asked: q, answer: '', digests: [] };
 
     ask(q, status, shown, true)
       .catch(function (err) {
@@ -632,6 +735,7 @@
       })
       .then(function () {
         if (status.parentNode) status.remove();
+        addActions();
         state.busy = false;
         sendBtn.disabled = false;
         input.focus();
@@ -701,6 +805,7 @@
         shown.any = true;
         if (!answerEl) { answerEl = add('it', ''); }
         answerEl.textContent += data.text;
+        turn.answer += data.text;
         log.scrollTop = log.scrollHeight;
       } else if (ev === 'figures' && data) {
         shown.any = true;
@@ -743,7 +848,7 @@
     if (payload.threadId) rememberThread(payload.threadId);
     state.turnsRemaining = payload.turnsRemaining;
 
-    if (answer) { shown.any = true; add('it', answer); }
+    if (answer) { shown.any = true; turn.answer = answer; add('it', answer); }
     // The JSON path carries every digest at once; the stream has already
     // rendered each as it arrived, so this runs for the JSON path only —
     // keyed on which path called, not on whether the answer text was empty.
