@@ -155,11 +155,27 @@ const PROJECTS = {
           'contract-amount': '123894', 'end-date': P1_TARGET,
           bidItems: [{ cost_code: '2100', sub_code: 'A', quantity: 100, unit_cost: 1066.16,
                        description: 'Base repair', start_date: daysOut(-120), target_date: P1_TARGET }],
+          assigned_equipment: ['Roller 3', 'Paver 1', 'Broom 2'],
           dailyRows: [
-            { cost_code: '2100', sub_code: 'A', date: daysOut(-60), quantity: 6, labor_hours: 8, employee: 'R. Diaz', equipment: 'Roller 3' },
+            // 8h of roller at $110. The equipment figures ride on the same row
+            // as the labor, which is how the page writes the first machine
+            // assigned to an operator.
+            { cost_code: '2100', sub_code: 'A', date: daysOut(-60), quantity: 6, labor_hours: 8, employee: 'R. Diaz',
+              equipment: 'Roller 3', equip_unit_cost: 110, equip_hours: 8 },
+            // An imported row: the total arrived already multiplied out, and
+            // multiplying it again is the bug. 675 is deliberately NOT 225 x 4
+            // — an override equal to the product proves nothing, because a
+            // build that ignored it entirely would agree.
+            { cost_code: '2100', sub_code: 'A', date: daysOut(-45), quantity: 0, labor_hours: 0, employee: '',
+              equipment: 'Paver 1', equip_unit_cost: 225, equip_hours: 4, equip_total_override: 675 },
+            // No machine on this row at all. A labor row is not an unnamed
+            // machine and must not pool into a '(none)' bucket.
             { cost_code: '2100', sub_code: 'A', date: daysOut(-30), quantity: 4, labor_hours: 8, employee: 'R. Diaz', equipment: '' },
           ] },
+  // Assigned a machine that never turned up: assignment is a plan, hours are
+  // the record, and answering one with the other is the failure here.
   'p2': { id: 'p2', 'project-name': 'Moon Township', 'job-number': '26004', status: 'In Progress',
+          assigned_equipment: ['Roller 3'],
           bidItems: [{ cost_code: '2100', sub_code: 'B', quantity: 50, unit_cost: 900 }] },
 };
 
@@ -204,6 +220,25 @@ const PURCHASE_ORDERS = [
     lines: [{ qty: 2, unit_cost: 250, tax: 0 }] },
 ];
 
+// The document vault. Nothing here is file CONTENT and nothing ever will be:
+// the digest counts paperwork and names it, and the note field a colleague
+// typed is left behind for the same reason a purchase order's is.
+//
+// p2 has none, which is what makes "which jobs are missing paperwork"
+// answerable. The third row files against no job at all — the division-level
+// General area, where paperwork belonging to no job lands.
+const DOCUMENTS = [
+  { project_id: 'p1', filename: 'Atwood executed contract.pdf', content_type: 'application/pdf',
+    size_bytes: 2097152, uploaded_by: 'jsmith', uploaded_at: '2026-05-20',
+    note: 'signed copy — Dave has the original, 555-0134', storage_key: 'co/FORCECORP/abc123.pdf' },
+  { project_id: 'p1', filename: 'CO-2 signed.pdf', content_type: 'application/pdf',
+    size_bytes: 524288, uploaded_by: 'mpoole', uploaded_at: '2026-05-14',
+    note: '', storage_key: 'co/FORCECORP/def456.pdf' },
+  { project_id: null, filename: 'Shop insurance 2026.pdf', content_type: 'application/pdf',
+    size_bytes: 1048576, uploaded_by: 'jsmith', uploaded_at: '2026-04-02',
+    note: '', storage_key: 'co/FORCECORP/ghi789.pdf' },
+];
+
 // The cost-code catalogue: what the division bids against. Not spend.
 const COST_ROWS = [
   { cost_code: '2100', sub_code: 'A', description: 'Base repair', quantity: 100,
@@ -215,6 +250,16 @@ const COST_ROWS = [
 const BLOBS = {
   'fct_paving_projects_index': { ids: ['p1', 'p2'] },
   'fct_purchase_orders:paving': PURCHASE_ORDERS,
+  // Broom 2 is on the roster and ran no hours in this window — "idle" is the
+  // wrong word for it and the digest has to leave room for that.
+  'fct_paving_lists': {
+    employees: [{ name: 'R. Diaz', rate: 38 }],
+    equipment: [
+      { name: 'Roller 3', unit_cost: 110 },
+      { name: 'Paver 1',  unit_cost: 225 },
+      { name: 'Broom 2',  unit_cost: 45 },
+    ],
+  },
   'fct_paving_cost_rows': COST_ROWS,
   'fct_truck_division': TRUCK_ENTRIES,
   'fct_intercompany_billing_entries': [],
@@ -321,6 +366,10 @@ function makeSql(opts = {}) {
         return Promise.reject(new Error('blob read failed'));
       }
       return Promise.resolve(bare in BLOBS ? [{ value: BLOBS[bare] }] : []);
+    }
+    if (/FROM project_documents/.test(text)) {
+      if (opts.docsThrow) return Promise.reject(new Error('documents unavailable'));
+      return Promise.resolve(opts.documents || DOCUMENTS);
     }
     if (/FROM dust_control_entries/.test(text)) {
       if (opts.dustRowsThrow) return Promise.reject(new Error('dust rows unavailable'));
@@ -1409,6 +1458,172 @@ console.log('\n══════════ purchase orders and cost codes ═
     nonsense.status === 'denied' && nonsense.division === null, JSON.stringify(nonsense));
 }
 
+// ── 11d. Equipment and the document vault ──────────────────────────────────
+// Standing on the same page somebody asks what the roller costs, what is on
+// Atwood, how many hours the paver ran, and whether the Moon Township contract
+// is on file. All of those used to come back as projected profit.
+console.log('\n══════════ equipment and documents ══════════');
+{
+  const res = await call({ message: 'what equipment did we run', division: 'paving' });
+  const d = res.body.digest;
+  const eq = d && d.equipment;
+  const modelSaw = JSON.stringify(sent[sent.length - 1]);
+
+  assert('the equipment roster reaches the digest with its unit costs',
+    eq && eq.count === 3
+      && eq.catalogue.rows.find(r => r.name === 'Roller 3').unitCost === 110,
+    JSON.stringify(eq && eq.catalogue));
+
+  const ran = eq && eq.usage.rows.rows;
+  assert('  and the hours each machine actually ran',
+    ran && ran.find(r => r.name === 'Roller 3').hours === 8,
+    JSON.stringify(ran));
+  assert('  costed at 8 x $110, which is what the page charges for those hours',
+    ran && ran.find(r => r.name === 'Roller 3').cost === 880,
+    JSON.stringify(ran));
+
+  // The `||` in the port. An imported row arrives with the total already
+  // multiplied out; multiplying it again turns a $900 day into $8,100.
+  assert('  and an imported row keeps the total it came with',
+    ran && ran.find(r => r.name === 'Paver 1').cost === 675,
+    'the rate and the hours multiply to 900, so 900 here would mean the override was ignored');
+  assert('  the totals being the sum of them',
+    eq.usage.totalHours === 12 && eq.usage.totalCost === 1555,
+    JSON.stringify(eq.usage));
+
+  assert('  a machine on the roster that ran nothing is simply absent from usage',
+    ran && !ran.some(r => r.name === 'Broom 2') && eq.catalogue.rows.some(r => r.name === 'Broom 2'),
+    'it is on the roster and it ran no hours in this window — those are both true');
+  assert('  and a daily row with no machine on it is not an unnamed machine',
+    ran && !ran.some(r => !r.name || /none|blank|unassigned/i.test(r.name)),
+    'a "(none)" bucket holding most of the hours reads as a real machine');
+
+  const byJob = eq && eq.byJob.rows;
+  assert('a job says what is assigned to it and what turned up',
+    byJob && byJob.find(r => r.job === 'Atwood Borough').piecesRun === 2
+      && byJob.find(r => r.job === 'Atwood Borough').assigned.rows.length === 3,
+    JSON.stringify(byJob));
+  assert('  which are different facts, and the digest keeps them apart',
+    byJob && byJob.find(r => r.job === 'Moon Township').piecesRun === 0
+      && byJob.find(r => r.job === 'Moon Township').assigned.rows.includes('Roller 3'),
+    'a machine assigned and never used is the case that makes them different');
+  assert('  and the limits say so, so an assignment is not reported as work done',
+    /assigned to a job is a plan, not a record/i.test(modelSaw), 'plan versus record');
+
+  // The trap, from the other side to purchase orders: this money is INSIDE
+  // the job's actual cost, and adding it counts the same roller twice.
+  assert('the limits say equipment cost is already in the job figures',
+    /ALREADY part of that job/i.test(modelSaw) && /never be added to it/i.test(modelSaw),
+    'a breakdown added to the thing it breaks down is a double-count');
+  assert('  and that today\'s roster rate is not what a past row was costed at',
+    /rate the list carries TODAY/i.test(modelSaw));
+  assert('  and that the hours only cover the jobs in this digest',
+    /may well have run on an older job/i.test(modelSaw),
+    'calling a machine idle on a twelve-job window is a wrong answer');
+
+  const dv = d && d.documents;
+  assert('the document vault reaches the digest', dv && dv.count === 3, JSON.stringify(dv));
+  assert('  counted per job, so "how much paperwork is on Atwood" is answerable',
+    dv && dv.byJob.rows.find(r => r.job === 'Atwood Borough').count === 2,
+    JSON.stringify(dv && dv.byJob.rows));
+  assert('  with paperwork belonging to no job named rather than left blank',
+    dv && dv.byJob.rows.some(r => /General/i.test(r.job)),
+    JSON.stringify(dv && dv.byJob.rows));
+  assert('  the most recent first, with who put it there and when',
+    dv && dv.recent.rows[0].filename === 'Atwood executed contract.pdf'
+       && dv.recent.rows[0].uploadedBy === 'jsmith',
+    JSON.stringify(dv && dv.recent.rows[0]));
+  assert('  and which jobs have nothing on file, which is the useful half',
+    dv && dv.jobsWithNoDocuments.rows.includes('Moon Township')
+       && !dv.jobsWithNoDocuments.rows.includes('Atwood Borough'),
+    JSON.stringify(dv && dv.jobsWithNoDocuments));
+
+  // Three fields left behind on purpose.
+  const raw = JSON.stringify(d);
+  assert('  the object-store path never leaves the server',
+    !/storage_key|storageKey|storage_url|abc123/.test(raw),
+    'a storage path is an access route, not an answer');
+  assert('  and neither does the free-text note on a document',
+    !/555-0134/.test(raw) && !/signed copy/.test(raw),
+    'same reason a purchase order\'s note stays behind');
+
+  assert('the digest says it covers both, so the rule lets it answer',
+    d.covers.some(c => /equipment/i.test(c)) && d.covers.some(c => /document/i.test(c)),
+    JSON.stringify(d.covers));
+
+  // The one that will be asked and cannot be answered: a list of filenames
+  // invites "so what does the contract say".
+  assert('  and states plainly that no file CONTENT is here at all',
+    /counted, never read/i.test(modelSaw) && /cannot be answered from this/i.test(modelSaw),
+    'a filename is not a contract');
+  assert('  and that deleted files, trash window included, are not counted',
+    /30-day trash window/i.test(modelSaw));
+}
+{
+  // The query itself. Documents are one of the few reads here against a real
+  // table rather than a blob, so the scoping is a WHERE and not a key prefix —
+  // and a missing division clause hands one division another's paperwork.
+  await call({ message: 'what documents do we have', division: 'paving' });
+  const q = queries.find(x => /FROM project_documents/.test(x.text));
+  assert('the document read is scoped to the company AND the division',
+    q && /company_code = \$/.test(q.text.replace(/\?/g, '$'))
+      && /division = \$/.test(q.text.replace(/\?/g, '$'))
+      && q.values.includes(COMPANY) && q.values.includes('paving'),
+    q && q.text);
+  assert('  and excludes deleted files rather than counting the trash',
+    q && /deleted_at IS NULL/.test(q.text), q && q.text);
+}
+{
+  // A read that fails is not an empty vault.
+  const res = await call({ message: 'documents?', division: 'paving' },
+    { sqlOpts: { docsThrow: true } });
+  const d = res.body.digest;
+  assert('a failed document read drops the subject rather than reporting none',
+    !d.documents && !d.covers.some(c => /document/i.test(c)),
+    JSON.stringify(d.covers));
+}
+{
+  // The port. api/lib/equipment-metrics costs a row the way tracker.html
+  // costs it, and the only way to know that stays true is to run the page's
+  // own function against the same rows. Both sides sound certain when they
+  // disagree, and the argument is about money.
+  const { rowEquipCost } = require(root('api/lib/equipment-metrics.js'));
+  const src = fs.readFileSync(root('tracker.html'), 'utf8');
+  const start = src.indexOf('function calcDaily(');
+  assert('tracker.html still has the function this is a port of', start >= 0);
+  let end = -1, depth = 0;
+  for (let j = src.indexOf('{', start); j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) { end = j + 1; break; }
+  }
+  const pageCalc = new Function('pvPreview',
+    `${src.slice(start, end)}; return calcDaily;`)({ active: false, rate: 0 });
+
+  const ROWS = [
+    { label: 'hours times a rate',        row: { equip_unit_cost: 110, equip_hours: 8 } },
+    { label: 'an imported total',         row: { equip_unit_cost: 225, equip_hours: 4, equip_total_override: 675 } },
+    { label: 'an override of zero',       row: { equip_unit_cost: 60,  equip_hours: 3, equip_total_override: 0 } },
+    { label: 'a machine with no hours',   row: { equip_unit_cost: 60,  equip_hours: 0 } },
+    { label: 'no equipment fields at all', row: { labor_hours: 8, rate: 38 } },
+    { label: 'strings, as a blob carries them',
+      row: { equip_unit_cost: '110.50', equip_hours: '7.5' } },
+    { label: 'junk where a number should be',
+      row: { equip_unit_cost: 'n/a', equip_hours: 8 } },
+  ];
+  for (const { label, row } of ROWS) {
+    const page = pageCalc(row).equip_total;
+    const lib  = rowEquipCost(row);
+    assert(`the port costs ${label} exactly as the page does`,
+      Math.abs(page - lib) < 0.0001, `page=${page} lib=${lib}`);
+  }
+  // Stated as its own assertion because the table above compares the port to
+  // the page, and both agreeing on the wrong answer would still pass.
+  assert('  and the override wins over the multiplication, on both sides',
+    pageCalc({ equip_unit_cost: 225, equip_hours: 4, equip_total_override: 675 }).equip_total === 675
+      && rowEquipCost({ equip_unit_cost: 225, equip_hours: 4, equip_total_override: 675 }) === 675,
+    'ignoring the override turns this $675 day into $900');
+}
+
 // ── 12a. The tool enum is built from this caller's scope ───────────────────
 console.log('\n══════════ the tool enum ══════════');
 {
@@ -2121,6 +2336,26 @@ console.log('\n══════════ every digest kind renders ══�
         rows: [{ costCode: '2100', subCode: 'A', description: 'Base repair',
                  quantity: 100, unitCost: 1066.16, status: 'Active' }],
         total: 1, truncated: false } },
+      equipment: {
+        count: 2,
+        catalogue: { rows: [{ name: 'Roller 3', unitCost: 110 },
+                            { name: 'Broom 2', unitCost: 45 }], total: 2, truncated: false },
+        usage: { totalHours: 8, totalCost: 880, rows: { rows: [
+          { name: 'Roller 3', hours: 8, cost: 880,
+            jobs: { rows: ['Atwood Borough'], total: 1, truncated: false } },
+        ], total: 1, truncated: false } },
+        byJob: { rows: [{ job: 'Atwood Borough',
+                          assigned: { rows: ['Roller 3'], total: 1, truncated: false },
+                          piecesRun: 1, hours: 8, cost: 880 }], total: 1, truncated: false },
+      },
+      documents: {
+        count: 2, totalMB: 2.5,
+        byJob: { rows: [{ job: 'Atwood Borough', count: 2 }], total: 1, truncated: false },
+        recent: { rows: [{ filename: 'Atwood executed contract.pdf', job: 'Atwood Borough',
+                           uploadedBy: 'jsmith', uploadedAt: '2026-05-20',
+                           sizeMB: 2, kind: 'application/pdf' }], total: 1, truncated: false },
+        jobsWithNoDocuments: { rows: ['Moon Township'], total: 1, truncated: false },
+      },
     };
 
     const boot = async digest => {
@@ -2151,8 +2386,9 @@ console.log('\n══════════ every digest kind renders ══�
     const secs = [...doc.querySelectorAll('.mathis-sec')];
     const titles = secs.map(d => d.querySelector('summary').textContent);
     assert('every subject the digest carries gets a section on screen',
-      secs.length === 3 && /Rubber/.test(titles[0]) && /Purchase orders/.test(titles[1])
-        && /Cost codes/.test(titles[2]), JSON.stringify(titles));
+      secs.length === 5 && /Rubber/.test(titles[0]) && /Purchase orders/.test(titles[1])
+        && /Cost codes/.test(titles[2]) && /Equipment/.test(titles[3])
+        && /Documents/.test(titles[4]), JSON.stringify(titles));
     assert('  each one closed, so the answer that was asked for stays first',
       secs.every(d => !d.open),
       'four tables under a profit question buries the profit');
@@ -2176,10 +2412,30 @@ console.log('\n══════════ every digest kind renders ══�
     assert('rubber stock is a figure on screen, not a sentence from the model',
       /Crumb/.test(secs[0].textContent) && /28/.test(secs[0].textContent));
 
+    const eqSec = secs[3];
+    assert('equipment shows the hours and what they cost',
+      /Roller 3/.test(eqSec.textContent) && /880/.test(eqSec.textContent),
+      eqSec.textContent.slice(0, 160));
+    assert('  and says the cost is inside the job figures, not on top of them',
+      /already inside/i.test(doc.body.textContent),
+      'a breakdown added to the thing it breaks down is a double-count');
+    assert('  and that today’s roster rate is not what a past row was costed at',
+      /rate a row was written with|keeps the rate it was written with/i.test(doc.body.textContent));
+
+    const docSec = secs[4];
+    assert('documents shows the count and which job has none',
+      /Atwood executed contract/.test(docSec.textContent)
+        && /No paperwork on file: Moon Township/.test(docSec.textContent),
+      docSec.textContent.slice(0, 200));
+    assert('  and says plainly that nothing here is the contents of a file',
+      /nothing here is the contents of a file/i.test(doc.body.textContent),
+      'a list of filenames invites "so what does the contract say"');
+
     // The early return this replaced: a turf digest with no open jobs painted
     // nothing at all, so the rubber figures existed only in the model's prose.
     const noJobs = await boot(Object.assign({}, DIGEST, {
       rows: [], totalProjects: 0, includedProjects: 0, purchaseOrders: null, costCodes: null,
+      equipment: null, documents: null,
     }));
     assert('a division with no open jobs still shows the stock it holds',
       /Crumb/.test(noJobs.body.textContent),

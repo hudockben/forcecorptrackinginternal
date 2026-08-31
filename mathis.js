@@ -726,6 +726,60 @@
     return section('Cost codes', cc.count + ' on file', tbl);
   }
 
+  /* Three questions under one word, so three tables.
+   *
+   * The dollars here are a BREAKDOWN of the jobs table's actual cost, not an
+   * addition to it — daily rows are what actual cost is made of. Same trap
+   * purchase orders set from the other side, so it gets the same note. */
+  function renderEquipment(d) {
+    var eq = d.equipment;
+    if (!eq || (!eq.count && !(eq.usage && eq.usage.rows && eq.usage.rows.rows.length))) return '';
+    var u = eq.usage || {};
+    var html = kv([
+      ['Hours run', num(u.totalHours)],
+      ['Cost of those hours', money(u.totalCost)]
+    ]);
+    html += breakdown(['Machine', 'Hours', 'Cost', 'Jobs'], u.rows, function (r) {
+      return text(r.name) + num(r.hours) + money(r.cost) +
+        text((r.jobs && r.jobs.rows || []).join(', '));
+    }, 'machines');
+    html += breakdown(['Machine', 'Unit cost'], eq.catalogue, function (r) {
+      return text(r.name) + money(r.unitCost);
+    }, 'machines on the roster');
+    return section('Equipment', eq.count ? eq.count + ' on the roster' : '', html) +
+      '<div class="mathis-note">' + esc('Equipment cost is already inside each job\u2019s spent figure above ' +
+        '\u2014 this breaks it down by machine, it does not add to it. Hours cover only the jobs shown. ' +
+        'The roster\u2019s unit cost is today\u2019s rate; a row keeps the rate it was written with.') +
+      '</div>';
+  }
+
+  /* Counted, never read. There is no file content anywhere in this digest, and
+   * the note says so because a list of filenames invites being asked what the
+   * contract says. */
+  function renderDocuments(d) {
+    var dv = d.documents;
+    if (!dv || !dv.count) return '';
+    var html = kv([
+      ['Files', '<td class="n">' + esc(dv.count) + '</td>'],
+      ['Total size', '<td class="n">' + esc(dv.totalMB) + ' MB</td>']
+    ]);
+    html += breakdown(['Job', 'Files'], dv.byJob, function (r) {
+      return text(r.job) + '<td class="n">' + esc(r.count) + '</td>';
+    }, 'jobs');
+    html += breakdown(['File', 'Job', 'Uploaded by', 'When'], dv.recent, function (r) {
+      return text(r.filename) + text(r.job) + text(r.uploadedBy) + text(r.uploadedAt);
+    }, 'recent uploads');
+    if (dv.jobsWithNoDocuments && dv.jobsWithNoDocuments.rows.length) {
+      html += '<div class="mathis-note">' + esc('No paperwork on file: ' +
+        dv.jobsWithNoDocuments.rows.join(', ') +
+        (dv.jobsWithNoDocuments.truncated ? ' and others' : '') + '.') + '</div>';
+    }
+    return section('Documents', dv.count + ' files', html) +
+      '<div class="mathis-note">' + esc('File names and counts only \u2014 nothing here is the contents of a file. ' +
+        'Deleted files are excluded.' +
+        (dv.truncated ? ' The read stopped at 500 files, so these counts are a floor.' : '')) + '</div>';
+  }
+
   function renderJobs(d) {
     var rows = d.rows || [];
     var notes = [];
@@ -753,7 +807,8 @@
 
     // Collapsed, and after the jobs table: a digest carries all of these
     // whatever was asked, so the answer to the actual question stays first.
-    html += renderRubber(d) + renderPOs(d) + renderCostCodes(d);
+    html += renderRubber(d) + renderPOs(d) + renderCostCodes(d) +
+      renderEquipment(d) + renderDocuments(d);
     post(html, notes);
   }
 

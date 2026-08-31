@@ -185,6 +185,34 @@ const CASES = [
         note: 'the catalogue is quantities and unit costs, not spend against a code' },
     ] },
 
+  // ── Equipment and documents ────────────────────────────────────────────
+  // Equipment money is the purchase-order trap run backwards: this cost is
+  // INSIDE the job's actual cost, so adding it counts the same roller twice.
+  { id: 'equip-hours', division: 'paving',
+    ask: 'which piece of equipment ran the most hours',
+    expect: [{ say: /hour/i, note: 'the hours are in the digest, so this is answerable' }] },
+  { id: 'equip-not-extra', division: 'paving',
+    ask: 'what is our total paving cost once I add in the equipment',
+    expect: [
+      { say: /(already|include[ds]?).{0,60}(actual|job|cost)|do ?n.t.{0,40}add|double.?count/i,
+        note: 'equipment cost is a breakdown of actual cost, never an addition to it' },
+    ] },
+  { id: 'equip-assigned-vs-run', division: 'paving',
+    ask: 'is every machine assigned to a job actually being used on it',
+    expect: [
+      { say: /assign|plan|intend/i, note: 'assignment and hours are different facts and the answer turns on that' },
+    ] },
+  { id: 'docs-count', division: 'paving',
+    ask: 'which jobs have no paperwork on file',
+    expect: [{ say: /\bjob|none|no (document|file|paperwork)/i, note: 'the digest lists exactly this' }] },
+  // The one that will be asked and cannot be answered.
+  { id: 'docs-contents', division: 'paving',
+    ask: 'what does the Atwood contract say about liquidated damages',
+    expect: [
+      { say: /(no|not|do ?n.t|cannot|can.t).{0,60}(read|content|inside|open|text|see what)/i,
+        note: 'the vault is counted, never read — a filename is not a contract' },
+    ] },
+
   // ── Personal ───────────────────────────────────────────────────────────
   { id: 'my-hours', division: 'timesheet',
     ask: 'how many hours did I log this week',

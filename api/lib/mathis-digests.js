@@ -31,6 +31,7 @@ const ctx      = require('./mathis-context');
 const quarryM  = require('./quarry-metrics');
 const dustM    = require('./dust-metrics');
 const dustCost = require('./dust-cost-metrics');
+const equipM   = require('./equipment-metrics');
 const truckM   = require('./trucking-metrics');
 const icM      = require('./ic-metrics');
 const payrollM = require('./payroll-metrics');
@@ -132,6 +133,13 @@ async function blobValue(c, key) {
 const JOB_LIMITS = ctx.JOB_LIMITS.concat([
   'A purchase order\'s value is what was ordered — quantity times unit cost, plus tax, across its lines. It is not what has been spent and not what has been invoiced, and it must never be added to a job\'s actual cost, which already counts the delivered material.',
   'Purchase orders are listed for the whole division. A PO\'s `job` is filled in only when that job is among the rows in this digest; `job: null` means the job is outside the window shown, NOT that the PO is unassigned.',
+  'Equipment cost is hours times the unit cost the daily row was written with — or the imported total when the row carries one. It is ALREADY part of that job\'s actualCost: it breaks that number down by machine and must never be added to it.',
+  'The equipment roster\'s unit cost is the rate the list carries TODAY. A row costed last year kept the rate it was written with, so the two can differ and the row is the one that was paid.',
+  'Equipment assigned to a job is a plan, not a record. A machine can be assigned and never turn up, or turn up without being assigned; `hours` is what actually ran and `assigned` is what somebody intended.',
+  'Equipment hours cover only the jobs in this digest. A machine showing no hours may well have run on an older job — say the window rather than calling it idle.',
+  'The document vault is counted, never read. There is no file content here of any kind: a question about what a contract, permit or change order SAYS cannot be answered from this, only how many such files exist and when they were uploaded.',
+  'Deleted documents are excluded, including any still inside the 30-day trash window. "No documents" for a job means none on file now.',
+  'The document read stops at 500 files. When `documents.truncated` is true the counts are a floor, not a total — say so rather than reporting them as the whole vault.',
   'The cost-code catalogue is the list of codes this division uses with the quantity and unit cost carried against each. It is a catalogue, not spend: actual spend per job is each job\'s actualCost.',
 ]);
 
@@ -254,6 +262,148 @@ async function costCodes(c, division) {
   return { count: rows.length, rows: capList(rows) };
 }
 
+// Each job division keeps its own roster blob — employees, equipment,
+// suppliers. api/timesheet-entries.js writes the same map down.
+const LISTS_KEYS = {
+  turf:   'fct_lists',
+  paving: 'fct_paving_lists',
+  kiewit: 'fct_kiewit_lists',
+};
+
+/**
+ * Equipment: the roster, what is assigned where, and what actually ran.
+ *
+ * Three different questions live under one word here and they have three
+ * different answers. "What does a roller cost us" is the roster's unit cost.
+ * "What is on Atwood" is the job's assignment list. "What did we actually run"
+ * is the daily rows — and only that last one is a figure about money.
+ *
+ * The dollars are a BREAKDOWN of each job's actual cost, not an addition to
+ * it: daily rows are what actual cost is made of. Saying so is the limit
+ * below, and it is the same trap purchase orders set from the other side.
+ */
+async function equipment(c, division, projects) {
+  const key = LISTS_KEYS[division];
+  if (!key) return null;
+  const r = await readBlob(c, key);
+  if (r.status === 'denied' || r.status === 'error') return null;
+
+  const lists   = r.value && typeof r.value === 'object' ? r.value : {};
+  const roster  = asArray(lists.equipment).length ? asArray(lists.equipment)
+                                                  : asArray(lists.equipmentList);
+  const catalogue = roster.map(e => (typeof e === 'string'
+    ? { name: safeText(e, 80), unitCost: null }
+    : { name: safeText(e && e.name, 80),
+        unitCost: money(e && (e.unit_cost != null ? e.unit_cost : e.unitCost)) }
+  )).filter(e => e.name);
+
+  const usage = equipM.equipmentUsage(projects, report.projName);
+
+  // What a PM assigned to the job, which is a plan and not a record: a machine
+  // can be assigned and never turn up, and turn up without being assigned.
+  const byJob = [];
+  for (const proj of projects) {
+    const assigned = asArray(proj && proj.assigned_equipment)
+      .map(n => safeText(n, 80)).filter(Boolean);
+    const job = report.projName(proj);
+    const ran = usage.rows.filter(u => u.jobs.includes(job));
+    if (!assigned.length && !ran.length) continue;
+    byJob.push({
+      job,
+      assigned: capList(assigned),
+      piecesRun: ran.length,
+      hours: round2(ran.reduce((t, u) => t + u.hours, 0)),
+      cost:  money(ran.reduce((t, u) => t + u.cost, 0)),
+    });
+  }
+
+  return {
+    count: catalogue.length,
+    catalogue: capList(catalogue),
+    usage: {
+      totalHours: usage.totalHours,
+      totalCost:  money(usage.totalCost),
+      rows: capList(usage.rows.map(u => ({
+        name: u.name, hours: u.hours, cost: money(u.cost),
+        jobs: capList(u.jobs),
+      }))),
+    },
+    byJob: capList(byJob),
+  };
+}
+
+/**
+ * The document vault: how much paperwork exists and where, never what is in it.
+ *
+ * project_documents carries company_code AND division as real columns, so this
+ * is one of the few reads here that is a plain scoped query rather than a blob.
+ * Three fields are left behind on purpose. storage_key and storage_url are the
+ * object-store path — an access route, not an answer. `note` is free text a
+ * colleague typed, same as a purchase order's.
+ *
+ * Soft-deleted rows are excluded. They sit in a 30-day trash window that only
+ * an administrator can see through the documents page, and a digest that
+ * counted them would answer a question the asker cannot verify.
+ */
+async function documents(c, division, projects) {
+  let rows;
+  try {
+    rows = await c.sql`
+      SELECT project_id, filename, content_type,
+             size_bytes::float          AS size_bytes,
+             uploaded_by,
+             uploaded_at::text          AS uploaded_at
+        FROM project_documents
+       WHERE company_code = ${c.companyCode}
+         AND division     = ${division}
+         AND deleted_at IS NULL
+       ORDER BY uploaded_at DESC
+       LIMIT 500
+    `;
+  } catch (err) {
+    console.error('[mathis] documents read failed:', err.message);
+    return null;
+  }
+
+  const list = Array.isArray(rows) ? rows : [];
+  const names = new Map(projects.map(p => [String(p.id || ''), report.projName(p)]));
+
+  const byJob = new Map();
+  let bytes = 0;
+  for (const d of list) {
+    const pid = String(d.project_id || '');
+    // A null project_id is the division's General / Non-Job area, which is
+    // where paperwork belonging to no job files. Naming it beats a blank.
+    const job = pid ? (names.get(pid) || null) : 'General (no job)';
+    const label = job || 'a job outside this list';
+    byJob.set(label, (byJob.get(label) || 0) + 1);
+    bytes += Number(d.size_bytes) || 0;
+  }
+
+  const withDocs = new Set(list.map(d => String(d.project_id || '')).filter(Boolean));
+
+  return {
+    count: list.length,
+    truncated: list.length >= 500,
+    totalMB: round2(bytes / 1048576),
+    byJob: capList([...byJob.entries()].map(([job, count]) => ({ job, count }))
+      .sort((a, b) => b.count - a.count)),
+    recent: capList(list.slice(0, LIST_CAP).map(d => ({
+      filename:   safeText(d.filename, 200),
+      job:        d.project_id ? (names.get(String(d.project_id)) || null) : 'General (no job)',
+      uploadedBy: safeText(d.uploaded_by, 60),
+      uploadedAt: safeText(d.uploaded_at, 10),
+      sizeMB:     round2((Number(d.size_bytes) || 0) / 1048576),
+      kind:       safeText(d.content_type, 60),
+    }))),
+    // Which of the jobs in this digest have no paperwork at all. Answerable
+    // precisely because the window is stated: it is these jobs, not every job.
+    jobsWithNoDocuments: capList(projects
+      .filter(p => !withDocs.has(String(p.id || '')))
+      .map(p => report.projName(p))),
+  };
+}
+
 /**
  * Rubber inventory, turf's own. This is what somebody asked about first and
  * got projected profit for instead, because the digest held nothing else.
@@ -295,19 +445,25 @@ async function jobDigest(c, division, opts = {}) {
   // Named so a PO can say which job it is against instead of an opaque id.
   const projectNames = new Map(projects.map(p => [String(p.id || ''), report.projName(p)]));
 
-  const [pos, codes] = await Promise.all([
+  const [pos, codes, equip, docs] = await Promise.all([
     purchaseOrders(c, division, projectNames),
     costCodes(c, division),
+    equipment(c, division, projects),
+    documents(c, division, projects),
   ]);
 
   const extraCovers = [];
   if (inventory) extraCovers.push('rubber inventory by type: bags produced, used and in stock');
   if (pos)   extraCovers.push('purchase orders: value, supplier, status and which job each is against');
   if (codes) extraCovers.push('the cost-code catalogue: which codes this division uses, their quantities and unit costs');
+  if (equip) extraCovers.push('equipment: the roster and its unit costs, what is assigned to each job, and the hours each machine ran');
+  if (docs)  extraCovers.push('the document vault: how many files each job has, who uploaded them and when — file names only, never their contents');
   const extras = {
     ...(inventory ? { rubberInventory: inventory } : {}),
     ...(pos   ? { purchaseOrders: pos } : {}),
     ...(codes ? { costCodes: codes } : {}),
+    ...(equip ? { equipment: equip } : {}),
+    ...(docs  ? { documents: docs } : {}),
   };
   if (!projects.length) {
     return {
@@ -1243,6 +1399,8 @@ module.exports = {
   rubberInventory,
   purchaseOrders,
   costCodes,
+  equipment,
+  documents,
   readScopedBlob,
   quarryDigest,
   schedulerDigest,
