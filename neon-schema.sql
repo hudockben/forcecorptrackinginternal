@@ -1714,3 +1714,53 @@ UPDATE quarry_sales_submissions
  WHERE price_per_ton IS NULL
    AND amount_charged IS NOT NULL AND amount_charged > 0
    AND amount_charged / NULLIF(tons, 0) <= 1000;
+
+-- ─────────────────────────────────────────────────
+-- MATHIS — the division-aware assistant (api/ai/mathis.js)
+--
+-- Deliberately real tables rather than app_data blobs. An fct_mathis_* key
+-- would be reachable through /api/data/[key].js, and divisionForKey() has no
+-- prefix for it, so it would resolve to turf: every turf user in the company
+-- could read every colleague's conversation, while a timesheet-only field
+-- employee could not read their own. Scoping by (company_code, user_id) is
+-- the property that makes a transcript private, and only a table has it.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mathis_threads (
+    id            BIGSERIAL     PRIMARY KEY,
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id       INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- The division the thread was opened in. Null means personal mode: a field
+    -- employee asking about their own rows rather than about a division.
+    division      TEXT,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mathis_threads_owner
+    ON mathis_threads (company_code, user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS mathis_messages (
+    id          BIGSERIAL     PRIMARY KEY,
+    thread_id   BIGINT        NOT NULL REFERENCES mathis_threads(id) ON DELETE CASCADE,
+    role        TEXT          NOT NULL CHECK (role IN ('user', 'assistant')),
+    content     TEXT          NOT NULL,
+    -- Stamped per message, not just per thread: a user can walk from paving to
+    -- the quarry with the panel open, and an answer has to stay attributable
+    -- to the division whose data actually produced it.
+    division    TEXT,
+    created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mathis_messages_thread
+    ON mathis_messages (thread_id, id);
+
+-- Spend cap. One row per user per day, incremented atomically BEFORE the model
+-- is called. A read-then-write counter is a race every concurrent serverless
+-- instance wins at once, which is exactly the case a cap exists for.
+CREATE TABLE IF NOT EXISTS mathis_usage (
+    company_code  TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id       INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    day           DATE          NOT NULL,
+    turns         INTEGER       NOT NULL DEFAULT 0,
+    PRIMARY KEY (company_code, user_id, day)
+);

@@ -145,9 +145,21 @@ async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legac
   return [];
 }
 
-const readTurfProjects   = (sql, cc, opts) => readProjectBlobs(sql, cc, 'fct_projects_index',        'fct_project_',        'fct_projects',        opts);
-const readPavingProjects = (sql, cc, opts) => readProjectBlobs(sql, cc, 'fct_paving_projects_index', 'fct_paving_project_', 'fct_paving_projects', opts);
-const readKiewitProjects = (sql, cc, opts) => readProjectBlobs(sql, cc, 'fct_kiewit_projects_index', 'fct_kiewit_project_', 'fct_kiewit_projects', opts);
+// The three project blob namespaces, written down once. Anything that needs
+// the index itself — counting how many projects a company has without reading
+// every one of their blobs — derives the key from here rather than repeating
+// the string and drifting from the reader that uses it.
+const PROJECT_KEYS = {
+  turf:   { index: 'fct_projects_index',        prefix: 'fct_project_',        legacy: 'fct_projects'        },
+  paving: { index: 'fct_paving_projects_index', prefix: 'fct_paving_project_', legacy: 'fct_paving_projects' },
+  kiewit: { index: 'fct_kiewit_projects_index', prefix: 'fct_kiewit_project_', legacy: 'fct_kiewit_projects' },
+};
+const projectReaderFor = div => (sql, cc, opts) =>
+  readProjectBlobs(sql, cc, PROJECT_KEYS[div].index, PROJECT_KEYS[div].prefix, PROJECT_KEYS[div].legacy, opts);
+
+const readTurfProjects   = projectReaderFor('turf');
+const readPavingProjects = projectReaderFor('paving');
+const readKiewitProjects = projectReaderFor('kiewit');
 
 // The divisions that run jobs: each has projects, bid items and a contract
 // value, and each has a home page whose layout this report mirrors. Trucking,
@@ -1751,6 +1763,7 @@ module.exports = async (req, res) => {
   return res.json(report);
 };
 
+module.exports.PROJECT_KEYS       = PROJECT_KEYS;
 module.exports.readTurfProjects   = readTurfProjects;
 module.exports.readPavingProjects = readPavingProjects;
 module.exports.readKiewitProjects = readKiewitProjects;
