@@ -206,13 +206,11 @@ const PERSONAL_LIMITS = [
 // Divisions Mathis can answer about today, and what to say about the rest.
 // Naming the gap is the point: "we do not capture what a haul costs" is a
 // true answer, while quoting trucking revenue as if it were profit is not.
-const NOT_YET = {
-  executive:    'The cross-division executive rollup is not wired into Mathis yet. Each division can be asked about on its own page.',
-  fuel_admin:   'Fuel administration — fleet economy, unbalanced gallons, statement variance — is not wired into Mathis yet.',
-  fuel:         'The fuel submission queue is not wired into Mathis yet.',
-  driver:       'The driver dispatch view is not wired into Mathis yet.',
-  quarry_sales: 'The scale-house sales queue is not wired into Mathis yet. The quarry division itself can be asked about on the quarry page.',
-};
+// Every division now has a digest or a personal queue behind it. Kept, empty,
+// because the next one added starts here — and because buildDigest still needs
+// somewhere to look before falling back to a generic answer.
+const NOT_YET = {};
+
 
 module.exports = {
   FIELD_ONLY,

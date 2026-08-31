@@ -58,8 +58,12 @@ function defaultScript(body) {
   if (names.includes('get_division_figures') && m) {
     return { text: '', tools: [{ name: 'get_division_figures', input: { division: m[1] } }], stop: 'tool_use' };
   }
-  if (names.includes('get_my_timesheet')) {
-    return { text: '', tools: [{ name: 'get_my_timesheet', input: {} }], stop: 'tool_use' };
+  if (names.includes('get_my_records')) {
+    const t = (body.tools || []).find(x => x.name === 'get_my_records');
+    const enums = t.input_schema.properties.area.enum || ['timesheet'];
+    const onPage = /on the ([a-z_]+) page/.exec(prompt);
+    const area = (onPage && enums.includes(onPage[1])) ? onPage[1] : enums[0];
+    return { text: '', tools: [{ name: 'get_my_records', input: { area } }], stop: 'tool_use' };
   }
   return { text: modelReply, stop: 'end_turn' };
 }
@@ -188,6 +192,9 @@ const BLOBS = {
   'dust_ees_other_rows': [],
   // A batch that makes 1,000 gal of concentrate, sprayed at 1:8, charged at
   // a flat $3.75 — enough for the margin to be a real number rather than null.
+  'fct_trucking_driver_logins': { 'jsmith': 'R. Diaz' },
+  'fct_trucking_schedule': { assignments: {} },
+  'fct_trucking_labor_schedule': { assignments: {} },
   'fct_scheduler_assignments': { version: 1, assignments: {
     [daysOut(30)]: [
       { resource: 'R. Diaz',  kind: 'emp',   division: 'paving', jobId: 'p1' },
@@ -285,6 +292,32 @@ function makeSql(opts = {}) {
         start_time: '07:00', end_time: '15:00', v1_rate: 120, v2_rate: 0,
         gallons_ub: 4200, inv_sent: null, inv_received: null, inv_status: '',
       }]);
+    }
+    if (/FROM fuel_statement_matches/.test(text)) {
+      return Promise.resolve([{ period_month: '2026-07', account: 'WEX', ours_total: 41200,
+        statement_total: 41890, difference: -690, variance_count: 2,
+        not_in_ours_count: 1, not_on_statement_count: 0 }]);
+    }
+    if (/FROM fuel_submissions/.test(text)) {
+      const own = /user_id =/.test(text);
+      const all = [
+        { work_date: '2026-08-02', status: 'approved', balance_status: 'balanced',
+          truck_number: 412, gallons: 90, mileage: 540, fueling_site: 'Pilot', state: 'PA', user_id: USER_ID },
+        { work_date: '2026-08-09', status: 'approved', balance_status: 'pending',
+          truck_number: 412, gallons: 100, mileage: 500, fueling_site: 'Sheetz', state: 'PA', user_id: USER_ID },
+        // No odometer: contributes gallons and no miles, which is the case
+        // that quietly drags a fleet average down.
+        { work_date: '2026-08-14', status: 'submitted', balance_status: 'pending',
+          truck_number: 408, gallons: 60, mileage: 0, fueling_site: 'Pilot', state: 'WV', user_id: 99 },
+      ];
+      return Promise.resolve(own ? all.filter(r => r.user_id === USER_ID) : all);
+    }
+    if (/FROM quarry_sales_submissions/.test(text)) {
+      return Promise.resolve([
+        { work_date: '2026-08-20', status: 'approved', location_name: 'Pit 4',
+          customer_name: 'Kiewit', product_name: '2A Modified', tons: 22.5,
+          amount_charged: 270, payment: 'account' },
+      ]);
     }
     if (/FROM dust_companies/.test(text))  return Promise.resolve([{ name: 'Kiewit', ub_rate: 0.42 }]);
     if (/FROM dust_settings/.test(text))   return Promise.resolve([{ v: 0.4 }]);
@@ -632,7 +665,7 @@ console.log('\n══════════ personal mode ══════�
       sqlOpts: { divisionRoles: { timesheet: 'level1' } } }
   );
   assert('a timesheet-only user gets an answer', res.statusCode === 200, String(res.statusCode));
-  assert('  in personal mode, whatever division the page claimed',
+  assert('  about their own records, on a page they cannot otherwise reach',
     res.body.digest && res.body.digest.kind === 'personal' && res.body.division === null,
     JSON.stringify(res.body.division));
 
@@ -645,10 +678,48 @@ console.log('\n══════════ personal mode ══════�
     /no pay rate/.test(JSON.stringify(sent[sent.length - 1])));
 }
 {
+  // The wrong answer this replaced: a driver asking what they are hauling and
+  // being handed their timesheet, because "field employees get personal mode"
+  // ignored which page they were standing on.
+  const res = await call({ message: 'what am I hauling tomorrow', division: 'driver' },
+    { token: tokenFor({ username: 'jsmith', divisionRoles: { driver: 'level1' } }),
+      sqlOpts: { divisionRoles: { driver: 'level1' } } });
+  assert('a driver asking about hauls gets hauls, not a timesheet',
+    res.body.digest && res.body.digest.kind === 'own_driver',
+    JSON.stringify(res.body.digest && res.body.digest.kind));
+  // Read off the seeding message rather than the serialised body: stringify
+  // escapes the quotes around the area name and the match silently fails.
+  // Found by content, because `messages` is one array the loop appends to, so
+  // its last entry by now is a tool result rather than the question.
+  const seed = String((sent[0].messages.find(m =>
+    typeof m.content === 'string' && /QUESTION:/.test(m.content)) || {}).content || '');
+  assert('  and the model is told to answer about their own queue',
+    /use get_my_records with area "driver"/.test(seed), seed.slice(0, 200));
+}
+{
   const res = await call({ message: 'x', division: 'paving' },
     { token: tokenFor({ divisionRoles: {} }), sqlOpts: { divisionRoles: {} } });
   assert('a user with no division at all is refused rather than defaulted to turf',
     res.statusCode === 403, String(res.statusCode));
+}
+{
+  const res = await call({ message: 'how many loads did I run', division: 'quarry_sales' },
+    { token: tokenFor({ divisionRoles: { quarry_sales: 'level1' } }),
+      sqlOpts: { divisionRoles: { quarry_sales: 'level1' } } });
+  const d = res.body.digest;
+  assert('a scale-house user gets their own loads', d && d.kind === 'own_quarry_sales', JSON.stringify(d && d.kind));
+  assert('  with tons and what was charged', d && d.loads === 1 && d.tons === 22.5);
+  const q = queries.find(x => /FROM quarry_sales_submissions/.test(x.text));
+  assert('  scoped to their own user_id', q && q.values.includes(USER_ID) && q.values.includes(COMPANY));
+}
+{
+  const res = await call({ message: 'my fill-ups?', division: 'fuel' },
+    { token: tokenFor({ divisionRoles: { fuel: 'level1' } }),
+      sqlOpts: { divisionRoles: { fuel: 'level1' } } });
+  const d = res.body.digest;
+  assert('a fuel submitter gets their own fill-ups', d && d.kind === 'own_fuel');
+  assert('  and only their own — the third belongs to somebody else',
+    d && d.fillUps === 2, `${d && d.fillUps} fill-ups`);
 }
 
 // ── 10. Trucking: revenue exists, profit does not ──────────────────────────
@@ -888,30 +959,65 @@ for (const div of ['quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
 // ── 10g. What is still genuinely unbuilt ───────────────────────────────────
 console.log('\n══════════ what is still not built ══════════');
 {
-  await call({ message: 'roll it all up', division: 'executive' },
-    { token: tokenFor({ divisionRoles: { executive: 'level3' } }),
-      sqlOpts: { divisionRoles: { executive: 'level3' } } });
-  const first = sent[0];
-  assert('no division tool is offered for a division with no digest',
-    !(first.tools || []).some(t => t.name === 'get_division_figures'),
-    'offering a tool that can only fail is worse than offering none');
-  const prompt = JSON.stringify(first);
-  assert('  and the model is told it has no figures for it, and why',
-    /You have NO figures for the executive division/.test(prompt)
-      && /not wired into Mathis yet/.test(prompt));
-  assert('  and told not to answer with something else instead',
-    /Do not substitute a figure from another division/.test(prompt)
-      && /do not answer with their timesheet instead/.test(prompt),
-    'with no tool for the page it is on, the nearest tool is the tempting wrong answer');
+  // The rollup is built from what the caller already holds, so holding
+  // 'executive' is not a key to divisions nobody granted them.
+  const roles = { executive: 'level3', paving: 'level2', trucking: 'level3' };
+  const res = await call({ message: 'roll it all up', division: 'executive' },
+    { token: tokenFor({ divisionRoles: roles }), sqlOpts: { divisionRoles: roles } });
+  const d = res.body.digest;
+  assert('an executive gets a rollup', d && d.kind === 'executive', JSON.stringify(d && d.kind));
+  assert('  covering exactly the divisions they hold',
+    d && d.covers.slice().sort().join(',') === 'paving,trucking', JSON.stringify(d && d.covers));
+  assert('  and naming the ones it does not cover, so a partial view cannot read as the company',
+    d && d.notCovered.includes('quarry') && d.notCovered.includes('dust'),
+    JSON.stringify(d && d.notCovered));
+  assert('  each division labelled with what its headline figure even means',
+    d && d.divisions.every(x => x.slice && (x.slice.measure || x.slice.available === false)),
+    JSON.stringify(d && d.divisions.map(x => x.slice && x.slice.measure)));
+  assert('  and trucking still carries no profit inside the rollup',
+    d && d.divisions.find(x => x.division === 'trucking').slice.profit === null);
+
+  const prompt = JSON.stringify(sent[sent.length - 1]);
+  assert('the model is told this is not a company-wide total',
+    /never describe it as a company-wide total/.test(prompt));
+  assert('  and that the divisions cannot be added together',
+    /cannot be added together/.test(prompt));
+  assert('  and that the Executive Report legitimately differs',
+    /job-number floor/.test(prompt) && /both can be right/.test(prompt));
+}
+{
+  const roles = { fuel_admin: 'level3' };
+  const res = await call({ message: 'fleet economy?', division: 'fuel_admin' },
+    { token: tokenFor({ divisionRoles: roles }), sqlOpts: { divisionRoles: roles } });
+  const d = res.body.digest;
+  assert('a fuel administrator gets the fleet', d && d.kind === 'fuel_admin');
+  assert('  with a fleet MPG over every fill-up in the window',
+    d && near(d.gallons, 250) && near(d.fleetMpg, 1040 / 250), JSON.stringify({ g: d && d.gallons, mpg: d && d.fleetMpg }));
+  assert('  a truck with no odometer reads as unknown, not as zero MPG',
+    d && d.trucks.rows.find(t => t.truck === '408').mpg === null,
+    JSON.stringify(d && d.trucks.rows));
+  assert('  and the fill-ups missing one are counted, since they drag the average',
+    d && d.fillUpsWithoutMileage === 1, String(d && d.fillUpsWithoutMileage));
+  assert('  approval and balancing are reported as separate axes',
+    d && d.byStatus && d.byBalanceStatus && d.unbalanced === 2,
+    JSON.stringify({ s: d && d.byStatus, b: d && d.byBalanceStatus }));
+  assert('the model is told not to merge those two axes',
+    /two separate axes and must not be merged/.test(JSON.stringify(sent[sent.length - 1])));
 }
 {
   for (const div of ['quarry', 'dust', 'trucking', 'intercompany', 'payroll']) {
     assert(`${div} is no longer listed as unbuilt`, !(div in ctxlib.NOT_YET));
   }
-  assert('scheduler is no longer unbuilt either', !('scheduler' in ctxlib.NOT_YET));
-  assert('  what is left is the executive rollup and the field queues',
-    ['executive', 'fuel_admin', 'fuel', 'driver', 'quarry_sales']
-      .every(d => d in ctxlib.NOT_YET), Object.keys(ctxlib.NOT_YET).join(', '));
+  // Every division now answers, so NOT_YET is empty and the invariant worth
+  // pinning is the coverage itself: a division added to ALL_DIVISIONS without
+  // a digest or a personal queue would silently answer nothing.
+  const { ALL_DIVISIONS: ALL } = require(root('api/lib/auth.js'));
+  const covered = new Set([...tools_.SUPPORTED, ...tools_.PERSONAL_AREAS]);
+  const uncovered = ALL.filter(d => !covered.has(d));
+  assert('every division has either a digest or a personal queue behind it',
+    uncovered.length === 0, uncovered.join(', '));
+  assert('  and nothing is left listed as unbuilt',
+    Object.keys(ctxlib.NOT_YET).length === 0, Object.keys(ctxlib.NOT_YET).join(', '));
 }
 
 // ── 10h. Every digest states what it cannot answer ─────────────────────────
@@ -1040,9 +1146,10 @@ console.log('\n══════════ wiring ═════════
   // would promise figures the server cannot produce, or hide ones it can.
   const hasFigSrc = (code.match(/var HAS_FIGURES = \[([\s\S]*?)\];/) || [])[1] || '';
   const hasFigures = [...hasFigSrc.matchAll(/'([a-z_]+)'/g)].map(m => m[1]);
-  assert('the widget knows which divisions have figures',
-    hasFigures.length > 0 && hasFigures.slice().sort().join(',') === tools_.SUPPORTED.slice().sort().join(','),
-    `widget=[${hasFigures}] server=[${tools_.SUPPORTED}]`);
+  const answerable = [...tools_.SUPPORTED, ...tools_.PERSONAL_AREAS].sort();
+  assert('the widget knows which divisions Mathis can answer for',
+    hasFigures.length > 0 && hasFigures.slice().sort().join(',') === answerable.join(','),
+    `widget=[${hasFigures}] server=[${answerable}]`);
 
   assert('  and the pages with nothing to answer about do not carry it',
     !tagged.includes('index.html') && !tagged.includes('divisions.html') && !tagged.includes('admin.html'),
@@ -1094,16 +1201,21 @@ console.log('\n══════════ the tool enum ══════�
   assert('a platform admin reaches every division that has a digest',
     tool && tool.input_schema.properties.division.enum.length === tools_.SUPPORTED.length,
     tool && String(tool.input_schema.properties.division.enum.length));
-  assert('  but still none that does not',
-    tool && !tool.input_schema.properties.division.enum.includes('executive'));
+  assert('  but no personal queue is offered as a division to read figures for',
+    tool && !tool.input_schema.properties.division.enum.some(d => tools_.PERSONAL_AREAS.includes(d)),
+    'somebody\'s own rows are a different promise from a division\'s figures');
 }
 {
   await call({ message: 'hours?', division: 'paving' },
     { token: tokenFor({ divisionRoles: { timesheet: 'level1' } }),
       sqlOpts: { divisionRoles: { timesheet: 'level1' } } });
   const names = (sent[0].tools || []).map(t => t.name);
-  assert('a field employee is offered their own timesheet and nothing else',
-    names.join(',') === 'get_my_timesheet', names.join(','));
+  assert('a field employee is offered their own records and no division figures',
+    names.join(',') === 'get_my_records', names.join(','));
+  const rec = (sent[0].tools || []).find(t => t.name === 'get_my_records');
+  assert('  and only the queues they are actually in',
+    rec && rec.input_schema.properties.area.enum.join(',') === 'timesheet',
+    rec && JSON.stringify(rec.input_schema.properties.area.enum));
 }
 
 // ── 12b. The enum is a hint; the check is the check ────────────────────────
@@ -1292,15 +1404,23 @@ console.log('\n══════════ streaming ════════
 console.log('\n══════════ the gap log ══════════');
 const gapRows = () => queries.filter(q => /INSERT INTO mathis_gaps/.test(q.text)).map(q => q.values);
 {
-  await call({ message: 'roll up every division for the board', division: 'executive' },
-    { token: tokenFor({ divisionRoles: { executive: 'level3' } }),
-      sqlOpts: { divisionRoles: { executive: 'level3' } } });
+  // Every division now answers, so no division is 'unsupported' any more and
+  // that path is unreachable today. It stays for the next one added — this
+  // asserts the wiring rather than the (currently impossible) outcome.
+  const src = fs.readFileSync(root('api/ai/mathis.js'), 'utf8');
+  assert('the unsupported-division gap is still wired for the next division added',
+    /noteGap\('division_unsupported'/.test(src));
+}
+{
+  await call({ message: 'quarry margin?', division: 'paving' }, {
+    script: [
+      { text: '', tools: [{ name: 'get_division_figures', input: { division: 'quarry' } }], stop: 'tool_use' },
+      { text: 'No.', stop: 'end_turn' },
+    ],
+  });
   const rows = gapRows();
-  assert('a division with no digest is logged as a gap', rows.length === 1, `${rows.length} rows`);
-  assert('  naming the kind and the division',
-    rows[0].includes('division_unsupported') && rows[0].includes('executive'), JSON.stringify(rows[0]));
-  assert('  with the question that hit it, which is the part worth reading',
-    rows[0].includes('roll up every division for the board'), JSON.stringify(rows[0]));
+  assert('a refused tool is logged with the question that hit it',
+    rows.length === 1 && rows[0].includes('quarry margin?'), JSON.stringify(rows));
   assert('  scoped to the company and the user who asked',
     rows[0].includes(COMPANY) && rows[0].includes(USER_ID));
 }

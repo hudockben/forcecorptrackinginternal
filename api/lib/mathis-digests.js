@@ -35,6 +35,7 @@ const truckM   = require('./trucking-metrics');
 const icM      = require('./ic-metrics');
 const payrollM = require('./payroll-metrics');
 const schedBoard = require('../scheduler/board');
+const driverSched = require('../driver/schedule');
 
 const { readBlob, safeText, money } = ctx;
 
@@ -593,6 +594,316 @@ async function schedulerDigest(c, opts = {}) {
   };
 }
 
+// ── Fuel administration ────────────────────────────────────────────────────
+
+const FUEL_ADMIN_LIMITS = [
+  'Miles per gallon here is total mileage over total gallons across the fill-ups in the window. It is a fleet average, not a per-truck reading unless the figure is under a truck number, and a fill-up with no mileage recorded contributes gallons but no miles — which drags the average down without being a truck that drank more.',
+  'Approval and balancing are two separate axes and must not be merged. A fill-up is approved or not (the daily review), and separately balanced or not (the monthly reconciliation against the fuel account). "Approved but not yet balanced" is where most of a month sits and is not a problem.',
+  'Statement variance is what a reconciliation recorded at the time. It is not recomputed here, so a period nobody reconciled has no variance rather than a variance of zero.',
+];
+
+async function fuelAdminDigest(c, opts = {}) {
+  const days = Number.isFinite(Number(opts.days)) ? Math.min(Math.max(7, Number(opts.days)), 365) : 90;
+  let rows = [], variance = [];
+  try {
+    [rows, variance] = await Promise.all([
+      c.sql`
+        SELECT status, balance_status, truck_number,
+               COALESCE(gallons, 0)::float AS gallons,
+               COALESCE(mileage, 0)::float AS mileage,
+               work_date::text AS work_date
+          FROM fuel_submissions
+         WHERE company_code = ${c.companyCode}
+           AND work_date >= CURRENT_DATE - (${days} || ' days')::interval
+      `,
+      c.sql`
+        SELECT period_month, account,
+               ours_total::float AS ours_total,
+               statement_total::float AS statement_total,
+               difference::float AS difference,
+               variance_count, not_in_ours_count, not_on_statement_count
+          FROM fuel_statement_matches
+         WHERE company_code = ${c.companyCode}
+         ORDER BY period_end DESC
+         LIMIT 12
+      `,
+    ]);
+  } catch (err) {
+    console.error('[mathis] fuel admin digest failed:', err.message);
+    return { division: 'fuel_admin', kind: 'fuel_admin', error: true, limits: FUEL_ADMIN_LIMITS };
+  }
+
+  const byStatus = {}, byBalance = {};
+  const perTruck = new Map();
+  let gallons = 0, mileage = 0, noMileage = 0;
+  for (const r of rows) {
+    byStatus[r.status || 'draft'] = (byStatus[r.status || 'draft'] || 0) + 1;
+    byBalance[r.balance_status || 'pending'] = (byBalance[r.balance_status || 'pending'] || 0) + 1;
+    const g = Number(r.gallons) || 0, m = Number(r.mileage) || 0;
+    gallons += g; mileage += m;
+    if (g > 0 && m <= 0) noMileage++;
+    const t = r.truck_number == null ? null : String(r.truck_number);
+    if (!t) continue;
+    if (!perTruck.has(t)) perTruck.set(t, { truck: t, gallons: 0, mileage: 0, fillUps: 0 });
+    const e = perTruck.get(t);
+    e.gallons += g; e.mileage += m; e.fillUps += 1;
+  }
+
+  const trucks = [...perTruck.values()]
+    .map(e => ({
+      truck: safeText(e.truck, 20),
+      fillUps: e.fillUps,
+      gallons: round2(e.gallons),
+      mileage: round2(e.mileage),
+      // Null, not zero: a truck whose fill-ups carry no odometer has no
+      // economy to report, and 0 mpg reads as a truck in trouble.
+      mpg: (e.gallons > 0 && e.mileage > 0) ? round2(e.mileage / e.gallons) : null,
+    }))
+    .sort((a, b) => (a.mpg === null ? 1 : b.mpg === null ? -1 : a.mpg - b.mpg));
+
+  return {
+    division: 'fuel_admin',
+    divisionName: 'Fuel Administration',
+    kind: 'fuel_admin',
+    windowDays: days,
+    fillUps: rows.length,
+    gallons: round2(gallons),
+    mileage: round2(mileage),
+    fleetMpg: (gallons > 0 && mileage > 0) ? round2(mileage / gallons) : null,
+    fillUpsWithoutMileage: noMileage,
+    byStatus,
+    byBalanceStatus: byBalance,
+    unbalanced: (byBalance.pending || 0) + (byBalance.issue || 0),
+    trucks: capList(trucks),
+    statementPeriods: capList(variance.map(v => ({
+      period:   safeText(v.period_month, 20),
+      account:  safeText(v.account, 40),
+      ours:     money(v.ours_total),
+      statement: money(v.statement_total),
+      difference: money(v.difference),
+      variances: v.variance_count,
+      missingFromOurs: v.not_in_ours_count,
+      missingFromStatement: v.not_on_statement_count,
+    }))),
+    limits: FUEL_ADMIN_LIMITS,
+  };
+}
+
+// ── Executive rollup ───────────────────────────────────────────────────────
+
+const EXEC_LIMITS = [
+  'This rollup covers ONLY the divisions this user can reach. It is not every division the company runs, so never describe it as a company-wide total — say which divisions it covers.',
+  'These are the same figures each division page shows. The Executive Report applies a job-number floor, a per-project exclusion flag and a portfolio cap that this does NOT, so its totals are legitimately different. If the user cites a figure from that report, both can be right — say which one you are quoting.',
+  'Each division means something different by its headline figure: job divisions report profit, quarry a per-ton contribution, dust and trucking revenue only, payroll hours. They cannot be added together, and a total across them would be meaningless.',
+  'Every division\'s own limits still apply inside its section. Trucking in particular has no cost and therefore no profit at all.',
+];
+
+// What is worth carrying up from each division. Deliberately small: an
+// executive summary that reproduced every digest would just be every digest.
+function execSlice(d) {
+  if (!d || d.error) return { available: false };
+  if (d.kind === 'jobs') {
+    const s = d.summary || {};
+    return {
+      measure: 'projected profit', activeProjects: s.activeProjects,
+      contract: money(s.contract), actualCost: money(s.actual),
+      projectedProfit: s.projProfit === null ? null : money(s.projProfit),
+      actualProfit: s.actProfit === null ? null : money(s.actProfit),
+      completedJobs: s.completedJobs,
+    };
+  }
+  if (d.kind === 'quarry') return {
+    measure: 'contribution per ton',
+    sales: d.total && d.total.totalSales, tonsSold: d.total && d.total.tonsSold,
+    contributionPerTon: d.breakEven && d.breakEven.contributionPerTon,
+    breakEvenStatus: d.breakEven && d.breakEven.status && d.breakEven.status.state,
+  };
+  if (d.kind === 'dust') return {
+    measure: 'revenue, plus a product margin',
+    revenue: d.revenueYtd, gallons: d.gallonsYtd,
+    marginPct: d.productMargin && d.productMargin.marginPct,
+  };
+  if (d.kind === 'trucking') return {
+    measure: 'revenue only — no cost is captured, so no profit exists',
+    revenue: d.revenue, hours: d.hours, cost: null, profit: null,
+  };
+  if (d.kind === 'intercompany') return {
+    measure: 'billed between divisions',
+    billed: d.billed && d.billed.total, notInvoiced: d.notInvoiced && d.notInvoiced.amount,
+  };
+  if (d.kind === 'payroll') return {
+    measure: 'hours only — no rate exists in this data',
+    totalHours: d.totals && d.totals.totalHours, employees: d.totals && d.totals.employees,
+  };
+  if (d.kind === 'scheduler') return {
+    measure: 'schedule health',
+    behind: d.subCodes && d.subCodes.behind, atRisk: d.subCodes && d.subCodes.atRisk,
+    conflicts: d.conflicts && d.conflicts.total,
+  };
+  return { available: false };
+}
+
+const EXEC_DIVISIONS = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
+                        'intercompany', 'payroll', 'scheduler'];
+
+async function executiveDigest(c, opts = {}) {
+  // Built from the divisions this caller already has, so the rollup widens
+  // nothing: holding 'executive' is not a key to divisions they were not
+  // granted, and an executive who holds three divisions gets three.
+  const scope = ctx.divisionScope(c.authz);
+  const covered = EXEC_DIVISIONS.filter(d => scope.includes(d));
+
+  const parts = await Promise.all(covered.map(async d => {
+    try { return { division: d, slice: execSlice(await buildDigest(c, d, { limit: 8 })) }; }
+    catch (err) {
+      console.error(`[mathis] exec rollup ${d} failed:`, err.message);
+      return { division: d, slice: { available: false } };
+    }
+  }));
+
+  return {
+    division: 'executive',
+    divisionName: 'Executive',
+    kind: 'executive',
+    covers: covered,
+    // Named so an answer cannot quietly present a partial view as the company.
+    notCovered: EXEC_DIVISIONS.filter(d => !covered.includes(d)),
+    divisions: parts,
+    limits: EXEC_LIMITS,
+  };
+}
+
+// ── The field queues: the asker's own records ──────────────────────────────
+
+const OWN_LIMITS = [
+  'These are ONLY the asking user\'s own records. Nobody else\'s are available through this or any other tool, and none should be described even in aggregate.',
+];
+
+async function fuelOwnDigest(c) {
+  let rows = [];
+  try {
+    rows = await c.sql`
+      SELECT work_date::text AS work_date, status, balance_status, truck_number,
+             COALESCE(gallons, 0)::float AS gallons,
+             COALESCE(mileage, 0)::float AS mileage,
+             fueling_site, state
+        FROM fuel_submissions
+       WHERE company_code = ${c.companyCode} AND user_id = ${c.authz.userId}
+         AND work_date >= CURRENT_DATE - INTERVAL '90 days'
+       ORDER BY work_date DESC
+       LIMIT 100
+    `;
+  } catch (err) {
+    console.error('[mathis] own fuel digest failed:', err.message);
+    return { division: 'fuel', kind: 'own_fuel', error: true, limits: OWN_LIMITS };
+  }
+  const byStatus = {};
+  let gallons = 0;
+  for (const r of rows) {
+    byStatus[r.status || 'draft'] = (byStatus[r.status || 'draft'] || 0) + 1;
+    gallons += Number(r.gallons) || 0;
+  }
+  return {
+    division: 'fuel', kind: 'own_fuel', window: 'the last 90 days',
+    fillUps: rows.length, gallons: round2(gallons), byStatus,
+    rows: capList(rows.map(r => ({
+      workDate: r.work_date, status: safeText(r.status, 20),
+      balanceStatus: safeText(r.balance_status, 20),
+      truck: r.truck_number == null ? null : String(r.truck_number),
+      gallons: round2(r.gallons), mileage: round2(r.mileage),
+      site: safeText(r.fueling_site, 60), state: safeText(r.state, 8),
+    }))),
+    limits: OWN_LIMITS.concat([
+      'A draft is a fill-up the user has not sent yet. Saying how many are still in draft is useful; describing one as missing or late is not — it may simply be today\'s.',
+    ]),
+  };
+}
+
+async function driverOwnDigest(c) {
+  const today = new Date().toISOString().slice(0, 10);
+  const to = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
+  let byDate = {};
+  try {
+    // resolveDriver maps this login to the name on the board. Using the
+    // username directly would either match nothing or, worse, match somebody
+    // else's row — it is the check that keeps one driver out of another's work.
+    const driver = await driverSched.resolveDriver(c.sql, c.companyCode, c.authz.username);
+    if (!driver) {
+      return { division: 'driver', kind: 'own_driver', unlinked: true, assignments: capList([]),
+        limits: OWN_LIMITS.concat(['This login is not linked to a driver on the board, so there are no hauls to show. Say that rather than saying they have none scheduled.']) };
+    }
+    byDate = await driverSched.assignmentsFor(c.sql, c.companyCode, driver, today, to);
+  } catch (err) {
+    console.error('[mathis] own driver digest failed:', err.message);
+    return { division: 'driver', kind: 'own_driver', error: true, limits: OWN_LIMITS };
+  }
+
+  const out = [];
+  for (const date of Object.keys(byDate).sort()) {
+    for (const a of byDate[date]) {
+      out.push({
+        date,
+        board:    safeText(a.board, 20),
+        unit:     safeText(a.unit || a.truck, 40),
+        job:      safeText(a.job || a.jobName),
+        customer: safeText(a.customer, 60),
+        from:     safeText(a.from || a.origin, 60),
+        to:       safeText(a.to || a.destination, 60),
+        start:    safeText(a.start_time || a.start, 10),
+      });
+    }
+  }
+  return {
+    division: 'driver', kind: 'own_driver',
+    window: 'today through the next 14 days',
+    assignments: capList(out),
+    limits: OWN_LIMITS.concat([
+      'These are the hauls the dispatcher has put on the board for this driver. A day with nothing on it means nothing is assigned yet, not that the driver is off.',
+    ]),
+  };
+}
+
+async function quarrySalesOwnDigest(c) {
+  let rows = [];
+  try {
+    rows = await c.sql`
+      SELECT work_date::text AS work_date, status, location_name, customer_name, product_name,
+             COALESCE(tons, 0)::float AS tons,
+             COALESCE(amount_charged, 0)::float AS amount_charged,
+             payment
+        FROM quarry_sales_submissions
+       WHERE company_code = ${c.companyCode} AND user_id = ${c.authz.userId}
+         AND work_date >= CURRENT_DATE - INTERVAL '45 days'
+       ORDER BY work_date DESC
+       LIMIT 100
+    `;
+  } catch (err) {
+    console.error('[mathis] own quarry sales digest failed:', err.message);
+    return { division: 'quarry_sales', kind: 'own_quarry_sales', error: true, limits: OWN_LIMITS };
+  }
+  const byStatus = {};
+  let tons = 0, charged = 0;
+  for (const r of rows) {
+    byStatus[r.status || 'draft'] = (byStatus[r.status || 'draft'] || 0) + 1;
+    tons += Number(r.tons) || 0;
+    charged += Number(r.amount_charged) || 0;
+  }
+  return {
+    division: 'quarry_sales', kind: 'own_quarry_sales', window: 'the last 45 days',
+    loads: rows.length, tons: round2(tons), charged: money(charged), byStatus,
+    rows: capList(rows.map(r => ({
+      workDate: r.work_date, status: safeText(r.status, 20),
+      pit: safeText(r.location_name, 60), customer: safeText(r.customer_name, 60),
+      product: safeText(r.product_name, 60),
+      tons: round2(r.tons), charged: money(r.amount_charged),
+      payment: safeText(r.payment, 20),
+    }))),
+    limits: OWN_LIMITS.concat([
+      'Amount charged is what was recorded at the scale. Sales tax and net-of-tax figures are worked out elsewhere and are not here.',
+    ]),
+  };
+}
+
 // ── Personal mode ──────────────────────────────────────────────────────────
 
 const PERSONAL_LIMITS = ctx.PERSONAL_LIMITS;
@@ -650,6 +961,8 @@ async function personalDigest(c) {
 // ── The router ─────────────────────────────────────────────────────────────
 
 const BUILDERS = {
+  executive:    executiveDigest,
+  fuel_admin:   fuelAdminDigest,
   scheduler:    schedulerDigest,
   quarry:       quarryDigest,
   dust:         dustDigest,
@@ -673,7 +986,10 @@ async function buildDigest(c, division, opts = {}) {
   // driver, quarry sales) are NOT folded in: a driver asking what they are
   // hauling tomorrow would get timesheet hours, which is a wrong answer rather
   // than a missing one.
-  if (division === 'timesheet') return await personalDigest(c);
+  if (division === 'timesheet')    return await personalDigest(c);
+  if (division === 'fuel')         return await fuelOwnDigest(c);
+  if (division === 'driver')       return await driverOwnDigest(c);
+  if (division === 'quarry_sales') return await quarrySalesOwnDigest(c);
   if (jobFin.jobDivision(division)) return await jobDigest(c, division, opts);
 
   const builder = BUILDERS[division];
@@ -693,6 +1009,10 @@ module.exports = {
   LIST_CAP,
   QUARRY_LIMITS,
   SCHEDULER_LIMITS,
+  FUEL_ADMIN_LIMITS,
+  EXEC_LIMITS,
+  OWN_LIMITS,
+  EXEC_DIVISIONS,
   DUST_LIMITS,
   TRUCKING_LIMITS,
   IC_LIMITS,
@@ -703,6 +1023,11 @@ module.exports = {
   personalDigest,
   quarryDigest,
   schedulerDigest,
+  executiveDigest,
+  fuelAdminDigest,
+  fuelOwnDigest,
+  driverOwnDigest,
+  quarrySalesOwnDigest,
   dustDigest,
   truckingDigest,
   icDigest,

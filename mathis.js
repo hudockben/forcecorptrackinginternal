@@ -66,7 +66,8 @@
    * free, an answer is not. scripts/test-mathis.js fails if this drifts from
    * the server's own list. */
   var HAS_FIGURES = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
-                     'intercompany', 'payroll', 'scheduler'];
+                     'intercompany', 'payroll', 'scheduler', 'executive', 'fuel_admin',
+                     'timesheet', 'fuel', 'driver', 'quarry_sales'];
 
   function division() {
     try { if (typeof DIVISION !== 'undefined' && DIVISION) return String(DIVISION); } catch (e) {}
@@ -76,8 +77,9 @@
   }
 
   /* Pages where the honest subject is the person, not the division. */
+  var PERSONAL_PAGES = ['timesheet', 'fuel', 'driver', 'quarry_sales'];
   function isPersonalPage() {
-    return division() === 'timesheet';
+    return PERSONAL_PAGES.indexOf(division()) >= 0;
   }
 
   function esc(s) {
@@ -223,8 +225,14 @@
 
   function greet() {
     var d = division();
+    var OWN = {
+      timesheet:    'your own timesheet entries — hours logged, what is still in draft',
+      fuel:         'the fill-ups you have submitted',
+      driver:       'the hauls assigned to you',
+      quarry_sales: 'the loads you have recorded'
+    };
     if (!d || isPersonalPage()) {
-      add('it', 'Ask me about your own timesheet entries — hours logged, what is still in draft.');
+      add('it', 'Ask me about ' + (OWN[d] || OWN.timesheet) + '. I can only see your own records here.');
       return;
     }
     if (HAS_FIGURES.indexOf(d) < 0) {
@@ -308,8 +316,13 @@
       dust:         renderDust,
       trucking:     renderTrucking,
       intercompany: renderIc,
-      payroll:      renderPayroll,
-      scheduler:    renderScheduler
+      payroll:          renderPayroll,
+      scheduler:        renderScheduler,
+      executive:        renderExecutive,
+      fuel_admin:       renderFuelAdmin,
+      own_fuel:         renderOwnFuel,
+      own_driver:       renderOwnDriver,
+      own_quarry_sales: renderOwnQuarrySales
     };
     var fn = by[digest.kind];
     if (fn) fn(digest);
@@ -435,6 +448,87 @@
     }
     if ((d.timeOff || {}).total) notes.push((d.timeOff.total) + ' on time off.');
     post(html, notes);
+  }
+
+  function renderExecutive(d) {
+    var parts = d.divisions || [];
+    if (!parts.length) return;
+    var body = parts.map(function (p) {
+      var sl = p.slice || {};
+      if (sl.available === false) {
+        return '<tr><td>' + esc(p.division) + '</td><td>' + esc(sl.measure || '—') +
+               '</td><td class="n unk">unavailable</td></tr>';
+      }
+      // Each division's headline is a DIFFERENT measure, so the middle column
+      // names it. A column of bare numbers would invite adding them up.
+      var head = sl.projectedProfit !== undefined ? sl.projectedProfit
+               : sl.contributionPerTon !== undefined ? sl.contributionPerTon
+               : sl.revenue !== undefined ? sl.revenue
+               : sl.billed !== undefined ? sl.billed
+               : sl.totalHours !== undefined ? sl.totalHours
+               : sl.behind !== undefined ? sl.behind
+               : null;
+      var cell = (sl.measure && /hours|behind|schedule/.test(sl.measure)) ? num(head) : money(head);
+      return '<tr><td>' + esc(p.division) + '</td><td>' + esc(sl.measure || '') + '</td>' + cell + '</tr>';
+    }).join('');
+    var html = '<div class="mathis-wrap"><table class="mathis-tbl"><thead><tr>' +
+      '<th>Division</th><th>Headline is</th><th style="text-align:right">Figure</th>' +
+      '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    var notes = ['Covers ' + (d.covers || []).length + ' division' +
+      ((d.covers || []).length === 1 ? '' : 's') + ' you have access to — not the whole company.'];
+    if ((d.notCovered || []).length) notes.push('Not shown: ' + d.notCovered.join(', ') + '.');
+    notes.push('Each row is a different measure. They cannot be added together.');
+    post(html, notes);
+  }
+
+  function renderFuelAdmin(d) {
+    var html = kv([
+      ['Fill-ups',            num(d.fillUps, 0)],
+      ['Gallons',             num(d.gallons)],
+      ['Miles',               num(d.mileage)],
+      ['Fleet MPG',           num(d.fleetMpg)],
+      ['Unbalanced',          num(d.unbalanced, 0)],
+      ['Fill-ups with no odometer', num(d.fillUpsWithoutMileage, 0)]
+    ]);
+    html += breakdown(['Truck', 'Fill-ups', 'Gallons', 'MPG'], d.trucks, function (t) {
+      return text(t.truck) + num(t.fillUps, 0) + num(t.gallons) + num(t.mpg);
+    }, 'trucks');
+    html += breakdown(['Period', 'Ours', 'Statement', 'Difference'], d.statementPeriods, function (v) {
+      return text(v.period) + money(v.ours) + money(v.statement) + money(v.difference);
+    }, 'periods');
+    post(html, [
+      'MPG is miles over gallons across the window. A dash means no odometer was recorded, not a truck at zero.',
+      'Approved and balanced are separate — most of a month sits approved but not yet balanced.'
+    ]);
+  }
+
+  function renderOwnFuel(d) {
+    var html = kv([['Fill-ups', num(d.fillUps, 0)], ['Gallons', num(d.gallons)]]);
+    html += breakdown(['Date', 'Truck', 'Gallons', 'Status'], d.rows, function (r) {
+      return text(r.workDate) + text(r.truck) + num(r.gallons) + text(r.status);
+    }, 'fill-ups');
+    post(html, ['Your own fill-ups, ' + (d.window || 'recent') + '.']);
+  }
+
+  function renderOwnDriver(d) {
+    if (d.unlinked) {
+      post(kv([['Hauls', '<td class="n unk" title="This login is not linked to a driver on the board.">not linked</td>']]),
+        ['This login is not tied to a driver name on the dispatch board, so there is nothing to show.']);
+      return;
+    }
+    var html = breakdown(['Date', 'Unit', 'Job', 'From', 'To'], d.assignments, function (a) {
+      return text(a.date) + text(a.unit) + text(a.job) + text(a.from) + text(a.to);
+    }, 'hauls');
+    if (!html) html = kv([['Hauls assigned', num(0, 0)]]);
+    post(html, ['Your hauls, ' + (d.window || 'ahead') + '. A day with nothing on it means nothing is assigned yet.']);
+  }
+
+  function renderOwnQuarrySales(d) {
+    var html = kv([['Loads', num(d.loads, 0)], ['Tons', num(d.tons)], ['Charged', money(d.charged)]]);
+    html += breakdown(['Date', 'Customer', 'Product', 'Tons', 'Charged'], d.rows, function (r) {
+      return text(r.workDate) + text(r.customer) + text(r.product) + num(r.tons) + money(r.charged);
+    }, 'loads');
+    post(html, ['Your own loads, ' + (d.window || 'recent') + '. Amount charged is what was recorded at the scale.']);
   }
 
   function renderPayroll(d) {

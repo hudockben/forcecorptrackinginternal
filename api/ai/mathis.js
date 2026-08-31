@@ -163,16 +163,20 @@ module.exports = async (req, res) => {
   // Still refused up front when the page names one they do not hold. The tool
   // loop could simply not offer it, but "you do not have access to that" is a
   // better answer than an answer about something else.
-  const fieldOnly = mathis.isFieldOnly(scope);
-  let division = null;
-  if (!fieldOnly) {
-    division = mathis.resolveDivision(body.division, authz);
-    if (!division) {
-      // Deliberately does not name the divisions they do hold — a 403 that
-      // enumerates is a 403 that leaks.
-      return res.status(403).json({ error: 'You do not have access to that division.' });
-    }
+  // The page's division is resolved for everyone, including field employees:
+  // a driver on the driver page is asking about hauls, and answering with
+  // their timesheet because "field employees get personal mode" would be a
+  // wrong answer rather than a refused one.
+  let division = mathis.resolveDivision(body.division, authz);
+  if (!division && !mathis.isFieldOnly(scope)) {
+    // Deliberately does not name the divisions they do hold — a 403 that
+    // enumerates is a 403 that leaks.
+    return res.status(403).json({ error: 'You do not have access to that division.' });
   }
+  // A field employee who lands on a page they cannot reach falls back to their
+  // own records instead of a refusal; there is always something of theirs to
+  // answer about.
+  const personalArea = division && tools_.PERSONAL_AREAS.includes(division);
 
   // ── Spend cap, incremented before the model is called ────────────────────
   let turns = 0;
@@ -259,13 +263,17 @@ module.exports = async (req, res) => {
   // here. Without it the model finds no tool for the page it is on, quietly
   // calls a different one, and answers a question nobody asked — which is
   // worse than saying the division is not wired up yet.
-  const unsupported = division && !tools_.SUPPORTED.includes(division);
+  const unsupported = division
+    && !tools_.SUPPORTED.includes(division)
+    && !tools_.PERSONAL_AREAS.includes(division);
 
   const context = [
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
-    division
-      ? `The user is looking at the ${division} division. Start there unless the question is clearly about something else.`
-      : 'The user is a field employee with no division data of their own. Only their own timesheet is available.',
+    personalArea
+      ? `The user is on the ${division} page. That is one of their own queues, so answer about THEIR records — use get_my_records with area "${division}".`
+      : division
+        ? `The user is looking at the ${division} division. Start there unless the question is clearly about something else.`
+        : 'The user is a field employee. Only their own records are available.',
     unsupported
       ? `You have NO figures for the ${division} division and no tool that can fetch any: ${mathis.NOT_YET[division] || 'It is not wired into Mathis yet.'} Say that plainly. Do not substitute a figure from another division or from another metric, and do not answer with their timesheet instead.`
       : '',
