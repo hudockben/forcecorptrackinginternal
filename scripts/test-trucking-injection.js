@@ -447,6 +447,22 @@ const ubDay = (n = 1) => ({ dustLegs: Array.from({ length: n }, () => ({ dest: '
         (await insertTruckingRow(sql, CO, entry())).haul_fee === '');
     }
     {
+      // The half-numbers the normalizer lets through. It keeps a rate on
+      // parseFloat — the rule the ?lists=1 route and the Trucking tab both use
+      // — so "121/hr" survives it and Number() still refuses it. The row has to
+      // come out blank and KEEP its haul_fee column: writing what truckFee
+      // hands back unchecked put `undefined` on the row, and JSON.stringify
+      // drops the key entirely on the way into the blob.
+      for (const rate of ['121/hr', '121 per hour', '99999999999']) {
+        const { sql, store } = rated({ 'Acme Materials': rate });
+        const row = await insertTruckingRow(sql, CO, entry());
+        const written = store.appData.get(BLOB_KEY)[0];
+        assert(`a rate of ${JSON.stringify(rate)} leaves the fee blank, not missing`,
+          row.haul_fee === '' && Object.prototype.hasOwnProperty.call(written, 'haul_fee'),
+          JSON.stringify(row.haul_fee));
+      }
+    }
+    {
       const { sql } = makeSql({
         appData: { [LISTS_BLOB]: { drivers: [], customers: [], units: [], rates: { 'Acme Materials': '99' } } },
       });

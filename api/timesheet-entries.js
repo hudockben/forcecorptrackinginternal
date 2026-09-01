@@ -1613,8 +1613,13 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   if (unpriced.length) {
     const rates = await truckCustomerRates(sql, companyCode);
     for (const row of unpriced) {
-      const { value } = truckFee(truckRateFor(rates, row.customer));
-      if (value !== '') row.haul_fee = value;
+      // Through the same gate a typed fee goes through, and only written when
+      // it comes back a number. The Manage Lists normalizer keeps a rate on
+      // parseFloat, which "121/hr" passes and Number() does not — and a rate
+      // this cannot read is not one to invent a figure from. The row stays
+      // blank, exactly as it would with no rate set at all.
+      const { value, error } = truckFee(truckRateFor(rates, row.customer));
+      if (!error && value !== '') row.haul_fee = value;
     }
   }
 
