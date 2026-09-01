@@ -254,6 +254,54 @@ const pm = read('api/lib/payroll-metrics.js');
 assert('the payroll arithmetic is ported, not re-derived in SQL',
   fs.existsSync(path.resolve(__dirname, '../api/lib/payroll-metrics.js'))
   && report.includes("require('../lib/payroll-metrics')"));
+
+// EVERY consumer must feed payrollMetrics the column it now classifies by.
+// Both of them SELECT an explicit column list from timesheet_entries, so
+// forgetting haul_type does not error — every row simply arrives with it
+// undefined and that consumer silently reports the OLD prevailing split while
+// the others report the new one. Three sources disagreeing about one fortnight
+// is worse than one being unavailable, and nothing about it looks like a bug
+// from the outside. Mathis shipped exactly this way for one commit.
+//
+// Written as "find the consumers, then check each" rather than naming the two
+// files, so a third consumer added later is covered on the day it appears.
+console.log('\n[every consumer of payrollMetrics is fed haul_type]');
+{
+  const apiDir = path.resolve(__dirname, '../api');
+  const walk = d => fs.readdirSync(d, { withFileTypes: true }).flatMap(e =>
+    e.isDirectory() ? walk(path.join(d, e.name))
+      : (e.name.endsWith('.js') ? [path.join(d, e.name)] : []));
+  const consumers = walk(apiDir).filter(f =>
+    /require\((['"]).*payroll-metrics\1\)/.test(fs.readFileSync(f, 'utf8')));
+
+  assert(`  found the consumers (${consumers.length})`, consumers.length >= 2,
+    consumers.map(f => path.relative(apiDir, f)).join(', '));
+
+  for (const f of consumers) {
+    // Comments come out FIRST, and this is not fussiness. The comment above the
+    // mathis query explains this very rule and contains both the word SELECT
+    // and the token haul_type — so scanning the raw source matched the PROSE
+    // and reported a pass while the column was actually deleted. The note
+    // written to prevent the bug was hiding it.
+    const s    = fs.readFileSync(f, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')          // block comments
+      .replace(/(^|[^:])\/\/.*$/gm, '$1')          // line comments, sparing https://
+      .replace(/^\s*--.*$/gm, '');                 // SQL comments inside sql`` templates
+    const rel  = path.relative(apiDir, f);
+    // Tempered: the column list may not itself contain FROM, so this cannot
+    // start at an unrelated `SELECT value FROM app_data` earlier in the file and
+    // run all the way down to this table — which is exactly what a plain lazy
+    // [\s\S]*? did, swallowing a `*` on the way and passing whatever it was
+    // handed. Checked by deleting the column and watching this fail.
+    const RE = /SELECT((?:(?!\bFROM\b)[\s\S])*?)\bFROM\s+timesheet_entries/gi;
+    const cols = [...s.matchAll(RE)].map(m => m[1]);
+    assert(`  ${rel} selects from timesheet_entries`, cols.length > 0);
+    // A bare `SELECT *` is fine — it carries every column by construction.
+    assert(`  ${rel} passes haul_type through to payrollMetrics`,
+      cols.some(c => /\*/.test(c) || /\bhaul_type\b/.test(c)),
+      `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
+  }
+}
 assert('hours are work plus travel',
   /const h\s*=\s*work \+ travel;/.test(pm) && /const h = work \+ travel;/.test(payroll));
 // Anchored on the CONDITION, not just on the two increments. Matching the
