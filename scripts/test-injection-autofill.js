@@ -246,6 +246,56 @@ async function injectionTests() {
     assert('an ordinary row leaves field_type unset', sql.inserted().field_type === null);
   }
 
+  // A truck driver's wage is already inside the truck's hourly rate — the
+  // Triaxle at $121/h is the machine AND the man in it. Pricing his hours again
+  // on the same row bills the job twice for one driver. The HOURS still have to
+  // post, though: payroll balances the driver's day against them.
+  console.log('\n[insertSplitRows — hauling]');
+  const HAUL_ENTRY = t => Object.assign({}, ENTRY, { haul_type: t });
+  {
+    const sql = makeSql({ equipmentBlob: [{ name: 'Pickup Truck', unit_cost: 18.75 }] });
+    await insertSplitRows(sql, [splitRow({ equipment: 'Pickup Truck', equip_hours: 8 })],
+      HAUL_ENTRY('off_site'), 'turf', 'FCT', 'brewerzach');
+    const r = sql.inserted();
+    assert('an off-site haul posts a $0 labour rate', r.rate === 0);
+    assert('  but keeps every hour worked',           r.labor_hours === 8);
+    assert('  and says why, in field_type',           r.field_type === 'Haul — To/From Site');
+    assert('  while the truck is still priced',       r.equip_unit_cost === 18.75 && r.equip_hours === 8);
+  }
+  {
+    const sql = makeSql({ prevailingWage: true });
+    await insertSplitRows(sql, [splitRow()], HAUL_ENTRY('on_site'), 'turf', 'FCT', 'brewerzach');
+    const r = sql.inserted();
+    // On site or off, the truck covers the labour — the two answers differ on
+    // the PREVAILING question (api/lib/payroll-metrics.js), not on this one.
+    assert('an on-site haul posts a $0 labour rate too', r.rate === 0);
+    assert('  and carries its own field_type',           r.field_type === 'Haul — On Site');
+  }
+  {
+    const sql = makeSql({ prevailingWage: true });
+    await insertSplitRows(sql, [splitRow({ is_travel: true, labor_hours: 2 })],
+      HAUL_ENTRY('off_site'), 'turf', 'FCT', 'brewerzach');
+    const r = sql.inserted();
+    // The commute is not bought by the truck — the man drives himself to the
+    // shop. Travel outranks the haul stamp so that labour stays paid.
+    assert('travel inside a haul day keeps the travel rate', r.rate === 32.5);
+    assert('  and stays marked Travel, not Haul',           r.field_type === 'Travel');
+  }
+  {
+    const sql = makeSql();
+    await insertSplitRows(sql, [splitRow()], HAUL_ENTRY(null), 'turf', 'FCT', 'brewerzach');
+    assert('an entry with no haul answer is priced as ordinary work',
+      sql.inserted().rate === 32.5 && sql.inserted().field_type === null);
+  }
+  {
+    const sql = makeSql();
+    await insertSplitRows(sql, [splitRow()], HAUL_ENTRY('nonsense'), 'turf', 'FCT', 'brewerzach');
+    // A value the column's CHECK would refuse must not zero a man's rate on the
+    // strength of being non-empty.
+    assert('an unrecognized haul answer is ignored, not guessed at',
+      sql.inserted().rate === 32.5 && sql.inserted().field_type === null);
+  }
+
   // Prevailing wage pays a premium for time on the work, not for driving to it.
   // The rate used to be resolved once per entry from the job's flag and stamped
   // on every row, so travel on a prevailing job was paid the prevailing rate.
@@ -401,7 +451,13 @@ async function refreshTests() {
       if (q.includes('FROM equipment_list'))   return Promise.resolve(equipmentTable);
       if (q.includes('FROM daily_tracking dt')) return Promise.resolve(rows);
       if (q.startsWith('UPDATE daily_tracking')) {
-        updates.push({ employee: values[0], job_class: values[1], rate: values[2], equip_unit_cost: values[3], row_id: values[4] });
+        // Positional, so this list must track the SET clause's order.
+        // field_type sits between rate and equip_unit_cost: the backfill
+        // re-stamps a hauling row as well as re-pricing it.
+        updates.push({
+          employee: values[0], job_class: values[1], rate: values[2],
+          field_type: values[3], equip_unit_cost: values[4], row_id: values[5],
+        });
         return Promise.resolve([]);
       }
       return Promise.resolve([]);
@@ -419,6 +475,53 @@ async function refreshTests() {
     row_id: 'ts99-a-0-1', division: 'turf', employee: 'brewerzach', job_class: null,
     rate: 0, equipment: '', equip_unit_cost: 0, username: 'brewerzach', job_id: 'J1',
   }, over);
+
+  // The backfill re-reads the driver's answer off the ENTRY (the scan joins
+  // timesheet_entries), never off the stamp already sitting on the row. If it
+  // trusted the stamp as a second source the two could disagree inside a single
+  // write: a driver who corrected his answer would have the marker cleared but
+  // the $0 rate kept, and the row would only come right on a second run.
+  {
+    const { updates } = await run([row({ rate: 32.5, haul_type: 'off_site' })]);
+    assert('a row whose entry says off-site haul is re-priced to $0',
+      updates.length === 1 && updates[0].rate === 0);
+    assert('  and stamped so the cost tab says why',
+      updates[0].field_type === 'Haul — To/From Site');
+  }
+  {
+    const { updates } = await run([row({ rate: 32.5, haul_type: 'on_site' })]);
+    assert('an on-site haul is re-priced to $0 as well',
+      updates.length === 1 && updates[0].rate === 0
+      && updates[0].field_type === 'Haul — On Site');
+  }
+  {
+    // The driver went back and said it was not a haul after all.
+    const { updates } = await run([row({ rate: 0, field_type: 'Haul — On Site', haul_type: null })]);
+    assert('a corrected answer un-stamps the row AND restores the rate, in one write',
+      updates.length === 1 && updates[0].rate === 32.5 && updates[0].field_type === null,
+      JSON.stringify(updates[0]));
+  }
+  {
+    // Everything already resolved — roster name and job class included — so the
+    // only reason to write would be the haul handling itself.
+    const { updates } = await run([row({
+      rate: 0, field_type: 'Haul — To/From Site', haul_type: 'off_site',
+      employee: 'Zach Brewer', job_class: 'Operator',
+    })]);
+    assert('an already-correct haul row is left alone', updates.length === 0,
+      JSON.stringify(updates[0] || null));
+  }
+  {
+    // Travel outranks the haul: the commute is not bought by the truck.
+    const { updates } = await run([row({ rate: 0, field_type: 'Travel', haul_type: 'off_site' })]);
+    assert('travel inside a haul day keeps its own rate and marker',
+      updates.length === 1 && updates[0].rate === 32.5 && updates[0].field_type === 'Travel');
+  }
+  {
+    const { updates } = await run([row({ rate: 0, field_type: 'Material', haul_type: null })]);
+    assert('an unrelated field type is preserved, not swept up',
+      updates.length === 1 && updates[0].field_type === 'Material' && updates[0].rate === 32.5);
+  }
 
   {
     const { res, updates } = await run([row({ equipment: 'Pickup Truck' })],

@@ -257,8 +257,40 @@ assert('the payroll arithmetic is ported, not re-derived in SQL',
 assert('hours are work plus travel',
   /const h\s*=\s*work \+ travel;/.test(pm) && /const h = work \+ travel;/.test(payroll));
 assert('travel never counts as prevailing — the prevailing job\'s travel falls to standard',
-  /prevailing_wage === true\) \{ acc\.pwHours \+= work; acc\.stdHours \+= travel; \}/.test(pm)
-  && /prevailing_wage === true\) \{ acc\.pwHours \+= work; acc\.stdHours \+= travel; \}/.test(payroll));
+  /acc\.pwHours\s*\+=\s*work;\s*acc\.stdHours\s*\+=\s*travel;/.test(pm)
+  && /acc\.pwHours\s*\+=\s*work;\s*acc\.stdHours\s*\+=\s*travel;/.test(payroll));
+// An off-site haul is standard for the same reason travel is: the prevailing
+// premium is for work on the covered site, and a driver running to and from it
+// never worked there. Asserted in BOTH implementations for the same reason the
+// travel rule is — the executive report renders the fortnight from
+// payroll-metrics.js while payroll.html renders it in the browser, and a rule
+// that lands in only one of them shows the office two different answers for
+// the same pay period.
+assert('an off-site haul never counts as prevailing, in both implementations',
+  /haul_type === 'off_site'/.test(pm)
+  && /prevailing_wage === true && !offSiteHaul/.test(pm)
+  && /haul_type === 'off_site'/.test(payroll)
+  && /prevailing_wage === true && !isOffSiteHaul\(e\)/.test(payroll));
+// A haul ON the site is ordinary covered work. Only 'off_site' may move hours
+// out of prevailing — a check for a bare truthy haul_type, or one that also
+// named 'on_site', would quietly underpay every driver who spent the day
+// working inside the fence.
+// Scoped to the ONE predicate each file classifies by, not to the whole file:
+// payroll.html also names both values in the approve modal's explanatory note,
+// which is prose about the rule rather than the rule itself.
+//
+// payroll-metrics.js sets `offSiteHaul` and payroll.html defines
+// `isOffSiteHaul`; either testing a bare truthy haul_type, or admitting
+// 'on_site', would quietly underpay every driver who spent the day working
+// inside the fence.
+const pmPredicate      = /const offSiteHaul = ([^;]+);/.exec(pm);
+const payrollPredicate = /function isOffSiteHaul\(e\) \{\s*return ([^;]+);/.exec(payroll);
+assert('each implementation classifies by a single findable predicate',
+  !!pmPredicate && !!payrollPredicate);
+assert('an on-site haul stays prevailing — only off_site is excluded',
+  !!pmPredicate && /'off_site'/.test(pmPredicate[1]) && !/'on_site'/.test(pmPredicate[1])
+  && !!payrollPredicate && /'off_site'/.test(payrollPredicate[1]) && !/'on_site'/.test(payrollPredicate[1]),
+  `pm: ${pmPredicate && pmPredicate[1]} | payroll: ${payrollPredicate && payrollPredicate[1]}`);
 assert('only an explicit true is prevailing, so a division without the concept is standard',
   /=== true/.test(pm) && !/prevailing_wage\s*\?/.test(pm));
 assert('only submitted and approved entries carry hours',

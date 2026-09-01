@@ -3248,6 +3248,32 @@ const INJECTED_EDITABLE_FIELDS = new Set(['cost_code', 'sub_code', 'job_class', 
 const TRAVEL_SUB_CODE = 'travel';
 const TRAVEL_RATE = 45;
 
+// Field types payroll stamps on a row the driver called a haul. Matched on the
+// "Haul" prefix rather than the exact strings so the two categories — and any
+// later third — all price the same way here.
+// Mirrors HAUL_FIELD_TYPE / HAUL_FIELD_TYPE_RE in api/timesheet-entries.js.
+const HAUL_FIELD_TYPES = ['Haul — On Site', 'Haul — To/From Site'];
+const HAUL_FIELD_TYPE_RE = /^haul\b/i;
+
+// Labour hours on a hauling row.
+//
+// These hours are real and the driver is paid for every one of them, but they
+// are NOT men on the work, and the two production figures below divide by men
+// on the work:
+//
+//   avg_laborers  = labor_hours / days / 8   — how big was the crew?
+//   mu_labor      = quantity / labor_hours   — how much did a man-hour buy?
+//
+// Count a driver in those and a four-man crew reads as five, and the rate every
+// future bid is priced off drops for a reason that has nothing to do with how
+// the crew performed. So the totals keep the hours (they were worked, and the
+// Labor Hours column should show them) and the RATES divide by labor_hours
+// minus these.
+function rowHaulHours(row) {
+  if (!row || !HAUL_FIELD_TYPE_RE.test(String(row.field_type || '').trim())) return 0;
+  return parseFloat(row.labor_hours) || 0;
+}
+
 if (!fctToken || !fctUser) {
   window.location.replace('index.html');
 }
@@ -13356,7 +13382,7 @@ function buildFilteredDailyAgg() {
       const key = (row.cost_code || '') + '||' + (row.sub_code || '');
       if (!agg[key]) agg[key] = {
         running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
-        labor_hours: 0, equip_hours: 0, equip_cost: 0,
+        labor_hours: 0, haul_hours: 0, equip_hours: 0, equip_cost: 0,
         material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
       };
       const a = agg[key];
@@ -13372,6 +13398,7 @@ function buildFilteredDailyAgg() {
       a.total_cost         += _rowCost;
       a.imported_total     += importedCost;
       a.labor_hours        += parseFloat(row.labor_hours)   || 0;
+      a.haul_hours         += rowHaulHours(row);
       a.equip_hours        += parseFloat(row.equip_hours)   || 0;
       a.equip_cost         += c.equip_total;
       a.material_cost      += parseFloat(row.material_cost) || 0;
@@ -13384,7 +13411,7 @@ function buildFilteredDailyAgg() {
         project: projName,
         projectId: p.id,
         running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
-        labor_hours: 0, equip_hours: 0, equip_cost: 0,
+        labor_hours: 0, haul_hours: 0, equip_hours: 0, equip_cost: 0,
         material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
       };
       const pa = projAgg[pkey];
@@ -13393,6 +13420,7 @@ function buildFilteredDailyAgg() {
       pa.total_cost         += _rowCost;
       pa.imported_total     += importedCost;
       pa.labor_hours        += parseFloat(row.labor_hours)   || 0;
+      pa.haul_hours         += rowHaulHours(row);
       pa.equip_hours        += parseFloat(row.equip_hours)   || 0;
       pa.equip_cost         += c.equip_total;
       pa.material_cost      += parseFloat(row.material_cost) || 0;
@@ -13582,7 +13610,7 @@ function renderCostTable() {
     const sc = key.split('||')[1] || '';
     if (!scAgg[sc]) scAgg[sc] = {
       running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
-      labor_hours: 0, equip_hours: 0, equip_cost: 0,
+      labor_hours: 0, haul_hours: 0, equip_hours: 0, equip_cost: 0,
       material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
     };
     const a = scAgg[sc];
@@ -13591,6 +13619,7 @@ function renderCostTable() {
     a.total_cost         += data.total_cost;
     a.imported_total     += data.imported_total;
     a.labor_hours        += data.labor_hours;
+    a.haul_hours         += data.haul_hours || 0;
     a.equip_hours        += data.equip_hours;
     a.equip_cost         += data.equip_cost;
     a.material_cost      += data.material_cost;
@@ -13611,7 +13640,7 @@ function renderCostTable() {
       scProjAgg[newKey] = {
         project: data.project, projectId: data.projectId,
         running_qty: 0, qty_count: 0, total_cost: 0, imported_total: 0,
-        labor_hours: 0, equip_hours: 0, equip_cost: 0,
+        labor_hours: 0, haul_hours: 0, equip_hours: 0, equip_cost: 0,
         material_cost: 0, num_laborers_sum: 0, num_laborers_count: 0, dates: new Set(),
       };
     }
@@ -13621,6 +13650,7 @@ function renderCostTable() {
     pa.total_cost         += data.total_cost;
     pa.imported_total     += data.imported_total;
     pa.labor_hours        += data.labor_hours;
+    pa.haul_hours         += data.haul_hours || 0;
     pa.equip_hours        += data.equip_hours;
     pa.equip_cost         += data.equip_cost;
     pa.material_cost      += data.material_cost;
@@ -13691,9 +13721,15 @@ function renderCostTable() {
     const avgDays  = jobCount
       ? _projKeys.reduce((s, pk) => s + scProjAgg[pk].dates.size, 0) / jobCount
       : daysAll;
+    // Crew size and units-per-man-hour divide by MEN ON THE WORK, so hauling
+    // hours come out first — see rowHaulHours. The Labor Hours column still
+    // shows every hour worked; only these two rates use the on-site figure.
+    // With no hauling on the sub code, site_hours === labor_hours and both
+    // read exactly as they always have.
+    const site_hours = Math.max(0, a.labor_hours - (a.haul_hours || 0));
     const avg_lab  = a.num_laborers_count ? a.num_laborers_sum / a.num_laborers_count
-                   : (daysAll && a.labor_hours) ? a.labor_hours / daysAll / 8 : 0;
-    const mu_lab   = a.labor_hours ? rqty / a.labor_hours : 0;
+                   : (daysAll && site_hours) ? site_hours / daysAll / 8 : 0;
+    const mu_lab   = site_hours ? rqty / site_hours : 0;
     const eq_cph   = a.equip_hours ? a.equip_cost / a.equip_hours : 0;
     const mu_eq    = a.equip_hours ? rqty / a.equip_hours : 0;
     const actualTotal = (pvPreview.active && pvPreview.rate > 0) ? rtotal : (a.imported_total || rtotal);
@@ -13782,9 +13818,10 @@ function renderCostTable() {
       const p_rtotal  = pa.total_cost;
       const p_past_avg = p_rqty ? p_rtotal / p_rqty : 0;
       const p_days    = pa.dates.size;
+      const p_site_hours = Math.max(0, pa.labor_hours - (pa.haul_hours || 0));
       const p_avg_lab = pa.num_laborers_count ? pa.num_laborers_sum / pa.num_laborers_count
-                      : (p_days && pa.labor_hours) ? pa.labor_hours / p_days / 8 : 0;
-      const p_mu_lab  = pa.labor_hours ? p_rqty / pa.labor_hours : 0;
+                      : (p_days && p_site_hours) ? p_site_hours / p_days / 8 : 0;
+      const p_mu_lab  = p_site_hours ? p_rqty / p_site_hours : 0;
       const p_eq_cph  = pa.equip_hours ? pa.equip_cost / pa.equip_hours : 0;
       const p_mu_eq   = pa.equip_hours ? p_rqty / pa.equip_hours : 0;
       const p_actual  = pa.imported_total || p_rtotal;
@@ -16810,6 +16847,14 @@ function calcDaily(row) {
 // — including any manual override — untouched.
 function dailyRowAutoRate(p, row) {
   if ((row.sub_code || '').trim().toLowerCase() === TRAVEL_SUB_CODE) return TRAVEL_RATE;
+  // A hauling row carries no labour cost: the driver is already inside the
+  // truck's hourly rate on the same row, so charging his wage as well bills the
+  // job twice for one man. Hours stay — only the money goes.
+  //
+  // Payroll stamps this field type on the rows it injects (HAUL_FIELD_TYPE in
+  // api/timesheet-entries.js); matching it here means a row keyed by hand in
+  // this tab prices the same way as one that came through an approval.
+  if (HAUL_FIELD_TYPE_RE.test((row.field_type || '').trim())) return 0;
   const emp = lists.employees.find(e => e.name === row.employee);
   if (!emp) return null;
   return p.prevailing_wage ? (emp.prevailing_rate || 0) : (emp.non_prevailing_rate || 0);
@@ -16890,7 +16935,12 @@ function renderDailyTable(projId) {
     return;
   }
 
-  const fieldTypeOpts = ['', ...[...lists.field_types].sort((a,b) => a.localeCompare(b))];
+  // The two Haul types are always offered, whether or not the office added them
+  // to the managed list: picking one is what zeroes a hand-keyed driver row
+  // (dailyRowAutoRate), so it must never be unavailable. Union rather than
+  // append, so a company that HAS added them doesn't see them twice.
+  const fieldTypeOpts = ['', ...[...new Set([...lists.field_types, ...HAUL_FIELD_TYPES])]
+    .sort((a,b) => a.localeCompare(b))];
   const assignedEmps  = p.assigned_employees || [];
   const assignedEquip = p.assigned_equipment || [];
   const empNames = (assignedEmps.length > 0
@@ -21373,6 +21423,18 @@ document.addEventListener('input', e => {
     // travel rate; leaving it restores the employee's standard/prevailing rate.
     // Non-travel → non-travel changes leave the rate alone so a manually entered
     // rate survives a re-categorization.
+    // Picking (or clearing) a Haul field type re-prices the row for the same
+    // reason Travel does: the classification IS the rate. Injected rows are
+    // skipped — payroll owns their rate — exactly as with Travel below.
+    if (f === 'field_type' && !_isInj) {
+      const autoRate = dailyRowAutoRate(p, p.dailyRows[i]);
+      if (autoRate != null) {
+        const _tbody = document.getElementById('daily-tbody-' + projId);
+        const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
+        p.dailyRows[i].rate = autoRate || '';
+        if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate || ''; }
+      }
+    }
     if (f === 'sub_code' && !_isInj) {
       const wasTravel = (_prevSubCode || '').trim().toLowerCase() === TRAVEL_SUB_CODE;
       const isTravel  = (el.value      || '').trim().toLowerCase() === TRAVEL_SUB_CODE;

@@ -1559,7 +1559,12 @@ async function buildPayrollSummary(sql, companyCode) {
       computed_hours::float              AS computed_hours,
       travel_hours::float                AS travel_hours,
       travel_to_site_hours::float        AS travel_to_site_hours,
-      travel_to_shop_hours::float        AS travel_to_shop_hours
+      travel_to_shop_hours::float        AS travel_to_shop_hours,
+      -- payrollMetrics sends an off-site haul's work hours to standard rather
+      -- than prevailing. This column list is explicit, so leaving it out here
+      -- would have the executive report quietly disagree with the Payroll page
+      -- about the same fortnight.
+      haul_type
     FROM timesheet_entries
     WHERE company_code = ${companyCode}
       AND status IN ('submitted', 'approved')
@@ -1601,7 +1606,9 @@ async function buildPayrollSummary(sql, companyCode) {
       { label: 'Total Hours',  value: hrs(t.totalHours),  tone: 'green', sub: 'work + travel' },
       {
         label: 'Prevailing Hrs', value: hrs(t.pwHours), tone: 'amber',
-        sub: 'work on prevailing-wage jobs',
+        sub: t.haulHours > 0.001
+          ? `work on prevailing-wage jobs · ${hrs(t.haulHours)} h off-site haul excluded`
+          : 'work on prevailing-wage jobs',
       },
       {
         label: 'Standard Hrs', value: hrs(t.stdHours), tone: 'plain',

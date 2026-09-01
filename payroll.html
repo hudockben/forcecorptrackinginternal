@@ -2499,8 +2499,19 @@
             // explicit true counts as prevailing — false and null (the
             // divisions with no prevailing-wage concept) are standard.
             // Prevailing + standard still add up to the day's total.
-            if (e.prevailing_wage === true) { acc.pwHours += work; acc.stdHours += travel; }
-            else                            { acc.stdHours += h; }
+            //
+            // An OFF-SITE HAUL is standard on the same reasoning as travel: the
+            // prevailing premium is for work on the covered site, and a driver
+            // running to and from it never worked there. A haul ON the site is
+            // ordinary covered work and stays prevailing.
+            // Mirrors payrollMetrics in api/lib/payroll-metrics.js — the two
+            // must agree, because the executive report renders the same
+            // fortnight from that module and this page is where payroll checks it.
+            if (e.prevailing_wage === true && !isOffSiteHaul(e)) {
+              acc.pwHours += work; acc.stdHours += travel;
+            } else {
+              acc.stdHours += h;
+            }
           }
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
@@ -2689,7 +2700,7 @@
         // Per entry, prevailing hours = the work hours when the tied job is
         // prevailing wage, else 0. Travel is excluded — it isn't paid at the
         // prevailing rate — which matches the aggregate column.
-        const pw     = (!isOff && e.prevailing_wage === true) ? work : 0;
+        const pw     = (!isOff && e.prevailing_wage === true && !isOffSiteHaul(e)) ? work : 0;
         sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw;
         sumToSite += (toSite || 0); sumToShop += (toShop || 0);
         const division = isOff ? '—' : (prettyDiv(e.division) || '—');
@@ -3216,7 +3227,7 @@
           // job is prevailing wage — the same split the summary columns use.
           // Travel is never prevailing-rate, so prevailing hours are the work
           // hours on a prevailing job; its travel drops into standard.
-          const pw  = isOff ? null : (e.prevailing_wage === true ? work : 0);
+          const pw  = isOff ? null : ((e.prevailing_wage === true && !isOffSiteHaul(e)) ? work : 0);
           const std = isOff ? null : (total - pw);
           // The two travel legs the timesheet collects, kept alongside their
           // sum. Null (never itemised) stays an empty cell so it can't be read
@@ -4118,14 +4129,54 @@
       const map = { vacation:'Vacation', sick:'Sick', jury_duty:'Jury Duty', bereavement:'Bereavement', holiday:'Holiday' };
       return map[t] || t;
     }
+    // What the driver answered on this job block, said plainly in the approve
+    // modal. Without it a supervisor approves a day and then finds every labour
+    // row priced at zero in the cost tab with nothing anywhere explaining it —
+    // which reads as the rate lookup having failed, and gets "fixed" by hand.
+    function splitHaulNoteHtml(entry) {
+      const t = entry && entry.haul_type;
+      if (t !== 'on_site' && t !== 'off_site') return '';
+      const where = t === 'on_site' ? 'on the site' : 'to &amp; from the site';
+      const wage  = (t === 'off_site' && entry.prevailing_wage === true)
+        ? ' Because the driver never worked the site, these hours pay at the <strong>standard</strong> rate even though the job is prevailing wage.'
+        : '';
+      return `<div style="grid-column:1/-1;margin-top:0.4rem;padding:0.5rem 0.6rem;`
+        + `border:1px solid var(--border);border-radius:6px;line-height:1.45">`
+        + `<strong>Hauled ${where}.</strong> The labour rows below post at a `
+        + `<strong>$0 labour rate</strong> — the driver is already inside the truck's `
+        + `hourly cost, so charging his wage again would bill the job twice for one man. `
+        + `The hours still post in full.${wage}</div>`;
+    }
+
+    // Did the driver answer "to & from site" on this entry's job block?
+    // haul_type is captured on the Timesheet, per job block, and only ever asked
+    // of someone flagged as a driver — so null (every non-driver, and every
+    // entry that predates the question) is simply "not a haul".
+    //
+    // The whole rule lives here rather than at the three call sites so the
+    // Hours Report, the per-employee detail table and the Excel export cannot
+    // drift apart on what counts as prevailing.
+    function isOffSiteHaul(e) {
+      return !!e && e.haul_type === 'off_site';
+    }
+
     // Prevailing-wage pill, derived from the job tied to the entry.
     // The server resolves e.prevailing_wage from the project blob:
     //   true/false → turf/paving job with a known prevailing-wage flag
     //   null       → time-off, or a division (dust/trucking/quarry) where
     //                prevailing wage doesn't apply → show a neutral dash.
+    //
+    // A prevailing job worked as an off-site haul gets its own pill. Showing a
+    // plain "Yes" there would have the approver reading a prevailing job whose
+    // hours the report is deliberately paying at standard, with nothing on the
+    // row to explain the difference — the one place that mismatch would look
+    // like a bug rather than the rule.
     function prevailingWageHtml(e) {
       if (e.entry_type === 'time_off' || e.prevailing_wage == null) {
         return '<span class="pw-na" title="Prevailing wage does not apply to this entry">—</span>';
+      }
+      if (e.prevailing_wage && isOffSiteHaul(e)) {
+        return '<span class="pw-pill pw-no" title="Prevailing-wage job, but this block was hauled to &amp; from the site — the driver never worked the site, so these hours pay at the standard rate">Haul</span>';
       }
       return e.prevailing_wage
         ? '<span class="pw-pill pw-yes" title="Prevailing wage job">Yes</span>'
@@ -4835,6 +4886,7 @@
         <div>Travel hours: <strong>${num2(travel)}</strong></div>
         <div>Total to allocate: <strong>${num2(required)}</strong></div>
         <div>Supervisor on entry: <strong>${escapeHtml(entry.supervisor_name || '—')}</strong></div>
+        ${splitHaulNoteHtml(entry)}
       `;
 
       document.getElementById('splitSaveBtn').textContent =

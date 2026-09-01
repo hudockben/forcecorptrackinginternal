@@ -216,6 +216,10 @@
     }
     .seg button.on   { background: var(--accent); color: #003; }
     .seg button.off  { background: var(--border); color: var(--text); }
+    /* Three-way variant, for the hauling question. Same control, one more
+       column — on a phone the three labels still clear the 42px touch target. */
+    .seg.seg-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .seg.seg-3 button { padding: 0.65rem 0.25rem; font-size: 0.8rem; }
 
     /* ── Time-off type radio grid ── */
     .pills {
@@ -631,6 +635,33 @@
           </div>
         </div>
 
+        <!-- ── The hauling question ──
+             Shown only to a user flagged as a driver in Manage Users
+             (employees.is_driver, delivered by /api/timesheet-supervisors).
+             Everyone else never sees it and posts haul_type null, exactly as
+             before this existed.
+
+             Asked per JOB BLOCK, which is already once per leg: a driver who
+             runs to the site and then hauls inside the fence splits the day the
+             way anyone else would, and answers this once for each half. That is
+             what lets one man on one day be part standard and part prevailing.
+
+             The three answers are not cosmetic — they drive different things:
+               No         → ordinary work. Priced and classified as always.
+               On site    → the truck rate covers the labour, but the man IS on
+                            the site, so on a prevailing job it stays prevailing.
+               To & from  → the truck rate covers the labour AND he never worked
+                            the site, so the hours are standard rate even on a
+                            prevailing job. -->
+        <div class="row" id="row-haul" style="display:none">
+          <label>Was this a haul?</label>
+          <div class="seg seg-3" id="seg-haul">
+            <button type="button" data-val=""         onclick="setHaul('', 0)">No</button>
+            <button type="button" data-val="on_site"  onclick="setHaul('on_site', 0)">On site</button>
+            <button type="button" data-val="off_site" onclick="setHaul('off_site', 0)">To &amp; from</button>
+          </div>
+        </div>
+
         <!-- ── Split the day across more than one job ──
              One day on two jobs used to mean filling this form twice. Each
              block added here is another job on the SAME day: its own division,
@@ -839,6 +870,19 @@
     let splitIdxs      = [];        // extra block indices, in display order
     let nextSplitIdx   = 0;         // monotonic: a removed block's ids never come back
     let equipVals      = { 0: null }; // block index → true / false / null
+    // block index → '' | 'on_site' | 'off_site'. '' means "not a haul", which is
+    // both the default and what a non-driver always posts. Only ever read when
+    // isDriver is true; see applyHaulVisibility.
+    let haulVals       = { 0: '' };
+    // Set from /api/timesheet-supervisors on load. Decides whether the hauling
+    // question is asked at all — nothing else in this page branches on it.
+    //   true  → ask, and post the answer
+    //   false → don't ask, and post '' so any stale answer is cleared
+    //   null  → we could not find out. Don't ask, and post NOTHING: the server
+    //           reads an absent haul_type as "leave what is stored", so a
+    //           failed roster load cannot quietly strip a driver's answer off
+    //           an entry he is only editing the hours of.
+    let isDriver       = null;
     let editingIds     = {};        // block index → id of the draft row it last wrote
     let loadedTags     = {};        // block index → the split tag it was loaded with
     let currentGroupId = null;      // split_group_id every block on this form writes
@@ -872,6 +916,8 @@
       'end':            'f-end',
       'hours':          'f-hours',
       'seg-equip':      'seg-equip',
+      'seg-haul':       'seg-haul',
+      'row-haul':       'row-haul',
     };
     function bid(i, key) { return i === 0 ? BLOCK0_IDS[key] : `s${i}-${key}`; }
     function bel(i, key) { return document.getElementById(bid(i, key)); }
@@ -983,6 +1029,15 @@
               <button type="button" data-val="false" onclick="setSeg('equip', false, ${i})">No</button>
             </div>
           </div>
+
+          <div class="row" id="s${i}-row-haul" style="display:none">
+            <label>Was this a haul?</label>
+            <div class="seg seg-3" id="s${i}-seg-haul">
+              <button type="button" data-val=""         onclick="setHaul('', ${i})">No</button>
+              <button type="button" data-val="on_site"  onclick="setHaul('on_site', ${i})">On site</button>
+              <button type="button" data-val="off_site" onclick="setHaul('off_site', ${i})">To &amp; from</button>
+            </div>
+          </div>
         </div>`;
     }
 
@@ -1008,7 +1063,12 @@
       const i = ++nextSplitIdx;
       splitIdxs.push(i);
       equipVals[i] = null;
+      haulVals[i]  = '';
       document.getElementById('splitBlocks').insertAdjacentHTML('beforeend', splitBlockHtml(i));
+      // A block added after load starts hidden in its own markup; reveal it now
+      // if this user is a driver, and default it to "No" so the answer is never
+      // blank on a block the driver skipped past.
+      applyHaulVisibility(i);
 
       if (inherit) {
         const prevEnd = bel(prev, 'end').value;
@@ -1040,6 +1100,7 @@
 
       splitIdxs = splitIdxs.filter(x => x !== i);
       delete equipVals[i];
+      delete haulVals[i];
       delete editingIds[i];
       delete loadedTags[i];
       const el = document.getElementById(`s${i}-block`);
@@ -1147,6 +1208,7 @@
       }
       splitIdxs = [];
       equipVals = { 0: equipVals[0] };
+      haulVals  = { 0: haulVals[0] };
     }
 
     async function init() {
@@ -1194,6 +1256,37 @@
       seg.querySelectorAll('button').forEach(b => b.classList.remove('on', 'off'));
       if (which === 'lunch') { lunchVal = null; updateHours(0); }
       else                     equipVals[i] = null;
+    }
+
+    // ── The hauling question ────────────────────────────────────────────────
+    // Three-way rather than a boolean, because "was this a haul?" and "were you
+    // on the site?" are two different questions and a driver's day turns on
+    // both. Kept out of setSeg deliberately: that one is boolean to its bones
+    // (data-val === 'true'), and widening it would put a third state into the
+    // lunch and equipment answers, which have no use for one.
+    function setHaul(val, i = 0) {
+      const seg = bel(i, 'seg-haul');
+      if (!seg) return;
+      seg.querySelectorAll('button').forEach(b => {
+        const on = (b.dataset.val || '') === (val || '');
+        b.classList.toggle('on',  on);
+        b.classList.toggle('off', !on);
+      });
+      haulVals[i] = val || '';
+    }
+
+    // Show or hide the question for one block, or for every block when `i` is
+    // omitted. A driver's block defaults to "No" rather than blank: the common
+    // answer should cost no taps, and an unanswered three-way on a form the
+    // driver never scrolled to would be a new way to block a submit.
+    function applyHaulVisibility(i) {
+      const idxs = (i == null) ? blockOrder() : [i];
+      for (const b of idxs) {
+        const row = bel(b, 'row-haul');
+        if (row) row.style.display = isDriver ? 'flex' : 'none';
+        if (isDriver) setHaul(haulVals[b] || '', b);
+        else          haulVals[b] = '';
+      }
     }
 
     function setOffType(t) {
@@ -1262,10 +1355,18 @@
           throw new Error((data && data.error) || `HTTP ${res.status}`);
         }
         supervisors = data.supervisors;
+        // Rides along on the same response. A deploy that predates the column
+        // sends nothing here, which reads as false — the form then behaves
+        // exactly as it did before the hauling question existed.
+        isDriver = data.is_driver === true;
       } catch (err) {
         console.error('[timesheet] supervisors failed to load:', err);
         supervisors = [];
+        // Unknown, not false — see the declaration. The question is not asked
+        // either way, but a saved answer survives the edit.
+        isDriver = null;
       }
+      applyHaulVisibility();
       const opts = '<option value="">— pick —</option>' +
         supervisors.map(s => `<option value="${s.id}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
       document.getElementById('f-supervisor').innerHTML = opts;
@@ -1729,6 +1830,11 @@
       bel(i, 'end').value   = e.end_time   || '';
       if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment, i);
       else clearSeg('equip', i);
+      // Re-open a saved haul on the answer it was saved with. An entry from
+      // before this question existed comes back null and lands on "No", which
+      // is what it has always meant.
+      haulVals[i] = e.haul_type || '';
+      applyHaulVisibility(i);
       updateHours(i);
     }
 
@@ -1852,6 +1958,8 @@
       updateHours();
       clearSeg('lunch');
       clearSeg('equip');
+      haulVals = { 0: '' };
+      applyHaulVisibility();
       renderSplitChrome();
       document.getElementById('f-supervisor').value = '';
       document.getElementById('f-notes').value = '';
@@ -1961,7 +2069,15 @@
           return { error: at(i, 'Start and end times are the same — that comes to 0 hours.') };
         }
         if (equipVals[i] == null) return { error: at(i, 'Operated equipment? Yes or No.') };
-        blocks.push({ i, div, jobId, jobLabel, start, end, equip: equipVals[i] });
+        // Only a flagged driver is ever asked, and their blocks default to "No",
+        // so this is always answered — no validation gate, unlike equipment.
+        // A non-driver posts '' and the server stores null.
+        // Omitted entirely when the roster flag is unknown, so the server keeps
+        // whatever is stored. '' is a real answer ("not a haul") and clears it.
+        blocks.push({ i, div, jobId, jobLabel, start, end, equip: equipVals[i],
+                      haulKey: isDriver === null
+                        ? {}
+                        : { haul_type: isDriver ? (haulVals[i] || '') : '' } });
       }
 
       // Two jobs can't be worked at the same moment, and a day that adds up to
@@ -2022,7 +2138,9 @@
             ees_name:       eesVal('ees-name'),
             ees_job_number: eesVal('ees-job-number'),
             ees_billing:    isEes ? (bel(b.i, 'ees-billing').value || 'Non-Billable') : '',
-          }, splitTagFor(b.i, pos, blocks.length)),
+            // '' → null on the server: not a haul, which is what every entry
+            // that predates this question also reads as. Absent → keep stored.
+          }, b.haulKey, splitTagFor(b.i, pos, blocks.length)),
         };
       });
 

@@ -1258,6 +1258,9 @@
           <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
             <input type="checkbox" id="sup-only" onchange="renderSupervisorList()" style="width:auto" /> Supervisors only
           </label>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
+            <input type="checkbox" id="drv-only" onchange="renderSupervisorList()" style="width:auto" /> Drivers only
+          </label>
           <span class="mu-count" id="sup-count"></span>
           <button class="mu-tool-btn" onclick="exportSupervisorsXlsx()" title="Download the list below as an Excel workbook (.xlsx)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1268,22 +1271,27 @@
         </div>
 
         <div class="mu-note">
-          Flag a user account as a supervisor to make them selectable in the
-          field-employee Timesheet form. The toggle attaches the supervisor
-          flag to the user's username, not to any individual job entry.
+          <strong>Supervisor</strong> makes a user selectable in the field-employee
+          Timesheet form. <strong>Driver</strong> marks someone whose hours are
+          normally bought by a truck rather than by a body on the site — it adds a
+          “Was this a haul?” question to each job on their Timesheet, and nothing
+          else. It does not price anything on its own; the driver's answer does.
+          Both flags attach to the username, not to any individual job entry, and
+          both apply across every division.
         </div>
 
         <div class="mu-table-wrap sup-wrap">
           <table class="user-table sup-table">
-            <colgroup><col class="c-sup-user" /><col class="c-sup-tog" /></colgroup>
+            <colgroup><col class="c-sup-user" /><col class="c-sup-tog" /><col class="c-sup-tog" /></colgroup>
             <thead>
               <tr>
                 <th scope="col">Username</th>
                 <th scope="col">Supervisor</th>
+                <th scope="col">Driver</th>
               </tr>
             </thead>
             <tbody id="supListBody">
-              <tr><td colspan="2" class="mu-empty-cell">Loading…</td></tr>
+              <tr><td colspan="3" class="mu-empty-cell">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -2147,12 +2155,14 @@
 
         // Employees fetch is non-fatal — if it fails we still show usernames
         // with all toggles in their default off state.
-        const flagged = new Set();
+        const flagged  = new Set();
+        const drivers  = new Set();
         if (empRes.ok) {
           const empData = await empRes.json();
           const employees = Array.isArray(empData.employees) ? empData.employees : [];
           employees.forEach(e => {
             if (e.is_supervisor && e.name) flagged.add(String(e.name).toLowerCase());
+            if (e.is_driver     && e.name) drivers.add(String(e.name).toLowerCase());
           });
         }
 
@@ -2162,11 +2172,12 @@
             id:            u.id,
             name:          u.username,
             is_supervisor: flagged.has(String(u.username).toLowerCase()),
+            is_driver:     drivers.has(String(u.username).toLowerCase()),
           }))
           .sort((a, b) => a.name.localeCompare(b.name));
         renderSupervisorList();
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="2" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="3" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
       }
     }
 
@@ -2174,9 +2185,11 @@
     function visibleSupervisors() {
       const q        = (document.getElementById('sup-search').value || '').toLowerCase().trim();
       const onlySups = document.getElementById('sup-only').checked;
+      const onlyDrvs = document.getElementById('drv-only').checked;
       let list = supEmployees;
       if (q)        list = list.filter(e => (e.name || '').toLowerCase().includes(q));
       if (onlySups) list = list.filter(e => e.is_supervisor === true);
+      if (onlyDrvs) list = list.filter(e => e.is_driver === true);
       return list;
     }
 
@@ -2186,14 +2199,16 @@
       const list  = visibleSupervisors();
       const flagged = supEmployees.filter(e => e.is_supervisor).length;
 
+      const drivers = supEmployees.filter(e => e.is_driver).length;
+
       count.textContent = supEmployees.length
         ? (list.length === supEmployees.length
-            ? `${flagged} of ${supEmployees.length} flagged`
+            ? `${flagged} supervisor${flagged === 1 ? '' : 's'} · ${drivers} driver${drivers === 1 ? '' : 's'} of ${supEmployees.length}`
             : `${list.length} of ${supEmployees.length} users`)
         : '';
 
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="2" class="mu-empty-cell">No users match.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="3" class="mu-empty-cell">No users match.</td></tr>';
         return;
       }
       tbody.innerHTML = list.map(e => `
@@ -2201,7 +2216,13 @@
           <td style="font-weight:600;color:#fff">${escSupHtml(e.name)}</td>
           <td>
             <label class="sup-toggle" title="Toggle supervisor">
-              <input type="checkbox" data-emp-name="${escSupHtml(e.name)}" ${e.is_supervisor ? 'checked' : ''} onchange="toggleSupervisor(this)" />
+              <input type="checkbox" data-emp-name="${escSupHtml(e.name)}" ${e.is_supervisor ? 'checked' : ''} onchange="toggleRoleFlag(this,'is_supervisor')" />
+              <span class="slider"></span>
+            </label>
+          </td>
+          <td>
+            <label class="sup-toggle" title="Toggle truck driver — adds the hauling question to this user's Timesheet">
+              <input type="checkbox" data-emp-name="${escSupHtml(e.name)}" ${e.is_driver ? 'checked' : ''} onchange="toggleRoleFlag(this,'is_driver')" />
               <span class="slider"></span>
             </label>
           </td>
@@ -2212,10 +2233,19 @@
     // both do the same job.
     const escSupHtml = escHtml;
 
-    async function toggleSupervisor(el) {
+    // One handler for both global role flags. The PATCH sends only the flag that
+    // was clicked, and the server leaves the other alone — flipping Driver must
+    // never disturb Supervisor, and the two toggles sit in the same row.
+    const ROLE_FLAG_WORDS = {
+      is_supervisor: { on: 'is now a supervisor.',   off: 'is no longer a supervisor.' },
+      is_driver:     { on: 'is now a truck driver.', off: 'is no longer a truck driver.' },
+    };
+
+    async function toggleRoleFlag(el, flag) {
       const name    = el.dataset.empName || '';
       const checked = el.checked;
       const result  = document.getElementById('sup-result');
+      const words   = ROLE_FLAG_WORDS[flag] || ROLE_FLAG_WORDS.is_supervisor;
       el.disabled   = true;
       result.style.color = 'var(--muted)';
       result.textContent = 'Saving…';
@@ -2223,17 +2253,17 @@
         const res = await fetch('/api/employees?name=' + encodeURIComponent(name), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ is_supervisor: checked }),
+          body: JSON.stringify({ [flag]: checked }),
         });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
-        // Update the in-memory list so the "Supervisors only" filter stays accurate
+        // Update the in-memory list so the "…only" filters stay accurate
         const emp = supEmployees.find(e => (e.name || '').toLowerCase() === name.toLowerCase());
-        if (emp) emp.is_supervisor = checked;
+        if (emp) emp[flag] = checked;
+        renderSupervisorList();
         result.style.color = 'var(--green)';
-        result.textContent = (data.employee?.name || name || 'Employee') +
-          (checked ? ' is now a supervisor.' : ' is no longer a supervisor.');
-        setTimeout(() => { if (result.textContent.endsWith('supervisor.')) result.textContent = ''; }, 2500);
+        result.textContent = `${data.employee?.name || name || 'Employee'} ${checked ? words.on : words.off}`;
+        setTimeout(() => { if (/(supervisor|driver)\.$/.test(result.textContent)) result.textContent = ''; }, 2500);
       } catch (err) {
         // Roll back the checkbox
         el.checked = !checked;
@@ -2483,11 +2513,11 @@
       const co = (user && (user.companyName || user.companyCode)) || 'company';
       const slug = String(co).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'company';
       _downloadXlsx([{
-        name: 'Supervisors',
-        header: ['Username', 'Supervisor'],
-        rows: list.map(e => [e.name, e.is_supervisor ? 'Yes' : 'No']),
-        widths: [26, 14],
-      }], `${slug}-supervisors-${_todayStamp()}.xlsx`);
+        name: 'Roles',
+        header: ['Username', 'Supervisor', 'Driver'],
+        rows: list.map(e => [e.name, e.is_supervisor ? 'Yes' : 'No', e.is_driver ? 'Yes' : 'No']),
+        widths: [26, 14, 14],
+      }], `${slug}-user-roles-${_todayStamp()}.xlsx`);
       result.style.color = 'var(--green)';
       result.textContent = `Exported ${list.length} user${list.length === 1 ? '' : 's'} to Excel.`;
       setTimeout(() => {
