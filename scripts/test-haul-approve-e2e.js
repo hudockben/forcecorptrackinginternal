@@ -190,6 +190,38 @@ const q = (sql, p) => client.query(sql, p).then(r => r.rows);
   assert('  and it still priced the labour at $0', row.rate === 0);
   assert('  stamped as an on-site haul', row.field_type === 'Haul — On Site');
 
+  // The failure the owner actually hit on the second attempt: marked as a haul,
+  // approved, and the row landed with NO truck — $0 labour and $0 equipment, the
+  // whole day free to the job. The modal now defaults the truck from the job's
+  // assigned equipment and follows the driver's hours with it, so the shape
+  // below is what a haul row should look like.
+  console.log('\n[a haul row must not cost the job nothing at all]');
+  const id4 = await mk();
+  const r4 = await call('POST', { action: 'approve', id: id4 },
+    { split: [{ cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+                equipment: 'Triaxle Dump', labor_hours: 6, equip_hours: 6, quantity: 0 }],
+      haul_type: 'off_site' }, ADMIN);
+  assert('it approves', r4.statusCode === 200);
+  [row] = await q(`SELECT rate::float rate, labor_hours::float lh, equip_unit_cost::float euc,
+                          equip_hours::float eh FROM daily_tracking WHERE timesheet_entry_id=$1`, [id4]);
+  const labourCost = row.rate * row.lh;
+  const equipCost  = row.euc * row.eh;
+  assert('the labour costs nothing, by design', labourCost === 0);
+  assert('but the TRUCK costs $726 — the day is not free', equipCost === 726,
+    `equip = ${row.euc} x ${row.eh} = ${equipCost}`);
+
+  console.log('\n[a haul approved with no truck at all is still accepted, and still free]');
+  // Deliberately unchanged: the warning is advice, not a gate — the approver may
+  // be right that the truck is billed elsewhere. This pins that it stays
+  // ACCEPTED, so nobody "fixes" the warning into a refusal by accident.
+  const id5 = await mk();
+  const r5 = await call('POST', { action: 'approve', id: id5 },
+    { split: [{ cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+                equipment: '', labor_hours: 6, equip_hours: 0, quantity: 0 }],
+      haul_type: 'off_site' }, ADMIN);
+  assert('the server does not refuse it', r5.statusCode === 200,
+    JSON.stringify(r5.body).slice(0, 160));
+
   console.log(`\n${passed} passed, ${failed} failed`);
   await client.end();
   process.exit(failed ? 1 : 0);

@@ -4145,6 +4145,57 @@
       const map = { vacation:'Vacation', sick:'Sick', jury_duty:'Jury Duty', bereavement:'Bereavement', holiday:'Holiday' };
       return map[t] || t;
     }
+    // Default a haul row's equipment to the one the office assigned to this job.
+    //
+    // Only when the job has EXACTLY ONE assigned unit. With none there is
+    // nothing to go on, and with several, picking one would be a guess that
+    // silently puts a wrong hourly rate on the job — the warning below is the
+    // honest answer there. The company-wide equipment list is deliberately not
+    // used: it is every machine the company owns and says nothing about this
+    // job.
+    //
+    // Never overwrites a choice already on the row.
+    function splitDefaultHaulEquipment(r) {
+      if (!r || String(r.equipment || '').trim()) return false;
+      const t = splitEntry && splitEntry.haul_type;
+      if (t !== 'on_site' && t !== 'off_site') return false;
+      if (isTravelSplitRow(r)) return false;
+      const only = (splitProjEquipment || []).filter(Boolean);
+      if (only.length !== 1) return false;
+      r.equipment = only[0];
+      return true;
+    }
+
+    // Keep a haul row's equipment hours level with its labour hours.
+    //
+    // Only while nobody has set them by hand (_equipHoursTouched) — a driver who
+    // spent part of the day out of the truck is a real thing, and the approver
+    // saying so must stick. Travel rows are left alone: the commute is not the
+    // truck's time.
+    //
+    // Returns true when it changed something, so the caller repaints.
+    function splitMirrorHaulEquipHours(r) {
+      if (!r || r._equipHoursTouched) return false;
+      const t = splitEntry && splitEntry.haul_type;
+      if (t !== 'on_site' && t !== 'off_site') return false;
+      if (isTravelSplitRow(r)) return false;
+      const want = Number(r.labor_hours) || 0;
+      if ((Number(r.equip_hours) || 0) === want) return false;
+      r.equip_hours = want;
+      return true;
+    }
+
+    // Apply it to every row — used when the haul answer itself changes, since
+    // that is the moment rows already carrying hours become haul rows.
+    function splitMirrorHaulEquipHoursAll() {
+      let changed = false;
+      for (const r of splitRows) {
+        changed = splitDefaultHaulEquipment(r) || changed;
+        changed = splitMirrorHaulEquipHours(r)  || changed;
+      }
+      return changed;
+    }
+
     // The approver's copy of the hauling question.
     //
     // The driver answers it on his timesheet, but only a driver the office has
@@ -4179,6 +4230,7 @@
       const el = document.getElementById('splitHaulPick');
       if (!el || !splitEntry) return;
       splitEntry.haul_type = el.value || null;
+      if (splitMirrorHaulEquipHoursAll()) renderSplitRows();
       const note = document.getElementById('splitHaulNote');
       if (note) note.outerHTML = splitHaulNoteHtml(splitEntry) ||
         '<div id="splitHaulNote" hidden></div>';
@@ -4837,6 +4889,10 @@
     // Equipment list: global list loaded once, per-job list built on each modal open
     let splitEquipmentGlobal = null;
     let splitEquipmentList   = null;
+    // Just the equipment the office assigned to THIS job, kept apart from the
+    // merged picker list so a haul row can default to it. The company list is
+    // every machine the company owns and says nothing about this job.
+    let splitProjEquipment   = [];
     const _projEquipCache    = {};
 
     function escAttr(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
@@ -4879,6 +4935,7 @@
           _projEquipCache[cacheKey] = projEquip;
         }
       }
+      splitProjEquipment = projEquip.slice();
       const merged = [...splitEquipmentGlobal];
       for (const name of projEquip) {
         if (!globalSet.has(name)) merged.push(name);
@@ -5015,6 +5072,11 @@
       // approve: a split read back by Edit Split already carries the hours it
       // was approved with, and those are not this modal's to restate.
       if (mode !== 'resplit') splitRows.filter(r => r.is_travel).forEach(splitFillTravelHours);
+      // The haul defaults, now that the job's assigned equipment has landed.
+      // Only on a fresh approve: a split read back by Edit Split already carries
+      // the equipment and hours it was approved with, and those are the
+      // supervisor's, not this modal's to restate.
+      if (mode !== 'resplit') splitMirrorHaulEquipHoursAll();
       renderSplitRows();
       renderSplitTally();
     }
@@ -5545,6 +5607,13 @@
       if (field === 'labor_hours' || field === 'equip_hours' || field === 'quantity') {
         const n = Number(value);
         r[field] = Number.isFinite(n) && n >= 0 ? n : 0;
+        if (field === 'equip_hours') r._equipHoursTouched = true;
+        // On a haul the truck was running for as long as the driver was in it,
+        // so the equipment hours follow the labour hours until someone says
+        // otherwise. Without this a haul row posts $0 labour AND $0 equipment —
+        // the whole day free to the job — which is exactly what the approver is
+        // NOT trying to say by calling it a haul.
+        if (field === 'labor_hours') repaint = splitMirrorHaulEquipHours(r) || repaint;
       } else if (field === 'is_travel') {
         r.is_travel = !!value;
         if (r.is_travel) {

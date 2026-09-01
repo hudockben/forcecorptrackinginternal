@@ -20,6 +20,7 @@
  */
 
 const fs   = require('fs');
+const vm   = require('vm');
 const path = require('path');
 
 let passed = 0, failed = 0;
@@ -179,6 +180,61 @@ assert('it is styled as advice, not as an error',
 // swallowed a paving company's existing "Haul Off" for spoil removal: every
 // such row priced at $0 and dropped out of its own production rates on the
 // first deploy, silently. The stamp claims the "Haul — …" shape only.
+// ── The autofill that keeps a haul row from costing nothing ────────────────
+// A haul posts $0 labour by design. If the truck is missing too, the day is
+// free to the job — which is the opposite of what calling it a haul means.
+console.log('\n[a haul row fills in its own truck and hours]');
+{
+  const mk = (over, proj, haul) => {
+    const sb = {
+      splitEntry: { haul_type: haul === undefined ? 'off_site' : haul },
+      splitRows: [],
+      splitProjEquipment: proj || [],
+    };
+    vm.createContext(sb);
+    vm.runInContext(
+      `const TRAVEL_CODE_RE = ${travelRe[1]};\n` +
+      `${fnSource('isTravelSplitRow')}\n${fnSource('splitDefaultHaulEquipment')}\n` +
+      `${fnSource('splitMirrorHaulEquipHours')}\n`, sb);
+    const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
+                              equipment: '', labor_hours: 6, equip_hours: 0 }, over);
+    sb.splitRows = [r];
+    const a = sb.splitDefaultHaulEquipment(r);
+    const b = sb.splitMirrorHaulEquipHours(r);
+    return { r, changed: a || b };
+  };
+
+  let { r } = mk({}, ['Triaxle Dump']);
+  assert('the job\'s single assigned unit becomes the truck', r.equipment === 'Triaxle Dump');
+  assert('  and its hours follow the driver\'s', r.equip_hours === 6);
+
+  ({ r } = mk({}, ['Triaxle Dump', 'Lowboy']));
+  assert('two assigned units is a guess, so it picks neither', r.equipment === '');
+  assert('  but the hours still follow, ready for whichever is picked', r.equip_hours === 6);
+
+  ({ r } = mk({}, []));
+  assert('no assigned equipment leaves the truck blank', r.equipment === '');
+
+  ({ r } = mk({ equipment: 'Lowboy' }, ['Triaxle Dump']));
+  assert('a truck the approver already chose is never overwritten', r.equipment === 'Lowboy');
+
+  ({ r } = mk({ equip_hours: 2, _equipHoursTouched: true }, ['Triaxle Dump']));
+  assert('hours set by hand stick — a driver can be out of the truck part of the day',
+    r.equip_hours === 2);
+
+  ({ r } = mk({}, ['Triaxle Dump'], null));
+  assert('none of it happens on an ordinary day',
+    r.equipment === '' && r.equip_hours === 0);
+
+  ({ r } = mk({ is_travel: true }, ['Triaxle Dump']));
+  assert('nor on a travel row — the commute is not the truck\'s time',
+    r.equipment === '' && r.equip_hours === 0);
+
+  ({ r } = mk({ labor_hours: 0 }, ['Triaxle Dump']));
+  assert('a zero-hour row gets the truck but no hours',
+    r.equipment === 'Triaxle Dump' && r.equip_hours === 0);
+}
+
 console.log('\n[the haul stamp claims only its own field types]');
 {
   const fs2 = require('fs');
