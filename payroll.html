@@ -1804,6 +1804,33 @@
     </div>
   </div>
 
+  <!-- ── Dust EES row edit modal ──
+       A dust entry on one of the two standing EES activities (Pre Loading /
+       Washing) posts one row to the dust division's "EES Other" tab on
+       approval. Everything on that row is pulled from the timesheet except the
+       hourly rate, which the dust office owns and this modal never touches.
+       These six columns are the part payroll can correct; they live on the
+       entry, so the save writes them there and re-injects the row from it.
+
+       Edit-only, deliberately: approving an EES day needs no figure from
+       payroll, so it keeps the plain confirm it has always had rather than
+       growing a modal that would ask for nothing. -->
+  <div class="modal-backdrop" id="eesBackdrop">
+    <div class="modal split-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title" id="eesTitle">Edit EES Row</div>
+        <button class="modal-close" onclick="closeEes()">&#10005;</button>
+      </div>
+      <div class="split-summary" id="eesSummary"></div>
+      <div id="eesFields" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-top:4px"></div>
+      <div class="modal-msg" id="eesMsg"></div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeEes()">Cancel</button>
+        <button class="btn-save"   id="eesSaveBtn" onclick="eesSave()">Save Row</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Trucking / dust approve/inject modal ──
        Trucking entries autofill a row into the Trucking division's "Truck
        Tracking" tab (fct_truck_division). Driver, hours, customer and
@@ -4066,6 +4093,7 @@
               ${!isPending && entryNeedsSplit(e) ? `<button class="row-btn approve" onclick="openSplitModalById('${e.id}','resplit')" title="Edit the cost tracking split injected from this entry">Edit Split</button>` : ''}
               ${!isPending && entryNeedsQuarry(e) ? `<button class="row-btn approve" onclick="openQuarryModalById('${e.id}','resplit')" title="Edit the quarry row injected from this entry">Edit Row</button>` : ''}
               ${!isPending && entryNeedsTrucking(e) ? `<button class="row-btn approve" onclick="openTruckingModalById('${e.id}','resplit')" title="${e.division === 'dust' ? 'Edit the dust billing + Truck Tracking rows posted from this entry — including splitting the day into hauls and moving one between Dust Control Tracking and Other Billing' : 'Edit the Truck Tracking rows posted from this entry — including splitting the day into hauls'}">Edit Row</button>` : ''}
+              ${!isPending && entryNeedsEes(e) ? `<button class="row-btn approve" onclick="openEesModalById('${e.id}')" title="Edit the EES Other row posted from this entry — unit, customer, location, name, job number and billing">Edit Row</button>` : ''}
               ${!isPending ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and put the entry back into Pending, removing any cost rows it injected">Un-approve</button>` : ''}
               <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
@@ -5999,17 +6027,16 @@
     }
 
     // Reverses an approval on ANY approved entry, which is why the button that
-    // calls this is gated on nothing but the row being approved. The three Edit
+    // calls this is gated on nothing but the row being approved. The Edit
     // buttons beside it each need a modal that can re-open one specific kind of
-    // injection, so they stay gated on entryNeedsSplit/Quarry/Trucking; this one
-    // does not, because the server works off the entry itself and sweeps every
-    // injection type it could have made — split rows, quarry blobs, Truck
+    // injection, so they stay gated on entryNeedsSplit/Quarry/Trucking/Ees; this
+    // one does not, because the server works off the entry itself and sweeps
+    // every injection type it could have made — split rows, quarry blobs, Truck
     // Tracking, dust EES Other, Dust Control Tracking and Other Billing (see
-    // action=unapprove in api/timesheet-entries.js). Gating it alongside the
-    // Edit buttons left a dust EES day (Pre Loading / Washing, which injects an
-    // EES Other row) and time off with Delete as the only way to take an
-    // approval back — which throws the entry away and makes the employee
-    // resubmit a day they already worked.
+    // action=unapprove in api/timesheet-entries.js). That difference still
+    // matters now every division has an Edit Row: time off has no modal and
+    // never will, because it injects nothing to edit — and it is still an
+    // approval somebody has to be able to take back.
     async function unapproveEntry(id) {
       const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
       if (!e) return;
@@ -7323,6 +7350,133 @@
       if (!e || e.entry_type !== 'daily') return false;
       if (e.division === 'trucking') return true;
       return e.division === 'dust' && !!e.job_id && !EES_JOB_IDS.includes(String(e.job_id));
+    }
+
+    // The other half of that routing decision: a dust day on one of the two
+    // standing EES activities, which posts one row to the dust EES Other tab
+    // instead of Truck Tracking. Exactly the entries entryNeedsTrucking excludes
+    // by way of EES_JOB_IDS, so the two are disjoint and every dust day with a
+    // job answers one of them. Mirrors the server's `division === 'dust' &&
+    // isEesJob(job_id)` in api/timesheet-entries.js — drift and payroll offers
+    // an Edit Row the resplit endpoint refuses, or hides one it would accept.
+    function entryNeedsEes(e) {
+      return !!e && e.entry_type === 'daily' && e.division === 'dust'
+        && !!e.job_id && EES_JOB_IDS.includes(String(e.job_id));
+    }
+    // "Pre Loading" / "Washing" — what the row's Activity column reads, which is
+    // decided server-side off the job id alone (insertEesOtherRow).
+    function eesActivityLabel(e) {
+      return String((e && e.job_id) || '') === 'ees:washing' ? 'Washing' : 'Pre Loading';
+    }
+
+    // ── Dust EES row edit modal ───────────────────────────────────────────
+    // Edit-only: see the modal markup for why approving an EES day stays a
+    // plain confirm. The boxes are filled from the ENTRY, not from a read of
+    // the posted row, because the entry is where these six columns live — the
+    // row is rebuilt from them on every re-injection, so the entry is what the
+    // tab will show. That also means there is no pre-fill round trip to race,
+    // and none of the "still loading, saving now would blank it" guarding the
+    // quarry and trucking modals need.
+    let eesEntry = null;
+
+    const EES_LABEL_STYLE = Q_LABEL_STYLE;
+    const EES_INPUT_STYLE = Q_INPUT_STYLE;
+
+    function _eesTextField(id, label, val, maxlen, placeholder) {
+      return `<label style="${EES_LABEL_STYLE}"><span>${escapeHtml(label)}</span>` +
+        `<input type="text" id="${id}" maxlength="${maxlen}" value="${escapeHtml(String(val == null ? '' : val))}" ` +
+        `placeholder="${escapeHtml(placeholder || '')}" style="${EES_INPUT_STYLE}"></label>`;
+    }
+
+    function eesFieldsHtml(e) {
+      // Customer is the one box where blank is not blank: insertEesOtherRow
+      // falls back to the job label, so say which label it would use rather
+      // than letting payroll read an empty box as an empty column.
+      const fallback = e.job_label || e.job_id || '';
+      const billing  = e.ees_billing === 'Billable' ? 'Billable' : 'Non-Billable';
+      return [
+        _eesTextField('ees_unit',      'Unit',       e.ees_unit,       100, 'Truck / unit #'),
+        _eesTextField('ees_customer',  'Customer',   e.ees_customer,   500, fallback),
+        _eesTextField('ees_location',  'Location',   e.ees_location,   500, 'Pad / site'),
+        _eesTextField('ees_name',      'Name',       e.ees_name,       500, 'Contact name'),
+        _eesTextField('ees_job_number','Job Number', e.ees_job_number, 100, 'Job #'),
+        `<label style="${EES_LABEL_STYLE}"><span>Billing</span>` +
+        `<select id="ees_billing" style="${EES_INPUT_STYLE}">` +
+          `<option value="Non-Billable"${billing === 'Non-Billable' ? ' selected' : ''}>Non-Billable</option>` +
+          `<option value="Billable"${billing === 'Billable' ? ' selected' : ''}>Billable</option>` +
+        `</select></label>`,
+      ].join('');
+    }
+
+    function openEesModalById(id) {
+      const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
+      if (!e) return alert('Entry not found.');
+      openEesModal(e);
+    }
+
+    function openEesModal(entry) {
+      eesEntry = entry;
+      document.getElementById('eesTitle').textContent =
+        'Edit EES Row — ' + (entry.username || '') + ' \u00b7 ' + prettyDate(entry.work_date);
+      document.getElementById('eesSummary').innerHTML = `
+        <div>Employee: <strong>${escapeHtml(entry.username || '')}</strong></div>
+        <div>Date: <strong>${escapeHtml(prettyDate(entry.work_date))}</strong></div>
+        <div>Activity: <strong>${escapeHtml(eesActivityLabel(entry))}</strong></div>
+        <div>Hours (injected): <strong>${num2(Number(entry.computed_hours) || 0)}</strong></div>
+        <div>Supervisor: <strong>${escapeHtml(entry.supervisor_name || '\u2014')}</strong></div>
+        <div>Rate: <strong>set in the dust office's EES Other tab</strong></div>
+      `;
+      const msg = document.getElementById('eesMsg');
+      msg.textContent = ''; msg.className = 'modal-msg';
+      document.getElementById('eesFields').innerHTML = eesFieldsHtml(entry);
+      document.getElementById('eesBackdrop').classList.add('open');
+    }
+
+    function closeEes() {
+      document.getElementById('eesBackdrop').classList.remove('open');
+      eesEntry = null;
+    }
+    bindBackdropClose(document.getElementById('eesBackdrop'), closeEes);
+
+    function _eesval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+
+    async function eesSave() {
+      if (!eesEntry) return;
+      const msg = document.getElementById('eesMsg');
+      msg.className = 'modal-msg';
+      const btn = document.getElementById('eesSaveBtn');
+      // Every box is sent, blank included: blank is a real answer here — it
+      // clears a column the driver filled in by mistake — and the boxes were
+      // filled from the entry, so there is no half-loaded state where sending
+      // them would wipe something this modal never showed.
+      const ees = {
+        unit:       _eesval('ees_unit'),
+        customer:   _eesval('ees_customer'),
+        location:   _eesval('ees_location'),
+        name:       _eesval('ees_name'),
+        job_number: _eesval('ees_job_number'),
+        billing:    _eesval('ees_billing') || 'Non-Billable',
+      };
+      btn.disabled = true;
+      try {
+        const res = await fetch(
+          '/api/timesheet-entries?action=resplit&id=' + encodeURIComponent(eesEntry.id),
+          { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ ees }) }
+        );
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        msg.classList.add('success');
+        msg.textContent = 'Row updated.';
+        if (j.entry) applyEntryUpdate(j.entry);
+        renderRows();
+        renderStats();
+        setTimeout(closeEes, 600);
+      } catch (err) {
+        msg.classList.add('error');
+        msg.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
     }
     function truckingFieldsHtml(row) {
       const r = row || {};

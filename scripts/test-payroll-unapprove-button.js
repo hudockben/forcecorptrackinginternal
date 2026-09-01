@@ -59,6 +59,8 @@ assert('Edit Row stays gated on entryNeedsQuarry',
   /\$\{!isPending && entryNeedsQuarry\(e\) \?/.test(HTML));
 assert('Edit Row stays gated on entryNeedsTrucking',
   /\$\{!isPending && entryNeedsTrucking\(e\) \?/.test(HTML));
+assert('Edit Row is gated on entryNeedsEes',
+  /\$\{!isPending && entryNeedsEes\(e\) \?/.test(HTML));
 assert('the confirm text does not promise cost rows for time off',
   /const injects = e\.entry_type !== 'time_off';/.test(HTML));
 
@@ -162,10 +164,10 @@ function entry(over) {
 
 // barrmike's two rows from the report, plus one of every other division.
 const CASES = [
-  { id: 'dust-ees',    label: 'dust EES Pre Loading',  edits: false,
+  { id: 'dust-ees',    label: 'dust EES Pre Loading',  edits: true,
     e: entry({ id: 'dust-ees',  username: 'barrmike',  division: 'dust',
                job_id: 'ees:preloading', job_label: 'EES - Pre Loading' }) },
-  { id: 'dust-ees-w',  label: 'dust EES Washing',      edits: false,
+  { id: 'dust-ees-w',  label: 'dust EES Washing',      edits: true,
     e: entry({ id: 'dust-ees-w', username: 'washguy',  division: 'dust',
                job_id: 'ees:washing', job_label: 'EES - Washing' }) },
   { id: 'dust-cust',   label: 'dust customer haul',    edits: true,
@@ -218,7 +220,8 @@ console.log('\n[behavioural — the Edit buttons keep their own gate]');
 for (const c of CASES) {
   const opensModal = approvedHtml.includes(`openSplitModalById('${c.id}'`)
     || approvedHtml.includes(`openQuarryModalById('${c.id}'`)
-    || approvedHtml.includes(`openTruckingModalById('${c.id}'`);
+    || approvedHtml.includes(`openTruckingModalById('${c.id}'`)
+    || approvedHtml.includes(`openEesModalById('${c.id}'`);
   assert(`${c.label} ${c.edits ? 'has an' : 'has no'} Edit modal button`, opensModal === c.edits);
 }
 

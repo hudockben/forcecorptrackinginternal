@@ -356,8 +356,20 @@ function entry(over = {}) {
     // entry that made it (approve injects, un-approve/delete miss it).
     const gates = SRC.match(/couldHaveEesOtherRows\(existing\)/g) || [];
     assert('un-approve, delete and the edit guard share the gate', gates.length === 3, `found ${gates.length}`);
-    assert('and none of the three still asks the old narrower one',
-      !/existing\.division === 'dust' && isEesJob\(existing\.job_id\)/.test(SRC));
+    // The narrow gate is not banned outright any more: payroll's Edit Row
+    // (action=resplit) asks it ON PURPOSE, because that branch owns the single
+    // standing-activity row and nothing else — editing a customer haul's leg
+    // rows is the haul modal's job, and it removes nothing either way. What
+    // must never ask it is a site that SWEEPS, which is the failure this pair
+    // of assertions exists to catch. So: exactly one narrow use, and all three
+    // wide ones still leading straight into the removal they gate.
+    const narrow = SRC.match(/existing\.division === 'dust' && isEesJob\(existing\.job_id\)/g) || [];
+    assert('the narrow gate is used exactly once (the EES resplit branch)',
+      narrow.length === 1, `found ${narrow.length}`);
+    const swept = SRC.match(
+      /couldHaveEesOtherRows\(existing\)\)\s*\{[\s\S]{0,300}?(removeEesOtherRows|eesOtherHasInjectedRow)/g) || [];
+    assert('and every teardown still sweeps from behind the wide gate',
+      swept.length === 3, `found ${swept.length}`);
   }
 
   // ── A customer haul billed off "Other Billing - Non Billable" ───────────
