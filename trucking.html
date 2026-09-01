@@ -4895,12 +4895,12 @@
 
     /* ═══════ How the daily report is grouped ═══════
        The truck supervisor's daily report reads as sections — the tri-axles,
-       then the lowboys, then anything hauled for Dust Control — so the sheet
-       is built the same way rather than as one flat run of rows.
+       then the lowboys, then anything hauled for EES — so the sheet is
+       built the same way rather than as one flat run of rows.
 
-       Dust Control is decided before the truck type because that is how the
-       report reads: work for dust is called out on its own whatever it went
-       out on, rather than being split across the truck sections.
+       EES is decided before the truck type because that is how the report
+       reads: work for EES is called out on its own whatever it went out
+       on, rather than being split across the truck sections.
 
        The truck type is the unit's own (see UNIT_TYPES, set in Manage Lists),
        falling back to what its name gives away for a unit nobody has typed one
@@ -4910,8 +4910,8 @@
        never dropped for want of a type. */
     const SCHED_GROUPS = [
       ...UNIT_TYPES.map(t => ({ key: t.key, label: t.label })),
-      { key: 'dust',  label: 'Dust Control' },
-      { key: 'other', label: 'Other'        },
+      { key: 'dust',  label: 'EES'   },
+      { key: 'other', label: 'Other' },
     ];
 
     function schedTruckGroup(a) {
@@ -5708,7 +5708,7 @@
       { key: 'turf',     label: 'Turf'          },
       { key: 'paving',   label: 'Paving'        },
       { key: 'kiewit',   label: 'Kiewit'        },
-      { key: 'dust',     label: 'Dust Control'  },
+      { key: 'dust',     label: 'EES'           },
       { key: 'trucking', label: 'Trucking'      },
       { key: 'quarry',   label: 'Quarry'        },
     ];
