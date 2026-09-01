@@ -31,6 +31,11 @@
  *      asserted to refuse exactly when the posted row is unknown, and to go
  *      through when it is known or when there is nothing to know.
  *
+ * The fuel boxes are covered here too, for a different failure: the form used to
+ * take a dollar TOTAL and derive $/gal, supervisors read "Fuel Cost ($)" as the
+ * pump price, and 190 gallons at a typed 4.50 was stored as $0.0237/gal — $4.50
+ * of fuel for a day that burned $855. The typed box is the per-gallon price now.
+ *
  * No DB, no browser.
  */
 
@@ -88,7 +93,7 @@ console.log('[the pre-fill cannot be mistaken for an empty row]');
 function runSave(rowLoad, mode) {
   const boxes = {
     q_equipmentName: { value: 'Loader' }, q_taskName: { value: 'Stripping' },
-    q_rate: { value: '42' }, q_fuelGallons: { value: '0' }, q_fuelCost: { value: '0' },
+    q_rate: { value: '42' }, q_fuelGallons: { value: '0' }, q_fuelPerGal: { value: '0' },
     q_hours: { value: '8' }, q_tons: { value: '' }, q_comments: { value: '' },
     quarrySaveBtn: { textContent: '', disabled: false },
     quarryMsg: {
@@ -148,6 +153,107 @@ console.log('\n[and when it is known, or there is nothing to know]');
   const fresh = runSave('none', 'approve');
   assert('a fresh approve is never blocked', fresh.posts.length === 1);
   assert('as an approve', /action=approve/.test(fresh.posts[0].url), fresh.posts[0] && fresh.posts[0].url);
+}
+
+// ── 3) Which fuel box is typed, and which is derived ────────────────────────
+// quarryFieldsHtml / recalcQuarryFuelCost / collectQuarryFields, run for real
+// against stubbed boxes. Getting this backwards is the bug they exist to stop.
+function fuelCtx(boxes) {
+  const ctx = {
+    escapeHtml: v => String(v == null ? '' : v).replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+    num2: n => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2),
+    Q_LABEL_STYLE: 'label', Q_INPUT_STYLE: 'input', Q_RO_STYLE: 'input;readonly-look',
+    QUARRY_DEFAULT_RATE: 26,
+    quarryEntry: { username: 'boringjamey' },
+    quarryEmployeeRate: () => null,
+    quarryEquipOptions: [], quarryTaskOptions: [],
+    _qval: id => (boxes[id] ? boxes[id].value : ''),
+    document: { getElementById: id => boxes[id] || null },
+    console,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(
+    slice('function _qNumField(id, label, val, span)', '\n    function openQuarryModalById(', 'quarry fuel fields'),
+    ctx);
+  return ctx;
+}
+// The <input …> tag carrying `id`, so readonly/value can be asserted per box.
+function tagFor(html, id) {
+  const m = new RegExp('<input[^>]*id="' + id + '"[^>]*>').exec(html);
+  return m ? m[0] : '';
+}
+
+console.log('\n[the pump price is typed; the dollar total is the derived one]');
+for (const activity of ['crushing', 'daily']) {
+  // A row already on file: 190 gallons at $4.50/gal. Crushing keeps the
+  // per-gallon rate in fuelCost, Daily in ppg — both hold $/gal, not dollars.
+  const stored = activity === 'crushing'
+    ? { fuelGallons: 190, fuelCost: 4.5 }
+    : { fuelGallons: 190, ppg: 4.5 };
+  const html   = fuelCtx({}).quarryFieldsHtml(activity, stored);
+  const perGal = tagFor(html, 'q_fuelPerGal');
+  const total  = tagFor(html, 'q_fuelCostAuto');
+
+  assert(`${activity}: the $/gal box holds the stored per-gallon rate`,
+    /value="4\.5"/.test(perGal), perGal);
+  assert(`${activity}: …and is the box that can be typed in`,
+    !!perGal && !/readonly/.test(perGal), perGal);
+  assert(`${activity}: fuel cost reads gallons × $/gal`,
+    /value="855\.00"/.test(total), total);
+  assert(`${activity}: …read-only, so the total can't be typed in by mistake`,
+    /readonly/.test(total), total);
+}
+
+console.log('\n[what the total does as the boxes are filled]');
+{
+  const boxes = {
+    q_fuelGallons:  { value: '190' },
+    q_fuelPerGal:   { value: '4.50' },
+    q_fuelCostAuto: { value: '' },
+  };
+  const ctx = fuelCtx(boxes);
+  ctx.recalcQuarryFuelCost();
+  assert('190 gallons at $4.50 comes to $855.00', boxes.q_fuelCostAuto.value === '855.00',
+    boxes.q_fuelCostAuto.value);
+
+  boxes.q_fuelPerGal.value = '';
+  ctx.recalcQuarryFuelCost();
+  assert('and a half-filled pair shows nothing rather than $0.00',
+    boxes.q_fuelCostAuto.value === '', boxes.q_fuelCostAuto.value);
+}
+
+console.log('\n[and what Save sends]');
+{
+  const boxes = {
+    q_hourlyRate:   { value: '26' }, q_hoursCrushing: { value: '5' },
+    q_loadsToCrusher: { value: '24' }, q_tonsPerLoad: { value: '30' },
+    q_fuelGallons:  { value: '190' }, q_fuelPerGal:   { value: '4.50' },
+    q_fuelCostAuto: { value: '855.00' }, q_comments:   { value: '' },
+    q_equipmentName: { value: 'Crusher' }, q_taskName:  { value: 'Crushing' },
+    q_rate:         { value: '26' },
+  };
+  const ctx = { _qval: id => (boxes[id] ? boxes[id].value : ''), console };
+  vm.createContext(ctx);
+  vm.runInContext(
+    slice('function collectQuarryFields(activity)', '\n    async function quarrySave()', 'collectQuarryFields'),
+    ctx);
+
+  const crush = ctx.collectQuarryFields('crushing');
+  assert('crushing posts the typed $/gal as its per-gallon fuelCost',
+    Number(crush.fuelCost) === 4.5, JSON.stringify(crush.fuelCost));
+  const daily = ctx.collectQuarryFields('daily');
+  assert('daily posts it as ppg', Number(daily.ppg) === 4.5, JSON.stringify(daily.ppg));
+
+  // The grid and the executive report both cost fuel as gallons × the stored
+  // per-gallon rate. That product is the total the modal showed — which is the
+  // whole point: what was on screen is what the quarry office gets billed.
+  assert('the grid re-derives the $855 the modal showed',
+    Number(crush.fuelGallons) * Number(crush.fuelCost) === 855,
+    String(Number(crush.fuelGallons) * Number(crush.fuelCost)));
+  assert('…and so does Daily',
+    Number(daily.fuelGallons) * Number(daily.ppg) === 855,
+    String(Number(daily.fuelGallons) * Number(daily.ppg)));
 }
 
 console.log('\n[the turf/paving split modal has the same guard]');
