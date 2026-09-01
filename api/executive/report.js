@@ -120,7 +120,20 @@ async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legac
   const allIds = Array.isArray(idx)
     ? idx
     : (idx && Array.isArray(idx.ids) ? idx.ids : []);
-  const ids = limit ? allIds.slice(0, limit) : allIds;
+
+  // The index is written as `projectsList.map(p => p.id)` and projectsList is
+  // APPENDED to — on load, on create, on legacy recovery — so index order is
+  // creation order: oldest first. Every page reverses it to display (the home
+  // cards do `.slice().reverse()`, the dashboard floats pinned to the front).
+  //
+  // So slicing from the FRONT returned the oldest N, which is the opposite of
+  // what any caller asking for a window wants. Mathis asked for twelve and got
+  // twelve long-closed jobs, then told the model they were "the most recent" —
+  // wrong figures delivered with a claim of correctness. Take from the end.
+  //
+  // Only the limited path changes. Callers that pass no limit (the executive
+  // report) still get the index in its stored order, byte for byte.
+  const ids = limit ? allIds.slice(-limit).reverse() : allIds;
 
   if (ids.length) {
     const keys = ids.map(id => `${companyCode}:${projKeyPrefix}${id}`);
@@ -129,9 +142,16 @@ async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legac
     // Preserve index order (pinned-first / most-recent-first depending on
     // how the home page maintains it) so the executive surfaces the same
     // ordering users see in the tracker.
-    return ids
+    const found = ids
       .map(id => byKey.get(`${companyCode}:${projKeyPrefix}${id}`))
       .filter(v => v && typeof v === 'object');
+    // Pinned first inside the window, the way the dashboard orders the same
+    // list. Only within what was read: a pinned job older than the window is
+    // still outside it, which is why callers that need a job BY NAME must
+    // search unlimited rather than hope it landed in the slice.
+    return limit
+      ? [...found.filter(p => p.pinned), ...found.filter(p => !p.pinned)]
+      : found;
   }
 
   if (legacyArrayKey) {
@@ -140,7 +160,10 @@ async function readProjectBlobs(sql, companyCode, indexKey, projKeyPrefix, legac
     `;
     const v = r[0]?.value;
     const list = Array.isArray(v) ? v.filter(p => p && typeof p === 'object') : [];
-    return limit ? list.slice(0, limit) : list;
+    // Same end of the same list, for the legacy single-blob layout.
+    return limit
+      ? [...list].reverse().slice(0, limit)
+      : list;
   }
   return [];
 }

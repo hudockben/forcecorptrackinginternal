@@ -105,7 +105,7 @@ function toolsFor(scope, division) {
         // Naming turf, paving and kiewit here to explain `limit` would tell a
         // quarry foreman those divisions exist. The sentence is division-free
         // for the same reason the enum is scoped.
-        + '. A division that runs jobs returns per-job financials, its purchase orders, its cost-code catalogue, its equipment roster and hours, its employee roster and job assignments, and a count of the paperwork on file — file names only, never contents. Pay rates and worked hours come back only for callers whose access level includes them; the digest says which. `limit` sets how many of the most recent jobs to read.',
+        + '. A division that runs jobs returns per-job financials, its purchase orders, its cost-code catalogue, its equipment roster and hours, its employee roster and job assignments, and a count of the paperwork on file — file names only, never contents. Pay rates and worked hours come back only for callers whose access level includes them; the digest says which. Without `job` it reads the most recent handful, which `limit` sizes; with `job` it searches every job in the division by name and number.',
       input_schema: {
         type: 'object',
         properties: {
@@ -113,6 +113,11 @@ function toolsFor(scope, division) {
             type: 'string',
             enum: reachable,
             description: 'Which division to read. Only the values listed are available to this user.',
+          },
+          job: {
+            type: 'string',
+            maxLength: 80,
+            description: 'A job name or job number to look up. Use this WHENEVER the user names a specific job — it searches every job in the division, while the default read is only the most recent handful. Partial names match.',
           },
           limit: {
             type: 'integer',
@@ -298,8 +303,13 @@ async function runTool(c, name, input) {
 
     const raw = input && input.limit;
     const limit = Number.isFinite(Number(raw)) ? Math.min(Math.max(1, Math.floor(Number(raw))), MAX_LIMIT) : undefined;
+    // Free text, but it never reaches a query: it is matched in JS against
+    // project names already read and already authorised for this caller. The
+    // digest layer caps and strips it like every other string a colleague
+    // could have typed.
+    const job = typeof (input && input.job) === 'string' ? input.job : undefined;
 
-    const digest = await digests.buildDigest(c, division, { limit });
+    const digest = await digests.buildDigest(c, division, { limit, job });
     return { digest };
   }
 

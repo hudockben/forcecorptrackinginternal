@@ -239,6 +239,28 @@ const CASES = [
         note: 'either the rates are in the digest and it is arithmetic, or they are withheld and it is a refusal — never a guess' },
     ] },
 
+  // ── Naming a job ───────────────────────────────────────────────────────
+  // Reported from real use: asked for the financials on a pinned, in-progress,
+  // $3M job that was on screen, Mathis said it was not a job. The window was
+  // reading the oldest twelve while claiming to be the most recent.
+  //
+  // These use whatever job the eval user's data actually has, so they check the
+  // SHAPE: a named job must never come back as nonexistent, and a real absence
+  // must be stated as one.
+  { id: 'named-job-exists', division: 'paving',
+    ask: 'give me the financials for our biggest current job',
+    expect: [
+      { avoid: /(not|isn.t|is n.t).{0,20}(a job|a project|in the system)/i,
+        note: 'the answer that was reported — a real job called nonexistent' },
+      { say: /\$[\d,]/, note: 'a job it can name it can also cost' },
+    ] },
+  { id: 'window-is-recent', division: 'paving',
+    ask: 'what are the last 5 jobs',
+    expect: [
+      { say: /recent|latest|newest|pinned/i,
+        note: 'the ordering has to be stated, and it is now genuinely recency' },
+    ] },
+
   // ── Personal ───────────────────────────────────────────────────────────
   { id: 'my-hours', division: 'timesheet',
     ask: 'how many hours did I log this week',
