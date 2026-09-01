@@ -229,6 +229,52 @@ const q = (sql, p) => client.query(sql, p).then(r => r.rows);
       `truck_unit=${JSON.stringify(saved2.truck_unit)}`);
   }
 
+  console.log('\n[payroll correcting the hours does not lose the truck]');
+  {
+    // Payroll's Edit Entry modal edits the DAY — date, job, clock, lunch — and
+    // sends neither haul_type nor truck_unit. Both must survive, or the entry
+    // stays a haul with no truck and the approval posts a row that costs the
+    // job nothing at all.
+    const c = await call('POST', {}, {
+      entry_type: 'daily', work_date: '2026-09-22', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '13:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+      haul_type: 'off_site', truck_unit: 'Lowboy',
+    }, FIELD);
+    const eid = c.body.entry.id;
+
+    const put = await call('PUT', { id: eid }, {
+      entry_type: 'daily', work_date: '2026-09-22', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '15:00',      // the correction
+      lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+    }, FIELD);
+    assert('the edit saves', put.statusCode === 200, JSON.stringify(put.body).slice(0, 160));
+
+    const [after] = await q(
+      'SELECT haul_type, truck_unit, computed_hours::float ch FROM timesheet_entries WHERE id=$1',
+      [eid]);
+    assert('the correction landed', after.ch === 8, `hours=${after.ch}`);
+    assert('the haul answer survives', after.haul_type === 'off_site');
+    assert('  and so does the truck', after.truck_unit === 'Lowboy',
+      `truck_unit=${JSON.stringify(after.truck_unit)}`);
+
+    // Present still wins, blank included — a driver clearing his own answer.
+    const put2 = await call('PUT', { id: eid }, {
+      entry_type: 'daily', work_date: '2026-09-22', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '15:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+      haul_type: '', truck_unit: '',
+    }, FIELD);
+    assert('clearing it explicitly still works', put2.statusCode === 200);
+    const [after2] = await q('SELECT haul_type, truck_unit FROM timesheet_entries WHERE id=$1', [eid]);
+    assert('  the answer is gone', after2.haul_type === null);
+    assert('  and the truck with it', !after2.truck_unit);
+  }
+
   console.log('\n[a haul row must not cost the job nothing at all]');
   const id4 = await mk();
   const r4 = await call('POST', { action: 'approve', id: id4 },

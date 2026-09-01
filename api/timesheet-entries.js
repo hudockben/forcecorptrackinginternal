@@ -3744,6 +3744,11 @@ module.exports = async (req, res) => {
         return res.status(409).json({ error: `Cannot approve an entry that is ${existing.status}` });
       }
 
+      // Set when the approver's answer actually changes the stored one, so the
+      // rollback below can put it back and the audit record can say what moved.
+      let priorHaulType   = null;
+      let haulTypeChanged = false;
+
       const needsSplit =
         existing.entry_type === 'daily' &&
         AUTO_INJECT_DIVISIONS.includes(existing.division);
@@ -3786,14 +3791,17 @@ module.exports = async (req, res) => {
         if (Object.prototype.hasOwnProperty.call(req.body || {}, 'haul_type')) {
           const nextHaul = safeHaulType(req.body.haul_type);
           if (nextHaul !== (existing.haul_type || null)) {
+            priorHaulType = existing.haul_type || null;
+            haulTypeChanged = true;
             await sql`
               UPDATE timesheet_entries SET haul_type = ${nextHaul}, updated_at = NOW()
               WHERE id = ${id} AND company_code = ${companyCode}
             `;
           }
-          // insertSplitRows prices off this object, so it has to carry the new
-          // answer — re-reading the row would be a second round trip for a value
-          // we already hold.
+          // Keeps this in-memory copy honest for anything below that reads it.
+          // It is NOT what the split is priced from — insertSplitRows is handed
+          // `updated`, the RETURNING * row from the status flip, which is read
+          // back after the write above and already carries the new answer.
           existing.haul_type = nextHaul;
         }
       }
@@ -3942,6 +3950,21 @@ module.exports = async (req, res) => {
             try { await removeEesOtherRows(sql, companyCode, updated); }
             catch (cleanupErr) { console.error('[timesheet-entries] EES Other rollback cleanup failed:', cleanupErr.message); }
           }
+          // The hauling answer was written BEFORE the injection, so it has to
+          // come back too. It is not cosmetic: left behind, the entry reads as
+          // pending while its hours have already moved out of prevailing in the
+          // Hours Report and the Excel export — for an approval that never
+          // happened.
+          if (haulTypeChanged) {
+            try {
+              await sql`
+                UPDATE timesheet_entries SET haul_type = ${priorHaulType}, updated_at = NOW()
+                WHERE id = ${id} AND company_code = ${companyCode}
+              `;
+            } catch (cleanupErr) {
+              console.error('[timesheet-entries] haul_type rollback failed:', cleanupErr.message);
+            }
+          }
           await sql`
             UPDATE timesheet_entries
             SET status              = 'submitted',
@@ -3971,9 +3994,17 @@ module.exports = async (req, res) => {
         if (withUnit) approvedRow = withUnit;
       }
 
+      // Reclassifying a day's haul answer moves the driver's hours between
+      // prevailing and standard — real money on his cheque — so it goes on the
+      // record with who did it and what it was before. The same handler already
+      // logs the truck unit and the dust row counts; this is the one field that
+      // changes what somebody is paid.
+      const haulAudit = haulTypeChanged
+        ? { haul_type_from: priorHaulType, haul_type_to: (existing.haul_type || null) }
+        : null;
       await writeAudit(
         sql, companyCode, payload, id, 'APPROVE',
-        splitRows ? { split_row_count: splitRows.length }
+        splitRows ? Object.assign({ split_row_count: splitRows.length }, haulAudit)
           : quarryInject ? { quarry_activity: quarryInject.activity }
           : (needsTrucking || needsDust)
             ? {
@@ -4266,14 +4297,19 @@ module.exports = async (req, res) => {
       // key leaves the entry's own alone. This is the only way to correct a
       // mis-classified haul on a day that is already approved, short of
       // un-approving it — and the rows are about to be re-priced from it below.
+      let rsPriorHaul = null, rsHaulChanged = false;
       if (Object.prototype.hasOwnProperty.call(req.body || {}, 'haul_type')) {
         const nextHaul = safeHaulType(req.body.haul_type);
         if (nextHaul !== (existing.haul_type || null)) {
+          rsPriorHaul = existing.haul_type || null;
+          rsHaulChanged = true;
           await sql`
             UPDATE timesheet_entries SET haul_type = ${nextHaul}, updated_at = NOW()
             WHERE id = ${id} AND company_code = ${companyCode}
           `;
         }
+        // Read by insertSplitRows below — the resplit path passes `existing`,
+        // not a re-read row, so this one IS the pricing source.
         existing.haul_type = nextHaul;
       }
 
@@ -4297,7 +4333,10 @@ module.exports = async (req, res) => {
 
       await writeAudit(
         sql, companyCode, payload, id, 'ADMIN_EDIT',
-        { resplit: true, split_row_count: splitRows.length },
+        Object.assign({ resplit: true, split_row_count: splitRows.length },
+          rsHaulChanged
+            ? { haul_type_from: rsPriorHaul, haul_type_to: (existing.haul_type || null) }
+            : null),
         dbToEntry(existing),
       );
       return res.json(await entryJson(sql, companyCode, existing));
@@ -4740,7 +4779,23 @@ module.exports = async (req, res) => {
       const staysTruck  = needsTruckTrackingRow({
         entry_type: data.entry_type, division: data.division, job_id: data.job_id,
       });
-      const keepUnit    = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_unit');
+      // A haul on turf/paving/kiewit keeps its truck in this same column, so it
+      // needs the same "absent means keep" protection. Without it, payroll
+      // correcting the hours on a haul day — an edit that sends neither key —
+      // wiped the unit the driver had named, while keepHaul below preserved the
+      // haul answer: still a haul, no truck, and the approval then posts a row
+      // that costs the job nothing at all.
+      //
+      // "Still a haul" is what the row will hold AFTER this write: the body's
+      // answer when it sent one, otherwise the stored one, which keepHaul keeps.
+      const nextHaulForUnit = Object.prototype.hasOwnProperty.call(body, 'haul_type')
+        ? safeHaulType(body.haul_type)
+        : (existing.haul_type || null);
+      const staysHaulUnit = data.entry_type === 'daily'
+        && !!nextHaulForUnit
+        && AUTO_INJECT_DIVISIONS.includes(data.division);
+      const keepUnit    = (staysTruck || staysHaulUnit)
+        && !Object.prototype.hasOwnProperty.call(body, 'truck_unit');
       const keepTruckDesc = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_description');
 
       // The same rule again for the six EES columns, for the same reason and

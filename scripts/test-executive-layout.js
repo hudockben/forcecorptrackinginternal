@@ -296,9 +296,16 @@ console.log('\n[every consumer of payrollMetrics is fed haul_type]');
     const RE = /SELECT((?:(?!\bFROM\b)[\s\S])*?)\bFROM\s+timesheet_entries/gi;
     const cols = [...s.matchAll(RE)].map(m => m[1]);
     assert(`  ${rel} selects from timesheet_entries`, cols.length > 0);
-    // A bare `SELECT *` is fine — it carries every column by construction.
+    // A bare `SELECT *` carries every column by construction — but only where
+    // it is the ONLY query in the file. With a sibling explicit list, a `*`
+    // elsewhere would satisfy a plain `.some` while the query that actually
+    // feeds payrollMetrics had the column deleted from under it, which is the
+    // masking this block exists to prevent. So: all-star files pass, and any
+    // file with an explicit list must name the column in one of them.
+    const allStar  = cols.every(c => /\*/.test(c));
+    const explicit = cols.some(c => !/\*/.test(c) && /\bhaul_type\b/.test(c));
     assert(`  ${rel} passes haul_type through to payrollMetrics`,
-      cols.some(c => /\*/.test(c) || /\bhaul_type\b/.test(c)),
+      allStar || explicit,
       `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
   }
 }

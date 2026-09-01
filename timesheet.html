@@ -908,16 +908,27 @@
     function equipmentNamesLoad() {
       if (equipmentNames) return Promise.resolve(equipmentNames);
       if (!equipmentNamesPromise) {
+        // A non-2xx must not be cached. It used to fall through to `[]`, which
+        // is truthy, so one expired-token 401 left the picker holding nothing
+        // but "— pick —" for the rest of the session — and a driver then marks
+        // a block a haul and submits it with no truck, which is the state this
+        // whole question exists to avoid. Only a real answer is kept; anything
+        // else clears the promise so the next call tries again.
         equipmentNamesPromise = fetch('/api/equipment', { headers: authHeaders() })
-          .then(r => (r.ok ? r.json() : null))
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
           .then(j => {
-            equipmentNames = (j && Array.isArray(j.equipment) ? j.equipment : [])
+            const names = (j && Array.isArray(j.equipment) ? j.equipment : [])
               .map(e => (e && e.name) || '')
               .filter(Boolean)
               .sort((a, b) => a.localeCompare(b));
-            return equipmentNames;
+            equipmentNames = names;
+            return names;
           })
-          .catch(() => { equipmentNamesPromise = null; return null; });
+          .catch(err => {
+            console.error('[timesheet] equipment list failed to load:', err.message);
+            equipmentNamesPromise = null;
+            return null;
+          });
       }
       return equipmentNamesPromise;
     }

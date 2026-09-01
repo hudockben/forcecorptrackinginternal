@@ -50,12 +50,21 @@ function fnSource(name) {
 // this test exists precisely to pin what the page does.
 const travelRe = /^\s*const TRAVEL_CODE_RE = (\/.*\/[a-z]*);$/m.exec(src);
 if (!travelRe) throw new Error('TRAVEL_CODE_RE not found in payroll.html');
-const run = (splitEntry, splitRows) => new Function(
-  'splitEntry', 'splitRows',
+// splitHaulAnswer, not splitEntry.haul_type: the picker's value is held apart
+// from the cached grid entry on purpose, so trying an answer and cancelling
+// cannot move a day's hours out of prevailing on the page behind the modal.
+// splitHaulIs comes across too — it is the one place the answer is read.
+const HAUL_PRELUDE =
   `const TRAVEL_CODE_RE = ${travelRe[1]};\n` +
-  `${fnSource('isTravelSplitRow')}\n${fnSource('splitHaulUnpricedRows')}\n` +
+  `const splitHaulIs = () =>\n` +
+  `  (splitHaulAnswer === 'on_site' || splitHaulAnswer === 'off_site') ? splitHaulAnswer : null;\n` +
+  `${fnSource('isTravelSplitRow')}\n`;
+
+const run = (splitEntry, splitRows) => new Function(
+  'splitEntry', 'splitRows', 'splitHaulAnswer',
+  `${HAUL_PRELUDE}${fnSource('splitHaulUnpricedRows')}\n` +
   `return splitHaulUnpricedRows();`,
-)(splitEntry, splitRows);
+)(splitEntry, splitRows, (splitEntry && splitEntry.haul_type) || '');
 
 const HAUL  = { haul_type: 'off_site' };
 const ONSITE = { haul_type: 'on_site' };
@@ -187,15 +196,15 @@ console.log('\n[a haul row fills in its own truck and hours]');
 {
   const mk = (over, proj, haul) => {
     const sb = {
-      splitEntry: { haul_type: haul === undefined ? 'off_site' : haul },
+      splitEntry: {},
+      splitHaulAnswer: haul === undefined ? 'off_site' : (haul || ''),
       splitRows: [],
       splitProjEquipment: proj || [],
     };
     vm.createContext(sb);
     vm.runInContext(
-      `const TRAVEL_CODE_RE = ${travelRe[1]};\n` +
-      `${fnSource('isTravelSplitRow')}\n${fnSource('splitDefaultHaulEquipment')}\n` +
-      `${fnSource('splitMirrorHaulEquipHours')}\n`, sb);
+      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n` +
+      `${fnSource('splitMirrorHaulEquipHours')}\n${fnSource('splitClearHaulAuto')}\n`, sb);
     const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
                               equipment: '', labor_hours: 6, equip_hours: 0 }, over);
     sb.splitRows = [r];
@@ -207,12 +216,11 @@ console.log('\n[a haul row fills in its own truck and hours]');
   // What the driver himself said always wins — he is the only one who knows
   // whether he was on a lowboy or a triaxle that day.
   const mkSaid = (unit, proj) => {
-    const sb = { splitEntry: { haul_type: 'off_site', truck_unit: unit },
+    const sb = { splitEntry: { truck_unit: unit }, splitHaulAnswer: 'off_site',
                  splitRows: [], splitProjEquipment: proj || [] };
     vm.createContext(sb);
     vm.runInContext(
-      `const TRAVEL_CODE_RE = ${travelRe[1]};\n` +
-      `${fnSource('isTravelSplitRow')}\n${fnSource('splitDefaultHaulEquipment')}\n`, sb);
+      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n`, sb);
     const r = { cost_code: 'Earthwork', sub_code: 'Excess Cut', equipment: '',
                 labor_hours: 6, equip_hours: 0 };
     sb.splitDefaultHaulEquipment(r);
@@ -313,6 +321,75 @@ console.log('\n[a haul row shows $0, not a blank]');
       !/(autoRate|ar) \|\| ''/.test(handler),
       (/(autoRate|ar) \|\| ''/.exec(handler) || [''])[0]);
   }
+}
+
+// ── Taking the answer back ─────────────────────────────────────────────────
+// The modal fills in a truck and its hours on a haul. If the row stops being a
+// haul, what the MODAL guessed has to go with it — otherwise the row posts the
+// full labour rate AND a truck nobody chose, or bills the commute to a truck
+// the travel rule says is not on the clock.
+console.log('\n[what the modal guessed, the modal takes back]');
+{
+  const mkClear = (haul, over) => {
+    const sb = { splitEntry: { truck_unit: 'Triaxle Dump' }, splitHaulAnswer: 'off_site',
+                 splitRows: [], splitProjEquipment: [] };
+    vm.createContext(sb);
+    vm.runInContext(
+      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n` +
+      `${fnSource('splitMirrorHaulEquipHours')}\n${fnSource('splitClearHaulAuto')}\n`, sb);
+    const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
+                              equipment: '', labor_hours: 6, equip_hours: 0 }, over);
+    sb.splitDefaultHaulEquipment(r);
+    sb.splitMirrorHaulEquipHours(r);
+    sb.splitHaulAnswer = haul;          // the approver changes their mind
+    sb.splitClearHaulAuto(r);
+    return r;
+  };
+
+  let r = mkClear('');
+  assert('answering "no" after "haul" takes the guessed truck back', r.equipment === '');
+  assert('  and its hours with it', r.equip_hours === 0);
+
+  r = mkClear('on_site');
+  assert('a haul that stays a haul keeps them',
+    r.equipment === 'Triaxle Dump' && r.equip_hours === 6);
+
+  // A truck the APPROVER typed is theirs, not the modal's to remove.
+  r = mkClear('', { equipment: 'Lowboy' });
+  assert('a truck the approver chose is never taken back', r.equipment === 'Lowboy');
+  r = mkClear('', { equip_hours: 4, _equipHoursTouched: true });
+  assert('hours the approver set are never taken back', r.equip_hours === 4);
+}
+
+// The picker's value is deliberately NOT written onto splitEntry: that object is
+// the one the grid holds, and isOffSiteHaul reads it from the Hours Report, the
+// per-employee table and the Excel export. Trying an answer and pressing Cancel
+// must not move a day's hours out of prevailing behind the modal.
+console.log('\n[trying an answer does not change the page behind the modal]');
+{
+  const change = fnSource('onSplitHaulChange');
+  assert('onSplitHaulChange writes the answer to splitHaulAnswer',
+    /splitHaulAnswer = el\.value/.test(change));
+  assert('  and never onto the cached entry',
+    !/splitEntry\.haul_type\s*=/.test(change), change);
+  assert('no code path writes haul_type onto splitEntry',
+    !/splitEntry\.haul_type\s*=/.test(src));
+  assert('closing the modal resets the pending answer',
+    /splitHaulAnswer\s*=\s*''/.test(fnSource('closeSplit')));
+  // The tests above call splitClearHaulAuto directly, so they cannot see it
+  // being unwired from the one place that runs it over every row.
+  assert('the un-fill is actually wired into the pass over every row',
+    /splitClearHaulAuto\(r\)/.test(fnSource('splitMirrorHaulEquipHoursAll')));
+  assert('  and that pass is what the picker triggers',
+    /splitMirrorHaulEquipHoursAll\(\)/.test(fnSource('onSplitHaulChange')));
+  // Rows read back by Edit Split carry hours somebody already approved. Marked
+  // touched, or the mirror rewrites a deliberate 5 h to the labour hours the
+  // next time anything on the row changes — a silent over-charge for truck time
+  // nobody logged.
+  assert('rows read back by Edit Split are marked as hand-set',
+    /is_travel:\s*!!r\.is_travel,[\s\S]{0,600}?_equipHoursTouched:\s*true,/.test(src));
+  assert('  and the job equipment, so it cannot leak into the next entry',
+    /splitProjEquipment\s*=\s*\[\]/.test(fnSource('closeSplit')));
 }
 
 console.log('\n[the haul stamp claims only its own field types]');

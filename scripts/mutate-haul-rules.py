@@ -1,3 +1,34 @@
+#!/usr/bin/env python3
+"""
+Mutation test for the truck-driver hauling rules.
+
+Run: python3 scripts/mutate-haul-rules.py
+
+A green suite proves the tests PASS. It does not prove they would FAIL if the
+behaviour broke — and an assertion that cannot fail is worse than none, because
+it reads as coverage. This breaks each haul rule in turn, runs the suite that is
+supposed to notice, and puts the file back.
+
+Every entry must report OK. A NOT CAUGHT line means that rule is unguarded:
+someone can delete it and the suite stays green. Two were found that way and are
+now covered:
+
+  * dropping haul_type from a payrollMetrics consumer's explicit SELECT — the
+    consumer then silently reports the OLD prevailing split while the others
+    report the new one, and nothing errors.
+  * the first version of that very guard, which scanned the raw source and
+    matched the COMMENT explaining the rule (it contains both "SELECT" and
+    "haul_type") rather than the query. The note written to prevent the bug was
+    hiding it. Comments are stripped before scanning now.
+
+Every entry must name a test that runs WITHOUT a database. A DB-backed suite
+invoked with no PG_TEST_URL exits non-zero for want of a connection, which this
+would read as "caught" — marking a rule guarded when nothing checked it.
+
+Anchors are exact source strings, so this file needs updating when the code it
+quotes is reformatted. A SKIP line means an anchor no longer matches: that is a
+failure to fix, not a pass, and the exit code says so.
+"""
 import io,subprocess,sys,os
 os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 # (label, file, old, new, test that MUST fail)
@@ -44,8 +75,20 @@ MUT=[
   "          const fieldType = travelRow\n            ? (r.field_type || 'Travel')",
   "scripts/test-injection-autofill.js"),
  ("split modal: ignore the truck the driver named","payroll.html",
-  "      const said = String((splitEntry && splitEntry.truck_unit) || '').trim();\n      if (said) { r.equipment = said; return true; }\n",
+  "      const said = String((splitEntry && splitEntry.truck_unit) || '').trim();\n      if (said) { r.equipment = said; r._haulAutoEquip = true; return true; }\n",
   "",
+  "scripts/test-haul-unpriced-warning.js"),
+ ("split modal: write the picker onto the cached grid entry again","payroll.html",
+  "      splitHaulAnswer = el.value || '';",
+  "      splitEntry.haul_type = el.value || null;",
+  "scripts/test-haul-unpriced-warning.js"),
+ ("split modal: stop taking back what it guessed","payroll.html",
+  "        changed = splitClearHaulAuto(r)        || changed;\n",
+  "",
+  "scripts/test-haul-unpriced-warning.js"),
+ ("resplit: treat approved equipment hours as untouched again","payroll.html",
+  "          _equipHoursTouched: true,",
+  "          _equipHoursTouched: false,",
   "scripts/test-haul-unpriced-warning.js"),
  ("split modal: stop following the driver's hours with the truck's","payroll.html",
   "      const want = Number(r.labor_hours) || 0;",
@@ -64,10 +107,20 @@ for label,f,old,new,test in MUT:
     s=io.open(f,encoding='utf-8').read()
     if s.count(old)!=1:
         print(f"  ??  SKIP (anchor x{s.count(old)}): {label}"); skipped+=1; continue
+    # try/finally, so a hung test, a timeout or a Ctrl-C cannot leave a
+    # deliberately broken source file on disk — which would be a silent,
+    # committable regression in the working tree.
     io.open(f,'w',encoding='utf-8').write(s.replace(old,new,1))
-    r=subprocess.run(['node',test],capture_output=True,text=True,timeout=400)
-    io.open(f,'w',encoding='utf-8').write(s)
-    if r.returncode!=0: print(f"  OK  caught by {test.split('/')[-1]}: {label}"); caught+=1
+    try:
+        r=subprocess.run(['node',test],capture_output=True,text=True,timeout=400)
+        rc=r.returncode
+    except subprocess.TimeoutExpired:
+        rc=None
+    finally:
+        io.open(f,'w',encoding='utf-8').write(s)
+    if rc is None:
+        print(f"  ??  TIMEOUT running {test.split('/')[-1]}: {label}"); missed+=1
+    elif rc!=0: print(f"  OK  caught by {test.split('/')[-1]}: {label}"); caught+=1
     else: print(f"  !!  NOT CAUGHT by {test.split('/')[-1]}: {label}"); missed+=1
 print(f"\ncaught {caught} | MISSED {missed} | skipped {skipped}")
-import sys; sys.exit(1 if (missed or skipped) else 0)
+sys.exit(1 if (missed or skipped) else 0)

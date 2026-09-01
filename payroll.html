@@ -4163,15 +4163,29 @@
     // Never overwrites a choice already on the row.
     function splitDefaultHaulEquipment(r) {
       if (!r || String(r.equipment || '').trim()) return false;
-      const t = splitEntry && splitEntry.haul_type;
-      if (t !== 'on_site' && t !== 'off_site') return false;
-      if (isTravelSplitRow(r)) return false;
+      if (!splitHaulIs() || isTravelSplitRow(r)) return false;
       const said = String((splitEntry && splitEntry.truck_unit) || '').trim();
-      if (said) { r.equipment = said; return true; }
+      if (said) { r.equipment = said; r._haulAutoEquip = true; return true; }
       const only = (splitProjEquipment || []).filter(Boolean);
       if (only.length !== 1) return false;
       r.equipment = only[0];
+      r._haulAutoEquip = true;
       return true;
+    }
+
+    // Take back what this modal guessed, once the row is no longer a haul.
+    // Only ever what IT filled in (_haulAuto*) — an approver's own truck and
+    // hours are theirs. Without this, answering "haul", then changing back to
+    // "worked on site", left the row posting the full labour rate AND a truck
+    // nobody chose; and ticking Travel billed the commute to the truck, which
+    // is exactly the time the travel rule says the truck is not on the clock for.
+    function splitClearHaulAuto(r) {
+      if (!r) return false;
+      if (splitHaulIs() && !isTravelSplitRow(r)) return false;
+      let changed = false;
+      if (r._haulAutoEquip) { r.equipment = ''; r._haulAutoEquip = false; changed = true; }
+      if (r._haulAutoHours) { r.equip_hours = 0; r._haulAutoHours = false; changed = true; }
+      return changed;
     }
 
     // Keep a haul row's equipment hours level with its labour hours.
@@ -4184,12 +4198,11 @@
     // Returns true when it changed something, so the caller repaints.
     function splitMirrorHaulEquipHours(r) {
       if (!r || r._equipHoursTouched) return false;
-      const t = splitEntry && splitEntry.haul_type;
-      if (t !== 'on_site' && t !== 'off_site') return false;
-      if (isTravelSplitRow(r)) return false;
+      if (!splitHaulIs() || isTravelSplitRow(r)) return false;
       const want = Number(r.labor_hours) || 0;
       if ((Number(r.equip_hours) || 0) === want) return false;
       r.equip_hours = want;
+      r._haulAutoHours = true;
       return true;
     }
 
@@ -4198,8 +4211,9 @@
     function splitMirrorHaulEquipHoursAll() {
       let changed = false;
       for (const r of splitRows) {
+        changed = splitClearHaulAuto(r)        || changed;
         changed = splitDefaultHaulEquipment(r) || changed;
-        changed = splitMirrorHaulEquipHours(r)  || changed;
+        changed = splitMirrorHaulEquipHours(r) || changed;
       }
       return changed;
     }
@@ -4218,7 +4232,9 @@
     // the labour rate beside it at the same time, and "nobody remembered to
     // flag him" is exactly the case this has to catch.
     function splitHaulPickerHtml(entry) {
-      const cur = (entry && (entry.haul_type || '')) || '';
+      // Seeded from the entry once, then owned by splitHaulAnswer until save.
+      splitHaulAnswer = (entry && (entry.haul_type || '')) || '';
+      const cur = splitHaulAnswer;
       const opt = (v, label) =>
         `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
       return `<div style="grid-column:1/-1;display:flex;align-items:center;gap:0.5rem;margin-top:0.4rem;flex-wrap:wrap">
@@ -4237,7 +4253,8 @@
     function onSplitHaulChange() {
       const el = document.getElementById('splitHaulPick');
       if (!el || !splitEntry) return;
-      splitEntry.haul_type = el.value || null;
+      // Never onto splitEntry — see the declaration of splitHaulAnswer.
+      splitHaulAnswer = el.value || '';
       if (splitMirrorHaulEquipHoursAll()) renderSplitRows();
       const note = document.getElementById('splitHaulNote');
       if (note) note.outerHTML = splitHaulNoteHtml(splitEntry) ||
@@ -4250,10 +4267,10 @@
     // row priced at zero in the cost tab with nothing anywhere explaining it —
     // which reads as the rate lookup having failed, and gets "fixed" by hand.
     function splitHaulNoteHtml(entry) {
-      const t = entry && entry.haul_type;
-      if (t !== 'on_site' && t !== 'off_site') return '<div id="splitHaulNote" hidden></div>';
+      const t = splitHaulIs();
+      if (!t) return '<div id="splitHaulNote" hidden></div>';
       const where = t === 'on_site' ? 'on the site' : 'to &amp; from the site';
-      const wage  = (t === 'off_site' && entry.prevailing_wage === true)
+      const wage  = (t === 'off_site' && entry && entry.prevailing_wage === true)
         ? ' Because the driver never worked the site, these hours pay at the <strong>standard</strong> rate even though the job is prevailing wage.'
         : '';
       return `<div id="splitHaulNote" style="grid-column:1/-1;margin-top:0.4rem;padding:0.5rem 0.6rem;`
@@ -4901,6 +4918,15 @@
     // merged picker list so a haul row can default to it. The company list is
     // every machine the company owns and says nothing about this job.
     let splitProjEquipment   = [];
+    // The hauling answer the approver is CONSIDERING, held apart from the entry.
+    //
+    // splitEntry is the very object the grid holds (openSplitModalById hands
+    // over `filtered.find(...)`), and isOffSiteHaul reads that object from the
+    // Hours Report, the per-employee table and the Excel export. Writing the
+    // picker straight onto it meant trying an answer and then pressing Cancel
+    // still moved that day's hours out of prevailing everywhere on the page,
+    // with nothing saved and nothing to show for it short of a reload.
+    let splitHaulAnswer      = '';
     const _projEquipCache    = {};
 
     function escAttr(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
@@ -5016,6 +5042,11 @@
       document.getElementById('splitSaveBtn').textContent =
         mode === 'approve' ? 'Approve & Inject' : 'Save Split';
 
+      // Stale from the PREVIOUS entry until this one's lookup lands, and the
+      // haul picker is live the whole time — so a job with one assigned unit
+      // could stamp its machine onto the next entry's row, at that machine's
+      // hourly rate, on a different job.
+      splitProjEquipment = [];
       // Open immediately so the user sees a responsive UI; lazy-load lookups
       document.getElementById('splitBackdrop').classList.add('open');
       // Empty tally while loading
@@ -5058,6 +5089,12 @@
           // Nobody's guess — this is what was approved. Spelled out so every
           // row in this array has the same shape.
           code_source: '',
+          // These hours were approved, so they are somebody's deliberate answer
+          // — a driver out of the truck for part of the day is a real thing.
+          // Without this the haul mirror read them as untouched and rewrote
+          // them to the labour hours the next time anything on the row changed,
+          // over-charging the job for truck time nobody logged.
+          _equipHoursTouched: true,
         }));
       } else {
         // Sensible defaults: one labor row, and a travel row if travel > 0.
@@ -5096,6 +5133,8 @@
       splitRows  = [];
       splitFetchSeq++;          // orphan any pre-fill still in flight
       splitRowLoad = 'none';
+      splitHaulAnswer    = '';
+      splitProjEquipment = [];
     }
     bindBackdropClose(document.getElementById('splitBackdrop'), closeSplit);
 
@@ -5743,9 +5782,12 @@
     // elsewhere — and refusing an approval that is genuinely correct just
     // teaches people to work around the modal. So this says what will happen
     // and gets out of the way.
+    // The answer every consequence in this modal is computed from.
+    const splitHaulIs = () =>
+      (splitHaulAnswer === 'on_site' || splitHaulAnswer === 'off_site') ? splitHaulAnswer : null;
+
     function splitHaulUnpricedRows() {
-      const t = splitEntry && splitEntry.haul_type;
-      if (t !== 'on_site' && t !== 'off_site') return [];
+      if (!splitHaulIs()) return [];
       const out = [];
       splitRows.forEach((r, i) => {
         // Travel keeps its own rate, so a travel row is priced either way.
@@ -5906,7 +5948,7 @@
             // the approver looked at it either way.
             body: JSON.stringify({
               split: splitRows,
-              haul_type: (document.getElementById('splitHaulPick') || {}).value || '',
+              haul_type: splitHaulAnswer || '',
             }),
           }
         );
@@ -9141,6 +9183,28 @@
         : `Approve ${total} ${total === 1 ? 'Entry' : 'Entries'}`;
     }
 
+    // The truck and its hours on a bulk-approved haul.
+    //
+    // Only what is knowable without anyone present: the unit the DRIVER named on
+    // his own timesheet, and the hours he was in it. There is no job-assignment
+    // fallback here on purpose — that one is a reasonable default with an
+    // approver looking at it and a warning beside it, and bulk has neither.
+    // A haul with no answer from the driver is left bare, which the row's $0
+    // total makes visible in the cost tab.
+    function bulkApplyHaulDefaults(e, rows) {
+      const t = e && e.haul_type;
+      if (t !== 'on_site' && t !== 'off_site') return;
+      const said = String((e && e.truck_unit) || '').trim();
+      for (const r of rows) {
+        if (r.is_travel) continue;            // the commute is not the truck's time
+        if (!(Number(r.labor_hours) > 0)) continue;
+        if (said && !String(r.equipment || '').trim()) r.equipment = said;
+        if (String(r.equipment || '').trim() && !(Number(r.equip_hours) > 0)) {
+          r.equip_hours = Number(r.labor_hours) || 0;
+        }
+      }
+    }
+
     // Materialize one entry's approve body from its group's template. Each day's
     // OWN hours are used so the server's "labor total must equal work + travel"
     // check passes per entry. Returns null for plain (status-only) approvals.
@@ -9186,6 +9250,14 @@
                         equip_hours: m.equip_hours, is_travel: onTravel });
           }
         }
+        // A haul day approved in bulk gets the same two defaults the modal
+        // applies, because the server prices its labour at $0 either way. Left
+        // alone, a bulk-approved haul posts $0 labour AND — with the group
+        // template's equipment blank, which is the common case — $0 equipment:
+        // the whole day free to the job, silently, with no modal open to warn
+        // anyone. haul_type itself is NOT sent: nobody answered a question
+        // here, so the entry's own answer stands (an absent key means keep).
+        bulkApplyHaulDefaults(e, rows);
         return { split: rows };
       }
       if (g.type === 'quarry') {

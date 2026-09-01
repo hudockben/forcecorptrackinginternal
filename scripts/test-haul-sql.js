@@ -33,6 +33,8 @@
  *     modal — which sends no haul_type at all — saves a correction to the hours.
  */
 
+const path   = require('path');
+const Module = require('module');
 const { Client } = require('pg');
 
 const URL = process.env.PG_TEST_URL || 'postgres://fct_test_user:test@localhost/fct_test';
@@ -85,21 +87,40 @@ function assert(label, cond, detail) {
   }
 
   // ── The role upsert (api/employees.js PATCH) ──────────────────────────────
+  //
+  // Drives the SHIPPED handler, not a copy of its SQL. A hand-written duplicate
+  // here would have stayed green while api/employees.js was changed to
+  // `is_supervisor = EXCLUDED.is_supervisor` — the exact regression the comment
+  // there warns about — because nothing would have loaded that file.
   console.log('\n[one role toggle never clears the other]');
+  let AUTH = null;
+  const origLoad = Module._load;
+  Module._load = function (request) {
+    if (request === '@neondatabase/serverless') {
+      return { neon: () => (strings, ...values) => {
+        let text = '';
+        strings.forEach((s, i) => { text += s + (i < values.length ? '$' + (i + 1) : ''); });
+        return c.query(text, values).then(r => r.rows);
+      } };
+    }
+    if (request === './lib/auth') return { requireAuth: () => AUTH };
+    return origLoad.apply(this, arguments);
+  };
+  const employeesHandler = require(path.resolve(__dirname, '..', 'api', 'employees.js'));
+  AUTH = { companyCode: 'FCT', username: 'office', role: 'admin' };
+
   const patch = async (name, sup, drv) => {
-    const supVal = sup === undefined ? null : Boolean(sup);
-    const drvVal = drv === undefined ? null : Boolean(drv);
-    const r = await c.query(
-      `INSERT INTO employees (company_code,name,is_supervisor,is_driver,sort_order,active,updated_at)
-       VALUES ($1,$2,COALESCE($3::boolean,FALSE),COALESCE($4::boolean,FALSE),
-         (SELECT COALESCE(MAX(sort_order),-1)+1 FROM employees WHERE company_code=$5),TRUE,NOW())
-       ON CONFLICT (company_code,name) DO UPDATE SET
-         is_supervisor = COALESCE($6::boolean, employees.is_supervisor),
-         is_driver     = COALESCE($7::boolean, employees.is_driver),
-         updated_at    = NOW()
-       RETURNING id,name,is_supervisor,is_driver`,
-      ['FCT', name, supVal, drvVal, 'FCT', supVal, drvVal]);
-    return r.rows[0];
+    const body = {};
+    if (sup !== undefined) body.is_supervisor = sup;
+    if (drv !== undefined) body.is_driver     = drv;
+    const res = {
+      statusCode: 200, body: null,
+      setHeader() {}, status(s) { this.statusCode = s; return this; },
+      json(b) { this.body = b; return this; }, end() { return this; },
+    };
+    await employeesHandler({ method: 'PATCH', query: { name }, body }, res);
+    if (res.statusCode !== 200) throw new Error('PATCH failed: ' + JSON.stringify(res.body));
+    return res.body.employee;
   };
 
   let r = await patch('Kris Fairman', undefined, true);
@@ -124,6 +145,18 @@ function assert(label, cond, detail) {
 
   const n = (await c.query(`SELECT COUNT(*)::int n FROM employees WHERE name='Kris Fairman'`)).rows[0].n;
   assert('  and five upserts left exactly one row', n === 1, `rows=${n}`);
+
+  // Sending neither flag is a 400, not a silent no-op.
+  {
+    const res = {
+      statusCode: 200, body: null,
+      setHeader() {}, status(s) { this.statusCode = s; return this; },
+      json(b) { this.body = b; return this; }, end() { return this; },
+    };
+    await employeesHandler({ method: 'PATCH', query: { name: 'Kris Fairman' }, body: {} }, res);
+    assert('a PATCH naming neither flag is refused', res.statusCode === 400,
+      `status=${res.statusCode}`);
+  }
 
   // ── keepHaul (the PUT in api/timesheet-entries.js) ────────────────────────
   console.log('\n[payroll editing the hours does not erase the driver\'s answer]');
