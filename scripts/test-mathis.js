@@ -1288,10 +1288,73 @@ console.log('\n══════════ what a digest is about ═══�
   const prompt = JSON.stringify(sent[sent.length - 1]);
   assert('  and the model is told to answer only what that list mentions',
     /ANSWER ONLY WHAT THE DIGEST COVERS/.test(prompt));
-  assert('  and told plainly not to describe something else instead',
-    /Do NOT describe what the digest does contain instead/.test(prompt)
+  assert('  and told plainly not to answer with a figure about something else',
+    /never answer the question that was asked with a figure about something else/.test(prompt)
       && /worse than no answer/.test(prompt),
     'this is the rule that was missing');
+  // The bug was SUBSTITUTION, not helpfulness. Saying "I don't have rubber for
+  // paving, though I do have the job figures" was never the failure, and
+  // forbidding it made every refusal a dead end.
+  assert('  while still being allowed to say what it DOES have, in a sentence',
+    /offer in one short sentence what this division's figures DO cover/.test(prompt));
+}
+{
+  // "Hello" used to cost a tool call and come back as "I don't have that".
+  // Refusing to greet somebody is not a safety property, it is a bad product.
+  const prompt = JSON.stringify(sent[sent.length - 1]);
+  assert('the model is told that not every message is a data question',
+    /NOT EVERY MESSAGE IS A DATA QUESTION/.test(prompt));
+  assert('  with a greeting answered like a person rather than refused',
+    /Hello\\?" gets a hello back/.test(prompt)
+      && /Not a tool call, not a refusal/.test(prompt),
+    'a greeting that returns "I do not have that" reads as broken');
+  assert('  and tools called when a question needs figures, not reflexively',
+    /Call them when a question needs figures/.test(prompt)
+      && !/Call them — you begin each turn with no figures at all/.test(prompt));
+  assert('  and a follow-up about figures already fetched answered from them',
+    /Fetch again only if the question needs something you did not fetch/.test(prompt),
+    'a second identical fetch to answer "why is that" is a wasted turn');
+  assert('  and judgement invited, since "which job would you look at" has an answer',
+    /Judgement is welcome/.test(prompt));
+
+  // Arithmetic ON digest figures is the answer to half the questions people
+  // ask, and "do not infer a number" was reading as a ban on adding two of
+  // them together.
+  assert('arithmetic on figures that ARE in the digest is allowed',
+    /Adding rows up, taking an average, a difference, a share or a percentage/.test(prompt)
+      && /show the figures it came from/.test(prompt),
+    '"what is the total across those five" is a sum, not an estimate');
+  assert('  while guessing at a figure that is not there is still forbidden',
+    /Estimating, extrapolating, guessing at a number that is not there/.test(prompt),
+    'this is the line that must not move');
+
+  // Loosening the conversation makes a new failure possible: confident
+  // instructions for an interface it has never seen.
+  assert('the model is told it cannot see the screen',
+    /You cannot see the screen/.test(prompt)
+      && /cannot walk them through the interface/.test(prompt),
+    'an invented menu path sends somebody looking for a button that is not there');
+
+  // Rule 7 used to forbid describing other employees outright, which now
+  // contradicts the crew roster sitting in the digest.
+  // A personal page told the model to "answer about THEIR records — use
+  // get_my_records", which read as an order to fetch whatever was said. A
+  // hello on the timesheet page came back with a timesheet.
+  const personal = await call({ message: 'hi', division: 'timesheet' },
+    { token: tokenFor({ divisionRoles: { timesheet: 'level1' } }),
+      sqlOpts: { divisionRoles: { timesheet: 'level1' } } });
+  const pCtx = JSON.stringify(sent[sent.length - 1]);
+  assert('a personal page scopes the read without demanding one',
+    /If they ask about records, use get_my_records/.test(pCtx)
+      && !/so answer about THEIR records/.test(pCtx),
+    'the scope is the point, not the fetch');
+  assert('  and still says a colleague\'s records are never available',
+    /never a colleague/i.test(pCtx) && personal.statusCode === 200);
+
+  assert('naming colleagues the digest itself carries is allowed',
+    /Where a digest names colleagues/.test(prompt)
+      && /Anything not in a digest, you do not have/.test(prompt),
+    'a rule that forbids reading the roster in the digest is a rule against the data');
 }
 {
   // Every kind the server can emit has to declare one, or the rule above has
@@ -1336,6 +1399,31 @@ console.log('\n══════════ what a digest is about ═══�
   assert('a division without inventory does not claim to cover it',
     d && !d.covers.some(c => /inventory/i.test(c)) && !d.rubberInventory,
     JSON.stringify(d && d.covers));
+}
+
+// ── 11b2. The panel promises what the digest actually carries ──────────────
+// The same list now lives in three places: COVERS in the digests, the tool
+// description, and the greeting the panel opens with. Somebody who is not told
+// purchase orders are answerable never asks; somebody promised documents that
+// are not there spends a question finding out. Both are drift, and drift here
+// is invisible until a person hits it.
+{
+  const res = await call({ message: 'x', division: 'paving' });
+  const covers = (res.body.digest.covers || []).join(' ');
+  const src = fs.readFileSync(root('mathis.js'), 'utf8');
+  const greeting = (src.match(/paving:\s*'([^']+)'/) || [])[1] || '';
+
+  for (const [subject, inCovers, inGreeting] of [
+    ['purchase orders', /purchase order/i, /purchase order/i],
+    ['cost codes',      /cost-code/i,      /cost code/i],
+    ['equipment',       /equipment/i,      /equipment/i],
+    ['the crew',        /employees/i,      /crew|employee/i],
+    ['paperwork',       /document/i,       /paperwork|document/i],
+  ]) {
+    assert(`the digest covers ${subject}`, inCovers.test(covers), covers.slice(0, 200));
+    assert(`  and the panel says so before a question is spent finding out`,
+      inGreeting.test(greeting), greeting);
+  }
 }
 
 // ── 11c. Purchase orders and the cost-code catalogue ───────────────────────

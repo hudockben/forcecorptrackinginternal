@@ -258,8 +258,17 @@
                 'I can still answer about your own timesheet, or about another division you have access to.');
       return;
     }
+    // Naming the subjects is not decoration. Somebody who does not know
+    // purchase orders are answerable never asks, and somebody who assumes
+    // everything is answerable spends a question finding out it is not.
+    var SUBJECTS = {
+      turf:   'jobs and profit, rubber stock, purchase orders, equipment, the crew, paperwork',
+      paving: 'jobs and profit, purchase orders, cost codes, equipment, the crew, paperwork',
+      kiewit: 'jobs and profit, purchase orders, cost codes, equipment, the crew, paperwork'
+    };
     add('it', 'Ask me about ' + d.replace(/_/g, ' ') +
-              ' — I answer from this division\'s own figures, and I will tell you when something is not tracked.');
+              (SUBJECTS[d] ? ' — ' + SUBJECTS[d] + '.' : ' — I answer from this division\'s own figures.') +
+              ' I answer from this division\'s own figures and say so when something is not tracked.');
   }
 
   function add(kind, text) {

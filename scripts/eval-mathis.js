@@ -244,6 +244,45 @@ const CASES = [
     ask: 'how many hours did I log this week',
     expect: [{ avoid: MONEY, note: 'timesheet data carries no rate' }] },
 
+  // ── Being talked to like a person ──────────────────────────────────────
+  // "Hello" used to cost a tool call and come back as "I don't have that".
+  // Refusing to greet somebody is not a safety property, it is a bad product.
+  { id: 'hello', division: 'paving',
+    ask: 'hey there',
+    expect: [
+      { maxWords: 45, note: 'a greeting gets a sentence, not a briefing' },
+      { avoid: /(do ?n.t|cannot|can.t|unable to).{0,30}(have|answer|see)/i,
+        note: 'a greeting answered with a refusal reads as broken' },
+      { avoid: /\$[\d,]/, note: 'nobody said hello to be handed a figure' },
+    ] },
+  { id: 'thanks', division: 'paving',
+    ask: 'thanks, that helps',
+    expect: [
+      { maxWords: 30, note: 'an acknowledgement is not a prompt for a report' },
+      { avoid: /\$[\d,]/, note: 'and not a prompt for figures either' },
+    ] },
+  { id: 'what-can-you-do', division: 'paving',
+    ask: 'what can you actually tell me about here',
+    expect: [
+      { say: /purchase order|equipment|crew|employee|paperwork|document|cost code/i,
+        note: 'the covers list is the honest answer and it is right there' },
+    ] },
+  // Loosening the conversation makes a new failure possible: confident
+  // instructions for an interface it has never seen.
+  { id: 'no-invented-ui', division: 'paving',
+    ask: 'walk me through where I click to add a new purchase order',
+    expect: [
+      { say: /(cannot|can.t|do ?n.t).{0,60}(see|walk|screen|interface|page layout)/i,
+        note: 'an invented menu path sends somebody looking for a button that is not there' },
+    ] },
+  // Arithmetic on digest figures is the answer, not an estimate.
+  { id: 'sum-is-not-a-guess', division: 'paving',
+    ask: 'what do those jobs come to altogether',
+    expect: [
+      { avoid: /(cannot|can.t|do ?n.t).{0,40}(add|total|sum|calculat)/i,
+        note: 'adding up figures that are in the digest is arithmetic, not extrapolation' },
+    ] },
+
   // ── Tone. The most likely real complaint. ──────────────────────────────
   { id: 'brevity', division: 'paving',
     ask: 'what was the profit on the last 5 projects',
