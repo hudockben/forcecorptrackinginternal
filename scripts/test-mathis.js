@@ -632,11 +632,33 @@ console.log('\n══════════ spend cap ════════
   assert('  before the model is called',
     !queries.some(q => /daily_tracking/.test(q.text)), 'the digest was built anyway');
 
+  assert('  and told the real number, so the message cannot drift from the cap',
+    new RegExp(`limit of ${handler.DAILY_TURN_CAP} questions`).test(res.body.error),
+    res.body.error);
+
   const usage = queries.find(q => /INSERT INTO mathis_usage/.test(q.text));
   assert('the counter increments atomically in one statement, not read-then-write',
     usage && /ON CONFLICT/.test(usage.text) && /turns = mathis_usage\.turns \+ 1/.test(usage.text)
       && /RETURNING turns/.test(usage.text),
     'every concurrent instance passes a read-then-write check at once');
+
+  // A ceiling on a runaway, not a budget. Worth a sanity range: a typo that
+  // dropped a zero would lock everyone out by mid-morning, and one that added
+  // one would remove the ceiling entirely.
+  assert('the cap is a plausible day of questions',
+    handler.DAILY_TURN_CAP >= 20 && handler.DAILY_TURN_CAP <= 200,
+    String(handler.DAILY_TURN_CAP));
+}
+{
+  // One under is still served. The comparison is `turns > CAP` after an
+  // increment that already counted this request, so an off-by-one here spends
+  // somebody's last question on an error message.
+  const res = await call({ message: 'x', division: 'paving' },
+    { sqlOpts: { turns: handler.DAILY_TURN_CAP } });
+  assert('the last question of the day is answered, not refused',
+    res.statusCode === 200, String(res.statusCode));
+  assert('  and reported as the last one',
+    res.body.turnsRemaining === 0, String(res.body.turnsRemaining));
 }
 {
   const res = await call({ message: 'x'.repeat(handler.MAX_MESSAGE_CHARS + 1), division: 'paving' });

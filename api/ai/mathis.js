@@ -53,7 +53,12 @@ const MODEL             = 'claude-opus-5';
 // headroom costs nothing and a truncated financial answer is worse than a
 // slow one. Adaptive thinking spends from the same allowance.
 const MAX_TOKENS        = 8192;
-const DAILY_TURN_CAP    = 30;
+// Per user per day. A ceiling on a runaway, not a budget: it exists so a
+// script, a stuck retry loop or a bad afternoon cannot turn into a bill
+// nobody saw coming. Raised from 30 once Mathis started answering greetings
+// and follow-ups, which are cheap turns but still turns, and 30 was starting
+// to be spent on conversation rather than questions.
+const DAILY_TURN_CAP    = 50;
 // Six exchanges was not enough for a conversation. "Why is that one behind?"
 // three questions after the figures were fetched came back with the context
 // already gone, and an answer built on the wrong subject is worse than a
