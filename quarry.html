@@ -1504,8 +1504,8 @@
               <th class="col-num">Hours</th>
               <th class="col-total">Total Payroll</th>
               <th class="col-num">Fuel Gallons</th>
-              <th class="col-num">Fuel Cost</th>
-              <th class="col-total">Total Fuel</th>
+              <th class="col-num">$/Gal</th>
+              <th class="col-total">Fuel Cost</th>
               <th class="col-num">Loads to Crusher</th>
               <th class="col-num">Tons / Load</th>
               <th class="col-total">Estimated Tons</th>
@@ -2502,12 +2502,15 @@
         <div class="bulk-help">
           Upload a CSV with these columns (header row required):
           <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Hourly Rate</code>, <code>Hours</code>,
-          <code>Fuel Gallons</code>, <code>Fuel Cost</code>, <code>Loads to Crusher</code>,
+          <code>Fuel Gallons</code>, <code>$/Gal</code>, <code>Loads to Crusher</code>,
           <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>, <code>Product</code>.
           Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
           <strong>Product</strong> is what the run was making — leave it blank and the tons land in
           Inventory's <em>Untagged</em> bucket.
-          The downloaded template also includes the computed columns (Total Payroll, Total Fuel,
+          <code>$/Gal</code> is the pump price per gallon (e.g. <code>4.50</code>), not the day's fuel
+          bill — that is computed as gallons × $/Gal. A sheet built against the older template, where
+          this column was headed <code>Fuel Cost</code>, still imports into it.
+          The downloaded template also includes the computed columns (Total Payroll, Fuel Cost,
           Estimated Tons, Tons/Hour, Total Cost, Cost/Ton) so column positions line up with the tracker —
           values in those columns are recomputed on import.
         </div>
@@ -4477,7 +4480,7 @@
           <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.hours === '' ? '' : row.hours}" placeholder="0" oninput="updateCrushNumber(${i}, 'hours', this.value)" /></td>
           <td class="col-total">${calcCell('crush-totalPayroll', c.totalPayroll, true)}</td>
           <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.fuelGallons === '' ? '' : row.fuelGallons}" placeholder="0" oninput="updateCrushNumber(${i}, 'fuelGallons', this.value)" /></td>
-          <td class="col-num"><input class="cell-input" type="number" min="0" step="0.001" value="${row.fuelCost === '' ? '' : row.fuelCost}" placeholder="0.00" oninput="updateCrushNumber(${i}, 'fuelCost', this.value)" /></td>
+          <td class="col-num"><input class="cell-input" type="number" min="0" step="0.001" value="${row.fuelCost === '' ? '' : row.fuelCost}" placeholder="4.50" title="Pump price per gallon — Fuel Cost is gallons × this" oninput="updateCrushNumber(${i}, 'fuelCost', this.value)" /></td>
           <td class="col-total">${calcCell('crush-totalFuel', c.totalFuel, true)}</td>
           <td class="col-num"><input class="cell-input" type="number" min="0" step="1" value="${row.loadsToCrusher === '' ? '' : row.loadsToCrusher}" placeholder="0" oninput="updateCrushNumber(${i}, 'loadsToCrusher', this.value)" /></td>
           <td class="col-num"><input class="cell-input" type="number" min="0" step="0.01" value="${row.tonsPerLoad === '' ? '' : row.tonsPerLoad}" placeholder="0" oninput="updateCrushNumber(${i}, 'tonsPerLoad', this.value)" /></td>
@@ -4970,21 +4973,21 @@
           { name: 'hourlyRate',     label: 'Hourly Rate',      aliases: ['hourlyrate', 'rate'],                            type: 'num',  outKey: 'hourlyRate', fillFromEmployee: 'rate' },
           { name: 'hours',          label: 'Hours',            aliases: ['hours'],                         required: true, type: 'num',  outKey: 'hours' },
           { name: 'fuelGallons',    label: 'Fuel Gallons',     aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],     type: 'num',  outKey: 'fuelGallons' },
-          { name: 'fuelCost',       label: 'Fuel Cost',        aliases: ['fuelcost'],                                      type: 'num',  outKey: 'fuelCost' },
+          { name: 'fuelCost',       label: '$/Gal',            aliases: ['ppg', 'pricepergallon', 'fuelcost'],             type: 'num',  outKey: 'fuelCost' },
           { name: 'loadsToCrusher', label: 'Loads to Crusher', aliases: ['loadstocrusher', 'loads'],                       type: 'num',  outKey: 'loadsToCrusher' },
           { name: 'tonsPerLoad',    label: 'Tons / Load',      aliases: ['tonsperload', 'tonsload'],                       type: 'num',  outKey: 'tonsPerLoad' },
           { name: 'hoursCrushing',  label: 'Hours Crushing',   aliases: ['hourscrushing'],                                 type: 'num',  outKey: 'hoursCrushing' },
           { name: 'comments',       label: 'Comments',         aliases: ['comments', 'comment', 'notes'],                  type: 'text', outKey: 'comments' },
         ],
         // Positionally matched to `fields` above.
-        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'Crushed Stone', '26', '8', '50', '175', '20', '15', '6', 'Sample comment'],
+        sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'Crushed Stone', '26', '8', '50', '3.5', '20', '15', '6', 'Sample comment'],
         // Product is appended last so every pre-existing column keeps the
         // position it lines up with in the tracker.
         templateLayout: [
           'date', 'location', 'employee', 'hourlyRate', 'hours',
           { label: 'Total Payroll',  computed: true },
           'fuelGallons', 'fuelCost',
-          { label: 'Total Fuel',     computed: true },
+          { label: 'Fuel Cost',      computed: true },
           'loadsToCrusher', 'tonsPerLoad',
           { label: 'Estimated Tons', computed: true },
           'hoursCrushing',
