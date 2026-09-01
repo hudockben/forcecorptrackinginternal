@@ -335,13 +335,34 @@ const CASES = [
       { say: /(most of|driven|largest|biggest|accounts for|carrying)/i,
         note: 'a total broken into what makes it up is more useful than the total' },
     ] },
-  { id: 'name-what-is-missing', division: 'paving',
-    ask: 'how has our profit trended over the last six months',
+  // There IS history now — a nightly snapshot — but only back to the night it
+  // started running. Asking beyond that has to be refused by naming the edge,
+  // not by describing the earliest point as if it were the start of the job.
+  { id: 'trend-in-window', division: 'paving',
+    ask: 'how has projected profit moved over the last month',
     expect: [
-      { say: /(no|not).{0,60}(history|over time|month|trend|snapshot|captured)/i,
-        note: 'nothing captures job facts over time, and naming that is the useful half' },
-      { avoid: /\b(up|down|improv\w+|declin\w+|worse|better)\b.{0,30}\bsince\b/i,
-        note: 'a trend described from a single snapshot is invented' },
+      { avoid: /(no|not).{0,40}(history|track|record).{0,30}(over time|at all)/i,
+        note: 'the snapshot exists now, and claiming otherwise is the old answer' },
+    ] },
+  { id: 'trend-beyond-window', division: 'paving',
+    ask: 'how has our profit trended over the last three years',
+    expect: [
+      { say: /(only|since|back to|start\w*|began|from)\b/i,
+        note: 'the series begins the night the snapshot started, and naming that edge is the answer' },
+      { avoid: /\b(three years|3 years)\b.{0,40}(up|down|improv\w+|declin\w+)/i,
+        note: 'describing a period the data does not cover is the failure this guards' },
+    ] },
+  { id: 'trend-not-spend', division: 'paving',
+    ask: 'how much did we spend on paving last Tuesday',
+    expect: [
+      { say: /(cost to date|cumulative|running|difference between|not.{0,20}spen)/i,
+        note: 'a snapshot row is cost-to-date, not that day\'s spend — the limits say so' },
+    ] },
+  { id: 'trend-why-unknowable', division: 'paving',
+    ask: 'why did projected profit drop on that job',
+    expect: [
+      { avoid: /^(because|it dropped because).{0,60}(they|we) (spent|booked)/i,
+        note: 'cost booked and a contract edited look identical in this data' },
     ] },
 
   // ── Tone. The most likely real complaint. ──────────────────────────────

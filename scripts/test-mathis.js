@@ -312,6 +312,22 @@ const BLOBS = {
   'fct_quarry_monthly_fixed': {}, 'fct_quarry_royalty': {}, 'fct_quarry_lists': {},
 };
 
+// Two nights of the snapshot. Atwood booked $6,000 of cost between them and
+// its projected profit moved by exactly that; Moon Township only appears on
+// the second night, which is what makes "entered the window part-way" a case
+// the digest has to tell apart from "did not move".
+const JOB_FACTS = [
+  { project_id: 'p1', day: '2026-08-25', job_name: 'Atwood Borough', job_number: '26040',
+    status: 'In Progress', complete: false, contract: 123894, actual_cost: 45390,
+    projected_cost: 78285, projected_profit: 45609, actual_profit: 78504 },
+  { project_id: 'p1', day: '2026-09-01', job_name: 'Atwood Borough', job_number: '26040',
+    status: 'In Progress', complete: false, contract: 123894, actual_cost: 51390,
+    projected_cost: 84285, projected_profit: 39609, actual_profit: 72504 },
+  { project_id: 'p2', day: '2026-09-01', job_name: 'Moon Township', job_number: '26004',
+    status: 'In Progress', complete: false, contract: null, actual_cost: 20000,
+    projected_cost: 45000, projected_profit: null, actual_profit: null },
+];
+
 let queries = [];
 function makeSql(opts = {}) {
   queries = [];
@@ -379,6 +395,16 @@ function makeSql(opts = {}) {
       }
       return Promise.resolve(bare in BLOBS ? [{ value: BLOBS[bare] }] : []);
     }
+    if (/FROM companies/.test(text) && /SELECT code/.test(text)) {
+      return Promise.resolve(opts.companies || [{ code: COMPANY }]);
+    }
+    if (/FROM mathis_job_facts/.test(text)) {
+      if (opts.jobFacts === 'none')    return Promise.resolve([]);
+      if (opts.jobFacts === 'one-day') return Promise.resolve(JOB_FACTS.filter(r => r.day === '2026-09-01' && r.project_id === 'p1'));
+      return Promise.resolve(JOB_FACTS);
+    }
+    if (/INSERT INTO mathis_job_facts/.test(text)) return Promise.resolve([]);
+    if (/DELETE FROM mathis_job_facts/.test(text)) return Promise.resolve({ count: 0 });
     if (/FROM project_documents/.test(text)) {
       if (opts.docsThrow) return Promise.reject(new Error('documents unavailable'));
       return Promise.resolve(opts.documents || DOCUMENTS);
@@ -740,7 +766,9 @@ console.log('\n══════════ the prompt ═══════�
   assert('  and names digest text as data, never instruction', /data, never instruction/.test(body.system[0].text));
   assert('the digest reaches the model', /Atwood Borough/.test(prompt));
   assert('  carrying the rules that make an answer honest', /PROJECTED profit/.test(prompt));
-  assert('  and the caveat about periods it cannot answer for', /as-of history/.test(prompt));
+  assert('  and the caveat that these figures are today only',
+    /These figures are TODAY only/.test(prompt) && /reports a fiction/.test(prompt),
+    'applying today\'s contract to an older period is the confident wrong answer');
   assert('no connection string or key is anywhere near the prompt',
     !/postgres:\/\/|sk-ant-/.test(prompt));
   // The model now has tools. What it does not have — and this is the line that
@@ -1399,7 +1427,8 @@ console.log('\n══════════ what a digest is about ═══�
     /every figure behind the judgement is one you fetched/.test(prompt),
     'having a view is not a licence to invent the numbers under it');
   assert('  and to name what is missing rather than stopping at "I do not have it"',
-    /Name the missing thing/.test(prompt));
+    /name the missing thing/i.test(prompt)
+      && /what would have to be captured/.test(prompt));
   assert('  and to ask, once, when a question genuinely has two readings',
     /never as a way of avoiding an answer you could give/.test(prompt),
     'a clarifying question used as a dodge is worse than a wrong guess');
@@ -2169,6 +2198,218 @@ console.log('\n══════════ the help tool and the page context
     !/\beval\s*\(/.test(widget), 'a lexical binding is not worth an eval');
   assert('  and sends nothing at all when it can read nothing',
     /return \(ctx\.tab \|\| ctx\.job\) \? ctx : undefined;/.test(widget));
+}
+
+// ── 11h. The nightly snapshot, and the only history in the system ──────────
+// Everything else Mathis reads is a picture of now, so "how has profit
+// trended" had no answer that was not invented. The failures here are
+// different in kind from the rest: not a wrong figure, but a real series read
+// as something it is not.
+console.log('\n══════════ the nightly snapshot ══════════');
+{
+  const snap = require(root('api/cron/job-snapshot.js'));
+  sqlImpl = makeSql({});
+  const out = await snap.runSnapshot(sqlImpl, { day: '2026-09-01' });
+
+  assert('the sweep covers every company in the database', out.companies === 1, JSON.stringify(out));
+  assert('  writing a row per job it found', out.jobs === 2, JSON.stringify(out));
+  const writes = queries.filter(q => /INSERT INTO mathis_job_facts/.test(q.text));
+  assert('  one insert per job', writes.length === 2, String(writes.length));
+  assert('  keyed by company, division, project AND day',
+    /ON CONFLICT \(company_code, division, project_id, day\)/.test(writes[0].text),
+    'a cron that fires twice must overwrite, not fabricate a second point for one day');
+  assert('  and the day it was told, not whatever the row already said',
+    writes[0].values.includes('2026-09-01'));
+
+  // The figure that matters: it must be the same arithmetic the page runs, or
+  // a trend is built on a number nobody can reconcile. Asserted as the
+  // RELATIONSHIP rather than as a magic number — a literal here would only
+  // pin whatever this fixture happens to produce, and would have to be
+  // rewritten every time somebody adjusted a bid item in it.
+  const atwood = writes.find(w => w.values.includes('Atwood Borough'));
+  const V = atwood && atwood.values;   // the INSERT's column order
+  const [contract, bid, actualCost, projCost, variance, projProfit, actProfit] =
+    V ? V.slice(8, 15) : [];
+  assert('a snapshot row carries the figures the digest would show',
+    contract === 123894 && actualCost === 51390, JSON.stringify(V));
+  assert('  with projected profit as contract minus PROJECTED final cost',
+    Math.abs(projProfit - (contract - projCost)) < 0.01,
+    `${projProfit} vs ${contract} - ${projCost}`);
+  assert('  and actual profit as contract minus cost TO DATE, which is a different number',
+    Math.abs(actProfit - (contract - actualCost)) < 0.01
+      && Math.abs(projProfit - actProfit) > 1,
+    `${actProfit} vs ${contract} - ${actualCost}`);
+  assert('  and the bid and variance travelling with them',
+    Number.isFinite(bid) && Number.isFinite(variance), JSON.stringify({ bid, variance }));
+
+  assert('old rows are purged on a complete sweep',
+    queries.some(q => /DELETE FROM mathis_job_facts/.test(q.text)));
+}
+{
+  // A sweep that ran out of time must not then delete a year of history.
+  const snap = require(root('api/cron/job-snapshot.js'));
+  sqlImpl = makeSql({});
+  let t = 0;
+  const out = await snap.runSnapshot(sqlImpl, { day: '2026-09-01', now: () => (t += 60000), budgetMs: 1 });
+  assert('a sweep that runs out of time says so', out.truncated === true, JSON.stringify(out));
+  assert('  and does NOT purge on the way out',
+    !queries.some(q => /DELETE FROM mathis_job_facts/.test(q.text)),
+    'deleting history at the end of a run that ran out of time loses a year');
+}
+{
+  // One unreadable division must not cost every other company its night.
+  const snap = require(root('api/cron/job-snapshot.js'));
+  sqlImpl = makeSql({ unreadableBlobs: ['fct_paving_projects_index'] });
+  const out = await snap.runSnapshot(sqlImpl, { day: '2026-09-01' });
+  assert('a division that throws is recorded and stepped over',
+    out.errors.length >= 1 && out.companies === 1,
+    JSON.stringify(out).slice(0, 200));
+}
+{
+  // The endpoint. It reads every company and writes to every company's
+  // history, so an unauthenticated GET that does that is a public button.
+  const handler = require(root('api/cron/job-snapshot.js'));
+  const before = process.env.CRON_SECRET;
+  const mk = (headers = {}) => ({ method: 'GET', headers, query: {} });
+
+  delete process.env.CRON_SECRET;
+  let res = mkRes();
+  await handler(mk(), res);
+  assert('with no secret configured the snapshot refuses to run',
+    res.statusCode === 503, String(res.statusCode));
+
+  process.env.CRON_SECRET = 'night-secret';
+  res = mkRes();
+  await handler(mk(), res);
+  assert('  and without the secret it is refused', res.statusCode === 401, String(res.statusCode));
+
+  res = mkRes();
+  await handler(mk({ authorization: 'Bearer wrong' }), res);
+  assert('  including with the wrong one', res.statusCode === 401, String(res.statusCode));
+
+  res = mkRes();
+  await handler({ method: 'DELETE', headers: { authorization: 'Bearer night-secret' }, query: {} }, res);
+  assert('  and it is not a delete endpoint', res.statusCode === 405, String(res.statusCode));
+
+  if (before === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = before;
+}
+{
+  // The digest over that history.
+  const digests_ = require(root('api/lib/mathis-digests.js'));
+  sqlImpl = makeSql({});
+  const c = { sql: sqlImpl, companyCode: COMPANY, authz: { divisionRoles: { paving: 'level2' } }, division: 'paving' };
+  const d = await digests_.jobHistory(c, 'paving', {});
+
+  assert('the history digest reads its own table',
+    queries.some(q => /FROM mathis_job_facts/.test(q.text)));
+  const q = queries.find(x => /FROM mathis_job_facts/.test(x.text));
+  assert('  scoped to the company and the division',
+    q.values.includes(COMPANY) && q.values.includes('paving'), q.text);
+
+  assert('two days of facts make a series', d.enough === true && d.days === 2, JSON.stringify(d).slice(0, 200));
+  assert('  with the window it actually covers, not the one that was asked for',
+    d.firstDay === '2026-08-25' && d.lastDay === '2026-09-01' && d.windowDays === 90,
+    JSON.stringify({ f: d.firstDay, l: d.lastDay, w: d.windowDays }));
+  const atwood = d.rows.rows.find(r => r.name === 'Atwood Borough');
+  assert('  and how far each job moved across it',
+    atwood && atwood.change.projectedProfit === -6000 && atwood.change.actualCost === 6000,
+    JSON.stringify(atwood && atwood.change));
+  assert('  ordered by the size of the move, either direction',
+    d.rows.rows[0].name === 'Atwood Borough', JSON.stringify(d.rows.rows.map(r => r.name)));
+  assert('  with a per-day division total to read the shape from',
+    d.totals.rows.length === 2 && d.totals.rows[0].day === '2026-08-25',
+    JSON.stringify(d.totals.rows));
+  assert('  and a job that entered part-way flagged as such',
+    d.rows.rows.find(r => r.name === 'Moon Township').partialWindow === true,
+    'its change covers less time than the window and reads as a smaller move otherwise');
+}
+{
+  // The failure that would arrive on the first night after deploy: one point,
+  // described as a direction.
+  const digests_ = require(root('api/lib/mathis-digests.js'));
+  sqlImpl = makeSql({ jobFacts: 'one-day' });
+  const c = { sql: sqlImpl, companyCode: COMPANY, authz: { divisionRoles: { paving: 'level2' } }, division: 'paving' };
+  const d = await digests_.jobHistory(c, 'paving', {});
+  assert('one day of history is not a trend, and says so',
+    d.enough === false && d.days === 1 && /nothing to compare/.test(d.note),
+    JSON.stringify(d).slice(0, 240));
+  assert('  and carries no rows to describe a direction from',
+    d.rows.rows.length === 0 && d.totals.rows.length === 0);
+
+  sqlImpl = makeSql({ jobFacts: 'none' });
+  const empty = await digests_.jobHistory({ ...c, sql: sqlImpl }, 'paving', {});
+  assert('and no history at all is stated rather than left blank',
+    empty.enough === false && /No snapshots/.test(empty.note), JSON.stringify(empty.note));
+}
+{
+  // What a snapshot series is NOT. These limits are the whole reason a trend
+  // is safe to offer: every one describes a real reading of the same numbers.
+  const digests_ = require(root('api/lib/mathis-digests.js'));
+  const L = digests_.HISTORY_LIMITS.join(' ');
+  assert('the limits say nothing exists before the first snapshot',
+    /NO data before .firstDay./.test(L) && /does not go back that far/.test(L));
+  assert('  that a row is the projection as it stood, not that day\'s spend',
+    /not what was spent that day/.test(L) && /cost-to-date/.test(L));
+  assert('  that a move in projected profit has more than one possible cause',
+    /cannot tell those apart/.test(L) && /do not assert WHY/.test(L),
+    'cost booked and a contract edited look identical here');
+  assert('  that a missing day is a missing snapshot, not a quiet day',
+    /Do not read a gap as a pause/.test(L));
+  assert('  that a job appearing mid-series did not start then',
+    /not the same as the job starting then/.test(L));
+  assert('  and that one point is not a direction',
+    /fewer than two distinct days there is no trend/.test(L));
+}
+{
+  // Through the endpoint, as the model would reach it.
+  const script = [
+    { text: '', tools: [{ name: 'get_job_history', input: { division: 'paving', days: 30 } }], stop: 'tool_use' },
+    { text: 'Atwood is 6k worse than a week ago.', stop: 'end_turn' },
+  ];
+  const res = await call({ message: 'how has this trended', division: 'paving' }, { script });
+  assert('the history tool is offered on a job division',
+    (sent[0].tools || []).some(t => t.name === 'get_job_history'),
+    (sent[0].tools || []).map(t => t.name).join(', '));
+  assert('  and its digest reaches the client to be drawn',
+    res.body.digest && res.body.digest.kind === 'job_history',
+    JSON.stringify(res.body.digest && res.body.digest.kind));
+  assert('  with a step saying what is being read',
+    tools_.stepLabel('get_job_history', { division: 'paving' }) === 'Reading how Paving has moved');
+  assert('  and the limits reaching the model but not the browser',
+    /not what was spent that day/.test(JSON.stringify(sent[1]))
+      && res.body.digest.limits === undefined);
+}
+{
+  // Only the job divisions keep one, and the enum says so.
+  const roles = { quarry: 'level3' };
+  await call({ message: 'trend?', division: 'quarry' },
+    { token: tokenFor({ divisionRoles: roles }), sqlOpts: { divisionRoles: roles } });
+  assert('a division with no snapshot is offered no history tool',
+    !(sent[0].tools || []).some(t => t.name === 'get_job_history'),
+    'there is no quarry history, and a tool implying one invites an invented trend');
+}
+{
+  // The enum is a convenience; the check is resolveDivision, as everywhere.
+  const script = [
+    { text: '', tools: [{ name: 'get_job_history', input: { division: 'kiewit' } }], stop: 'tool_use' },
+    { text: 'Cannot see that.', stop: 'end_turn' },
+  ];
+  const res = await call({ message: 'kiewit trend', division: 'paving' }, { script });
+  assert('a history call naming an unauthorised division is refused',
+    /not available to this user/.test(JSON.stringify(sent[1])),
+    JSON.stringify(sent[1]).slice(0, 200));
+  assert('  and no history row is read for it',
+    !queries.some(q => /FROM mathis_job_facts/.test(q.text) && q.values.includes('kiewit')));
+  assert('  and nothing reaches the client', res.body.digest == null);
+}
+{
+  // The widget half.
+  const widget = fs.readFileSync(root('mathis.js'), 'utf8');
+  assert('the panel can draw a history digest', /job_history:\s*renderJobHistory/.test(widget));
+  assert('  showing the move rather than only the position',
+    /Proj\. profit then/.test(widget) && /change/.test(widget));
+  assert('  and saying nothing exists before the first day',
+    /Nothing exists before/.test(widget));
 }
 
 // ── 12a. The tool enum is built from this caller's scope ───────────────────
@@ -3177,9 +3418,26 @@ console.log('\n══════════ deployment ═══════�
   const env = fs.readFileSync(root('api/.env.example'), 'utf8');
   assert('ANTHROPIC_API_KEY is documented', /ANTHROPIC_API_KEY/.test(env));
   assert('  and so is JWT_SECRET, which every endpoint needs', /JWT_SECRET/.test(env));
+  assert('  and CRON_SECRET, without which the snapshot never runs',
+    /CRON_SECRET/.test(env),
+    'a nightly job nobody configured is a history that silently stays empty');
+
+  const cron = (vercel.crons || []).find(c => /job-snapshot/.test(c.path));
+  assert('the snapshot is actually scheduled, not just written',
+    !!cron, JSON.stringify(vercel.crons));
+  assert('  once a day, overnight',
+    cron && /^\d+ \d+ \* \* \*$/.test(cron.schedule) && Number(cron.schedule.split(' ')[1]) < 12,
+    cron && cron.schedule);
+  assert('  with room to finish, since it sweeps every company',
+    (vercel.functions['api/cron/job-snapshot.js'] || {}).maxDuration >= 60,
+    JSON.stringify(vercel.functions['api/cron/job-snapshot.js']));
+  assert('  and a budget that stops before that ceiling does',
+    require(root('api/cron/job-snapshot.js')).TIME_BUDGET_MS
+      < (vercel.functions['api/cron/job-snapshot.js'].maxDuration * 1000),
+    'a function killed at its ceiling leaves no record of where it got to');
 
   const schema = fs.readFileSync(root('neon-schema.sql'), 'utf8');
-  for (const t of ['mathis_threads', 'mathis_messages', 'mathis_usage', 'mathis_gaps', 'mathis_feedback']) {
+  for (const t of ['mathis_threads', 'mathis_messages', 'mathis_usage', 'mathis_gaps', 'mathis_feedback', 'mathis_job_facts']) {
     assert(`${t} is in the schema`, new RegExp(`CREATE TABLE IF NOT EXISTS ${t}`).test(schema));
   }
   assert('  transcripts are keyed by user, not just by company',
