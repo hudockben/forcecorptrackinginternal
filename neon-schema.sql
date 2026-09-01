@@ -629,10 +629,12 @@ CREATE TABLE IF NOT EXISTS dust_companies (
     v1_rate       NUMERIC(10,4),                 -- default Vehicle 1 rate for this customer
     v2_rate       NUMERIC(10,4),                 -- default Vehicle 2 rate for this customer
     ub_rate       NUMERIC(10,4),                 -- per-customer UB $/gal override (NULL = use dust_settings.ub_rate)
+    trucking_rate NUMERIC(10,4),                 -- default $/hr this customer is billed for hauling on an Other Billing row
     sort_order    INTEGER       NOT NULL DEFAULT 0,
     UNIQUE (company_code, name)
 );
 
+ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS trucking_rate NUMERIC(10,4);
 ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS v1_rate NUMERIC(10,4);
 ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS v2_rate NUMERIC(10,4);
 ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS ub_rate NUMERIC(10,4);

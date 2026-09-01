@@ -115,9 +115,17 @@ console.log('\n[called wherever a fee or a customer can move]');
 
   // Filling the model without repainting would leave the box blank on screen and
   // still save the number — the sort of thing nobody finds until an invoice.
+  //
+  // The Other Billing hauling rate is filled in beside the fee at both of these
+  // (see test-ob-trucking-rate.js), so what has to hold is that the repaint
+  // follows the PAIR — and it is now asserted of each function in its own right
+  // rather than of the two run together, where one could have carried the other.
+  const fillsThenRepaints = src =>
+    /haulRateApply\(\);\n\s*haulObRateApply\(\);/.test(src)
+    && /truckingRenderFields\(lastTruckingRow\);/.test(src);
   assert('every call is followed by a repaint',
     /if \(haulRateApply\(\)\) truckingRenderFields\(lastTruckingRow\);/.test(opener)
-    && /haulRateApply\(\);\n\s*truckingRenderFields\(lastTruckingRow\);/.test(company + dest));
+    && fillsThenRepaints(company) && fillsThenRepaints(dest));
 }
 
 console.log('\n[the marker stays on this side of the wire]');

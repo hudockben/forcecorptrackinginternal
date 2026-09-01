@@ -2287,12 +2287,13 @@ async function dustOptionsForEntry(sql, companyCode, entry, companyName, opts = 
   const jobId = override ? '' : (safeStr(entry && entry.job_id, 200) || '');
   const label = override || (safeStr(entry && entry.job_label, 500) || '');
 
+  await ensureDustTruckingRateColumn(sql);
   const [byId] = jobId ? await sql`
-    SELECT id, name, v1_rate, v2_rate FROM dust_companies
+    SELECT id, name, v1_rate, v2_rate, trucking_rate FROM dust_companies
     WHERE company_code = ${companyCode} AND id = ${jobId}
   ` : [];
   const [byName] = (!byId && label) ? await sql`
-    SELECT id, name, v1_rate, v2_rate FROM dust_companies
+    SELECT id, name, v1_rate, v2_rate, trucking_rate FROM dust_companies
     WHERE company_code = ${companyCode} AND name = ${label}
   ` : [];
   const co = byId || byName || null;
@@ -2357,6 +2358,11 @@ async function dustOptionsForEntry(sql, companyCode, entry, companyName, opts = 
     known:     !!co,
     v1_rate:   co && co.v1_rate != null ? Number(co.v1_rate) : null,
     v2_rate:   v2Rate,
+    // What this customer is billed per hour for HAULING on an Other Billing
+    // row — the trucking line beside the material. Sent with the two vehicle
+    // rates because it is the same kind of thing: a rate set once against the
+    // customer, which the approve modal fills the box from.
+    trucking_rate: co && co.trucking_rate != null ? Number(co.trucking_rate) : null,
     men:       men.map(m => m.name).filter(Boolean),
     locations: locations.map(l => ({ name: l.name, state: l.state || '' })).filter(l => l.name),
     equipment: equipment.map(e => ({
@@ -2368,6 +2374,27 @@ async function dustOptionsForEntry(sql, companyCode, entry, companyName, opts = 
     mu,
     usual_vehicle2: usualVehicle2,
   };
+}
+
+// The per-customer hauling rate is added lazily by api/dust-config.js, on the
+// first load of the dust page's own config — and an approval can run before
+// that has ever happened, on a database that predates the column. Selecting it
+// by name would then throw inside the request that has to roll the approval
+// back. Ensured here for the same reason and in the same way the executive
+// report ensures ub_rate before reading it, once per cold start.
+//
+// A failure is swallowed deliberately: the column exists in every database that
+// has loaded the dust page, and a permissions problem here would fail the
+// SELECT below on its own terms rather than through a broken approval.
+let _dustTruckingRateColEnsured = false;
+async function ensureDustTruckingRateColumn(sql) {
+  if (_dustTruckingRateColEnsured) return;
+  try {
+    await sql`ALTER TABLE IF EXISTS dust_companies ADD COLUMN IF NOT EXISTS trucking_rate NUMERIC(10,4)`;
+    _dustTruckingRateColEnsured = true;
+  } catch (err) {
+    console.error('[timesheet-entries] ensuring dust_companies.trucking_rate failed:', err.message);
+  }
 }
 
 /**
@@ -3155,8 +3182,9 @@ async function dustSplitForEntry(sql, companyCode, entry) {
  * grouped here.
  */
 async function dustCompanyDirectory(sql, companyCode) {
+  await ensureDustTruckingRateColumn(sql);
   const [companies, men, locations] = await Promise.all([
-    sql`SELECT id, name, v1_rate, v2_rate FROM dust_companies
+    sql`SELECT id, name, v1_rate, v2_rate, trucking_rate FROM dust_companies
         WHERE company_code = ${companyCode} ORDER BY name`,
     sql`SELECT p.dust_company_id, p.name FROM dust_company_personnel p
         JOIN dust_companies c ON c.id = p.dust_company_id
@@ -3170,6 +3198,7 @@ async function dustCompanyDirectory(sql, companyCode) {
     name:      c.name || '',
     v1_rate:   c.v1_rate != null ? Number(c.v1_rate) : null,
     v2_rate:   c.v2_rate != null ? Number(c.v2_rate) : null,
+    trucking_rate: c.trucking_rate != null ? Number(c.trucking_rate) : null,
     men:       [],
     locations: [],
   }]));

@@ -6441,16 +6441,18 @@
           name: entryName, known: !!o.known,
           v1_rate: o.v1_rate != null ? o.v1_rate : null,
           v2_rate: o.v2_rate != null ? o.v2_rate : null,
+          trucking_rate: o.trucking_rate != null ? o.trucking_rate : null,
           men: o.men || [], locations: o.locations || [],
           usual_vehicle2: legStr(o.usual_vehicle2),
         };
       }
       const hit = (dustCompanies || []).find(c => legStr(c.name).trim().toLowerCase() === want.toLowerCase());
-      if (!hit) return { name: want, known: false, v1_rate: null, v2_rate: null, men: [], locations: [], usual_vehicle2: '' };
+      if (!hit) return { name: want, known: false, v1_rate: null, v2_rate: null, trucking_rate: null, men: [], locations: [], usual_vehicle2: '' };
       return {
         name: hit.name, known: true,
         v1_rate: hit.v1_rate != null ? hit.v1_rate : null,
         v2_rate: hit.v2_rate != null ? hit.v2_rate : null,
+        trucking_rate: hit.trucking_rate != null ? hit.trucking_rate : null,
         men: hit.men || [], locations: hit.locations || [],
         // Only the timesheet customer's usual escort is learned server-side, so
         // another customer's leg is offered none rather than the wrong one.
@@ -6523,6 +6525,11 @@
         // this haul at another customer swaps it rather than billing the second
         // company at the first's price. See haulRateApply.
         leg.feeFromRate = legStr(after.feeFromRate);
+        // The Other Billing hauling rate travels on exactly the same terms —
+        // the delivery below is usually for the same customer at the same rate,
+        // and where it is not, the swap is what corrects it. See haulObRateApply.
+        leg.trucking_rate = legStr(after.trucking_rate);
+        leg.obRateFromCo  = legStr(after.obRateFromCo);
       } else {
         leg.start_time = legStr(truckingEntry && truckingEntry.start_time).slice(0, 5);
         leg.end_time   = legStr(truckingEntry && truckingEntry.end_time).slice(0, 5);
@@ -6897,7 +6904,8 @@
       // "this box holds a figure I filled in" — which is what the note under it
       // and the swap on a customer change both read. haulTouched already stops
       // the pre-fill here; this stops the marker outliving what it describes.
-      if (field === 'haul_fee') leg.feeFromRate = '';
+      if (field === 'haul_fee')      leg.feeFromRate  = '';
+      if (field === 'trucking_rate') leg.obRateFromCo = '';
       if (field === 'location') dustCascadeLocation(leg);
       if (field === 'vehicle1') dustCascadeVehicle(leg, 1);
       if (field === 'vehicle2') dustCascadeVehicle(leg, 2);
@@ -6919,7 +6927,8 @@
       // — what the haul was billed at, and possibly invoiced at. Dropping the
       // marker says so: the rate pre-fill only ever takes back its OWN number,
       // so from here on it will leave this one alone.
-      if (field === 'haul_fee') leg.feeFromRate = '';
+      if (field === 'haul_fee')      leg.feeFromRate  = '';
+      if (field === 'trucking_rate') leg.obRateFromCo = '';
       const el = document.getElementById(`hl_${leg.key}_${domId}`);
       if (el) el.value = leg[field];
     }
@@ -6996,6 +7005,44 @@
       return changed;
     }
 
+    // ── The Other Billing trucking rate, from the customer's default ──────
+    // The hauling line beside the material: that grid bills hours × this rate,
+    // and until now it was the one figure on the row nobody could set once —
+    // every delivery had it typed in again from whatever the last one said.
+    // It is set beside the customer's name in the dust office's own Manage
+    // Lists, next to the two vehicle rates and the UB price, and read from
+    // there the same way they are.
+    //
+    // The rule is the haul fee's, for the same reasons, kept deliberately
+    // parallel: read FORWARD ONLY onto a rate still blank, because re-pricing a
+    // customer must never restate a delivery that has already been invoiced;
+    // and `obRateFromCo` remembers the exact number this pre-fill put in the
+    // box, so re-pointing a haul at another customer swaps that customer's rate
+    // in rather than billing them at the last one's. A rate the approver typed,
+    // or one read back off a posted row, is left alone for good.
+    function haulObRateApply() {
+      let changed = false;
+      for (const leg of haulLegs) {
+        // Only an Other Billing haul has the box — a UB haul bills on vehicle
+        // rates, and a non-billable one bills nobody.
+        if (!legIsOb(leg)) continue;
+        if (haulTouchedHas(leg, 'trucking_rate')) continue;
+        const cur = legStr(leg.trucking_rate).trim();
+        // Anything in the box this pre-fill did not put there stands, and stops
+        // being its business: on a re-edit that is the rate the row was posted
+        // at, and a delivery already invoiced keeps the number it was invoiced
+        // under.
+        if (cur && cur !== legStr(leg.obRateFromCo).trim()) { leg.obRateFromCo = ''; continue; }
+        const co   = dustCoFor(legCustomer(leg));
+        const next = co.trucking_rate != null ? String(co.trucking_rate) : '';
+        if (cur === next) continue;
+        leg.trucking_rate = next;
+        leg.obRateFromCo  = next;
+        changed = true;
+      }
+      return changed;
+    }
+
     // Typing hours moves the end of the leg, because hours are what a supervisor
     // knows ("five hours at Bear Hollow") and the tab bills on the window. Needs
     // a start to count from; without one the box is left for the times to fill.
@@ -7049,11 +7096,13 @@
           leg[f] = v;
           haulTouched.delete(leg.key + '|' + f);
         }
-        // And the fee, on its own terms: the haul fee is not re-derived over a
+        // And the two rates that follow the customer on their own terms: the
+        // haul fee and the Other Billing hauling rate are not re-derived over a
         // number the approver typed or a row already posted at, the way the
-        // dust rates above are. Only the rate this pre-fill itself filled in
+        // dust rates above are. Only what these pre-fills themselves filled in
         // follows the customer — which is the whole point of it following.
         haulRateApply();
+        haulObRateApply();
       }
       truckingRenderFields(lastTruckingRow);
     }
@@ -7081,7 +7130,11 @@
       // screen — that grid is the one whose hauls also post a Truck Tracking
       // row. It should arrive holding the customer's rate, like every other fee
       // box does, rather than blank because the box did not exist a moment ago.
+      // Its Trucking Rate box arrives with the same haul, and comes from the
+      // dust office's own rate for this customer rather than the trucking
+      // office's — two grids, two rates, one rule.
       haulRateApply();
+      haulObRateApply();
       truckingRenderFields(lastTruckingRow);
     }
 
@@ -7093,6 +7146,9 @@
         return;
       }
       haulLegs.push(haulFreshLeg(haulLegs[haulLegs.length - 1] || null));
+      // A haul added below a delivery is another delivery — it inherits the
+      // destination, so it inherits the box, so it gets the rate.
+      haulObRateApply();
       truckingRenderFields(lastTruckingRow);
     }
 
@@ -7147,6 +7203,11 @@
         dustCascadeVehicle(leg, 1);
         dustCascadeVehicle(leg, 2);
       }
+      // The customer's hauling rate arrives with this lookup, so an Other
+      // Billing haul that was on screen before it landed gets its rate now.
+      // Its own guards decide what it may touch — a rate typed meanwhile, or
+      // one read back off a posted row, is not its to fill.
+      haulObRateApply();
       // On a re-edit the posted rows already answered every box; only a fresh
       // approve takes suggestions from the customer.
       if (dustRowsSeen) return;
@@ -7619,7 +7680,10 @@
            If the day ran to two customers, two pads or two kinds of work, split it and give each
            haul its own hours. Driver, unit and description come from the timesheet and are the same
            on every row; the customer and the hours are the haul's own. The state, the
-           vehicle rates and the escort follow from whichever customer that haul names.
+           vehicle rates, the escort and a delivery's <strong>trucking rate</strong> follow from
+           whichever customer that haul names — the rates are set beside that customer's name in the
+           dust office's <strong>Manage Lists</strong>; type over any of them to bill this haul at
+           something else.
            ${legPostsTruck(haulLegs[0]) ? carry : ''}Every row is locked in its tab and is edited here in Payroll.`;
         return;
       }

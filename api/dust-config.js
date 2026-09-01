@@ -40,6 +40,12 @@ async function ensureCompanyRateColumns(sql) {
   // Optional per-customer UB $/gal override. NULL means "use the global
   // dust_settings.ub_rate"; a value bills that customer at its own rate.
   await sql`ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS ub_rate NUMERIC(10,4)`;
+  // The hourly rate this customer is billed for HAULING on an Other Billing
+  // row — the trucking line beside the material, which that grid prices as
+  // hours × rate. A fact about the customer, like the two vehicle rates above,
+  // and until this it was the one figure on the row nobody could set once:
+  // every delivery had it typed in again from memory.
+  await sql`ALTER TABLE dust_companies ADD COLUMN IF NOT EXISTS trucking_rate NUMERIC(10,4)`;
   _companyRateColsEnsured = true;
 }
 
@@ -119,6 +125,7 @@ module.exports = async (req, res) => {
           v1_rate:   co.v1_rate != null ? parseFloat(co.v1_rate) : null,
           v2_rate:   co.v2_rate != null ? parseFloat(co.v2_rate) : null,
           ub_rate:   co.ub_rate != null ? parseFloat(co.ub_rate) : null,
+          trucking_rate: co.trucking_rate != null ? parseFloat(co.trucking_rate) : null,
           locations: locRows
             .filter(l => l.dust_company_id === co.id)
             .map(l => ({ id: l.id, name: l.name, state: l.state || '' })),
@@ -356,16 +363,19 @@ async function _syncCompanies(sql, companyCode, companies) {
       WHERE company_code = ${companyCode} AND name = ${co.name || ''} AND id <> ${co.id}
     `;
     await sql`
-      INSERT INTO dust_companies (id, company_code, name, tier, v1_rate, v2_rate, ub_rate, sort_order)
+      INSERT INTO dust_companies (id, company_code, name, tier, v1_rate, v2_rate, ub_rate,
+                                  trucking_rate, sort_order)
       VALUES (${co.id}, ${companyCode}, ${co.name || ''}, ${co.tier || ''},
-              ${safeFloat(co.v1_rate)}, ${safeFloat(co.v2_rate)}, ${safeFloat(co.ub_rate)}, ${i})
+              ${safeFloat(co.v1_rate)}, ${safeFloat(co.v2_rate)}, ${safeFloat(co.ub_rate)},
+              ${safeFloat(co.trucking_rate)}, ${i})
       ON CONFLICT (id) DO UPDATE SET
-        name       = EXCLUDED.name,
-        tier       = EXCLUDED.tier,
-        v1_rate    = EXCLUDED.v1_rate,
-        v2_rate    = EXCLUDED.v2_rate,
-        ub_rate    = EXCLUDED.ub_rate,
-        sort_order = EXCLUDED.sort_order
+        name          = EXCLUDED.name,
+        tier          = EXCLUDED.tier,
+        v1_rate       = EXCLUDED.v1_rate,
+        v2_rate       = EXCLUDED.v2_rate,
+        ub_rate       = EXCLUDED.ub_rate,
+        trucking_rate = EXCLUDED.trucking_rate,
+        sort_order    = EXCLUDED.sort_order
     `;
 
     // Locations — bulk-wipe protection per company.

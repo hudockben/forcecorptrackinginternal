@@ -76,7 +76,7 @@ assert('dust-config: ensures ub_rate column on cold start',
 assert('dust-config GET: maps co.ub_rate into company object',
   /ub_rate:\s*co\.ub_rate != null \? parseFloat\(co\.ub_rate\) : null/.test(cfgJs));
 assert('dust-config PUT: INSERT column list includes ub_rate',
-  /INSERT INTO dust_companies \(id, company_code, name, tier, v1_rate, v2_rate, ub_rate, sort_order\)/.test(cfgJs));
+  /INSERT INTO dust_companies \(id, company_code, name, tier, v1_rate, v2_rate, ub_rate,\s*\n\s*trucking_rate, sort_order\)/.test(cfgJs));
 assert('dust-config PUT: VALUES bind safeFloat(co.ub_rate)',
   /safeFloat\(co\.v2_rate\)\},\s*\$\{safeFloat\(co\.ub_rate\)\}/.test(cfgJs));
 assert('dust-config PUT: ON CONFLICT updates ub_rate',

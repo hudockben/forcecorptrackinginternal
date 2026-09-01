@@ -4527,6 +4527,10 @@
                   <input type="number" class="short" value="${co.ub_rate != null ? co.ub_rate : ''}" placeholder="default" min="0" step="0.01"
                     title="Per-customer UB price per gallon. Blank = use the global UB Rate."
                     oninput="updateCompanyRate('${co.id}','ub_rate',this.value)" onchange="onCompanyUbRateChange()" />
+                  <span class="list-item-lbl" title="What this customer is billed per hour for hauling on an Other Billing row. Fills the Trucking Rate box on a new delivery; blank leaves it to be typed.">Hauling $/hr</span>
+                  <input type="number" class="short" value="${co.trucking_rate != null ? co.trucking_rate : ''}" placeholder="0.00" min="0" step="0.01"
+                    title="What this customer is billed per hour for hauling on an Other Billing row. Fills the Trucking Rate box on a new delivery; blank leaves it to be typed."
+                    oninput="updateCompanyRate('${co.id}','trucking_rate',this.value)" />
                 </div>
                 <div class="company-body" ${isOpen ? '' : 'hidden'}>
                   <div class="co-locations-section">
@@ -6986,12 +6990,37 @@
     function obSetCustomer(idx, value) {
       if (!obRows[idx]) return;
       if (obIsInjectedRow(obRows[idx])) return;
+      // Read before it is overwritten: the rate fill below has to know who the
+      // row billed a moment ago to tell its own number from a hand-typed one.
+      const oldCo = (dustLists.companies || []).find(c => c.name === obRows[idx].customer);
       obRows[idx].customer    = value;
       obRows[idx].destination = '';
       obRows[idx].state       = '';
       const co   = (dustLists.companies || []).find(c => c.name === value);
       const locs = co ? (co.locations || []).slice().sort((a, b) => a.name.localeCompare(b.name)) : [];
       const tr   = document.querySelector(`#obTbody tr[data-idx="${idx}"]`);
+      // The hauling rate this grid bills the trucking line at, from the rate set
+      // beside the customer's name in Manage Lists — the same rule the tracking
+      // grid applies to the two vehicle rates: filled onto a blank box, swapped
+      // where it still holds the OUTGOING customer's rate, and left alone the
+      // moment it holds anything else, because that is a hand-typed price and
+      // one this delivery may already have been invoiced at.
+      {
+        const cur          = obRows[idx].trucking_rate;
+        const isBlank      = (cur === '' || cur == null);
+        const oldRate      = oldCo && oldCo.trucking_rate != null ? oldCo.trucking_rate : null;
+        const matchesOldCo = (oldRate != null && !isBlank && parseFloat(cur) === parseFloat(oldRate));
+        if (isBlank || matchesOldCo) {
+          const next = (co && co.trucking_rate != null) ? String(co.trucking_rate) : '';
+          if (next !== (isBlank ? '' : String(cur))) {
+            obRows[idx].trucking_rate = next;
+            const rateEl = tr && tr.querySelector('input[data-field="trucking_rate"]');
+            if (rateEl) rateEl.value = next;
+            obRefreshCalcCells(idx);
+            obRefreshTotals();
+          }
+        }
+      }
       if (tr) {
         const destSel = tr.querySelector('select[data-role="ob-dest"]');
         if (destSel) {
@@ -7240,7 +7269,7 @@
             : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>`}
           ${obInjected
             ? obRo(row.trucking_rate, 'cw-rate')
-            : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>`}
+            : `<td class="cw-rate"><input type="number" data-field="trucking_rate" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>`}
           <td class="cw-loc"><input type="text" value="${esc(row.comments||'')}" placeholder="Notes…" oninput="obSet(${idx},'comments',this.value)"></td>
           <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}${obInjected ? `<div style="margin-top:0.15rem">${obTsBadge}</div>` : ''}</td>
           ${obInjected

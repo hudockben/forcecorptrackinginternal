@@ -73,7 +73,11 @@ function makeSql(initial = {}) {
 
     // One customer, by id or by name. The whole-directory read (ORDER BY name,
     // no id/name predicate) is a different query — see below.
-    if (q.startsWith('SELECT id, name, v1_rate, v2_rate FROM dust_companies') && !q.includes('ORDER BY name')) {
+    // The lazy column guard the injection runs before reading a customer's
+    // rates. A real database answers it and moves on; a mock that refused it
+    // would push every read down the swallowed-error path and test nothing.
+    if (q.startsWith('ALTER TABLE')) return Promise.resolve([]);
+    if (q.startsWith('SELECT id, name, v1_rate, v2_rate, trucking_rate FROM dust_companies') && !q.includes('ORDER BY name')) {
       const [, needle] = values;
       const byId = q.includes('AND id =');
       return Promise.resolve(store.companies.filter(c => (byId ? c.id : c.name) === needle));
@@ -107,7 +111,7 @@ function makeSql(initial = {}) {
       return Promise.resolve([...store.dce.values()].filter(r => like(r.id, values[1])));
     }
     // dustCompanyDirectory: every customer, with its men and pads.
-    if (q.startsWith('SELECT id, name, v1_rate, v2_rate FROM dust_companies') && q.includes('ORDER BY name')) {
+    if (q.startsWith('SELECT id, name, v1_rate, v2_rate, trucking_rate FROM dust_companies') && q.includes('ORDER BY name')) {
       return Promise.resolve(store.companies.slice().sort((a, b) => a.name.localeCompare(b.name)));
     }
     if (q.startsWith('SELECT p.dust_company_id, p.name FROM dust_company_personnel')) {

@@ -75,12 +75,16 @@ function makeSql(initial = {}) {
   const sql = (strings, ...values) => {
     const q = strings.join(' ').replace(/\s+/g, ' ').trim();
 
-    if (q.startsWith('SELECT id, name, v1_rate, v2_rate FROM dust_companies') && !q.includes('ORDER BY name')) {
+    // The lazy column guard the injection runs before reading a customer's
+    // rates. A real database answers it and moves on; a mock that refused it
+    // would push every read down the swallowed-error path and test nothing.
+    if (q.startsWith('ALTER TABLE')) return Promise.resolve([]);
+    if (q.startsWith('SELECT id, name, v1_rate, v2_rate, trucking_rate FROM dust_companies') && !q.includes('ORDER BY name')) {
       const [, needle] = values;
       const byId = q.includes('AND id =');
       return Promise.resolve(store.companies.filter(c => (byId ? c.id : c.name) === needle));
     }
-    if (q.startsWith('SELECT id, name, v1_rate, v2_rate FROM dust_companies')) {
+    if (q.startsWith('SELECT id, name, v1_rate, v2_rate, trucking_rate FROM dust_companies')) {
       return Promise.resolve(store.companies.slice().sort((a, b) => a.name.localeCompare(b.name)));
     }
     if (q.startsWith('SELECT name FROM dust_company_personnel')) {
