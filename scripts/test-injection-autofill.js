@@ -522,6 +522,31 @@ async function refreshTests() {
     assert('an unrelated field type is preserved, not swept up',
       updates.length === 1 && updates[0].field_type === 'Material' && updates[0].rate === 32.5);
   }
+  {
+    // sub_code IS editable on an injected row, so a supervisor can move a haul
+    // row onto a travel code. The rate corrects itself back to standard — and
+    // the stamp has to go with it, because rowHaulHours on the division pages
+    // subtracts stamped hours from the crew-size and units-per-man-hour
+    // denominators. Left behind it keeps a driver out of a figure he now
+    // belongs in.
+    const { updates } = await run([row({
+      rate: 0, field_type: 'Haul — On Site', sub_code: 'Mobilization - Travel',
+      haul_type: 'on_site',
+    })]);
+    assert('a haul row re-coded to travel loses the haul stamp',
+      updates.length === 1 && updates[0].field_type === 'Travel',
+      JSON.stringify(updates[0]));
+    assert('  and is paid at the standard rate again', updates[0].rate === 32.5);
+  }
+  {
+    // The same row without the stale stamp must not be disturbed.
+    const { updates } = await run([row({
+      rate: 32.5, field_type: 'Travel', sub_code: 'Mobilization - Travel',
+      haul_type: 'off_site', employee: 'Zach Brewer', job_class: 'Operator',
+    })]);
+    assert('an already-correct travel row inside a haul day is left alone',
+      updates.length === 0, JSON.stringify(updates[0] || null));
+  }
 
   {
     const { res, updates } = await run([row({ equipment: 'Pickup Truck' })],

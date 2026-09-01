@@ -258,6 +258,63 @@ console.log('\n[a haul row fills in its own truck and hours]');
     r.equipment === 'Triaxle Dump' && r.equip_hours === 0);
 }
 
+// ── The rate a haul row shows ──────────────────────────────────────────────
+// dailyRowAutoRate returns a numeric 0 for a haul: the truck already pays for
+// the man. Every rate-write in the row handler goes through dailyRateOut so
+// that 0 is written as a NUMBER. Written as `autoRate || ''` — which each site
+// used to say for itself — the 0 becomes '', and an empty rate cell reads as
+// "the lookup failed". The hand-fix for that is typing the driver's wage back
+// onto a row whose truck already covers him, which is the double-billing the
+// whole feature exists to remove.
+console.log('\n[a haul row shows $0, not a blank]');
+{
+  const fs3 = require('fs');
+  for (const page of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const s = fs3.readFileSync(path.resolve(__dirname, '..', page), 'utf8');
+    const grab = name => {
+      const start = s.indexOf(`function ${name}(`);
+      if (start < 0) return null;
+      let d = 0;
+      for (let i = s.indexOf('{', start); i < s.length; i++) {
+        if (s[i] === '{') d++;
+        else if (s[i] === '}' && --d === 0) return s.slice(start, i + 1);
+      }
+      return null;
+    };
+    const reM = /^const HAUL_FIELD_TYPE_RE = (\/.*\/[a-z]*);/m.exec(s);
+    const src = grab('dailyRateOut');
+    assert(`${page} defines dailyRateOut`, !!src && !!reM);
+    if (!src || !reM) continue;
+    const out = new Function('HAUL_FIELD_TYPE_RE', `${src}; return dailyRateOut;`)(eval(reM[1]));
+
+    assert(`  ${page}: a haul row writes a numeric 0`,
+      out({ field_type: 'Haul — On Site' }, 0) === 0);
+    assert(`  ${page}: and so does the to/from stamp`,
+      out({ field_type: 'Haul — To/From Site' }, 0) === 0);
+    // Deliberately unchanged: an employee with no roster rate still blanks.
+    // "Nothing to fill in" is what an empty rate cell has always meant, and a
+    // blanket `0` there would invent a rate of zero for a missing one.
+    assert(`  ${page}: an ordinary row with no roster rate still blanks`,
+      out({ field_type: '' }, 0) === '');
+    assert(`  ${page}: a real rate passes through untouched`,
+      out({ field_type: '' }, 32.5) === 32.5);
+    assert(`  ${page}: a haul row with a real rate still shows 0 — the truck pays`,
+      out({ field_type: 'Haul — On Site' }, 77) === 0);
+    assert(`  ${page}: "no basis to set one" stays null, so callers leave the rate alone`,
+      out({ field_type: 'Haul — On Site' }, null) === null);
+  }
+
+  // And no site may quietly go back to doing it by hand.
+  for (const page of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const s = fs3.readFileSync(path.resolve(__dirname, '..', page), 'utf8');
+    const handler = s.slice(s.indexOf("if (f === 'cost_code')"),
+                            s.indexOf('// Auto-calculate material cost'));
+    assert(`  ${page}: the row handler writes no rate outside dailyRateOut`,
+      !/(autoRate|ar) \|\| ''/.test(handler),
+      (/(autoRate|ar) \|\| ''/.exec(handler) || [''])[0]);
+  }
+}
+
 console.log('\n[the haul stamp claims only its own field types]');
 {
   const fs2 = require('fs');

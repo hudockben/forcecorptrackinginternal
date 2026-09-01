@@ -16878,6 +16878,23 @@ function dailyRowAutoRate(p, row) {
   return p.prevailing_wage ? (emp.prevailing_rate || 0) : (emp.non_prevailing_rate || 0);
 }
 
+// What to WRITE into a rate cell for a rate dailyRowAutoRate just resolved.
+//
+// A haul's 0 is a real answer — the truck already pays for the man — so it is
+// written as a number. A missing roster rate is not an answer, and still
+// blanks: "nothing to fill in" is what an empty rate cell has always meant here.
+//
+// Every rate-write in the row handler goes through this. They used to say
+// `autoRate || ''` individually, which turned a haul's deliberate 0 into '' —
+// so setting Field Type to a haul showed 0, and then picking the Employee
+// (the very next column) blanked it again. An empty rate cell reads as "the
+// lookup failed", and the hand-fix for that is typing the driver's wage back
+// onto a row whose truck already covers him.
+function dailyRateOut(row, autoRate) {
+  if (autoRate == null) return null;
+  return HAUL_FIELD_TYPE_RE.test((row.field_type || '').trim()) ? 0 : (autoRate || '');
+}
+
 function dailyRowCost(row) {
   const c = calcDaily(row);
   const importedCost = parseFloat(row.total_cost) || 0;
@@ -21414,8 +21431,9 @@ document.addEventListener('input', e => {
             if (!_isInj && cur.trim().toLowerCase() === TRAVEL_SUB_CODE) {
               const ar = dailyRowAutoRate(p, p.dailyRows[i]);
               if (ar != null) {
-                p.dailyRows[i].rate = ar || '';
-                const rInp = rowEl.querySelector('[data-f="rate"]'); if (rInp) rInp.value = ar || '';
+                const arOut = dailyRateOut(p.dailyRows[i], ar);
+                p.dailyRows[i].rate = arOut;
+                const rInp = rowEl.querySelector('[data-f="rate"]'); if (rInp) rInp.value = arOut;
               }
             }
           }
@@ -21436,8 +21454,9 @@ document.addEventListener('input', e => {
         // rate; otherwise use the employee's prevailing / non-prevailing rate.
         const autoRate = dailyRowAutoRate(p, p.dailyRows[i]);
         if (autoRate != null) {
-          p.dailyRows[i].rate = autoRate || '';
-          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate || ''; }
+          const out = dailyRateOut(p.dailyRows[i], autoRate);
+          p.dailyRows[i].rate = out;
+          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = out; }
         }
       }
     }
@@ -21466,7 +21485,7 @@ document.addEventListener('input', e => {
         // same case store a numeric 0, and the grid should not show two
         // different things for one fact. Leaving a haul falls back to the
         // roster rate, where blank still means "nothing to fill in".
-        const next = isHaul ? 0 : (autoRate == null ? null : (autoRate || ''));
+        const next = isHaul ? 0 : dailyRateOut(p.dailyRows[i], autoRate);
         if (next != null) {
           const _tbody = document.getElementById('daily-tbody-' + projId);
           const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
@@ -21483,8 +21502,9 @@ document.addEventListener('input', e => {
         if (autoRate != null) {
           const _tbody = document.getElementById('daily-tbody-' + projId);
           const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
-          p.dailyRows[i].rate = autoRate || '';
-          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate || ''; }
+          const out = dailyRateOut(p.dailyRows[i], autoRate);
+          p.dailyRows[i].rate = out;
+          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = out; }
         }
       }
     }

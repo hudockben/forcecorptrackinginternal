@@ -4498,7 +4498,19 @@ module.exports = async (req, res) => {
           // Re-stamp so the cost tab says why the row is priced at zero — and
           // un-stamp a row that is no longer a haul, so the marker never
           // outlives the answer that put it there.
-          const fieldType = travelRow ? (r.field_type || 'Travel')
+          // A row that has BECOME travel drops any haul stamp it still carries.
+          // sub_code is one of the fields a supervisor may re-code on an
+          // injected row, so a haul row can be moved onto a travel code — and
+          // the stamp is not cosmetic: rowHaulHours on the division pages
+          // subtracts stamped hours from the crew-size and units-per-man-hour
+          // denominators. Left behind, it keeps a driver out of a figure he now
+          // belongs in, while the rate beside it has already been corrected
+          // back to his standard one.
+          //
+          // Safe to overwrite: an injected row's field_type is only ever
+          // 'Travel', a haul stamp, or NULL — there is no third value to lose.
+          const fieldType = travelRow
+            ? (HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')) ? 'Travel' : (r.field_type || 'Travel'))
             : (haulType ? HAUL_FIELD_TYPE[haulType]
               : (HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')) ? null : (r.field_type || null)));
           const eqCost    = resolver.equipCostFor(r.equipment);
