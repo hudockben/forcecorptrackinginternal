@@ -85,7 +85,12 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
         } else {
           acc.stdHours += h;
         }
-        if (offSiteHaul) acc.haulHours += work;
+        // Only hours this rule actually MOVED. A driver's off-site haul on a
+        // job that was never prevailing wage is standard either way, and
+        // counting it here had the executive strip report "40.00 h off-site
+        // haul excluded" beside a prevailing total of 0.00 — describing a
+        // reclassification that never happened.
+        if (offSiteHaul && e.prevailing_wage === true) acc.haulHours += work;
         // Distinct dates worked, so two entries on one day are one day.
         const d = String(e.work_date || '').slice(0, 10);
         if (d) acc._dates.add(d);

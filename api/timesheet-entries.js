@@ -795,7 +795,16 @@ const HAUL_FIELD_TYPE = {
   on_site:  'Haul — On Site',
   off_site: 'Haul — To/From Site',
 };
-const HAUL_FIELD_TYPE_RE = /^haul\b/i;
+// Anchored on the SEPARATOR, not just the word. `/^haul\b/` matched any field
+// type an office had already invented that merely starts with "Haul" — a
+// paving company using "Haul Off" for spoil removal would have had every such
+// row silently priced at $0 and dropped out of its own production rates on the
+// first deploy. Nothing reserves the word, and field_types is a free-form
+// company-managed list. Matching "Haul — …" keeps the category open for a third
+// stamp later while claiming only a shape no one types by accident.
+// Any of em dash, en dash or hyphen, so the rule does not hinge on which
+// character survived a copy-paste.
+const HAUL_FIELD_TYPE_RE = /^haul\s*[—–-]\s/i;
 
 // A driver's labour is already inside the truck's hourly rate — the Triaxle at
 // $121/h is the truck AND the man in it. Pricing his hours again on the same
@@ -4698,11 +4707,18 @@ module.exports = async (req, res) => {
       // prevailing and re-bills the job for his wage.
       //
       // Absent means keep; present still wins, blank included, so timesheet.html
-      // can clear an answer the driver ticked by mistake. Unlike the truck and
-      // EES fields there is no "stays a haul" condition to add: haul_type is not
-      // tied to a division or a job, so nothing about a re-categorization makes
-      // a previously-true answer stale.
-      const keepHaul = !Object.prototype.hasOwnProperty.call(body, 'haul_type');
+      // can clear an answer the driver ticked by mistake.
+      //
+      // Gated on the entry still being a DAILY one, the same shape as staysTruck
+      // and staysEes above. normalizeEntryBody already forces haul_type to null
+      // on the time_off branch on purpose, and the time-off payload sends no
+      // haul_type key — so without this an entry switched from a haul day to
+      // time off would keep the answer, and carry it back into a later daily
+      // edit that never asked for it, zeroing that block's labour rate.
+      // Division and job changes need no such gate: haul_type is tied to
+      // neither, so nothing about a re-categorization makes it stale.
+      const keepHaul = data.entry_type === 'daily'
+        && !Object.prototype.hasOwnProperty.call(body, 'haul_type');
 
       const [updated] = await sql`
         UPDATE timesheet_entries SET

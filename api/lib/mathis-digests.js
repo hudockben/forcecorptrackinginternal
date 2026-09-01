@@ -1062,6 +1062,8 @@ const PAYROLL_LIMITS = [
   'THIS DATA CARRIES NO PAY RATE AND NO DOLLAR FIGURE OF ANY KIND. Hours are hours. No question about pay, wages, labour cost or payroll spend can be answered from it — say the rates are not in this data rather than estimating from anything.',
   'Figures cover the current biweekly pay period only, and only entries that are submitted or approved. A draft an employee has not sent is not counted and must not be described as missing time.',
   'Prevailing-wage hours are split by a flag on the job, not by a rate. It says which work was prevailing-wage, not what any of it paid.',
+  'Two things move hours OUT of prevailing even on a prevailing-wage job, and both are about where the person was, not what they were paid. Travel is never prevailing. Nor is an off-site haul: a truck driver running to and from the site never worked it. Hauling ON the site stays prevailing. So a driver can show 0 prevailing hours on a prevailing-wage job and that is correct, not a data gap — do not explain it from the job flag alone.',
+  'haulHours is the off-site haul work reclassified by that rule, and it is already counted inside the standard hours — it is a note on the split, not a third bucket. Prevailing + standard is the whole day; do not add haulHours to them.',
 ];
 
 async function payrollDigest(c) {

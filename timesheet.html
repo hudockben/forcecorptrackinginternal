@@ -1279,13 +1279,26 @@
     // omitted. A driver's block defaults to "No" rather than blank: the common
     // answer should cost no taps, and an unanswered three-way on a form the
     // driver never scrolled to would be a new way to block a submit.
+    //
+    // PURELY PRESENTATIONAL — it must never write to haulVals for a hidden
+    // block. It used to clear the value whenever isDriver was not yet true, and
+    // isDriver starts null: init() runs loadSupervisors() and loadEntries()
+    // CONCURRENTLY, so a driver who taps a saved draft before the roster call
+    // lands had fillBlockFromEntry store 'off_site' and this wipe it a line
+    // later. The flag then arrived true, the control read "No", and saving
+    // posted '' — silently moving his hours back into prevailing and re-billing
+    // his wage to the job on the next approval.
+    //
+    // Nothing needs the clear: buildPayloads already decides what to post from
+    // isDriver directly ('' when false, nothing at all when null), so the
+    // stored value only ever matters for a driver, which is the case that keeps
+    // it.
     function applyHaulVisibility(i) {
       const idxs = (i == null) ? blockOrder() : [i];
       for (const b of idxs) {
         const row = bel(b, 'row-haul');
         if (row) row.style.display = isDriver ? 'flex' : 'none';
         if (isDriver) setHaul(haulVals[b] || '', b);
-        else          haulVals[b] = '';
       }
     }
 

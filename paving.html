@@ -3253,7 +3253,16 @@ const TRAVEL_RATE = 45;
 // later third — all price the same way here.
 // Mirrors HAUL_FIELD_TYPE / HAUL_FIELD_TYPE_RE in api/timesheet-entries.js.
 const HAUL_FIELD_TYPES = ['Haul — On Site', 'Haul — To/From Site'];
-const HAUL_FIELD_TYPE_RE = /^haul\b/i;
+// Anchored on the SEPARATOR, not just the word. `/^haul\b/` matched any field
+// type an office had already invented that merely starts with "Haul" — a
+// paving company using "Haul Off" for spoil removal would have had every such
+// row silently priced at $0 and dropped out of its own production rates on the
+// first deploy. Nothing reserves the word, and field_types is a free-form
+// company-managed list. Matching "Haul — …" keeps the category open for a third
+// stamp later while claiming only a shape no one types by accident.
+// Any of em dash, en dash or hyphen, so the rule does not hinge on which
+// character survived a copy-paste.
+const HAUL_FIELD_TYPE_RE = /^haul\s*[—–-]\s/i;
 
 // Labour hours on a hauling row.
 //
@@ -21378,6 +21387,10 @@ document.addEventListener('input', e => {
     const _isInj = _r.timesheet_entry_id != null && _r.timesheet_entry_id !== '';
     if (_isInj && !INJECTED_EDITABLE_FIELDS.has(f)) return;
     const _prevSubCode = p.dailyRows[i].sub_code;
+    // Captured for the same reason as the sub code above: the haul re-pricing
+    // below has to know whether this edit ENTERED or LEFT a Haul field type,
+    // and by the next line the old value is gone.
+    const _prevFieldType = p.dailyRows[i].field_type;
     p.dailyRows[i][f] = el.value;
     if (f === 'sub_code') _bidScInvalidate();   // bid sub code picker reads these names
     // Keep the sub code honest about the cost code it now sits under. There is
@@ -21435,13 +21448,31 @@ document.addEventListener('input', e => {
     // Picking (or clearing) a Haul field type re-prices the row for the same
     // reason Travel does: the classification IS the rate. Injected rows are
     // skipped — payroll owns their rate — exactly as with Travel below.
+    //
+    // ONLY on a haul transition, matching the sub_code handler's rule below.
+    // Firing on every field-type change re-derived the rate from the roster
+    // whenever anyone re-categorized a row, so a supervisor who had typed 60.00
+    // by hand and then set Field Type to "Material" silently got the roster's
+    // 32.50 back — the exact overwrite the comment below promises not to do.
     if (f === 'field_type' && !_isInj) {
-      const autoRate = dailyRowAutoRate(p, p.dailyRows[i]);
-      if (autoRate != null) {
-        const _tbody = document.getElementById('daily-tbody-' + projId);
-        const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
-        p.dailyRows[i].rate = autoRate || '';
-        if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = autoRate || ''; }
+      const wasHaul = HAUL_FIELD_TYPE_RE.test((_prevFieldType || '').trim());
+      const isHaul  = HAUL_FIELD_TYPE_RE.test((el.value      || '').trim());
+      if (isHaul || wasHaul) {
+        const autoRate = dailyRowAutoRate(p, p.dailyRows[i]);
+        // Entering a haul always resolves to 0 and that 0 is a real answer —
+        // the truck covers the driver — so it is written as 0, not blanked.
+        // A blank rate cell reads as "the lookup failed", which is what a
+        // supervisor goes and fixes by hand; the rows payroll injects for the
+        // same case store a numeric 0, and the grid should not show two
+        // different things for one fact. Leaving a haul falls back to the
+        // roster rate, where blank still means "nothing to fill in".
+        const next = isHaul ? 0 : (autoRate == null ? null : (autoRate || ''));
+        if (next != null) {
+          const _tbody = document.getElementById('daily-tbody-' + projId);
+          const rowEl = _tbody ? [..._tbody.children].find(r => r.querySelector(`[data-i="${i}"]`)) : null;
+          p.dailyRows[i].rate = next;
+          if (rowEl) { const s = rowEl.querySelector('[data-f="rate"]'); if (s) s.value = next; }
+        }
       }
     }
     if (f === 'sub_code' && !_isInj) {

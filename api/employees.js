@@ -252,33 +252,31 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'is_supervisor or is_driver field required' });
       }
 
-      // Make sure the row exists without touching either flag — a person who
-      // only ever appeared in the paving or quarry roster has no employees row
-      // until the first time someone flags them.
-      await sql`
-        INSERT INTO employees (company_code, name, sort_order, active, updated_at)
+      // One statement, so a click either lands whole or not at all — and a
+      // person who only ever appeared in the paving or quarry roster still gets
+      // their employees row created on the first flag.
+      //
+      // COALESCE is what lets a single upsert leave the OTHER flag alone: the
+      // VALUES list has to supply something for the flag the caller did not
+      // send, so it sends NULL and the DO UPDATE keeps the stored value. A
+      // straight `is_driver = EXCLUDED.is_driver` would clear Supervisor every
+      // time someone toggled Driver.
+      const supVal = hasSup ? Boolean(fields.is_supervisor) : null;
+      const drvVal = hasDrv ? Boolean(fields.is_driver)     : null;
+      const [row] = await sql`
+        INSERT INTO employees (company_code, name, is_supervisor, is_driver, sort_order, active, updated_at)
         VALUES (
           ${companyCode}, ${name},
+          COALESCE(${supVal}::boolean, FALSE),
+          COALESCE(${drvVal}::boolean, FALSE),
           (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM employees WHERE company_code = ${companyCode}),
           TRUE, NOW()
         )
-        ON CONFLICT (company_code, name) DO NOTHING
-      `;
-      if (hasSup) {
-        await sql`
-          UPDATE employees SET is_supervisor = ${Boolean(fields.is_supervisor)}, updated_at = NOW()
-          WHERE company_code = ${companyCode} AND name = ${name}
-        `;
-      }
-      if (hasDrv) {
-        await sql`
-          UPDATE employees SET is_driver = ${Boolean(fields.is_driver)}, updated_at = NOW()
-          WHERE company_code = ${companyCode} AND name = ${name}
-        `;
-      }
-      const [row] = await sql`
-        SELECT id, name, is_supervisor, is_driver FROM employees
-        WHERE company_code = ${companyCode} AND name = ${name}
+        ON CONFLICT (company_code, name) DO UPDATE SET
+          is_supervisor = COALESCE(${supVal}::boolean, employees.is_supervisor),
+          is_driver     = COALESCE(${drvVal}::boolean, employees.is_driver),
+          updated_at    = NOW()
+        RETURNING id, name, is_supervisor, is_driver
       `;
       return res.json({ ok: true, employee: row });
     }

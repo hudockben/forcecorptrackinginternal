@@ -59,6 +59,9 @@ const run = (splitEntry, splitRows) => new Function(
 const HAUL  = { haul_type: 'off_site' };
 const ONSITE = { haul_type: 'on_site' };
 const NOT   = { haul_type: null };
+// equip_hours is deliberately absent from the defaults: 0 is what a fresh split
+// row actually carries (_blankSplitRow), so a fixture that wants a PRICED truck
+// has to say so, the same way the approver has to.
 const row = over => Object.assign(
   { cost_code: 'Earthwork', sub_code: 'Excess Cut', labor_hours: 8, equipment: '' }, over);
 
@@ -76,7 +79,10 @@ console.log('\n[when the warning fires]');
     bad.length === 1);
 }
 {
-  const bad = run(HAUL, [row({ labor_hours: 4 }), row({ labor_hours: 4, equipment: 'Triaxle Dump' })]);
+  const bad = run(HAUL, [
+    row({ labor_hours: 4 }),
+    row({ labor_hours: 4, equipment: 'Triaxle Dump', equip_hours: 4 }),
+  ]);
   assert('only the row missing its truck is flagged', bad.length === 1 && bad[0].n === 1);
 }
 {
@@ -88,8 +94,8 @@ console.log('\n[when the warning fires]');
 console.log('\n[when it stays quiet]');
 
 {
-  assert('a haul row WITH a truck is fine',
-    run(HAUL, [row({ equipment: 'Triaxle Dump' })]).length === 0);
+  assert('a haul row with a truck AND its hours is fine',
+    run(HAUL, [row({ equipment: 'Triaxle Dump', equip_hours: 8 })]).length === 0);
 }
 {
   assert('an ordinary (non-haul) entry is never flagged — the wage is real there',
@@ -114,6 +120,25 @@ console.log('\n[when it stays quiet]');
 {
   assert('whitespace is not a truck',
     run(HAUL, [row({ equipment: '   ' })]).length === 1);
+}
+{
+  // The case the first cut of this warning missed entirely. _blankSplitRow
+  // starts every row at equip_hours 0 and only travel rows get theirs filled
+  // in, so a named unit with no hours is the LIKELY shape of the mistake, not
+  // an exotic one — and it costs the job exactly as nothing as naming no truck.
+  const bad = run(HAUL, [row({ equipment: 'Triaxle Dump', equip_hours: 0 })]);
+  assert('a named truck with no equipment hours is still flagged', bad.length === 1);
+  assert('  and the warning knows a unit was named, so it can say what to fix',
+    bad[0].hasUnit === true);
+}
+{
+  const bad = run(HAUL, [row({ equipment: '', equip_hours: 0 })]);
+  assert('a row with neither unit nor hours reports no unit',
+    bad.length === 1 && bad[0].hasUnit === false);
+}
+{
+  assert('a truck with real hours on it is priced, so it stays quiet',
+    run(HAUL, [row({ equipment: 'Triaxle Dump', equip_hours: 8 })]).length === 0);
 }
 {
   assert('an unrecognized haul answer is not flagged',
@@ -147,6 +172,36 @@ assert('the warning has somewhere to render',
 // Amber, not red: red in this modal means the save was refused.
 assert('it is styled as advice, not as an error',
   /\.split-warn\s*\{[^}]*var\(--yellow\)/.test(src));
+
+// ── The stamp must not claim field types the office already owns ────────────
+// field_types is a free-form, company-managed dropdown (api/dropdown-lists.js)
+// with nothing reserving the word "Haul". A regex of /^haul\b/ would have
+// swallowed a paving company's existing "Haul Off" for spoil removal: every
+// such row priced at $0 and dropped out of its own production rates on the
+// first deploy, silently. The stamp claims the "Haul — …" shape only.
+console.log('\n[the haul stamp claims only its own field types]');
+{
+  const fs2 = require('fs');
+  const files = ['api/timesheet-entries.js', 'tracker.html', 'paving.html', 'kiewit-pinetree.html'];
+  const pats = files.map(f => {
+    const m = /^\s*const HAUL_FIELD_TYPE_RE = (\/.*\/[a-z]*);/m
+      .exec(fs2.readFileSync(path.resolve(__dirname, '..', f), 'utf8'));
+    return { f, re: m && eval(m[1]) };
+  });
+  assert('every copy of the matcher was found',
+    pats.every(p => p.re), pats.filter(p => !p.re).map(p => p.f).join(', '));
+  assert('all four copies are identical — the rule lives in four files',
+    new Set(pats.map(p => String(p.re))).size === 1,
+    [...new Set(pats.map(p => String(p.re)))].join(' vs '));
+
+  const re = pats[0].re;
+  for (const s of ['Haul — On Site', 'Haul — To/From Site', 'Haul - On Site']) {
+    assert(`  matches ${JSON.stringify(s)}`, re.test(s));
+  }
+  for (const s of ['Haul Off', 'Hauling', 'Haul', 'Haulage', 'Material', 'Trucking']) {
+    assert(`  leaves ${JSON.stringify(s)} alone`, !re.test(s));
+  }
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

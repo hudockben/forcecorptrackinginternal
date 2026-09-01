@@ -5632,8 +5632,13 @@
         if (isTravelSplitRow(r)) return;
         const hrs = Number(r.labor_hours) || 0;
         if (hrs <= 0) return;
-        if (String(r.equipment || '').trim()) return;
-        out.push({ n: i + 1, hours: hrs });
+        // A named unit is not the same as a priced one. _blankSplitRow starts
+        // every row at equip_hours 0 and only travel rows get hours filled in,
+        // so "Triaxle Dump" with 0 equipment hours costs the job exactly as
+        // nothing as naming no truck at all — and that was slipping past the
+        // very check this exists for. Both halves are required.
+        if (String(r.equipment || '').trim() && (Number(r.equip_hours) || 0) > 0) return;
+        out.push({ n: i + 1, hours: hrs, hasUnit: !!String(r.equipment || '').trim() });
       });
       return out;
     }
@@ -5645,15 +5650,24 @@
       if (!bad.length) { el.hidden = true; el.innerHTML = ''; return; }
       const hours = bad.reduce((s, r) => s + r.hours, 0);
       const rows  = bad.map(r => `#${r.n}`).join(', ');
+      const one   = bad.length === 1;
+      // Name the actual gap: "add the unit" is useless advice on a row that
+      // already has one and is missing its hours.
+      const missing = bad.every(r => r.hasUnit)  ? 'no equipment hours'
+                    : bad.some(r => r.hasUnit)   ? 'no equipment hours, or no unit at all'
+                    :                              'no equipment';
+      const remedy  = bad.every(r => r.hasUnit)  ? 'Put the equipment hours on'
+                    : bad.some(r => r.hasUnit)   ? 'Complete the equipment on'
+                    :                              'Add the unit and its hours to';
       el.hidden = false;
       el.innerHTML =
-        `<strong>${bad.length === 1 ? 'Row' : 'Rows'} ${escapeHtml(rows)}: `
-        + `${hours.toFixed(2)} h of hauling with no equipment.</strong> `
+        `<strong>${one ? 'Row' : 'Rows'} ${escapeHtml(rows)}: `
+        + `${hours.toFixed(2)} h of hauling with ${missing}.</strong> `
         + `A haul posts a $0 labour rate because the driver is already inside the `
-        + `truck's hourly cost — but no truck is named on `
-        + `${bad.length === 1 ? 'this row' : 'these rows'}, so ${bad.length === 1 ? 'it' : 'they'} `
-        + `will cost the job nothing at all. Add the unit, or approve as-is if the `
-        + `truck is billed elsewhere.`;
+        + `truck's hourly cost — so with nothing priced on the equipment side `
+        + `${one ? 'this row' : 'these rows'} will cost the job nothing at all. `
+        + `${remedy} ${one ? 'it' : 'them'}, or approve as-is if the truck is `
+        + `billed elsewhere.`;
     }
 
     // A code the supervisor typed is not in the split until its cell commits,

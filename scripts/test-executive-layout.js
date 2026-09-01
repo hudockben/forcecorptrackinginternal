@@ -256,9 +256,16 @@ assert('the payroll arithmetic is ported, not re-derived in SQL',
   && report.includes("require('../lib/payroll-metrics')"));
 assert('hours are work plus travel',
   /const h\s*=\s*work \+ travel;/.test(pm) && /const h = work \+ travel;/.test(payroll));
+// Anchored on the CONDITION, not just on the two increments. Matching the
+// increments alone passes even if the guard above them is deleted outright —
+// checked by rewriting the condition to `if (true)`, which the loose form
+// happily accepted while every hour on every job became prevailing.
+// The gap is bounded (not [\s\S]*) so the match cannot wander off to a pair of
+// increments somewhere else in the file — which is the whole failure mode.
+const PW_GUARD_RE =
+  /prevailing_wage === true[\s\S]{0,40}\{\s*acc\.pwHours\s*\+=\s*work;\s*acc\.stdHours\s*\+=\s*travel;/;
 assert('travel never counts as prevailing — the prevailing job\'s travel falls to standard',
-  /acc\.pwHours\s*\+=\s*work;\s*acc\.stdHours\s*\+=\s*travel;/.test(pm)
-  && /acc\.pwHours\s*\+=\s*work;\s*acc\.stdHours\s*\+=\s*travel;/.test(payroll));
+  PW_GUARD_RE.test(pm) && PW_GUARD_RE.test(payroll));
 // An off-site haul is standard for the same reason travel is: the prevailing
 // premium is for work on the covered site, and a driver running to and from it
 // never worked there. Asserted in BOTH implementations for the same reason the
