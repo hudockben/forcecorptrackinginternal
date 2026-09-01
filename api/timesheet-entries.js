@@ -49,7 +49,10 @@
  *     Haul fee and the division column come from payroll's modal; `unit` is
  *     pre-filled there from the entry, and a value sent back is written onto
  *     the entry's truck_unit as well as the row. Omitting `unit` (bulk approve)
- *     keeps the entry's own.
+ *     keeps the entry's own. Omitting `haul_fee` — bulk approve again, whose
+ *     one box cannot price a card spanning customers — bills the haul at that
+ *     customer's rate from the Trucking tab's Manage Lists; a fee sent blank is
+ *     payroll's own answer and posts the row unpriced.
  *     A dust customer haul may send `dust` as { rows: [...] }, one element per
  *     haul the day was split into. Each carries `dest` — "dust" for the Dust
  *     Control Tracking grid (vehicle rates x hours + UB gallons) or "ob" for
@@ -277,6 +280,42 @@ function couldHaveEesOtherRows(entry) {
 // rate a Billable row bills at. Everything else on the row is timesheet-fed, so
 // a re-injection must preserve this and overwrite the rest.
 const EES_OTHER_TAB_FIELDS = ['rate'];
+
+// The two values the tab's Billing column accepts, mirroring the select in
+// timesheet.html. Intercompany only picks up rows marked Billable, so a typo
+// arriving as a third value would silently un-bill the day — the validator
+// below refuses it rather than writing it.
+const EES_BILLING_VALUES = ['Non-Billable', 'Billable'];
+
+/**
+ * Validate the six EES columns a standing-EES day carries onto its row.
+ *
+ * Two doors open onto these columns — the driver's form (through
+ * normalizeEntryBody) and payroll's Edit Row (through action=resplit) — so the
+ * caps here are deliberately normalizeEntryBody's. Drift them and the same
+ * value is accepted at one door and truncated at the other, which reads as the
+ * office losing a job number it definitely typed.
+ *
+ * Blank comes back as null, not '': that is what the columns hold for "not
+ * filled in", and insertEesOtherRow falls back to the job label for a customer
+ * left empty. Billing alone defaults rather than nulls, because a row with no
+ * billing state is one Intercompany would have to guess about.
+ */
+function validateEesInjection(raw) {
+  const e = (raw && typeof raw === 'object') ? raw : {};
+  const billing = safeStr(e.billing, 50) || 'Non-Billable';
+  if (!EES_BILLING_VALUES.includes(billing)) {
+    return { error: `billing must be one of: ${EES_BILLING_VALUES.join(', ')}` };
+  }
+  return { fields: {
+    unit:       safeStr(e.unit, 100),
+    customer:   safeStr(e.customer, 500),
+    location:   safeStr(e.location, 500),
+    name:       safeStr(e.name, 500),
+    job_number: safeStr(e.job_number, 100),
+    billing,
+  } };
+}
 
 function safeDate(v) {
   if (!v) return null;
@@ -1106,6 +1145,54 @@ function truckFee(v) {
   return { value: Math.round(n * 10000) / 10000 };
 }
 
+/* ── What the office bills this customer ──────────────────────────────────
+   A haul's fee is a fact about the company it hauled for: set once, beside its
+   name in the Trucking tab's Manage Lists, and read from there by everything
+   that prices a haul. The tab drops it onto a row the moment you name a
+   customer on one; payroll's approve modal pre-fills the Haul Fee box from it.
+
+   This is the same rate, read on the server, for the hauls nobody priced by
+   hand. Bulk approve is why it has to exist: ONE fee box prices a whole card,
+   so a card holding days for three customers cannot be filled in at all, and
+   every row it approved used to post with no fee — reading as $0/hr in the
+   trucking office's tab for work that had an agreed rate all along.
+
+   Rates have no normalized table (dropdown_lists stores a customer as a bare
+   name), so the lists blob is the only place they exist. Read exactly as
+   api/truck-division.js's ?lists=1 route reads them — the company's own key
+   first, the legacy global one behind it — and normalized the same way: a rate
+   that is blank or non-numeric is not a price, and a fee filled in from one
+   would read as a figure somebody is being charged. */
+async function truckCustomerRates(sql, companyCode) {
+  const [scopedRows, legacyRows] = await Promise.all([
+    sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
+    sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
+  ]);
+  const asObj = v => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+  const lists = asObj(scopedRows[0]?.value) || asObj(legacyRows[0]?.value);
+  const raw   = asObj(lists && lists.rates) || {};
+  const rates = {};
+  for (const key of Object.keys(raw)) {
+    const name = String(key).trim();
+    const val  = String(raw[key] == null ? '' : raw[key]).trim();
+    if (name && val && !isNaN(parseFloat(val))) rates[name] = val;
+  }
+  return rates;
+}
+
+// Matched on case as well as space, exactly as trucking.html and payroll.html
+// match it: the LIST is a set of spellings ("kovalchick" and "Kovalchick" are
+// two entries there because each was typed onto a row), while a rate is a fact
+// about the COMPANY — a haul typed in lower case bills the same customer at the
+// same price.
+const _truckRateKey = v => String(v == null ? '' : v).trim().toLowerCase();
+function truckRateFor(rates, name) {
+  const k = _truckRateKey(name);
+  if (!k || !rates) return '';
+  const hit = Object.keys(rates).find(n => _truckRateKey(n) === k);
+  return hit ? String(rates[hit]) : '';
+}
+
 /**
  * Validate ONE leg of a split day's Truck Tracking payload. Returns { fields }
  * or { error }.
@@ -1141,7 +1228,18 @@ function validateTruckingInjection(raw) {
   const t = (raw && typeof raw === 'object') ? raw : {};
   const fee = truckFee(t.haul_fee);
   if (fee.error) return { error: fee.error };
-  const haul_fee = fee.value;
+  // An ABSENT fee is not a blank one, on the same terms as the unit below. The
+  // approve modal sends whatever its box holds, '' included, because that box
+  // was pre-filled from the customer's rate — so a blank one is payroll saying
+  // this haul bills nothing. What it does NOT send is a box it never filled in
+  // and nobody typed in: BULK approve leaves the key off whenever its one fee
+  // box is empty, since a card can span customers and one number cannot price
+  // them, and the single modal leaves it off for a box that is blank because
+  // the rates had not landed yet rather than because anyone emptied it. That
+  // absence means "price it the way the office prices it", and insertTruckingRows
+  // fills it from the customer's agreed rate — a row that used to post at no fee
+  // at all and read as $0/hr in the trucking tab.
+  const feeGiven = t.haul_fee !== undefined && t.haul_fee !== null;
   const division = safeStr(t.division, 100) || '';
   // Unit is the one autofilled column payroll can also type: the driver may
   // have left it off (every dust haul submitted before the Unit field existed
@@ -1156,7 +1254,8 @@ function validateTruckingInjection(raw) {
   // that spells "no opinion" as null must not silently wipe the unit. Clearing
   // is spelled '' — which is what the modal sends when payroll empties the box.
   const unit = t.unit == null ? null : (safeStr(t.unit, 100) || '');
-  const fields = { haul_fee, division, unit };
+  const fields = { division, unit };
+  if (feeGiven) fields.haul_fee = fee.value;
 
   // A split day sends one leg per haul. The approve modal sends this for every
   // entry that posts Truck Tracking rows, one element when the day was not
@@ -1364,6 +1463,11 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   // Payroll-entered fields (validated by validateTruckingInjection). Blank is
   // allowed — payroll can approve now and set the fee later via Edit Row.
   const dayFee   = (fields.haul_fee === '' || fields.haul_fee == null) ? '' : fields.haul_fee;
+  // Whether the day's fee is an ANSWER. Blank is one — payroll cleared a box
+  // that was pre-filled with the customer's rate — while absent is nobody
+  // having said, which is what bulk approve sends for a card spanning
+  // customers. See the rate fill below, and validateTruckingInjection.
+  const dayFeeGiven = fields.haul_fee !== undefined && fields.haul_fee !== null;
   const division = safeStr(fields.division, 100)
     || (entry.division === 'dust' ? 'Dust' : '');
   // null/undefined = the modal sent no unit (bulk approve, or an older client)
@@ -1497,6 +1601,14 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   // rather than a duplicate.
   const rows = allRows.filter((_, i) => postsHere(i));
 
+  // The hauls nobody priced: no fee on the leg, and none on the day either.
+  // Kept as ids rather than positions, because `rows` is `allRows` minus the
+  // legs the dust office bills off its own grid — an index into one is not an
+  // index into the other.
+  const unpricedIds = new Set(
+    allRows.filter((_, i) => (legs[i] || {}).haul_fee === undefined && !dayFeeGiven)
+           .map(r => r.id));
+
   // Carry over the invoice columns the trucking office owns on each row. Every
   // cost field is payroll's and is rewritten from the entry, but the office
   // fills in the QB number and the invoiced/paid dates on the locked row — and
@@ -1517,6 +1629,33 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
     if (!prev || !sameHaul(prev.customer, row.customer)) continue;
     for (const f of TRUCK_TAB_FIELDS) {
       if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
+    }
+  }
+
+  // ── A haul nobody priced bills its customer's agreed rate ──────────────
+  // The last stop for a fee, after the approve modal's own pre-fill and before
+  // the row is written. It fires only where the payload asked no fee question of
+  // anybody — bulk approve pricing a card that spans customers, or a client too
+  // old to send one — so a fee typed in the modal, a blank one deliberately
+  // cleared there, and a leg priced on its own all stand exactly as sent.
+  //
+  // Read FORWARD ONLY, onto a haul still unpriced, which is the rule the tab and
+  // the modal both apply: re-pricing a customer in Manage Lists must never
+  // silently restate a haul that has already gone out the door. A customer with
+  // no rate set is left blank, exactly as before — there is nothing to fill it
+  // from — and the fee is filled in from Edit Row, or a rate is set beside that
+  // customer's name and the next approval carries it.
+  const unpriced = rows.filter(r => unpricedIds.has(r.id) && r.haul_fee === '' && r.customer);
+  if (unpriced.length) {
+    const rates = await truckCustomerRates(sql, companyCode);
+    for (const row of unpriced) {
+      // Through the same gate a typed fee goes through, and only written when
+      // it comes back a number. The Manage Lists normalizer keeps a rate on
+      // parseFloat, which "121/hr" passes and Number() does not — and a rate
+      // this cannot read is not one to invent a figure from. The row stays
+      // blank, exactly as it would with no rate set at all.
+      const { value, error } = truckFee(truckRateFor(rates, row.customer));
+      if (!error && value !== '') row.haul_fee = value;
     }
   }
 
@@ -3799,6 +3938,62 @@ module.exports = async (req, res) => {
         return res.json(await entryJson(sql, companyCode, existing));
       }
 
+      // Dust EES re-edit: the standing-activity day (Pre Loading / Washing),
+      // whose approval posts one row to the division's EES Other tab. Disjoint
+      // from both gates below by construction — needsTruckTrackingRow and
+      // needsDustTrackingRow each exclude an EES job, because that work is not a
+      // customer haul — so the order of these branches carries no meaning.
+      //
+      // Everything the tab shows is timesheet-fed except the office's own rate,
+      // and these six columns are the part payroll can correct. So the edit
+      // writes them back onto the entry FIRST and re-injects from it: the row is
+      // rebuilt from the entry on every later re-injection, and writing only the
+      // row would be reverted by the next un-approve/re-approve.
+      // insertEesOtherRow rewrites this entry's row in place and carries the
+      // rate across (EES_OTHER_TAB_FIELDS), so correcting a job number cannot
+      // cost the dust office the figure it bills at.
+      // The INJECTION gate, not couldHaveEesOtherRows: that one is deliberately
+      // wider — any dust entry — because teardown must also find the per-leg
+      // rows a customer haul posts. Editing one of those is the haul modal's
+      // job, below. This branch owns only the standing-activity row, so it asks
+      // the same question insertEesOtherRow's writer does.
+      if (existing.entry_type === 'daily'
+          && existing.division === 'dust' && isEesJob(existing.job_id)) {
+        const { fields, error } = validateEesInjection(req.body && req.body.ees);
+        if (error) return res.status(400).json({ error });
+        const [reEes] = await sql`
+          UPDATE timesheet_entries SET
+            ees_unit       = ${fields.unit},
+            ees_customer   = ${fields.customer},
+            ees_location   = ${fields.location},
+            ees_name       = ${fields.name},
+            ees_job_number = ${fields.job_number},
+            ees_billing    = ${fields.billing},
+            updated_at     = NOW()
+          WHERE id = ${id} AND company_code = ${companyCode}
+          RETURNING *
+        `;
+        const eesEntry = reEes || existing;
+        try {
+          await insertEesOtherRow(sql, companyCode, eesEntry);
+        } catch (injErr) {
+          console.error('[timesheet-entries] EES resplit failed:', injErr.message);
+          // The columns landed and the row did not, so the two disagree until a
+          // retry — say which half held, or payroll re-types an edit that is
+          // already on the entry and wonders why the tab never moved.
+          return res.status(500).json({
+            error: 'Edit failed: the entry was updated but the EES Other row could not be rewritten. Retry.',
+            detail: injErr.message,
+          });
+        }
+        await writeAudit(
+          sql, companyCode, payload, id, 'ADMIN_EDIT',
+          { resplit: true, ees_other: true, ees_billing: fields.billing },
+          dbToEntry(existing),
+        );
+        return res.json(await entryJson(sql, companyCode, eesEntry));
+      }
+
       // Trucking re-edit: rewrite the injected Truck Tracking row with the new
       // haul fee / division / unit. insertTruckingRow removes the prior injected
       // row for this entry before appending, so there's no separate delete step.
@@ -4381,6 +4576,23 @@ module.exports = async (req, res) => {
       const keepUnit    = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_unit');
       const keepTruckDesc = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_description');
 
+      // The same rule again for the six EES columns, for the same reason and
+      // with the same failure the two above were added to stop. payroll.html's
+      // entry-edit form has no Unit / Customer / Location / Name / Job Number /
+      // Billing input — it edits the day, not the EES row — so it sends none of
+      // these keys, and taking absent as "clear them" threw away what the driver
+      // filled in on any correction to the hours or the job, and reset Billing
+      // to Non-Billable. The tab then bills nobody for a day that was Billable.
+      // Absent means keep; present still wins, blank included, so timesheet.html
+      // can still clear a field the driver filled in by mistake, and payroll's
+      // Edit Row (action=resplit) writes them through its own path.
+      // Only while the entry is STILL an EES day, though: normalizeEntryBody
+      // forces these to null off an EES job on purpose, so a job change to a
+      // customer haul must not let stale EES columns ride along.
+      const staysEes = data.entry_type === 'daily'
+        && data.division === 'dust' && isEesJob(data.job_id);
+      const keepEes  = f => staysEes && !Object.prototype.hasOwnProperty.call(body, f);
+
       const [updated] = await sql`
         UPDATE timesheet_entries SET
           entry_type         = ${data.entry_type},
@@ -4404,12 +4616,18 @@ module.exports = async (req, res) => {
                                     THEN truck_unit ELSE ${data.truck_unit}::text END,
           truck_description  = CASE WHEN ${keepTruckDesc}::boolean
                                     THEN truck_description ELSE ${data.truck_description}::text END,
-          ees_unit           = ${data.ees_unit},
-          ees_customer       = ${data.ees_customer},
-          ees_location       = ${data.ees_location},
-          ees_name           = ${data.ees_name},
-          ees_job_number     = ${data.ees_job_number},
-          ees_billing        = ${data.ees_billing},
+          ees_unit           = CASE WHEN ${keepEes('ees_unit')}::boolean
+                                    THEN ees_unit ELSE ${data.ees_unit}::text END,
+          ees_customer       = CASE WHEN ${keepEes('ees_customer')}::boolean
+                                    THEN ees_customer ELSE ${data.ees_customer}::text END,
+          ees_location       = CASE WHEN ${keepEes('ees_location')}::boolean
+                                    THEN ees_location ELSE ${data.ees_location}::text END,
+          ees_name           = CASE WHEN ${keepEes('ees_name')}::boolean
+                                    THEN ees_name ELSE ${data.ees_name}::text END,
+          ees_job_number     = CASE WHEN ${keepEes('ees_job_number')}::boolean
+                                    THEN ees_job_number ELSE ${data.ees_job_number}::text END,
+          ees_billing        = CASE WHEN ${keepEes('ees_billing')}::boolean
+                                    THEN ees_billing ELSE ${data.ees_billing}::text END,
           split_group_id     = ${split.split_group_id},
           split_index        = ${split.split_index},
           split_count        = ${split.split_count},

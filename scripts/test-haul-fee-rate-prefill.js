@@ -130,7 +130,45 @@ console.log('\n[the marker stays on this side of the wire]');
   const save = slice(SRC, 'trucking.rows = haulLegs.map', '// The dust half', 'the save payload');
   assert('and no leg carries it into the save', !/feeFromRate/.test(save));
   assert('the fee itself still is sent, from the model rather than the box',
-    /haul_fee:\s+leg\.haul_fee,/.test(save));
+    /if \(feeAnswered\(leg\)\) row\.haul_fee = leg\.haul_fee;/.test(save));
+}
+
+// ── A fee nobody ever answered is not sent at all ──────────────────────────
+// The modal sends every other box blank included, because every other box was
+// pre-filled and blank is therefore an answer. The fee is the one that can be
+// blank for a reason that has nothing to do with the approver: the rates may
+// not have landed by the time Approve was clicked, or this customer may have no
+// rate at all. Sent as '' that posts the haul at no fee — $0/hr in the trucking
+// tab — so it is left OFF the payload instead, and the server prices it from
+// the customer's rate exactly as the box would have.
+console.log('\n[a fee nobody answered]');
+{
+  const save = slice(SRC, 'const btn = document.getElementById(\'truckingSaveBtn\');',
+                          '// The dust half', 'the trucking save payload');
+  assert('an answer is a number in the box, or a box the approver typed in',
+    /const feeAnswered = leg =>\s*\n\s*haulTouchedHas\(leg, 'haul_fee'\) \|\| legStr\(leg\.haul_fee\)\.trim\(\) !== '';/.test(save));
+  assert('the day\'s fee is only sent when it is one',
+    /if \(topFee !== '' \|\| truckingTouched\.has\('tk_haulFee'\)\) trucking\.haul_fee = topFee;/.test(save));
+  assert('and it is dropped when a haul on a split day answered nothing',
+    /if \(haulLegs\.every\(feeAnswered\)\) trucking\.haul_fee = haulLegs\[0\]\.haul_fee;\s*\n\s*else delete trucking\.haul_fee;/.test(save));
+  // The unit next to it is unconditional, and says why in its own comment: it
+  // is pre-filled from the timesheet, so its blank IS an answer. The two rules
+  // sit side by side deliberately.
+  assert('the unit beside it is still always sent', /unit: _tkval\('tk_unit'\),/.test(save));
+
+  // The server end of the same rule.
+  const API = read('api/timesheet-entries.js');
+  assert('the server keeps absent apart from blank',
+    /const feeGiven = t\.haul_fee !== undefined && t\.haul_fee !== null;/.test(API)
+    && /if \(feeGiven\) fields\.haul_fee = fee\.value;/.test(API));
+  assert('and prices the hauls nobody answered for from the customer\'s rate',
+    /const rates = await truckCustomerRates\(sql, companyCode\);/.test(API)
+    && /truckFee\(truckRateFor\(rates, row\.customer\)\)/.test(API));
+  assert('reading them off the same lists blob the ?lists=1 route reads',
+    /async function truckCustomerRates\(sql, companyCode\)/.test(API)
+    && /companyCode \+ ':fct_truck_division_lists'/.test(API));
+  assert('and matching the customer the way both pages match one',
+    /const _truckRateKey = v => String\(v == null \? '' : v\)\.trim\(\)\.toLowerCase\(\);/.test(API));
 }
 
 console.log('\n[the note under the box]');
@@ -405,7 +443,7 @@ console.log('\n[bulk approve]');
   // other prefilled field on this card already wears — and the card says whose
   // rate it is, which is what makes it checkable at a glance.
   assert('a filled-in fee wears the same marker as the other prefills',
-    /_bulkNum\(idx, 'haul_fee', g\.template\.haul_fee, '0\.00', fromRate/.test(SRC)
+    /_bulkNum\(idx, 'haul_fee', g\.template\.haul_fee,\s*\n\s*ratedN \? "auto · each customer's rate" : '0\.00', fromRate/.test(SRC)
     && /className: 'auto-code'/.test(SRC));
   assert('and the card names the customer the rate came from',
     /The fee is <strong>\$\{escapeHtml\(rateCustomer\)\}<\/strong>'s rate/.test(SRC));
@@ -422,8 +460,26 @@ console.log('\n[bulk approve]');
     /if \(field === 'haul_fee'\) g\.template\.haul_fee_source = '';/.test(SRC));
   // haul_fee_source is the card's own bookkeeping. On the wire it would be a
   // field the approve endpoint never asked for.
-  const body = slice(SRC, "return { trucking: { haul_fee:", '}', 'the bulk approve body');
+  const body = slice(SRC, "if (g.type === 'trucking') {\n        // ONE box prices",
+                          'return null;', 'the bulk approve body');
   assert('the marker is not sent with the approval', !/haul_fee_source/.test(body));
+  // And the point of the whole card: a box that could not be filled in is not
+  // an answer. Sent as '' it priced every day on the card at nothing — which is
+  // what put $0 haul fees on rows the office had an agreed rate for.
+  assert('an empty box is left off the payload rather than sent blank',
+    /const trucking = \{ division: g\.template\.division_col \};/.test(body)
+    && /if \(fee !== ''\) trucking\.haul_fee = fee;/.test(body));
+
+  // What the card SAYS a blank box will do, which is the other half of it: a
+  // money box left empty reads as "$0" unless something says otherwise.
+  assert('the card says a blank box prices each day from its own customer',
+    /Left empty, each day bills <strong>its own customer's rate<\/strong>/.test(SRC));
+  assert('and counts the days that would still post unpriced',
+    /const ratedN   = perDay\.filter\(Boolean\)\.length;/.test(SRC)
+    && /const unrated  = days - ratedN;/.test(SRC)
+    && /\$\{unrated\}<\/strong> of the \$\{days\} days here/.test(SRC));
+  assert('a card whose customers have no rate at all says so instead',
+    /No rate is set for \$\{days === 1 \? 'this customer' : 'these customers'\}/.test(SRC));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

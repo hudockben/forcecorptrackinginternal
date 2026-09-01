@@ -814,9 +814,10 @@ function pageTests() {
   // into them, but off their own copies of the rule, which put an undated row
   // at the BOTTOM where Sales puts it at the top. Three tabs, one comparator,
   // so they cannot drift apart again.
+  const SORTED_BY_DATE = /\.sort\((?:byDateDesc\b|\(a, b\) => byDateDesc\()/g;
   assert('and so do Daily and Crushing, off the same comparator',
-    (grid.match(/\.sort\(byDateDesc\)/g) || []).length === 3,
-    String((grid.match(/\.sort\(byDateDesc\)/g) || []).length));
+    (grid.match(SORTED_BY_DATE) || []).length === 3,
+    String((grid.match(SORTED_BY_DATE) || []).length));
   {
     // Scoped to the three tracking grids — the ones that carry injected rows.
     // Inventory's adjustment grid sorts by date too and is left alone: nothing
@@ -824,9 +825,15 @@ function pageTests() {
     const blocks = [...grid.matchAll(/const visibleEntries = \w+Rows\n[\s\S]*?;\n/g)].map(m => m[0]);
     assert('all three tracking grids build their rows the same way', blocks.length === 3,
       String(blocks.length));
+    // Crushing groups its rows by day, so it breaks a same-date tie by pit to
+    // keep each day's rows contiguous under one group header. byDateDesc still
+    // decides the dates, and the only tie it breaks is one byDateDesc itself
+    // returns 0 for — anything ordering these grids by something OTHER than
+    // the shared comparator is a tab drifting off the rule again.
+    const SHARED = /\.sort\((?:byDateDesc|\(a, b\) => byDateDesc\(a, b\)(?: \|\| \w+\(a, b\))?)\);\n$/;
     assert('and every one of them sorts with the shared comparator',
-      blocks.every(b => /\.sort\(byDateDesc\);\n$/.test(b)),
-      blocks.filter(b => !/\.sort\(byDateDesc\);\n$/.test(b)).join('\n---\n'));
+      blocks.every(b => SHARED.test(b)),
+      blocks.filter(b => !SHARED.test(b)).join('\n---\n'));
   }
   {
     const src = /function byDateDesc\(a, b\) \{([\s\S]*?)\n    \}/.exec(grid);

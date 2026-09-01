@@ -1804,6 +1804,33 @@
     </div>
   </div>
 
+  <!-- ── Dust EES row edit modal ──
+       A dust entry on one of the two standing EES activities (Pre Loading /
+       Washing) posts one row to the dust division's "EES Other" tab on
+       approval. Everything on that row is pulled from the timesheet except the
+       hourly rate, which the dust office owns and this modal never touches.
+       These six columns are the part payroll can correct; they live on the
+       entry, so the save writes them there and re-injects the row from it.
+
+       Edit-only, deliberately: approving an EES day needs no figure from
+       payroll, so it keeps the plain confirm it has always had rather than
+       growing a modal that would ask for nothing. -->
+  <div class="modal-backdrop" id="eesBackdrop">
+    <div class="modal split-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title" id="eesTitle">Edit EES Row</div>
+        <button class="modal-close" onclick="closeEes()">&#10005;</button>
+      </div>
+      <div class="split-summary" id="eesSummary"></div>
+      <div id="eesFields" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-top:4px"></div>
+      <div class="modal-msg" id="eesMsg"></div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeEes()">Cancel</button>
+        <button class="btn-save"   id="eesSaveBtn" onclick="eesSave()">Save Row</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Trucking / dust approve/inject modal ──
        Trucking entries autofill a row into the Trucking division's "Truck
        Tracking" tab (fct_truck_division). Driver, hours, customer and
@@ -4066,7 +4093,8 @@
               ${!isPending && entryNeedsSplit(e) ? `<button class="row-btn approve" onclick="openSplitModalById('${e.id}','resplit')" title="Edit the cost tracking split injected from this entry">Edit Split</button>` : ''}
               ${!isPending && entryNeedsQuarry(e) ? `<button class="row-btn approve" onclick="openQuarryModalById('${e.id}','resplit')" title="Edit the quarry row injected from this entry">Edit Row</button>` : ''}
               ${!isPending && entryNeedsTrucking(e) ? `<button class="row-btn approve" onclick="openTruckingModalById('${e.id}','resplit')" title="${e.division === 'dust' ? 'Edit the dust billing + Truck Tracking rows posted from this entry — including splitting the day into hauls and moving one between Dust Control Tracking and Other Billing' : 'Edit the Truck Tracking rows posted from this entry — including splitting the day into hauls'}">Edit Row</button>` : ''}
-              ${!isPending && (entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e)) ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and remove the injected cost rows">Un-approve</button>` : ''}
+              ${!isPending && entryNeedsEes(e) ? `<button class="row-btn approve" onclick="openEesModalById('${e.id}')" title="Edit the EES Other row posted from this entry — unit, customer, location, name, job number and billing">Edit Row</button>` : ''}
+              ${!isPending ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and put the entry back into Pending, removing any cost rows it injected">Un-approve</button>` : ''}
               <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
           </tr>
@@ -5998,13 +6026,29 @@
       }
     }
 
+    // Reverses an approval on ANY approved entry, which is why the button that
+    // calls this is gated on nothing but the row being approved. The Edit
+    // buttons beside it each need a modal that can re-open one specific kind of
+    // injection, so they stay gated on entryNeedsSplit/Quarry/Trucking/Ees; this
+    // one does not, because the server works off the entry itself and sweeps
+    // every injection type it could have made — split rows, quarry blobs, Truck
+    // Tracking, dust EES Other, Dust Control Tracking and Other Billing (see
+    // action=unapprove in api/timesheet-entries.js). That difference still
+    // matters now every division has an Edit Row: time off has no modal and
+    // never will, because it injects nothing to edit — and it is still an
+    // approval somebody has to be able to take back.
     async function unapproveEntry(id) {
       const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
       if (!e) return;
+      // Time off injects no cost row anywhere, so promising to remove one would
+      // be a lie; every daily division posts something. Say which it is.
+      const injects = e.entry_type !== 'time_off';
       if (!confirm(
         `Un-approve ${e.username}'s entry for ${prettyDate(e.work_date)}?\n\n` +
-        `This will remove the cost tracking rows injected into the ${prettyDiv(e.division)} division ` +
-        `and put the entry back into Pending.`
+        (injects
+          ? `This will remove the cost tracking rows injected into the ${prettyDiv(e.division)} division ` +
+            `and put the entry back into Pending.`
+          : `The entry goes back into Pending for review.`)
       )) return;
       try {
         const res = await fetch('/api/timesheet-entries?action=unapprove&id=' + encodeURIComponent(id), {
@@ -7307,6 +7351,133 @@
       if (e.division === 'trucking') return true;
       return e.division === 'dust' && !!e.job_id && !EES_JOB_IDS.includes(String(e.job_id));
     }
+
+    // The other half of that routing decision: a dust day on one of the two
+    // standing EES activities, which posts one row to the dust EES Other tab
+    // instead of Truck Tracking. Exactly the entries entryNeedsTrucking excludes
+    // by way of EES_JOB_IDS, so the two are disjoint and every dust day with a
+    // job answers one of them. Mirrors the server's `division === 'dust' &&
+    // isEesJob(job_id)` in api/timesheet-entries.js — drift and payroll offers
+    // an Edit Row the resplit endpoint refuses, or hides one it would accept.
+    function entryNeedsEes(e) {
+      return !!e && e.entry_type === 'daily' && e.division === 'dust'
+        && !!e.job_id && EES_JOB_IDS.includes(String(e.job_id));
+    }
+    // "Pre Loading" / "Washing" — what the row's Activity column reads, which is
+    // decided server-side off the job id alone (insertEesOtherRow).
+    function eesActivityLabel(e) {
+      return String((e && e.job_id) || '') === 'ees:washing' ? 'Washing' : 'Pre Loading';
+    }
+
+    // ── Dust EES row edit modal ───────────────────────────────────────────
+    // Edit-only: see the modal markup for why approving an EES day stays a
+    // plain confirm. The boxes are filled from the ENTRY, not from a read of
+    // the posted row, because the entry is where these six columns live — the
+    // row is rebuilt from them on every re-injection, so the entry is what the
+    // tab will show. That also means there is no pre-fill round trip to race,
+    // and none of the "still loading, saving now would blank it" guarding the
+    // quarry and trucking modals need.
+    let eesEntry = null;
+
+    const EES_LABEL_STYLE = Q_LABEL_STYLE;
+    const EES_INPUT_STYLE = Q_INPUT_STYLE;
+
+    function _eesTextField(id, label, val, maxlen, placeholder) {
+      return `<label style="${EES_LABEL_STYLE}"><span>${escapeHtml(label)}</span>` +
+        `<input type="text" id="${id}" maxlength="${maxlen}" value="${escapeHtml(String(val == null ? '' : val))}" ` +
+        `placeholder="${escapeHtml(placeholder || '')}" style="${EES_INPUT_STYLE}"></label>`;
+    }
+
+    function eesFieldsHtml(e) {
+      // Customer is the one box where blank is not blank: insertEesOtherRow
+      // falls back to the job label, so say which label it would use rather
+      // than letting payroll read an empty box as an empty column.
+      const fallback = e.job_label || e.job_id || '';
+      const billing  = e.ees_billing === 'Billable' ? 'Billable' : 'Non-Billable';
+      return [
+        _eesTextField('ees_unit',      'Unit',       e.ees_unit,       100, 'Truck / unit #'),
+        _eesTextField('ees_customer',  'Customer',   e.ees_customer,   500, fallback),
+        _eesTextField('ees_location',  'Location',   e.ees_location,   500, 'Pad / site'),
+        _eesTextField('ees_name',      'Name',       e.ees_name,       500, 'Contact name'),
+        _eesTextField('ees_job_number','Job Number', e.ees_job_number, 100, 'Job #'),
+        `<label style="${EES_LABEL_STYLE}"><span>Billing</span>` +
+        `<select id="ees_billing" style="${EES_INPUT_STYLE}">` +
+          `<option value="Non-Billable"${billing === 'Non-Billable' ? ' selected' : ''}>Non-Billable</option>` +
+          `<option value="Billable"${billing === 'Billable' ? ' selected' : ''}>Billable</option>` +
+        `</select></label>`,
+      ].join('');
+    }
+
+    function openEesModalById(id) {
+      const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
+      if (!e) return alert('Entry not found.');
+      openEesModal(e);
+    }
+
+    function openEesModal(entry) {
+      eesEntry = entry;
+      document.getElementById('eesTitle').textContent =
+        'Edit EES Row — ' + (entry.username || '') + ' \u00b7 ' + prettyDate(entry.work_date);
+      document.getElementById('eesSummary').innerHTML = `
+        <div>Employee: <strong>${escapeHtml(entry.username || '')}</strong></div>
+        <div>Date: <strong>${escapeHtml(prettyDate(entry.work_date))}</strong></div>
+        <div>Activity: <strong>${escapeHtml(eesActivityLabel(entry))}</strong></div>
+        <div>Hours (injected): <strong>${num2(Number(entry.computed_hours) || 0)}</strong></div>
+        <div>Supervisor: <strong>${escapeHtml(entry.supervisor_name || '\u2014')}</strong></div>
+        <div>Rate: <strong>set in the dust office's EES Other tab</strong></div>
+      `;
+      const msg = document.getElementById('eesMsg');
+      msg.textContent = ''; msg.className = 'modal-msg';
+      document.getElementById('eesFields').innerHTML = eesFieldsHtml(entry);
+      document.getElementById('eesBackdrop').classList.add('open');
+    }
+
+    function closeEes() {
+      document.getElementById('eesBackdrop').classList.remove('open');
+      eesEntry = null;
+    }
+    bindBackdropClose(document.getElementById('eesBackdrop'), closeEes);
+
+    function _eesval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+
+    async function eesSave() {
+      if (!eesEntry) return;
+      const msg = document.getElementById('eesMsg');
+      msg.className = 'modal-msg';
+      const btn = document.getElementById('eesSaveBtn');
+      // Every box is sent, blank included: blank is a real answer here — it
+      // clears a column the driver filled in by mistake — and the boxes were
+      // filled from the entry, so there is no half-loaded state where sending
+      // them would wipe something this modal never showed.
+      const ees = {
+        unit:       _eesval('ees_unit'),
+        customer:   _eesval('ees_customer'),
+        location:   _eesval('ees_location'),
+        name:       _eesval('ees_name'),
+        job_number: _eesval('ees_job_number'),
+        billing:    _eesval('ees_billing') || 'Non-Billable',
+      };
+      btn.disabled = true;
+      try {
+        const res = await fetch(
+          '/api/timesheet-entries?action=resplit&id=' + encodeURIComponent(eesEntry.id),
+          { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ ees }) }
+        );
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        msg.classList.add('success');
+        msg.textContent = 'Row updated.';
+        if (j.entry) applyEntryUpdate(j.entry);
+        renderRows();
+        renderStats();
+        setTimeout(closeEes, 600);
+      } catch (err) {
+        msg.classList.add('error');
+        msg.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
     function truckingFieldsHtml(row) {
       const r = row || {};
       // On a dust haul the fee lives on the leg, because a split day posts a
@@ -7693,13 +7864,25 @@
       }
       const btn = document.getElementById('truckingSaveBtn');
       const trucking = {
-        haul_fee: _tkval('tk_haulFee'),
         division: _tkval('tk_division'),
         // Always sent (blank included) — the box is pre-filled from the entry,
         // so what's in it is the approver's answer either way. Bulk approve is
         // the one path that omits it; there one unit can't speak for a group.
         unit: _tkval('tk_unit'),
       };
+      // The fee is the one box that is NOT always sent. A number in it — typed,
+      // or pre-filled from the customer's rate — is an answer, and so is a box
+      // the approver emptied themselves: that says this haul bills nothing.
+      // A box that is blank because nobody ever put anything in it is not an
+      // answer at all — the rates may not have landed before Approve was
+      // clicked, or this customer may have none — and sending '' would post the
+      // haul at no fee, reading as $0/hr in the trucking tab. Left off, the
+      // server prices it from the customer's agreed rate, exactly as this box
+      // would have. Same absent-vs-blank rule the unit above takes.
+      const feeAnswered = leg =>
+        haulTouchedHas(leg, 'haul_fee') || legStr(leg.haul_fee).trim() !== '';
+      const topFee = _tkval('tk_haulFee');
+      if (topFee !== '' || truckingTouched.has('tk_haulFee')) trucking.haul_fee = topFee;
       const body = { trucking };
       // Every entry that posts Truck Tracking rows sends its hauls here, a
       // trucking day as much as a dust one, and one element when the day was
@@ -7711,14 +7894,21 @@
       if (entrySplits() && haulLegs.length) {
         // With the day split there is no box at the top to read, and the day's
         // fee is the first haul's — it is what the server falls back to for a
-        // leg that names none.
-        trucking.haul_fee = haulLegs[0].haul_fee;
-        trucking.rows = haulLegs.map(leg => ({
-          company:    legCustomerPayload(leg),
-          start_time: leg.start_time,
-          end_time:   leg.end_time,
-          haul_fee:   leg.haul_fee,
-        }));
+        // leg that names none. So it is only sent when there is no such leg:
+        // standing in for a haul the approver never priced would bill that
+        // customer at another customer's rate, where leaving it off prices the
+        // haul from its own customer's.
+        if (haulLegs.every(feeAnswered)) trucking.haul_fee = haulLegs[0].haul_fee;
+        else delete trucking.haul_fee;
+        trucking.rows = haulLegs.map(leg => {
+          const row = {
+            company:    legCustomerPayload(leg),
+            start_time: leg.start_time,
+            end_time:   leg.end_time,
+          };
+          if (feeAnswered(leg)) row.haul_fee = leg.haul_fee;
+          return row;
+        });
       }
       // The dust half — one entry per haul, in the order they are on screen, so
       // the server writes them as legs 1..n and takes back any leg this save no
@@ -8530,6 +8720,20 @@
           if (name && !rateNames.some(n => _truckRateKey(n) === _truckRateKey(name))) rateNames.push(name);
         }
         const rateCustomer = rateNames.length === 1 ? rateNames[0] : '';
+        // What a day left alone will actually bill. The card can only SHOW one
+        // number when every day on it agrees, but there is still a rate per day
+        // — the fee is filled in per haul when this box is sent empty — so the
+        // card counts the days that have one rather than letting a blank box
+        // read as "these post at nothing".
+        // Silent until the rosters land, the way the unit hint in the single
+        // modal is: the first paint happens before the fetch comes back, and
+        // "no rate is set for these customers" read off a list we have not seen
+        // would be wrong for a second and alarming for longer.
+        const ratesIn  = !!(truckLists && truckLists.rates);
+        const typedFee = String(g.template.haul_fee == null ? '' : g.template.haul_fee).trim();
+        const perDay   = ratesIn ? g.entries.map(e => truckCustomerRate(bulkTruckCustomer(e))) : [];
+        const ratedN   = perDay.filter(Boolean).length;
+        const unrated  = days - ratedN;
         // Haul Fee and the Division column are Truck Tracking's, and bulk
         // approve cannot say a haul bills off anything but Dust Control
         // Tracking — that answer is per haul, and this card covers a week of
@@ -8549,17 +8753,34 @@
             also posts a Truck Tracking row — or approve these hauls one at a time instead.</div>` : `
           <div class="bulk-fields">
             <div class="bulk-field"><span>Haul Fee ($/hr) <span style="text-transform:none;font-weight:400">(optional)</span></span>${
-              _bulkNum(idx, 'haul_fee', g.template.haul_fee, '0.00', fromRate
+              _bulkNum(idx, 'haul_fee', g.template.haul_fee,
+                ratedN ? "auto · each customer's rate" : '0.00', fromRate
                 ? { className: 'auto-code', title: `${rateCustomer ? rateCustomer + "'s rate" : 'The rate every customer here is billed at'}, from Trucking → Manage Lists. Type over it to bill these days at something else.` }
                 : null)}</div>
             <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, 'e.g. Paving')}</div>
           </div>
-          <div class="bulk-note">${!fromRate ? '' : (rateCustomer
+          <div class="bulk-note">${fromRate ? (rateCustomer
             ? `The fee is <strong>${escapeHtml(rateCustomer)}</strong>'s rate, filled in from the trucking
                office's <strong>Manage Lists</strong> — every day on this card hauls for them. Type over it to
                bill these days at something else. `
             : `The fee is filled in from the trucking office's <strong>Manage Lists</strong> — every customer
                on this card is billed at it. Type over it to bill these days at something else. `
+          ) : (typedFee || !ratesIn) ? '' : ratedN ? (
+            // One box cannot price a card that spans customers, so it is left
+            // empty and each day is priced from its own customer's rate on the
+            // way in. Said here because a blank money box otherwise reads as
+            // "these post at $0" — which is exactly what they used to do.
+            `Left empty, each day bills <strong>its own customer's rate</strong> from the trucking office's
+             <strong>Manage Lists</strong>${unrated
+               ? ` — but <strong>${unrated}</strong> of the ${days} days here
+                   ${unrated === 1 ? 'hauls' : 'haul'} for a customer with no rate set, and
+                   ${unrated === 1 ? 'it posts' : 'they post'} unpriced. Set the rate beside that customer's
+                   name in Trucking → Manage Lists, or fill the fee in from Edit Row.`
+               : '.'} Type a fee to bill every day here at that instead. `
+          ) : (
+            `No rate is set for ${days === 1 ? 'this customer' : 'these customers'} in the trucking office's
+             <strong>Manage Lists</strong>, so a fee left empty posts ${days === 1 ? 'this day' : 'these days'}
+             unpriced — type one here, or set the rate beside the customer's name and approve. `
           )}Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
             customer come from each timesheet — a day whose unit is blank keeps it that way;
             fill it in from Edit Row afterwards.</div>`;
@@ -8726,7 +8947,18 @@
         } };
       }
       if (g.type === 'trucking') {
-        return { trucking: { haul_fee: g.template.haul_fee, division: g.template.division_col } };
+        // ONE box prices every day on this card, so it is only sent when it
+        // holds a number. Blank is not an answer here the way it is in the
+        // single modal: a card can span customers, and the box can only be
+        // filled in when every day on it agrees on the price — so a blank one
+        // means nobody has priced these days rather than that they bill
+        // nothing. Sent as '' it posted every row at no fee, reading as $0/hr
+        // in the trucking tab; left off, the server prices each day from its
+        // own customer's agreed rate. The unit is left off for the same reason.
+        const fee = String(g.template.haul_fee == null ? '' : g.template.haul_fee).trim();
+        const trucking = { division: g.template.division_col };
+        if (fee !== '') trucking.haul_fee = fee;
+        return { trucking };
       }
       return null;
     }

@@ -384,11 +384,177 @@ const ubDay = (n = 1) => ({ dustLegs: Array.from({ length: n }, () => ({ dest: '
     assert('fields: haul_fee blank when omitted', (await insertTruckingRow(sql, CO, entry())).haul_fee === '');
   }
 
+  // ── A haul nobody priced bills its customer's agreed rate ────────────────
+  // What a company is billed per hour is set once, beside its name in the
+  // Trucking tab's Manage Lists. The tab drops it onto a row the moment you
+  // name a customer on one, and payroll's approve modal pre-fills the Haul Fee
+  // box from it — but the box is not always there to fill: BULK approve prices
+  // a whole card from ONE box, so a card holding days for three customers
+  // cannot be filled in at all, and every row it approved used to post with no
+  // fee and read as $0/hr in the trucking office's tab.
+  //
+  // So the fee is filled in here too, on the last stop before the row is
+  // written, and only where the payload asked the question of nobody.
+  {
+    console.log('\n[the customer\'s agreed rate]');
+    const rated = (rates, over = {}) => makeSql({
+      appData: { [`${CO}:${LISTS_BLOB}`]: { drivers: [], customers: [], units: [], rates } },
+      ...over,
+    });
+
+    {
+      // Bulk approve: no fee key at all.
+      const { sql, store } = rated({ 'Acme Materials': '121' });
+      const row = await insertTruckingRow(sql, CO, entry(), { division: 'Paving' });
+      assert('a haul approved with no fee bills the customer\'s rate', row.haul_fee === 121);
+      assert('and the mirror carries the same number', store.tde.get(row.id).haul_fee === 121);
+    }
+    {
+      // A rate is about the COMPANY, so it matches on case and space — the same
+      // rule trucking.html and payroll.html both key it on.
+      const { sql } = rated({ '  acme MATERIALS ': '105' });
+      assert('the customer is matched on case and space',
+        (await insertTruckingRow(sql, CO, entry())).haul_fee === 105);
+    }
+    {
+      const { sql } = rated({ 'Acme Materials': '121' });
+      assert('a fee payroll typed is never re-priced',
+        (await insertTruckingRow(sql, CO, entry(), { haul_fee: 145 })).haul_fee === 145);
+    }
+    {
+      // Blank is an answer — the modal's box was pre-filled with this very
+      // rate, so an empty one is payroll saying this haul bills nothing.
+      const { sql } = rated({ 'Acme Materials': '121' });
+      assert('a fee deliberately cleared stays cleared',
+        (await insertTruckingRow(sql, CO, entry(), { haul_fee: '' })).haul_fee === '');
+    }
+    {
+      const { sql } = rated({ 'Acme Materials': '121' });
+      assert('a zero-rated haul stays zero-rated',
+        (await insertTruckingRow(sql, CO, entry(), { haul_fee: 0 })).haul_fee === 0);
+    }
+    {
+      const { sql } = rated({ 'Somebody Else': '121' });
+      assert('a customer with no rate set posts unpriced, as before',
+        (await insertTruckingRow(sql, CO, entry())).haul_fee === '');
+    }
+    {
+      // Normalized exactly as the ?lists=1 route normalizes it: a rate that is
+      // blank or non-numeric is not a price, and a fee filled in from one would
+      // read as a figure somebody is being charged.
+      const { sql } = rated({ 'Acme Materials': 'call the office' });
+      assert('a rate that is not a number is not a price',
+        (await insertTruckingRow(sql, CO, entry())).haul_fee === '');
+    }
+    {
+      // The half-numbers the normalizer lets through. It keeps a rate on
+      // parseFloat — the rule the ?lists=1 route and the Trucking tab both use
+      // — so "121/hr" survives it and Number() still refuses it. The row has to
+      // come out blank and KEEP its haul_fee column: writing what truckFee
+      // hands back unchecked put `undefined` on the row, and JSON.stringify
+      // drops the key entirely on the way into the blob.
+      for (const rate of ['121/hr', '121 per hour', '99999999999']) {
+        const { sql, store } = rated({ 'Acme Materials': rate });
+        const row = await insertTruckingRow(sql, CO, entry());
+        const written = store.appData.get(BLOB_KEY)[0];
+        assert(`a rate of ${JSON.stringify(rate)} leaves the fee blank, not missing`,
+          row.haul_fee === '' && Object.prototype.hasOwnProperty.call(written, 'haul_fee'),
+          JSON.stringify(row.haul_fee));
+      }
+    }
+    {
+      const { sql } = makeSql({
+        appData: { [LISTS_BLOB]: { drivers: [], customers: [], units: [], rates: { 'Acme Materials': '99' } } },
+      });
+      assert('the legacy unscoped lists blob is read too',
+        (await insertTruckingRow(sql, CO, entry())).haul_fee === 99);
+    }
+    {
+      // A split day prices each haul from its OWN customer, which is the whole
+      // reason one number could never speak for a card of them.
+      const { sql } = rated({ CNX: '121', Antero: '105' });
+      const rows = await insertTruckingRows(sql, CO, entry(), {
+        rows: [
+          { company: 'CNX',    start_time: '07:00', end_time: '11:15' },
+          { company: 'Antero', start_time: '11:15', end_time: '15:30' },
+        ],
+      });
+      assert('each haul of a split day bills its own customer\'s rate',
+        rows[0].haul_fee === 121 && rows[1].haul_fee === 105);
+    }
+    {
+      // A leg that priced itself keeps its price, and the leg beside it is
+      // still filled in from its own customer rather than from that number.
+      const { sql } = rated({ CNX: '121', Antero: '105' });
+      const rows = await insertTruckingRows(sql, CO, entry(), {
+        rows: [
+          { company: 'CNX',    start_time: '07:00', end_time: '11:15', haul_fee: 150 },
+          { company: 'Antero', start_time: '11:15', end_time: '15:30' },
+        ],
+      });
+      assert('a haul priced by hand stands, and its neighbour is still its own',
+        rows[0].haul_fee === 150 && rows[1].haul_fee === 105);
+    }
+    {
+      // The day's fee is an answer for every leg that names none — that is what
+      // the modal sends for a day it did not split — so the rate never fires.
+      const { sql } = rated({ CNX: '121', Antero: '105' });
+      const rows = await insertTruckingRows(sql, CO, entry(), {
+        haul_fee: '',
+        rows: [
+          { company: 'CNX',    start_time: '07:00', end_time: '11:15' },
+          { company: 'Antero', start_time: '11:15', end_time: '15:30' },
+        ],
+      });
+      assert('a day cleared of its fee posts every haul unpriced',
+        rows[0].haul_fee === '' && rows[1].haul_fee === '');
+    }
+    {
+      // The two real wire shapes, end to end: what each page actually sends
+      // when nobody has priced the day, through validation, into the row.
+      const bulk = rated({ 'Acme Materials': '121' });
+      const bulkRow = await insertTruckingRow(
+        bulk.sql, CO, entry(), validateTruckingInjection({ division: '' }).fields);
+      assert('the bulk card\'s payload arrives priced', bulkRow.haul_fee === 121);
+
+      // The single modal on an unsplit day: it sends the day as one haul, and
+      // leaves the fee off that haul when its box was never filled in.
+      const one = rated({ 'Acme Materials': '121' });
+      const oneRow = await insertTruckingRow(one.sql, CO, entry(), validateTruckingInjection({
+        division: '', unit: '634',
+        rows: [{ start_time: '07:00', end_time: '15:30' }],
+      }).fields);
+      assert('and so does the approve modal\'s, for a box nobody filled in',
+        oneRow.haul_fee === 121);
+    }
+    {
+      // A dust customer haul billed off Other Billing posts a Truck Tracking
+      // row like any other, and is priced like any other.
+      const { sql } = rated({ CNX: '130' });
+      const rows = await insertTruckingRows(
+        sql, CO, entry({ division: 'dust', job_id: 'CNX', job_label: 'CNX' }), {}, obDay(1));
+      assert('a material haul off the dust tab is priced the same way',
+        rows.length === 1 && rows[0].haul_fee === 130);
+    }
+  }
+
   // ── validateTruckingInjection ──
   {
     assert('validate: numeric haul fee accepted', validateTruckingInjection({ haul_fee: '115.5' }).fields.haul_fee === 115.5);
+    // Blank is an answer, absent is not. The approve modal sends whatever its
+    // box holds — the box was pre-filled from the customer's rate, so an empty
+    // one is payroll saying this haul bills nothing. Bulk approve sends no key
+    // at all when its single fee box is empty, because one number cannot price
+    // a card that spans customers, and that absence is what lets the injection
+    // fill the fee in from each customer's own rate.
     assert('validate: blank haul fee → blank', validateTruckingInjection({ haul_fee: '' }).fields.haul_fee === '');
-    assert('validate: missing body → blank fee', validateTruckingInjection(undefined).fields.haul_fee === '');
+    assert('validate: a fee nobody sent is left absent, not blanked',
+      !('haul_fee' in validateTruckingInjection(undefined).fields)
+      && !('haul_fee' in validateTruckingInjection({ division: 'Paving' }).fields));
+    assert('validate: an explicit null is absent too',
+      !('haul_fee' in validateTruckingInjection({ haul_fee: null }).fields));
+    assert('validate: zero is a price, not an absence',
+      validateTruckingInjection({ haul_fee: 0 }).fields.haul_fee === 0);
     assert('validate: negative haul fee rejected', !!validateTruckingInjection({ haul_fee: -5 }).error);
     assert('validate: non-numeric haul fee rejected', !!validateTruckingInjection({ haul_fee: 'abc' }).error);
     assert('validate: division trimmed', validateTruckingInjection({ division: '  Paving  ' }).fields.division === 'Paving');
@@ -1082,11 +1248,19 @@ const ubDay = (n = 1) => ({ dustLegs: Array.from({ length: n }, () => ({ dest: '
   {
     console.log('\n[bulk approve sends no hauls]');
     const SRC = require('fs').readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
-    const body = SRC.match(/return \{ trucking: \{[^}]*\} \};/);
+    const from = SRC.indexOf("if (g.type === 'trucking') {\n        // ONE box prices");
+    const body = from < 0 ? '' : SRC.slice(from, SRC.indexOf('return { trucking };', from));
     assert('the bulk trucking body still carries only the fee and the division',
-      !!body && /haul_fee: g\.template\.haul_fee/.test(body[0])
-             && /division: g\.template\.division_col/.test(body[0])
-             && !/rows/.test(body[0]) && !/unit/.test(body[0]), body && body[0]);
+      !!body && /trucking\.haul_fee = fee;/.test(body)
+             && /division: g\.template\.division_col/.test(body)
+             && !/rows/.test(body) && !/unit:/.test(body), body);
+    // The fee is the one field that can go unanswered: the card's single box
+    // prices every day on it, so it can only be filled in when they all agree,
+    // and an empty one has to mean "nobody priced these" rather than "these
+    // bill nothing" — which is what posted the rows at $0/hr. Left off, the
+    // injection fills each day in from its own customer's agreed rate.
+    assert('and an empty fee box is left off it entirely',
+      /if \(fee !== ''\) trucking\.haul_fee = fee;/.test(body));
     // …and the server reads that absence as "one row for the day".
     const { sql } = makeSql({ drivers: [] });
     const bulk = await insertTruckingRows(sql, CO, entry({ travel_hours: 1 }), { haul_fee: 90, division: '' });
