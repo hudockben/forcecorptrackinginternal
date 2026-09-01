@@ -4145,14 +4145,20 @@
       const map = { vacation:'Vacation', sick:'Sick', jury_duty:'Jury Duty', bereavement:'Bereavement', holiday:'Holiday' };
       return map[t] || t;
     }
-    // Default a haul row's equipment to the one the office assigned to this job.
+    // Default a haul row's truck, best source first.
     //
-    // Only when the job has EXACTLY ONE assigned unit. With none there is
-    // nothing to go on, and with several, picking one would be a guess that
-    // silently puts a wrong hourly rate on the job — the warning below is the
-    // honest answer there. The company-wide equipment list is deliberately not
-    // used: it is every machine the company owns and says nothing about this
-    // job.
+    //   1. WHAT THE DRIVER SAID. He picks it on his own timesheet, from this
+    //      same equipment list, whenever he calls a block a haul — because the
+    //      same man is on a lowboy one day and a triaxle the next, so it is a
+    //      fact about the day and only he was there. It arrives on truck_unit.
+    //   2. The one unit the office assigned to this job, if there is exactly
+    //      one. A fallback for a day answered before the question existed, or
+    //      by a driver nobody had flagged.
+    //
+    // With neither — or with several assigned and no answer from the driver —
+    // it fills nothing. Picking one of two would silently bill the job at
+    // another machine's hourly rate, and the warning below is the honest answer
+    // instead.
     //
     // Never overwrites a choice already on the row.
     function splitDefaultHaulEquipment(r) {
@@ -4160,6 +4166,8 @@
       const t = splitEntry && splitEntry.haul_type;
       if (t !== 'on_site' && t !== 'off_site') return false;
       if (isTravelSplitRow(r)) return false;
+      const said = String((splitEntry && splitEntry.truck_unit) || '').trim();
+      if (said) { r.equipment = said; return true; }
       const only = (splitProjEquipment || []).filter(Boolean);
       if (only.length !== 1) return false;
       r.equipment = only[0];

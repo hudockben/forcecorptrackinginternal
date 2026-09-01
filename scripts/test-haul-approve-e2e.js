@@ -195,6 +195,40 @@ const q = (sql, p) => client.query(sql, p).then(r => r.rows);
   // whole day free to the job. The modal now defaults the truck from the job's
   // assigned equipment and follows the driver's hours with it, so the shape
   // below is what a haul row should look like.
+  console.log('\n[the truck the driver named survives to the cost row]');
+  {
+    // A lowboy today, a triaxle tomorrow — so the driver names it per day. On a
+    // turf job truck_unit used to be forced to null on the way in, which left
+    // the approver retyping something the driver had already said.
+    const c = await call('POST', {}, {
+      entry_type: 'daily', work_date: '2026-09-20', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '13:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+      haul_type: 'off_site', truck_unit: 'Lowboy',
+    }, FIELD);
+    assert('the entry saves', c.statusCode === 200, JSON.stringify(c.body).slice(0, 160));
+    const [saved] = await q('SELECT haul_type, truck_unit FROM timesheet_entries WHERE id=$1',
+      [c.body.entry.id]);
+    assert('the truck is kept on a turf haul, not nulled',
+      saved.truck_unit === 'Lowboy', `truck_unit=${JSON.stringify(saved.truck_unit)}`);
+    assert('  alongside the haul answer', saved.haul_type === 'off_site');
+
+    // And the same field on an ordinary turf day is still discarded — nothing
+    // about this loosens the rule for a non-haul.
+    const c2 = await call('POST', {}, {
+      entry_type: 'daily', work_date: '2026-09-21', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '13:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+      truck_unit: 'Lowboy',
+    }, FIELD);
+    const [saved2] = await q('SELECT truck_unit FROM timesheet_entries WHERE id=$1',
+      [c2.body.entry.id]);
+    assert('an ordinary turf day still discards a stray unit', saved2.truck_unit === null,
+      `truck_unit=${JSON.stringify(saved2.truck_unit)}`);
+  }
+
   console.log('\n[a haul row must not cost the job nothing at all]');
   const id4 = await mk();
   const r4 = await call('POST', { action: 'approve', id: id4 },

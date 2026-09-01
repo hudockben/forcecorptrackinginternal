@@ -3447,7 +3447,17 @@ function normalizeEntryBody(body) {
   // never collect a unit the approval would then discard, or vice versa. Forced
   // to null everywhere else so a stray value can't leak across divisions.
   const isTruckRow = needsTruckTrackingRow({ entry_type: 'daily', division, job_id });
-  const truck_unit        = isTruckRow ? safeStr(body.truck_unit, 100)        : null;
+  // A haul on a division that posts a cost row names its truck in this same
+  // column — it is the same fact, and the two are disjoint by construction
+  // (needsTruckTrackingRow covers only trucking and dust customers, neither of
+  // which auto-injects a cost row). Without this the unit the driver picked
+  // would be nulled on the way in and the approver would be back to typing it.
+  //
+  // The DESCRIPTION stays trucking-only: it belongs to the Truck Tracking row,
+  // and a cost row has nowhere to show it.
+  const haulType   = safeHaulType(body.haul_type);
+  const isHaulUnit = !!haulType && AUTO_INJECT_DIVISIONS.includes(division);
+  const truck_unit        = (isTruckRow || isHaulUnit) ? safeStr(body.truck_unit, 100) : null;
   const truck_description = isTruckRow ? safeStr(body.truck_description, 2000) : null;
 
   // EES-only extras, captured only for a dust entry on one of the two standing
@@ -3476,7 +3486,7 @@ function normalizeEntryBody(body) {
       travel_hours,
       lunch_break,
       operated_equipment: safeBool(body.operated_equipment),
-      haul_type:          safeHaulType(body.haul_type),
+      haul_type:          haulType,
       supervisor_id,
       supervisor_name,
       notes:              safeStr(body.notes, 2000),

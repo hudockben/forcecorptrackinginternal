@@ -204,6 +204,29 @@ console.log('\n[a haul row fills in its own truck and hours]');
     return { r, changed: a || b };
   };
 
+  // What the driver himself said always wins — he is the only one who knows
+  // whether he was on a lowboy or a triaxle that day.
+  const mkSaid = (unit, proj) => {
+    const sb = { splitEntry: { haul_type: 'off_site', truck_unit: unit },
+                 splitRows: [], splitProjEquipment: proj || [] };
+    vm.createContext(sb);
+    vm.runInContext(
+      `const TRAVEL_CODE_RE = ${travelRe[1]};\n` +
+      `${fnSource('isTravelSplitRow')}\n${fnSource('splitDefaultHaulEquipment')}\n`, sb);
+    const r = { cost_code: 'Earthwork', sub_code: 'Excess Cut', equipment: '',
+                labor_hours: 6, equip_hours: 0 };
+    sb.splitDefaultHaulEquipment(r);
+    return r;
+  };
+  assert('the truck the DRIVER picked is used',
+    mkSaid('Lowboy', []).equipment === 'Lowboy');
+  assert('  and it beats the job\'s assignment, because only he was there',
+    mkSaid('Lowboy', ['Triaxle Dump']).equipment === 'Lowboy');
+  assert('  and it works where the job assigns several',
+    mkSaid('Triaxle Dump', ['Triaxle Dump', 'Lowboy']).equipment === 'Triaxle Dump');
+  assert('a driver who left it blank falls back to the job assignment',
+    mkSaid('', ['Triaxle Dump']).equipment === 'Triaxle Dump');
+
   let { r } = mk({}, ['Triaxle Dump']);
   assert('the job\'s single assigned unit becomes the truck', r.equipment === 'Triaxle Dump');
   assert('  and its hours follow the driver\'s', r.equip_hours === 6);

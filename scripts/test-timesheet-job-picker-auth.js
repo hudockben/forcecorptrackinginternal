@@ -134,6 +134,11 @@ function harness(responses) {
     sessionExpired: () => { signedOut++; },
     isEesSelection: () => false,
     isTruckSelection: () => false,
+    // onDivisionChange re-evaluates the haul truck picker, because whether it
+    // shows depends on the division. Stubbed like every other collaborator
+    // here — this suite is about the job picker's auth behaviour, and the
+    // picker's own rules are covered in test-haul-timesheet-state.js.
+    applyHaulUnitVisibility: () => {},
     truckUnitRosterLoad: () => Promise.resolve(null),
     truckUnitOptionsFill: () => {},
     truckUnitHintsRefresh: () => {},

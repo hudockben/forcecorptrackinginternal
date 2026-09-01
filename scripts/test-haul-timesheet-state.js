@@ -50,22 +50,34 @@ function fnSource(name) {
 
 // A sandbox holding just what these two functions touch. setHaul writes to the
 // DOM, so every element is a stub that records what it was told.
-function sandbox(isDriver, haulVals, blocks = [0]) {
+function sandbox(isDriver, haulVals, blocks = [0], opts = {}) {
   const els = {};
   const el = id => (els[id] = els[id] || {
-    id, style: {},
+    id, style: {}, value: '',
     querySelectorAll: () => [],
   });
+  // The block's division picker, which decides whether the truck question has
+  // anywhere to land.
+  el('division').value = opts.division || 'turf';
   const sb = {
     console, isDriver, haulVals,
+    haulUnits: opts.haulUnits || { 0: '' },
     blockOrder: () => blocks,
     bel: (i, key) => el(i === 0 ? key : `s${i}-${key}`),
     setHaul(val, i) { sb.__setHaulCalls.push([val, i]); sb.haulVals[i] = val || ''; },
-    __setHaulCalls: [],
+    // Real function under test below; these two only reach the DOM.
+    haulUnitFill(i) { sb.__fillCalls.push(i); },
+    equipmentNamesLoad: () => Promise.resolve([]),
+    __setHaulCalls: [], __fillCalls: [],
     __els: els,
   };
   vm.createContext(sb);
-  vm.runInContext(fnSource('applyHaulVisibility'), sb);
+  // applyHaulVisibility calls applyHaulUnitVisibility, so both come across —
+  // stubbing the callee would let the two drift apart unnoticed, which is the
+  // failure this file exists to catch in the first place.
+  vm.runInContext(
+    `const HAUL_UNIT_DIVISIONS = ['turf','paving','kiewit'];\n` +
+    `${fnSource('applyHaulUnitVisibility')}\n${fnSource('applyHaulVisibility')}`, sb);
   return sb;
 }
 
@@ -119,11 +131,22 @@ console.log('\n[what actually gets posted is decided by isDriver, not by haulVal
 const build = src.slice(src.indexOf('function buildPayloads('),
                         src.indexOf('function buildPayloads(') + 12000);
 assert('unknown roster (null) posts NO haul_type key, so the server keeps what it has',
-  /haulKey: isDriver === null\s*\n\s*\? \{\}/.test(build));
+  /haulKey: isDriver === null \? \{\}/.test(build));
 assert('a non-driver posts an explicit empty answer, which clears any stale value',
-  /: \{ haul_type: isDriver \? \(haulVals\[i\] \|\| ''\) : '' \}/.test(build));
+  /const _haul\s*=\s*isDriver \? \(haulVals\[i\] \|\| ''\) : '';/.test(build)
+  && /\{ haul_type: _haul \}/.test(build));
 assert('the payload spreads that key rather than always sending the field',
   /\}, b\.haulKey, splitTagFor\(/.test(build));
+
+// The truck rides on truck_unit, but only for a haul on a division whose cost
+// row has an equipment column to receive it. null means "not mine" and leaves
+// the trucking/dust rules that own that field untouched.
+assert('the truck is only sent for a haul on a cost-tracking division',
+  /_haulUnit\s*=\s*\(isDriver && _haul && HAUL_UNIT_DIVISIONS\.includes\(div\)\)/.test(build));
+assert('  and is null otherwise, so trucking and dust keep that column',
+  /\?\s*\(haulUnits\[i\] \|\| ''\) : null;/.test(build));
+assert('  with the trucking path used whenever it is null',
+  /b\.haulUnit != null\s*\n\s*\? b\.haulUnit/.test(build));
 
 // And the guard itself: a render function that writes to haulVals is the bug.
 const vis = fnSource('applyHaulVisibility');
