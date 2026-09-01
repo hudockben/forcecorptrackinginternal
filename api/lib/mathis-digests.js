@@ -1062,11 +1062,20 @@ const PAYROLL_LIMITS = [
   'THIS DATA CARRIES NO PAY RATE AND NO DOLLAR FIGURE OF ANY KIND. Hours are hours. No question about pay, wages, labour cost or payroll spend can be answered from it — say the rates are not in this data rather than estimating from anything.',
   'Figures cover the current biweekly pay period only, and only entries that are submitted or approved. A draft an employee has not sent is not counted and must not be described as missing time.',
   'Prevailing-wage hours are split by a flag on the job, not by a rate. It says which work was prevailing-wage, not what any of it paid.',
+  'Two things move hours OUT of prevailing even on a prevailing-wage job, and both are about where the person was, not what they were paid. Travel is never prevailing. Nor is an off-site haul: a truck driver running to and from the site never worked it. Hauling ON the site stays prevailing. So a driver can show 0 prevailing hours on a prevailing-wage job and that is correct, not a data gap — do not explain it from the job flag alone.',
+  'haulHours is the off-site haul work reclassified by that rule, and it is already counted inside the standard hours — it is a note on the split, not a third bucket. Prevailing + standard is the whole day; do not add haulHours to them.',
 ];
 
 async function payrollDigest(c) {
   const { startIso, endIso } = report.biweeklyPayPeriod(new Date());
 
+  // haul_type is in the column list on purpose: payrollMetrics sends an
+  // off-site haul's work hours to standard rather than prevailing, and this
+  // SELECT is explicit. Leave it out and every row reaches payrollMetrics with
+  // haul_type undefined, so Mathis keeps answering with the OLD split —
+  // silently, and in disagreement with both the Payroll page and the executive
+  // report. Written out here rather than inside the query: the sql tag only
+  // sees text, and a backtick in it would close the template.
   let rows;
   try {
     rows = await c.sql`
@@ -1075,7 +1084,8 @@ async function payrollDigest(c) {
              computed_hours::float       AS computed_hours,
              travel_hours::float         AS travel_hours,
              travel_to_site_hours::float AS travel_to_site_hours,
-             travel_to_shop_hours::float AS travel_to_shop_hours
+             travel_to_shop_hours::float AS travel_to_shop_hours,
+             haul_type
         FROM timesheet_entries
        WHERE company_code = ${c.companyCode}
          AND status IN ('submitted', 'approved')

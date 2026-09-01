@@ -100,6 +100,10 @@ vm.runInContext([
   'bulkBadEquipHours() {',
   'bulkDroppedMachines() {',
   'bulkDaysTable(g, idx) {',
+  // buildBulkBody applies the haul defaults, so the real one comes across —
+  // stubbing it would hide a bulk-approved haul posting a row that costs the
+  // job nothing at all, which is what it exists to prevent.
+  'bulkApplyHaulDefaults(e, rows) {',
   'buildBulkBody(g, e) {',
 ].map(grab).join('\n\n'), sandbox);
 
@@ -487,11 +491,27 @@ console.log('\n[split tally: travel reconciliation]');
   // been passing vacuously since the tally started consulting it.
   const travelRe = src.match(/const TRAVEL_CODE_RE = [^\n]+/);
   if (!travelRe) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
-  const tallyFn = [travelRe[0], grab('isTravelSplitRow(r) {'), grab('renderSplitTally() {')].join('\n\n');
+  // Same story for the hauling warning: renderSplitTally calls it at the end,
+  // so leaving it out puts every assertion below back behind a ReferenceError.
+  // It reads splitEntry/splitRows and writes to a #splitWarn element the stub
+  // below hands out like any other.
+  const tallyFn = [
+    travelRe[0],
+    // The haul readers go through this one accessor, so it has to come across
+    // with them. Held apart from splitEntry on purpose: the picker's value must
+    // not reach the object the grid holds until it is saved.
+    `const splitHaulIs = () =>\n` +
+    `  (splitHaulAnswer === 'on_site' || splitHaulAnswer === 'off_site') ? splitHaulAnswer : null;`,
+    grab('isTravelSplitRow(r) {'),
+    grab('splitHaulUnpricedRows() {'),
+    grab('renderSplitHaulWarning() {'),
+    grab('renderSplitTally() {'),
+  ].join('\n\n');
   function tally(rows, entry) {
     const store = {};
     const stub = () => ({ textContent: '', style: {}, classList: { add() {}, remove() {} } });
     const sb = { console, splitRows: rows, splitEntry: entry,
+                 splitHaulAnswer: (entry && entry.haul_type) || '',
                  document: { getElementById: id => (store[id] = store[id] || stub()) } };
     vm.createContext(sb);
     vm.runInContext(tallyFn, sb);

@@ -1,9 +1,16 @@
 'use strict';
 /**
- * Supervisors dropdown for the Timesheet form.
+ * Supervisors dropdown for the Timesheet form, plus the caller's own driver flag.
  *
  *   GET /api/timesheet-supervisors
- *     → { supervisors: [{ id, name }, ...] }
+ *     → { supervisors: [{ id, name }, ...], is_driver: <bool> }
+ *
+ * `is_driver` describes the CALLER, not the supervisor list: it is true when the
+ * signed-in user is flagged employees.is_driver = TRUE. The Timesheet form uses
+ * it for one purpose — deciding whether to ask "was this a haul?" on each job
+ * block. It rides along on this request because the form already awaits it
+ * before first paint, so the question is there the moment a driver opens the
+ * page rather than appearing a beat later.
  *
  * Source: employees rows flagged is_supervisor = TRUE, INNER JOINed to the
  * users table on username so only user accounts surface in the dropdown.
@@ -57,7 +64,27 @@ module.exports = async (req, res) => {
     } catch {
       rows = [];
     }
-    return res.json({ supervisors: rows.map(r => ({ id: r.id, name: r.name })) });
+    // The caller's own driver flag. Same tolerance as above: a deploy that has
+    // not run the migration yet simply reports false, which is the pre-existing
+    // behaviour (no hauling question) rather than an error.
+    let isDriver = false;
+    try {
+      const [me] = await sql`
+        SELECT is_driver FROM employees
+        WHERE  company_code = ${payload.companyCode}
+          AND  LOWER(name)  = LOWER(${payload.username || ''})
+          AND (active = TRUE OR active IS NULL)
+        LIMIT 1
+      `;
+      isDriver = !!(me && me.is_driver);
+    } catch {
+      isDriver = false;
+    }
+
+    return res.json({
+      supervisors: rows.map(r => ({ id: r.id, name: r.name })),
+      is_driver:   isDriver,
+    });
   } catch (err) {
     console.error('[timesheet-supervisors]', err.message);
     return res.status(500).json({ error: 'Database error', detail: err.message });

@@ -919,6 +919,31 @@ CREATE INDEX IF NOT EXISTS idx_employees_supervisor ON employees(company_code, i
   WHERE is_supervisor = TRUE;
 
 -- ─────────────────────────────────────────────────
+-- EMPLOYEES — is_driver flag for the Timesheet hauling question
+-- ─────────────────────────────────────────────────
+-- Marks a person whose hours are normally bought by a truck, not by a body on
+-- the site. It does exactly ONE thing: it decides whether the Timesheet form
+-- asks that person "was this a haul?" per job block. It never prices anything
+-- and it never classifies a day on its own — the answer to the question does,
+-- and it is stored on the entry (timesheet_entries.haul_type below).
+--
+-- That division of labour is the whole point. "Is this man a truck driver?" is
+-- a fact about the person: stable, known to the office, and worth asking once.
+-- "Were these particular hours a haul, and was it on the site or to and from
+-- it?" is a fact about the WORK, changes leg by leg, and only the driver knows
+-- it. Conflating the two is what made a driver's day unclassifiable.
+--
+-- Global, exactly like is_supervisor and for the same reason: a driver hauls
+-- for turf, paving and kiewit alike, and those divisions keep separate roster
+-- blobs. Flagging the person once in "Manage Users → Drivers" (divisions.html)
+-- beats flagging them in three list blobs and having them disagree.
+-- syncLists in api/lib/sync-normalized.js deliberately leaves this column out
+-- of its UPDATE SET so a per-division blob sync can never clear it.
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_driver BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_employees_driver ON employees(company_code, is_driver)
+  WHERE is_driver = TRUE;
+
+-- ─────────────────────────────────────────────────
 -- TIMESHEET ENTRIES
 -- Field-employee time entries. Two row shapes share one table,
 -- discriminated by entry_type:
@@ -1005,6 +1030,50 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS travel_hours         NUME
 -- executes.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS truck_unit        TEXT;
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS truck_description TEXT;
+
+-- Hauling classification. Asked of roster-flagged drivers (employees.is_driver)
+-- on the Timesheet, once per JOB BLOCK — which is already once per leg, because
+-- timesheet.html posts one row per block and a driver splits a day the same way
+-- anyone else does (MAX_JOB_BLOCKS = 6, split_group_id ties them together).
+--
+--   NULL      → not a haul. Ordinary work, priced and classified as it always
+--               was. Every entry ever submitted before this existed, every
+--               non-driver, and a driver who spent the day on a machine.
+--   'on_site' → hauling within the job site. This IS covered work: on a
+--               prevailing-wage job it stays prevailing.
+--   'off_site'→ hauling to and from the site. The man never worked the site,
+--               so these hours are standard rate even on a prevailing job.
+--
+-- Two things read it, and they are deliberately different:
+--
+--   PAYROLL HOURS. api/lib/payroll-metrics.js sends 'off_site' work hours to
+--   standard instead of prevailing. This is the ONLY level at which that can be
+--   fixed: the prevailing-hours report counts SUBMITTED entries too, and a
+--   submitted entry has no cost-tracking rows yet, so a per-cost-row flag would
+--   never reach it. Hours themselves are untouched — the driver is still owed
+--   the full day and payroll still balances against it.
+--
+--   JOB COST. insertSplitRows in api/timesheet-entries.js prices any haul row
+--   at 0 and stamps daily_tracking.field_type, because the driver's cost is
+--   already inside the truck's hourly rate. Hours still post so the row reads
+--   honestly; only the money is suppressed.
+--
+-- The CHECK deliberately admits NULL rather than defaulting to a string: "not a
+-- haul" is the overwhelming majority and the absence of an answer, not an
+-- answer. Nothing downstream may treat NULL as anything but ordinary work.
+-- Drop-then-add rather than a DO block guarding for duplicate_object: Postgres
+-- has no ADD CONSTRAINT IF NOT EXISTS, and scripts/run-schema.js splits this
+-- file on semicolons, which would shred a DO $$ ... $$ body into fragments that
+-- do not parse. Two plain statements are idempotent in sequence and survive
+-- that splitter.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS haul_type TEXT;
+ALTER TABLE timesheet_entries DROP CONSTRAINT IF EXISTS timesheet_entries_haul_type_check;
+ALTER TABLE timesheet_entries ADD CONSTRAINT timesheet_entries_haul_type_check
+  CHECK (haul_type IS NULL OR haul_type IN ('on_site','off_site'));
+
+CREATE INDEX IF NOT EXISTS idx_ts_haul_type
+  ON timesheet_entries(company_code, haul_type)
+  WHERE haul_type IS NOT NULL;
 
 -- EES-only daily fields. Captured on the timesheet only when the division is
 -- 'dust' AND the job is one of the two standing EES activities (job_id

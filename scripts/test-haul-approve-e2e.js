@@ -1,0 +1,308 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * Payroll can classify a haul at approval time — the whole way through.
+ *
+ * Run: PG_TEST_URL=postgres://... node scripts/test-haul-approve-e2e.js
+ *      (defaults to postgres://fct_test_user:test@localhost/fct_test)
+ *
+ * Set the database up first — auth-schema.sql THEN neon-schema.sql.
+ * DESTRUCTIVE: truncates timesheet_entries, daily_tracking and app_data.
+ *
+ * The driver answers the hauling question on his timesheet. But only a driver
+ * the office has FLAGGED is asked, and a day already submitted cannot be
+ * answered retrospectively by anyone but payroll. So on the day this is
+ * switched on, every entry in the queue carries no answer — and a driver who
+ * simply forgot could otherwise only be fixed by sending the day back.
+ *
+ * This drives the real handler against a real PostgreSQL and asserts the case
+ * the owner actually hit: a Franklin Regional entry submitted with no answer,
+ * approved as an off-site haul, must come out with
+ *
+ *   - the entry carrying haul_type, so the prevailing-hours report reclassifies
+ *   - the injected cost row priced at $0 LABOUR but with its hours intact and
+ *     the truck still costed
+ *
+ * The hours are the point: payroll balances the driver's day against them, so
+ * suppressing the money must never suppress the time.
+ */
+
+const path   = require('path');
+const Module = require('module');
+const { Client } = require('pg');
+
+const URL = process.env.PG_TEST_URL || 'postgres://fct_test_user:test@localhost/fct_test';
+const dbName = (URL.split('/').pop() || '').split('?')[0];
+if (!/test/i.test(dbName)) {
+  console.error(`Refusing to run: "${dbName}" does not look like a test database.`);
+  process.exit(1);
+}
+
+const client = new Client({ connectionString: URL });
+function makeSql(c) {
+  return (strings, ...values) => {
+    let text = '';
+    strings.forEach((s, i) => { text += s + (i < values.length ? '$' + (i + 1) : ''); });
+    return c.query(text, values).then(r => r.rows);
+  };
+}
+
+let AUTH = null;
+const origLoad = Module._load;
+Module._load = function (request) {
+  if (request === '@neondatabase/serverless') return { neon: () => makeSql(client) };
+  if (request === './lib/auth') {
+    return {
+      requireAuth: () => AUTH,
+      requireDivision: () => null,
+      hasDivisionAccess: (p, area) => !!(p && (p.isPlatformAdmin ||
+        (p.divisionRoles && p.divisionRoles[area] && p.divisionRoles[area] !== 'no_access'))),
+    };
+  }
+  return origLoad.apply(this, arguments);
+};
+
+const handler = require(path.resolve(__dirname, '..', 'api', 'timesheet-entries.js'));
+
+let passed = 0, failed = 0;
+function assert(label, cond, detail) {
+  if (cond) { passed++; console.log(`  ✓ ${label}`); }
+  else      { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
+}
+
+const FIELD = { companyCode: 'FCT', userId: 7,  username: 'hudockben', divisionRoles: { timesheet: 'level1' } };
+const ADMIN = { companyCode: 'FCT', userId: 42, username: 'office',
+                divisionRoles: { timesheet: 'level1', payroll: 'level3' }, role: 'admin' };
+
+async function call(method, query, body, auth) {
+  AUTH = auth;
+  const res = {
+    statusCode: 200, body: null,
+    setHeader() {}, status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; return this; }, end() { return this; },
+  };
+  await handler({ method, query: query || {}, body: body || {} }, res);
+  return res;
+}
+
+const q = (sql, p) => client.query(sql, p).then(r => r.rows);
+
+(async () => {
+  await client.connect();
+  await client.query(`INSERT INTO companies (code,name) VALUES ('FCT','Force Corp')
+                      ON CONFLICT (code) DO NOTHING`);
+  await client.query('TRUNCATE timesheet_entries, daily_tracking, app_data RESTART IDENTITY CASCADE');
+
+  // Franklin Regional Multi, prevailing wage — exactly the owner's job.
+  await client.query(
+    `INSERT INTO app_data (key,value) VALUES ('FCT:fct_project_26049', $1)`,
+    [JSON.stringify({ id: '26049', 'project-name': 'Franklin Regional Multi', prevailing_wage: true })]);
+  // The turf roster the injected row is priced from.
+  await client.query(
+    `INSERT INTO app_data (key,value) VALUES ('FCT:fct_lists', $1)`,
+    [JSON.stringify({
+      employees: [{ name: 'Ben Hudock', job_class: 'Operator',
+                    prevailing_rate: 77, non_prevailing_rate: 55 }],
+      equipment: [{ name: 'Triaxle Dump', unit_cost: 121 }],
+    })]);
+
+  // A day submitted with NO answer — the driver was never flagged, which is the
+  // state every entry is in on the day this is switched on.
+  // A distinct date per scenario: the submit path refuses a second entry for the
+  // same person, day and job, which is a duplicate guard, not something to work
+  // around.
+  let _day = 0;
+  const mk = async () => {
+    const c = await call('POST', {}, {
+      entry_type: 'daily', work_date: `2026-09-0${++_day}`, division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '13:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+    }, FIELD);
+    if (c.statusCode !== 200) throw new Error('create failed: ' + JSON.stringify(c.body));
+    await call('POST', { action: 'submit', id: c.body.entry.id }, {}, FIELD);
+    return c.body.entry.id;
+  };
+
+  const SPLIT = [{ cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+                   equipment: 'Triaxle Dump', labor_hours: 6, equip_hours: 6, quantity: 0 }];
+
+  console.log('\n[the entry as submitted]');
+  const id = await mk();
+  let [e] = await q('SELECT haul_type, computed_hours FROM timesheet_entries WHERE id=$1', [id]);
+  assert('carries no hauling answer', e.haul_type === null);
+  assert('  and six work hours', Number(e.computed_hours) === 6);
+
+  console.log('\n[payroll approves it as an off-site haul]');
+  const r = await call('POST', { action: 'approve', id }, { split: SPLIT, haul_type: 'off_site' }, ADMIN);
+  assert('the approval succeeds', r.statusCode === 200, JSON.stringify(r.body).slice(0, 200));
+
+  [e] = await q('SELECT haul_type, status FROM timesheet_entries WHERE id=$1', [id]);
+  assert('the answer is stored on the entry', e.haul_type === 'off_site');
+  assert('  and the entry is approved', e.status === 'approved');
+
+  let [row] = await q(
+    `SELECT rate::float rate, labor_hours::float lh, equip_unit_cost::float euc,
+            equip_hours::float eh, field_type, employee, job_class
+       FROM daily_tracking WHERE timesheet_entry_id=$1`, [id]);
+  assert('one cost row was injected', !!row);
+  assert('the LABOUR RATE is $0 — the driver is inside the truck cost', row.rate === 0,
+    `rate=${row.rate}`);
+  assert('the HOURS are intact — payroll balances the day against them', row.lh === 6,
+    `labor_hours=${row.lh}`);
+  assert('the truck is still priced at $121/h for 6 h',
+    row.euc === 121 && row.eh === 6, `euc=${row.euc} eh=${row.eh}`);
+  assert('the row says why it costs nothing', row.field_type === 'Haul — To/From Site',
+    `field_type=${row.field_type}`);
+  assert('and it still carries the roster name and class',
+    row.employee === 'Ben Hudock' && row.job_class === 'Operator');
+
+  console.log('\n[the prevailing split follows from it]');
+  const { payrollMetrics } = require(path.resolve(__dirname, '../api/lib/payroll-metrics.js'));
+  const entries = await q(
+    `SELECT username, entry_type, status, division, job_id, work_date::text work_date,
+            computed_hours::float computed_hours, travel_hours::float travel_hours, haul_type
+       FROM timesheet_entries WHERE id=$1`, [id]);
+  entries[0].prevailing_wage = true;   // Franklin Regional is a PW job
+  const t = payrollMetrics({ entries, periodStart: '2026-08-31', periodEnd: '2026-09-13' }).totals;
+  assert('the 6 hours are STANDARD, not prevailing', t.pwHours === 0 && t.stdHours === 6,
+    `pw=${t.pwHours} std=${t.stdHours}`);
+  assert('  and he is still owed all six', t.workHours === 6);
+
+  console.log('\n[an ordinary approval is untouched]');
+  const id2 = await mk();
+  const r2 = await call('POST', { action: 'approve', id: id2 }, { split: SPLIT, haul_type: '' }, ADMIN);
+  assert('it approves', r2.statusCode === 200, JSON.stringify(r2.body).slice(0, 200));
+  [row] = await q(`SELECT rate::float rate, field_type FROM daily_tracking
+                    WHERE timesheet_entry_id=$1`, [id2]);
+  assert('the prevailing rate is applied as always', row.rate === 77, `rate=${row.rate}`);
+  assert('  and nothing is stamped', row.field_type === null);
+
+  console.log('\n[approving without mentioning haul_type keeps the driver\'s own answer]');
+  const id3 = await mk();
+  await q(`UPDATE timesheet_entries SET haul_type='on_site' WHERE id=$1`, [id3]);
+  const r3 = await call('POST', { action: 'approve', id: id3 }, { split: SPLIT }, ADMIN);
+  assert('it approves', r3.statusCode === 200);
+  [e] = await q('SELECT haul_type FROM timesheet_entries WHERE id=$1', [id3]);
+  assert('the answer survives an approval that never mentioned it', e.haul_type === 'on_site');
+  [row] = await q(`SELECT rate::float rate, field_type FROM daily_tracking
+                    WHERE timesheet_entry_id=$1`, [id3]);
+  assert('  and it still priced the labour at $0', row.rate === 0);
+  assert('  stamped as an on-site haul', row.field_type === 'Haul — On Site');
+
+  // The failure the owner actually hit on the second attempt: marked as a haul,
+  // approved, and the row landed with NO truck — $0 labour and $0 equipment, the
+  // whole day free to the job. The modal now defaults the truck from the job's
+  // assigned equipment and follows the driver's hours with it, so the shape
+  // below is what a haul row should look like.
+  console.log('\n[the truck the driver named survives to the cost row]');
+  {
+    // A lowboy today, a triaxle tomorrow — so the driver names it per day. On a
+    // turf job truck_unit used to be forced to null on the way in, which left
+    // the approver retyping something the driver had already said.
+    const c = await call('POST', {}, {
+      entry_type: 'daily', work_date: '2026-09-20', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '13:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+      haul_type: 'off_site', truck_unit: 'Lowboy',
+    }, FIELD);
+    assert('the entry saves', c.statusCode === 200, JSON.stringify(c.body).slice(0, 160));
+    const [saved] = await q('SELECT haul_type, truck_unit FROM timesheet_entries WHERE id=$1',
+      [c.body.entry.id]);
+    assert('the truck is kept on a turf haul, not nulled',
+      saved.truck_unit === 'Lowboy', `truck_unit=${JSON.stringify(saved.truck_unit)}`);
+    assert('  alongside the haul answer', saved.haul_type === 'off_site');
+
+    // And the same field on an ordinary turf day is still discarded — nothing
+    // about this loosens the rule for a non-haul.
+    const c2 = await call('POST', {}, {
+      entry_type: 'daily', work_date: '2026-09-21', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '13:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+      truck_unit: 'Lowboy',
+    }, FIELD);
+    const [saved2] = await q('SELECT truck_unit FROM timesheet_entries WHERE id=$1',
+      [c2.body.entry.id]);
+    assert('an ordinary turf day still discards a stray unit', saved2.truck_unit === null,
+      `truck_unit=${JSON.stringify(saved2.truck_unit)}`);
+  }
+
+  console.log('\n[payroll correcting the hours does not lose the truck]');
+  {
+    // Payroll's Edit Entry modal edits the DAY — date, job, clock, lunch — and
+    // sends neither haul_type nor truck_unit. Both must survive, or the entry
+    // stays a haul with no truck and the approval posts a row that costs the
+    // job nothing at all.
+    const c = await call('POST', {}, {
+      entry_type: 'daily', work_date: '2026-09-22', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '13:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+      haul_type: 'off_site', truck_unit: 'Lowboy',
+    }, FIELD);
+    const eid = c.body.entry.id;
+
+    const put = await call('PUT', { id: eid }, {
+      entry_type: 'daily', work_date: '2026-09-22', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '15:00',      // the correction
+      lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+    }, FIELD);
+    assert('the edit saves', put.statusCode === 200, JSON.stringify(put.body).slice(0, 160));
+
+    const [after] = await q(
+      'SELECT haul_type, truck_unit, computed_hours::float ch FROM timesheet_entries WHERE id=$1',
+      [eid]);
+    assert('the correction landed', after.ch === 8, `hours=${after.ch}`);
+    assert('the haul answer survives', after.haul_type === 'off_site');
+    assert('  and so does the truck', after.truck_unit === 'Lowboy',
+      `truck_unit=${JSON.stringify(after.truck_unit)}`);
+
+    // Present still wins, blank included — a driver clearing his own answer.
+    const put2 = await call('PUT', { id: eid }, {
+      entry_type: 'daily', work_date: '2026-09-22', division: 'turf',
+      job_id: '26049', job_label: 'Franklin Regional Multi · 26049',
+      start_time: '07:00', end_time: '15:00', lunch_break: false, operated_equipment: false,
+      supervisor_id: 3, supervisor_name: 'brewernate',
+      haul_type: '', truck_unit: '',
+    }, FIELD);
+    assert('clearing it explicitly still works', put2.statusCode === 200);
+    const [after2] = await q('SELECT haul_type, truck_unit FROM timesheet_entries WHERE id=$1', [eid]);
+    assert('  the answer is gone', after2.haul_type === null);
+    assert('  and the truck with it', !after2.truck_unit);
+  }
+
+  console.log('\n[a haul row must not cost the job nothing at all]');
+  const id4 = await mk();
+  const r4 = await call('POST', { action: 'approve', id: id4 },
+    { split: [{ cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+                equipment: 'Triaxle Dump', labor_hours: 6, equip_hours: 6, quantity: 0 }],
+      haul_type: 'off_site' }, ADMIN);
+  assert('it approves', r4.statusCode === 200);
+  [row] = await q(`SELECT rate::float rate, labor_hours::float lh, equip_unit_cost::float euc,
+                          equip_hours::float eh FROM daily_tracking WHERE timesheet_entry_id=$1`, [id4]);
+  const labourCost = row.rate * row.lh;
+  const equipCost  = row.euc * row.eh;
+  assert('the labour costs nothing, by design', labourCost === 0);
+  assert('but the TRUCK costs $726 — the day is not free', equipCost === 726,
+    `equip = ${row.euc} x ${row.eh} = ${equipCost}`);
+
+  console.log('\n[a haul approved with no truck at all is still accepted, and still free]');
+  // Deliberately unchanged: the warning is advice, not a gate — the approver may
+  // be right that the truck is billed elsewhere. This pins that it stays
+  // ACCEPTED, so nobody "fixes" the warning into a refusal by accident.
+  const id5 = await mk();
+  const r5 = await call('POST', { action: 'approve', id: id5 },
+    { split: [{ cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+                equipment: '', labor_hours: 6, equip_hours: 0, quantity: 0 }],
+      haul_type: 'off_site' }, ADMIN);
+  assert('the server does not refuse it', r5.statusCode === 200,
+    JSON.stringify(r5.body).slice(0, 160));
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  await client.end();
+  process.exit(failed ? 1 : 0);
+})().catch(err => { console.error('Harness error:', err.stack); process.exit(1); });

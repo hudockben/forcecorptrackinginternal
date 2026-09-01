@@ -55,6 +55,12 @@ const sandbox = {
   splitEntry: null,
   splitRows: [],
   splitCcCache: {},
+  // splitSave posts the approver's hauling answer alongside the split. Held in
+  // its own variable rather than on splitEntry, so trying an answer and
+  // cancelling cannot move a day's hours out of prevailing on the page behind
+  // the modal. This suite is about the travel codes, so '' — not a haul — is
+  // the right value throughout.
+  splitHaulAnswer: '',
   renderSplitRows:  () => { repaints++; },
   renderSplitTally: () => {},
 };
@@ -770,6 +776,11 @@ console.log('\n[a repaint keeps the cursor where it was]');
     "var splitEntry = { division: 'turf', job_id: 'J1', computed_hours: 6.5, travel_hours: 1.5 };",
     "var splitCcCache = { 'turf::J1': " + JSON.stringify(TURF) + ' };',
     'var splitEquipmentList = [];',
+    // splitSave posts the approver's hauling answer with the split. Kept
+    // off splitEntry on purpose — the object the grid holds must not change
+    // until a save lands. '' throughout: these cases are not hauls.
+    "var splitHaulAnswer = '';",
+    'var splitProjEquipment = [];',
     'var splitRows = [_blankSplitRow(false), _blankSplitRow(true)];',
   ].join('\n\n');
 
@@ -1136,6 +1147,10 @@ console.log('\n[the form and the server agree on what is saveable]');
     'function authHeaders(){return {};}  function applyEntryUpdate(){}',
     'function renderRows(){}  function renderStats(){}  function closeSplit(){}',
     'var selectedIds = new Set();',
+    // splitSave posts the approver's hauling answer with the split. Kept off
+    // splitEntry on purpose — the object the grid holds must not change until a
+    // save lands. '' throughout: these cases are not hauls.
+    'var splitHaulAnswer = "";',
     'var splitMode = "approve", splitRowLoad = "none";',
     "var splitEntry = { id: 1, division: 'turf', job_id: 'J1', computed_hours: 20, travel_hours: 5 };",
     "var splitCcCache = { 'turf::J1': [{ cost_code: 'Silt Sock', sub_codes: ['12inch'] }] };",

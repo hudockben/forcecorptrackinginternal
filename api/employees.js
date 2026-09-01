@@ -3,9 +3,13 @@
  * GET    /api/employees                 — list all active employees for the company
  * PUT    /api/employees                 — full replace: sync entire employee array
  * POST   /api/employees                 — create a single employee
- * PATCH  /api/employees?id=N            — partial update of one employee (currently
- *                                         only `is_supervisor`; used by the global
- *                                         "Manage Supervisors" UI on divisions.html)
+ * PATCH  /api/employees?name=X          — partial update of one employee's global
+ *                                         role flags (`is_supervisor`, `is_driver`);
+ *                                         used by the "Manage Users" UI on
+ *                                         divisions.html. Either flag may be sent
+ *                                         alone — an absent flag is left alone
+ *                                         rather than reset, so the two toggles
+ *                                         can never clobber each other.
  * DELETE /api/employees?id=N            — hard-delete one employee by id
  */
 const { neon }        = require('@neondatabase/serverless');
@@ -23,16 +27,17 @@ module.exports = async (req, res) => {
     // Returns the union of every roster in the company — the canonical
     // `employees` table (turf/dust/trucking) + paving's separate
     // `fct_paving_lists.employees` blob + the `quarry_employees` table.
-    // Deduplicated by name so the global "Manage Supervisors" modal shows
-    // everyone exactly once. `is_supervisor` only comes from the employees
-    // table — paving/quarry-only people start out unflagged and a PATCH
-    // will create their row when first flipped on.
+    // Deduplicated by name so the global "Manage Users" modal shows
+    // everyone exactly once. `is_supervisor` and `is_driver` only come from the
+    // employees table — paving/quarry-only people start out unflagged and a
+    // PATCH will create their row when first flipped on.
     if (req.method === 'GET') {
       const tableRows = await sql`
         SELECT id, name, job_class,
                pw_rate       AS prevailing_rate,
                non_pw_rate   AS non_prevailing_rate,
                is_supervisor,
+               is_driver,
                sort_order
         FROM   employees
         WHERE  company_code = ${companyCode} AND active = TRUE
@@ -48,6 +53,7 @@ module.exports = async (req, res) => {
           prevailing_rate:    r.prevailing_rate,
           non_prevailing_rate:r.non_prevailing_rate,
           is_supervisor:      r.is_supervisor === true,
+          is_driver:          r.is_driver === true,
           source:             'employees',
         });
       }
@@ -71,6 +77,7 @@ module.exports = async (req, res) => {
             prevailing_rate:    null,
             non_prevailing_rate:null,
             is_supervisor:      false,
+            is_driver:          false,
             source:             'paving',
           });
         }
@@ -97,6 +104,7 @@ module.exports = async (req, res) => {
             prevailing_rate:    null,
             non_prevailing_rate:null,
             is_supervisor:      false,
+            is_driver:          false,
             source:             'kiewit',
           });
         }
@@ -122,6 +130,7 @@ module.exports = async (req, res) => {
             prevailing_rate:    null,
             non_prevailing_rate:null,
             is_supervisor:      false,
+            is_driver:          false,
             source:             'quarry',
           });
         }
@@ -230,23 +239,44 @@ module.exports = async (req, res) => {
       const name = (req.query.name || '').trim();
       if (!name) return res.status(400).json({ error: 'name required' });
 
+      // Both flags are global role markers on the person, and the two toggles
+      // sit in the same modal. Send either alone: an absent flag is left as it
+      // is rather than reset, so flipping "Driver" can never silently clear
+      // "Supervisor" (a single upsert naming both columns would do exactly
+      // that, because the VALUES list has to supply *something* for the one the
+      // caller did not send).
       const fields = req.body || {};
-      if (typeof fields.is_supervisor === 'undefined') {
-        return res.status(400).json({ error: 'is_supervisor field required' });
+      const hasSup = typeof fields.is_supervisor !== 'undefined';
+      const hasDrv = typeof fields.is_driver     !== 'undefined';
+      if (!hasSup && !hasDrv) {
+        return res.status(400).json({ error: 'is_supervisor or is_driver field required' });
       }
-      const isSup = Boolean(fields.is_supervisor);
 
+      // One statement, so a click either lands whole or not at all — and a
+      // person who only ever appeared in the paving or quarry roster still gets
+      // their employees row created on the first flag.
+      //
+      // COALESCE is what lets a single upsert leave the OTHER flag alone: the
+      // VALUES list has to supply something for the flag the caller did not
+      // send, so it sends NULL and the DO UPDATE keeps the stored value. A
+      // straight `is_driver = EXCLUDED.is_driver` would clear Supervisor every
+      // time someone toggled Driver.
+      const supVal = hasSup ? Boolean(fields.is_supervisor) : null;
+      const drvVal = hasDrv ? Boolean(fields.is_driver)     : null;
       const [row] = await sql`
-        INSERT INTO employees (company_code, name, is_supervisor, sort_order, active, updated_at)
+        INSERT INTO employees (company_code, name, is_supervisor, is_driver, sort_order, active, updated_at)
         VALUES (
-          ${companyCode}, ${name}, ${isSup},
+          ${companyCode}, ${name},
+          COALESCE(${supVal}::boolean, FALSE),
+          COALESCE(${drvVal}::boolean, FALSE),
           (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM employees WHERE company_code = ${companyCode}),
           TRUE, NOW()
         )
         ON CONFLICT (company_code, name) DO UPDATE SET
-          is_supervisor = EXCLUDED.is_supervisor,
+          is_supervisor = COALESCE(${supVal}::boolean, employees.is_supervisor),
+          is_driver     = COALESCE(${drvVal}::boolean, employees.is_driver),
           updated_at    = NOW()
-        RETURNING id, name, is_supervisor
+        RETURNING id, name, is_supervisor, is_driver
       `;
       return res.json({ ok: true, employee: row });
     }

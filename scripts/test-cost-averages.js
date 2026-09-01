@@ -73,7 +73,27 @@ console.log('\n[the distinct-date total is still used where it belongs]');
 // the implied crew size.
 assert('daysAll keeps the cross-job distinct-date count', /const daysAll {2}= a\.dates\.size;/.test(render));
 assert('Avg Laborers still divides by daysAll, not the average',
-  /a\.labor_hours \/ daysAll \/ 8/.test(render) && !/a\.labor_hours \/ avgDays \/ 8/.test(render));
+  /site_hours \/ daysAll \/ 8/.test(render) && !/\/ avgDays \/ 8/.test(render));
+
+// Hauling hours are worked and paid, but they are not men on the work. Counting
+// a truck driver as crew makes a four-man crew read as five and drops the
+// units-per-man-hour every future bid is priced off — for a reason that has
+// nothing to do with how the crew performed. So the two RATES divide by
+// labor_hours minus the hauling hours, while the Labor Hours column keeps
+// showing every hour worked.
+console.log('\n[hauling hours are paid, but they are not crew]');
+assert('the on-site figure is labor hours minus hauling hours',
+  /site_hours = Math\.max\(0, a\.labor_hours - \(a\.haul_hours \|\| 0\)\)/.test(render));
+assert('Avg Laborers is built from it, not from raw labor hours',
+  !/a\.labor_hours \/ daysAll \/ 8/.test(render));
+assert('and units per man-hour divides by it too',
+  /mu_lab {3}= site_hours \? rqty \/ site_hours/.test(render)
+  && !/mu_lab {3}= a\.labor_hours \? rqty \/ a\.labor_hours/.test(render));
+assert('the per-job rows do the same',
+  /p_site_hours = Math\.max\(0, pa\.labor_hours - \(pa\.haul_hours \|\| 0\)\)/.test(render)
+  && /p_mu_lab {2}= p_site_hours \? p_rqty \/ p_site_hours/.test(render));
+assert('the Labor Hours total itself is untouched — the hours were worked',
+  /labor_hours: a\.labor_hours/.test(render));
 
 console.log('\n[child rows — each job\'s own figures]');
 assert('a job row shows the quantity logged on that job',

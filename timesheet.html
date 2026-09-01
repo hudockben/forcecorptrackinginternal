@@ -216,6 +216,10 @@
     }
     .seg button.on   { background: var(--accent); color: #003; }
     .seg button.off  { background: var(--border); color: var(--text); }
+    /* Three-way variant, for the hauling question. Same control, one more
+       column — on a phone the three labels still clear the 42px touch target. */
+    .seg.seg-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .seg.seg-3 button { padding: 0.65rem 0.25rem; font-size: 0.8rem; }
 
     /* ── Time-off type radio grid ── */
     .pills {
@@ -631,6 +635,49 @@
           </div>
         </div>
 
+        <!-- ── The hauling question ──
+             Shown only to a user flagged as a driver in Manage Users
+             (employees.is_driver, delivered by /api/timesheet-supervisors).
+             Everyone else never sees it and posts haul_type null, exactly as
+             before this existed.
+
+             Asked per JOB BLOCK, which is already once per leg: a driver who
+             runs to the site and then hauls inside the fence splits the day the
+             way anyone else would, and answers this once for each half. That is
+             what lets one man on one day be part standard and part prevailing.
+
+             The three answers are not cosmetic — they drive different things:
+               No         → ordinary work. Priced and classified as always.
+               On site    → the truck rate covers the labour, but the man IS on
+                            the site, so on a prevailing job it stays prevailing.
+               To & from  → the truck rate covers the labour AND he never worked
+                            the site, so the hours are standard rate even on a
+                            prevailing job. -->
+        <div class="row" id="row-haul" style="display:none">
+          <label>Was this a haul?</label>
+          <div class="seg seg-3" id="seg-haul">
+            <button type="button" data-val=""         onclick="setHaul('', 0)">No</button>
+            <button type="button" data-val="on_site"  onclick="setHaul('on_site', 0)">On site</button>
+            <button type="button" data-val="off_site" onclick="setHaul('off_site', 0)">To &amp; from</button>
+          </div>
+        </div>
+
+        <!-- ── Which truck ──
+             Asked only once the answer above says it WAS a haul, and only on the
+             divisions whose cost tracking has an equipment column to put it in.
+             A driver may be on a lowboy one day and a triaxle the next, so this
+             is a fact about the day, not about the man — which is why it is
+             asked here rather than defaulted from a roster.
+             The options are the company's own equipment list, the same
+             vocabulary the cost row uses ("Triaxle Dump", "Lowboy"), so what he
+             picks lands on the row unchanged. -->
+        <div class="row" id="row-haul-unit" style="display:none">
+          <label for="haul-unit">Which truck?</label>
+          <select id="haul-unit" onchange="setHaulUnit(this.value, 0)">
+            <option value="">— pick —</option>
+          </select>
+        </div>
+
         <!-- ── Split the day across more than one job ──
              One day on two jobs used to mean filling this form twice. Each
              block added here is another job on the SAME day: its own division,
@@ -839,6 +886,78 @@
     let splitIdxs      = [];        // extra block indices, in display order
     let nextSplitIdx   = 0;         // monotonic: a removed block's ids never come back
     let equipVals      = { 0: null }; // block index → true / false / null
+    // block index → '' | 'on_site' | 'off_site'. '' means "not a haul", which is
+    // both the default and what a non-driver always posts. Only ever read when
+    // isDriver is true; see applyHaulVisibility.
+    let haulVals       = { 0: '' };
+    // block index → the equipment name the driver picked for that haul. Only
+    // ever read when the block is a haul on a division whose cost tracking has
+    // an equipment column; see HAUL_UNIT_DIVISIONS.
+    let haulUnits      = { 0: '' };
+    // The divisions whose approval posts a cost-tracking row with an equipment
+    // column — the only ones where naming the truck has anywhere to land.
+    // Mirrors AUTO_INJECT_DIVISIONS in api/timesheet-entries.js.
+    const HAUL_UNIT_DIVISIONS = ['turf', 'paving', 'kiewit'];
+
+    // The company's equipment list, fetched once and shared by every block.
+    // Same list the payroll split modal offers, so what the driver picks is a
+    // name the cost row already understands rather than something that has to
+    // be translated.
+    let equipmentNames        = null;
+    let equipmentNamesPromise = null;
+    function equipmentNamesLoad() {
+      if (equipmentNames) return Promise.resolve(equipmentNames);
+      if (!equipmentNamesPromise) {
+        // A non-2xx must not be cached. It used to fall through to `[]`, which
+        // is truthy, so one expired-token 401 left the picker holding nothing
+        // but "— pick —" for the rest of the session — and a driver then marks
+        // a block a haul and submits it with no truck, which is the state this
+        // whole question exists to avoid. Only a real answer is kept; anything
+        // else clears the promise so the next call tries again.
+        equipmentNamesPromise = fetch('/api/equipment', { headers: authHeaders() })
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then(j => {
+            const names = (j && Array.isArray(j.equipment) ? j.equipment : [])
+              .map(e => (e && e.name) || '')
+              .filter(Boolean)
+              .sort((a, b) => a.localeCompare(b));
+            equipmentNames = names;
+            return names;
+          })
+          .catch(err => {
+            console.error('[timesheet] equipment list failed to load:', err.message);
+            equipmentNamesPromise = null;
+            return null;
+          });
+      }
+      return equipmentNamesPromise;
+    }
+
+    // Fill one block's picker, keeping whatever is already selected — including
+    // a name no longer on the list, so re-opening an old entry cannot silently
+    // drop the truck it was saved with.
+    function haulUnitFill(i) {
+      const sel = bel(i, 'haul-unit');
+      if (!sel) return;
+      const cur  = haulUnits[i] || '';
+      const opts = (equipmentNames || []).slice();
+      if (cur && !opts.includes(cur)) opts.push(cur);
+      sel.innerHTML = '<option value="">— pick —</option>' +
+        opts.map(n => `<option value="${escapeHtml(n)}"${n === cur ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
+      sel.value = cur;
+    }
+
+    function setHaulUnit(val, i = 0) { haulUnits[i] = val || ''; }
+
+    // Set from /api/timesheet-supervisors on load. Decides whether the hauling
+    // question is asked at all — nothing else in this page branches on it.
+    //   true  → ask, and post the answer
+    //   false → don't ask, and post '' so any stale answer is cleared
+    //   null  → we could not find out. Don't ask, and post NOTHING: the server
+    //           reads an absent haul_type as "leave what is stored", so a
+    //           failed roster load cannot quietly strip a driver's answer off
+    //           an entry he is only editing the hours of.
+    let isDriver       = null;
     let editingIds     = {};        // block index → id of the draft row it last wrote
     let loadedTags     = {};        // block index → the split tag it was loaded with
     let currentGroupId = null;      // split_group_id every block on this form writes
@@ -872,6 +991,10 @@
       'end':            'f-end',
       'hours':          'f-hours',
       'seg-equip':      'seg-equip',
+      'seg-haul':       'seg-haul',
+      'row-haul':       'row-haul',
+      'row-haul-unit':  'row-haul-unit',
+      'haul-unit':      'haul-unit',
     };
     function bid(i, key) { return i === 0 ? BLOCK0_IDS[key] : `s${i}-${key}`; }
     function bel(i, key) { return document.getElementById(bid(i, key)); }
@@ -983,6 +1106,22 @@
               <button type="button" data-val="false" onclick="setSeg('equip', false, ${i})">No</button>
             </div>
           </div>
+
+          <div class="row" id="s${i}-row-haul" style="display:none">
+            <label>Was this a haul?</label>
+            <div class="seg seg-3" id="s${i}-seg-haul">
+              <button type="button" data-val=""         onclick="setHaul('', ${i})">No</button>
+              <button type="button" data-val="on_site"  onclick="setHaul('on_site', ${i})">On site</button>
+              <button type="button" data-val="off_site" onclick="setHaul('off_site', ${i})">To &amp; from</button>
+            </div>
+          </div>
+
+          <div class="row" id="s${i}-row-haul-unit" style="display:none">
+            <label for="s${i}-haul-unit">Which truck?</label>
+            <select id="s${i}-haul-unit" onchange="setHaulUnit(this.value, ${i})">
+              <option value="">— pick —</option>
+            </select>
+          </div>
         </div>`;
     }
 
@@ -1008,7 +1147,13 @@
       const i = ++nextSplitIdx;
       splitIdxs.push(i);
       equipVals[i] = null;
+      haulVals[i]  = '';
+      haulUnits[i] = '';
       document.getElementById('splitBlocks').insertAdjacentHTML('beforeend', splitBlockHtml(i));
+      // A block added after load starts hidden in its own markup; reveal it now
+      // if this user is a driver, and default it to "No" so the answer is never
+      // blank on a block the driver skipped past.
+      applyHaulVisibility(i);
 
       if (inherit) {
         const prevEnd = bel(prev, 'end').value;
@@ -1040,6 +1185,8 @@
 
       splitIdxs = splitIdxs.filter(x => x !== i);
       delete equipVals[i];
+      delete haulVals[i];
+      delete haulUnits[i];
       delete editingIds[i];
       delete loadedTags[i];
       const el = document.getElementById(`s${i}-block`);
@@ -1147,6 +1294,8 @@
       }
       splitIdxs = [];
       equipVals = { 0: equipVals[0] };
+      haulVals  = { 0: haulVals[0] };
+      haulUnits = { 0: haulUnits[0] };
     }
 
     async function init() {
@@ -1194,6 +1343,72 @@
       seg.querySelectorAll('button').forEach(b => b.classList.remove('on', 'off'));
       if (which === 'lunch') { lunchVal = null; updateHours(0); }
       else                     equipVals[i] = null;
+    }
+
+    // ── The hauling question ────────────────────────────────────────────────
+    // Three-way rather than a boolean, because "was this a haul?" and "were you
+    // on the site?" are two different questions and a driver's day turns on
+    // both. Kept out of setSeg deliberately: that one is boolean to its bones
+    // (data-val === 'true'), and widening it would put a third state into the
+    // lunch and equipment answers, which have no use for one.
+    function setHaul(val, i = 0) {
+      const seg = bel(i, 'seg-haul');
+      if (!seg) return;
+      seg.querySelectorAll('button').forEach(b => {
+        const on = (b.dataset.val || '') === (val || '');
+        b.classList.toggle('on',  on);
+        b.classList.toggle('off', !on);
+      });
+      haulVals[i] = val || '';
+      applyHaulUnitVisibility(i);
+    }
+
+    // The truck picker follows the ANSWER, not the flag: it appears the moment a
+    // block is called a haul and goes away again if that is taken back. Limited
+    // to the divisions whose cost row has an equipment column — naming a truck
+    // on a quarry day would ask for something with nowhere to go.
+    function applyHaulUnitVisibility(i) {
+      const idxs = (i == null) ? blockOrder() : [i];
+      for (const b of idxs) {
+        const row = bel(b, 'row-haul-unit');
+        if (!row) continue;
+        const div    = (bel(b, 'division') || {}).value || '';
+        const isHaul = isDriver && !!haulVals[b] && HAUL_UNIT_DIVISIONS.includes(div);
+        row.style.display = isHaul ? 'flex' : 'none';
+        if (!isHaul) continue;
+        // Fetch once, then fill. Until it lands the picker holds just the
+        // saved value, so an entry being edited never shows a blank truck.
+        haulUnitFill(b);
+        equipmentNamesLoad().then(() => haulUnitFill(b));
+      }
+    }
+
+    // Show or hide the question for one block, or for every block when `i` is
+    // omitted. A driver's block defaults to "No" rather than blank: the common
+    // answer should cost no taps, and an unanswered three-way on a form the
+    // driver never scrolled to would be a new way to block a submit.
+    //
+    // PURELY PRESENTATIONAL — it must never write to haulVals for a hidden
+    // block. It used to clear the value whenever isDriver was not yet true, and
+    // isDriver starts null: init() runs loadSupervisors() and loadEntries()
+    // CONCURRENTLY, so a driver who taps a saved draft before the roster call
+    // lands had fillBlockFromEntry store 'off_site' and this wipe it a line
+    // later. The flag then arrived true, the control read "No", and saving
+    // posted '' — silently moving his hours back into prevailing and re-billing
+    // his wage to the job on the next approval.
+    //
+    // Nothing needs the clear: buildPayloads already decides what to post from
+    // isDriver directly ('' when false, nothing at all when null), so the
+    // stored value only ever matters for a driver, which is the case that keeps
+    // it.
+    function applyHaulVisibility(i) {
+      const idxs = (i == null) ? blockOrder() : [i];
+      for (const b of idxs) {
+        const row = bel(b, 'row-haul');
+        if (row) row.style.display = isDriver ? 'flex' : 'none';
+        if (isDriver) setHaul(haulVals[b] || '', b);
+        else applyHaulUnitVisibility(b);
+      }
     }
 
     function setOffType(t) {
@@ -1262,10 +1477,18 @@
           throw new Error((data && data.error) || `HTTP ${res.status}`);
         }
         supervisors = data.supervisors;
+        // Rides along on the same response. A deploy that predates the column
+        // sends nothing here, which reads as false — the form then behaves
+        // exactly as it did before the hauling question existed.
+        isDriver = data.is_driver === true;
       } catch (err) {
         console.error('[timesheet] supervisors failed to load:', err);
         supervisors = [];
+        // Unknown, not false — see the declaration. The question is not asked
+        // either way, but a saved answer survives the edit.
+        isDriver = null;
       }
+      applyHaulVisibility();
       const opts = '<option value="">— pick —</option>' +
         supervisors.map(s => `<option value="${s.id}" data-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('');
       document.getElementById('f-supervisor').innerHTML = opts;
@@ -1295,6 +1518,10 @@
       // they show depends on the job as well as the division under dust, so
       // onJobChange owns the reveal and runs again once the jobs have loaded.
       onJobChange(i);
+      // The truck picker is division-dependent too: moving a haul block onto a
+      // division whose cost row has no equipment column must take it away
+      // again, rather than leave a truck the approval has nowhere to put.
+      applyHaulUnitVisibility(i);
       if (!div) {
         jobSel.innerHTML = '<option value="">— pick division first —</option>';
         jobSel.disabled = true;
@@ -1729,6 +1956,14 @@
       bel(i, 'end').value   = e.end_time   || '';
       if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment, i);
       else clearSeg('equip', i);
+      // Re-open a saved haul on the answer it was saved with. An entry from
+      // before this question existed comes back null and lands on "No", which
+      // is what it has always meant.
+      haulVals[i] = e.haul_type || '';
+      // The truck comes back out of the same column it went into. Read before
+      // applyHaulVisibility so the picker is filled with it on first paint.
+      haulUnits[i] = e.haul_type ? (e.truck_unit || '') : '';
+      applyHaulVisibility(i);
       updateHours(i);
     }
 
@@ -1852,6 +2087,9 @@
       updateHours();
       clearSeg('lunch');
       clearSeg('equip');
+      haulVals  = { 0: '' };
+      haulUnits = { 0: '' };
+      applyHaulVisibility();
       renderSplitChrome();
       document.getElementById('f-supervisor').value = '';
       document.getElementById('f-notes').value = '';
@@ -1961,7 +2199,20 @@
           return { error: at(i, 'Start and end times are the same — that comes to 0 hours.') };
         }
         if (equipVals[i] == null) return { error: at(i, 'Operated equipment? Yes or No.') };
-        blocks.push({ i, div, jobId, jobLabel, start, end, equip: equipVals[i] });
+        // Only a flagged driver is ever asked, and their blocks default to "No",
+        // so this is always answered — no validation gate, unlike equipment.
+        // A non-driver posts '' and the server stores null.
+        // Omitted entirely when the roster flag is unknown, so the server keeps
+        // whatever is stored. '' is a real answer ("not a haul") and clears it.
+        // The truck rides on truck_unit — it IS the unit — but only for a haul
+        // on a division that has somewhere to put it. Everywhere else the
+        // trucking/dust rules below own that field, untouched.
+        const _haul     = isDriver ? (haulVals[i] || '') : '';
+        const _haulUnit = (isDriver && _haul && HAUL_UNIT_DIVISIONS.includes(div))
+          ? (haulUnits[i] || '') : null;
+        blocks.push({ i, div, jobId, jobLabel, start, end, equip: equipVals[i],
+                      haulUnit: _haulUnit,
+                      haulKey: isDriver === null ? {} : { haul_type: _haul } });
       }
 
       // Two jobs can't be worked at the same moment, and a day that adds up to
@@ -1985,7 +2236,12 @@
         // (trucking, and dust customer hauls); the server nulls them for
         // anything else, so this only decides whether the value makes the trip.
         const isTruck   = isTruckSelection(b.i);
-        const truckUnit = isTruck ? (bel(b.i, 'truck-unit').value || '').trim() : '';
+        // A haul on turf/paving/kiewit names its truck here instead — the same
+        // column, because it is the same fact, and the two selections never
+        // overlap (isTruckSelection covers only trucking and dust customers).
+        const truckUnit = b.haulUnit != null
+          ? b.haulUnit
+          : (isTruck ? (bel(b.i, 'truck-unit').value || '').trim() : '');
         const truckDesc = isTruck ? (bel(b.i, 'truck-desc').value || '').trim() : '';
         return {
           block: b.i,
@@ -2022,7 +2278,9 @@
             ees_name:       eesVal('ees-name'),
             ees_job_number: eesVal('ees-job-number'),
             ees_billing:    isEes ? (bel(b.i, 'ees-billing').value || 'Non-Billable') : '',
-          }, splitTagFor(b.i, pos, blocks.length)),
+            // '' → null on the server: not a haul, which is what every entry
+            // that predates this question also reads as. Absent → keep stored.
+          }, b.haulKey, splitTagFor(b.i, pos, blocks.length)),
         };
       });
 

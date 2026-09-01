@@ -369,6 +369,18 @@ function safeBool(v) {
   return null;
 }
 
+// The hauling answer, normalized to what the CHECK constraint admits.
+// Anything the form did not ask — a non-driver, an older client, an entry that
+// predates the question — comes back null, which every reader treats as
+// ordinary work. An unrecognized string is null for the same reason: guessing
+// between 'on site' and 'to and from' would silently move a man's hours
+// between prevailing and standard, so an answer we cannot read is no answer.
+const HAUL_TYPES = new Set(['on_site', 'off_site']);
+function safeHaulType(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  return HAUL_TYPES.has(s) ? s : null;
+}
+
 function safeInt(v) {
   if (v == null || v === '') return null;
   const n = parseInt(v, 10);
@@ -405,6 +417,7 @@ function dbToEntry(r) {
     travel_hours:          r.travel_hours != null ? Number(r.travel_hours) : null,
     lunch_break:           r.lunch_break,
     operated_equipment:  r.operated_equipment,
+    haul_type:           r.haul_type || '',
     supervisor_id:       r.supervisor_id,
     supervisor_name:     r.supervisor_name || '',
     notes:               r.notes || '',
@@ -769,6 +782,48 @@ function isTravelSplitRow(row) {
     || TRAVEL_CODE_RE.test(String(row.cost_code || ''));
 }
 
+// ── Hauling ───────────────────────────────────────────────────────────────
+// The field_type an injected row is stamped with when the driver answered the
+// hauling question on this entry's job block. Two things read the stamp: a
+// human scanning the cost tab, who otherwise sees an hours row priced at zero
+// with nothing saying why, and the production-rate roll-ups, which must not
+// count a driver's hours as men on the site.
+//
+// Prefixed "Haul — " on purpose: HAUL_FIELD_TYPE_RE below matches the prefix,
+// so a third category can be added here without touching anything that reads it.
+const HAUL_FIELD_TYPE = {
+  on_site:  'Haul — On Site',
+  off_site: 'Haul — To/From Site',
+};
+// Anchored on the SEPARATOR, not just the word. `/^haul\b/` matched any field
+// type an office had already invented that merely starts with "Haul" — a
+// paving company using "Haul Off" for spoil removal would have had every such
+// row silently priced at $0 and dropped out of its own production rates on the
+// first deploy. Nothing reserves the word, and field_types is a free-form
+// company-managed list. Matching "Haul — …" keeps the category open for a third
+// stamp later while claiming only a shape no one types by accident.
+// Any of em dash, en dash or hyphen, so the rule does not hinge on which
+// character survived a copy-paste.
+const HAUL_FIELD_TYPE_RE = /^haul\s*[—–-]\s/i;
+
+// A driver's labour is already inside the truck's hourly rate — the Triaxle at
+// $121/h is the truck AND the man in it. Pricing his hours again on the same
+// row bills the job twice for one driver, which is what this suppresses.
+//
+// HOURS ARE NOT SUPPRESSED, only the money: the row still carries what he
+// worked, so payroll balances against it and the cost tab reads honestly.
+//
+// Both answers zero the rate. Where they differ is prevailing wage, and that is
+// decided on the payroll side (api/lib/payroll-metrics.js), not here — the two
+// questions are genuinely separate. "Is this labour already paid for by the
+// equipment line?" is about the COST of the row; "did the man work the covered
+// site?" is about the RATE HE IS OWED. A haul on the site is both: free to the
+// cost code, and still prevailing in his cheque.
+function haulTypeOf(entry) {
+  const t = entry && entry.haul_type;
+  return (t === 'on_site' || t === 'off_site') ? t : null;
+}
+
 /**
  * Insert split rows into daily_tracking. The caller is responsible for first
  * deleting any prior injected rows for this entry (resplit case) — this
@@ -803,6 +858,9 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   // work at the job's rate, travel always at the employee's standard rate.
   const workRate   = resolver.rateFor(emp, isPrevailingWage);
   const travelRate = resolver.rateFor(emp, false);
+  // Did the driver call this block a haul? If so his labour is already bought
+  // by the truck on the row, and pricing it again double-bills the job.
+  const haulType = haulTypeOf(entry);
   // Prefer the roster's own spelling so the injected row carries the name the
   // cost tracking tab shows everywhere else, not the raw login.
   const employeeLabel = (emp && emp.name) || employeeName;
@@ -822,7 +880,12 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
     // has no `//` comment syntax. Written inside the statement it made every
     // turf/paving/kiewit approval fail to parse.
     const isTravel  = isTravelSplitRow(r);
-    const fieldType = isTravel ? 'Travel' : null;
+    // Travel outranks the haul stamp, and keeps its own rate. A travel row is
+    // the drive between shop and job — the commute — and the truck is not on
+    // the clock for it, so that labour is real and unpaid-for elsewhere.
+    // The haul only covers the WORK rows of the block.
+    const isHaulRow = !isTravel && !!haulType;
+    const fieldType = isTravel ? 'Travel' : (isHaulRow ? HAUL_FIELD_TYPE[haulType] : null);
     await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -841,7 +904,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${r.cost_code || null},
         ${r.sub_code || null},
         ${jobClass},
-        ${isTravel ? travelRate : workRate},
+        ${isHaulRow ? 0 : (isTravel ? travelRate : workRate)},
         ${r.labor_hours},
         ${r.equipment || null},
         ${eqUnitCost},
@@ -3318,6 +3381,7 @@ function normalizeEntryBody(body) {
         travel_hours:         null,
         lunch_break:          null,
         operated_equipment:   null,
+        haul_type:            null,
         supervisor_id,
         supervisor_name,
         notes:                safeStr(body.notes, 2000),
@@ -3383,7 +3447,17 @@ function normalizeEntryBody(body) {
   // never collect a unit the approval would then discard, or vice versa. Forced
   // to null everywhere else so a stray value can't leak across divisions.
   const isTruckRow = needsTruckTrackingRow({ entry_type: 'daily', division, job_id });
-  const truck_unit        = isTruckRow ? safeStr(body.truck_unit, 100)        : null;
+  // A haul on a division that posts a cost row names its truck in this same
+  // column — it is the same fact, and the two are disjoint by construction
+  // (needsTruckTrackingRow covers only trucking and dust customers, neither of
+  // which auto-injects a cost row). Without this the unit the driver picked
+  // would be nulled on the way in and the approver would be back to typing it.
+  //
+  // The DESCRIPTION stays trucking-only: it belongs to the Truck Tracking row,
+  // and a cost row has nowhere to show it.
+  const haulType   = safeHaulType(body.haul_type);
+  const isHaulUnit = !!haulType && AUTO_INJECT_DIVISIONS.includes(division);
+  const truck_unit        = (isTruckRow || isHaulUnit) ? safeStr(body.truck_unit, 100) : null;
   const truck_description = isTruckRow ? safeStr(body.truck_description, 2000) : null;
 
   // EES-only extras, captured only for a dust entry on one of the two standing
@@ -3412,6 +3486,7 @@ function normalizeEntryBody(body) {
       travel_hours,
       lunch_break,
       operated_equipment: safeBool(body.operated_equipment),
+      haul_type:          haulType,
       supervisor_id,
       supervisor_name,
       notes:              safeStr(body.notes, 2000),
@@ -3540,7 +3615,7 @@ module.exports = async (req, res) => {
           division, job_id, job_label,
           start_time, end_time, computed_hours,
           travel_to_site_hours, travel_to_shop_hours, travel_hours,
-          lunch_break, operated_equipment,
+          lunch_break, operated_equipment, haul_type,
           supervisor_id, supervisor_name,
           notes, time_off_type,
           truck_unit, truck_description,
@@ -3551,7 +3626,7 @@ module.exports = async (req, res) => {
           ${data.division}, ${data.job_id}, ${data.job_label},
           ${data.start_time}, ${data.end_time}, ${data.computed_hours},
           ${data.travel_to_site_hours}, ${data.travel_to_shop_hours}, ${data.travel_hours},
-          ${data.lunch_break}, ${data.operated_equipment},
+          ${data.lunch_break}, ${data.operated_equipment}, ${data.haul_type},
           ${data.supervisor_id}, ${data.supervisor_name},
           ${data.notes}, ${data.time_off_type},
           ${data.truck_unit}, ${data.truck_description},
@@ -3669,6 +3744,11 @@ module.exports = async (req, res) => {
         return res.status(409).json({ error: `Cannot approve an entry that is ${existing.status}` });
       }
 
+      // Set when the approver's answer actually changes the stored one, so the
+      // rollback below can put it back and the audit record can say what moved.
+      let priorHaulType   = null;
+      let haulTypeChanged = false;
+
       const needsSplit =
         existing.entry_type === 'daily' &&
         AUTO_INJECT_DIVISIONS.includes(existing.division);
@@ -3696,6 +3776,34 @@ module.exports = async (req, res) => {
         const { rows, error } = validateSplit((req.body && req.body.split) || [], existing);
         if (error) return res.status(400).json({ error });
         splitRows = rows;
+
+        // The approver's answer to the hauling question, when they gave one.
+        //
+        // The driver answers on the timesheet, but only a driver the office has
+        // flagged is even asked — and a day already submitted cannot be
+        // answered retrospectively by anyone but payroll. Without this the
+        // classification could not be applied to a single entry already sitting
+        // in the queue, and a driver who forgot could only be fixed by sending
+        // the day back.
+        //
+        // Absent means keep whatever the entry carries, exactly as the PUT does:
+        // approving an ordinary day must never clear a driver's own answer.
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'haul_type')) {
+          const nextHaul = safeHaulType(req.body.haul_type);
+          if (nextHaul !== (existing.haul_type || null)) {
+            priorHaulType = existing.haul_type || null;
+            haulTypeChanged = true;
+            await sql`
+              UPDATE timesheet_entries SET haul_type = ${nextHaul}, updated_at = NOW()
+              WHERE id = ${id} AND company_code = ${companyCode}
+            `;
+          }
+          // Keeps this in-memory copy honest for anything below that reads it.
+          // It is NOT what the split is priced from — insertSplitRows is handed
+          // `updated`, the RETURNING * row from the status flip, which is read
+          // back after the write above and already carries the new answer.
+          existing.haul_type = nextHaul;
+        }
       }
 
       let quarryInject = null;
@@ -3842,6 +3950,21 @@ module.exports = async (req, res) => {
             try { await removeEesOtherRows(sql, companyCode, updated); }
             catch (cleanupErr) { console.error('[timesheet-entries] EES Other rollback cleanup failed:', cleanupErr.message); }
           }
+          // The hauling answer was written BEFORE the injection, so it has to
+          // come back too. It is not cosmetic: left behind, the entry reads as
+          // pending while its hours have already moved out of prevailing in the
+          // Hours Report and the Excel export — for an approval that never
+          // happened.
+          if (haulTypeChanged) {
+            try {
+              await sql`
+                UPDATE timesheet_entries SET haul_type = ${priorHaulType}, updated_at = NOW()
+                WHERE id = ${id} AND company_code = ${companyCode}
+              `;
+            } catch (cleanupErr) {
+              console.error('[timesheet-entries] haul_type rollback failed:', cleanupErr.message);
+            }
+          }
           await sql`
             UPDATE timesheet_entries
             SET status              = 'submitted',
@@ -3871,9 +3994,17 @@ module.exports = async (req, res) => {
         if (withUnit) approvedRow = withUnit;
       }
 
+      // Reclassifying a day's haul answer moves the driver's hours between
+      // prevailing and standard — real money on his cheque — so it goes on the
+      // record with who did it and what it was before. The same handler already
+      // logs the truck unit and the dust row counts; this is the one field that
+      // changes what somebody is paid.
+      const haulAudit = haulTypeChanged
+        ? { haul_type_from: priorHaulType, haul_type_to: (existing.haul_type || null) }
+        : null;
       await writeAudit(
         sql, companyCode, payload, id, 'APPROVE',
-        splitRows ? { split_row_count: splitRows.length }
+        splitRows ? Object.assign({ split_row_count: splitRows.length }, haulAudit)
           : quarryInject ? { quarry_activity: quarryInject.activity }
           : (needsTrucking || needsDust)
             ? {
@@ -4162,6 +4293,26 @@ module.exports = async (req, res) => {
       const { rows: splitRows, error } = validateSplit((req.body && req.body.split) || [], existing);
       if (error) return res.status(400).json({ error });
 
+      // Same rule as the approve path: an answer supplied here wins, an absent
+      // key leaves the entry's own alone. This is the only way to correct a
+      // mis-classified haul on a day that is already approved, short of
+      // un-approving it — and the rows are about to be re-priced from it below.
+      let rsPriorHaul = null, rsHaulChanged = false;
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'haul_type')) {
+        const nextHaul = safeHaulType(req.body.haul_type);
+        if (nextHaul !== (existing.haul_type || null)) {
+          rsPriorHaul = existing.haul_type || null;
+          rsHaulChanged = true;
+          await sql`
+            UPDATE timesheet_entries SET haul_type = ${nextHaul}, updated_at = NOW()
+            WHERE id = ${id} AND company_code = ${companyCode}
+          `;
+        }
+        // Read by insertSplitRows below — the resplit path passes `existing`,
+        // not a re-read row, so this one IS the pricing source.
+        existing.haul_type = nextHaul;
+      }
+
       // Delete the prior injected rows for this entry, then insert the new
       // split. We don't wrap this in a transaction (neon-serverless has
       // limited multi-statement transaction support) — the delete is safe
@@ -4182,7 +4333,10 @@ module.exports = async (req, res) => {
 
       await writeAudit(
         sql, companyCode, payload, id, 'ADMIN_EDIT',
-        { resplit: true, split_row_count: splitRows.length },
+        Object.assign({ resplit: true, split_row_count: splitRows.length },
+          rsHaulChanged
+            ? { haul_type_from: rsPriorHaul, haul_type_to: (existing.haul_type || null) }
+            : null),
         dbToEntry(existing),
       );
       return res.json(await entryJson(sql, companyCode, existing));
@@ -4291,7 +4445,7 @@ module.exports = async (req, res) => {
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
                    dt.equipment, dt.equip_unit_cost,
                    dt.field_type, dt.cost_code, dt.sub_code,
-                   te.username, te.job_id
+                   te.username, te.job_id, te.haul_type
             FROM daily_tracking dt
             JOIN timesheet_entries te
               ON te.id = dt.timesheet_entry_id AND te.company_code = dt.company_code
@@ -4306,7 +4460,7 @@ module.exports = async (req, res) => {
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
                    dt.equipment, dt.equip_unit_cost,
                    dt.field_type, dt.cost_code, dt.sub_code,
-                   te.username, te.job_id
+                   te.username, te.job_id, te.haul_type
             FROM daily_tracking dt
             JOIN timesheet_entries te
               ON te.id = dt.timesheet_entry_id AND te.company_code = dt.company_code
@@ -4362,7 +4516,42 @@ module.exports = async (req, res) => {
           // range and those rows correct themselves in place.
           const travelRow = String(r.field_type || '') === 'Travel'
             || isTravelSplitRow({ cost_code: r.cost_code, sub_code: r.sub_code });
-          const rate      = resolver.rateFor(emp, !travelRow && !!pwFlags.get(String(r.job_id)));
+          // Same treatment for a haul, and for the same reason it self-heals:
+          // read the answer from the ENTRY rather than only from the stamp, so
+          // a row posted before the driver was flagged — or before the driver
+          // corrected his answer — re-prices and re-stamps itself when the
+          // range is run. Travel still outranks it, exactly as on the approval
+          // path: the commute is not bought by the truck.
+          // The ENTRY decides, not the stamp already on the row: the scan joins
+          // timesheet_entries, so haul_type is always available and always
+          // current. Reading the stamp as a second source would let the two
+          // disagree inside one write — a row whose driver has since corrected
+          // his answer would lose the stamp but keep the $0, and only come right
+          // on a second run.
+          const haulType  = travelRow ? null : haulTypeOf(r);
+          // A driver's labour is inside the truck's rate; pricing it again
+          // bills the job twice for one man. Hours are left alone.
+          const rate      = haulType
+            ? 0
+            : resolver.rateFor(emp, !travelRow && !!pwFlags.get(String(r.job_id)));
+          // Re-stamp so the cost tab says why the row is priced at zero — and
+          // un-stamp a row that is no longer a haul, so the marker never
+          // outlives the answer that put it there.
+          // A row that has BECOME travel drops any haul stamp it still carries.
+          // sub_code is one of the fields a supervisor may re-code on an
+          // injected row, so a haul row can be moved onto a travel code — and
+          // the stamp is not cosmetic: rowHaulHours on the division pages
+          // subtracts stamped hours from the crew-size and units-per-man-hour
+          // denominators. Left behind, it keeps a driver out of a figure he now
+          // belongs in, while the rate beside it has already been corrected
+          // back to his standard one.
+          //
+          // Safe to overwrite: an injected row's field_type is only ever
+          // 'Travel', a haul stamp, or NULL — there is no third value to lose.
+          const fieldType = travelRow
+            ? (HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')) ? 'Travel' : (r.field_type || 'Travel'))
+            : (haulType ? HAUL_FIELD_TYPE[haulType]
+              : (HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')) ? null : (r.field_type || null)));
           const eqCost    = resolver.equipCostFor(r.equipment);
           // job_class is one of the fields a supervisor may re-categorize in
           // the division tab, so only fill it when it is still empty — never
@@ -4375,6 +4564,7 @@ module.exports = async (req, res) => {
           const same = Number(r.rate) === rate
             && String(r.employee || '') === String(emp.name || '')
             && String(r.job_class || '') === String(jobClass || '')
+            && String(r.field_type || '') === String(fieldType || '')
             && Number(r.equip_unit_cost) === nextEqCost;
           if (same) continue;
 
@@ -4383,6 +4573,7 @@ module.exports = async (req, res) => {
             SET employee        = ${emp.name},
                 job_class       = ${jobClass},
                 rate            = ${rate},
+                field_type      = ${fieldType},
                 equip_unit_cost = ${nextEqCost},
                 updated_at      = NOW()
             WHERE row_id = ${r.row_id} AND company_code = ${companyCode}
@@ -4588,7 +4779,23 @@ module.exports = async (req, res) => {
       const staysTruck  = needsTruckTrackingRow({
         entry_type: data.entry_type, division: data.division, job_id: data.job_id,
       });
-      const keepUnit    = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_unit');
+      // A haul on turf/paving/kiewit keeps its truck in this same column, so it
+      // needs the same "absent means keep" protection. Without it, payroll
+      // correcting the hours on a haul day — an edit that sends neither key —
+      // wiped the unit the driver had named, while keepHaul below preserved the
+      // haul answer: still a haul, no truck, and the approval then posts a row
+      // that costs the job nothing at all.
+      //
+      // "Still a haul" is what the row will hold AFTER this write: the body's
+      // answer when it sent one, otherwise the stored one, which keepHaul keeps.
+      const nextHaulForUnit = Object.prototype.hasOwnProperty.call(body, 'haul_type')
+        ? safeHaulType(body.haul_type)
+        : (existing.haul_type || null);
+      const staysHaulUnit = data.entry_type === 'daily'
+        && !!nextHaulForUnit
+        && AUTO_INJECT_DIVISIONS.includes(data.division);
+      const keepUnit    = (staysTruck || staysHaulUnit)
+        && !Object.prototype.hasOwnProperty.call(body, 'truck_unit');
       const keepTruckDesc = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_description');
 
       // The same rule again for the six EES columns, for the same reason and
@@ -4608,6 +4815,28 @@ module.exports = async (req, res) => {
         && data.division === 'dust' && isEesJob(data.job_id);
       const keepEes  = f => staysEes && !Object.prototype.hasOwnProperty.call(body, f);
 
+      // Same hazard, same rule, for the driver's hauling answer. Payroll's Edit
+      // Entry modal edits the DAY — date, job, clock, lunch, equipment — and
+      // sends none of the timesheet's haul keys, so writing data.haul_type
+      // unconditionally would clear it on any correction to the hours or the
+      // job. The prevailing-hours split and the $0 labour rate both hang off
+      // that answer, so losing it silently moves a driver's hours back into
+      // prevailing and re-bills the job for his wage.
+      //
+      // Absent means keep; present still wins, blank included, so timesheet.html
+      // can clear an answer the driver ticked by mistake.
+      //
+      // Gated on the entry still being a DAILY one, the same shape as staysTruck
+      // and staysEes above. normalizeEntryBody already forces haul_type to null
+      // on the time_off branch on purpose, and the time-off payload sends no
+      // haul_type key — so without this an entry switched from a haul day to
+      // time off would keep the answer, and carry it back into a later daily
+      // edit that never asked for it, zeroing that block's labour rate.
+      // Division and job changes need no such gate: haul_type is tied to
+      // neither, so nothing about a re-categorization makes it stale.
+      const keepHaul = data.entry_type === 'daily'
+        && !Object.prototype.hasOwnProperty.call(body, 'haul_type');
+
       const [updated] = await sql`
         UPDATE timesheet_entries SET
           entry_type         = ${data.entry_type},
@@ -4623,6 +4852,8 @@ module.exports = async (req, res) => {
           travel_hours         = ${data.travel_hours},
           lunch_break        = ${data.lunch_break},
           operated_equipment = ${data.operated_equipment},
+          haul_type          = CASE WHEN ${keepHaul}::boolean
+                                    THEN haul_type ELSE ${data.haul_type}::text END,
           supervisor_id      = ${data.supervisor_id},
           supervisor_name    = ${data.supervisor_name},
           notes              = ${data.notes},

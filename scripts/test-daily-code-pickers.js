@@ -164,6 +164,14 @@ const harness = [
    var TRAVEL_RATE = 18, STANDARD_RATE = 41.5;
    var dailyRowAutoRate = (proj, row) =>
      (row.sub_code || '').trim().toLowerCase() === 'travel' ? TRAVEL_RATE : STANDARD_RATE;
+   // Every rate-write in the handler goes through this. Stubbed to match the
+   // real rule — a haul's 0 is a real answer and written as a number, a missing
+   // roster rate still blanks — because this suite supplies its own rate model
+   // above. The real one is pinned against all three pages in
+   // scripts/test-haul-unpriced-warning.js.
+   var HAUL_FIELD_TYPE_RE = /^haul\s*[—–-]\s/i;
+   var dailyRateOut = (row, autoRate) => autoRate == null ? null
+     : (HAUL_FIELD_TYPE_RE.test((row.field_type || '').trim()) ? 0 : (autoRate || ''));
    var bidScInvalidations = 0;
    var saves = { debounced: [], now: [] };
    var drPutDebounced = (id, row) => saves.debounced.push([id, row.cost_code, row.sub_code]);

@@ -1,0 +1,420 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * A haul row with no truck on it is free labour — say so, don't refuse it.
+ *
+ * Run: node scripts/test-haul-unpriced-warning.js
+ *
+ * On a haul, the labour rows post at a $0 rate because the driver is already
+ * inside the truck's hourly cost. Nothing requires a truck ON the row, though.
+ * So a haul row left with no equipment costs the job NOTHING AT ALL: no wage,
+ * because it is a haul, and no machine, because none was named. The hours
+ * balance, the approval succeeds, and the job quietly gets free labour.
+ *
+ * The approver is warned rather than blocked. They may well be right — a driver
+ * riding along, a truck billed on another row, a leg the office prices
+ * elsewhere — and refusing an approval that is genuinely correct only teaches
+ * people to work around the modal.
+ *
+ * Evaluates the real functions out of payroll.html — no browser needed.
+ */
+
+const fs   = require('fs');
+const vm   = require('vm');
+const path = require('path');
+
+let passed = 0, failed = 0;
+function assert(label, cond, detail) {
+  if (cond) { passed++; console.log(`  ✓ ${label}`); }
+  else      { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
+}
+
+const src = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
+
+// Lift a top-level `function name(...) { ... }` out of the page by brace match.
+function fnSource(name) {
+  const start = src.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`${name} not found in payroll.html`);
+  let depth = 0;
+  for (let i = src.indexOf('{', start); i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
+  }
+  throw new Error(`${name} never closes`);
+}
+
+// splitHaulUnpricedRows reads splitEntry and splitRows as free variables and
+// calls isTravelSplitRow, which in turn reads TRAVEL_CODE_RE — so all three
+// come across together. Lifted from the page rather than restated here: a
+// second copy of the travel pattern is a second place for it to drift, and
+// this test exists precisely to pin what the page does.
+const travelRe = /^\s*const TRAVEL_CODE_RE = (\/.*\/[a-z]*);$/m.exec(src);
+if (!travelRe) throw new Error('TRAVEL_CODE_RE not found in payroll.html');
+// splitHaulAnswer, not splitEntry.haul_type: the picker's value is held apart
+// from the cached grid entry on purpose, so trying an answer and cancelling
+// cannot move a day's hours out of prevailing on the page behind the modal.
+// splitHaulIs comes across too — it is the one place the answer is read.
+const HAUL_PRELUDE =
+  `const TRAVEL_CODE_RE = ${travelRe[1]};\n` +
+  `const splitHaulIs = () =>\n` +
+  `  (splitHaulAnswer === 'on_site' || splitHaulAnswer === 'off_site') ? splitHaulAnswer : null;\n` +
+  `${fnSource('isTravelSplitRow')}\n`;
+
+const run = (splitEntry, splitRows) => new Function(
+  'splitEntry', 'splitRows', 'splitHaulAnswer',
+  `${HAUL_PRELUDE}${fnSource('splitHaulUnpricedRows')}\n` +
+  `return splitHaulUnpricedRows();`,
+)(splitEntry, splitRows, (splitEntry && splitEntry.haul_type) || '');
+
+const HAUL  = { haul_type: 'off_site' };
+const ONSITE = { haul_type: 'on_site' };
+const NOT   = { haul_type: null };
+// equip_hours is deliberately absent from the defaults: 0 is what a fresh split
+// row actually carries (_blankSplitRow), so a fixture that wants a PRICED truck
+// has to say so, the same way the approver has to.
+const row = over => Object.assign(
+  { cost_code: 'Earthwork', sub_code: 'Excess Cut', labor_hours: 8, equipment: '' }, over);
+
+console.log('\n[when the warning fires]');
+
+{
+  const bad = run(HAUL, [row()]);
+  assert('a haul row with hours and no truck is flagged', bad.length === 1);
+  assert('  and it is named by its row number', bad[0].n === 1);
+  assert('  and carries its hours, so the warning can total them', bad[0].hours === 8);
+}
+{
+  const bad = run(ONSITE, [row()]);
+  assert('an on-site haul is flagged too — both answers price labour at $0',
+    bad.length === 1);
+}
+{
+  const bad = run(HAUL, [
+    row({ labor_hours: 4 }),
+    row({ labor_hours: 4, equipment: 'Triaxle Dump', equip_hours: 4 }),
+  ]);
+  assert('only the row missing its truck is flagged', bad.length === 1 && bad[0].n === 1);
+}
+{
+  const bad = run(HAUL, [row({ labor_hours: 3 }), row({ labor_hours: 5 })]);
+  assert('two bare rows are both flagged', bad.length === 2);
+  assert('  and their hours add up to the day', bad.reduce((s, r) => s + r.hours, 0) === 8);
+}
+
+console.log('\n[when it stays quiet]');
+
+{
+  assert('a haul row with a truck AND its hours is fine',
+    run(HAUL, [row({ equipment: 'Triaxle Dump', equip_hours: 8 })]).length === 0);
+}
+{
+  assert('an ordinary (non-haul) entry is never flagged — the wage is real there',
+    run(NOT, [row()]).length === 0);
+}
+{
+  assert('an entry that predates the question is never flagged',
+    run({}, [row()]).length === 0);
+}
+{
+  // Travel keeps the employee's own rate on a haul day: the commute is not
+  // bought by the truck, so those hours are priced whether or not one is named.
+  assert('a travel row on a haul day is not flagged (it keeps its own rate)',
+    run(HAUL, [row({ is_travel: true, equipment: '' })]).length === 0);
+  assert('  and neither is one booked to a travel code without the tick',
+    run(HAUL, [row({ sub_code: 'Mobilization - Travel', equipment: '' })]).length === 0);
+}
+{
+  assert('a zero-hour row is not flagged — nothing is being given away',
+    run(HAUL, [row({ labor_hours: 0 })]).length === 0);
+}
+{
+  assert('whitespace is not a truck',
+    run(HAUL, [row({ equipment: '   ' })]).length === 1);
+}
+{
+  // The case the first cut of this warning missed entirely. _blankSplitRow
+  // starts every row at equip_hours 0 and only travel rows get theirs filled
+  // in, so a named unit with no hours is the LIKELY shape of the mistake, not
+  // an exotic one — and it costs the job exactly as nothing as naming no truck.
+  const bad = run(HAUL, [row({ equipment: 'Triaxle Dump', equip_hours: 0 })]);
+  assert('a named truck with no equipment hours is still flagged', bad.length === 1);
+  assert('  and the warning knows a unit was named, so it can say what to fix',
+    bad[0].hasUnit === true);
+}
+{
+  const bad = run(HAUL, [row({ equipment: '', equip_hours: 0 })]);
+  assert('a row with neither unit nor hours reports no unit',
+    bad.length === 1 && bad[0].hasUnit === false);
+}
+{
+  assert('a truck with real hours on it is priced, so it stays quiet',
+    run(HAUL, [row({ equipment: 'Triaxle Dump', equip_hours: 8 })]).length === 0);
+}
+{
+  assert('an unrecognized haul answer is not flagged',
+    run({ haul_type: 'nonsense' }, [row()]).length === 0);
+}
+
+console.log('\n[it warns — it must never refuse]');
+
+// The whole point: this is advice, not a gate. If splitSave ever consults the
+// warning the approver loses the ability to approve a day that is genuinely
+// correct, and starts working around the modal instead.
+const saveStart = src.indexOf('async function splitSave(');
+let depth = 0, saveEnd = -1;
+for (let i = src.indexOf('{', saveStart); i < src.length; i++) {
+  if (src[i] === '{') depth++;
+  else if (src[i] === '}' && --depth === 0) { saveEnd = i + 1; break; }
+}
+const saveSrc = src.slice(saveStart, saveEnd);
+assert('splitSave was found', saveStart >= 0 && saveEnd > saveStart);
+assert('splitSave never consults the warning',
+  !/splitHaulUnpricedRows|splitWarn|renderSplitHaulWarning/.test(saveSrc));
+
+// And it has to actually be shown, on every recompute rather than only at open,
+// or a supervisor who adds the truck is left staring at a stale warning.
+// Brace-matched rather than regex-spanned: a lazy [\s\S]*? would happily match
+// a call that had been moved somewhere else entirely in the file.
+assert('the warning is rendered from renderSplitTally, so it tracks every edit',
+  /renderSplitHaulWarning\(\);/.test(fnSource('renderSplitTally')));
+assert('the warning has somewhere to render',
+  /id="splitWarn"/.test(src) && /\.split-warn\s*\{/.test(src));
+// Amber, not red: red in this modal means the save was refused.
+assert('it is styled as advice, not as an error',
+  /\.split-warn\s*\{[^}]*var\(--yellow\)/.test(src));
+
+// ── The stamp must not claim field types the office already owns ────────────
+// field_types is a free-form, company-managed dropdown (api/dropdown-lists.js)
+// with nothing reserving the word "Haul". A regex of /^haul\b/ would have
+// swallowed a paving company's existing "Haul Off" for spoil removal: every
+// such row priced at $0 and dropped out of its own production rates on the
+// first deploy, silently. The stamp claims the "Haul — …" shape only.
+// ── The autofill that keeps a haul row from costing nothing ────────────────
+// A haul posts $0 labour by design. If the truck is missing too, the day is
+// free to the job — which is the opposite of what calling it a haul means.
+console.log('\n[a haul row fills in its own truck and hours]');
+{
+  const mk = (over, proj, haul) => {
+    const sb = {
+      splitEntry: {},
+      splitHaulAnswer: haul === undefined ? 'off_site' : (haul || ''),
+      splitRows: [],
+      splitProjEquipment: proj || [],
+    };
+    vm.createContext(sb);
+    vm.runInContext(
+      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n` +
+      `${fnSource('splitMirrorHaulEquipHours')}\n${fnSource('splitClearHaulAuto')}\n`, sb);
+    const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
+                              equipment: '', labor_hours: 6, equip_hours: 0 }, over);
+    sb.splitRows = [r];
+    const a = sb.splitDefaultHaulEquipment(r);
+    const b = sb.splitMirrorHaulEquipHours(r);
+    return { r, changed: a || b };
+  };
+
+  // What the driver himself said always wins — he is the only one who knows
+  // whether he was on a lowboy or a triaxle that day.
+  const mkSaid = (unit, proj) => {
+    const sb = { splitEntry: { truck_unit: unit }, splitHaulAnswer: 'off_site',
+                 splitRows: [], splitProjEquipment: proj || [] };
+    vm.createContext(sb);
+    vm.runInContext(
+      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n`, sb);
+    const r = { cost_code: 'Earthwork', sub_code: 'Excess Cut', equipment: '',
+                labor_hours: 6, equip_hours: 0 };
+    sb.splitDefaultHaulEquipment(r);
+    return r;
+  };
+  assert('the truck the DRIVER picked is used',
+    mkSaid('Lowboy', []).equipment === 'Lowboy');
+  assert('  and it beats the job\'s assignment, because only he was there',
+    mkSaid('Lowboy', ['Triaxle Dump']).equipment === 'Lowboy');
+  assert('  and it works where the job assigns several',
+    mkSaid('Triaxle Dump', ['Triaxle Dump', 'Lowboy']).equipment === 'Triaxle Dump');
+  assert('a driver who left it blank falls back to the job assignment',
+    mkSaid('', ['Triaxle Dump']).equipment === 'Triaxle Dump');
+
+  let { r } = mk({}, ['Triaxle Dump']);
+  assert('the job\'s single assigned unit becomes the truck', r.equipment === 'Triaxle Dump');
+  assert('  and its hours follow the driver\'s', r.equip_hours === 6);
+
+  ({ r } = mk({}, ['Triaxle Dump', 'Lowboy']));
+  assert('two assigned units is a guess, so it picks neither', r.equipment === '');
+  assert('  but the hours still follow, ready for whichever is picked', r.equip_hours === 6);
+
+  ({ r } = mk({}, []));
+  assert('no assigned equipment leaves the truck blank', r.equipment === '');
+
+  ({ r } = mk({ equipment: 'Lowboy' }, ['Triaxle Dump']));
+  assert('a truck the approver already chose is never overwritten', r.equipment === 'Lowboy');
+
+  ({ r } = mk({ equip_hours: 2, _equipHoursTouched: true }, ['Triaxle Dump']));
+  assert('hours set by hand stick — a driver can be out of the truck part of the day',
+    r.equip_hours === 2);
+
+  ({ r } = mk({}, ['Triaxle Dump'], null));
+  assert('none of it happens on an ordinary day',
+    r.equipment === '' && r.equip_hours === 0);
+
+  ({ r } = mk({ is_travel: true }, ['Triaxle Dump']));
+  assert('nor on a travel row — the commute is not the truck\'s time',
+    r.equipment === '' && r.equip_hours === 0);
+
+  ({ r } = mk({ labor_hours: 0 }, ['Triaxle Dump']));
+  assert('a zero-hour row gets the truck but no hours',
+    r.equipment === 'Triaxle Dump' && r.equip_hours === 0);
+}
+
+// ── The rate a haul row shows ──────────────────────────────────────────────
+// dailyRowAutoRate returns a numeric 0 for a haul: the truck already pays for
+// the man. Every rate-write in the row handler goes through dailyRateOut so
+// that 0 is written as a NUMBER. Written as `autoRate || ''` — which each site
+// used to say for itself — the 0 becomes '', and an empty rate cell reads as
+// "the lookup failed". The hand-fix for that is typing the driver's wage back
+// onto a row whose truck already covers him, which is the double-billing the
+// whole feature exists to remove.
+console.log('\n[a haul row shows $0, not a blank]');
+{
+  const fs3 = require('fs');
+  for (const page of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const s = fs3.readFileSync(path.resolve(__dirname, '..', page), 'utf8');
+    const grab = name => {
+      const start = s.indexOf(`function ${name}(`);
+      if (start < 0) return null;
+      let d = 0;
+      for (let i = s.indexOf('{', start); i < s.length; i++) {
+        if (s[i] === '{') d++;
+        else if (s[i] === '}' && --d === 0) return s.slice(start, i + 1);
+      }
+      return null;
+    };
+    const reM = /^const HAUL_FIELD_TYPE_RE = (\/.*\/[a-z]*);/m.exec(s);
+    const src = grab('dailyRateOut');
+    assert(`${page} defines dailyRateOut`, !!src && !!reM);
+    if (!src || !reM) continue;
+    const out = new Function('HAUL_FIELD_TYPE_RE', `${src}; return dailyRateOut;`)(eval(reM[1]));
+
+    assert(`  ${page}: a haul row writes a numeric 0`,
+      out({ field_type: 'Haul — On Site' }, 0) === 0);
+    assert(`  ${page}: and so does the to/from stamp`,
+      out({ field_type: 'Haul — To/From Site' }, 0) === 0);
+    // Deliberately unchanged: an employee with no roster rate still blanks.
+    // "Nothing to fill in" is what an empty rate cell has always meant, and a
+    // blanket `0` there would invent a rate of zero for a missing one.
+    assert(`  ${page}: an ordinary row with no roster rate still blanks`,
+      out({ field_type: '' }, 0) === '');
+    assert(`  ${page}: a real rate passes through untouched`,
+      out({ field_type: '' }, 32.5) === 32.5);
+    assert(`  ${page}: a haul row with a real rate still shows 0 — the truck pays`,
+      out({ field_type: 'Haul — On Site' }, 77) === 0);
+    assert(`  ${page}: "no basis to set one" stays null, so callers leave the rate alone`,
+      out({ field_type: 'Haul — On Site' }, null) === null);
+  }
+
+  // And no site may quietly go back to doing it by hand.
+  for (const page of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const s = fs3.readFileSync(path.resolve(__dirname, '..', page), 'utf8');
+    const handler = s.slice(s.indexOf("if (f === 'cost_code')"),
+                            s.indexOf('// Auto-calculate material cost'));
+    assert(`  ${page}: the row handler writes no rate outside dailyRateOut`,
+      !/(autoRate|ar) \|\| ''/.test(handler),
+      (/(autoRate|ar) \|\| ''/.exec(handler) || [''])[0]);
+  }
+}
+
+// ── Taking the answer back ─────────────────────────────────────────────────
+// The modal fills in a truck and its hours on a haul. If the row stops being a
+// haul, what the MODAL guessed has to go with it — otherwise the row posts the
+// full labour rate AND a truck nobody chose, or bills the commute to a truck
+// the travel rule says is not on the clock.
+console.log('\n[what the modal guessed, the modal takes back]');
+{
+  const mkClear = (haul, over) => {
+    const sb = { splitEntry: { truck_unit: 'Triaxle Dump' }, splitHaulAnswer: 'off_site',
+                 splitRows: [], splitProjEquipment: [] };
+    vm.createContext(sb);
+    vm.runInContext(
+      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n` +
+      `${fnSource('splitMirrorHaulEquipHours')}\n${fnSource('splitClearHaulAuto')}\n`, sb);
+    const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
+                              equipment: '', labor_hours: 6, equip_hours: 0 }, over);
+    sb.splitDefaultHaulEquipment(r);
+    sb.splitMirrorHaulEquipHours(r);
+    sb.splitHaulAnswer = haul;          // the approver changes their mind
+    sb.splitClearHaulAuto(r);
+    return r;
+  };
+
+  let r = mkClear('');
+  assert('answering "no" after "haul" takes the guessed truck back', r.equipment === '');
+  assert('  and its hours with it', r.equip_hours === 0);
+
+  r = mkClear('on_site');
+  assert('a haul that stays a haul keeps them',
+    r.equipment === 'Triaxle Dump' && r.equip_hours === 6);
+
+  // A truck the APPROVER typed is theirs, not the modal's to remove.
+  r = mkClear('', { equipment: 'Lowboy' });
+  assert('a truck the approver chose is never taken back', r.equipment === 'Lowboy');
+  r = mkClear('', { equip_hours: 4, _equipHoursTouched: true });
+  assert('hours the approver set are never taken back', r.equip_hours === 4);
+}
+
+// The picker's value is deliberately NOT written onto splitEntry: that object is
+// the one the grid holds, and isOffSiteHaul reads it from the Hours Report, the
+// per-employee table and the Excel export. Trying an answer and pressing Cancel
+// must not move a day's hours out of prevailing behind the modal.
+console.log('\n[trying an answer does not change the page behind the modal]');
+{
+  const change = fnSource('onSplitHaulChange');
+  assert('onSplitHaulChange writes the answer to splitHaulAnswer',
+    /splitHaulAnswer = el\.value/.test(change));
+  assert('  and never onto the cached entry',
+    !/splitEntry\.haul_type\s*=/.test(change), change);
+  assert('no code path writes haul_type onto splitEntry',
+    !/splitEntry\.haul_type\s*=/.test(src));
+  assert('closing the modal resets the pending answer',
+    /splitHaulAnswer\s*=\s*''/.test(fnSource('closeSplit')));
+  // The tests above call splitClearHaulAuto directly, so they cannot see it
+  // being unwired from the one place that runs it over every row.
+  assert('the un-fill is actually wired into the pass over every row',
+    /splitClearHaulAuto\(r\)/.test(fnSource('splitMirrorHaulEquipHoursAll')));
+  assert('  and that pass is what the picker triggers',
+    /splitMirrorHaulEquipHoursAll\(\)/.test(fnSource('onSplitHaulChange')));
+  // Rows read back by Edit Split carry hours somebody already approved. Marked
+  // touched, or the mirror rewrites a deliberate 5 h to the labour hours the
+  // next time anything on the row changes — a silent over-charge for truck time
+  // nobody logged.
+  assert('rows read back by Edit Split are marked as hand-set',
+    /is_travel:\s*!!r\.is_travel,[\s\S]{0,600}?_equipHoursTouched:\s*true,/.test(src));
+  assert('  and the job equipment, so it cannot leak into the next entry',
+    /splitProjEquipment\s*=\s*\[\]/.test(fnSource('closeSplit')));
+}
+
+console.log('\n[the haul stamp claims only its own field types]');
+{
+  const fs2 = require('fs');
+  const files = ['api/timesheet-entries.js', 'tracker.html', 'paving.html', 'kiewit-pinetree.html'];
+  const pats = files.map(f => {
+    const m = /^\s*const HAUL_FIELD_TYPE_RE = (\/.*\/[a-z]*);/m
+      .exec(fs2.readFileSync(path.resolve(__dirname, '..', f), 'utf8'));
+    return { f, re: m && eval(m[1]) };
+  });
+  assert('every copy of the matcher was found',
+    pats.every(p => p.re), pats.filter(p => !p.re).map(p => p.f).join(', '));
+  assert('all four copies are identical — the rule lives in four files',
+    new Set(pats.map(p => String(p.re))).size === 1,
+    [...new Set(pats.map(p => String(p.re)))].join(' vs '));
+
+  const re = pats[0].re;
+  for (const s of ['Haul — On Site', 'Haul — To/From Site', 'Haul - On Site']) {
+    assert(`  matches ${JSON.stringify(s)}`, re.test(s));
+  }
+  for (const s of ['Haul Off', 'Hauling', 'Haul', 'Haulage', 'Material', 'Trucking']) {
+    assert(`  leaves ${JSON.stringify(s)} alone`, !re.test(s));
+  }
+}
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);
