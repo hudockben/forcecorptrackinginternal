@@ -4928,6 +4928,14 @@
     }
 
     // ── Quarry Bulk CSV Upload (generic for daily, crushing, sales) ──
+    // Both trackers cost fuel as gallons × a per-gallon rate, so a day's fuel
+    // bill in that column prices the whole day off it — 50 gallons at a pasted
+    // 175 reads as $8,750 of fuel. On the grids the Fuel Cost cell recalculates
+    // as you type and the blowup is on screen; an import shows a row count, so
+    // the rate is range-checked here instead. No pump has charged $25/gal, and
+    // a day's fuel bill is never that low, which separates the two cleanly.
+    const MAX_PER_GALLON = 25;
+    const PER_GALLON_NOTE = "this column is the pump price per gallon (e.g. 4.50); the day's fuel bill is computed as gallons × it";
     const BULK_CONFIGS = {
       daily: {
         title: 'Daily Tracking',
@@ -4940,7 +4948,7 @@
           { name: 'hours',       label: 'Hours',        aliases: ['hours'],                           required: true, type: 'num',  outKey: 'hours' },
           { name: 'rate',        label: 'Rate',         aliases: ['rate', 'hourlyrate'],                              type: 'num',  outKey: 'rate', fillFromEmployee: 'rate' },
           { name: 'fuelGallons', label: 'Fuel / Gallons', aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],     type: 'num',  outKey: 'fuelGallons' },
-          { name: 'ppg',         label: 'PPG',          aliases: ['ppg', 'pricepergallon'],                           type: 'num',  outKey: 'ppg' },
+          { name: 'ppg',         label: 'PPG',          aliases: ['ppg', 'pricepergallon'],                           type: 'num',  outKey: 'ppg', max: MAX_PER_GALLON, maxNote: PER_GALLON_NOTE },
         ],
         sample: () => [todayIso(), 'Main Yard', 'Jim Zimmerman', 'Loader', 'Loading', '1.75', '26', '10', '3.5'],
         // Template layout mirrors the tracker UI column order; entries
@@ -4973,7 +4981,7 @@
           { name: 'hourlyRate',     label: 'Hourly Rate',      aliases: ['hourlyrate', 'rate'],                            type: 'num',  outKey: 'hourlyRate', fillFromEmployee: 'rate' },
           { name: 'hours',          label: 'Hours',            aliases: ['hours'],                         required: true, type: 'num',  outKey: 'hours' },
           { name: 'fuelGallons',    label: 'Fuel Gallons',     aliases: ['fuelgallons', 'gallons', 'fuel', 'fuelgal'],     type: 'num',  outKey: 'fuelGallons' },
-          { name: 'fuelCost',       label: '$/Gal',            aliases: ['ppg', 'pricepergallon', 'fuelcost'],             type: 'num',  outKey: 'fuelCost' },
+          { name: 'fuelCost',       label: '$/Gal',            aliases: ['ppg', 'pricepergallon', 'fuelcost'],             type: 'num',  outKey: 'fuelCost', max: MAX_PER_GALLON, maxNote: PER_GALLON_NOTE },
           { name: 'loadsToCrusher', label: 'Loads to Crusher', aliases: ['loadstocrusher', 'loads'],                       type: 'num',  outKey: 'loadsToCrusher' },
           { name: 'tonsPerLoad',    label: 'Tons / Load',      aliases: ['tonsperload', 'tonsload'],                       type: 'num',  outKey: 'tonsPerLoad' },
           { name: 'hoursCrushing',  label: 'Hours Crushing',   aliases: ['hourscrushing'],                                 type: 'num',  outKey: 'hoursCrushing' },
@@ -5231,6 +5239,9 @@
             const n = parseAnyNum(cell);
             if (n === null) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}"`);
             else if (n === '' && f.required) errors.push(`${f.label} is required`);
+            else if (f.max != null && n !== '' && n > f.max) {
+              errors.push(`${f.label} "${cell}" is over ${f.max}${f.maxNote ? ` — ${f.maxNote}` : ''}`);
+            }
             out[f.name] = n === null ? '' : n;
           } else if (f.type === 'list') {
             if (!cell && f.required) errors.push(`${f.label} is required`);

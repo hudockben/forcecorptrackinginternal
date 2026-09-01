@@ -920,10 +920,25 @@ function quarryNum(v, max = 1e12) {
 // estimated_tons = loads*tonsPerLoad, etc.) can overflow the NUMERIC(14,4)
 // mirror columns (max ≈ 1e10) inside syncForKey — which would otherwise throw
 // AFTER the blob was already written and leave blob/mirror inconsistent.
+// ppg (Daily) and fuelCost (Crushing) are PRICES PER GALLON — the tracker, the
+// executive report and quarry-metrics all cost fuel as fuelGallons × the rate.
+// At $1,000/gal the cap admitted any day's fuel bill typed in by mistake, and
+// the row then priced the whole day off it. A pump price ceiling rejects that
+// instead; see PER_GALLON_MSG for what the caller is told.
 const Q_MAX = {
-  rate: 1e4, hourlyRate: 1e4, ppg: 1e3, fuelCost: 1e3,
+  rate: 1e4, hourlyRate: 1e4, ppg: 25, fuelCost: 25,
   fuelGallons: 1e5, loadsToCrusher: 1e4, tonsPerLoad: 1e3, hoursCrushing: 24,
 };
+const PER_GALLON_FIELDS = new Set(['ppg', 'fuelCost']);
+const PER_GALLON_MSG = "is a price per gallon, not a total — enter the pump price (e.g. 4.50) and the fuel cost is computed as gallons × that";
+// "ppg must be between 0 and 25" reads like a bug to whoever just typed 855.
+// Say which number the field wants.
+function quarryRangeError(field, raw) {
+  if (PER_GALLON_FIELDS.has(field) && Number(raw) > Q_MAX[field]) {
+    return `${field} ${PER_GALLON_MSG}`;
+  }
+  return `${field} must be between 0 and ${Q_MAX[field]}`;
+}
 
 function validateQuarryInjection(activity, raw) {
   const q = (raw && typeof raw === 'object') ? raw : {};
@@ -931,9 +946,9 @@ function validateQuarryInjection(activity, raw) {
     const rate        = quarryNum(q.rate,        Q_MAX.rate);
     const fuelGallons = quarryNum(q.fuelGallons, Q_MAX.fuelGallons);
     const ppg         = quarryNum(q.ppg,         Q_MAX.ppg);
-    if (rate == null)        return { error: `rate must be between 0 and ${Q_MAX.rate}` };
-    if (fuelGallons == null) return { error: `fuelGallons must be between 0 and ${Q_MAX.fuelGallons}` };
-    if (ppg == null)         return { error: `ppg must be between 0 and ${Q_MAX.ppg}` };
+    if (rate == null)        return { error: quarryRangeError('rate', q.rate) };
+    if (fuelGallons == null) return { error: quarryRangeError('fuelGallons', q.fuelGallons) };
+    if (ppg == null)         return { error: quarryRangeError('ppg', q.ppg) };
     return { fields: {
       equipmentId:   safeStr(q.equipmentId, 200) || '',
       equipmentName: safeStr(q.equipmentName, 255) || '',
@@ -952,7 +967,7 @@ function validateQuarryInjection(activity, raw) {
       tonsPerLoad:    quarryNum(q.tonsPerLoad,    Q_MAX.tonsPerLoad),
     };
     for (const [k, v] of Object.entries(vals)) {
-      if (v == null) return { error: `${k} must be between 0 and ${Q_MAX[k]}` };
+      if (v == null) return { error: quarryRangeError(k, q[k]) };
     }
     return { fields: { ...vals, comments: safeStr(q.comments, 2000) || '' } };
   }
@@ -4773,4 +4788,7 @@ module.exports._test = {
   obSplitForEntry,
   matchDustEmployee,
   OB_BLOB_KEY,
+  // Quarry injection — scripts/test-quarry-fuel-entry.js.
+  validateQuarryInjection,
+  Q_MAX,
 };

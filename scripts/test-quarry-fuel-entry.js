@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * What the quarry tracker calls the two fuel numbers.
+ * How a fuel price gets into a quarry row — what the columns are called, and
+ * what stops a day's fuel bill landing in one that means dollars per gallon.
  *
- * Run: node scripts/test-quarry-fuel-headers.js
+ * Run: node scripts/test-quarry-fuel-entry.js
  *
  * A crushing row stores fuelCost as a PER-GALLON rate — crushCalc, the
  * executive report and quarry-metrics all cost fuel as fuelGallons × fuelCost.
@@ -21,6 +22,13 @@
  * quietly: the template's computed column is now headed "Fuel Cost", which is
  * also the header every previously-downloaded sheet uses for the per-gallon
  * column. Both have to land in the right place, so both are tested.
+ *
+ * Names are not the whole guard, though. On the grids and in payroll's Edit
+ * Quarry Row the Fuel Cost figure recalculates as the rate is typed, so a bill
+ * entered there shows up immediately as an absurd number on screen. Two paths
+ * have no such tell — a CSV import, whose preview counts rows rather than
+ * dollars, and the injection endpoint, whose cap used to be $1,000/gal — so
+ * both range-check the rate against a price no pump has charged.
  *
  * No DB, no browser.
  */
@@ -47,7 +55,7 @@ const ctx = { todayIso: () => '2026-09-01', console };
 vm.createContext(ctx);
 vm.runInContext(slice('function normHeader(h)', '\n    function parseCSV(text)', 'normHeader'), ctx);
 // `const` in a vm script stays lexical, so hand it out explicitly.
-vm.runInContext(slice('const BULK_CONFIGS = {', '\n    const bulkParsed = {};', 'BULK_CONFIGS')
+vm.runInContext(slice('const MAX_PER_GALLON =', '\n    const bulkParsed = {};', 'BULK_CONFIGS')
   + '\nglobalThis.BULK_CONFIGS = BULK_CONFIGS;', ctx);
 const { normHeader, BULK_CONFIGS } = ctx;
 
@@ -170,6 +178,67 @@ console.log('\n[the replica above still matches parseBulk]');
     /\[\.\.\.new Set\(\[labelAlias, \.\.\.f\.aliases\]\)\]/.test(parse));
   assert('and the first header that hits still wins',
     /const idx = headerRow\.indexOf\(a\);[\s\S]*?break;/.test(parse));
+}
+
+// ── 5) The importer's range check ───────────────────────────────────────────
+console.log('\n[a fuel bill pasted into the per-gallon column]');
+{
+  for (const [key, field] of [['crushing', 'fuelCost'], ['daily', 'ppg']]) {
+    const f = BULK_CONFIGS[key].fields.find(x => x.name === field);
+    assert(`${key}: the per-gallon column carries a ceiling`,
+      f && typeof f.max === 'number' && f.max > 0 && f.max <= 25, f && String(f.max));
+    assert(`${key}: …that no pump price reaches but every fuel bill clears`,
+      f && f.max >= 10, f && String(f.max));
+    assert(`${key}: …and says which number the column wants`,
+      !!(f && f.maxNote && /per gallon/i.test(f.maxNote)), f && f.maxNote);
+  }
+  // The check itself lives in parseBulk's num branch, beside the other
+  // per-field validations, so a row that trips it is excluded from the import
+  // and listed in the preview like any other bad row.
+  const numBranch = slice("} else if (f.type === 'num') {", "} else if (f.type === 'list') {", 'num branch');
+  assert('parseBulk rejects the row rather than importing it',
+    /f\.max != null && n !== '' && n > f\.max/.test(numBranch) && /errors\.push/.test(numBranch),
+    numBranch.replace(/\s+/g, ' ').slice(0, 200));
+}
+
+// ── 6) The server backstop ──────────────────────────────────────────────────
+console.log('\n[and the same number posted to the injection endpoint]');
+{
+  const { validateQuarryInjection, Q_MAX } = require('../api/timesheet-entries.js')._test;
+
+  assert('ppg and fuelCost are capped at a pump price',
+    Q_MAX.ppg <= 25 && Q_MAX.fuelCost <= 25, `ppg ${Q_MAX.ppg}, fuelCost ${Q_MAX.fuelCost}`);
+
+  // 190 gallons at $4.50 — the day the modal is built to record.
+  const goodDaily = validateQuarryInjection('daily', { rate: '26', fuelGallons: '190', ppg: '4.50' });
+  assert('a real pump price goes through', goodDaily.fields && goodDaily.fields.ppg === 4.5,
+    JSON.stringify(goodDaily));
+  const goodCrush = validateQuarryInjection('crushing',
+    { hourlyRate: '26', hoursCrushing: '5', fuelGallons: '190', fuelCost: '4.50',
+      loadsToCrusher: '24', tonsPerLoad: '30' });
+  assert('…on crushing too', goodCrush.fields && goodCrush.fields.fuelCost === 4.5,
+    JSON.stringify(goodCrush));
+
+  // That same day's fuel bill. It used to be under the $1,000/gal cap, so it
+  // saved, and the row priced 190 gallons at $855 each.
+  const billDaily = validateQuarryInjection('daily', { rate: '26', fuelGallons: '190', ppg: '855' });
+  assert('the day\'s fuel bill is refused', !!billDaily.error, JSON.stringify(billDaily));
+  assert('…saying it is a price per gallon, not a total',
+    /price per gallon/i.test(billDaily.error || ''), billDaily.error);
+  assert('…and what to type instead', /4\.50/.test(billDaily.error || ''), billDaily.error);
+
+  const billCrush = validateQuarryInjection('crushing',
+    { hourlyRate: '26', hoursCrushing: '5', fuelGallons: '190', fuelCost: '855',
+      loadsToCrusher: '24', tonsPerLoad: '30' });
+  assert('crushing refuses it the same way',
+    /price per gallon/i.test(billCrush.error || ''), billCrush.error);
+
+  // Fields that are not per-gallon keep their own caps and their plain message.
+  const bigRate = validateQuarryInjection('daily', { rate: '99999999', fuelGallons: '1', ppg: '4' });
+  assert('an out-of-range rate still reports its own range',
+    /rate must be between 0 and/.test(bigRate.error || ''), bigRate.error);
+  assert('and gallons are untouched by the fuel-price cap',
+    (validateQuarryInjection('daily', { rate: '26', fuelGallons: '900', ppg: '4.50' }).fields || {}).fuelGallons === 900);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
