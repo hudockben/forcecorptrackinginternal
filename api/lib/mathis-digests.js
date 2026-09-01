@@ -31,6 +31,7 @@ const ctx      = require('./mathis-context');
 const quarryM  = require('./quarry-metrics');
 const dustM    = require('./dust-metrics');
 const dustCost = require('./dust-cost-metrics');
+const dailyM   = require('./daily-cost-metrics');
 const truckM   = require('./trucking-metrics');
 const icM      = require('./ic-metrics');
 const payrollM = require('./payroll-metrics');
@@ -59,8 +60,67 @@ function capList(list, cap = LIST_CAP) {
   };
 }
 
+/* What a digest is ABOUT, in plain words.
+ *
+ * `limits` says how the figures inside could be misread. This says whether the
+ * question is even in the building. They are different failures and only one
+ * of them was guarded: asked about rubber inventory on turf, Mathis returned
+ * projected profit — it described what it had, because nothing told it what it
+ * did not have, and a blob of job rows next to any question invites a summary
+ * of the blob.
+ *
+ * A closed list of everything a division does NOT hold is impossible to keep
+ * true. A short list of what it DOES hold is easy to keep true, and the prompt
+ * turns anything outside it into "I don't have that".
+ */
+const COVERS = {
+  jobs: ['per-job contract value, bid budget, actual cost to date, projected final cost, projected and actual profit, and variance'],
+  quarry: ['sales, tons sold and crushed, cost per pit, tons on hand, and per-ton contribution against break-even'],
+  dust: ['revenue across the three billing books, gallons, invoice ageing, and the product margin on a sprayed gallon'],
+  trucking: ['haul revenue, hours, active units and drivers, and invoice state'],
+  intercompany: ['what each division billed another, hours, and what is uninvoiced or aged'],
+  payroll: ['hours for the current pay period, by employee and by status'],
+  scheduler: ['sub-code pace and status, extra laborers implied, double-bookings and time off'],
+  fuel_admin: ['fill-ups, gallons, fleet and per-truck economy, balancing state, and statement variance'],
+  executive: ['one headline figure per division the user can reach'],
+  personal: ['the asking user\'s own timesheet entries and hours'],
+  own_fuel: ['the asking user\'s own fuel fill-ups'],
+  own_driver: ['the hauls assigned to the asking user'],
+  own_quarry_sales: ['the asking user\'s own scale-house loads'],
+};
+
 const asArray = v => (Array.isArray(v) ? v : []);
 const round2  = v => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 100) / 100 : null);
+
+/**
+ * Read a company-scoped blob whose key does NOT carry its division.
+ *
+ * readBlob derives the division check from the key, which is the right default
+ * and is what stops a caller naming a resource they cannot have. Purchase
+ * orders break the pattern: their key is
+ * `{company}:fct_purchase_orders:{division}`, and divisionForKey sees no known
+ * prefix and answers 'turf' — so a paving foreman asking for paving's own
+ * purchase orders would be refused for lacking turf.
+ *
+ * So the check is made here instead, against the division — and the KEY is
+ * built from the division that check returned, not from anything the caller
+ * held separately. Passing the two independently is how a read ends up
+ * authorised for one division and pointed at another's row; `keyFor` makes
+ * that combination impossible to write rather than merely wrong.
+ */
+async function readScopedBlob(c, keyFor, requested) {
+  const division = ctx.resolveDivision(requested, c.authz);
+  if (!division) return { status: 'denied', value: null, division: null };
+  const key = keyFor(division);
+  try {
+    const rows = await c.sql`SELECT value FROM app_data WHERE key = ${`${c.companyCode}:${key}`}`;
+    if (!rows.length || rows[0].value == null) return { status: 'empty', value: null, division };
+    return { status: 'ok', value: rows[0].value, division };
+  } catch (err) {
+    console.error(`[mathis] scoped blob read failed for ${key}:`, err.message);
+    return { status: 'error', value: null, division };
+  }
+}
 
 /** Read a blob, mapping readBlob's status onto what the metrics libs expect. */
 async function blobValue(c, key) {
@@ -70,7 +130,21 @@ async function blobValue(c, key) {
 
 // ── Job divisions: turf, paving, kiewit ────────────────────────────────────
 
-const JOB_LIMITS = ctx.JOB_LIMITS;
+const JOB_LIMITS = ctx.JOB_LIMITS.concat([
+  'A purchase order\'s value is what was ordered — quantity times unit cost, plus tax, across its lines. It is not what has been spent and not what has been invoiced, and it must never be added to a job\'s actual cost, which already counts the delivered material.',
+  'Purchase orders are listed for the whole division. A PO\'s `job` is filled in only when that job is among the rows in this digest; `job: null` means the job is outside the window shown, NOT that the PO is unassigned.',
+  'Equipment cost is hours times the unit cost the daily row was written with — or the imported total when the row carries one. It is ALREADY part of that job\'s actualCost: it breaks that number down by machine and must never be added to it.',
+  'The equipment roster\'s unit cost is the rate the list carries TODAY. A row costed last year kept the rate it was written with, so the two can differ and the row is the one that was paid.',
+  'Equipment assigned to a job is a plan, not a record. A machine can be assigned and never turn up, or turn up without being assigned; `hours` is what actually ran and `assigned` is what somebody intended.',
+  'Equipment hours cover only the jobs in this digest. A machine showing no hours may well have run on an older job — say the window rather than calling it idle.',
+  'Labor cost is the rate stored ON EACH DAILY ROW times its hours — not the roster rate today, because a prevailing-wage job is costed at a different rate and a closed job keeps what it was written with. Like equipment, it is ALREADY part of that job\'s actualCost and must never be added to it.',
+  'Employees assigned to a job are a plan, not a record, exactly as with equipment. `byJob.assigned` is who somebody put on the job; `worked` is who actually logged hours.',
+  'When `employees.payVisible` is false there are no pay rates and no worked hours in this digest, because the asking user\'s access level does not include them — the division page hides them too. Say they are not available at this access level. Do NOT estimate a rate, do not derive one from any other figure, and do not describe the absence as "no rates on file".',
+  'The document vault is counted, never read. There is no file content here of any kind: a question about what a contract, permit or change order SAYS cannot be answered from this, only how many such files exist and when they were uploaded.',
+  'Deleted documents are excluded, including any still inside the 30-day trash window. "No documents" for a job means none on file now.',
+  'The document read stops at 500 files. When `documents.truncated` is true the counts are a floor, not a total — say so rather than reporting them as the whole vault.',
+  'The cost-code catalogue is the list of codes this division uses with the quantity and unit cost carried against each. It is a catalogue, not spend: actual spend per job is each job\'s actualCost.',
+]);
 
 const countIds = v => {
   if (Array.isArray(v)) return v.length;
@@ -95,6 +169,332 @@ function pickJobRow(r) {
   };
 }
 
+// Where each job division keeps its cost-code catalogue. Turf's is unprefixed,
+// which divisionForKey correctly reads as turf.
+const COST_ROW_KEYS = {
+  turf:   'fct_cost_rows',
+  paving: 'fct_paving_cost_rows',
+  kiewit: 'fct_kiewit_cost_rows',
+};
+
+const poValue = po => (Array.isArray(po && po.lines) ? po.lines : []).reduce((sum, l) => {
+  const qty  = Number(l && l.qty) || 0;
+  const cost = Number(l && l.unit_cost) || 0;
+  const tax  = Number(l && l.tax) || 0;
+  return sum + qty * cost + tax;
+}, 0);
+
+/**
+ * Purchase orders for one job division.
+ *
+ * `notes` is deliberately dropped. It is free text any colleague can write, it
+ * answers no question anybody asks about a PO, and every field like it that
+ * reaches the model is surface for no benefit.
+ */
+async function purchaseOrders(c, division, projectNames) {
+  // 'empty' is a fact, not an absence: every job division raises purchase
+  // orders, so a missing blob means none have been raised yet. Returning null
+  // for it would drop the subject out of `covers`, and "I don't have purchase
+  // orders" is a different — and wrong — answer from "none on file".
+  const r = await readScopedBlob(c, d => `fct_purchase_orders:${d}`, division);
+  if (r.status === 'denied' || r.status === 'error') return null;
+  const list = asArray(r.value);
+  if (!list.length) return { count: 0, totalValue: 0, byStatus: {}, bySupplier: capList([]), rows: capList([]) };
+
+  const byStatus = {}, bySupplier = new Map();
+  let total = 0;
+  const rows = [];
+  for (const po of list) {
+    if (!po || typeof po !== 'object') continue;
+    const value = round2(poValue(po));
+    total += value;
+    const st = safeText(po.status, 30) || 'Open';
+    byStatus[st] = (byStatus[st] || 0) + 1;
+    const sup = safeText(po.supplier, 60) || '(none)';
+    bySupplier.set(sup, round2((bySupplier.get(sup) || 0) + value));
+    rows.push({
+      poNumber: safeText(po.po_number, 40),
+      title:    safeText(po.title),
+      supplier: sup,
+      status:   st,
+      // Only the jobs in this digest's window have names here; a PO against an
+      // older job gets null rather than an id nobody can read.
+      job:      projectNames.get(String(po.project_id || '')) || null,
+      costCode: safeText(po.cost_code, 20),
+      subCode:  safeText(po.sub_code, 20),
+      dated:    safeText(po.date_created, 20),
+      value,
+      lines:    Array.isArray(po.lines) ? po.lines.length : 0,
+    });
+  }
+  rows.sort((a, b) => b.value - a.value);
+
+  return {
+    count: rows.length,
+    totalValue: round2(total),
+    byStatus,
+    bySupplier: capList([...bySupplier.entries()]
+      .map(([supplier, value]) => ({ supplier, value }))
+      .sort((a, b) => b.value - a.value)),
+    rows: capList(rows),
+  };
+}
+
+/**
+ * The cost-code catalogue: which codes this division uses, what quantity is
+ * carried against each and what it is costed at. Not daily spend — that is in
+ * daily_tracking and reaches the digest as each job's `actualCost`.
+ */
+async function costCodes(c, division) {
+  const key = COST_ROW_KEYS[division];
+  if (!key) return null;
+  // readBlob, not blobValue: blobValue folds 'denied' and 'empty' into the
+  // same null, and those are the two cases that have to be told apart here.
+  const r = await readBlob(c, key);
+  if (r.status === 'denied' || r.status === 'error') return null;
+  const list = asArray(r.value);
+  if (!list.length) return { count: 0, rows: capList([]) };
+  const rows = list.filter(r => r && typeof r === 'object').map(r => ({
+    costCode:    safeText(r.cost_code || r.costCode, 20),
+    subCode:     safeText(r.sub_code  || r.subCode, 20),
+    description: safeText(r.description, 80),
+    quantity:    round2(r.quantity),
+    unitCost:    money(r.bid_item_cost != null ? r.bid_item_cost : r.bidItemCost),
+    status:      safeText(r.status, 20) || 'Active',
+  }));
+  return { count: rows.length, rows: capList(rows) };
+}
+
+// Each job division keeps its own roster blob — employees, equipment,
+// suppliers. api/timesheet-entries.js writes the same map down.
+const LISTS_KEYS = {
+  turf:   'fct_lists',
+  paving: 'fct_paving_lists',
+  kiewit: 'fct_kiewit_lists',
+};
+
+/**
+ * Equipment: the roster, what is assigned where, and what actually ran.
+ *
+ * Three different questions live under one word here and they have three
+ * different answers. "What does a roller cost us" is the roster's unit cost.
+ * "What is on Atwood" is the job's assignment list. "What did we actually run"
+ * is the daily rows — and only that last one is a figure about money.
+ *
+ * The dollars are a BREAKDOWN of each job's actual cost, not an addition to
+ * it: daily rows are what actual cost is made of. Saying so is the limit
+ * below, and it is the same trap purchase orders set from the other side.
+ */
+async function equipment(c, division, projects) {
+  const key = LISTS_KEYS[division];
+  if (!key) return null;
+  const r = await readBlob(c, key);
+  if (r.status === 'denied' || r.status === 'error') return null;
+
+  const lists   = r.value && typeof r.value === 'object' ? r.value : {};
+  const roster  = asArray(lists.equipment).length ? asArray(lists.equipment)
+                                                  : asArray(lists.equipmentList);
+  const catalogue = roster.map(e => (typeof e === 'string'
+    ? { name: safeText(e, 80), unitCost: null }
+    : { name: safeText(e && e.name, 80),
+        unitCost: money(e && (e.unit_cost != null ? e.unit_cost : e.unitCost)) }
+  )).filter(e => e.name);
+
+  const usage = dailyM.equipmentUsage(projects, report.projName);
+
+  // What a PM assigned to the job, which is a plan and not a record: a machine
+  // can be assigned and never turn up, and turn up without being assigned.
+  const byJob = [];
+  for (const proj of projects) {
+    const assigned = asArray(proj && proj.assigned_equipment)
+      .map(n => safeText(n, 80)).filter(Boolean);
+    const job = report.projName(proj);
+    const ran = usage.rows.filter(u => u.jobs.includes(job));
+    if (!assigned.length && !ran.length) continue;
+    byJob.push({
+      job,
+      assigned: capList(assigned),
+      piecesRun: ran.length,
+      hours: round2(ran.reduce((t, u) => t + u.hours, 0)),
+      cost:  money(ran.reduce((t, u) => t + u.cost, 0)),
+    });
+  }
+
+  return {
+    count: catalogue.length,
+    catalogue: capList(catalogue),
+    usage: {
+      totalHours: usage.totalHours,
+      totalCost:  money(usage.totalCost),
+      rows: capList(usage.rows.map(u => ({
+        name: u.name, hours: u.hours, cost: money(u.cost),
+        jobs: capList(u.jobs),
+      }))),
+    },
+    byJob: capList(byJob),
+  };
+}
+
+/**
+ * Employees: the roster, who is on which job, and — for those allowed to see
+ * it — what people are paid and the hours behind the labor cost.
+ *
+ * This is the one block here with a check inside it beyond "which division".
+ * tracker.html shows pay rates only in the Manage Lists modal, and hides that
+ * modal, the Daily tab and Labor Analytics below level3. A level2 foreman
+ * therefore cannot see what his crew earns on his own page, and answering it
+ * in a chat window would make this feature a permissions bypass. Names and
+ * assignments stay open to everyone with the division, because the project
+ * card already shows both.
+ *
+ * `payVisible` travels with the digest so the model can say WHY a rate is
+ * missing. Without it the absence looks like no data, and "we have no rates on
+ * file" is a wrong answer to a question that was really about permission.
+ */
+async function employees(c, division, projects) {
+  const key = LISTS_KEYS[division];
+  if (!key) return null;
+  const r = await readBlob(c, key);
+  if (r.status === 'denied' || r.status === 'error') return null;
+
+  const payVisible = ctx.canSeePay(c.authz, division);
+  const lists = r.value && typeof r.value === 'object' ? r.value : {};
+
+  const roster = asArray(lists.employees).map(e => {
+    const name = safeText(typeof e === 'string' ? e : (e && e.name), 80);
+    if (!name) return null;
+    if (!payVisible) return { name };
+    const o = typeof e === 'object' && e ? e : {};
+    return {
+      name,
+      jobClass: safeText(o.job_class || o.jobClass, 60),
+      // Both rates, because which one applies is the JOB's prevailing-wage
+      // flag and not the person's — reporting one as "their rate" is wrong
+      // half the time.
+      prevailingRate:    money(o.prevailing_rate    != null ? o.prevailing_rate    : o.pw_rate),
+      nonPrevailingRate: money(o.non_prevailing_rate != null ? o.non_prevailing_rate : o.non_pw_rate),
+    };
+  }).filter(Boolean);
+
+  // Assignment is a plan and visible to everyone; hours are the record and
+  // are not. Keeping them in separate fields is what stops one being answered
+  // with the other.
+  const byJob = [];
+  for (const proj of projects) {
+    const assigned = asArray(proj && proj.assigned_employees)
+      .map(n => safeText(n, 80)).filter(Boolean);
+    if (!assigned.length) continue;
+    byJob.push({ job: report.projName(proj), assigned: capList(assigned) });
+  }
+
+  let worked = null;
+  if (payVisible) {
+    const u = dailyM.laborUsage(projects, report.projName);
+    worked = {
+      totalHours: u.totalHours,
+      totalLaborCost: money(u.totalCost),
+      rows: capList(u.rows.map(x => ({
+        name: x.name, hours: x.hours, laborCost: money(x.cost), jobs: capList(x.jobs),
+      }))),
+    };
+  }
+
+  return { count: roster.length, payVisible, roster: capList(roster), byJob: capList(byJob), worked };
+}
+
+/**
+ * The document vault: how much paperwork exists and where, never what is in it.
+ *
+ * project_documents carries company_code AND division as real columns, so this
+ * is one of the few reads here that is a plain scoped query rather than a blob.
+ * Three fields are left behind on purpose. storage_key and storage_url are the
+ * object-store path — an access route, not an answer. `note` is free text a
+ * colleague typed, same as a purchase order's.
+ *
+ * Soft-deleted rows are excluded. They sit in a 30-day trash window that only
+ * an administrator can see through the documents page, and a digest that
+ * counted them would answer a question the asker cannot verify.
+ */
+async function documents(c, division, projects) {
+  let rows;
+  try {
+    rows = await c.sql`
+      SELECT project_id, filename, content_type,
+             size_bytes::float          AS size_bytes,
+             uploaded_by,
+             uploaded_at::text          AS uploaded_at
+        FROM project_documents
+       WHERE company_code = ${c.companyCode}
+         AND division     = ${division}
+         AND deleted_at IS NULL
+       ORDER BY uploaded_at DESC
+       LIMIT 500
+    `;
+  } catch (err) {
+    console.error('[mathis] documents read failed:', err.message);
+    return null;
+  }
+
+  const list = Array.isArray(rows) ? rows : [];
+  const names = new Map(projects.map(p => [String(p.id || ''), report.projName(p)]));
+
+  const byJob = new Map();
+  let bytes = 0;
+  for (const d of list) {
+    const pid = String(d.project_id || '');
+    // A null project_id is the division's General / Non-Job area, which is
+    // where paperwork belonging to no job files. Naming it beats a blank.
+    const job = pid ? (names.get(pid) || null) : 'General (no job)';
+    const label = job || 'a job outside this list';
+    byJob.set(label, (byJob.get(label) || 0) + 1);
+    bytes += Number(d.size_bytes) || 0;
+  }
+
+  const withDocs = new Set(list.map(d => String(d.project_id || '')).filter(Boolean));
+
+  return {
+    count: list.length,
+    truncated: list.length >= 500,
+    totalMB: round2(bytes / 1048576),
+    byJob: capList([...byJob.entries()].map(([job, count]) => ({ job, count }))
+      .sort((a, b) => b.count - a.count)),
+    recent: capList(list.slice(0, LIST_CAP).map(d => ({
+      filename:   safeText(d.filename, 200),
+      job:        d.project_id ? (names.get(String(d.project_id)) || null) : 'General (no job)',
+      uploadedBy: safeText(d.uploaded_by, 60),
+      uploadedAt: safeText(d.uploaded_at, 10),
+      sizeMB:     round2((Number(d.size_bytes) || 0) / 1048576),
+      kind:       safeText(d.content_type, 60),
+    }))),
+    // Which of the jobs in this digest have no paperwork at all. Answerable
+    // precisely because the window is stated: it is these jobs, not every job.
+    jobsWithNoDocuments: capList(projects
+      .filter(p => !withDocs.has(String(p.id || '')))
+      .map(p => report.projName(p))),
+  };
+}
+
+/**
+ * Rubber inventory, turf's own. This is what somebody asked about first and
+ * got projected profit for instead, because the digest held nothing else.
+ * buildRubberInventory is the executive report's reader, not a second one.
+ */
+async function rubberInventory(c) {
+  try {
+    const inv = await report.buildRubberInventory(c.sql, c.companyCode);
+    return capList((Array.isArray(inv) ? inv : []).map(r => ({
+      rubberType: safeText(r.rubber_type || r.type, 60),
+      produced:   round2(r.produced),
+      used:       round2(r.used),
+      inStock:    round2(r.in_stock),
+      poundsProduced: round2(r.lbs_total),
+    })));
+  } catch (err) {
+    console.error('[mathis] rubber inventory failed:', err.message);
+    return null;
+  }
+}
+
 async function jobDigest(c, division, opts = {}) {
   const div = jobFin.jobDivision(division);
   if (!div) return null;
@@ -106,10 +506,45 @@ async function jobDigest(c, division, opts = {}) {
   if (idx.status === 'denied') return { division, kind: 'denied' };
   const totalProjects = countIds(idx.value);
 
+  // Read before the empty-projects branch: rubber stock, purchase orders and
+  // the cost-code catalogue all exist whether or not a single job is open, and
+  // returning early skipped them entirely.
+  const inventory = division === 'turf' ? await rubberInventory(c) : null;
+
   const projects = (await div.read(c.sql, c.companyCode, { limit })).filter(Boolean);
+  // Named so a PO can say which job it is against instead of an opaque id.
+  const projectNames = new Map(projects.map(p => [String(p.id || ''), report.projName(p)]));
+
+  const [pos, codes, equip, docs, crew] = await Promise.all([
+    purchaseOrders(c, division, projectNames),
+    costCodes(c, division),
+    equipment(c, division, projects),
+    documents(c, division, projects),
+    employees(c, division, projects),
+  ]);
+
+  const extraCovers = [];
+  if (inventory) extraCovers.push('rubber inventory by type: bags produced, used and in stock');
+  if (pos)   extraCovers.push('purchase orders: value, supplier, status and which job each is against');
+  if (codes) extraCovers.push('the cost-code catalogue: which codes this division uses, their quantities and unit costs');
+  if (equip) extraCovers.push('equipment: the roster and its unit costs, what is assigned to each job, and the hours each machine ran');
+  if (docs)  extraCovers.push('the document vault: how many files each job has, who uploaded them and when — file names only, never their contents');
+  if (crew)  extraCovers.push(crew.payVisible
+    ? 'employees: the roster with job classes and pay rates, who is assigned to each job, and the hours each person worked with the labor cost of those hours'
+    : 'employees: the roster by NAME and who is assigned to each job — pay rates and worked hours are NOT here, because this user\'s access level does not include them');
+  const extras = {
+    ...(inventory ? { rubberInventory: inventory } : {}),
+    ...(pos   ? { purchaseOrders: pos } : {}),
+    ...(codes ? { costCodes: codes } : {}),
+    ...(equip ? { equipment: equip } : {}),
+    ...(docs  ? { documents: docs } : {}),
+    ...(crew  ? { employees: crew } : {}),
+  };
   if (!projects.length) {
     return {
       division, divisionName: div.name, kind: 'jobs',
+      covers: COVERS.jobs.concat(extraCovers),
+      ...extras,
       totalProjects, includedProjects: 0, rows: [], summary: null,
       ordering: 'none — this division has no projects on file',
       limits: JOB_LIMITS,
@@ -123,6 +558,8 @@ async function jobDigest(c, division, opts = {}) {
     division,
     divisionName: div.name,
     kind: 'jobs',
+    covers: COVERS.jobs.concat(extraCovers),
+    ...extras,
     totalProjects,
     includedProjects: rows.length,
     truncated: totalProjects > rows.length,
@@ -175,6 +612,7 @@ async function quarryDigest(c, opts = {}) {
     division: 'quarry',
     divisionName: 'Quarry',
     kind: 'quarry',
+    covers: COVERS.quarry,
     year: m.year,
     cutoff: m.cutoff,
     entryCount: m.entryCount,
@@ -279,6 +717,7 @@ async function dustDigest(c) {
     division: 'dust',
     divisionName: 'Dust Control',
     kind: 'dust',
+    covers: COVERS.dust,
     year: m.year,
     productMargin: margin,
     unavailableBooks: unavailable,
@@ -352,6 +791,7 @@ async function truckingDigest(c) {
     division: 'trucking',
     divisionName: 'Trucking',
     kind: 'trucking',
+    covers: COVERS.trucking,
     year: m.year,
     entryCount: m.entryCount,
     revenue: money(m.revenue),
@@ -405,6 +845,7 @@ async function icDigest(c) {
     division: 'intercompany',
     divisionName: 'Intercompany',
     kind: 'intercompany',
+    covers: COVERS.intercompany,
     year: m.year,
     entryCount: m.entryCount,
     duplicatesCollapsed: m.duplicates,
@@ -453,7 +894,7 @@ async function payrollDigest(c) {
     `;
   } catch (err) {
     console.error('[mathis] payroll entries failed:', err.message);
-    return { division: 'payroll', kind: 'payroll', error: true, limits: PAYROLL_LIMITS };
+    return { division: 'payroll', kind: 'payroll', covers: COVERS.payroll, error: true, limits: PAYROLL_LIMITS };
   }
 
   const entries = rows || [];
@@ -471,6 +912,7 @@ async function payrollDigest(c) {
     division: 'payroll',
     divisionName: 'Payroll',
     kind: 'payroll',
+    covers: COVERS.payroll,
     periodStart: m.periodStart,
     periodEnd: m.periodEnd,
     totals: m.totals,
@@ -510,7 +952,7 @@ async function schedulerDigest(c, opts = {}) {
     board = await schedBoard.buildBoard(c.sql, c.companyCode, today);
   } catch (err) {
     console.error('[mathis] scheduler board failed:', err.message);
-    return { division: 'scheduler', kind: 'scheduler', error: true, limits: SCHEDULER_LIMITS };
+    return { division: 'scheduler', kind: 'scheduler', covers: COVERS.scheduler, error: true, limits: SCHEDULER_LIMITS };
   }
 
   const counts = { behind: 0, atRisk: 0, onTrack: 0, complete: 0, noData: 0 };
@@ -579,6 +1021,7 @@ async function schedulerDigest(c, opts = {}) {
     division: 'scheduler',
     divisionName: 'Scheduler',
     kind: 'scheduler',
+    covers: COVERS.scheduler,
     today: board.today,
     sourceDivisions: board.sourceDivisions || [],
     activeJobs: (board.jobs || []).length,
@@ -630,7 +1073,7 @@ async function fuelAdminDigest(c, opts = {}) {
     ]);
   } catch (err) {
     console.error('[mathis] fuel admin digest failed:', err.message);
-    return { division: 'fuel_admin', kind: 'fuel_admin', error: true, limits: FUEL_ADMIN_LIMITS };
+    return { division: 'fuel_admin', kind: 'fuel_admin', covers: COVERS.fuel_admin, error: true, limits: FUEL_ADMIN_LIMITS };
   }
 
   const byStatus = {}, byBalance = {};
@@ -665,6 +1108,7 @@ async function fuelAdminDigest(c, opts = {}) {
     division: 'fuel_admin',
     divisionName: 'Fuel Administration',
     kind: 'fuel_admin',
+    covers: COVERS.fuel_admin,
     windowDays: days,
     fillUps: rows.length,
     gallons: round2(gallons),
@@ -765,7 +1209,8 @@ async function executiveDigest(c, opts = {}) {
     division: 'executive',
     divisionName: 'Executive',
     kind: 'executive',
-    covers: covered,
+    covers: COVERS.executive,
+    coversDivisions: covered,
     // Named so an answer cannot quietly present a partial view as the company.
     notCovered: EXEC_DIVISIONS.filter(d => !covered.includes(d)),
     divisions: parts,
@@ -795,7 +1240,7 @@ async function fuelOwnDigest(c) {
     `;
   } catch (err) {
     console.error('[mathis] own fuel digest failed:', err.message);
-    return { division: 'fuel', kind: 'own_fuel', error: true, limits: OWN_LIMITS };
+    return { division: 'fuel', kind: 'own_fuel', covers: COVERS.own_fuel, error: true, limits: OWN_LIMITS };
   }
   const byStatus = {};
   let gallons = 0;
@@ -805,6 +1250,7 @@ async function fuelOwnDigest(c) {
   }
   return {
     division: 'fuel', kind: 'own_fuel', window: 'the last 90 days',
+    covers: COVERS.own_fuel,
     fillUps: rows.length, gallons: round2(gallons), byStatus,
     rows: capList(rows.map(r => ({
       workDate: r.work_date, status: safeText(r.status, 20),
@@ -829,13 +1275,13 @@ async function driverOwnDigest(c) {
     // else's row — it is the check that keeps one driver out of another's work.
     const driver = await driverSched.resolveDriver(c.sql, c.companyCode, c.authz.username);
     if (!driver) {
-      return { division: 'driver', kind: 'own_driver', unlinked: true, assignments: capList([]),
+      return { division: 'driver', kind: 'own_driver', covers: COVERS.own_driver, unlinked: true, assignments: capList([]),
         limits: OWN_LIMITS.concat(['This login is not linked to a driver on the board, so there are no hauls to show. Say that rather than saying they have none scheduled.']) };
     }
     byDate = await driverSched.assignmentsFor(c.sql, c.companyCode, driver, today, to);
   } catch (err) {
     console.error('[mathis] own driver digest failed:', err.message);
-    return { division: 'driver', kind: 'own_driver', error: true, limits: OWN_LIMITS };
+    return { division: 'driver', kind: 'own_driver', covers: COVERS.own_driver, error: true, limits: OWN_LIMITS };
   }
 
   const out = [];
@@ -855,6 +1301,7 @@ async function driverOwnDigest(c) {
   }
   return {
     division: 'driver', kind: 'own_driver',
+    covers: COVERS.own_driver,
     window: 'today through the next 14 days',
     assignments: capList(out),
     limits: OWN_LIMITS.concat([
@@ -879,7 +1326,7 @@ async function quarrySalesOwnDigest(c) {
     `;
   } catch (err) {
     console.error('[mathis] own quarry sales digest failed:', err.message);
-    return { division: 'quarry_sales', kind: 'own_quarry_sales', error: true, limits: OWN_LIMITS };
+    return { division: 'quarry_sales', kind: 'own_quarry_sales', covers: COVERS.own_quarry_sales, error: true, limits: OWN_LIMITS };
   }
   const byStatus = {};
   let tons = 0, charged = 0;
@@ -890,6 +1337,7 @@ async function quarrySalesOwnDigest(c) {
   }
   return {
     division: 'quarry_sales', kind: 'own_quarry_sales', window: 'the last 45 days',
+    covers: COVERS.own_quarry_sales,
     loads: rows.length, tons: round2(tons), charged: money(charged), byStatus,
     rows: capList(rows.map(r => ({
       workDate: r.work_date, status: safeText(r.status, 20),
@@ -924,7 +1372,7 @@ async function personalDigest(c) {
     `;
   } catch (err) {
     console.error('[mathis] personal digest failed:', err.message);
-    return { division: null, kind: 'personal', rows: [], byStatus: {}, error: true, limits: PERSONAL_LIMITS };
+    return { division: null, kind: 'personal', covers: COVERS.personal, rows: [], byStatus: {}, error: true, limits: PERSONAL_LIMITS };
   }
 
   const byStatus = {};
@@ -944,6 +1392,7 @@ async function personalDigest(c) {
     division: null,
     kind: 'personal',
     window: 'the last 45 days',
+    covers: COVERS.personal,
     rows: rows.map(r => ({
       workDate:  r.work_date instanceof Date ? r.work_date.toISOString().slice(0, 10) : String(r.work_date || ''),
       status:    safeText(r.status, 20),
@@ -1004,6 +1453,7 @@ async function buildDigest(c, division, opts = {}) {
 }
 
 module.exports = {
+  COVERS,
   DEFAULT_JOB_ROWS,
   MAX_JOB_ROWS,
   LIST_CAP,
@@ -1021,6 +1471,13 @@ module.exports = {
   buildDigest,
   jobDigest,
   personalDigest,
+  rubberInventory,
+  purchaseOrders,
+  costCodes,
+  equipment,
+  documents,
+  employees,
+  readScopedBlob,
   quarryDigest,
   schedulerDigest,
   executiveDigest,

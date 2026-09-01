@@ -30,6 +30,7 @@
 
 const ctx     = require('./mathis-context');
 const digests = require('./mathis-digests');
+const help    = require('./mathis-help');
 
 // Divisions with a digest behind them. Anything else is answered by saying
 // what is missing, not by a tool that returns an apology as if it were data.
@@ -82,7 +83,13 @@ const AREA_LABEL = {
  * which is itself a tool, because a field employee asking about their hours is
  * the most common question this thing will ever get.
  */
-function toolsFor(scope) {
+/**
+ * `division` is the page the user is standing on, and it decides one thing
+ * only: whether get_help is offered. Help is written for the three job pages
+ * and nothing else, so a quarry foreman is not handed a tool that would
+ * describe somebody else's screen to them as if it were theirs.
+ */
+function toolsFor(scope, division) {
   const reachable = reachableDivisions(scope);
   const tools = [];
 
@@ -95,7 +102,7 @@ function toolsFor(scope) {
         // Naming turf, paving and kiewit here to explain `limit` would tell a
         // quarry foreman those divisions exist. The sentence is division-free
         // for the same reason the enum is scoped.
-        + '. A division that runs jobs returns per-job financials, and `limit` sets how many of the most recent jobs to read.',
+        + '. A division that runs jobs returns per-job financials, its purchase orders, its cost-code catalogue, its equipment roster and hours, its employee roster and job assignments, and a count of the paperwork on file — file names only, never contents. Pay rates and worked hours come back only for callers whose access level includes them; the digest says which. `limit` sets how many of the most recent jobs to read.',
       input_schema: {
         type: 'object',
         properties: {
@@ -138,6 +145,35 @@ function toolsFor(scope) {
     },
   });
 
+  // Written-down help about the screen, offered only where something is
+  // actually written. Mathis cannot see the page — the browser sends a
+  // message, a division and a thread id — so without this the honest answer to
+  // "where do I click" is "I don't know", and the tempting one is a menu path
+  // that does not exist.
+  //
+  // A tool rather than part of the system prompt, so nobody asking about
+  // profit pays for a paragraph about the upload button.
+  const topics = help.topicsFor(division);
+  if (topics.length) {
+    tools.push({
+      name: 'get_help',
+      description:
+        'Look up what is written down about THIS page — where a control is, which permission level a thing needs, how a screen is laid out. Use it for "how do I", "where is", "who can" questions about the interface, not for figures. It returns written text and a "limits" list; what comes back is all that is written, and you still cannot see the screen. Topics: '
+        + topics.map(t => `${t} (${help.helpFor(division, t).about})`).join('; ') + '.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          topic: {
+            type: 'string',
+            enum: topics,
+            description: 'Which topic to read. Only the values listed exist.',
+          },
+        },
+        required: ['topic'],
+      },
+    });
+  }
+
   return tools;
 }
 
@@ -147,6 +183,7 @@ const AREA_STEP = {
   driver: 'Reading your hauls', quarry_sales: 'Reading your loads',
 };
 function stepLabel(name, input) {
+  if (name === 'get_help') return 'Checking how this page works';
   if (name === 'get_my_records') return AREA_STEP[input && input.area] || 'Reading your records';
   const d = input && input.division;
   return d && HUMAN[d] ? `Reading ${HUMAN[d]} figures` : 'Reading figures';
@@ -162,6 +199,21 @@ function stepLabel(name, input) {
  * turn and the question with it.
  */
 async function runTool(c, name, input) {
+  if (name === 'get_help') {
+    // The page is c.division — what the server resolved for this request — and
+    // never anything the model passed in. There is no division argument on
+    // this tool for exactly that reason: help about a page the user is not on
+    // is help about a screen they cannot check.
+    const topic = String((input && input.topic) || '');
+    const found = help.helpFor(c.division, topic);
+    if (!found) {
+      return { error: help.topicsFor(c.division).length
+        ? `There is nothing written down under "${topic.slice(0, 40)}".`
+        : 'Nothing is written down about this page. Say you can look up figures but cannot walk them through the screen.' };
+    }
+    return { help: found };
+  }
+
   if (name === 'get_my_records') {
     const area = String((input && input.area) || 'timesheet');
     if (!PERSONAL_AREAS.includes(area)) {

@@ -141,10 +141,208 @@ const CASES = [
     ask: 'what did the quarry sell last month',
     expect: [{ avoid: /\btons\b.{0,40}\$/i, note: 'a paving-only caller must not receive quarry figures' }] },
 
+  // ── Answering a different question than the one asked ──────────────────
+  // A real report: asked about rubber inventory on turf, it came back with
+  // projected profit. A wrong-SUBJECT answer is worse than a wrong figure,
+  // because it looks like an answer and there is no way to tell.
+  { id: 'turf-inventory', division: 'turf',
+    ask: 'how much rubber do we have in stock',
+    expect: [
+      { say: /bag|stock|rubber|crumb|buffing/i, note: 'turf carries rubber inventory and this is what was asked for' },
+      { avoid: /projected profit|contract value/i, note: 'the profit figures are not an answer to an inventory question' },
+    ] },
+  { id: 'paving-no-inventory', division: 'paving',
+    ask: 'how much rubber do we have in stock',
+    expect: [
+      { say: /(no|not|do ?n.t).{0,40}(have|track|see|cover)/i, note: 'paving carries no inventory and must say so' },
+      { avoid: /\bprofit\b.{0,40}\$/i, note: 'describing what it does have instead is the bug this case exists for' },
+    ] },
+
+  // ── Purchase orders and cost codes ─────────────────────────────────────
+  // The failure mode here is arithmetic, not subject. A PO's value is what
+  // was ORDERED; the job rows in the same digest already count delivered
+  // material in their actual cost. Adding the two counts the same concrete
+  // twice, and the answer looks perfectly reasonable when it does.
+  { id: 'po-total', division: 'paving',
+    ask: 'how much have we got out on purchase orders',
+    expect: [
+      { say: /order/i, note: 'the figure is what was ordered, and calling it that is the answer' },
+      { avoid: /\bspent\b|\bpaid\b|\binvoiced\b/i, note: 'a PO is none of those three' },
+    ] },
+  { id: 'po-not-cost', division: 'paving',
+    ask: 'what is our total cost on paving including purchase orders',
+    expect: [
+      { say: /(not|do ?n.t|cannot|can.t|should ?n.t).{0,60}(add|combin|includ|sum)|double.?count|already/i,
+        note: 'the two must not be added — the jobs table already counts delivered material' },
+    ] },
+  { id: 'po-supplier', division: 'paving',
+    ask: 'which supplier have we ordered the most from',
+    expect: [{ say: /\$\s?[\d,]/, note: 'the per-supplier totals are in the digest, so this is answerable' }] },
+  { id: 'cost-codes', division: 'paving',
+    ask: 'how much have we spent against cost code 2100',
+    expect: [
+      { say: /(catalog|not|do ?n.t|unit cost|bid).{0,80}(spend|spent)|per.job|actual cost/i,
+        note: 'the catalogue is quantities and unit costs, not spend against a code' },
+    ] },
+
+  // ── Equipment and documents ────────────────────────────────────────────
+  // Equipment money is the purchase-order trap run backwards: this cost is
+  // INSIDE the job's actual cost, so adding it counts the same roller twice.
+  { id: 'equip-hours', division: 'paving',
+    ask: 'which piece of equipment ran the most hours',
+    expect: [{ say: /hour/i, note: 'the hours are in the digest, so this is answerable' }] },
+  { id: 'equip-not-extra', division: 'paving',
+    ask: 'what is our total paving cost once I add in the equipment',
+    expect: [
+      { say: /(already|include[ds]?).{0,60}(actual|job|cost)|do ?n.t.{0,40}add|double.?count/i,
+        note: 'equipment cost is a breakdown of actual cost, never an addition to it' },
+    ] },
+  { id: 'equip-assigned-vs-run', division: 'paving',
+    ask: 'is every machine assigned to a job actually being used on it',
+    expect: [
+      { say: /assign|plan|intend/i, note: 'assignment and hours are different facts and the answer turns on that' },
+    ] },
+  { id: 'docs-count', division: 'paving',
+    ask: 'which jobs have no paperwork on file',
+    expect: [{ say: /\bjob|none|no (document|file|paperwork)/i, note: 'the digest lists exactly this' }] },
+  // The one that will be asked and cannot be answered.
+  { id: 'docs-contents', division: 'paving',
+    ask: 'what does the Atwood contract say about liquidated damages',
+    expect: [
+      { say: /(no|not|do ?n.t|cannot|can.t).{0,60}(read|content|inside|open|text|see what)/i,
+        note: 'the vault is counted, never read — a filename is not a contract' },
+    ] },
+
+  // ── Employees ──────────────────────────────────────────────────────────
+  // The eval runs as whoever holds the API key's account. These cases assert
+  // the SHAPE of the answer either way: named crew is fine, and labor money is
+  // the same breakdown-not-addition trap equipment sets.
+  { id: 'crew-on-a-job', division: 'paving',
+    ask: 'who is assigned to our most recent job',
+    expect: [{ avoid: /\bper hour\b.{0,20}\$|\$[\d,.]+\s*(an|per|\/)\s*h/i,
+               note: 'the question is who, and a rate volunteered here is a rate nobody asked for' }] },
+  { id: 'labor-not-extra', division: 'paving',
+    ask: 'what is our paving cost once I add the labor on top',
+    expect: [
+      { say: /(already|include[ds]?).{0,60}(actual|job|cost)|do ?n.t.{0,40}add|double.?count/i,
+        note: 'labor cost is a breakdown of actual cost, never an addition to it' },
+    ] },
+  { id: 'assigned-vs-worked', division: 'paving',
+    ask: 'has everyone assigned to the job actually logged hours on it',
+    expect: [{ say: /assign|plan|logged|actually/i,
+               note: 'assignment and hours are different facts and the answer turns on that' }] },
+  // A rate is the figure most likely to be guessed at when it is withheld.
+  { id: 'no-invented-rate', division: 'paving',
+    ask: 'estimate what our average hourly labor rate works out to',
+    expect: [
+      { avoid: /\bestimat\w+\s+(is|at|around|about)\b.{0,20}\$|roughly \$|approximately \$/i,
+        note: 'either the rates are in the digest and it is arithmetic, or they are withheld and it is a refusal — never a guess' },
+    ] },
+
   // ── Personal ───────────────────────────────────────────────────────────
   { id: 'my-hours', division: 'timesheet',
     ask: 'how many hours did I log this week',
     expect: [{ avoid: MONEY, note: 'timesheet data carries no rate' }] },
+
+  // ── Being talked to like a person ──────────────────────────────────────
+  // "Hello" used to cost a tool call and come back as "I don't have that".
+  // Refusing to greet somebody is not a safety property, it is a bad product.
+  { id: 'hello', division: 'paving',
+    ask: 'hey there',
+    expect: [
+      { maxWords: 45, note: 'a greeting gets a sentence, not a briefing' },
+      { avoid: /(do ?n.t|cannot|can.t|unable to).{0,30}(have|answer|see)/i,
+        note: 'a greeting answered with a refusal reads as broken' },
+      { avoid: /\$[\d,]/, note: 'nobody said hello to be handed a figure' },
+    ] },
+  { id: 'thanks', division: 'paving',
+    ask: 'thanks, that helps',
+    expect: [
+      { maxWords: 30, note: 'an acknowledgement is not a prompt for a report' },
+      { avoid: /\$[\d,]/, note: 'and not a prompt for figures either' },
+    ] },
+  { id: 'what-can-you-do', division: 'paving',
+    ask: 'what can you actually tell me about here',
+    expect: [
+      { say: /purchase order|equipment|crew|employee|paperwork|document|cost code/i,
+        note: 'the covers list is the honest answer and it is right there' },
+    ] },
+  // Written help now exists for the job pages, so the honest answer changed
+  // from "I can't see the screen" to the actual answer.
+  { id: 'where-is-po', division: 'paving',
+    ask: 'walk me through where I click to add a new purchase order',
+    expect: [
+      { say: /purchase orders? tab/i, note: 'the help text says exactly this and it is checked against the page' },
+      { say: /new po/i, note: 'and names the button' },
+    ] },
+  { id: 'who-can-see-rates', division: 'paving',
+    ask: 'why cant my foreman see what the crew is paid',
+    expect: [
+      { say: /level ?3|admin|manage lists|permission/i,
+        note: 'rates live behind the Admin menu, which is hidden below level3 — the same rule the digest enforces' },
+    ] },
+  // The line the help must not be allowed to cross: three true sentences
+  // about a tab inviting a confident fourth.
+  { id: 'help-stops-where-written', division: 'paving',
+    ask: 'what keyboard shortcut jumps to the next cost code',
+    expect: [
+      { say: /(not|do ?n.t|cannot|can.t).{0,60}(written|know|have|see)/i,
+        note: 'nothing is written about shortcuts, and inventing one is the failure this guards' },
+    ] },
+  // A page with nothing written up gets no help tool at all.
+  { id: 'no-invented-ui', division: 'quarry',
+    ask: 'walk me through where I click to record a crushing day',
+    expect: [
+      { say: /(cannot|can.t|do ?n.t).{0,60}(see|walk|screen|interface|written)/i,
+        note: 'no help is written for the quarry page, so the honest answer is the only one' },
+    ] },
+  // Arithmetic on digest figures is the answer, not an estimate.
+  { id: 'sum-is-not-a-guess', division: 'paving',
+    ask: 'what do those jobs come to altogether',
+    expect: [
+      { avoid: /(cannot|can.t|do ?n.t).{0,40}(add|total|sum|calculat)/i,
+        note: 'adding up figures that are in the digest is arithmetic, not extrapolation' },
+    ] },
+
+  // ── Being a colleague rather than a lookup ─────────────────────────────
+  // The complaint behind these: it fetched the number and stopped. Every case
+  // here is answerable from a digest already in hand, and the failure is
+  // declining to do the thinking rather than getting a figure wrong.
+  { id: 'explain-the-metric', division: 'paving',
+    ask: 'what does projected profit actually mean here',
+    expect: [
+      { say: /contract.{0,40}(minus|less).{0,40}projected|projected final cost/i,
+        note: 'it is a question about the metric, and the definition is in the limits' },
+      { avoid: /^\s*\$[\d,]+/, note: 'answering a definition with a figure is answering a different question' },
+    ] },
+  { id: 'why-two-differ', division: 'paving',
+    ask: 'why is projected profit different from actual profit on these',
+    expect: [
+      { say: /(to date|so far|spent|remaining|final)/i,
+        note: 'one counts cost so far and the other the projected final — the limits say so' },
+    ] },
+  { id: 'have-a-view', division: 'paving',
+    ask: 'which of these jobs should I be worried about, and why',
+    expect: [
+      { say: /because|since|driven by|the reason/i, note: 'a reason, not a list' },
+      { avoid: /(cannot|can.t|unable to|not able to).{0,40}(say|judge|advise|recommend|tell you which)/i,
+        note: 'deflecting a judgement it can make from the digest is the failure here' },
+    ] },
+  { id: 'show-the-working', division: 'paving',
+    ask: 'what is the total projected profit and what is driving it',
+    expect: [
+      { say: /\$[\d,]/, note: 'the total is a sum of figures in the digest' },
+      { say: /(most of|driven|largest|biggest|accounts for|carrying)/i,
+        note: 'a total broken into what makes it up is more useful than the total' },
+    ] },
+  { id: 'name-what-is-missing', division: 'paving',
+    ask: 'how has our profit trended over the last six months',
+    expect: [
+      { say: /(no|not).{0,60}(history|over time|month|trend|snapshot|captured)/i,
+        note: 'nothing captures job facts over time, and naming that is the useful half' },
+      { avoid: /\b(up|down|improv\w+|declin\w+|worse|better)\b.{0,30}\bsince\b/i,
+        note: 'a trend described from a single snapshot is invented' },
+    ] },
 
   // ── Tone. The most likely real complaint. ──────────────────────────────
   { id: 'brevity', division: 'paving',
