@@ -667,7 +667,35 @@ async function jobDigest(c, division, opts = {}) {
   // returning early skipped them entirely.
   const inventory = division === 'turf' ? await rubberInventory(c) : null;
 
-  const projects = (await div.read(c.sql, c.companyCode, { limit })).filter(Boolean);
+  // A job the user NAMED is searched for across the whole division, not hoped
+  // for inside the window. This is what somebody asking "financials for
+  // Franklin Regional Multi" means, and answering it out of a twelve-row slice
+  // told them a real job was not a job.
+  const wanted = safeText(opts.job, 80).trim();
+  let searched = null;
+  let projects;
+  if (wanted) {
+    const all = (await div.read(c.sql, c.companyCode)).filter(Boolean);
+    const needle = wanted.toLowerCase();
+    const hits = all.filter(p => {
+      const name = String(report.projName(p) || '').toLowerCase();
+      const job  = String(report.projJob(p)  || '').toLowerCase();
+      return name.includes(needle) || (job && job.includes(needle));
+    });
+    projects = hits.slice(0, MAX_JOB_ROWS);
+    searched = {
+      // Echoed back so the answer can name what it looked for, and so a
+      // mis-heard job name is visible rather than silently answered around.
+      searchedFor: wanted,
+      // The whole division was read, so "no such job" is a fact here rather
+      // than an artefact of a window. This flag is what the limits key off.
+      searchedEveryJob: true,
+      matched: hits.length,
+      truncatedMatches: hits.length > projects.length,
+    };
+  } else {
+    projects = (await div.read(c.sql, c.companyCode, { limit })).filter(Boolean);
+  }
   // Named so a PO can say which job it is against instead of an opaque id.
   const projectNames = new Map(projects.map(p => [String(p.id || ''), report.projName(p)]));
 
@@ -701,8 +729,11 @@ async function jobDigest(c, division, opts = {}) {
       division, divisionName: div.name, kind: 'jobs',
       covers: COVERS.jobs.concat(extraCovers),
       ...extras,
+      ...(searched || {}),
       totalProjects, includedProjects: 0, rows: [], summary: null,
-      ordering: 'none — this division has no projects on file',
+      ordering: searched
+        ? `No job in this division matches "${searched.searchedFor}". Every one of its ${totalProjects} jobs was checked by name and job number, so this is a real absence rather than a window.`
+        : 'none — this division has no projects on file',
       limits: JOB_LIMITS,
     };
   }
@@ -716,10 +747,13 @@ async function jobDigest(c, division, opts = {}) {
     kind: 'jobs',
     covers: COVERS.jobs.concat(extraCovers),
     ...extras,
+    ...(searched || {}),
     totalProjects,
     includedProjects: rows.length,
-    truncated: totalProjects > rows.length,
-    ordering: 'Most recent first, as the division page orders its own project list (pinned jobs lead). There is no created-at date on a project, so this is the ordering "the last N jobs" refers to; say which ordering you used.',
+    truncated: searched ? !!searched.truncatedMatches : totalProjects > rows.length,
+    ordering: searched
+      ? `The jobs matching "${searched.searchedFor}" by name or job number, out of all ${totalProjects} in this division. Nothing was filtered by recency.`
+      : 'The most recently created jobs, newest first, with any pinned ones among them moved to the front — the same order the division page shows. Projects carry no created-at date, so position in the index is the only notion of recency there is; say which ordering you used.',
     rows: rows.map(pickJobRow),
     summary: jobFin.summarise(rows),
     limits: JOB_LIMITS,

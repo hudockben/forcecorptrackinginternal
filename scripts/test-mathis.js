@@ -775,14 +775,29 @@ console.log('\n══════════ the prompt ═══════�
   // matters — is any way to express a query. Every tool takes a division name
   // from a fixed list and nothing else.
   assert('the model is given tools', Array.isArray(body.tools) && body.tools.length > 0);
-  // The surface that matters is what a tool ACCEPTS. Every input is either a
-  // string constrained to an enum or a bounded integer — there is nowhere to
-  // put a query. app_data tenancy is a string prefix applied in application
-  // code, so one free-text field reaching a read would be the whole ballgame.
+  // The surface that matters is what a tool ACCEPTS. app_data tenancy is a
+  // string prefix applied in application code, so one free-text field REACHING
+  // A READ would be the whole ballgame — that, not the existence of a string,
+  // is the property.
+  //
+  // `job` is the one free-text input, added because searching a division for a
+  // job by name is the only honest way to answer "financials for Franklin
+  // Regional Multi". It never reaches a query: it is matched in JS against
+  // project names already fetched and already authorised for this caller, and
+  // the behavioural assertion below proves that rather than assuming it. Any
+  // OTHER free-text input still fails here, so the next one gets the same
+  // scrutiny this one did.
+  const JS_SIDE_FILTERS = ['get_division_figures.job'];
   const freeform = body.tools.flatMap(t =>
     Object.entries((t.input_schema && t.input_schema.properties) || {})
       .filter(([, sch]) => !(Array.isArray(sch.enum) && sch.enum.length) && sch.type !== 'integer')
-      .map(([k]) => `${t.name}.${k}`));
+      .map(([k]) => `${t.name}.${k}`))
+    .filter(n => !JS_SIDE_FILTERS.includes(n));
+
+  const jobProp = body.tools.find(t => t.name === 'get_division_figures')
+    .input_schema.properties.job;
+  assert('  the one free-text input is length-bounded',
+    jobProp.maxLength && jobProp.maxLength <= 120, JSON.stringify(jobProp.maxLength));
   assert('  and not one of them accepts a free-text input',
     freeform.length === 0, freeform.join(', '));
   assert('  a turn that may still call one is not told to stop',
@@ -2410,6 +2425,162 @@ console.log('\n══════════ the nightly snapshot ════�
     /Proj\. profit then/.test(widget) && /change/.test(widget));
   assert('  and saying nothing exists before the first day',
     /Nothing exists before/.test(widget));
+}
+
+// ── 11i. Which jobs the window actually contains ───────────────────────────
+// The bug this exists for, reported from real use: somebody asked for the
+// financials on a pinned, in-progress, $3M job that was on their screen, and
+// Mathis said it was not a job.
+//
+// The index is written as `projectsList.map(p => p.id)` and projectsList is
+// APPENDED to, so it is oldest-first; every page reverses it to display. The
+// digest sliced from the FRONT, so "the twelve most recent" were the twelve
+// OLDEST — and the ordering string told the model they were the most recent.
+// Wrong figures with a claim of correctness, and a real job reading as
+// nonexistent because it was outside a window nobody knew was backwards.
+//
+// Nothing pinned the direction, which is why it survived. This does.
+console.log('\n══════════ which jobs the window holds ══════════');
+{
+  const digests_ = require(root('api/lib/mathis-digests.js'));
+  const report_  = require(root('api/executive/report.js'));
+
+  // Ten jobs in creation order. Anything reading from the front gets Job 01.
+  const IDS = Array.from({ length: 10 }, (_, i) => `w${i + 1}`);
+  const BLOBS_W = { 'fct_paving_projects_index': { ids: IDS } };
+  const PROJ_W = Object.fromEntries(IDS.map((id, i) => [id, {
+    id, 'project-name': `Job ${String(i + 1).padStart(2, '0')}`,
+    'job-number': `260${String(i + 1).padStart(2, '0')}`,
+    'contract-amount': String(100000 + i),
+    pinned: id === 'w2',          // an OLD job, pinned
+  }]));
+  const wq = [];
+  const wsql = (st, ...v) => {
+    const text = st.join('?').replace(/\s+/g, ' ').trim();
+    wq.push({ text, values: v });
+    if (/SELECT value FROM app_data/.test(text)) {
+      const bare = String(v[0]).split(':')[1];
+      return Promise.resolve(BLOBS_W[bare] ? [{ value: BLOBS_W[bare] }] : []);
+    }
+    if (/SELECT key, value FROM app_data/.test(text)) {
+      return Promise.resolve((v[0] || []).map(k => {
+        const id = String(k).split('fct_paving_project_')[1];
+        return PROJ_W[id] ? { key: k, value: PROJ_W[id] } : null;
+      }).filter(Boolean));
+    }
+    return Promise.resolve([]);
+  };
+
+  const three = await report_.readPavingProjects(wsql, COMPANY, { limit: 3 });
+  assert('a window of three takes the three NEWEST jobs',
+    three.some(p => p['project-name'] === 'Job 10')
+      && !three.some(p => p['project-name'] === 'Job 01'),
+    three.map(p => p['project-name']).join(', '));
+  assert('  newest first, the way the page shows them',
+    three[0]['project-name'] === 'Job 10' || three[0].pinned === true,
+    three.map(p => p['project-name']).join(', '));
+
+  const withPin = await report_.readPavingProjects(wsql, COMPANY, { limit: 9 });
+  assert('  with a pinned job inside the window floated to the front',
+    withPin[0]['project-name'] === 'Job 02',
+    withPin.map(p => p['project-name']).join(', '));
+
+  const all = await report_.readPavingProjects(wsql, COMPANY);
+  assert('and a read with NO limit is left exactly as it was stored',
+    all[0]['project-name'] === 'Job 01' && all.length === 10,
+    'the executive report consumes this order and was not asked to change');
+}
+{
+  // The report itself: a named job is found wherever it sits.
+  const digests_ = require(root('api/lib/mathis-digests.js'));
+  const IDS = Array.from({ length: 30 }, (_, i) => `f${i + 1}`);
+  const PROJ_F = Object.fromEntries(IDS.map((id, i) => [id, {
+    id, 'project-name': i === 1 ? 'Franklin Regional Multi' : `Filler ${i}`,
+    'job-number': i === 1 ? '26049' : `900${i}`,
+    'contract-amount': i === 1 ? '3017650' : '1000',
+  }]));
+  const fq = [];
+  const fsql = (st, ...v) => {
+    const text = st.join('?').replace(/\s+/g, ' ').trim();
+    fq.push({ text, values: v });
+    if (/SELECT value FROM app_data/.test(text)) {
+      const bare = String(v[0]).split(':')[1];
+      return Promise.resolve(bare === 'fct_paving_projects_index' ? [{ value: { ids: IDS } }] : []);
+    }
+    if (/SELECT key, value FROM app_data/.test(text)) {
+      return Promise.resolve((v[0] || []).map(k => {
+        const id = String(k).split('fct_paving_project_')[1];
+        return PROJ_F[id] ? { key: k, value: PROJ_F[id] } : null;
+      }).filter(Boolean));
+    }
+    return Promise.resolve([]);
+  };
+  const c = { sql: fsql, companyCode: COMPANY, authz: { divisionRoles: { paving: 'level3' } }, division: 'paving' };
+
+  // Franklin is the SECOND-oldest of thirty: outside a twelve-row window from
+  // either end. Exactly the shape of the job that came back as "not a job".
+  const windowed = await digests_.jobDigest(c, 'paving', {});
+  assert('a job outside the window is genuinely absent from a plain read',
+    !windowed.rows.some(r => /Franklin/.test(r.name)),
+    'which is the situation — the fix is that the model can now go and look');
+
+  const found = await digests_.jobDigest(c, 'paving', { job: 'Franklin Regional Multi' });
+  assert('naming the job finds it wherever it sits in the division',
+    found.rows.length === 1 && /Franklin/.test(found.rows[0].name),
+    JSON.stringify(found.rows.map(r => r.name)));
+  assert('  with its figures',
+    found.rows[0].contract === 3017650, String(found.rows[0].contract));
+  assert('  and the digest says the whole division was searched',
+    found.searchedEveryJob === true && found.searchedFor === 'Franklin Regional Multi'
+      && found.matched === 1,
+    JSON.stringify({ s: found.searchedEveryJob, f: found.searchedFor, m: found.matched }));
+  assert('  so the ordering no longer claims a recency it did not apply',
+    /Nothing was filtered by recency/.test(found.ordering), found.ordering);
+
+  const byNumber = await digests_.jobDigest(c, 'paving', { job: '26049' });
+  assert('the job number finds it too', byNumber.rows.length === 1
+    && /Franklin/.test(byNumber.rows[0].name), JSON.stringify(byNumber.rows));
+
+  const partial = await digests_.jobDigest(c, 'paving', { job: 'franklin' });
+  assert('  and so does part of the name, in any case',
+    partial.rows.length === 1, JSON.stringify(partial.rows.map(r => r.name)));
+
+  const nope = await digests_.jobDigest(c, 'paving', { job: 'Nonexistent Job' });
+  assert('a job that really is not there says so as a fact, not a window',
+    nope.rows.length === 0 && nope.searchedEveryJob === true
+      && /real absence rather than a window/.test(nope.ordering),
+    nope.ordering);
+}
+{
+  // The free-text input, proven not to reach a query.
+  const digests_ = require(root('api/lib/mathis-digests.js'));
+  sqlImpl = makeSql({});
+  const c = { sql: sqlImpl, companyCode: COMPANY, authz: { divisionRoles: { paving: 'level3' } }, division: 'paving' };
+  const NASTY = "Atwood' OR 1=1; DROP TABLE app_data; --";
+  const out = await digests_.jobDigest(c, 'paving', { job: NASTY });
+  const everySent = JSON.stringify(queries);
+  assert('the job name never reaches a query, in text or in values',
+    !everySent.includes('DROP TABLE') && !everySent.includes('OR 1=1'),
+    'it is matched in JS against rows already fetched, never interpolated');
+  assert('  and it matches nothing, rather than matching everything',
+    out.rows.length === 0, JSON.stringify(out.rows.map(r => r.name)));
+  assert('  while what is echoed back is stripped and capped like any typed text',
+    typeof out.searchedFor === 'string' && out.searchedFor.length <= 80);
+}
+{
+  // The limit that turns the remaining case into a correct answer.
+  const res = await call({ message: 'financials for Franklin Regional Multi', division: 'paving' });
+  const modelSaw = JSON.stringify(sent[sent.length - 1]);
+  assert('the model is forbidden from calling a named job nonexistent',
+    /NEVER tell somebody a job they named does not exist/.test(modelSaw)
+      && /unless .searchedEveryJob. is true/.test(modelSaw),
+    'this is the exact answer that was reported from real use');
+  assert('  and told to go and look instead',
+    /call the figures tool again with .job. set/.test(modelSaw), modelSaw.slice(0, 200));
+  assert('  and the tool tells it when to do that',
+    /WHENEVER the user names a specific job/.test(JSON.stringify(sent[0].tools)),
+    'the model has to know the argument is for exactly this');
+  assert('  and the turn still answers', res.statusCode === 200, String(res.statusCode));
 }
 
 // ── 12a. The tool enum is built from this caller's scope ───────────────────
