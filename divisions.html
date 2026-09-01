@@ -964,7 +964,11 @@
     </div>
   </header>
 
-  <!-- ── Manage Users modal (with Supervisors sub-tab) ── -->
+  <!-- ── Manage Users modal (with a Roles sub-tab) ──
+       The sub-tab was called "Supervisors" when the supervisor flag was the only
+       thing on it. It now also carries Driver, which decides whether the
+       Timesheet asks someone the hauling question — and a toggle nobody can find
+       is a toggle nobody sets, which reads as the feature being broken. -->
   <div class="modal-backdrop" id="userModalBackdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="muTitle" onclick="event.stopPropagation()">
       <div class="modal-header">
@@ -974,7 +978,7 @@
 
       <div class="mu-subtabs">
         <button class="mu-subtab-btn active" id="muTabBtnUsers"       onclick="switchUserSubTab('users')">Users<span class="mu-subtab-count" id="muTabCountUsers"></span></button>
-        <button class="mu-subtab-btn"        id="muTabBtnSupervisors" onclick="switchUserSubTab('supervisors')">Supervisors</button>
+        <button class="mu-subtab-btn"        id="muTabBtnSupervisors" onclick="switchUserSubTab('supervisors')">Roles</button>
       </div>
 
       <div class="mu-body" id="muBody">

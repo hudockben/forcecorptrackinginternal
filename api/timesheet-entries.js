@@ -3761,6 +3761,31 @@ module.exports = async (req, res) => {
         const { rows, error } = validateSplit((req.body && req.body.split) || [], existing);
         if (error) return res.status(400).json({ error });
         splitRows = rows;
+
+        // The approver's answer to the hauling question, when they gave one.
+        //
+        // The driver answers on the timesheet, but only a driver the office has
+        // flagged is even asked — and a day already submitted cannot be
+        // answered retrospectively by anyone but payroll. Without this the
+        // classification could not be applied to a single entry already sitting
+        // in the queue, and a driver who forgot could only be fixed by sending
+        // the day back.
+        //
+        // Absent means keep whatever the entry carries, exactly as the PUT does:
+        // approving an ordinary day must never clear a driver's own answer.
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'haul_type')) {
+          const nextHaul = safeHaulType(req.body.haul_type);
+          if (nextHaul !== (existing.haul_type || null)) {
+            await sql`
+              UPDATE timesheet_entries SET haul_type = ${nextHaul}, updated_at = NOW()
+              WHERE id = ${id} AND company_code = ${companyCode}
+            `;
+          }
+          // insertSplitRows prices off this object, so it has to carry the new
+          // answer — re-reading the row would be a second round trip for a value
+          // we already hold.
+          existing.haul_type = nextHaul;
+        }
       }
 
       let quarryInject = null;
@@ -4226,6 +4251,21 @@ module.exports = async (req, res) => {
 
       const { rows: splitRows, error } = validateSplit((req.body && req.body.split) || [], existing);
       if (error) return res.status(400).json({ error });
+
+      // Same rule as the approve path: an answer supplied here wins, an absent
+      // key leaves the entry's own alone. This is the only way to correct a
+      // mis-classified haul on a day that is already approved, short of
+      // un-approving it — and the rows are about to be re-priced from it below.
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'haul_type')) {
+        const nextHaul = safeHaulType(req.body.haul_type);
+        if (nextHaul !== (existing.haul_type || null)) {
+          await sql`
+            UPDATE timesheet_entries SET haul_type = ${nextHaul}, updated_at = NOW()
+            WHERE id = ${id} AND company_code = ${companyCode}
+          `;
+        }
+        existing.haul_type = nextHaul;
+      }
 
       // Delete the prior injected rows for this entry, then insert the new
       // split. We don't wrap this in a transaction (neon-serverless has

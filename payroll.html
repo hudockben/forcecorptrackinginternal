@@ -4145,18 +4145,58 @@
       const map = { vacation:'Vacation', sick:'Sick', jury_duty:'Jury Duty', bereavement:'Bereavement', holiday:'Holiday' };
       return map[t] || t;
     }
+    // The approver's copy of the hauling question.
+    //
+    // The driver answers it on his timesheet, but only a driver the office has
+    // FLAGGED is asked, and a day already submitted cannot be answered
+    // retrospectively by anyone but payroll. Without this the whole
+    // classification could not be applied to a single entry already sitting in
+    // the queue — which is every entry on the day it is switched on — and a
+    // driver who simply forgot could only be fixed by sending the day back.
+    //
+    // Shown on every turf/paving/kiewit approval rather than only for flagged
+    // drivers: payroll is the one place that can see the truck on the row and
+    // the labour rate beside it at the same time, and "nobody remembered to
+    // flag him" is exactly the case this has to catch.
+    function splitHaulPickerHtml(entry) {
+      const cur = (entry && (entry.haul_type || '')) || '';
+      const opt = (v, label) =>
+        `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
+      return `<div style="grid-column:1/-1;display:flex;align-items:center;gap:0.5rem;margin-top:0.4rem;flex-wrap:wrap">
+        <label for="splitHaulPick" style="font-weight:600">Was this a haul?</label>
+        <select id="splitHaulPick" style="padding:0.3rem 0.4rem;min-width:190px">
+          ${opt('',        'No — worked on site')}
+          ${opt('on_site', 'Yes — hauled on site')}
+          ${opt('off_site','Yes — hauled to &amp; from site')}
+        </select>
+        <span style="opacity:0.75">Sets the labour rate and the prevailing-wage split for this day.</span>
+      </div>`;
+    }
+
+    // Re-render the consequences the moment the answer changes, so the approver
+    // sees what they just decided rather than finding out in the cost tab.
+    function onSplitHaulChange() {
+      const el = document.getElementById('splitHaulPick');
+      if (!el || !splitEntry) return;
+      splitEntry.haul_type = el.value || null;
+      const note = document.getElementById('splitHaulNote');
+      if (note) note.outerHTML = splitHaulNoteHtml(splitEntry) ||
+        '<div id="splitHaulNote" hidden></div>';
+      renderSplitTally();
+    }
+
     // What the driver answered on this job block, said plainly in the approve
     // modal. Without it a supervisor approves a day and then finds every labour
     // row priced at zero in the cost tab with nothing anywhere explaining it —
     // which reads as the rate lookup having failed, and gets "fixed" by hand.
     function splitHaulNoteHtml(entry) {
       const t = entry && entry.haul_type;
-      if (t !== 'on_site' && t !== 'off_site') return '';
+      if (t !== 'on_site' && t !== 'off_site') return '<div id="splitHaulNote" hidden></div>';
       const where = t === 'on_site' ? 'on the site' : 'to &amp; from the site';
       const wage  = (t === 'off_site' && entry.prevailing_wage === true)
         ? ' Because the driver never worked the site, these hours pay at the <strong>standard</strong> rate even though the job is prevailing wage.'
         : '';
-      return `<div style="grid-column:1/-1;margin-top:0.4rem;padding:0.5rem 0.6rem;`
+      return `<div id="splitHaulNote" style="grid-column:1/-1;margin-top:0.4rem;padding:0.5rem 0.6rem;`
         + `border:1px solid var(--border);border-radius:6px;line-height:1.45">`
         + `<strong>Hauled ${where}.</strong> The labour rows below post at a `
         + `<strong>$0 labour rate</strong> — the driver is already inside the truck's `
@@ -4902,8 +4942,11 @@
         <div>Travel hours: <strong>${num2(travel)}</strong></div>
         <div>Total to allocate: <strong>${num2(required)}</strong></div>
         <div>Supervisor on entry: <strong>${escapeHtml(entry.supervisor_name || '—')}</strong></div>
+        ${splitHaulPickerHtml(entry)}
         ${splitHaulNoteHtml(entry)}
       `;
+      const hp = document.getElementById('splitHaulPick');
+      if (hp) hp.addEventListener('change', onSplitHaulChange);
 
       document.getElementById('splitSaveBtn').textContent =
         mode === 'approve' ? 'Approve & Inject' : 'Save Split';
@@ -5780,7 +5823,14 @@
           {
             method: 'POST',
             headers: authHeaders(true),
-            body: JSON.stringify({ split: splitRows }),
+            // haul_type rides along with the split so one click settles both the
+            // allocation and the classification. Sent on every save, including
+            // the empty answer, because the picker always shows a real choice —
+            // the approver looked at it either way.
+            body: JSON.stringify({
+              split: splitRows,
+              haul_type: (document.getElementById('splitHaulPick') || {}).value || '',
+            }),
           }
         );
         const j = await res.json();
