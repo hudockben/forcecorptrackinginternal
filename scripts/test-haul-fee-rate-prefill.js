@@ -214,6 +214,36 @@ console.log('\n[what the route will serve]');
 // boxes actually mounted, so a fee box that is not on screen reads as absent
 // rather than as an empty one — which is the difference between "no fee asked
 // for" and "fee deliberately left blank".
+/**
+ * Evaluate one slice of payroll.html, and say something useful when it will
+ * not evaluate.
+ *
+ * These suites lift ranges of the page by string anchors. Anything added
+ * inside a range that reaches OUTSIDE it — a style constant declared 1,600
+ * lines earlier, a helper defined near the top — takes the whole file down
+ * with a bare `ReferenceError: X is not defined` and a stack pointing at
+ * `evalmachine.<anonymous>`, before the first assertion runs. That has now
+ * happened three times, and each one cost an investigation to work out that
+ * the page was fine and the harness was missing a global.
+ *
+ * So the third time is the last: name the identifier and say what to do.
+ */
+function evalSlice(code, ctx, what) {
+  try {
+    vm.runInContext(code, ctx);
+  } catch (err) {
+    const missing = /^(\w+) is not defined$/.exec(err.message);
+    if (missing) {
+      throw new Error(
+        `${what} reads "${missing[1]}", which payroll.html declares outside the slice `
+        + `lifted here. The page is fine; this harness is missing a global. Add `
+        + `\`${missing[1]}\`` + ` to the ctx object above — a no-op stub is enough unless an `
+        + `assertion below is actually about it.`);
+    }
+    throw err;
+  }
+}
+
 function makeSandbox({ entry, rates, dust }) {
   const els = new Map();
   const mount = id => {
@@ -230,7 +260,16 @@ function makeSandbox({ entry, rates, dust }) {
     truckingNoteRefresh: () => {},
     escapeHtml: s => String(s == null ? '' : s),
     num2: n => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2),
-    TK_LABEL: '', TK_INPUT: '',
+    // Style constants the sliced block reads but does not define — they are
+    // declared hundreds of lines earlier in payroll.html, outside every slice
+    // taken here. Stubbed empty because no assertion below is about styling;
+    // what matters is that the block evaluates at all. Q_LABEL_STYLE joined
+    // the list when the EES billing fields moved into the gate slice, and its
+    // absence took both of these suites down before their first assertion.
+    TK_LABEL: '', TK_INPUT: '', Q_LABEL_STYLE: '', Q_INPUT_STYLE: '',
+    // Wires a modal's backdrop to its close handler. The gate slice calls it
+    // at evaluation time for the EES modal; nothing here is about backdrops.
+    bindBackdropClose: () => {},
     // The roster as truckListsLoad leaves it. null = still in flight.
     truckLists: rates === null ? null : { units: [], customers: [], rates },
     document: {
@@ -250,9 +289,9 @@ function makeSandbox({ entry, rates, dust }) {
   const gate    = slice(SRC, '    const EES_JOB_IDS =', '    function truckingFieldsHtml(', 'entryNeedsTrucking');
   const model   = slice(SRC, '    // ── The hauls a day is split into',
                              "    const TK_LABEL = 'display:flex", 'the haul model');
-  vm.runInContext(helpers, ctx);
-  vm.runInContext(gate, ctx);
-  vm.runInContext(model, ctx);
+  evalSlice(helpers, ctx, 'the roster accessors');
+  evalSlice(gate, ctx, 'the division gate');
+  evalSlice(model, ctx, 'the haul model');
   const run = code => vm.runInContext(code, ctx);
   ctx.__opts = dust ? dust.options : null;
   ctx.__cos  = dust ? dust.companies : null;
