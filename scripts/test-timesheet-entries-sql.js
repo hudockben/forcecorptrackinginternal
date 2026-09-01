@@ -250,6 +250,8 @@ async function run() {
 
   await haulFieldsSurviveAnEdit();
   await theUnitIsOnlyWrittenOnceTheRowExists();
+  await eesFieldsSurviveAnEdit();
+  await eesRowIsEditableWithoutUnapproving();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   await client.end();
@@ -382,3 +384,169 @@ run().catch(async err => {
   try { await client.end(); } catch { /* already closed */ }
   process.exit(1);
 });
+
+// A dust day on a standing EES activity carries six columns no other division
+// has — unit, customer, location, name, job number and billing — and payroll's
+// entry-edit form has inputs for none of them: it edits the day, not the EES
+// row. It therefore PUTs a body with all six keys missing, which normalized to
+// null and silently wiped what the driver typed, resetting Billing to
+// Non-Billable so the tab billed nobody for a day that was Billable. Exactly
+// the failure haulFieldsSurviveAnEdit covers for the two haul fields, and the
+// same rule fixes it: absent means keep, present still wins, blank included.
+async function eesFieldsSurviveAnEdit() {
+  console.log('\n[a payroll edit keeps the EES fields it does not ask about]');
+  const EES = {
+    entry_type: 'daily', work_date: '2026-08-14', division: 'dust',
+    job_id: 'ees:preloading', job_label: 'EES - Pre Loading',
+    start_time: '07:00', end_time: '15:00', lunch_break: false,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: 'PRE LOADED TRUCK',
+    ees_unit: 'T-12', ees_customer: 'Environmental Energy Services',
+    ees_location: 'EES', ees_name: 'Contact', ees_job_number: 'J-900',
+    ees_billing: 'Billable',
+  };
+  const made = await call('POST', {}, EES, FIELD);
+  const eid  = made.body.entry.id;
+  // Payroll may only edit a submitted or approved entry, so put it in the state
+  // it is actually in when the office opens the edit modal on it.
+  await call('POST', { action: 'submit', id: eid }, {}, FIELD);
+  const born = (await client.query(
+    `SELECT ees_unit, ees_billing FROM timesheet_entries WHERE id=$1`, [eid])).rows[0];
+  assert('the driver\'s EES fields are on the entry', born.ees_unit === 'T-12'
+    && born.ees_billing === 'Billable', JSON.stringify(born));
+
+  // Exactly the shape payroll.html's edit modal sends — no ees_* keys at all.
+  const edited = await call('PUT', { id: eid }, {
+    entry_type: 'daily', work_date: '2026-08-14', division: 'dust',
+    job_id: 'ees:preloading', job_label: 'EES - Pre Loading',
+    start_time: '06:30', end_time: '15:00',
+    travel_to_site_hours: '0', travel_to_shop_hours: '0',
+    lunch_break: false, operated_equipment: false,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: 'PRE LOADED TRUCK',
+  }, ADMIN);
+  assert('the edit goes through', edited.statusCode === 200, JSON.stringify(edited.body));
+  const kept = (await client.query(
+    `SELECT ees_unit, ees_customer, ees_location, ees_name, ees_job_number, ees_billing,
+            start_time
+       FROM timesheet_entries WHERE id=$1`, [eid])).rows[0];
+  assert('the unit survives it',       kept.ees_unit === 'T-12', JSON.stringify(kept));
+  assert('the customer survives it',   kept.ees_customer === 'Environmental Energy Services');
+  assert('the location survives it',   kept.ees_location === 'EES');
+  assert('the name survives it',       kept.ees_name === 'Contact');
+  assert('the job number survives it', kept.ees_job_number === 'J-900');
+  // The one that silently cost money: a Billable day reset to Non-Billable is a
+  // day Intercompany stops picking up, with nothing on screen to say so.
+  assert('and Billable is not reset to Non-Billable', kept.ees_billing === 'Billable',
+    JSON.stringify(kept));
+  assert('while the edit it DID ask about landed', String(kept.start_time).startsWith('06:30'),
+    String(kept.start_time));
+
+  // Present still wins — this is how the driver's own form clears a mistake.
+  await call('PUT', { id: eid }, Object.assign({}, EES, {
+    ees_unit: '', ees_job_number: '', ees_billing: 'Non-Billable',
+  }), ADMIN);
+  const cleared = (await client.query(
+    `SELECT ees_unit, ees_job_number, ees_billing FROM timesheet_entries WHERE id=$1`, [eid])).rows[0];
+  assert('sending them blank still clears them',
+    !cleared.ees_unit && !cleared.ees_job_number && cleared.ees_billing === 'Non-Billable',
+    JSON.stringify(cleared));
+
+  // And a job change off the standing activities must not let stale EES columns
+  // ride along — normalizeEntryBody nulls them off a non-EES job on purpose.
+  await call('PUT', { id: eid }, Object.assign({}, EES, { ees_unit: 'T-99' }), ADMIN);
+  await call('PUT', { id: eid }, {
+    entry_type: 'daily', work_date: '2026-08-14', division: 'dust',
+    job_id: 'CNX', job_label: 'CNX',
+    start_time: '06:30', end_time: '15:30',
+    travel_to_site_hours: '0', travel_to_shop_hours: '0',
+    lunch_break: false, operated_equipment: false,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: '',
+  }, ADMIN);
+  const moved = (await client.query(
+    `SELECT ees_unit FROM timesheet_entries WHERE id=$1`, [eid])).rows[0];
+  assert('moving the entry off an EES job drops the unit', !moved.ees_unit, JSON.stringify(moved));
+  await call('DELETE', { id: eid }, {}, ADMIN);
+}
+
+// An approved EES day used to be uneditable from payroll in both directions:
+// the PUT refuses while an injected row exists ("un-approve it first"), and
+// resplit — the door every other division uses to correct an injected row in
+// place — answered 400 because its branches only knew turf/paving/kiewit,
+// quarry and hauling. So the six columns the tab shows could not be corrected
+// at all without deleting the day. This is that door.
+async function eesRowIsEditableWithoutUnapproving() {
+  console.log('\n[an approved EES day can be corrected in place]');
+  const EES = {
+    entry_type: 'daily', work_date: '2026-08-15', division: 'dust',
+    job_id: 'ees:preloading', job_label: 'EES - Pre Loading',
+    start_time: '07:00', end_time: '15:00', lunch_break: false,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: 'PRE LOADED TRUCK',
+    ees_unit: '', ees_customer: '', ees_location: '', ees_name: '',
+    ees_job_number: '', ees_billing: 'Non-Billable',
+  };
+  const made = await call('POST', {}, EES, FIELD);
+  const eid  = made.body.entry.id;
+  await call('POST', { action: 'submit', id: eid }, {}, FIELD);
+  const appr = await call('POST', { action: 'approve', id: eid }, {}, ADMIN);
+  assert('the day approves', appr.statusCode === 200, JSON.stringify(appr.body));
+
+  const blobRows = async () => {
+    const r = await client.query(
+      `SELECT value FROM app_data WHERE key='FCT:dust_ees_other_rows'`);
+    const v = r.rows[0] && r.rows[0].value;
+    return Array.isArray(v) ? v.filter(x => String(x.id || '').startsWith(`tse-${eid}-`)) : [];
+  };
+  const posted = await blobRows();
+  assert('approval posted one EES Other row', posted.length === 1, JSON.stringify(posted));
+  assert('and it billed nobody yet', posted[0].billing === 'Non-Billable');
+
+  // The dust office types its rate on the row — the one column the tab owns.
+  const all = (await client.query(
+    `SELECT value FROM app_data WHERE key='FCT:dust_ees_other_rows'`)).rows[0].value;
+  all.find(r => r.id === posted[0].id).rate = '95';
+  await client.query(
+    `UPDATE app_data SET value=$1 WHERE key='FCT:dust_ees_other_rows'`,
+    [JSON.stringify(all)]);
+
+  // Payroll opens Edit Row and fills in what the driver left off.
+  const saved = await call('POST', { action: 'resplit', id: eid }, { ees: {
+    unit: 'T-12', customer: 'Environmental Energy Services', location: 'EES',
+    name: 'Contact', job_number: 'J-900', billing: 'Billable',
+  } }, ADMIN);
+  assert('the edit goes through without un-approving', saved.statusCode === 200,
+    JSON.stringify(saved.body));
+
+  const onEntry = (await client.query(
+    `SELECT status, ees_unit, ees_customer, ees_job_number, ees_billing
+       FROM timesheet_entries WHERE id=$1`, [eid])).rows[0];
+  assert('the entry stays approved', onEntry.status === 'approved', onEntry.status);
+  assert('and carries the corrected columns', onEntry.ees_unit === 'T-12'
+    && onEntry.ees_job_number === 'J-900' && onEntry.ees_billing === 'Billable',
+    JSON.stringify(onEntry));
+
+  const after = await blobRows();
+  assert('still exactly one row', after.length === 1, JSON.stringify(after));
+  assert('the row id is unchanged', after[0].id === posted[0].id,
+    `${posted[0].id} -> ${after[0].id}`);
+  assert('the tab shows the corrected unit',     after[0].unit === 'T-12');
+  assert('the tab shows the corrected customer', after[0].customer === 'Environmental Energy Services');
+  assert('the tab now bills the day',            after[0].billing === 'Billable');
+  // The whole reason the edit re-injects from the entry instead of writing the
+  // row: the office's rate is not payroll's to overwrite, and a correction that
+  // wiped it would take the figure the day bills at with it.
+  assert('and the office\'s rate is untouched',  after[0].rate === '95', JSON.stringify(after[0]));
+
+  // A billing value the tab cannot render is refused rather than written —
+  // Intercompany reads this column positively, so a third value un-bills.
+  const bad = await call('POST', { action: 'resplit', id: eid }, {
+    ees: { billing: 'Maybe' },
+  }, ADMIN);
+  assert('an unknown billing value is a 400', bad.statusCode === 400, JSON.stringify(bad.body));
+  const untouched = await blobRows();
+  assert('and changed nothing', untouched[0].billing === 'Billable' && untouched[0].unit === 'T-12',
+    JSON.stringify(untouched[0]));
+
+  // Un-approve still sweeps the row it just edited.
+  await call('POST', { action: 'unapprove', id: eid }, {}, ADMIN);
+  assert('un-approve takes the row back', (await blobRows()).length === 0);
+  await call('DELETE', { id: eid }, {}, ADMIN);
+}

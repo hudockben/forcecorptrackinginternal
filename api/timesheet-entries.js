@@ -281,6 +281,42 @@ function couldHaveEesOtherRows(entry) {
 // a re-injection must preserve this and overwrite the rest.
 const EES_OTHER_TAB_FIELDS = ['rate'];
 
+// The two values the tab's Billing column accepts, mirroring the select in
+// timesheet.html. Intercompany only picks up rows marked Billable, so a typo
+// arriving as a third value would silently un-bill the day — the validator
+// below refuses it rather than writing it.
+const EES_BILLING_VALUES = ['Non-Billable', 'Billable'];
+
+/**
+ * Validate the six EES columns a standing-EES day carries onto its row.
+ *
+ * Two doors open onto these columns — the driver's form (through
+ * normalizeEntryBody) and payroll's Edit Row (through action=resplit) — so the
+ * caps here are deliberately normalizeEntryBody's. Drift them and the same
+ * value is accepted at one door and truncated at the other, which reads as the
+ * office losing a job number it definitely typed.
+ *
+ * Blank comes back as null, not '': that is what the columns hold for "not
+ * filled in", and insertEesOtherRow falls back to the job label for a customer
+ * left empty. Billing alone defaults rather than nulls, because a row with no
+ * billing state is one Intercompany would have to guess about.
+ */
+function validateEesInjection(raw) {
+  const e = (raw && typeof raw === 'object') ? raw : {};
+  const billing = safeStr(e.billing, 50) || 'Non-Billable';
+  if (!EES_BILLING_VALUES.includes(billing)) {
+    return { error: `billing must be one of: ${EES_BILLING_VALUES.join(', ')}` };
+  }
+  return { fields: {
+    unit:       safeStr(e.unit, 100),
+    customer:   safeStr(e.customer, 500),
+    location:   safeStr(e.location, 500),
+    name:       safeStr(e.name, 500),
+    job_number: safeStr(e.job_number, 100),
+    billing,
+  } };
+}
+
 function safeDate(v) {
   if (!v) return null;
   // A DATE column comes back from the driver as a Date at LOCAL midnight, so
@@ -3902,6 +3938,62 @@ module.exports = async (req, res) => {
         return res.json(await entryJson(sql, companyCode, existing));
       }
 
+      // Dust EES re-edit: the standing-activity day (Pre Loading / Washing),
+      // whose approval posts one row to the division's EES Other tab. Disjoint
+      // from both gates below by construction — needsTruckTrackingRow and
+      // needsDustTrackingRow each exclude an EES job, because that work is not a
+      // customer haul — so the order of these branches carries no meaning.
+      //
+      // Everything the tab shows is timesheet-fed except the office's own rate,
+      // and these six columns are the part payroll can correct. So the edit
+      // writes them back onto the entry FIRST and re-injects from it: the row is
+      // rebuilt from the entry on every later re-injection, and writing only the
+      // row would be reverted by the next un-approve/re-approve.
+      // insertEesOtherRow rewrites this entry's row in place and carries the
+      // rate across (EES_OTHER_TAB_FIELDS), so correcting a job number cannot
+      // cost the dust office the figure it bills at.
+      // The INJECTION gate, not couldHaveEesOtherRows: that one is deliberately
+      // wider — any dust entry — because teardown must also find the per-leg
+      // rows a customer haul posts. Editing one of those is the haul modal's
+      // job, below. This branch owns only the standing-activity row, so it asks
+      // the same question insertEesOtherRow's writer does.
+      if (existing.entry_type === 'daily'
+          && existing.division === 'dust' && isEesJob(existing.job_id)) {
+        const { fields, error } = validateEesInjection(req.body && req.body.ees);
+        if (error) return res.status(400).json({ error });
+        const [reEes] = await sql`
+          UPDATE timesheet_entries SET
+            ees_unit       = ${fields.unit},
+            ees_customer   = ${fields.customer},
+            ees_location   = ${fields.location},
+            ees_name       = ${fields.name},
+            ees_job_number = ${fields.job_number},
+            ees_billing    = ${fields.billing},
+            updated_at     = NOW()
+          WHERE id = ${id} AND company_code = ${companyCode}
+          RETURNING *
+        `;
+        const eesEntry = reEes || existing;
+        try {
+          await insertEesOtherRow(sql, companyCode, eesEntry);
+        } catch (injErr) {
+          console.error('[timesheet-entries] EES resplit failed:', injErr.message);
+          // The columns landed and the row did not, so the two disagree until a
+          // retry — say which half held, or payroll re-types an edit that is
+          // already on the entry and wonders why the tab never moved.
+          return res.status(500).json({
+            error: 'Edit failed: the entry was updated but the EES Other row could not be rewritten. Retry.',
+            detail: injErr.message,
+          });
+        }
+        await writeAudit(
+          sql, companyCode, payload, id, 'ADMIN_EDIT',
+          { resplit: true, ees_other: true, ees_billing: fields.billing },
+          dbToEntry(existing),
+        );
+        return res.json(await entryJson(sql, companyCode, eesEntry));
+      }
+
       // Trucking re-edit: rewrite the injected Truck Tracking row with the new
       // haul fee / division / unit. insertTruckingRow removes the prior injected
       // row for this entry before appending, so there's no separate delete step.
@@ -4484,6 +4576,23 @@ module.exports = async (req, res) => {
       const keepUnit    = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_unit');
       const keepTruckDesc = staysTruck && !Object.prototype.hasOwnProperty.call(body, 'truck_description');
 
+      // The same rule again for the six EES columns, for the same reason and
+      // with the same failure the two above were added to stop. payroll.html's
+      // entry-edit form has no Unit / Customer / Location / Name / Job Number /
+      // Billing input — it edits the day, not the EES row — so it sends none of
+      // these keys, and taking absent as "clear them" threw away what the driver
+      // filled in on any correction to the hours or the job, and reset Billing
+      // to Non-Billable. The tab then bills nobody for a day that was Billable.
+      // Absent means keep; present still wins, blank included, so timesheet.html
+      // can still clear a field the driver filled in by mistake, and payroll's
+      // Edit Row (action=resplit) writes them through its own path.
+      // Only while the entry is STILL an EES day, though: normalizeEntryBody
+      // forces these to null off an EES job on purpose, so a job change to a
+      // customer haul must not let stale EES columns ride along.
+      const staysEes = data.entry_type === 'daily'
+        && data.division === 'dust' && isEesJob(data.job_id);
+      const keepEes  = f => staysEes && !Object.prototype.hasOwnProperty.call(body, f);
+
       const [updated] = await sql`
         UPDATE timesheet_entries SET
           entry_type         = ${data.entry_type},
@@ -4507,12 +4616,18 @@ module.exports = async (req, res) => {
                                     THEN truck_unit ELSE ${data.truck_unit}::text END,
           truck_description  = CASE WHEN ${keepTruckDesc}::boolean
                                     THEN truck_description ELSE ${data.truck_description}::text END,
-          ees_unit           = ${data.ees_unit},
-          ees_customer       = ${data.ees_customer},
-          ees_location       = ${data.ees_location},
-          ees_name           = ${data.ees_name},
-          ees_job_number     = ${data.ees_job_number},
-          ees_billing        = ${data.ees_billing},
+          ees_unit           = CASE WHEN ${keepEes('ees_unit')}::boolean
+                                    THEN ees_unit ELSE ${data.ees_unit}::text END,
+          ees_customer       = CASE WHEN ${keepEes('ees_customer')}::boolean
+                                    THEN ees_customer ELSE ${data.ees_customer}::text END,
+          ees_location       = CASE WHEN ${keepEes('ees_location')}::boolean
+                                    THEN ees_location ELSE ${data.ees_location}::text END,
+          ees_name           = CASE WHEN ${keepEes('ees_name')}::boolean
+                                    THEN ees_name ELSE ${data.ees_name}::text END,
+          ees_job_number     = CASE WHEN ${keepEes('ees_job_number')}::boolean
+                                    THEN ees_job_number ELSE ${data.ees_job_number}::text END,
+          ees_billing        = CASE WHEN ${keepEes('ees_billing')}::boolean
+                                    THEN ees_billing ELSE ${data.ees_billing}::text END,
           split_group_id     = ${split.split_group_id},
           split_index        = ${split.split_index},
           split_count        = ${split.split_count},
