@@ -715,10 +715,21 @@ console.log('\n══════════ the prompt ═══════�
     Array.isArray(res.body.steps) && /Paving/.test(res.body.steps.join(' ')),
     JSON.stringify(res.body.steps));
   assert('  on the model this was costed for', body.model === 'claude-opus-5', body.model);
-  assert('  with adaptive thinking at low effort',
+  assert('  with adaptive thinking, which stays on at every effort',
     body.thinking && body.thinking.type === 'adaptive'
-      && body.output_config && body.output_config.effort === 'low',
-    JSON.stringify({ t: body.thinking, o: body.output_config }));
+      && sent[0].thinking && sent[0].thinking.type === 'adaptive',
+    JSON.stringify({ first: sent[0].thinking, last: body.thinking }));
+  // Effort is spent where it buys something. Deciding which tool to call,
+  // given a division and a question, needs almost none. Reading the table that
+  // comes back — the outlier, why two figures differ, which job to worry about
+  // — is the whole job, and starving that turn is what made answers read like
+  // a lookup rather than a colleague.
+  assert('  fetching at low effort, because picking a tool is not the hard part',
+    sent[0].output_config && sent[0].output_config.effort === 'low',
+    JSON.stringify(sent[0].output_config));
+  assert('  and answering at medium, which is where the thinking pays',
+    body.output_config && body.output_config.effort === 'medium',
+    JSON.stringify(body.output_config));
   assert('  and headroom so a financial answer is not truncated mid-figure',
     body.max_tokens >= 4096, String(body.max_tokens));
 
@@ -1372,6 +1383,42 @@ console.log('\n══════════ what a digest is about ═══�
     'the scope is the point, not the fetch');
   assert('  and still says a colleague\'s records are never available',
     /never a colleague/i.test(pCtx) && personal.statusCode === 200);
+
+  // Fetching the number was being treated as the whole answer. "At most a few
+  // sentences" was a ceiling on depth, and it fell hardest on exactly the
+  // questions worth asking a colleague rather than a report.
+  assert('the model is told the figure is the start of the answer, not all of it',
+    /MORE THAN THE FIGURE/.test(prompt));
+  assert('  and asked to explain what a metric means when that is the question',
+    /is a question about the metric, not a request for it/.test(prompt));
+  assert('  and to have a view when one is asked for',
+    /wants a named job and a reason, not a list/.test(prompt)
+      && /refusing to is the unhelpful answer/.test(prompt),
+    '"which should I worry about" is answerable and deflecting it is the bad answer');
+  assert('  with every figure behind that judgement still one it fetched',
+    /every figure behind the judgement is one you fetched/.test(prompt),
+    'having a view is not a licence to invent the numbers under it');
+  assert('  and to name what is missing rather than stopping at "I do not have it"',
+    /Name the missing thing/.test(prompt));
+  assert('  and to ask, once, when a question genuinely has two readings',
+    /never as a way of avoiding an answer you could give/.test(prompt),
+    'a clarifying question used as a dodge is worse than a wrong guess');
+  assert('  with depth matched to the question rather than to a word count',
+    /Match the depth to the question rather than to a word count/.test(prompt)
+      && !/at most a few sentences/.test(prompt),
+    'the old ceiling cut short exactly the answers worth having');
+
+  // The limits were written as prohibitions, but they are also the clearest
+  // short account of what each figure means — and that is most of what
+  // somebody is asking when they ask why two numbers differ.
+  assert('the limits are offered as explanation, not only as restriction',
+    /best short explanation of what each figure MEANS/.test(prompt)
+      && /not on what you may teach/.test(prompt));
+
+  // The panel paints the reply as text, so markdown arrives as punctuation.
+  assert('  and formatting that would show up as literal characters is ruled out',
+    /they arrive on screen as literal characters/.test(prompt)
+      && /Line breaks and simple/.test(prompt));
 
   assert('naming colleagues the digest itself carries is allowed',
     /Where a digest names colleagues/.test(prompt)

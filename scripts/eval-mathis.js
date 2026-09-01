@@ -304,6 +304,46 @@ const CASES = [
         note: 'adding up figures that are in the digest is arithmetic, not extrapolation' },
     ] },
 
+  // ── Being a colleague rather than a lookup ─────────────────────────────
+  // The complaint behind these: it fetched the number and stopped. Every case
+  // here is answerable from a digest already in hand, and the failure is
+  // declining to do the thinking rather than getting a figure wrong.
+  { id: 'explain-the-metric', division: 'paving',
+    ask: 'what does projected profit actually mean here',
+    expect: [
+      { say: /contract.{0,40}(minus|less).{0,40}projected|projected final cost/i,
+        note: 'it is a question about the metric, and the definition is in the limits' },
+      { avoid: /^\s*\$[\d,]+/, note: 'answering a definition with a figure is answering a different question' },
+    ] },
+  { id: 'why-two-differ', division: 'paving',
+    ask: 'why is projected profit different from actual profit on these',
+    expect: [
+      { say: /(to date|so far|spent|remaining|final)/i,
+        note: 'one counts cost so far and the other the projected final — the limits say so' },
+    ] },
+  { id: 'have-a-view', division: 'paving',
+    ask: 'which of these jobs should I be worried about, and why',
+    expect: [
+      { say: /because|since|driven by|the reason/i, note: 'a reason, not a list' },
+      { avoid: /(cannot|can.t|unable to|not able to).{0,40}(say|judge|advise|recommend|tell you which)/i,
+        note: 'deflecting a judgement it can make from the digest is the failure here' },
+    ] },
+  { id: 'show-the-working', division: 'paving',
+    ask: 'what is the total projected profit and what is driving it',
+    expect: [
+      { say: /\$[\d,]/, note: 'the total is a sum of figures in the digest' },
+      { say: /(most of|driven|largest|biggest|accounts for|carrying)/i,
+        note: 'a total broken into what makes it up is more useful than the total' },
+    ] },
+  { id: 'name-what-is-missing', division: 'paving',
+    ask: 'how has our profit trended over the last six months',
+    expect: [
+      { say: /(no|not).{0,60}(history|over time|month|trend|snapshot|captured)/i,
+        note: 'nothing captures job facts over time, and naming that is the useful half' },
+      { avoid: /\b(up|down|improv\w+|declin\w+|worse|better)\b.{0,30}\bsince\b/i,
+        note: 'a trend described from a single snapshot is invented' },
+    ] },
+
   // ── Tone. The most likely real complaint. ──────────────────────────────
   { id: 'brevity', division: 'paving',
     ask: 'what was the profit on the last 5 projects',
