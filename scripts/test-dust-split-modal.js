@@ -70,7 +70,10 @@ console.log('[the payload the modal and the server agree on]');
     /typed\.toLowerCase\(\) === entryCo\.toLowerCase\(\)/.test(SRC) && /typed === entryCo/.test(SRC));
   assert('and the same legs go to the Truck Tracking half',
     !!save && /trucking\.rows = haulLegs\.map/.test(save[0])
-    && /haul_fee:\s*leg\.haul_fee/.test(save[0]));
+    // The fee rides along per haul, but only where the haul has one: a box
+    // nobody ever filled in is left off, and the server prices that haul from
+    // its customer's agreed rate rather than posting it at no fee.
+    && /if \(feeAnswered\(leg\)\) row\.haul_fee = leg\.haul_fee;/.test(save[0]));
   assert('a haul with no hours is refused before it can bill nothing',
     !!save && /has no hours/.test(save[0]));
   // The per-haul destination. Both branches have to say which grid they are,

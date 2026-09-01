@@ -49,7 +49,10 @@
  *     Haul fee and the division column come from payroll's modal; `unit` is
  *     pre-filled there from the entry, and a value sent back is written onto
  *     the entry's truck_unit as well as the row. Omitting `unit` (bulk approve)
- *     keeps the entry's own.
+ *     keeps the entry's own. Omitting `haul_fee` — bulk approve again, whose
+ *     one box cannot price a card spanning customers — bills the haul at that
+ *     customer's rate from the Trucking tab's Manage Lists; a fee sent blank is
+ *     payroll's own answer and posts the row unpriced.
  *     A dust customer haul may send `dust` as { rows: [...] }, one element per
  *     haul the day was split into. Each carries `dest` — "dust" for the Dust
  *     Control Tracking grid (vehicle rates x hours + UB gallons) or "ob" for
@@ -1106,6 +1109,54 @@ function truckFee(v) {
   return { value: Math.round(n * 10000) / 10000 };
 }
 
+/* ── What the office bills this customer ──────────────────────────────────
+   A haul's fee is a fact about the company it hauled for: set once, beside its
+   name in the Trucking tab's Manage Lists, and read from there by everything
+   that prices a haul. The tab drops it onto a row the moment you name a
+   customer on one; payroll's approve modal pre-fills the Haul Fee box from it.
+
+   This is the same rate, read on the server, for the hauls nobody priced by
+   hand. Bulk approve is why it has to exist: ONE fee box prices a whole card,
+   so a card holding days for three customers cannot be filled in at all, and
+   every row it approved used to post with no fee — reading as $0/hr in the
+   trucking office's tab for work that had an agreed rate all along.
+
+   Rates have no normalized table (dropdown_lists stores a customer as a bare
+   name), so the lists blob is the only place they exist. Read exactly as
+   api/truck-division.js's ?lists=1 route reads them — the company's own key
+   first, the legacy global one behind it — and normalized the same way: a rate
+   that is blank or non-numeric is not a price, and a fee filled in from one
+   would read as a figure somebody is being charged. */
+async function truckCustomerRates(sql, companyCode) {
+  const [scopedRows, legacyRows] = await Promise.all([
+    sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_truck_division_lists'}`,
+    sql`SELECT value FROM app_data WHERE key = 'fct_truck_division_lists'`,
+  ]);
+  const asObj = v => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+  const lists = asObj(scopedRows[0]?.value) || asObj(legacyRows[0]?.value);
+  const raw   = asObj(lists && lists.rates) || {};
+  const rates = {};
+  for (const key of Object.keys(raw)) {
+    const name = String(key).trim();
+    const val  = String(raw[key] == null ? '' : raw[key]).trim();
+    if (name && val && !isNaN(parseFloat(val))) rates[name] = val;
+  }
+  return rates;
+}
+
+// Matched on case as well as space, exactly as trucking.html and payroll.html
+// match it: the LIST is a set of spellings ("kovalchick" and "Kovalchick" are
+// two entries there because each was typed onto a row), while a rate is a fact
+// about the COMPANY — a haul typed in lower case bills the same customer at the
+// same price.
+const _truckRateKey = v => String(v == null ? '' : v).trim().toLowerCase();
+function truckRateFor(rates, name) {
+  const k = _truckRateKey(name);
+  if (!k || !rates) return '';
+  const hit = Object.keys(rates).find(n => _truckRateKey(n) === k);
+  return hit ? String(rates[hit]) : '';
+}
+
 /**
  * Validate ONE leg of a split day's Truck Tracking payload. Returns { fields }
  * or { error }.
@@ -1141,7 +1192,18 @@ function validateTruckingInjection(raw) {
   const t = (raw && typeof raw === 'object') ? raw : {};
   const fee = truckFee(t.haul_fee);
   if (fee.error) return { error: fee.error };
-  const haul_fee = fee.value;
+  // An ABSENT fee is not a blank one, on the same terms as the unit below. The
+  // approve modal sends whatever its box holds, '' included, because that box
+  // was pre-filled from the customer's rate — so a blank one is payroll saying
+  // this haul bills nothing. What it does NOT send is a box it never filled in
+  // and nobody typed in: BULK approve leaves the key off whenever its one fee
+  // box is empty, since a card can span customers and one number cannot price
+  // them, and the single modal leaves it off for a box that is blank because
+  // the rates had not landed yet rather than because anyone emptied it. That
+  // absence means "price it the way the office prices it", and insertTruckingRows
+  // fills it from the customer's agreed rate — a row that used to post at no fee
+  // at all and read as $0/hr in the trucking tab.
+  const feeGiven = t.haul_fee !== undefined && t.haul_fee !== null;
   const division = safeStr(t.division, 100) || '';
   // Unit is the one autofilled column payroll can also type: the driver may
   // have left it off (every dust haul submitted before the Unit field existed
@@ -1156,7 +1218,8 @@ function validateTruckingInjection(raw) {
   // that spells "no opinion" as null must not silently wipe the unit. Clearing
   // is spelled '' — which is what the modal sends when payroll empties the box.
   const unit = t.unit == null ? null : (safeStr(t.unit, 100) || '');
-  const fields = { haul_fee, division, unit };
+  const fields = { division, unit };
+  if (feeGiven) fields.haul_fee = fee.value;
 
   // A split day sends one leg per haul. The approve modal sends this for every
   // entry that posts Truck Tracking rows, one element when the day was not
@@ -1364,6 +1427,11 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   // Payroll-entered fields (validated by validateTruckingInjection). Blank is
   // allowed — payroll can approve now and set the fee later via Edit Row.
   const dayFee   = (fields.haul_fee === '' || fields.haul_fee == null) ? '' : fields.haul_fee;
+  // Whether the day's fee is an ANSWER. Blank is one — payroll cleared a box
+  // that was pre-filled with the customer's rate — while absent is nobody
+  // having said, which is what bulk approve sends for a card spanning
+  // customers. See the rate fill below, and validateTruckingInjection.
+  const dayFeeGiven = fields.haul_fee !== undefined && fields.haul_fee !== null;
   const division = safeStr(fields.division, 100)
     || (entry.division === 'dust' ? 'Dust' : '');
   // null/undefined = the modal sent no unit (bulk approve, or an older client)
@@ -1497,6 +1565,14 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
   // rather than a duplicate.
   const rows = allRows.filter((_, i) => postsHere(i));
 
+  // The hauls nobody priced: no fee on the leg, and none on the day either.
+  // Kept as ids rather than positions, because `rows` is `allRows` minus the
+  // legs the dust office bills off its own grid — an index into one is not an
+  // index into the other.
+  const unpricedIds = new Set(
+    allRows.filter((_, i) => (legs[i] || {}).haul_fee === undefined && !dayFeeGiven)
+           .map(r => r.id));
+
   // Carry over the invoice columns the trucking office owns on each row. Every
   // cost field is payroll's and is rewritten from the entry, but the office
   // fills in the QB number and the invoiced/paid dates on the locked row — and
@@ -1517,6 +1593,28 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
     if (!prev || !sameHaul(prev.customer, row.customer)) continue;
     for (const f of TRUCK_TAB_FIELDS) {
       if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
+    }
+  }
+
+  // ── A haul nobody priced bills its customer's agreed rate ──────────────
+  // The last stop for a fee, after the approve modal's own pre-fill and before
+  // the row is written. It fires only where the payload asked no fee question of
+  // anybody — bulk approve pricing a card that spans customers, or a client too
+  // old to send one — so a fee typed in the modal, a blank one deliberately
+  // cleared there, and a leg priced on its own all stand exactly as sent.
+  //
+  // Read FORWARD ONLY, onto a haul still unpriced, which is the rule the tab and
+  // the modal both apply: re-pricing a customer in Manage Lists must never
+  // silently restate a haul that has already gone out the door. A customer with
+  // no rate set is left blank, exactly as before — there is nothing to fill it
+  // from — and the fee is filled in from Edit Row, or a rate is set beside that
+  // customer's name and the next approval carries it.
+  const unpriced = rows.filter(r => unpricedIds.has(r.id) && r.haul_fee === '' && r.customer);
+  if (unpriced.length) {
+    const rates = await truckCustomerRates(sql, companyCode);
+    for (const row of unpriced) {
+      const { value } = truckFee(truckRateFor(rates, row.customer));
+      if (value !== '') row.haul_fee = value;
     }
   }
 
