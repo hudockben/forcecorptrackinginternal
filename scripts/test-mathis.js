@@ -1959,7 +1959,15 @@ console.log('\n══════════ employees, and who may see what th
     if (src[j] === '{') depth++;
     else if (src[j] === '}' && --depth === 0) { end = j + 1; break; }
   }
-  const mk = pv => new Function('pvPreview', `${src.slice(start, end)}; return calcDaily;`)(pv);
+  // calcDaily also reads the page's haul field-type matcher, to keep the PV
+  // preview from repricing a hauling row (the driver is inside the truck's
+  // hourly cost, so there is no wage to substitute). Lift the real constant out
+  // of the page rather than restating the pattern here — a copy would be one
+  // more place for the rule to drift.
+  const haulReMatch = /^const HAUL_FIELD_TYPE_RE = (\/.*\/[a-z]*);$/m.exec(src);
+  assert('the page defines HAUL_FIELD_TYPE_RE for calcDaily to read', !!haulReMatch);
+  const mk = pv => new Function('pvPreview', 'HAUL_FIELD_TYPE_RE',
+    `${src.slice(start, end)}; return calcDaily;`)(pv, eval(haulReMatch[1]));
   const pageOff = mk({ active: false, rate: 0 });
 
   for (const [label, row] of [
@@ -1979,6 +1987,15 @@ console.log('\n══════════ employees, and who may see what th
     pageOn({ rate: 55, labor_hours: 8 }).labor_cost === 792
       && rowLaborCost({ rate: 55, labor_hours: 8 }) === 440,
     'a what-if a user switched on for their own screen is not a fact about the job');
+  // A hauling row is the one row the preview must leave alone. Repricing it
+  // would put the driver's wage back beside the truck that already includes
+  // him — the exact double count the haul rules exist to remove — and it would
+  // only appear in the preview, where it reads as a real what-if figure.
+  assert('  and a hauling row is not repriced by the preview either',
+    pageOn({ rate: 0, labor_hours: 8, field_type: 'Haul — To/From Site' }).labor_cost === 0,
+    'got ' + pageOn({ rate: 0, labor_hours: 8, field_type: 'Haul — To/From Site' }).labor_cost);
+  assert('  while an ordinary row still is',
+    pageOn({ rate: 0, labor_hours: 8, field_type: 'Material' }).labor_cost === 792);
 }
 
 // ── 11f. The help text, and the test that keeps it true ────────────────────

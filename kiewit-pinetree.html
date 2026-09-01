@@ -16600,7 +16600,16 @@ const defaultDailyRow = () => ({
 });
 
 function calcDaily(row) {
-  const rate         = (pvPreview.active && pvPreview.rate > 0) ? pvPreview.rate : (parseFloat(row.rate) || 0);
+  // The PV preview asks "what if all this labour were at one prevailing rate?"
+  // A hauling row has no wage to substitute — the driver is inside the truck's
+  // hourly cost on the same row — so pricing him at the preview rate would put
+  // the double count straight back, and only in the preview, where it reads as
+  // a real what-if figure. He is excluded from the substitution instead.
+  // (Travel keeps being repriced: it HAS a rate of its own, so swapping one
+  // rate for another is at least a coherent question there.)
+  const _pvRow       = pvPreview.active && pvPreview.rate > 0
+    && !HAUL_FIELD_TYPE_RE.test(String(row.field_type || '').trim());
+  const rate         = _pvRow ? pvPreview.rate : (parseFloat(row.rate) || 0);
   const labor_hours  = parseFloat(row.labor_hours)    || 0;
   const euc          = parseFloat(row.equip_unit_cost) || 0;
   const equip_hours  = parseFloat(row.equip_hours)    || 0;
