@@ -487,7 +487,17 @@ console.log('\n[split tally: travel reconciliation]');
   // been passing vacuously since the tally started consulting it.
   const travelRe = src.match(/const TRAVEL_CODE_RE = [^\n]+/);
   if (!travelRe) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
-  const tallyFn = [travelRe[0], grab('isTravelSplitRow(r) {'), grab('renderSplitTally() {')].join('\n\n');
+  // Same story for the hauling warning: renderSplitTally calls it at the end,
+  // so leaving it out puts every assertion below back behind a ReferenceError.
+  // It reads splitEntry/splitRows and writes to a #splitWarn element the stub
+  // below hands out like any other.
+  const tallyFn = [
+    travelRe[0],
+    grab('isTravelSplitRow(r) {'),
+    grab('splitHaulUnpricedRows() {'),
+    grab('renderSplitHaulWarning() {'),
+    grab('renderSplitTally() {'),
+  ].join('\n\n');
   function tally(rows, entry) {
     const store = {};
     const stub = () => ({ textContent: '', style: {}, classList: { add() {}, remove() {} } });

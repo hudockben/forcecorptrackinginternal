@@ -1227,6 +1227,21 @@
     .modal-msg.error   { color: var(--red); }
     .modal-msg.success { color: var(--green); }
 
+    /* Advisory, never a blocker — the approver may well be right. Amber rather
+       than red for exactly that reason: red in this modal means the save was
+       refused. */
+    .split-warn {
+      margin-top: 0.5rem;
+      padding: 0.5rem 0.6rem;
+      border: 1px solid rgba(234,179,8,0.45);
+      border-radius: 6px;
+      background: rgba(234,179,8,0.10);
+      color: var(--yellow);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    .split-warn strong { color: var(--yellow); }
+
     /* ── Split modal (approve + resplit) ── */
     .split-modal { max-width: min(1400px, 96vw); }
     .split-summary {
@@ -1775,6 +1790,7 @@
           <tbody id="splitTbody"></tbody>
         </table>
       </div>
+      <div class="split-warn" id="splitWarn" hidden></div>
       <div class="modal-msg" id="splitMsg"></div>
       <div class="modal-footer">
         <button class="btn-cancel" onclick="closeSplit()">Cancel</button>
@@ -5593,6 +5609,51 @@
       } else {
         tally.classList.add('ok'); status.textContent = '✓ balanced';
       }
+      renderSplitHaulWarning();
+    }
+
+    // On a haul, the labour rows post at a $0 rate because the driver is inside
+    // the truck's hourly cost. Nothing requires a truck ON the row, though — so
+    // a haul row left with no equipment costs the job NOTHING AT ALL: no wage,
+    // because it is a haul, and no machine, because none was named. The day
+    // balances, the approval succeeds, and the job silently gets free labour.
+    //
+    // A warning, not a refusal. The approver may well be right — a driver
+    // riding along, a truck billed on another row, a leg the office prices
+    // elsewhere — and refusing an approval that is genuinely correct just
+    // teaches people to work around the modal. So this says what will happen
+    // and gets out of the way.
+    function splitHaulUnpricedRows() {
+      const t = splitEntry && splitEntry.haul_type;
+      if (t !== 'on_site' && t !== 'off_site') return [];
+      const out = [];
+      splitRows.forEach((r, i) => {
+        // Travel keeps its own rate, so a travel row is priced either way.
+        if (isTravelSplitRow(r)) return;
+        const hrs = Number(r.labor_hours) || 0;
+        if (hrs <= 0) return;
+        if (String(r.equipment || '').trim()) return;
+        out.push({ n: i + 1, hours: hrs });
+      });
+      return out;
+    }
+
+    function renderSplitHaulWarning() {
+      const el = document.getElementById('splitWarn');
+      if (!el) return;
+      const bad = splitHaulUnpricedRows();
+      if (!bad.length) { el.hidden = true; el.innerHTML = ''; return; }
+      const hours = bad.reduce((s, r) => s + r.hours, 0);
+      const rows  = bad.map(r => `#${r.n}`).join(', ');
+      el.hidden = false;
+      el.innerHTML =
+        `<strong>${bad.length === 1 ? 'Row' : 'Rows'} ${escapeHtml(rows)}: `
+        + `${hours.toFixed(2)} h of hauling with no equipment.</strong> `
+        + `A haul posts a $0 labour rate because the driver is already inside the `
+        + `truck's hourly cost — but no truck is named on `
+        + `${bad.length === 1 ? 'this row' : 'these rows'}, so ${bad.length === 1 ? 'it' : 'they'} `
+        + `will cost the job nothing at all. Add the unit, or approve as-is if the `
+        + `truck is billed elsewhere.`;
     }
 
     // A code the supervisor typed is not in the split until its cell commits,
