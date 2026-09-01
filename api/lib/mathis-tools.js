@@ -34,6 +34,9 @@ const help    = require('./mathis-help');
 
 // Divisions with a digest behind them. Anything else is answered by saying
 // what is missing, not by a tool that returns an apology as if it were data.
+// Divisions the nightly snapshot writes history for.
+const JOB_HISTORY_DIVISIONS = ['turf', 'paving', 'kiewit'];
+
 const SUPPORTED = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
                    'intercompany', 'payroll', 'scheduler', 'executive', 'fuel_admin'];
 
@@ -153,6 +156,37 @@ function toolsFor(scope, division) {
   //
   // A tool rather than part of the system prompt, so nobody asking about
   // profit pays for a paragraph about the upload button.
+  // Movement over time, for the divisions that run jobs. A separate tool
+  // rather than a block on every job digest: most questions are about now, and
+  // a series of ninety days would ride along with all of them for the few that
+  // are not.
+  const jobDivs = reachable.filter(d => JOB_HISTORY_DIVISIONS.includes(d));
+  if (jobDivs.length) {
+    tools.push({
+      name: 'get_job_history',
+      description:
+        'How a job division has MOVED over time — contract, cost and projected profit per day, and how far each job has shifted across the window. This is the only history in the system: everything else you can fetch is today. It comes from a nightly snapshot, so it begins the night that snapshot started running and answers nothing about a period before that. Use it for "how has this trended", "what changed this month", "is this getting worse". Available: '
+        + jobDivs.map(d => `${d} (${HUMAN[d]})`).join(', ') + '.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          division: {
+            type: 'string',
+            enum: jobDivs,
+            description: 'Which division to read. Only the values listed are available to this user.',
+          },
+          days: {
+            type: 'integer',
+            minimum: 1,
+            maximum: digests.MAX_HISTORY_DAYS,
+            description: `How many days back to look. Defaults to ${digests.DEFAULT_HISTORY_DAYS}, capped at ${digests.MAX_HISTORY_DAYS}. Asking for more than has been captured is not an error — the digest says how far back it actually goes.`,
+          },
+        },
+        required: ['division'],
+      },
+    });
+  }
+
   const topics = help.topicsFor(division);
   if (topics.length) {
     tools.push({
@@ -184,6 +218,10 @@ const AREA_STEP = {
 };
 function stepLabel(name, input) {
   if (name === 'get_help') return 'Checking how this page works';
+  if (name === 'get_job_history') {
+    const d = input && input.division;
+    return d && HUMAN[d] ? `Reading how ${HUMAN[d]} has moved` : 'Reading how things have moved';
+  }
   if (name === 'get_my_records') return AREA_STEP[input && input.area] || 'Reading your records';
   const d = input && input.division;
   return d && HUMAN[d] ? `Reading ${HUMAN[d]} figures` : 'Reading figures';
@@ -228,6 +266,23 @@ async function runTool(c, name, input) {
     return { digest: await digests.buildDigest(c, area, {}) };
   }
 
+  if (name === 'get_job_history') {
+    // Same re-authorisation as the figures tool, for the same reason: the enum
+    // is a convenience for the model, never the check.
+    const division = ctx.resolveDivision(input && input.division, c.authz);
+    if (!division) {
+      return { error: 'That division is not available to this user. Tell them you cannot see it — do not name other divisions.' };
+    }
+    if (!JOB_HISTORY_DIVISIONS.includes(division)) {
+      return { error: 'Only the job divisions keep a history. Say that this one does not.' };
+    }
+    const raw = input && input.days;
+    const days = Number.isFinite(Number(raw)) ? Number(raw) : undefined;
+    const digest = await digests.jobHistory(c, division, { days });
+    if (!digest) return { error: 'The history could not be read just now.' };
+    return { digest };
+  }
+
   if (name === 'get_division_figures') {
     // Not `input.division` straight into a read. resolveDivision normalises the
     // string and checks it against roles re-read this turn, so a division the
@@ -253,6 +308,7 @@ async function runTool(c, name, input) {
 
 module.exports = {
   SUPPORTED,
+  JOB_HISTORY_DIVISIONS,
   PERSONAL_AREAS,
   personalAreas,
   HUMAN,

@@ -215,6 +215,36 @@ console.log('\n[only a material haul reaches Truck Tracking]');
 
 // ── 2) Behavioural ──────────────────────────────────────────────────────────
 // The leg model, run for real against a stubbed DOM.
+/**
+ * Evaluate one slice of payroll.html, and say something useful when it will
+ * not evaluate.
+ *
+ * These suites lift ranges of the page by string anchors. Anything added
+ * inside a range that reaches OUTSIDE it — a style constant declared 1,600
+ * lines earlier, a helper defined near the top — takes the whole file down
+ * with a bare `ReferenceError: X is not defined` and a stack pointing at
+ * `evalmachine.<anonymous>`, before the first assertion runs. That has now
+ * happened three times, and each one cost an investigation to work out that
+ * the page was fine and the harness was missing a global.
+ *
+ * So the third time is the last: name the identifier and say what to do.
+ */
+function evalSlice(code, ctx, what) {
+  try {
+    vm.runInContext(code, ctx);
+  } catch (err) {
+    const missing = /^(\w+) is not defined$/.exec(err.message);
+    if (missing) {
+      throw new Error(
+        `${what} reads "${missing[1]}", which payroll.html declares outside the slice `
+        + `lifted here. The page is fine; this harness is missing a global. Add `
+        + `\`${missing[1]}\`` + ` to the ctx object above — a no-op stub is enough unless an `
+        + `assertion below is actually about it.`);
+    }
+    throw err;
+  }
+}
+
 function makeSandbox(entry, options, companies) {
   const els = new Map();
   const el = id => {
@@ -242,7 +272,16 @@ function makeSandbox(entry, options, companies) {
     // session (truckListsLoad) and offered on a trucking day's hauls.
     truckCustomerRoster: () => ['Acme Materials', 'Derry Stone', 'HC Quarry'],
     num2: n => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2),
-    TK_LABEL: '', TK_INPUT: '',
+    // Style constants the sliced block reads but does not define — they are
+    // declared hundreds of lines earlier in payroll.html, outside every slice
+    // taken here. Stubbed empty because no assertion below is about styling;
+    // what matters is that the block evaluates at all. Q_LABEL_STYLE joined
+    // the list when the EES billing fields moved into the gate slice, and its
+    // absence took both of these suites down before their first assertion.
+    TK_LABEL: '', TK_INPUT: '', Q_LABEL_STYLE: '', Q_INPUT_STYLE: '',
+    // Wires a modal's backdrop to its close handler. The gate slice calls it
+    // at evaluation time for the EES modal; nothing here is about backdrops.
+    bindBackdropClose: () => {},
     document: {
       activeElement: null,
       getElementById: id => el(id),
@@ -259,8 +298,8 @@ function makeSandbox(entry, options, companies) {
   const gateStart = SRC.indexOf('    const EES_JOB_IDS =');
   const gateEnd   = SRC.indexOf('    function truckingFieldsHtml(');
   if (gateStart < 0 || gateEnd < 0) throw new Error('could not find entryNeedsTrucking in payroll.html');
-  vm.runInContext(SRC.slice(gateStart, gateEnd), ctx);
-  vm.runInContext(SRC.slice(start, end), ctx);
+  evalSlice(SRC.slice(gateStart, gateEnd), ctx, 'the division gate');
+  evalSlice(SRC.slice(start, end), ctx, 'the haul model');
   // The block's own `let`s live in the context's lexical scope, not on the
   // context object, so they are reached by running code in the same context
   // rather than by poking at ctx.

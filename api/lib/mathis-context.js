@@ -214,7 +214,7 @@ const JOB_LIMITS = [
   'Profit means PROJECTED profit: contract minus projected FINAL cost. That is what every page in this application means by the word. Cost-to-date would flatter a half-spent job into looking twice as profitable as it will finish.',
   'Actual profit is contract minus money actually spent, and is only meaningful on a job that is complete.',
   'A job with no contract value on file has UNKNOWN profit, shown as null. It is not a profit of zero and it is not a loss. Say the contract is missing.',
-  'There is no as-of history for contract values, so questions about a past period ("profit last quarter", "is margin improving") cannot be answered honestly from this data. Spend is dated, but applying today\'s contract to an older period would report a fiction. Say so rather than estimating.',
+  'These figures are TODAY only. This digest has no history in it, so nothing here answers "profit last quarter" or "is margin improving" — applying today\'s contract to an older period reports a fiction. Movement over time is a separate read: use get_job_history if it is offered, and if it is not, say the history does not exist rather than estimating.',
   'These figures may differ from the Executive report, which applies a job-number floor, a per-project exclusion flag and a portfolio cap that this data does not. If the user cites a different number from that page, both can be right.',
 ];
 

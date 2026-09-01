@@ -1833,3 +1833,52 @@ CREATE TABLE IF NOT EXISTS mathis_feedback (
 
 CREATE INDEX IF NOT EXISTS idx_mathis_feedback_rollup
     ON mathis_feedback (company_code, verdict, created_at DESC);
+
+-- ─────────────────────────────────────────────────
+-- MATHIS JOB FACTS — one row per job per day
+--
+-- Everything else Mathis reads is a snapshot of NOW. Nothing in this system
+-- records what a job looked like last month, so "how has profit trended" had
+-- no answer that was not invented, and the honest reply was to name the
+-- missing thing. This is the missing thing.
+--
+-- Written nightly by api/cron/job-snapshot.js through the SAME rowsFor path
+-- the digests use, so a figure here and the figure on the page came from one
+-- piece of arithmetic. A separate query that recomputed them would drift, and
+-- a trend built on a drifting figure is worse than no trend.
+--
+-- What a row IS: the projection as it stood at the end of that day. What it is
+-- NOT: what was spent that day. actual_cost is cost-to-date, so the series
+-- climbs; the day-over-day difference is what was booked, and only if nobody
+-- edited a bid item. projected_profit can move because cost was booked OR
+-- because somebody changed the contract value, and the row cannot tell those
+-- apart. api/lib/mathis-digests.js states both in the history digest's limits.
+--
+-- (company_code, division, project_id, day) is the natural key, so a re-run on
+-- the same day overwrites rather than doubling. That matters: a cron that
+-- fires twice, or a manual catch-up run, must not fabricate a second data
+-- point for a day that already has one.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mathis_job_facts (
+    company_code      TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    division          TEXT          NOT NULL,
+    project_id        TEXT          NOT NULL,
+    day               DATE          NOT NULL,
+    job_name          TEXT,
+    job_number        TEXT,
+    status            TEXT,
+    complete          BOOLEAN       NOT NULL DEFAULT FALSE,
+    contract          NUMERIC(16,2),
+    bid               NUMERIC(16,2),
+    actual_cost       NUMERIC(16,2),
+    projected_cost    NUMERIC(16,2),
+    variance          NUMERIC(16,2),
+    projected_profit  NUMERIC(16,2),
+    actual_profit     NUMERIC(16,2),
+    captured_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (company_code, division, project_id, day)
+);
+
+-- The read the history digest makes: one division's window, newest first.
+CREATE INDEX IF NOT EXISTS idx_mathis_job_facts_window
+    ON mathis_job_facts (company_code, division, day DESC);

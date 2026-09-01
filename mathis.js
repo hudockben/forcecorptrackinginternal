@@ -463,7 +463,8 @@
       fuel_admin:       renderFuelAdmin,
       own_fuel:         renderOwnFuel,
       own_driver:       renderOwnDriver,
-      own_quarry_sales: renderOwnQuarrySales
+      own_quarry_sales: renderOwnQuarrySales,
+      job_history:      renderJobHistory
     };
     var fn = by[digest.kind];
     if (fn) fn(digest);
@@ -867,6 +868,42 @@
     // whatever was asked, so the answer to the actual question stays first.
     html += renderRubber(d) + renderPOs(d) + renderCostCodes(d) +
       renderEquipment(d) + renderEmployees(d) + renderDocuments(d);
+    post(html, notes);
+  }
+
+  /* Movement, not a position. Every other renderer here paints where things
+   * stand; this one paints how far they have come, which is why the columns
+   * are a from, a to and a delta rather than a single figure. */
+  function renderJobHistory(d) {
+    if (!d.enough) {
+      post(kv([
+        ['Days captured', '<td class="n">' + esc(d.days || 0) + '</td>']
+      ]), [d.note || 'Not enough history yet to show a trend.',
+           'The nightly snapshot builds this up one day at a time.']);
+      return;
+    }
+
+    var html = kv([
+      ['Window',        '<td class="n">' + esc(d.firstDay) + ' to ' + esc(d.lastDay) + '</td>'],
+      ['Days captured', '<td class="n">' + esc(d.days) + '</td>']
+    ]);
+    html += breakdown(['Job', 'Proj. profit then', 'now', 'change'], d.rows, function (r) {
+      return text(r.name + (r.partialWindow ? ' *' : '')) +
+        money(r.from && r.from.projectedProfit) +
+        money(r.to && r.to.projectedProfit) +
+        moneyCell(r.change && r.change.projectedProfit, true);
+    }, 'jobs');
+    html += breakdown(['Day', 'Jobs', 'Spent', 'Proj. profit'], d.totals, function (r) {
+      return text(r.day) + '<td class="n">' + esc(r.jobs) + '</td>' +
+        money(r.actualCost) + money(r.projectedProfit);
+    }, 'days');
+
+    var notes = ['Change is across the window shown, biggest move first.'];
+    if ((d.rows.rows || []).some(function (r) { return r.partialWindow; })) {
+      notes.push('* entered the data part-way through the window, so its change covers less time.');
+    }
+    notes.push('A day is the projection as it stood, not what was spent that day. ' +
+               'Nothing exists before ' + d.firstDay + '.');
     post(html, notes);
   }
 

@@ -13,10 +13,18 @@
       "memory": 1024,
       "maxDuration": 60
     },
+    "api/cron/job-snapshot.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 60
+    },
     "api/**/*.js": {
       "includeFiles": "api/**"
     }
   },
+  "crons": [
+    { "path": "/api/cron/job-snapshot", "schedule": "20 7 * * *" }
+  ],
   "headers": [
     {
       "source": "/(.*)",

@@ -75,6 +75,7 @@ function capList(list, cap = LIST_CAP) {
  */
 const COVERS = {
   jobs: ['per-job contract value, bid budget, actual cost to date, projected final cost, projected and actual profit, and variance'],
+  job_history: ['how each job\'s contract, cost and projected profit have MOVED over a window of days, from a nightly snapshot — the only history in this system'],
   quarry: ['sales, tons sold and crushed, cost per pit, tons on hand, and per-ton contribution against break-even'],
   dust: ['revenue across the three billing books, gallons, invoice ageing, and the product margin on a sprayed gallon'],
   trucking: ['haul revenue, hours, active units and drivers, and invoice state'],
@@ -400,6 +401,161 @@ async function employees(c, division, projects) {
   }
 
   return { count: roster.length, payVisible, roster: capList(roster), byJob: capList(byJob), worked };
+}
+
+// How far back a history read looks by default, and the ceiling on it.
+const DEFAULT_HISTORY_DAYS = 90;
+const MAX_HISTORY_DAYS     = 400;   // matches the cron's retention
+
+const HISTORY_LIMITS = [
+  'This series begins the day the nightly snapshot started running. There is NO data before `firstDay`, and a question about a period earlier than that has no answer here — say the history does not go back that far rather than describing the earliest point as if it were the start of the job.',
+  'A row is the projection AS IT STOOD at the end of that day, not what was spent that day. actualCost is cost-to-date and climbs; the difference between two days is roughly what was booked between them, and only if nobody edited a bid item in between.',
+  'Projected profit can move because cost was booked, because somebody changed the contract value, or because a bid item was edited. These rows cannot tell those apart. Describe WHAT changed; do not assert WHY unless the figures make it unambiguous.',
+  'A missing day is a day the snapshot did not run — a deploy, an outage, a job that had not been created yet. It is not a day with no work. Do not read a gap as a pause.',
+  'A job appearing part-way through the series entered the data then, which is not the same as the job starting then.',
+  'With fewer than two distinct days there is no trend, only one point. Say so plainly instead of describing a direction.',
+];
+
+/**
+ * How the jobs have moved, from the nightly snapshot.
+ *
+ * Everything else here is a picture of now. This is the only thing in the
+ * system that knows what a job looked like last month, and it exists because
+ * "how has profit trended" previously had no answer that was not invented.
+ *
+ * The figures are not recomputed and not re-derived: api/cron/job-snapshot.js
+ * wrote them through the same rowsFor path the live digest uses, so a point on
+ * this series and the number on the page today came from one piece of
+ * arithmetic.
+ */
+async function jobHistory(c, division, opts = {}) {
+  const div = jobFin.jobDivision(division);
+  if (!div) return null;
+
+  const want = Number(opts.days);
+  const days = Number.isFinite(want) && want > 0
+    ? Math.min(Math.floor(want), MAX_HISTORY_DAYS)
+    : DEFAULT_HISTORY_DAYS;
+
+  let rows;
+  try {
+    rows = await c.sql`
+      SELECT project_id, day::text AS day, job_name, job_number, status, complete,
+             contract::float         AS contract,
+             actual_cost::float      AS actual_cost,
+             projected_cost::float   AS projected_cost,
+             projected_profit::float AS projected_profit,
+             actual_profit::float    AS actual_profit
+        FROM mathis_job_facts
+       WHERE company_code = ${c.companyCode}
+         AND division     = ${division}
+         AND day >= CURRENT_DATE - ${days}::integer
+       ORDER BY day ASC
+    `;
+  } catch (err) {
+    console.error('[mathis] job history read failed:', err.message);
+    return null;
+  }
+
+  const list = Array.isArray(rows) ? rows : [];
+  const dayKeys = [...new Set(list.map(r => r.day))].sort();
+
+  // Said out loud rather than left for the reader to notice. On the first
+  // night after deploy this branch is the whole answer, and a single point
+  // described as a trend is exactly the invented answer the snapshot exists
+  // to replace.
+  if (dayKeys.length < 2) {
+    return {
+      division, divisionName: div.name, kind: 'job_history',
+      covers: COVERS.job_history,
+      windowDays: days, days: dayKeys.length,
+      firstDay: dayKeys[0] || null, lastDay: dayKeys[dayKeys.length - 1] || null,
+      enough: false,
+      note: dayKeys.length === 0
+        ? 'No snapshots have been taken for this division yet.'
+        : 'Only one day has been captured so far, so there is nothing to compare it against.',
+      totals: capList([]), rows: capList([]),
+      limits: HISTORY_LIMITS,
+    };
+  }
+
+  // Per-day division totals. Nulls stay out of the sums rather than counting
+  // as zero — a job with no contract on file would otherwise drag the series
+  // down on the day it was created.
+  const byDay = new Map();
+  for (const r of list) {
+    let d = byDay.get(r.day);
+    if (!d) byDay.set(r.day, (d = { day: r.day, jobs: 0, contract: 0, actualCost: 0, projectedCost: 0, projectedProfit: 0 }));
+    d.jobs++;
+    if (r.contract         != null) d.contract         += r.contract;
+    if (r.actual_cost      != null) d.actualCost       += r.actual_cost;
+    if (r.projected_cost   != null) d.projectedCost    += r.projected_cost;
+    if (r.projected_profit != null) d.projectedProfit  += r.projected_profit;
+  }
+  const totals = [...byDay.values()]
+    .sort((a, b) => (a.day < b.day ? -1 : 1))
+    .map(d => ({
+      day: d.day, jobs: d.jobs,
+      contract: money(d.contract), actualCost: money(d.actualCost),
+      projectedCost: money(d.projectedCost), projectedProfit: money(d.projectedProfit),
+    }));
+
+  // Per job: where it started in this window, where it is now, and the move.
+  const byJob = new Map();
+  for (const r of list) {
+    const key = String(r.project_id);
+    let j = byJob.get(key);
+    if (!j) byJob.set(key, (j = { first: r, last: r }));
+    if (r.day < j.first.day) j.first = r;
+    if (r.day > j.last.day)  j.last  = r;
+  }
+  const delta = (a, b) => (a == null || b == null ? null : money(b - a));
+  const jobs = [...byJob.values()].map(({ first, last }) => ({
+    name:      safeText(last.job_name),
+    jobNumber: safeText(last.job_number, 40),
+    status:    safeText(last.status, 40),
+    complete:  !!last.complete,
+    firstSeen: first.day,
+    from: {
+      day: first.day,
+      contract: money(first.contract), actualCost: money(first.actual_cost),
+      projectedCost: money(first.projected_cost), projectedProfit: money(first.projected_profit),
+    },
+    to: {
+      day: last.day,
+      contract: money(last.contract), actualCost: money(last.actual_cost),
+      projectedCost: money(last.projected_cost), projectedProfit: money(last.projected_profit),
+    },
+    change: {
+      contract:         delta(first.contract, last.contract),
+      actualCost:       delta(first.actual_cost, last.actual_cost),
+      projectedCost:    delta(first.projected_cost, last.projected_cost),
+      projectedProfit:  delta(first.projected_profit, last.projected_profit),
+    },
+    // A job whose window starts after the series does was not there on day
+    // one, and the model has to be able to tell that apart from one that
+    // simply did not move.
+    partialWindow: first.day !== dayKeys[0],
+  })).sort((a, b) => {
+    const A = a.change.projectedProfit, B = b.change.projectedProfit;
+    if (A == null) return 1;
+    if (B == null) return -1;
+    return Math.abs(B) - Math.abs(A);
+  });
+
+  return {
+    division, divisionName: div.name, kind: 'job_history',
+    covers: COVERS.job_history,
+    windowDays: days,
+    days: dayKeys.length,
+    firstDay: dayKeys[0],
+    lastDay: dayKeys[dayKeys.length - 1],
+    enough: true,
+    ordering: 'Jobs are ordered by how far projected profit moved across the window, biggest move first, regardless of direction.',
+    totals: capList(totals, 60),
+    rows: capList(jobs),
+    limits: HISTORY_LIMITS,
+  };
 }
 
 /**
@@ -1477,6 +1633,10 @@ module.exports = {
   equipment,
   documents,
   employees,
+  jobHistory,
+  HISTORY_LIMITS,
+  DEFAULT_HISTORY_DAYS,
+  MAX_HISTORY_DAYS,
   readScopedBlob,
   quarryDigest,
   schedulerDigest,
