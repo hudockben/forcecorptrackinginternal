@@ -7693,13 +7693,25 @@
       }
       const btn = document.getElementById('truckingSaveBtn');
       const trucking = {
-        haul_fee: _tkval('tk_haulFee'),
         division: _tkval('tk_division'),
         // Always sent (blank included) — the box is pre-filled from the entry,
         // so what's in it is the approver's answer either way. Bulk approve is
         // the one path that omits it; there one unit can't speak for a group.
         unit: _tkval('tk_unit'),
       };
+      // The fee is the one box that is NOT always sent. A number in it — typed,
+      // or pre-filled from the customer's rate — is an answer, and so is a box
+      // the approver emptied themselves: that says this haul bills nothing.
+      // A box that is blank because nobody ever put anything in it is not an
+      // answer at all — the rates may not have landed before Approve was
+      // clicked, or this customer may have none — and sending '' would post the
+      // haul at no fee, reading as $0/hr in the trucking tab. Left off, the
+      // server prices it from the customer's agreed rate, exactly as this box
+      // would have. Same absent-vs-blank rule the unit above takes.
+      const feeAnswered = leg =>
+        haulTouchedHas(leg, 'haul_fee') || legStr(leg.haul_fee).trim() !== '';
+      const topFee = _tkval('tk_haulFee');
+      if (topFee !== '' || truckingTouched.has('tk_haulFee')) trucking.haul_fee = topFee;
       const body = { trucking };
       // Every entry that posts Truck Tracking rows sends its hauls here, a
       // trucking day as much as a dust one, and one element when the day was
@@ -7711,14 +7723,21 @@
       if (entrySplits() && haulLegs.length) {
         // With the day split there is no box at the top to read, and the day's
         // fee is the first haul's — it is what the server falls back to for a
-        // leg that names none.
-        trucking.haul_fee = haulLegs[0].haul_fee;
-        trucking.rows = haulLegs.map(leg => ({
-          company:    legCustomerPayload(leg),
-          start_time: leg.start_time,
-          end_time:   leg.end_time,
-          haul_fee:   leg.haul_fee,
-        }));
+        // leg that names none. So it is only sent when there is no such leg:
+        // standing in for a haul the approver never priced would bill that
+        // customer at another customer's rate, where leaving it off prices the
+        // haul from its own customer's.
+        if (haulLegs.every(feeAnswered)) trucking.haul_fee = haulLegs[0].haul_fee;
+        else delete trucking.haul_fee;
+        trucking.rows = haulLegs.map(leg => {
+          const row = {
+            company:    legCustomerPayload(leg),
+            start_time: leg.start_time,
+            end_time:   leg.end_time,
+          };
+          if (feeAnswered(leg)) row.haul_fee = leg.haul_fee;
+          return row;
+        });
       }
       // The dust half — one entry per haul, in the order they are on screen, so
       // the server writes them as legs 1..n and takes back any leg this save no
@@ -8530,6 +8549,20 @@
           if (name && !rateNames.some(n => _truckRateKey(n) === _truckRateKey(name))) rateNames.push(name);
         }
         const rateCustomer = rateNames.length === 1 ? rateNames[0] : '';
+        // What a day left alone will actually bill. The card can only SHOW one
+        // number when every day on it agrees, but there is still a rate per day
+        // — the fee is filled in per haul when this box is sent empty — so the
+        // card counts the days that have one rather than letting a blank box
+        // read as "these post at nothing".
+        // Silent until the rosters land, the way the unit hint in the single
+        // modal is: the first paint happens before the fetch comes back, and
+        // "no rate is set for these customers" read off a list we have not seen
+        // would be wrong for a second and alarming for longer.
+        const ratesIn  = !!(truckLists && truckLists.rates);
+        const typedFee = String(g.template.haul_fee == null ? '' : g.template.haul_fee).trim();
+        const perDay   = ratesIn ? g.entries.map(e => truckCustomerRate(bulkTruckCustomer(e))) : [];
+        const ratedN   = perDay.filter(Boolean).length;
+        const unrated  = days - ratedN;
         // Haul Fee and the Division column are Truck Tracking's, and bulk
         // approve cannot say a haul bills off anything but Dust Control
         // Tracking — that answer is per haul, and this card covers a week of
@@ -8549,17 +8582,34 @@
             also posts a Truck Tracking row — or approve these hauls one at a time instead.</div>` : `
           <div class="bulk-fields">
             <div class="bulk-field"><span>Haul Fee ($/hr) <span style="text-transform:none;font-weight:400">(optional)</span></span>${
-              _bulkNum(idx, 'haul_fee', g.template.haul_fee, '0.00', fromRate
+              _bulkNum(idx, 'haul_fee', g.template.haul_fee,
+                ratedN ? "auto · each customer's rate" : '0.00', fromRate
                 ? { className: 'auto-code', title: `${rateCustomer ? rateCustomer + "'s rate" : 'The rate every customer here is billed at'}, from Trucking → Manage Lists. Type over it to bill these days at something else.` }
                 : null)}</div>
             <div class="bulk-field"><span>Division <span style="text-transform:none;font-weight:400">(optional)</span></span>${_bulkText(idx, 'division_col', g.template.division_col, 'e.g. Paving')}</div>
           </div>
-          <div class="bulk-note">${!fromRate ? '' : (rateCustomer
+          <div class="bulk-note">${fromRate ? (rateCustomer
             ? `The fee is <strong>${escapeHtml(rateCustomer)}</strong>'s rate, filled in from the trucking
                office's <strong>Manage Lists</strong> — every day on this card hauls for them. Type over it to
                bill these days at something else. `
             : `The fee is filled in from the trucking office's <strong>Manage Lists</strong> — every customer
                on this card is billed at it. Type over it to bill these days at something else. `
+          ) : (typedFee || !ratesIn) ? '' : ratedN ? (
+            // One box cannot price a card that spans customers, so it is left
+            // empty and each day is priced from its own customer's rate on the
+            // way in. Said here because a blank money box otherwise reads as
+            // "these post at $0" — which is exactly what they used to do.
+            `Left empty, each day bills <strong>its own customer's rate</strong> from the trucking office's
+             <strong>Manage Lists</strong>${unrated
+               ? ` — but <strong>${unrated}</strong> of the ${days} days here
+                   ${unrated === 1 ? 'hauls' : 'haul'} for a customer with no rate set, and
+                   ${unrated === 1 ? 'it posts' : 'they post'} unpriced. Set the rate beside that customer's
+                   name in Trucking → Manage Lists, or fill the fee in from Edit Row.`
+               : '.'} Type a fee to bill every day here at that instead. `
+          ) : (
+            `No rate is set for ${days === 1 ? 'this customer' : 'these customers'} in the trucking office's
+             <strong>Manage Lists</strong>, so a fee left empty posts ${days === 1 ? 'this day' : 'these days'}
+             unpriced — type one here, or set the rate beside the customer's name and approve. `
           )}Haul fee &amp; division apply to every day here. Driver, unit, hours &amp;
             customer come from each timesheet — a day whose unit is blank keeps it that way;
             fill it in from Edit Row afterwards.</div>`;
@@ -8726,7 +8776,18 @@
         } };
       }
       if (g.type === 'trucking') {
-        return { trucking: { haul_fee: g.template.haul_fee, division: g.template.division_col } };
+        // ONE box prices every day on this card, so it is only sent when it
+        // holds a number. Blank is not an answer here the way it is in the
+        // single modal: a card can span customers, and the box can only be
+        // filled in when every day on it agrees on the price — so a blank one
+        // means nobody has priced these days rather than that they bill
+        // nothing. Sent as '' it posted every row at no fee, reading as $0/hr
+        // in the trucking tab; left off, the server prices each day from its
+        // own customer's agreed rate. The unit is left off for the same reason.
+        const fee = String(g.template.haul_fee == null ? '' : g.template.haul_fee).trim();
+        const trucking = { division: g.template.division_col };
+        if (fee !== '') trucking.haul_fee = fee;
+        return { trucking };
       }
       return null;
     }
