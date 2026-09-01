@@ -4066,7 +4066,7 @@
               ${!isPending && entryNeedsSplit(e) ? `<button class="row-btn approve" onclick="openSplitModalById('${e.id}','resplit')" title="Edit the cost tracking split injected from this entry">Edit Split</button>` : ''}
               ${!isPending && entryNeedsQuarry(e) ? `<button class="row-btn approve" onclick="openQuarryModalById('${e.id}','resplit')" title="Edit the quarry row injected from this entry">Edit Row</button>` : ''}
               ${!isPending && entryNeedsTrucking(e) ? `<button class="row-btn approve" onclick="openTruckingModalById('${e.id}','resplit')" title="${e.division === 'dust' ? 'Edit the dust billing + Truck Tracking rows posted from this entry — including splitting the day into hauls and moving one between Dust Control Tracking and Other Billing' : 'Edit the Truck Tracking rows posted from this entry — including splitting the day into hauls'}">Edit Row</button>` : ''}
-              ${!isPending && (entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e)) ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and remove the injected cost rows">Un-approve</button>` : ''}
+              ${!isPending ? `<button class="row-btn delete"  onclick="unapproveEntry('${e.id}')" title="Un-approve and put the entry back into Pending, removing any cost rows it injected">Un-approve</button>` : ''}
               <button class="row-btn delete"  onclick="deleteEntry('${e.id}')">Delete</button>
             </td>
           </tr>
@@ -5998,13 +5998,30 @@
       }
     }
 
+    // Reverses an approval on ANY approved entry, which is why the button that
+    // calls this is gated on nothing but the row being approved. The three Edit
+    // buttons beside it each need a modal that can re-open one specific kind of
+    // injection, so they stay gated on entryNeedsSplit/Quarry/Trucking; this one
+    // does not, because the server works off the entry itself and sweeps every
+    // injection type it could have made — split rows, quarry blobs, Truck
+    // Tracking, dust EES Other, Dust Control Tracking and Other Billing (see
+    // action=unapprove in api/timesheet-entries.js). Gating it alongside the
+    // Edit buttons left a dust EES day (Pre Loading / Washing, which injects an
+    // EES Other row) and time off with Delete as the only way to take an
+    // approval back — which throws the entry away and makes the employee
+    // resubmit a day they already worked.
     async function unapproveEntry(id) {
       const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
       if (!e) return;
+      // Time off injects no cost row anywhere, so promising to remove one would
+      // be a lie; every daily division posts something. Say which it is.
+      const injects = e.entry_type !== 'time_off';
       if (!confirm(
         `Un-approve ${e.username}'s entry for ${prettyDate(e.work_date)}?\n\n` +
-        `This will remove the cost tracking rows injected into the ${prettyDiv(e.division)} division ` +
-        `and put the entry back into Pending.`
+        (injects
+          ? `This will remove the cost tracking rows injected into the ${prettyDiv(e.division)} division ` +
+            `and put the entry back into Pending.`
+          : `The entry goes back into Pending for review.`)
       )) return;
       try {
         const res = await fetch('/api/timesheet-entries?action=unapprove&id=' + encodeURIComponent(id), {
