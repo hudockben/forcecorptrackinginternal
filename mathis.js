@@ -930,11 +930,62 @@
       });
   }
 
+  /* What the user is actually looking at.
+   *
+   * Mathis is a server endpoint: it gets a message, a division and a thread id,
+   * and nothing else about the page. So "how is this job doing" arrived with no
+   * idea which job was open, and the answer was about the division.
+   *
+   * Two things are read, both from what the pages already maintain. The active
+   * panel's id gives the tab. The per-job view globals give the job — a
+   * top-level `let` in a classic script lands in the global lexical
+   * environment, shared across scripts, so these resolve from here even though
+   * they never become properties of window. That is the same mechanism the
+   * DIVISION lookup above relies on.
+   *
+   * This is a HINT and the server treats it as one. It is read from the page by
+   * script the user's own browser is running, so it authorises nothing and
+   * fetches nothing — everything it could say, the user could have typed. Any
+   * failure here sends less context, never a wrong answer: each read is
+   * guarded, and an unreadable page simply sends nothing. */
+  /* Written out one by one rather than looped over by name. A lexical binding
+   * is not a property of anything, so reading one from a list of strings means
+   * eval — and eval in a widget that is dropped onto every page is a bad trade
+   * for four lines saved. */
+  function openJobId() {
+    try { if (typeof dailyViewProjId !== 'undefined' && dailyViewProjId) return dailyViewProjId; } catch (e) {}
+    try { if (typeof bidViewProjId   !== 'undefined' && bidViewProjId)   return bidViewProjId;   } catch (e) {}
+    try { if (typeof prodViewProjId  !== 'undefined' && prodViewProjId)  return prodViewProjId;  } catch (e) {}
+    try { if (typeof docsProjectId   !== 'undefined' && docsProjectId)   return docsProjectId;   } catch (e) {}
+    return null;
+  }
+
+  function pageContext() {
+    var ctx = {};
+    try {
+      var panel = document.querySelector('.tab-panel.active');
+      if (panel && panel.id) ctx.tab = panel.id.replace(/^tab-/, '');
+    } catch (e) {}
+    try {
+      var id = openJobId();
+      var list = [];
+      try { if (typeof projectsList !== 'undefined' && projectsList) list = projectsList; } catch (e) {}
+      for (var j = 0; id && j < list.length; j++) {
+        if (list[j] && String(list[j].id) === String(id)) {
+          ctx.job = String(list[j]['project-name'] || list[j].name || '').slice(0, 80);
+          break;
+        }
+      }
+    } catch (e) {}
+    return (ctx.tab || ctx.job) ? ctx : undefined;
+  }
+
   function body(q) {
     return JSON.stringify({
       message: q,
       division: division() || undefined,
-      threadId: state.threadId
+      threadId: state.threadId,
+      pageContext: pageContext()
     });
   }
 

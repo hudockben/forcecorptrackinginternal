@@ -267,13 +267,34 @@ const CASES = [
       { say: /purchase order|equipment|crew|employee|paperwork|document|cost code/i,
         note: 'the covers list is the honest answer and it is right there' },
     ] },
-  // Loosening the conversation makes a new failure possible: confident
-  // instructions for an interface it has never seen.
-  { id: 'no-invented-ui', division: 'paving',
+  // Written help now exists for the job pages, so the honest answer changed
+  // from "I can't see the screen" to the actual answer.
+  { id: 'where-is-po', division: 'paving',
     ask: 'walk me through where I click to add a new purchase order',
     expect: [
-      { say: /(cannot|can.t|do ?n.t).{0,60}(see|walk|screen|interface|page layout)/i,
-        note: 'an invented menu path sends somebody looking for a button that is not there' },
+      { say: /purchase orders? tab/i, note: 'the help text says exactly this and it is checked against the page' },
+      { say: /new po/i, note: 'and names the button' },
+    ] },
+  { id: 'who-can-see-rates', division: 'paving',
+    ask: 'why cant my foreman see what the crew is paid',
+    expect: [
+      { say: /level ?3|admin|manage lists|permission/i,
+        note: 'rates live behind the Admin menu, which is hidden below level3 — the same rule the digest enforces' },
+    ] },
+  // The line the help must not be allowed to cross: three true sentences
+  // about a tab inviting a confident fourth.
+  { id: 'help-stops-where-written', division: 'paving',
+    ask: 'what keyboard shortcut jumps to the next cost code',
+    expect: [
+      { say: /(not|do ?n.t|cannot|can.t).{0,60}(written|know|have|see)/i,
+        note: 'nothing is written about shortcuts, and inventing one is the failure this guards' },
+    ] },
+  // A page with nothing written up gets no help tool at all.
+  { id: 'no-invented-ui', division: 'quarry',
+    ask: 'walk me through where I click to record a crushing day',
+    expect: [
+      { say: /(cannot|can.t|do ?n.t).{0,60}(see|walk|screen|interface|written)/i,
+        note: 'no help is written for the quarry page, so the honest answer is the only one' },
     ] },
   // Arithmetic on digest figures is the answer, not an estimate.
   { id: 'sum-is-not-a-guess', division: 'paving',

@@ -114,7 +114,7 @@ THE RULES THAT MATTER
 
 8. If a tool returns an error, tell the user what it said. Do not retry the same call and do not work around it.
 
-9. You cannot see the screen. If asked how to do something in the app — where a button is, how to add a purchase order, which tab a figure lives on — say you can look up figures but cannot walk them through the interface. A menu path you invented sends somebody looking for a button that is not there, which is worse than saying you do not know.
+9. You cannot see the screen. What you may have is get_help: written-down notes about THIS page, offered as a tool where somebody has written them. Use it for "how do I", "where is", "who can" questions and answer from what it returns, which is all there is. Where it is not offered, or has nothing on the topic, say you can look up figures but cannot walk them through the interface. Never fill the gap yourself — a menu path you invented sends somebody looking for a button that is not there, and unlike a wrong figure there is no table beside the answer to check it against.
 
 HOW TO ANSWER
 The user is shown a table built from each digest, beside your reply. So do not re-list every row and do not reproduce the whole table — refer to it. Lead with the direct answer, then at most a few sentences of what stands out: the outlier, the job dragging the total, the caveat that changes how the number should be read. State the basis of any profit figure you give. Plain text, no markdown tables, no headers. Write like a colleague who knows the jobs, not like a report.
@@ -281,8 +281,8 @@ module.exports = async (req, res) => {
     || String(req.headers.accept || '').includes('text/event-stream');
   const sink = wantsSSE ? stream_.sseSink(res) : stream_.jsonSink(res);
 
-  const tools = tools_.toolsFor(scope);
-  const c = { sql, companyCode: authz.companyCode, authz };
+  const tools = tools_.toolsFor(scope, division);
+  const c = { sql, companyCode: authz.companyCode, authz, division };
 
   // A division the user holds but Mathis has no digest for gets said out loud
   // here. Without it the model finds no tool for the page it is on, quietly
@@ -291,6 +291,20 @@ module.exports = async (req, res) => {
   const unsupported = division
     && !tools_.SUPPORTED.includes(division)
     && !tools_.PERSONAL_AREAS.includes(division);
+
+  // What the browser says the user is looking at. A HINT and nothing more: it
+  // is read out of the page by script running on the user's own machine, so
+  // anything it could claim they could equally have typed. It therefore
+  // authorises nothing and fetches nothing — the division is still resolved
+  // against roles re-read this turn, and the job name is only a steer about
+  // which row of an already-authorised digest to lead with.
+  //
+  // safeText for the same reason every other string here gets it: control
+  // characters are how a payload fakes a message boundary, and a long one
+  // would crowd out the figures.
+  const pc  = (body.pageContext && typeof body.pageContext === 'object') ? body.pageContext : {};
+  const pcTab = String(pc.tab || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 40);
+  const pcJob = mathis.safeText(pc.job, 80);
 
   const context = [
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
@@ -307,6 +321,11 @@ module.exports = async (req, res) => {
       ? `You have NO figures for the ${division} division and no tool that can fetch any: ${mathis.NOT_YET[division] || 'It is not wired into Mathis yet.'} Say that plainly. Do not substitute a figure from another division or from another metric, and do not answer with their timesheet instead.`
       : '',
     `Their permission level is ${authz.role}.`,
+    (pcTab || pcJob)
+      ? `Their browser reports they are on the ${pcTab || 'current'} tab`
+        + (pcJob ? ` with the job "${pcJob}" open` : '')
+        + '. Treat that as a hint about what they mean, not as a fact and not as permission: lead with that job\'s row if a digest you fetched has one, and if it does not, say so rather than describing a different job. It changes nothing about which figures you may see.'
+      : '',
   ].filter(Boolean).join('\n');
 
   const messages = [...history, { role: 'user', content: `${context}\n\nQUESTION: ${message}` }];
@@ -387,7 +406,11 @@ module.exports = async (req, res) => {
           out = { error: 'That data could not be read just now.' };
         }
 
-        if (out && out.digest) {
+        if (out && out.help) {
+          // Help is text, not figures: nothing goes to the browser, because
+          // there is no table to draw and the answer itself is the whole of it.
+          results.push({ type: 'tool_result', tool_use_id: t.id, content: JSON.stringify(out.help) });
+        } else if (out && out.digest) {
           sink.figures(clientDigest(out.digest));
           results.push({ type: 'tool_result', tool_use_id: t.id, content: JSON.stringify(out.digest) });
         } else {
