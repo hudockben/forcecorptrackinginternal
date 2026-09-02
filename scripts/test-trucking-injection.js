@@ -120,7 +120,8 @@ function makeSql(initial = {}) {
       return Promise.resolve([{ cleared: 1 }]);
     }
     // The sweep's one lookup: which of these entries still exist and stand.
-    if (q.startsWith('SELECT id, status, entry_type, division, job_id FROM timesheet_entries')) {
+    if (q.startsWith('SELECT id, status, entry_type, division, job_id')
+        && q.includes('FROM timesheet_entries')) {
       const ids = values[values.length - 1] || [];
       return Promise.resolve(ids.map(id => store.entries.get(Number(id))).filter(Boolean));
     }
@@ -676,12 +677,22 @@ const ubDay = (n = 1) => ({ dustLegs: Array.from({ length: n }, () => ({ dest: '
         return !(needsTruckTrackingRow(e) && needsEes(e));
       }));
 
-    // The gate is one function called at four sites (approve, resplit,
-    // un-approve, the edit guard). Inlining it at any of them is how an
-    // injected row starts outliving the entry that made it.
+    // The gate decides whether to INJECT, and it is one function called at both
+    // of the two sites that do (approve and resplit). Inlining it at either is
+    // how the two start disagreeing about which days post a Truck Tracking row.
     const calls = (SRC.match(/needsTruckTrackingRow\(existing\)/g) || []).length;
-    assert('approve, resplit, un-approve and the edit guard share the gate',
-      calls === 4, `found ${calls}`);
+    assert('approve and resplit share the injection gate', calls === 2, `found ${calls}`);
+    // The TEARDOWNS ask it nothing, and must not start again. They used to,
+    // and it was right while a Truck Tracking row could only come from a
+    // trucking or dust entry — the division override ended that, and a
+    // teardown that skips a turf day leaves the trucking office invoicing a
+    // haul payroll has withdrawn. Every sweep goes through one helper that
+    // names every remover, called with no question asked first.
+    const sweeper = /async function removeSplitDestinationRows\([\s\S]{0,1200}?\n\}/.exec(SRC);
+    assert('the destination sweep reaches Truck Tracking',
+      !!sweeper && /removeTruckingRows\(sql, companyCode, entry\)/.test(sweeper[0]));
+    const gatedSweep = /needsTruckTrackingRow\(existing\)\)\s*\{[\s\S]{0,200}?removeTruckingRows/.test(SRC);
+    assert('and no teardown sits behind the injection gate', !gatedSweep);
   }
 
   // ── payroll.html must agree on the gate ─────────────────────────────────

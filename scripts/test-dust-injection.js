@@ -181,7 +181,8 @@ function makeSql(initial = {}) {
       const key = values[0];
       return Promise.resolve(store.appData.has(key) ? [{ value: store.appData.get(key) }] : []);
     }
-    if (q.startsWith('SELECT id, status, entry_type, division, job_id FROM timesheet_entries')) {
+    if (q.startsWith('SELECT id, status, entry_type, division, job_id')
+        && q.includes('FROM timesheet_entries')) {
       const ids = values[values.length - 1] || [];
       return Promise.resolve(ids.map(id => store.entries.get(Number(id))).filter(Boolean));
     }
@@ -244,13 +245,24 @@ function entry(over = {}) {
     assert('trucking entry            → does NOT', !needsDustTrackingRow(entry({ division: 'trucking' })));
     assert('time off                  → does NOT', !needsDustTrackingRow(entry({ entry_type: 'time_off' })));
     assert('null entry                → does NOT', !needsDustTrackingRow(null));
-    // The gate is one function called at four sites (approve, resplit,
-    // un-approve, the edit guard). Inlining it at any of them is how an injected
-    // row starts outliving the entry that made it.
+    // The gate decides whether to INJECT, and it is one function called at both
+    // of the two sites that do (approve and resplit). Inlining it at either is
+    // how the two start disagreeing about which days post a dust row.
     const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
     const calls = (SRC.match(/needsDustTrackingRow\(existing\)/g) || []).length;
-    assert('approve, resplit, un-approve and the edit guard share the gate',
-      calls === 4, `found ${calls}`);
+    assert('approve and resplit share the injection gate', calls === 2, `found ${calls}`);
+    // The TEARDOWNS ask it nothing. They used to, and it was right while a dust
+    // row could only come from a dust entry — the division override ended that,
+    // and a teardown that skips a turf day leaves the dust office billing work
+    // payroll has withdrawn. Every sweep now goes through one helper that names
+    // every remover and is called with no question asked first.
+    const sweeper = /async function removeSplitDestinationRows\([\s\S]{0,1200}?\n\}/.exec(SRC);
+    assert('the destination sweep reaches the dust grids',
+      !!sweeper
+      && /removeDustTrackingRows\(sql, companyCode, entry\)/.test(sweeper[0])
+      && /removeObRows\(sql, companyCode, entry\)/.test(sweeper[0]));
+    const gatedSweep = /needsDustTrackingRow\(existing\)\)\s*\{[\s\S]{0,200}?removeDustTrackingRows/.test(SRC);
+    assert('and no teardown sits behind the injection gate', !gatedSweep);
   }
 
   // ── validateDustInjection: absent vs blank ───────────────────────────────

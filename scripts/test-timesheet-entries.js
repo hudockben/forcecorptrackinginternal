@@ -326,7 +326,8 @@ async function dateRoundTripTests() {
 // Un-approve rewrites the blob, then mirrors the delete. If the mirror throws,
 // a quarry/trucking row outlives the un-approve on an entry that now reads
 // 'submitted'. Deleting the entry is the last chance to take it along, so the
-// sweep keys on the entry's division rather than on its status.
+// sweep keys on neither the entry's status nor its division — the division
+// override means any entry's split can have posted into any division's tab.
 async function deleteSweepTests() {
   console.log('\n[DELETE sweeps injected rows whatever the status]');
 
@@ -369,9 +370,16 @@ async function deleteSweepTests() {
     assert('a submitted quarry entry still gets swept', sweptQuarry);
   }
   {
+    // A paving entry used to sweep neither, because a paving day could only
+    // ever have posted into daily_tracking. The division override ended that:
+    // its split can send hours to a trucking customer or a quarry activity, so
+    // deleting one has to look everywhere. The sweeps are keyed on the entry
+    // id, so looking costs a blob read and writes nothing when there is
+    // nothing there — and skipping the look is how a deleted entry leaves a
+    // row behind in a tab that cannot delete its own.
     const { sweptTrucking, sweptQuarry } = await del(Object.assign({}, base, { division: 'paving', status: 'draft' }));
-    assert('a paving draft sweeps neither — nothing to find there',
-      !sweptTrucking && !sweptQuarry);
+    assert('a paving entry sweeps every division too — the override can send it anywhere',
+      sweptTrucking && sweptQuarry);
   }
 }
 

@@ -74,7 +74,7 @@ Module._load = function (req, parent) {
 const TS = require(path.resolve(__dirname, '../api/timesheet-entries.js'));
 const {
   insertEesOtherRow, insertEesOtherRows, removeEesOtherRows,
-  eesOtherRowIdPrefix, eesOtherRowId, eesSplitForEntry, couldHaveEesOtherRows,
+  eesOtherRowIdPrefix, eesOtherRowId, eesSplitForEntry,
 } = TS._test;
 const sql = require('@neondatabase/serverless').neon();
 const BLOB = 'ACME:dust_ees_other_rows';
@@ -225,8 +225,14 @@ function entry(over = {}) {
     const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
     const guard = SRC.slice(SRC.indexOf('injected cost rows, refuse'), SRC.indexOf('injected_row_count'));
     assert('the edit guard counts EES rows', /eesOtherHasInjectedRow/.test(guard));
-    assert('and gates on any dust entry, not just an EES-activity one',
-      /couldHaveEesOtherRows\(existing\)/.test(guard));
+    // And it asks on EVERY approved entry, behind no gate at all. It used to
+    // ask only of a dust entry, which was true until the division override let
+    // a turf day post rows here — after that, a gate reading the entry's own
+    // division walks straight past them and lets the entry be edited out from
+    // under a tab that shows its hours verbatim.
+    assert('and asks it of every approved entry, behind no division gate',
+      /Promise\.all\(\[[\s\S]{0,400}?eesOtherHasInjectedRow\(sql, companyCode, existing\)/.test(guard)
+      && !/division === '[a-z]+'[^\n]*\)\s*\{[\s\S]{0,200}?eesOtherHasInjectedRow/.test(guard));
   }
 
   console.log('\n[approving puts back work that Intercompany had removed]');
@@ -344,32 +350,40 @@ function entry(over = {}) {
     assert('turf + EES id       → does NOT inject', !needsEesOther(entry({ division: 'turf' })));
     assert('time off            → does NOT inject', !needsEesOther(entry({ entry_type: 'time_off' })));
 
-    // The TEARDOWN gate is wider than either injection gate, and deliberately.
-    // Two different things put rows in this tab: the single row an entry on a
-    // standing EES activity posts, and the per-leg rows a dust CUSTOMER haul
-    // posts for each haul billed off "Other Billing - Non Billable". Asking
-    // isEesJob would find only the first, so a customer haul's rows would
-    // outlive the entry that made them in a tab that deletes nothing.
-    assert('the teardown gate covers any dust entry',
-      /function couldHaveEesOtherRows\(entry\) \{\s*\n\s*return !!entry && entry\.division === 'dust';/.test(SRC));
-    // And it must be identical everywhere it appears, or a row outlives the
-    // entry that made it (approve injects, un-approve/delete miss it).
-    const gates = SRC.match(/couldHaveEesOtherRows\(existing\)/g) || [];
-    assert('un-approve, delete and the edit guard share the gate', gates.length === 3, `found ${gates.length}`);
-    // The narrow gate is not banned outright any more: payroll's Edit Row
+    // The TEARDOWNS no longer gate on anything at all, and deliberately.
+    //
+    // Three different things put rows in this tab: the single row an entry on a
+    // standing EES activity posts, the per-leg rows a dust CUSTOMER haul posts
+    // for each haul billed off "Other Billing - Non Billable", and — since the
+    // division override — the rows a turf, paving or kiewit day can send here.
+    // Asking isEesJob finds only the first; asking "is this a dust entry" finds
+    // only the first two. Any predicate at all has to stay in step with every
+    // injection path at once, and that drift is what stranded rows before.
+    //
+    // So every sweep goes through one helper that names all five removers, and
+    // the sweep sites ask nothing before calling it.
+    const sweeper = /async function removeSplitDestinationRows\([\s\S]{0,1200}?\n\}/.exec(SRC);
+    assert('the destination sweep reaches the EES grid',
+      !!sweeper && /removeEesOtherRows\(sql, companyCode, entry\)/.test(sweeper[0]));
+    // The resplit call passes a `keep` set — the destinations it is about to
+    // re-inject, which their own injectors rewrite in place so the office's
+    // invoice columns survive. Still a sweep site; just not a bare one.
+    const sweepSites = SRC.match(/removeSplitDestinationRows\(sql, companyCode, (existing|updated)[,)]/g) || [];
+    // un-approve, delete, resplit, and the approve path's rollback.
+    assert('un-approve, delete, resplit and the approve rollback all sweep',
+      sweepSites.length === 4, `found ${sweepSites.length}`);
+    // No sweep site may sit behind a division test again. This is the exact
+    // regression the override introduced: `if (existing.division === 'dust')`
+    // reads as harmless and silently skips a turf day's EES rows.
+    const gatedSweep = /(division === '[a-z]+'|isEesJob\(existing\.job_id\))[^\n]*\)\s*\{[\s\S]{0,200}?removeEesOtherRows/.test(SRC);
+    assert('and none of them is behind a division gate', !gatedSweep);
+    // The narrow gate is not banned outright: payroll's Edit Row
     // (action=resplit) asks it ON PURPOSE, because that branch owns the single
     // standing-activity row and nothing else — editing a customer haul's leg
-    // rows is the haul modal's job, and it removes nothing either way. What
-    // must never ask it is a site that SWEEPS, which is the failure this pair
-    // of assertions exists to catch. So: exactly one narrow use, and all three
-    // wide ones still leading straight into the removal they gate.
+    // rows is the haul modal's job, and it removes nothing either way.
     const narrow = SRC.match(/existing\.division === 'dust' && isEesJob\(existing\.job_id\)/g) || [];
     assert('the narrow gate is used exactly once (the EES resplit branch)',
       narrow.length === 1, `found ${narrow.length}`);
-    const swept = SRC.match(
-      /couldHaveEesOtherRows\(existing\)\)\s*\{[\s\S]{0,300}?(removeEesOtherRows|eesOtherHasInjectedRow)/g) || [];
-    assert('and every teardown still sweeps from behind the wide gate',
-      swept.length === 3, `found ${swept.length}`);
   }
 
   // ── A customer haul billed off "Other Billing - Non Billable" ───────────
@@ -467,15 +481,22 @@ function entry(over = {}) {
       && back[0].vehicle1 === '4000' && back[0].start_time === '08:00');
   }
   {
-    // The teardown gate has to cover a customer haul, or its rows outlive the
-    // entry in a tab that cannot delete them.
-    assert('the teardown gate covers a customer haul',
-      couldHaveEesOtherRows({ division: 'dust', job_id: 'co-cnx' }) === true);
-    assert('and a standing EES activity',
-      couldHaveEesOtherRows({ division: 'dust', job_id: 'ees:washing' }) === true);
-    assert('but no other division',
-      couldHaveEesOtherRows({ division: 'trucking', job_id: 'co-cnx' }) === false);
-    assert('and not a null entry', couldHaveEesOtherRows(null) === false);
+    // Teardown has to find a customer haul's rows whatever the entry looks
+    // like now, or they outlive it in a tab that cannot delete them. The sweep
+    // is keyed on the entry id alone, so it finds them for an entry whose
+    // division says dust, one that says turf because the override sent them
+    // here, and one stripped of its job entirely.
+    store.clear();
+    for (const [label, e] of [
+      ['a dust customer haul',        { id: 611, division: 'dust',  job_id: 'co-cnx' }],
+      ['a turf day sent here',        { id: 612, division: 'turf',  job_id: 'p-17'   }],
+      ['an entry stripped of its job', { id: 613, division: 'dust',  job_id: ''       }],
+    ]) {
+      await insertEesOtherRows(sql, 'ACME', entry(e), [{ dest: 'ees', company: 'CNX' }]);
+      assert(`un-approve finds the row for ${label}`,
+        (await removeEesOtherRows(sql, 'ACME', e)) === 1);
+    }
+    assert('and leaves the tab empty', rows().length === 0);
 
     store.clear();
     const day = entry({ id: 605, job_id: 'co-cnx', job_label: 'CNX' });

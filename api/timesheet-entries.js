@@ -184,6 +184,26 @@ const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holida
 // divisions either store labor elsewhere or don't track per-project cost.
 const AUTO_INJECT_DIVISIONS = ['turf', 'paving', 'kiewit'];
 
+// Where a single split row is allowed to be SENT, overriding the division the
+// driver picked on his timesheet.
+//
+// The driver names one division for the whole day, and everything downstream
+// follows it. When he names the wrong one — a truck driver filing a customer
+// haul against the turf job he happened to be hauling for, or the reverse —
+// payroll used to have exactly two ways out: send the day back, or move the
+// WHOLE entry with the Edit modal. Neither can say "six of these hours were
+// turf and four were a haul for EAI", which is the day this override exists
+// for. See splitDestOf and injectSplitDestinations.
+//
+// The three daily_tracking divisions take a row whole — cost code, sub code,
+// equipment, quantity and hours all mean the same thing on the other side. The
+// three blob divisions are written by their own injectors from what a timesheet
+// can actually tell them (the hours, the driver, and the job named here); the
+// money each of those tabs prices its row from — a haul fee, gallons, a
+// crusher's tons — stays theirs to fill in, exactly as it is on a day the
+// driver files correctly.
+const SPLIT_DEST_DIVISIONS = ['turf', 'paving', 'kiewit', 'trucking', 'dust', 'quarry'];
+
 // Quarry auto-injects too, but into the quarry division's OWN cost tracking —
 // the fct_quarry_daily / fct_quarry_crushing app_data blobs (mirrored to
 // quarry_daily_entries / quarry_crushing_entries by sync-normalized.js), NOT
@@ -249,26 +269,6 @@ function eesOtherRowIndexFromId(rowId) {
   return (Number.isInteger(n) && n >= 2 && n <= MAX_DUST_ROWS) ? n : null;
 }
 
-/**
- * True when this entry could have rows in the EES Other tab.
- *
- * Two different things put them there and the teardown paths must find both:
- * the single row an entry on a standing EES ACTIVITY posts, and the per-leg
- * rows a dust CUSTOMER haul posts for every haul billed off "Other Billing -
- * Non Billable". Un-approve, delete and the edit guard used to ask isEesJob,
- * which is only the first of those — so a customer haul's rows would have
- * outlived the entry that made them, in a tab that creates and deletes nothing
- * and could never have removed them.
- *
- * Deliberately wider than either gate: any dust entry at all. Every removal
- * behind it is keyed on the "tse-<entryId>-" prefix, so asking on an entry that
- * has none costs one blob read and finds nothing — and the alternative, a
- * predicate that has to stay in step with two injection gates at once, is
- * exactly the drift that stranded rows before.
- */
-function couldHaveEesOtherRows(entry) {
-  return !!entry && entry.division === 'dust';
-}
 
 // The two standing EES activities are encoded by api/timesheet-jobs.js and named
 // in lib/truck-injected.js (isEesJob, imported above) — the dust EES gate and the
@@ -601,6 +601,100 @@ function _matchRoster(cand, employeeName, key) {
 }
 
 /**
+ * Normalize one split row's DESTINATION override. Returns { dest } — null when
+ * the row stays on the entry's own division, which is every row of an ordinary
+ * day — or { error }.
+ *
+ * The extras each destination needs are validated by that destination's OWN
+ * validator rather than by a second copy here: a haul fee that is refused on a
+ * trucking day has to be refused on a trucking-bound override too, or the
+ * override becomes the way round the rule. See SPLIT_DEST_DIVISIONS.
+ */
+function normalizeSplitDest(raw, idx) {
+  if (raw == null || raw === '') return { dest: null };
+  if (typeof raw !== 'object') return { error: `split[${idx}].dest must be an object` };
+
+  const division = (safeStr(raw.division, 40) || '').toLowerCase();
+  // An override with no division named is not an override. The modal sends the
+  // key on every row once any row carries one, so this is the ordinary case.
+  if (!division) return { dest: null };
+  if (!SPLIT_DEST_DIVISIONS.includes(division)) {
+    return { error: `split[${idx}].dest.division must be one of ${SPLIT_DEST_DIVISIONS.join(', ')}` };
+  }
+
+  // The job is what the destination is: a project on the other division's
+  // board, a trucking customer, a dust customer, a quarry activity+location.
+  // Without it there is nothing to post the row against, and every injector
+  // downstream reads it off the entry it is handed.
+  const job_id = safeStr(raw.job_id, 200);
+  if (!job_id) {
+    return { error: `split[${idx}] is being sent to ${division} but names no job` };
+  }
+  const job_label = safeStr(raw.job_label, 500) || job_id;
+
+  const dest = { division, job_id, job_label, extras: {} };
+
+  if (division === 'quarry') {
+    // Same demand the quarry approve path makes of an entry: the activity is
+    // encoded in the job id, and a job that carries none has no tab to land in.
+    const { activity } = parseQuarryJob(job_id);
+    if (!activity) {
+      return { error: `split[${idx}] names a quarry job with no Daily/Crushing activity on it` };
+    }
+    const { fields, error } = validateQuarryInjection(activity, raw.quarry);
+    if (error) return { error: `split[${idx}]: ${error}` };
+    // The quarry tab renders an injected row READ-ONLY (isTimesheetRow in
+    // quarry.html), and injected-blob-guard.js gives it no columns of its own
+    // on one. So unlike trucking, where the office owns the invoice columns and
+    // an unpriced haul falls back to the customer's agreed rate, nothing
+    // downstream can put a rate on this row later: a zero here is a $0 cost row
+    // in the quarry's books that nobody is able to correct.
+    //
+    // Which field carries it depends on the tab. Both are hours x rate.
+    const rate = activity === 'crushing' ? fields.hourlyRate : fields.rate;
+    if (!(Number(rate) > 0)) {
+      return { error: `split[${idx}] is being sent to the quarry, which cannot price a row after the fact — give this row an hourly rate` };
+    }
+    dest.activity = activity;
+    dest.extras = fields;
+  } else if (division === 'trucking') {
+    const { fields, error } = validateTruckingLeg(raw.trucking);
+    if (error) return { error: `split[${idx}]: ${error}` };
+    // Both boundaries or neither. The window is optional here — the hours come
+    // from the grid — but half of one is worse than none: insertTruckingRows
+    // fills the missing end from the whole day, so a haul given 06:00 and no
+    // end is stamped 06:00-16:30 against four hours. That contradiction is
+    // exactly what the injector's own comments exist to prevent.
+    if (!!fields.start_time !== !!fields.end_time) {
+      return { error: `split[${idx}] has half a time window — give this haul both a start and an end, or neither` };
+    }
+    // The customer is the job the override names. A leg that carried its own
+    // company as well could disagree with it, and then the row's customer and
+    // the destination the approver picked would be two different answers.
+    dest.extras = { ...fields, company: job_label };
+    const unit = raw.unit == null ? null : (safeStr(raw.unit, 100) || '');
+    if (unit != null) dest.unit = unit;
+  } else if (division === 'dust') {
+    const { fields, error } = validateDustLeg(raw.dust);
+    if (error) return { error: `split[${idx}]: ${error}` };
+    // Dust Control Tracking has no hours column: it bills vehicle rates across
+    // the row's clock WINDOW, so the window is the money. Every other
+    // destination takes the hours the grid allocated and prices from those.
+    //
+    // Left to fall back, a leg with no window of its own inherits the whole
+    // day's — which invoices a customer for ten hours of a day they had four
+    // of. So a row sent here has to say when, and it is refused rather than
+    // guessed: there is nothing in a timesheet that says which four.
+    if (!fields.start_time || !fields.end_time) {
+      return { error: `split[${idx}] is being sent to Dust Control Tracking, which bills by the clock — give this row a start and end time` };
+    }
+    dest.extras = { ...fields, company: job_label };
+  }
+
+  return { dest };
+}
+
+/**
  * Normalize one split row from the request body. Returns { row, error }.
  * Each row contributes either labor_hours (>0) and/or equip_hours (>0).
  * is_travel is a UI-only marker that we forward to a flag column —
@@ -633,7 +727,17 @@ function normalizeSplitRow(raw, idx) {
   if (labor_hours <= 0 && equip_hours <= 0) {
     return { error: `split[${idx}] must have labor_hours or equip_hours greater than 0` };
   }
-  if (!cost_code && !sub_code) {
+  const { dest, error: destError } = normalizeSplitDest(raw.dest, idx);
+  if (destError) return { error: destError };
+
+  // Cost codes are a daily_tracking idea. The three blob tabs have no such
+  // column — a Truck Tracking row is a customer, a window and a fee — so
+  // demanding one of a row bound for them would make the override impossible
+  // to satisfy. Rows that stay on a daily_tracking division still need it,
+  // override or not: that is the column the cost lands under.
+  const destDivision = dest ? dest.division : null;
+  const wantsCostCode = destDivision == null || AUTO_INJECT_DIVISIONS.includes(destDivision);
+  if (wantsCostCode && !cost_code && !sub_code) {
     return { error: `split[${idx}] needs at least a cost code or sub code` };
   }
   return {
@@ -645,6 +749,7 @@ function normalizeSplitRow(raw, idx) {
       equip_hours: _r2(equip_hours),
       quantity:    Math.round(quantity * 10000) / 10000,
       is_travel:   raw.is_travel === true,
+      dest,
     },
   };
 }
@@ -675,6 +780,30 @@ function validateSplit(rawSplit, entry) {
     return {
       error: `split labor_hours total (${actual.toFixed(2)}) must equal computed_hours + travel_hours (${expected.toFixed(2)})`,
     };
+  }
+  // The blob tabs cap a day at MAX_INJECTED_LEGS rows, and validateTruckingInjection
+  // and validateDustInjection enforce it on the paths those tabs own. A split
+  // reaching them through the division override has to obey the same cap, and
+  // not because the number is sacred: the leg index is encoded in the row id,
+  // and the parsers that read it back give up past the cap — truckRowLegIndex
+  // collapses every leg above six onto leg 1, where the read-time sweep then
+  // treats them as duplicates of each other and deletes all but one, and
+  // dustRowIndexFromId returns null, which marks the row stale outright. Rows
+  // over the cap do not survive the next page load, so they are refused here
+  // rather than written and lost.
+  const perDivision = new Map();
+  for (const r of rows) {
+    if (!r.dest || AUTO_INJECT_DIVISIONS.includes(r.dest.division)) continue;
+    const n = (perDivision.get(r.dest.division) || 0) + 1;
+    perDivision.set(r.dest.division, n);
+  }
+  for (const [division, n] of perDivision) {
+    if (division !== 'trucking' && division !== 'dust') continue;
+    if (n > MAX_INJECTED_LEGS) {
+      return {
+        error: `a day can be split across at most ${MAX_INJECTED_LEGS} ${division === 'dust' ? 'dust' : 'Truck Tracking'} rows (this split has ${n})`,
+      };
+    }
   }
   return { rows };
 }
@@ -830,7 +959,7 @@ function haulTypeOf(entry) {
  * function only inserts. row_id is generated server-side (UUID-ish) so
  * the daily_tracking unique constraint never collides.
  */
-async function insertSplitRows(sql, splitRows, entry, division, companyCode, employeeName) {
+async function insertSplitRows(sql, splitRows, entry, division, companyCode, employeeName, opts = {}) {
   // Pull the row_id naming pattern used by the existing daily-rows.js layer
   // (timestamp + random tail). This is a TEXT column with a UNIQUE constraint;
   // never collides because we mint a fresh value per call.
@@ -850,14 +979,32 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   const resolver = await buildCostResolver(
     sql, companyCode, division, splitRows.map(r => r.equipment),
   );
-  const emp      = resolver.employeeFor(employeeName);
+  let emp = resolver.employeeFor(employeeName);
+  // A row SENT to another division is priced off the man, not off where the
+  // cost lands. Each division keeps its own roster, and a turf hand lent to a
+  // paving job for four hours is not on paving's — so pricing him from the
+  // destination alone posts a $0 labour row and reads, on the other tab, as a
+  // rate lookup that failed. His own division holds his rate; fall back to it.
+  //
+  // Only ever a fallback: a man on BOTH rosters is priced by the destination's,
+  // because that is the figure the office running that job agreed to.
+  const homeDivision = safeStr(opts.homeDivision, 40) || '';
+  let homeResolver = null;
+  if (!emp && homeDivision && homeDivision !== division) {
+    homeResolver = await buildCostResolver(
+      sql, companyCode, homeDivision, splitRows.map(r => r.equipment),
+    );
+    emp = homeResolver.employeeFor(employeeName);
+  }
+  // Rates come from whichever roster actually found him.
+  const rateSource = (homeResolver && emp) ? homeResolver : resolver;
   const jobClass = (emp && emp.job_class) || null;
   // Travel is not paid at the prevailing rate, even when the job itself is
   // prevailing wage — the premium is for time on the work, not for driving to
   // it. So each row is priced by what it is rather than by the job alone:
   // work at the job's rate, travel always at the employee's standard rate.
-  const workRate   = resolver.rateFor(emp, isPrevailingWage);
-  const travelRate = resolver.rateFor(emp, false);
+  const workRate   = rateSource.rateFor(emp, isPrevailingWage);
+  const travelRate = rateSource.rateFor(emp, false);
   // Did the driver call this block a haul? If so his labour is already bought
   // by the truck on the row, and pricing it again double-bills the job.
   const haulType = haulTypeOf(entry);
@@ -865,9 +1012,17 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
   // cost tracking tab shows everywhere else, not the raw login.
   const employeeLabel = (emp && emp.name) || employeeName;
 
+  // One approval can now call this more than once — once per daily_tracking
+  // division a row was sent to. The index is what keeps the ids apart, so it
+  // has to keep counting across those calls rather than restarting at 0 in
+  // each: two calls landing in the same millisecond would otherwise mint the
+  // same "ts<id>-<stamp>-0-…" twice and the second row would be swallowed
+  // whole by the ON CONFLICT DO NOTHING below.
+  const seqOffset = Number(opts.seqOffset) || 0;
+
   for (let i = 0; i < splitRows.length; i++) {
     const r = splitRows[i];
-    const rowId = `ts${entry.id}-${baseStamp}-${i}-${Math.floor(Math.random() * 1e6)}`;
+    const rowId = `ts${entry.id}-${baseStamp}-${seqOffset + i}-${Math.floor(Math.random() * 1e6)}`;
     const eqUnitCost = resolver.equipCostFor(r.equipment);
     // Stamp the marker from the same rule the rate below is priced by, so the
     // row's stored classification and its rate can never disagree. A row booked
@@ -942,6 +1097,299 @@ async function removeSplitRows(sql, companyCode, entryId) {
       AND (timesheet_entry_id = ${entryId} OR row_id LIKE ${like})
   `;
   return cnt;
+}
+
+// ── Split destinations (the division override) ─────────────────────────────
+// One approved day can now land in more than one division's cost tracking. The
+// hours are still the entry's — payroll balances the split against them to the
+// cent, and this changes none of that — but WHERE each row's cost goes is the
+// approver's to say. See SPLIT_DEST_DIVISIONS for why.
+
+/**
+ * The destination a split row is bound for: its own override, or the entry's
+ * division and job when it carries none. `home` marks the rows that go where
+ * they always went, so an ordinary day takes exactly the path it did before.
+ */
+function splitDestOf(entry, row) {
+  const homeJob = String(entry.job_id == null ? '' : entry.job_id);
+  const d = row && row.dest;
+  if (!d) {
+    return {
+      division: entry.division, job_id: homeJob,
+      job_label: entry.job_label || '', extras: {}, home: true,
+    };
+  }
+  // An "override" naming the entry's own division AND job is not one. Saying so
+  // here rather than in the modal means a client that stamps every row with the
+  // current division — which is the obvious way to write that UI — still gets
+  // the plain single-division path, not a fan-out to one destination.
+  const home = d.division === entry.division && String(d.job_id) === homeJob;
+  return { ...d, home };
+}
+
+/**
+ * The hours one split row represents, for a tab that bills by them.
+ *
+ * Labour hours, except on a row that has none — validateSplit accepts a row
+ * carrying equipment hours alone (it needs one or the other, and only the
+ * labour column has to add up to the day). Read as zero, such a row posts a
+ * Truck Tracking haul billing nothing against a real fee, and a quarry row
+ * showing no time for a machine that ran all day. The truck was there for
+ * those hours whether or not a man was on the clock for them.
+ */
+function splitRowHours(r) {
+  const labor = Number(r && r.labor_hours) || 0;
+  if (labor > 0) return _r2(labor);
+  return _r2(Number(r && r.equip_hours) || 0);
+}
+
+/** Sum of the hours a group of split rows carries. */
+function splitHoursOf(rows) {
+  return _r2(rows.reduce((s, r) => s + splitRowHours(r), 0));
+}
+
+/**
+ * The audit line per destination: which division, which job, how many rows and
+ * how many hours. Grouped even though the rows are injected one by one, because
+ * "four hours went to EAI" is what somebody reading the log wants, not a row
+ * count that happens to match the grid.
+ */
+function destSummary(bound) {
+  const by = new Map();
+  for (const { row, dest } of bound) {
+    const key = `${dest.division}::${dest.job_id}`;
+    if (!by.has(key)) by.set(key, { division: dest.division, job_id: dest.job_id, rows: 0, hours: 0 });
+    const acc = by.get(key);
+    acc.rows  += 1;
+    acc.hours = _r2(acc.hours + splitRowHours(row));
+  }
+  return [...by.values()];
+}
+
+/**
+ * The rows this split sent to a division whose cost tracking is a JSON blob.
+ *
+ * These are the only rows Edit Split cannot read back off the cost itself. A
+ * Truck Tracking row is a customer, a window and a fee; it has no column for
+ * the cost code, the sub code or the quantity the split grid carries, so
+ * reopening the modal from the blob would hand back a row that is not the one
+ * that was saved — and saving that would quietly rewrite it. Rows that landed
+ * in daily_tracking are deliberately NOT here: they can be read back exactly,
+ * and a supervisor may have re-coded them in the destination tab since, which
+ * the modal must show.
+ *
+ * See timesheet_entries.split_destinations in neon-schema.sql.
+ */
+function blobBoundSplitRows(entry, rows) {
+  return rows
+    .map(r => ({ row: r, dest: splitDestOf(entry, r) }))
+    .filter(({ dest }) => !dest.home && !AUTO_INJECT_DIVISIONS.includes(dest.division))
+    .map(({ row, dest }) => ({
+      cost_code:   row.cost_code || '',
+      sub_code:    row.sub_code || '',
+      equipment:   row.equipment || '',
+      labor_hours: row.labor_hours,
+      equip_hours: row.equip_hours,
+      quantity:    row.quantity,
+      is_travel:   row.is_travel === true,
+      dest: {
+        division:  dest.division,
+        job_id:    dest.job_id,
+        job_label: dest.job_label,
+        ...(dest.activity ? { activity: dest.activity } : null),
+        ...(dest.unit != null ? { unit: dest.unit } : null),
+        extras:    dest.extras || {},
+      },
+    }));
+}
+
+/**
+ * Write one approved day's split into every division it was routed to.
+ *
+ * Grouping is by destination, not by row, because the injectors on the other
+ * side are day-shaped: Truck Tracking rewrites every row it owns for an entry
+ * in one pass, and calling it once per haul would have each call delete the
+ * one before it. So each destination family gets exactly one call carrying all
+ * of its rows.
+ *
+ * Returns a summary of what went where, for the audit record.
+ */
+async function injectSplitDestinations(sql, companyCode, entry, rows, flags = {}) {
+  const groups = new Map();
+  for (const r of rows) {
+    const dest = splitDestOf(entry, r);
+    const key  = `${dest.division}::${dest.job_id}`;
+    if (!groups.has(key)) groups.set(key, { dest, rows: [] });
+    groups.get(key).rows.push(r);
+  }
+
+  const summary = [];
+  const all = [...groups.values()];
+  // The rows bound for a blob tab, in the order the approver wrote them.
+  //
+  // Grouped by destination for the daily_tracking divisions above — one call
+  // each — but NOT here. A Truck Tracking row is a haul and a dust row is a
+  // pad: two rows naming the same customer are two hauls, on their own clocks,
+  // each invoiced. Folding them into one leg because they share a customer
+  // billed the first row's window for both, and on the dust side, where the
+  // window IS the money, the second row's hours were never billed at all.
+  const blobBound = rows
+    .map(r => ({ row: r, dest: splitDestOf(entry, r) }))
+    .filter(({ dest }) => !dest.home && !AUTO_INJECT_DIVISIONS.includes(dest.division));
+
+  // ── daily_tracking destinations: turf, paving, kiewit ───────────────────
+  // One call per destination, each priced from that division's own lists and
+  // that job's own prevailing-wage flag. seqOffset keeps the row ids apart
+  // across the calls — see insertSplitRows.
+  let seqOffset = 0;
+  for (const g of all) {
+    if (!AUTO_INJECT_DIVISIONS.includes(g.dest.division)) continue;
+    // The entry the injector prices from. A routed group is handed a copy
+    // carrying the destination's job, because project_id, the cost-code lookup
+    // and the prevailing-wage flag all come off it — the real entry is left
+    // alone so nothing else in this request sees a job it does not have.
+    const destEntry = g.dest.home
+      ? entry
+      : { ...entry, division: g.dest.division, job_id: g.dest.job_id, job_label: g.dest.job_label };
+    await insertSplitRows(
+      sql, g.rows, destEntry, g.dest.division, companyCode, entry.username,
+      { seqOffset, homeDivision: entry.division },
+    );
+    seqOffset += g.rows.length;
+    if (!g.dest.home) {
+      summary.push({ division: g.dest.division, job_id: g.dest.job_id, rows: g.rows.length, hours: splitHoursOf(g.rows) });
+    }
+  }
+
+  // ── Truck Tracking ───────────────────────────────────────────────────────
+  const truckBound = blobBound.filter(b => b.dest.division === 'trucking');
+  if (truckBound.length) {
+    // One leg per ROW, each billing the hours the grid gave it. `company` is
+    // the customer the override named; the fee is left to that customer's
+    // agreed rate unless payroll typed one, exactly as on a day the driver
+    // filed under Trucking himself.
+    const legs = truckBound.map(b => ({ ...b.dest.extras, hours: splitRowHours(b.row) }));
+    const unitAnswer = truckBound.map(b => b.dest.unit).find(u => u != null);
+    const truckEntry = {
+      ...entry,
+      division:       'trucking',
+      job_id:         truckBound[0].dest.job_id,
+      job_label:      truckBound[0].dest.job_label,
+      // The hours this destination got, not the day's — a single-leg override
+      // prices off these directly.
+      computed_hours: splitHoursOf(truckBound.map(b => b.row)),
+      travel_hours:   0,
+    };
+    const fields = { rows: legs, division: '' };
+    if (unitAnswer != null) fields.unit = unitAnswer;
+    await insertTruckingRows(sql, companyCode, truckEntry, fields, { clearSuppression: true });
+    summary.push(...destSummary(truckBound));
+  }
+
+  // ── Dust: tracking / Other Billing / EES Other ──────────────────────────
+  // All three writers take the whole day's legs and each keeps only the ones
+  // its own grid bills, so a day routed across them posts one row per haul in
+  // whichever grid claims it — the same contract the dust approve path uses.
+  const dustBound = blobBound.filter(b => b.dest.division === 'dust');
+  if (dustBound.length) {
+    // One leg per row here too, and for a sharper reason than trucking: a dust
+    // row carries no hours column at all, so its window is the whole of what it
+    // bills. Two pads folded into one leg lose the second window outright.
+    const legs = dustBound.map(b => ({ ...b.dest.extras }));
+    const dustEntry = {
+      ...entry,
+      division:       'dust',
+      job_id:         dustBound[0].dest.job_id,
+      job_label:      dustBound[0].dest.job_label,
+      computed_hours: splitHoursOf(dustBound.map(b => b.row)),
+      travel_hours:   0,
+    };
+    await insertDustTrackingRows(sql, companyCode, dustEntry, legs, { clearSuppression: true });
+    await insertObRows(sql, companyCode, dustEntry, legs, { clearSuppression: true });
+    await insertEesOtherRows(sql, companyCode, dustEntry, legs, { clearSuppression: true });
+    summary.push(...destSummary(dustBound));
+  }
+
+  // ── Quarry ───────────────────────────────────────────────────────────────
+  const quarryBound = blobBound.filter(b => b.dest.division === 'quarry');
+  if (quarryBound.length) {
+    // And one quarry row per split row, on the same reasoning: each carries its
+    // own hours and its own rate, and merging two would have to throw one of
+    // the two rates away.
+    await insertQuarryRowsForDests(sql, companyCode, entry, quarryBound.map(b => ({
+      activity:  b.dest.activity,
+      job_id:    b.dest.job_id,
+      job_label: b.dest.job_label,
+      fields:    b.dest.extras,
+      hours:     splitRowHours(b.row),
+    })));
+    summary.push(...destSummary(quarryBound));
+  }
+
+  return summary;
+}
+
+/**
+ * Record — or clear — the blob-bound rows of an entry's split, so Edit Split
+ * can reopen on them. Writing null when there are none keeps the column from
+ * describing cost that is no longer posted.
+ */
+async function saveBlobBoundSplitRows(sql, companyCode, entry, rows) {
+  const stored = rows ? blobBoundSplitRows(entry, rows) : [];
+  const value  = stored.length ? JSON.stringify(stored) : null;
+  await sql`
+    UPDATE timesheet_entries SET split_destinations = ${value}, updated_at = NOW()
+    WHERE id = ${entry.id} AND company_code = ${companyCode}
+  `;
+}
+
+/**
+ * Take back every cost row a DIVISION OVERRIDE posted outside daily_tracking.
+ *
+ * Each of these removers finds its rows by the entry id encoded in the row id
+ * and nothing else — not the entry's division, not its job — so running all of
+ * them against any entry is safe, and against an entry that never used the
+ * override it is a handful of blob reads that find nothing.
+ *
+ * That is the whole reason the override can be trusted: un-approving a day has
+ * to be able to undo it without knowing where it went. Anything that tried to
+ * remember the destinations instead would strand rows the moment the record and
+ * the blobs disagreed.
+ *
+ * `opts.keep` is for the one caller that is not tearing down: a re-split, which
+ * sweeps and then re-injects. Each injector already rewrites and prunes every
+ * row it owns for the entry, and it carries the DESTINATION OFFICE's own
+ * columns across while it does — the QB invoice number, the sent and paid
+ * dates, the dust company-man approval, the task number. Deleting the row first
+ * throws all of that away and hands the injector nothing to carry: an approver
+ * fixing a cost code on an unrelated row would silently blank an invoice the
+ * trucking office had already sent and mint a new task number for it. So a
+ * destination the split still posts to is left for its injector to rewrite;
+ * only the ones it no longer posts to are swept here.
+ */
+async function removeSplitDestinationRows(sql, companyCode, entry, opts = {}) {
+  // Destinations the caller is about to re-inject, which must NOT be swept
+  // first — see the note above.
+  const keep = opts.keep instanceof Set ? opts.keep : new Set();
+  let removed = 0;
+  if (!keep.has('quarry'))   removed += await removeQuarryRows(sql, companyCode, entry);
+  if (!keep.has('trucking')) removed += await removeTruckingRows(sql, companyCode, entry);
+  if (!keep.has('dust')) {
+    removed += await removeDustTrackingRows(sql, companyCode, entry);
+    removed += await removeObRows(sql, companyCode, entry);
+    removed += await removeEesOtherRows(sql, companyCode, entry);
+  }
+  return removed;
+}
+
+/** The blob divisions a validated split is about to post to. */
+function splitDestinationDivisions(entry, rows) {
+  const out = new Set();
+  for (const r of rows || []) {
+    const dest = splitDestOf(entry, r);
+    if (!dest.home && !AUTO_INJECT_DIVISIONS.includes(dest.division)) out.add(dest.division);
+  }
+  return out;
 }
 
 // ── Quarry split helpers (timesheet → fct_quarry_daily/crushing blob) ──────
@@ -1092,18 +1540,31 @@ async function matchQuarryEmployee(sql, companyCode, name) {
  * retried approve), appends the new row, writes the blob, and mirrors it into
  * the normalized table via syncForKey. Returns the row that was written.
  */
-async function insertQuarryRow(sql, companyCode, entry, activity, fields) {
-  const blobKey = QUARRY_ACTIVITY_KEY[activity];
-  const { locationId } = parseQuarryJob(entry.job_id);
-  const locationName = await quarryLocationName(sql, companyCode, locationId, entry.job_label);
+/**
+ * Build the quarry blob row for one activity. Shared by the ordinary quarry
+ * approval (one row for the whole entry) and by a division override sending
+ * part of a turf/paving/kiewit day here — the two must produce the same shape
+ * of row or the tab reads one of them as foreign.
+ *
+ * `jobId`/`jobLabel` are passed rather than read off the entry so an override
+ * can name a quarry activity+location the entry itself does not carry. `hours`
+ * likewise: an override allocates part of a day, and the grid already decided
+ * how much.  `seq` keeps two rows minted in the same millisecond apart.
+ */
+async function buildQuarryRow(sql, companyCode, entry, activity, fields, opts = {}) {
+  const jobId    = opts.jobId != null ? opts.jobId : entry.job_id;
+  const jobLabel = opts.jobLabel != null ? opts.jobLabel : entry.job_label;
+  const { locationId } = parseQuarryJob(jobId);
+  const locationName = await quarryLocationName(sql, companyCode, locationId, jobLabel);
   const emp = await matchQuarryEmployee(sql, companyCode, entry.username);
   const workDate = safeDate(entry.work_date) || '';
   // Work hours only — travel time is intentionally not carried into the
   // quarry cost row (product decision).
-  const hours = _r2(Number(entry.computed_hours) || 0);
+  const hours = _r2(opts.hours != null ? Number(opts.hours) || 0 : Number(entry.computed_hours) || 0);
+  const seq = Number(opts.seq) || 0;
 
   const base = {
-    id: `${quarryRowIdPrefix(entry.id)}${Date.now()}`,
+    id: `${quarryRowIdPrefix(entry.id)}${Date.now()}${seq ? `-${seq}` : ''}`,
     date: workDate,
     locationId: locationId || '',
     locationName: locationName || '',
@@ -1135,6 +1596,17 @@ async function insertQuarryRow(sql, companyCode, entry, activity, fields) {
         tonsPerLoad:    fields.tonsPerLoad,
       };
 
+  return row;
+}
+
+/**
+ * The ordinary quarry approval: one entry, one activity, one row. Unchanged in
+ * behaviour — it clears whatever this entry posted before and writes the one
+ * row that replaces it.
+ */
+async function insertQuarryRow(sql, companyCode, entry, activity, fields) {
+  const blobKey = QUARRY_ACTIVITY_KEY[activity];
+  const row = await buildQuarryRow(sql, companyCode, entry, activity, fields);
   const prefix = quarryRowIdPrefix(entry.id);
   const arr = await readBlobArray(sql, companyCode, blobKey);
   const next = arr.filter(r => !(r && typeof r === 'object' && String(r.id || '').startsWith(prefix)));
@@ -1142,6 +1614,78 @@ async function insertQuarryRow(sql, companyCode, entry, activity, fields) {
   await writeBlobArray(sql, companyCode, blobKey, next);
   await syncForKey(sql, companyCode, blobKey, next);
   return row;
+}
+
+/**
+ * Quarry rows written by a DIVISION OVERRIDE: a day filed against turf, paving
+ * or kiewit, part of which was really quarry work.
+ *
+ * Both activity blobs are swept before anything is written, and each is written
+ * at most once. Going through insertQuarryRow per destination instead would
+ * have each call clear the rows the call before it had just added — the sweep
+ * is keyed on the entry, which every one of these rows shares.
+ */
+async function insertQuarryRowsForDests(sql, companyCode, entry, dests) {
+  const prefix = quarryRowIdPrefix(entry.id);
+  const built  = new Map();   // blobKey → rows to add
+  for (let i = 0; i < dests.length; i++) {
+    const d = dests[i];
+    const blobKey = QUARRY_ACTIVITY_KEY[d.activity];
+    if (!blobKey) continue;
+    const row = await buildQuarryRow(sql, companyCode, entry, d.activity, d.fields, {
+      jobId: d.job_id, jobLabel: d.job_label, hours: d.hours, seq: i + 1,
+    });
+    if (!built.has(blobKey)) built.set(blobKey, []);
+    built.get(blobKey).push(row);
+  }
+  const written = [];
+  // Every activity blob is touched, not only the ones being written to: a
+  // re-split that moved the day off Crushing and onto Daily has to take the
+  // Crushing row back, and the only way to know it is there is to look.
+  for (const blobKey of Object.values(QUARRY_ACTIVITY_KEY)) {
+    const add = built.get(blobKey) || [];
+    const arr = await readBlobArray(sql, companyCode, blobKey);
+    const isMine = r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix);
+    const kept = arr.filter(r => !isMine(r));
+    // Nothing of ours there and nothing of ours to add: leave the blob alone
+    // rather than racing the quarry tab's own save for a no-op write.
+    if (!add.length && kept.length === arr.length) continue;
+    const next = kept.concat(add);
+    await writeBlobArray(sql, companyCode, blobKey, next);
+    await syncForKey(sql, companyCode, blobKey, next);
+    // syncForKey will not delete the LAST mirror row (it short-circuits on an
+    // empty array), and it has no way to know about a row that left the blob
+    // while others stayed. Same explicit cleanup, same reason, as
+    // removeQuarryRows.
+    const goneIds = arr.filter(isMine).map(r => String(r.id))
+      .filter(id => !add.some(r => String(r.id) === id));
+    if (goneIds.length) {
+      if (blobKey === QUARRY_ACTIVITY_KEY.daily) {
+        await sql`DELETE FROM quarry_daily_entries WHERE company_code = ${companyCode} AND id = ANY(${goneIds})`;
+      } else {
+        await sql`DELETE FROM quarry_crushing_entries WHERE company_code = ${companyCode} AND id = ANY(${goneIds})`;
+      }
+    }
+    written.push(...add);
+  }
+  return written;
+}
+
+/**
+ * True when this entry still has a quarry blob row, in EITHER activity blob.
+ *
+ * quarrySplitForEntry cannot answer this: it resolves the blob from the
+ * activity encoded in the entry's OWN job, so it reads a turf day that sent
+ * hours to the crusher as having no quarry row at all. This asks the blobs
+ * instead, keyed on the entry id like every other teardown.
+ */
+async function quarryHasInjectedRow(sql, companyCode, entry) {
+  const prefix = quarryRowIdPrefix(entry.id);
+  for (const blobKey of Object.values(QUARRY_ACTIVITY_KEY)) {
+    const arr = await readBlobArray(sql, companyCode, blobKey);
+    if (arr.some(r => r && typeof r === 'object' && String(r.id || '').startsWith(prefix))) return true;
+  }
+  return false;
 }
 
 /**
@@ -1621,11 +2165,31 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
     // would stamp a row "11:15–15:30" against nine hours — which is what a
     // supervisor gets by splitting a day, then removing the first haul. Either
     // both come from the leg or neither does.
-    const start = (split && leg.start_time !== undefined) ? leg.start_time : hhmm(entry.start_time);
-    const end   = (split && leg.end_time   !== undefined) ? leg.end_time   : hhmm(entry.end_time);
+    // A leg that states its own hours (see givenHours below) is not the whole
+    // day either, so its window is its own when it has one — the "both or
+    // neither" rule above is about a day being carved up BY its windows, and
+    // these were carved up by hours instead. Without this a four-hour haul sent
+    // over from a turf day would be stamped with the driver's full 06:00–16:30.
+    const ownWindow = split || leg.hours != null;
+    const start = (ownWindow && leg.start_time !== undefined) ? leg.start_time : hhmm(entry.start_time);
+    const end   = (ownWindow && leg.end_time   !== undefined) ? leg.end_time   : hhmm(entry.end_time);
     const span  = computeHours(start, end);
+    // Hours stated outright, which is what a row SENT here from another
+    // division's split grid carries. That grid balances against the entry's own
+    // hours to the cent before anything is written, so the figure it allocated
+    // to this haul is already the answer — deriving it a second time from a
+    // clock window would let the two disagree, and the window is the half
+    // nobody typed. Server-set only: validateTruckingLeg drops the key, so no
+    // client can put an hour figure on a leg that a window should have priced.
+    //
+    // The lunch walk below is deliberately skipped for these. `owed` exists to
+    // take the break off a day being carved into windows; a leg that states its
+    // hours has already had it taken off upstream.
+    const givenHours = leg.hours == null ? null : _r2(Number(leg.hours) || 0);
     let hours;
-    if (!split) {
+    if (givenHours != null) {
+      hours = givenHours;
+    } else if (!split) {
       hours = _r2(work + travel);
     } else {
       // A leg of a split day bills its own window and nothing else. Cleared
@@ -3769,6 +4333,9 @@ module.exports = async (req, res) => {
         isEesJob(existing.job_id);
 
       let splitRows = null;
+      // What the split actually posted OUTSIDE this entry's own division, for
+      // the audit record. Empty on the ordinary day, which is most of them.
+      let splitDests = [];
       if (needsSplit) {
         if (!existing.job_id) {
           return res.status(400).json({ error: 'Cannot inject: entry has no job_id (project)' });
@@ -3870,9 +4437,22 @@ module.exports = async (req, res) => {
       if (splitRows || quarryInject || needsTrucking || needsDust || needsEesOther) {
         try {
           if (splitRows) {
-            await insertSplitRows(
-              sql, splitRows, updated, updated.division, companyCode, updated.username,
-            );
+            // Not insertSplitRows directly: a row may have been routed to
+            // another division entirely, and the fan-out is what knows which
+            // injector each destination needs. A day with no overrides on it
+            // takes exactly the same single call it always did.
+            // Recorded BEFORE the rows are written, not after.
+            //
+            // This record is what tells the destination tabs' read-time sweeps
+            // that a turf entry legitimately owns a row in their blob. Written
+            // afterwards, anyone opening Truck Tracking in the gap between the
+            // two statements sweeps the haul away as an orphan and takes its
+            // Intercompany billing entry with it. Written first, the worst case
+            // is a record naming rows that do not exist yet, which makes the
+            // sweep more cautious rather than less — and the rollback below
+            // clears it.
+            await saveBlobBoundSplitRows(sql, companyCode, updated, splitRows);
+            splitDests = await injectSplitDestinations(sql, companyCode, updated, splitRows);
           } else if (quarryInject) {
             await insertQuarryRow(
               sql, companyCode, updated, quarryInject.activity, quarryInject.fields,
@@ -3916,6 +4496,13 @@ module.exports = async (req, res) => {
           if (splitRows) {
             try { await removeSplitRows(sql, companyCode, id); }
             catch (cleanupErr) { console.error('[timesheet-entries] split rollback cleanup failed:', cleanupErr.message); }
+            // A split can now have written into the trucking, dust and quarry
+            // blobs as well — one destination landing and the next one throwing
+            // is exactly the partial state this rollback exists for, and the
+            // guards below are keyed on what the ENTRY needed, so none of them
+            // covers a row the override sent somewhere else.
+            try { await removeSplitDestinationRows(sql, companyCode, updated); }
+            catch (cleanupErr) { console.error('[timesheet-entries] split destination rollback cleanup failed:', cleanupErr.message); }
           }
           // Quarry/trucking write the blob before mirroring; if the mirror sync
           // threw, scrub any half-written blob row so it can't linger as a
@@ -3971,6 +4558,7 @@ module.exports = async (req, res) => {
                 approved_at         = NULL,
                 approved_by_user_id = NULL,
                 approved_by_name    = NULL,
+                split_destinations  = NULL,
                 updated_at          = NOW()
             WHERE id = ${id} AND company_code = ${companyCode}
           `;
@@ -4004,7 +4592,12 @@ module.exports = async (req, res) => {
         : null;
       await writeAudit(
         sql, companyCode, payload, id, 'APPROVE',
-        splitRows ? Object.assign({ split_row_count: splitRows.length }, haulAudit)
+        splitRows ? Object.assign({ split_row_count: splitRows.length },
+          // Which divisions this day's cost was sent to, when it went anywhere
+          // but its own. Cost landing on another division's board is exactly
+          // the kind of thing whoever finds it there needs to be able to trace.
+          splitDests.length ? { split_destinations: splitDests } : null,
+          haulAudit)
           : quarryInject ? { quarry_activity: quarryInject.activity }
           : (needsTrucking || needsDust)
             ? {
@@ -4098,11 +4691,12 @@ module.exports = async (req, res) => {
       // insertEesOtherRow rewrites this entry's row in place and carries the
       // rate across (EES_OTHER_TAB_FIELDS), so correcting a job number cannot
       // cost the dust office the figure it bills at.
-      // The INJECTION gate, not couldHaveEesOtherRows: that one is deliberately
-      // wider — any dust entry — because teardown must also find the per-leg
-      // rows a customer haul posts. Editing one of those is the haul modal's
-      // job, below. This branch owns only the standing-activity row, so it asks
-      // the same question insertEesOtherRow's writer does.
+      // The INJECTION gate, deliberately narrow. The teardowns ask nothing at
+      // all — they sweep every entry, because a customer haul's per-leg rows
+      // and anything the division override sent here have to be found too.
+      // Editing one of those is the haul modal's job, below. This branch owns
+      // only the standing-activity row, so it asks the same question
+      // insertEesOtherRow's writer does.
       if (existing.entry_type === 'daily'
           && existing.division === 'dust' && isEesJob(existing.job_id)) {
         const { fields, error } = validateEesInjection(req.body && req.body.ees);
@@ -4319,12 +4913,31 @@ module.exports = async (req, res) => {
       // to retry because it's keyed on the entry, and the insert is
       // idempotent on row_id.
       await removeSplitRows(sql, companyCode, id);
+      // A prior save may have routed rows into trucking, dust or quarry. Those
+      // live in their own blobs, so removeSplitRows above — which only knows
+      // daily_tracking — cannot see them, and re-injecting without clearing
+      // them first would leave the old destination standing beside the new one.
+      //
+      // Except where this split posts again: those injectors rewrite their own
+      // rows in place and carry the destination office's invoice columns across
+      // while they do. Sweeping first would throw those away on every re-split.
+      await removeSplitDestinationRows(sql, companyCode, existing, {
+        keep: splitDestinationDivisions(existing, splitRows),
+      });
+      let rsDests = [];
       try {
-        await insertSplitRows(
-          sql, splitRows, existing, existing.division, companyCode, existing.username,
-        );
+        // Before the write, for the reason the approve path spells out: this
+        // record is what keeps the destination tabs from sweeping these rows
+        // away as orphans, so it must never lag behind them.
+        await saveBlobBoundSplitRows(sql, companyCode, existing, splitRows);
+        rsDests = await injectSplitDestinations(sql, companyCode, existing, splitRows);
       } catch (injErr) {
         console.error('[timesheet-entries] resplit insert failed:', injErr.message);
+        // split_destinations is deliberately left as written. It only ever makes
+        // the destination tabs' sweeps keep MORE — a record naming rows that
+        // were never written matches nothing and costs nothing, while clearing
+        // it would expose any row that did land to being swept as an orphan
+        // before the retry this error asks for. The retry rewrites both.
         return res.status(500).json({
           error: 'Resplit failed: prior rows deleted but new rows could not be written. Retry.',
           detail: injErr.message,
@@ -4334,6 +4947,7 @@ module.exports = async (req, res) => {
       await writeAudit(
         sql, companyCode, payload, id, 'ADMIN_EDIT',
         Object.assign({ resplit: true, split_row_count: splitRows.length },
+          rsDests.length ? { split_destinations: rsDests } : null,
           rsHaulChanged
             ? { haul_type_from: rsPriorHaul, haul_type_to: (existing.haul_type || null) }
             : null),
@@ -4365,47 +4979,31 @@ module.exports = async (req, res) => {
 
       // Counts as it deletes, so the audit log captures how much cost went away.
       const cnt = await removeSplitRows(sql, companyCode, id);
-      // Quarry stores its injected rows in the fct_quarry_* blobs, not
-      // daily_tracking — clear those too so the Daily/Crushing tab reflects
-      // the un-approval.
-      let removedQuarry = 0;
-      if (existing.division === 'quarry') {
-        removedQuarry = await removeQuarryRows(sql, companyCode, existing);
-      }
-      // Trucking (and dust customer work) stores its injected rows in the
-      // fct_truck_division blob + truck_division_entries table — clear those so
-      // the Truck Tracking tab reflects the un-approval.
-      let removedTrucking = 0;
-      if (needsTruckTrackingRow(existing)) {
-        removedTrucking = await removeTruckingRows(sql, companyCode, existing);
-      }
-      // Dust stores its injected rows in the dust_ees_other_rows blob — clear
-      // those so the EES Other tab reflects the un-approval. The dust auto-sync
-      // then pulls any Intercompany entry the row had created.
-      let removedEesOther = 0;
-      if (couldHaveEesOtherRows(existing)) {
-        removedEesOther = await removeEesOtherRows(sql, companyCode, existing);
-      }
-      // A dust customer haul also posted a Dust Control Tracking row — take that
-      // back too, or the dust office keeps billing work payroll has withdrawn.
-      let removedDust = 0;
-      let removedDustOb = 0;
-      if (needsDustTrackingRow(existing)) {
-        removedDust = await removeDustTrackingRows(sql, companyCode, existing);
-        // A haul billed as material posted into Other Billing instead, and the
-        // entry alone cannot say which grid it went to — the destination lives
-        // on the leg. So both are swept whenever the entry could have posted to
-        // either; the one with nothing to find costs a single blob read.
-        removedDustOb = await removeObRows(sql, companyCode, existing);
-      }
-      const removed = cnt + removedQuarry + removedTrucking + removedEesOther
-        + removedDust + removedDustOb;
+      // Everything below used to be gated on the entry's OWN division: a turf
+      // day could only have posted into daily_tracking, so there was nothing
+      // else to look for. The division override broke that assumption — a turf
+      // day can now have posted a Truck Tracking row, a dust row and a quarry
+      // row — and a guard that skips the sweep leaves those standing after the
+      // approval that created them is gone, billing customers for work payroll
+      // has withdrawn.
+      //
+      // So the sweep is unconditional. Every remover finds its rows by the
+      // entry id alone (see removeSplitDestinationRows), so this is correct for
+      // an entry that used the override and costs a few empty blob reads for
+      // one that did not.
+      // Quarry keeps its rows in the fct_quarry_* blobs, trucking (and dust
+      // customer work) in fct_truck_division, dust across its three grids —
+      // none of them in daily_tracking. removeSplitDestinationRows clears every
+      // one of them, so the tabs reflect the un-approval and the dust auto-sync
+      // pulls any Intercompany entry those rows had created.
+      const removed = cnt + await removeSplitDestinationRows(sql, companyCode, existing);
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'submitted',
             approved_at         = NULL,
             approved_by_user_id = NULL,
             approved_by_name    = NULL,
+            split_destinations  = NULL,
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -4623,7 +5221,8 @@ module.exports = async (req, res) => {
       // value fields) so the payroll modal can pre-fill on re-edit. `id` MUST
       // be selected — quarrySplitForEntry keys the blob lookup on entry.id.
       const [entryRow] = await sql`
-        SELECT id, entry_type, division, job_id, job_label FROM timesheet_entries
+        SELECT id, entry_type, division, job_id, job_label, split_destinations
+        FROM timesheet_entries
         WHERE id = ${id} AND company_code = ${companyCode}
       `;
       if (entryRow && entryRow.division === 'quarry') {
@@ -4670,14 +5269,22 @@ module.exports = async (req, res) => {
       }
 
       const rows = await sql`
-        SELECT row_id, project_id, date, cost_code, sub_code, equipment,
+        SELECT row_id, project_id, division, date, cost_code, sub_code, equipment,
                labor_hours, equip_hours, quantity, field_type
         FROM daily_tracking
         WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
         ORDER BY id ASC
       `;
-      return res.json({
-        split: rows.map(r => ({
+      // Where each row actually landed, so a split routed to another division
+      // reopens showing that rather than reading as an ordinary row on this
+      // entry's own job — which is what the modal would save it back as.
+      const homeDiv = entryRow ? entryRow.division : null;
+      const homeJob = entryRow ? String(entryRow.job_id == null ? '' : entryRow.job_id) : '';
+      const daily = rows.map(r => {
+        const rowDiv = r.division || homeDiv;
+        const rowJob = String(r.project_id == null ? '' : r.project_id);
+        const moved  = rowDiv !== homeDiv || rowJob !== homeJob;
+        return {
           cost_code:   r.cost_code   || '',
           sub_code:    r.sub_code    || '',
           equipment:   r.equipment   || '',
@@ -4685,8 +5292,16 @@ module.exports = async (req, res) => {
           equip_hours: r.equip_hours != null ? Number(r.equip_hours) : 0,
           quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
           is_travel:   r.field_type === 'Travel',
-        })),
+          // job_label is not a daily_tracking column; the modal already holds
+          // the destination division's job list and names it from there.
+          ...(moved ? { dest: { division: rowDiv, job_id: rowJob } } : null),
+        };
       });
+      // The rows that went to a blob tab, which cannot be read back out of it.
+      // See timesheet_entries.split_destinations.
+      const storedRaw = entryRow ? entryRow.split_destinations : null;
+      const stored = Array.isArray(storedRaw) ? storedRaw : [];
+      return res.json({ split: daily.concat(stored) });
     }
 
     // ── PUT — update fields ───────────────────────────────────────────────
@@ -4719,30 +5334,29 @@ module.exports = async (req, res) => {
           WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
         `;
         let injected = cnt;
-        if (existing.division === 'quarry') {
-          const { row } = await quarrySplitForEntry(sql, companyCode, existing);
-          if (row) injected += 1;
-        }
-        if (needsTruckTrackingRow(existing)) {
-          if (await truckingHasInjectedRow(sql, companyCode, existing)) injected += 1;
-        }
-        // The dust tab shows this entry's date, times and customer verbatim, so
-        // editing an approved haul without re-injecting would leave the tab —
-        // and the invoice built from it — quietly disagreeing with the timesheet.
-        if (needsDustTrackingRow(existing)) {
-          if (await dustHasInjectedRow(sql, companyCode, existing)) injected += 1;
-          // Same rule for a haul billed as material: the Other Billing row
-          // shows this entry's date and customer, and its trucking hours are
-          // the clock window off the timesheet, so editing the entry underneath
-          // it would leave the invoice disagreeing with the day it billed.
-          if (await obHasInjectedRow(sql, companyCode, existing)) injected += 1;
-        }
-        // Same rule for EES: the tab shows the entry's hours and times verbatim,
-        // so editing an approved entry without re-injecting would leave the tab
-        // — and any Intercompany figure built from it — quietly disagreeing with
-        // the timesheet.
-        if (couldHaveEesOtherRows(existing)) {
-          if (await eesOtherHasInjectedRow(sql, companyCode, existing)) injected += 1;
+        // Asked of every approved entry, not only of the division that normally
+        // posts to each tab. A day's cost can have been SENT anywhere by the
+        // division override, so "this is a turf entry, it can only have
+        // daily_tracking rows" is no longer true — and this guard is the only
+        // thing standing between an edited entry and a tab still showing the
+        // hours, times and customer it had before the edit. The dust and Other
+        // Billing rows carry the entry's clock window; the EES row its hours;
+        // Truck Tracking its customer and unit; the quarry its hours.
+        //
+        // Only when daily_tracking has not already settled it, and then all at
+        // once. Each is an independent prefixed lookup that finds nothing when
+        // the entry never posted there, which is the common case for all five —
+        // awaited one after another they were five needless serverless
+        // round-trips on the way to a 409 the first count had already decided.
+        if (injected === 0) {
+          const elsewhere = await Promise.all([
+            quarryHasInjectedRow(sql, companyCode, existing),
+            truckingHasInjectedRow(sql, companyCode, existing),
+            dustHasInjectedRow(sql, companyCode, existing),
+            obHasInjectedRow(sql, companyCode, existing),
+            eesOtherHasInjectedRow(sql, companyCode, existing),
+          ]);
+          injected += elsewhere.filter(Boolean).length;
         }
         if (injected > 0) {
           return res.status(409).json({
@@ -4913,44 +5527,23 @@ module.exports = async (req, res) => {
       // "manual" rows, which is invisible and surprising. Explicit DELETE
       // keeps payroll deletion symmetric with the approval/un-approval flow.
       //
-      // Every sweep keys on the entry's DIVISION, never on its status. An
-      // injected row can outlive the thing that should have removed it — a
-      // daily_tracking row that lost its link (see removeSplitRows), or a
-      // quarry/trucking row whose blob rewrite landed while its mirror delete
-      // threw — and either way the entry is left reading 'submitted' with
-      // cost still posted against it. Deleting the entry is the last chance to
-      // catch those, so the status must not be what decides whether to look.
-      // Costs nothing on the other divisions, which never match the prefix.
+      // No sweep keys on the entry's division or its status. An injected row
+      // can outlive the thing that should have removed it — a daily_tracking
+      // row that lost its link (see removeSplitRows), or a quarry/trucking row
+      // whose blob rewrite landed while its mirror delete threw — and either
+      // way the entry is left reading 'submitted' with cost still posted
+      // against it. Deleting the entry is the last chance to catch those, so
+      // nothing about the entry may decide whether to look.
+      //
+      // The division gates that used to stand here were already only an
+      // optimization, and the division override made them wrong: a turf day can
+      // now have posted a Truck Tracking row, a dust row and a quarry row, and
+      // a gate reading `division === 'trucking'` would walk past every one of
+      // them on the way to deleting the only record that they exist. Every
+      // remover is keyed on this entry's id, so looking where there is nothing
+      // costs a few blob reads and can never match another entry's rows.
       let removedSplitRows = await removeSplitRows(sql, companyCode, id);
-      if (existing.division === 'quarry') {
-        removedSplitRows += await removeQuarryRows(sql, companyCode, existing);
-      }
-      // Deliberately broader than needsTruckTrackingRow: that gate also reads
-      // the job, and a dust entry un-approved, stripped of its job and then
-      // deleted would slip past it while its injected row (removed on a sweep
-      // that threw) lived on. The sweep is keyed on the "tst-<id>-" prefix, so
-      // looking when there is nothing to find costs one blob read and can never
-      // match another entry's rows.
-      if (existing.division === 'trucking' || existing.division === 'dust') {
-        removedSplitRows += await removeTruckingRows(sql, companyCode, existing);
-      }
-      // Same reasoning, same breadth, for the dust half of a customer haul: the
-      // sweep is keyed on the "tsd-<id>-" prefix, so looking when there is
-      // nothing to find costs one indexed lookup and can never match another
-      // entry's row.
-      if (existing.division === 'dust') {
-        removedSplitRows += await removeDustTrackingRows(sql, companyCode, existing);
-        // And the Other Billing half, on the same reasoning and the same
-        // breadth: the sweep is keyed on the "tso-<id>-" prefix, so looking
-        // when there is nothing to find costs one blob read and can never match
-        // another entry's rows.
-        removedSplitRows += await removeObRows(sql, companyCode, existing);
-      }
-      // Keyed on the division+job the same way the other sweeps are, so a row
-      // that outlived its entry still gets caught when the entry is deleted.
-      if (couldHaveEesOtherRows(existing)) {
-        removedSplitRows += await removeEesOtherRows(sql, companyCode, existing);
-      }
+      removedSplitRows += await removeSplitDestinationRows(sql, companyCode, existing);
       await sql`DELETE FROM timesheet_entries WHERE id = ${id} AND company_code = ${companyCode}`;
       await writeAudit(
         sql, companyCode, payload, id, 'DELETE',
@@ -4974,6 +5567,17 @@ module.exports._test = {
   normalizeSplitTag,
   normalizeEntryBody,
   matchRosterEmployee,
+  SPLIT_DEST_DIVISIONS,
+  validateSplit,
+  normalizeSplitDest,
+  splitDestOf,
+  blobBoundSplitRows,
+  injectSplitDestinations,
+  removeSplitDestinationRows,
+  splitDestinationDivisions,
+  splitRowHours,
+  insertQuarryRowsForDests,
+  quarryHasInjectedRow,
   insertSplitRows,
   removeSplitRows,
   truckingRowIdPrefix,
@@ -4986,7 +5590,6 @@ module.exports._test = {
   insertEesOtherRows,
   eesOtherRowId,
   eesOtherRowIndexFromId,
-  couldHaveEesOtherRows,
   eesSplitForEntry,
   removeEesOtherRows,
   eesOtherRowIdPrefix,

@@ -1951,3 +1951,24 @@ CREATE TABLE IF NOT EXISTS mathis_job_facts (
 -- The read the history digest makes: one division's window, newest first.
 CREATE INDEX IF NOT EXISTS idx_mathis_job_facts_window
     ON mathis_job_facts (company_code, division, day DESC);
+
+-- ── Division override: where an approved day's cost was SENT ───────────────
+-- A driver names one division on his timesheet and the whole day used to
+-- follow it. Payroll can now route individual split rows elsewhere at approval
+-- time — see SPLIT_DEST_DIVISIONS in api/timesheet-entries.js — because "he
+-- filed ten hours against the turf job and four of them were a haul for EAI"
+-- had no other answer short of sending the day back.
+--
+-- This column holds ONLY the rows sent to a division whose cost tracking is a
+-- JSON blob (trucking, dust, quarry). Rows sent to another daily_tracking
+-- division (turf/paving/kiewit) are NOT stored here: those land as real rows
+-- carrying their own division and project_id, a supervisor may re-code them in
+-- the destination tab afterwards, and the modal must reopen on what the tab
+-- actually holds rather than on what was saved. The blob tabs have no column
+-- for a cost code or a split row, so a row sent there cannot be read back out
+-- of them — this is what lets Edit Split reopen it instead of silently
+-- dropping it on the next save.
+--
+-- Cleared whenever the rows are (un-approve, delete), so it can never outlive
+-- the cost it describes.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_destinations JSONB;

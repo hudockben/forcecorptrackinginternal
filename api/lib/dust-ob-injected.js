@@ -42,7 +42,7 @@
  * before it.
  */
 
-const { removeIcBillingEntries, MAX_INJECTED_LEGS } = require('./truck-injected');
+const { removeIcBillingEntries, MAX_INJECTED_LEGS, splitSentTo } = require('./truck-injected');
 const { needsDustTrackingRow } = require('./dust-injected');
 const { IC_SOURCES } = require('./ic-sources');
 
@@ -176,7 +176,8 @@ function findStaleObRows(rows, entriesById) {
     const id      = String(row.id);
     const entryId = entryIdFromObRowId(id);
     const entry   = entriesById.get(entryId) || null;
-    if (!entry || entry.status !== 'approved' || !needsObRow(entry)) {
+    if (!entry || entry.status !== 'approved'
+        || !(needsObRow(entry) || splitSentTo(entry, 'dust'))) {
       stale.push(id);
       continue;
     }
@@ -260,7 +261,7 @@ async function sweepInjectedObRows(sql, companyCode, rows) {
   if (!entryIds.length) return { rows: list, removed: [] };
 
   const entryRows = await sql`
-    SELECT id, status, entry_type, division, job_id
+    SELECT id, status, entry_type, division, job_id, split_destinations
       FROM timesheet_entries
      WHERE company_code = ${companyCode} AND id = ANY(${entryIds}::bigint[])
   `;

@@ -88,6 +88,40 @@ function needsTruckTrackingRow(entry) {
   return entry.division === 'dust' && !!entry.job_id && !isEesJob(entry.job_id);
 }
 
+/**
+ * True when this entry's approved split SENT rows to `division`.
+ *
+ * The division override (SPLIT_DEST_DIVISIONS in api/timesheet-entries.js) lets
+ * payroll route part of a turf/paving/kiewit day into another division's cost
+ * tracking, for the day a driver files his hours under the wrong division. The
+ * row that lands over there is payroll's and legitimate — but the ENTRY still
+ * says turf.
+ *
+ * That matters here because every "does this entry still justify this row" test
+ * on the read path answers from entry.division alone. Left at that, the first
+ * person to open Truck Tracking after such an approval sweeps the haul away as
+ * an orphan and takes its Intercompany billing entry with it, and the same on
+ * the two dust grids — silently, on a plain page load, with no way back short
+ * of un-approving the timesheet.
+ *
+ * timesheet_entries.split_destinations is what the entry knows about where its
+ * cost went. It is written when those rows are written and cleared when they
+ * are removed, so it can never outlive them.
+ */
+function splitSentTo(entry, division) {
+  const raw = entry && entry.split_destinations;
+  if (!raw) return false;
+  // JSONB arrives parsed from neon-serverless and from pg, but a caller that
+  // selected it as text (or a mock that stores what it was handed) would hand
+  // over the string. Cheap to be right either way.
+  let list = raw;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch { return false; }
+  }
+  return Array.isArray(list)
+    && list.some(r => r && r.dest && r.dest.division === division);
+}
+
 // Every row injected from one timesheet entry shares this prefix, so un-approve
 // and delete can find them again. Encoded into the row `id` (not a side field)
 // because the division tabs drop unknown keys but always preserve `id`.
@@ -460,7 +494,8 @@ function findStaleTruckRows(entries, entriesById, ubLegs = null) {
   for (const row of injected) {
     const entryId = entryIdFromTruckRowId(row.id);
     const entry   = entriesById.get(entryId) || null;
-    if (!entry || entry.status !== 'approved' || !needsTruckTrackingRow(entry)) {
+    if (!entry || entry.status !== 'approved'
+        || !(needsTruckTrackingRow(entry) || splitSentTo(entry, 'trucking'))) {
       stale.push(String(row.id));
       continue;
     }
@@ -505,7 +540,7 @@ async function sweepInjectedTruckRows(sql, companyCode, entries) {
   if (!entryIds.length) return { entries: list, removed: [] };
 
   const rows = await sql`
-    SELECT id, status, entry_type, division, job_id
+    SELECT id, status, entry_type, division, job_id, split_destinations
       FROM timesheet_entries
      WHERE company_code = ${companyCode} AND id = ANY(${entryIds}::bigint[])
   `;
@@ -556,6 +591,7 @@ module.exports = {
   MAX_INJECTED_LEGS,
   isEesJob,
   needsTruckTrackingRow,
+  splitSentTo,
   truckingRowIdPrefix,
   truckingRowId,
   entryIdFromTruckRowId,
