@@ -12,7 +12,7 @@ const MAX_RECIPIENTS = 50;          // hard cap per send
 const MAX_HTML_BYTES = 1_500_000;   // ~1.5 MB raw HTML; Resend itself caps higher
 const MAX_ATTACHMENTS = 6;          // per send
 const MAX_ATTACH_BYTES = 8_000_000; // ~8 MB total decoded; Resend caps at 40 MB/message
-const MAX_SUMMARY_METRICS = 8;      // key figures shown above the attachment note
+const MAX_SUMMARY_METRICS = 12;     // key figures shown above the attachment note
 const EMAIL_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
 
 // Inline images / small docs only — keeps the endpoint from relaying arbitrary
@@ -108,11 +108,18 @@ function sanitizeReportHtml(html) {
   return out;
 }
 
+// The report palette, for the figures that carry a color in the report's own
+// header: green in the black or under bid, red over, amber for cost booked so
+// far. A metric's `tone` may only name one of these.
+const SUMMARY_TONES = { good: '#166534', bad: '#991b1b', actual: '#92400e' };
+const SUMMARY_TONE_DEFAULT = '#111';
+
 // Normalize caller-supplied summary metrics into at most MAX_SUMMARY_METRICS
-// { label, value } pairs. These are the key figures the report already shows in
-// its own header strip (Bid Budget, Actual Cost, ...) — the client lifts them
-// out of the report HTML so the email body stays skimmable on a phone while
-// the full table travels as the PDF.
+// { label, value, tone? } entries. These are the key figures the report already
+// shows in its own header strip (Contract Value, Bid Budget, Actual Profit,
+// Actual Cost, ...) — the client lifts them out of the report HTML so the email
+// body carries enough to act on without opening anything, while the full table
+// travels as the PDF.
 function normalizeSummary(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -121,7 +128,11 @@ function normalizeSummary(raw) {
     const label = String(m.label ?? '').trim().slice(0, 40);
     const value = String(m.value ?? '').trim().slice(0, 60);
     if (!label || !value) continue;
-    out.push({ label, value });
+    // Only a palette name survives — the tone reaches the markup as a color,
+    // so an unrecognized one is dropped rather than passed through.
+    const toneKey = String(m.tone ?? '');
+    const tone = Object.prototype.hasOwnProperty.call(SUMMARY_TONES, toneKey) ? toneKey : null;
+    out.push(tone ? { label, value, tone } : { label, value });
     if (out.length >= MAX_SUMMARY_METRICS) break;
   }
   return out;
@@ -160,7 +171,7 @@ function buildEmailHtml({ title, note, bodyHtml, companyName, generatedAt, summa
     const cells = metrics.map(m => `
         <td width="50%" style="padding:8px 12px;vertical-align:top;">
           <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6b7280;">${esc(m.label)}</div>
-          <div style="font-size:17px;font-weight:800;color:#111;margin-top:2px;">${esc(m.value)}</div>
+          <div style="font-size:17px;font-weight:800;color:${SUMMARY_TONES[m.tone] || SUMMARY_TONE_DEFAULT};margin-top:2px;">${esc(m.value)}</div>
         </td>`);
     if (cells.length % 2) cells.push('<td width="50%"></td>');
     const rows = [];

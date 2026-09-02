@@ -29,7 +29,8 @@
 //     note?:        string,        // optional caller note prepended above the report
 //     html:         string,        // report body HTML (inline-styled is best)
 //     attach_pdf?:  boolean,       // default true — render `html` to an attached PDF
-//     summary?:     [{ label, value }]  // key figures shown in the email body
+//     summary?:     [{ label, value, tone? }]  // key figures shown in the email body
+//                                              // tone: 'good' | 'bad' | 'actual'
 //   }
 //
 // Response:
