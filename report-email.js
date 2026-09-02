@@ -54,13 +54,36 @@
   // ── Key figures ─────────────────────────────────────────────────────
   // Every report opens with a strip of headline numbers — Bid Budget / Actual
   // Cost / Projected Cost / Project Complete on the bid reports, Total Cost /
-  // Labor Hours / Projects on the dailies. The markup differs per report but
-  // the shape doesn't: a label element next to a value element, both inside a
-  // per-metric wrapper, all inside one strip. Rather than make all 17 call
-  // sites pass the figures down, lift them back out of the HTML they already
-  // built.
+  // Labor Hours / Projects on the dailies, and on the job summary two stacked
+  // bars, contract and budget over days and costs. The markup differs per
+  // report but the shape doesn't: a label element next to a value element, both
+  // inside a per-metric wrapper, all inside one strip. Rather than make all 17
+  // call sites pass the figures down, lift them back out of the HTML they
+  // already built.
   const LABEL_RE = /(?:^|[-_])(?:label|lbl)$/;
   const VALUE_RE = /(?:^|[-_])(?:val|value|num)$/;
+
+  // How many figures ride in the email body. A job summary with change orders
+  // on it runs the full twelve — five contract/budget figures over the seven
+  // days-and-costs ones.
+  const MAX_METRICS = 12;
+
+  // The reports color their headline figures: green under bid or in the black,
+  // red over, amber for cost booked so far. Carry that through so the email
+  // reads like the report's own header rather than a flat column of numbers.
+  const TONE_CLASSES = {
+    'under':  'good',   'sqft-under':  'good',   'green': 'good',
+    'over':   'bad',    'sqft-over':   'bad',    'red':   'bad',
+    'actual': 'actual', 'sqft-actual': 'actual',
+  };
+
+  function toneOf(el) {
+    if (!el || !el.classList) return null;
+    for (const c of el.classList) {
+      if (Object.prototype.hasOwnProperty.call(TONE_CLASSES, c)) return TONE_CLASSES[c];
+    }
+    return null;
+  }
 
   function classMatches(el, re) {
     if (!el || !el.classList) return false;
@@ -106,19 +129,49 @@
       const strip = (lab.parentElement && lab.parentElement.parentElement) || lab.parentElement;
       if (!strip) continue;
       if (!groups.has(strip)) groups.set(strip, []);
-      groups.get(strip).push({ label, value });
+      const tone = toneOf(val);
+      groups.get(strip).push(tone ? { label, value, tone } : { label, value });
     }
 
-    // A report can open with more than one strip (the bid report shows a $/SF
-    // bar above the cost roll-up). Prefer the bigger strip, and among equals
-    // the one carrying dollars and percentages — that's the cost roll-up.
+    // A report can open with more than one strip: the job summary stacks a
+    // contract / bid budget / actual profit bar above the days-and-costs bar,
+    // and the bid report a $/SY bar above the cost roll-up. Anchor on the
+    // strongest strip — most metrics, weighted toward the ones carrying dollars
+    // and percentages — and then carry its companions with it, so the email
+    // opens with the same headline block the PDF does instead of a fragment of
+    // one bar.
     let best = null;
-    for (const list of groups.values()) {
+    for (const [strip, list] of groups) {
       if (list.length < 2) continue;
       const score = list.length + list.filter(m => /[$%]/.test(m.value)).length * 2;
-      if (!best || score > best.score) best = { score, list };
+      if (!best || score > best.score) best = { score, strip, list };
     }
-    return best ? best.list.slice(0, 6) : [];
+    if (!best) return [];
+
+    // A companion is a strip sitting beside the anchor under the same parent
+    // wearing the same classes. That picks up the paired opening bars and
+    // nothing further down the report — the job summary's schedule KPI strip is
+    // built from the same .sum-metric parts but wears .sched-bar as well, so it
+    // stays out rather than crowding out the figures that matter. With no
+    // classes to match on there is nothing to tell a companion from any other
+    // sibling, so the anchor goes alone.
+    const classesOf = el => Array.from(el.classList || []).sort().join('.');
+    const anchorCls = classesOf(best.strip);
+    const anchorPar = best.strip.parentElement;
+    const isCompanion = strip => Boolean(anchorCls)
+      && strip.parentElement === anchorPar
+      && strip.tagName === best.strip.tagName
+      && classesOf(strip) === anchorCls;
+
+    const out = [];
+    for (const [strip, list] of groups) {   // Map order is document order
+      if (strip !== best.strip && !isCompanion(strip)) continue;
+      for (const m of list) {
+        if (out.length >= MAX_METRICS) return out;
+        out.push(m);
+      }
+    }
+    return out;
   }
 
   // ── State (one modal at a time) ─────────────────────────────────────

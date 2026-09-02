@@ -86,8 +86,9 @@ const sqftBar = `<div class="sqft-bar">
   <div class="sqft-metric"><div class="sqft-label">Running Cost / SF</div><div class="sqft-val">$0.24</div></div>
 </div>`;
 out = extractSummary(`<!DOCTYPE html><html><body>${sqftBar}${finBar}</body></html>`);
-assert('cost roll-up beats the $/SF bar when both are present',
-  out.length === 4 && out[0].label === 'Bid Budget', JSON.stringify(out.map(m => m.label)));
+assert('paired opening bars are carried together, in report order',
+  out.length === 7 && out[0].label === 'Total SF' && out[3].label === 'Bid Budget',
+  JSON.stringify(out.map(m => m.label)));
 
 // The daily-summary strip uses a different class family.
 out = extractSummary(`<!DOCTYPE html><html><body><div class="strip">
@@ -105,6 +106,53 @@ out = extractSummary(`<!DOCTYPE html><html><body><div class="sum-bar">
 </div></body></html>`);
 assert('job-summary .sum-label/.sum-val strip is recognized',
   out.length === 2 && out[1].value === '$88,400.00', JSON.stringify(out));
+
+// The job summary opens with two .sum-bar strips — contract / bid budget /
+// actual profit over days-and-costs — and further down carries a schedule KPI
+// strip built from the same .sum-metric parts. The email should take both
+// opening bars whole and leave the schedule strip behind.
+const jsFinBar = `<div class="sum-bar">
+  <div class="sum-metric"><div class="sum-label">Contract Value</div><div class="sum-val">$19,612.00</div></div>
+  <div class="sum-metric"><div class="sum-label">Bid Budget</div><div class="sum-val">$12,872.36</div></div>
+  <div class="sum-sep"></div>
+  <div class="sum-metric"><div class="sum-label">Actual Profit</div><div class="sum-val sqft-under">$6,272.64 (32.0%)</div></div>
+</div>`;
+const jsWorkBar = `<div class="sum-bar">
+  <div class="sum-metric"><div class="sum-label">Days Worked</div><div class="sum-val">3</div></div>
+  <div class="sum-metric"><div class="sum-label">Labor Hours</div><div class="sum-val">89.5</div></div>
+  <div class="sum-metric"><div class="sum-label">Labor Cost</div><div class="sum-val">$4,207.50</div></div>
+  <div class="sum-metric"><div class="sum-label">Equipment Cost</div><div class="sum-val">$1,525.50</div></div>
+  <div class="sum-metric"><div class="sum-label">Trucking Cost</div><div class="sum-val">$2,138.07</div></div>
+  <div class="sum-metric"><div class="sum-label">Total Purchases</div><div class="sum-val">$5,468.29</div></div>
+  <div class="sum-sep"></div>
+  <div class="sum-metric"><div class="sum-label">Actual Cost</div><div class="sum-val sqft-actual">$13,339.36</div></div>
+</div>`;
+const jsSchedBar = `<div class="sum-bar sched-bar">
+  <div class="sum-metric"><div class="sum-label">Schedule Start</div><div class="sum-val">Jun 3</div></div>
+  <div class="sum-metric"><div class="sum-label">Scheduled Codes</div><div class="sum-val">6</div></div>
+  <div class="sum-metric"><div class="sum-label">Overall % Complete</div><div class="sum-val">82%</div></div>
+</div>`;
+
+out = extractSummary(`<!DOCTYPE html><html><body>${jsFinBar}${jsWorkBar}${jsSchedBar}</body></html>`);
+const jsLabels = out.map(m => m.label);
+assert('the job summary carries both opening bars — 10 figures',
+  out.length === 10, JSON.stringify(jsLabels));
+assert('the contract bar leads, the way the PDF opens',
+  jsLabels.slice(0, 3).join('|') === 'Contract Value|Bid Budget|Actual Profit', JSON.stringify(jsLabels));
+assert('Actual Cost is no longer truncated off the end',
+  jsLabels[9] === 'Actual Cost' && out[9].value === '$13,339.36', JSON.stringify(out[9]));
+assert('the schedule KPI strip stays out of the email',
+  !jsLabels.includes('Scheduled Codes'), JSON.stringify(jsLabels));
+assert('a figure the report colors carries its tone',
+  out[2].tone === 'good' && out[9].tone === 'actual', JSON.stringify([out[2], out[9]]));
+assert('an uncolored figure carries no tone', out[3].tone === undefined, JSON.stringify(out[3]));
+
+// The cap: a job with change orders runs five contract figures over seven cost
+// ones, and nothing past that reaches the email.
+const wideBar = n => `<div class="sqft-bar">${Array.from({ length: n }, (_, i) =>
+  `<div class="sqft-metric"><div class="sqft-label">L${i}</div><div class="sqft-val">$${i}</div></div>`).join('')}</div>`;
+out = extractSummary(`<!DOCTYPE html><html><body>${wideBar(8)}${wideBar(8)}</body></html>`);
+assert('the figure list is capped at 12', out.length === 12, String(out.length));
 
 // Placeholders are not figures.
 out = extractSummary(`<!DOCTYPE html><html><body><div class="sqft-bar">
@@ -142,6 +190,20 @@ assert('an odd metric count is padded to a full row',
   (shell.match(/<td width="50%"><\/td>/g) || []).length === 1);
 assert('no inline report table when a PDF carries it', !shell.includes('<table class'));
 
+const toned = buildEmailHtml({
+  title: 'Job Summary — Eric Pash (26082)', bodyHtml: '',
+  summary: [
+    { label: 'Actual Profit', value: '$6,272.64 (32.0%)', tone: 'good' },
+    { label: 'Actual Cost',   value: '$13,339.36',        tone: 'actual' },
+    { label: 'Days Worked',   value: '3' },
+    { label: 'Variance',      value: '-$1.00',            tone: 'chartreuse' },
+  ],
+});
+assert('a good tone renders in the report green', toned.includes('color:#166534'));
+assert('an actual tone renders in the report amber', toned.includes('color:#92400e'));
+assert('an untoned figure stays plain', toned.includes('color:#111'));
+assert('an unrecognized tone never reaches the markup', !toned.includes('chartreuse'));
+
 const xss = buildEmailHtml({
   title: 'X', bodyHtml: '',
   summary: [{ label: '<img src=x onerror=alert(1)>', value: '"><script>alert(1)</script>' }],
@@ -153,7 +215,11 @@ assert('the attachment note is HTML-escaped', !xss.includes('<script>alert(2)'))
 assert('normalizeSummary drops empty pairs',
   normalizeSummary([{ label: 'A', value: '1' }, { label: '', value: '2' }, { label: 'C', value: '' }]).length === 1);
 assert('normalizeSummary caps the list', normalizeSummary(
-  Array.from({ length: 20 }, (_, i) => ({ label: 'L' + i, value: 'V' + i }))).length === 8);
+  Array.from({ length: 20 }, (_, i) => ({ label: 'L' + i, value: 'V' + i }))).length === 12);
+assert('normalizeSummary keeps palette tones and drops the rest',
+  normalizeSummary([{ label: 'A', value: '1', tone: 'good' },
+                    { label: 'B', value: '2', tone: 'chartreuse' }])
+    .map(m => m.tone || '-').join('') === 'good-');
 assert('normalizeSummary tolerates non-arrays', normalizeSummary(null).length === 0 && normalizeSummary('x').length === 0);
 
 const cidHtml = '<img src="cid:cs-gantt" alt="g"><img src="cid:missing">';
