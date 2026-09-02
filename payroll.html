@@ -1304,6 +1304,29 @@
     .split-table input.num { text-align: right; font-variant-numeric: tabular-nums; }
     .split-table td.travel-cell { text-align: center; }
     .split-table tr.travel-row { background: rgba(59,130,246,0.05); }
+
+    /* ── The division override ──────────────────────────────────────────
+       A routed row is tinted so it reads as leaving this division at a
+       glance: an approver scanning a six-row split should not have to open
+       every picker to see which hours are going somewhere else. */
+    .split-table tr.dest-row { background: rgba(217,119,6,0.09); }
+    .split-table tr.dest-row.travel-row { background: rgba(217,119,6,0.13); }
+    .split-table select.dest-div { margin-bottom: 0.25rem; }
+    .split-table select.dest-job { font-size: 0.78rem; }
+    /* Says what happens to a row the destination tab prices itself, standing
+       where the cost code would be. */
+    .dest-note {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-style: italic;
+      color: var(--muted);
+      line-height: 1.3;
+    }
+    .dest-window { display: flex; gap: 0.25rem; }
+    .split-table input.dest-time { font-size: 0.75rem; padding: 0.35rem 0.3rem; }
+    /* Dust bills across this window, so an empty one is not a blank field —
+       it is the row's price missing. Marked until it is filled. */
+    .split-table input.dest-time.needed { border-color: var(--red); }
     .split-row-del {
       background: none;
       border: 1px solid var(--border);
@@ -1776,6 +1799,8 @@
           <thead>
             <tr>
               <th style="width:40px">#</th>
+              <th style="width:210px"
+                  title="Where this row's COST goes. Blank posts it against the job on the timesheet, which is almost always right. Pick a division here when the driver filed the day under the wrong one — the hours and his pay are unchanged either way.">Send to</th>
               <th>Cost Code</th>
               <th>Sub Code</th>
               <th style="width:90px">Sub Qty</th>
@@ -5077,8 +5102,23 @@
       if (seq !== splitFetchSeq) return;
 
       if (mode === 'resplit' && existing && existing.length) {
+        // Whatever this split was sent to last time has to come back on screen,
+        // or the next save quietly re-posts those hours against the timesheet's
+        // own job — the modal saves what it shows.
+        const destDivs = [...new Set(existing
+          .map(r => (r.dest && r.dest.division) || '')
+          .filter(Boolean))];
+        await Promise.all(destDivs.map(loadDestJobs));
+        await Promise.all(existing
+          .filter(r => r.dest && r.dest.job_id && SPLIT_DEST_DAILY.includes(r.dest.division))
+          .map(r => loadCostCodesFor(r.dest.division, r.dest.job_id)));
+        if (seq !== splitFetchSeq) return;
         splitRows = existing.map(r => ({
           _uid:        _splitRowUid(),
+          dest_division: (r.dest && r.dest.division) || '',
+          dest_job:      (r.dest && r.dest.job_id)   || '',
+          dest_start:    (r.dest && r.dest.extras && r.dest.extras.start_time) || '',
+          dest_end:      (r.dest && r.dest.extras && r.dest.extras.end_time)   || '',
           cost_code:   r.cost_code   || '',
           sub_code:    r.sub_code    || '',
           quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
@@ -5164,6 +5204,12 @@
     function _blankSplitRow(isTravel) {
       return {
         _uid:        _splitRowUid(),
+        // Blank means "the job on the timesheet", which is what almost every
+        // row is. See the division override, above.
+        dest_division: '',
+        dest_job:      '',
+        dest_start:    '',
+        dest_end:      '',
         cost_code:   '',
         sub_code:    '',
         quantity:    0,
@@ -5197,6 +5243,216 @@
       if (!splitEntry) return [];
       const list = splitCcCache[`${splitEntry.division}::${splitEntry.job_id}`];
       return Array.isArray(list) ? list : [];
+    }
+
+    // ── The division override ────────────────────────────────────────────
+    // A driver names one division on his timesheet and the whole day follows
+    // it. When he names the wrong one, payroll's only ways out were to send the
+    // day back or move the WHOLE entry — neither of which can say "six of these
+    // hours were turf and four were a haul for EAI". So a row may name its own
+    // destination, and the server fans the split out to each division's own
+    // injector (SPLIT_DEST_DIVISIONS in api/timesheet-entries.js).
+    //
+    // The hours are untouched by any of this. The grid still balances against
+    // the entry's own clock, and the driver is paid for the day he worked — all
+    // that moves is which division's cost tracking carries the row.
+    const SPLIT_DEST_DIVISIONS = ['turf', 'paving', 'kiewit', 'trucking', 'dust', 'quarry'];
+    // Divisions whose cost tracking is daily_tracking, and which therefore take
+    // a split row whole — cost code, sub code, equipment, quantity and all. The
+    // other three keep theirs in a JSON blob with no such columns, so a row sent
+    // to one of them carries only what that tab can hold.
+    const SPLIT_DEST_DAILY = ['turf', 'paving', 'kiewit'];
+    // Jobs per destination division, fetched once each and reused. The picker
+    // is per row, so a six-row split must not mean six lookups of the same list.
+    const splitDestJobsCache = {};
+
+    async function loadDestJobs(division) {
+      if (!division) return [];
+      if (splitDestJobsCache[division]) return splitDestJobsCache[division];
+      try {
+        const res = await fetch('/api/timesheet-jobs?division=' + encodeURIComponent(division),
+          { headers: authHeaders() });
+        const j = await res.json();
+        splitDestJobsCache[division] = Array.isArray(j.jobs) ? j.jobs : [];
+      } catch { splitDestJobsCache[division] = []; }
+      return splitDestJobsCache[division];
+    }
+
+    /** The division a row's cost lands on — its override, or the entry's own. */
+    function splitRowDivision(r) {
+      const d = r && r.dest_division;
+      return d || (splitEntry ? splitEntry.division : '');
+    }
+    /** The job a row's cost lands against. */
+    function splitRowJob(r) {
+      if (r && r.dest_division) return r.dest_job || '';
+      return splitEntry ? splitEntry.job_id : '';
+    }
+    /** Does this row post into daily_tracking, wherever it is going? */
+    function splitRowIsDaily(r) {
+      return SPLIT_DEST_DAILY.includes(splitRowDivision(r));
+    }
+    /**
+     * The cost codes for the job THIS row is going to. A row sent to another
+     * division is coded against that division's job, not against the one on the
+     * timesheet — offering the timesheet's codes there would file the cost under
+     * a code the destination job has never heard of.
+     */
+    function splitRowCcList(r) {
+      const key = `${splitRowDivision(r)}::${splitRowJob(r)}`;
+      const list = splitCcCache[key];
+      return Array.isArray(list) ? list : [];
+    }
+    /** Pretty name for a destination job id, from whichever list holds it. */
+    function splitDestJobLabel(division, jobId) {
+      const jobs = splitDestJobsCache[division] || [];
+      const hit = jobs.find(j => String(j.id) === String(jobId));
+      return hit ? (hit.label || hit.id) : String(jobId || '');
+    }
+
+    /**
+     * One split row on the wire.
+     *
+     * The modal keeps the destination flat (dest_division / dest_job / the
+     * window) because that is what the two selects and the two time boxes bind
+     * to; the server takes it nested, under the destination's own key, so each
+     * division's existing validator can read its own half unchanged. This is
+     * the one place the two shapes meet.
+     */
+    function splitRowPayload(r) {
+      const out = {
+        cost_code:   r.cost_code || '',
+        sub_code:    r.sub_code || '',
+        equipment:   r.equipment || '',
+        labor_hours: Number(r.labor_hours) || 0,
+        equip_hours: Number(r.equip_hours) || 0,
+        quantity:    Number(r.quantity) || 0,
+        is_travel:   r.is_travel === true,
+      };
+      if (!r.dest_division) return out;
+      out.dest = {
+        division:  r.dest_division,
+        job_id:    r.dest_job || '',
+        job_label: splitDestJobLabel(r.dest_division, r.dest_job),
+      };
+      const window = {};
+      if (r.dest_start) window.start_time = r.dest_start;
+      if (r.dest_end)   window.end_time   = r.dest_end;
+      // Nested under the destination's own key so validateTruckingLeg and
+      // validateDustLeg each see the payload they already know how to read.
+      if (r.dest_division === 'trucking') out.dest.trucking = window;
+      if (r.dest_division === 'dust')     out.dest.dust     = window;
+      return out;
+    }
+
+    /** The "Send to" cell: a division, and once one is picked, its job. */
+    function splitDestCellHtml(r, i) {
+      const div = r.dest_division || '';
+      const opts = SPLIT_DEST_DIVISIONS
+        .map(d => `<option value="${d}" ${div === d ? 'selected' : ''}>${escapeHtml(prettyDiv(d) || d)}</option>`)
+        .join('');
+      // The blank option is the default and the common case: this row's cost
+      // belongs on the job the driver named, and saying so must take no clicks.
+      const divSel = `<select class="dest-div" onchange="splitOnDestDivision(${i}, this.value)">
+          <option value="">— this job —</option>${opts}
+        </select>`;
+      if (!div) return divSel;
+
+      const jobs = splitDestJobsCache[div];
+      let jobSel;
+      if (!jobs) {
+        jobSel = '<select disabled><option>loading…</option></select>';
+      } else if (!jobs.length) {
+        // Never a silent empty box: an office with no live jobs on that board
+        // is a real answer, and the approver needs to know that is what they
+        // are looking at rather than a lookup that failed.
+        jobSel = '<select disabled><option>no live jobs</option></select>';
+      } else {
+        const chosen = r.dest_job || '';
+        jobSel = `<select class="dest-job" onchange="splitOnDestJob(${i}, this.value)">
+            <option value="">— pick a job —</option>
+            ${jobs.map(j => `<option value="${escapeHtml(j.id)}" ${String(chosen) === String(j.id) ? 'selected' : ''}>${escapeHtml(j.label || j.id)}</option>`).join('')}
+          </select>`;
+      }
+      return divSel + jobSel;
+    }
+
+    /**
+     * What stands where the cost code would be on a row bound for a blob tab.
+     *
+     * Those tabs price their own rows — a haul fee, vehicle rates and gallons,
+     * a crusher's tons — and none of that is knowable from a timesheet. Saying
+     * so on the row is the difference between an approver understanding that
+     * the office fills it in and one hunting for a cost-code box that is not
+     * there.
+     */
+    function splitDestNoCodeHtml(r) {
+      const div = splitRowDivision(r);
+      const what = div === 'trucking' ? 'Truck Tracking'
+                 : div === 'dust'     ? 'Dust Control Tracking'
+                 : div === 'quarry'   ? 'the quarry tab'
+                 : 'that tab';
+      return `<span class="dest-note" title="This row posts straight into ${escapeHtml(what)}, which has no cost codes. The hours, the driver and the job go across; that office prices the row.">posts to ${escapeHtml(what)}</span>`;
+    }
+
+    /**
+     * The clock window for a row bound for Truck Tracking or Dust Control
+     * Tracking. Both tabs stamp a row with when the work happened; dust also
+     * BILLS from it — vehicle rates across the window — which is why a dust row
+     * is refused without one while a trucking row, whose hours come from the
+     * grid, is not.
+     *
+     * The quarry takes neither: its row carries hours, and the grid has already
+     * said how many.
+     */
+    function splitDestWindowHtml(r, i) {
+      const div = splitRowDivision(r);
+      if (div !== 'trucking' && div !== 'dust') return '';
+      const need = div === 'dust';
+      const t = (field, val) =>
+        `<input type="time" class="dest-time${need && !val ? ' needed' : ''}" value="${escapeHtml(val || '')}"
+           onchange="splitOnChange(${i},'${field}',this.value)"
+           title="${need
+             ? 'Dust Control Tracking bills vehicle rates across this window, so this row needs one of its own — the whole day would invoice the customer for hours that were not theirs.'
+             : 'Optional. The hours come from the grid; this is the window the Truck Tracking row is stamped with.'}">`;
+      return `<div class="dest-window">${t('dest_start', r.dest_start)}${t('dest_end', r.dest_end)}</div>`;
+    }
+
+    async function splitOnDestDivision(idx, value) {
+      const r = splitRows[idx];
+      if (!r) return;
+      const div = value || '';
+      if ((r.dest_division || '') === div) return;
+      r.dest_division = div;
+      // The job belongs to the division that was showing; keeping it would
+      // point a paving row at a trucking customer's id.
+      r.dest_job = '';
+      // And so do the codes: a cost code from the timesheet's job means nothing
+      // on another board, and a stale one saved through is cost filed under a
+      // code the destination has never had.
+      r.cost_code = ''; r.sub_code = ''; r.code_source = '';
+      renderSplitRows();
+      renderSplitTally();
+      if (div) {
+        await loadDestJobs(div);
+        // The modal may have moved on — or this row been deleted — while the
+        // lookup was in flight.
+        if (splitRows[idx] === r) renderSplitRows();
+      }
+    }
+
+    async function splitOnDestJob(idx, value) {
+      const r = splitRows[idx];
+      if (!r) return;
+      r.dest_job = value || '';
+      r.cost_code = ''; r.sub_code = ''; r.code_source = '';
+      renderSplitRows();
+      renderSplitTally();
+      // Only the daily_tracking divisions have cost codes to offer.
+      if (r.dest_job && splitRowIsDaily(r)) {
+        await loadCostCodesFor(r.dest_division, r.dest_job);
+        if (splitRows[idx] === r) renderSplitRows();
+      }
     }
 
     // Every travel line this job's bid items offer, as { cost_code, sub_code }
@@ -5291,6 +5547,10 @@
       for (const r of splitRows) {
         if (!isTravelSplitRow(r)) continue;
         if (r.code_source === 'manual') continue;
+        // A row sent to another division books against that division's job, and
+        // these codes are read off this one's bid items. Filling them in over
+        // there would file the drive under a code the destination never had.
+        if (r.dest_division) continue;
         const blank = !String(r.cost_code || '').trim() && !String(r.sub_code || '').trim();
         if (r.code_source !== 'auto' && !blank) continue;
         if (r.cost_code === pick.cost_code && r.sub_code === pick.sub_code) continue;
@@ -5606,14 +5866,19 @@
       const tbody = document.getElementById('splitTbody');
       const focus = _splitFocusSnapshot();
       if (!splitRows.length) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
         return;
       }
-      const ccList = splitCcListNow();
-      const ccCodes = ccList.map(c => c.cost_code);
       const eqOpts = (splitEquipmentList || []).slice();
       tbody.innerHTML = splitRows.map((r, i) => {
+        // Per row, not per modal: a row sent to another division is coded
+        // against THAT division's job. See splitRowCcList.
+        const ccList = splitRowCcList(r);
+        const ccCodes = ccList.map(c => c.cost_code);
         const found = findCostCode(ccList, r.cost_code);
+        // The three blob tabs have no cost-code column at all, so a row bound
+        // for one is not asked for a code it could not carry.
+        const isDaily = splitRowIsDaily(r);
         const subOpts = (found && Array.isArray(found.sub_codes)) ? found.sub_codes.slice() : [];
         // A prefilled code is a guess off the job's bid items, not something
         // anyone checked. Dashed and labelled so it reads as one and gets
@@ -5629,10 +5894,13 @@
               title: "Filled in from this job's travel code — change it if the drive books somewhere else." }
           : null;
         return `
-        <tr class="${r.is_travel ? 'travel-row' : ''}">
+        <tr class="${r.is_travel ? 'travel-row' : ''}${r.dest_division ? ' dest-row' : ''}">
           <td style="color:var(--muted);font-variant-numeric:tabular-nums">${i + 1}</td>
-          <td>${_cbHtml(i, 'cost_code', r.cost_code, ccCodes, '— pick —', auto('cost_code'))}</td>
-          <td>${_cbHtml(i, 'sub_code', r.sub_code, subOpts, '—', auto('sub_code'))}</td>
+          <td>${splitDestCellHtml(r, i)}</td>
+          <td>${isDaily
+            ? _cbHtml(i, 'cost_code', r.cost_code, ccCodes, '— pick —', auto('cost_code'))
+            : splitDestNoCodeHtml(r)}</td>
+          <td>${isDaily ? _cbHtml(i, 'sub_code', r.sub_code, subOpts, '—', auto('sub_code')) : splitDestWindowHtml(r, i)}</td>
           <td><input type="number" class="num" min="0" step="0.01" placeholder="0.00" value="${numInputVal(r.quantity)}" oninput="splitOnChange(${i},'quantity',this.value)"></td>
           <td>${_cbHtml(i, 'equipment', r.equipment, eqOpts, '— none —')}</td>
           <td><input type="number" class="num" min="0" max="24" step="0.25" placeholder="0.00" value="${numInputVal(r.labor_hours)}" oninput="splitOnChange(${i},'labor_hours',this.value)"></td>
@@ -5689,6 +5957,9 @@
         // through a finished row wiped the sub code the supervisor had just
         // chosen, and the repaint stole the focus on the way out.
         if (next !== prev) {
+          // The dust window is marked while it is missing, so filling it has to
+          // repaint for the mark to go. renderSplitRows puts the cursor back.
+          if (field === 'dest_start' || field === 'dest_end') repaint = true;
           if (field === 'cost_code' || field === 'sub_code') r.code_source = 'manual';
           if (field === 'cost_code') {
             r.sub_code = '';                       // sub codes are scoped to a cost code
@@ -5704,7 +5975,7 @@
             // pairs with the work row. On a paving job that made the drive's
             // cost code impossible to change at all.
             if (r.is_travel) {
-              const subs = splitTravelSubsFor(splitCcListNow(), next);
+              const subs = splitTravelSubsFor(splitRowCcList(r), next);
               if (subs.length === 1) r.sub_code = subs[0];
             }
             // And the work row's code is what tells a paving travel row where
@@ -5905,9 +6176,26 @@
       ];
       for (let i = 0; i < splitRows.length; i++) {
         const r = splitRows[i];
-        if (!r.cost_code && !r.sub_code) {
-          msg.classList.add('error');
-          msg.textContent = `Row ${i + 1}: pick a cost code or sub code.`;
+        const fail = text => { msg.classList.add('error'); msg.textContent = `Row ${i + 1}: ${text}`; };
+        // A division with no job names no destination — every injector on the
+        // other side reads the job off what it is handed, so this would post
+        // the row against nothing.
+        if (r.dest_division && !r.dest_job) {
+          fail(`pick a job on ${prettyDiv(r.dest_division) || r.dest_division}, or set "Send to" back to this job.`);
+          return;
+        }
+        // Cost codes are a daily_tracking idea. The blob tabs have no such
+        // column, so a row bound for one is not asked for a code — see
+        // splitDestNoCodeHtml.
+        if (splitRowIsDaily(r) && !r.cost_code && !r.sub_code) {
+          fail('pick a cost code or sub code.');
+          return;
+        }
+        // Dust bills vehicle rates across the row's window, so a dust row
+        // without one would invoice the customer for the whole day. The server
+        // refuses it too; this is so the approver is told in the form.
+        if (splitRowDivision(r) === 'dust' && (!r.dest_start || !r.dest_end)) {
+          fail('Dust Control Tracking bills by the clock — give this row a start and end time.');
           return;
         }
         if ((Number(r.labor_hours) || 0) <= 0 && (Number(r.equip_hours) || 0) <= 0) {
@@ -5947,7 +6235,7 @@
             // the empty answer, because the picker always shows a real choice —
             // the approver looked at it either way.
             body: JSON.stringify({
-              split: splitRows,
+              split: splitRows.map(splitRowPayload),
               haul_type: splitHaulAnswer || '',
             }),
           }
