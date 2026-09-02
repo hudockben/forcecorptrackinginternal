@@ -1325,8 +1325,20 @@
     .dest-window { display: flex; gap: 0.25rem; }
     .split-table input.dest-time { font-size: 0.75rem; padding: 0.35rem 0.3rem; }
     /* Dust bills across this window, so an empty one is not a blank field —
-       it is the row's price missing. Marked until it is filled. */
+       it is the row's price missing. Marked until it is filled. The quarry rate
+       is marked on the same reasoning: that tab cannot be given one later. */
     .split-table input.dest-time.needed { border-color: var(--red); }
+    .dest-retry {
+      width: 100%;
+      background: none;
+      border: 1px solid var(--red);
+      color: var(--red);
+      border-radius: 4px;
+      padding: 0.35rem 0.3rem;
+      font-size: 0.72rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
     .split-row-del {
       background: none;
       border: 1px solid var(--border);
@@ -5119,6 +5131,8 @@
           dest_job:      (r.dest && r.dest.job_id)   || '',
           dest_start:    (r.dest && r.dest.extras && r.dest.extras.start_time) || '',
           dest_end:      (r.dest && r.dest.extras && r.dest.extras.end_time)   || '',
+          dest_rate:     (r.dest && r.dest.extras
+            && (r.dest.extras.hourlyRate || r.dest.extras.rate)) || '',
           cost_code:   r.cost_code   || '',
           sub_code:    r.sub_code    || '',
           quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
@@ -5210,6 +5224,7 @@
         dest_job:      '',
         dest_start:    '',
         dest_end:      '',
+        dest_rate:     '',
         cost_code:   '',
         sub_code:    '',
         quantity:    0,
@@ -5273,8 +5288,14 @@
         const res = await fetch('/api/timesheet-jobs?division=' + encodeURIComponent(division),
           { headers: authHeaders() });
         const j = await res.json();
-        splitDestJobsCache[division] = Array.isArray(j.jobs) ? j.jobs : [];
-      } catch { splitDestJobsCache[division] = []; }
+        // A refusal parses like an answer. Cached, a single 500 or a 403 turns
+        // into "no live jobs" for that division for the rest of the session —
+        // and the picker says that phrase to mean the office genuinely has
+        // none, so the approver has no way to tell the difference and no way
+        // to retry short of reloading the page. Only a real list is kept.
+        if (!res.ok || !Array.isArray(j.jobs)) return null;
+        splitDestJobsCache[division] = j.jobs;
+      } catch { return null; }
       return splitDestJobsCache[division];
     }
 
@@ -5342,6 +5363,16 @@
       // validateDustLeg each see the payload they already know how to read.
       if (r.dest_division === 'trucking') out.dest.trucking = window;
       if (r.dest_division === 'dust')     out.dest.dust     = window;
+      if (r.dest_division === 'quarry') {
+        // Both quarry tabs cost the row as hours x rate; they just spell the
+        // rate differently. The activity is encoded in the job id by
+        // api/timesheet-jobs.js ("<activity>:<locationId>"), which is the same
+        // place the server reads it from.
+        const rate = Number(r.dest_rate) || 0;
+        out.dest.quarry = String(r.dest_job || '').startsWith('crushing:')
+          ? { hourlyRate: rate }
+          : { rate };
+      }
       return out;
     }
 
@@ -5361,7 +5392,12 @@
       const jobs = splitDestJobsCache[div];
       let jobSel;
       if (!jobs) {
-        jobSel = '<select disabled><option>loading…</option></select>';
+        // Never loaded, still loading, or the lookup failed — the retry button
+        // covers the last of those, and costs nothing in the other two.
+        jobSel = splitDestJobsPending.has(div)
+          ? '<select disabled><option>loading…</option></select>'
+          : `<button type="button" class="dest-retry" onclick="splitOnDestDivision(${i}, '${div}', true)"
+               title="The job list for this division could not be loaded. Try again.">jobs didn\u2019t load — retry</button>`;
       } else if (!jobs.length) {
         // Never a silent empty box: an office with no live jobs on that board
         // is a real answer, and the approver needs to know that is what they
@@ -5407,6 +5443,19 @@
      */
     function splitDestWindowHtml(r, i) {
       const div = splitRowDivision(r);
+      // The quarry takes hours, not a window — but it does need a rate, and it
+      // is the one destination that cannot be given one later: quarry.html
+      // renders an injected row read-only and the blob guard gives the tab no
+      // column of its own on it. Left at zero the row is a $0 cost in the
+      // quarry's books that nobody downstream is able to correct, so it is
+      // asked for here and refused without.
+      if (div === 'quarry') {
+        const val = r.dest_rate == null || r.dest_rate === '' ? '' : r.dest_rate;
+        return `<input type="number" min="0" step="0.01" class="num dest-time${val === '' ? ' needed' : ''}"
+          placeholder="$/hr" value="${escapeHtml(String(val))}"
+          onchange="splitOnChange(${i},'dest_rate',this.value)"
+          title="The hourly rate this row costs the quarry at. The quarry tab shows payroll's rows read-only, so this cannot be filled in over there afterwards.">`;
+      }
       if (div !== 'trucking' && div !== 'dust') return '';
       const need = div === 'dust';
       const t = (field, val) =>
@@ -5418,23 +5467,33 @@
       return `<div class="dest-window">${t('dest_start', r.dest_start)}${t('dest_end', r.dest_end)}</div>`;
     }
 
-    async function splitOnDestDivision(idx, value) {
+    // Divisions whose job lookup is in flight right now, so the cell can tell
+    // "still loading" from "that lookup failed" — they look identical otherwise
+    // and mean opposite things to the approver.
+    const splitDestJobsPending = new Set();
+
+    async function splitOnDestDivision(idx, value, retry) {
       const r = splitRows[idx];
       if (!r) return;
       const div = value || '';
-      if ((r.dest_division || '') === div) return;
+      if (!retry && (r.dest_division || '') === div) return;
+      const changed = (r.dest_division || '') !== div;
       r.dest_division = div;
       // The job belongs to the division that was showing; keeping it would
-      // point a paving row at a trucking customer's id.
-      r.dest_job = '';
+      // point a paving row at a trucking customer's id. A retry is not a
+      // change, so it leaves the row exactly as it is.
+      if (changed) r.dest_job = '';
       // And so do the codes: a cost code from the timesheet's job means nothing
       // on another board, and a stale one saved through is cost filed under a
       // code the destination has never had.
-      r.cost_code = ''; r.sub_code = ''; r.code_source = '';
+      if (changed) { r.cost_code = ''; r.sub_code = ''; r.code_source = ''; }
       renderSplitRows();
       renderSplitTally();
       if (div) {
-        await loadDestJobs(div);
+        splitDestJobsPending.add(div);
+        renderSplitRows();
+        try { await loadDestJobs(div); }
+        finally { splitDestJobsPending.delete(div); }
         // The modal may have moved on — or this row been deleted — while the
         // lookup was in flight.
         if (splitRows[idx] === r) renderSplitRows();
@@ -5840,10 +5899,16 @@
       const row  = Array.prototype.indexOf.call(tr.parentElement.children, tr);
       const cell = Array.prototype.indexOf.call(tr.children, td);
       if (row < 0 || cell < 0) return null;
+      // Which control in the cell, not just which cell. A cell used to hold one
+      // input; the destination override puts two time boxes in one and a pair
+      // of selects in another, and "the first input in the cell" sent the caret
+      // back to the start-time box every time the end time was committed.
+      const controls = Array.prototype.slice.call(td.querySelectorAll('input, select, textarea'));
+      const within = controls.indexOf(el);
       // Only text inputs have a selection; number and checkbox throw on read.
       let start = null, end = null;
       try { start = el.selectionStart; end = el.selectionEnd; } catch (_) { /* not a text field */ }
-      return { row, cell, start, end };
+      return { row, cell, within: within < 0 ? 0 : within, start, end };
     }
 
     function _splitFocusRestore(snap) {
@@ -5851,7 +5916,9 @@
       const tbody = document.getElementById('splitTbody');
       const tr = tbody && tbody.children[snap.row];
       const td = tr && tr.children[snap.cell];
-      const el = td && td.querySelector('input');
+      if (!td) return;
+      const controls = Array.prototype.slice.call(td.querySelectorAll('input, select, textarea'));
+      const el = controls[snap.within] || controls[0];
       if (!el) return;
       // Focusing a combobox re-opens its menu and selects the text, which is
       // what it looked like before the repaint; put the caret back after, so
@@ -5959,7 +6026,7 @@
         if (next !== prev) {
           // The dust window is marked while it is missing, so filling it has to
           // repaint for the mark to go. renderSplitRows puts the cursor back.
-          if (field === 'dest_start' || field === 'dest_end') repaint = true;
+          if (field === 'dest_start' || field === 'dest_end' || field === 'dest_rate') repaint = true;
           if (field === 'cost_code' || field === 'sub_code') r.code_source = 'manual';
           if (field === 'cost_code') {
             r.sub_code = '';                       // sub codes are scoped to a cost code
@@ -6196,6 +6263,17 @@
         // refuses it too; this is so the approver is told in the form.
         if (splitRowDivision(r) === 'dust' && (!r.dest_start || !r.dest_end)) {
           fail('Dust Control Tracking bills by the clock — give this row a start and end time.');
+          return;
+        }
+        // The quarry cannot price a row after the fact — its tab shows payroll's
+        // rows read-only — so a rate of nothing here is a $0 cost row for good.
+        if (splitRowDivision(r) === 'quarry' && !(Number(r.dest_rate) > 0)) {
+          fail('the quarry shows payroll rows read-only, so it cannot be priced later — give this row an hourly rate.');
+          return;
+        }
+        // Half a window stamps the haul with the whole day. Both or neither.
+        if (splitRowDivision(r) === 'trucking' && !!r.dest_start !== !!r.dest_end) {
+          fail('give this haul both a start and an end time, or neither.');
           return;
         }
         if ((Number(r.labor_hours) || 0) <= 0 && (Number(r.equip_hours) || 0) <= 0) {

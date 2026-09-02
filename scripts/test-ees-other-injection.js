@@ -231,7 +231,8 @@ function entry(over = {}) {
     // division walks straight past them and lets the entry be edited out from
     // under a tab that shows its hours verbatim.
     assert('and asks it of every approved entry, behind no division gate',
-      /\n\s*if \(await eesOtherHasInjectedRow\(sql, companyCode, existing\)\) injected \+= 1;/.test(guard));
+      /Promise\.all\(\[[\s\S]{0,400}?eesOtherHasInjectedRow\(sql, companyCode, existing\)/.test(guard)
+      && !/division === '[a-z]+'[^\n]*\)\s*\{[\s\S]{0,200}?eesOtherHasInjectedRow/.test(guard));
   }
 
   console.log('\n[approving puts back work that Intercompany had removed]');
@@ -361,9 +362,13 @@ function entry(over = {}) {
     //
     // So every sweep goes through one helper that names all five removers, and
     // the sweep sites ask nothing before calling it.
+    const sweeper = /async function removeSplitDestinationRows\([\s\S]{0,1200}?\n\}/.exec(SRC);
     assert('the destination sweep reaches the EES grid',
-      /async function removeSplitDestinationRows\(sql, companyCode, entry\) \{[\s\S]{0,600}?removeEesOtherRows\(sql, companyCode, entry\)/.test(SRC));
-    const sweepSites = SRC.match(/removeSplitDestinationRows\(sql, companyCode, (existing|updated)\)/g) || [];
+      !!sweeper && /removeEesOtherRows\(sql, companyCode, entry\)/.test(sweeper[0]));
+    // The resplit call passes a `keep` set — the destinations it is about to
+    // re-inject, which their own injectors rewrite in place so the office's
+    // invoice columns survive. Still a sweep site; just not a bare one.
+    const sweepSites = SRC.match(/removeSplitDestinationRows\(sql, companyCode, (existing|updated)[,)]/g) || [];
     // un-approve, delete, resplit, and the approve path's rollback.
     assert('un-approve, delete, resplit and the approve rollback all sweep',
       sweepSites.length === 4, `found ${sweepSites.length}`);

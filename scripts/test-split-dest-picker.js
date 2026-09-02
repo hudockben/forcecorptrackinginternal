@@ -93,7 +93,7 @@ console.log('\n[the payload the modal and the server agree on]');
 // ── 2) Behavioural ──────────────────────────────────────────────────────────
 // The real override model out of payroll.html, in a vm with the outside world
 // stubbed. A copy of these functions would test nothing.
-function sandbox({ jobs = {}, costCodes = {} } = {}) {
+function sandbox({ jobs = {}, costCodes = {}, fail = new Set() } = {}) {
   const painted = { rows: 0, tally: 0 };
   const fetched = [];
   const ctx = {
@@ -115,7 +115,12 @@ function sandbox({ jobs = {}, costCodes = {} } = {}) {
       fetched.push(`jobs:${url}`);
       const m = /division=([a-z]+)/.exec(String(url));
       const div = m ? m[1] : '';
-      return Promise.resolve({ json: () => Promise.resolve({ jobs: jobs[div] || [] }) });
+      // `fail` names divisions whose lookup should answer like a real refusal:
+      // a non-ok status with an error body, which parses just like an answer.
+      if (fail.has(div)) {
+        return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: 'boom' }) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ jobs: jobs[div] || [] }) });
     },
     splitCcCache: {},
     splitEntry: null,
@@ -285,8 +290,42 @@ const row = (o = {}) => Object.assign({
     assert('a trucking row is offered one but never marked',
       /type="time"/.test(s.call('splitDestWindowHtml', row({ dest_division: 'trucking' }), 0))
       && !/needed/.test(s.call('splitDestWindowHtml', row({ dest_division: 'trucking' }), 0)));
-    assert('a quarry row is asked for none',
-      s.call('splitDestWindowHtml', row({ dest_division: 'quarry' }), 0) === '');
+    // The quarry takes hours, so no window — but it is the one destination that
+    // cannot be priced afterwards, because quarry.html renders payroll's rows
+    // read-only. So it is asked for a rate instead, and marked without one.
+    const qHtml = s.call('splitDestWindowHtml', row({ dest_division: 'quarry' }), 0);
+    assert('a quarry row is asked for no window', !/type="time"/.test(qHtml));
+    assert('but it is asked for a rate', /placeholder="\$\/hr"/.test(qHtml));
+    assert('and marked while it has none', /needed/.test(qHtml));
+    assert('the mark goes once it is priced',
+      !/needed/.test(s.call('splitDestWindowHtml', row({ dest_division: 'quarry', dest_rate: 95 }), 0)));
+  }
+
+  console.log('\n[a job lookup that fails is not the same as an office with no jobs]');
+  {
+    const s = sandbox({ jobs: JOBS, fail: new Set(['trucking']) });
+    const r = row();
+    s.set(ENTRY, [r]);
+    await s.call('splitOnDestDivision', 0, 'trucking');
+    const html = s.call('splitDestCellHtml', r, 0);
+    // Cached as [], one 500 read as "no live jobs" — the phrase the picker uses
+    // to mean the office genuinely has none — for the rest of the session, with
+    // no way to retry short of reloading the page.
+    assert('a failed lookup does not claim the office has no jobs',
+      !/no live jobs/.test(html), html);
+    assert('it offers a retry instead', /dest-retry/.test(html));
+    // The block's own `const`s live in the context's lexical scope, not on the
+    // context object, so they are reached by running code in the same context.
+    assert('and nothing was cached',
+      s.run('splitDestJobsCache.trucking === undefined') === true);
+
+    // The retry has to work, and must not wipe a job the row already had.
+    const s2 = sandbox({ jobs: JOBS });
+    const r2 = row({ dest_division: 'trucking', dest_job: 'c-eai', cost_code: '' });
+    s2.set(ENTRY, [r2]);
+    await s2.call('splitOnDestDivision', 0, 'trucking', true);
+    assert('a retry keeps the job already picked', r2.dest_job === 'c-eai');
+    assert('and fills the list in', /value="c-eai"/.test(s2.call('splitDestCellHtml', r2, 0)));
   }
 
   console.log('\n[what goes on the wire]');
@@ -316,6 +355,16 @@ const row = (o = {}) => Object.assign({
     const bare = s.call('splitRowPayload', row({ dest_division: 'trucking', dest_job: 'c-eai' }));
     assert('a haul with no window sends no window at all',
       bare.dest.trucking && Object.keys(bare.dest.trucking).length === 0);
+
+    // The two quarry tabs cost a row the same way and spell the rate
+    // differently; the activity is encoded in the job id.
+    await s.call('loadDestJobs', 'quarry');
+    const qDaily = s.call('splitRowPayload',
+      row({ labor_hours: 3, dest_division: 'quarry', dest_job: 'daily:hc', dest_rate: 74 }));
+    assert('a quarry Daily row sends its rate as rate', qDaily.dest.quarry.rate === 74);
+    const qCrush = s.call('splitRowPayload',
+      row({ labor_hours: 3, dest_division: 'quarry', dest_job: 'crushing:hc', dest_rate: 95 }));
+    assert('and a Crushing row as hourlyRate', qCrush.dest.quarry.hourlyRate === 95);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

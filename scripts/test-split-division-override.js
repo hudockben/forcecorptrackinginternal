@@ -84,6 +84,7 @@ const LISTS_BLOB = {
 function makeSql() {
   const store = new Map(Object.entries(LISTS_BLOB).map(([k, v]) => [k, v]));
   const inserts = [];   // daily_tracking INSERTs, values in column order
+  const dustRows = [];  // dust_control_entries INSERTs
   const log = [];
   const sql = (strings, ...values) => {
     const q = strings.join(' ').replace(/\s+/g, ' ').trim();
@@ -113,10 +114,15 @@ function makeSql() {
       store.set(String(values[0]), JSON.parse(values[1]));
       return Promise.resolve([]);
     }
+    if (q.startsWith('INSERT INTO dust_control_entries')) {
+      dustRows.push({ id: values[0], values });
+      return Promise.resolve([]);
+    }
     return Promise.resolve([]);
   };
   sql.store = store;
   sql.inserts = inserts;
+  sql.dustRows = dustRows;
   sql.log = log;
   sql.blob = key => {
     const v = store.get(`FCT:${key}`);
@@ -170,10 +176,36 @@ function destValidationTests() {
   assert('a quarry job with no activity is refused',
     /no Daily\/Crushing activity/.test(
       normalizeSplitDest({ division: 'quarry', job_id: 'homer-city' }, 0).error || ''));
-  const q = normalizeSplitDest({ division: 'quarry', job_id: 'crushing:hc', job_label: 'Crushing — Homer City' }, 0).dest;
+  // The quarry tab renders an injected row read-only and owns no column on it,
+  // so unlike a haul — which falls back to the customer's agreed rate and can be
+  // re-priced by the office afterwards — a quarry row that lands at rate 0 is a
+  // $0 cost row nobody downstream is able to correct.
+  assert('a quarry destination with no rate is refused',
+    /give this row an hourly rate/.test(
+      normalizeSplitDest({ division: 'quarry', job_id: 'crushing:hc' }, 0).error || ''));
+  assert('and so is one whose rate is zero',
+    !!normalizeSplitDest({ division: 'quarry', job_id: 'daily:hc', quarry: { rate: 0 } }, 0).error);
+  const q = normalizeSplitDest(
+    { division: 'quarry', job_id: 'crushing:hc', job_label: 'Crushing — Homer City', quarry: { hourlyRate: 95 } }, 0).dest;
   assert('a quarry destination resolves its activity', q.activity === 'crushing');
-  assert('and defaults the numbers the tab prices from to zero',
-    q.extras.hourlyRate === 0 && q.extras.fuelGallons === 0);
+  assert('and carries the rate it was given', q.extras.hourlyRate === 95);
+  assert('the crushing tab reads its rate from hourlyRate, the daily tab from rate',
+    normalizeSplitDest({ division: 'quarry', job_id: 'daily:hc', quarry: { rate: 88 } }, 0).dest.extras.rate === 88);
+  assert('the numbers only that office can know still default to zero',
+    q.extras.fuelGallons === 0 && q.extras.tonsPerLoad === 0);
+
+  // Half a window is worse than none: insertTruckingRows fills the missing
+  // boundary from the whole day, stamping a four-hour haul 06:00-16:30.
+  assert('a haul given only a start time is refused',
+    /half a time window/.test(
+      normalizeSplitDest({ division: 'trucking', job_id: 'c-eai', trucking: { start_time: '06:00' } }, 0).error || ''));
+  assert('and one given only an end time',
+    /half a time window/.test(
+      normalizeSplitDest({ division: 'trucking', job_id: 'c-eai', trucking: { end_time: '10:00' } }, 0).error || ''));
+  assert('a whole window is fine',
+    !normalizeSplitDest({ division: 'trucking', job_id: 'c-eai', trucking: { start_time: '06:00', end_time: '10:00' } }, 0).error);
+  assert('and so is none at all — the hours come from the grid',
+    !normalizeSplitDest({ division: 'trucking', job_id: 'c-eai' }, 0).error);
 
   // The extras are validated by the DESTINATION's own validator, so a rule
   // that holds on a trucking day holds on a trucking-bound override too.
@@ -201,7 +233,7 @@ function costCodeTests() {
   assert('a row sent to Truck Tracking does not',
     !validateSplit([{ ...bare, dest: { division: 'trucking', job_id: 'c-eai' } }], entry).error);
   assert('nor one sent to the quarry',
-    !validateSplit([{ ...bare, dest: { division: 'quarry', job_id: 'daily:hc' } }], entry).error);
+    !validateSplit([{ ...bare, dest: { division: 'quarry', job_id: 'daily:hc', quarry: { rate: 74 } } }], entry).error);
 
   // The hours rule is untouched: the split still has to add up to the day.
   assert('the day must still balance, override or not',
@@ -344,7 +376,7 @@ async function fanOutTests() {
       row({ labor_hours: 7 }),
       row({ labor_hours: 3, dest: {
         division: 'quarry', job_id: 'daily:hc', job_label: 'Daily — Homer City',
-        activity: 'daily', extras: { equipmentId: '', equipmentName: '', taskId: '', taskName: '', rate: 0, fuelGallons: 0, ppg: 0 },
+        activity: 'daily', extras: { equipmentId: '', equipmentName: '', taskId: '', taskName: '', rate: 74, fuelGallons: 0, ppg: 0 },
       } }),
     ]);
     const daily = sql.blob('fct_quarry_daily');
@@ -361,11 +393,11 @@ async function fanOutTests() {
     await injectSplitDestinations(sql, 'FCT', ENTRY, [
       row({ labor_hours: 4, dest: {
         division: 'quarry', job_id: 'daily:hc', job_label: 'Daily — Homer City', activity: 'daily',
-        extras: { equipmentId: '', equipmentName: '', taskId: '', taskName: '', rate: 0, fuelGallons: 0, ppg: 0 },
+        extras: { equipmentId: '', equipmentName: '', taskId: '', taskName: '', rate: 74, fuelGallons: 0, ppg: 0 },
       } }),
       row({ labor_hours: 6, dest: {
         division: 'quarry', job_id: 'crushing:hc', job_label: 'Crushing — Homer City', activity: 'crushing',
-        extras: { hourlyRate: 0, hoursCrushing: 0, fuelGallons: 0, fuelCost: 0, loadsToCrusher: 0, tonsPerLoad: 0, comments: '' },
+        extras: { hourlyRate: 95, hoursCrushing: 0, fuelGallons: 0, fuelCost: 0, loadsToCrusher: 0, tonsPerLoad: 0, comments: '' },
       } }),
     ]);
     assert('the Daily tab gets its row', sql.blob('fct_quarry_daily').length === 1);
@@ -400,7 +432,7 @@ async function teardownTests() {
     row({ labor_hours: 4, dest: { division: 'trucking', job_id: 'c-eai', job_label: 'EAI', extras: { company: 'EAI' } } }),
     row({ labor_hours: 6, dest: {
       division: 'quarry', job_id: 'daily:hc', job_label: 'Daily — Homer City', activity: 'daily',
-      extras: { equipmentId: '', equipmentName: '', taskId: '', taskName: '', rate: 0, fuelGallons: 0, ppg: 0 },
+      extras: { equipmentId: '', equipmentName: '', taskId: '', taskName: '', rate: 74, fuelGallons: 0, ppg: 0 },
     } }),
   ]);
   assert('the rows are there to start with',
@@ -460,6 +492,167 @@ async function resplitTests() {
     sql.inserts.length === 1 && sql.inserts[0].division === 'turf');
 }
 
+// ── 7) The bugs a review caught, pinned so they cannot come back ───────────
+async function regressionTests() {
+  console.log('\n[two rows for one customer are two hauls, not one]');
+  {
+    const sql = makeSql();
+    // Grouping the fan-out by destination folded these into a single leg: the
+    // hours were summed but only the FIRST row's window survived, so the tab
+    // showed one 06:00-10:00 haul billing seven hours.
+    await injectSplitDestinations(sql, 'FCT', ENTRY, [
+      row({ labor_hours: 4, dest: { division: 'trucking', job_id: 'c-eai', job_label: 'EAI',
+        extras: { company: 'EAI', start_time: '06:00', end_time: '10:00' } } }),
+      row({ labor_hours: 6, dest: { division: 'trucking', job_id: 'c-eai', job_label: 'EAI',
+        extras: { company: 'EAI', start_time: '11:00', end_time: '17:00' } } }),
+    ]);
+    const truck = sql.blob('fct_truck_division');
+    assert('both hauls are written', truck.length === 2, `found ${truck.length}`);
+    assert('each billing its own hours',
+      truck.map(r => r.total_hours).sort().join() === '4,6');
+    assert('and stamped with its own window',
+      truck.map(r => `${r.actual_start}-${r.actual_end}`).sort().join(' ') === '06:00-10:00 11:00-17:00',
+      truck.map(r => `${r.actual_start}-${r.actual_end}`).join(' '));
+  }
+  {
+    const sql = makeSql();
+    // Worse on the dust side: a dust row has no hours column, so the window IS
+    // what it bills. A folded leg lost the second pad's hours outright.
+    await injectSplitDestinations(sql, 'FCT', ENTRY, [
+      row({ labor_hours: 4, dest: { division: 'dust', job_id: 'co-cnx', job_label: 'CNX',
+        extras: { company: 'CNX', start_time: '06:00', end_time: '10:00' } } }),
+      row({ labor_hours: 3, dest: { division: 'dust', job_id: 'co-cnx', job_label: 'CNX',
+        extras: { company: 'CNX', start_time: '13:00', end_time: '16:00' } } }),
+      row({ labor_hours: 3 }),
+    ]);
+    assert('both pads are billed', sql.dustRows.length === 2, `found ${sql.dustRows.length}`);
+    assert('and the afternoon one is not the morning one again',
+      new Set(sql.dustRows.map(r => r.id)).size === 2);
+  }
+
+  console.log('\n[a row with only equipment hours still bills them]');
+  {
+    const sql = makeSql();
+    // validateSplit accepts a row carrying equipment hours alone. Counting only
+    // labour posted a haul of 0 hours against a real fee.
+    await injectSplitDestinations(sql, 'FCT', ENTRY, [
+      row({ labor_hours: 10 }),
+      row({ labor_hours: 0, equip_hours: 8, equipment: 'Triaxle Dump',
+        dest: { division: 'trucking', job_id: 'c-eai', job_label: 'EAI', extras: { company: 'EAI' } } }),
+    ]);
+    const truck = sql.blob('fct_truck_division');
+    assert('the haul bills the hours the truck ran', truck[0] && truck[0].total_hours === 8,
+      truck[0] && String(truck[0].total_hours));
+  }
+
+  console.log('\n[the cap the destination tabs can actually read back]');
+  {
+    const entry = { computed_hours: 7, travel_hours: 0 };
+    const haul = i => ({
+      labor_hours: 1, cost_code: '', sub_code: '',
+      dest: { division: 'trucking', job_id: `c-${i}`, job_label: `C${i}` },
+    });
+    const six   = Array.from({ length: 6 }, (_, i) => haul(i));
+    six[0].labor_hours = 2;
+    assert('six hauls are fine', !validateSplit(six, entry).error);
+    const seven = Array.from({ length: 7 }, (_, i) => haul(i));
+    // Past the cap the leg index encoded in the row id stops round-tripping:
+    // truckRowLegIndex collapses everything above six onto leg 1, where the
+    // read-time sweep deletes all but one as duplicates.
+    assert('seven are refused rather than written and swept away',
+      /at most 6 Truck Tracking rows/.test(validateSplit(seven, entry).error || ''),
+      validateSplit(seven, entry).error);
+  }
+
+  console.log('\n[a re-split must not blank the invoice the office already sent]');
+  {
+    const sql = makeSql();
+    const dest = { division: 'trucking', job_id: 'c-eai', job_label: 'EAI', extras: { company: 'EAI' } };
+    await injectSplitDestinations(sql, 'FCT', ENTRY, [row({ labor_hours: 10, dest })]);
+    // The trucking office invoices it.
+    const blob = sql.blob('fct_truck_division');
+    blob[0].qb_invoice = 'QB-8891';
+    blob[0].invoice_status = 'Paid';
+    sql.store.set('FCT:fct_truck_division', blob);
+
+    // Payroll reopens Edit Split and saves. The sweep must leave trucking alone,
+    // because insertTruckingRows is about to rewrite that row and carry the
+    // office's own columns across — deleting it first throws them away.
+    const keep = TS._test.splitDestinationDivisions(ENTRY, [row({ labor_hours: 10, dest })]);
+    await removeSplitDestinationRows(sql, 'FCT', ENTRY, { keep });
+    await injectSplitDestinations(sql, 'FCT', ENTRY, [row({ labor_hours: 10, dest })]);
+    const after = sql.blob('fct_truck_division');
+    assert('the haul is still one row', after.length === 1);
+    assert('the invoice number survived the re-split', after[0].qb_invoice === 'QB-8891',
+      String(after[0] && after[0].qb_invoice));
+    assert('and so did its status', after[0].invoice_status === 'Paid');
+  }
+  {
+    const sql = makeSql();
+    // …but a destination the split no longer posts to IS swept, or the old row
+    // stands beside the new one.
+    await injectSplitDestinations(sql, 'FCT', ENTRY, [
+      row({ labor_hours: 10, dest: { division: 'trucking', job_id: 'c-eai', job_label: 'EAI', extras: { company: 'EAI' } } }),
+    ]);
+    const keep = TS._test.splitDestinationDivisions(ENTRY, [row({ labor_hours: 10 })]);
+    assert('a split with no blob destinations keeps nothing', keep.size === 0);
+    await removeSplitDestinationRows(sql, 'FCT', ENTRY, { keep });
+    assert('so the haul is taken back', sql.blob('fct_truck_division').length === 0);
+  }
+}
+
+// ── 8) The read-time sweeps must not treat an override row as an orphan ────
+function sweepTests() {
+  console.log('\n[the tabs sweep rows whose entry no longer justifies them]');
+  const { findStaleTruckRows } = require(path.resolve(__dirname, '..', 'api', 'lib', 'truck-injected.js'));
+  const { findStaleDustRows }  = require(path.resolve(__dirname, '..', 'api', 'lib', 'dust-injected.js'));
+  const { findStaleObRows }    = require(path.resolve(__dirname, '..', 'api', 'lib', 'dust-ob-injected.js'));
+
+  const turf = extra => new Map([[900, Object.assign(
+    { id: 900, status: 'approved', entry_type: 'daily', division: 'turf', job_id: 'p-frank' }, extra)]]);
+  const sentTo = division => turf({
+    split_destinations: [{ labor_hours: 4, dest: { division, job_id: 'x', job_label: 'X' } }],
+  });
+
+  // A turf entry with no override has no business owning these rows, and the
+  // sweep taking them back is the behaviour that keeps a stranded row from
+  // outliving its entry. That must not change.
+  assert('a turf entry that sent nothing still loses a stray haul',
+    findStaleTruckRows([{ id: 'tst-900-row' }], turf()).length === 1);
+  assert('and a stray dust row',
+    findStaleDustRows([{ id: 'tsd-900-row' }], turf()).length === 1);
+  assert('and a stray Other Billing row',
+    findStaleObRows([{ id: 'tso-900-1' }], turf()).length === 1);
+
+  // But one the override put there is payroll's, and deleting it on a page load
+  // takes the Intercompany billing entry with it.
+  assert('a turf entry that sent hours to trucking keeps its haul',
+    findStaleTruckRows([{ id: 'tst-900-row' }], sentTo('trucking')).length === 0);
+  assert('a turf entry that sent hours to dust keeps its dust row',
+    findStaleDustRows([{ id: 'tsd-900-row' }], sentTo('dust')).length === 0);
+  assert('and its Other Billing row',
+    findStaleObRows([{ id: 'tso-900-1' }], sentTo('dust')).length === 0);
+
+  // The record is read as data, not trusted blindly: a split that went to dust
+  // does not justify a Truck Tracking row.
+  assert('sending to dust does not justify a haul row',
+    findStaleTruckRows([{ id: 'tst-900-row' }], sentTo('dust')).length === 1);
+  // And it stops mattering the moment the entry is no longer approved.
+  const unapproved = new Map([[900, {
+    id: 900, status: 'submitted', entry_type: 'daily', division: 'turf',
+    split_destinations: [{ dest: { division: 'trucking', job_id: 'x' } }],
+  }]]);
+  assert('an un-approved entry loses the row whatever it once sent',
+    findStaleTruckRows([{ id: 'tst-900-row' }], unapproved).length === 1);
+  // JSONB read back as text must not silently disable the whole rule.
+  const asText = new Map([[900, {
+    id: 900, status: 'approved', entry_type: 'daily', division: 'turf',
+    split_destinations: JSON.stringify([{ dest: { division: 'trucking', job_id: 'x' } }]),
+  }]]);
+  assert('the record is understood even when it arrives as text',
+    findStaleTruckRows([{ id: 'tst-900-row' }], asText).length === 0);
+}
+
 (async () => {
   console.log('Split division override\n');
   destValidationTests();
@@ -468,6 +661,8 @@ async function resplitTests() {
   await fanOutTests();
   await teardownTests();
   await resplitTests();
+  await regressionTests();
+  sweepTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {

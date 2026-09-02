@@ -175,7 +175,8 @@ function makeSql(initial = {}) {
       store.appData.set(values[0], JSON.parse(values[1]));
       return Promise.resolve([]);
     }
-    if (q.startsWith('SELECT id, status, entry_type, division, job_id FROM timesheet_entries')) {
+    if (q.startsWith('SELECT id, status, entry_type, division, job_id')
+        && q.includes('FROM timesheet_entries')) {
       const ids = values[values.length - 1] || [];
       return Promise.resolve(ids.map(id => store.entries.get(Number(id))).filter(Boolean));
     }

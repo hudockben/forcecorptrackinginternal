@@ -181,7 +181,8 @@ function makeSql(initial = {}) {
       const key = values[0];
       return Promise.resolve(store.appData.has(key) ? [{ value: store.appData.get(key) }] : []);
     }
-    if (q.startsWith('SELECT id, status, entry_type, division, job_id FROM timesheet_entries')) {
+    if (q.startsWith('SELECT id, status, entry_type, division, job_id')
+        && q.includes('FROM timesheet_entries')) {
       const ids = values[values.length - 1] || [];
       return Promise.resolve(ids.map(id => store.entries.get(Number(id))).filter(Boolean));
     }
@@ -255,9 +256,11 @@ function entry(over = {}) {
     // and a teardown that skips a turf day leaves the dust office billing work
     // payroll has withdrawn. Every sweep now goes through one helper that names
     // every remover and is called with no question asked first.
+    const sweeper = /async function removeSplitDestinationRows\([\s\S]{0,1200}?\n\}/.exec(SRC);
     assert('the destination sweep reaches the dust grids',
-      /async function removeSplitDestinationRows\(sql, companyCode, entry\) \{[\s\S]{0,600}?removeDustTrackingRows\(sql, companyCode, entry\)/.test(SRC)
-      && /async function removeSplitDestinationRows\(sql, companyCode, entry\) \{[\s\S]{0,600}?removeObRows\(sql, companyCode, entry\)/.test(SRC));
+      !!sweeper
+      && /removeDustTrackingRows\(sql, companyCode, entry\)/.test(sweeper[0])
+      && /removeObRows\(sql, companyCode, entry\)/.test(sweeper[0]));
     const gatedSweep = /needsDustTrackingRow\(existing\)\)\s*\{[\s\S]{0,200}?removeDustTrackingRows/.test(SRC);
     assert('and no teardown sits behind the injection gate', !gatedSweep);
   }

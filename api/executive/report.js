@@ -604,7 +604,7 @@ async function readTruckDivisionEntries(sql, companyCode) {
       )];
       if (!entryIds.length) return [];
       const rows = await sql`
-        SELECT id, status, entry_type, division, job_id
+        SELECT id, status, entry_type, division, job_id, split_destinations
           FROM timesheet_entries
          WHERE company_code = ${companyCode} AND id = ANY(${entryIds}::bigint[])
       `;

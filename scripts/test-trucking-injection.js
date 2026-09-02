@@ -120,7 +120,8 @@ function makeSql(initial = {}) {
       return Promise.resolve([{ cleared: 1 }]);
     }
     // The sweep's one lookup: which of these entries still exist and stand.
-    if (q.startsWith('SELECT id, status, entry_type, division, job_id FROM timesheet_entries')) {
+    if (q.startsWith('SELECT id, status, entry_type, division, job_id')
+        && q.includes('FROM timesheet_entries')) {
       const ids = values[values.length - 1] || [];
       return Promise.resolve(ids.map(id => store.entries.get(Number(id))).filter(Boolean));
     }
@@ -687,8 +688,9 @@ const ubDay = (n = 1) => ({ dustLegs: Array.from({ length: n }, () => ({ dest: '
     // teardown that skips a turf day leaves the trucking office invoicing a
     // haul payroll has withdrawn. Every sweep goes through one helper that
     // names every remover, called with no question asked first.
+    const sweeper = /async function removeSplitDestinationRows\([\s\S]{0,1200}?\n\}/.exec(SRC);
     assert('the destination sweep reaches Truck Tracking',
-      /async function removeSplitDestinationRows\(sql, companyCode, entry\) \{[\s\S]{0,600}?removeTruckingRows\(sql, companyCode, entry\)/.test(SRC));
+      !!sweeper && /removeTruckingRows\(sql, companyCode, entry\)/.test(sweeper[0]));
     const gatedSweep = /needsTruckTrackingRow\(existing\)\)\s*\{[\s\S]{0,200}?removeTruckingRows/.test(SRC);
     assert('and no teardown sits behind the injection gate', !gatedSweep);
   }
