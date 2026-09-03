@@ -6389,6 +6389,12 @@
 
     const SCHED_REC_NO_REPORTS = new Map();   // shared, never written to
 
+    /* Built once. Sorting a year of records runs this comparison tens of
+       thousands of times, and building the collator inside the comparator —
+       which is what passing the options to localeCompare does — is most of
+       the cost of a sort. */
+    const SCHED_REC_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
     /** The range the report map has to match to be worth joining against. */
     function schedRecKey() { return schedRec.from + '..' + schedRec.to; }
 
@@ -6669,8 +6675,8 @@
           if (bBad) return -1;
           return av !== bv ? (av - bv) * mul : schedRecTie(a, b);
         }
-        const c = String(a[key] == null ? '' : a[key])
-          .localeCompare(String(b[key] == null ? '' : b[key]), undefined, { numeric: true, sensitivity: 'base' });
+        const c = SCHED_REC_COLLATOR.compare(
+          String(a[key] == null ? '' : a[key]), String(b[key] == null ? '' : b[key]));
         return c ? c * mul : schedRecTie(a, b);
       });
     }
@@ -6984,7 +6990,13 @@
       const t = document.getElementById('sched-rec-to');
       let from = f ? f.value : schedRec.from;
       let to   = t ? t.value : schedRec.to;
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return;
+      // A box that has been emptied, or half typed, is put back to the range
+      // that is actually applied — otherwise it sits there blank over a table
+      // still showing the old dates, and neither one is believable.
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+        schedRecSyncRange();
+        return;
+      }
       if (to < from) { const s = from; from = to; to = s; }   // typed back to front
       schedRec.from    = from;
       schedRec.to      = to;
@@ -7107,6 +7119,7 @@
       put(['Board',     boardLbl]);
       put(['Status',    schedRec.status === 'all' ? 'Any' : schedRec.status]);
       put(['Filters',   schedRecFilterSummary()]);
+      put(['Driver reports', schedRecReportsState()]);
       put(['Generated', now]);
       gap();
       put(['TOTALS'], _XLSX_S.HEAD);
@@ -7176,6 +7189,25 @@
       // Days read in date order; everything else busiest first.
       if (key === 'date') return out.sort((a, b) => String(a.label).localeCompare(String(b.label)));
       return out.sort((a, b) => b.rows - a.rows || String(a.label).localeCompare(String(b.label)));
+    }
+
+    /** Whether the reported columns can be trusted for the range on screen.
+     *  Said on the summary sheet as well as on the note line: a workbook gets
+     *  emailed on, and a reader who never saw the screen has no other way to
+     *  tell an empty Tons column from a quiet week. */
+    function schedRecReportsState() {
+      const key = schedRecKey();
+      if (schedRec.reportsErr && schedRec.reportsErrRange === key) {
+        return 'NOT LOADED (' + schedRec.reportsErr + ') — every reported column below is empty';
+      }
+      if (schedRec.reportsLoading)            return 'still loading — the reported columns may be short';
+      if (schedRec.reportsRange !== key)      return 'not loaded for this range — the reported columns are empty';
+      if (schedRec.reportsShort)              return 'read through ' + schedRec.reportsShort +
+                                                     ' only — the range is wider than one pull';
+      const missing = SCHED_BOARDS.filter(cfg => !(_schedStates[cfg.id] || {}).loaded);
+      if (missing.length) return 'complete, but the ' + missing.map(c => c.noun.toLowerCase()).join(' and ') +
+                                 ' schedule did not load — those records are missing';
+      return 'complete';
     }
 
     /** The column filters and the search box in words, for the summary sheet —

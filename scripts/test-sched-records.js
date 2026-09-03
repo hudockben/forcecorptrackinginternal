@@ -81,7 +81,7 @@ const RECORDS = slice(TRUCKING, '    /* ═════════════�
    the context — so the few the tests reach for are handed out explicitly. */
 const EXPORTS = [
   'schedRec', 'SCHED_REC_COLS', 'SCHED_REC_STATUSES', 'SCHED_REC_PRESETS',
-  'SCHED_BOARDS', '_schedStates', 'SCHED_REC_STUCK',
+  'SCHED_BOARDS', '_schedStates', 'SCHED_REC_STUCK', 'SCHED_REC_COLLATOR',
 ].map(n => `globalThis.${n} = ${n};`).join('\n')
   // schedView is a `let`, so the tests get a door to it rather than reaching in.
   + '\nglobalThis.__setView = v => { schedView = v; };';
@@ -90,7 +90,7 @@ const EXPORTS = [
 function page(opts) {
   const o = opts || {};
   const sandbox = {
-    console, TextEncoder, TextDecoder, Uint8Array, DataView, Map, Set, Date, Math, JSON, isFinite, Number, String,
+    console, TextEncoder, TextDecoder, Uint8Array, DataView, Map, Set, Date, Math, JSON, Intl, isFinite, Number, String,
     _remKey: v => String(v == null ? '' : v).trim(),
     divTruckLists: { drivers: [], customers: [], units: o.units || [], materials: [], locations: [] },
     // Records never touches the DOM in these tests; the stubs are here so a
@@ -596,6 +596,20 @@ function parseXml(xml, label) {
   const text = files['xl/worksheets/sheet2.xml'];
   eq('the summary is titled',        c2.A1.text, 'Schedule Records — Summary');
   eq('and states the range',         c2.B2.text, '2026-03-02  to  2026-03-06');
+  // A workbook gets emailed on. Whoever opens it never saw the note under the
+  // table, so it has to carry whether the reported columns can be trusted.
+  eq('and whether the reported columns are complete', c2.A6.text, 'Driver reports');
+  eq('which they are here',                           c2.B6.text, 'complete');
+  {
+    const was = p.schedRec.reportsErr, wasRange = p.schedRec.reportsErrRange;
+    p.schedRec.reportsErr = 'HTTP 503';
+    p.schedRec.reportsErrRange = p.schedRecKey();
+    const broken = unzip(p.schedRecXlsx(rows));
+    assert('and says so when they could not be loaded',
+      /NOT LOADED \(HTTP 503\)/.test(broken['xl/worksheets/sheet2.xml']),
+      broken['xl/worksheets/sheet2.xml'].slice(0, 500));
+    p.schedRec.reportsErr = was; p.schedRec.reportsErrRange = wasRange;
+  }
   ['TOTALS', 'BY DRIVER', 'BY DIVISION', 'BY PROJECT / JOB', 'BY TRUCK', 'BY TRUCK TYPE',
    'BY MATERIAL', 'BY DAY'].forEach(h =>
     assert('rolls up ' + h.toLowerCase(), text.includes('>' + h + '<')));
@@ -639,7 +653,7 @@ console.log('\n── The dispatch sheet is unchanged ──');
 {
   const DAY = '2026-03-02';
   const sandbox = {
-    console, TextEncoder, TextDecoder, Uint8Array, Map, Set, Date, Math, JSON, isFinite, Number, String,
+    console, TextEncoder, TextDecoder, Uint8Array, Map, Set, Date, Math, JSON, Intl, isFinite, Number, String,
     _remKey: v => String(v == null ? '' : v).trim(),
     divTruckLists: { drivers: [], customers: [], units: [{ name: '2757', type: 'triaxle' }], materials: [], locations: [] },
     schedS: () => ({ anchor: DAY, view: 'day', assignments: { [DAY]: [A('d1')] }, hidden: new Set() }),
@@ -764,7 +778,7 @@ console.log('\n── On screen ──');
   const from = '2026-03-01', to = '2026-03-07';
 
   const sandbox = {
-    console, TextEncoder, TextDecoder, Uint8Array, Map, Set, Date, Math, JSON, isFinite, Number, String,
+    console, TextEncoder, TextDecoder, Uint8Array, Map, Set, Date, Math, JSON, Intl, isFinite, Number, String,
     setTimeout: win.setTimeout.bind(win),
     _remKey: v => String(v == null ? '' : v).trim(),
     divTruckLists: { drivers: [], customers: [], units: [{ name: '2757', type: 'triaxle' }], materials: [], locations: [] },
@@ -853,12 +867,17 @@ console.log('\n── On screen ──');
   eq('and the preset says custom', doc.getElementById('sched-rec-preset').value, 'custom');
   sandbox.schedRecSetPreset('ytd');
   eq('picking a preset moves the boxes', fEl.value.slice(5), '01-01');
-  assert('a half-typed date changes nothing', (() => {
+  assert('a half-typed date changes nothing, and the box goes back', (() => {
     const was = sandbox.schedRec.from;
     fEl.value = '2026-0';
     sandbox.schedRecSetRange();
-    fEl.value = was;
-    return sandbox.schedRec.from === was;
+    return sandbox.schedRec.from === was && fEl.value === was;
+  })());
+  assert('and so does an emptied one', (() => {
+    const was = sandbox.schedRec.to;
+    tEl.value = '';
+    sandbox.schedRecSetRange();
+    return sandbox.schedRec.to === was && tEl.value === was;
   })());
 
   /* ── A repaint mid-typing must not take the caret ── */
@@ -916,7 +935,7 @@ function live(opts) {
   const win = dom.window;
   const calls = { loads: [], fetches: [] };
   const sandbox = {
-    console, TextEncoder, TextDecoder, Uint8Array, Map, Set, Date, Math, JSON, isFinite, Number, String,
+    console, TextEncoder, TextDecoder, Uint8Array, Map, Set, Date, Math, JSON, Intl, isFinite, Number, String,
     setTimeout: win.setTimeout.bind(win),
     _remKey: v => String(v == null ? '' : v).trim(),
     divTruckLists: { drivers: [], customers: [], units: [], materials: [], locations: [] },
