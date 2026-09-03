@@ -47,30 +47,37 @@ const num = v => (Number.isFinite(Number(v)) ? Number(v) : null);
 /**
  * Snapshot one division of one company.
  *
- * Returns the number of jobs written. A division a company does not run reads
- * as an empty project index and writes nothing, which is correct and needs no
- * special case — the company's allowed_divisions are not consulted, because a
- * division switched off today should not silently erase the history of the
- * work it did last month.
+ * Returns { written, projects, skipped }, not a bare count. A division a
+ * company does not run reads as an empty project index and writes nothing,
+ * which is correct and needs no special case — the company's
+ * allowed_divisions are not consulted, because a division switched off today
+ * should not silently erase the history of the work it did last month.
+ *
+ * But "correctly wrote nothing" and "found work and failed to record it" used
+ * to be the same return value, so the caller could not tell them apart and
+ * neither could anybody reading the logs. `projects` says how much work was
+ * in front of it and `skipped` how much it could not key, which is what turns
+ * a silent zero into a sentence.
  */
 async function snapshotDivision(sql, companyCode, division, day) {
   const div = jobFin.jobDivision(division);
-  if (!div) return 0;
+  if (!div) return { written: 0, projects: 0, skipped: 0 };
 
   const projects = (await div.read(sql, companyCode, { limit: MAX_PROJECTS })).filter(Boolean);
-  if (!projects.length) return 0;
+  if (!projects.length) return { written: 0, projects: 0, skipped: 0 };
 
   const fin  = await report.buildFinancials(sql, companyCode, division, projects, null);
   const rows = jobFin.rowsFor(div, projects, fin, false);
 
   let written = 0;
+  let skipped = 0;
   for (let i = 0; i < rows.length; i++) {
     const r  = rows[i];
     // rowsFor preserves the order of `projects`, so the project at the same
     // index is this row's. Matching by name instead would collapse two jobs a
     // PM gave the same name, which is a thing PMs do.
     const id = String((projects[i] && projects[i].id) || '');
-    if (!id) continue;
+    if (!id) { skipped++; continue; }
 
     await sql`
       INSERT INTO mathis_job_facts (
@@ -106,7 +113,7 @@ async function snapshotDivision(sql, companyCode, division, day) {
     `;
     written++;
   }
-  return written;
+  return { written, projects: projects.length, skipped };
 }
 
 /**
@@ -120,7 +127,14 @@ async function runSnapshot(sql, { day, now = () => Date.now(), budgetMs = TIME_B
   const companies = await sql`SELECT code FROM companies ORDER BY code`;
   const result = {
     day: today, companies: 0, jobs: 0, divisions: 0,
-    skippedCompanies: 0, truncated: false, errors: [],
+    skippedCompanies: 0, truncated: false,
+    // Every division that wrote no row, and which silence it was. A night
+    // where the whole sweep writes nothing used to be indistinguishable from
+    // a healthy one — same `jobs: 0`, same 200, nothing named. This is the
+    // field that tells an operator whether the job found no work or found
+    // work it could not record.
+    empty: [],
+    errors: [],
   };
 
   for (const c of companies) {
@@ -141,7 +155,19 @@ async function runSnapshot(sql, { day, now = () => Date.now(), budgetMs = TIME_B
     for (const division of jobFin.JOB_DIVISIONS.map(d => d.key)) {
       try {
         const n = await snapshotDivision(sql, code, division, today);
-        if (n) { jobsHere += n; result.divisions++; }
+        if (n.written) { jobsHere += n.written; result.divisions++; }
+        else {
+          result.empty.push({
+            company: code, division, projects: n.projects,
+            reason: n.projects ? 'no usable project id' : 'no projects',
+          });
+        }
+        // Rows the loop could not key are lost silently otherwise: the
+        // division still reports the jobs it did write, and the gap only
+        // shows up later as a job missing from a trend nobody is checking.
+        if (n.skipped) {
+          result.errors.push(`${code}/${division}: ${n.skipped} project(s) had no id and were not recorded`);
+        }
       } catch (err) {
         // One division's blob being unreadable must not cost the other
         // fourteen companies their night. Recorded and carried past.
@@ -201,8 +227,20 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
   try {
     const out = await runSnapshot(sql, {});
+    // A night that wrote nothing at all is the failure this endpoint used to
+    // report as success, and the only record of it was a happy-path log line
+    // that read the same as a good night. Logged at error level so it lands
+    // in a search for failures, and `ok` now says what actually happened —
+    // the status stays 200 because the sweep really did run, and a company
+    // that genuinely has no jobs must not page anybody.
+    if (!out.jobs) {
+      console.error('[job-snapshot] wrote nothing:', JSON.stringify({
+        day: out.day, empty: out.empty, errors: out.errors,
+        truncated: out.truncated, companies: out.companies,
+      }));
+    }
     console.log('[job-snapshot]', JSON.stringify(out));
-    return res.status(200).json({ ok: true, ...out });
+    return res.status(200).json({ ok: out.jobs > 0, ...out });
   } catch (err) {
     console.error('[job-snapshot] sweep failed:', err.message);
     return res.status(500).json({ error: 'Snapshot failed.' });

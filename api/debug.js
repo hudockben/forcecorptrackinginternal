@@ -19,20 +19,27 @@ module.exports = async (req, res) => {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  let payload;
   try {
-    jwt.verify(token, process.env.JWT_SECRET);
+    payload = jwt.verify(token, process.env.JWT_SECRET);
   } catch {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
+  // CRON_SECRET belongs here for the same reason the others do: without it
+  // /api/cron/job-snapshot refuses to run, so the nightly history quietly
+  // never gets written. It was the one variable a feature depended on and the
+  // one this check omitted, which is how "no history yet" stayed unexplained.
   const checks = {
     DATABASE_URL: !!process.env.DATABASE_URL,
     JWT_SECRET:   !!process.env.JWT_SECRET,
     ADMIN_SECRET: !!process.env.ADMIN_SECRET,
+    CRON_SECRET:  !!process.env.CRON_SECRET,
   };
 
   let dbCheck = null;
   let appDataKeys = null;
+  let jobSnapshot = null;
   if (process.env.DATABASE_URL) {
     try {
       const sql = neon(process.env.DATABASE_URL);
@@ -78,7 +85,40 @@ module.exports = async (req, res) => {
     } catch (err) {
       dbCheck = err.message;
     }
+
+    // When the nightly snapshot last wrote, per division, for the caller's own
+    // company only. Counts and dates, never a job name or a figure — enough to
+    // tell "the cron has never run" from "it ran and found nothing", which
+    // previously lived only in Vercel's function logs. Scoped and read the
+    // same way api/lib/mathis-digests.js reads it, so what shows up here is
+    // what Mathis can see.
+    try {
+      const sql = neon(process.env.DATABASE_URL);
+      const code = String((payload && payload.companyCode) || '').toUpperCase();
+      const rows = code ? await sql`
+        SELECT division,
+               COUNT(*)::int              AS rows,
+               COUNT(DISTINCT day)::int   AS days,
+               MAX(day)::text             AS last_day
+          FROM mathis_job_facts
+         WHERE company_code = ${code}
+         GROUP BY division
+         ORDER BY division
+      ` : [];
+      jobSnapshot = {
+        configured: !!process.env.CRON_SECRET,
+        // Two distinct days is the floor a trend needs — see jobHistory() in
+        // api/lib/mathis-digests.js. Said here so the answer does not require
+        // knowing that rule.
+        divisions: rows.map(r => ({
+          division: r.division, rows: r.rows, days: r.days,
+          lastDay: r.last_day, trendable: r.days >= 2,
+        })),
+      };
+    } catch (err) {
+      jobSnapshot = { configured: !!process.env.CRON_SECRET, error: err.message };
+    }
   }
 
-  return res.json({ checks, dbCheck, appDataKeys });
+  return res.json({ checks, dbCheck, appDataKeys, jobSnapshot });
 };

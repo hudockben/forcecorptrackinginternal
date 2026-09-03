@@ -393,6 +393,12 @@ function makeSql(opts = {}) {
       if (opts.unreadableBlobs && opts.unreadableBlobs.includes(bare)) {
         return Promise.reject(new Error('blob read failed'));
       }
+      // extraBlobs lets one test populate a division the shared fixture
+      // leaves empty, without moving the ground under every other test that
+      // reads BLOBS.
+      if (opts.extraBlobs && bare in opts.extraBlobs) {
+        return Promise.resolve([{ value: opts.extraBlobs[bare] }]);
+      }
       return Promise.resolve(bare in BLOBS ? [{ value: BLOBS[bare] }] : []);
     }
     if (/FROM companies/.test(text) && /SELECT code/.test(text)) {
@@ -448,8 +454,15 @@ function makeSql(opts = {}) {
     if (/SELECT key, value FROM app_data/.test(text)) {
       const keys = values[0] || [];
       return Promise.resolve(keys.map(k => {
-        const id = String(k).split('fct_paving_project_')[1];
-        return PROJECTS[id] ? { key: k, value: PROJECTS[id] } : null;
+        // Every job division's blob prefix, not just paving's. Hardcoding
+        // fct_paving_project_ meant a turf or kiewit index could name ids and
+        // the fixture would still hand back nothing — so any test of those
+        // divisions could only ever assert zero, and did.
+        const s = String(k);
+        const id = s.split('fct_paving_project_')[1]
+                || s.split('fct_kiewit_project_')[1]
+                || s.split('fct_project_')[1];
+        return PROJECTS[id] ? { key: s, value: PROJECTS[id] } : null;
       }).filter(Boolean));
     }
     if (/FROM daily_tracking/.test(text)) {
@@ -2276,6 +2289,62 @@ console.log('\n══════════ the nightly snapshot ════�
 
   assert('old rows are purged on a complete sweep',
     queries.some(q => /DELETE FROM mathis_job_facts/.test(q.text)));
+}
+{
+  // Turf is the division most often asked for a trend, and until now no test
+  // proved the sweep ever wrote a single turf row: the fixture left its
+  // project index empty, the assertions above count only paving's two jobs,
+  // and deleting turf from JOB_DIVISIONS outright left the suite green. That
+  // is exactly the shape of failure this snapshot can have in production — a
+  // division silently contributing nothing — so it is asserted directly.
+  const snap = require(root('api/cron/job-snapshot.js'));
+  sqlImpl = makeSql({ extraBlobs: { 'fct_projects_index': { ids: ['p1', 'p2'] } } });
+  const out = await snap.runSnapshot(sqlImpl, { day: '2026-09-02' });
+
+  const writes = queries.filter(q => /INSERT INTO mathis_job_facts/.test(q.text));
+  const turf   = writes.filter(w => w.values.includes('turf'));
+  assert('turf is snapshotted like every other job division',
+    turf.length === 2, `${turf.length} turf rows written`);
+  assert('  and its jobs are counted in the sweep, not just paving\'s',
+    out.jobs === 4 && out.divisions === 2, JSON.stringify(out));
+  assert('  carrying the day it was told',
+    turf.every(w => w.values.includes('2026-09-02')));
+}
+{
+  // A division that writes nothing must SAY so. Reporting `jobs: 0` with a
+  // clean 200 and no other detail is what made two empty nights read as two
+  // healthy ones, and left "has the cron ever worked" answerable only from
+  // Vercel's logs.
+  const snap = require(root('api/cron/job-snapshot.js'));
+  sqlImpl = makeSql({});
+  const out = await snap.runSnapshot(sqlImpl, { day: '2026-09-01' });
+
+  assert('a division with no jobs is named, not passed over in silence',
+    out.empty.some(e => e.division === 'turf'   && e.reason === 'no projects')
+    && out.empty.some(e => e.division === 'kiewit' && e.reason === 'no projects'),
+    JSON.stringify(out.empty));
+  assert('  and a division that DID write is not in that list',
+    !out.empty.some(e => e.division === 'paving'), JSON.stringify(out.empty));
+}
+{
+  // The whole sweep writing nothing is the failure the endpoint used to
+  // report as success. `ok` has to disagree with a night that did nothing,
+  // while the status stays 200 — the sweep ran, it just found no work.
+  const handler = require(root('api/cron/job-snapshot.js'));
+  const before = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = 'night-secret';
+  const prevUrl = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = prevUrl || 'postgres://stub';
+
+  sqlImpl = makeSql({ companies: [] });
+  const res = mkRes();
+  await handler({ method: 'GET', headers: { authorization: 'Bearer night-secret' }, query: {} }, res);
+  assert('a night that wrote nothing does not answer ok:true',
+    res.statusCode === 200 && res.body && res.body.ok === false,
+    JSON.stringify({ status: res.statusCode, ok: res.body && res.body.ok }));
+
+  if (before === undefined) delete process.env.CRON_SECRET; else process.env.CRON_SECRET = before;
+  if (prevUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = prevUrl;
 }
 {
   // A sweep that ran out of time must not then delete a year of history.
