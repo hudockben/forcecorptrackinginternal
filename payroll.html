@@ -1272,6 +1272,14 @@
     .split-tally.ok       .tally-status { color: var(--green); font-weight: 700; }
     .split-tally.bad      { border-color: rgba(239,68,68,0.45); }
     .split-tally.bad      .tally-status { color: var(--red);   font-weight: 700; }
+    /* The haul balance under the approve modal's legs. Amber rather than the red
+       above, because the two tallies carry different consequences: the job-split
+       tally refuses to save until it balances, while hauls that do not add up to
+       the clock window are reported and still saved — a real gap between two
+       hauls is a legitimate day. Painting this red would promise a refusal that
+       never comes. */
+    .split-tally.warn     { border-color: rgba(251,191,36,0.45); }
+    .split-tally.warn     .tally-status { color: #fbbf24; font-weight: 700; }
     .split-table {
       width: 100%;
       border-collapse: collapse;
@@ -7209,21 +7217,31 @@
       leg.dest = after ? legDest(after) : 'dust';
       leg.company = after ? legStr(after.company) : co.name;
       if (after) {
-        // Halve the leg above and hand this one the back half, so adding a leg
-        // to a ten-hour day starts life as the 5/5 it usually is. Both windows
-        // stay inside the day, and either can be corrected afterwards.
-        const s = legMins(after.start_time), e = legMins(after.end_time);
-        if (s != null && e != null) {
-          let span = e - s;
-          if (span < 0) span += 1440;
-          const mid = legHhmm(s + Math.round(span / 2));
-          leg.start_time = mid;
-          leg.end_time   = after.end_time;
-          after.end_time = mid;
-          // The carve is the approver's own doing, so a pre-fill landing a
-          // moment later must not put the leg above back to the whole day.
-          haulTouched.add(after.key + '|end_time');
-        }
+        // Adding a haul takes NO hours off the haul above it. This used to halve
+        // the leg above and hand this one the back half, on the theory that a
+        // day split in two is usually split down the middle — but nobody had
+        // typed those figures and they are the ones that then billed. A dust day
+        // of 07:00–14:00 split three ways came out 3.50 / 1.75 / 1.75, evened
+        // out by the modal rather than reported by the supervisor, and a run of
+        // dust control entries was approved that way before anyone noticed.
+        //
+        // So the supervisor states how long each haul ran, and the balance line
+        // under the legs (see haulTallyRefresh) says how much of the clock
+        // window is still unaccounted for as they type — the same way the job
+        // split grid above tallies labour hours against the day.
+        //
+        // The start is seeded from the previous haul's end because hauls do run
+        // back to back, and because it makes the Hours box usable straight away:
+        // haulSetHours counts forward from the start, so one number finishes the
+        // leg. Seeding it moves no hours — the leg above keeps every minute it
+        // had, and this leg reads 0.00 h until its end is answered.
+        //
+        // The end is left deliberately blank. It is the one figure that has to
+        // come from the approver, and leaving an unanswered haul unsaveable is
+        // the point: the save refuses a haul with no hours (see truckingSave),
+        // so a leg nobody finished cannot post as a zero-hour row.
+        leg.start_time = legStr(after.end_time);
+        leg.end_time   = '';
         // The same truck runs the next pad unless the approver says otherwise,
         // and it hauls at the same fee until they say otherwise too.
         leg.vehicle1 = legStr(after.vehicle1);
@@ -7527,25 +7545,78 @@
           <span id="haulTally" style="font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums"></span>
           ${count > 1 ? '' : `<span style="font-size:12px;color:var(--muted)">
             Split it if the day ran to more than one customer${dust ? ' or pad' : ''}.</span>`}
-        </div>`;
+        </div>
+        ${count > 1 ? `
+        <div style="${FULL_ROW}">
+          <div class="split-tally" id="haulBalance" style="font-size:12px">
+            <span>Allocated: <span class="tally-num" id="haulAllocated">0.00</span> h</span>
+            <span>Clock window: <span class="tally-num" id="haulRequired">0.00</span> h</span>
+            <span>Remaining: <span class="tally-num" id="haulRemaining">0.00</span> h</span>
+            <span class="tally-status" id="haulBalanceStatus">—</span>
+          </div>
+        </div>` : ''}`;
     }
 
-    // The hours line under the legs. Says what the legs add up to against the
-    // clock window they are carving, and colours it only when they disagree —
-    // a gap between hauls is legitimate, so this reports rather than blocks.
+    // The hours under the legs, in two parts: the one-line note an unsplit day
+    // gets, and the balance a split day is filled in against — allocated, the
+    // clock window, and what is left to place. Nothing here blocks a save; a
+    // gap between two hauls is a legitimate day, so this reports.
     function haulTallyRefresh() {
+      const legs  = haulHoursAllocated();
+      const day   = entryClockHours();
+      const off   = Math.round((legs - day) * 100) / 100;
+      const ok    = Math.abs(off) < 0.01;
+      const split = haulLegs.length > 1;
+      // Unsplit, the one-line note is still the whole story, and it stays silent
+      // unless the boxes and the clock disagree: the row bills the day's stated
+      // hours whatever this window says, so there is nothing here to balance and
+      // a tally would only invite the approver to "correct" a figure that prices
+      // nothing. The balance block below is not rendered in that case at all.
       const el = document.getElementById('haulTally');
-      if (!el) return;
-      const legs = haulHoursAllocated();
-      const day  = entryClockHours();
-      const off  = Math.round((legs - day) * 100) / 100;
-      const ok   = Math.abs(off) < 0.01;
-      el.style.color = ok ? 'var(--muted)' : '#fbbf24';
-      el.textContent = haulLegs.length > 1
-        ? (ok
-            ? `${num2(legs)} h across ${haulLegs.length} hauls — the whole clock window.`
-            : `${num2(legs)} h across ${haulLegs.length} hauls, ${num2(day)} h on the clock (${off > 0 ? '+' : ''}${num2(off)} h).`)
-        : (ok ? '' : `${num2(legs)} h on this row, ${num2(day)} h on the clock.`);
+      if (el) {
+        el.style.color = ok ? 'var(--muted)' : '#fbbf24';
+        el.textContent = (split || ok) ? '' : `${num2(legs)} h on this row, ${num2(day)} h on the clock.`;
+      }
+      // Split, the hauls are carving the clock window up between them, and the
+      // balance is what the approver is working against as they type — the same
+      // allocated / required / remaining line the job split grid above uses,
+      // because it is the same question asked of the same day. Nothing here is
+      // enforced: a genuine gap between two hauls is a real day, so this reports
+      // and the save only refuses a haul with NO hours (see truckingSave).
+      const bal = document.getElementById('haulBalance');
+      if (bal) {
+        const rem   = Math.round((day - legs) * 100) / 100;
+        const blank = haulLegs.findIndex(l => !haulHours(l));
+        document.getElementById('haulAllocated').textContent = legs.toFixed(2);
+        document.getElementById('haulRequired').textContent  = day.toFixed(2);
+        document.getElementById('haulRemaining').textContent = rem.toFixed(2);
+        const status = document.getElementById('haulBalanceStatus');
+        bal.classList.remove('ok', 'bad', 'warn');
+        // An unanswered haul is reported first, and in red, because it is the
+        // one state on this line that actually stops the save (see
+        // truckingSave) — and because without it the arithmetic can read as
+        // balanced while a haul sits empty: an added haul takes nothing off the
+        // haul above it, so haul 1 alone may still cover the whole clock
+        // window. "✓ balanced" with a blank haul on screen is the one thing
+        // this line must never say. Named by position, and the first of them,
+        // which is the same haul the save will name.
+        if (blank !== -1) {
+          bal.classList.add('bad');
+          status.textContent = `haul ${blank + 1} has no hours yet`;
+        } else if (ok) {
+          bal.classList.add('ok');
+          status.textContent = `✓ balanced across ${haulLegs.length} hauls`;
+        } else {
+          bal.classList.add('warn');
+          // Put as hours still to place rather than "under-allocated": what the
+          // supervisor acts on is how much of the day is not on a haul yet —
+          // or, the other way about, how much time the hauls are claiming that
+          // the clock never had.
+          status.textContent = rem > 0
+            ? `${num2(rem)} h of the day not on a haul yet`
+            : `${num2(-rem)} h more than the day's clock window`;
+        }
+      }
       // What haul 1's Truck Tracking row will bill, when that is not simply its
       // own window. The lunch break the timesheet deducted and the travel logged
       // outside the clock have to be carried by one of the hauls or the day
@@ -7612,6 +7683,7 @@
       if (field === 'location') dustCascadeLocation(leg);
       if (field === 'vehicle1') dustCascadeVehicle(leg, 1);
       if (field === 'vehicle2') dustCascadeVehicle(leg, 2);
+      if (field === 'end_time') haulChainStart(leg);
       if (field === 'start_time' || field === 'end_time') haulTallyRefresh();
     }
 
@@ -7725,7 +7797,40 @@
       haulTouched.add(leg.key + '|end_time');
       const el = document.getElementById(`hl_${leg.key}_end`);
       if (el) el.value = leg.end_time;
+      haulChainStart(leg);
       haulTallyRefresh();
+    }
+
+    // A haul nobody has finished yet trails the one above it: answer haul 1 and
+    // haul 2's start comes with it, so a day is filled in top to bottom without
+    // the boundary between every pair being retyped.
+    //
+    // This is deliberately NOT the old carve returning. The leg being moved has
+    // no end time, so it has no hours to gain or lose — the move is provably
+    // worth 0.00 h either way, and the hours on the leg above are untouched.
+    // That is the line this modal now holds: where two hauls MEET may follow
+    // what the approver typed, what a haul BILLS may not.
+    //
+    // So a haul with hours of its own stays exactly where it is, and so does a
+    // start the approver typed themselves — either one is an answer, and moving
+    // it would be the carve wearing a different hat.
+    function haulChainStart(leg) {
+      // Only ever off a real clock value. haulEdit fires on every keystroke, so
+      // a cleared End box arrives here as '' — and chaining THAT would wipe the
+      // start the haul below was seeded with and strand it: haulSetHours counts
+      // forward from a start, so a haul that has lost its own cannot be
+      // answered by typing its hours at all. The approver clears an end to
+      // retype it, and would find the next haul quietly emptied for their
+      // trouble. Same guard covers a half-typed value ("10:3") from a browser
+      // with no native time control, which must not reach the model either.
+      if (legMins(leg.end_time) == null) return;
+      const next = haulLegs[haulLegs.indexOf(leg) + 1];
+      if (!next || legStr(next.end_time).trim() !== '') return;
+      if (haulTouchedHas(next, 'start_time')) return;
+      if (legStr(next.start_time) === legStr(leg.end_time)) return;
+      next.start_time = legStr(leg.end_time);
+      const box = document.getElementById(`hl_${next.key}_start`);
+      if (box) box.value = next.start_time;
     }
 
     // Changing the customer re-points the whole leg. The men, the pad, the state
@@ -7811,26 +7916,19 @@
       if (haulLegs.length <= 1) return;
       const leg = haulLegBy(key);
       if (!leg) return;
-      // Give the hours back to the leg above, so removing the second half of a
-      // day leaves the first half covering it rather than silently short.
+      // The removed haul's hours are NOT handed to a neighbour. Stretching the
+      // leg above to swallow them was the same silent redistribution the carve
+      // on add used to do — hours appearing on a haul whose window the
+      // supervisor never touched, at that customer's rate — and it is exactly
+      // as wrong in this direction: removing a middle haul would have billed
+      // its hours to whoever happened to be above it.
+      //
+      // The day is simply short by that haul now, and the balance line says so
+      // ("N h of the day not on a haul yet") until the supervisor places those
+      // hours themselves. That is the trade this modal is making everywhere:
+      // an imbalance the approver can see and fix beats an arithmetic that
+      // closes on its own and bills the wrong customer.
       const i = haulLegs.indexOf(leg);
-      const prev = haulLegs[i - 1];
-      if (prev && legMins(prev.end_time) != null && legMins(leg.end_time) != null
-          && legStr(prev.end_time) === legStr(leg.start_time)) {
-        prev.end_time = leg.end_time;
-        haulTouched.add(prev.key + '|end_time');
-      } else {
-        // Removing the FIRST haul has no leg above to give the hours to, so they
-        // go forward instead. Without this, taking the first half of a day off
-        // leaves the survivor covering only the back half — hours that were
-        // approved, silently unbilled.
-        const next = haulLegs[i + 1];
-        if (next && legMins(next.start_time) != null && legMins(leg.start_time) != null
-            && legStr(next.start_time) === legStr(leg.end_time)) {
-          next.start_time = leg.start_time;
-          haulTouched.add(next.key + '|start_time');
-        }
-      }
       haulLegs.splice(i, 1);
       for (const f of HAUL_FIELDS) haulTouched.delete(leg.key + '|' + f);
       haulTouched.delete(leg.key + '|dest');
@@ -7975,13 +8073,14 @@
       // instead of saving as a blank row.
       while (haulLegs.length < posted.length) {
         const src = posted[haulLegs.length];
-        // haulFreshLeg(null), never haulFreshLeg(previousLeg): seeding from the
-        // leg above CARVES IT IN HALF — that is what it is for when the approver
-        // clicks "add a haul" — and marks its end_time touched, so the pre-fill
-        // below can no longer put the posted window back. A day whose leg 1 was
-        // posted 06:00–09:00 would re-open as 06:00–11:00 and re-save billing
-        // five hours instead of three. haulApplyTruckRows takes null for the
-        // same reason.
+        // haulFreshLeg(null), never haulFreshLeg(previousLeg): a leg seeded from
+        // the one above it starts at that leg's END with a blank window, which
+        // is right when the approver clicks "add a haul" and wrong here — this
+        // loop is rebuilding hauls that are already posted, and the pre-fill
+        // below is about to put each one's real window back. Passing null gives
+        // it the day's own defaults to fall back on instead of a half-empty leg
+        // if a row turns out to be missing. haulApplyTruckRows takes null for
+        // the same reason.
         haulLegs.push(src ? haulLegFromDustRow(src) : haulFreshLeg(null));
       }
       const domId = {

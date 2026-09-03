@@ -251,6 +251,19 @@ function makeSandbox(entry, options, companies) {
     if (!els.has(id)) els.set(id, {
       id, value: '', textContent: '', innerHTML: '', style: {}, className: '',
       focus() {}, setSelectionRange() {},
+      // The balance line under the legs paints its own state through classList
+      // (haulTallyRefresh adds 'ok' or 'warn'), and every real element has one.
+      // Backed by a Set so an assertion can read back which state the tally
+      // settled on rather than only what it said.
+      classList: (() => {
+        const s = new Set();
+        return {
+          add:      (...c) => { for (const x of c) s.add(x); },
+          remove:   (...c) => { for (const x of c) s.delete(x); },
+          contains: c => s.has(c),
+          toString: () => [...s].join(' '),
+        };
+      })(),
     });
     return els.get(id);
   };
@@ -360,11 +373,14 @@ console.log('\n[splitting the day]');
   t.call('haulAddLeg');
   const [a, b] = t.legs();
   assert('a second haul appears', t.legs().length === 2);
-  assert('the day is halved rather than doubled',
-    a.start_time === '05:00' && a.end_time === '10:00' &&
-    b.start_time === '10:00' && b.end_time === '15:00');
-  assert('the two hauls still add up to the day',
-    t.call('haulHours', a) + t.call('haulHours', b) === 10);
+  // Adding a haul used to halve the leg above and hand this one the back half.
+  // Nobody typed those figures and they are the ones that billed: a 07:00–14:00
+  // dust day split three ways came out 3.50 / 1.75 / 1.75 on its own.
+  assert('the first haul keeps every hour it had',
+    a.start_time === '05:00' && a.end_time === '15:00');
+  assert('and the new haul starts where that one ends, with no hours of its own',
+    b.start_time === '15:00' && b.end_time === '' && t.call('haulHours', b) === 0);
+  assert('so no haul bills an hour nobody typed', t.call('haulHours', a) === 10);
   assert('the new haul keeps the same truck', b.vehicle1 === 'Distributor Truck 4000');
   assert('but not the pad or the company man', b.location === '' && b.company_man === '');
 
@@ -396,6 +412,62 @@ console.log('\n[splitting the day]');
   assert('and its own customer', a.company === 'CNX' && b.company === 'Antero');
 }
 
+console.log('\n[the balance line under the hauls]');
+{
+  // What replaced the auto-split: the day's total is stated, and the line under
+  // the legs balances against it as the supervisor types. Same
+  // allocated/required/remaining shape as the job split grid above, because it
+  // is the same question asked of the same day.
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  const status = () => t.el('haulBalanceStatus').textContent;
+  const state  = () => t.el('haulBalance').classList.toString();
+  t.call('haulAddLeg');
+  const [a, b] = t.legs();
+
+  // The trap the first cut of this fell into: haul 1 still covers the whole
+  // clock window on its own, so the arithmetic balances while haul 2 sits
+  // empty. "✓ balanced" there would be a lie the save then refuses.
+  assert('an unanswered haul is called out, not silently balanced',
+    /haul 2 has no hours/.test(status()), status());
+  assert('and in red, because that state really does stop the save',
+    state().includes('bad'), state());
+
+  t.call('haulSetHours', a.key, '4');
+  t.call('haulSetHours', b.key, '3');
+  assert('with both answered, what is left of the day is the headline',
+    /3\.00 h of the day not on a haul yet/.test(status()), status());
+  assert('in amber — a gap between two hauls is a real day, and still saves',
+    state().includes('warn'), state());
+  assert('and the three figures are the ones it is made of',
+    t.el('haulAllocated').textContent === '7.00'
+    && t.el('haulRequired').textContent  === '10.00'
+    && t.el('haulRemaining').textContent === '3.00',
+    [t.el('haulAllocated').textContent, t.el('haulRequired').textContent,
+     t.el('haulRemaining').textContent].join('/'));
+
+  t.call('haulSetHours', b.key, '6');
+  assert('it balances once the hauls cover the clock window',
+    /balanced across 2 hauls/.test(status()), status());
+  assert('in green', state().includes('ok'), state());
+
+  t.call('haulSetHours', b.key, '8');
+  assert('and hauls claiming more than the day are called out too',
+    /2\.00 h more than the day/.test(status()), status());
+  assert('also in amber, since the save allows it', state().includes('warn'), state());
+
+  // Every assertion above reads the line through document.getElementById, and
+  // this harness's stub hands back an element for ANY id — so they would all
+  // pass just the same if the line were never rendered at all. It was caught
+  // that way once. The markup itself is the only thing that settles it.
+  const html = t.run('haulSectionHtml()');
+  assert('and the line is really in the section markup',
+    /id="haulBalance"/.test(html) && /id="haulAllocated"/.test(html)
+    && /id="haulRequired"/.test(html) && /id="haulRemaining"/.test(html)
+    && /id="haulBalanceStatus"/.test(html));
+  assert('  but not on an unsplit day, which does not bill by these windows at all',
+    !/id="haulBalance"/.test(makeSandbox(ENTRY, OPTIONS, COMPANIES).run('haulSectionHtml()')));
+}
+
 console.log('\n[typing hours instead of times]');
 {
   const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
@@ -404,8 +476,45 @@ console.log('\n[typing hours instead of times]');
   t.call('haulSetHours', a.key, '6');
   assert('the haul ends six hours after it started', a.end_time === '11:00');
   assert('and reads back as six hours', t.call('haulHours', a) === 6);
+  // The unfinished haul below trails it. It has no end time, so it has no hours
+  // to gain or lose — the boundary moves, the billing does not.
+  assert('the unfinished haul below follows that end', b.start_time === '11:00');
   t.call('haulSetHours', b.key, '0');
-  assert('zero hours is ignored rather than collapsing the haul', b.end_time === '15:00');
+  assert('zero hours is ignored rather than collapsing the haul', b.end_time === '');
+  // And once it has hours of its own it stays put: shortening haul 1 after that
+  // would be the old carve pointing the other way.
+  t.call('haulSetHours', b.key, '2');
+  assert('the answered haul runs from where it was left', b.end_time === '13:00');
+  t.call('haulSetHours', a.key, '5');
+  assert('and shortening the haul above no longer drags it',
+    b.start_time === '11:00' && b.end_time === '13:00',
+    JSON.stringify([b.start_time, b.end_time]));
+}
+
+console.log('\n[clearing an end time does not empty the haul below]');
+{
+  // haulEdit fires on every keystroke, so a cleared End box reaches the chain
+  // as ''. Chaining that wiped the start the haul below was seeded with — and a
+  // haul with no start cannot be answered by typing its hours at all, because
+  // haulSetHours counts forward from one. The approver clears an end to retype
+  // it; they must not find the next haul emptied for their trouble.
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  t.call('haulAddLeg');
+  const [a, b] = t.legs();
+  assert('the added haul is seeded at the end of the one above', b.start_time === '15:00');
+  t.call('haulEdit', a.key, 'end_time', '');
+  assert('clearing haul 1\'s end leaves haul 2\'s start alone',
+    b.start_time === '15:00', JSON.stringify([a.end_time, b.start_time]));
+  assert('  and haul 1 is the one reported as unanswered', t.call('haulHours', a) === 0);
+  // A browser with no native time control hands over partial text as it is
+  // typed. None of it is a clock value, so none of it may reach the model.
+  for (const partial of ['1', '10', '10:3']) {
+    t.call('haulEdit', a.key, 'end_time', partial);
+    assert(`a half-typed "${partial}" does not move haul 2`, b.start_time === '15:00',
+      `b.start=${b.start_time}`);
+  }
+  t.call('haulEdit', a.key, 'end_time', '10:30');
+  assert('and the completed value does', b.start_time === '10:30');
 }
 
 console.log('\n[taking a haul back off]');
@@ -505,8 +614,10 @@ console.log('\n[a trucking day, which has no dust half at all]');
 
   t.call('haulAddLeg');
   const [a, b] = t.legs();
-  assert('splitting halves the day',
-    a.end_time === '11:15' && b.start_time === '11:15' && b.end_time === '15:30');
+  assert('splitting takes no hours off the first haul',
+    a.start_time === '07:00' && a.end_time === '15:30');
+  assert('and the second starts where it ends, still unanswered',
+    b.start_time === '15:30' && b.end_time === '');
   assert('and the boxes appear', t.run('haulBoxesShown()') === true);
   const html = t.run('haulSectionHtml()');
   assert('a trucking haul shows the customer, window, hours and fee',
@@ -643,14 +754,24 @@ console.log('\n[hauls that would bill something odd]');
   assert('and the tally shows the day no longer adds up',
     t.run('haulHoursAllocated()') !== t.run('entryClockHours()'));
 
-  // Removing the FIRST haul hands its hours forward rather than dropping them.
+  // Removing a haul no longer hands its hours to a neighbour. That was the same
+  // silent redistribution as the old carve, pointing the other way — a middle
+  // haul taken off would have billed its hours to whoever happened to sit above
+  // it, at that customer's rate. The day is simply short until the approver
+  // places those hours themselves, and the balance line is what says so.
   const t2 = makeSandbox(TRUCKING, null, null);
   t2.call('haulAddLeg');
   const [x, y] = t2.legs();
+  t2.call('haulSetHours', x.key, '4');     // 07:00–11:00
+  t2.call('haulSetHours', y.key, '4.5');   // 11:00–15:30
+  assert('two hauls, both answered, cover the day',
+    t2.run('haulHoursAllocated()') === t2.run('entryClockHours()'));
   t2.call('haulRemoveLeg', x.key);
-  assert('the survivor covers the whole day again',
-    t2.legs().length === 1 && y.start_time === '07:00' && y.end_time === '15:30',
+  assert('the survivor keeps its own window rather than swallowing the day',
+    t2.legs().length === 1 && y.start_time === '11:00' && y.end_time === '15:30',
     JSON.stringify([y.start_time, y.end_time]));
+  assert('and the day now reads short by exactly the haul that was removed',
+    t2.run('haulHoursAllocated()') === 4.5);
 }
 
 console.log('\n[what is being typed survives a pre-fill landing]');
