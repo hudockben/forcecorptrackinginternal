@@ -7815,6 +7815,15 @@
     // start the approver typed themselves — either one is an answer, and moving
     // it would be the carve wearing a different hat.
     function haulChainStart(leg) {
+      // Only ever off a real clock value. haulEdit fires on every keystroke, so
+      // a cleared End box arrives here as '' — and chaining THAT would wipe the
+      // start the haul below was seeded with and strand it: haulSetHours counts
+      // forward from a start, so a haul that has lost its own cannot be
+      // answered by typing its hours at all. The approver clears an end to
+      // retype it, and would find the next haul quietly emptied for their
+      // trouble. Same guard covers a half-typed value ("10:3") from a browser
+      // with no native time control, which must not reach the model either.
+      if (legMins(leg.end_time) == null) return;
       const next = haulLegs[haulLegs.indexOf(leg) + 1];
       if (!next || legStr(next.end_time).trim() !== '') return;
       if (haulTouchedHas(next, 'start_time')) return;

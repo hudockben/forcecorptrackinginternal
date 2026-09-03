@@ -491,6 +491,32 @@ console.log('\n[typing hours instead of times]');
     JSON.stringify([b.start_time, b.end_time]));
 }
 
+console.log('\n[clearing an end time does not empty the haul below]');
+{
+  // haulEdit fires on every keystroke, so a cleared End box reaches the chain
+  // as ''. Chaining that wiped the start the haul below was seeded with — and a
+  // haul with no start cannot be answered by typing its hours at all, because
+  // haulSetHours counts forward from one. The approver clears an end to retype
+  // it; they must not find the next haul emptied for their trouble.
+  const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
+  t.call('haulAddLeg');
+  const [a, b] = t.legs();
+  assert('the added haul is seeded at the end of the one above', b.start_time === '15:00');
+  t.call('haulEdit', a.key, 'end_time', '');
+  assert('clearing haul 1\'s end leaves haul 2\'s start alone',
+    b.start_time === '15:00', JSON.stringify([a.end_time, b.start_time]));
+  assert('  and haul 1 is the one reported as unanswered', t.call('haulHours', a) === 0);
+  // A browser with no native time control hands over partial text as it is
+  // typed. None of it is a clock value, so none of it may reach the model.
+  for (const partial of ['1', '10', '10:3']) {
+    t.call('haulEdit', a.key, 'end_time', partial);
+    assert(`a half-typed "${partial}" does not move haul 2`, b.start_time === '15:00',
+      `b.start=${b.start_time}`);
+  }
+  t.call('haulEdit', a.key, 'end_time', '10:30');
+  assert('and the completed value does', b.start_time === '10:30');
+}
+
 console.log('\n[taking a haul back off]');
 {
   const t = makeSandbox(ENTRY, OPTIONS, COMPANIES);
