@@ -128,14 +128,19 @@ function makeSql(initial = {}) {
     // upsertTruckDivisionEntry
     if (q.startsWith('INSERT INTO truck_division_entries')) {
       // values order: id, companyCode, task_number, actual_date, driver, unit,
-      // actual_start, actual_end, total_hours, haul_fee, customer, description,
-      // division, notes, qb_invoice, invoiced_date, invoice_sent_date,
-      // invoice_status, date_paid
+      // actual_start, actual_end, total_hours, haul_fee, haul_fee_override,
+      // haul_fee_payroll, customer, description, division, notes, qb_invoice,
+      // invoiced_date, invoice_sent_date, invoice_status, date_paid
+      // Positional, so it has to track the column list in
+      // upsertTruckDivisionEntry — a column added there and not here reads the
+      // next one's value and the assertions below say so.
       const [id, , task_number, actual_date, driver, unit, actual_start, actual_end,
-             total_hours, haul_fee, customer, description, division] = values;
+             total_hours, haul_fee, haul_fee_override, haul_fee_payroll,
+             customer, description, division] = values;
       store.tde.set(id, {
         id, task_number, actual_date, driver, unit, actual_start, actual_end,
-        total_hours, haul_fee, customer, description, division,
+        total_hours, haul_fee, haul_fee_override, haul_fee_payroll,
+        customer, description, division,
       });
       return Promise.resolve([]);
     }

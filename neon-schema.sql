@@ -553,7 +553,11 @@ CREATE TABLE IF NOT EXISTS truck_division_entries (
     actual_start      TEXT,                          -- HH:MM string
     actual_end        TEXT,                          -- HH:MM string
     total_hours       NUMERIC(10,4),
+    -- The fee this haul bills at. Derived on write when the trucking office has
+    -- set a backup fee on a payroll row: the two columns below record that.
     haul_fee          NUMERIC(10,4),
+    haul_fee_override NUMERIC(10,4),
+    haul_fee_payroll  NUMERIC(10,4),
     customer          TEXT,
     description       TEXT,
     division          TEXT,
@@ -567,6 +571,15 @@ CREATE TABLE IF NOT EXISTS truck_division_entries (
     created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
+
+-- The trucking office's backup haul fee, and payroll's own figure behind it.
+-- haul_fee above is the DERIVED one (the override when one stands, payroll's
+-- number otherwise), so every reader that prices a haul off this table keeps
+-- reading one column. These two say where that number came from — see "The
+-- backup haul fee" in api/lib/truck-injected.js. NULL on every row nobody has
+-- overridden, which is nearly all of them.
+ALTER TABLE truck_division_entries ADD COLUMN IF NOT EXISTS haul_fee_override NUMERIC(10,4);
+ALTER TABLE truck_division_entries ADD COLUMN IF NOT EXISTS haul_fee_payroll  NUMERIC(10,4);
 
 CREATE INDEX IF NOT EXISTS idx_tde_company      ON truck_division_entries(company_code);
 CREATE INDEX IF NOT EXISTS idx_tde_company_date ON truck_division_entries(company_code, actual_date);

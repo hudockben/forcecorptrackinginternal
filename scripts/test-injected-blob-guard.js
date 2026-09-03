@@ -219,7 +219,15 @@ const payroll = (id, over = {}) => ({ id, driver: 'Mike Barr', total_hours: 12.5
     assert('sent date survives',          row.invoice_sent_date === '2026-08-13');
     assert('paid status survives',        row.invoice_status === 'Paid', row.invoice_status);
     assert('date paid survives',          row.date_paid === '2026-08-20');
-    assert('every office column is covered', TRUCK_TAB_FIELDS.length === 5, TRUCK_TAB_FIELDS.join(','));
+    // Named, not counted: the list grew a sixth column (the backup haul fee,
+    // covered by test-haul-fee-override.js) and a count alone would have said
+    // only that something changed. Each name here is a column this block has
+    // proved survives a correction — anything added to TRUCK_TAB_FIELDS without
+    // that proof fails this.
+    assert('every office column is covered',
+      TRUCK_TAB_FIELDS.join(',') ===
+        'qb_invoice,invoiced_date,invoice_sent_date,invoice_status,date_paid,haul_fee_override',
+      TRUCK_TAB_FIELDS.join(','));
   }
 
   // ── The write paths actually call the guard ─────────────────────────────

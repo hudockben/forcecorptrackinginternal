@@ -141,6 +141,8 @@ const {
   MAX_INJECTED_LEGS,
   maxTaskNumber,
   formatTaskNumber,
+  applyHaulFeeOverride,
+  normalizeHaulFee,
 } = require('./lib/truck-injected');
 // The same rules for the Dust Control Tracking row a dust customer haul also
 // injects. Shared with api/dust-rows.js, which sweeps rows that outlived their
@@ -1754,18 +1756,11 @@ function truckDate(v) { return safeDate(v); }
 // autofills from the timesheet entry. All are optional (blank is allowed) so
 // payroll can approve now and fill the fee in later via Edit Row. Returns
 // { fields } or { error }.
-const TRUCK_HAUL_FEE_MAX = 1e7;
-function truckFee(v) {
-  // Trimmed first: Number(' ') is 0, so a whitespace-only box would be stored as
-  // a deliberate $0/hr — which reads to the trucking office as zero-rated work
-  // rather than as a fee nobody has set yet.
-  if (v == null || String(v).trim() === '') return { value: '' };
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 0 || n > TRUCK_HAUL_FEE_MAX) {
-    return { error: `haul_fee must be a number between 0 and ${TRUCK_HAUL_FEE_MAX}` };
-  }
-  return { value: Math.round(n * 10000) / 10000 };
-}
+// The approve modal's fee and the tab's backup fee go through the same gate, in
+// lib/truck-injected.js beside the row rules — two readings of "is this a price"
+// is two answers to whether a haul is unpriced, and the guard has to agree with
+// the injector about which it is (HAUL_FEE_MAX is its ceiling).
+const truckFee = normalizeHaulFee;
 
 /* ── What the office bills this customer ──────────────────────────────────
    A haul's fee is a fact about the company it hauled for: set once, beside its
@@ -1954,7 +1949,8 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
   await sql`
     INSERT INTO truck_division_entries (
       id, company_code, task_number, actual_date, driver, unit,
-      actual_start, actual_end, total_hours, haul_fee, customer,
+      actual_start, actual_end, total_hours, haul_fee,
+      haul_fee_override, haul_fee_payroll, customer,
       description, division, notes, qb_invoice, invoiced_date,
       invoice_sent_date, invoice_status, date_paid, updated_at
     ) VALUES (
@@ -1967,6 +1963,8 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
       ${e.actual_end || null},
       ${truckNum(e.total_hours)},
       ${truckNum(e.haul_fee)},
+      ${truckNum(e.haul_fee_override)},
+      ${truckNum(e.haul_fee_payroll)},
       ${e.customer || null},
       ${e.description || null},
       ${e.division || null},
@@ -1987,6 +1985,11 @@ async function upsertTruckDivisionEntry(sql, companyCode, e) {
       actual_end        = EXCLUDED.actual_end,
       total_hours       = EXCLUDED.total_hours,
       haul_fee          = EXCLUDED.haul_fee,
+      -- Written, not left alone: this row was just re-derived, so an override
+      -- that has been cleared or a figure payroll has since changed has to move
+      -- here too, or the mirror keeps describing a fee the blob no longer bills.
+      haul_fee_override = EXCLUDED.haul_fee_override,
+      haul_fee_payroll  = EXCLUDED.haul_fee_payroll,
       customer          = EXCLUDED.customer,
       description       = EXCLUDED.description,
       division          = EXCLUDED.division,
@@ -2300,6 +2303,20 @@ async function insertTruckingRows(sql, companyCode, entry, fields = {}, flags = 
       if (!error && value !== '') row.haul_fee = value;
     }
   }
+
+  // ── The office's backup fee has the last word ─────────────────────────
+  // Every cost column above was rewritten from the entry, this one included.
+  // But haul_fee is the one an office edit can be standing against: the tab
+  // lets an unpriced haul be priced where it is billed (TRUCK_TAB_FIELDS
+  // carries haul_fee_override across a re-approval, the same way it carries the
+  // QB number), and a correction to the day's hours must not quietly restate a
+  // fee somebody has already invoiced under.
+  //
+  // Payroll's own figure is still recorded — it goes to haul_fee_payroll, so
+  // the tab can show what the override is disagreeing with and hand the row
+  // back with one click — and an override that agrees with it is dropped. See
+  // "The backup haul fee" in lib/truck-injected.js.
+  for (const row of rows) applyHaulFeeOverride(row);
 
   // Number each row out of the tab's own TR-#### series, so a haul that came
   // from a timesheet is identifiable in the Task Number column — and on the
