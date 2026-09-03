@@ -6412,6 +6412,15 @@
       return Math.round(mins / 60 * 100) / 100;
     }
 
+    /** A reported figure as a number, or '' for anything that is not one. A
+     *  blank and a NaN must not both end up in the same total — one is nothing
+     *  to add, the other poisons every figure downstream of it. */
+    function schedRecFigure(v) {
+      if (v === '' || v == null) return '';
+      const n = Number(v);
+      return isFinite(n) ? n : '';
+    }
+
     /** Tons an hour, to two places — the production rate the office reads off
      *  a haul. Blank unless both figures are there and the hours are real: a
      *  rate over zero hours is a division by zero dressed up as a number. */
@@ -6503,9 +6512,10 @@
       };
 
       const rows = [], known = new Set();
+      let allLoaded = true;
       SCHED_BOARDS.forEach(cfg => {
         const st = _schedStates[cfg.id];
-        if (!st || !st.loaded) return;
+        if (!st || !st.loaded) { allLoaded = false; return; }
         Object.keys(st.assignments || {}).forEach(d => {
           const list = st.assignments[d] || [];
           list.forEach(a => { if (a && a.id) known.add(a.id); });
@@ -6516,6 +6526,11 @@
 
       // A report against an assignment nobody can find any more. The haul was
       // run and reported; only the plan for it is gone. Kept, and said so.
+      //
+      // Only once both boards are in, though: "no assignment anywhere" is a
+      // claim about both of them, and a board that failed to load would turn
+      // every haul it holds into a phantom Report-only row.
+      if (!allLoaded) return rows;
       schedRec.reports.forEach((rep, id) => {
         if (!rep || known.has(id)) return;
         const d = String(rep.work_date || '').slice(0, 10);
@@ -6528,8 +6543,8 @@
     function schedRecRow(cfg, date, a, unitTypeOf, dowOf) {
       const rep    = schedRec.reports.get(a.id) || null;
       const actHrs = rep ? schedRecHours(rep.actual_start, rep.actual_end) : '';
-      const tons   = rep && rep.tons  != null && rep.tons  !== '' ? Number(rep.tons)  : '';
-      const loads  = rep && rep.loads != null && rep.loads !== '' ? Number(rep.loads) : '';
+      const tons   = rep ? schedRecFigure(rep.tons)  : '';
+      const loads  = rep ? schedRecFigure(rep.loads) : '';
       return {
         boardId:     cfg.id,
         board:       cfg.noun,
@@ -6563,8 +6578,8 @@
     function schedRecOrphanRow(id, rep, dowOf) {
       const date   = String(rep.work_date || '').slice(0, 10);
       const actHrs = schedRecHours(rep.actual_start, rep.actual_end);
-      const tons   = rep.tons  != null && rep.tons  !== '' ? Number(rep.tons)  : '';
-      const loads  = rep.loads != null && rep.loads !== '' ? Number(rep.loads) : '';
+      const tons   = schedRecFigure(rep.tons);
+      const loads  = schedRecFigure(rep.loads);
       return {
         boardId: '', board: '—',
         date: date, dow: dowOf(date),

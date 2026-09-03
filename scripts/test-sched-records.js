@@ -139,6 +139,10 @@ console.log('\n── Hours and rates ──');
   eq('agrees with the dispatch sheet',
     String(p.schedRecHours('22:00', '06:00').toFixed(2)), p.schedHoursBetween('22:00', '06:00'));
 
+  eq('a figure comes through as a number',  p.schedRecFigure('96.5'), 96.5);
+  eq('a blank figure stays blank',          p.schedRecFigure(null), '');
+  eq('and so does one that is not a number', p.schedRecFigure('n/a'), '');
+
   eq('tons an hour',                       p.schedRecRate(100, 8), 12.5);
   eq('no rate without hours',              p.schedRecRate(100, ''), '');
   eq('no rate without tons',               p.schedRecRate('', 8), '');
@@ -200,6 +204,24 @@ console.log('\n── The rows ──');
   const l1 = rows.find(r => r.id === 'l1');
   eq('the labor board is folded in',    l1.board, 'Labor');
 
+  // A figure the endpoint could not make a number of must not poison a total.
+  {
+    const junk = page({
+      from: '2026-03-02', to: '2026-03-02',
+      assignments: { trucking: { '2026-03-02': [A('j1'), A('j2', { driver: 'Kirk, Dan' })] } },
+      reports: [
+        { assignment_id: 'j1', work_date: '2026-03-02', tons: 'n/a', loads: null,
+          actual_start: '06:00', actual_end: '14:00' },
+        { assignment_id: 'j2', work_date: '2026-03-02', tons: 40, loads: 2,
+          actual_start: '06:00', actual_end: '14:00' },
+      ],
+    });
+    const t = junk.schedRecTotals(junk.schedRecBuild());
+    eq('a junk figure is dropped, not added', t.tons, 40);
+    assert('and the total is still a number', isFinite(t.tons) && isFinite(t.loads));
+    eq('and its cell reads empty', junk.schedRecText(junk.schedRecBuild().find(r => r.id === 'j1'), 'tons'), '');
+  }
+
   const gh = rows.find(r => r.id === 'ghost');
   eq('a report with no assignment is kept', gh.status, 'Report only');
   eq('under no board',                  gh.board, '—');
@@ -209,6 +231,16 @@ console.log('\n── The rows ──');
 
   assert('a report against an out-of-range assignment makes no row',
     !rows.some(r => r.id === 'after'));
+
+  // "No assignment anywhere" is a claim about both boards. While one of them
+  // is missing, every haul it holds would look like a deleted one.
+  p._schedStates.labor.loaded = false;
+  assert('nothing is called Report only while a board is still missing',
+    !p.schedRecBuild().some(r => r.status === 'Report only'),
+    JSON.stringify(p.schedRecBuild().map(r => r.id + ':' + r.status)));
+  p._schedStates.labor.loaded = true;
+  assert('and it comes back once that board is in',
+    p.schedRecBuild().some(r => r.id === 'ghost'));
 
   // The type a unit's NAME gives away still stands in when nobody typed one.
   const p2 = page({
