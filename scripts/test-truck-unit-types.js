@@ -398,7 +398,7 @@ function renderPanel(state, drive) {
     const cols  = evalIn(newReport(freshLists(), []), 'SCHED_SHEET_COLS');
     const tons  = cols.indexOf('Tons'), loads = cols.indexOf('Loads');
     const html  = slice(TRUCKING, '    function schedSheetHTML(date)', '    function schedSheetPrint()', 'sheet html');
-    const xlsx  = slice(TRUCKING, '    function schedSheetXlsx(date)', '      const files = [', 'sheet xlsx');
+    const xlsx  = slice(TRUCKING, '    function schedSheetXlsx(date)', '      return _xlsxPackage(', 'sheet xlsx');
     const nums  = `new Set([4, ${tons}, ${loads}])`;
     assert('the printed sheet right-aligns the figure columns', html.includes(nums), nums);
     assert('and the workbook writes them as numbers', xlsx.includes(nums), nums);

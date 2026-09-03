@@ -883,6 +883,91 @@
     .sched-sub-btn.err::after { background: var(--orange); }
     .sched-board-panel { display: none; }
     .sched-board-panel.active { display: block; }
+
+    /* ── Scheduler Records ──
+       The archive behind the two boards: every assignment either of them has
+       ever carried, flattened into one table a dispatcher can filter and pull
+       for a date range. Built on the Truck Tracking table's own classes where
+       they fit — sticky header, sticky filter row — so the two read as the
+       same tool. Its own prefix throughout: the boards are blanked when this
+       is showing, but nothing here may collide with an id over there. */
+    .rec-bar {
+      display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.6rem;
+    }
+    .rec-bar label {
+      font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); margin-right: 0.2rem;
+    }
+    .rec-bar input[type=date], .rec-bar select, .rec-bar input[type=text] {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.75rem; padding: 0.28rem 0.4rem;
+      outline: none; font-family: inherit;
+    }
+    .rec-bar input[type=date]:focus, .rec-bar select:focus, .rec-bar input[type=text]:focus {
+      border-color: #555;
+    }
+    .rec-bar input.rec-search { min-width: 190px; }
+    .rec-bar .rec-sep { width: 1px; height: 20px; background: var(--border); margin: 0 0.15rem; }
+    .rec-btn {
+      font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.32rem 0.7rem; cursor: pointer; white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .rec-btn:hover { color: var(--text); border-color: #555; }
+    .rec-btn.primary { color: var(--orange); border-color: var(--orange); }
+    .rec-btn.primary:hover { background: var(--orange); color: #fff; }
+    .rec-btn[disabled] { opacity: 0.45; cursor: default; }
+    .rec-btn[disabled]:hover { color: var(--muted); border-color: var(--border); background: none; }
+
+    .rec-note { font-size: 0.7rem; color: var(--muted); }
+    .rec-note.warn { color: var(--amber); }
+    .rec-note.err  { color: var(--orange); }
+
+    .rec-scroll { overflow: auto; max-height: calc(100vh - 340px); border: 1px solid var(--border); border-radius: 6px; }
+    .rec-tbl { width: 100%; border-collapse: collapse; background: var(--surface); min-width: 2400px; }
+    .rec-tbl thead tr.hdr-row th {
+      position: sticky; top: 0; z-index: 3;
+      padding: 0.5rem 0.55rem; background: var(--surface2); color: var(--muted);
+      font-size: 0.63rem; letter-spacing: 0.07em; text-transform: uppercase;
+      border-bottom: 1px solid var(--border); white-space: nowrap; text-align: left;
+      cursor: pointer; user-select: none;
+    }
+    .rec-tbl thead tr.hdr-row th.r { text-align: right; }
+    .rec-tbl thead tr.hdr-row th:hover { color: var(--text); }
+    .rec-tbl thead tr.hdr-row th.sorted { color: var(--orange); }
+    .rec-tbl thead tr.hdr-row th .arw { font-size: 0.6rem; margin-left: 0.2rem; }
+    .rec-tbl thead tr.filter-row th {
+      position: sticky; top: 29px; z-index: 3; background: var(--surface);
+      padding: 0.22rem 0.3rem; border-bottom: 1px solid var(--border);
+    }
+    .rec-tbl thead tr.filter-row input {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 3px; color: var(--muted); font-size: 0.68rem;
+      padding: 0.16rem 0.3rem; outline: none; font-family: inherit;
+    }
+    .rec-tbl thead tr.filter-row input:focus { border-color: #555; color: var(--text); }
+    .rec-tbl thead tr.filter-row input.on { color: var(--text); border-color: #4b5563; }
+    .rec-tbl tbody tr { border-bottom: 1px solid var(--border); }
+    .rec-tbl tbody tr:hover { background: var(--surface2); }
+    .rec-tbl tbody td {
+      padding: 0.32rem 0.55rem; font-size: 0.76rem; white-space: nowrap;
+      max-width: 320px; overflow: hidden; text-overflow: ellipsis;
+    }
+    .rec-tbl tbody td.r { text-align: right; font-variant-numeric: tabular-nums; }
+    .rec-tbl tbody td.dim { color: var(--muted); }
+    .rec-tbl tbody td.id  { color: var(--muted); font-family: monospace; font-size: 0.66rem; }
+    .rec-tbl tbody tr.orphan td { background: rgba(250,204,21,0.05); }
+    .rec-tbl tbody td .pill {
+      display: inline-block; padding: 0.05rem 0.4rem; border-radius: 999px;
+      font-size: 0.62rem; letter-spacing: 0.04em; border: 1px solid var(--border); color: var(--muted);
+    }
+    .rec-tbl tbody td .pill.yes  { color: var(--green);  border-color: rgba(34,197,94,0.4);  }
+    .rec-tbl tbody td .pill.no   { color: var(--muted); }
+    .rec-tbl tbody td .pill.only { color: var(--amber);  border-color: rgba(250,204,21,0.4); }
+    .rec-empty { padding: 3rem 1.5rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
     .pdf-btn {
       margin-left: auto; padding: 0.3rem 0.75rem;
       font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
@@ -1077,18 +1162,23 @@
   </div>
 
   <!-- ══════════════════════════════════════════════
-       SCHEDULER TAB — two boards, one tool
+       SCHEDULER TAB — two boards and their archive, one tool
        Trucking and Labor are the same board pointed at different blobs.
-       Only the selected one is drawn; the other panel is emptied on the way
+       Records is the third sub-tab: every assignment either board has ever
+       carried, flattened into one filterable table that pulls for a date
+       range and downloads as a workbook.
+       Only the selected panel is drawn; the others are emptied on the way
        out so no element id exists twice in the document.
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-scheduler">
     <div class="sub-tab-bar">
       <button class="sched-sub-btn active" data-board="trucking">Trucking Schedule</button>
       <button class="sched-sub-btn" data-board="labor">Labor Schedule</button>
+      <button class="sched-sub-btn" data-board="records">Records</button>
     </div>
     <div class="sched-board-panel active" id="sched-board-trucking"></div>
     <div class="sched-board-panel" id="sched-board-labor"></div>
+    <div class="sched-board-panel" id="sched-board-records"></div>
   </div>
 
   <script>
@@ -1123,7 +1213,7 @@
           p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
         if (btn.dataset.tab === 'dashboard') renderDashboard();
         if (btn.dataset.tab === 'truck-tracking') renderTrackingTab();
-        if (btn.dataset.tab === 'scheduler') renderScheduler();
+        if (btn.dataset.tab === 'scheduler') schedRerender();
         if (btn.dataset.tab === 'analytics') {
           const activeSub = document.querySelector('.sub-tab-btn.active');
           if (activeSub?.dataset.sub === 'equipment-utilization') renderEquipmentUtilization();
@@ -4115,7 +4205,12 @@
       { id: 'labor',    label: 'Labor Schedule',    noun: 'Labor',
         key: 'fct_trucking_labor_schedule', reportType: 'trucking_labor_dispatch' },
     ];
-    let schedBoard = 'trucking';    // which sub-tab is showing
+    let schedBoard = 'trucking';    // the board the Trucking/Labor UI acts on
+    /* Which sub-tab is showing. Either board id, or 'records' — the archive
+       view, which is not a board: it reads both of them and owns no blob. It
+       is tracked apart from schedBoard so that opening Records leaves the
+       board selection alone, and closing it lands back on the board you left. */
+    let schedView = 'trucking';
 
     function schedBoardCfg(board) {
       return SCHED_BOARDS.find(b => b.id === (board || schedBoard)) || SCHED_BOARDS[0];
@@ -4208,9 +4303,26 @@
      *  finishes for the other board updates its state and leaves the DOM
      *  alone — its panel is drawn from scratch when it is picked. */
     function schedIsActive(board) {
-      const b = document.querySelector('.tab-btn.active');
-      if (!b || b.dataset.tab !== 'scheduler') return false;
+      if (!schedTabShowing()) return false;
+      if (schedView !== schedBoard) return false;   // Records is up; no board is drawn
       return (board || schedBoard) === schedBoard;
+    }
+
+    /** The Scheduler tab is the one selected — whichever of its sub-tabs. */
+    function schedTabShowing() {
+      const b = document.querySelector('.tab-btn.active');
+      return !!b && b.dataset.tab === 'scheduler';
+    }
+
+    /** Redraw whatever the Scheduler is showing. Board data reaches Records as
+     *  well as the boards — a schedule that finishes loading, or a save that
+     *  lands, changes the archive too — so the board-scoped redraws go through
+     *  here rather than calling renderScheduler() directly. */
+    function schedRerender(board) {
+      if (!schedTabShowing()) return;
+      if (schedView === 'records') { renderSchedRecords(); return; }
+      const b = board || schedBoard;
+      if (schedIsActive(b)) renderScheduler(b);
     }
 
     /* ── Roster. The managed driver list is the roster, but any driver who
@@ -4377,7 +4489,7 @@
         st.loadError = err && err.message ? err.message : 'Could not load the schedule.';
       } finally {
         st.loading = false;
-        if (schedIsActive(b)) renderScheduler(b);
+        schedRerender(b);
       }
     }
 
@@ -4452,7 +4564,7 @@
           const theirs = (a && typeof a === 'object' && !Array.isArray(a)) ? a : {};
           if (JSON.stringify(theirs) !== st.baseline) {
             st.assignments = schedMerge(st.baseline, st.assignments, theirs);
-            if (schedIsActive(b)) renderScheduler(b);
+            schedRerender(b);
           }
           // The hidden set is one small list rather than keyed rows, so there is
           // nothing to merge per-item: whoever last changed it wins. If we have
@@ -4462,7 +4574,7 @@
             const next = new Set(h.filter(x => typeof x === 'string'));
             if (JSON.stringify([...next].sort()) !== st.hiddenBaseline) {
               st.hidden = next;
-              if (schedIsActive(b)) renderScheduler(b);
+              schedRerender(b);
             }
           }
         }
@@ -4531,7 +4643,9 @@
        board being drawn. */
     function renderScheduler(board) {
       const b = board || schedBoard;
-      if (b !== schedBoard) return;
+      // Not the selected board, or the Records sub-tab is up and both board
+      // panels are blank — either way there is nothing of this board on screen.
+      if (b !== schedBoard || schedView !== schedBoard) return;
       const st   = schedS(b);
       const cfg  = schedBoardCfg(b);
       const root = document.getElementById('sched-board-' + b);
@@ -4578,18 +4692,22 @@
        otherwise save into whichever board came next — and blanks the panel
        being left so no id is in the document twice. */
     function schedSwitchBoard(board) {
-      if (!_schedStates[board]) return;
+      if (board !== 'records' && !_schedStates[board]) return;
       schedCloseEditor();
       schedClosePicker();
       schedCloseReport();
-      const prev = document.getElementById('sched-board-' + schedBoard);
-      if (prev && board !== schedBoard) prev.innerHTML = '';
-      schedBoard = board;
+      const prev = document.getElementById('sched-board-' + schedView);
+      if (prev && board !== schedView) prev.innerHTML = '';
+      schedView = board;
+      // Records is a view over both boards, not a board: the board selection
+      // is left exactly as it was so leaving Records lands back on it.
+      if (board !== 'records') schedBoard = board;
       document.querySelectorAll('.sched-sub-btn').forEach(btn =>
         btn.classList.toggle('active', btn.dataset.board === board));
       document.querySelectorAll('.sched-board-panel').forEach(pnl =>
         pnl.classList.toggle('active', pnl.id === 'sched-board-' + board));
-      renderScheduler(board);
+      if (board === 'records') renderSchedRecords();
+      else renderScheduler(board);
     }
 
     function schedToolbarHTML() {
@@ -5231,6 +5349,112 @@
       return s;
     }
 
+    /** Excel's own day number for a YYYY-MM-DD: days since 1899-12-30. Built
+     *  from UTC so no time zone can push a date onto the day before it, the
+     *  same reason every parse on this page goes through local noon. */
+    function _xlsxSerial(ds) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ds || ''));
+      if (!m) return null;
+      return Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - Date.UTC(1899, 11, 30)) / 86400000);
+    }
+
+    /** Excel will not open a workbook whose sheet name carries one of its
+     *  reserved characters, or runs past 31. */
+    function _xlsxSheetName(name, i) {
+      const s = String(name == null ? '' : name).replace(/[:\\\/?*\[\]]/g, ' ').trim().slice(0, 31);
+      return s || ('Sheet' + (i + 1));
+    }
+
+    /* Style slots every sheet below writes against. 0 and 1 are what the
+       dispatch sheet has always used, so they keep their meaning:
+         0 default · 1 bold · 2 date · 3 two decimals · 4 header band */
+    const _XLSX_S = { PLAIN: 0, BOLD: 1, DATE: 2, NUM2: 3, HEAD: 4 };
+
+    /** Wrap worksheets into a workbook.
+     *  Each sheet is { name, colsXml, rowsXml, freeze, autoFilterRef } — the
+     *  rows already rendered, because the two workbooks on this page lay their
+     *  rows out very differently and only the packaging is common. */
+    function _xlsxPackage(sheets) {
+      const list = (sheets || []).map((sh, i) => ({ ...sh, name: _xlsxSheetName(sh.name, i) }));
+      const sheetXml = sh => {
+        const views = sh.freeze
+          ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" ` +
+            `activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
+          : '';
+        // autoFilter belongs after sheetData in the schema; putting it before
+        // it is the one ordering mistake Excel refuses to open the file over.
+        const filter = sh.autoFilterRef ? `<autoFilter ref="${sh.autoFilterRef}"/>` : '';
+        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+          `${views}${sh.colsXml || ''}<sheetData>${sh.rowsXml || ''}</sheetData>${filter}</worksheet>`;
+      };
+      // The hidden name Excel keeps beside an auto-filter. Without it the
+      // dropdowns still appear, but the range is forgotten on the first save.
+      const names = list.map((sh, i) => sh.autoFilterRef
+        ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${
+            sh.name.replace(/'/g, "''")}'!${sh.autoFilterRef.split(':').map(r => '$' + r.replace(/(\d+)/, '$$$1')).join(':')}</definedName>`
+        : '').filter(Boolean).join('');
+
+      const files = [
+        { name: '[Content_Types].xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+          `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+          `<Default Extension="xml" ContentType="application/xml"/>` +
+          `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
+          list.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ` +
+            `ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') +
+          `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
+          `</Types>` },
+        { name: '_rels/.rels', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
+          `</Relationships>` },
+        { name: 'xl/workbook.xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
+          `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+          `<sheets>${list.map((sh, i) =>
+            `<sheet name="${_xmlEsc(sh.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>` +
+          (names ? `<definedNames>${names}</definedNames>` : '') +
+          `</workbook>` },
+        { name: 'xl/_rels/workbook.xml.rels', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          list.map((_, i) => `<Relationship Id="rId${i + 1}" ` +
+            `Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" ` +
+            `Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
+          `<Relationship Id="rId${list.length + 1}" ` +
+            `Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+          `</Relationships>` },
+        { name: 'xl/styles.xml', data:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+          `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>` +
+          `<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
+          `<fills count="3"><fill><patternFill patternType="none"/></fill>` +
+          `<fill><patternFill patternType="gray125"/></fill>` +
+          `<fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill></fills>` +
+          `<borders count="2"><border/>` +
+          `<border><left/><right/><top/><bottom style="thin"><color rgb="FF808080"/></bottom><diagonal/></border></borders>` +
+          `<cellStyleXfs count="1"><xf/></cellStyleXfs>` +
+          `<cellXfs count="5">` +
+            `<xf xfId="0"/>` +
+            `<xf xfId="0" fontId="1" applyFont="1"/>` +
+            `<xf xfId="0" numFmtId="14" applyNumberFormat="1"/>` +
+            `<xf xfId="0" numFmtId="2" applyNumberFormat="1"/>` +
+            `<xf xfId="0" fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1"/>` +
+          `</cellXfs>` +
+          // Without a named Normal style some readers warn the workbook has no
+          // default; Excel copes either way, but the file should be clean.
+          `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
+          `</styleSheet>` },
+        ...list.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: sheetXml(sh) })),
+      ];
+      return _zip(files);
+    }
+
     function schedSheetXlsx(date) {
       const header = SCHED_SHEET_COLS;
       const numeric = new Set([4, 12, 13]);   // hours, tons, loads
@@ -5268,51 +5492,7 @@
       const cols = `<cols>${widths.map((w, i) =>
         `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`;
 
-      const files = [
-        { name: '[Content_Types].xml', data:
-          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
-          `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
-          `<Default Extension="xml" ContentType="application/xml"/>` +
-          `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
-          `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
-          `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
-          `</Types>` },
-        { name: '_rels/.rels', data:
-          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
-          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>` +
-          `</Relationships>` },
-        { name: 'xl/workbook.xml', data:
-          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-          `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
-          `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-          `<sheets><sheet name="Dispatch" sheetId="1" r:id="rId1"/></sheets></workbook>` },
-        { name: 'xl/_rels/workbook.xml.rels', data:
-          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-          `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
-          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>` +
-          `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
-          `</Relationships>` },
-        { name: 'xl/styles.xml', data:
-          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-          `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-          `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>` +
-          `<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
-          `<fills count="1"><fill><patternFill patternType="none"/></fill></fills>` +
-          `<borders count="1"><border/></borders>` +
-          `<cellStyleXfs count="1"><xf/></cellStyleXfs>` +
-          `<cellXfs count="2"><xf xfId="0"/><xf xfId="0" fontId="1" applyFont="1"/></cellXfs>` +
-          // Without a named Normal style some readers warn the workbook has no
-          // default; Excel copes either way, but the file should be clean.
-          `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
-          `</styleSheet>` },
-        { name: 'xl/worksheets/sheet1.xml', data:
-          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-          `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-          `${cols}<sheetData>${sheetRows}</sheetData></worksheet>` },
-      ];
-      return _zip(files);
+      return _xlsxPackage([{ name: 'Dispatch', colsXml: cols, rowsXml: sheetRows }]);
     }
 
     function schedSheetDownload() {
@@ -6098,6 +6278,839 @@
       const next = list.filter(a => a.id !== id);
       if (next.length) st.assignments[date] = next;
       else delete st.assignments[date];   // keep the blob free of empty days
+    }
+
+
+    /* ═══════════════════════════════════════════
+       SCHEDULER RECORDS — the archive behind the boards
+
+       The two boards answer "what is running this week". This answers "what
+       did we run", which is a different question and a different shape: one
+       flat table of every assignment either board has ever carried, over a
+       date range you choose, filterable column by column and downloadable as
+       a workbook the office can pivot.
+
+       It reads the same two blobs the boards save to — nothing is copied into
+       a third store that could drift out of step with them — joined to the
+       driver reports for the range so plan and actual sit on one line. A
+       report whose assignment has since been deleted is still a record of
+       work someone did, so it is carried too, marked "Report only" rather
+       than quietly dropped out of the record.
+
+       Read-only throughout. Pulling records must never be able to change what
+       is on a board.
+    ═══════════════════════════════════════════ */
+
+    /** The columns, once. The table, the filter boxes, the sort and the
+     *  workbook are all built from this list, so the screen and the download
+     *  can never disagree about what a record says.
+     *    type — how the value sorts, and how the workbook types the cell
+     *    dp   — decimal places for a number
+     *    f    — carries a filter box in the header
+     *    w    — column width in the workbook */
+    const SCHED_REC_COLS = [
+      { key: 'board',       label: 'Board',          w: 12               },
+      { key: 'date',        label: 'Date',           w: 12, type: 'date', f: 1 },
+      { key: 'dow',         label: 'Day',            w: 7,               f: 1 },
+      { key: 'driver',      label: 'Driver',         w: 20,              f: 1 },
+      { key: 'division',    label: 'Division',       w: 13,              f: 1 },
+      { key: 'project',     label: 'Project / Job',  w: 34,              f: 1 },
+      { key: 'location',    label: 'Location',       w: 20,              f: 1 },
+      { key: 'address',     label: 'Address',        w: 32,              f: 1 },
+      { key: 'material',    label: 'Material',       w: 18,              f: 1 },
+      { key: 'unit',        label: 'Truck',          w: 14,              f: 1 },
+      { key: 'unitType',    label: 'Truck Type',     w: 16,              f: 1 },
+      { key: 'start',       label: 'Sched Start',    w: 11, type: 'time' },
+      { key: 'end',         label: 'Sched End',      w: 11, type: 'time' },
+      { key: 'planHrs',     label: 'Sched Hrs',      w: 10, type: 'num', dp: 2 },
+      { key: 'actStart',    label: 'Act. Start',     w: 11, type: 'time' },
+      { key: 'actEnd',      label: 'Act. End',       w: 11, type: 'time' },
+      { key: 'actHrs',      label: 'Act. Hrs',       w: 10, type: 'num', dp: 2 },
+      { key: 'tons',        label: 'Tons',           w: 10, type: 'num', dp: 2 },
+      { key: 'loads',       label: 'Loads',          w: 9,  type: 'num', dp: 0 },
+      { key: 'tph',         label: 'Tons / Hr',      w: 11, type: 'num', dp: 2 },
+      { key: 'tickets',     label: 'Tickets',        w: 18,              f: 1 },
+      { key: 'notes',       label: 'Dispatch Notes', w: 34,              f: 1 },
+      { key: 'driverNotes', label: 'Driver Notes',   w: 34,              f: 1 },
+      { key: 'status',      label: 'Status',         w: 13               },
+      { key: 'id',          label: 'Record ID',      w: 38,              f: 1 },
+    ];
+
+    const SCHED_REC_STATUSES = ['Planned', 'Reported', 'Report only'];
+
+    /* Driver reports are fetched a window at a time: the endpoint clamps any
+       range longer than 400 days, so a multi-year pull is chunked rather than
+       silently answered with the first year of it. */
+    const SCHED_REC_CHUNK    = 366;
+    const SCHED_REC_MAX_PULL = 24;    // chunks in one pull — a runaway backstop
+    const SCHED_REC_DRAW     = 750;   // rows drawn before "show all" is offered
+
+    const schedRec = {
+      from: '', to: '', preset: '30',
+      board: 'all', status: 'all', q: '',
+      col:  {},                       // column key → filter text
+      sort: { key: 'date', dir: 'desc' },
+      reports:        new Map(),      // assignment id → driver report
+      reportsRange:   '',             // the range `reports` covers
+      reportsLoading: '',             // the range in flight, '' when idle
+      reportsErr:     null,
+      reportsErrRange: '',            // the range that failed — not retried on its own
+      reportsShort:   '',             // last day actually pulled, when the pull ran out of chunks
+      showAll: false,
+    };
+
+    /** Decimal hours between two HH:MM times as a number, or '' when either is
+     *  missing. An end at or before the start reads as running past midnight,
+     *  the same rule schedHoursBetween uses on the dispatch sheet — a night
+     *  haul from 10p to 6a is eight hours on both. */
+    function schedRecHours(start, end) {
+      const s0 = schedMins(start), e0 = schedMins(end);
+      if (s0 === null || e0 === null) return '';
+      const mins = e0 > s0 ? e0 - s0 : (e0 + 1440) - s0;
+      return Math.round(mins / 60 * 100) / 100;
+    }
+
+    /** Tons an hour, to two places — the production rate the office reads off
+     *  a haul. Blank unless both figures are there and the hours are real: a
+     *  rate over zero hours is a division by zero dressed up as a number. */
+    function schedRecRate(qty, hours) {
+      if (qty === '' || hours === '' || !(hours > 0)) return '';
+      return Math.round((Number(qty) / Number(hours)) * 100) / 100;
+    }
+
+    /* ── Range ── */
+
+    const SCHED_REC_PRESETS = [
+      { key: '7',      label: 'Last 7 days'  },
+      { key: '30',     label: 'Last 30 days' },
+      { key: '90',     label: 'Last 90 days' },
+      { key: 'mtd',    label: 'This month'   },
+      { key: 'lastm',  label: 'Last month'   },
+      { key: 'qtd',    label: 'This quarter' },
+      { key: 'ytd',    label: 'This year'    },
+      { key: 'all',    label: 'All time'     },
+      { key: 'custom', label: 'Custom'       },
+    ];
+
+    /** The earliest and latest date either board holds anything on. Both null
+     *  when nothing is scheduled at all. */
+    function schedRecSpan() {
+      let lo = null, hi = null;
+      SCHED_BOARDS.forEach(cfg => {
+        const st = _schedStates[cfg.id];
+        if (!st) return;
+        Object.keys(st.assignments || {}).forEach(d => {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !(st.assignments[d] || []).length) return;
+          if (lo === null || d < lo) lo = d;
+          if (hi === null || d > hi) hi = d;
+        });
+      });
+      return { lo, hi };
+    }
+
+    function schedRecApplyPreset(key) {
+      const today = schedTodayStr();
+      const d = schedParse(today);
+      let from = today, to = today;
+      switch (key) {
+        case '7':   from = schedAddDays(today, -6);  break;
+        case '30':  from = schedAddDays(today, -29); break;
+        case '90':  from = schedAddDays(today, -89); break;
+        case 'mtd': from = schedStr(new Date(d.getFullYear(), d.getMonth(), 1)); break;
+        case 'lastm':
+          from = schedStr(new Date(d.getFullYear(), d.getMonth() - 1, 1));
+          to   = schedStr(new Date(d.getFullYear(), d.getMonth(), 0));
+          break;
+        case 'qtd': from = schedStr(new Date(d.getFullYear(), Math.floor(d.getMonth() / 3) * 3, 1)); break;
+        case 'ytd': from = schedStr(new Date(d.getFullYear(), 0, 1)); break;
+        case 'all': {
+          // Bounded by what is actually on the boards, so "all time" is a real
+          // range to fetch reports for rather than an open-ended one. Work is
+          // scheduled ahead, so the end runs past today when the boards do.
+          const span = schedRecSpan();
+          from = span.lo || schedAddDays(today, -365);
+          to   = span.hi && span.hi > today ? span.hi : today;
+          if (from > to) to = from;
+          break;
+        }
+        default: return;   // 'custom' — the dates stay as typed
+      }
+      schedRec.preset = key;
+      schedRec.from   = from;
+      schedRec.to     = to;
+    }
+
+    /* ── Rows ═════════════════════════════════════════════════════════════
+       Rebuilt on every paint rather than cached: the boards can be saving
+       underneath this, and a stale archive is worse than a few milliseconds.
+       The two lookups that are not cheap — the truck's type, and the weekday
+       a date falls on — are memoised for the length of one build. */
+
+    function schedRecBuild() {
+      const from = schedRec.from, to = schedRec.to;
+      if (!from || !to) return [];
+      const typeMemo = new Map(), dowMemo = new Map();
+      const unitTypeOf = u => {
+        const k = String(u == null ? '' : u);
+        if (!typeMemo.has(k)) typeMemo.set(k, k ? unitTypeLabel(k) : '');
+        return typeMemo.get(k);
+      };
+      const dowOf = ds => {
+        if (!dowMemo.has(ds)) dowMemo.set(ds, schedParse(ds).toLocaleDateString('en-US', { weekday: 'short' }));
+        return dowMemo.get(ds);
+      };
+
+      const rows = [], known = new Set();
+      SCHED_BOARDS.forEach(cfg => {
+        const st = _schedStates[cfg.id];
+        if (!st || !st.loaded) return;
+        Object.keys(st.assignments || {}).forEach(d => {
+          const list = st.assignments[d] || [];
+          list.forEach(a => { if (a && a.id) known.add(a.id); });
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < from || d > to) return;
+          list.forEach(a => { if (a) rows.push(schedRecRow(cfg, d, a, unitTypeOf, dowOf)); });
+        });
+      });
+
+      // A report against an assignment nobody can find any more. The haul was
+      // run and reported; only the plan for it is gone. Kept, and said so.
+      schedRec.reports.forEach((rep, id) => {
+        if (!rep || known.has(id)) return;
+        const d = String(rep.work_date || '').slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < from || d > to) return;
+        rows.push(schedRecOrphanRow(id, rep, dowOf));
+      });
+      return rows;
+    }
+
+    function schedRecRow(cfg, date, a, unitTypeOf, dowOf) {
+      const rep    = schedRec.reports.get(a.id) || null;
+      const actHrs = rep ? schedRecHours(rep.actual_start, rep.actual_end) : '';
+      const tons   = rep && rep.tons  != null && rep.tons  !== '' ? Number(rep.tons)  : '';
+      const loads  = rep && rep.loads != null && rep.loads !== '' ? Number(rep.loads) : '';
+      return {
+        boardId:     cfg.id,
+        board:       cfg.noun,
+        date,
+        dow:         dowOf(date),
+        driver:      a.driver   || '',
+        division:    schedDivLabel(a.division),
+        project:     schedJobOf(a),
+        location:    a.location || '',
+        address:     a.address  || '',
+        material:    a.material || '',
+        unit:        a.unit     || '',
+        unitType:    unitTypeOf(a.unit),
+        start:       a.start    || '',
+        end:         a.end      || '',
+        planHrs:     schedRecHours(a.start, a.end),
+        actStart:    rep ? (rep.actual_start || '') : '',
+        actEnd:      rep ? (rep.actual_end   || '') : '',
+        actHrs:      actHrs,
+        tons:        tons,
+        loads:       loads,
+        tph:         schedRecRate(tons, actHrs),
+        tickets:     rep ? (rep.tickets || '') : '',
+        notes:       a.notes || '',
+        driverNotes: rep ? (rep.notes || '') : '',
+        status:      rep ? 'Reported' : 'Planned',
+        id:          a.id || '',
+      };
+    }
+
+    function schedRecOrphanRow(id, rep, dowOf) {
+      const date   = String(rep.work_date || '').slice(0, 10);
+      const actHrs = schedRecHours(rep.actual_start, rep.actual_end);
+      const tons   = rep.tons  != null && rep.tons  !== '' ? Number(rep.tons)  : '';
+      const loads  = rep.loads != null && rep.loads !== '' ? Number(rep.loads) : '';
+      return {
+        boardId: '', board: '—',
+        date: date, dow: dowOf(date),
+        driver: rep.driver_name || rep.username || '',
+        division: '', project: '', location: '', address: '', material: '',
+        unit: '', unitType: '',
+        start: '', end: '', planHrs: '',
+        actStart: rep.actual_start || '', actEnd: rep.actual_end || '', actHrs: actHrs,
+        tons: tons, loads: loads, tph: schedRecRate(tons, actHrs),
+        tickets: rep.tickets || '', notes: '', driverNotes: rep.notes || '',
+        status: 'Report only',
+        id: id || '',
+      };
+    }
+
+    /** What a cell reads as. One definition for the screen, the filter boxes,
+     *  the search and the workbook's text columns alike. */
+    function schedRecText(row, key) {
+      const col = SCHED_REC_COLS.find(c => c.key === key);
+      const v   = row[key];
+      if (v === '' || v == null) return '';
+      if (col && col.type === 'time') return schedTime12(v);
+      if (col && col.type === 'num')  return schedNum(v, col.dp);
+      return String(v);
+    }
+
+    /* ── Filter and sort ── */
+
+    function schedRecFilter(rows) {
+      const q    = String(schedRec.q || '').trim().toLowerCase();
+      const cols = Object.keys(schedRec.col)
+        .map(k => [k, String(schedRec.col[k] || '').trim().toLowerCase()])
+        .filter(pair => pair[1]);
+      return rows.filter(r => {
+        if (schedRec.board  !== 'all' && r.boardId !== schedRec.board)  return false;
+        if (schedRec.status !== 'all' && r.status  !== schedRec.status) return false;
+        for (const pair of cols) {
+          if (!schedRecText(r, pair[0]).toLowerCase().includes(pair[1])) return false;
+        }
+        if (q) {
+          const hay = SCHED_REC_COLS.map(c => schedRecText(r, c.key)).join('  ').toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }
+
+    /** Newest day first, then the order the day ran. The tie-break under every
+     *  sort, so rows equal on the sorted column still come out in a stable,
+     *  meaningful order rather than in whatever order the blob held them. */
+    function schedRecTie(a, b) {
+      return String(b.date || '').localeCompare(String(a.date || ''))
+          || String(a.start || '~').localeCompare(String(b.start || '~'))
+          || String(a.driver || '').localeCompare(String(b.driver || ''))
+          || String(a.id || '').localeCompare(String(b.id || ''));
+    }
+
+    function schedRecSort(rows) {
+      const key = schedRec.sort.key;
+      const mul = schedRec.sort.dir === 'desc' ? -1 : 1;
+      const col = SCHED_REC_COLS.find(c => c.key === key) || {};
+      const asNum  = col.type === 'num';
+      const asTime = col.type === 'time';
+      return rows.slice().sort((a, b) => {
+        if (asNum || asTime) {
+          const av = asNum ? (a[key] === '' || a[key] == null ? null : Number(a[key])) : schedMins(a[key]);
+          const bv = asNum ? (b[key] === '' || b[key] == null ? null : Number(b[key])) : schedMins(b[key]);
+          const aBad = av === null || isNaN(av), bBad = bv === null || isNaN(bv);
+          // Blanks sort last whichever way the column points: a haul with no
+          // tons reported is not the smallest haul of the day.
+          if (aBad) return bBad ? schedRecTie(a, b) : 1;
+          if (bBad) return -1;
+          return av !== bv ? (av - bv) * mul : schedRecTie(a, b);
+        }
+        const c = String(a[key] == null ? '' : a[key])
+          .localeCompare(String(b[key] == null ? '' : b[key]), undefined, { numeric: true, sensitivity: 'base' });
+        return c ? c * mul : schedRecTie(a, b);
+      });
+    }
+
+    /** Everything the view is showing, filtered and sorted — what the totals
+     *  are taken over, and what the workbook is written from. */
+    function schedRecView() { return schedRecSort(schedRecFilter(schedRecBuild())); }
+
+    function schedRecTotals(rows) {
+      const t = { rows: rows.length, planHrs: 0, actHrs: 0, tons: 0, loads: 0, reported: 0,
+                  drivers: new Set(), trucks: new Set(), days: new Set() };
+      rows.forEach(r => {
+        if (r.driver) t.drivers.add(r.driver);
+        if (r.unit)   t.trucks.add(r.unit);
+        if (r.date)   t.days.add(r.date);
+        if (r.planHrs !== '') t.planHrs += r.planHrs;
+        if (r.actHrs  !== '') t.actHrs  += r.actHrs;
+        if (r.tons    !== '') t.tons    += r.tons;
+        if (r.loads   !== '') t.loads   += r.loads;
+        if (r.status  !== 'Planned') t.reported++;
+      });
+      return t;
+    }
+
+    /* ── Driver reports for the range ── */
+
+    async function schedRecEnsureReports() {
+      const from = schedRec.from, to = schedRec.to;
+      if (!from || !to) return;
+      const key = from + '..' + to;
+      // A range that already failed is not retried by the next repaint — every
+      // keystroke repaints, and a dead endpoint would otherwise be hammered
+      // once per character. Retry is a button.
+      if (schedRec.reportsRange === key || schedRec.reportsLoading === key
+          || schedRec.reportsErrRange === key) return;
+      schedRec.reportsLoading = key;
+      schedRec.reportsErr = null;
+      schedRec.reportsShort = '';
+      try {
+        const map = new Map();
+        let cur = from, reached = from;
+        for (let i = 0; i < SCHED_REC_MAX_PULL && cur <= to; i++) {
+          const stop = schedAddDays(cur, SCHED_REC_CHUNK - 1);
+          const end  = stop > to ? to : stop;
+          const r = await fetch(
+            `${API_BASE}/trucking-driver-reports?from=${encodeURIComponent(cur)}&to=${encodeURIComponent(end)}`,
+            { headers: { 'Authorization': `Bearer ${token}` } });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const j = await r.json();
+          (Array.isArray(j.reports) ? j.reports : []).forEach(x => {
+            if (x && x.assignment_id) map.set(x.assignment_id, x);
+          });
+          reached = end;
+          if (end >= to) break;
+          cur = schedAddDays(end, 1);
+        }
+        // The range may have moved on while this was in flight; the newer pull
+        // owns the map, and this one throws away what it fetched.
+        if (schedRec.reportsLoading !== key) return;
+        schedRec.reports      = map;
+        schedRec.reportsRange = key;
+        // A range wider than the chunk budget stops short. Said out loud rather
+        // than left to look like nobody reported anything that far back.
+        schedRec.reportsShort = reached < to ? reached : '';
+      } catch (err) {
+        if (schedRec.reportsLoading !== key) return;
+        schedRec.reportsErr      = (err && err.message) || 'could not load driver reports';
+        schedRec.reportsErrRange = key;
+      } finally {
+        if (schedRec.reportsLoading === key) {
+          schedRec.reportsLoading = '';
+          if (schedTabShowing() && schedView === 'records') schedRecPaint();
+        }
+      }
+    }
+
+    /* ── Render ════════════════════════════════════════════════════════════
+       The shell is built once and then only the header, the body, the totals
+       and the note are repainted. The filter boxes live in the shell for that
+       reason: a save landing or a board finishing its load repaints this
+       view, and a rebuilt input would take the caret with it mid-word. */
+
+    function renderSchedRecords() {
+      const root = document.getElementById('sched-board-records');
+      if (!root) return;
+      // A board whose load failed is left alone: schedEnsureLoaded retries on
+      // every call, this runs on every repaint, and the two together would sit
+      // in a fetch loop against an endpoint that is already down. Retry is the
+      // button in the note.
+      SCHED_BOARDS.forEach(cfg => {
+        const st = _schedStates[cfg.id];
+        if (st && !st.loadError) schedEnsureLoaded(cfg.id);
+      });
+      if (!schedRec.from || !schedRec.to) schedRecApplyPreset(schedRec.preset);
+      // "All time" is the span of the boards, and the boards arrive after the
+      // first paint — so it is recomputed until they have.
+      else if (schedRec.preset === 'all') { schedRecApplyPreset('all'); schedRecSyncRange(); }
+      // Rebuilt only when the panel really is empty — switching sub-tabs blanks
+      // it, and nothing else may throw away what is typed into the filters.
+      if (!document.getElementById('sched-rec-body')) root.innerHTML = schedRecShellHTML();
+      schedRecPaint();
+    }
+
+    function schedRecShellHTML() {
+      const presets = SCHED_REC_PRESETS.map(p =>
+        `<option value="${p.key}"${p.key === schedRec.preset ? ' selected' : ''}>${schedEsc(p.label)}</option>`).join('');
+      const boards = `<option value="all"${schedRec.board === 'all' ? ' selected' : ''}>All boards</option>` +
+        SCHED_BOARDS.map(b =>
+          `<option value="${b.id}"${b.id === schedRec.board ? ' selected' : ''}>${schedEsc(b.noun)}</option>`).join('');
+      const statuses = `<option value="all"${schedRec.status === 'all' ? ' selected' : ''}>Any status</option>` +
+        SCHED_REC_STATUSES.map(s =>
+          `<option value="${schedEsc(s)}"${s === schedRec.status ? ' selected' : ''}>${schedEsc(s)}</option>`).join('');
+      const filterRow = SCHED_REC_COLS.map(c => `<th>${c.f
+        ? `<input type="text" id="sched-rec-f-${c.key}" autocomplete="off"
+             class="${schedRec.col[c.key] ? 'on' : ''}" placeholder="Filter"
+             value="${schedEsc(schedRec.col[c.key] || '')}"
+             oninput="schedRecSetCol('${c.key}', this.value, this)">`
+        : ''}</th>`).join('');
+
+      return `
+        <div style="padding:1.25rem">
+          <p class="home-section-title">Schedule Records</p>
+          <div class="rec-bar">
+            <label for="sched-rec-from">From</label>
+            <input type="date" id="sched-rec-from" value="${schedEsc(schedRec.from)}" onchange="schedRecSetRange()">
+            <label for="sched-rec-to">To</label>
+            <input type="date" id="sched-rec-to" value="${schedEsc(schedRec.to)}" onchange="schedRecSetRange()">
+            <select id="sched-rec-preset" onchange="schedRecSetPreset(this.value)"
+                    title="Jump the range to a period">${presets}</select>
+            <span class="rec-sep"></span>
+            <select id="sched-rec-board" onchange="schedRecSetBoard(this.value)"
+                    title="Which board's records to show">${boards}</select>
+            <select id="sched-rec-status" onchange="schedRecSetStatus(this.value)"
+                    title="Planned, reported back, or reported with no assignment left">${statuses}</select>
+            <input type="text" class="rec-search" id="sched-rec-q" autocomplete="off"
+                   placeholder="Search every column…" value="${schedEsc(schedRec.q)}"
+                   oninput="schedRecSetQ(this.value)">
+            <button class="rec-btn" onclick="schedRecClear()" title="Clear every filter">Clear</button>
+            <span style="flex:1"></span>
+            <button class="rec-btn primary" onclick="schedRecDownload()"
+                    title="Download what is on screen as an Excel workbook">&#8595; Download XLSX</button>
+          </div>
+          <div class="totals-bar" id="sched-rec-totals"></div>
+          <div class="rec-scroll">
+            <table class="rec-tbl">
+              <thead>
+                <tr class="hdr-row" id="sched-rec-hdr"></tr>
+                <tr class="filter-row">${filterRow}</tr>
+              </thead>
+              <tbody id="sched-rec-body"></tbody>
+            </table>
+          </div>
+          <p class="rec-note" id="sched-rec-note" style="margin-top:0.55rem"></p>
+        </div>`;
+    }
+
+    function schedRecHeadHTML() {
+      return SCHED_REC_COLS.map(c => {
+        const on = schedRec.sort.key === c.key;
+        return `<th class="${c.type === 'num' ? 'r ' : ''}${on ? 'sorted' : ''}"
+          onclick="schedRecSortBy('${c.key}')" title="Sort by ${schedEsc(c.label)}">${schedEsc(c.label)}${
+          on ? `<span class="arw">${schedRec.sort.dir === 'asc' ? '▲' : '▼'}</span>` : ''}</th>`;
+      }).join('');
+    }
+
+    function schedRecBodyHTML(rows) {
+      if (!rows.length) {
+        return `<tr><td class="rec-empty" colspan="${SCHED_REC_COLS.length}">
+          No records in this range.<br>
+          <span style="font-size:0.75rem">Widen the dates, or clear the filters.</span></td></tr>`;
+      }
+      const draw = schedRec.showAll ? rows : rows.slice(0, SCHED_REC_DRAW);
+      return draw.map(r => {
+        const cells = SCHED_REC_COLS.map(c => {
+          if (c.key === 'status') {
+            const cls = r.status === 'Reported' ? 'yes' : r.status === 'Report only' ? 'only' : 'no';
+            return `<td><span class="pill ${cls}">${schedEsc(r.status)}</span></td>`;
+          }
+          const txt = schedRecText(r, c.key);
+          const cls = c.key === 'id' ? 'id'
+            : (c.type === 'num' || c.type === 'time') ? 'r'
+            : txt ? '' : 'dim';
+          return `<td class="${cls}" title="${schedEsc(txt)}">${
+            schedEsc(txt) || '<span class="dim">—</span>'}</td>`;
+        }).join('');
+        return `<tr class="${r.status === 'Report only' ? 'orphan' : ''}">${cells}</tr>`;
+      }).join('');
+    }
+
+    function schedRecTotalsHTML(t) {
+      const cell = (lbl, val) =>
+        `<span><span class="lbl">${lbl}</span><span class="val">${val}</span></span>`;
+      return [
+        cell('Records',    schedNum(t.rows, 0)),
+        cell('Days',       schedNum(t.days.size, 0)),
+        cell('Drivers',    schedNum(t.drivers.size, 0)),
+        cell('Trucks',     schedNum(t.trucks.size, 0)),
+        cell('Sched hrs',  schedNum(t.planHrs, 2)),
+        cell('Actual hrs', schedNum(t.actHrs, 2)),
+        cell('Tons',       schedNum(t.tons, 2)),
+        cell('Loads',      schedNum(t.loads, 0)),
+        cell('Tons / hr',  t.actHrs > 0 ? schedNum(t.tons / t.actHrs, 2) : '—'),
+        cell('Reported',   schedNum(t.reported, 0) + ' / ' + schedNum(t.rows, 0)),
+      ].join('');
+    }
+
+    function schedRecPaint() {
+      const body = document.getElementById('sched-rec-body');
+      if (!body) return;
+      schedRecEnsureReports();
+
+      const rows = schedRecView();
+      const hdr  = document.getElementById('sched-rec-hdr');
+      if (hdr) hdr.innerHTML = schedRecHeadHTML();
+      body.innerHTML = schedRecBodyHTML(rows);
+
+      const tot = document.getElementById('sched-rec-totals');
+      if (tot) tot.innerHTML = schedRecTotalsHTML(schedRecTotals(rows));
+
+      const note = document.getElementById('sched-rec-note');
+      if (!note) return;
+      // Everything the tab has to admit to, in one line: what is still loading,
+      // what failed and how to try it again, what was left out of the pull, and
+      // what is not drawn. Nothing is capped or dropped silently.
+      const bits = [], btns = [];
+      const btn = (label, fn) =>
+        `<button class="rec-btn" style="margin-left:0.4rem" onclick="${fn}">${label}</button>`;
+      const waiting = SCHED_BOARDS.filter(cfg => {
+        const st = _schedStates[cfg.id];
+        return st && !st.loaded && !st.loadError;
+      });
+      const broke = SCHED_BOARDS.filter(cfg => (_schedStates[cfg.id] || {}).loadError);
+      let cls = 'rec-note';
+      if (waiting.length) bits.push('Loading the ' + waiting.map(c => c.noun.toLowerCase()).join(' and ') + ' schedule…');
+      if (schedRec.reportsLoading) bits.push('Loading driver reports…');
+      if (broke.length) {
+        cls = 'rec-note err';
+        bits.push('Could not load the ' + broke.map(c => c.noun.toLowerCase()).join(' and ') +
+          ' schedule, so those records are missing.');
+        btns.push(btn('Retry', 'schedRecRetryBoards()'));
+      }
+      if (schedRec.reportsErr) {
+        if (cls === 'rec-note') cls = 'rec-note warn';
+        bits.push('Driver reports could not be loaded (' + schedRec.reportsErr +
+          '), so the reported columns are empty.');
+        btns.push(btn('Retry reports', 'schedRecRetryReports()'));
+      } else if (schedRec.reportsShort) {
+        if (cls === 'rec-note') cls = 'rec-note warn';
+        bits.push('That range is wider than one pull: driver reports were read through ' +
+          schedRec.reportsShort + ' only. Narrow the dates for the rest.');
+      }
+      if (!schedRec.showAll && rows.length > SCHED_REC_DRAW) {
+        bits.push('Showing the first ' + schedNum(SCHED_REC_DRAW, 0) + ' of ' +
+          schedNum(rows.length, 0) + ' records — the download carries all of them.');
+        btns.push(btn('Show all', 'schedRecShowAll()'));
+      }
+      if (!bits.length) bits.push('Click a column heading to sort · every filter narrows the download too.');
+      note.className = cls;
+      note.innerHTML = schedEsc(bits.join(' · ')) + btns.join('');
+    }
+
+    /* ── Controls ── */
+
+    /** Put the range state back into the boxes that show it. */
+    function schedRecSyncRange() {
+      const f = document.getElementById('sched-rec-from');    if (f) f.value = schedRec.from;
+      const t = document.getElementById('sched-rec-to');      if (t) t.value = schedRec.to;
+      const p = document.getElementById('sched-rec-preset');  if (p) p.value = schedRec.preset;
+    }
+
+    /** Both retries are buttons rather than something a repaint does on its
+     *  own: every keystroke repaints, and an endpoint that is down would be
+     *  asked again once per character. */
+    function schedRecRetryBoards() {
+      SCHED_BOARDS.forEach(cfg => {
+        const st = _schedStates[cfg.id];
+        if (st) st.loadError = null;
+      });
+      renderSchedRecords();
+    }
+
+    function schedRecRetryReports() {
+      schedRec.reportsErr      = null;
+      schedRec.reportsErrRange = '';
+      schedRecPaint();
+    }
+
+    function schedRecSetRange() {
+      const f = document.getElementById('sched-rec-from');
+      const t = document.getElementById('sched-rec-to');
+      let from = f ? f.value : schedRec.from;
+      let to   = t ? t.value : schedRec.to;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return;
+      if (to < from) { const s = from; from = to; to = s; }   // typed back to front
+      schedRec.from    = from;
+      schedRec.to      = to;
+      schedRec.preset  = 'custom';
+      schedRec.showAll = false;
+      schedRecSyncRange();
+      schedRecPaint();
+    }
+
+    function schedRecSetPreset(key) {
+      if (key === 'custom') { schedRec.preset = 'custom'; return; }
+      schedRecApplyPreset(key);
+      schedRec.showAll = false;
+      schedRecSyncRange();
+      schedRecPaint();
+    }
+
+    function schedRecSetBoard(v)  { schedRec.board  = v; schedRec.showAll = false; schedRecPaint(); }
+    function schedRecSetStatus(v) { schedRec.status = v; schedRec.showAll = false; schedRecPaint(); }
+    function schedRecSetQ(v)      { schedRec.q      = v; schedRec.showAll = false; schedRecPaint(); }
+    function schedRecShowAll()    { schedRec.showAll = true; schedRecPaint(); }
+
+    function schedRecSetCol(key, v, el) {
+      schedRec.col[key] = v;
+      schedRec.showAll  = false;
+      if (el) el.classList.toggle('on', !!String(v || '').trim());
+      schedRecPaint();
+    }
+
+    function schedRecSortBy(key) {
+      const col = SCHED_REC_COLS.find(c => c.key === key);
+      if (!col) return;
+      // A column opens on the reading its values are usually wanted in:
+      // biggest or latest first for a figure or a date, A–Z for a name.
+      if (schedRec.sort.key === key) {
+        schedRec.sort.dir = schedRec.sort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        schedRec.sort.key = key;
+        schedRec.sort.dir = (col.type === 'num' || col.type === 'date') ? 'desc' : 'asc';
+      }
+      schedRecPaint();
+    }
+
+    function schedRecClear() {
+      schedRec.col     = {};
+      schedRec.q       = '';
+      schedRec.board   = 'all';
+      schedRec.status  = 'all';
+      schedRec.showAll = false;
+      SCHED_REC_COLS.forEach(c => {
+        const el = document.getElementById('sched-rec-f-' + c.key);
+        if (el) { el.value = ''; el.classList.remove('on'); }
+      });
+      const q = document.getElementById('sched-rec-q');      if (q) q.value = '';
+      const b = document.getElementById('sched-rec-board');  if (b) b.value = 'all';
+      const s = document.getElementById('sched-rec-status'); if (s) s.value = 'all';
+      schedRecPaint();
+    }
+
+    /* ── Workbook ══════════════════════════════════════════════════════════
+       Two sheets. Records is every row on screen — filters and sort and all —
+       under a frozen header with Excel's own auto-filter already switched on,
+       dates written as dates so a date filter works on them. Summary rolls the
+       same rows up the ways the office reads them: per driver, division, job,
+       truck, truck type, material and day, with the hours, tons, loads and the
+       rates that come out of them. */
+
+    function schedRecXlsx(rows) {
+      const cell = (r, c, v, style) => {
+        const ref = _colName(c) + r;
+        if (v === '' || v == null) return style ? `<c r="${ref}" s="${style}"/>` : '';
+        if (typeof v === 'number') {
+          if (!isFinite(v)) return '';
+          return `<c r="${ref}"${style ? ` s="${style}"` : ''}><v>${v}</v></c>`;
+        }
+        return `<c r="${ref}"${style ? ` s="${style}"` : ''} t="inlineStr">` +
+               `<is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
+      };
+
+      /* ── Sheet 1: the records ── */
+      const recXml = [`<row r="1">${SCHED_REC_COLS.map((c, i) =>
+        cell(1, i, c.label, _XLSX_S.HEAD)).join('')}</row>`];
+      rows.forEach((row, i) => {
+        const r = i + 2;
+        recXml.push(`<row r="${r}">${SCHED_REC_COLS.map((c, ci) => {
+          if (c.type === 'date') {
+            const ser = _xlsxSerial(row[c.key]);
+            return ser === null ? cell(r, ci, String(row[c.key] || '')) : cell(r, ci, ser, _XLSX_S.DATE);
+          }
+          if (c.type === 'num') {
+            const v = row[c.key];
+            if (v === '' || v == null) return '';
+            return cell(r, ci, Number(v), c.dp === 0 ? _XLSX_S.PLAIN : _XLSX_S.NUM2);
+          }
+          return cell(r, ci, schedRecText(row, c.key));
+        }).join('')}</row>`);
+      });
+      const recCols = `<cols>${SCHED_REC_COLS.map((c, i) =>
+        `<col min="${i + 1}" max="${i + 1}" width="${c.w}" customWidth="1"/>`).join('')}</cols>`;
+
+      /* ── Sheet 2: the rollups ── */
+      const t   = schedRecTotals(rows);
+      const now = new Date().toLocaleString('en-US', { weekday: 'short', month: 'short',
+        day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+      const boardLbl = schedRec.board === 'all'
+        ? 'All boards'
+        : ((SCHED_BOARDS.find(b => b.id === schedRec.board) || {}).noun || schedRec.board);
+      const r2 = n => Math.round(n * 100) / 100;
+
+      const sum = [];
+      let sr = 0;
+      const put = (vals, style) => {
+        sr++;
+        sum.push(`<row r="${sr}">${vals.map((v, c) => cell(sr, c, v, style)).join('')}</row>`);
+      };
+      const gap = () => { sr++; };
+
+      put(['Schedule Records — Summary'], _XLSX_S.BOLD);
+      put(['Range',     schedRec.from + '  to  ' + schedRec.to]);
+      put(['Board',     boardLbl]);
+      put(['Status',    schedRec.status === 'all' ? 'Any' : schedRec.status]);
+      put(['Filters',   schedRecFilterSummary()]);
+      put(['Generated', now]);
+      gap();
+      put(['TOTALS'], _XLSX_S.HEAD);
+      put(['Records',          t.rows]);
+      put(['Days',             t.days.size]);
+      put(['Drivers',          t.drivers.size]);
+      put(['Trucks',           t.trucks.size]);
+      put(['Scheduled hours',  r2(t.planHrs)]);
+      put(['Actual hours',     r2(t.actHrs)]);
+      put(['Tons',             r2(t.tons)]);
+      put(['Loads',            t.loads]);
+      put(['Tons / hour',      t.actHrs > 0 ? r2(t.tons  / t.actHrs) : '']);
+      put(['Loads / hour',     t.actHrs > 0 ? r2(t.loads / t.actHrs) : '']);
+      put(['Reported',         t.reported]);
+
+      const ROLLUPS = [
+        { title: 'BY DRIVER',        key: 'driver'   },
+        { title: 'BY DIVISION',      key: 'division' },
+        { title: 'BY PROJECT / JOB', key: 'project'  },
+        { title: 'BY TRUCK',         key: 'unit'     },
+        { title: 'BY TRUCK TYPE',    key: 'unitType' },
+        { title: 'BY MATERIAL',      key: 'material' },
+        { title: 'BY DAY',           key: 'date'     },
+      ];
+      ROLLUPS.forEach(g => {
+        gap();
+        put([g.title], _XLSX_S.HEAD);
+        put(['', 'Records', 'Sched hrs', 'Actual hrs', 'Tons', 'Loads', 'Tons / hr', 'Loads / hr'], _XLSX_S.BOLD);
+        schedRecRollup(rows, g.key).forEach(x => {
+          sr++;
+          sum.push(`<row r="${sr}">` +
+            cell(sr, 0, x.label || '(blank)') +
+            cell(sr, 1, x.rows) +
+            cell(sr, 2, r2(x.planHrs), _XLSX_S.NUM2) +
+            cell(sr, 3, r2(x.actHrs),  _XLSX_S.NUM2) +
+            cell(sr, 4, r2(x.tons),    _XLSX_S.NUM2) +
+            cell(sr, 5, x.loads) +
+            cell(sr, 6, x.actHrs > 0 ? r2(x.tons  / x.actHrs) : '', _XLSX_S.NUM2) +
+            cell(sr, 7, x.actHrs > 0 ? r2(x.loads / x.actHrs) : '', _XLSX_S.NUM2) +
+            '</row>');
+        });
+      });
+      const sumCols = '<cols><col min="1" max="1" width="34" customWidth="1"/>' +
+        '<col min="2" max="8" width="13" customWidth="1"/></cols>';
+
+      return _xlsxPackage([
+        { name: 'Records', colsXml: recCols, rowsXml: recXml.join(''), freeze: true,
+          autoFilterRef: 'A1:' + _colName(SCHED_REC_COLS.length - 1) + (rows.length + 1) },
+        { name: 'Summary', colsXml: sumCols, rowsXml: sum.join('') },
+      ]);
+    }
+
+    /** One rollup: the rows grouped on a column. */
+    function schedRecRollup(rows, key) {
+      const m = new Map();
+      rows.forEach(r => {
+        const k = schedRecText(r, key);
+        let g = m.get(k);
+        if (!g) { g = { label: k, rows: 0, planHrs: 0, actHrs: 0, tons: 0, loads: 0 }; m.set(k, g); }
+        g.rows++;
+        if (r.planHrs !== '') g.planHrs += r.planHrs;
+        if (r.actHrs  !== '') g.actHrs  += r.actHrs;
+        if (r.tons    !== '') g.tons    += r.tons;
+        if (r.loads   !== '') g.loads   += r.loads;
+      });
+      const out = [...m.values()];
+      // Days read in date order; everything else busiest first.
+      if (key === 'date') return out.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+      return out.sort((a, b) => b.rows - a.rows || String(a.label).localeCompare(String(b.label)));
+    }
+
+    /** The column filters and the search box in words, for the summary sheet —
+     *  so a workbook that left the building says what it was narrowed to. */
+    function schedRecFilterSummary() {
+      const bits = [];
+      SCHED_REC_COLS.forEach(c => {
+        const v = String(schedRec.col[c.key] || '').trim();
+        if (v) bits.push(c.label + ' contains "' + v + '"');
+      });
+      const q = String(schedRec.q || '').trim();
+      if (q) bits.push('search "' + q + '"');
+      return bits.length ? bits.join('; ') : 'none';
+    }
+
+    function schedRecDownload() {
+      const rows = schedRecView();
+      const blob = new Blob([schedRecXlsx(rows)],
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'schedule-records-' + schedRec.from + '_to_' + schedRec.to + '.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoked on a timer rather than immediately: Safari reads the blob after
+      // the click returns, and pulling it out downloads an empty file.
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }
 
     /* ═══════════════════════════════════════════
