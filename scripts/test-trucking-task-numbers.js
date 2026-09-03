@@ -100,8 +100,10 @@ function makeSql(initial = {}) {
       return Promise.resolve([]);
     }
     if (q.startsWith('INSERT INTO truck_division_entries')) {
+      // Positional, so it tracks upsertTruckDivisionEntry's column list —
+      // haul_fee is followed there by the backup-fee pair.
       const [id, , task_number, actual_date, driver, unit, actual_start, actual_end,
-             total_hours, haul_fee, customer] = values;
+             total_hours, haul_fee, , , customer] = values;
       store.tde.set(id, {
         id, task_number, actual_date, driver, unit, actual_start, actual_end,
         total_hours, haul_fee, customer,

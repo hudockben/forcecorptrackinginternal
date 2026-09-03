@@ -31,6 +31,125 @@
 
 const TRUCK_DIVISION_BLOB = 'fct_truck_division';
 
+/* ── The backup haul fee ───────────────────────────────────────────────────
+ *
+ * A haul's fee belongs to payroll: the approve modal asks for it, and every
+ * cost column of an injected row is rewritten from the timesheet entry. That is
+ * the right owner and it stays the right owner — but it was also the ONLY way
+ * to price one, and Truck Tracking is where the office notices an unpriced
+ * haul. A row that came over at $0.00 could not be fixed from the tab it is
+ * billed out of: someone had to find the entry in Payroll, un-approve it,
+ * re-approve it with a fee, and hope nothing else on it had moved.
+ *
+ * So the fee gets a backup: the office types one in the tab, and it is kept
+ * BESIDE payroll's number rather than on top of it.
+ *
+ *   haul_fee_override — what the office typed here. The tab may write it
+ *                       (it is on TRUCK_TAB_FIELDS), so it survives both a
+ *                       whole-blob save and a re-approval.
+ *   haul_fee_payroll  — payroll's own figure, kept only while an override is
+ *                       standing, so the tab can show what it is disagreeing
+ *                       with and hand the row back with one click.
+ *   haul_fee          — DERIVED: the override when one stands, payroll's
+ *                       number otherwise.
+ *
+ * Deriving into haul_fee is the point. Everything that prices a haul reads that
+ * one column — the tab's own totals, Intercompany billing, the executive
+ * report, trucking-metrics, the normalized mirror, the CSV the office invoices
+ * from, and payroll's own Edit Row — and an override each of them had to know
+ * about separately is an override some of them would miss, which is a row
+ * billing one figure and reported at another. They keep reading one column;
+ * this decides what is in it, at both of the two writers (a tab save through
+ * injected-blob-guard, and re-injection in api/timesheet-entries.js).
+ *
+ * Payroll is never locked out. It goes on rewriting haul_fee from the entry,
+ * and if it comes back with a different number the override still stands — the
+ * office set it deliberately, and a fee somebody has invoiced under must not
+ * change because an unrelated correction was made upstream — but the tab says
+ * so, and clearing the box takes payroll's figure back. An override that agrees
+ * with payroll is dropped rather than kept: there is nothing to override, and a
+ * receipt left behind would go on shadowing a column it no longer changes.
+ *
+ * Which is also how a disagreement ends on its own. Payroll's Edit Row fills
+ * its Haul Fee box from the posted row (haulApplyTruckRows in payroll.html), so
+ * it shows the fee the haul is actually billing at — the office's, when one
+ * stands. Saving it puts that same number on the entry, the override now agrees
+ * with payroll, and it is dropped: payroll has adopted the figure, and the row
+ * goes back to having one owner.
+ */
+const HAUL_FEE_OVERRIDE = 'haul_fee_override';
+const HAUL_FEE_PAYROLL  = 'haul_fee_payroll';
+
+// The ceiling on a fee, wherever one is read. $10M/hr is not a rate anybody
+// bills; a number past it is a typo or a paste of something that is not money.
+const HAUL_FEE_MAX = 1e7;
+
+/**
+ * Read a haul fee the way every writer must read one: `{ value }` with a
+ * number, `{ value: '' }` for "nobody has set one", or `{ error }`.
+ *
+ * Trimmed before Number(), because Number(' ') is 0 — a whitespace-only box
+ * would otherwise store as a deliberate $0/hr, which reads to the office as
+ * zero-rated work rather than as an unpriced haul. 0 typed on purpose is a
+ * legitimate fee and passes.
+ */
+function normalizeHaulFee(v) {
+  if (v == null || String(v).trim() === '') return { value: '' };
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > HAUL_FEE_MAX) {
+    return { error: `haul_fee must be a number between 0 and ${HAUL_FEE_MAX}` };
+  }
+  return { value: Math.round(n * 10000) / 10000 };
+}
+
+// Two fees are the same fee when they are the same number. String vs number is
+// how the same figure arrives from a JSON blob ('115') and from payroll (115),
+// so comparing them raw would read every override as a disagreement.
+function sameHaulFee(a, b) {
+  const x = normalizeHaulFee(a), y = normalizeHaulFee(b);
+  if (x.error || y.error) return false;
+  return x.value === y.value;
+}
+
+/**
+ * Settle `haul_fee` on one injected row from the override standing against it.
+ * Mutates and returns the row — the two callers each have a row in hand they
+ * are about to store.
+ *
+ * Payroll's figure is whatever the row carries before this runs, EXCEPT when a
+ * previous pass already moved it aside: haul_fee_payroll is the fee this row
+ * would bill with no override, wherever it is present. That distinction is what
+ * makes the function idempotent, and it is why the guard can run it on a row it
+ * just took from the database.
+ *
+ * A junk override — negative, non-numeric, past the ceiling — is dropped rather
+ * than honoured. It cannot arrive from the tab, which validates before it
+ * saves, so it means a hand-edited blob or an older client, and inventing a
+ * price from it is the one outcome worse than ignoring it.
+ */
+function applyHaulFeeOverride(row) {
+  if (!row || typeof row !== 'object') return row;
+
+  const payroll = Object.prototype.hasOwnProperty.call(row, HAUL_FEE_PAYROLL)
+    ? row[HAUL_FEE_PAYROLL]
+    : row.haul_fee;
+  const { value, error } = normalizeHaulFee(row[HAUL_FEE_OVERRIDE]);
+
+  // Nothing standing: no override, one this cannot read, or one that agrees
+  // with payroll anyway. The row bills payroll's number and carries no receipt.
+  if (error || value === '' || sameHaulFee(value, payroll)) {
+    delete row[HAUL_FEE_OVERRIDE];
+    delete row[HAUL_FEE_PAYROLL];
+    row.haul_fee = payroll == null ? '' : payroll;
+    return row;
+  }
+
+  row[HAUL_FEE_OVERRIDE] = value;
+  row[HAUL_FEE_PAYROLL]  = payroll == null ? '' : payroll;
+  row.haul_fee           = value;
+  return row;
+}
+
 /**
  * The columns the trucking office owns on a row payroll owns.
  *
@@ -43,6 +162,11 @@ const TRUCK_DIVISION_BLOB = 'fct_truck_division';
  */
 const TRUCK_TAB_FIELDS = [
   'qb_invoice', 'invoiced_date', 'invoice_sent_date', 'invoice_status', 'date_paid',
+  // The backup fee (see "The backup haul fee" above). The override, not
+  // haul_fee itself: a tab that could write the fee outright would also freeze
+  // payroll out of it, because this list is what re-injection PRESERVES — a fee
+  // on it could never be corrected from the timesheet again.
+  HAUL_FEE_OVERRIDE,
 ];
 
 // The shared Intercompany billing list, and the tag trucking rows carry in it.
@@ -585,6 +709,12 @@ async function sweepInjectedTruckRows(sql, companyCode, entries) {
 module.exports = {
   TRUCK_DIVISION_BLOB,
   TRUCK_TAB_FIELDS,
+  HAUL_FEE_OVERRIDE,
+  HAUL_FEE_PAYROLL,
+  HAUL_FEE_MAX,
+  normalizeHaulFee,
+  sameHaulFee,
+  applyHaulFeeOverride,
   IC_BILLING_BLOB,
   IC_SOURCE_TRUCKING,
   EES_JOB_IDS,

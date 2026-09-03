@@ -28,9 +28,12 @@
  *
  * The one nuance is that a tab may own some COLUMNS of a row it does not own:
  * the trucking office fills in the invoice sub-row (QB number, invoiced/sent
- * dates, paid status) on a locked payroll row. Those are replayed from the
- * incoming copy onto the server's row, the same way dust's EES tab replays its
- * rate column. Everything else on the row stays payroll's.
+ * dates, paid status) on a locked payroll row, and prices an unpriced haul
+ * through the backup fee. Those are replayed from the incoming copy onto the
+ * server's row, the same way dust's EES tab replays its rate column, and
+ * anything they decide (`derive`) is recomputed here from the server's row
+ * rather than trusted from the client. Everything else on the row stays
+ * payroll's.
  *
  * Dust's EES tab (dust_ees_other_rows) is deliberately absent: it already
  * version-checks its writes and replays its own columns on a conflict, and is
@@ -48,7 +51,7 @@
 // the two drifting apart is how an office edit survives one path but not the
 // other.
 const {
-  needsTruckTrackingRow, truckingRowIdPrefix, TRUCK_TAB_FIELDS,
+  needsTruckTrackingRow, truckingRowIdPrefix, TRUCK_TAB_FIELDS, applyHaulFeeOverride,
 } = require('./truck-injected');
 // Same rule, same reason, for the Dust Other Billing grid: OB_TAB_FIELDS is
 // what re-injection preserves, so it is also what a tab save may overwrite.
@@ -69,7 +72,12 @@ const { SALES_TAB_FIELDS } = require('./quarry-sales-injected');
  * task numbers and never collide.
  */
 const INJECTED_BLOBS = {
-  fct_truck_division:  { prefix: 'tst-', tabFields: TRUCK_TAB_FIELDS },
+  // `derive` settles the columns a tab-owned one decides. Trucking has the one
+  // case: the office's backup haul fee is what the tab may write, and haul_fee
+  // is derived from it, so the number everything downstream prices a haul off
+  // is right in the blob rather than in each reader. See "The backup haul fee"
+  // in truck-injected.js.
+  fct_truck_division:  { prefix: 'tst-', tabFields: TRUCK_TAB_FIELDS, derive: applyHaulFeeOverride },
   // Quarry's injected rows are rendered read-only in quarry.html (isTimesheetRow),
   // so the tab owns none of their columns.
   fct_quarry_daily:    { prefix: 'tsq-', tabFields: [] },
@@ -95,7 +103,8 @@ const isInjected = (row, prefix) =>
  * Rules, in order of the incoming list so the tab's own ordering survives:
  *   - a row the tab owns  → kept exactly as sent,
  *   - a payroll row the server still has → server's copy, with the tab-owned
- *     columns replayed from the incoming copy,
+ *     columns replayed from the incoming copy and the blob's `derive` hook run
+ *     over the result,
  *   - a payroll row the server no longer has → dropped (payroll un-approved or
  *     deleted it; the client's copy is stale by definition),
  *   - a payroll row the server has that the incoming list never mentioned →
@@ -121,6 +130,11 @@ function mergeInjectedRows(serverRows, incomingRows, cfg) {
     for (const f of cfg.tabFields) {
       if (Object.prototype.hasOwnProperty.call(row, f)) out[f] = row[f];
     }
+    // Then whatever those columns decide is recomputed from the server's row —
+    // never taken from the client, which is the whole point of the guard. A
+    // save that edits the backup fee and one that came from a client too old to
+    // know about it land the same number either way.
+    if (cfg.derive) cfg.derive(out);
     merged.push(out);
     placed.add(id);
   }
@@ -183,7 +197,8 @@ module.exports = {
   describeMerge,
   guardInjectedBlobWrite,
   // Re-exported so callers that already have a truck row in hand don't reach
-  // past this module for the two things that decide its fate.
+  // past this module for the things that decide its fate.
   needsTruckTrackingRow,
   truckingRowIdPrefix,
+  applyHaulFeeOverride,
 };

@@ -57,6 +57,13 @@ function dbToEntry(r) {
     actual_end:        r.actual_end        || '',
     total_hours:       r.total_hours    != null ? String(r.total_hours)    : '',
     haul_fee:          r.haul_fee       != null ? String(r.haul_fee)       : '',
+    // The office's backup fee, and payroll's own figure behind it. Mirrored so
+    // that a fallback to the tables (blob lost or not yet written) still knows
+    // the fee on the row was set here and what it replaced — haul_fee above is
+    // already the derived one, so the money is right either way, but without
+    // these the tab would stop offering to hand the row back to payroll.
+    ...(r.haul_fee_override != null ? { haul_fee_override: Number(r.haul_fee_override) } : {}),
+    ...(r.haul_fee_payroll  != null ? { haul_fee_payroll:  Number(r.haul_fee_payroll)  } : {}),
     customer:          r.customer          || '',
     description:       r.description       || '',
     division:          r.division          || '',
@@ -364,7 +371,8 @@ async function _syncEntries(sql, companyCode, entries) {
     await sql`
       INSERT INTO truck_division_entries (
         id, company_code, task_number, actual_date, driver, unit,
-        actual_start, actual_end, total_hours, haul_fee, customer,
+        actual_start, actual_end, total_hours, haul_fee,
+        haul_fee_override, haul_fee_payroll, customer,
         description, division, notes, qb_invoice, invoiced_date,
         invoice_sent_date, invoice_status, date_paid, updated_at
       ) VALUES (
@@ -377,6 +385,8 @@ async function _syncEntries(sql, companyCode, entries) {
         ${e.actual_end         || null},
         ${safeFloat(e.total_hours)},
         ${safeFloat(e.haul_fee)},
+        ${safeFloat(e.haul_fee_override)},
+        ${safeFloat(e.haul_fee_payroll)},
         ${e.customer           || null},
         ${e.description        || null},
         ${e.division           || null},
@@ -397,6 +407,8 @@ async function _syncEntries(sql, companyCode, entries) {
         actual_end        = EXCLUDED.actual_end,
         total_hours       = EXCLUDED.total_hours,
         haul_fee          = EXCLUDED.haul_fee,
+        haul_fee_override = EXCLUDED.haul_fee_override,
+        haul_fee_payroll  = EXCLUDED.haul_fee_payroll,
         customer          = EXCLUDED.customer,
         description       = EXCLUDED.description,
         division          = EXCLUDED.division,
