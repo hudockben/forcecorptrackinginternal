@@ -74,6 +74,9 @@ const DIVS    = slice(TRUCKING, '    const SCHED_DIVISIONS = [', '    const sche
 const JOBOF   = slice(TRUCKING, '    function schedJobOf(a)', '    /** Layout A — by day.', 'job/division labels');
 const HOURS   = slice(TRUCKING, '    /** Decimal hours between two HH:MM times',
                                 '    /** "24.5 t · 3 loads', 'dispatch-sheet hours');
+const DELETE  = slice(TRUCKING, '    function schedDeleteEditor()',
+                                '    /* ═══════════════════════════════════════════\n       SCHEDULER RECORDS',
+                                'delete + archive');
 const RECORDS = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       SCHEDULER RECORDS',
                                 '    /* ═══════════════════════════════════════════\n       CSV UPLOAD', 'records tab');
 
@@ -81,14 +84,16 @@ const RECORDS = slice(TRUCKING, '    /* ═════════════�
    the context — so the few the tests reach for are handed out explicitly. */
 const EXPORTS = [
   'schedRec', 'SCHED_REC_COLS', 'SCHED_REC_STATUSES', 'SCHED_REC_PRESETS',
-  'SCHED_BOARDS', '_schedStates', 'SCHED_REC_STUCK', 'SCHED_REC_COLLATOR',
+  'SCHED_BOARDS', '_schedStates', 'SCHED_REC_STUCK', 'SCHED_REC_COLLATOR', 'SCHED_REC_NO_REPORTS',
 ].map(n => `globalThis.${n} = ${n};`).join('\n')
   // schedView is a `let`, so the tests get a door to it rather than reaching in.
-  + '\nglobalThis.__setView = v => { schedView = v; };';
+  + '\nglobalThis.__setView = v => { schedView = v; };'
+  + '\nglobalThis.__setCtx  = v => { schedCtx  = v; };';
 
 /** trucking.html's Records tab, over boards and reports handed in. */
 function page(opts) {
   const o = opts || {};
+  const marked = [];
   const sandbox = {
     console, TextEncoder, TextDecoder, Uint8Array, DataView, Map, Set, Date, Math, JSON, Intl, isFinite, Number, String,
     _remKey: v => String(v == null ? '' : v).trim(),
@@ -98,11 +103,18 @@ function page(opts) {
     document: { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] },
     API_BASE: '/api',
     token: 'test',
+    user: { username: 'bhudock' },
     fetch: () => Promise.reject(new Error('no network in tests')),
+    // The delete path's neighbours. Records must not need them; a call to one
+    // is recorded so the tests can say what the delete actually did.
+    marked,
+    schedMarkDirty:  b => marked.push(b),
+    schedCloseEditor: () => {},
+    renderScheduler:  () => {},
   };
   vm.createContext(sandbox);
-  vm.runInContext([BOARDS, TYPES, GROUPS, DIVS, JOBOF, HOURS, XLSX, RECORDS, EXPORTS].join('\n'), sandbox,
-    { filename: 'trucking.html' });
+  vm.runInContext([BOARDS, TYPES, GROUPS, DIVS, JOBOF, HOURS, XLSX, DELETE, RECORDS, EXPORTS].join('\n'),
+    sandbox, { filename: 'trucking.html' });
 
   Object.keys(o.assignments || {}).forEach(board => {
     const st = sandbox._schedStates[board];
@@ -533,9 +545,11 @@ function parseXml(xml, label) {
     return m;
   };
   const c1 = cellsOf(s1);
+  const NCOL = p.SCHED_REC_COLS.length;
+  const LAST = p._colName(NCOL - 1);
   eq('the first heading is the board',   c1.A1.text, 'Board');
   eq('the second is the date',           c1.B1.text, 'Date');
-  eq('the last is the record id',        c1[String.fromCharCode(64 + 25) + '1'].text, 'Record ID');
+  eq('the last is the record id',        c1[LAST + '1'].text, 'Record ID');
 
   const dataRows = [...s1.getElementsByTagName('row')].length - 1;
   eq('a row per record', dataRows, rows.length);
@@ -557,16 +571,17 @@ function parseXml(xml, label) {
   assert('the header row is frozen', /<pane[^>]+state="frozen"/.test(files['xl/worksheets/sheet1.xml']));
   const af = s1.getElementsByTagName('autoFilter')[0];
   assert('an auto-filter is set', !!af);
-  eq('over the header and every row', af && af.getAttribute('ref'), 'A1:Y' + (rows.length + 1));
+  eq('over the header and every row', af && af.getAttribute('ref'), 'A1:' + LAST + (rows.length + 1));
   assert('autoFilter is written after sheetData, where the schema wants it',
     files['xl/worksheets/sheet1.xml'].indexOf('</sheetData>') <
     files['xl/worksheets/sheet1.xml'].indexOf('<autoFilter'));
   assert('and Excel is told the filter range',
     /_xlnm\._FilterDatabase/.test(files['xl/workbook.xml']) &&
-    /'Records'!\$A\$1:\$Y\$4/.test(files['xl/workbook.xml']), files['xl/workbook.xml'].slice(-320));
+    files['xl/workbook.xml'].includes(`'Records'!$A$1:$${LAST}$${rows.length + 1}`),
+    files['xl/workbook.xml'].slice(-320));
 
   // A column is written for exactly the columns there are.
-  eq('a width per column', [...s1.getElementsByTagName('col')].length, 25);
+  eq('a width per column', [...s1.getElementsByTagName('col')].length, NCOL);
 
   // What the screen says and what the cell says are the same thing.
   const rowOf = id => rows.findIndex(r => r.id === id) + 2;
@@ -631,7 +646,7 @@ function parseXml(xml, label) {
   if (emptyFiles['xl/worksheets/sheet1.xml']) {
     parseXml(emptyFiles['xl/worksheets/sheet1.xml'], 'empty sheet1');
     const eaf = parseXml(emptyFiles['xl/worksheets/sheet1.xml'], 'e').getElementsByTagName('autoFilter')[0];
-    eq('and its filter covers the header alone', eaf.getAttribute('ref'), 'A1:Y1');
+    eq('and its filter covers the header alone', eaf.getAttribute('ref'), 'A1:' + LAST + '1');
   }
 
   /* ── The download is what the screen shows ── */
@@ -715,7 +730,7 @@ console.log('\n── Wiring ──');
   // end of a save flush — go through schedRerender, which is what wakes
   // Records when the boards change underneath it.
   eq('every board-scoped redraw goes through schedRerender',
-    (TRUCKING.match(/schedRerender\(b\);/g) || []).length, 3);
+    (TRUCKING.match(/schedRerender\(b\);/g) || []).length, 4);
   assert('and schedRerender is the only thing left calling renderScheduler(b)',
     (TRUCKING.match(/schedIsActive\(b\)\) renderScheduler\(b\);/g) || []).length === 1);
 
@@ -742,7 +757,8 @@ console.log('\n── Wiring ──');
   assert('the sort opens on a column that exists',
     p.SCHED_REC_COLS.some(c => c.key === p.schedRec.sort.key));
   assert('every status the filter offers is one a row can carry',
-    p.SCHED_REC_STATUSES.length === 3 && p.SCHED_REC_STATUSES.includes('Report only'));
+    p.SCHED_REC_STATUSES.length === 4 &&
+    p.SCHED_REC_STATUSES.includes('Report only') && p.SCHED_REC_STATUSES.includes('Removed'));
 
   // The frozen columns are positioned by hand, so their offsets have to be the
   // running total of the widths before them or they overlap on screen.
@@ -759,9 +775,202 @@ console.log('\n── Wiring ──');
       left += px;
     });
     assert('the pinned columns tile the left edge exactly', !bad.length, bad.join('; '));
+    // A pinned cell has to paint over what scrolls under it, so every rule that
+    // gives one a background must give it an opaque one.
+    const css = slice(TRUCKING, '    .rec-tbl th.stk, .rec-tbl td.stk', '    .rec-tbl tbody td.r ', 'pinned css');
+    const bg = css.match(/td\.stk\s*\{[^}]*background:\s*([^;]+);/g) || [];
+    assert('every pinned background is opaque',
+      bg.length >= 3 && !/rgba|#[0-9a-f]{8}\b/i.test(css.replace(/tr:hover|orphan/g, '')), css);
     assert('and nothing else is pinned',
       p.SCHED_REC_COLS.filter(c => p.schedRecStick(c.key).cls).length === 3);
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   8b. THE ARCHIVE
+   Deleting a haul used to take it out of the record entirely — Records reads
+   the boards, and what is not on a board is not in it. What was there is now
+   kept, and these are the ways it could still be lost.
+══════════════════════════════════════════════════════════════════════════ */
+console.log('\n── The archive ──');
+{
+  const DAY = '2026-03-02';
+  const p = page({
+    from: '2026-03-01', to: '2026-03-31',
+    units: [{ name: '2757', type: 'triaxle' }],
+    assignments: { trucking: { [DAY]: [
+      A('d1', { notes: 'called off — plant down', address: '', location: '' }),
+      A('d2', { driver: 'Kirk, Dan' }),
+    ] } },
+    reports: [{ assignment_id: 'd1', work_date: DAY, tons: 30, loads: 1,
+                actual_start: '06:00', actual_end: '10:00' }],
+  });
+  const st = p._schedStates.trucking;
+
+  /* ── The tombstone ── */
+  p.schedArchiveRemoval('trucking', DAY, 'd1');
+  const t = st.deleted.d1;
+  assert('deleting archives the row under its id', !!t);
+  eq('with the day it was on',        t._d, DAY);
+  eq('the driver it was for',         t.driver, 'Barr, Michael');
+  eq('the job it was on',             t.project, 'Acme Materials');
+  eq('the truck it was going out on', t.unit, '2757');
+  eq('and what it said',              t.notes, 'called off — plant down');
+  eq('stamped with who removed it',   t.removedBy, 'bhudock');
+  assert('and when', /^\d{4}-\d{2}-\d{2}T/.test(t.removedAt), t.removedAt);
+  assert('empty fields are dropped — the archive is written on every save',
+    !('address' in t) && !('location' in t), JSON.stringify(t));
+  assert('the board itself is untouched by archiving',
+    (st.assignments[DAY] || []).some(a => a.id === 'd1'));
+  p.schedRemoveById(DAY, 'd1', 'trucking');   // the other half of the delete
+
+  /* ── Delete does both, in that order ── */
+  p.__setCtx({ board: 'trucking', date: DAY, id: 'd2' });
+  p.schedDeleteEditor();
+  assert('the Delete button archives as well as removes',
+    !!st.deleted.d2 && !(st.assignments[DAY] || []).some(a => a.id === 'd2'));
+  eq('and marks the board for saving', p.marked.join(','), 'trucking');
+  eq('the archived row is the row as it stood', st.deleted.d2.driver, 'Kirk, Dan');
+  assert('archiving a row that is not there does nothing',
+    (() => { const was = JSON.stringify(st.deleted);
+             p.schedArchiveRemoval('trucking', DAY, 'nosuch');
+             return JSON.stringify(st.deleted) === was; })());
+
+  /* ── It reaches the record ── */
+  p.schedRec.removed = true;
+  const rows = p.schedRecView();
+  const r1 = rows.find(r => r.id === 'd1');
+  eq('a removed haul is in the record',      r1.status, 'Removed');
+  eq('on the board it was removed from',     r1.board, 'Trucking');
+  eq('on the day it was on',                 r1.date, DAY);
+  eq('with its scheduled hours',             r1.planHrs, 8);
+  eq('and the report the driver did file',   r1.tons, 30);
+  eq('and who removed it',                   r1.removedBy, 'bhudock');
+  assert('and it still counts as reported, because it was', r1.reported === true);
+  {
+    // The one that was never reported must not be counted as if it had been.
+    const t2 = p.schedRecTotals(p.schedRecView());
+    eq('a removed haul nobody reported is not counted as reported', t2.reported, 1);
+    eq('and both are counted as removed', t2.removed, 2);
+  }
+  assert('and when, in words', /2026/.test(p.schedRecText(r1, 'removedAt')), p.schedRecText(r1, 'removedAt'));
+  assert('a haul with a report and a tombstone is Removed, not Report only',
+    !rows.some(r => r.status === 'Report only'));
+
+  /* ── Out of the way unless asked for ── */
+  p.schedRec.removed = false;
+  assert('removed hauls are out of the default pull',
+    !p.schedRecView().some(r => r.status === 'Removed'));
+  eq('and the tab counts what it is holding back', p.schedRecViewParts().hiddenRemoved, 2);
+  p.schedRec.status = 'Removed';
+  eq('asking for them by status brings them in whatever the tick says',
+    p.schedRecView().length, 2);
+  p.schedRec.status = 'all';
+  eq('and then they are held back again', p.schedRecViewParts().hiddenRemoved, 2);
+
+  // The other filters still apply to them.
+  p.schedRec.removed = true;
+  p.schedRec.col.driver = 'kirk';
+  eq('a column filter narrows the archive too', p.schedRecView().length, 1);
+  p.schedRec.col = {};
+
+  // The count of what is hidden respects the other filters, or it would offer
+  // to show rows that are filtered out anyway.
+  p.schedRec.removed = false;
+  p.schedRec.col.driver = 'kirk';
+  eq('and so does the count of what is hidden', p.schedRecViewParts().hiddenRemoved, 1);
+  p.schedRec.col = {};
+  p.schedRec.removed = true;
+
+  /* ── The workbook ── */
+  {
+    const wb = unzip(p.schedRecXlsx(p.schedRecView()));
+    const doc = parseXml(wb['xl/worksheets/sheet1.xml'], 'records');
+    const hdr = [...doc.getElementsByTagName('row')][0];
+    const heads = [...hdr.getElementsByTagName('t')].map(t => t.textContent);
+    assert('the workbook carries the removal columns',
+      heads.includes('Removed') && heads.includes('Removed by'), heads.join(','));
+    const at = p.SCHED_REC_COLS.findIndex(c => c.key === 'removedAt');
+    const ref = p._colName(at) + '2';
+    const c = [...doc.getElementsByTagName('c')].find(x => x.getAttribute('r') === ref);
+    assert('the removal stamp is written as a date and time, not text',
+      c && c.getAttribute('s') === '5' && c.getElementsByTagName('v').length === 1,
+      c && c.outerHTML);
+    const v = Number(c.getElementsByTagName('v')[0].textContent);
+    assert('and it is a plausible serial with a time on it',
+      v > 46000 && v % 1 !== 0, String(v));
+    assert('and the summary says the archive is in this pull',
+      /Removed hauls/.test(wb['xl/worksheets/sheet2.xml']) &&
+      /included/.test(wb['xl/worksheets/sheet2.xml']));
+    p.schedRec.removed = false;
+    const wb2 = unzip(p.schedRecXlsx(p.schedRecView()));
+    assert('and says so when it is not',
+      /excluded/.test(wb2['xl/worksheets/sheet2.xml']));
+    p.schedRec.removed = true;
+  }
+
+  /* ── A live row always wins a tombstone ── */
+  {
+    const q = page({
+      from: '2026-03-01', to: '2026-03-31',
+      assignments: { trucking: { [DAY]: [A('both')] } },
+    });
+    q._schedStates.trucking.deleted = { both: { ...A('both'), _d: DAY, removedAt: '2026-03-04T10:00:00.000Z', removedBy: 'x' } };
+    q.schedRec.removed = true;
+    const got = q.schedRecView().filter(r => r.id === 'both');
+    eq('a row on a board and in the archive is drawn once', got.length, 1);
+    eq('as the live row',                                   got[0].status, 'Planned');
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   8c. THE ARCHIVE SURVIVES A SAVE
+   The blob is written whole on every save, so anything the write forgets is
+   gone from the server the next time anybody saves.
+══════════════════════════════════════════════════════════════════════════ */
+console.log('\n── The archive survives a save ──');
+{
+  const p = page({});
+  const st = p._schedStates.trucking;
+  st.assignments = { '2026-03-02': [A('k1')] };
+  st.deleted = { gone: { id: 'gone', driver: 'Kirk, Dan', _d: '2026-03-01',
+                         removedAt: '2026-03-02T12:00:00.000Z', removedBy: 'bhudock' } };
+  st.hidden = new Set(['Someone']);
+
+  const body = p.schedBlobValue(st);
+  assert('a save carries the archive', !!body.deleted && !!body.deleted.gone);
+  assert('alongside the assignments and the hidden list',
+    !!body.assignments['2026-03-02'] && body.hidden.join() === 'Someone');
+  eq('and is versioned like before', body.version, 1);
+
+  // Both writers must agree, or the keepalive on the way out of the page drops
+  // the archive on every unload.
+  const flush = slice(TRUCKING, '    async function schedFlush(board)', '    function schedStep(n)', 'flush');
+  eq('the debounced save and the keepalive write the same shape',
+    (flush.match(/JSON\.stringify\(\{ value: schedBlobValue\(st\) \}\)/g) || []).length, 2);
+  assert('and nothing writes the blob by hand any more',
+    !/value: \{ version: 1, assignments/.test(TRUCKING));
+
+  /* ── Two dispatchers ── */
+  const ours   = { a: { id: 'a', removedBy: 'us' } };
+  const theirs = { b: { id: 'b', removedBy: 'them' } };
+  const merged = p.schedMergeDeleted(ours, theirs);
+  assert('a merge keeps both sides\' removals', !!merged.a && !!merged.b);
+  eq('and takes neither off the record', Object.keys(merged).length, 2);
+  eq('ours wins a row both hold',
+    p.schedMergeDeleted({ x: { removedBy: 'us' } }, { x: { removedBy: 'them' } }).x.removedBy, 'us');
+  assert('a server with no archive yet is not an error',
+    Object.keys(p.schedMergeDeleted(ours, null)).length === 1);
+  assert('and neither is one that is not an object',
+    Object.keys(p.schedMergeDeleted(ours, [1, 2])).length === 1);
+
+  // Nothing in the app may take a tombstone off the record.
+  const recSrc = RECORDS + DELETE;
+  assert('nothing deletes from the archive',
+    !/delete\s+st\.deleted|delete\s+schedS\([^)]*\)\.deleted|\.deleted\s*=\s*\{\}/.test(recSrc),
+    'a write to the archive that is not an addition');
+  assert('and Records only ever reads it',
+    !/st\.deleted\s*=|\.deleted\[[^\]]+\]\s*=/.test(RECORDS));
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

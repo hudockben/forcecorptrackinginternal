@@ -972,6 +972,20 @@
     .rec-tbl tbody td.dim { color: var(--muted); }
     .rec-tbl tbody td.id  { color: var(--muted); font-family: monospace; font-size: 0.66rem; }
     .rec-tbl tbody tr.orphan td { background: rgba(250,204,21,0.05); }
+    /* A haul that was taken off a board is kept, and reads as kept rather than
+       as one that ran: dimmed, and its job struck through. */
+    .rec-tbl tbody tr.removed td { background: rgba(239,68,68,0.05); color: #8a8a95; }
+    .rec-tbl tbody tr.removed td.struck { text-decoration: line-through; }
+    /* Opaque, like every pinned cell: a translucent one lets the columns
+       scrolling underneath show through it, and the row reads as two rows. */
+    .rec-tbl tbody tr.removed td.stk { background: #1c141a; }
+    .rec-check {
+      display: inline-flex; align-items: center; gap: 0.3rem; cursor: pointer;
+      font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+      white-space: nowrap;
+    }
+    .rec-check:hover { color: var(--text); }
+    .rec-check input { accent-color: var(--orange); cursor: pointer; margin: 0; }
     .rec-tbl tbody td .pill {
       display: inline-block; padding: 0.05rem 0.4rem; border-radius: 999px;
       font-size: 0.62rem; letter-spacing: 0.04em; border: 1px solid var(--border); color: var(--muted);
@@ -979,6 +993,7 @@
     .rec-tbl tbody td .pill.yes  { color: var(--green);  border-color: rgba(34,197,94,0.4);  }
     .rec-tbl tbody td .pill.no   { color: var(--muted); }
     .rec-tbl tbody td .pill.only { color: var(--amber);  border-color: rgba(250,204,21,0.4); }
+    .rec-tbl tbody td .pill.gone { color: var(--orange); border-color: rgba(239,68,68,0.4); }
     .rec-empty { padding: 3rem 1.5rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
     .pdf-btn {
       margin-left: auto; padding: 0.3rem 0.75rem;
@@ -4253,6 +4268,14 @@
         hidden:         new Set(),
         hiddenBaseline: '[]',
         pickQuery:      '',
+        // Every assignment this board has ever had deleted, keyed by id, with
+        // the day it was on and who took it off. Kept in the board's own blob
+        // rather than a second one so a deletion and its record are the same
+        // write: an archive that can fail on its own is an archive that loses
+        // the thing it was there to keep. Tombstones are only ever added —
+        // nothing in the app removes one — so a merge is a union.
+        deleted:         {},
+        deletedBaseline: '{}',
       };
     }
     const _schedStates = {};
@@ -4465,6 +4488,21 @@
       for (const id in m) { const { _d, ...rest } = m[id]; (o[_d] = o[_d] || []).push(rest); }
       return o;
     }
+    /** Tombstones from two sessions, together. Nothing in the app deletes one,
+     *  so there is nothing to reconcile — the union is the answer, and ours
+     *  wins a tie because two people cannot delete the same row twice. */
+    function schedMergeDeleted(ours, theirs) {
+      const t = (theirs && typeof theirs === 'object' && !Array.isArray(theirs)) ? theirs : {};
+      return { ...t, ...(ours || {}) };
+    }
+
+    /** What one board saves. In one place because the debounced flush and the
+     *  keepalive on the way out of the page must write the same shape — a
+     *  keepalive that forgot the archive would drop it on every unload. */
+    function schedBlobValue(st) {
+      return { version: 1, assignments: st.assignments, hidden: [...st.hidden].sort(), deleted: st.deleted };
+    }
+
     function schedMerge(baseStr, ours, theirs) {
       let base = {};
       try { base = JSON.parse(baseStr || '{}'); } catch { base = {}; }
@@ -4493,6 +4531,9 @@
         const h = value && typeof value === 'object' ? value.hidden : null;
         st.hidden = new Set(Array.isArray(h) ? h.filter(x => typeof x === 'string') : []);
         st.hiddenBaseline = schedHiddenStr(b);
+        const del = value && typeof value === 'object' ? value.deleted : null;
+        st.deleted = (del && typeof del === 'object' && !Array.isArray(del)) ? del : {};
+        st.deletedBaseline = JSON.stringify(st.deleted);
         st.loaded = true;
       } catch (err) {
         // Surfaced as a retryable error rather than an empty board: an empty
@@ -4581,6 +4622,16 @@
           // The hidden set is one small list rather than keyed rows, so there is
           // nothing to merge per-item: whoever last changed it wins. If we have
           // not touched ours since the last read, theirs is the newer answer.
+          // Union rather than last-writer-wins: a save from another dispatcher
+          // must not take their deletions off the record, or ours off theirs.
+          const del = value && typeof value === 'object' ? value.deleted : null;
+          if (del && typeof del === 'object' && !Array.isArray(del)) {
+            const merged = schedMergeDeleted(st.deleted, del);
+            if (JSON.stringify(merged) !== JSON.stringify(st.deleted)) {
+              st.deleted = merged;
+              schedRerender(b);
+            }
+          }
           const h = value && typeof value === 'object' ? value.hidden : null;
           if (Array.isArray(h) && schedHiddenStr(b) === st.hiddenBaseline) {
             const next = new Set(h.filter(x => typeof x === 'string'));
@@ -4593,12 +4644,13 @@
         const r = await fetch(`${API_BASE}/data/${KEY}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ value: { version: 1, assignments: st.assignments, hidden: [...st.hidden].sort() } })
+          body: JSON.stringify({ value: schedBlobValue(st) })
         });
         await _handleSaveResponse(r, 'schedFlush');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         st.baseline = JSON.stringify(st.assignments);
         st.hiddenBaseline = schedHiddenStr(b);
+        st.deletedBaseline = JSON.stringify(st.deleted);
         st.dirty = false;
         schedSetStatus('saved', b);
       } catch {
@@ -4627,7 +4679,7 @@
           fetch(`${API_BASE}/data/${cfg.key}`, {
             method: 'PUT', keepalive: true,
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ value: { version: 1, assignments: st.assignments, hidden: [...st.hidden].sort() } })
+            body: JSON.stringify({ value: schedBlobValue(st) })
           }).catch(() => {});
         } catch { /* best-effort */ }
       });
@@ -5370,6 +5422,19 @@
       return Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - Date.UTC(1899, 11, 30)) / 86400000);
     }
 
+    /** The same, to the minute, for a timestamp. Built from the local clock
+     *  rather than UTC: a workbook has no time zone, so the cell has to say
+     *  what the screen said. */
+    function _xlsxStamp(iso) {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return null;
+      const p2 = n => String(n).padStart(2, '0');
+      const day = _xlsxSerial(d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()));
+      if (day === null) return null;
+      const frac = (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds()) / 86400;
+      return Math.round((day + frac) * 1e6) / 1e6;
+    }
+
     /** Excel will not open a workbook whose sheet name carries one of its
      *  reserved characters, or runs past 31. */
     function _xlsxSheetName(name, i) {
@@ -5379,8 +5444,9 @@
 
     /* Style slots every sheet below writes against. 0 and 1 are what the
        dispatch sheet has always used, so they keep their meaning:
-         0 default · 1 bold · 2 date · 3 two decimals · 4 header band */
-    const _XLSX_S = { PLAIN: 0, BOLD: 1, DATE: 2, NUM2: 3, HEAD: 4 };
+         0 default · 1 bold · 2 date · 3 two decimals · 4 header band
+         5 date and time */
+    const _XLSX_S = { PLAIN: 0, BOLD: 1, DATE: 2, NUM2: 3, HEAD: 4, STAMP: 5 };
 
     /** Wrap worksheets into a workbook.
      *  Each sheet is { name, colsXml, rowsXml, freeze, autoFilterRef } — the
@@ -5451,12 +5517,13 @@
           `<borders count="2"><border/>` +
           `<border><left/><right/><top/><bottom style="thin"><color rgb="FF808080"/></bottom><diagonal/></border></borders>` +
           `<cellStyleXfs count="1"><xf/></cellStyleXfs>` +
-          `<cellXfs count="5">` +
+          `<cellXfs count="6">` +
             `<xf xfId="0"/>` +
             `<xf xfId="0" fontId="1" applyFont="1"/>` +
             `<xf xfId="0" numFmtId="14" applyNumberFormat="1"/>` +
             `<xf xfId="0" numFmtId="2" applyNumberFormat="1"/>` +
             `<xf xfId="0" fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1"/>` +
+            `<xf xfId="0" numFmtId="22" applyNumberFormat="1"/>` +
           `</cellXfs>` +
           // Without a named Normal style some readers warn the workbook has no
           // default; Excel copes either way, but the file should be clean.
@@ -6277,10 +6344,43 @@
 
     function schedDeleteEditor() {
       if (!schedCtx || !schedCtx.id) return;
+      // Archived first, then removed. Both land in the same save, so a haul
+      // can never leave the board without its record going with it.
+      schedArchiveRemoval(schedCtx.board, schedCtx.date, schedCtx.id);
       schedRemoveById(schedCtx.date, schedCtx.id, schedCtx.board);
       schedMarkDirty(schedCtx.board);
       schedCloseEditor();
       renderScheduler();
+    }
+
+    /** Copy an assignment into the board's archive on its way off the board.
+     *
+     *  Deleting a haul is the one thing that used to take it out of the record
+     *  entirely: the Records tab reads the boards, and what is not on a board
+     *  is not in it. So what was there is kept — the row as it stood, the day
+     *  it was on, when it went and who took it — and Records shows it as
+     *  Removed rather than not at all.
+     *
+     *  Empty fields are dropped. The archive lives in the board's blob and the
+     *  blob is written whole on every save, so a tombstone that carries eight
+     *  blank strings costs that on every keystroke's worth of saving forever.
+     *
+     *  Editing is not deleting: schedSaveEditor takes a row off its old date to
+     *  put it back on a new one, and that is a move, not a removal. Only the
+     *  Delete button reaches here. */
+    function schedArchiveRemoval(board, date, id) {
+      const st  = schedS(board);
+      const rec = (st.assignments[date] || []).find(x => x && x.id === id);
+      if (!rec) return;
+      const lean = {};
+      Object.keys(rec).forEach(k => {
+        const v = rec[k];
+        if (v !== '' && v != null) lean[k] = v;
+      });
+      lean._d        = date;
+      lean.removedAt = new Date().toISOString();
+      lean.removedBy = (user && user.username) || '';
+      st.deleted = { ...st.deleted, [id]: lean };
     }
 
     function schedRemoveById(date, id, board) {
@@ -6345,10 +6445,17 @@
       { key: 'notes',       label: 'Dispatch Notes', w: 34,              f: 1 },
       { key: 'driverNotes', label: 'Driver Notes',   w: 34,              f: 1 },
       { key: 'status',      label: 'Status',         w: 13               },
+      { key: 'removedAt',   label: 'Removed',        w: 20, type: 'stamp', f: 1 },
+      { key: 'removedBy',   label: 'Removed by',     w: 18,              f: 1 },
       { key: 'id',          label: 'Record ID',      w: 38,              f: 1 },
     ];
 
-    const SCHED_REC_STATUSES = ['Planned', 'Reported', 'Report only'];
+    /* Planned    — on a board, nothing reported against it yet
+       Reported   — the driver sent their day back against it
+       Report only— a report with no assignment and no record of one being
+                    deleted, which is the only way a haul can now go missing
+       Removed    — taken off a board, kept in that board's archive */
+    const SCHED_REC_STATUSES = ['Planned', 'Reported', 'Report only', 'Removed'];
 
     /* The columns pinned to the left edge, in order from it. They carry a `px`
        width because a sticky column has to be told where it starts, and that
@@ -6410,6 +6517,10 @@
     const schedRec = {
       from: '', to: '', preset: '30',
       board: 'all', status: 'all', q: '',
+      // Removed hauls are in the archive but out of the way: they never ran,
+      // and their scheduled hours would pad a month's figures with work that
+      // was called off. One tick brings them in, and the totals say how many.
+      removed: false,
       col:  {},                       // column key → filter text
       sort: { key: 'date', dir: 'desc' },
       reports:        new Map(),      // assignment id → driver report
@@ -6545,6 +6656,23 @@
         });
       });
 
+      // What was deleted off a board. Read after every board's live ids are
+      // known, so a tombstone for something that is somehow still on a board
+      // loses to the live row rather than doubling it — and so that an id with
+      // a tombstone is never also counted as a report with no trace.
+      SCHED_BOARDS.forEach(cfg => {
+        const st = _schedStates[cfg.id];
+        if (!st || !st.loaded) return;
+        Object.keys(st.deleted || {}).forEach(id => {
+          const t = st.deleted[id];
+          if (!t || known.has(id)) return;
+          known.add(id);
+          const d = String(t._d || '');
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < from || d > to) return;
+          rows.push(schedRecRemovedRow(cfg, t, id, reps, unitTypeOf, dowOf));
+        });
+      });
+
       // A report against an assignment nobody can find any more. The haul was
       // run and reported; only the plan for it is gone. Kept, and said so.
       //
@@ -6592,8 +6720,25 @@
         notes:       a.notes || '',
         driverNotes: rep ? (rep.notes || '') : '',
         status:      rep ? 'Reported' : 'Planned',
+        // Whether a driver filed against this haul, kept apart from the status
+        // it reads as: a removed haul may well have been reported before it
+        // was taken off, and one that was not must not be counted as if it had.
+        reported:    !!rep,
+        removedAt:   '',
+        removedBy:   '',
         id:          a.id || '',
       };
+    }
+
+    /** A tombstone as a row. Built through schedRecRow so a removed haul reads
+     *  exactly like a live one — same columns, same figures, and the report it
+     *  did get if the driver filed one before it was taken off. */
+    function schedRecRemovedRow(cfg, t, id, reps, unitTypeOf, dowOf) {
+      const row = schedRecRow(cfg, t._d, { ...t, id }, reps, unitTypeOf, dowOf);
+      row.status    = 'Removed';
+      row.removedAt = t.removedAt || '';
+      row.removedBy = t.removedBy || '';
+      return row;
     }
 
     function schedRecOrphanRow(id, rep, dowOf) {
@@ -6611,9 +6756,18 @@
         actStart: rep.actual_start || '', actEnd: rep.actual_end || '', actHrs: actHrs,
         tons: tons, loads: loads, tph: schedRecRate(tons, actHrs),
         tickets: rep.tickets || '', notes: '', driverNotes: rep.notes || '',
-        status: 'Report only',
+        status: 'Report only', reported: true,
+        removedAt: '', removedBy: '',
         id: id || '',
       };
+    }
+
+    /** When something was removed, as the office reads a date and time. */
+    function schedRecStamp(iso) {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso == null ? '' : iso);
+      return d.toLocaleString('en-US',
+        { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
     }
 
     /** What a cell reads as. One definition for the screen, the filter boxes,
@@ -6622,19 +6776,25 @@
       const col = SCHED_REC_BY_KEY[key];
       const v   = row[key];
       if (v === '' || v == null) return '';
-      if (col && col.type === 'time') return schedTime12(v);
-      if (col && col.type === 'num')  return schedNum(v, col.dp);
+      if (col && col.type === 'time')  return schedTime12(v);
+      if (col && col.type === 'stamp') return schedRecStamp(v);
+      if (col && col.type === 'num')   return schedNum(v, col.dp);
       return String(v);
     }
 
     /* ── Filter and sort ── */
 
-    function schedRecFilter(rows) {
+    /** Asking for the removed ones by status is asking for them, tick or no. */
+    function schedRecWantsRemoved() { return schedRec.removed || schedRec.status === 'Removed'; }
+
+    function schedRecFilter(rows, withRemoved) {
       const q    = String(schedRec.q || '').trim().toLowerCase();
       const cols = Object.keys(schedRec.col)
         .map(k => [k, String(schedRec.col[k] || '').trim().toLowerCase()])
         .filter(pair => pair[1]);
+      const wantRemoved = withRemoved === undefined ? schedRecWantsRemoved() : !!withRemoved;
       return rows.filter(r => {
+        if (r.status === 'Removed' && !wantRemoved) return false;
         if (schedRec.board  !== 'all' && r.boardId !== schedRec.board)  return false;
         if (schedRec.status !== 'all' && r.status  !== schedRec.status) return false;
         for (const pair of cols) {
@@ -6681,14 +6841,25 @@
       });
     }
 
-    /** Everything the view is showing, filtered and sorted — what the totals
-     *  are taken over, and what the workbook is written from. */
-    function schedRecView() { return schedRecSort(schedRecFilter(schedRecBuild())); }
+    /** Everything the view is showing, filtered and sorted, and how much of
+     *  the archive it is holding back. One build and one filter pass for both:
+     *  this runs on every keystroke, and counting what is hidden by filtering
+     *  a second time would double the cost of typing. */
+    function schedRecViewParts() {
+      const passed = schedRecFilter(schedRecBuild(), true);
+      const want   = schedRecWantsRemoved();
+      const rows   = want ? passed : passed.filter(r => r.status !== 'Removed');
+      return { rows: schedRecSort(rows), hiddenRemoved: passed.length - rows.length };
+    }
+
+    /** What the totals are taken over, and what the workbook is written from. */
+    function schedRecView() { return schedRecViewParts().rows; }
 
     function schedRecTotals(rows) {
-      const t = { rows: rows.length, planHrs: 0, actHrs: 0, tons: 0, loads: 0, reported: 0,
+      const t = { rows: rows.length, planHrs: 0, actHrs: 0, tons: 0, loads: 0, reported: 0, removed: 0,
                   drivers: new Set(), trucks: new Set(), days: new Set() };
       rows.forEach(r => {
+        if (r.status === 'Removed') t.removed++;
         if (r.driver) t.drivers.add(r.driver);
         if (r.unit)   t.trucks.add(r.unit);
         if (r.date)   t.days.add(r.date);
@@ -6696,7 +6867,7 @@
         if (r.actHrs  !== '') t.actHrs  += r.actHrs;
         if (r.tons    !== '') t.tons    += r.tons;
         if (r.loads   !== '') t.loads   += r.loads;
-        if (r.status  !== 'Planned') t.reported++;
+        if (r.reported) t.reported++;
       });
       return t;
     }
@@ -6819,6 +6990,9 @@
                     title="Which board's records to show">${boards}</select>
             <select id="sched-rec-status" onchange="schedRecSetStatus(this.value)"
                     title="Planned, reported back, or reported with no assignment left">${statuses}</select>
+            <label class="rec-check" title="Hauls deleted off a board, kept in its archive">
+              <input type="checkbox" id="sched-rec-removed"${schedRec.removed ? ' checked' : ''}
+                     onchange="schedRecSetRemoved(this.checked)">Include removed</label>
             <input type="text" class="rec-search" id="sched-rec-q" autocomplete="off"
                    placeholder="Search every column…" value="${schedEsc(schedRec.q)}"
                    oninput="schedRecSetQ(this.value)">
@@ -6869,18 +7043,23 @@
         const cells = SCHED_REC_COLS.map(c => {
           const st = schedRecStick(c.key);
           if (c.key === 'status') {
-            const pill = r.status === 'Reported' ? 'yes' : r.status === 'Report only' ? 'only' : 'no';
+            const pill = r.status === 'Reported' ? 'yes'
+              : r.status === 'Report only' ? 'only'
+              : r.status === 'Removed' ? 'gone' : 'no';
             return `<td class="${st.cls}" style="${st.style}"><span class="pill ${pill}">${
               schedEsc(r.status)}</span></td>`;
           }
           const txt = schedRecText(r, c.key);
           const cls = (c.key === 'id' ? 'id'
             : (c.type === 'num' || c.type === 'time') ? 'r'
-            : txt ? '' : 'dim') + (st.cls ? ' ' + st.cls : '');
+            : txt ? '' : 'dim')
+            + (st.cls ? ' ' + st.cls : '')
+            + (r.status === 'Removed' && c.key === 'project' ? ' struck' : '');
           return `<td class="${cls}" style="${st.style}" title="${schedEsc(txt)}">${
             schedEsc(txt) || '<span class="dim">—</span>'}</td>`;
         }).join('');
-        return `<tr class="${r.status === 'Report only' ? 'orphan' : ''}">${cells}</tr>`;
+        return `<tr class="${r.status === 'Report only' ? 'orphan'
+          : r.status === 'Removed' ? 'removed' : ''}">${cells}</tr>`;
       }).join('');
     }
 
@@ -6898,6 +7077,9 @@
         cell('Loads',      schedNum(t.loads, 0)),
         cell('Tons / hr',  t.actHrs > 0 ? schedNum(t.tons / t.actHrs, 2) : '—'),
         cell('Reported',   schedNum(t.reported, 0) + ' / ' + schedNum(t.rows, 0)),
+        // Only when there are any: a bar that always says "Removed 0" trains
+        // people to stop reading it.
+        t.removed ? cell('Removed', schedNum(t.removed, 0)) : '',
       ].join('');
     }
 
@@ -6906,7 +7088,8 @@
       if (!body) return;
       schedRecEnsureReports();
 
-      const rows = schedRecView();
+      const view = schedRecViewParts();
+      const rows = view.rows;
       const hdr  = document.getElementById('sched-rec-hdr');
       if (hdr) hdr.innerHTML = schedRecHeadHTML();
       body.innerHTML = schedRecBodyHTML(rows);
@@ -6948,6 +7131,13 @@
         if (cls === 'rec-note') cls = 'rec-note warn';
         bits.push('That range is wider than one pull: driver reports were read through ' +
           schedRec.reportsShort + ' only. Narrow the dates for the rest.');
+      }
+      // An archive nobody knows is there is no better than no archive.
+      if (view.hiddenRemoved) {
+        bits.push(schedNum(view.hiddenRemoved, 0) + ' removed haul' +
+          (view.hiddenRemoved === 1 ? '' : 's') + ' in this range ' +
+          (view.hiddenRemoved === 1 ? 'is' : 'are') + ' not shown.');
+        btns.push(btn('Show removed', 'schedRecShowRemoved()'));
       }
       if (!schedRec.showAll && rows.length > SCHED_REC_DRAW) {
         bits.push('Showing the first ' + schedNum(SCHED_REC_DRAW, 0) + ' of ' +
@@ -7015,9 +7205,17 @@
     }
 
     function schedRecSetBoard(v)  { schedRec.board  = v; schedRec.showAll = false; schedRecPaint(); }
+    function schedRecSetRemoved(v) { schedRec.removed = !!v; schedRec.showAll = false; schedRecPaint(); }
     function schedRecSetStatus(v) { schedRec.status = v; schedRec.showAll = false; schedRecPaint(); }
     function schedRecSetQ(v)      { schedRec.q      = v; schedRec.showAll = false; schedRecPaint(); }
     function schedRecShowAll()    { schedRec.showAll = true; schedRecPaint(); }
+
+    function schedRecShowRemoved() {
+      schedRec.removed = true;
+      const el = document.getElementById('sched-rec-removed');
+      if (el) el.checked = true;
+      schedRecPaint();
+    }
 
     function schedRecSetCol(key, v, el) {
       schedRec.col[key] = v;
@@ -7035,7 +7233,8 @@
         schedRec.sort.dir = schedRec.sort.dir === 'asc' ? 'desc' : 'asc';
       } else {
         schedRec.sort.key = key;
-        schedRec.sort.dir = (col.type === 'num' || col.type === 'date') ? 'desc' : 'asc';
+        schedRec.sort.dir =
+          (col.type === 'num' || col.type === 'date' || col.type === 'stamp') ? 'desc' : 'asc';
       }
       schedRecPaint();
     }
@@ -7050,9 +7249,12 @@
         const el = document.getElementById('sched-rec-f-' + c.key);
         if (el) { el.value = ''; el.classList.remove('on'); }
       });
-      const q = document.getElementById('sched-rec-q');      if (q) q.value = '';
-      const b = document.getElementById('sched-rec-board');  if (b) b.value = 'all';
-      const s = document.getElementById('sched-rec-status'); if (s) s.value = 'all';
+      const q = document.getElementById('sched-rec-q');       if (q) q.value = '';
+      const b = document.getElementById('sched-rec-board');   if (b) b.value = 'all';
+      const s = document.getElementById('sched-rec-status');  if (s) s.value = 'all';
+      // Clear is about the filters. Whether the archive is in view is a choice
+      // about what you are looking at, so it is left as it was set.
+      const d = document.getElementById('sched-rec-removed'); if (d) d.checked = schedRec.removed;
       schedRecPaint();
     }
 
@@ -7085,6 +7287,10 @@
           if (c.type === 'date') {
             const ser = _xlsxSerial(row[c.key]);
             return ser === null ? cell(r, ci, String(row[c.key] || '')) : cell(r, ci, ser, _XLSX_S.DATE);
+          }
+          if (c.type === 'stamp') {
+            const at = _xlsxStamp(row[c.key]);
+            return at === null ? cell(r, ci, schedRecText(row, c.key)) : cell(r, ci, at, _XLSX_S.STAMP);
           }
           if (c.type === 'num') {
             const v = row[c.key];
@@ -7120,6 +7326,9 @@
       put(['Status',    schedRec.status === 'all' ? 'Any' : schedRec.status]);
       put(['Filters',   schedRecFilterSummary()]);
       put(['Driver reports', schedRecReportsState()]);
+      put(['Removed hauls',  schedRecWantsRemoved()
+        ? 'included — rows marked Removed are hauls deleted off a board'
+        : 'excluded — this pull is the work that stayed on the board']);
       put(['Generated', now]);
       gap();
       put(['TOTALS'], _XLSX_S.HEAD);
