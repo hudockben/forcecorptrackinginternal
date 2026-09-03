@@ -6827,9 +6827,16 @@
 
     function schedRecBodyHTML(rows) {
       if (!rows.length) {
-        return `<tr><td class="rec-empty" colspan="${SCHED_REC_COLS.length}">
-          No records in this range.<br>
-          <span style="font-size:0.75rem">Widen the dates, or clear the filters.</span></td></tr>`;
+        // "Nothing here" and "not here yet" look identical, and only one of them
+        // is worth widening the dates over.
+        const waiting = SCHED_BOARDS.some(cfg => {
+          const st = _schedStates[cfg.id];
+          return st && !st.loaded && !st.loadError;
+        });
+        return `<tr><td class="rec-empty" colspan="${SCHED_REC_COLS.length}">${waiting
+          ? 'Loading the schedule…'
+          : `No records in this range.<br>
+             <span style="font-size:0.75rem">Widen the dates, or clear the filters.</span>`}</td></tr>`;
       }
       const draw = schedRec.showAll ? rows : rows.slice(0, SCHED_REC_DRAW);
       return draw.map(r => {

@@ -871,6 +871,13 @@ console.log('\n── On screen ──');
   /* ── Nothing found ── */
   sandbox.schedRecSetQ('nothing matches this');
   assert('an empty result says so', /No records in this range/.test(body.textContent));
+  // A board still on its way looks exactly like an empty archive otherwise.
+  sandbox._schedStates.labor.loaded = false;
+  sandbox.schedRecPaint();
+  assert('but an archive that has not arrived yet says that instead',
+    /Loading the schedule/.test(body.textContent) && !/No records/.test(body.textContent),
+    body.textContent.slice(0, 90));
+  sandbox._schedStates.labor.loaded = true;
   eq('and the totals go to zero', sandbox.schedRecTotals(sandbox.schedRecView()).rows, 0);
   sandbox.schedRecSetQ('');
 
