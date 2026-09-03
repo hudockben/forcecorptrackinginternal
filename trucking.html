@@ -6387,6 +6387,20 @@
     const SCHED_REC_MAX_PULL = 24;    // chunks in one pull — a runaway backstop
     const SCHED_REC_DRAW     = 750;   // rows drawn before "show all" is offered
 
+    const SCHED_REC_NO_REPORTS = new Map();   // shared, never written to
+
+    /** The range the report map has to match to be worth joining against. */
+    function schedRecKey() { return schedRec.from + '..' + schedRec.to; }
+
+    /** The driver reports for the range on screen — and nothing else. A map
+     *  fetched for another range answers with blanks and the odd stranger,
+     *  which reads as "nobody reported anything" rather than as "not loaded":
+     *  wrong on the board, wrong in the totals, wrong in the workbook. It is
+     *  therefore not consulted at all until it is the right one. */
+    function schedRecReports() {
+      return schedRec.reportsRange === schedRecKey() ? schedRec.reports : SCHED_REC_NO_REPORTS;
+    }
+
     const schedRec = {
       from: '', to: '', preset: '30',
       board: 'all', status: 'all', q: '',
@@ -6511,6 +6525,7 @@
         return dowMemo.get(ds);
       };
 
+      const reps = schedRecReports();
       const rows = [], known = new Set();
       let allLoaded = true;
       SCHED_BOARDS.forEach(cfg => {
@@ -6520,7 +6535,7 @@
           const list = st.assignments[d] || [];
           list.forEach(a => { if (a && a.id) known.add(a.id); });
           if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < from || d > to) return;
-          list.forEach(a => { if (a) rows.push(schedRecRow(cfg, d, a, unitTypeOf, dowOf)); });
+          list.forEach(a => { if (a) rows.push(schedRecRow(cfg, d, a, reps, unitTypeOf, dowOf)); });
         });
       });
 
@@ -6531,7 +6546,7 @@
       // claim about both of them, and a board that failed to load would turn
       // every haul it holds into a phantom Report-only row.
       if (!allLoaded) return rows;
-      schedRec.reports.forEach((rep, id) => {
+      reps.forEach((rep, id) => {
         if (!rep || known.has(id)) return;
         const d = String(rep.work_date || '').slice(0, 10);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < from || d > to) return;
@@ -6540,8 +6555,8 @@
       return rows;
     }
 
-    function schedRecRow(cfg, date, a, unitTypeOf, dowOf) {
-      const rep    = schedRec.reports.get(a.id) || null;
+    function schedRecRow(cfg, date, a, reps, unitTypeOf, dowOf) {
+      const rep    = reps.get(a.id) || null;
       const actHrs = rep ? schedRecHours(rep.actual_start, rep.actual_end) : '';
       const tons   = rep ? schedRecFigure(rep.tons)  : '';
       const loads  = rep ? schedRecFigure(rep.loads) : '';
@@ -6688,11 +6703,12 @@
       const key = from + '..' + to;
       // A range that already failed is not retried by the next repaint — every
       // keystroke repaints, and a dead endpoint would otherwise be hammered
-      // once per character. Retry is a button.
+      // once per character. Retry is a button. The failure is remembered
+      // against its own range rather than as a flag, so coming back to it
+      // still says the reports are missing instead of showing another range's.
       if (schedRec.reportsRange === key || schedRec.reportsLoading === key
           || schedRec.reportsErrRange === key) return;
       schedRec.reportsLoading = key;
-      schedRec.reportsErr = null;
       schedRec.reportsShort = '';
       try {
         const map = new Map();
@@ -6720,6 +6736,10 @@
         // A range wider than the chunk budget stops short. Said out loud rather
         // than left to look like nobody reported anything that far back.
         schedRec.reportsShort = reached < to ? reached : '';
+        if (schedRec.reportsErrRange === key) {
+          schedRec.reportsErr      = null;
+          schedRec.reportsErrRange = '';
+        }
       } catch (err) {
         if (schedRec.reportsLoading !== key) return;
         schedRec.reportsErr      = (err && err.message) || 'could not load driver reports';
@@ -6910,12 +6930,15 @@
           ' schedule, so those records are missing.');
         btns.push(btn('Retry', 'schedRecRetryBoards()'));
       }
-      if (schedRec.reportsErr) {
+      // Both of these are about the range on screen: a failure recorded on a
+      // range you have since navigated away from is not this range's news.
+      const key = schedRecKey();
+      if (schedRec.reportsErr && schedRec.reportsErrRange === key) {
         if (cls === 'rec-note') cls = 'rec-note warn';
         bits.push('Driver reports could not be loaded (' + schedRec.reportsErr +
           '), so the reported columns are empty.');
         btns.push(btn('Retry reports', 'schedRecRetryReports()'));
-      } else if (schedRec.reportsShort) {
+      } else if (schedRec.reportsShort && schedRec.reportsRange === key) {
         if (cls === 'rec-note') cls = 'rec-note warn';
         bits.push('That range is wider than one pull: driver reports were read through ' +
           schedRec.reportsShort + ' only. Narrow the dates for the rest.');

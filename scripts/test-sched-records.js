@@ -110,9 +110,11 @@ function page(opts) {
     st.loaded = true;
   });
   (o.reports || []).forEach(r => sandbox.schedRec.reports.set(r.assignment_id, r));
-  if (o.reports) sandbox.schedRec.reportsRange = 'preloaded';
   sandbox.schedRec.from = o.from || '2026-01-01';
   sandbox.schedRec.to   = o.to   || '2026-12-31';
+  // The map only answers for the range it was fetched for, so the fixture has
+  // to claim the range it is standing in for.
+  if (o.reports) sandbox.schedRec.reportsRange = sandbox.schedRec.from + '..' + sandbox.schedRec.to;
   return sandbox;
 }
 
@@ -922,9 +924,11 @@ function live(opts) {
     API_BASE: '/api', token: 'test',
     fetch: url => {
       calls.fetches.push(String(url));
-      return o.fetchFails
-        ? Promise.reject(new Error('HTTP 503'))
-        : Promise.resolve({ ok: true, json: () => Promise.resolve({ reports: [] }) });
+      if (o.fetchFails) return Promise.reject(new Error('HTTP 503'));
+      // Answers the way the endpoint does: only the window it was asked for.
+      const m = /from=([\d-]+)&to=([\d-]+)/.exec(String(url)) || [];
+      const reports = (o.reports || []).filter(r => r.work_date >= m[1] && r.work_date <= m[2]);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ reports }) });
     },
     schedEnsureLoaded: b => { calls.loads.push(b); },
     Blob: function () {}, URL: { createObjectURL: () => '', revokeObjectURL: () => {} },
@@ -939,7 +943,7 @@ function live(opts) {
   });
   sandbox.schedRec.from = o.from || '2026-03-01';
   sandbox.schedRec.to   = o.to   || '2026-03-07';
-  return { sandbox, calls, win };
+  return { sandbox, calls, win, opts: o };
 }
 const SBOARDS = sb => sb.SCHED_BOARDS.map(b => b.id);
 const settle = () => new Promise(r => setImmediate(r));
@@ -1010,6 +1014,80 @@ const settle = () => new Promise(r => setImmediate(r));
       !!sandbox.schedRec.reportsShort &&
       /read through/.test(sandbox.document.getElementById('sched-rec-note').textContent),
       sandbox.document.getElementById('sched-rec-note').textContent);
+  }
+
+  /* ── A failure belongs to the range it happened on ── */
+  {
+    const { sandbox, calls, opts } = live({
+      from: '2026-03-01', to: '2026-03-07',
+      reports: [
+        { assignment_id: 'mar', work_date: '2026-03-03', tons: 11, loads: 1,
+          actual_start: '06:00', actual_end: '14:00' },
+        { assignment_id: 'apr', work_date: '2026-04-03', tons: 99, loads: 9,
+          actual_start: '06:00', actual_end: '14:00' },
+      ],
+    });
+    sandbox._schedStates.trucking.assignments = {
+      '2026-03-03': [A('mar')], '2026-04-03': [A('apr', { driver: 'Kirk, Dan' })],
+    };
+    const note = () => sandbox.document.getElementById('sched-rec-note');
+    const rowOf = id => sandbox.schedRecView().find(r => r.id === id);
+
+    // March fails.
+    opts.fetchFails = true;
+    sandbox.renderSchedRecords();
+    await settle(); await settle();
+    eq('the first range is tried once', calls.fetches.length, 1);
+    assert('and says its reports are missing', /could not be loaded/.test(note().textContent));
+
+    // April succeeds.
+    opts.fetchFails = false;
+    sandbox.schedRec.from = '2026-04-01'; sandbox.schedRec.to = '2026-04-30';
+    sandbox.schedRecPaint();
+    await settle(); await settle();
+    eq('the next range is fetched', calls.fetches.length, 2);
+    eq('and its reports land on its rows', rowOf('apr').tons, 99);
+    assert('and the warning is gone', !/could not be loaded/.test(note().textContent), note().textContent);
+
+    // Back to March. It is still not re-fetched — but it must not read as if
+    // nobody reported anything, and it must not show April's answers.
+    sandbox.schedRec.from = '2026-03-01'; sandbox.schedRec.to = '2026-03-07';
+    sandbox.schedRecPaint();
+    await settle();
+    eq('the range that failed is still not re-fetched', calls.fetches.length, 2);
+    assert('and it says so again', /could not be loaded/.test(note().textContent), note().textContent);
+    assert('and offers the retry again', /schedRecRetryReports/.test(note().innerHTML));
+    eq('the row shows no actuals rather than another range\'s', rowOf('mar').tons, '');
+    eq('and is not miscounted as reported', rowOf('mar').status, 'Planned');
+
+    // The retry works, and clears the failure for good.
+    sandbox.schedRecRetryReports();
+    await settle(); await settle();
+    eq('retry fetches it', calls.fetches.length, 3);
+    eq('and its reports land', rowOf('mar').tons, 11);
+    assert('and the warning is gone for good', !/could not be loaded/.test(note().textContent));
+    eq('and the failure is forgotten', sandbox.schedRec.reportsErrRange, '');
+  }
+
+  /* ── A map for another range is never joined, even mid-load ── */
+  {
+    const { sandbox } = live({
+      from: '2026-04-01', to: '2026-04-30',
+      reports: [{ assignment_id: 'apr', work_date: '2026-04-03', tons: 99, loads: 9,
+                  actual_start: '06:00', actual_end: '14:00' }],
+    });
+    sandbox._schedStates.trucking.assignments = { '2026-04-03': [A('apr')] };
+    sandbox.renderSchedRecords();
+    await settle(); await settle();
+    eq('April reads its reports', sandbox.schedRecView()[0].tons, 99);
+
+    // Move the range. The old map is still in hand and the new pull has not
+    // landed; the rows must not be joined against it.
+    sandbox.schedRec.from = '2026-05-01'; sandbox.schedRec.to = '2026-05-31';
+    sandbox._schedStates.trucking.assignments = { '2026-05-04': [A('apr')] };
+    const mid = sandbox.schedRecView()[0];
+    eq('the moved haul shows no actuals while the new range loads', mid.tons, '');
+    eq('and is not counted as reported', mid.status, 'Planned');
   }
 
   /* ── "All time" catches up once the boards arrive ── */
