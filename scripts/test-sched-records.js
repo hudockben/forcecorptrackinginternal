@@ -81,7 +81,7 @@ const RECORDS = slice(TRUCKING, '    /* ═════════════�
    the context — so the few the tests reach for are handed out explicitly. */
 const EXPORTS = [
   'schedRec', 'SCHED_REC_COLS', 'SCHED_REC_STATUSES', 'SCHED_REC_PRESETS',
-  'SCHED_BOARDS', '_schedStates',
+  'SCHED_BOARDS', '_schedStates', 'SCHED_REC_STUCK',
 ].map(n => `globalThis.${n} = ${n};`).join('\n')
   // schedView is a `let`, so the tests get a door to it rather than reaching in.
   + '\nglobalThis.__setView = v => { schedView = v; };';
@@ -695,6 +695,25 @@ console.log('\n── Wiring ──');
     p.SCHED_REC_COLS.some(c => c.key === p.schedRec.sort.key));
   assert('every status the filter offers is one a row can carry',
     p.SCHED_REC_STATUSES.length === 3 && p.SCHED_REC_STATUSES.includes('Report only'));
+
+  // The frozen columns are positioned by hand, so their offsets have to be the
+  // running total of the widths before them or they overlap on screen.
+  {
+    let left = 0;
+    const bad = [];
+    ['board', 'date', 'driver'].forEach((k, i) => {
+      const st = p.schedRecStick(k);
+      const px = p.SCHED_REC_COLS.find(c => c.key === k).px;
+      if (!st.cls.includes('stk')) bad.push(k + ' is not pinned');
+      if (!st.style.includes(`left:${left}px`)) bad.push(k + ' starts at the wrong offset: ' + st.style);
+      if (!st.style.includes(`width:${px}px`)) bad.push(k + ' is not the width its offset assumes');
+      if (i === 2 && !st.cls.includes('stk-edge')) bad.push('the last pinned column has no edge');
+      left += px;
+    });
+    assert('the pinned columns tile the left edge exactly', !bad.length, bad.join('; '));
+    assert('and nothing else is pinned',
+      p.SCHED_REC_COLS.filter(c => p.schedRecStick(c.key).cls).length === 3);
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

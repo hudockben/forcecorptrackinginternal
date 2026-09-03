@@ -956,6 +956,18 @@
       padding: 0.32rem 0.55rem; font-size: 0.76rem; white-space: nowrap;
       max-width: 320px; overflow: hidden; text-overflow: ellipsis;
     }
+    /* Board, Date and Driver stay put while the other twenty-two columns
+       scroll past, so a row half a screen to the right is still somebody's.
+       Sticky cells need an opaque background of their own — the row's would
+       scroll out from under them — and their own border, which border-collapse
+       does not carry onto a stuck cell. */
+    .rec-tbl th.stk, .rec-tbl td.stk { position: sticky; z-index: 2; }
+    .rec-tbl tbody td.stk { background: var(--surface); border-bottom: 1px solid var(--border); }
+    .rec-tbl tbody tr:hover td.stk { background: var(--surface2); }
+    .rec-tbl tbody tr.orphan td.stk { background: #1b1a17; }
+    .rec-tbl thead tr.hdr-row th.stk    { z-index: 5; background: var(--surface2); }
+    .rec-tbl thead tr.filter-row th.stk { z-index: 5; background: var(--surface); }
+    .rec-tbl .stk-edge { box-shadow: 1px 0 0 var(--border); }
     .rec-tbl tbody td.r { text-align: right; font-variant-numeric: tabular-nums; }
     .rec-tbl tbody td.dim { color: var(--muted); }
     .rec-tbl tbody td.id  { color: var(--muted); font-family: monospace; font-size: 0.66rem; }
@@ -6309,10 +6321,10 @@
      *    f    — carries a filter box in the header
      *    w    — column width in the workbook */
     const SCHED_REC_COLS = [
-      { key: 'board',       label: 'Board',          w: 12               },
-      { key: 'date',        label: 'Date',           w: 12, type: 'date', f: 1 },
+      { key: 'board',       label: 'Board',          w: 12,              px: 88  },
+      { key: 'date',        label: 'Date',           w: 12, type: 'date', px: 100, f: 1 },
       { key: 'dow',         label: 'Day',            w: 7,               f: 1 },
-      { key: 'driver',      label: 'Driver',         w: 20,              f: 1 },
+      { key: 'driver',      label: 'Driver',         w: 20,              px: 160, f: 1 },
       { key: 'division',    label: 'Division',       w: 13,              f: 1 },
       { key: 'project',     label: 'Project / Job',  w: 34,              f: 1 },
       { key: 'location',    label: 'Location',       w: 20,              f: 1 },
@@ -6337,6 +6349,36 @@
     ];
 
     const SCHED_REC_STATUSES = ['Planned', 'Reported', 'Report only'];
+
+    /* The columns pinned to the left edge, in order from it. They carry a `px`
+       width because a sticky column has to be told where it starts, and that
+       offset is the sum of the ones before it. Day is deliberately not among
+       them: three columns is already 350px of a scrolling table. */
+    const SCHED_REC_STUCK = ['board', 'date', 'driver'];
+
+    /* Worked out once. Both of these are read for every cell of every row —
+       twenty-five times a row, hundreds of rows, on every keystroke — and a
+       linear scan of the column list in there is the difference between a
+       table that keeps up with typing and one that does not. */
+    const SCHED_REC_BY_KEY = SCHED_REC_COLS.reduce((m, c) => { m[c.key] = c; return m; },
+      Object.create(null));   // no prototype, so an odd key cannot answer with Object's
+    const SCHED_REC_STICK = (() => {
+      const out = {};
+      let left = 0;
+      SCHED_REC_STUCK.forEach((key, i) => {
+        const px = (SCHED_REC_BY_KEY[key] || {}).px || 0;
+        out[key] = {
+          cls: 'stk' + (i === SCHED_REC_STUCK.length - 1 ? ' stk-edge' : ''),
+          style: `left:${left}px;width:${px}px;min-width:${px}px;max-width:${px}px`,
+        };
+        left += px;
+      });
+      return out;
+    })();
+    const SCHED_REC_LOOSE = { cls: '', style: '' };
+
+    /** The style and class a pinned column needs, or neither for the rest. */
+    function schedRecStick(key) { return SCHED_REC_STICK[key] || SCHED_REC_LOOSE; }
 
     /* Driver reports are fetched a window at a time: the endpoint clamps any
        range longer than 400 days, so a multi-year pull is chunked rather than
@@ -6541,7 +6583,7 @@
     /** What a cell reads as. One definition for the screen, the filter boxes,
      *  the search and the workbook's text columns alike. */
     function schedRecText(row, key) {
-      const col = SCHED_REC_COLS.find(c => c.key === key);
+      const col = SCHED_REC_BY_KEY[key];
       const v   = row[key];
       if (v === '' || v == null) return '';
       if (col && col.type === 'time') return schedTime12(v);
@@ -6583,7 +6625,7 @@
     function schedRecSort(rows) {
       const key = schedRec.sort.key;
       const mul = schedRec.sort.dir === 'desc' ? -1 : 1;
-      const col = SCHED_REC_COLS.find(c => c.key === key) || {};
+      const col = SCHED_REC_BY_KEY[key] || {};
       const asNum  = col.type === 'num';
       const asTime = col.type === 'time';
       return rows.slice().sort((a, b) => {
@@ -6711,12 +6753,15 @@
       const statuses = `<option value="all"${schedRec.status === 'all' ? ' selected' : ''}>Any status</option>` +
         SCHED_REC_STATUSES.map(s =>
           `<option value="${schedEsc(s)}"${s === schedRec.status ? ' selected' : ''}>${schedEsc(s)}</option>`).join('');
-      const filterRow = SCHED_REC_COLS.map(c => `<th>${c.f
-        ? `<input type="text" id="sched-rec-f-${c.key}" autocomplete="off"
-             class="${schedRec.col[c.key] ? 'on' : ''}" placeholder="Filter"
-             value="${schedEsc(schedRec.col[c.key] || '')}"
-             oninput="schedRecSetCol('${c.key}', this.value, this)">`
-        : ''}</th>`).join('');
+      const filterRow = SCHED_REC_COLS.map(c => {
+        const st = schedRecStick(c.key);
+        return `<th class="${st.cls}" style="${st.style}">${c.f
+          ? `<input type="text" id="sched-rec-f-${c.key}" autocomplete="off"
+               class="${schedRec.col[c.key] ? 'on' : ''}" placeholder="Filter"
+               value="${schedEsc(schedRec.col[c.key] || '')}"
+               oninput="schedRecSetCol('${c.key}', this.value, this)">`
+          : ''}</th>`;
+      }).join('');
 
       return `
         <div style="padding:1.25rem">
@@ -6758,7 +6803,8 @@
     function schedRecHeadHTML() {
       return SCHED_REC_COLS.map(c => {
         const on = schedRec.sort.key === c.key;
-        return `<th class="${c.type === 'num' ? 'r ' : ''}${on ? 'sorted' : ''}"
+        const st = schedRecStick(c.key);
+        return `<th class="${c.type === 'num' ? 'r ' : ''}${on ? 'sorted ' : ''}${st.cls}" style="${st.style}"
           onclick="schedRecSortBy('${c.key}')" title="Sort by ${schedEsc(c.label)}">${schedEsc(c.label)}${
           on ? `<span class="arw">${schedRec.sort.dir === 'asc' ? '▲' : '▼'}</span>` : ''}</th>`;
       }).join('');
@@ -6773,15 +6819,17 @@
       const draw = schedRec.showAll ? rows : rows.slice(0, SCHED_REC_DRAW);
       return draw.map(r => {
         const cells = SCHED_REC_COLS.map(c => {
+          const st = schedRecStick(c.key);
           if (c.key === 'status') {
-            const cls = r.status === 'Reported' ? 'yes' : r.status === 'Report only' ? 'only' : 'no';
-            return `<td><span class="pill ${cls}">${schedEsc(r.status)}</span></td>`;
+            const pill = r.status === 'Reported' ? 'yes' : r.status === 'Report only' ? 'only' : 'no';
+            return `<td class="${st.cls}" style="${st.style}"><span class="pill ${pill}">${
+              schedEsc(r.status)}</span></td>`;
           }
           const txt = schedRecText(r, c.key);
-          const cls = c.key === 'id' ? 'id'
+          const cls = (c.key === 'id' ? 'id'
             : (c.type === 'num' || c.type === 'time') ? 'r'
-            : txt ? '' : 'dim';
-          return `<td class="${cls}" title="${schedEsc(txt)}">${
+            : txt ? '' : 'dim') + (st.cls ? ' ' + st.cls : '');
+          return `<td class="${cls}" style="${st.style}" title="${schedEsc(txt)}">${
             schedEsc(txt) || '<span class="dim">—</span>'}</td>`;
         }).join('');
         return `<tr class="${r.status === 'Report only' ? 'orphan' : ''}">${cells}</tr>`;
@@ -6922,7 +6970,7 @@
     }
 
     function schedRecSortBy(key) {
-      const col = SCHED_REC_COLS.find(c => c.key === key);
+      const col = SCHED_REC_BY_KEY[key];
       if (!col) return;
       // A column opens on the reading its values are usually wanted in:
       // biggest or latest first for a figure or a date, A–Z for a name.
