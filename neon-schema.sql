@@ -1120,31 +1120,35 @@ CREATE INDEX IF NOT EXISTS idx_ts_haul_type
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS haul_hours NUMERIC(6,2);
 
 -- ─────────────────────────────────────────────────
--- DAILY TRACKING — haul_exempt
+-- DAILY TRACKING — is_haul
 -- ─────────────────────────────────────────────────
--- "The approver said outright that the truck did NOT buy this row's labour."
+-- "Did the truck buy this row's labour?" — the approver's own answer, in the
+-- three states the question actually has.
 --
--- Whether a row is a haul is otherwise readable off the row itself: a haul
--- carries a 'Haul — …' field_type, and anything else does not. That is enough
--- for two of the three states and not for the third, because an ABSENT stamp
--- means two different things — the approver decided the driver was out of the
--- truck for these hours, or nobody ever asked (a row posted before the driver
--- was flagged, or before the question was per-row at all).
+--   TRUE  → he was in the truck. The row posts a $0 labour rate: his wage is
+--           already inside the truck's hourly cost.
+--   FALSE → he was out of it and working. Never a haul, whatever is on the row,
+--           however many times anything re-reads it.
+--   NULL  → NOBODY SAID. The truck on the row decides, which is what lets a
+--           genuinely stale row still self-heal.
 --
--- The difference is money. POST ?action=refresh-rates re-prices every injected
--- row in a range and is meant to heal the second case; without this column it
--- healed the first one too, re-stamping the site-labour row and putting its $0
--- back on every run, silently, for as long as anyone kept running it.
+-- Nullable on purpose. It was first written as `haul_exempt BOOLEAN NOT NULL`,
+-- which can only say "not a haul" or "nothing said" — "it IS a haul" then had
+-- to be inferred from the 'Haul — …' stamp in field_type, so two columns
+-- carried one answer, could contradict each other, and every reader had to be
+-- told which won. One nullable column holds all three states outright and needs
+-- no precedence rule at all.
 --
---   FALSE → nothing was said. The stamp, and failing that the truck on the row,
---           decide — which is what lets a genuinely stale row still self-heal.
---   TRUE  → he was out of the truck and working. Never a haul, whatever else is
---           on the row, however many times anything re-reads it.
+-- The stamp stays, doing only what it is actually read for: the cost grids
+-- display it, and the division pages subtract stamped hours from their
+-- crew-size and units-per-man-hour denominators. It is also the only record a
+-- row approved BEFORE this column existed carries, so storedHaulAnswer falls
+-- back to it when is_haul is null — without that, every historic haul row would
+-- read as "nobody said" and be re-derived from a truck many of them never named.
 --
 -- Only ever set from the split modal's per-row Haul tick, and only on rows this
--- app injected (timesheet_entry_id IS NOT NULL). A row created any other way
--- carries the default and behaves exactly as it always did.
-ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS haul_exempt BOOLEAN NOT NULL DEFAULT FALSE;
+-- app injected (timesheet_entry_id IS NOT NULL).
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS is_haul BOOLEAN;
 
 -- EES-only daily fields. Captured on the timesheet only when the division is
 -- 'dust' AND the job is one of the two standing EES activities (job_id

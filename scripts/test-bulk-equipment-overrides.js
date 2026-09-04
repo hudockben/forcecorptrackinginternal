@@ -105,6 +105,9 @@ vm.runInContext([
   // job nothing at all, which is what it exists to prevent.
   'bulkApplyHaulDefaults(e, rows) {',
   'buildBulkBody(g, e) {',
+  // The days this panel cannot answer for, named on the card rather than
+  // guessed at. See the haul block at the end of this file.
+  'bulkHaulNeedsReview(g) {',
 ].map(grab).join('\n\n'), sandbox);
 
 const entry = (user, day, work, travel = 0) => ({
@@ -639,6 +642,71 @@ console.log('\n[the two isTravelSplitRow implementations agree]');
         mine(row) === server(row), `payroll ${mine(row)} vs server ${server(row)}`);
     }
   }
+}
+
+// ── Bulk approve on a hauling day ──────────────────────────────────────────
+// Bulk means "approve what the driver filed", and what he filed is a day-level
+// answer covering every hour of the block. Splitting it into the hours he drove
+// and the hours he worked takes a person deciding, which is why the Edit Split
+// modal has a per-row tick and this panel does not — so bulk sends the answer
+// EXPLICITLY rather than leaving the server to read it off the truck.
+//
+// Left derived, it was a live money bug: a group carrying a crew equipment
+// override puts a machine on the row that is NOT the driver's truck, the server
+// reads the row as ordinary work, and the day posts his full wage on top of that
+// machine's hourly cost — the double-bill the $0 rule exists to prevent, from a
+// button with no warning surface at all.
+console.log('\n[bulk approve, hauling]');
+{
+  const haulDay = (user, day, truck) => Object.assign(
+    entry(user, day, 8), { haul_type: 'off_site', truck_unit: truck });
+  const rick = haulDay('rick', 5, 'Triaxle Dump');
+  const { groups: hg } = sandbox.buildBulkGroups([rick]);
+  const hgg = hg[0];
+  sandbox.bulkGroups = hg;
+  hgg.template.cost_code = 'CC1';
+  hgg.template.sub_code  = 'SC1';
+
+  let body = sandbox.buildBulkBody(hgg, rick);
+  assert('the driver\'s own truck goes on the row',
+    body.split[0].equipment === 'Triaxle Dump' && body.split[0].equip_hours === 8);
+  assert('  and the row says outright that the truck bought it',
+    body.split[0].is_haul === true, JSON.stringify(body.split[0]));
+  assert('  so it cannot be re-read as ordinary work by anything downstream',
+    body.split.every(r => r.is_travel || r.is_haul === true));
+  assert('nothing needs review while the row carries his own truck',
+    sandbox.bulkHaulNeedsReview(hgg).length === 0);
+
+  // The crew override puts a different machine on the row. Bulk still approves
+  // it as the haul he said it was — but says which days it could not answer for.
+  sandbox.bulkRowSet(0, 'rick-5', 0, 'equipment', 'Roller 12');
+  sandbox.bulkRowEquipCommit(0, 'rick-5', 0);
+  body = sandbox.buildBulkBody(hgg, rick);
+  assert('a machine that is not his truck is still approved as the haul he filed',
+    body.split[0].is_haul === true && body.split[0].equipment === 'Roller 12');
+  const review = sandbox.bulkHaulNeedsReview(hgg);
+  assert('  and the day is named for review rather than guessed at',
+    review.length === 1 && review[0].id === 'rick-5', JSON.stringify(review.map(e => e.id)));
+
+  // An ordinary day is untouched by any of it.
+  const plain = entry('al', 6, 8);
+  const { groups: pg } = sandbox.buildBulkGroups([plain]);
+  sandbox.bulkGroups = pg;
+  pg[0].template.cost_code = 'CC1';
+  pg[0].template.sub_code  = 'SC1';
+  const pbody = sandbox.buildBulkBody(pg[0], plain);
+  assert('a day nobody called a haul sends no haul answer at all',
+    pbody.split.every(r => r.is_haul === undefined), JSON.stringify(pbody.split));
+  assert('  and never needs review', sandbox.bulkHaulNeedsReview(pg[0]).length === 0);
+
+  // Called directly above, so none of it notices the card no longer asking.
+  // The panel has no other warning surface, and a day approved as a haul that
+  // should not have been is a man's wage — it has to be said on screen.
+  const card = grab('bulkGroupCard(g, idx) {');
+  assert('and the group card actually asks',
+    /const review = bulkHaulNeedsReview\(g\);/.test(card));
+  assert('  and renders what comes back', /\$\{reviewNote\}/.test(card)
+    && /review\.length \? /.test(card));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -31,10 +31,11 @@
  *      that as the haul zeroes his roller time exactly as marking the whole day
  *      did.
  *
- * And an explicit "not a haul" is STORED — daily_tracking.haul_exempt. An absent
- * stamp used to mean two things at once ("he was working" and "nobody asked"),
- * which the refresh-rates sweep could only guess at; it guessed wrong and put
- * the $0 back on every run.
+ * And the answer is STORED, in all three states — daily_tracking.is_haul. An
+ * absent stamp used to mean two things at once ("he was working" and "nobody
+ * asked"), which the refresh-rates sweep could only guess at; it guessed wrong
+ * and put the $0 back on every run. A row approved before that column existed
+ * has only its stamp, so the stamp is read as the legacy "it was a haul".
  *
  * These are the real functions out of api/timesheet-entries.js. The pricing
  * expression and the sweep that re-rates approved rows are read from source,
@@ -99,14 +100,21 @@ console.log('\n[a machine on the row is not the same question as the truck]');
     truckOnRow(lowboy, TRIAXLE) === false);
   assert('  but it is unquestionably priced, so the row does cost the job something',
     T.pricedMachineOnRow(lowboy) === true);
-  assert('  and that pair is what makes it worth asking about',
-    T.unnamedMachineOnRow(lowboy, TRIAXLE) === true);
-  assert('the named truck is never an unnamed machine',
-    T.unnamedMachineOnRow(row({ equipment: 'Triaxle Dump', equip_hours: 6.5 }), TRIAXLE) === false);
+  // Priced AND not the truck is the pair worth asking the approver about. The
+  // question itself is the modal's — see splitUnnamedMachineRows in payroll.html
+  // and its coverage in test-haul-unpriced-warning.js; the server holds only the
+  // two predicates it is composed from, because the server has nobody to ask.
+  const oddPair = r => T.pricedMachineOnRow(r) && !truckOnRow(r, TRIAXLE);
+  assert('  and that pair is what makes it worth asking about', oddPair(lowboy) === true);
+  assert('the named truck is never one of them',
+    oddPair(row({ equipment: 'Triaxle Dump', equip_hours: 6.5 })) === false);
   assert('nor is a bare row — there is no machine on it to wonder about',
-    T.unnamedMachineOnRow(row(), TRIAXLE) === false);
+    oddPair(row()) === false);
   assert('nor a unit with no hours, which bills nothing either way',
-    T.unnamedMachineOnRow(row({ equipment: 'Lowboy', equip_hours: 0 }), TRIAXLE) === false);
+    oddPair(row({ equipment: 'Lowboy', equip_hours: 0 })) === false);
+  assert('and the server keeps no unused copy of the question it cannot answer',
+    T.unnamedMachineOnRow === undefined
+    && !/function unnamedMachineOnRow\(/.test(src));
 }
 
 console.log('\n[which rows the haul pays for]');
@@ -195,8 +203,8 @@ assert('  and the entry goes with it, so the rule knows which unit was the truck
 // asked" — so the approver's decision had to be written down somewhere the
 // re-rate sweep could read it.
 assert('an explicit "not a haul" is stored, not merely left unstamped',
-  /material_cost, quantity, timesheet_entry_id, haul_exempt/.test(insert)
-  && /\$\{r\.is_haul === false\}/.test(insert));
+  /material_cost, quantity, timesheet_entry_id, is_haul/.test(insert)
+  && /r\.is_haul === true \|\| r\.is_haul === false \? r\.is_haul : null/.test(insert));
 assert('a haul row is written at 0 and every other row at its real rate',
   /\$\{isHaulRow \? 0 : \(isTravel \? travelRate : workRate\)\}/.test(insert));
 assert('the stamp follows the same answer, so the rate and the marker cannot disagree',
@@ -227,9 +235,9 @@ assert('  and the stamp is tested once, not three times over the same value',
   (sweep.match(/HAUL_FIELD_TYPE_RE\.test/g) || []).length === 1);
 assert('the stored exemption outranks the truck, so the sweep cannot re-haul a row',
   /const stored    = storedHaulAnswer\(r\);/.test(sweep)
-  && T.storedHaulAnswer({ haul_exempt: true }).is_haul === false);
+  && T.storedHaulAnswer({ is_haul: false }).is_haul === false);
 assert('  which means it reads that column, and the truck the driver named',
-  (src.match(/dt\.cost_code, dt\.sub_code, dt\.haul_exempt,/g) || []).length === 2
+  (src.match(/dt\.cost_code, dt\.sub_code, dt\.is_haul,/g) || []).length === 2
   && (src.match(/te\.haul_type, te\.truck_unit/g) || []).length === 2);
 // A row that changes sides moves exactly its own labour hours in or out of the
 // hauled total. ADJUSTED, not cleared: null means "the whole day was hauled",
@@ -241,7 +249,14 @@ assert('a row that changes sides adjusts its entry\'s haul_hours by its own hour
   /if \(stamped !== !!haulType && r\.timesheet_entry_id\) \{/.test(sweep)
   && /seen\.delta \+= \(haulType \? 1 : -1\) \* \(Number\(r\.labor_hours\) \|\| 0\);/.test(sweep));
 assert('  starting from the whole day when nothing was ever recorded',
-  /COALESCE\(haul_hours, \$\{work\}::numeric\) \+ \$\{_r2\(moved\.delta\)\}::numeric/.test(sweep));
+  /COALESCE\(te\.haul_hours, m\.work\) \+ m\.delta/.test(sweep));
+// One statement for every entry that moved, not one per entry: a loop of
+// awaited updates costs a round-trip each, and the first sweep over a wide
+// range after a deploy is exactly when there are most of them.
+assert('  and written for every moved entry in a single statement',
+  /FROM unnest\(\$\{movedIds\}::bigint\[\], \$\{movedDeltas\}::numeric\[\], \$\{movedWork\}::numeric\[\]\)/
+    .test(sweep)
+  && !/for \(const \[id, moved\] of haulHoursMoved\)/.test(sweep));
 assert('  and clamped to the day at both ends, so the split still adds up',
   /GREATEST\(0, LEAST\(/.test(sweep));
 assert('  which needs the row\'s hours and the day\'s, so it selects both',
@@ -258,7 +273,7 @@ const asSweep = (r, entryHaul) => {
   return (!travel && isHaulWorkRow(
     Object.assign({ equipment: r.equipment, equip_hours: r.equip_hours },
                   stamped ? { is_haul: true } : null,
-                  r.haul_exempt === true ? { is_haul: false } : null),
+                  r.is_haul === false ? { is_haul: false } : null),
     haulTypeOf({ haul_type: entryHaul }), r)) ? haulTypeOf({ haul_type: entryHaul }) : null;
 };
 
@@ -277,7 +292,7 @@ assert('a second machine on a haul day is not the truck, so it is left alone',
             truck_unit: 'Triaxle Dump' }, 'off_site') === null);
 assert('and the stored exemption holds even against the truck itself',
   asSweep({ field_type: null, equipment: 'Triaxle Dump', equip_hours: 6.5,
-            truck_unit: 'Triaxle Dump', haul_exempt: true }, 'off_site') === null);
+            truck_unit: 'Triaxle Dump', is_haul: false }, 'off_site') === null);
 assert('and a day no longer called a haul loses the stamp it had',
   asSweep({ field_type: 'Haul — To/From Site', equipment: 'Triaxle Dump', equip_hours: 6.5 }, null) === null);
 assert('travel is never re-stamped as a haul, whatever the entry says',
@@ -294,12 +309,19 @@ assert('the approval writes it from the split it is about to inject',
 assert('a resplit rewrites it from the new split',
   /const rsHaulHours = haulWorkHoursOf\(existing, splitRows\);/.test(src));
 assert('and it is cleared everywhere the split goes away',
-  (src.match(/haul_hours\s*=\s*NULL/g) || []).length >= 3,
+  (src.match(/haul_hours\s*=\s*NULL/g) || []).length >= 2,
   `${(src.match(/haul_hours\s*=\s*NULL/g) || []).length} clears`);
+// But NOT on an edit that keeps the answer. Cleared unconditionally, this had
+// the same backwards sign the sweep did: null means THE WHOLE DAY WAS HAULED,
+// so wiping it on an edit that kept haul_type moved a driver's site hours out
+// of prevailing. Same "absent means keep" rule as haul_type beside it.
+assert('  and kept by an edit that keeps the haul answer it describes',
+  /haul_hours         = CASE WHEN \$\{keepHaul\}::boolean\s*\n\s*THEN haul_hours ELSE NULL END,/
+    .test(src));
 assert('the entry hands it to the page that reads it',
   /haul_hours:\s*r\.haul_hours != null \? Number\(r\.haul_hours\) : null,/.test(src));
-assert('haul_exempt is added to daily_tracking',
-  /ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS haul_exempt BOOLEAN NOT NULL DEFAULT FALSE;/
+assert('is_haul is added to daily_tracking, nullable so it can hold all three states',
+  /ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS is_haul BOOLEAN;/
     .test(fs.readFileSync(path.resolve(__dirname, '../neon-schema.sql'), 'utf8')));
 
 // Reopening a split has to hand back THREE states, never two. Collapsed to a
@@ -308,10 +330,17 @@ assert('haul_exempt is added to daily_tracking',
 // re-stamped the entry and re-priced nothing at all.
 assert('a stamped row reopens as a haul',
   JSON.stringify(T.storedHaulAnswer({ field_type: 'Haul — To/From Site' })) === '{"is_haul":true}');
-assert('  an exempt row reopens as deliberately not one',
-  JSON.stringify(T.storedHaulAnswer({ haul_exempt: true })) === '{"is_haul":false}');
+assert('  an un-hauled row reopens as deliberately not one',
+  JSON.stringify(T.storedHaulAnswer({ is_haul: false })) === '{"is_haul":false}');
+// The column is authoritative; the stamp is only what a row approved before it
+// existed has to go on. Without that fallback every historic haul row would
+// read as "nobody said" and be re-derived from a truck many never named.
+assert('  a row from before the column falls back to its stamp',
+  JSON.stringify(T.storedHaulAnswer({ is_haul: null, field_type: 'Haul — On Site' })) === '{"is_haul":true}');
+assert('  and the column outranks a stamp that disagrees with it',
+  JSON.stringify(T.storedHaulAnswer({ is_haul: false, field_type: 'Haul — On Site' })) === '{"is_haul":false}');
 assert('  and a row nobody ever answered reopens with no key at all, so the truck decides',
-  T.storedHaulAnswer({ field_type: null, haul_exempt: false }) === null);
+  T.storedHaulAnswer({ is_haul: null, field_type: null }) === null);
 assert('  with one function answering that for both readers',
   /\.\.\.storedHaulAnswer\(r\),/.test(src) && /storedHaulAnswer\(r\);/.test(src));
 

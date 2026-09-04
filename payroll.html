@@ -9824,6 +9824,23 @@
         fields = `<div class="bulk-note">These entries just change status to approved — no cost row is injected.</div>`;
       }
 
+      // A haul day whose row will carry a machine the driver never named. Bulk
+      // will approve it as a haul — his own answer — but if he was operating
+      // that machine on the site those hours are his, and only somebody looking
+      // at the day can say. Named rather than blocked: refusing an approval
+      // that is genuinely correct just teaches people to work around the panel.
+      const review = bulkHaulNeedsReview(g);
+      const reviewNote = review.length ? `<div class="bulk-note" style="border-color:var(--yellow)">
+          <strong>${review.length} haul ${review.length === 1 ? 'day carries' : 'days carry'}
+          a machine the driver did not name.</strong>
+          ${escapeHtml([...new Set(review.map(e => e.username || '—'))].join(', '))} —
+          ${review.length === 1 ? 'it will be approved' : 'they will be approved'} as
+          hauling, at a $0 labour rate, which is what the driver answered. If he was
+          out of the truck operating that machine, the job owes him those hours:
+          approve ${review.length === 1 ? 'that day' : 'those days'} through
+          <strong>Edit Split</strong> instead and untick Haul on the row.
+        </div>` : '';
+
       return `<div class="bulk-group">
         <div class="bulk-group-head">
           <span class="bulk-badge ${badgeClass}">${escapeHtml(badgeText)}</span>
@@ -9831,6 +9848,7 @@
           <span class="bulk-group-meta">${escapeHtml(meta)}</span>
         </div>
         ${fields}
+        ${reviewNote}
         ${bulkDaysTable(g, idx)}
       </div>`;
     }
@@ -9923,6 +9941,20 @@
     // approver looking at it and a warning beside it, and bulk has neither.
     // A haul with no answer from the driver is left bare, which the row's $0
     // total makes visible in the cost tab.
+    //
+    // And the haul answer is sent EXPLICITLY, per row, rather than left for the
+    // server to read off the truck. Bulk means "approve what the driver filed",
+    // and what he filed is a day-level answer covering every hour of the block —
+    // splitting it into the hours he drove and the hours he worked takes a
+    // person deciding, which is the whole reason the Edit Split modal has a tick
+    // and this panel does not.
+    //
+    // Leaving it derived was a live money bug: a group carrying a crew
+    // equipment override puts a machine on the row that is NOT the driver's
+    // truck, the server then reads the row as ordinary work, and the day posts
+    // his full wage on top of that machine's hourly cost — the double-bill the
+    // $0 rule exists to prevent, from a button with no warning surface at all.
+    // bulkHaulNeedsReview below is what points those days at the modal instead.
     function bulkApplyHaulDefaults(e, rows) {
       const t = e && e.haul_type;
       if (t !== 'on_site' && t !== 'off_site') return;
@@ -9934,7 +9966,28 @@
         if (String(r.equipment || '').trim() && !(Number(r.equip_hours) > 0)) {
           r.equip_hours = Number(r.labor_hours) || 0;
         }
+        r.is_haul = true;
       }
+    }
+
+    // The days in a bulk group that this panel cannot answer for: a haul whose
+    // row will carry a machine the driver never named. Bulk marks the whole
+    // block a haul, which is what he said — but if he was actually operating
+    // that machine on the site, those hours are his and the job owes them, and
+    // only somebody looking at the day can tell. Named on the card so they can
+    // be pulled out and approved through the modal instead.
+    function bulkHaulNeedsReview(g) {
+      if (!g || g.type !== 'split') return [];
+      return (g.entries || []).filter(e => {
+        const t = e && e.haul_type;
+        if (t !== 'on_site' && t !== 'off_site') return false;
+        const said = String((e && e.truck_unit) || '').trim();
+        if (!said) return false;              // nothing to compare against
+        return (bulkRowEffective(g, e) || []).some(m =>
+          m.leg !== 'travel'
+          && String(m.equipment || '').trim()
+          && String(m.equipment).trim().toLowerCase() !== said.toLowerCase());
+      });
     }
 
     // Materialize one entry's approve body from its group's template. Each day's

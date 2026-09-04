@@ -263,6 +263,15 @@ const TRIAXLE_DAY = { haul_type: 'off_site', truck_unit: 'Triaxle Dump' };
     oddMachines(TRIAXLE_DAY, [row({ equipment: 'Triaxle Dump', equip_hours: 8 })]).length === 0);
   assert('  and nor is it once the approver has ticked it as a haul',
     oddMachines(TRIAXLE_DAY, [row({ is_haul: true, equipment: 'Lowboy', equip_hours: 3 })]).length === 0);
+  // A row he UNTICKED that carries the actual truck is a deliberate "the truck
+  // is billed elsewhere" call, not an ambiguous machine — there is nothing to
+  // ask him about, and nagging about a decision he just made is how a banner
+  // becomes wallpaper. This is the only case the truck test itself decides:
+  // everything else is settled by the haul check above it.
+  assert('an unticked row carrying his own truck is his decision, not a question',
+    oddMachines(TRIAXLE_DAY, [row({ is_haul: false, equipment: 'Triaxle Dump', equip_hours: 8 })]).length === 0);
+  assert('  while an unticked row carrying a different machine still is one',
+    oddMachines(TRIAXLE_DAY, [row({ is_haul: false, equipment: 'Lowboy', equip_hours: 3 })]).length === 1);
   assert('  nor a bare row, which has no machine to wonder about',
     oddMachines(TRIAXLE_DAY, [row()]).length === 0);
   assert('  nor a unit with no hours, which bills nothing either way',
@@ -567,27 +576,28 @@ console.log('\n[trying an answer does not change the page behind the modal]');
   assert('  and re-open on the haul answer they were approved with, undefined included',
     /is_travel:\s*!!r\.is_travel,[\s\S]{0,1600}?is_haul:\s*r\.is_haul,/.test(src));
   {
-    // The stored answer lives in two columns — the 'Haul — …' stamp and
-    // haul_exempt — and every reader needs the same precedence between them.
-    // Written once, so the sweep and this read-back cannot come to different
-    // conclusions about the same row.
+    // daily_tracking.is_haul holds the answer outright, in all three states.
+    // Read through one function so the sweep and this read-back cannot come to
+    // different conclusions about the same row.
     const T = require(path.resolve(__dirname, '../api/timesheet-entries.js'))._test;
-    assert('a stamped row reads back as a haul',
-      JSON.stringify(T.storedHaulAnswer({ field_type: 'Haul — To/From Site' })) === '{"is_haul":true}');
-    assert('  an exempt row as deliberately not one',
-      JSON.stringify(T.storedHaulAnswer({ haul_exempt: true })) === '{"is_haul":false}');
+    assert('an un-hauled row reads back as deliberately not one',
+      JSON.stringify(T.storedHaulAnswer({ is_haul: false })) === '{"is_haul":false}');
+    assert('  a hauled row as a haul',
+      JSON.stringify(T.storedHaulAnswer({ is_haul: true })) === '{"is_haul":true}');
     assert('  and a row nobody answered as nothing at all, so the truck decides',
-      T.storedHaulAnswer({ field_type: null, haul_exempt: false }) === null);
-    // Neither writer ever sets one without the other, but if anything ever does
-    // the precedence has to be the same everywhere rather than falling out of
-    // the order two spreads happen to be written in.
-    assert('  with the stamp winning outright if a row ever carried both',
-      JSON.stringify(T.storedHaulAnswer({ field_type: 'Haul — On Site', haul_exempt: true })) === '{"is_haul":true}');
+      T.storedHaulAnswer({ is_haul: null, field_type: null }) === null);
+    // A row approved before the column existed has only its stamp to go on.
+    // Without that fallback every historic haul row would read as "nobody said"
+    // and be re-derived from a truck many of them never named.
+    assert('  a row from before the column falls back to its stamp',
+      JSON.stringify(T.storedHaulAnswer({ is_haul: null, field_type: 'Haul — To/From Site' })) === '{"is_haul":true}');
+    assert('  with the column outranking a stamp that disagrees with it',
+      JSON.stringify(T.storedHaulAnswer({ is_haul: false, field_type: 'Haul — On Site' })) === '{"is_haul":false}');
     const api = fs.readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
     assert('and both readers go through that one function, not their own copy',
       (api.match(/\.\.\.storedHaulAnswer\(r\)/g) || []).length === 1
       && /const stored    = storedHaulAnswer\(r\);/.test(api)
-      && !/haul_exempt === true \? \{ is_haul: false \}[\s\S]{0,80}?\n\s*\}, haulTypeOf/.test(api));
+      && (api.match(/is_haul === false\) return \{ is_haul: false \}/g) || []).length === 1);
   }
   // Only a real answer is sent. An untouched row sends no key, and the server
   // reads the truck off the row exactly as the modal does — so "nobody said"

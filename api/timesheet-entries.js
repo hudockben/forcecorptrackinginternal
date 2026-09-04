@@ -1008,30 +1008,20 @@ function pricedMachineOnRow(row) {
     && (Number(row && row.equip_hours) || 0) > 0;
 }
 
-// A machine that is priced but is NOT the truck the driver named. Nobody but
-// the approver can say which it is: a second truck he also hauled with, or a
-// roller he ran on the site. Guessing either way is wrong for somebody —
-// calling it a haul takes the man's wage off a row he worked, and calling it
-// work bills the job his wage on top of the machine — so the row is left
-// paying him (the side that cannot underpay a person) and SAID OUT LOUD.
-// The silence was the actual defect here, not the choice of default.
-function unnamedMachineOnRow(row, entry) {
-  return pricedMachineOnRow(row) && !truckOnRow(row, entry);
-}
-
 // The answer stored on an injected row, in the three states the rule uses.
 //
-// It lives in two columns — the 'Haul — …' stamp in field_type, which the cost
-// grids and the production-rate denominators already read, and haul_exempt for
-// the approver's explicit "he was out of the truck". Every reader needs the
-// same precedence between them, so it is written once here rather than spread
-// inline at each site, where a transposed order would have the sweep and the
-// Edit Split read-back disagree about the same row.
+// daily_tracking.is_haul holds it outright — true, false, or null for "nobody
+// said". A row approved BEFORE that column existed has nothing in it and only
+// its 'Haul — …' stamp to go on, so the stamp is read as the legacy true. It is
+// a fallback, not a second source of truth: without it every historic haul row
+// would come back "nobody said" and be re-derived from a truck many of them
+// never named, silently re-pricing approved work.
 //
 // Returns an object to spread onto a row, or null for "nobody said".
 function storedHaulAnswer(row) {
+  if (row && row.is_haul === true)  return { is_haul: true };
+  if (row && row.is_haul === false) return { is_haul: false };
   if (HAUL_FIELD_TYPE_RE.test(String((row && row.field_type) || ''))) return { is_haul: true };
-  if (row && row.haul_exempt === true) return { is_haul: false };
   return null;
 }
 
@@ -1175,7 +1165,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         date, field_type, employee, cost_code, sub_code, job_class,
         rate, labor_hours, equipment, equip_unit_cost, equip_hours,
         material, supplier, po_num, units_purchased, unit_cost,
-        material_cost, quantity, timesheet_entry_id, haul_exempt
+        material_cost, quantity, timesheet_entry_id, is_haul
       ) VALUES (
         ${rowId},
         ${entry.job_id},
@@ -1195,7 +1185,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${null}, ${null}, ${null}, ${0}, ${0},
         ${0}, ${r.quantity || 0},
         ${entry.id},
-        ${r.is_haul === false}
+        ${r.is_haul === true || r.is_haul === false ? r.is_haul : null}
       )
       ON CONFLICT (row_id) DO NOTHING
     `;
@@ -5219,7 +5209,7 @@ module.exports = async (req, res) => {
         ? await sql`
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
                    dt.equipment, dt.equip_unit_cost, dt.equip_hours,
-                   dt.field_type, dt.cost_code, dt.sub_code, dt.haul_exempt,
+                   dt.field_type, dt.cost_code, dt.sub_code, dt.is_haul,
                    dt.timesheet_entry_id, dt.labor_hours,
                    te.username, te.job_id, te.haul_type, te.truck_unit,
                    te.computed_hours
@@ -5236,7 +5226,7 @@ module.exports = async (req, res) => {
         : await sql`
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
                    dt.equipment, dt.equip_unit_cost, dt.equip_hours,
-                   dt.field_type, dt.cost_code, dt.sub_code, dt.haul_exempt,
+                   dt.field_type, dt.cost_code, dt.sub_code, dt.is_haul,
                    dt.timesheet_entry_id, dt.labor_hours,
                    te.username, te.job_id, te.haul_type, te.truck_unit,
                    te.computed_hours
@@ -5320,13 +5310,13 @@ module.exports = async (req, res) => {
           // taken off the haul stays off it however many times this is run.
           const stamped   = HAUL_FIELD_TYPE_RE.test(String(r.field_type || ''));
           const stored    = storedHaulAnswer(r);
-          // haul_exempt is the approver saying outright that the driver was out
-          // of the truck for these hours. Without it, an absent stamp meant two
-          // things at once — "he was working" and "nobody ever asked" — and
-          // this sweep could only guess. It guessed wrong on the row this whole
-          // change exists for: any machine with hours on it read as the truck,
-          // so the site-labour row was re-stamped and re-zeroed on every run,
-          // silently undoing the approver for as long as anyone kept running it.
+          // is_haul is the approver's own answer, stored. Without it, an absent
+          // stamp meant two things at once — "he was working" and "nobody ever
+          // asked" — and this sweep could only guess. It guessed wrong on the
+          // row this whole change exists for: any machine with hours on it read
+          // as the truck, so the site-labour row was re-stamped and re-zeroed on
+          // every run, silently undoing the approver for as long as anyone kept
+          // running it.
           const haulType  = (!travelRow && isHaulWorkRow({
             equipment:   r.equipment,
             equip_hours: r.equip_hours,
@@ -5411,22 +5401,27 @@ module.exports = async (req, res) => {
         }
       }
 
-      // The entries whose split changed sides above. One statement each, and
-      // none at all on an ordinary run.
+      // The entries whose split changed sides above — ONE statement for all of
+      // them, and none at all on an ordinary run. A loop of awaited updates
+      // costs a serverless round-trip per entry, and the first sweep over a
+      // wide range after a deploy is exactly when there are most of them.
       //
       // A null haul_hours starts from the whole day, because that is what null
       // has always meant. Clamped to the day at both ends: the column may never
       // make prevailing + standard stop adding up to the hours the man is owed.
-      for (const [id, moved] of haulHoursMoved) {
-        const work = moved.work;
+      if (haulHoursMoved.size) {
+        const movedIds    = [...haulHoursMoved.keys()].map(Number);
+        const movedDeltas = movedIds.map(id => _r2(haulHoursMoved.get(String(id)).delta));
+        const movedWork   = movedIds.map(id => haulHoursMoved.get(String(id)).work);
         await sql`
-          UPDATE timesheet_entries
+          UPDATE timesheet_entries te
           SET haul_hours = GREATEST(0, LEAST(
-                ${work}::numeric,
-                COALESCE(haul_hours, ${work}::numeric) + ${_r2(moved.delta)}::numeric
+                m.work, COALESCE(te.haul_hours, m.work) + m.delta
               )),
               updated_at = NOW()
-          WHERE id = ${Number(id)} AND company_code = ${companyCode}
+          FROM unnest(${movedIds}::bigint[], ${movedDeltas}::numeric[], ${movedWork}::numeric[])
+            AS m(id, delta, work)
+          WHERE te.id = m.id AND te.company_code = ${companyCode}
         `;
       }
 
@@ -5527,7 +5522,7 @@ module.exports = async (req, res) => {
 
       const rows = await sql`
         SELECT row_id, project_id, division, date, cost_code, sub_code, equipment,
-               labor_hours, equip_hours, quantity, field_type, haul_exempt
+               labor_hours, equip_hours, quantity, field_type, is_haul
         FROM daily_tracking
         WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
         ORDER BY id ASC
@@ -5552,10 +5547,12 @@ module.exports = async (req, res) => {
           // What the approver settled last time, in the same three states the
           // modal and the pricing rule use — never collapsed to a boolean.
           //
-          //   stamped     → it was a haul.
-          //   haul_exempt → he said outright it was not.
-          //   neither     → NOBODY SAID. The key is absent, and the truck on
-          //                 the row decides, exactly as on a fresh approve.
+          //   is_haul true  → it was a haul.
+          //   is_haul false → he said outright it was not.
+          //   neither       → NOBODY SAID. The key is absent, and the truck on
+          //                   the row decides, exactly as on a fresh approve.
+          //                   A row from before the column existed falls back to
+          //                   its 'Haul — …' stamp; see storedHaulAnswer.
           //
           // Sending `false` for that third case is what made re-classifying an
           // approved day impossible: every row of a day that was never a haul
@@ -5740,7 +5737,18 @@ module.exports = async (req, res) => {
           operated_equipment = ${data.operated_equipment},
           haul_type          = CASE WHEN ${keepHaul}::boolean
                                     THEN haul_type ELSE ${data.haul_type}::text END,
-          haul_hours         = NULL,
+          -- How much of the day the truck bought, kept or dropped with the
+          -- answer it describes. Cleared unconditionally, this had the same
+          -- backwards sign the refresh-rates sweep did: null does not mean
+          -- "no split", it means THE WHOLE DAY WAS HAULED, so wiping it on an
+          -- edit that kept haul_type moved a driver's site hours out of
+          -- prevailing — on an entry this branch only reaches with its cost
+          -- rows already gone, so nothing would have written a real figure back.
+          -- Same "absent means keep" rule as haul_type, truck_unit and the EES
+          -- columns beside it; a REPLACED answer drops it, because the hours it
+          -- counted were counted under the old one.
+          haul_hours         = CASE WHEN ${keepHaul}::boolean
+                                    THEN haul_hours ELSE NULL END,
           supervisor_id      = ${data.supervisor_id},
           supervisor_name    = ${data.supervisor_name},
           notes              = ${data.notes},
@@ -5858,7 +5866,6 @@ module.exports._test = {
   HAUL_FIELD_TYPE_RE,
   isTravelSplitRow,
   pricedMachineOnRow,
-  unnamedMachineOnRow,
   storedHaulAnswer,
   insertQuarryRowsForDests,
   quarryHasInjectedRow,
