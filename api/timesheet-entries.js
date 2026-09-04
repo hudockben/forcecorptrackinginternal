@@ -976,9 +976,24 @@ function haulTypeOf(entry) {
 // "Triaxle Dump" with no hours costs the job exactly as nothing as naming no
 // truck at all. Both halves are required — the same pair the modal's unpriced
 // warning has always tested.
-function truckOnRow(row) {
-  return !!String((row && row.equipment) || '').trim()
-    && (Number(row && row.equip_hours) || 0) > 0;
+//
+// And it has to be THE TRUCK, not merely a machine. "Any equipment counts" put
+// the original bug straight back one machine over: a driver who hauls in the
+// triaxle for 6.50 h and then spends 2.50 h on the site running a roller has a
+// second row with a unit and hours on it, and reading that as the haul zeroed
+// his roller time exactly as marking the whole day did. The driver names the
+// truck he hauled with on his own timesheet (timesheet_entries.truck_unit) and
+// it is the same equipment list the row is coded from, so the two compare
+// directly. Where he named nothing there is nothing better to go on and any
+// machine still counts — the Haul tick is the answer in that case, and being
+// wrong there costs the job his wage rather than costing him his wage.
+function truckOnRow(row, entry) {
+  const unit = String((row && row.equipment) || '').trim();
+  if (!unit) return false;
+  if ((Number(row && row.equip_hours) || 0) <= 0) return false;
+  const said = String((entry && entry.truck_unit) || '').trim();
+  if (!said) return true;
+  return unit.toLowerCase() === said.toLowerCase();
 }
 
 // Was THIS row bought by the truck?
@@ -1003,11 +1018,11 @@ function truckOnRow(row) {
 //
 // Travel still outranks all of it — the commute is not the truck's time — and
 // that is the caller's job, as it always was.
-function isHaulWorkRow(row, haulType) {
+function isHaulWorkRow(row, haulType, entry) {
   if (!haulType) return false;
   if (row && row.is_haul === true)  return true;
   if (row && row.is_haul === false) return false;
-  return truckOnRow(row);
+  return truckOnRow(row, entry);
 }
 
 // The work hours of a split that the truck bought — what lands in
@@ -1018,7 +1033,7 @@ function haulWorkHoursOf(entry, rows) {
   const haulType = haulTypeOf(entry);
   if (!haulType) return null;
   const total = (Array.isArray(rows) ? rows : []).reduce((sum, r) => (
-    (!isTravelSplitRow(r) && isHaulWorkRow(r, haulType))
+    (!isTravelSplitRow(r) && isHaulWorkRow(r, haulType, entry))
       ? sum + (Number(r.labor_hours) || 0)
       : sum
   ), 0);
@@ -1113,7 +1128,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
     // The haul only covers the WORK rows of the block — and of those, only the
     // ones the truck was actually on. See isHaulWorkRow: a driver out of the
     // truck and working the site is owed that labour, and the job owes it.
-    const isHaulRow = !isTravel && isHaulWorkRow(r, haulType);
+    const isHaulRow = !isTravel && isHaulWorkRow(r, haulType, entry);
     const fieldType = isTravel ? 'Travel' : (isHaulRow ? HAUL_FIELD_TYPE[haulType] : null);
     await sql`
       INSERT INTO daily_tracking (
@@ -1121,7 +1136,7 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         date, field_type, employee, cost_code, sub_code, job_class,
         rate, labor_hours, equipment, equip_unit_cost, equip_hours,
         material, supplier, po_num, units_purchased, unit_cost,
-        material_cost, quantity, timesheet_entry_id
+        material_cost, quantity, timesheet_entry_id, haul_exempt
       ) VALUES (
         ${rowId},
         ${entry.job_id},
@@ -1140,7 +1155,8 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
         ${r.equip_hours},
         ${null}, ${null}, ${null}, ${0}, ${0},
         ${0}, ${r.quantity || 0},
-        ${entry.id}
+        ${entry.id},
+        ${r.is_haul === false}
       )
       ON CONFLICT (row_id) DO NOTHING
     `;
@@ -5164,8 +5180,9 @@ module.exports = async (req, res) => {
         ? await sql`
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
                    dt.equipment, dt.equip_unit_cost, dt.equip_hours,
-                   dt.field_type, dt.cost_code, dt.sub_code,
-                   te.username, te.job_id, te.haul_type
+                   dt.field_type, dt.cost_code, dt.sub_code, dt.haul_exempt,
+                   dt.timesheet_entry_id,
+                   te.username, te.job_id, te.haul_type, te.truck_unit
             FROM daily_tracking dt
             JOIN timesheet_entries te
               ON te.id = dt.timesheet_entry_id AND te.company_code = dt.company_code
@@ -5179,8 +5196,9 @@ module.exports = async (req, res) => {
         : await sql`
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
                    dt.equipment, dt.equip_unit_cost, dt.equip_hours,
-                   dt.field_type, dt.cost_code, dt.sub_code,
-                   te.username, te.job_id, te.haul_type
+                   dt.field_type, dt.cost_code, dt.sub_code, dt.haul_exempt,
+                   dt.timesheet_entry_id,
+                   te.username, te.job_id, te.haul_type, te.truck_unit
             FROM daily_tracking dt
             JOIN timesheet_entries te
               ON te.id = dt.timesheet_entry_id AND te.company_code = dt.company_code
@@ -5200,6 +5218,9 @@ module.exports = async (req, res) => {
       }
 
       let updated = 0;
+      // Entries whose split no longer means what haul_hours says. See the write
+      // below the row loop.
+      const haulHoursStale = new Set();
       // Keyed on login AND division: the same person can submit into more than
       // one, and each division has its own list. Collapsing them onto one entry
       // sent you to fix a list that was only part of the problem.
@@ -5256,11 +5277,19 @@ module.exports = async (req, res) => {
           // haul row carries the truck it was bought by, and a row deliberately
           // taken off the haul stays off it however many times this is run.
           const stamped   = HAUL_FIELD_TYPE_RE.test(String(r.field_type || ''));
+          // haul_exempt is the approver saying outright that the driver was out
+          // of the truck for these hours. Without it, an absent stamp meant two
+          // things at once — "he was working" and "nobody ever asked" — and
+          // this sweep could only guess. It guessed wrong on the row this whole
+          // change exists for: any machine with hours on it read as the truck,
+          // so the site-labour row was re-stamped and re-zeroed on every run,
+          // silently undoing the approver for as long as anyone kept running it.
           const haulType  = (!travelRow && isHaulWorkRow({
             equipment:   r.equipment,
             equip_hours: r.equip_hours,
             ...(stamped ? { is_haul: true } : null),
-          }, haulTypeOf(r))) ? haulTypeOf(r) : null;
+            ...(r.haul_exempt === true ? { is_haul: false } : null),
+          }, haulTypeOf(r), r)) ? haulTypeOf(r) : null;
           // A driver's labour is inside the truck's rate; pricing it again
           // bills the job twice for one man. Hours are left alone.
           const rate      = haulType
@@ -5281,9 +5310,9 @@ module.exports = async (req, res) => {
           // Safe to overwrite: an injected row's field_type is only ever
           // 'Travel', a haul stamp, or NULL — there is no third value to lose.
           const fieldType = travelRow
-            ? (HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')) ? 'Travel' : (r.field_type || 'Travel'))
+            ? (stamped ? 'Travel' : (r.field_type || 'Travel'))
             : (haulType ? HAUL_FIELD_TYPE[haulType]
-              : (HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')) ? null : (r.field_type || null)));
+              : (stamped ? null : (r.field_type || null)));
           const eqCost    = resolver.equipCostFor(r.equipment);
           // job_class is one of the fields a supervisor may re-categorize in
           // the division tab, so only fill it when it is still empty — never
@@ -5300,6 +5329,19 @@ module.exports = async (req, res) => {
             && Number(r.equip_unit_cost) === nextEqCost;
           if (same) continue;
 
+          // A row that changed SIDES — hauled to not, or not to hauled — makes
+          // its entry's haul_hours a lie, and that column decides how many of
+          // the man's hours are prevailing. This sweep cannot recompute it: it
+          // is bounded at SCAN_LIMIT rows and may hold only part of a day, so
+          // summing what it can see would invent a figure from half a split.
+          // Clearing it is the honest answer — null means "never split", which
+          // reads as the whole day, exactly as haul_type did on its own. That
+          // is the conservative direction in both cases, and the next resplit
+          // writes a real figure again.
+          if (stamped !== !!haulType && r.timesheet_entry_id) {
+            haulHoursStale.add(String(r.timesheet_entry_id));
+          }
+
           await sql`
             UPDATE daily_tracking
             SET employee        = ${emp.name},
@@ -5313,6 +5355,17 @@ module.exports = async (req, res) => {
           `;
           updated++;
         }
+      }
+
+      // The entries whose split changed sides above. One statement for all of
+      // them, and only when there are any — the ordinary run touches nothing
+      // here and pays nothing for the check.
+      if (haulHoursStale.size) {
+        await sql`
+          UPDATE timesheet_entries SET haul_hours = NULL, updated_at = NOW()
+          WHERE company_code = ${companyCode}
+            AND id = ANY(${[...haulHoursStale].map(Number)})
+        `;
       }
 
       await writeAudit(
@@ -5404,7 +5457,7 @@ module.exports = async (req, res) => {
 
       const rows = await sql`
         SELECT row_id, project_id, division, date, cost_code, sub_code, equipment,
-               labor_hours, equip_hours, quantity, field_type
+               labor_hours, equip_hours, quantity, field_type, haul_exempt
         FROM daily_tracking
         WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
         ORDER BY id ASC
@@ -5426,13 +5479,22 @@ module.exports = async (req, res) => {
           equip_hours: r.equip_hours != null ? Number(r.equip_hours) : 0,
           quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
           is_travel:   r.field_type === 'Travel',
-          // The haul stamp is the record of what the approver settled last
-          // time, exactly as 'Travel' is for the box beside it. Read back
-          // outright rather than re-derived from the truck, so a row he
-          // deliberately took off the haul — a driver who got out and worked
-          // the site — does not quietly become one again when the modal
-          // reopens and re-prices it at $0.
-          is_haul:     HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')),
+          // What the approver settled last time, in the same three states the
+          // modal and the pricing rule use — never collapsed to a boolean.
+          //
+          //   stamped     → it was a haul.
+          //   haul_exempt → he said outright it was not.
+          //   neither     → NOBODY SAID. The key is absent, and the truck on
+          //                 the row decides, exactly as on a fresh approve.
+          //
+          // Sending `false` for that third case is what made re-classifying an
+          // approved day impossible: every row of a day that was never a haul
+          // came back as a deliberate "not a haul", so switching the picker to
+          // "hauled to & from site" re-stamped the entry and re-priced nothing
+          // — the truck kept charging the job AND the man kept charging his
+          // wage, and no hour left prevailing.
+          ...(HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')) ? { is_haul: true }
+            : r.haul_exempt === true ? { is_haul: false } : null),
           // job_label is not a daily_tracking column; the modal already holds
           // the destination division's job list and names it from there.
           ...(moved ? { dest: { division: rowDiv, job_id: rowJob } } : null),

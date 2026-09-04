@@ -499,11 +499,22 @@ console.log('\n[trying an answer does not change the page behind the modal]');
   // back with every work row ticked — which is what it was approved as — so
   // reopening it moves nobody's money until the approver unticks the row where
   // the driver was out of the truck.
-  assert('  and re-open on the haul answer they were approved with',
-    /is_travel:\s*!!r\.is_travel,[\s\S]{0,1600}?is_haul:\s*r\.is_haul === true,/.test(src));
-  assert('the server reads that answer back off the row\'s own stamp',
-    /is_haul:\s*HAUL_FIELD_TYPE_RE\.test\(String\(r\.field_type \|\| ''\)\)/
-      .test(fs.readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8')));
+  // And re-open on the answer they were approved with, in THREE states — never
+  // collapsed to a boolean. Forced to one, every row of a day that was never a
+  // haul came back as a deliberate "not a haul", so an approver switching the
+  // picker to "hauled to & from site" re-stamped the entry and re-priced no row
+  // at all: the truck kept charging the job AND the man kept charging his wage.
+  assert('  and re-open on the haul answer they were approved with, undefined included',
+    /is_travel:\s*!!r\.is_travel,[\s\S]{0,1600}?is_haul:\s*r\.is_haul,/.test(src));
+  {
+    const api = fs.readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+    assert('the server reads a haul back off the row\'s own stamp',
+      /HAUL_FIELD_TYPE_RE\.test\(String\(r\.field_type \|\| ''\)\) \? \{ is_haul: true \}/.test(api));
+    assert('  an un-hauled row off the column that stores that decision',
+      /r\.haul_exempt === true \? \{ is_haul: false \} : null/.test(api));
+    assert('  and sends nothing at all for a row nobody ever answered',
+      /: r\.haul_exempt === true \? \{ is_haul: false \} : null\),/.test(api));
+  }
   // Only a real answer is sent. An untouched row sends no key, and the server
   // reads the truck off the row exactly as the modal does — so "nobody said"
   // can never arrive looking like a deliberate "not a haul".

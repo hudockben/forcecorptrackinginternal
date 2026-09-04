@@ -141,10 +141,15 @@ const CREW = [
 
   console.log('\n[each is approved and priced from its OWN driver\'s answer]');
   for (const c of CREW) {
+    // The approver names the driver's own truck and its hours — which is what
+    // the split modal fills in for them from timesheet_entries.truck_unit, and
+    // what makes the row a haul: the $0 labour rate says the truck already
+    // bought this labour, so the truck has to actually be on the row. A day
+    // with nobody in a truck now pays the man rather than billing the job
+    // nothing at all.
     const split = [{ cost_code: 'Earthwork', sub_code: 'Stone', quantity: 0,
-                     // The approver names no equipment: the point is that each
-                     // row still finds the right machine on its own.
-                     equipment: '', labor_hours: 8, equip_hours: 0 }];
+                     equipment: c.truck || '', labor_hours: 8,
+                     equip_hours: c.truck ? 8 : 0 }];
     // haul_type is not resent — the driver's own answer stands.
     const r = await call('POST', { action: 'approve', id: ids[c.user] }, { split }, ADMIN);
     if (r.statusCode !== 200) throw new Error(`${c.user} approve: ${JSON.stringify(r.body)}`);
@@ -171,7 +176,8 @@ const CREW = [
   const { payrollMetrics } = require(path.resolve(__dirname, '../api/lib/payroll-metrics.js'));
   const entries = await q(
     `SELECT username, entry_type, status, division, job_id, work_date::text work_date,
-            computed_hours::float computed_hours, travel_hours::float travel_hours, haul_type
+            computed_hours::float computed_hours, travel_hours::float travel_hours,
+            haul_type, haul_hours::float haul_hours
        FROM timesheet_entries`);
   entries.forEach(e => { e.prevailing_wage = true; });   // Franklin Regional is PW
   const t = payrollMetrics({ entries, periodStart: '2026-08-31', periodEnd: '2026-09-13' }).totals;
@@ -181,6 +187,13 @@ const CREW = [
     t.stdHours === 24, `std=${t.stdHours}`);
   assert('the on-site hauler and the operator stay prevailing: 16 h',
     t.pwHours === 16, `pw=${t.pwHours}`);
+  // Each hauler was in his truck for the whole day, so the split says so and
+  // the figure agrees with the day-level answer it refines.
+  assert('  and each hauler\'s day is recorded as wholly hauled',
+    entries.filter(e => e.haul_type === 'off_site').every(e => e.haul_hours === 8),
+    JSON.stringify(entries.map(e => [e.username, e.haul_type, e.haul_hours])));
+  assert('  while the man who never hauled has no such figure',
+    entries.filter(e => !e.haul_type).every(e => e.haul_hours == null));
   assert('  and the crew is still owed every hour it worked',
     t.workHours === 40 && (t.pwHours + t.stdHours) === 40);
 

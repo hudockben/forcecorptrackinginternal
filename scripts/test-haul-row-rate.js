@@ -24,8 +24,17 @@
  * Three rules, in order:
  *   1. Travel outranks everything. The commute is not the truck's time.
  *   2. An explicit is_haul from the approver wins.
- *   3. Otherwise the truck decides — NAMED and with HOURS, since a unit with no
- *      hours prices at nothing and buys nothing.
+ *   3. Otherwise the truck decides — NAMED, with HOURS, and actually the unit
+ *      the driver said he hauled with. "Any machine counts" puts the original
+ *      bug back one machine over: 6.50 h in the triaxle then 2.50 h on the site
+ *      running a roller is a second row with a unit and hours on it, and reading
+ *      that as the haul zeroes his roller time exactly as marking the whole day
+ *      did.
+ *
+ * And an explicit "not a haul" is STORED — daily_tracking.haul_exempt. An absent
+ * stamp used to mean two things at once ("he was working" and "nobody asked"),
+ * which the refresh-rates sweep could only guess at; it guessed wrong and put
+ * the $0 back on every run.
  *
  * These are the real functions out of api/timesheet-entries.js. The pricing
  * expression and the sweep that re-rates approved rows are read from source,
@@ -53,6 +62,7 @@ const NOT = { haul_type: null };
 
 console.log('\n[is the truck on this row?]');
 
+const TRIAXLE = { truck_unit: 'Triaxle Dump' };
 assert('a named unit with hours against it', truckOnRow(row({ equipment: 'Triaxle Dump', equip_hours: 6.5 })) === true);
 assert('a named unit with NO hours buys nothing',
   truckOnRow(row({ equipment: 'Triaxle Dump', equip_hours: 0 })) === false);
@@ -62,6 +72,18 @@ assert('whitespace is not a unit',
   truckOnRow(row({ equipment: '   ', equip_hours: 6.5 })) === false);
 assert('a bare row', truckOnRow(row()) === false);
 assert('and nothing at all does not throw', truckOnRow(null) === false);
+
+// And it has to be THE truck. A driver on the site running a second machine is
+// not in his truck, and pricing that row as a haul is the original bug wearing
+// a different unit.
+assert('the truck the driver named is the truck',
+  truckOnRow(row({ equipment: 'Triaxle Dump', equip_hours: 6.5 }), TRIAXLE) === true);
+assert('  and a roller he ran on the site is not, however many hours it has',
+  truckOnRow(row({ equipment: 'Roller', equip_hours: 2.5 }), TRIAXLE) === false);
+assert('  spelling is compared case-insensitively, not by identity',
+  truckOnRow(row({ equipment: 'triaxle dump', equip_hours: 6.5 }), TRIAXLE) === true);
+assert('where the driver named no truck there is nothing better, so any machine counts',
+  truckOnRow(row({ equipment: 'Roller', equip_hours: 2.5 }), {}) === true);
 
 console.log('\n[which rows the haul pays for]');
 
@@ -142,7 +164,15 @@ console.log('\n[the rate the row is actually written with]');
 const insert = src.slice(src.indexOf('async function insertSplitRows('),
                          src.indexOf('async function removeSplitRows('));
 assert('travel still outranks the haul, and keeps its own rate',
-  /const isHaulRow = !isTravel && isHaulWorkRow\(r, haulType\);/.test(insert));
+  /const isHaulRow = !isTravel && isHaulWorkRow\(r, haulType, entry\);/.test(insert));
+assert('  and the entry goes with it, so the rule knows which unit was the truck',
+  /isHaulWorkRow\(r, haulType, entry\)/.test(insert));
+// An absent stamp meant two things at once — "he was working" and "nobody
+// asked" — so the approver's decision had to be written down somewhere the
+// re-rate sweep could read it.
+assert('an explicit "not a haul" is stored, not merely left unstamped',
+  /material_cost, quantity, timesheet_entry_id, haul_exempt/.test(insert)
+  && /\$\{r\.is_haul === false\}/.test(insert));
 assert('a haul row is written at 0 and every other row at its real rate',
   /\$\{isHaulRow \? 0 : \(isTravel \? travelRate : workRate\)\}/.test(insert));
 assert('the stamp follows the same answer, so the rate and the marker cannot disagree',
@@ -166,8 +196,18 @@ assert('  which means it needs the equipment hours, so it selects them',
 assert('travel still outranks it here too',
   /!travelRow && isHaulWorkRow\(/.test(sweep));
 assert('a row that is no longer a haul is re-priced AND un-stamped',
-  /HAUL_FIELD_TYPE_RE\.test\(String\(r\.field_type \|\| ''\)\) \? null : \(r\.field_type \|\| null\)/
-    .test(sweep));
+  /: \(stamped \? null : \(r\.field_type \|\| null\)\)/.test(sweep));
+assert('  and the stamp is tested once, not three times over the same value',
+  (sweep.match(/HAUL_FIELD_TYPE_RE\.test/g) || []).length === 1);
+assert('the stored exemption outranks the truck, so the sweep cannot re-haul a row',
+  /r\.haul_exempt === true \? \{ is_haul: false \} : null/.test(sweep));
+assert('  which means it reads that column, and the truck the driver named',
+  (src.match(/dt\.cost_code, dt\.sub_code, dt\.haul_exempt,/g) || []).length === 2
+  && (src.match(/te\.haul_type, te\.truck_unit/g) || []).length === 2);
+assert('a row that changes sides clears its entry\'s haul_hours rather than lying',
+  /if \(stamped !== !!haulType && r\.timesheet_entry_id\) \{/.test(sweep)
+  && /haulHoursStale\.add\(String\(r\.timesheet_entry_id\)\);/.test(sweep)
+  && /UPDATE timesheet_entries SET haul_hours = NULL[\s\S]{0,200}?id = ANY\(/.test(sweep));
 
 // The three rules, evaluated the way the sweep evaluates them.
 const asSweep = (r, entryHaul) => {
@@ -176,8 +216,9 @@ const asSweep = (r, entryHaul) => {
     || T.isTravelSplitRow({ cost_code: r.cost_code, sub_code: r.sub_code });
   return (!travel && isHaulWorkRow(
     Object.assign({ equipment: r.equipment, equip_hours: r.equip_hours },
-                  stamped ? { is_haul: true } : null),
-    haulTypeOf({ haul_type: entryHaul }))) ? haulTypeOf({ haul_type: entryHaul }) : null;
+                  stamped ? { is_haul: true } : null,
+                  r.haul_exempt === true ? { is_haul: false } : null),
+    haulTypeOf({ haul_type: entryHaul }), r)) ? haulTypeOf({ haul_type: entryHaul }) : null;
 };
 
 assert('a stamped row keeps its stamp and its $0, run after run',
@@ -186,6 +227,16 @@ assert('the site-labour row the approver un-hauled stays un-hauled',
   asSweep({ field_type: null, equipment: '', equip_hours: 0, sub_code: 'Scratch/leveling - Labor' }, 'off_site') === null);
 assert('a row posted before the driver was flagged still self-heals — it carries the truck',
   asSweep({ field_type: null, equipment: 'Triaxle Dump', equip_hours: 6.5 }, 'off_site') === 'off_site');
+// THE ONE THE SWEEP GOT WRONG. He hauled in the triaxle and then ran a roller
+// on the site; payroll unticked that row so the job pays him for it. Without
+// the stored exemption, "any machine with hours is the truck" re-stamped it and
+// put the $0 back on every run — silently, for as long as anyone kept running.
+assert('a second machine on a haul day is not the truck, so it is left alone',
+  asSweep({ field_type: null, equipment: 'Roller', equip_hours: 2.5,
+            truck_unit: 'Triaxle Dump' }, 'off_site') === null);
+assert('and the stored exemption holds even against the truck itself',
+  asSweep({ field_type: null, equipment: 'Triaxle Dump', equip_hours: 6.5,
+            truck_unit: 'Triaxle Dump', haul_exempt: true }, 'off_site') === null);
 assert('and a day no longer called a haul loses the stamp it had',
   asSweep({ field_type: 'Haul — To/From Site', equipment: 'Triaxle Dump', equip_hours: 6.5 }, null) === null);
 assert('travel is never re-stamped as a haul, whatever the entry says',
@@ -206,6 +257,20 @@ assert('and it is cleared everywhere the split goes away',
   `${(src.match(/haul_hours\s*=\s*NULL/g) || []).length} clears`);
 assert('the entry hands it to the page that reads it',
   /haul_hours:\s*r\.haul_hours != null \? Number\(r\.haul_hours\) : null,/.test(src));
+assert('haul_exempt is added to daily_tracking',
+  /ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS haul_exempt BOOLEAN NOT NULL DEFAULT FALSE;/
+    .test(fs.readFileSync(path.resolve(__dirname, '../neon-schema.sql'), 'utf8')));
+
+// Reopening a split has to hand back THREE states, never two. Collapsed to a
+// boolean, every row of a day that was never a haul came back as a deliberate
+// "not a haul" — so an approver switching the picker to "hauled to & from site"
+// re-stamped the entry and re-priced nothing at all.
+assert('a stamped row reopens as a haul',
+  /\? \{ is_haul: true \}/.test(src));
+assert('  an exempt row reopens as deliberately not one',
+  /r\.haul_exempt === true \? \{ is_haul: false \} : null/.test(src));
+assert('  and a row nobody ever answered reopens with no key at all, so the truck decides',
+  /: r\.haul_exempt === true \? \{ is_haul: false \} : null\),/.test(src));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

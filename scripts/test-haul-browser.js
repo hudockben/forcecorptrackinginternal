@@ -305,6 +305,51 @@ async function boot(page, file, opts) {
     ok('  while the untouched driving row sends no answer at all — the truck decides',
       !('is_haul' in perRow.after.payload[0]), JSON.stringify(perRow.after.payload[0]));
 
+    // The column has to appear the moment the ANSWER changes, not only when the
+    // repaint happens to be triggered by something else. It used to be revealed
+    // inside a repaint that onSplitHaulChange only ran `if` one of the auto-fill
+    // helpers had changed something — so on a day with no truck_unit and no
+    // single assigned unit, answering "haul" left the column hidden while the
+    // warning told the approver to untick a checkbox that was not on screen.
+    const reveal = await page.evaluate(async () => {
+      splitEntry = { id: 2, computed_hours: 8, travel_hours: 0, haul_type: null };
+      splitHaulAnswer = '';
+      splitProjEquipment = ['Triaxle Dump', 'Lowboy'];   // several: nothing to infer
+      splitRows = [{ cost_code: 'Earthwork', sub_code: 'Stone', quantity: 0,
+                     equipment: '', labor_hours: 8, equip_hours: 0, is_travel: false, code_source: '' }];
+      renderSplitRows();
+      const shown = () => {
+        const th = document.querySelector('.split-table thead .haul-col');
+        return !!th && getComputedStyle(th).display !== 'none';
+      };
+      const before = shown();
+      document.getElementById('splitHaulPick').value = 'off_site';
+      onSplitHaulChange();
+      return { before, after: shown() };
+    });
+    ok('answering the haul question reveals the column even when nothing else changes',
+      reveal.before === false && reveal.after === true, JSON.stringify(reveal));
+
+    // And the tick is derived, so an edit to the truck or its hours has to
+    // redraw it. Left stale it said the opposite of how the row would be
+    // priced — an unticked box, promising the job pays him, beside a row about
+    // to post $0.
+    const stale = await page.evaluate(() => {
+      const box = () => document.querySelector('#splitTbody .haul-col input').checked;
+      splitEntry.truck_unit = 'Triaxle Dump';
+      const start = box();
+      splitOnChange(0, 'equipment', 'Triaxle Dump');
+      const named = box();
+      splitOnChange(0, 'equip_hours', '8');
+      const priced = box();
+      // And the pricing rule the server will actually apply.
+      return { start, named, priced, willPost0: splitRowIsHaul(splitRows[0]) };
+    });
+    ok('the tick follows the truck onto the row instead of going stale',
+      stale.start === false && stale.priced === true, JSON.stringify(stale));
+    ok('  and it agrees with how the row will be priced',
+      stale.priced === stale.willPost0, JSON.stringify(stale));
+
     ok('the $0-labour note explains itself', /\$0 labour rate/.test(note), note.slice(0, 80));
     ok('  and says the hours pay at standard on a prevailing job',
       /standard/.test(note) && /prevailing/.test(note));

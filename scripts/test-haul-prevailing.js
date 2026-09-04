@@ -247,6 +247,48 @@ console.log('\n[payroll.html says the same thing]');
     agree === CASES.length, `${agree}/${CASES.length}`);
 }
 
+// ── The pill the approver reads ─────────────────────────────────────────────
+// The Prevailing column and the pill beside it are computed from the same rule,
+// and the pill's own comment says it exists so the two can never look like they
+// disagree. A day answered as a haul whose split found no hours in the truck is
+// wholly prevailing, and a "Haul" pill promising the standard rate beside a
+// full prevailing figure is that mismatch in reverse.
+console.log('\n[the pill says what the hours say]');
+{
+  const fs   = require('fs');
+  const page = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
+  const grab = name => {
+    const start = page.indexOf(`function ${name}(`);
+    if (start < 0) return null;
+    let depth = 0;
+    for (let i = page.indexOf('{', start); i < page.length; i++) {
+      if (page[i] === '{') depth++;
+      else if (page[i] === '}' && --depth === 0) return page.slice(start, i + 1);
+    }
+    return null;
+  };
+  const pill = new Function('offSiteHaulWork', 'isOffSiteHaul',
+    `${grab('prevailingWageHtml')}; return prevailingWageHtml;`,
+  )(offSiteHaulWork, e => !!e && e.haul_type === 'off_site');
+  const day = over => Object.assign(
+    { entry_type: 'daily', prevailing_wage: true, computed_hours: 9, haul_type: 'off_site' }, over);
+
+  assert('all of it in the truck reads "Haul"',
+    />Haul</.test(pill(day({ haul_hours: 9 }))), pill(day({ haul_hours: 9 })));
+  assert('an unsplit haul day reads "Haul" too — it still means the whole day',
+    />Haul</.test(pill(day({}))));
+  assert('part of it reads "Part haul", with both figures in the title',
+    />Part haul</.test(pill(day({ haul_hours: 6.5 })))
+    && /6\.50/.test(pill(day({ haul_hours: 6.5 })))
+    && /2\.50/.test(pill(day({ haul_hours: 6.5 }))));
+  assert('and NONE of it in the truck reads "Yes" — every hour was worked on the site',
+    />Yes</.test(pill(day({ haul_hours: 0 }))), pill(day({ haul_hours: 0 })));
+  assert('an ordinary prevailing day is unchanged',
+    />Yes</.test(pill(day({ haul_type: null }))));
+  assert('and a non-prevailing job still reads "No"',
+    />No</.test(pill(day({ prevailing_wage: false, haul_type: null }))));
+}
+
 // ── The invariant ───────────────────────────────────────────────────────────
 console.log('\n[hours are only ever reclassified, never created or destroyed]');
 

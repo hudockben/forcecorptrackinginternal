@@ -1119,6 +1119,33 @@ CREATE INDEX IF NOT EXISTS idx_ts_haul_type
 -- prevailing + standard stop adding up to the hours the man is owed.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS haul_hours NUMERIC(6,2);
 
+-- ─────────────────────────────────────────────────
+-- DAILY TRACKING — haul_exempt
+-- ─────────────────────────────────────────────────
+-- "The approver said outright that the truck did NOT buy this row's labour."
+--
+-- Whether a row is a haul is otherwise readable off the row itself: a haul
+-- carries a 'Haul — …' field_type, and anything else does not. That is enough
+-- for two of the three states and not for the third, because an ABSENT stamp
+-- means two different things — the approver decided the driver was out of the
+-- truck for these hours, or nobody ever asked (a row posted before the driver
+-- was flagged, or before the question was per-row at all).
+--
+-- The difference is money. POST ?action=refresh-rates re-prices every injected
+-- row in a range and is meant to heal the second case; without this column it
+-- healed the first one too, re-stamping the site-labour row and putting its $0
+-- back on every run, silently, for as long as anyone kept running it.
+--
+--   FALSE → nothing was said. The stamp, and failing that the truck on the row,
+--           decide — which is what lets a genuinely stale row still self-heal.
+--   TRUE  → he was out of the truck and working. Never a haul, whatever else is
+--           on the row, however many times anything re-reads it.
+--
+-- Only ever set from the split modal's per-row Haul tick, and only on rows this
+-- app injected (timesheet_entry_id IS NOT NULL). A row created any other way
+-- carries the default and behaves exactly as it always did.
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS haul_exempt BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- EES-only daily fields. Captured on the timesheet only when the division is
 -- 'dust' AND the job is one of the two standing EES activities (job_id
 -- 'ees:preloading' / 'ees:washing' — see api/timesheet-jobs.js), and carried
