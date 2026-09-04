@@ -362,16 +362,7 @@ assert('an unsplit day still moves the whole day, in both implementations',
 // which is prose about the rule rather than the rule itself. The doc comments
 // above each function say "on site" in prose too, which is why this reads the
 // function BODY and not the lines around it.
-const fnBody = (src, name) => {
-  const start = src.indexOf(`function ${name}(`);
-  if (start < 0) return null;
-  let depth = 0;
-  for (let i = src.indexOf('{', start); i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
-  }
-  return null;
-};
+const { fnSource: fnBody } = require(require('path').resolve(__dirname, 'lib/fn-source.js'));
 const pmPredicate = fnBody(pm, 'offSiteHaulWork');
 // payroll.html splits the same rule in two: offSiteHaulWork asks isOffSiteHaul,
 // which is also what the Hours Report pill and the entry table read. Both

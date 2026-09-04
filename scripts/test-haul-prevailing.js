@@ -30,9 +30,14 @@
  * owed. Reclassifying hours must never create or destroy any.
  */
 
+const fs   = require('fs');
 const path = require('path');
 const { payrollMetrics, offSiteHaulWork } =
   require(path.resolve(__dirname, '../api/lib/payroll-metrics.js'));
+// One brace matcher, shared — see scripts/lib/fn-source.js for why.
+const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+// Read once. Both blocks below lift a function out of the same page.
+const PAGE = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -216,18 +221,10 @@ assert('  and so is a negative one',
 // so a difference between them is two numbers for one day.
 console.log('\n[payroll.html says the same thing]');
 {
-  const fs   = require('fs');
-  const page = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
-  const start = page.indexOf('function offSiteHaulWork(');
-  assert('payroll.html carries its own offSiteHaulWork', start >= 0);
-  let depth = 0, end = -1;
-  for (let i = page.indexOf('{', start); i < page.length; i++) {
-    if (page[i] === '{') depth++;
-    else if (page[i] === '}' && --depth === 0) { end = i + 1; break; }
-  }
+  const pageSrc = requireFn(PAGE, 'offSiteHaulWork', 'payroll.html');
+  assert('payroll.html carries its own offSiteHaulWork', !!pageSrc);
   const pageFn = new Function(
-    'isOffSiteHaul',
-    `${page.slice(start, end)}; return offSiteHaulWork;`,
+    'isOffSiteHaul', `${pageSrc}; return offSiteHaulWork;`,
   )(e => !!e && e.haul_type === 'off_site');
 
   const CASES = [
@@ -255,20 +252,8 @@ console.log('\n[payroll.html says the same thing]');
 // full prevailing figure is that mismatch in reverse.
 console.log('\n[the pill says what the hours say]');
 {
-  const fs   = require('fs');
-  const page = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
-  const grab = name => {
-    const start = page.indexOf(`function ${name}(`);
-    if (start < 0) return null;
-    let depth = 0;
-    for (let i = page.indexOf('{', start); i < page.length; i++) {
-      if (page[i] === '{') depth++;
-      else if (page[i] === '}' && --depth === 0) return page.slice(start, i + 1);
-    }
-    return null;
-  };
   const pill = new Function('offSiteHaulWork', 'isOffSiteHaul',
-    `${grab('prevailingWageHtml')}; return prevailingWageHtml;`,
+    `${requireFn(PAGE, 'prevailingWageHtml', 'payroll.html')}; return prevailingWageHtml;`,
   )(offSiteHaulWork, e => !!e && e.haul_type === 'off_site');
   const day = over => Object.assign(
     { entry_type: 'daily', prevailing_wage: true, computed_hours: 9, haul_type: 'off_site' }, over);

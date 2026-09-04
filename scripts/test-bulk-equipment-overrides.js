@@ -505,10 +505,12 @@ console.log('\n[split tally: travel reconciliation]');
     grab('isTravelSplitRow(r) {'),
     // The haul rule is per ROW now — whether the truck was on it — so the two
     // helpers that answer that come across as well. The warning calls both.
+    grab('splitPricedMachineOnRow(r) {'),
     grab('splitTruckOnRow(r) {'),
     grab('splitRowIsHaul(r) {'),
     grab('splitHaulUnpricedRows() {'),
     grab('splitHaulNoTruckHours() {'),
+    grab('splitUnnamedMachineRows() {'),
     grab('renderSplitHaulWarning() {'),
     grab('renderSplitTally() {'),
   ].join('\n\n');

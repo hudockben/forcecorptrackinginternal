@@ -53,6 +53,9 @@ function assert(label, cond, detail) {
 }
 
 const src = fs.readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
+// Available to any assertion below that needs a whole function rather than a
+// line of it — one shared brace matcher, see scripts/lib/fn-source.js.
+const { fnSource } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 const row = over => Object.assign(
   { cost_code: 'Notch Milling 9.5MM', sub_code: 'Milling - Trucking',
     labor_hours: 8, equipment: '', equip_hours: 0 }, over);
@@ -84,6 +87,27 @@ assert('  spelling is compared case-insensitively, not by identity',
   truckOnRow(row({ equipment: 'triaxle dump', equip_hours: 6.5 }), TRIAXLE) === true);
 assert('where the driver named no truck there is nothing better, so any machine counts',
   truckOnRow(row({ equipment: 'Roller', equip_hours: 2.5 }), {}) === true);
+
+console.log('\n[a machine on the row is not the same question as the truck]');
+
+// Conflating them got the warning wrong: "is this the truck he hauled with"
+// decides whether to ASSUME the row is a haul; "is any machine priced here"
+// decides whether the row costs the job anything at all.
+{
+  const lowboy = row({ equipment: 'Lowboy', equip_hours: 3, labor_hours: 3 });
+  assert('a lowboy on a triaxle day is not the named truck',
+    truckOnRow(lowboy, TRIAXLE) === false);
+  assert('  but it is unquestionably priced, so the row does cost the job something',
+    T.pricedMachineOnRow(lowboy) === true);
+  assert('  and that pair is what makes it worth asking about',
+    T.unnamedMachineOnRow(lowboy, TRIAXLE) === true);
+  assert('the named truck is never an unnamed machine',
+    T.unnamedMachineOnRow(row({ equipment: 'Triaxle Dump', equip_hours: 6.5 }), TRIAXLE) === false);
+  assert('nor is a bare row — there is no machine on it to wonder about',
+    T.unnamedMachineOnRow(row(), TRIAXLE) === false);
+  assert('nor a unit with no hours, which bills nothing either way',
+    T.unnamedMachineOnRow(row({ equipment: 'Lowboy', equip_hours: 0 }), TRIAXLE) === false);
+}
 
 console.log('\n[which rows the haul pays for]');
 
@@ -184,13 +208,15 @@ console.log('\n[the re-rate sweep does not walk over the approver]');
 // refresh-rates re-prices every injected row in a date range. It used to read
 // the haul answer off the ENTRY alone and re-stamp every non-travel row, which
 // would put the $0 straight back onto the site-labour row on the next run.
+// Wide enough to reach the audit record at the end of the branch: the
+// haul_hours adjustment and the line naming whose prevailing split moved both
+// live past where the old 12000-char window stopped.
 const sweep = src.slice(src.indexOf("req.query.action === 'refresh-rates'"),
-                        src.indexOf("req.query.action === 'refresh-rates'") + 12000);
+                        src.indexOf("req.query.action === 'refresh-rates'") + 16000);
 assert('it reads the stamp already on the row',
   /const stamped\s*=\s*HAUL_FIELD_TYPE_RE\.test\(String\(r\.field_type \|\| ''\)\)/.test(sweep));
-assert('  and hands both the truck and that stamp to the same rule the approval uses',
-  /isHaulWorkRow\(\{[\s\S]{0,220}?equip_hours:\s*r\.equip_hours,[\s\S]{0,220}?stamped \? \{ is_haul: true \} : null/
-    .test(sweep));
+assert('  and hands the truck plus that stored answer to the rule the approval uses',
+  /isHaulWorkRow\(\{[\s\S]{0,160}?equip_hours:\s*r\.equip_hours,\s*\n\s*\.\.\.stored,/.test(sweep));
 assert('  which means it needs the equipment hours, so it selects them',
   (src.match(/dt\.equipment, dt\.equip_unit_cost, dt\.equip_hours,/g) || []).length === 2);
 assert('travel still outranks it here too',
@@ -200,14 +226,29 @@ assert('a row that is no longer a haul is re-priced AND un-stamped',
 assert('  and the stamp is tested once, not three times over the same value',
   (sweep.match(/HAUL_FIELD_TYPE_RE\.test/g) || []).length === 1);
 assert('the stored exemption outranks the truck, so the sweep cannot re-haul a row',
-  /r\.haul_exempt === true \? \{ is_haul: false \} : null/.test(sweep));
+  /const stored    = storedHaulAnswer\(r\);/.test(sweep)
+  && T.storedHaulAnswer({ haul_exempt: true }).is_haul === false);
 assert('  which means it reads that column, and the truck the driver named',
   (src.match(/dt\.cost_code, dt\.sub_code, dt\.haul_exempt,/g) || []).length === 2
   && (src.match(/te\.haul_type, te\.truck_unit/g) || []).length === 2);
-assert('a row that changes sides clears its entry\'s haul_hours rather than lying',
+// A row that changes sides moves exactly its own labour hours in or out of the
+// hauled total. ADJUSTED, not cleared: null means "the whole day was hauled",
+// so clearing on a row LEAVING the haul moved MORE of the man's hours to
+// standard rather than fewer — a supervisor re-coding the driving row onto a
+// travel code was enough to strip the prevailing premium off hours he really
+// worked on the covered site.
+assert('a row that changes sides adjusts its entry\'s haul_hours by its own hours',
   /if \(stamped !== !!haulType && r\.timesheet_entry_id\) \{/.test(sweep)
-  && /haulHoursStale\.add\(String\(r\.timesheet_entry_id\)\);/.test(sweep)
-  && /UPDATE timesheet_entries SET haul_hours = NULL[\s\S]{0,200}?id = ANY\(/.test(sweep));
+  && /seen\.delta \+= \(haulType \? 1 : -1\) \* \(Number\(r\.labor_hours\) \|\| 0\);/.test(sweep));
+assert('  starting from the whole day when nothing was ever recorded',
+  /COALESCE\(haul_hours, \$\{work\}::numeric\) \+ \$\{_r2\(moved\.delta\)\}::numeric/.test(sweep));
+assert('  and clamped to the day at both ends, so the split still adds up',
+  /GREATEST\(0, LEAST\(/.test(sweep));
+assert('  which needs the row\'s hours and the day\'s, so it selects both',
+  (src.match(/dt\.timesheet_entry_id, dt\.labor_hours,/g) || []).length === 2
+  && (src.match(/te\.computed_hours/g) || []).length === 2);
+assert('a sweep that moves somebody\'s prevailing split says whose',
+  /haul_hours_reclassified: reclassified/.test(sweep) && /reclassified,/.test(sweep));
 
 // The three rules, evaluated the way the sweep evaluates them.
 const asSweep = (r, entryHaul) => {
@@ -266,11 +307,13 @@ assert('haul_exempt is added to daily_tracking',
 // "not a haul" — so an approver switching the picker to "hauled to & from site"
 // re-stamped the entry and re-priced nothing at all.
 assert('a stamped row reopens as a haul',
-  /\? \{ is_haul: true \}/.test(src));
+  JSON.stringify(T.storedHaulAnswer({ field_type: 'Haul — To/From Site' })) === '{"is_haul":true}');
 assert('  an exempt row reopens as deliberately not one',
-  /r\.haul_exempt === true \? \{ is_haul: false \} : null/.test(src));
+  JSON.stringify(T.storedHaulAnswer({ haul_exempt: true })) === '{"is_haul":false}');
 assert('  and a row nobody ever answered reopens with no key at all, so the truck decides',
-  /: r\.haul_exempt === true \? \{ is_haul: false \} : null\),/.test(src));
+  T.storedHaulAnswer({ field_type: null, haul_exempt: false }) === null);
+assert('  with one function answering that for both readers',
+  /\.\.\.storedHaulAnswer\(r\),/.test(src) && /storedHaulAnswer\(r\);/.test(src));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -5325,12 +5325,39 @@
     // he named nothing, any machine still counts and the tick is the answer.
     // Mirrors truckOnRow in api/timesheet-entries.js.
     function splitTruckOnRow(r) {
-      const unit = String((r && r.equipment) || '').trim();
-      if (!unit) return false;
-      if ((Number(r && r.equip_hours) || 0) <= 0) return false;
+      if (!splitPricedMachineOnRow(r)) return false;
       const said = String((splitEntry && splitEntry.truck_unit) || '').trim();
       if (!said) return true;
-      return unit.toLowerCase() === said.toLowerCase();
+      return String(r.equipment).trim().toLowerCase() === said.toLowerCase();
+    }
+
+    // Does this row bill the job for a machine at all? A DIFFERENT question
+    // from "is this the truck", and the warning below asks this one: a ticked
+    // haul row carrying the lowboy on a day the driver named the triaxle is not
+    // the named truck and is still perfectly well priced, so telling the
+    // approver it "will cost the job nothing at all" is false — and the remedy
+    // it names is already done, so the banner could never be cleared.
+    // Mirrors pricedMachineOnRow in api/timesheet-entries.js.
+    function splitPricedMachineOnRow(r) {
+      return !!String((r && r.equipment) || '').trim()
+        && (Number(r && r.equip_hours) || 0) > 0;
+    }
+
+    // A priced machine that is NOT the truck the driver named, on a row nobody
+    // has called a haul. Only the approver can say which it is — a second truck
+    // he also hauled with, or a roller he ran on the site — so it is left
+    // paying him (the side that cannot underpay a person) and said out loud.
+    // Mirrors unnamedMachineOnRow in api/timesheet-entries.js.
+    function splitUnnamedMachineRows() {
+      if (!splitHaulIs()) return [];
+      const out = [];
+      splitRows.forEach((r, i) => {
+        if (isTravelSplitRow(r) || splitRowIsHaul(r)) return;
+        if (!splitPricedMachineOnRow(r) || splitTruckOnRow(r)) return;
+        if ((Number(r.labor_hours) || 0) <= 0) return;
+        out.push({ n: i + 1, hours: Number(r.labor_hours) || 0, unit: String(r.equipment).trim() });
+      });
+      return out;
     }
 
     // Will this row be priced as a haul — $0 labour, and its hours out of the
@@ -6339,7 +6366,7 @@
         // so "Triaxle Dump" with 0 equipment hours costs the job exactly as
         // nothing as naming no truck at all — and that was slipping past the
         // very check this exists for. Both halves are required.
-        if (splitTruckOnRow(r)) return;
+        if (splitPricedMachineOnRow(r)) return;
         out.push({ n: i + 1, hours: hrs, hasUnit: !!String(r.equipment || '').trim() });
       });
       return out;
@@ -6361,7 +6388,28 @@
     function renderSplitHaulWarning() {
       const el = document.getElementById('splitWarn');
       if (!el) return;
+      // A machine on the row that is not the truck he named. The modal will not
+      // guess whether he was driving it or running it on the site — guessing
+      // "haul" takes his wage off a row he worked, guessing "work" bills the
+      // job his wage on top of the machine — so it pays him and says so. Named
+      // first because it is the only one of the three that is a live money
+      // question rather than a missing figure.
+      const odd = splitUnnamedMachineRows();
       const bad = splitHaulUnpricedRows();
+      if (odd.length) {
+        const one = odd.length === 1;
+        el.hidden = false;
+        el.innerHTML =
+          `<strong>${one ? 'Row' : 'Rows'} ${escapeHtml(odd.map(r => `#${r.n}`).join(', '))}: `
+          + `${escapeHtml([...new Set(odd.map(r => r.unit))].join(', '))} `
+          + `${one ? 'is' : 'are'} not the truck he named `
+          + `(${escapeHtml(String((splitEntry && splitEntry.truck_unit) || '—'))}).</strong> `
+          + `${one ? 'That row is' : 'Those rows are'} being paid at his own rate, `
+          + `on top of the machine — right if he was operating it on the site, `
+          + `wrong if he was driving it. Tick <strong>Haul</strong> on `
+          + `${one ? 'it' : 'them'} if he was.`;
+        return;
+      }
       if (!bad.length) {
         const loose = splitHaulNoTruckHours();
         if (!loose) { el.hidden = true; el.innerHTML = ''; return; }

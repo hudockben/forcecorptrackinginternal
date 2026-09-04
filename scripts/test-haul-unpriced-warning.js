@@ -43,17 +43,10 @@ function assert(label, cond, detail) {
 
 const src = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
 
-// Lift a top-level `function name(...) { ... }` out of the page by brace match.
-function fnSource(name) {
-  const start = src.indexOf(`function ${name}(`);
-  if (start < 0) throw new Error(`${name} not found in payroll.html`);
-  let depth = 0;
-  for (let i = src.indexOf('{', start); i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
-  }
-  throw new Error(`${name} never closes`);
-}
+// Lift a top-level `function name(...) { ... }` out of the page — one shared
+// brace matcher, see scripts/lib/fn-source.js.
+const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const fnSource = name => requireFn(src, name, 'payroll.html');
 
 // splitHaulUnpricedRows reads splitEntry and splitRows as free variables and
 // calls isTravelSplitRow, which in turn reads TRAVEL_CODE_RE — so all three
@@ -74,6 +67,7 @@ const HAUL_PRELUDE =
   // The per-row rule and the two helpers around it. Lifted rather than
   // restated for the same reason as the travel pattern: this file exists to
   // pin what the page does, and a second copy is a second thing to drift.
+  `${fnSource('splitPricedMachineOnRow')}\n` +
   `${fnSource('splitTruckOnRow')}\n` +
   `${fnSource('splitRowIsHaul')}\n` +
   `${fnSource('splitRowTakesTruck')}\n`;
@@ -97,6 +91,13 @@ const row = over => Object.assign(
 const isHaul = (splitEntry, rows, i = 0) => new Function(
   'splitEntry', 'splitRows', 'splitHaulAnswer',
   `${HAUL_PRELUDE}return splitRowIsHaul(splitRows[${i}]);`,
+)(splitEntry, rows, (splitEntry && splitEntry.haul_type) || '');
+
+// The machines on a haul day that are not the truck he named.
+const oddMachines = (splitEntry, rows) => new Function(
+  'splitEntry', 'splitRows', 'splitHaulAnswer',
+  `${HAUL_PRELUDE}${fnSource('splitUnnamedMachineRows')}\n` +
+  `return splitUnnamedMachineRows();`,
 )(splitEntry, rows, (splitEntry && splitEntry.haul_type) || '');
 
 // And the day-level "nobody claimed the truck" figure.
@@ -223,6 +224,65 @@ console.log('\n[when it stays quiet]');
 {
   assert('an unrecognized haul answer is not flagged',
     run({ haul_type: 'nonsense' }, [row({ is_haul: true })]).length === 0);
+}
+
+console.log('\n[a machine that is not the truck he named]');
+
+// Two different questions, and conflating them got this warning wrong both
+// ways round. "Is this the truck he hauled with" decides whether to ASSUME the
+// row is a haul; "is any machine priced here" decides whether the row costs the
+// job anything at all.
+const TRIAXLE_DAY = { haul_type: 'off_site', truck_unit: 'Triaxle Dump' };
+{
+  // A ticked haul row carrying the lowboy on a day he named the triaxle. It is
+  // not the named truck — and it is unquestionably priced, so telling the
+  // approver it "will cost the job nothing at all" is false, and the remedy the
+  // warning names (put the equipment hours on) is already done, which left a
+  // banner that could never be cleared from inside the modal.
+  const lowboy = row({ is_haul: true, equipment: 'Lowboy', equip_hours: 3, labor_hours: 3 });
+  assert('a ticked haul row with a priced lowboy is NOT called unpriced',
+    run(TRIAXLE_DAY, [lowboy]).length === 0,
+    JSON.stringify(run(TRIAXLE_DAY, [lowboy])));
+  assert('  while a ticked row with nothing priced on it still is',
+    run(TRIAXLE_DAY, [row({ is_haul: true })]).length === 1);
+}
+{
+  // Untouched, a machine that is not the truck is genuinely ambiguous: a second
+  // truck he also hauled with, or a roller he ran on the site. Guessing "haul"
+  // takes his wage off a row he worked; guessing "work" bills the job his wage
+  // on top of the machine. It pays him — the side that cannot underpay a
+  // person — and says so, because the silence was the real defect.
+  const odd = oddMachines(TRIAXLE_DAY, [
+    row({ labor_hours: 6, equipment: 'Triaxle Dump', equip_hours: 6 }),
+    row({ labor_hours: 3, equipment: 'Lowboy',       equip_hours: 3 }),
+  ]);
+  assert('the machine that is not his truck is surfaced', odd.length === 1);
+  assert('  named, so the approver knows which row and which unit',
+    odd[0].n === 2 && odd[0].unit === 'Lowboy' && odd[0].hours === 3);
+  assert('the truck itself is never surfaced',
+    oddMachines(TRIAXLE_DAY, [row({ equipment: 'Triaxle Dump', equip_hours: 8 })]).length === 0);
+  assert('  and nor is it once the approver has ticked it as a haul',
+    oddMachines(TRIAXLE_DAY, [row({ is_haul: true, equipment: 'Lowboy', equip_hours: 3 })]).length === 0);
+  assert('  nor a bare row, which has no machine to wonder about',
+    oddMachines(TRIAXLE_DAY, [row()]).length === 0);
+  assert('  nor a unit with no hours, which bills nothing either way',
+    oddMachines(TRIAXLE_DAY, [row({ equipment: 'Lowboy', equip_hours: 0 })]).length === 0);
+  assert('  nor travel, which keeps its own rate whatever is on it',
+    oddMachines(TRIAXLE_DAY, [row({ is_travel: true, equipment: 'Lowboy', equip_hours: 3 })]).length === 0);
+  assert('where the driver named no truck there is nothing to compare against',
+    oddMachines(HAUL, [row({ equipment: 'Lowboy', equip_hours: 3 })]).length === 0);
+  assert('and an ordinary day says nothing at all',
+    oddMachines(NOT, [row({ equipment: 'Lowboy', equip_hours: 3 })]).length === 0);
+
+  // The tests above call it directly, so they cannot see it being unwired from
+  // the banner that is the only reason it exists. Named first in there because
+  // it is the one live money question of the three, not a missing figure.
+  const render = fnSource('renderSplitHaulWarning');
+  assert('and the banner actually asks for it',
+    /const odd = splitUnnamedMachineRows\(\);/.test(render), render);
+  assert('  before either of the other two notes',
+    render.indexOf('splitUnnamedMachineRows') < render.indexOf('splitHaulNoTruckHours')
+    && /if \(odd\.length\) \{/.test(render));
 }
 
 console.log('\n[a haul day where nobody claimed the truck]');
@@ -507,13 +567,27 @@ console.log('\n[trying an answer does not change the page behind the modal]');
   assert('  and re-open on the haul answer they were approved with, undefined included',
     /is_travel:\s*!!r\.is_travel,[\s\S]{0,1600}?is_haul:\s*r\.is_haul,/.test(src));
   {
+    // The stored answer lives in two columns — the 'Haul — …' stamp and
+    // haul_exempt — and every reader needs the same precedence between them.
+    // Written once, so the sweep and this read-back cannot come to different
+    // conclusions about the same row.
+    const T = require(path.resolve(__dirname, '../api/timesheet-entries.js'))._test;
+    assert('a stamped row reads back as a haul',
+      JSON.stringify(T.storedHaulAnswer({ field_type: 'Haul — To/From Site' })) === '{"is_haul":true}');
+    assert('  an exempt row as deliberately not one',
+      JSON.stringify(T.storedHaulAnswer({ haul_exempt: true })) === '{"is_haul":false}');
+    assert('  and a row nobody answered as nothing at all, so the truck decides',
+      T.storedHaulAnswer({ field_type: null, haul_exempt: false }) === null);
+    // Neither writer ever sets one without the other, but if anything ever does
+    // the precedence has to be the same everywhere rather than falling out of
+    // the order two spreads happen to be written in.
+    assert('  with the stamp winning outright if a row ever carried both',
+      JSON.stringify(T.storedHaulAnswer({ field_type: 'Haul — On Site', haul_exempt: true })) === '{"is_haul":true}');
     const api = fs.readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
-    assert('the server reads a haul back off the row\'s own stamp',
-      /HAUL_FIELD_TYPE_RE\.test\(String\(r\.field_type \|\| ''\)\) \? \{ is_haul: true \}/.test(api));
-    assert('  an un-hauled row off the column that stores that decision',
-      /r\.haul_exempt === true \? \{ is_haul: false \} : null/.test(api));
-    assert('  and sends nothing at all for a row nobody ever answered',
-      /: r\.haul_exempt === true \? \{ is_haul: false \} : null\),/.test(api));
+    assert('and both readers go through that one function, not their own copy',
+      (api.match(/\.\.\.storedHaulAnswer\(r\)/g) || []).length === 1
+      && /const stored    = storedHaulAnswer\(r\);/.test(api)
+      && !/haul_exempt === true \? \{ is_haul: false \}[\s\S]{0,80}?\n\s*\}, haulTypeOf/.test(api));
   }
   // Only a real answer is sent. An untouched row sends no key, and the server
   // reads the truck off the row exactly as the modal does — so "nobody said"
