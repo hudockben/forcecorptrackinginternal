@@ -270,6 +270,41 @@ async function boot(page, file, opts) {
       h.innerHTML = splitHaulNoteHtml({ prevailing_wage: true });
       return h.textContent;
     });
+    // The per-row Haul tick: the column only exists on a haul day, it follows
+    // the truck on the row, and unticking it is what pays a driver who got out
+    // and worked the site.
+    const perRow = await page.evaluate(() => {
+      splitEntry = { id: 1, computed_hours: 9, travel_hours: 0, haul_type: 'off_site' };
+      splitHaulAnswer = 'off_site';
+      splitProjEquipment = [];
+      splitRows = [
+        { cost_code: 'Notch Milling', sub_code: 'Milling - Trucking', quantity: 0,
+          equipment: 'Triaxle Dump', labor_hours: 6.5, equip_hours: 6.5, is_travel: false, code_source: '' },
+        { cost_code: 'Notch Milling', sub_code: 'Scratch/leveling - Labor', quantity: 0,
+          equipment: '', labor_hours: 2.5, equip_hours: 0, is_travel: false, code_source: '' },
+      ];
+      renderSplitRows();
+      const boxes = () => [...document.querySelectorAll('#splitTbody .haul-col input')];
+      const shown = () => getComputedStyle(document.querySelector('#splitTbody .haul-col')).display !== 'none';
+      const before = { onHaulDay: shown(), checked: boxes().map(b => b.checked) };
+      // Untick the site-labour row — he was out of the truck.
+      splitOnChange(1, 'is_haul', false);
+      const after = { checked: boxes().map(b => b.checked), payload: splitRows.map(splitRowPayload) };
+      // And the column disappears entirely once the day is not a haul.
+      splitHaulAnswer = '';
+      renderSplitRows();
+      const off = { colShown: shown() };
+      return { before, after, off };
+    });
+    ok('the Haul column is shown on a haul day', perRow.before.onHaulDay);
+    ok('  with the driving row ticked and the site-labour row not — no clicks needed',
+      JSON.stringify(perRow.before.checked) === '[true,false]', JSON.stringify(perRow.before.checked));
+    ok('  and it disappears on a day nobody called a haul', perRow.off.colShown === false);
+    ok('unticking a row sends is_haul false, so the server pays him for it',
+      perRow.after.payload[1].is_haul === false, JSON.stringify(perRow.after.payload[1]));
+    ok('  while the untouched driving row sends no answer at all — the truck decides',
+      !('is_haul' in perRow.after.payload[0]), JSON.stringify(perRow.after.payload[0]));
+
     ok('the $0-labour note explains itself', /\$0 labour rate/.test(note), note.slice(0, 80));
     ok('  and says the hours pay at standard on a prevailing job',
       /standard/.test(note) && /prevailing/.test(note));

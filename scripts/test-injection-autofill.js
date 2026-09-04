@@ -263,13 +263,60 @@ async function injectionTests() {
     assert('  while the truck is still priced',       r.equip_unit_cost === 18.75 && r.equip_hours === 8);
   }
   {
-    const sql = makeSql({ prevailingWage: true });
-    await insertSplitRows(sql, [splitRow()], HAUL_ENTRY('on_site'), 'turf', 'FCT', 'brewerzach');
+    const sql = makeSql({ prevailingWage: true, equipmentBlob: [{ name: 'Pickup Truck', unit_cost: 18.75 }] });
+    await insertSplitRows(sql, [splitRow({ equipment: 'Pickup Truck', equip_hours: 8 })],
+      HAUL_ENTRY('on_site'), 'turf', 'FCT', 'brewerzach');
     const r = sql.inserted();
     // On site or off, the truck covers the labour — the two answers differ on
     // the PREVAILING question (api/lib/payroll-metrics.js), not on this one.
     assert('an on-site haul posts a $0 labour rate too', r.rate === 0);
     assert('  and carries its own field_type',           r.field_type === 'Haul — On Site');
+  }
+  // But only the rows the TRUCK bought. A man who hauls to the job and then
+  // gets out and works it has both kinds of hour in one day, and the row with
+  // no truck on it is his labour — the job owes it, and his hours belong in its
+  // crew-size and units-per-man-hour denominators, which a haul stamp removes.
+  {
+    const sql = makeSql({ equipmentBlob: [{ name: 'Triaxle Dump', unit_cost: 121 }] });
+    await insertSplitRows(sql, [
+      splitRow({ sub_code: 'Milling - Trucking',     labor_hours: 6.5, equipment: 'Triaxle Dump', equip_hours: 6.5 }),
+      splitRow({ sub_code: 'Scratch/leveling - Labor', labor_hours: 2.5 }),
+    ], HAUL_ENTRY('off_site'), 'turf', 'FCT', 'brewerzach');
+    const rows = sql.insertedAll();
+    assert('the row he drove is the haul: $0 and stamped',
+      rows[0].rate === 0 && rows[0].field_type === 'Haul — To/From Site',
+      JSON.stringify(rows[0]));
+    assert('the row he worked is not: his own rate, and no stamp',
+      rows[1].rate === 32.5 && rows[1].field_type === null,
+      JSON.stringify(rows[1]));
+    assert('  and its hours are untouched either way',
+      rows[0].labor_hours === 6.5 && rows[1].labor_hours === 2.5);
+  }
+  {
+    // A truck NAMED but never given hours buys nothing, so it cannot be what
+    // paid for the labour — this is the likeliest shape of the mistake, since
+    // every split row starts at equip_hours 0.
+    const sql = makeSql({ equipmentBlob: [{ name: 'Triaxle Dump', unit_cost: 121 }] });
+    await insertSplitRows(sql, [splitRow({ equipment: 'Triaxle Dump', equip_hours: 0 })],
+      HAUL_ENTRY('off_site'), 'turf', 'FCT', 'brewerzach');
+    assert('a named truck with no hours does not zero the man',
+      sql.inserted().rate === 32.5 && sql.inserted().field_type === null);
+  }
+  {
+    // And the approver's tick overrules the truck in either direction — for the
+    // day it really is billed on another row or another job.
+    const sql = makeSql();
+    await insertSplitRows(sql, [splitRow({ is_haul: true })],
+      HAUL_ENTRY('off_site'), 'turf', 'FCT', 'brewerzach');
+    assert('a row ticked as a haul posts $0 with no truck on it at all',
+      sql.inserted().rate === 0 && sql.inserted().field_type === 'Haul — To/From Site');
+  }
+  {
+    const sql = makeSql({ equipmentBlob: [{ name: 'Triaxle Dump', unit_cost: 121 }] });
+    await insertSplitRows(sql, [splitRow({ is_haul: false, equipment: 'Triaxle Dump', equip_hours: 8 })],
+      HAUL_ENTRY('off_site'), 'turf', 'FCT', 'brewerzach');
+    assert('and an unticked row pays him even with the truck right there',
+      sql.inserted().rate === 32.5 && sql.inserted().field_type === null);
   }
   {
     const sql = makeSql({ prevailingWage: true });
@@ -476,23 +523,50 @@ async function refreshTests() {
     rate: 0, equipment: '', equip_unit_cost: 0, username: 'brewerzach', job_id: 'J1',
   }, over);
 
-  // The backfill re-reads the driver's answer off the ENTRY (the scan joins
-  // timesheet_entries), never off the stamp already sitting on the row. If it
-  // trusted the stamp as a second source the two could disagree inside a single
-  // write: a driver who corrected his answer would have the marker cleared but
-  // the $0 rate kept, and the row would only come right on a second run.
+  // The backfill reads the driver's answer off the ENTRY (the scan joins
+  // timesheet_entries) — but WHICH ROWS it applies to is the row's own business,
+  // exactly as on the approval path. A row still carrying its haul stamp keeps
+  // it; a row with the truck on it self-heals onto one; a row the approver
+  // deliberately took off the haul stays off it, however many times this runs.
   {
-    const { updates } = await run([row({ rate: 32.5, haul_type: 'off_site' })]);
+    const { updates } = await run([row({
+      rate: 32.5, haul_type: 'off_site', equipment: 'Triaxle Dump', equip_hours: 8,
+    })]);
     assert('a row whose entry says off-site haul is re-priced to $0',
       updates.length === 1 && updates[0].rate === 0);
     assert('  and stamped so the cost tab says why',
       updates[0].field_type === 'Haul — To/From Site');
   }
   {
-    const { updates } = await run([row({ rate: 32.5, haul_type: 'on_site' })]);
+    const { updates } = await run([row({
+      rate: 32.5, haul_type: 'on_site', equipment: 'Triaxle Dump', equip_hours: 8,
+    })]);
     assert('an on-site haul is re-priced to $0 as well',
       updates.length === 1 && updates[0].rate === 0
       && updates[0].field_type === 'Haul — On Site');
+  }
+  {
+    // A row already stamped keeps its stamp and its $0 even with no truck on
+    // it — that is what the approver settled, and this sweep is not the place
+    // to reopen it.
+    const { updates } = await run([row({
+      rate: 0, field_type: 'Haul — To/From Site', haul_type: 'off_site',
+      employee: 'Zach Brewer', job_class: 'Operator',
+    })]);
+    assert('a stamped row with no truck is left exactly as approved',
+      updates.length === 0, JSON.stringify(updates[0] || null));
+  }
+  {
+    // THE ONE THIS GUARD EXISTS FOR. He hauled to & from, then got out and
+    // worked the site; payroll un-hauled that row so the job pays him for it.
+    // Re-stamping it here would put the $0 back and quietly undo them.
+    const { updates } = await run([row({
+      rate: 32.5, field_type: null, equipment: '', equip_hours: 0,
+      haul_type: 'off_site', sub_code: 'Scratch/leveling - Labor',
+      employee: 'Zach Brewer', job_class: 'Operator',
+    })]);
+    assert('the site-labour row the approver un-hauled is not re-zeroed',
+      updates.length === 0, JSON.stringify(updates[0] || null));
   }
   {
     // The driver went back and said it was not a haul after all.

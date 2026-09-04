@@ -18,13 +18,21 @@
  * down the arithmetic that reads it, in the module the Payroll page and the
  * executive report both roll their fortnight up through.
  *
+ * And a man can do BOTH INSIDE ONE BLOCK. He is meant to file the two halves
+ * separately, but plenty of days arrive as one 9-hour block answered "to & from"
+ * — he hauled there, got out, and worked the site. haul_type cannot say how much
+ * of it was which; payroll's split can, and lands the answer on the entry as
+ * haul_hours. Those hours are the truck's and fall to standard; the rest were
+ * worked on the covered site and keep the premium.
+ *
  * The invariant that matters most is the last one: whatever the split, a
  * worker's prevailing + standard hours must still add up to the hours he is
  * owed. Reclassifying hours must never create or destroy any.
  */
 
 const path = require('path');
-const { payrollMetrics } = require(path.resolve(__dirname, '../api/lib/payroll-metrics.js'));
+const { payrollMetrics, offSiteHaulWork } =
+  require(path.resolve(__dirname, '../api/lib/payroll-metrics.js'));
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -139,6 +147,106 @@ assert('he is paid for the whole 10-hour day',
 assert('and it is one day worked, not two',
   mixed.daysWorked === 1, `daysWorked=${mixed.daysWorked}`);
 
+// ── One block, both kinds of hour ───────────────────────────────────────────
+console.log('\n[he hauled there, got out, and worked the site — all in one block]');
+
+// Rick's day on Libby Phillipsburg: 9 hours filed as ONE block answered
+// "to & from". 6.50 h of it was the triaxle; the other 2.50 h he spent on
+// scratch/leveling with his boots on the ground. Payroll separates them in the
+// split modal and the hours land here.
+const partial = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: 6.5 }));
+assert('the hours in the truck fall to standard: 6.50 h',
+  near(partial.stdHours, 6.5), `std=${partial.stdHours}`);
+assert('the hours on the site keep the premium: 2.50 h prevailing',
+  near(partial.pwHours, 2.5), `pw=${partial.pwHours}`);
+assert('  and only the hauled hours are reported as excluded',
+  near(partial.haulHours, 6.5), `haul=${partial.haulHours}`);
+assert('he is still owed the whole 9-hour day',
+  near(partial.workHours, 9) && near(partial.pwHours + partial.stdHours, 9),
+  `work=${partial.workHours} pw+std=${partial.pwHours + partial.stdHours}`);
+
+const partialTravel = only(entry({ computed_hours: 9, travel_hours: 1, haul_type: 'off_site', haul_hours: 6.5 }));
+assert('travel joins the hauled hours in standard, as it always has',
+  near(partialTravel.stdHours, 7.5) && near(partialTravel.pwHours, 2.5),
+  `pw=${partialTravel.pwHours} std=${partialTravel.stdHours}`);
+
+const noneHauled = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: 0 }));
+assert('a split that found no hauled hours at all pays the whole day prevailing',
+  near(noneHauled.pwHours, 9) && near(noneHauled.stdHours, 0),
+  `pw=${noneHauled.pwHours} std=${noneHauled.stdHours}`);
+
+const allHauled = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: 9 }));
+assert('a split that was all truck reads exactly as the un-split day did',
+  near(allHauled.pwHours, 0) && near(allHauled.stdHours, 9),
+  `pw=${allHauled.pwHours} std=${allHauled.stdHours}`);
+
+// ── Nothing approved before this reports differently ───────────────────────
+console.log('\n[the column is new; the numbers it replaces are not]');
+
+const unsplit = only(entry({ computed_hours: 9, haul_type: 'off_site' }));
+assert('haul_hours null means the whole day, exactly as haul_type meant alone',
+  near(unsplit.pwHours, 0) && near(unsplit.stdHours, 9),
+  `pw=${unsplit.pwHours} std=${unsplit.stdHours}`);
+assert('  and an explicit null is read the same way',
+  near(only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: null })).stdHours, 9));
+
+// An ON-SITE haul is covered work whatever the split says: the man was on the
+// site for all of it, and haul_hours is about the LABOUR COST of the rows, not
+// about where he stood. Reading it here would move his premium on the strength
+// of a cost decision.
+const onSitePartial = only(entry({ computed_hours: 9, haul_type: 'on_site', haul_hours: 6.5 }));
+assert('an on-site haul stays wholly prevailing however the rows were split',
+  near(onSitePartial.pwHours, 9) && near(onSitePartial.stdHours, 0),
+  `pw=${onSitePartial.pwHours} std=${onSitePartial.stdHours}`);
+
+// A split whose hauled hours somehow exceed the day cannot be allowed to invent
+// negative prevailing hours — the invariant below is the whole contract.
+const overrun = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: 40 }));
+assert('a nonsense haul figure is clamped to the day, never negative',
+  near(overrun.pwHours, 0) && near(overrun.stdHours, 9),
+  `pw=${overrun.pwHours} std=${overrun.stdHours}`);
+const negative = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: -3 }));
+assert('  and so is a negative one',
+  near(negative.pwHours, 9) && near(negative.stdHours, 0),
+  `pw=${negative.pwHours} std=${negative.stdHours}`);
+
+// ── The two copies of the rule ──────────────────────────────────────────────
+// payroll.html carries its own, because the page cannot import this module. The
+// executive report renders the fortnight from here and payroll checks it there,
+// so a difference between them is two numbers for one day.
+console.log('\n[payroll.html says the same thing]');
+{
+  const fs   = require('fs');
+  const page = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
+  const start = page.indexOf('function offSiteHaulWork(');
+  assert('payroll.html carries its own offSiteHaulWork', start >= 0);
+  let depth = 0, end = -1;
+  for (let i = page.indexOf('{', start); i < page.length; i++) {
+    if (page[i] === '{') depth++;
+    else if (page[i] === '}' && --depth === 0) { end = i + 1; break; }
+  }
+  const pageFn = new Function(
+    'isOffSiteHaul',
+    `${page.slice(start, end)}; return offSiteHaulWork;`,
+  )(e => !!e && e.haul_type === 'off_site');
+
+  const CASES = [
+    { haul_type: 'off_site', haul_hours: 6.5 },
+    { haul_type: 'off_site', haul_hours: 0 },
+    { haul_type: 'off_site', haul_hours: null },
+    { haul_type: 'off_site' },
+    { haul_type: 'off_site', haul_hours: 40 },
+    { haul_type: 'off_site', haul_hours: -3 },
+    { haul_type: 'on_site',  haul_hours: 6.5 },
+    { haul_type: null,       haul_hours: 6.5 },
+    { haul_type: 'off_site', haul_hours: 'nonsense' },
+  ];
+  let agree = 0;
+  for (const c of CASES) if (near(pageFn(c, 9), offSiteHaulWork(c, 9))) agree++;
+  assert(`the page and the module agree on all ${CASES.length} shapes`,
+    agree === CASES.length, `${agree}/${CASES.length}`);
+}
+
 // ── The invariant ───────────────────────────────────────────────────────────
 console.log('\n[hours are only ever reclassified, never created or destroyed]');
 
@@ -146,13 +254,18 @@ const CASES = [];
 for (const pw of [true, false, null]) {
   for (const haul of [null, 'on_site', 'off_site']) {
     for (const travel of [0, 2.5]) {
-      CASES.push({ pw, haul, travel });
+      // Every shape haul_hours can arrive in, including the ones no split
+      // should ever produce — the invariant has to hold against those too.
+      for (const hh of [undefined, null, 0, 3, 8, 40, -3]) {
+        CASES.push({ pw, haul, travel, hh });
+      }
     }
   }
 }
 let balanced = 0;
 for (const c of CASES) {
-  const t = only(entry({ prevailing_wage: c.pw, haul_type: c.haul, travel_hours: c.travel }));
+  const t = only(entry({ prevailing_wage: c.pw, haul_type: c.haul,
+                         travel_hours: c.travel, haul_hours: c.hh }));
   if (near(t.pwHours + t.stdHours, 8 + c.travel)) balanced++;
 }
 assert(`prevailing + standard = work + travel, across all ${CASES.length} combinations`,

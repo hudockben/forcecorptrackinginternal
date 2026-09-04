@@ -420,6 +420,10 @@ function dbToEntry(r) {
     lunch_break:           r.lunch_break,
     operated_equipment:  r.operated_equipment,
     haul_type:           r.haul_type || '',
+    // Null is not zero here: it means the day was never split, so the whole of
+    // it reads as the haul — the way every haul day behaved before the split
+    // could say otherwise. See the column comment in neon-schema.sql.
+    haul_hours:          r.haul_hours != null ? Number(r.haul_hours) : null,
     supervisor_id:       r.supervisor_id,
     supervisor_name:     r.supervisor_name || '',
     notes:               r.notes || '',
@@ -701,6 +705,12 @@ function normalizeSplitDest(raw, idx) {
  * Each row contributes either labor_hours (>0) and/or equip_hours (>0).
  * is_travel is a UI-only marker that we forward to a flag column —
  * server-side it has no special validation beyond "you can mark it".
+ *
+ * is_haul is the approver's override of whether the truck bought this row's
+ * labour, and it is deliberately THREE-STATE: true and false are answers, and
+ * anything else — a caller that does not send the key at all — leaves it to
+ * isHaulWorkRow, which reads the truck off the row. That is what keeps the
+ * server's answer the same whether or not the client had an opinion.
  */
 function normalizeSplitRow(raw, idx) {
   if (!raw || typeof raw !== 'object') {
@@ -751,6 +761,11 @@ function normalizeSplitRow(raw, idx) {
       equip_hours: _r2(equip_hours),
       quantity:    Math.round(quantity * 10000) / 10000,
       is_travel:   raw.is_travel === true,
+      // Only a real answer survives; anything else stays undefined so the truck
+      // on the row decides. Writing `raw.is_haul === true` here would turn
+      // "no opinion" into "definitely not a haul" and quietly pay a driver's
+      // wage on top of the truck that is right there on the row.
+      ...(raw.is_haul === true || raw.is_haul === false ? { is_haul: raw.is_haul } : null),
       dest,
     },
   };
@@ -955,6 +970,61 @@ function haulTypeOf(entry) {
   return (t === 'on_site' || t === 'off_site') ? t : null;
 }
 
+// Is the truck actually ON this row?
+//
+// A named unit is not a priced one: every split row starts at equip_hours 0, so
+// "Triaxle Dump" with no hours costs the job exactly as nothing as naming no
+// truck at all. Both halves are required — the same pair the modal's unpriced
+// warning has always tested.
+function truckOnRow(row) {
+  return !!String((row && row.equipment) || '').trim()
+    && (Number(row && row.equip_hours) || 0) > 0;
+}
+
+// Was THIS row bought by the truck?
+//
+// The day-level answer used to settle it for every row at once, and that is the
+// bug: a driver who hauls to the site and then gets out and works it has both
+// kinds of hour in one day. Marking the whole day a haul priced his site labour
+// at $0 — the job got his work for nothing and he dropped out of its crew-size
+// and units-per-man-hour denominators, because a haul stamp takes those hours
+// out of both.
+//
+// So the row decides, on the only fact that means anything here: whether the
+// truck is on it. His labour is inside the truck's hourly rate exactly when he
+// is inside the truck.
+//
+//   is_haul true/false → the approver said so outright, and outranks everything.
+//   no answer          → the truck decides (truckOnRow). A day where nobody
+//                        named a truck at all bills the man's labour rather
+//                        than billing the job nothing whatsoever, and the tick
+//                        is there to put it back to $0 when the truck really is
+//                        billed on another row or another job.
+//
+// Travel still outranks all of it — the commute is not the truck's time — and
+// that is the caller's job, as it always was.
+function isHaulWorkRow(row, haulType) {
+  if (!haulType) return false;
+  if (row && row.is_haul === true)  return true;
+  if (row && row.is_haul === false) return false;
+  return truckOnRow(row);
+}
+
+// The work hours of a split that the truck bought — what lands in
+// timesheet_entries.haul_hours. Travel rows are left out on purpose: travel is
+// already standard-rate on its own rule, and counting it here as well would let
+// prevailing + standard stop adding up to the hours the man is owed.
+function haulWorkHoursOf(entry, rows) {
+  const haulType = haulTypeOf(entry);
+  if (!haulType) return null;
+  const total = (Array.isArray(rows) ? rows : []).reduce((sum, r) => (
+    (!isTravelSplitRow(r) && isHaulWorkRow(r, haulType))
+      ? sum + (Number(r.labor_hours) || 0)
+      : sum
+  ), 0);
+  return _r2(total);
+}
+
 /**
  * Insert split rows into daily_tracking. The caller is responsible for first
  * deleting any prior injected rows for this entry (resplit case) — this
@@ -1040,8 +1110,10 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
     // Travel outranks the haul stamp, and keeps its own rate. A travel row is
     // the drive between shop and job — the commute — and the truck is not on
     // the clock for it, so that labour is real and unpaid-for elsewhere.
-    // The haul only covers the WORK rows of the block.
-    const isHaulRow = !isTravel && !!haulType;
+    // The haul only covers the WORK rows of the block — and of those, only the
+    // ones the truck was actually on. See isHaulWorkRow: a driver out of the
+    // truck and working the site is owed that labour, and the job owes it.
+    const isHaulRow = !isTravel && isHaulWorkRow(r, haulType);
     const fieldType = isTravel ? 'Travel' : (isHaulRow ? HAUL_FIELD_TYPE[haulType] : null);
     await sql`
       INSERT INTO daily_tracking (
@@ -1194,6 +1266,11 @@ function blobBoundSplitRows(entry, rows) {
       equip_hours: row.equip_hours,
       quantity:    row.quantity,
       is_travel:   row.is_travel === true,
+      // Only a real answer is stored, on the same three-state reasoning as
+      // normalizeSplitRow: a row reopened from the blob with no key left on it
+      // goes back to letting the truck decide, rather than coming back as a
+      // deliberate "not a haul" nobody ever said.
+      ...(row.is_haul === true || row.is_haul === false ? { is_haul: row.is_haul } : null),
       dest: {
         division:  dest.division,
         job_id:    dest.job_id,
@@ -4440,12 +4517,24 @@ module.exports = async (req, res) => {
       const unitGiven = !!(truckingInject && truckingInject.unit != null);
       const unitValue = unitGiven ? (truckingInject.unit || null) : null;
 
+      // How much of the day the truck actually bought, read off the split that
+      // is about to be written. Written WITH the status flip rather than after
+      // it: the flip is what makes the day payroll's, and this is what decides
+      // which of its hours are prevailing — the two disagreeing for even one
+      // read would show an approved driver's day paid at the wrong rate.
+      //
+      // Null on the paths with no split to read (quarry, trucking, dust, EES):
+      // nothing there refines the day-level answer, so it keeps meaning the
+      // whole day, exactly as it always has.
+      const haulHours = splitRows ? haulWorkHoursOf(existing, splitRows) : null;
+
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'approved',
             approved_at         = NOW(),
             approved_by_user_id = ${userId},
             approved_by_name    = ${username},
+            haul_hours          = ${haulHours},
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -4576,6 +4665,7 @@ module.exports = async (req, res) => {
                 approved_by_user_id = NULL,
                 approved_by_name    = NULL,
                 split_destinations  = NULL,
+                haul_hours          = NULL,
                 updated_at          = NOW()
             WHERE id = ${id} AND company_code = ${companyCode}
           `;
@@ -4961,6 +5051,20 @@ module.exports = async (req, res) => {
         });
       }
 
+      // The rows have been re-priced from the new split; the entry's share of
+      // prevailing has to follow them. Written after the injection, not before:
+      // a resplit that fails leaves the OLD rows deleted and returns above, and
+      // moving a driver's hours out of prevailing for a split that was never
+      // written is the one way this column could lie about money.
+      const rsHaulHours = haulWorkHoursOf(existing, splitRows);
+      await sql`
+        UPDATE timesheet_entries SET haul_hours = ${rsHaulHours}, updated_at = NOW()
+        WHERE id = ${id} AND company_code = ${companyCode}
+      `;
+      // The response and the audit both render from this object, so it has to
+      // carry what was just written — exactly as haul_type does above.
+      existing.haul_hours = rsHaulHours;
+
       await writeAudit(
         sql, companyCode, payload, id, 'ADMIN_EDIT',
         Object.assign({ resplit: true, split_row_count: splitRows.length },
@@ -5021,6 +5125,7 @@ module.exports = async (req, res) => {
             approved_by_user_id = NULL,
             approved_by_name    = NULL,
             split_destinations  = NULL,
+            haul_hours          = NULL,
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -5058,7 +5163,7 @@ module.exports = async (req, res) => {
       const scanRows = (from && to)
         ? await sql`
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
-                   dt.equipment, dt.equip_unit_cost,
+                   dt.equipment, dt.equip_unit_cost, dt.equip_hours,
                    dt.field_type, dt.cost_code, dt.sub_code,
                    te.username, te.job_id, te.haul_type
             FROM daily_tracking dt
@@ -5073,7 +5178,7 @@ module.exports = async (req, res) => {
           `
         : await sql`
             SELECT dt.row_id, dt.division, dt.employee, dt.job_class, dt.rate,
-                   dt.equipment, dt.equip_unit_cost,
+                   dt.equipment, dt.equip_unit_cost, dt.equip_hours,
                    dt.field_type, dt.cost_code, dt.sub_code,
                    te.username, te.job_id, te.haul_type
             FROM daily_tracking dt
@@ -5137,13 +5242,25 @@ module.exports = async (req, res) => {
           // corrected his answer — re-prices and re-stamps itself when the
           // range is run. Travel still outranks it, exactly as on the approval
           // path: the commute is not bought by the truck.
-          // The ENTRY decides, not the stamp already on the row: the scan joins
-          // timesheet_entries, so haul_type is always available and always
-          // current. Reading the stamp as a second source would let the two
-          // disagree inside one write — a row whose driver has since corrected
-          // his answer would lose the stamp but keep the $0, and only come right
-          // on a second run.
-          const haulType  = travelRow ? null : haulTypeOf(r);
+          //
+          // But the entry cannot decide it ALONE any more, because the answer is
+          // now per row: a driver who hauled to the site and then got out and
+          // worked it has one row the truck bought and one it did not, and this
+          // sweep must not walk over the approver and re-zero the second. So the
+          // entry says whether hauling happened at all, and the ROW says whether
+          // it was this one — the truck being on it, or a stamp already saying
+          // so. is_haul is what the approval path calls the same two facts.
+          //
+          // Which keeps both halves honest: a stamped row re-prices and
+          // re-stamps as before, a pre-flag row still self-heals because a real
+          // haul row carries the truck it was bought by, and a row deliberately
+          // taken off the haul stays off it however many times this is run.
+          const stamped   = HAUL_FIELD_TYPE_RE.test(String(r.field_type || ''));
+          const haulType  = (!travelRow && isHaulWorkRow({
+            equipment:   r.equipment,
+            equip_hours: r.equip_hours,
+            ...(stamped ? { is_haul: true } : null),
+          }, haulTypeOf(r))) ? haulTypeOf(r) : null;
           // A driver's labour is inside the truck's rate; pricing it again
           // bills the job twice for one man. Hours are left alone.
           const rate      = haulType
@@ -5309,6 +5426,13 @@ module.exports = async (req, res) => {
           equip_hours: r.equip_hours != null ? Number(r.equip_hours) : 0,
           quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
           is_travel:   r.field_type === 'Travel',
+          // The haul stamp is the record of what the approver settled last
+          // time, exactly as 'Travel' is for the box beside it. Read back
+          // outright rather than re-derived from the truck, so a row he
+          // deliberately took off the haul — a driver who got out and worked
+          // the site — does not quietly become one again when the modal
+          // reopens and re-prices it at $0.
+          is_haul:     HAUL_FIELD_TYPE_RE.test(String(r.field_type || '')),
           // job_label is not a daily_tracking column; the modal already holds
           // the destination division's job list and names it from there.
           ...(moved ? { dest: { division: rowDiv, job_id: rowJob } } : null),
@@ -5485,6 +5609,7 @@ module.exports = async (req, res) => {
           operated_equipment = ${data.operated_equipment},
           haul_type          = CASE WHEN ${keepHaul}::boolean
                                     THEN haul_type ELSE ${data.haul_type}::text END,
+          haul_hours         = NULL,
           supervisor_id      = ${data.supervisor_id},
           supervisor_name    = ${data.supervisor_name},
           notes              = ${data.notes},
@@ -5593,6 +5718,14 @@ module.exports._test = {
   removeSplitDestinationRows,
   splitDestinationDivisions,
   splitRowHours,
+  // The per-row haul rule — scripts/test-haul-row-rate.js.
+  haulTypeOf,
+  truckOnRow,
+  isHaulWorkRow,
+  haulWorkHoursOf,
+  HAUL_FIELD_TYPE,
+  HAUL_FIELD_TYPE_RE,
+  isTravelSplitRow,
   insertQuarryRowsForDests,
   quarryHasInjectedRow,
   insertSplitRows,

@@ -23,6 +23,13 @@
 //     A haul ON the site is ordinary covered work and stays prevailing — which
 //     is why haul_type has two values and not one. See the column comment in
 //     neon-schema.sql for where the answer comes from.
+//   • ONLY THE HOURS HE ACTUALLY HAULED. A driver who runs to the site and then
+//     gets out and works it did both in one day, and haul_type on its own
+//     cannot say how much of each — it answered for the whole block. Payroll's
+//     split says: haul_hours holds the work hours the truck bought, and the
+//     rest were worked on the covered site and are owed the premium. An entry
+//     with haul_hours null was never split, and reads as the whole day, which
+//     is exactly how it behaved before the column existed.
 //   • Only an explicit true is prevailing. false and null — the divisions with
 //     no prevailing-wage concept — are standard.
 //   • travel_to_site + travel_to_shop are the two legs behind travel_hours as
@@ -36,6 +43,39 @@ const num = v => {
 };
 
 const COUNTED_STATUSES = new Set(['submitted', 'approved']);
+
+/**
+ * How many of a day's WORK hours the truck bought, and so fall to the standard
+ * rate on a prevailing-wage job.
+ *
+ * Only an off-site haul moves anything: a haul on the site is ordinary covered
+ * work, and a day that was not a haul at all has nothing to move.
+ *
+ *   haul_hours null → the day was never split, so the answer is still the one
+ *                     haul_type gave on its own: all of it. This is what keeps
+ *                     every fortnight approved before the column existed
+ *                     reporting exactly the hours it always did.
+ *   haul_hours n    → payroll separated the legs. n hours were in the truck;
+ *                     the rest were worked on the site and stay prevailing.
+ *
+ * Clamped to the day, because prevailing + standard must still add up to the
+ * hours the man is owed — reclassifying hours may never create or destroy any.
+ *
+ * Mirrored in payroll.html (offSiteHaulWork). The two must agree: the executive
+ * report renders the fortnight from here and the Payroll page is where it is
+ * checked.
+ */
+function offSiteHaulWork(e, work) {
+  if (!e || e.haul_type !== 'off_site') return 0;
+  if (e.haul_hours == null) return work;
+  const h = Number(e.haul_hours);
+  // A figure we cannot read is not a zero. num() would make it one, and that
+  // would pay a whole hauled day at the prevailing rate on the strength of a
+  // value nobody can parse. Unreadable falls back to what haul_type said on its
+  // own — all of it — which is the answer this column refines, never reverses.
+  if (!Number.isFinite(h)) return work;
+  return Math.min(Math.max(h, 0), work);
+}
 
 function emptyEmployee(username) {
   return {
@@ -76,21 +116,23 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
         acc.travelHours  += travel;
         acc.travelToSite += num(e.travel_to_site_hours);
         acc.travelToShop += num(e.travel_to_shop_hours);
-        // An off-site haul is standard even on a prevailing job, so its work
-        // hours join the travel in the standard bucket. Every other case is
-        // unchanged: 'on_site' and null both fall through to the old rule.
-        const offSiteHaul = e.haul_type === 'off_site';
-        if (e.prevailing_wage === true && !offSiteHaul) {
-          acc.pwHours  += work; acc.stdHours += travel;
+        // The hours the truck bought join the travel in the standard bucket;
+        // whatever is left of the work he did on the covered site, and is owed
+        // the premium for. Every other case is unchanged: 'on_site' and null
+        // both come back 0 here and fall through to the old rule.
+        const haulWork = offSiteHaulWork(e, work);
+        if (e.prevailing_wage === true) {
+          acc.pwHours  += work - haulWork;
+          acc.stdHours += haulWork + travel;
+          // Only hours this rule actually MOVED. A driver's off-site haul on a
+          // job that was never prevailing wage is standard either way, and
+          // counting it here had the executive strip report "40.00 h off-site
+          // haul excluded" beside a prevailing total of 0.00 — describing a
+          // reclassification that never happened.
+          acc.haulHours += haulWork;
         } else {
           acc.stdHours += h;
         }
-        // Only hours this rule actually MOVED. A driver's off-site haul on a
-        // job that was never prevailing wage is standard either way, and
-        // counting it here had the executive strip report "40.00 h off-site
-        // haul excluded" beside a prevailing total of 0.00 — describing a
-        // reclassification that never happened.
-        if (offSiteHaul && e.prevailing_wage === true) acc.haulHours += work;
         // Distinct dates worked, so two entries on one day are one day.
         const d = String(e.work_date || '').slice(0, 10);
         if (d) acc._dates.add(d);
@@ -124,4 +166,4 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
   return { periodStart, periodEnd, employees, totals };
 }
 
-module.exports = { payrollMetrics, COUNTED_STATUSES };
+module.exports = { payrollMetrics, COUNTED_STATUSES, offSiteHaulWork };
