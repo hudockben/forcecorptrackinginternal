@@ -701,12 +701,23 @@
         <div style="padding:1rem;overflow:auto" data-body>${bodyHTML}</div>
       </div>`;
     document.body.appendChild(back);
-    const close = () => back.remove();
+
+    function onEsc(e) { if (e.key === 'Escape') close(); }
+    // Removed by close(), so a dialog opened and shut fifty times does not
+    // leave fifty listeners behind waiting on a key.
+    const close = () => { document.removeEventListener('keydown', onEsc); back.remove(); };
+    document.addEventListener('keydown', onEsc);
     back.querySelector('[data-close]').addEventListener('click', close);
-    back.addEventListener('click', e => { if (e.target === back) close(); });
-    document.addEventListener('keydown', function onEsc(e) {
-      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); }
-    });
+
+    // Close on the backdrop only when the press STARTED on it. Reading the
+    // click alone shut the dialog whenever a drag ENDED outside it — sweeping
+    // a selection across the note box and releasing past the edge fires a
+    // click whose target is the backdrop — and everything filled in went with
+    // it, which reads as the dialog closing for no reason.
+    let pressedBack = false;
+    back.addEventListener('mousedown', e => { pressedBack = e.target === back; });
+    back.addEventListener('click', e => { if (e.target === back && pressedBack) close(); });
+
     return { el: back, body: back.querySelector('[data-body]'), close };
   }
 
@@ -801,6 +812,19 @@
       </select>`;
   }
 
+  // Where a document attached from a purchase order files itself when the
+  // user has not said otherwise: that order's own subfolder — the server
+  // creates one on the first attach — and failing that the Purchase Orders
+  // root it lives under. The picker used to open blank on this path, Upload
+  // refused with "Pick a folder", and that refusal was a toast at the bottom
+  // of the screen while the user was reading the middle of it. Attaching from
+  // a PO looked like a dead button.
+  function defaultFolderForPo(poId, projectId) {
+    if (!poId) return '';
+    const bySlug = slug => (folders.find(f => f.slug === slug) || {}).id || '';
+    return bySlug(`po-${poId}`) || bySlug(projectId ? 'purchase-orders' : 'unassigned-pos');
+  }
+
   function wirePoFilter(root, id, projectId) {
     const box = root.querySelector(`[data-po-filter="${id}"]`);
     const sel = root.querySelector('#' + id);
@@ -829,6 +853,7 @@
     // Default to the tab's selection, but let callers override: openAttach()
     // works against the PO's own job, which is not always the one on screen.
     if (projectId === undefined) projectId = cfg.getProjectId();
+    if (!folderId) folderId = defaultFolderForPo(poId, projectId);
     const m = modal('Upload documents', `
       <div style="display:flex;flex-direction:column;gap:0.85rem">
         <div>
@@ -839,6 +864,7 @@
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Folder <span style="color:var(--red,#ef4444)">*</span></label>
           ${folderPickerHTML('fctdoc-folder', folderId, '— pick a folder —')}
+          ${poId ? `<div style="${S.muted};margin-top:0.25rem">Filed under the purchase order as well, whichever folder you pick.</div>` : ''}
         </div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Link to purchase order <span style="opacity:0.7">(optional)</span></label>
@@ -849,6 +875,7 @@
           <input type="text" id="fctdoc-note" placeholder="e.g. 22.14 tons" maxlength="500" style="${S.input};width:100%" />
         </div>
         <div id="fctdoc-progress" style="${S.muted}"></div>
+        <div id="fctdoc-err" style="display:none;color:var(--red,#ef4444);font-size:0.78rem;white-space:pre-line"></div>
         <div style="display:flex;justify-content:flex-end;gap:0.5rem">
           <button data-cancel style="${S.btn}">Cancel</button>
           <button id="fctdoc-go" style="${S.green}">Upload</button>
@@ -861,7 +888,20 @@
     const fileInput = m.body.querySelector('#fctdoc-files');
     const fileList  = m.body.querySelector('#fctdoc-filelist');
     const progress  = m.body.querySelector('#fctdoc-progress');
+    const errBox    = m.body.querySelector('#fctdoc-err');
     let picked = files;
+
+    // Say what went wrong inside the dialog, not only in a toast. The toast
+    // prints at the bottom of the window and clears itself after a few
+    // seconds; on a tall screen it is nowhere near the middle, where the
+    // dialog and the eye both are, so a refused upload read as a button that
+    // does nothing.
+    function fail(msg) {
+      errBox.textContent = msg;
+      errBox.style.display = '';
+      toast(msg, 'error');
+    }
+    function clearFail() { errBox.textContent = ''; errBox.style.display = 'none'; }
 
     function showPicked() {
       fileList.innerHTML = picked.length
@@ -869,23 +909,40 @@
         : '';
     }
     showPicked();
-    fileInput.addEventListener('change', () => { picked = [...fileInput.files]; showPicked(); });
+    fileInput.addEventListener('change', () => {
+      picked = [...fileInput.files];
+      clearFail();
+      showPicked();
+    });
 
     m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
 
     m.body.querySelector('#fctdoc-go').addEventListener('click', async () => {
+      clearFail();
+
+      // Read the control itself rather than trusting the change event alone.
+      // A change that never landed — the dialog reopened over this one, the
+      // file dragged straight onto the field — left `picked` empty with the
+      // file plainly sitting there, and Upload answered "pick at least one
+      // file" about a file the user could see.
+      if (fileInput.files && fileInput.files.length) {
+        picked = [...fileInput.files];
+        showPicked();
+      }
+
       const chosenFolder = m.body.querySelector('#fctdoc-folder').value;
       const chosenPo     = m.body.querySelector('#fctdoc-po').value || null;
       const note         = m.body.querySelector('#fctdoc-note').value.trim();
 
-      if (!picked.length)   { toast('Pick at least one file.', 'error'); return; }
-      if (!chosenFolder)    { toast('Pick a folder — every file has to be filed somewhere.', 'error'); return; }
+      if (!picked.length)   { fail('Pick at least one file.'); return; }
+      if (!chosenFolder)    { fail('Pick a folder — every file has to be filed somewhere.'); return; }
 
       const go = m.body.querySelector('#fctdoc-go');
       go.disabled = true;
       go.textContent = 'Uploading…';
 
       let done = 0, failed = 0;
+      const errors = [];
       for (const file of picked) {
         progress.textContent = `Uploading ${done + failed + 1} of ${picked.length}: ${file.name}`;
         try {
@@ -898,12 +955,28 @@
           done++;
         } catch (err) {
           failed++;
-          toast(`${file.name}: ${err.message}`, 'error');
+          errors.push(`${file.name}: ${err.message}`);
         }
       }
 
+      // Nothing landed, so there is nothing to leave for. Closing on a total
+      // failure threw away the file, the folder and the note along with the
+      // dialog and left only a toast that timed out — the user had to set the
+      // whole thing up again to find out what had gone wrong.
+      if (!done) {
+        progress.textContent = '';
+        go.disabled = false;
+        go.textContent = 'Upload';
+        fail(errors.join('\n') || 'Nothing was uploaded.');
+        return;
+      }
+
+      // One toast, not two. They all print at the same spot on the screen, so
+      // a success and a failure raised together simply cover each other up.
       m.close();
-      if (done) toast(`${done} file${done === 1 ? '' : 's'} uploaded.`);
+      const landed = `${done} file${done === 1 ? '' : 's'} uploaded.`;
+      if (errors.length) toast(`${landed} ${failed} failed — ${errors.join('; ')}`, 'error');
+      else toast(landed);
 
       // The upload is committed; only the refresh can still fail. Left
       // unguarded it rejected, skipped the re-render, and left a green
