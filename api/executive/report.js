@@ -1564,7 +1564,13 @@ async function buildPayrollSummary(sql, companyCode) {
       -- than prevailing. This column list is explicit, so leaving it out here
       -- would have the executive report quietly disagree with the Payroll page
       -- about the same fortnight.
-      haul_type
+      -- haul_hours is the other half of that answer: how much of the day was
+      -- actually the truck, for the driver who hauled there and then worked the
+      -- site. Without it every row arrives looking un-split, and the report
+      -- pays his whole day at standard while the Payroll page pays part of it
+      -- at prevailing.
+      haul_type,
+      haul_hours::float                  AS haul_hours
     FROM timesheet_entries
     WHERE company_code = ${companyCode}
       AND status IN ('submitted', 'approved')

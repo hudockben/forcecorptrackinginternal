@@ -47,16 +47,9 @@ function assert(label, cond, detail) {
 
 const src = fs.readFileSync(path.resolve(__dirname, '../timesheet.html'), 'utf8');
 
-function fnSource(name) {
-  const start = src.indexOf(`function ${name}(`);
-  if (start < 0) throw new Error(`${name} not found in timesheet.html`);
-  let depth = 0;
-  for (let i = src.indexOf('{', start); i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
-  }
-  throw new Error(`${name} never closes`);
-}
+// One shared brace matcher — see scripts/lib/fn-source.js.
+const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const fnSource = name => requireFn(src, name, 'timesheet.html');
 
 // Just enough DOM for the three buttons and the two classes that carry the
 // whole state of this control on screen.

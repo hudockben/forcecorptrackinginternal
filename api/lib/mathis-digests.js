@@ -1069,13 +1069,15 @@ const PAYROLL_LIMITS = [
 async function payrollDigest(c) {
   const { startIso, endIso } = report.biweeklyPayPeriod(new Date());
 
-  // haul_type is in the column list on purpose: payrollMetrics sends an
-  // off-site haul's work hours to standard rather than prevailing, and this
-  // SELECT is explicit. Leave it out and every row reaches payrollMetrics with
-  // haul_type undefined, so Mathis keeps answering with the OLD split —
-  // silently, and in disagreement with both the Payroll page and the executive
-  // report. Written out here rather than inside the query: the sql tag only
-  // sees text, and a backtick in it would close the template.
+  // haul_type and haul_hours are in the column list on purpose: payrollMetrics
+  // sends an off-site haul's work hours to standard rather than prevailing, and
+  // haul_hours says how many of them there were — the driver who hauled to the
+  // job and then worked the site has some of each. This SELECT is explicit.
+  // Leave either out and every row reaches payrollMetrics looking un-split, so
+  // Mathis keeps answering with the OLD split — silently, and in disagreement
+  // with both the Payroll page and the executive report. Written out here
+  // rather than inside the query: the sql tag only sees text, and a backtick in
+  // it would close the template.
   let rows;
   try {
     rows = await c.sql`
@@ -1085,7 +1087,8 @@ async function payrollDigest(c) {
              travel_hours::float         AS travel_hours,
              travel_to_site_hours::float AS travel_to_site_hours,
              travel_to_shop_hours::float AS travel_to_shop_hours,
-             haul_type
+             haul_type,
+             haul_hours::float           AS haul_hours
         FROM timesheet_entries
        WHERE company_code = ${c.companyCode}
          AND status IN ('submitted', 'approved')

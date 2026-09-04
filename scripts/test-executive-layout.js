@@ -307,6 +307,14 @@ console.log('\n[every consumer of payrollMetrics is fed haul_type]');
     assert(`  ${rel} passes haul_type through to payrollMetrics`,
       allStar || explicit,
       `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
+    // And haul_hours with it, for the same reason and with the same failure
+    // mode: without it every row arrives looking un-split, so a driver who
+    // hauled to the job and then worked it is reported wholly at standard
+    // while the Payroll page pays part of his day at prevailing.
+    const explicitHours = cols.some(c => !/\*/.test(c) && /\bhaul_hours\b/.test(c));
+    assert(`  ${rel} passes haul_hours through as well`,
+      allStar || explicitHours,
+      `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
   }
 }
 assert('hours are work plus travel',
@@ -318,7 +326,7 @@ assert('hours are work plus travel',
 // The gap is bounded (not [\s\S]*) so the match cannot wander off to a pair of
 // increments somewhere else in the file — which is the whole failure mode.
 const PW_GUARD_RE =
-  /prevailing_wage === true[\s\S]{0,40}\{\s*acc\.pwHours\s*\+=\s*work;\s*acc\.stdHours\s*\+=\s*travel;/;
+  /prevailing_wage === true[\s\S]{0,40}\{\s*acc\.pwHours\s*\+=\s*work - haulWork;\s*acc\.stdHours\s*\+=\s*haulWork \+ travel;/;
 assert('travel never counts as prevailing — the prevailing job\'s travel falls to standard',
   PW_GUARD_RE.test(pm) && PW_GUARD_RE.test(payroll));
 // An off-site haul is standard for the same reason travel is: the prevailing
@@ -328,31 +336,45 @@ assert('travel never counts as prevailing — the prevailing job\'s travel falls
 // payroll-metrics.js while payroll.html renders it in the browser, and a rule
 // that lands in only one of them shows the office two different answers for
 // the same pay period.
-assert('an off-site haul never counts as prevailing, in both implementations',
-  /haul_type === 'off_site'/.test(pm)
-  && /prevailing_wage === true && !offSiteHaul/.test(pm)
-  && /haul_type === 'off_site'/.test(payroll)
-  && /prevailing_wage === true && !isOffSiteHaul\(e\)/.test(payroll));
+//
+// And only the hours he ACTUALLY hauled. A man who drives to the job, gets out
+// and works it did both inside one block, and haul_type cannot say how much was
+// which — payroll's split can, and lands it on the entry as haul_hours. Both
+// files read that through the same named rule, so neither can move an hour the
+// other keeps.
+assert('the hauled hours are the ones that leave prevailing, in both implementations',
+  /const haulWork = offSiteHaulWork\(e, work\);/.test(pm)
+  && /const haulWork = offSiteHaulWork\(e, work\);/.test(payroll)
+  && /function offSiteHaulWork\(/.test(pm)
+  && /function offSiteHaulWork\(/.test(payroll));
+// A day that was never split still reads as wholly hauled — exactly what
+// haul_type meant on its own — so nothing approved before the column existed
+// reports a different number the day it ships.
+assert('an unsplit day still moves the whole day, in both implementations',
+  /if \(e\.haul_hours == null\) return work;/.test(pm)
+  && /if \(e\.haul_hours == null\) return work;/.test(payroll));
 // A haul ON the site is ordinary covered work. Only 'off_site' may move hours
 // out of prevailing — a check for a bare truthy haul_type, or one that also
 // named 'on_site', would quietly underpay every driver who spent the day
 // working inside the fence.
-// Scoped to the ONE predicate each file classifies by, not to the whole file:
+// Scoped to the ONE rule each file classifies by, not to the whole file:
 // payroll.html also names both values in the approve modal's explanatory note,
-// which is prose about the rule rather than the rule itself.
-//
-// payroll-metrics.js sets `offSiteHaul` and payroll.html defines
-// `isOffSiteHaul`; either testing a bare truthy haul_type, or admitting
-// 'on_site', would quietly underpay every driver who spent the day working
-// inside the fence.
-const pmPredicate      = /const offSiteHaul = ([^;]+);/.exec(pm);
-const payrollPredicate = /function isOffSiteHaul\(e\) \{\s*return ([^;]+);/.exec(payroll);
+// which is prose about the rule rather than the rule itself. The doc comments
+// above each function say "on site" in prose too, which is why this reads the
+// function BODY and not the lines around it.
+const { fnSource: fnBody } = require(require('path').resolve(__dirname, 'lib/fn-source.js'));
+const pmPredicate = fnBody(pm, 'offSiteHaulWork');
+// payroll.html splits the same rule in two: offSiteHaulWork asks isOffSiteHaul,
+// which is also what the Hours Report pill and the entry table read. Both
+// halves have to be clean, so both come across.
+const payrollPredicate = [fnBody(payroll, 'offSiteHaulWork'),
+                          fnBody(payroll, 'isOffSiteHaul')].join('\n');
 assert('each implementation classifies by a single findable predicate',
-  !!pmPredicate && !!payrollPredicate);
+  !!pmPredicate && /offSiteHaulWork/.test(payrollPredicate) && /isOffSiteHaul/.test(payrollPredicate));
 assert('an on-site haul stays prevailing — only off_site is excluded',
-  !!pmPredicate && /'off_site'/.test(pmPredicate[1]) && !/'on_site'/.test(pmPredicate[1])
-  && !!payrollPredicate && /'off_site'/.test(payrollPredicate[1]) && !/'on_site'/.test(payrollPredicate[1]),
-  `pm: ${pmPredicate && pmPredicate[1]} | payroll: ${payrollPredicate && payrollPredicate[1]}`);
+  !!pmPredicate && /'off_site'/.test(pmPredicate) && !/'on_site'/.test(pmPredicate)
+  && /'off_site'/.test(payrollPredicate) && !/'on_site'/.test(payrollPredicate),
+  `pm: ${pmPredicate} | payroll: ${payrollPredicate}`);
 assert('only an explicit true is prevailing, so a division without the concept is standard',
   /=== true/.test(pm) && !/prevailing_wage\s*\?/.test(pm));
 assert('only submitted and approved entries carry hours',

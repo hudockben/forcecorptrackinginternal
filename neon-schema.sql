@@ -1088,6 +1088,68 @@ CREATE INDEX IF NOT EXISTS idx_ts_haul_type
   ON timesheet_entries(company_code, haul_type)
   WHERE haul_type IS NOT NULL;
 
+-- ─────────────────────────────────────────────────
+-- TIMESHEET ENTRIES — haul_hours
+-- ─────────────────────────────────────────────────
+-- How many of the day's WORK hours the truck actually bought.
+--
+-- haul_type answers "was this day a haul?", and for a long time that was the
+-- whole answer: every work hour on a haul day was priced at $0 (the driver is
+-- already inside the truck's hourly rate) and, on an off-site haul, paid at the
+-- standard rate even on a prevailing-wage job.
+--
+-- A driver who hauls to the site and then GETS OUT AND WORKS IT breaks that.
+-- The hours he spent in the truck are bought by the truck; the hours he spent
+-- on the site are not — the job owes him for those, at the prevailing rate if
+-- the job carries one. He is supposed to file the two halves as separate job
+-- blocks on his timesheet, but plenty of days arrive as one block and payroll
+-- is where that gets caught. The split modal is what separates them: each row
+-- says whether the truck was on it, and the hours of the rows that were get
+-- summed here.
+--
+--   NULL → not split yet, or an entry from before this column existed. Read as
+--          "the whole day", which is exactly how it behaved before, so no
+--          approved fortnight changes its numbers on deploy.
+--   0    → split, and none of it was hauled.
+--   n    → n work hours were the haul; computed_hours - n were worked on site.
+--
+-- Written at approval and re-written on a resplit; cleared on un-approve, so it
+-- can never outlive the split it describes. Travel is not counted here — travel
+-- is already standard-rate on its own rule, and counting it twice would let
+-- prevailing + standard stop adding up to the hours the man is owed.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS haul_hours NUMERIC(6,2);
+
+-- ─────────────────────────────────────────────────
+-- DAILY TRACKING — is_haul
+-- ─────────────────────────────────────────────────
+-- "Did the truck buy this row's labour?" — the approver's own answer, in the
+-- three states the question actually has.
+--
+--   TRUE  → he was in the truck. The row posts a $0 labour rate: his wage is
+--           already inside the truck's hourly cost.
+--   FALSE → he was out of it and working. Never a haul, whatever is on the row,
+--           however many times anything re-reads it.
+--   NULL  → NOBODY SAID. The truck on the row decides, which is what lets a
+--           genuinely stale row still self-heal.
+--
+-- Nullable on purpose. It was first written as `haul_exempt BOOLEAN NOT NULL`,
+-- which can only say "not a haul" or "nothing said" — "it IS a haul" then had
+-- to be inferred from the 'Haul — …' stamp in field_type, so two columns
+-- carried one answer, could contradict each other, and every reader had to be
+-- told which won. One nullable column holds all three states outright and needs
+-- no precedence rule at all.
+--
+-- The stamp stays, doing only what it is actually read for: the cost grids
+-- display it, and the division pages subtract stamped hours from their
+-- crew-size and units-per-man-hour denominators. It is also the only record a
+-- row approved BEFORE this column existed carries, so storedHaulAnswer falls
+-- back to it when is_haul is null — without that, every historic haul row would
+-- read as "nobody said" and be re-derived from a truck many of them never named.
+--
+-- Only ever set from the split modal's per-row Haul tick, and only on rows this
+-- app injected (timesheet_entry_id IS NOT NULL).
+ALTER TABLE daily_tracking ADD COLUMN IF NOT EXISTS is_haul BOOLEAN;
+
 -- EES-only daily fields. Captured on the timesheet only when the division is
 -- 'dust' AND the job is one of the two standing EES activities (job_id
 -- 'ees:preloading' / 'ees:washing' — see api/timesheet-jobs.js), and carried

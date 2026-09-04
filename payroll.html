@@ -988,8 +988,17 @@
       border-radius: 4px;
       white-space: nowrap;
     }
+    /* The Haul tick has nothing to say on a day nobody called a haul, and an
+       always-on column of dead checkboxes is worse than no column: it invites
+       ticking. One class on the table takes the header and every cell together,
+       so the two can never disagree about whether the column is there. */
+    .split-table:not(.haul-on) .haul-col { display: none; }
     .pw-yes { background: rgba(234,179,8,0.16);  color: var(--yellow); }
     .pw-no  { background: rgba(136,136,136,0.15); color: var(--muted); }
+    /* Part haul: some of the day prevailing, some of it not. Its own colour
+       because it is its own answer — reading it as either "Yes" or "Haul"
+       sends the approver looking for a bug in the hours. */
+    .pw-part { background: rgba(96,165,250,0.16); color: var(--blue); }
     .pw-na  { color: var(--muted); }
 
     /* ── Split-day chip ──
@@ -1829,6 +1838,8 @@
               <th style="width:90px">Equip h</th>
               <th style="width:60px;text-align:center"
                   title="Marks this row as travel time. It does not change the cost code — put the travel code on the row itself.">Travel</th>
+              <th class="haul-col" style="width:60px;text-align:center"
+                  title="Was the driver IN THE TRUCK for these hours? Ticked, the row posts a $0 labour rate — his wage is already inside the truck's hourly cost. Unticked, he was out of it and working, so the job pays him for the time. Follows the equipment on the row until you say otherwise.">Haul</th>
               <th style="width:50px"></th>
             </tr>
           </thead>
@@ -2565,11 +2576,15 @@
             // prevailing premium is for work on the covered site, and a driver
             // running to and from it never worked there. A haul ON the site is
             // ordinary covered work and stays prevailing.
+            // And only the hours he actually hauled — see offSiteHaulWork. A
+            // man who drove there and then worked the site is owed the premium
+            // for the half he spent on it.
             // Mirrors payrollMetrics in api/lib/payroll-metrics.js — the two
             // must agree, because the executive report renders the same
             // fortnight from that module and this page is where payroll checks it.
-            if (e.prevailing_wage === true && !isOffSiteHaul(e)) {
-              acc.pwHours += work; acc.stdHours += travel;
+            const haulWork = offSiteHaulWork(e, work);
+            if (e.prevailing_wage === true) {
+              acc.pwHours += work - haulWork; acc.stdHours += haulWork + travel;
             } else {
               acc.stdHours += h;
             }
@@ -2759,9 +2774,11 @@
         const toSite = isOff ? null : (e.travel_to_site_hours != null ? Number(e.travel_to_site_hours) : null);
         const toShop = isOff ? null : (e.travel_to_shop_hours != null ? Number(e.travel_to_shop_hours) : null);
         // Per entry, prevailing hours = the work hours when the tied job is
-        // prevailing wage, else 0. Travel is excluded — it isn't paid at the
-        // prevailing rate — which matches the aggregate column.
-        const pw     = (!isOff && e.prevailing_wage === true && !isOffSiteHaul(e)) ? work : 0;
+        // prevailing wage, less whatever of them the truck bought. Travel is
+        // excluded — it isn't paid at the prevailing rate — which matches the
+        // aggregate column.
+        const pw     = (!isOff && e.prevailing_wage === true)
+          ? work - offSiteHaulWork(e, work) : 0;
         sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw;
         sumToSite += (toSite || 0); sumToShop += (toShop || 0);
         const division = isOff ? '—' : (prettyDiv(e.division) || '—');
@@ -3284,11 +3301,12 @@
           const work   = isOff ? null : Number(e.computed_hours || 0);
           const travel = isOff ? null : Number(e.travel_hours   || 0);
           const total  = isOff ? null : work + travel;
-          // Per entry, prevailing hours are the whole day's hours when the tied
-          // job is prevailing wage — the same split the summary columns use.
-          // Travel is never prevailing-rate, so prevailing hours are the work
-          // hours on a prevailing job; its travel drops into standard.
-          const pw  = isOff ? null : ((e.prevailing_wage === true && !isOffSiteHaul(e)) ? work : 0);
+          // Per entry, prevailing hours are the day's work hours when the tied
+          // job is prevailing wage, less the ones the truck bought — the same
+          // split the summary columns use. Travel is never prevailing-rate, so
+          // it drops into standard along with the hauled hours.
+          const pw  = isOff ? null
+            : ((e.prevailing_wage === true) ? work - offSiteHaulWork(e, work) : 0);
           const std = isOff ? null : (total - pw);
           // The two travel legs the timesheet collects, kept alongside their
           // sum. Null (never itemised) stays an empty cell so it can't be read
@@ -4206,9 +4224,18 @@
     // instead.
     //
     // Never overwrites a choice already on the row.
+    // Rows the modal will put the truck on: a haul day, not the commute, and
+    // not a row the approver has said outright the driver was out of the truck
+    // for. That last clause is what stops the three helpers below from handing
+    // a truck back to the site-labour row and turning it into a haul again on
+    // the next repaint.
+    function splitRowTakesTruck(r) {
+      return !!splitHaulIs() && !isTravelSplitRow(r) && !(r && r.is_haul === false);
+    }
+
     function splitDefaultHaulEquipment(r) {
       if (!r || String(r.equipment || '').trim()) return false;
-      if (!splitHaulIs() || isTravelSplitRow(r)) return false;
+      if (!splitRowTakesTruck(r)) return false;
       const said = String((splitEntry && splitEntry.truck_unit) || '').trim();
       if (said) { r.equipment = said; r._haulAutoEquip = true; return true; }
       const only = (splitProjEquipment || []).filter(Boolean);
@@ -4226,7 +4253,7 @@
     // is exactly the time the travel rule says the truck is not on the clock for.
     function splitClearHaulAuto(r) {
       if (!r) return false;
-      if (splitHaulIs() && !isTravelSplitRow(r)) return false;
+      if (splitRowTakesTruck(r)) return false;
       let changed = false;
       if (r._haulAutoEquip) { r.equipment = ''; r._haulAutoEquip = false; changed = true; }
       if (r._haulAutoHours) { r.equip_hours = 0; r._haulAutoHours = false; changed = true; }
@@ -4243,7 +4270,13 @@
     // Returns true when it changed something, so the caller repaints.
     function splitMirrorHaulEquipHours(r) {
       if (!r || r._equipHoursTouched) return false;
-      if (!splitHaulIs() || isTravelSplitRow(r)) return false;
+      if (!splitRowTakesTruck(r)) return false;
+      // And only where there is a truck to mirror onto. Hours against no unit
+      // price at nothing, so all this used to do was make a row that costs the
+      // job nothing LOOK like a priced haul — while the $0 labour rate it
+      // carried was real. A row with no unit is now simply not a haul, and
+      // prices the man's labour instead.
+      if (!String(r.equipment || '').trim()) return false;
       const want = Number(r.labor_hours) || 0;
       if ((Number(r.equip_hours) || 0) === want) return false;
       r.equip_hours = want;
@@ -4300,7 +4333,14 @@
       if (!el || !splitEntry) return;
       // Never onto splitEntry — see the declaration of splitHaulAnswer.
       splitHaulAnswer = el.value || '';
-      if (splitMirrorHaulEquipHoursAll()) renderSplitRows();
+      // Unconditionally. The Haul column, its ticks and their derived state all
+      // come from this repaint, and the helper above returns false whenever it
+      // had nothing to fill in — an entry with no truck_unit on a job with no
+      // single assigned unit, which is precisely the day the approver most
+      // needs the ticks. Answering "haul" then left the column hidden and the
+      // warning telling them to untick a checkbox that was not on screen.
+      splitMirrorHaulEquipHoursAll();
+      renderSplitRows();
       const note = document.getElementById('splitHaulNote');
       if (note) note.outerHTML = splitHaulNoteHtml(splitEntry) ||
         '<div id="splitHaulNote" hidden></div>';
@@ -4316,14 +4356,16 @@
       if (!t) return '<div id="splitHaulNote" hidden></div>';
       const where = t === 'on_site' ? 'on the site' : 'to &amp; from the site';
       const wage  = (t === 'off_site' && entry && entry.prevailing_wage === true)
-        ? ' Because the driver never worked the site, these hours pay at the <strong>standard</strong> rate even though the job is prevailing wage.'
+        ? ' The hauled hours pay at the <strong>standard</strong> rate even though the job is prevailing wage — the premium is for work on the covered site. Any hours left unticked were worked on it, and keep the premium.'
         : '';
       return `<div id="splitHaulNote" style="grid-column:1/-1;margin-top:0.4rem;padding:0.5rem 0.6rem;`
         + `border:1px solid var(--border);border-radius:6px;line-height:1.45">`
-        + `<strong>Hauled ${where}.</strong> The labour rows below post at a `
-        + `<strong>$0 labour rate</strong> — the driver is already inside the truck's `
-        + `hourly cost, so charging his wage again would bill the job twice for one man. `
-        + `The hours still post in full.${wage}</div>`;
+        + `<strong>Hauled ${where}.</strong> The rows he was <strong>in the truck</strong> for `
+        + `post at a <strong>$0 labour rate</strong> — he is already inside its hourly cost, `
+        + `so charging his wage again would bill the job twice for one man. `
+        + `A row he was out of it and working is not one of them: leave its `
+        + `<strong>Haul</strong> box unticked and the job pays him for that time. `
+        + `The hours post in full either way.${wage}</div>`;
     }
 
     // Did the driver answer "to & from site" on this entry's job block?
@@ -4336,6 +4378,34 @@
     // drift apart on what counts as prevailing.
     function isOffSiteHaul(e) {
       return !!e && e.haul_type === 'off_site';
+    }
+
+    // How many of a day's WORK hours the truck bought, and so fall to the
+    // standard rate on a prevailing-wage job.
+    //
+    // haul_type answered for the whole block, and a driver who runs to the site
+    // and then GETS OUT AND WORKS IT did both in one day. Payroll's split is
+    // what separates them: each row says whether the truck was on it, and the
+    // hours of the rows that were land on the entry as haul_hours. What is left
+    // is work on the covered site and is owed the premium.
+    //
+    //   null → never split (or an entry from before the column existed), so the
+    //          answer is still the one haul_type gave alone: all of it. Every
+    //          fortnight approved before this reports exactly what it always did.
+    //   n    → n hours in the truck; the rest on the site.
+    //
+    // Clamped to the day, because prevailing + standard must still add up to
+    // the hours the man is owed.
+    //
+    // Mirrors offSiteHaulWork in api/lib/payroll-metrics.js — the two must
+    // agree, because the executive report renders the same fortnight from that
+    // module and this page is where payroll checks it.
+    function offSiteHaulWork(e, work) {
+      if (!isOffSiteHaul(e)) return 0;
+      if (e.haul_hours == null) return work;
+      const h = Number(e.haul_hours);
+      if (!Number.isFinite(h)) return work;
+      return Math.min(Math.max(h, 0), work);
     }
 
     // Prevailing-wage pill, derived from the job tied to the entry.
@@ -4354,6 +4424,22 @@
         return '<span class="pw-na" title="Prevailing wage does not apply to this entry">—</span>';
       }
       if (e.prevailing_wage && isOffSiteHaul(e)) {
+        // A day can now be part haul and part site work — he drove there and
+        // then got out and worked it — so the pill has to say WHICH, or an
+        // approver reading "Haul" beside a day that is mostly prevailing has
+        // no way to tell the report is right.
+        const work = Number(e.computed_hours || 0);
+        const haul = offSiteHaulWork(e, work);
+        // The split found none of it was the truck — every hour was worked on
+        // the site, and the Prevailing column beside this says so. A "Haul"
+        // pill promising the standard rate next to a full prevailing figure is
+        // the exact mismatch this pill exists to prevent, in reverse.
+        if (haul <= 0) {
+          return '<span class="pw-pill pw-yes" title="Prevailing wage job. This day was answered as a haul, but the split found no hours in the truck — all of it was worked on the site, so all of it is prevailing">Yes</span>';
+        }
+        if (haul < work - 0.001) {
+          return `<span class="pw-pill pw-part" title="Prevailing-wage job. ${haul.toFixed(2)} h of this day was hauled to &amp; from the site and pays at the standard rate; the other ${(work - haul).toFixed(2)} h was worked on the site and stays prevailing">Part haul</span>`;
+        }
         return '<span class="pw-pill pw-no" title="Prevailing-wage job, but this block was hauled to &amp; from the site — the driver never worked the site, so these hours pay at the standard rate">Haul</span>';
       }
       return e.prevailing_wage
@@ -5148,6 +5234,17 @@
           labor_hours: r.labor_hours != null ? Number(r.labor_hours) : 0,
           equip_hours: r.equip_hours != null ? Number(r.equip_hours) : 0,
           is_travel:   !!r.is_travel,
+          // What was approved, not what the truck on the row would suggest now —
+          // and in three states, not two. A day signed off before the answer was
+          // per-row comes back with every work row ticked, which is exactly what
+          // it was approved as, so reopening it changes nobody's money until the
+          // approver unticks the row where the driver was out of the truck.
+          //
+          // Passed through UNTOUCHED, undefined included. Forcing it to a
+          // boolean here made every row of a day that was never a haul a
+          // deliberate "not a haul", so an approver switching the picker to
+          // "hauled to & from site" re-stamped the day and re-priced nothing.
+          is_haul:     r.is_haul,
           // Nobody's guess — this is what was approved. Spelled out so every
           // row in this array has the same shape.
           code_source: '',
@@ -5215,6 +5312,76 @@
         || TRAVEL_CODE_RE.test(String(r.cost_code || ''));
     }
 
+    // Is the truck actually ON this row? A named unit is not a priced one:
+    // every row starts at equip_hours 0, so "Triaxle Dump" with no hours costs
+    // the job exactly as nothing as naming no truck at all.
+    //
+    // And it has to be THE TRUCK, not merely a machine: a driver who hauls in
+    // the triaxle and then spends part of the day on the site running a roller
+    // has a second row with a unit and hours on it, and reading that as the
+    // haul zeroes his roller time exactly as marking the whole day did. The
+    // driver names the truck on his own timesheet and it comes from the same
+    // equipment list the row is coded from, so the two compare directly. Where
+    // he named nothing, any machine still counts and the tick is the answer.
+    // Mirrors truckOnRow in api/timesheet-entries.js.
+    function splitTruckOnRow(r) {
+      if (!splitPricedMachineOnRow(r)) return false;
+      const said = String((splitEntry && splitEntry.truck_unit) || '').trim();
+      if (!said) return true;
+      return String(r.equipment).trim().toLowerCase() === said.toLowerCase();
+    }
+
+    // Does this row bill the job for a machine at all? A DIFFERENT question
+    // from "is this the truck", and the warning below asks this one: a ticked
+    // haul row carrying the lowboy on a day the driver named the triaxle is not
+    // the named truck and is still perfectly well priced, so telling the
+    // approver it "will cost the job nothing at all" is false — and the remedy
+    // it names is already done, so the banner could never be cleared.
+    // Mirrors pricedMachineOnRow in api/timesheet-entries.js.
+    function splitPricedMachineOnRow(r) {
+      return !!String((r && r.equipment) || '').trim()
+        && (Number(r && r.equip_hours) || 0) > 0;
+    }
+
+    // A priced machine that is NOT the truck the driver named, on a row nobody
+    // has called a haul. Only the approver can say which it is — a second truck
+    // he also hauled with, or a roller he ran on the site — so it is left
+    // paying him (the side that cannot underpay a person) and said out loud.
+    // Mirrors unnamedMachineOnRow in api/timesheet-entries.js.
+    function splitUnnamedMachineRows() {
+      if (!splitHaulIs()) return [];
+      const out = [];
+      splitRows.forEach((r, i) => {
+        if (isTravelSplitRow(r) || splitRowIsHaul(r)) return;
+        if (!splitPricedMachineOnRow(r) || splitTruckOnRow(r)) return;
+        if ((Number(r.labor_hours) || 0) <= 0) return;
+        out.push({ n: i + 1, hours: Number(r.labor_hours) || 0, unit: String(r.equipment).trim() });
+      });
+      return out;
+    }
+
+    // Will this row be priced as a haul — $0 labour, and its hours out of the
+    // crew-size and units-per-man-hour denominators?
+    //
+    // The day-level answer used to settle it for every row at once, and that is
+    // what sent a driver's site labour out at $0: a man who hauls to the job and
+    // then GETS OUT AND WORKS IT has both kinds of hour in one day, and only the
+    // ones he spent in the truck are inside the truck's rate.
+    //
+    // So the row decides, on the only fact that means anything here — whether
+    // the truck is on it — and the tick overrides that in either direction, for
+    // the day the truck is genuinely billed on another row or another job.
+    //
+    // Mirrors isHaulWorkRow in api/timesheet-entries.js. The two must agree:
+    // this is what the modal shows and warns about, that is what actually
+    // prices the row.
+    function splitRowIsHaul(r) {
+      if (!splitHaulIs() || isTravelSplitRow(r)) return false;
+      if (r && r.is_haul === true)  return true;
+      if (r && r.is_haul === false) return false;
+      return splitTruckOnRow(r);
+    }
+
     // A row's identity, stable across repaints and across other rows being
     // deleted out from under it. The combobox commits 120ms after the blur, by
     // which time a row's POSITION is no longer a safe way to name it.
@@ -5240,6 +5407,12 @@
         labor_hours: 0,
         equip_hours: 0,
         is_travel:   !!isTravel,
+        // Whether the truck bought this row's labour. Deliberately UNSET, not
+        // false: unset means "the equipment on the row decides", which is the
+        // right answer nearly every time and costs nobody a click. It only
+        // becomes a stored true/false when the approver ticks it, or when a
+        // resplit reads back what was approved last time.
+        is_haul:     undefined,
         // Who put the codes on this row: '' nobody yet, 'auto' the travel
         // prefill below, 'manual' the supervisor. Only 'auto' rows are the
         // prefill's to keep updating. Ignored by the server, which reads a
@@ -5358,6 +5531,11 @@
         quantity:    Number(r.quantity) || 0,
         is_travel:   r.is_travel === true,
       };
+      // Only a real answer is sent. An untouched row sends no key at all, and
+      // the server reads the truck off the row exactly as this modal does — so
+      // the two cannot drift, and "nobody said" never arrives looking like a
+      // deliberate "not a haul".
+      if (r.is_haul === true || r.is_haul === false) out.is_haul = r.is_haul;
       if (!r.dest_division) return out;
       out.dest = {
         division:  r.dest_division,
@@ -5940,8 +6118,16 @@
     function renderSplitRows() {
       const tbody = document.getElementById('splitTbody');
       const focus = _splitFocusSnapshot();
+      // One class settles the whole Haul column — see .split-table:not(.haul-on).
+      // Set from the picker's live answer rather than from the entry, because
+      // the approver can change it in this modal and the column has to appear
+      // and disappear with it. Done FIRST: the empty-rows return below would
+      // otherwise leave the header column showing whatever the last render left.
+      if (tbody && tbody.parentElement) {
+        tbody.parentElement.classList.toggle('haul-on', !!splitHaulIs());
+      }
       if (!splitRows.length) {
-        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
         return;
       }
       const eqOpts = (splitEquipmentList || []).slice();
@@ -5983,6 +6169,13 @@
           <td class="travel-cell">
             <input type="checkbox" ${r.is_travel ? 'checked' : ''} onchange="splitOnChange(${i},'is_travel',this.checked)">
           </td>
+          <td class="travel-cell haul-col">
+            <input type="checkbox" ${splitRowIsHaul(r) ? 'checked' : ''} ${isTravelSplitRow(r) ? 'disabled' : ''}
+                   title="${isTravelSplitRow(r)
+                     ? 'The commute is not the truck&#39;s time, so a travel row is never a haul — it keeps its own rate.'
+                     : 'Ticked: he was in the truck, so this row posts $0 labour. Unticked: he was out of it and working, so the job pays him.'}"
+                   onchange="splitOnChange(${i},'is_haul',this.checked)">
+          </td>
           <td><button class="split-row-del" onclick="splitDeleteRow(${i})" title="Remove row">&#10005;</button></td>
         </tr>
         `;
@@ -5998,12 +6191,32 @@
         const n = Number(value);
         r[field] = Number.isFinite(n) && n >= 0 ? n : 0;
         if (field === 'equip_hours') r._equipHoursTouched = true;
+        // The Haul tick is DERIVED from the truck on the row whenever nobody has
+        // set it by hand, so an edit to the equipment hours can change it. The
+        // box has to be redrawn or it says the opposite of how the row will be
+        // priced — an unticked box beside a row that will post $0, with a
+        // tooltip promising the job pays him.
+        if (field === 'equip_hours' && splitHaulIs() && r.is_haul === undefined) repaint = true;
         // On a haul the truck was running for as long as the driver was in it,
         // so the equipment hours follow the labour hours until someone says
         // otherwise. Without this a haul row posts $0 labour AND $0 equipment —
         // the whole day free to the job — which is exactly what the approver is
         // NOT trying to say by calling it a haul.
         if (field === 'labor_hours') repaint = splitMirrorHaulEquipHours(r) || repaint;
+      } else if (field === 'is_haul') {
+        // Now a stored answer rather than one derived from the equipment, and
+        // it stays stored: the approver has looked at this row and said which
+        // it is, and nothing they do to the truck afterwards should quietly
+        // overrule them.
+        r.is_haul = !!value;
+        // The truck follows the answer, the same way it follows the day-level
+        // one — ticking says he was in it, so the modal offers the unit and
+        // keeps its hours level with his; unticking takes back only what the
+        // modal itself filled in.
+        splitClearHaulAuto(r);
+        splitDefaultHaulEquipment(r);
+        splitMirrorHaulEquipHours(r);
+        repaint = true;
       } else if (field === 'is_travel') {
         r.is_travel = !!value;
         if (r.is_travel) {
@@ -6035,6 +6248,10 @@
           // The dust window is marked while it is missing, so filling it has to
           // repaint for the mark to go. renderSplitRows puts the cursor back.
           if (field === 'dest_start' || field === 'dest_end' || field === 'dest_rate') repaint = true;
+          // And the equipment, for the reason spelled out at equip_hours above:
+          // naming the truck is what makes an underived row a haul, so the tick
+          // beside it has to be redrawn or it contradicts the price.
+          if (field === 'equipment' && splitHaulIs() && r.is_haul === undefined) repaint = true;
           if (field === 'cost_code' || field === 'sub_code') r.code_source = 'manual';
           if (field === 'cost_code') {
             r.sub_code = '';                       // sub codes are scoped to a cost code
@@ -6136,8 +6353,12 @@
       if (!splitHaulIs()) return [];
       const out = [];
       splitRows.forEach((r, i) => {
-        // Travel keeps its own rate, so a travel row is priced either way.
-        if (isTravelSplitRow(r)) return;
+        // Only rows that will actually post at $0. Travel keeps its own rate,
+        // and a row with no truck on it is no longer a haul at all — it prices
+        // the man's labour, which is the whole point. What is left is the row
+        // somebody TICKED as a haul without a priced truck on it, and that one
+        // really does cost the job nothing.
+        if (!splitRowIsHaul(r)) return;
         const hrs = Number(r.labor_hours) || 0;
         if (hrs <= 0) return;
         // A named unit is not the same as a priced one. _blankSplitRow starts
@@ -6145,17 +6366,62 @@
         // so "Triaxle Dump" with 0 equipment hours costs the job exactly as
         // nothing as naming no truck at all — and that was slipping past the
         // very check this exists for. Both halves are required.
-        if (String(r.equipment || '').trim() && (Number(r.equip_hours) || 0) > 0) return;
+        if (splitPricedMachineOnRow(r)) return;
         out.push({ n: i + 1, hours: hrs, hasUnit: !!String(r.equipment || '').trim() });
       });
       return out;
     }
 
+    // The other way a haul day can read wrong: it says a haul happened and not
+    // one row claims to be it. Nothing is broken — every hour prices at the
+    // man's own rate, which is the safe direction — but the truck is then
+    // billed to this job by nobody, and that is worth saying out loud rather
+    // than leaving the approver to notice the day got cheaper.
+    function splitHaulNoTruckHours() {
+      if (!splitHaulIs()) return 0;
+      if (splitRows.some(splitRowIsHaul)) return 0;
+      return Math.round(splitRows.reduce((sum, r) => (
+        isTravelSplitRow(r) ? sum : sum + (Number(r.labor_hours) || 0)
+      ), 0) * 100) / 100;
+    }
+
     function renderSplitHaulWarning() {
       const el = document.getElementById('splitWarn');
       if (!el) return;
+      // A machine on the row that is not the truck he named. The modal will not
+      // guess whether he was driving it or running it on the site — guessing
+      // "haul" takes his wage off a row he worked, guessing "work" bills the
+      // job his wage on top of the machine — so it pays him and says so. Named
+      // first because it is the only one of the three that is a live money
+      // question rather than a missing figure.
+      const odd = splitUnnamedMachineRows();
       const bad = splitHaulUnpricedRows();
-      if (!bad.length) { el.hidden = true; el.innerHTML = ''; return; }
+      if (odd.length) {
+        const one = odd.length === 1;
+        el.hidden = false;
+        el.innerHTML =
+          `<strong>${one ? 'Row' : 'Rows'} ${escapeHtml(odd.map(r => `#${r.n}`).join(', '))}: `
+          + `${escapeHtml([...new Set(odd.map(r => r.unit))].join(', '))} `
+          + `${one ? 'is' : 'are'} not the truck he named `
+          + `(${escapeHtml(String((splitEntry && splitEntry.truck_unit) || '—'))}).</strong> `
+          + `${one ? 'That row is' : 'Those rows are'} being paid at his own rate, `
+          + `on top of the machine — right if he was operating it on the site, `
+          + `wrong if he was driving it. Tick <strong>Haul</strong> on `
+          + `${one ? 'it' : 'them'} if he was.`;
+        return;
+      }
+      if (!bad.length) {
+        const loose = splitHaulNoTruckHours();
+        if (!loose) { el.hidden = true; el.innerHTML = ''; return; }
+        el.hidden = false;
+        el.innerHTML =
+          `<strong>${loose.toFixed(2)} h called a haul with no truck on any row.</strong> `
+          + `Every row will pay the driver his own rate — nothing here is billing `
+          + `the job for a truck. That is right if he was out of it and working, `
+          + `or if the truck is billed elsewhere; if he was driving, put the unit `
+          + `and its hours on the row so the truck is what the job pays for.`;
+        return;
+      }
       const hours = bad.reduce((s, r) => s + r.hours, 0);
       const rows  = bad.map(r => `#${r.n}`).join(', ');
       const one   = bad.length === 1;
@@ -6174,8 +6440,9 @@
         + `A haul posts a $0 labour rate because the driver is already inside the `
         + `truck's hourly cost — so with nothing priced on the equipment side `
         + `${one ? 'this row' : 'these rows'} will cost the job nothing at all. `
-        + `${remedy} ${one ? 'it' : 'them'}, or approve as-is if the truck is `
-        + `billed elsewhere.`;
+        + `${remedy} ${one ? 'it' : 'them'}, untick Haul if the driver was out `
+        + `of the truck and working — the job pays him for that time — or `
+        + `approve as-is if the truck is billed elsewhere.`;
     }
 
     // A code the supervisor typed is not in the split until its cell commits,
@@ -9557,6 +9824,23 @@
         fields = `<div class="bulk-note">These entries just change status to approved — no cost row is injected.</div>`;
       }
 
+      // A haul day whose row will carry a machine the driver never named. Bulk
+      // will approve it as a haul — his own answer — but if he was operating
+      // that machine on the site those hours are his, and only somebody looking
+      // at the day can say. Named rather than blocked: refusing an approval
+      // that is genuinely correct just teaches people to work around the panel.
+      const review = bulkHaulNeedsReview(g);
+      const reviewNote = review.length ? `<div class="bulk-note" style="border-color:var(--yellow)">
+          <strong>${review.length} haul ${review.length === 1 ? 'day carries' : 'days carry'}
+          a machine the driver did not name.</strong>
+          ${escapeHtml([...new Set(review.map(e => e.username || '—'))].join(', '))} —
+          ${review.length === 1 ? 'it will be approved' : 'they will be approved'} as
+          hauling, at a $0 labour rate, which is what the driver answered. If he was
+          out of the truck operating that machine, the job owes him those hours:
+          approve ${review.length === 1 ? 'that day' : 'those days'} through
+          <strong>Edit Split</strong> instead and untick Haul on the row.
+        </div>` : '';
+
       return `<div class="bulk-group">
         <div class="bulk-group-head">
           <span class="bulk-badge ${badgeClass}">${escapeHtml(badgeText)}</span>
@@ -9564,6 +9848,7 @@
           <span class="bulk-group-meta">${escapeHtml(meta)}</span>
         </div>
         ${fields}
+        ${reviewNote}
         ${bulkDaysTable(g, idx)}
       </div>`;
     }
@@ -9656,6 +9941,20 @@
     // approver looking at it and a warning beside it, and bulk has neither.
     // A haul with no answer from the driver is left bare, which the row's $0
     // total makes visible in the cost tab.
+    //
+    // And the haul answer is sent EXPLICITLY, per row, rather than left for the
+    // server to read off the truck. Bulk means "approve what the driver filed",
+    // and what he filed is a day-level answer covering every hour of the block —
+    // splitting it into the hours he drove and the hours he worked takes a
+    // person deciding, which is the whole reason the Edit Split modal has a tick
+    // and this panel does not.
+    //
+    // Leaving it derived was a live money bug: a group carrying a crew
+    // equipment override puts a machine on the row that is NOT the driver's
+    // truck, the server then reads the row as ordinary work, and the day posts
+    // his full wage on top of that machine's hourly cost — the double-bill the
+    // $0 rule exists to prevent, from a button with no warning surface at all.
+    // bulkHaulNeedsReview below is what points those days at the modal instead.
     function bulkApplyHaulDefaults(e, rows) {
       const t = e && e.haul_type;
       if (t !== 'on_site' && t !== 'off_site') return;
@@ -9667,7 +9966,28 @@
         if (String(r.equipment || '').trim() && !(Number(r.equip_hours) > 0)) {
           r.equip_hours = Number(r.labor_hours) || 0;
         }
+        r.is_haul = true;
       }
+    }
+
+    // The days in a bulk group that this panel cannot answer for: a haul whose
+    // row will carry a machine the driver never named. Bulk marks the whole
+    // block a haul, which is what he said — but if he was actually operating
+    // that machine on the site, those hours are his and the job owes them, and
+    // only somebody looking at the day can tell. Named on the card so they can
+    // be pulled out and approved through the modal instead.
+    function bulkHaulNeedsReview(g) {
+      if (!g || g.type !== 'split') return [];
+      return (g.entries || []).filter(e => {
+        const t = e && e.haul_type;
+        if (t !== 'on_site' && t !== 'off_site') return false;
+        const said = String((e && e.truck_unit) || '').trim();
+        if (!said) return false;              // nothing to compare against
+        return (bulkRowEffective(g, e) || []).some(m =>
+          m.leg !== 'travel'
+          && String(m.equipment || '').trim()
+          && String(m.equipment).trim().toLowerCase() !== said.toLowerCase());
+      });
     }
 
     // Materialize one entry's approve body from its group's template. Each day's
