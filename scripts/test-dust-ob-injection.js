@@ -41,7 +41,7 @@ const {
 } = _test;
 const {
   obRowId, obRowIndexFromId, isInjectedObRowId, findStaleObRows,
-  sweepInjectedObRows, needsObRow, OB_TAB_FIELDS, MAX_OB_ROWS,
+  sweepInjectedObRows, needsObRow, OB_TAB_FIELDS, MAX_OB_ROWS, applyObPriceOverride,
 } = require('../api/lib/dust-ob-injected.js');
 const { mergeInjectedRows, guardConfigFor } = require('../api/lib/injected-blob-guard.js');
 
@@ -406,13 +406,78 @@ console.log('Dust timesheet → Other Billing injection\n');
     assert('the invoice number survives', obRow(store, 1).inv_number === 'INV-2210');
     assert('and the office\'s note with it', obRow(store, 1).comments === 'PO 8841');
     assert('those are exactly the office\'s columns',
-      OB_TAB_FIELDS.join(',') === 'inv_number,comments');
+      OB_TAB_FIELDS.join(',') === 'inv_number,comments,price_per_unit_override');
 
     // The slot is re-pointed at another customer: it is a different haul now,
     // so the previous customer's invoice number must not ride along.
     await insertObRows(sql, CO, ENTRY, [{ ...legs[0], company: 'Antero', location: 'Shale Run' }]);
     assert('a slot whose customer changed starts clean',
       obRow(store, 1).inv_number === '' && obRow(store, 1).customer === 'Antero');
+  }
+
+  // ── 7b) The office's price survives a correction upstream ─────────────────
+  // The other half of "The manual price override" (api/lib/dust-ob-injected.js);
+  // the derivation itself, the tab save and the page are in
+  // scripts/test-ob-price-override.js. This is the writer that lives here.
+  console.log('\n[a price the office set is not restated by a re-approval]');
+  {
+    const { sql, store } = makeSql(FIXTURE);
+    // Approved with no price: nobody typed one in the modal. The delivery bills
+    // the trucking and gives the material away.
+    const legs = [{ dest: 'ob', location: 'Bear Hollow', material: 'ClearFrac',
+                    gallons_bags: 4000, mu: 'GAL', trucking_rate: 95 }];
+    await insertObRows(sql, CO, ENTRY, legs);
+    assert('it lands unpriced', obRow(store, 1).price_per_unit === '');
+
+    // The office prices it in the tab and invoices it.
+    const list = obRows(store).slice();
+    list[0] = { ...list[0], price_per_unit_override: 1.42, price_per_unit_payroll: '',
+                price_per_unit: 1.42, inv_number: 'INV-2210' };
+    store.appData.set(OB_KEY, list);
+
+    // Payroll corrects the quantity — nothing to do with the price — and
+    // re-approves. The invoice is already out at 1.42.
+    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], gallons_bags: 4200 }]);
+    assert('the correction lands', obRow(store, 1).gallons_bags === 4200);
+    assert('and the price the invoice went out at stands',
+      obRow(store, 1).price_per_unit === 1.42, JSON.stringify(obRow(store, 1).price_per_unit));
+    assert('with the override still recorded as the office\'s',
+      obRow(store, 1).price_per_unit_override === 1.42);
+
+    // Payroll comes back with a price of its own. The office still wins — but
+    // the receipt now shows what it is disagreeing with.
+    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], gallons_bags: 4200, price_per_unit: 0.42 }]);
+    assert('payroll\'s own figure does not overrule it',
+      obRow(store, 1).price_per_unit === 1.42);
+    assert('and is kept beside it so the tab can say so',
+      obRow(store, 1).price_per_unit_payroll === 0.42);
+
+    // Payroll adopts the office's figure — which is what saving Edit Row does,
+    // since it is pre-filled from the posted row. The disagreement is over.
+    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], gallons_bags: 4200, price_per_unit: 1.42 }]);
+    assert('an override payroll has adopted is dropped',
+      !('price_per_unit_override' in obRow(store, 1))
+      && !('price_per_unit_payroll' in obRow(store, 1)));
+    assert('and the row goes back to having one owner',
+      obRow(store, 1).price_per_unit === 1.42);
+  }
+
+  // ── 7c) …but not onto a different haul ────────────────────────────────────
+  console.log('\n[a slot re-pointed at another customer is not priced by the old one]');
+  {
+    const { sql, store } = makeSql(FIXTURE);
+    const legs = [{ dest: 'ob', location: 'Bear Hollow', material: 'ClearFrac',
+                    gallons_bags: 4000, mu: 'GAL', trucking_rate: 95 }];
+    await insertObRows(sql, CO, ENTRY, legs);
+    const list = obRows(store).slice();
+    list[0] = { ...list[0], price_per_unit_override: 1.42, price_per_unit: 1.42 };
+    store.appData.set(OB_KEY, list);
+
+    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], company: 'Antero', location: 'Shale Run' }]);
+    assert('the new customer starts unpriced',
+      obRow(store, 1).customer === 'Antero' && obRow(store, 1).price_per_unit === '');
+    assert('and carries no override from the haul it replaced',
+      !('price_per_unit_override' in obRow(store, 1)));
   }
 
   // ── 8) Pruning a shortened day ────────────────────────────────────────────
@@ -545,8 +610,10 @@ console.log('Dust timesheet → Other Billing injection\n');
   {
     const cfg = guardConfigFor('dust_other_billing_rows');
     assert('the blob is registered with the guard', !!cfg && cfg.prefix === 'tso-');
-    assert('and the office keeps exactly its two columns',
-      cfg.tabFields.join(',') === 'inv_number,comments');
+    assert('and the office keeps exactly its three columns',
+      cfg.tabFields.join(',') === 'inv_number,comments,price_per_unit_override');
+    assert('with the price derived from the override it may write',
+      cfg.derive === applyObPriceOverride);
 
     const server = [
       { id: 'tso-41-1', customer: 'CNX', material: 'ClearFrac', gallons_bags: 4200,
@@ -606,7 +673,7 @@ console.log('Dust timesheet → Other Billing injection\n');
     assert('the tab knows a payroll row when it sees one',
       /function obIsInjectedRowId\(id\) \{\s*\n\s*return \/\^tso-\\d\+-\/\.test/.test(DUST));
     assert('and agrees with the server about which columns it owns',
-      /const OB_TAB_FIELDS = \['inv_number', 'comments'\];/.test(DUST));
+      /const OB_TAB_FIELDS = \['inv_number', 'comments', OB_PRICE_OVERRIDE\];/.test(DUST));
     assert('the delete button is a padlock on a payroll row',
       /obInjected\s*\n?\s*\? `<td class="del-col"><span title="\$\{obLockTitle\}"/.test(DUST));
     assert('and obDeleteRow refuses one that reaches it anyway',
@@ -619,11 +686,19 @@ console.log('Dust timesheet → Other Billing injection\n');
       (DUST.match(/if \(obIsInjectedRow\(obRows\[idx\]\)\) return;/g) || []).length === 2);
     // Every payroll-owned column has to be read-only, or a box that looks
     // editable silently loses what is typed in it on the next save.
+    // price_per_unit is deliberately absent: it is the one payroll column the
+    // office can still set, and it saves because it goes in as an override.
     for (const col of ['date', 'driver', 'truck_number', 'trailer_number', 'customer',
                        'destination', 'state', 'material', 'gallons_bags', 'mu',
-                       'price_per_unit', 'trucking_hrs', 'trucking_rate']) {
+                       'trucking_hrs', 'trucking_rate']) {
       assert(`${col} renders read-only`, new RegExp(`obRo\\(row\\.${col},`).test(DUST));
     }
+    assert('the price is not one of them',
+      !/obRo\(row\.price_per_unit,/.test(DUST));
+    assert('it is an open box on a locked row',
+      /onchange="obSetPriceOverride\(\$\{idx\},this\.value\)"/.test(DUST));
+    assert('wired to the override, never to price_per_unit itself',
+      /row\[OB_PRICE_OVERRIDE\] = value;\s*\n\s*_obApplyPriceOverride\(row\);/.test(DUST));
     assert('the invoice number stays editable',
       /placeholder="INV-…" oninput="obSet\(\$\{idx\},'inv_number'/.test(DUST));
     assert('and so does the comment',

@@ -1119,6 +1119,21 @@
        or the row silently stops being billed. */
     .ic-sent-chip.ic-removed-chip { color: var(--muted); }
 
+    /* The one open box on a payroll-injected Other Billing row: the backup
+       price per gal/bag. A dashed underline so it reads as deliberately open
+       rather than as a cell somebody forgot to lock, and the note under it
+       when the office's figure and payroll's disagree. */
+    .sheet-table td.ob-ovr { padding: 0 0.1rem; }
+    .sheet-table td.ob-ovr input {
+      height: auto; padding: 0.15rem 0.32rem;
+      border-bottom: 1px dashed var(--border);
+    }
+    .sheet-table td.ob-ovr .ob-ovr-note {
+      line-height: 1.2; padding: 0.06rem 0.32rem 0.1rem;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sheet-table td.ob-ovr .ob-ovr-note:empty { display: none; }
+
     /* Cells owned by the timesheet, not by the tab. Shown plainly so it's
        obvious they can't be typed into — payroll is the source of truth and
        an edit here would silently disagree with the approved entry. */
@@ -6959,13 +6974,164 @@
       obScheduleSave();
     }
 
-    // The two columns the dust office still owns on a payroll row: the invoice
-    // it bills under and the note against it. Mirrors OB_TAB_FIELDS in
+    /* ═══════════════════════════════════════════
+       MANUAL PRICE OVERRIDE  (payroll-injected rows)
+       Every column on a "← Timesheet" row is payroll's and renders read-only,
+       because the timesheet entry is where that data belongs. The price per
+       gal/bag was the one field where that rule cost more than it protected: a
+       delivery approved with no price — nobody typed one in the approve modal,
+       and the material has no rate standing behind it — lands here blank, and
+       THIS is the tab where somebody notices, because it is the tab the invoice
+       comes out of. The customer gets billed for the trucking and the material
+       goes out free. Fixing it meant finding the entry in Payroll, un-approving
+       it and re-approving it with a price.
+
+       So the price box stays open on a locked row, as an override rather than a
+       takeover. What is typed here is stored as price_per_unit_override beside
+       payroll's own figure, never on top of it — the server derives
+       price_per_unit from the pair (api/lib/dust-ob-injected.js, "The manual
+       price override") — so the material total, the home dashboard's unpriced
+       tally, Intercompany billing and every report that prices a delivery off
+       price_per_unit need to know nothing about any of this. Payroll goes on
+       owning the price: it can still correct one from the entry, the row says
+       when the two disagree, and clearing the box hands the number straight
+       back.
+    ═══════════════════════════════════════════ */
+
+    const OB_PRICE_OVERRIDE = 'price_per_unit_override';
+    const OB_PRICE_PAYROLL  = 'price_per_unit_payroll';
+
+    // The server's price gate, restated: '' for "nobody has set one", a rounded
+    // number for a price, null for something that is not one. Kept in step with
+    // normalizeObPrice in api/lib/dust-ob-injected.js — a box the page accepts
+    // and the server then drops is a price that vanishes on the next load.
+    const OB_PRICE_MAX = 999999.9999;
+    function _obPriceVal(v) {
+      if (v == null || String(v).trim() === '') return '';
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || n > OB_PRICE_MAX) return null;
+      return Math.round(n * 10000) / 10000;
+    }
+    const _obSamePrice = (a, b) => {
+      const x = _obPriceVal(a), y = _obPriceVal(b);
+      return x !== null && y !== null && x === y;
+    };
+
+    /** Is an override standing on this row? */
+    function _obHasPriceOverride(row) {
+      if (!row || !obIsInjectedRow(row)) return false;
+      const v = _obPriceVal(row[OB_PRICE_OVERRIDE]);
+      return v !== '' && v !== null;
+    }
+
+    /** Payroll's own price for a row — behind the override when one stands. */
+    function _obPayrollPrice(row) {
+      if (!row) return '';
+      return _obHasPriceOverride(row)
+        ? (row[OB_PRICE_PAYROLL] == null ? '' : row[OB_PRICE_PAYROLL])
+        : row.price_per_unit;
+    }
+
+    /** Settle price_per_unit from the override, exactly as the server will on save. */
+    function _obApplyPriceOverride(row) {
+      if (!row) return;
+      const payroll = Object.prototype.hasOwnProperty.call(row, OB_PRICE_PAYROLL)
+        ? row[OB_PRICE_PAYROLL]
+        : row.price_per_unit;
+      const v = _obPriceVal(row[OB_PRICE_OVERRIDE]);
+      if (v === null || v === '' || _obSamePrice(v, payroll)) {
+        delete row[OB_PRICE_OVERRIDE];
+        delete row[OB_PRICE_PAYROLL];
+        row.price_per_unit = payroll == null ? '' : payroll;
+      } else {
+        row[OB_PRICE_OVERRIDE] = v;
+        row[OB_PRICE_PAYROLL]  = payroll == null ? '' : payroll;
+        row.price_per_unit     = v;
+      }
+    }
+
+    /**
+     * The note under an overridden price: that it was set here, what payroll
+     * says instead, and a click that goes back to payroll's answer. Payroll's
+     * figure is labelled rather than shown bare — an unlabelled number under a
+     * price box reads as the price.
+     */
+    function _obPriceNote(row, idx) {
+      if (!_obHasPriceOverride(row)) return '';
+      const pay  = _obPriceVal(_obPayrollPrice(row));
+      const has  = pay !== '' && pay !== null;
+      const said = has ? rate4(pay) : '';
+      const label = has ? `&#8635; set here &middot; payroll ${esc(said)}` : '&#8635; set here';
+      const title = has
+        ? `Set in this tab, not in Payroll. Payroll has ${said} on this delivery — click to bill payroll's figure instead.`
+        : 'Set in this tab, not in Payroll. Payroll has no price on this delivery — click to clear this one and leave it unpriced.';
+      return `<span onclick="obClearPriceOverride(${idx})" title="${esc(title)}" style="cursor:pointer;font-size:0.6rem;color:#fbbf24">${label}</span>`;
+    }
+
+    /** Repaint one row's price box, its note and its totals after a change. */
+    function _obPaintPrice(idx) {
+      const row = obRows[idx];
+      if (!row) return;
+      const box = document.getElementById(`ob-price-${idx}`);
+      if (box) box.value = row.price_per_unit == null ? '' : row.price_per_unit;
+      const note = document.getElementById(`ob-price-ovr-${idx}`);
+      if (note) note.innerHTML = _obPriceNote(row, idx);
+      obRefreshCalcCells(idx);
+      obRefreshTotals();
+    }
+
+    /**
+     * Price a locked row from the tab. Refuses anything that is not a price and
+     * puts the box back, rather than saving a figure the server would drop. A
+     * blank clears the override and returns payroll's number.
+     */
+    function obSetPriceOverride(idx, value) {
+      const row = obRows[idx];
+      if (!row || !obIsInjectedRow(row)) return;
+      if (_obPriceVal(value) === null) { _obPaintPrice(idx); return; }
+      row[OB_PRICE_OVERRIDE] = value;
+      _obApplyPriceOverride(row);
+      _obPaintPrice(idx);
+      obScheduleSave();
+    }
+
+    function obClearPriceOverride(idx) { obSetPriceOverride(idx, ''); }
+
+    /**
+     * Live totals as the office types, without repainting the box under the
+     * cursor. Nothing is saved here: the commit path (onchange →
+     * obSetPriceOverride) is what validates, repaints and schedules the write,
+     * exactly as _obLiveSet stands beside obSet on a hand-added row.
+     */
+    function _obLivePriceOverride(idx, value) {
+      const row = obRows[idx];
+      if (!row || !obIsInjectedRow(row)) return;
+      if (_obPriceVal(value) === null) return;
+      row[OB_PRICE_OVERRIDE] = value;
+      _obApplyPriceOverride(row);
+      const note = document.getElementById(`ob-price-ovr-${idx}`);
+      if (note) note.innerHTML = _obPriceNote(row, idx);
+      obRefreshCalcCells(idx);
+      obRefreshTotals();
+    }
+
+    // The columns the dust office still owns on a payroll row: the invoice it
+    // bills under, the note against it, and the backup price (see "MANUAL PRICE
+    // OVERRIDE" above — the override, never price_per_unit itself, which stays
+    // payroll's to correct). Mirrors OB_TAB_FIELDS in
     // api/lib/dust-ob-injected.js, which is what the server replays from this
     // tab's saves and what re-injection preserves — anything not on this list
     // is silently discarded on the way in, so offering it here would be a box
     // that looks editable and never saves.
-    const OB_TAB_FIELDS = ['inv_number', 'comments'];
+    const OB_TAB_FIELDS = ['inv_number', 'comments', OB_PRICE_OVERRIDE];
+
+    // The columns a change to which moves this row's money. The override is one
+    // of them by way of price_per_unit, which is derived from it before the
+    // totals are read back.
+    const OB_CALC_FIELDS = [
+      'gallons_bags', 'price_per_unit', 'trucking_hrs', 'trucking_rate',
+      OB_PRICE_OVERRIDE,
+    ];
 
     function obSet(idx, field, value) {
       if (!obRows[idx]) return;
@@ -6973,8 +7139,12 @@
       // stale render or the console. The server discards the write either way.
       if (obIsInjectedRow(obRows[idx]) && !OB_TAB_FIELDS.includes(field)) return;
       obRows[idx][field] = value;
-      if (field === 'gallons_bags' || field === 'price_per_unit'
-          || field === 'trucking_hrs' || field === 'trucking_rate') {
+      // A stale render or the console can still reach the override this way, so
+      // settle price_per_unit from it here too rather than only on the path the
+      // box uses — a row saved with an override and a price that disagree would
+      // bill one figure and report another until the next re-injection.
+      if (field === OB_PRICE_OVERRIDE) _obApplyPriceOverride(obRows[idx]);
+      if (OB_CALC_FIELDS.includes(field)) {
         obRefreshCalcCells(idx);
         obRefreshTotals();
       }
@@ -7032,8 +7202,8 @@
       if (!obRows[idx]) return;
       if (obIsInjectedRow(obRows[idx]) && !OB_TAB_FIELDS.includes(field)) return;
       obRows[idx][field] = value;
-      if (field === 'gallons_bags' || field === 'price_per_unit'
-          || field === 'trucking_hrs' || field === 'trucking_rate') {
+      if (field === OB_PRICE_OVERRIDE) _obApplyPriceOverride(obRows[idx]);
+      if (OB_CALC_FIELDS.includes(field)) {
         obRefreshCalcCells(idx);
         obRefreshTotals();
       }
@@ -7186,16 +7356,19 @@
           </div>`;
 
         // Payroll-injected rows are locked here: every column but the invoice
-        // number and the comment was filled in when a supervisor approved the
-        // driver's timesheet and billed that haul as material, and the only
-        // correct way to change or remove one is to go back there. Leaving them
-        // editable would mean two sources of truth for the same delivery — and
-        // the server discards the edit anyway, replaying its own copy of these
-        // columns over any save from this tab.
+        // number, the comment and the price was filled in when a supervisor
+        // approved the driver's timesheet and billed that haul as material, and
+        // the only correct way to change or remove one is to go back there.
+        // Leaving them editable would mean two sources of truth for the same
+        // delivery — and the server discards the edit anyway, replaying its own
+        // copy of these columns over any save from this tab. The price is the
+        // exception, and an override rather than an exception to that rule: see
+        // "MANUAL PRICE OVERRIDE" above.
         const obInjected = obIsInjectedRow(row);
         const obRo = (v, cls) =>
           `<td class="${cls}" style="color:var(--text);font-size:0.72rem;padding:0.3rem 0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(v == null || v === '' ? '—' : String(v))}</td>`;
-        const obLockTitle = 'Posted from an approved timesheet entry — edit it in Payroll, not here.';
+        const obLockTitle = 'Posted from an approved timesheet entry — edit it in Payroll, not here. The price per gal/bag is the exception: it can be set here as an override.';
+        const obPriceTitle = 'Manual override — payroll owns this price, but you can price the delivery here if it came over without one, or bill it at a different figure. Clear the box to go back to payroll\'s.';
         const obTsBadge   = `<span title="${obLockTitle}" style="display:inline-block;font-size:0.53rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.12);border:1px solid rgba(165,180,252,0.35);border-radius:3px;padding:0.02rem 0.26rem;white-space:nowrap">&#8592; Timesheet</span>`;
 
         const expanded = obExpanded.has(row.id);
@@ -7233,7 +7406,7 @@
             ? obRo(row.mu, 'cw-mu')
             : `<td class="cw-mu"><select onchange="obSet(${idx},'mu',this.value)">${muOpts}</select></td>`}
           ${obInjected
-            ? obRo(row.price_per_unit, 'cw-rate')
+            ? `<td class="cw-rate ob-ovr"><input type="number" id="ob-price-${idx}" step="0.01" min="0" value="${esc(row.price_per_unit == null ? '' : String(row.price_per_unit))}" placeholder="0.00" title="${obPriceTitle}" oninput="_obLivePriceOverride(${idx},this.value)" onchange="obSetPriceOverride(${idx},this.value)"><div class="ob-ovr-note" id="ob-price-ovr-${idx}">${_obPriceNote(row, idx)}</div></td>`
             : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.price_per_unit||'')}" oninput="_obLiveSet(${idx},'price_per_unit',this.value)" onchange="obSet(${idx},'price_per_unit',this.value)"></td>`}
           ${obInjected
             ? obRo(row.trucking_hrs, 'cw-rate')
@@ -7268,11 +7441,14 @@
       if (!tr) return;
       const totalCell = tr.querySelector('td.calc.cw-inv');
       if (totalCell) {
-        // Preserve any IC chip that lived inside the cell
-        const chip = totalCell.querySelector('.ic-sent-chip');
+        // Only the money in this cell is text; everything else in it is an
+        // element that has to survive the repaint — the IC chip, and the
+        // "← Timesheet" badge, which matters now that the price box makes this
+        // reachable on a payroll row. Re-appended in the order they were in.
+        const kept = [...totalCell.children];
         totalCell.textContent = c.total ? money(c.total) : '—';
         totalCell.classList.toggle('empty', !c.total);
-        if (chip) totalCell.appendChild(chip);
+        for (const el of kept) totalCell.appendChild(el);
       }
     }
 
