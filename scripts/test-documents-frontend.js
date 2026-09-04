@@ -443,8 +443,10 @@ console.log('\n[documents.js upload sequence]');
     // and is the only thing that notices whether the descent into a matched
     // branch is blocked by a folder already kept as some other hit's ancestor.
     const TREE = [
-      { id: 'f-po',    parent_id: null,     name: 'Purchase Orders',     kind: 'fixed',     sort_order: 1 },
-      { id: 'f-po137', parent_id: 'f-po',   name: 'PO PO-0137',          kind: 'po',        sort_order: 1 },
+      { id: 'f-po',    parent_id: null,     name: 'Purchase Orders',     kind: 'fixed',     sort_order: 1,
+        slug: 'purchase-orders' },
+      { id: 'f-po137', parent_id: 'f-po',   name: 'PO PO-0137',          kind: 'po',        sort_order: 1,
+        slug: 'po-po-1' },
       { id: 'f-earth', parent_id: null,     name: 'Earthwork',           kind: 'cost_code', sort_order: 2 },
       { id: 'f-des',   parent_id: null,     name: 'Design & Permitting', kind: 'cost_code', sort_order: 3 },
       { id: 'f-dwg',   parent_id: 'f-des',  name: 'Drawings',            kind: 'cost_code', sort_order: 1 },
@@ -647,7 +649,56 @@ console.log('\n[documents.js upload sequence]');
       pinned.querySelector('#fctdoc-po').value);
     assert('while its folder still has a filter, since that is the open choice',
       Boolean(pinned.querySelector('[data-folder-filter="fctdoc-folder"]')));
+
+    // The filing folder is the one thing this path leaves open, and it used to
+    // open blank. Upload then refused with "Pick a folder" in a toast at the
+    // bottom of the window — nowhere near the dialog — so the button read as
+    // dead. A purchase order already knows where its paperwork goes.
+    assert('the folder opens on the purchase order\'s own subfolder',
+      pinned.querySelector('#fctdoc-folder').value === 'f-po137',
+      pinned.querySelector('#fctdoc-folder').value);
+    assert('and the dialog says the PO link happens whatever folder is picked',
+      /filed under the purchase order as well/i.test(pinned.innerHTML));
     pinned.remove();
+
+    // A PO nothing has been attached to yet has no subfolder — the server
+    // makes it on the first upload — so fall back to the root it will live in
+    // rather than back to nothing.
+    await FD.openAttach({ id: 'po-9', po_number: 'PO-0999', project_id: 'p1' });
+    const att9 = [...window.document.querySelectorAll('body > div')].pop();
+    att9.querySelector('[data-attach-new]').click();
+    const fresh9 = [...window.document.querySelectorAll('body > div')].pop();
+    assert('a PO with no subfolder yet falls back to Purchase Orders',
+      fresh9.querySelector('#fctdoc-folder').value === 'f-po',
+      fresh9.querySelector('#fctdoc-folder').value);
+
+    // Every upload failing used to close the dialog anyway, taking the file,
+    // the folder and the note with it. The only trace left was a toast that
+    // timed out, so the user rebuilt the whole dialog to find out what broke.
+    const goBtn = fresh9.querySelector('#fctdoc-go');
+    const fInp  = fresh9.querySelector('#fctdoc-files');
+    Object.defineProperty(fInp, 'files', {
+      value: [new window.File(['x'], 'ticket.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    });
+    fInp.dispatchEvent(new window.Event('change', { bubbles: true }));
+
+    const beforeFail = window.fetch;
+    window.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: 'storage is down' }) });
+    goBtn.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    window.fetch = beforeFail;
+
+    assert('an upload that fails outright leaves the dialog standing',
+      window.document.body.contains(fresh9));
+    assert('with the reason printed in it, not only in a toast that times out',
+      /storage is down/.test(fresh9.querySelector('#fctdoc-err').textContent),
+      fresh9.querySelector('#fctdoc-err').textContent);
+    assert('and the button live again so the same file can be retried',
+      goBtn.disabled === false && goBtn.textContent === 'Upload',
+      `${goBtn.disabled} / ${goBtn.textContent}`);
+    fresh9.remove();
 
     // The Link dialog carries the same picker.
     mount.querySelector('[data-folder="f-earth"]').click();
