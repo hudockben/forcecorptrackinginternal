@@ -102,6 +102,27 @@ async function boot(page, file, opts) {
     const labels = await page.$$eval('#seg-haul button', b => b.map(x => x.textContent.trim()));
     ok('with all three answers', labels.length === 3 && labels.includes('On site'), labels.join('/'));
 
+    // Nothing is answered for him. The control used to open on "No", so a
+    // driver who scrolled past it filed the same entry as one who read it and
+    // got it wrong — and afterwards nothing could tell the two apart. This is
+    // the check that has to run in a real browser: the sandbox can say the
+    // class is absent, only this can say the pill is not lit on screen.
+    const fresh = await page.evaluate(() => {
+      const seg = document.getElementById('seg-haul');
+      const bg  = b => getComputedStyle(b).backgroundColor;
+      return {
+        lit:    [...seg.querySelectorAll('button')].filter(b => b.classList.contains('on')).length,
+        needs:  seg.classList.contains('needs'),
+        marker: getComputedStyle(document.getElementById('haul-need')).display !== 'none',
+        // Every segment paints the same as its neighbours while unanswered.
+        flat:   new Set([...seg.querySelectorAll('button')].map(bg)).size === 1,
+      };
+    });
+    ok('the question opens with no answer chosen for him', fresh.lit === 0 && fresh.flat,
+      JSON.stringify(fresh));
+    ok('  and says so — dashed outline plus a "pick one" marker',
+      fresh.needs && fresh.marker, JSON.stringify(fresh));
+
     // Answering it should reveal the truck picker, filled from the equipment list.
     await page.evaluate(() => { document.getElementById('f-division').value = 'turf'; });
     await page.click('#seg-haul button[data-val="off_site"]');
@@ -113,6 +134,29 @@ async function boot(page, file, opts) {
                opts: s ? [...s.options].map(o => o.value).filter(Boolean) : [] };
     });
     ok('answering "haul" reveals the truck picker', unit.shown);
+
+    // And the answer he picked is its own colour rather than the same teal as
+    // every other answer on the page — the second half of the same complaint.
+    const hues = await page.evaluate(() => {
+      const seg = document.getElementById('seg-haul');
+      const by  = v => seg.querySelector(`button[data-val="${v}"]`);
+      const lit = [...seg.querySelectorAll('button')].filter(b => b.classList.contains('on'));
+      return {
+        needs: seg.classList.contains('needs'),
+        marker: getComputedStyle(document.getElementById('haul-need')).display !== 'none',
+        litVal: lit.length === 1 ? lit[0].dataset.val : null,
+        offSite: getComputedStyle(by('off_site')).backgroundColor,
+        onSite:  getComputedStyle(by('on_site')).backgroundColor,
+        no:      getComputedStyle(by('')).backgroundColor,
+      };
+    });
+    ok('  and only the answer he picked is lit', hues.litVal === 'off_site', hues.litVal);
+    ok('  the needs-an-answer marking is gone', !hues.needs && !hues.marker);
+    ok('  "To & from" lights green, not the teal every other answer uses',
+      hues.offSite === 'rgb(34, 197, 94)', hues.offSite);
+    ok('  and the two answers he did not pick look nothing like it',
+      hues.onSite !== hues.offSite && hues.no !== hues.offSite,
+      `${hues.no} / ${hues.onSite} / ${hues.offSite}`);
     ok('  populated from the company equipment list',
       unit.opts.includes('Triaxle Dump') && unit.opts.includes('Lowboy'), unit.opts.join('/'));
 
@@ -122,6 +166,63 @@ async function boot(page, file, opts) {
     const hidden = await page.evaluate(() =>
       getComputedStyle(document.getElementById('row-haul-unit')).display === 'none');
     ok('answering "no" hides it again', hidden);
+
+    // "No" is an answer, not the absence of one — tapping it has to look
+    // different from never having touched the control.
+    const said = await page.evaluate(() => {
+      const seg = document.getElementById('seg-haul');
+      return { needs: seg.classList.contains('needs'),
+               no: getComputedStyle(seg.querySelector('button[data-val=""]')).backgroundColor };
+    });
+    ok('  and reads as answered, not as untouched',
+      !said.needs && said.no === 'rgb(96, 165, 250)', JSON.stringify(said));
+
+    // A second job on the same day is a second haul question, and it opens
+    // blank too — a split day was the easiest way to inherit a wrong answer.
+    await page.click('#btn-add-split');
+    await page.waitForTimeout(200);
+    const split = await page.evaluate(() => {
+      const seg = document.querySelector('[id$="-seg-haul"]');
+      if (!seg) return null;
+      return { id: seg.id, needs: seg.classList.contains('needs'),
+               lit: [...seg.querySelectorAll('button')].filter(b => b.classList.contains('on')).length };
+    });
+    ok('a second job opens its own haul question unanswered',
+      !!split && split.needs && split.lit === 0, JSON.stringify(split));
+
+    // The enforcement half. Removing the default only helps if a blank answer
+    // stops the day going out — otherwise the wrong "No" is just traded for a
+    // silent null. Fill a complete single-job day, leave this one question
+    // alone, and ask the form what it would save.
+    const gate = await page.evaluate(async () => {
+      removeSplit(document.querySelector('[id$="-seg-haul"]').id.split('-')[0].slice(1) * 1);
+      document.getElementById('f-division').value = 'turf';
+      await onDivisionChange(0);
+      const job = document.getElementById('f-job');
+      job.value = [...job.options].map(o => o.value).filter(Boolean)[0] || '';
+      onJobChange(0);
+      document.getElementById('f-start').value = '07:00';
+      document.getElementById('f-end').value   = '15:30';
+      updateHours(0);
+      setSeg('lunch', true);
+      setSeg('equip', false);
+      const sup = document.getElementById('f-supervisor');
+      sup.value = [...sup.options].map(o => o.value).filter(Boolean)[0] || '';
+      // Back to untouched, the way the driver's form actually opens.
+      haulVals[0] = null; renderHaul(0); applyHaulUnitVisibility(0);
+      const blank = buildPayloads();
+      setHaul('on_site', 0);
+      const answered = buildPayloads();
+      return {
+        blankErr: blank.error || null,
+        answeredErr: answered.error || null,
+        posted: answered.list ? answered.list[0].data.haul_type : undefined,
+      };
+    });
+    ok('a day with the haul question untouched will not save',
+      /haul/i.test(gate.blankErr || ''), JSON.stringify(gate));
+    ok('  and the same day saves the moment he answers',
+      gate.answeredErr === null && gate.posted === 'on_site', JSON.stringify(gate));
     await page.close();
   }
 

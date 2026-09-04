@@ -220,6 +220,31 @@
        column — on a phone the three labels still clear the 42px touch target. */
     .seg.seg-3 { grid-template-columns: 1fr 1fr 1fr; }
     .seg.seg-3 button { padding: 0.65rem 0.25rem; font-size: 0.8rem; }
+    /* One colour per answer, because these three are not shades of the same
+       thing — they decide whether the day stays prevailing and whether the
+       truck rate already covers the labour. Every other answer on this form
+       lights the same teal, so a driver glancing down a filled-in page read
+       "lit" as "answered" without ever reading WHICH answer it was. Three hues
+       make the picked one legible at arm's length from a cab:
+         No        → blue,  ordinary work
+         On site   → amber, hauling, still on the job
+         To & from → green, hauling, never worked the site */
+    .seg.seg-3 button[data-val=""].on         { background: var(--blue);   color: #06121f; }
+    .seg.seg-3 button[data-val="on_site"].on  { background: var(--yellow); color: #201800; }
+    .seg.seg-3 button[data-val="off_site"].on { background: var(--green);  color: #04220f; }
+    /* Nothing picked yet. With no default answer the control has to say out
+       loud that it is still waiting — three unlit segments on their own read as
+       "off", which is the same misreading in a different coat. */
+    .seg.seg-3.needs {
+      border-color: var(--yellow);
+      border-style: dashed;
+      background: rgba(234, 179, 8, 0.08);
+    }
+    .haul-need {
+      color: var(--yellow);
+      font-weight: 700;
+      letter-spacing: 0.06em;
+    }
 
     /* ── Time-off type radio grid ── */
     .pills {
@@ -654,12 +679,13 @@
                             the site, so the hours are standard rate even on a
                             prevailing job. -->
         <div class="row" id="row-haul" style="display:none">
-          <label>Was this a haul?</label>
-          <div class="seg seg-3" id="seg-haul">
+          <label>Was this a haul? <span class="haul-need" id="haul-need">&mdash; pick one</span></label>
+          <div class="seg seg-3 needs" id="seg-haul">
             <button type="button" data-val=""         onclick="setHaul('', 0)">No</button>
             <button type="button" data-val="on_site"  onclick="setHaul('on_site', 0)">On site</button>
             <button type="button" data-val="off_site" onclick="setHaul('off_site', 0)">To &amp; from</button>
           </div>
+          <div class="hint">On site = you hauled within the job. To &amp; from = you hauled to or from the job and did not work the site.</div>
         </div>
 
         <!-- ── Which truck ──
@@ -886,10 +912,14 @@
     let splitIdxs      = [];        // extra block indices, in display order
     let nextSplitIdx   = 0;         // monotonic: a removed block's ids never come back
     let equipVals      = { 0: null }; // block index → true / false / null
-    // block index → '' | 'on_site' | 'off_site'. '' means "not a haul", which is
-    // both the default and what a non-driver always posts. Only ever read when
-    // isDriver is true; see applyHaulVisibility.
-    let haulVals       = { 0: '' };
+    // block index → null | '' | 'on_site' | 'off_site'.
+    //   null → NOT ANSWERED, and where every driver's block starts. There is no
+    //          default any more: a lit "No" nobody chose looks exactly like one
+    //          that was chosen, which is how off-site hauls kept arriving as
+    //          ordinary site work. buildPayloads refuses the day until it is set.
+    //   ''   → "not a haul" — a real answer, and what a non-driver always posts.
+    // Only ever read when isDriver is true; see applyHaulVisibility.
+    let haulVals       = { 0: null };
     // block index → the equipment name the driver picked for that haul. Only
     // ever read when the block is a haul on a division whose cost tracking has
     // an equipment column; see HAUL_UNIT_DIVISIONS.
@@ -992,6 +1022,7 @@
       'hours':          'f-hours',
       'seg-equip':      'seg-equip',
       'seg-haul':       'seg-haul',
+      'haul-need':      'haul-need',
       'row-haul':       'row-haul',
       'row-haul-unit':  'row-haul-unit',
       'haul-unit':      'haul-unit',
@@ -1108,12 +1139,13 @@
           </div>
 
           <div class="row" id="s${i}-row-haul" style="display:none">
-            <label>Was this a haul?</label>
-            <div class="seg seg-3" id="s${i}-seg-haul">
+            <label>Was this a haul? <span class="haul-need" id="s${i}-haul-need">&mdash; pick one</span></label>
+            <div class="seg seg-3 needs" id="s${i}-seg-haul">
               <button type="button" data-val=""         onclick="setHaul('', ${i})">No</button>
               <button type="button" data-val="on_site"  onclick="setHaul('on_site', ${i})">On site</button>
               <button type="button" data-val="off_site" onclick="setHaul('off_site', ${i})">To &amp; from</button>
             </div>
+            <div class="hint">On site = you hauled within the job. To &amp; from = you hauled to or from the job and did not work the site.</div>
           </div>
 
           <div class="row" id="s${i}-row-haul-unit" style="display:none">
@@ -1147,12 +1179,12 @@
       const i = ++nextSplitIdx;
       splitIdxs.push(i);
       equipVals[i] = null;
-      haulVals[i]  = '';
+      haulVals[i]  = null;
       haulUnits[i] = '';
       document.getElementById('splitBlocks').insertAdjacentHTML('beforeend', splitBlockHtml(i));
       // A block added after load starts hidden in its own markup; reveal it now
-      // if this user is a driver, and default it to "No" so the answer is never
-      // blank on a block the driver skipped past.
+      // if this user is a driver. It stays unanswered — what keeps a skipped
+      // block from going out wrong is the gate in buildPayloads, not a default.
       applyHaulVisibility(i);
 
       if (inherit) {
@@ -1352,15 +1384,32 @@
     // (data-val === 'true'), and widening it would put a third state into the
     // lunch and equipment answers, which have no use for one.
     function setHaul(val, i = 0) {
+      haulVals[i] = val || '';
+      renderHaul(i);
+      applyHaulUnitVisibility(i);
+    }
+
+    // Draw one block's control from haulVals — the only thing that touches
+    // those three buttons. Split out of setHaul because the two jobs are no
+    // longer the same job: setHaul records that the driver PICKED something,
+    // and re-rendering a block that has not been picked yet must not quietly
+    // record "No" on his behalf. That is the whole bug this change is about.
+    //
+    // Unanswered lights nothing, keeps the dashed amber outline and leaves the
+    // "pick one" marker beside the label up.
+    function renderHaul(i) {
       const seg = bel(i, 'seg-haul');
       if (!seg) return;
+      const cur   = haulVals[i];
+      const asked = cur != null;
       seg.querySelectorAll('button').forEach(b => {
-        const on = (b.dataset.val || '') === (val || '');
+        const on = asked && (b.dataset.val || '') === cur;
         b.classList.toggle('on',  on);
-        b.classList.toggle('off', !on);
+        b.classList.toggle('off', asked && !on);
       });
-      haulVals[i] = val || '';
-      applyHaulUnitVisibility(i);
+      seg.classList.toggle('needs', !asked);
+      const need = bel(i, 'haul-need');
+      if (need) need.style.display = asked ? 'none' : '';
     }
 
     // The truck picker follows the ANSWER, not the flag: it appears the moment a
@@ -1384,9 +1433,14 @@
     }
 
     // Show or hide the question for one block, or for every block when `i` is
-    // omitted. A driver's block defaults to "No" rather than blank: the common
-    // answer should cost no taps, and an unanswered three-way on a form the
-    // driver never scrolled to would be a new way to block a submit.
+    // omitted. A driver's block starts BLANK rather than on "No". It used to be
+    // the other way round — the common answer should cost no taps — but so did
+    // the wrong one: a driver scrolling past a pre-lit "No" filed an off-site
+    // haul as prevailing site work, and nothing on the page ever said he had
+    // not answered. buildPayloads now blocks the save until he picks, which is
+    // exactly the "new way to block a submit" the old default was avoiding —
+    // deliberately, because the alternative is a wrong answer nobody can spot
+    // afterwards.
     //
     // PURELY PRESENTATIONAL — it must never write to haulVals for a hidden
     // block. It used to clear the value whenever isDriver was not yet true, and
@@ -1406,8 +1460,8 @@
       for (const b of idxs) {
         const row = bel(b, 'row-haul');
         if (row) row.style.display = isDriver ? 'flex' : 'none';
-        if (isDriver) setHaul(haulVals[b] || '', b);
-        else applyHaulUnitVisibility(b);
+        if (isDriver) renderHaul(b);
+        applyHaulUnitVisibility(b);
       }
     }
 
@@ -1956,9 +2010,11 @@
       bel(i, 'end').value   = e.end_time   || '';
       if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment, i);
       else clearSeg('equip', i);
-      // Re-open a saved haul on the answer it was saved with. An entry from
-      // before this question existed comes back null and lands on "No", which
-      // is what it has always meant.
+      // Re-open a saved haul on the answer it was saved with — a stored row is
+      // an answered row, never a blank one, since nothing saves without an
+      // answer. An entry from before this question existed comes back null and
+      // lands on "No", which is what it has always meant, so re-opening an old
+      // draft does not make the driver answer a question he was never asked.
       haulVals[i] = e.haul_type || '';
       // The truck comes back out of the same column it went into. Read before
       // applyHaulVisibility so the picker is filled with it on first paint.
@@ -2087,7 +2143,7 @@
       updateHours();
       clearSeg('lunch');
       clearSeg('equip');
-      haulVals  = { 0: '' };
+      haulVals  = { 0: null };
       haulUnits = { 0: '' };
       applyHaulVisibility();
       renderSplitChrome();
@@ -2199,11 +2255,17 @@
           return { error: at(i, 'Start and end times are the same — that comes to 0 hours.') };
         }
         if (equipVals[i] == null) return { error: at(i, 'Operated equipment? Yes or No.') };
-        // Only a flagged driver is ever asked, and their blocks default to "No",
-        // so this is always answered — no validation gate, unlike equipment.
-        // A non-driver posts '' and the server stores null.
-        // Omitted entirely when the roster flag is unknown, so the server keeps
-        // whatever is stored. '' is a real answer ("not a haul") and clears it.
+        // Only a flagged driver is ever asked — and now that the control has no
+        // default, this is a gate exactly like the equipment question above.
+        // A blank three-way used to save itself as "No", which billed an
+        // off-site haul as prevailing site work and paid the man twice for the
+        // same hours. Refusing the save is the cheaper failure by far.
+        if (isDriver && haulVals[i] == null) {
+          return { error: at(i, 'Was this a haul? Pick No, On site or To & from.') };
+        }
+        // A non-driver posts '' and the server stores null. Omitted entirely
+        // when the roster flag is unknown, so the server keeps whatever is
+        // stored. '' is a real answer ("not a haul") and clears it.
         // The truck rides on truck_unit — it IS the unit — but only for a haul
         // on a division that has somewhere to put it. Everywhere else the
         // trucking/dust rules below own that field, untouched.
