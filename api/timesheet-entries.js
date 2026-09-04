@@ -170,6 +170,7 @@ const {
   obRowId,
   obRowIndexFromId,
   deleteObRows,
+  applyObPriceOverride,
 } = require('./lib/dust-ob-injected');
 // The tag EES Other rows carry in the shared Intercompany list. Named off the
 // shared enum rather than spelled out at each use: the string appeared inline
@@ -3604,6 +3605,17 @@ async function insertObRows(sql, companyCode, entry, legs, flags = {}) {
           if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
         }
       }
+      // The backup price the office typed in the tab is one of those carried
+      // fields, so settle price_per_unit from it before the row is stored — the
+      // second of the two writers named in "The manual price override"
+      // (api/lib/dust-ob-injected.js). Without this a re-approval would write
+      // payroll's figure into the column everything prices a delivery off while
+      // the override sat beside it doing nothing, and a delivery the office had
+      // already invoiced would silently change price because an unrelated
+      // correction was made upstream. Run on every row, not just the carried
+      // ones: it is idempotent, and it is what drops an override the approver
+      // has now adopted.
+      applyObPriceOverride(row);
       rows.push(row);
     }
   }

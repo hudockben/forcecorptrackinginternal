@@ -51,21 +51,157 @@ const { IC_SOURCES } = require('./ic-sources');
 const OB_BLOB_KEY  = 'dust_other_billing_rows';
 const IC_SOURCE_OB = IC_SOURCES.DUST_OTHER_BILLING;
 
+/* ── The manual price override ─────────────────────────────────────────────
+ *
+ * The price a delivery bills at belongs to payroll: the approve modal asks for
+ * it per leg, and every column of an injected row is rewritten from the
+ * timesheet entry. That is the right owner and it stays the right owner — but
+ * it was also the ONLY way to price one, and Other Billing is the tab where an
+ * unpriced delivery is noticed, because it is the tab the invoice comes out of.
+ * A haul approved with no price — nobody typed one in the modal, and the
+ * material has no rate standing behind it — lands here at nothing: it invoices
+ * the customer for the trucking alone, and the gallons go out free. Fixing it
+ * meant finding the entry in Payroll, un-approving it, re-approving it with a
+ * price, and hoping nothing else on the day had moved in between.
+ *
+ * So the price gets a manual override: the office types one in the tab, and it
+ * is kept BESIDE payroll's number rather than on top of it. Same shape, and the
+ * same reasoning, as the backup haul fee in truck-injected.js.
+ *
+ *   price_per_unit_override — what the office typed here. The tab may write it
+ *                             (it is on OB_TAB_FIELDS), so it survives both a
+ *                             whole-blob save and a re-approval.
+ *   price_per_unit_payroll  — payroll's own figure, kept only while an override
+ *                             is standing, so the tab can show what it is
+ *                             disagreeing with and hand the row back with one
+ *                             click.
+ *   price_per_unit          — DERIVED: the override when one stands, payroll's
+ *                             number otherwise.
+ *
+ * Deriving into price_per_unit is the point. Everything that prices a delivery
+ * reads that one column — the tab's own material total, the home dashboard's
+ * unpriced tally, dust-metrics, Intercompany billing and the mirror table it
+ * syncs into, the audit log's diff, and payroll's own Edit Row — and an
+ * override each of them had to know about separately is an override some of
+ * them would miss, which is a row billing one figure and reported at another.
+ * They keep reading one column; this decides what is in it, at both of the two
+ * writers (a tab save through injected-blob-guard, and re-injection in
+ * api/timesheet-entries.js).
+ *
+ * Payroll is never locked out. It goes on rewriting price_per_unit from the
+ * entry, and if it comes back with a different number the override still stands
+ * — the office set it deliberately, and a price somebody has invoiced under
+ * must not change because an unrelated correction was made upstream — but the
+ * tab says so, and clearing the box takes payroll's figure back. An override
+ * that agrees with payroll is dropped rather than kept: there is nothing to
+ * override, and a receipt left behind would go on shadowing a column it no
+ * longer changes.
+ *
+ * Which is also how a disagreement ends on its own. Payroll's Edit Row fills
+ * its Price per Gal/Bag box from the posted row (obSplitForEntry feeds it), so
+ * it shows the price the delivery is actually billing at — the office's, when
+ * one stands. Saving it puts that same number on the entry, the override now
+ * agrees with payroll, and it is dropped: payroll has adopted the figure, and
+ * the row goes back to having one owner.
+ */
+const OB_PRICE_OVERRIDE = 'price_per_unit_override';
+const OB_PRICE_PAYROLL  = 'price_per_unit_payroll';
+
+// The ceiling on a price, wherever one is read. DUST_NUMERIC_MAX in
+// api/timesheet-entries.js, restated: price_per_unit is NUMERIC(10,4) both
+// where payroll validates it and in the Intercompany mirror this row's billing
+// syncs into (api/lib/sync-normalized.js), so a ceiling any wider than this
+// does not reject a fat-fingered figure — it accepts one Postgres then refuses
+// with a 22003 overflow, on a sync nobody was watching.
+const OB_PRICE_MAX = 999999.9999;
+
+/**
+ * Read a price the way every writer must read one: `{ value }` with a number,
+ * `{ value: '' }` for "nobody has set one", or `{ error }`.
+ *
+ * Trimmed before Number(), because Number(' ') is 0 — a whitespace-only box
+ * would otherwise store as a deliberate $0.00/gal, which reads to the office as
+ * material given away on purpose rather than as a delivery nobody has priced.
+ * 0 typed on purpose is a legitimate price and passes.
+ */
+function normalizeObPrice(v) {
+  if (v == null || String(v).trim() === '') return { value: '' };
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > OB_PRICE_MAX) {
+    return { error: `price_per_unit must be a number between 0 and ${OB_PRICE_MAX}` };
+  }
+  return { value: Math.round(n * 10000) / 10000 };
+}
+
+// Two prices are the same price when they are the same number. String vs number
+// is how the same figure arrives from a JSON blob ('1.42') and from payroll
+// (1.42), so comparing them raw would read every override as a disagreement.
+function sameObPrice(a, b) {
+  const x = normalizeObPrice(a), y = normalizeObPrice(b);
+  if (x.error || y.error) return false;
+  return x.value === y.value;
+}
+
+/**
+ * Settle `price_per_unit` on one injected row from the override standing
+ * against it. Mutates and returns the row — the two callers each have a row in
+ * hand they are about to store.
+ *
+ * Payroll's figure is whatever the row carries before this runs, EXCEPT when a
+ * previous pass already moved it aside: price_per_unit_payroll is the price
+ * this row would bill with no override, wherever it is present. That
+ * distinction is what makes the function idempotent, and it is why the guard
+ * can run it on a row it just took from the database.
+ *
+ * A junk override — negative, non-numeric, past the ceiling — is dropped
+ * rather than honoured. It cannot arrive from the tab, which validates before
+ * it saves, so it means a hand-edited blob or an older client, and inventing a
+ * price from it is the one outcome worse than ignoring it.
+ */
+function applyObPriceOverride(row) {
+  if (!row || typeof row !== 'object') return row;
+
+  const payroll = Object.prototype.hasOwnProperty.call(row, OB_PRICE_PAYROLL)
+    ? row[OB_PRICE_PAYROLL]
+    : row.price_per_unit;
+  const { value, error } = normalizeObPrice(row[OB_PRICE_OVERRIDE]);
+
+  // Nothing standing: no override, one this cannot read, or one that agrees
+  // with payroll anyway. The row bills payroll's number and carries no receipt.
+  if (error || value === '' || sameObPrice(value, payroll)) {
+    delete row[OB_PRICE_OVERRIDE];
+    delete row[OB_PRICE_PAYROLL];
+    row.price_per_unit = payroll == null ? '' : payroll;
+    return row;
+  }
+
+  row[OB_PRICE_OVERRIDE] = value;
+  row[OB_PRICE_PAYROLL]  = payroll == null ? '' : payroll;
+  row.price_per_unit     = value;
+  return row;
+}
+
 /**
  * The columns the dust office owns on a row payroll owns.
  *
  * Everything else on an injected row renders locked in the tab — it came off
  * the timesheet or out of the approve modal, and payroll is where it is
- * corrected. These two are the office's: the invoice number it bills under, and
- * the note it writes against that invoice. Re-injection preserves them and
- * overwrites the rest, or correcting a haul's hours quietly wipes the invoice
- * number off a row that was already sent. Same rule, and the same reason, as
- * DUST_TAB_FIELDS on the tracking side and TRUCK_TAB_FIELDS on the trucking one.
+ * corrected. These are the office's: the invoice number it bills under, the
+ * note it writes against that invoice, and the backup price (see "The manual
+ * price override" above). Re-injection preserves them and overwrites the rest,
+ * or correcting a haul's hours quietly wipes the invoice number off a row that
+ * was already sent. Same rule, and the same reason, as DUST_TAB_FIELDS on the
+ * tracking side and TRUCK_TAB_FIELDS on the trucking one.
  *
  * `comments` is seeded from the driver's notes on a first injection and then
  * belongs to the office — see insertObRows.
+ *
+ * The override, not price_per_unit itself: a tab that could write the price
+ * outright would also freeze payroll out of it, because this list is what
+ * re-injection PRESERVES — a price on it could never be corrected from the
+ * timesheet again.
  */
-const OB_TAB_FIELDS = ['inv_number', 'comments'];
+const OB_TAB_FIELDS = ['inv_number', 'comments', OB_PRICE_OVERRIDE];
 
 /**
  * True when this entry can post Other Billing rows at all.
@@ -282,6 +418,12 @@ module.exports = {
   OB_BLOB_KEY,
   IC_SOURCE_OB,
   OB_TAB_FIELDS,
+  OB_PRICE_OVERRIDE,
+  OB_PRICE_PAYROLL,
+  OB_PRICE_MAX,
+  normalizeObPrice,
+  sameObPrice,
+  applyObPriceOverride,
   MAX_OB_ROWS,
   needsObRow,
   obRowIdPrefix,

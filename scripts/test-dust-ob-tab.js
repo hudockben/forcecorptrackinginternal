@@ -16,6 +16,8 @@
  *   - every payroll-owned column of the injected row is read-only text,
  *   - the invoice number and the comment are still inputs, because the dust
  *     office bills on them,
+ *   - the price per gal/bag is a real box too, and typing in it goes in as an
+ *     override beside payroll's figure rather than on top of it,
  *   - the delete button is a padlock,
  *   - the hand-added row beside it is untouched — every cell still editable,
  *     still deletable.
@@ -162,9 +164,11 @@ async function main() {
   };
 
   console.log('\n[the payroll row is locked]');
+  // price_per_unit is not on the list: it is the one payroll column the office
+  // can still set, as an override. See "the office can still price it" below.
   const LOCKED = ['date', 'driver', 'truck_number', 'trailer_number', 'customer',
                   'destination', 'state', 'material', 'gallons_bags', 'mu',
-                  'price_per_unit', 'trucking_hrs', 'trucking_rate'];
+                  'trucking_hrs', 'trucking_rate'];
   for (const col of LOCKED) {
     assert(`${col} is read-only text`, !editable(injected, col),
       cell(injected, col) ? cell(injected, col).innerHTML.slice(0, 80) : 'no cell');
@@ -185,11 +189,60 @@ async function main() {
   assert('the invoice number is editable', editable(injected, 'inv_number'));
   assert('and the comment is too', editable(injected, 'comments'));
 
+  console.log('\n[the office can still price it]');
+  assert('the price per gal/bag is a real box', editable(injected, 'price_per_unit'));
+  const priceBox = cell(injected, 'price_per_unit').querySelector('input');
+  assert('showing what the delivery bills at now',
+    priceBox.value === '0.42', priceBox.value);
+  assert('and saying it is an override, not a takeover',
+    /override/i.test(priceBox.getAttribute('title') || ''), priceBox.getAttribute('title'));
+  assert('nothing under it while the office and payroll agree',
+    (doc.getElementById('ob-price-ovr-' + injected.getAttribute('data-idx')).innerHTML) === '');
+
+  // The office prices it at 1.42. Payroll's 0.42 is kept beside it, not lost.
+  const iIdx = Number(injected.getAttribute('data-idx'));
+  win.eval(`obSetPriceOverride(${iIdx}, '1.42')`);
+  const priced = () => JSON.parse(win.eval(`JSON.stringify(obRows[${iIdx}])`));
+  assert('the override is what is stored',
+    priced().price_per_unit_override === 1.42, JSON.stringify(priced()));
+  assert('payroll\'s figure is kept beside it',
+    priced().price_per_unit_payroll === 0.42);
+  assert('and price_per_unit is derived from the pair',
+    priced().price_per_unit === 1.42);
+  // 4,000 gal at the office's 1.42 = $5,680 of material, plus the 10 trucking
+  // hours at 95 the haul's own window billed.
+  assert('the material total follows it',
+    cell(injected, 'total').textContent.startsWith('$6,630.00'),
+    cell(injected, 'total').textContent);
+  assert('the row still says where it came from',
+    /Timesheet/.test(cell(injected, 'total').innerHTML));
+  assert('and the note says whose number it is',
+    /set here/.test(doc.getElementById('ob-price-ovr-' + iIdx).innerHTML));
+
+  // Clearing the box hands the number back to payroll.
+  win.eval(`obClearPriceOverride(${iIdx})`);
+  assert('clearing it returns payroll\'s price', priced().price_per_unit === 0.42);
+  assert('and drops the receipt',
+    !('price_per_unit_override' in priced()) && !('price_per_unit_payroll' in priced()));
+  assert('the box shows it again',
+    cell(injected, 'price_per_unit').querySelector('input').value === '0.42');
+  assert('and the note is gone',
+    doc.getElementById('ob-price-ovr-' + iIdx).innerHTML === '');
+
+  // Junk is refused rather than saved as a price the server would drop.
+  win.eval(`obSetPriceOverride(${iIdx}, '-5')`);
+  assert('a negative price is refused', priced().price_per_unit === 0.42);
+  assert('and the override is not stored', !('price_per_unit_override' in priced()));
+
   console.log('\n[the hand-added row is untouched]');
-  for (const col of LOCKED) {
+  for (const col of LOCKED.concat('price_per_unit')) {
     assert(`${col} is still editable`, editable(manual, col));
   }
   assert('and it can still be deleted', !!cell(manual, 'del').querySelector('button'));
+  win.eval(`obSet(obRows.findIndex(r => r.id === 'm8x2p1'), 'price_per_unit', '0.99')`);
+  const m = JSON.parse(win.eval("JSON.stringify(obRows.find(r => r.id === 'm8x2p1'))"));
+  assert('its price is edited outright, never overridden',
+    m.price_per_unit === '0.99' && !('price_per_unit_override' in m));
 
   console.log('\n[a locked cell cannot be written even from script]');
   const before = win.eval("JSON.stringify(obRows.find(r => r.id === 'tso-41-1'))");
