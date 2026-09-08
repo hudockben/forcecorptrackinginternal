@@ -337,8 +337,21 @@ const JOB_B = {
     html.slice(0, 400));
   assert('an editor is offered an upload straight into the folder',
     html.includes('Upload to this folder'), html.slice(0, 900));
-  dialog.querySelector('[data-cancel]').click();
-  assert('closing removes it', ![...window.document.body.children].includes(dialog));
+
+  // The whole saving over the Upload button in the Documents tab is that the
+  // folder is already chosen. If it opened on "pick a folder" the user would
+  // still have to find the cost code in a list of forty.
+  dialog.querySelector('[data-ccnew]').click();
+  await new Promise(r => setTimeout(r, 50));
+  const upload = [...window.document.body.children].pop();
+  assert('…which opens the upload dialog', upload.textContent.includes('Upload documents'),
+    upload.textContent.slice(0, 200));
+  const picker = upload.querySelector('#fctdoc-folder');
+  assert('…already filed to the cost code\'s own folder',
+    picker && picker.value === 'f-420', picker && picker.value);
+  assert('…and the cost-code dialog got out of the way',
+    ![...window.document.body.children].includes(dialog));
+  upload.querySelector('[data-cancel]').click();
 
   // An empty folder says so rather than showing an empty box.
   await FD.openCostCodeFolder({ projectId: 'A', costCode: '415' });
