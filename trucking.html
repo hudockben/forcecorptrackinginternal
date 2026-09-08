@@ -1809,8 +1809,15 @@
       sentNow.forEach(({ id, sentAt }) => {
         const mainBadge = document.getElementById('ic-main-' + id);
         if (mainBadge) { mainBadge.innerHTML = `&#10003; IC ${fmtSentAt(sentAt)}`; mainBadge.style.color = '#22c55e'; }
+        // Through _icPoolNote rather than straight to the timestamp, so a haul
+        // that fell back to its own customer says so here too the moment it
+        // lands — not only after the next full render.
         const tsEl = document.getElementById('ic-ts-' + id);
-        if (tsEl) { tsEl.textContent = fmtSentAt(sentAt); tsEl.style.color = '#22c55e'; }
+        const row  = divEntries.find(r => r && r.id === id);
+        if (tsEl) {
+          tsEl.textContent = row ? _icPoolNote(row) : fmtSentAt(sentAt);
+          tsEl.style.color = '#22c55e';
+        }
       });
     }
 
@@ -4054,20 +4061,36 @@
      *  cell reads "EES" either way and a tooltip that always claimed the haul
      *  was billed to EES would be flatly wrong on the one day it matters — the
      *  day before somebody adds EES to the Intercompany company list. */
-    function _icPoolTitle(customer) {
+    function _icPoolTitle(customer, id) {
       const real = String(customer == null ? '' : customer).trim();
-      if (_icEesEnrolled === false) {
-        return `${IC_POOL_NAME} isn't on the Intercompany company list yet, so this haul still goes out `
-          + `under ${real}. Add ${IC_POOL_NAME} there and it pools with the rest.`;
+      if (_icDidFallBack(id, customer)) {
+        return `${IC_POOL_NAME} isn't on the Intercompany company list, so this haul goes out `
+          + `under ${real} instead. Add ${IC_POOL_NAME} there and it pools with the rest.`;
       }
       return `Billed to Intercompany as ${IC_POOL_NAME} — ${real} ordered the haul, ${IC_POOL_NAME} ran it. `
         + `The row still stores ${real}: rates, Analytics and the CSV all go by the real name.`;
     }
 
+    /** Did this haul actually go out under its own name rather than the pool's?
+     *
+     *  Answered from the mirrored entry wherever there is one, because that is
+     *  what Intercompany was really told — the pooling rule only says what the
+     *  tab MEANT to bill. A row mirrored during the window before somebody
+     *  enrolled EES carries the real customer for good, and a cell that read the
+     *  rule alone would go on claiming a rollup that never happened long after
+     *  the sync stopped warning about it. An unsent row has no entry to read, so
+     *  there the roster answers instead. */
+    function _icDidFallBack(id, customer) {
+      if (!isIcRolledUp(customer)) return false;
+      const sent = id == null ? null : icSentMap.get(id);
+      if (!sent) return _icEesEnrolled === false;
+      return _icPoolKey(sent.customer) !== _icPoolKey(IC_POOL_NAME);
+    }
+
     function _custPoolHtml(id, customer) {
       const key = _cbEscape(String(id));
       if (!isIcRolledUp(customer)) return `<div id="cust-pool-${key}"></div>`;
-      return `<div id="cust-pool-${key}" title="${_cbEscape(_icPoolTitle(customer))}" ` +
+      return `<div id="cust-pool-${key}" title="${_cbEscape(_icPoolTitle(customer, id))}" ` +
         `style="color:var(--text);font-size:0.8rem;line-height:1.25">${IC_POOL_NAME}</div>`;
     }
 
@@ -4087,7 +4110,18 @@
      */
     function _icPoolNote(e) {
       const sent = icSentMap.get(e.id);
-      if (sent) return fmtSentAt(sent.sent_at);
+      if (sent) {
+        // Sent is not the end of the story for a pooled haul. One mirrored
+        // before EES was on the company list went out under its own name, and
+        // saying only WHEN it went would retire the warning the moment it
+        // stopped being harmless — the row would read EES for ever while
+        // Intercompany invoiced somebody else.
+        if (_icDidFallBack(e.id, e.customer)) {
+          const under = String(sent.customer || '').trim();
+          return `${fmtSentAt(sent.sent_at)} — as ${under}, not ${IC_POOL_NAME}`;
+        }
+        return fmtSentAt(sent.sent_at);
+      }
       const total = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
       if (!(total > 0) || !(e.customer || '').trim()) return 'Needs customer & total';
       if (!isIcRolledUp(e.customer)) return 'Awaiting sync — check Intercompany company list';
@@ -4114,7 +4148,7 @@
       });
       document.querySelectorAll('[id^="cust-real-"]').forEach(el => {
         const e = byId.get(el.id.slice(10));
-        if (e) el.title = _icPoolTitle(e.customer);
+        if (e) el.title = _icPoolTitle(e.customer, e.id);
       });
       document.querySelectorAll('[id^="ic-ts-"]').forEach(el => {
         const e = byId.get(el.id.slice(6));
@@ -4310,7 +4344,7 @@
             // has. The editable row's version of this is _custPoolHtml, which
             // has to sit beside a live combobox and is built differently for it.
             const custLocked = isIcRolledUp(e.customer)
-              ? `${ro(IC_POOL_NAME)}<div id="cust-real-${e.id}" title="${esc(_icPoolTitle(e.customer))}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc(e.customer)}</div>`
+              ? `${ro(IC_POOL_NAME)}<div id="cust-real-${e.id}" title="${esc(_icPoolTitle(e.customer, e.id))}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc(e.customer)}</div>`
               : ro(e.customer);
             const caretCell = `<td style="width:28px;text-align:center;padding:0 0.25rem;cursor:pointer" onclick="toggleInvoiceRow('${e.id}')"><span id="caret-${e.id}" style="${caretStyle}">&#8250;</span></td>`;
             const tsBadge = `<span title="Injected from an approved timesheet entry — edit it in Payroll, not here. The haul fee is the exception: it can be set here as a backup." style="display:inline-block;font-size:0.56rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#2dd4bf;background:rgba(45,212,191,0.12);border:1px solid rgba(45,212,191,0.35);border-radius:3px;padding:0.05rem 0.32rem;white-space:nowrap">&#8592; Timesheet</span>`;

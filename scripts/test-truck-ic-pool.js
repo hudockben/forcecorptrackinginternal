@@ -90,6 +90,7 @@ const harness = new Function(`
   ${extractFn('_recoverEntriesFromIcBilling')}
   ${extractConst('_cbEscape')}
   ${extractFn('fmtSentAt')}
+  ${extractFn('_icDidFallBack')}
   ${extractFn('_icPoolTitle')}
   ${extractFn('_custPoolHtml')}
   ${extractFn('_icPoolNote')}
@@ -97,7 +98,11 @@ const harness = new Function(`
   let _icEesEnrolled = null;
   return {
     icPoolName, isIcRolledUp, _icTruckEntrySig, IC_POOL_EXEMPT,
-    cell(id, customer, enrolled) { _icEesEnrolled = enrolled; return _custPoolHtml(id, customer); },
+    cell(id, customer, enrolled, sent) {
+      _icEesEnrolled = enrolled;
+      icSentMap = new Map(sent ? [[id, sent]] : []);
+      return _custPoolHtml(id, customer);
+    },
     note(e, enrolled, sent) {
       _icEesEnrolled = enrolled;
       icSentMap = new Map(sent ? [[e.id, sent]] : []);
@@ -439,11 +444,23 @@ console.log('\n[the Customer cell]');
   const fallback = harness.cell('tr-6', 'Ox Hill', false);
   assert('the tooltip claims EES billing only when EES is enrolled',
     promised.includes('Billed to Intercompany as EES'));
-  assert('and says the haul still goes out under its own name when it is not',
+  assert('and says the haul goes out under its own name when it is not',
     !fallback.includes('Billed to Intercompany as EES')
-      && fallback.includes('still goes out under Ox Hill'));
+      && fallback.includes('goes out under Ox Hill instead'));
   assert('the line itself still reads EES either way',
     promised.endsWith('>EES</div>') && fallback.endsWith('>EES</div>'));
+}
+
+{
+  // The window that closes only when somebody enrols EES: a haul mirrored
+  // before then went out under its own name, and the entry is the only record
+  // of that once the sync stops warning.
+  const sentAsSelf = { sent_at: '2026-09-04T14:16:00Z', customer: 'Ox Hill' };
+  const sentAsPool = { sent_at: '2026-09-04T14:16:00Z', customer: 'EES' };
+  assert('a sent haul that fell back says so on the cell, however the roster reads now',
+    harness.cell('tr-7', 'Ox Hill', true, sentAsSelf).includes('goes out under Ox Hill instead'));
+  assert('and one that really pooled does not',
+    harness.cell('tr-7', 'Ox Hill', false, sentAsPool).includes('Billed to Intercompany as EES'));
 }
 
 console.log('\n[what the expanded panel tells the office]');
@@ -463,8 +480,18 @@ console.log('\n[what the expanded panel tells the office]');
   assert('an exempt row keeps the note it always had',
     harness.note(row({ customer: 'Kovalchick' }), true, null)
       === 'Awaiting sync — check Intercompany company list');
-  assert('and a sent row shows when it went, whatever the pool is doing',
-    harness.note(pooledRow, false, { sent_at: '2026-09-04T14:16:00Z' }).startsWith('Sent '));
+  // The timestamp is formatted in the reader's own timezone, so these compare
+  // against the plain note rather than against a wall-clock string.
+  const at    = '2026-09-04T14:16:00Z';
+  const plain = harness.note(pooledRow, false, { sent_at: at, customer: 'EES' });
+  assert('a sent row that really pooled just says when it went',
+    /^Sent /.test(plain) && !plain.includes('not EES'));
+  assert('and one that went out under its own name says that too, not just when',
+    harness.note(pooledRow, true, { sent_at: at, customer: 'Ox Hill' })
+      === `${plain} — as Ox Hill, not EES`);
+  assert('an exempt row is never annotated, sent or not',
+    harness.note(row({ customer: 'Kovalchick' }), false, { sent_at: at, customer: 'Kovalchick' })
+      === plain);
 }
 
 // ── 6. The tab, rendered ───────────────────────────────────────────────────
@@ -604,9 +631,9 @@ console.log('\n[the answer about EES arriving after the rows are on screen]');
       || p.doc.getElementById('cust-pool-a').title.length > 0);
   p.run('_setIcEesEnrolled(false);');
   assert('once EES is known to be missing, every pooled tooltip says so',
-    p.doc.getElementById('cust-pool-a').title.includes('still goes out under Ox Hill'));
+    p.doc.getElementById('cust-pool-a').title.includes('goes out under Ox Hill instead'));
   assert('including the locked row\'s',
-    p.doc.getElementById('cust-real-tst-9-row').title.includes('still goes out under Arcadis'));
+    p.doc.getElementById('cust-real-tst-9-row').title.includes('goes out under Arcadis instead'));
   assert('and every unsent note says so',
     p.doc.getElementById('ic-ts-a').textContent === "Not sent — EES isn't on the Intercompany company list yet");
   assert('an exempt row\'s note is left alone',
