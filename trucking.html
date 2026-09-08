@@ -1832,8 +1832,13 @@
       try {
         await _loadIcSuppressions();
         const companies = await tdGet('fct_intercompany_companies');
-        const coList = Array.isArray(companies) ? companies : [];
-        if (!coList.length) return;              // nothing to match against
+        // A roster that came back empty is a company list with nothing on it; a
+        // roster that did not come back at all is a failed read. They have to be
+        // told apart, because the first is a definite "EES is not enrolled" and
+        // the second is "we do not know yet" — and the row's note says something
+        // different, and something wrong if it guesses.
+        const coList = Array.isArray(companies) ? companies : null;
+        if (!coList) return;
 
         // customer name (lowercased) → matched IC company, restricted to 'trucking'
         const coByName = new Map();
@@ -1843,12 +1848,11 @@
           }
         });
         // Does the pool have a company to bill to? The answer decides what a
-        // row's expanded panel tells the office — billing as EES, or still
-        // billing under its own name because EES is not on the Intercompany
-        // list yet. Recorded before the early return on purpose: an empty
-        // trucking roster is a definite no, not an unknown.
+        // row's Customer tooltip and expanded panel tell the office. Recorded
+        // before the early return, so an empty trucking roster is read as the
+        // definite no that it is rather than left as an unknown.
         _setIcEesEnrolled(coByName.has(_icPoolKey(IC_POOL_NAME)));
-        if (!coByName.size) return;
+        if (!coByName.size) return;              // nothing to match against
 
         // Probe read: is any write warranted at all? Skips a needless second read
         // + PUT in the common steady state where nothing IC-relevant changed.
@@ -3900,6 +3904,10 @@
         // until a filter keystroke or a year tab forces a render, and the office
         // reads a customer the row no longer has.
         _paintCustPool(id, value);
+        // The note in the expanded panel names the customer too, so it goes
+        // stale on the same edit and for the same reason.
+        const noteEl = document.getElementById('ic-ts-' + id);
+        if (noteEl && !icSentMap.has(id)) noteEl.textContent = _icPoolNote(e);
       }
       if (field === 'unit') {
         const unit  = divTruckLists.units.find(u => u.name === value);
@@ -4040,14 +4048,26 @@
        unstyled, so it is a zero-height nothing on an exempt or blank row and so
        _paintCustPool can find it after an edit — the same habit as ic-main-,
        unit-num- and fee-ovr-. */
+    /** What the tooltip over a pooled Customer cell says.
+     *
+     *  It names the fall-back when the pool has nowhere to bill, because the
+     *  cell reads "EES" either way and a tooltip that always claimed the haul
+     *  was billed to EES would be flatly wrong on the one day it matters — the
+     *  day before somebody adds EES to the Intercompany company list. */
+    function _icPoolTitle(customer) {
+      const real = String(customer == null ? '' : customer).trim();
+      if (_icEesEnrolled === false) {
+        return `${IC_POOL_NAME} isn't on the Intercompany company list yet, so this haul still goes out `
+          + `under ${real}. Add ${IC_POOL_NAME} there and it pools with the rest.`;
+      }
+      return `Billed to Intercompany as ${IC_POOL_NAME} — ${real} ordered the haul, ${IC_POOL_NAME} ran it. `
+        + `The row still stores ${real}: rates, Analytics and the CSV all go by the real name.`;
+    }
+
     function _custPoolHtml(id, customer) {
       const key = _cbEscape(String(id));
       if (!isIcRolledUp(customer)) return `<div id="cust-pool-${key}"></div>`;
-      const real  = String(customer == null ? '' : customer).trim();
-      const title = `Billed to Intercompany as ${IC_POOL_NAME} — ${real} ordered the haul, EES ran it. `
-        + `The row still stores ${real}, and the box below is still the one to edit: rates, `
-        + `Analytics and the CSV all go by the real name.`;
-      return `<div id="cust-pool-${key}" title="${_cbEscape(title)}" ` +
+      return `<div id="cust-pool-${key}" title="${_cbEscape(_icPoolTitle(customer))}" ` +
         `style="color:var(--text);font-size:0.8rem;line-height:1.25">${IC_POOL_NAME}</div>`;
     }
 
@@ -4071,16 +4091,31 @@
       const total = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
       if (!(total > 0) || !(e.customer || '').trim()) return 'Needs customer & total';
       if (!isIcRolledUp(e.customer)) return 'Awaiting sync — check Intercompany company list';
+      // Says what is missing, not what happens instead. The haul falls back to
+      // its own customer, but only if THAT company is enrolled — and this line
+      // has no way to know, so promising it would be a guess the office would
+      // read as a fact.
       if (_icEesEnrolled === false) {
-        return `${IC_POOL_NAME} isn't on the Intercompany company list yet — this haul still bills under ${String(e.customer).trim()}`;
+        return `Not sent — ${IC_POOL_NAME} isn't on the Intercompany company list yet`;
       }
       return `Awaiting sync — bills to Intercompany as ${IC_POOL_NAME}`;
     }
 
-    /** Repaint every unsent row's note in place — no re-render, so a row the
-     *  office is mid-edit on is never disturbed. */
+    /** Repaint everything whose wording turns on the pool having somewhere to
+     *  bill: the line over each Customer box, the tooltip on each locked row's
+     *  pooled cell, and every unsent row's note. In place rather than through a
+     *  re-render, so a row the office is mid-edit on is never disturbed — the
+     *  pooled line is a sibling of the combobox, never the box itself. */
     function _paintIcPoolNotes() {
       const byId = new Map(divEntries.map(e => [e.id, e]));
+      document.querySelectorAll('[id^="cust-pool-"]').forEach(el => {
+        const e = byId.get(el.id.slice(10));
+        if (e) el.outerHTML = _custPoolHtml(e.id, e.customer);
+      });
+      document.querySelectorAll('[id^="cust-real-"]').forEach(el => {
+        const e = byId.get(el.id.slice(10));
+        if (e) el.title = _icPoolTitle(e.customer);
+      });
       document.querySelectorAll('[id^="ic-ts-"]').forEach(el => {
         const e = byId.get(el.id.slice(6));
         if (!e || icSentMap.has(e.id)) return;
@@ -4125,10 +4160,16 @@
           // way the tab always worked. Every other column matches the one value
           // it displays — a filter that quietly searched a field nobody can see
           // would be worse than no filter.
-          const hay = field === 'customer'
-            ? `${e.customer || ''} ${icPoolName(e.customer)}`
-            : String(e[field] || '');
-          return hay.toLowerCase().includes(val.toLowerCase());
+          //
+          // Each name is tested on its own rather than joined into one string:
+          // a joined haystack matches across the seam, so "Hill EES" would find
+          // a row that reads neither and a lone space would find every row.
+          const q = val.toLowerCase();
+          if (field === 'customer') {
+            return String(e.customer || '').toLowerCase().includes(q)
+                || icPoolName(e.customer).toLowerCase().includes(q);
+          }
+          return String(e[field] || '').toLowerCase().includes(q);
         })
       );
     }
@@ -4269,7 +4310,7 @@
             // has. The editable row's version of this is _custPoolHtml, which
             // has to sit beside a live combobox and is built differently for it.
             const custLocked = isIcRolledUp(e.customer)
-              ? `${ro(IC_POOL_NAME)}<div id="cust-real-${e.id}" title="The customer on the haul. Intercompany bills it as ${esc(IC_POOL_NAME)}." style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc(e.customer)}</div>`
+              ? `${ro(IC_POOL_NAME)}<div id="cust-real-${e.id}" title="${esc(_icPoolTitle(e.customer))}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc(e.customer)}</div>`
               : ro(e.customer);
             const caretCell = `<td style="width:28px;text-align:center;padding:0 0.25rem;cursor:pointer" onclick="toggleInvoiceRow('${e.id}')"><span id="caret-${e.id}" style="${caretStyle}">&#8250;</span></td>`;
             const tsBadge = `<span title="Injected from an approved timesheet entry — edit it in Payroll, not here. The haul fee is the exception: it can be set here as a backup." style="display:inline-block;font-size:0.56rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#2dd4bf;background:rgba(45,212,191,0.12);border:1px solid rgba(45,212,191,0.35);border-radius:3px;padding:0.05rem 0.32rem;white-space:nowrap">&#8592; Timesheet</span>`;

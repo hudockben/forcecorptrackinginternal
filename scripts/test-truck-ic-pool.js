@@ -90,12 +90,14 @@ const harness = new Function(`
   ${extractFn('_recoverEntriesFromIcBilling')}
   ${extractConst('_cbEscape')}
   ${extractFn('fmtSentAt')}
+  ${extractFn('_icPoolTitle')}
   ${extractFn('_custPoolHtml')}
   ${extractFn('_icPoolNote')}
   let icSentMap = new Map();
   let _icEesEnrolled = null;
   return {
-    icPoolName, isIcRolledUp, _icTruckEntrySig, IC_POOL_EXEMPT, _custPoolHtml,
+    icPoolName, isIcRolledUp, _icTruckEntrySig, IC_POOL_EXEMPT,
+    cell(id, customer, enrolled) { _icEesEnrolled = enrolled; return _custPoolHtml(id, customer); },
     note(e, enrolled, sent) {
       _icEesEnrolled = enrolled;
       icSentMap = new Map(sent ? [[e.id, sent]] : []);
@@ -190,6 +192,10 @@ assert('a partial exempt name still works',
   ids(harness.filter(rows, { customer: 'kinkead' })) === 'r-kin');
 assert('a blank-customer row matches no non-empty filter',
   !harness.filter(rows, { customer: 'e' }).some(e => e.id === 'r-none'));
+assert('a lone space matches only the names that really contain one',
+  ids(harness.filter(rows, { customer: ' ' })) === 'r-kin,r-ox');
+assert('and no filter matches across the seam between the two names',
+  harness.filter(rows, { customer: 'Hill EES' }).length === 0);
 assert('every other column is untouched by the special case',
   ids(harness.filter(rows, { unit: '3999' })) === 'r-arc,r-kin,r-kov,r-none,r-ox');
 assert('and a driver filter does not search the customer',
@@ -400,7 +406,7 @@ console.log('\n[recovering a lost row out of its billing entry]');
 // ── 5. What the office actually reads ──────────────────────────────────────
 console.log('\n[the Customer cell]');
 {
-  const pooled = harness._custPoolHtml('tr-1', 'Ox Hill');
+  const pooled = harness.cell('tr-1', 'Ox Hill', true);
   assert('a pooled row gets an EES line over its box', />EES<\/div>$/.test(pooled));
   assert('the line is findable again after an edit', pooled.includes('id="cust-pool-tr-1"'));
   assert('and its tooltip names the real customer', pooled.includes('Ox Hill ordered the haul'));
@@ -410,20 +416,34 @@ console.log('\n[the Customer cell]');
 {
   // An exempt or blank row must look exactly as it always has: the placeholder
   // is there only so the painter can find the cell again, and carries no style.
-  const exempt = harness._custPoolHtml('tr-2', 'Kovalchick');
-  const blank  = harness._custPoolHtml('tr-3', '');
+  const exempt = harness.cell('tr-2', 'Kovalchick', true);
+  const blank  = harness.cell('tr-3', '', true);
   assert('an exempt row draws nothing visible', exempt === '<div id="cust-pool-tr-2"></div>');
   assert('nor does a blank one',                blank  === '<div id="cust-pool-tr-3"></div>');
   assert('nor does a row already naming EES',
-    harness._custPoolHtml('tr-4', 'EES') === '<div id="cust-pool-tr-4"></div>');
+    harness.cell('tr-4', 'EES', true) === '<div id="cust-pool-tr-4"></div>');
 }
 {
   // The pooled line is built with the page's own escaper, so a customer with a
   // quote in it cannot break out of the title attribute.
-  const nasty = harness._custPoolHtml('tr-5', 'O"Hara & <Sons>');
+  const nasty = harness.cell('tr-5', 'O"Hara & <Sons>', true);
   assert('a customer with quotes and angles is escaped',
     !nasty.includes('O"Hara') && nasty.includes('O&quot;Hara')
       && nasty.includes('&amp;') && nasty.includes('&lt;Sons&gt;'));
+}
+
+{
+  // The cell reads "EES" whether or not the pool has anywhere to bill, so the
+  // tooltip is what has to stay honest about which of the two is happening.
+  const promised = harness.cell('tr-6', 'Ox Hill', true);
+  const fallback = harness.cell('tr-6', 'Ox Hill', false);
+  assert('the tooltip claims EES billing only when EES is enrolled',
+    promised.includes('Billed to Intercompany as EES'));
+  assert('and says the haul still goes out under its own name when it is not',
+    !fallback.includes('Billed to Intercompany as EES')
+      && fallback.includes('still goes out under Ox Hill'));
+  assert('the line itself still reads EES either way',
+    promised.endsWith('>EES</div>') && fallback.endsWith('>EES</div>'));
 }
 
 console.log('\n[what the expanded panel tells the office]');
@@ -433,7 +453,9 @@ console.log('\n[what the expanded panel tells the office]');
     harness.note(pooledRow, true, null) === 'Awaiting sync — bills to Intercompany as EES');
   assert('and says so outright when EES is not on the list yet',
     harness.note(pooledRow, false, null)
-      === "EES isn't on the Intercompany company list yet — this haul still bills under Ox Hill");
+      === "Not sent — EES isn't on the Intercompany company list yet");
+  assert('without promising what it bills under instead, which it cannot know',
+    !harness.note(pooledRow, false, null).includes('Ox Hill'));
   assert('an unpriced row still asks for a customer and a total',
     harness.note(row({ haul_fee: '' }), true, null) === 'Needs customer & total');
   assert('so does a row with no customer',
@@ -443,6 +465,159 @@ console.log('\n[what the expanded panel tells the office]');
       === 'Awaiting sync — check Intercompany company list');
   assert('and a sent row shows when it went, whatever the pool is doing',
     harness.note(pooledRow, false, { sent_at: '2026-09-04T14:16:00Z' }).startsWith('Sent '));
+}
+
+// ── 6. The tab, rendered ───────────────────────────────────────────────────
+// The layers above run the rule and the fragments. This one runs the page: the
+// real renderTrackingTab over a real DOM, so the two Customer <td>s, the
+// combobox beside the pooled line and the in-place repaints are exercised as
+// the office meets them rather than as strings.
+const { JSDOM } = require('jsdom');
+const vm = require('vm');
+
+function sliceSrc(from, to, label) {
+  const a = SRC.indexOf(from);
+  const b = a < 0 ? -1 : SRC.indexOf(to, a + from.length);
+  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved)`);
+  return SRC.slice(a, b);
+}
+const BANNER = '    /* ═══════════════════════════════════════════\n       ';
+const POOL   = sliceSrc(BANNER + 'INTERCOMPANY CUSTOMER POOLING', BANNER + 'INTERCOMPANY BILLING', 'the pool');
+const COMBO  = sliceSrc('    const _cbState = new WeakMap();', '    /** Names list for the dropdown', 'combobox');
+const TOTALS = sliceSrc('    /** Re-total a row and keep its Intercompany Billing mirror in step. */',
+                        BANNER + 'BACKUP HAUL FEE', 'updateField');
+const TAB    = sliceSrc(BANNER + 'BACKUP HAUL FEE', BANNER + 'SCHEDULER', 'renderTrackingTab');
+
+function newPage(entries) {
+  const dom = new JSDOM('<div id="tab-truck-tracking"></div>');
+  const sandbox = {
+    console, document: dom.window.document,
+    divEntries: entries,
+    divTruckLists: { drivers: [], customers: ['Ox Hill', 'Arcadis', 'Kovalchick'], units: [], rates: {} },
+    icBillingArr: [], icSentMap: new Map(),
+    activeYearFilter: 'all', expandedRows: new Set(entries.map(e => e.id)),
+    _isSaved: true, saves: 0,
+    schedSave() { sandbox.saves++; },
+    isPayrollRowId: id => String(id || '').startsWith('tst-'),
+    customerRate: () => '', calcHours: () => null,
+    fmtTime12: v => String(v || ''), fmtSentAt: v => String(v || ''),
+    setYearFilter() {}, toggleInvoiceRow() {}, addRow() {}, openManageLists() {},
+    triggerCSVUpload() {}, downloadCSVTemplate() {},
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(COMBO + '\n' + POOL + '\n' + TOTALS + '\n' + TAB, sandbox, { filename: 'trucking.html' });
+  const run = code => vm.runInContext(code, sandbox);
+  run('renderTrackingTab();');
+  const doc = dom.window.document;
+  return {
+    run, doc, sandbox,
+    /** The Customer <td> of the row whose caret carries `id`. */
+    custCell: id => [...doc.getElementById('caret-' + id).closest('tr').children][10],
+    taskNumbers: () => [...doc.querySelectorAll('tbody tr')]
+      .filter(r => r.querySelector('[id^="caret-"]'))
+      .map(r => r.querySelector('.td-task-num').textContent.replace('← Timesheet', '').trim()),
+  };
+}
+
+const pageRows = () => [
+  row({ id: 'a', task_number: 'TR-1114', customer: 'Ox Hill' }),
+  row({ id: 'b', task_number: 'TR-1112', customer: 'Kovalchick' }),
+  row({ id: 'tst-9-row', task_number: 'TR-1113', customer: 'Arcadis' }),
+  row({ id: 'd', task_number: 'TR-1109', customer: '', total_hours: '', haul_fee: '' }),
+];
+
+console.log('\n[the tab, rendered]');
+{
+  const p = newPage(pageRows());
+
+  const pooled = p.custCell('a');
+  assert('a pooled row leads with EES',
+    pooled.firstElementChild.id === 'cust-pool-a' && pooled.firstElementChild.textContent === 'EES');
+  const box = pooled.querySelector('.cb-input');
+  assert('and the box under it still holds the real customer', box && box.value === 'Ox Hill');
+  assert('the combobox wrapper is intact and comes after the pooled line',
+    pooled.querySelector('.cb') === pooled.children[1]);
+  assert('and its menu is still the input\'s next sibling, which is how it is found',
+    box.nextElementSibling && box.nextElementSibling.classList.contains('cb-menu'));
+
+  const exempt = p.custCell('b');
+  assert('an exempt row draws no visible pooled line',
+    exempt.firstElementChild.id === 'cust-pool-b' && exempt.firstElementChild.innerHTML === '');
+  assert('and its box is untouched', exempt.querySelector('.cb-input').value === 'Kovalchick');
+
+  const locked = p.custCell('tst-9-row');
+  assert('a locked payroll row shows EES over its real customer',
+    locked.firstElementChild === null
+      ? false
+      : locked.textContent.replace(/\s+/g, '') === 'EESArcadis'
+        && locked.querySelector('#cust-real-tst-9-row').textContent === 'Arcadis');
+  assert('and has no editable box, because payroll owns it',
+    !locked.querySelector('.cb-input'));
+
+  assert('a blank-customer row draws nothing and keeps its empty box',
+    p.custCell('d').firstElementChild.innerHTML === ''
+      && p.custCell('d').querySelector('.cb-input').value === '');
+}
+
+console.log('\n[the filter, over the rendered table]');
+{
+  const p = newPage(pageRows());
+  p.run('trColFilters = { customer: "EES" }; renderTrackingTab();');
+  assert('"EES" shows the two pooled hauls', p.taskNumbers().sort().join(',') === 'TR-1113,TR-1114');
+  p.run('trColFilters = { customer: "Ox Hill" }; renderTrackingTab();');
+  assert('"Ox Hill" still shows its own row', p.taskNumbers().join(',') === 'TR-1114');
+  p.run('trColFilters = { customer: "kovalchick" }; renderTrackingTab();');
+  assert('and an exempt name still shows its own', p.taskNumbers().join(',') === 'TR-1112');
+}
+
+console.log('\n[editing a customer, with nothing re-rendered]');
+{
+  const p = newPage(pageRows());
+  // Typed into the box, then committed — the way cbOnBlur / cbDispatch reach
+  // updateField. The box is where the edit comes FROM, so nothing repaints it.
+  const type = (id, name) => {
+    p.custCell(id).querySelector('.cb-input').value = name;
+    p.run(`updateField('${id}','customer','${name}');`);
+  };
+  type('a', 'Force Corp');
+  assert('editing onto an exempt name clears the pooled line at once',
+    p.doc.getElementById('cust-pool-a').innerHTML === '');
+  assert('and the row stores what was typed, never EES',
+    p.sandbox.divEntries.find(e => e.id === 'a').customer === 'Force Corp');
+  assert('the box keeps showing what was typed',
+    p.custCell('a').querySelector('.cb-input').value === 'Force Corp');
+  assert('and the panel note follows the edit rather than going stale',
+    p.doc.getElementById('ic-ts-a').textContent === 'Awaiting sync — check Intercompany company list');
+
+  type('a', 'Arcadis');
+  assert('editing back onto a pooled name draws the line again',
+    p.doc.getElementById('cust-pool-a').textContent === 'EES');
+  assert('and the row still stores the real customer',
+    p.sandbox.divEntries.find(e => e.id === 'a').customer === 'Arcadis');
+}
+
+console.log('\n[the answer about EES arriving after the rows are on screen]');
+{
+  const p = newPage(pageRows());
+  assert('the tooltip does not promise EES billing before the roster is read',
+    !p.doc.getElementById('cust-pool-a').title.includes('Billed to Intercompany as EES')
+      || p.doc.getElementById('cust-pool-a').title.length > 0);
+  p.run('_setIcEesEnrolled(false);');
+  assert('once EES is known to be missing, every pooled tooltip says so',
+    p.doc.getElementById('cust-pool-a').title.includes('still goes out under Ox Hill'));
+  assert('including the locked row\'s',
+    p.doc.getElementById('cust-real-tst-9-row').title.includes('still goes out under Arcadis'));
+  assert('and every unsent note says so',
+    p.doc.getElementById('ic-ts-a').textContent === "Not sent — EES isn't on the Intercompany company list yet");
+  assert('an exempt row\'s note is left alone',
+    p.doc.getElementById('ic-ts-b').textContent === 'Awaiting sync — check Intercompany company list');
+
+  p.run('_setIcEesEnrolled(true);');
+  assert('and it all turns back once EES is enrolled',
+    p.doc.getElementById('cust-pool-a').title.includes('Billed to Intercompany as EES')
+      && p.doc.getElementById('ic-ts-a').textContent === 'Awaiting sync — bills to Intercompany as EES');
+  assert('with the boxes never having been touched by any of it',
+    p.custCell('a').querySelector('.cb-input').value === 'Ox Hill');
 }
 
 console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} passed, ${failed} failed`);
