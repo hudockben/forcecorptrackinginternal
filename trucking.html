@@ -1474,12 +1474,29 @@
        companies — and the office wants to see that on the row before the
        invoice goes out, not discover it on the Intercompany screen.
 
-       Three names are the exception. Force, Kinkead and Kovalchick bill under
-       their own name, and they match on CONTAINS, case and all: "Force Corp",
-       "Kinkead HC", "Kinkead's" and "kovalchick" are those same three
-       companies typed differently onto a row, and every spelling has to stay
-       out of the pool. Everything else pools. A blank customer pools nowhere —
-       an unfinished row is not an EES haul, it is an unfinished row.
+       What stays out of the pool is decided by the Intercompany company list
+       itself: a haul for a company enrolled there under trucking bills under
+       that company, because that company is its own pool already. XTO's work
+       belongs in XTO's pool and EAI's in EAI's; Ox Hill has no company of its
+       own, so its work is EES work. The office therefore controls this from
+       Manage Companies and never from here — enrol a company and its hauls
+       leave the pool on the next sync, with no code change.
+
+       Force, Kinkead and Kovalchick are named here as well, as a floor. They
+       are on that list today, and a haul for one of them must not start
+       pooling because somebody untick's a division while tidying the roster.
+
+       A name matches on WHOLE WORDS, case and all, because the roster carries
+       the company and the rows carry whatever somebody typed: "Kinkead HC",
+       "Kinkead's", "kovalchick" and "XTO Energy" are all that company's work
+       and every spelling has to stay out of the pool. Whole words rather than
+       anywhere-inside because the roster carries short names — "EAI" sits
+       inside "Beaird", and a plain contains would take a haul out of the pool
+       and invoice EAI for it. The same rule then picks the company to bill, so
+       what the cell says and what Intercompany is told can never disagree.
+
+       A blank customer pools nowhere — an unfinished row is not an EES haul,
+       it is an unfinished row.
 
        This is a VIEW and a BILLING rule, never a rewrite. The row keeps the
        real customer in its `customer` field for good: Analytics, Customer
@@ -1499,6 +1516,13 @@
     const IC_POOL_EXEMPT      = ['Force', 'Kinkead', 'Kovalchick'];
     const IC_POOL_EXEMPT_KEYS = IC_POOL_EXEMPT.map(n => n.toLowerCase());
 
+    // Every company enrolled in Intercompany under the trucking division,
+    // lowercased — the roster half of the rule. null until it has been read,
+    // and that is not the same as empty: an unread roster cannot tell EES work
+    // from XTO work, so nothing pools until it arrives rather than everything
+    // pooling for the moment it takes to load.
+    let icTruckCoNames = null;
+
     /* Pooling matches on contains, not on the whole name — unlike _rateKey,
        which is about pricing one company and so has to be the whole name. The
        difference is what each thing is about: a rate is what THIS company pays,
@@ -1506,13 +1530,52 @@
        Kinkead's truck however the office wrote it down. */
     const _icPoolKey = v => String(v == null ? '' : v).trim().toLowerCase();
 
+    /** Does `name` appear in `hay` as a whole word? Both already lowercased.
+     *
+     *  Bounded by anything that is not a letter or a digit, so "Kinkead HC",
+     *  "Kinkead's" and "XTO Energy" are that company's work while "Beaird" is
+     *  not EAI's and "Workforce Solutions" is not Force's. The empty string on
+     *  either edge counts as a boundary, so a name that is the whole value
+     *  matches. */
+    const _icWordish = c => /[a-z0-9]/.test(c);
+    function _icNamesMatch(hay, name) {
+      if (!hay || !name) return false;
+      for (let i = hay.indexOf(name); i !== -1; i = hay.indexOf(name, i + 1)) {
+        if (!_icWordish(i === 0 ? '' : hay[i - 1]) && !_icWordish(hay[i + name.length] || '')) return true;
+      }
+      return false;
+    }
+
     /** True when a customer bills to the pool under a name that is not its own —
      *  which is also the question the cell asks before drawing two lines. */
     function isIcRolledUp(customer) {
       const k = _icPoolKey(customer);
-      if (!k) return false;                             // blank bills nowhere
+      if (!k) return false;                              // blank bills nowhere
       if (k === _icPoolKey(IC_POOL_NAME)) return false;  // already the pool itself
-      return !IC_POOL_EXEMPT_KEYS.some(n => k.includes(n));
+      if (IC_POOL_EXEMPT_KEYS.some(n => _icNamesMatch(k, n))) return false;
+      if (!icTruckCoNames) return false;                 // roster unread — claim nothing
+      for (const name of icTruckCoNames) if (_icNamesMatch(k, name)) return false;
+      return true;
+    }
+
+    /** The trucking-enrolled Intercompany company a customer bills under, or
+     *  null when it has none of its own.
+     *
+     *  The exact name first, then the same whole-word rule that kept the haul
+     *  out of the pool — otherwise "XTO Energy" would be spared the pool and
+     *  then match no company at all, and the haul would quietly stop billing
+     *  rather than land in XTO's pool where it belongs. Longest name wins, so a
+     *  company whose name sits inside a longer one cannot claim its work. */
+    function icCompanyFor(customer, coByName) {
+      const k = _icPoolKey(customer);
+      if (!k) return null;
+      const exact = coByName.get(k);
+      if (exact) return exact;
+      let best = null, bestLen = 0;
+      coByName.forEach((co, name) => {
+        if (name.length > bestLen && _icNamesMatch(k, name)) { best = co; bestLen = name.length; }
+      });
+      return best;
     }
 
     /** The name a haul bills under: '' for blank, its own for the three exempt
@@ -1524,9 +1587,59 @@
     }
 
     // Whether an "EES" company is actually enrolled in Intercompany under the
-    // 'trucking' division. null until a sync has read the roster — unknown is
-    // not the same as no, and the row's note says different things for each.
+    // 'trucking' division. null until the roster has been read — unknown is not
+    // the same as no, and the row's note says different things for each.
     let _icEesEnrolled = null;
+
+    /** Read the Intercompany company roster and record who bills under
+     *  themselves. Hands back the trucking-enrolled companies keyed by
+     *  lowercased name — the map the billing reconciler matches against — or
+     *  null when the roster could not be read at all. */
+    async function loadIcTruckCompanies() {
+      const companies = await tdGet('fct_intercompany_companies');
+      // A roster that came back empty is a company list with nothing on it; a
+      // roster that did not come back is a failed read. They have to be told
+      // apart: the first is a definite answer about who is enrolled, and the
+      // second is no answer at all.
+      if (!Array.isArray(companies)) return null;
+      const coByName = new Map();
+      companies.forEach(c => {
+        if (c && (c.divisions || []).includes('trucking')) coByName.set(_icPoolKey(c.name), c);
+      });
+      _setIcTruckCompanies(coByName);
+      return coByName;
+    }
+
+    /** Record the roster, and redraw if it changed who pools. */
+    function _setIcTruckCompanies(coByName) {
+      const next = new Set([...coByName.keys()].filter(Boolean));
+      const same = icTruckCoNames
+        && icTruckCoNames.size === next.size
+        && [...next].every(n => icTruckCoNames.has(n));
+      icTruckCoNames  = next;
+      _icEesEnrolled  = next.has(_icPoolKey(IC_POOL_NAME));
+      if (!same) _repaintPooledCells();
+    }
+
+    /** Redraw the tab when the roster answer changes under it.
+     *
+     *  A full render rather than a repaint, because the answer changes the
+     *  SHAPE of a Customer cell and not only its text: a locked row gains or
+     *  loses a sub-line and an editable one gains or loses the line above its
+     *  box. Held off while somebody is typing and while another tab is
+     *  showing — the same two conditions the background polls stand down on —
+     *  and the notes are brought up to date in place instead, so a row mid-edit
+     *  is never rebuilt underneath the caret. The next render takes the rest.
+     *
+     *  The polls' own _isEditing / _activeTabId live inside the polling
+     *  closure at the foot of the file and cannot be called from here. */
+    function _repaintPooledCells() {
+      const el  = document.activeElement;
+      const btn = document.querySelector('.tab-btn.active');
+      const busy = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+      if (busy || !btn || btn.dataset.tab !== 'truck-tracking') { _paintIcPoolNotes(); return; }
+      renderTrackingTab();
+    }
 
     /* ═══════════════════════════════════════════
        INTERCOMPANY BILLING — AUTO-SEND
@@ -1729,10 +1842,11 @@
         // after pooling ships rewrites nothing it did not have to.
         const isPooled = isIcRolledUp(row.customer);
         let   billedAs = isPooled ? IC_POOL_NAME : row.customer;
-        let   matched  = coByName.get(_icPoolKey(billedAs));
+        let   matched  = isPooled ? coByName.get(_icPoolKey(IC_POOL_NAME))
+                                  : icCompanyFor(row.customer, coByName);
         if (!matched && isPooled) {
           billedAs = row.customer;
-          matched  = coByName.get(_icPoolKey(row.customer));
+          matched  = icCompanyFor(row.customer, coByName);
         }
         if (!matched) {
           // Neither the pool nor the customer is enrolled in IC trucking
@@ -1838,27 +1952,11 @@
       _icAutoSyncRunning = true;
       try {
         await _loadIcSuppressions();
-        const companies = await tdGet('fct_intercompany_companies');
-        // A roster that came back empty is a company list with nothing on it; a
-        // roster that did not come back at all is a failed read. They have to be
-        // told apart, because the first is a definite "EES is not enrolled" and
-        // the second is "we do not know yet" — and the row's note says something
-        // different, and something wrong if it guesses.
-        const coList = Array.isArray(companies) ? companies : null;
-        if (!coList) return;
-
-        // customer name (lowercased) → matched IC company, restricted to 'trucking'
-        const coByName = new Map();
-        coList.forEach(c => {
-          if ((c.divisions || []).includes('trucking')) {
-            coByName.set((c.name || '').trim().toLowerCase(), c);
-          }
-        });
-        // Does the pool have a company to bill to? The answer decides what a
-        // row's Customer tooltip and expanded panel tell the office. Recorded
-        // before the early return, so an empty trucking roster is read as the
-        // definite no that it is rather than left as an unknown.
-        _setIcEesEnrolled(coByName.has(_icPoolKey(IC_POOL_NAME)));
+        // The roster is both halves of this: who bills under themselves (which
+        // decides what the tab draws) and which company a haul is billed to.
+        // One read, so the two can never disagree.
+        const coByName = await loadIcTruckCompanies();
+        if (!coByName) return;
         if (!coByName.size) return;              // nothing to match against
 
         // Probe read: is any write warranted at all? Skips a needless second read
@@ -2220,6 +2318,10 @@
         tdDivGet(),
         tdGet('fct_lists'),
         loadIcSentMap(),
+        // Alongside the rows, not after them: the Customer column cannot tell
+        // an EES haul from an XTO one until the roster is in, so reading it
+        // here is what keeps the first render of the tab from being wrong.
+        loadIcTruckCompanies(),
       ]);
       if (divData) {
         // Only a real array counts as "loaded" — see _divEntriesLoaded. A
@@ -4157,15 +4259,7 @@
       });
     }
 
-    /** Record whether the pool has a company to bill to, and repaint the notes
-     *  when the answer changes — the tab renders before the first sync has read
-     *  the roster, so the honest answer arrives after the row is already on
-     *  screen. */
-    function _setIcEesEnrolled(yes) {
-      if (yes === _icEesEnrolled) return;
-      _icEesEnrolled = yes;
-      _paintIcPoolNotes();
-    }
+
 
     /* ═══════════════════════════════════════════
        COLUMN FILTERS

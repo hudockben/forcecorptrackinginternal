@@ -7,8 +7,13 @@
  *
  * Most of what leaves the yard is hauled by EES, whoever ordered it. "Ox Hill"
  * is the customer on the ticket, but EES ran the truck, so Intercompany has to
- * bill one EES rather than a page of one-job companies. Force, Kinkead and
- * Kovalchick are the exceptions and bill under their own name.
+ * bill one EES rather than a page of one-job companies.
+ *
+ * What stays out of the pool is the Intercompany company list: a haul for a
+ * company enrolled there under trucking bills under that company, because that
+ * company is its own pool already. XTO's work belongs in XTO's pool, Ox Hill
+ * has no company of its own and so is EES work. Force, Kinkead and Kovalchick
+ * are named in the code as well, as a floor under the roster.
  *
  * The rule is a VIEW and a BILLING rule, never a rewrite, and that is the line
  * every case below holds. The row keeps the customer it was hauled for, because
@@ -81,7 +86,11 @@ const harness = new Function(`
   ${extractConst('IC_POOL_NAME')}
   ${extractConst('IC_POOL_EXEMPT')}
   ${extractConst('IC_POOL_EXEMPT_KEYS')}
+  ${extractConst('icTruckCoNames')}
   ${extractConst('_icPoolKey')}
+  ${extractConst('_icWordish')}
+  ${extractFn('_icNamesMatch')}
+  ${extractFn('icCompanyFor')}
   ${extractFn('isIcRolledUp')}
   ${extractFn('icPoolName')}
   ${extractFn('_icTruckEntrySig')}
@@ -98,6 +107,8 @@ const harness = new Function(`
   let _icEesEnrolled = null;
   return {
     icPoolName, isIcRolledUp, _icTruckEntrySig, IC_POOL_EXEMPT,
+    /** Seed the roster the way loadIcTruckCompanies would. */
+    enrol(names) { icTruckCoNames = names === null ? null : new Set(names.map(n => n.trim().toLowerCase())); },
     cell(id, customer, enrolled, sent) {
       _icEesEnrolled = enrolled;
       icSentMap = new Map(sent ? [[id, sent]] : []);
@@ -126,6 +137,12 @@ const harness = new Function(`
 `)();
 
 const { icPoolName, isIcRolledUp } = harness;
+
+// Every case below runs against the office's real roster unless it says
+// otherwise: EES, Kinkead, Force, EAI, Kovalchick and XTO all carry the
+// Trucking tag in Manage Companies. Ox Hill and the rest do not.
+const ROSTER = ['EES', 'Kinkead', 'Force', 'EAI', 'Kovalchick', 'XTO'];
+harness.enrol(ROSTER);
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 const EES  = { id: 'co-ees',  name: 'EES',        divisions: ['trucking'] };
@@ -158,7 +175,41 @@ assert('so does Arcadis',       icPoolName('Arcadis') === 'EES');
 assert('so does Richard Sproul', icPoolName('Richard Sproul') === 'EES');
 assert('so does Cowanshnock Twp', icPoolName('Cowanshnock Twp') === 'EES');
 
-console.log('\n[the three exempt names, in every spelling the rows carry]');
+console.log('\n[a company with its own Intercompany pool keeps it]');
+['XTO', 'XTO Energy', 'xto', 'EAI', 'EAI Trucking'].forEach(name => {
+  assert(`"${name}" bills under itself, not EES`,
+    icPoolName(name) === name.trim() && !isIcRolledUp(name));
+});
+assert('and a customer with no company of its own pools',
+  icPoolName('Ox Hill') === 'EES');
+
+console.log('\n[a name is matched on whole words, not on any run of letters]');
+// The roster carries short names. "EAI" sits inside "Beaird" and "Force"
+// inside "Workforce", and taking those hauls out of the pool would invoice a
+// company that had nothing to do with them.
+[['Beaird', 'EAI'], ['Beaird Hauling', 'EAI'], ['Workforce Solutions', 'Force'],
+ ['Reinforced Earth', 'Force'], ['Enforcement Services', 'Force'],
+ ['Kinkeadle Sand', 'Kinkead'], ['Extort Ltd', 'XTO']].forEach(([name, near]) => {
+  assert(`"${name}" pools — it only looks like ${near}`, isIcRolledUp(name));
+});
+[['XTO Energy', 'XTO'], ['Kinkead HC', 'Kinkead'], ["Kinkead's", 'Kinkead'],
+ ['EAI Trucking', 'EAI'], ['R. Kovalchick & Sons', 'Kovalchick'],
+ ['Force Corp', 'Force']].forEach(([name, co]) => {
+  assert(`"${name}" is ${co}'s work and stays out`, !isIcRolledUp(name));
+});
+
+console.log('\n[before the roster is read, nothing is claimed]');
+harness.enrol(null);
+assert('an unread roster cannot tell EES work from XTO work, so nothing pools',
+  !isIcRolledUp('Ox Hill') && icPoolName('Ox Hill') === 'Ox Hill');
+assert('but the three named companies are exempt with or without it',
+  !isIcRolledUp('Kinkead HC'));
+harness.enrol([]);
+assert('an empty roster is an answer, and everything unnamed pools',
+  isIcRolledUp('Ox Hill') && isIcRolledUp('XTO'));
+harness.enrol(ROSTER);
+
+console.log('\n[the three named companies, in every spelling the rows carry]');
 const exemptSpellings = [
   'Force', 'Force Corp', 'FORCE', 'force corp',
   'Kinkead', 'Kinkead HC', "Kinkead's", 'kinkead',
@@ -167,8 +218,16 @@ const exemptSpellings = [
 exemptSpellings.forEach(name => {
   assert(`"${name}" keeps its own name`, icPoolName(name) === name.trim() && !isIcRolledUp(name));
 });
-assert('the exempt list is exactly the three the office named',
+assert('the named floor is exactly the three the office called out',
   JSON.stringify(harness.IC_POOL_EXEMPT) === JSON.stringify(['Force', 'Kinkead', 'Kovalchick']));
+// The floor is what keeps a haul for one of them out of the pool even if
+// somebody unticks Trucking on the roster while tidying it up.
+harness.enrol(['EES']);
+assert('and it holds when the roster no longer names them',
+  !isIcRolledUp('Force Corp') && !isIcRolledUp('Kinkead HC') && !isIcRolledUp('kovalchick'));
+assert('while a company that lives only on the roster does pool once dropped',
+  isIcRolledUp('XTO Energy'));
+harness.enrol(ROSTER);
 
 console.log('\n[EES itself]');
 // The pool's own name is not an exempt name, so it pools to itself — which
@@ -231,6 +290,38 @@ console.log('\n[pooling into Intercompany]');
   const entries = [];
   const res = harness.reconcile([row({ customer: '' })], entries, roster(EES, KOVA));
   assert('a blank-customer row is mirrored nowhere', !res.changed && entries.length === 0);
+}
+
+console.log('\n[a company with its own pool is billed to it]');
+{
+  const XTO = { id: 'co-xto', name: 'XTO', divisions: ['trucking'] };
+  const entries = [];
+  harness.reconcile([row({ customer: 'XTO Energy' })], entries, roster(EES, XTO));
+  assert('an XTO haul bills to XTO, not to EES', entries[0].company_id === 'co-xto');
+  assert('its customer is the one on the row', entries[0].customer === 'XTO Energy');
+  assert('and it carries no customer_real, because nothing was pooled',
+    !('customer_real' in entries[0]));
+
+  const pooled = [];
+  harness.reconcile([row({ customer: 'Ox Hill' })], pooled, roster(EES, XTO));
+  assert('while Ox Hill, which has no company of its own, goes to EES',
+    pooled[0].company_id === 'co-ees' && pooled[0].customer_real === 'Ox Hill');
+
+  // The other half of the same rule: a name kept out of the pool has to find
+  // its company, or the haul would be spared the pool and then bill nowhere.
+  const near = [];
+  harness.reconcile([row({ customer: 'Beaird' })], near, roster(EES, XTO,
+    { id: 'co-eai', name: 'EAI', divisions: ['trucking'] }));
+  assert('a customer that merely looks like EAI is pooled, not billed to EAI',
+    near[0].company_id === 'co-ees' && near[0].customer_real === 'Beaird');
+
+  // Longest name wins, so a company sitting inside a longer one cannot take
+  // the other's work.
+  const two = [];
+  harness.reconcile([row({ customer: 'Kinkead HC' })], two, roster(EES,
+    { id: 'co-kin',  name: 'Kinkead',    divisions: ['trucking'] },
+    { id: 'co-kinhc', name: 'Kinkead HC', divisions: ['trucking'] }));
+  assert('"Kinkead HC" bills to Kinkead HC, not to Kinkead', two[0].company_id === 'co-kinhc');
 }
 
 console.log('\n[an individually enrolled customer is pooled too]');
@@ -534,6 +625,10 @@ function newPage(entries) {
   vm.createContext(sandbox);
   vm.runInContext(COMBO + '\n' + POOL + '\n' + TOTALS + '\n' + TAB, sandbox, { filename: 'trucking.html' });
   const run = code => vm.runInContext(code, sandbox);
+  // The roster the page would have read before its first render. Through the
+  // page's own setter so the derived _icEesEnrolled is set the same way, and
+  // before any render so no case is measuring the not-yet-loaded state.
+  run(`_setIcTruckCompanies(new Map(${JSON.stringify(ROSTER.map(n => [n.toLowerCase(), {}]))}));`);
   run('renderTrackingTab();');
   const doc = dom.window.document;
   return {
@@ -629,7 +724,9 @@ console.log('\n[the answer about EES arriving after the rows are on screen]');
   assert('the tooltip does not promise EES billing before the roster is read',
     !p.doc.getElementById('cust-pool-a').title.includes('Billed to Intercompany as EES')
       || p.doc.getElementById('cust-pool-a').title.length > 0);
-  p.run('_setIcEesEnrolled(false);');
+  // EES taken off the Intercompany list — every other company stays on it.
+  p.run(`_setIcTruckCompanies(new Map(${JSON.stringify(
+    ROSTER.filter(n => n !== 'EES').map(n => [n.toLowerCase(), {}]))}));`);
   assert('once EES is known to be missing, every pooled tooltip says so',
     p.doc.getElementById('cust-pool-a').title.includes('goes out under Ox Hill instead'));
   assert('including the locked row\'s',
@@ -639,7 +736,7 @@ console.log('\n[the answer about EES arriving after the rows are on screen]');
   assert('an exempt row\'s note is left alone',
     p.doc.getElementById('ic-ts-b').textContent === 'Awaiting sync — check Intercompany company list');
 
-  p.run('_setIcEesEnrolled(true);');
+  p.run(`_setIcTruckCompanies(new Map(${JSON.stringify(ROSTER.map(n => [n.toLowerCase(), {}]))}));`);
   assert('and it all turns back once EES is enrolled',
     p.doc.getElementById('cust-pool-a').title.includes('Billed to Intercompany as EES')
       && p.doc.getElementById('ic-ts-a').textContent === 'Awaiting sync — bills to Intercompany as EES');
