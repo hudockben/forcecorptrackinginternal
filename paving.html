@@ -723,6 +723,23 @@
     .bid-grp-pct-sub { color: var(--muted); font-weight: 400; font-size: 0.64rem; }
     .bid-grp-days { margin-left: 0.75rem; color: var(--blue); font-weight: 500; font-size: 0.66rem; vertical-align: middle; white-space: nowrap; }
     .bid-grp-days::before { content: '\00b7'; margin-right: 0.5rem; opacity: 0.55; }
+    /* Folder shortcut on the cost-code header — see _bidGroupDocsHTML().
+       Nearly invisible until the row is under the cursor, because it sits on a
+       bar that already carries a name, a progress bar, a percent, a sub-code
+       count and a day count; one more always-lit control there read as clutter.
+       A cost code that HAS paperwork keeps its chip lit whatever the cursor is
+       doing — that is the half worth seeing from across the table. */
+    .bid-grp-docs { background: none; border: 1px solid transparent; color: #4a6a4a; font-size: 0.68rem;
+      font-weight: 600; padding: 0.1rem 0.4rem; border-radius: 3px; cursor: pointer; margin-left: 0.75rem;
+      vertical-align: middle; opacity: 0.35; transition: opacity 0.12s, background 0.12s, color 0.12s;
+      /* Pinned, because the folder glyph is an emoji and renders taller than
+         the text beside it — left to the button default it pushed every green
+         bar in the table a couple of pixels taller than it was before. */
+      line-height: 1; }
+    .bid-group-hdr:hover .bid-grp-docs { opacity: 1; }
+    .bid-grp-docs.has-docs { opacity: 1; color: #5a9a5a; }
+    .bid-grp-docs:hover { background: #1e3a1e; border-color: #2a4a2a; color: var(--green); opacity: 1; }
+    .bid-grp-docs:focus-visible { opacity: 1; outline: 1px solid var(--green); outline-offset: 1px; }
     .bid-grp-pct.gp-done   { color: #4ade80; }
     .bid-grp-pct.gp-active { color: var(--blue); }
     .bid-grp-pct.gp-none   { color: var(--muted); }
@@ -8264,6 +8281,37 @@ function _bidGroupDaysHTML(days) {
   return `<span class="bid-grp-days" title="Distinct days worked across this cost code's sub codes. Two sub codes worked the same day count once, and a gap between work days is not counted — the 1st and the 5th are 2 days, not 5.">${days} day${days !== 1 ? 's' : ''} worked</span>`;
 }
 
+/* The folder shortcut that sits at the end of the cost-code header, so the
+   drawings, tickets and submittals filed under a cost code are one click from
+   the bid line they belong to instead of a trip through the Documents tab.
+
+   It draws the count when there is one, and nothing but the folder when there
+   is not — an empty chip beside a cost code with no paperwork is the state
+   most cost codes are in, and a number there would have been noise. The count
+   comes out of a cache the Documents module fills once per job (see
+   _loadBidDocCounts); before that lands, and on a page that never loaded
+   documents.js at all, the chip still opens the folder, it just cannot say how
+   much is in it yet.
+
+   A group with no cost code has no folder — nothing seeds one for '' — so it
+   gets no chip rather than a button that can only apologise. */
+function _bidGroupDocsHTML(projId, costCode) {
+  const code = String(costCode || '').trim();
+  if (!code) return '';
+  const n = window.FCTDocuments ? FCTDocuments.costCodeCount(projId, code) : 0;
+  const tip = n
+    ? `${n} document${n !== 1 ? 's' : ''} filed under cost code ${code} — click to open the folder`
+    : `Open the document folder for cost code ${code}`;
+  // The cost code travels in a data attribute and is read back out of the
+  // dataset, rather than being interpolated into the handler as a JS string
+  // literal. Cost codes are free text — "Owner's Allowance & Contingency" is a
+  // real one — and this way nothing anybody typed ever reaches the JS parser.
+  // Same shape as the paperclip on a PO row, for the same reason.
+  return `<button class="bid-grp-docs${n ? ' has-docs' : ''}" title="${esc(tip)}"
+    data-bid-docs-proj="${_cbEsc(projId)}" data-bid-docs-code="${_cbEsc(code)}"
+    onclick="event.stopPropagation();openBidGroupDocs(this.dataset.bidDocsProj,this.dataset.bidDocsCode)">&#128193;${n || ''}</button>`;
+}
+
 function actualForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -9877,6 +9925,10 @@ function renderBidTable(projId, opts = {}) {
     // reports the days behind the rows on screen rather than the whole group's.
     const gDaysWorked = daysWorkedForGroup(visItems, projId);
     const gDaysHTML   = _bidGroupDaysHTML(gDaysWorked);
+    // Drawn from the cost code itself, not the visible sub codes: the folder
+    // belongs to the code, so a filter narrowing the group to two sub codes
+    // must not change which folder the chip opens or what it counts.
+    const gDocsHTML   = _bidGroupDocsHTML(projId, costCode);
 
     // ── Group header ──
     const hdrTr = document.createElement('tr');
@@ -9888,7 +9940,7 @@ function renderBidTable(projId, opts = {}) {
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
           <strong>${esc(costCode) || '(No Code)'}</strong>
           <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">${groupItems.length} sub code${groupItems.length!==1?'s':''}</span>
-          ${gPctHTML}${gDaysHTML}
+          ${gPctHTML}${gDaysHTML}${gDocsHTML}
         </td>`
       : `<td colspan="${COLS}">
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
@@ -9896,7 +9948,7 @@ function renderBidTable(projId, opts = {}) {
             onclick="event.stopPropagation()"
             onchange="updateBidGroupCode('${projId}','${escJs(costCode)}',this.value)">
           <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${escJs(costCode)}')">+ Sub Code</button>
-          ${gPctHTML}${gDaysHTML}
+          ${gPctHTML}${gDaysHTML}${gDocsHTML}
           <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
             onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${escJs(costCode)}\\'?'))removeBidGroup('${projId}','${escJs(costCode)}')">✕</button>
         </td>`;
@@ -10492,8 +10544,12 @@ function _docsEnsureConfigured() {
       canManage: perm.canDeleteProject,
       canDelete: perm.isAdmin,
     },
-    // Attaching or deleting changes the paperclip counts the PO tab draws.
-    onChange: () => { if (activeTab === 'po') renderPOTab(); },
+    // Attaching or deleting changes the paperclip counts the PO tab draws, and
+    // the folder counts on an open bid's green cost-code bars.
+    onChange: () => {
+      if (activeTab === 'po') renderPOTab();
+      _bidDocCountsStale();
+    },
   });
   _docsConfigured = true;
 }
@@ -10510,6 +10566,74 @@ function openPODocs(poId) {
   FCTDocuments.openAttach({
     id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: po.project_id,
   });
+}
+
+/**
+ * The folder chip on the bid page's green cost-code bar. Opens that cost
+ * code's document folder in a dialog over the bid table — deliberately not a
+ * jump to the Documents tab, because the point of the chip is reaching a
+ * drawing without losing your place halfway down a two-hundred-line bid, and
+ * the bid table is a fullscreen overlay a tab switch would have to close.
+ *
+ * The project id is passed through rather than read off docsProjectId: that is
+ * the Documents tab's own picker and is null until someone chooses a job
+ * there, which is not the job whose bid is on screen.
+ */
+function openBidGroupDocs(projId, costCode) {
+  // documents.js is deferred; a click landing before it parses retries rather
+  // than doing nothing, the same way the PO paperclip above does.
+  if (!window.FCTDocuments) { setTimeout(() => openBidGroupDocs(projId, costCode), 150); return; }
+  _docsEnsureConfigured();
+  FCTDocuments.openCostCodeFolder({ projectId: projId, costCode, label: costCodeLabel(costCode, '') });
+}
+
+// Job whose cost-code document counts are in hand, so opening the same bid
+// twice does not refetch them. Cleared by _bidDocCountsStale() whenever a file
+// is added or removed, which is the only thing that can change a count.
+let _bidDocCountsFor = null;
+let _bidDocCountTicks = 0;
+
+/**
+ * Fetch the per-cost-code document counts for one job and repaint the bid
+ * table's green bars with them. Fire-and-forget: the chips open the folder
+ * with or without a count, so nothing here is worth an error in front of
+ * someone who did nothing but open a bid.
+ */
+function _loadBidDocCounts(projId) {
+  if (!projId) return;
+  if (!window.FCTDocuments) {
+    // Bounded, unlike the click retry above: this runs unprompted on every bid
+    // open, and an unconditional retry chain on a page where documents.js
+    // failed to load would never stop.
+    if (_bidDocCountTicks++ > 40) return;      // ~6 seconds
+    setTimeout(() => _loadBidDocCounts(projId), 150);
+    return;
+  }
+  _bidDocCountTicks = 0;
+  if (_bidDocCountsFor === projId) return;
+  _bidDocCountsFor = projId;
+  _docsEnsureConfigured();
+  FCTDocuments.refreshCostCodeCounts(projId).then(() => {
+    // Only if the user is still looking at this bid. Repainting a table they
+    // have since closed and reopened on another job would overwrite it with
+    // this job's numbers.
+    if (bidViewProjId !== projId) return;
+    // And not while they are typing in it. renderBidTable rebuilds the whole
+    // tbody, so a repaint landing a few hundred milliseconds after the view
+    // opened — which is exactly when someone starts editing a quantity — took
+    // the caret and the half-typed field with it. The counts are only ever a
+    // number on a chip; they can wait for the next natural render.
+    const tbody = document.getElementById('btbody-' + projId);
+    if (tbody && tbody.contains(document.activeElement)) return;
+    renderBidTable(projId);
+  });
+}
+
+/* Called when a document is added or removed anywhere, so the counts on an
+   open bid are refetched instead of sitting on the number they had before. */
+function _bidDocCountsStale() {
+  _bidDocCountsFor = null;
+  if (bidViewProjId) _loadBidDocCounts(bidViewProjId);
 }
 
 function renderDocsTab() {
@@ -19920,6 +20044,7 @@ function openBidView(projId) {
   document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
   document.getElementById('bid-fullscreen').style.display = 'flex';
   renderBidTable(projId);
+  _loadBidDocCounts(projId);      // fills in the folder chips' counts, then repaints
 }
 
 function closeBidView() {
