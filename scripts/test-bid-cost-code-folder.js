@@ -105,7 +105,9 @@ for (const page of PAGES) {
 
   const loader = extractFunction(src, '_loadBidDocCounts');
   assert('counts are fetched once per job, not once per render',
-    /if \(_bidDocCountsFor === projId\) return;/.test(loader), loader);
+    /if \(_bidDocCountsFor === projId \|\| _bidDocCountsBusy === projId\) return;/.test(loader), loader);
+  assert('a failed fetch does not count as done, so it is retried',
+    /if \(!counts\) return;\n    _bidDocCountsFor = projId;/.test(loader), loader);
   assert('waiting for the deferred script is bounded',
     /_bidDocCountTicks\+\+ > 40/.test(loader), loader);
   assert('the repaint is guarded against the user moving on',
@@ -400,6 +402,87 @@ const JOB_B = {
   assert('…but is offered no upload', !ro.innerHTML.includes('Upload to this folder'));
   assert('…and a refused folder seed does not stop the dialog opening',
     Boolean(ro.querySelector('[data-cancel]')));
+
+  // ── The failure and race paths ──────────────────────────────────────────
+  // A count fetch that fails has to be distinguishable from one that found
+  // nothing, or the host caches "job counted" off a flake and never retries.
+  const stashed = window.fetch;
+  window.fetch = async () => { throw new Error('network down'); };
+  const failed529 = await FD.refreshCostCodeCounts('C');
+  assert('a failed count fetch reports failure rather than an empty count',
+    failed529 === null, JSON.stringify(failed529));
+  assert('…and does not invent a zero for the job', FD.costCodeCount('C', '420') === 0);
+  window.fetch = stashed;
+
+  // A slow fetch must not write its stale numbers over what a later one wrote.
+  // Only the FIRST request for D stalls; the second returns at once and lands
+  // the real numbers, and then the first is released to try to undo them.
+  let release, nth = 0;
+  window.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.includes('projectId=D') && (init.method || 'GET') === 'GET' && nth++ === 0) {
+      await new Promise(r => { release = r; });
+      // The stale answer: this job looked empty when the request went out.
+      return { ok: true, status: 200, json: async () => ({ folders: JOB_A.folders, documents: [], caps: JOB_A.caps }) };
+    }
+    return { ok: true, status: 200, json: async () => (init.method === 'PUT' ? {} : JOB_A) };
+  };
+  const slow = FD.refreshCostCodeCounts('D');       // in flight, will answer "0 files"
+  await new Promise(r => setTimeout(r, 10));
+  await FD.refreshCostCodeCounts('D');              // a fresher count lands first
+  const fresh420 = FD.costCodeCount('D', '420');
+  assert('the fresher count landed', fresh420 === 2, String(fresh420));
+  release();
+  await slow;
+  assert('a slow count fetch cannot overwrite fresher numbers',
+    FD.costCodeCount('D', '420') === 2, String(FD.costCodeCount('D', '420')));
+  window.fetch = stashed;
+
+  // Two clicks on a slow connection used to toast an error over a dialog that
+  // had opened perfectly well.
+  const openCount = () => [...window.document.body.children]
+    .filter(el => el.querySelector && el.querySelector('[data-cancel]')).length;
+  // Start from a clear screen — earlier cases leave their dialogs up on
+  // purpose, and counting those would pass this whether or not the guard works.
+  [...window.document.body.children].forEach(el => {
+    const c = el.querySelector && el.querySelector('[data-cancel]');
+    if (c) c.click();
+  });
+  assert('no dialog is open before the double-click case', openCount() === 0, String(openCount()));
+  const both = Promise.all([
+    FD.openCostCodeFolder({ projectId: 'A', costCode: '420' }),
+    FD.openCostCodeFolder({ projectId: 'A', costCode: '420' }),
+  ]);
+  await both;
+  assert('a double click opens one dialog, not two', openCount() === 1, String(openCount()));
+  assert('…and raises no error toast',
+    !/Something else loaded/.test(window.document.body.textContent),
+    window.document.body.textContent.slice(-200));
+  [...window.document.body.children].forEach(el => el.querySelector
+    && el.querySelector('[data-cancel]') && el.querySelector('[data-cancel]').click());
+
+  // A cost code pasted out of a spreadsheet keeps its whitespace all the way
+  // into the seeded folder, so the lookup has to trim on both sides.
+  window.fetch = async (url, init = {}) => ({
+    ok: true, status: 200,
+    json: async () => (init.method === 'PUT' ? {} : {
+      folders: [{ id: 'f-sp', parent_id: null, name: '420 · Paving', kind: 'cost_code',
+                  slug: 'cc-420 ', cost_code: '420 ', sort_order: 9 }],
+      documents: [{ id: 'z1', filename: 'sp.pdf', content_type: 'application/pdf', size_bytes: 1,
+                    note: '', uploaded_by: 'b', uploaded_at: '2026-09-01T00:00:00Z',
+                    folder_ids: ['f-sp'], po_ids: [] }],
+      caps: JOB_A.caps,
+    }),
+  });
+  await FD.refreshCostCodeCounts('E');
+  assert('a cost code stored with a trailing space still counts',
+    FD.costCodeCount('E', '420') === 1, String(FD.costCodeCount('E', '420')));
+  await FD.openCostCodeFolder({ projectId: 'E', costCode: '420' });
+  const spDlg = [...window.document.body.children].pop();
+  assert('…and still opens its folder', spDlg.innerHTML.includes('sp.pdf'),
+    spDlg.textContent.slice(0, 200));
+  spDlg.querySelector('[data-cancel]') && spDlg.querySelector('[data-cancel]').click();
+  window.fetch = stashed;
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

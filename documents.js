@@ -71,6 +71,11 @@
   // counting through load() would have repainted the Documents tab's rail with
   // a foreign job's folders every time someone opened a bid.
   let ccCounts  = {};
+  // Bumped by every load() and every count fetch, so a slow count fetch cannot
+  // write its stale numbers over fresher ones. Separate from loadGeneration:
+  // bumping that one here would make in-flight load() responses think they had
+  // lost a race they were never in.
+  let ccGeneration = 0;
 
   // Bumped by every load(). A response whose generation is stale — because the
   // job picker moved on, or because openAttach() started a load for a PO on
@@ -275,6 +280,7 @@
     // for free. Doing it anywhere else meant a file attached from a cost-code
     // bar left the chip beside it still reading the old number.
     ccCounts[projectId || ''] = countByCostCode(folders, documents);
+    ccGeneration++;
 
     // The folder that was open may not exist in the scope just loaded.
     if (currentFolderId && !folders.some(f => f.id === currentFolderId)) {
@@ -325,13 +331,24 @@
       ccCounts[key] = countByCostCode(folders, documents);
       return ccCounts[key];
     }
+    const generation = ++ccGeneration;
+    let data;
     try {
-      const data = await api('GET', `/documents${q({ projectId })}`);
-      ccCounts[key] = countByCostCode(data.folders || [], data.documents || []);
+      data = await api('GET', `/documents${q({ projectId })}`);
     } catch (err) {
+      // null, not an empty map: the caller caches "this job is counted" off
+      // the result, and a failure that looked like a successful count of zero
+      // meant one flaky request left every chip on the job blank for the rest
+      // of the session with nothing to retry it.
       console.warn('[documents] cost-code counts refresh failed:', err.message);
+      return null;
     }
-    return ccCounts[key] || {};
+    // A load(), or a later count fetch, landed while this was in flight. Its
+    // numbers describe the job as it is now; ours describe it as it was before
+    // whatever that was — writing them back would undo an upload's count.
+    if (generation !== ccGeneration) return ccCounts[key] || null;
+    ccCounts[key] = countByCostCode(data.folders || [], data.documents || []);
+    return ccCounts[key];
   }
 
   // ── Folder tree ─────────────────────────────────────────────────────
@@ -368,9 +385,13 @@
      and a name match then fails on exactly the jobs that are best kept up. */
   function folderCostCode(f) {
     if (!f || f.kind !== 'cost_code') return '';
-    if (f.cost_code) return String(f.cost_code);
+    // Trimmed, and the lookups trim too. docsCostCodesFor() seeds the folder
+    // with the bid item's value verbatim, so a code pasted out of a
+    // spreadsheet as "420 " is stored with its space — and every lookup for
+    // "420" then missed a folder that was sitting right there.
+    if (f.cost_code) return String(f.cost_code).trim();
     const m = /^cc-(.+)$/.exec(f.slug || '');
-    return m ? m[1] : '';
+    return m ? m[1].trim() : '';
   }
 
   /* Every folder id at or under `rootId`. A cost-code folder is a folder like
@@ -1477,7 +1498,20 @@
    * down a two-hundred-line bid, and on tracker.html the bid table is a
    * fullscreen overlay that switching tabs would have had to close.
    */
-  async function openCostCodeFolder({ projectId = null, costCode, label = '' } = {}) {
+  // One chip opening at a time. Two clicks on a slow connection used to start
+  // two loads, and the first one to come back lost the generation race and
+  // toasted "something else loaded while that was opening" — an error, over a
+  // dialog that had opened perfectly well from the second click.
+  let ccOpening = false;
+
+  async function openCostCodeFolder(opts) {
+    if (ccOpening) return;
+    ccOpening = true;
+    try { return await _openCostCodeFolder(opts || {}); }
+    finally { ccOpening = false; }
+  }
+
+  async function _openCostCodeFolder({ projectId = null, costCode, label = '' }) {
     const code = String(costCode == null ? '' : costCode).trim();
     if (!code) {
       toast('That group has no cost code yet, so there is no folder to open.', 'error');
@@ -1510,7 +1544,7 @@
     if (!folder && !loadedNow) {
       let fresh = false;
       try { fresh = await load(projectId, { force: true }); } catch { /* keep the message below */ }
-      if (fresh) folder = folders.find(f => folderCostCode(f) === code);
+      if (fresh) { folder = folders.find(f => folderCostCode(f) === code); loadedNow = true; }
     }
 
     if (!folder) {
@@ -1524,6 +1558,12 @@
         : `Cost code ${code} has no folder yet, and creating one needs edit access.`, 'error');
       return;
     }
+
+    // A load ran, which means the counts the bid page drew its chips from are
+    // older than what this dialog is about to list — someone else filed a
+    // drawing since. Nudge the host to repaint, so the chip does not still say
+    // nothing over a dialog showing three files.
+    if (loadedNow && cfg.onChange) cfg.onChange();
 
     const ids  = subtreeIds(folder.id, folders);
     const here = documents
@@ -1679,7 +1719,7 @@
     /** Documents filed under one cost code on one job, 0 until counted. */
     costCodeCount(projectId, code) {
       const forJob = ccCounts[projectId || ''];
-      return (forJob && forJob[String(code)]) || 0;
+      return (forJob && forJob[String(code == null ? '' : code).trim()]) || 0;
     },
 
     // exercised by scripts/test-documents-frontend.js — the upload sequence is

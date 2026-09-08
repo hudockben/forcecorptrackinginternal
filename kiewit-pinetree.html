@@ -10491,6 +10491,11 @@ function openBidGroupDocs(projId, costCode) {
 // twice does not refetch them. Cleared by _bidDocCountsStale() whenever a file
 // is added or removed, which is the only thing that can change a count.
 let _bidDocCountsFor = null;
+// Job whose counts are being fetched right now. Separate from the above
+// because the slot above is only claimed once the numbers actually arrive —
+// without this, the fetch openBidView starts and the one an upload's onChange
+// starts a moment later would both go out for the same job.
+let _bidDocCountsBusy = null;
 let _bidDocCountTicks = 0;
 
 /**
@@ -10510,10 +10515,17 @@ function _loadBidDocCounts(projId) {
     return;
   }
   _bidDocCountTicks = 0;
-  if (_bidDocCountsFor === projId) return;
-  _bidDocCountsFor = projId;
+  if (_bidDocCountsFor === projId || _bidDocCountsBusy === projId) return;
+  _bidDocCountsBusy = projId;
   _docsEnsureConfigured();
-  FCTDocuments.refreshCostCodeCounts(projId).then(() => {
+  FCTDocuments.refreshCostCodeCounts(projId).then(counts => {
+    if (_bidDocCountsBusy === projId) _bidDocCountsBusy = null;
+    // Claim the slot only once the counts are actually in hand. Claiming it up
+    // front meant one flaky request — a 500, a dropped connection on site LTE —
+    // left every chip on the job blank for the rest of the session, with the
+    // guard above refusing to try again because it believed the job was done.
+    if (!counts) return;
+    _bidDocCountsFor = projId;
     // Only if the user is still looking at this bid. Repainting a table they
     // have since closed and reopened on another job would overwrite it with
     // this job's numbers.
@@ -10533,6 +10545,10 @@ function _loadBidDocCounts(projId) {
    open bid are refetched instead of sitting on the number they had before. */
 function _bidDocCountsStale() {
   _bidDocCountsFor = null;
+  // Also released, so a file attached while a count fetch was still out does
+  // not get shut out by the in-flight guard and leave the chip on the old
+  // number. documents.js drops whichever response is the older of the two.
+  _bidDocCountsBusy = null;
   if (bidViewProjId) _loadBidDocCounts(bidViewProjId);
 }
 
