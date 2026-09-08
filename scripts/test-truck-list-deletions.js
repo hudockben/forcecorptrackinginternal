@@ -83,6 +83,9 @@ function newPage(state) {
     tdDivPut() { sandbox.saves++; },
     saveTruckLists() { sandbox.saves++; },
     renderListsPanel() {}, renderTrackingTab() {}, renderScheduler() {},
+    // The pooled "EES" line updateField repaints over a Customer box. These
+    // cases are about rates and rosters, and there are no cells here to paint.
+    _paintCustPool() {},
     schedIsActive: () => false, schedSave() {}, calcHours: () => null,
     icSentMap: new Map(),
     // A merge reaches past the lists: payroll owns some rows, a sign-in points

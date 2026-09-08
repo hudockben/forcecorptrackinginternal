@@ -111,6 +111,12 @@ const TOTALS   = slice(TRUCKING, '    /** Re-total a row and keep its Intercompa
 const BACKUP   = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       BACKUP HAUL FEE',
                                  '    /* ═══════════════════════════════════════════\n       SCHEDULER',
                                  'backup fee + column filters + renderTrackingTab');
+// The Customer column asks whether a haul pools under EES before it draws, so
+// the rule comes along rather than being stubbed — a stub here would let the
+// cell render against a rule the page does not have.
+const POOL     = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       INTERCOMPANY CUSTOMER POOLING',
+                                 '    /* ═══════════════════════════════════════════\n       INTERCOMPANY BILLING',
+                                 'the EES customer pool');
 
 function newPage(entries) {
   const dom = new JSDOM('<div id="tab-truck-tracking"></div>');
@@ -128,12 +134,17 @@ function newPage(entries) {
     cbHtml: (id, field, cur) => `<input data-cb="${field}" value="${cur}">`,
     fmtTime12: v => String(v || ''),
     fmtSentAt: v => String(v || ''),
+    // The attribute escaper the pooled Customer line writes through. Escaping
+    // is not what these cases are about — test-truck-ic-pool.js holds that
+    // line against the page's own one.
+    _cbEscape: v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
     _isSaved: true,
     setYearFilter() {}, toggleInvoiceRow() {}, addRow() {}, openManageLists() {},
     triggerCSVUpload() {}, downloadCSVTemplate() {},
   };
   vm.createContext(sandbox);
-  vm.runInContext(TOTALS + '\n' + BACKUP, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + TOTALS + '\n' + BACKUP, sandbox, { filename: 'trucking.html' });
   return { page: sandbox, dom, render: () => { sandbox.renderTrackingTab(); return dom.window.document; } };
 }
 

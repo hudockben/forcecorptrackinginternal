@@ -1467,6 +1467,181 @@
     });
 
     /* ═══════════════════════════════════════════
+       INTERCOMPANY CUSTOMER POOLING  (the "EES" pool)
+       Most of what leaves this yard is hauled by EES, whoever the haul was
+       for. "Ox Hill" is the customer on the ticket, but EES ran the truck, so
+       Intercompany has to bill one EES rather than a page of one-job
+       companies — and the office wants to see that on the row before the
+       invoice goes out, not discover it on the Intercompany screen.
+
+       What stays out of the pool is decided by the Intercompany company list
+       itself: a haul for a company enrolled there under trucking bills under
+       that company, because that company is its own pool already. XTO's work
+       belongs in XTO's pool and EAI's in EAI's; Ox Hill has no company of its
+       own, so its work is EES work. The office therefore controls this from
+       Manage Companies and never from here — enrol a company and its hauls
+       leave the pool on the next sync, with no code change.
+
+       Force, Kinkead and Kovalchick are named here as well, as a floor. They
+       are on that list today, and a haul for one of them must not start
+       pooling because somebody untick's a division while tidying the roster.
+
+       A name matches on WHOLE WORDS, case and all, because the roster carries
+       the company and the rows carry whatever somebody typed: "Kinkead HC",
+       "Kinkead's", "kovalchick" and "XTO Energy" are all that company's work
+       and every spelling has to stay out of the pool. Whole words rather than
+       anywhere-inside because the roster carries short names — "EAI" sits
+       inside "Beaird", and a plain contains would take a haul out of the pool
+       and invoice EAI for it. The same rule then picks the company to bill, so
+       what the cell says and what Intercompany is told can never disagree.
+
+       A blank customer pools nowhere — an unfinished row is not an EES haul,
+       it is an unfinished row.
+
+       This is a VIEW and a BILLING rule, never a rewrite. The row keeps the
+       real customer in its `customer` field for good: Analytics, Customer
+       Data, the haul-fee rate autofill and the CSV all price and count by the
+       company that actually ordered the haul. Storing the pooled name would
+       not even survive — the server re-stamps the real one onto a payroll row
+       on every re-approval, and drops any `customer` this tab tries to save
+       onto a locked row at all. Only two places ever see the pooled name: the
+       Customer cell in this tab, and the mirrored Intercompany entry.
+
+       "EES" already names the dust division elsewhere in this file (the
+       scheduler's division groups, both keyed 'dust'). This is a different
+       thing wearing the same three letters: a company on the Intercompany
+       roster, matched by name. Nothing joins the two.
+    ═══════════════════════════════════════════ */
+    const IC_POOL_NAME        = 'EES';
+    const IC_POOL_EXEMPT      = ['Force', 'Kinkead', 'Kovalchick'];
+    const IC_POOL_EXEMPT_KEYS = IC_POOL_EXEMPT.map(n => n.toLowerCase());
+
+    // Every company enrolled in Intercompany under the trucking division,
+    // lowercased — the roster half of the rule. null until it has been read,
+    // and that is not the same as empty: an unread roster cannot tell EES work
+    // from XTO work, so nothing pools until it arrives rather than everything
+    // pooling for the moment it takes to load.
+    let icTruckCoNames = null;
+
+    /* Pooling matches on contains, not on the whole name — unlike _rateKey,
+       which is about pricing one company and so has to be the whole name. The
+       difference is what each thing is about: a rate is what THIS company pays,
+       while pooling is asking whose truck ran the haul, and "Kinkead HC" is
+       Kinkead's truck however the office wrote it down. */
+    const _icPoolKey = v => String(v == null ? '' : v).trim().toLowerCase();
+
+    /** Does `name` appear in `hay` as a whole word? Both already lowercased.
+     *
+     *  Bounded by anything that is not a letter or a digit, so "Kinkead HC",
+     *  "Kinkead's" and "XTO Energy" are that company's work while "Beaird" is
+     *  not EAI's and "Workforce Solutions" is not Force's. The empty string on
+     *  either edge counts as a boundary, so a name that is the whole value
+     *  matches. */
+    const _icWordish = c => /[a-z0-9]/.test(c);
+    function _icNamesMatch(hay, name) {
+      if (!hay || !name) return false;
+      for (let i = hay.indexOf(name); i !== -1; i = hay.indexOf(name, i + 1)) {
+        if (!_icWordish(i === 0 ? '' : hay[i - 1]) && !_icWordish(hay[i + name.length] || '')) return true;
+      }
+      return false;
+    }
+
+    /** True when a customer bills to the pool under a name that is not its own —
+     *  which is also the question the cell asks before drawing two lines. */
+    function isIcRolledUp(customer) {
+      const k = _icPoolKey(customer);
+      if (!k) return false;                              // blank bills nowhere
+      if (k === _icPoolKey(IC_POOL_NAME)) return false;  // already the pool itself
+      if (IC_POOL_EXEMPT_KEYS.some(n => _icNamesMatch(k, n))) return false;
+      if (!icTruckCoNames) return false;                 // roster unread — claim nothing
+      for (const name of icTruckCoNames) if (_icNamesMatch(k, name)) return false;
+      return true;
+    }
+
+    /** The trucking-enrolled Intercompany company a customer bills under, or
+     *  null when it has none of its own.
+     *
+     *  The exact name first, then the same whole-word rule that kept the haul
+     *  out of the pool — otherwise "XTO Energy" would be spared the pool and
+     *  then match no company at all, and the haul would quietly stop billing
+     *  rather than land in XTO's pool where it belongs. Longest name wins, so a
+     *  company whose name sits inside a longer one cannot claim its work. */
+    function icCompanyFor(customer, coByName) {
+      const k = _icPoolKey(customer);
+      if (!k) return null;
+      const exact = coByName.get(k);
+      if (exact) return exact;
+      let best = null, bestLen = 0;
+      coByName.forEach((co, name) => {
+        if (name.length > bestLen && _icNamesMatch(k, name)) { best = co; bestLen = name.length; }
+      });
+      return best;
+    }
+
+    /** The name a haul bills under: '' for blank, its own for the three exempt
+     *  companies, 'EES' for everything else. What to SHOW and what to BILL —
+     *  never what to store. The row's own `customer` is left alone. */
+    function icPoolName(customer) {
+      const real = String(customer == null ? '' : customer).trim();
+      return isIcRolledUp(real) ? IC_POOL_NAME : real;
+    }
+
+    // Whether an "EES" company is actually enrolled in Intercompany under the
+    // 'trucking' division. null until the roster has been read — unknown is not
+    // the same as no, and the row's note says different things for each.
+    let _icEesEnrolled = null;
+
+    /** Read the Intercompany company roster and record who bills under
+     *  themselves. Hands back the trucking-enrolled companies keyed by
+     *  lowercased name — the map the billing reconciler matches against — or
+     *  null when the roster could not be read at all. */
+    async function loadIcTruckCompanies() {
+      const companies = await tdGet('fct_intercompany_companies');
+      // A roster that came back empty is a company list with nothing on it; a
+      // roster that did not come back is a failed read. They have to be told
+      // apart: the first is a definite answer about who is enrolled, and the
+      // second is no answer at all.
+      if (!Array.isArray(companies)) return null;
+      const coByName = new Map();
+      companies.forEach(c => {
+        if (c && (c.divisions || []).includes('trucking')) coByName.set(_icPoolKey(c.name), c);
+      });
+      _setIcTruckCompanies(coByName);
+      return coByName;
+    }
+
+    /** Record the roster, and redraw if it changed who pools. */
+    function _setIcTruckCompanies(coByName) {
+      const next = new Set([...coByName.keys()].filter(Boolean));
+      const same = icTruckCoNames
+        && icTruckCoNames.size === next.size
+        && [...next].every(n => icTruckCoNames.has(n));
+      icTruckCoNames  = next;
+      _icEesEnrolled  = next.has(_icPoolKey(IC_POOL_NAME));
+      if (!same) _repaintPooledCells();
+    }
+
+    /** Redraw the tab when the roster answer changes under it.
+     *
+     *  A full render rather than a repaint, because the answer changes the
+     *  SHAPE of a Customer cell and not only its text: a locked row gains or
+     *  loses a sub-line and an editable one gains or loses the line above its
+     *  box. Held off while somebody is typing and while another tab is
+     *  showing — the same two conditions the background polls stand down on —
+     *  and the notes are brought up to date in place instead, so a row mid-edit
+     *  is never rebuilt underneath the caret. The next render takes the rest.
+     *
+     *  The polls' own _isEditing / _activeTabId live inside the polling
+     *  closure at the foot of the file and cannot be called from here. */
+    function _repaintPooledCells() {
+      const el  = document.activeElement;
+      const btn = document.querySelector('.tab-btn.active');
+      const busy = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+      if (busy || !btn || btn.dataset.tab !== 'truck-tracking') { _paintIcPoolNotes(); return; }
+      renderTrackingTab();
+    }
+
+    /* ═══════════════════════════════════════════
        INTERCOMPANY BILLING — AUTO-SEND
        Mirrors qualifying truck-tracking rows into the shared Intercompany
        Billing blob automatically (no button click), matching the Dust Control
@@ -1495,12 +1670,18 @@
     // Fields the trucking row owns. A change in any of these warrants rewriting
     // the mirrored entry; Intercompany-side fields (invoice/payment dates) are
     // deliberately excluded so an IC-side edit never looks like a trucking change.
+    //
+    // customer_real is in here because it has to be: it is the only copy of the
+    // real customer on a pooled entry, and a field left out of the signature is
+    // a field that never reaches an entry already sent. Left out, an "Ox Hill"
+    // haul mirrored before pooling shipped would keep saying EES and nothing
+    // else, for ever.
     function _icTruckEntrySig(e) {
       return JSON.stringify([
         e.company_id, e.company_name, e.task_number, e.actual_date,
         e.driver, e.unit, e.actual_start, e.actual_end,
         e.total_hours, e.haul_fee, e.total,
-        e.customer, e.description, e.division, e.notes,
+        e.customer, e.customer_real, e.description, e.division, e.notes,
       ]);
     }
 
@@ -1642,12 +1823,37 @@
           continue;
         }
 
-        const matched = coByName.get((row.customer || '').trim().toLowerCase());
+        // Which company Intercompany bills. Most hauls pool under EES; Force,
+        // Kinkead and Kovalchick bill under their own name (see "INTERCOMPANY
+        // CUSTOMER POOLING" above).
+        //
+        // The fall-back is the important half. If nobody has put EES on the
+        // Intercompany company list under the trucking division, the pooled
+        // lookup misses — and a miss here means the row is skipped in silence,
+        // no entry created, no warning anywhere. Without the fall-back, the day
+        // pooling ships is the day every non-exempt haul drops off the
+        // Intercompany invoice run. So a row whose pool has nowhere to go bills
+        // the way it billed yesterday, under its own customer, until somebody
+        // enrolls EES — and the row's expanded panel says that is what is
+        // happening.
+        // Everything that is not pooled bills under the row's own value,
+        // verbatim rather than trimmed, so an entry that was never pooled comes
+        // out of this byte-for-byte the entry it always was and the first sync
+        // after pooling ships rewrites nothing it did not have to.
+        const isPooled = isIcRolledUp(row.customer);
+        let   billedAs = isPooled ? IC_POOL_NAME : row.customer;
+        let   matched  = isPooled ? coByName.get(_icPoolKey(IC_POOL_NAME))
+                                  : icCompanyFor(row.customer, coByName);
+        if (!matched && isPooled) {
+          billedAs = row.customer;
+          matched  = icCompanyFor(row.customer, coByName);
+        }
         if (!matched) {
-          // Customer isn't enrolled in IC trucking billing. Don't create an
-          // entry — and don't delete an existing one either: it was valid when
-          // sent, and un-enrolling a customer shouldn't retroactively wipe its
-          // history (or any IC-side invoice/payment dates on it).
+          // Neither the pool nor the customer is enrolled in IC trucking
+          // billing. Don't create an entry — and don't delete an existing one
+          // either: it was valid when sent, and un-enrolling a customer
+          // shouldn't retroactively wipe its history (or any IC-side
+          // invoice/payment dates on it).
           continue;
         }
 
@@ -1661,11 +1867,23 @@
           driver: row.driver, unit: row.unit,
           actual_start: row.actual_start, actual_end: row.actual_end,
           total_hours: row.total_hours, haul_fee: row.haul_fee, total: tot,
-          customer: row.customer, description: row.description,
+          customer: billedAs, description: row.description,
           division: row.division, notes: row.notes,
           sent_at: sentAt,
           sent_by: (typeof user !== 'undefined' && user?.username) || '',
         };
+        // The pooled name is what Intercompany bills; it is not the truth about
+        // the haul, so the real customer rides along beside it. This is not
+        // decoration: _recoverEntriesFromIcBilling rebuilds a lost truck row out
+        // of its billing entry and writes that row back to the server, so an
+        // entry that carried EES alone would resurrect an Ox Hill haul as an EES
+        // one — permanently, and looking exactly like a normal recovery.
+        // Carried only when the two differ, and cleared when they stop
+        // differing, so an exempt row's signature is the one it always had and
+        // the first sync after this ships rewrites only the entries that
+        // genuinely moved.
+        if (billedAs !== row.customer) entry.customer_real = row.customer;
+        else delete entry.customer_real;
         // On first mirror, snapshot the invoice/payment fields the trucking
         // office fills in the sub-row. On later syncs leave whatever's on the IC
         // entry — the Intercompany screen owns invoice_sent_date / payment dates.
@@ -1705,8 +1923,15 @@
       sentNow.forEach(({ id, sentAt }) => {
         const mainBadge = document.getElementById('ic-main-' + id);
         if (mainBadge) { mainBadge.innerHTML = `&#10003; IC ${fmtSentAt(sentAt)}`; mainBadge.style.color = '#22c55e'; }
+        // Through _icPoolNote rather than straight to the timestamp, so a haul
+        // that fell back to its own customer says so here too the moment it
+        // lands — not only after the next full render.
         const tsEl = document.getElementById('ic-ts-' + id);
-        if (tsEl) { tsEl.textContent = fmtSentAt(sentAt); tsEl.style.color = '#22c55e'; }
+        const row  = divEntries.find(r => r && r.id === id);
+        if (tsEl) {
+          tsEl.textContent = row ? _icPoolNote(row) : fmtSentAt(sentAt);
+          tsEl.style.color = '#22c55e';
+        }
       });
     }
 
@@ -1727,18 +1952,12 @@
       _icAutoSyncRunning = true;
       try {
         await _loadIcSuppressions();
-        const companies = await tdGet('fct_intercompany_companies');
-        const coList = Array.isArray(companies) ? companies : [];
-        if (!coList.length) return;              // nothing to match against
-
-        // customer name (lowercased) → matched IC company, restricted to 'trucking'
-        const coByName = new Map();
-        coList.forEach(c => {
-          if ((c.divisions || []).includes('trucking')) {
-            coByName.set((c.name || '').trim().toLowerCase(), c);
-          }
-        });
-        if (!coByName.size) return;
+        // The roster is both halves of this: who bills under themselves (which
+        // decides what the tab draws) and which company a haul is billed to.
+        // One read, so the two can never disagree.
+        const coByName = await loadIcTruckCompanies();
+        if (!coByName) return;
+        if (!coByName.size) return;              // nothing to match against
 
         // Probe read: is any write warranted at all? Skips a needless second read
         // + PUT in the common steady state where nothing IC-relevant changed.
@@ -2099,6 +2318,10 @@
         tdDivGet(),
         tdGet('fct_lists'),
         loadIcSentMap(),
+        // Alongside the rows, not after them: the Customer column cannot tell
+        // an EES haul from an XTO one until the roster is in, so reading it
+        // here is what keeps the first render of the tab from being wrong.
+        loadIcTruckCompanies(),
       ]);
       if (divData) {
         // Only a real array counts as "loaded" — see _divEntriesLoaded. A
@@ -2163,7 +2386,14 @@
           actual_end:       ic.actual_end       || '',
           total_hours:      ic.total_hours      || '',
           haul_fee:         ic.haul_fee         || '',
-          customer:         ic.customer         || '',
+          // The real customer, never the pooled one. An entry mirrored for a
+          // pooled haul carries EES in `customer` so Intercompany bills it that
+          // way, and the row's own name in customer_real — and THIS is the line
+          // that would otherwise turn a view-level rollup into a rewrite,
+          // because whatever it reads is written straight back to the server as
+          // the row's customer. An entry from before pooling shipped has no
+          // customer_real and falls through to the name it always had.
+          customer:         ic.customer_real   || ic.customer || '',
           description:      ic.description      || '',
           division:         ic.division         || '',
           notes:            ic.notes            || '',
@@ -3766,6 +3996,10 @@
         // at it without anyone typing the number again. Only ever onto a blank
         // fee: a row already carrying one was priced deliberately, and quietly
         // restating an invoiced haul is the one thing this must not do.
+        //
+        // `value` is the REAL customer and has to stay that way — the rate is
+        // the company's, not the pool's, and pricing every non-exempt haul off
+        // one EES rate would reprice the division.
         const rate = customerRate(value);
         if (rate && !(parseFloat(e.haul_fee) || 0)) {
           e.haul_fee = rate;
@@ -3773,6 +4007,16 @@
           if (feeEl) feeEl.value = rate;
           _syncRowTotal(e);
         }
+        // Nothing re-renders after an edit, so the pooled line above the box is
+        // repainted by hand — the same way the unit number below one is. Without
+        // this, typing "Force" over "Ox Hill" leaves the cell still claiming EES
+        // until a filter keystroke or a year tab forces a render, and the office
+        // reads a customer the row no longer has.
+        _paintCustPool(id, value);
+        // The note in the expanded panel names the customer too, so it goes
+        // stale on the same edit and for the same reason.
+        const noteEl = document.getElementById('ic-ts-' + id);
+        if (noteEl && !icSentMap.has(id)) noteEl.textContent = _icPoolNote(e);
       }
       if (field === 'unit') {
         const unit  = divTruckLists.units.find(u => u.name === value);
@@ -3895,6 +4139,128 @@
 
     function clearBackupFee(id) { setBackupFee(id, ''); }
 
+    /* ── The pooled name on a Customer cell ──
+       EES sits where the customer used to, and the real customer sits under it
+       — on a locked row as a muted sub-line, on an editable row as the box
+       itself. Nothing is hidden and nothing is retyped.
+
+       The pooled line is markup BESIDE the combobox, never inside it, and this
+       is the whole reason the cell is built this way. The .cb-input carries the
+       real customer because cbOnFocus, cbOnBlur and cbDispatch all read that
+       box and compare it to what the row has stored: put "EES" in it and the
+       very next blur writes EES onto the row and the real name is gone. The
+       menu is reached by input.nextElementSibling, so nothing may ever be
+       inserted between the input and .cb-menu — this line goes before the whole
+       .cb wrapper, and the wrapper keeps being the menu's only positioned box.
+
+       The element is emitted even when there is nothing to say, empty and
+       unstyled, so it is a zero-height nothing on an exempt or blank row and so
+       _paintCustPool can find it after an edit — the same habit as ic-main-,
+       unit-num- and fee-ovr-. */
+    /** What the tooltip over a pooled Customer cell says.
+     *
+     *  It names the fall-back when the pool has nowhere to bill, because the
+     *  cell reads "EES" either way and a tooltip that always claimed the haul
+     *  was billed to EES would be flatly wrong on the one day it matters — the
+     *  day before somebody adds EES to the Intercompany company list. */
+    function _icPoolTitle(customer, id) {
+      const real = String(customer == null ? '' : customer).trim();
+      if (_icDidFallBack(id, customer)) {
+        return `${IC_POOL_NAME} isn't on the Intercompany company list, so this haul goes out `
+          + `under ${real} instead. Add ${IC_POOL_NAME} there and it pools with the rest.`;
+      }
+      return `Billed to Intercompany as ${IC_POOL_NAME} — ${real} ordered the haul, ${IC_POOL_NAME} ran it. `
+        + `The row still stores ${real}: rates, Analytics and the CSV all go by the real name.`;
+    }
+
+    /** Did this haul actually go out under its own name rather than the pool's?
+     *
+     *  Answered from the mirrored entry wherever there is one, because that is
+     *  what Intercompany was really told — the pooling rule only says what the
+     *  tab MEANT to bill. A row mirrored during the window before somebody
+     *  enrolled EES carries the real customer for good, and a cell that read the
+     *  rule alone would go on claiming a rollup that never happened long after
+     *  the sync stopped warning about it. An unsent row has no entry to read, so
+     *  there the roster answers instead. */
+    function _icDidFallBack(id, customer) {
+      if (!isIcRolledUp(customer)) return false;
+      const sent = id == null ? null : icSentMap.get(id);
+      if (!sent) return _icEesEnrolled === false;
+      return _icPoolKey(sent.customer) !== _icPoolKey(IC_POOL_NAME);
+    }
+
+    function _custPoolHtml(id, customer) {
+      const key = _cbEscape(String(id));
+      if (!isIcRolledUp(customer)) return `<div id="cust-pool-${key}"></div>`;
+      return `<div id="cust-pool-${key}" title="${_cbEscape(_icPoolTitle(customer, id))}" ` +
+        `style="color:var(--text);font-size:0.8rem;line-height:1.25">${IC_POOL_NAME}</div>`;
+    }
+
+    /** Repaint the pooled line over one row's Customer box. */
+    function _paintCustPool(id, customer) {
+      const el = document.getElementById('cust-pool-' + id);
+      if (el) el.outerHTML = _custPoolHtml(id, customer);
+    }
+
+    /**
+     * The Intercompany line in a row's expanded panel: when it went, or why it
+     * hasn't. A pooled row says so outright, and says the other thing outright
+     * too — that EES is not on the Intercompany company list yet, so the haul is
+     * still going out under its own name. That sentence is the only warning the
+     * office gets that a rollup was asked for and never finished, and silence
+     * there is what would let a division quietly bill under the wrong company.
+     */
+    function _icPoolNote(e) {
+      const sent = icSentMap.get(e.id);
+      if (sent) {
+        // Sent is not the end of the story for a pooled haul. One mirrored
+        // before EES was on the company list went out under its own name, and
+        // saying only WHEN it went would retire the warning the moment it
+        // stopped being harmless — the row would read EES for ever while
+        // Intercompany invoiced somebody else.
+        if (_icDidFallBack(e.id, e.customer)) {
+          const under = String(sent.customer || '').trim();
+          return `${fmtSentAt(sent.sent_at)} — as ${under}, not ${IC_POOL_NAME}`;
+        }
+        return fmtSentAt(sent.sent_at);
+      }
+      const total = (parseFloat(e.total_hours) || 0) * (parseFloat(e.haul_fee) || 0);
+      if (!(total > 0) || !(e.customer || '').trim()) return 'Needs customer & total';
+      if (!isIcRolledUp(e.customer)) return 'Awaiting sync — check Intercompany company list';
+      // Says what is missing, not what happens instead. The haul falls back to
+      // its own customer, but only if THAT company is enrolled — and this line
+      // has no way to know, so promising it would be a guess the office would
+      // read as a fact.
+      if (_icEesEnrolled === false) {
+        return `Not sent — ${IC_POOL_NAME} isn't on the Intercompany company list yet`;
+      }
+      return `Awaiting sync — bills to Intercompany as ${IC_POOL_NAME}`;
+    }
+
+    /** Repaint everything whose wording turns on the pool having somewhere to
+     *  bill: the line over each Customer box, the tooltip on each locked row's
+     *  pooled cell, and every unsent row's note. In place rather than through a
+     *  re-render, so a row the office is mid-edit on is never disturbed — the
+     *  pooled line is a sibling of the combobox, never the box itself. */
+    function _paintIcPoolNotes() {
+      const byId = new Map(divEntries.map(e => [e.id, e]));
+      document.querySelectorAll('[id^="cust-pool-"]').forEach(el => {
+        const e = byId.get(el.id.slice(10));
+        if (e) el.outerHTML = _custPoolHtml(e.id, e.customer);
+      });
+      document.querySelectorAll('[id^="cust-real-"]').forEach(el => {
+        const e = byId.get(el.id.slice(10));
+        if (e) el.title = _icPoolTitle(e.customer, e.id);
+      });
+      document.querySelectorAll('[id^="ic-ts-"]').forEach(el => {
+        const e = byId.get(el.id.slice(6));
+        if (!e || icSentMap.has(e.id)) return;
+        el.textContent = _icPoolNote(e);
+      });
+    }
+
+
+
     /* ═══════════════════════════════════════════
        COLUMN FILTERS
     ═══════════════════════════════════════════ */
@@ -3915,9 +4281,24 @@
       const active = Object.entries(trColFilters).filter(([, v]) => v);
       if (!active.length) return entries;
       return entries.filter(e =>
-        active.every(([field, val]) =>
-          String(e[field] || '').toLowerCase().includes(val.toLowerCase())
-        )
+        active.every(([field, val]) => {
+          // Customer is the one column showing two names, so it is the one
+          // column that matches on both: "EES" pulls up every pooled haul the
+          // way the cells read, and "Ox Hill" still pulls up its own rows the
+          // way the tab always worked. Every other column matches the one value
+          // it displays — a filter that quietly searched a field nobody can see
+          // would be worse than no filter.
+          //
+          // Each name is tested on its own rather than joined into one string:
+          // a joined haystack matches across the seam, so "Hill EES" would find
+          // a row that reads neither and a lone space would find every row.
+          const q = val.toLowerCase();
+          if (field === 'customer') {
+            return String(e.customer || '').toLowerCase().includes(q)
+                || icPoolName(e.customer).toLowerCase().includes(q);
+          }
+          return String(e[field] || '').toLowerCase().includes(q);
+        })
       );
     }
 
@@ -4048,6 +4429,17 @@
                 style="width:100%;background:transparent;border:none;border-bottom:1px dashed var(--border);color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0;text-align:right">
               <div id="fee-ovr-${e.id}" style="text-align:right;line-height:1.2;margin-top:0.1rem">${_backupFeeNote(e)}</div>`;
             const unitNum = `<div id="unit-num-${e.id}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc((divTruckLists.units.find(u=>u.name===e.unit)||{}).number||'')}</div>`;
+            // The Customer cell on a locked row: EES where the customer used to
+            // be, and the customer itself in the sub-line under it, the same
+            // shape and the same 0.68rem as the unit number one column over. A
+            // locked row is payroll's and cannot be retyped here, so there is
+            // nothing to repaint and no box to protect — an exempt or blank row
+            // renders through the untouched ro() and looks exactly as it always
+            // has. The editable row's version of this is _custPoolHtml, which
+            // has to sit beside a live combobox and is built differently for it.
+            const custLocked = isIcRolledUp(e.customer)
+              ? `${ro(IC_POOL_NAME)}<div id="cust-real-${e.id}" title="${esc(_icPoolTitle(e.customer, e.id))}" style="font-size:0.68rem;color:var(--muted);margin-top:0.1rem;padding-left:0.15rem">${esc(e.customer)}</div>`
+              : ro(e.customer);
             const caretCell = `<td style="width:28px;text-align:center;padding:0 0.25rem;cursor:pointer" onclick="toggleInvoiceRow('${e.id}')"><span id="caret-${e.id}" style="${caretStyle}">&#8250;</span></td>`;
             const tsBadge = `<span title="Injected from an approved timesheet entry — edit it in Payroll, not here. The haul fee is the exception: it can be set here as a backup." style="display:inline-block;font-size:0.56rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#2dd4bf;background:rgba(45,212,191,0.12);border:1px solid rgba(45,212,191,0.35);border-radius:3px;padding:0.05rem 0.32rem;white-space:nowrap">&#8592; Timesheet</span>`;
             // Payroll numbers its rows out of the same TR-#### series this tab
@@ -4072,7 +4464,7 @@
                   <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)"><span style="color:#fbbf24;font-size:0.8rem;font-weight:600">${esc(e.total_hours||'')}</span></td>
                   <td style="min-width:90px;text-align:right">${feeBox}</td>
                   <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
-                  <td style="min-width:130px">${ro(e.customer)}</td>
+                  <td style="min-width:130px">${custLocked}</td>
                   <td style="min-width:160px">${ro(e.description)}</td>
                   <td style="min-width:100px">${ro(e.division)}</td>
                   <td style="min-width:130px">${ro(e.notes)}${icBadge}</td>
@@ -4089,7 +4481,7 @@
                   <td style="min-width:80px;text-align:right;background:rgba(251,191,36,0.06)"><input type="number" id="th-hrs-${e.id}" value="${esc(e.total_hours || '')}" placeholder="0" onchange="updateField('${e.id}','total_hours',this.value)" style="width:100%;background:transparent;border:none;color:#fbbf24;font-size:0.8rem;outline:none;padding:0.15rem 0;text-align:right;font-weight:600"></td>
                   <td style="min-width:90px;text-align:right">${inp(e.id,'haul_fee','number','0.00',e.haul_fee,'th-fee-' + e.id)}</td>
                   <td class="td-total" id="td-tot-${e.id}">${fmtMoney(tot)}</td>
-                  <td style="min-width:130px">${cbHtml(e.id, 'customer', e.customer || '')}</td>
+                  <td style="min-width:130px">${_custPoolHtml(e.id, e.customer)}${cbHtml(e.id, 'customer', e.customer || '')}</td>
                   <td style="min-width:160px">${inp(e.id,'description','text','Description',e.description)}</td>
                   <td style="min-width:100px">${inp(e.id,'division','text','Division',e.division)}</td>
                   <td style="min-width:130px">${inp(e.id,'notes','text','Notes',e.notes)}${icBadge}</td>
@@ -4122,13 +4514,7 @@
                   <div style="display:flex;flex-direction:column;gap:0.25rem;padding-bottom:0.1rem;min-width:180px">
                     <div style="${subLabel}">Intercompany Billing</div>
                     <span style="font-size:0.72rem;color:var(--muted);white-space:nowrap">&#8644; Auto-sends to Intercompany</span>
-                    <span id="ic-ts-${e.id}" style="font-size:0.63rem;font-weight:600;letter-spacing:0.02em;color:${icSentMap.has(e.id) ? '#22c55e' : 'var(--muted)'}">${
-                      icSentMap.has(e.id)
-                        ? fmtSentAt(icSentMap.get(e.id)?.sent_at)
-                        : (((parseFloat(e.total_hours)||0)*(parseFloat(e.haul_fee)||0) > 0 && (e.customer||'').trim())
-                            ? 'Awaiting sync — check Intercompany company list'
-                            : 'Needs customer &amp; total')
-                    }</span>
+                    <span id="ic-ts-${e.id}" style="font-size:0.63rem;font-weight:600;letter-spacing:0.02em;color:${icSentMap.has(e.id) ? '#22c55e' : 'var(--muted)'}">${esc(_icPoolNote(e))}</span>
                   </div>
                 </div>
               </td>

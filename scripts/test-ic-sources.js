@@ -172,6 +172,19 @@ console.log('\n[the divisions can actually reach the shared keys]');
     JSON.stringify(auth.CROSS_DIVISION_CONTRIBUTORS));
 }
 
+/** The body of the first `async function <prefix>…(` in `src`, braces balanced. */
+function sliceFn(src, prefix) {
+  const m = new RegExp(`async function ${prefix}\\w*\\s*\\(`).exec(src);
+  if (!m) throw new Error(`no async function starting "${prefix}" found`);
+  const open = src.indexOf('{', m.index);
+  let depth = 0;
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) return src.slice(m.index, j + 1);
+  }
+  throw new Error(`unbalanced braces slicing ${prefix}`);
+}
+
 console.log('\n[a deletion in intercompany is honoured by every owning division]');
 {
   // Each page that auto-syncs into the blob recreates rows from its own data,
@@ -181,8 +194,18 @@ console.log('\n[a deletion in intercompany is honoured by every owning division]
     assert(`${f} loads the removed list`, /_loadIcSuppressions\(\)/.test(src));
     // Ordering, not call shape: the removed list must be in hand before the
     // reconcile that decides what to create.
-    const load = src.indexOf('_loadIcSuppressions()');
-    const co   = Math.max(src.indexOf("apiGet('fct_intercompany_companies')"), src.indexOf("tdGet('fct_intercompany_companies')"));
+    //
+    // Measured inside the auto-sync function rather than across the whole
+    // file. A page is free to read the company roster through a helper
+    // declared further up — trucking does, so the tab's first render knows
+    // who bills under themselves — and a file-wide search then finds that
+    // declaration instead of the call the ordering is about.
+    const sync = sliceFn(src, 'autoSyncIntercompany');
+    const load = sync.indexOf('_loadIcSuppressions()');
+    const co   = Math.max(
+      sync.indexOf("apiGet('fct_intercompany_companies')"),
+      sync.indexOf("tdGet('fct_intercompany_companies')"),
+      sync.indexOf('loadIcTruckCompanies()'));
     assert(`${f} loads it before reconciling`, load !== -1 && co !== -1 && load < co,
       'the reconcile would run against an empty removed list');
     // The create branch specifically — matching the function's mere existence
