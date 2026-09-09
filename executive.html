@@ -1535,9 +1535,10 @@
 
     // ── Payroll ──
     // Mirrors the Payroll page's Reports tab: its Hours Report totals across the
-    // strip, then its per-employee table, twelve columns and a totals row. The
-    // travel split and the prevailing/standard split are the point — a single
-    // "total hours" figure cannot tell payroll what rate anything is paid at.
+    // strip, then its per-employee table, fifteen columns and a totals row. The
+    // travel split, the prevailing/standard split and the regular/overtime split
+    // are the point — a single "total hours" figure cannot tell payroll what
+    // rate anything is paid at, and overtime is not the period's hours minus 40.
     function renderPayrollSection(d) {
       const rows  = Array.isArray(d.rows) ? d.rows : [];
       const total = d.total || null;

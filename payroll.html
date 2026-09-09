@@ -543,9 +543,9 @@
       cursor: not-allowed;
     }
     .btn-excel:disabled:hover { background: transparent; }
-    /* Breaking travel into its two legs takes the report to 12 columns, which
-       is wider than the card on a laptop screen. Scroll it sideways rather
-       than letting the status column fall off the edge. */
+    /* The travel legs and the overtime split take the report to 15 columns,
+       which is wider than the card on a laptop screen. Scroll it sideways
+       rather than letting the status column fall off the edge. */
     .report-scroll { overflow-x: auto; }
     .report table {
       width: 100%;
@@ -751,17 +751,34 @@
       }
       .report-title { color: #000 !important; font-size: 14pt; }
       .report-sub   { color: #555 !important; }
-      /* 12 columns across a landscape page — 10pt overflowed the sheet and
-         Chrome clipped the status column off the right edge. */
+      /* 15 columns across a landscape page. 10pt overflowed the sheet and
+         Chrome clipped the status column off the right edge, so this has been
+         8pt since the travel legs were split out — and at twelve columns 8pt
+         filled the page EXACTLY, with nothing to spare. The overtime split
+         needed three more columns, and it buys them out of the GUTTERS rather
+         than the type: a payroll sheet that has to be read on paper should not
+         get smaller every time a column is added. Measured, not guessed —
+         10.2in of usable width at 96dpi is 979px, and the table comes in at
+         919 with the figures still at the size payroll has been reading. */
       .report table { font-size: 8pt; }
       /* Headers and pills are sized in rem, so they don't follow the table's
          point size — shrink them here too or they set the width floor. */
       .report thead th {
-        font-size: 0.5rem !important;
-        letter-spacing: 0.05em !important;
-        padding: 0.5rem 0.28rem !important;
+        font-size: 0.46rem !important;
+        letter-spacing: 0.03em !important;
+        padding: 0.5rem 0.16rem !important;
       }
-      .report tbody td, .report tr.total td { padding: 0.4rem 0.28rem !important; }
+      .report tbody td, .report tr.total td { padding: 0.4rem 0.16rem !important; }
+      /* The per-employee detail is a thirteen-column table printed INSIDE a
+         cell of the fifteen-column one, indented, so it has less room than its
+         parent and its rem sizes ignore the point size above. Left alone it was
+         the widest thing on the page. */
+      .report .report-detail-table { font-size: 7pt !important; }
+      .report .report-detail-table th {
+        font-size: 0.48rem !important;
+        padding: 0.32rem 0.16rem !important;
+      }
+      .report .report-detail-table td { padding: 0.3rem 0.16rem !important; }
       .report .pill {
         font-size: 0.5rem !important;
         letter-spacing: 0.06em !important;
@@ -804,6 +821,11 @@
         border-bottom: 1px solid #999 !important;
         border-left: none !important;
       }
+      /* .wb-label included deliberately: it takes its colour from --text,
+         which is near-white, so leaving it out printed the week's own dates
+         invisibly on the page — the one part of the band you cannot do
+         without. */
+      .report .report-detail-table .wb-label,
       .report .report-detail-table .wb-fig,
       .report .report-detail-table .wb-fig strong,
       .report .report-detail-table .wb-note,
@@ -811,6 +833,17 @@
       .report .report-detail-table .wb-ot-pw,
       .report .report-detail-table .wb-warn { color: #000 !important; }
       .report .report-detail-table .wb-warn { border-color: #000 !important; }
+      /* The band's text is sized in rem, so it ignored the point size the
+         table prints at and came out half again as large as the figures it
+         summarises — it read as the heading of the page rather than of a week. */
+      .report .report-detail-table tr.week-band > td { padding: 0.3rem 0.16rem !important; }
+      .report .report-detail-table .wb-label { font-size: 0.5rem !important; }
+      .report .report-detail-table .wb-fig,
+      .report .report-detail-table .wb-note,
+      .report .report-detail-table .wb-ot,
+      .report .report-detail-table .wb-ot-pw { font-size: 6.5pt !important; }
+      .report .report-detail-table .wb-warn  { font-size: 6pt !important; }
+      .report .report-detail-table tr.week-band > td > span { margin-right: 0.5rem !important; }
       .report .report-caveat {
         color: #000 !important;
         background: #f7f7f7 !important;
@@ -2135,6 +2168,14 @@
     //     would be drawn back over the failure as if they were current.
     let entriesFetchSeq  = 0;      // bumped per request; older replies are dropped
     let entriesLoadError = null;   // message from the last failed load, else null
+    // The date range and division the rows IN MEMORY were fetched with — which
+    // is not necessarily what the filter bar says. The boxes re-render from
+    // allEntries without refetching (see above), so between editing a date and
+    // pressing Apply the two disagree. Anything making a claim ABOUT THE ROWS
+    // has to ask this and not the inputs. Overtime is the case that matters:
+    // "this week is only half loaded" is a fact about the fetch, never about
+    // what someone has typed into a box.
+    let loadedScope = { from: '', to: '', division: '' };
 
     // ── Approved-tab paging ───────────────────────────────────────────────
     // Pending is a queue payroll works to zero, so it stays whole. Approved is
@@ -2502,6 +2543,7 @@
         if (seq !== entriesFetchSeq) return;
         if (!res.ok) throw new Error(data.error || 'Failed');
         allEntries = Array.isArray(data.entries) ? data.entries : [];
+        loadedScope = { from, to, division };
         entriesLoadError = null;
         // Diagnostic log so the empty-Pending case is easy to debug from DevTools.
         console.log('[payroll] GET', url, '→', res.status, 'entries:', allEntries.length,
@@ -2517,6 +2559,7 @@
         // the refresh never landed.
         allEntries = [];
         filtered   = [];
+        loadedScope = { from: '', to: '', division: '' };
         selectedIds.clear();
         entriesLoadError = err.message || 'Failed to load time entries';
         filterAndRender();
@@ -2688,7 +2731,10 @@
       // loop above: whether an hour is overtime depends on the whole week
       // around it, so the week has to have finished arriving first.
       for (const r of byUser.values()) {
-        const ot = weeklyOvertime(r.entries, { from, to });
+        // The range the ROWS came back for, not the one in the boxes. A week is
+        // only half loaded because the fetch cut it, and the fetch is what
+        // loadedScope remembers.
+        const ot = weeklyOvertime(r.entries, loadedScope);
         r.weeks      = ot.weeks;
         r.regHours   = ot.regHours;
         r.otHours    = ot.otHours;
@@ -2741,9 +2787,9 @@
       // overtime is a floor and not an answer — say so, rather than printing a
       // figure that reads like the man's whole week.
       const otNotes = [];
-      if (tot.otClipped)  otNotes.push('the date range starts or ends mid-week');
-      if (div)            otNotes.push(`only the ${prettyDiv(div)} division is in view`);
-      if (supFilter)      otNotes.push('a supervisor filter is narrowing the entries');
+      if (tot.otClipped)         otNotes.push('the date range starts or ends mid-week');
+      if (loadedScope.division)  otNotes.push(`only the ${prettyDiv(loadedScope.division)} division was loaded`);
+      if (supFilter)             otNotes.push('a supervisor filter is narrowing the entries');
       const otCaveat = otNotes.length
         ? `Overtime is counted per Monday–Sunday week from the entries in view. Here ${otNotes.join(', and ')}, so a week may be missing hours and its overtime understated.`
         : '';
@@ -2991,7 +3037,7 @@
             </tr>`;
         }).join('');
 
-        return weekBandHtml(wk, w) + lines;
+        return weekBandHtml(wk, w, list) + lines;
       }).join('');
 
       return `
@@ -3036,7 +3082,7 @@
     // and where the fortieth fell. This is the row that makes the fortnight
     // legible — the same 79.75 hours is no overtime split evenly and ten hours
     // of it if one week carried fifty.
-    function weekBandHtml(weekStart, w) {
+    function weekBandHtml(weekStart, w, list) {
       if (!weekStart) {
         return `<tr class="week-band week-band-odd"><td colspan="13">
           <span class="wb-label">Entries with no readable work date</span>
@@ -3044,10 +3090,23 @@
         </td></tr>`;
       }
       const label = `Week of ${prettyDateShort(weekStart)} – ${prettyDateShort(weekEndOf(weekStart))}`;
+      // A week with no counted hours. It is NOT enough to say nothing was
+      // submitted or approved: a week of approved vacation has no hours worked
+      // and every row under this band reads "Approved". Printing "nothing
+      // submitted or approved" over them is simply false, and this is a sheet
+      // payroll prints. So the band says which of the two it actually is.
       if (!w) {
+        const rows = list || [];
+        // Say what IS here, never what is missing. Naming a status would be a
+        // second thing to get wrong: the pills on the rows beside this band
+        // already say what each entry is, and a band that disagrees with them
+        // is worse than one that stays quiet.
+        const note = rows.every(e => e.entry_type === 'time_off')
+          ? 'time off only — no hours worked toward the 40'
+          : 'no hours counted toward the 40 this week';
         return `<tr class="week-band"><td colspan="13">
           <span class="wb-label">${escapeHtml(label)}</span>
-          <span class="wb-note">nothing submitted or approved this week</span>
+          <span class="wb-note">${escapeHtml(note)}</span>
         </td></tr>`;
       }
       const ot = w.otHours > 0.001;

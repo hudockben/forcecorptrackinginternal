@@ -340,5 +340,84 @@ console.log('\n[payroll.html says the same thing]');
   assert(`both copies agree across all ${SETS.length} weeks`, diffs.length === 0, diffs.join(' | '));
 }
 
+// ── What a week with no counted hours is allowed to say ─────────────────────
+// A week of approved vacation has no hours worked, so weeklyOvertime produces
+// no week for it — and the band printed above those rows used to read "nothing
+// submitted or approved this week" directly over a column of APPROVED pills.
+// On a sheet payroll prints, that is not a wording problem, it is a false
+// statement about the man's time.
+console.log('\n[a week with no hours worked still describes itself honestly]');
+{
+  const band = new Function(`
+    ${requireFn(PAGE, 'escapeHtml',      'payroll.html')}
+    ${requireFn(PAGE, 'prettyDateShort', 'payroll.html')}
+    ${requireFn(PAGE, 'weekEndOf',       'payroll.html')}
+    ${requireFn(PAGE, 'weekBandHtml',    'payroll.html')}
+    return weekBandHtml;
+  `)();
+
+  const off = { entry_type: 'time_off', status: 'approved', work_date: MON };
+  const vacationWeek = band(MON, undefined, [off, { ...off, work_date: TUE }]);
+  assert('a week of approved time off is not called unsubmitted',
+    !/submitted|approved/i.test(vacationWeek), vacationWeek);
+  assert('  it says what it is: time off, and no hours toward the 40',
+    /time off only/.test(vacationWeek) && /40/.test(vacationWeek), vacationWeek);
+  assert('  and it still names its own week',
+    vacationWeek.includes('Week of'), vacationWeek);
+
+  // Any other week without counted hours states the fact and stops. Naming a
+  // status here would be a second thing to get wrong — the pills on the rows
+  // below the band already say what each entry is.
+  const otherWeek = band(MON, undefined, [entry(MON, { status: 'draft' })]);
+  assert('any other empty week states the fact without naming a status',
+    /no hours counted/.test(otherWeek) && !/submitted|approved|draft/i.test(otherWeek),
+    otherWeek);
+
+  const dated = band('', undefined, []);
+  assert('and an entry with no readable date is still called out separately',
+    /no readable work date/.test(dated), dated);
+}
+
+// ── The range the overtime is measured against ──────────────────────────────
+// The filter boxes re-render the report from the rows already in memory, with
+// no refetch. So the date inputs can say one thing while the rows say another,
+// and "this week is only half loaded" is a fact about the FETCH. Reading it off
+// the inputs put a partial-week warning on a whole week (and, worse, took one
+// off a week that really was cut).
+console.log('\n[the partial-week warning describes the fetch, not the filter bar]');
+{
+  assert('the page records the scope its rows were fetched with',
+    /let loadedScope = \{ from: '', to: '', division: '' \};/.test(PAGE));
+  assert('  it is set from the reply that landed, not from the inputs at render time',
+    /allEntries = Array\.isArray\(data\.entries\)[\s\S]{0,80}loadedScope = \{ from, to, division \};/.test(PAGE));
+  assert('  and a failed load clears it, so stale bounds cannot outlive the rows',
+    /allEntries = \[\];[\s\S]{0,200}loadedScope = \{ from: '', to: '', division: '' \};/.test(PAGE));
+  assert('the overtime weeks are measured against that scope',
+    /weeklyOvertime\(r\.entries, loadedScope\)/.test(PAGE));
+  assert('  and the footnote names the division that was actually loaded',
+    /loadedScope\.division/.test(PAGE));
+}
+
+// ── The printed sheet ───────────────────────────────────────────────────────
+// The week band's colours come from CSS variables built for a dark screen. The
+// print block forces the report to black on white; a span left out of it prints
+// near-white on white, which on the band's label is the week's own dates.
+console.log('\n[the week band survives being printed]');
+{
+  const printBlock = PAGE.slice(PAGE.indexOf('@media print'));
+  // Every rule in the print block that paints text black, as selector-list and
+  // body pairs. A band span is safe if it appears in the selectors of one.
+  const blackRules = [...printBlock.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(m => /color:\s*#000/.test(m[2]))
+    .map(m => m[1]);
+  for (const cls of ['wb-label', 'wb-fig', 'wb-note', 'wb-ot', 'wb-ot-pw', 'wb-warn']) {
+    const dotted = '.' + cls;
+    assert(`  ${dotted} is forced to black on paper`,
+      blackRules.some(sel => sel.split(',').some(one => one.trim().endsWith(dotted))));
+  }
+  assert('the band gets a print size too, or it ignores the table\'s point size',
+    /week-band[\s\S]{0,600}font-size/.test(printBlock));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
