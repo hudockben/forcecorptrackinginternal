@@ -62,6 +62,15 @@ const RENDER  = slice(TRUCKING, '    /* ── Reading a sign-in against the dri
 const REPORT  = slice(TRUCKING, '    /* ═══════ How the daily report is grouped',
                                 '    function schedSheetRows(date)', 'report grouping + sheet row');
 
+// The Manage Lists panel now carries an Intercompany Rollup tab, so the
+// pooling rule comes along with the panel it is part of rather than being
+// stubbed — a stub would let that tab render against a rule the page does
+// not have.
+const POOL = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       INTERCOMPANY CUSTOMER POOLING',
+                             '    /* ═══════════════════════════════════════════\n       INTERCOMPANY BILLING',
+                             'the EES customer pool');
+
+
 const freshLists = () => ({
   drivers: [], customers: [], units: [], locations: [], materials: [], notDrivers: [],
   rates: {}, removed: { drivers: [], customers: [], units: [], materials: [], unitNumbers: {}, unitTypes: {} },
@@ -98,7 +107,7 @@ function newPage(state) {
     labor:    { loaded: state.laborLoaded === true,  assignments: state.labor || {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext(HELPERS + '\n' + PANEL, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + HELPERS + '\n' + PANEL, sandbox, { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -120,7 +129,7 @@ function newReport(lists, items, reports) {
     schedJobOf: a => (a && (a.project || a.customer)) || '',
   };
   vm.createContext(sandbox);
-  vm.runInContext(HELPERS + '\n' + REPORT, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + HELPERS + '\n' + REPORT, sandbox, { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -149,7 +158,7 @@ function renderPanel(state, drive) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(HELPERS + '\n' + RENDER, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + HELPERS + '\n' + RENDER, sandbox, { filename: 'trucking.html' });
   if (drive) drive(sandbox);
   sandbox.renderListsPanel();
   return { html, tabs: tabsHtml, page: sandbox };

@@ -84,9 +84,8 @@ const harness = new Function(`
   function isPayrollRowId(id) { return String(id || '').startsWith('tst-'); }
   function tdDivPut() { saves++; }
   ${extractConst('IC_POOL_NAME')}
-  ${extractConst('IC_POOL_EXEMPT')}
-  ${extractConst('IC_POOL_EXEMPT_KEYS')}
-  ${extractConst('icTruckCoNames')}
+  ${extractConst('IC_KEEP_DEFAULT')}
+  ${extractFn('icKeepList')}
   ${extractConst('_icPoolKey')}
   ${extractConst('_icWordish')}
   ${extractFn('_icNamesMatch')}
@@ -105,10 +104,14 @@ const harness = new Function(`
   ${extractFn('_icPoolNote')}
   let icSentMap = new Map();
   let _icEesEnrolled = null;
+  let divTruckLists = {};
   return {
-    icPoolName, isIcRolledUp, _icTruckEntrySig, IC_POOL_EXEMPT,
-    /** Seed the roster the way loadIcTruckCompanies would. */
-    enrol(names) { icTruckCoNames = names === null ? null : new Set(names.map(n => n.trim().toLowerCase())); },
+    icPoolName, isIcRolledUp, _icTruckEntrySig, IC_KEEP_DEFAULT, icKeepList,
+    /** Set the office's rollup list. null puts it back to untouched. */
+    keep(names) {
+      if (names === null) delete divTruckLists.icKeep;
+      else divTruckLists.icKeep = names.slice();
+    },
     cell(id, customer, enrolled, sent) {
       _icEesEnrolled = enrolled;
       icSentMap = new Map(sent ? [[id, sent]] : []);
@@ -138,11 +141,19 @@ const harness = new Function(`
 
 const { icPoolName, isIcRolledUp } = harness;
 
-// Every case below runs against the office's real roster unless it says
-// otherwise: EES, Kinkead, Force, EAI, Kovalchick and XTO all carry the
-// Trucking tag in Manage Companies. Ox Hill and the rest do not.
-const ROSTER = ['EES', 'Kinkead', 'Force', 'EAI', 'Kovalchick', 'XTO'];
-harness.enrol(ROSTER);
+// Every case below runs against the list the office keeps in Manage Lists →
+// Intercompany Rollup unless it says otherwise. Ox Hill is deliberately NOT on
+// it even though Ox Hill has its own Intercompany company: which companies ran
+// their own trucks is not something the page can read anywhere, which is why
+// the list exists.
+const KEEP = ['EAI', 'Force', 'Kinkead', 'Kovalchick', 'XTO'];
+harness.keep(KEEP);
+
+// The other list, and a different question: who is enrolled in Intercompany
+// under trucking. It decides which company a haul is billed TO, and whether
+// the pool has anywhere to bill at all — never who pools. Ox Hill is on it,
+// which is exactly why the roster could not be the rule.
+const IC_ROSTER = ['EES', 'Kinkead', 'Force', 'EAI', 'Kovalchick', 'XTO', 'Ox Hill'];
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 const EES  = { id: 'co-ees',  name: 'EES',        divisions: ['trucking'] };
@@ -198,18 +209,19 @@ console.log('\n[a name is matched on whole words, not on any run of letters]');
   assert(`"${name}" is ${co}'s work and stays out`, !isIcRolledUp(name));
 });
 
-console.log('\n[before the roster is read, nothing is claimed]');
-harness.enrol(null);
-assert('an unread roster cannot tell EES work from XTO work, so nothing pools',
-  !isIcRolledUp('Ox Hill') && icPoolName('Ox Hill') === 'Ox Hill');
-assert('but the three named companies are exempt with or without it',
-  !isIcRolledUp('Kinkead HC'));
-harness.enrol([]);
-assert('an empty roster is an answer, and everything unnamed pools',
-  isIcRolledUp('Ox Hill') && isIcRolledUp('XTO'));
-harness.enrol(ROSTER);
+console.log('\n[a list the office has never touched, and one it has emptied]');
+harness.keep(null);
+assert('an untouched list is the five it started with',
+  JSON.stringify(harness.icKeepList()) === JSON.stringify(KEEP));
+assert('so XTO keeps its name and Ox Hill pools, out of the box',
+  !isIcRolledUp('XTO Energy') && isIcRolledUp('Ox Hill'));
+harness.keep([]);
+assert('an emptied list is an answer, not an absence — everything pools',
+  isIcRolledUp('Ox Hill') && isIcRolledUp('XTO') && isIcRolledUp('Kovalchick'));
+assert('except the pool itself and a blank', !isIcRolledUp('EES') && !isIcRolledUp(''));
+harness.keep(KEEP);
 
-console.log('\n[the three named companies, in every spelling the rows carry]');
+console.log('\n[the names on the list, in every spelling the rows carry]');
 const exemptSpellings = [
   'Force', 'Force Corp', 'FORCE', 'force corp',
   'Kinkead', 'Kinkead HC', "Kinkead's", 'kinkead',
@@ -218,16 +230,20 @@ const exemptSpellings = [
 exemptSpellings.forEach(name => {
   assert(`"${name}" keeps its own name`, icPoolName(name) === name.trim() && !isIcRolledUp(name));
 });
-assert('the named floor is exactly the three the office called out',
-  JSON.stringify(harness.IC_POOL_EXEMPT) === JSON.stringify(['Force', 'Kinkead', 'Kovalchick']));
-// The floor is what keeps a haul for one of them out of the pool even if
-// somebody unticks Trucking on the roster while tidying it up.
-harness.enrol(['EES']);
-assert('and it holds when the roster no longer names them',
-  !isIcRolledUp('Force Corp') && !isIcRolledUp('Kinkead HC') && !isIcRolledUp('kovalchick'));
-assert('while a company that lives only on the roster does pool once dropped',
-  isIcRolledUp('XTO Energy'));
-harness.enrol(ROSTER);
+assert('the list starts as the five the office named',
+  JSON.stringify(harness.IC_KEEP_DEFAULT) === JSON.stringify(KEEP));
+
+// The whole point of the list being editable: taking a name off it pools that
+// company's hauls, and adding one takes them back out, with no code change.
+harness.keep(KEEP.filter(n => n !== 'XTO'));
+assert('dropping XTO pools its hauls', isIcRolledUp('XTO Energy'));
+assert('and leaves everything else alone', !isIcRolledUp('Kinkead HC'));
+harness.keep([...KEEP, 'Ox Hill']);
+assert('adding Ox Hill takes its hauls back out of the pool',
+  !isIcRolledUp('Ox Hill') && icPoolName('Ox Hill') === 'Ox Hill');
+assert('and a name is matched however it was typed on the row',
+  !isIcRolledUp('OX HILL') && !isIcRolledUp('Ox Hill Quarry'));
+harness.keep(KEEP);
 
 console.log('\n[EES itself]');
 // The pool's own name is not an exempt name, so it pools to itself — which
@@ -322,6 +338,26 @@ console.log('\n[a company with its own pool is billed to it]');
     { id: 'co-kin',  name: 'Kinkead',    divisions: ['trucking'] },
     { id: 'co-kinhc', name: 'Kinkead HC', divisions: ['trucking'] }));
   assert('"Kinkead HC" bills to Kinkead HC, not to Kinkead', two[0].company_id === 'co-kinhc');
+}
+
+console.log('\n[the case that sent this back: Ox Hill has its own IC company]');
+{
+  // Ox Hill is enrolled in Intercompany under trucking AND is not on the
+  // office's rollup list. Having a company of its own is not what decides it —
+  // XTO has one too and keeps its name — so Ox Hill still pools.
+  const entries = [];
+  harness.reconcile([row({ customer: 'Ox Hill' })], entries, roster(EES, OXH));
+  assert('it pools to EES even though Ox Hill is on the company roster',
+    entries[0].company_id === 'co-ees' && entries[0].customer === 'EES');
+  assert('with its real name carried along', entries[0].customer_real === 'Ox Hill');
+
+  // …and the day the office adds it to the rollup list, it stops.
+  harness.keep([...KEEP, 'Ox Hill']);
+  const kept = [];
+  harness.reconcile([row({ customer: 'Ox Hill' })], kept, roster(EES, OXH));
+  assert('putting it on the rollup list bills it to its own company',
+    kept[0].company_id === 'co-oxh' && kept[0].customer === 'Ox Hill');
+  harness.keep(KEEP);
 }
 
 console.log('\n[an individually enrolled customer is pooled too]');
@@ -605,13 +641,28 @@ const COMBO  = sliceSrc('    const _cbState = new WeakMap();', '    /** Names li
 const TOTALS = sliceSrc('    /** Re-total a row and keep its Intercompany Billing mirror in step. */',
                         BANNER + 'BACKUP HAUL FEE', 'updateField');
 const TAB    = sliceSrc(BANNER + 'BACKUP HAUL FEE', BANNER + 'SCHEDULER', 'renderTrackingTab');
+// The Manage Lists panel, because the rollup list is edited there and the tab
+// has to redraw when it changes.
+const LISTS  = sliceSrc('    const _remKey =', '    function saveTruckLists()', 'list helpers');
+const PANEL  = sliceSrc('    /* ── Reading a sign-in against the drivers list',
+                        '    function schedSave()', 'panel');
 
 function newPage(entries) {
-  const dom = new JSDOM('<div id="tab-truck-tracking"></div>');
+  const dom = new JSDOM(
+    '<div id="tab-truck-tracking"></div><div id="lists-tabs"></div><div id="lists-panel-body"></div>');
   const sandbox = {
     console, document: dom.window.document,
     divEntries: entries,
-    divTruckLists: { drivers: [], customers: ['Ox Hill', 'Arcadis', 'Kovalchick'], units: [], rates: {} },
+    divTruckLists: {
+      drivers: [], customers: ['Ox Hill', 'Arcadis', 'Kovalchick'],
+      units: [], locations: [], materials: [], rates: {}, notDrivers: [], removed: {},
+    },
+    divLists: { employees: [], equipment: [] },
+    driverLoginMap: {}, driverLoginUsers: [], _driverLoginsLoaded: true,
+    loadDriverLogins: () => Promise.resolve(),
+    tdDivPut() {}, saveTruckLists() {}, renderScheduler() {}, schedIsActive: () => false,
+    setCustomerRate() {}, _historicRate: () => '', _countRowsNaming: () => 0,
+    _csvDate: v => v, _csvTime: v => v, _csvNum: v => v,
     icBillingArr: [], icSentMap: new Map(),
     activeYearFilter: 'all', expandedRows: new Set(entries.map(e => e.id)),
     _isSaved: true, saves: 0,
@@ -623,12 +674,14 @@ function newPage(entries) {
     triggerCSVUpload() {}, downloadCSVTemplate() {},
   };
   vm.createContext(sandbox);
-  vm.runInContext(COMBO + '\n' + POOL + '\n' + TOTALS + '\n' + TAB, sandbox, { filename: 'trucking.html' });
+  vm.runInContext([COMBO, POOL, TOTALS, LISTS, PANEL, TAB].join('\n'),
+    sandbox, { filename: 'trucking.html' });
   const run = code => vm.runInContext(code, sandbox);
   // The roster the page would have read before its first render. Through the
   // page's own setter so the derived _icEesEnrolled is set the same way, and
   // before any render so no case is measuring the not-yet-loaded state.
-  run(`_setIcTruckCompanies(new Map(${JSON.stringify(ROSTER.map(n => [n.toLowerCase(), {}]))}));`);
+  run(`divTruckLists.icKeep = ${JSON.stringify(KEEP)};`);
+  run(`_setIcTruckCompanies(new Map(${JSON.stringify(IC_ROSTER.map(n => [n.toLowerCase(), {}]))}));`);
   run('renderTrackingTab();');
   const doc = dom.window.document;
   return {
@@ -681,6 +734,37 @@ console.log('\n[the tab, rendered]');
       && p.custCell('d').querySelector('.cb-input').value === '');
 }
 
+console.log('\n[the Manage Lists rollup tab]');
+{
+  const p = newPage(pageRows());
+  p.run("_listsTab = 'icKeep'; renderListsPanel();");
+  const body = p.doc.getElementById('lists-panel-body');
+  const names = [...body.querySelectorAll('.li-name')].map(el => el.textContent);
+  assert('it lists the companies that keep their own name',
+    JSON.stringify(names) === JSON.stringify(KEEP), JSON.stringify(names));
+
+  // The count beside a name is how many rows it holds out of the pool, matched
+  // the way the rule matches — so "Kovalchick" counts its one row here.
+  const chip = n => body.querySelectorAll('.lists-item')[names.indexOf(n)]
+    .querySelector('.li-count').textContent;
+  assert('and how many rows each one keeps out', chip('Kovalchick') === '1');
+  assert('with an em dash where a name holds nothing back', chip('Force') === '—');
+
+  // Three of the four fixture rows name a customer; two of those pool.
+  const tail = [...body.querySelectorAll('.lists-hint')].pop().textContent.replace(/\s+/g, ' ').trim();
+  assert('the summary counts rows, not objects', /^2 of 3 rows with a customer bill as EES/.test(tail), tail);
+
+  p.run("removeIcKeep('Kovalchick');");
+  assert('taking a name off pools its hauls at once',
+    p.doc.getElementById('cust-pool-b').textContent === 'EES');
+  assert('and the list is written out, so the default no longer stands',
+    JSON.stringify(p.sandbox.divTruckLists.icKeep)
+      === JSON.stringify(['EAI', 'Force', 'Kinkead', 'XTO']),
+    JSON.stringify(p.sandbox.divTruckLists.icKeep));
+  assert('the row still stores its own customer',
+    p.sandbox.divEntries.find(e => e.id === 'b').customer === 'Kovalchick');
+}
+
 console.log('\n[the filter, over the rendered table]');
 {
   const p = newPage(pageRows());
@@ -724,9 +808,11 @@ console.log('\n[the answer about EES arriving after the rows are on screen]');
   assert('the tooltip does not promise EES billing before the roster is read',
     !p.doc.getElementById('cust-pool-a').title.includes('Billed to Intercompany as EES')
       || p.doc.getElementById('cust-pool-a').title.length > 0);
-  // EES taken off the Intercompany list — every other company stays on it.
+  // EES taken off the INTERCOMPANY COMPANY roster — a different list from the
+  // rollup one above, and the only thing that decides whether the pool has
+  // anywhere to bill.
   p.run(`_setIcTruckCompanies(new Map(${JSON.stringify(
-    ROSTER.filter(n => n !== 'EES').map(n => [n.toLowerCase(), {}]))}));`);
+    IC_ROSTER.filter(n => n !== 'EES').map(n => [n.toLowerCase(), {}]))}));`);
   assert('once EES is known to be missing, every pooled tooltip says so',
     p.doc.getElementById('cust-pool-a').title.includes('goes out under Ox Hill instead'));
   assert('including the locked row\'s',
@@ -736,7 +822,7 @@ console.log('\n[the answer about EES arriving after the rows are on screen]');
   assert('an exempt row\'s note is left alone',
     p.doc.getElementById('ic-ts-b').textContent === 'Awaiting sync — check Intercompany company list');
 
-  p.run(`_setIcTruckCompanies(new Map(${JSON.stringify(ROSTER.map(n => [n.toLowerCase(), {}]))}));`);
+  p.run(`_setIcTruckCompanies(new Map(${JSON.stringify(IC_ROSTER.map(n => [n.toLowerCase(), {}]))}));`);
   assert('and it all turns back once EES is enrolled',
     p.doc.getElementById('cust-pool-a').title.includes('Billed to Intercompany as EES')
       && p.doc.getElementById('ic-ts-a').textContent === 'Awaiting sync — bills to Intercompany as EES');

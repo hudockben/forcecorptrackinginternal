@@ -1312,6 +1312,9 @@
     // account. Every other unlinked sign-in is offered as a name to add, and
     // without somewhere to put the answer "no" the same office accounts get
     // offered for ever.
+    // `icKeep` is the companies whose hauls bill under their own name instead
+    // of pooling under EES — see "INTERCOMPANY CUSTOMER POOLING". Absent until
+    // the office edits it, which is what lets the default stand.
     let divTruckLists = { drivers: [], customers: [], units: [], locations: [], materials: [],
                           rates: {}, notDrivers: [],
                           removed: { drivers: [], customers: [], units: [], materials: [] } };
@@ -1474,26 +1477,25 @@
        companies — and the office wants to see that on the row before the
        invoice goes out, not discover it on the Intercompany screen.
 
-       What stays out of the pool is decided by the Intercompany company list
-       itself: a haul for a company enrolled there under trucking bills under
-       that company, because that company is its own pool already. XTO's work
-       belongs in XTO's pool and EAI's in EAI's; Ox Hill has no company of its
-       own, so its work is EES work. The office therefore controls this from
-       Manage Companies and never from here — enrol a company and its hauls
-       leave the pool on the next sync, with no code change.
+       What stays out of the pool is a list the office keeps: Manage Lists →
+       Intercompany Rollup. XTO's work belongs in XTO's pool and EAI's in
+       EAI's, while Ox Hill's is EES work — and nothing the page can read
+       tells those two apart on its own. Both are companies, both are on the
+       Intercompany roster, and only the office knows which of them ran its own
+       trucks. So the office says, here, and changes the answer without anybody
+       touching code.
 
-       Force, Kinkead and Kovalchick are named here as well, as a floor. They
-       are on that list today, and a haul for one of them must not start
-       pooling because somebody untick's a division while tidying the roster.
+       The list starts as Force, Kinkead, Kovalchick, XTO and EAI. That default
+       stands only until somebody edits it: once the list has been saved it is
+       the whole answer, an emptied list included.
 
-       A name matches on WHOLE WORDS, case and all, because the roster carries
-       the company and the rows carry whatever somebody typed: "Kinkead HC",
+       A name matches on WHOLE WORDS, case and all, because the list carries the
+       company and the rows carry whatever somebody typed: "Kinkead HC",
        "Kinkead's", "kovalchick" and "XTO Energy" are all that company's work
        and every spelling has to stay out of the pool. Whole words rather than
-       anywhere-inside because the roster carries short names — "EAI" sits
-       inside "Beaird", and a plain contains would take a haul out of the pool
-       and invoice EAI for it. The same rule then picks the company to bill, so
-       what the cell says and what Intercompany is told can never disagree.
+       anywhere-inside because the list carries short names — "EAI" sits inside
+       "Beaird", and a plain contains would take a haul out of the pool and
+       invoice EAI for it.
 
        A blank customer pools nowhere — an unfinished row is not an EES haul,
        it is an unfinished row.
@@ -1512,16 +1514,19 @@
        thing wearing the same three letters: a company on the Intercompany
        roster, matched by name. Nothing joins the two.
     ═══════════════════════════════════════════ */
-    const IC_POOL_NAME        = 'EES';
-    const IC_POOL_EXEMPT      = ['Force', 'Kinkead', 'Kovalchick'];
-    const IC_POOL_EXEMPT_KEYS = IC_POOL_EXEMPT.map(n => n.toLowerCase());
+    const IC_POOL_NAME    = 'EES';
+    const IC_KEEP_DEFAULT = ['EAI', 'Force', 'Kinkead', 'Kovalchick', 'XTO'];
 
-    // Every company enrolled in Intercompany under the trucking division,
-    // lowercased — the roster half of the rule. null until it has been read,
-    // and that is not the same as empty: an unread roster cannot tell EES work
-    // from XTO work, so nothing pools until it arrives rather than everything
-    // pooling for the moment it takes to load.
-    let icTruckCoNames = null;
+    /** The companies that keep their own name.
+     *
+     *  Stored in the truck-division blob beside the other managed lists, so it
+     *  is edited in Manage Lists and travels with the division. Absent means
+     *  the office has never touched it and the default stands; an array means
+     *  the office has, and it is the whole answer — including an empty one,
+     *  which is why this tests for an array rather than for truthiness. */
+    function icKeepList() {
+      return Array.isArray(divTruckLists.icKeep) ? divTruckLists.icKeep : IC_KEEP_DEFAULT;
+    }
 
     /* Pooling matches on contains, not on the whole name — unlike _rateKey,
        which is about pricing one company and so has to be the whole name. The
@@ -1552,10 +1557,7 @@
       const k = _icPoolKey(customer);
       if (!k) return false;                              // blank bills nowhere
       if (k === _icPoolKey(IC_POOL_NAME)) return false;  // already the pool itself
-      if (IC_POOL_EXEMPT_KEYS.some(n => _icNamesMatch(k, n))) return false;
-      if (!icTruckCoNames) return false;                 // roster unread — claim nothing
-      for (const name of icTruckCoNames) if (_icNamesMatch(k, name)) return false;
-      return true;
+      return !icKeepList().some(n => _icNamesMatch(k, _icPoolKey(n)));
     }
 
     /** The trucking-enrolled Intercompany company a customer bills under, or
@@ -1610,35 +1612,17 @@
       return coByName;
     }
 
-    /** Record the roster, and redraw if it changed who pools. */
+    /** Record whether the pool has a company to bill to.
+     *
+     *  Who pools is the office's list and not this roster, so the answer only
+     *  ever changes wording — the tooltip over a pooled cell and the note in
+     *  its panel — and those are repainted in place rather than through a
+     *  render, so a row somebody is mid-edit on is never rebuilt under them. */
     function _setIcTruckCompanies(coByName) {
-      const next = new Set([...coByName.keys()].filter(Boolean));
-      const same = icTruckCoNames
-        && icTruckCoNames.size === next.size
-        && [...next].every(n => icTruckCoNames.has(n));
-      icTruckCoNames  = next;
-      _icEesEnrolled  = next.has(_icPoolKey(IC_POOL_NAME));
-      if (!same) _repaintPooledCells();
-    }
-
-    /** Redraw the tab when the roster answer changes under it.
-     *
-     *  A full render rather than a repaint, because the answer changes the
-     *  SHAPE of a Customer cell and not only its text: a locked row gains or
-     *  loses a sub-line and an editable one gains or loses the line above its
-     *  box. Held off while somebody is typing and while another tab is
-     *  showing — the same two conditions the background polls stand down on —
-     *  and the notes are brought up to date in place instead, so a row mid-edit
-     *  is never rebuilt underneath the caret. The next render takes the rest.
-     *
-     *  The polls' own _isEditing / _activeTabId live inside the polling
-     *  closure at the foot of the file and cannot be called from here. */
-    function _repaintPooledCells() {
-      const el  = document.activeElement;
-      const btn = document.querySelector('.tab-btn.active');
-      const busy = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
-      if (busy || !btn || btn.dataset.tab !== 'truck-tracking') { _paintIcPoolNotes(); return; }
-      renderTrackingTab();
+      const yes = coByName.has(_icPoolKey(IC_POOL_NAME));
+      if (yes === _icEesEnrolled) return;
+      _icEesEnrolled = yes;
+      _paintIcPoolNotes();
     }
 
     /* ═══════════════════════════════════════════
@@ -2318,9 +2302,10 @@
         tdDivGet(),
         tdGet('fct_lists'),
         loadIcSentMap(),
-        // Alongside the rows, not after them: the Customer column cannot tell
-        // an EES haul from an XTO one until the roster is in, so reading it
-        // here is what keeps the first render of the tab from being wrong.
+        // Alongside the rows, so the first render of a pooled row already
+        // knows whether EES has anywhere to bill and its tooltip and note can
+        // say so. Who pools does not wait on this — that is the office's own
+        // list, and it arrives with the rows.
         loadIcTruckCompanies(),
       ]);
       if (divData) {
@@ -2337,6 +2322,10 @@
         if (tl.removed && typeof tl.removed === 'object') divTruckLists.removed = _normRemoved(tl.removed);
         if (tl.rates   && typeof tl.rates   === 'object') divTruckLists.rates   = _normRates(tl.rates);
         if (Array.isArray(tl.notDrivers)) divTruckLists.notDrivers = _normNotDrivers(tl.notDrivers);
+        // Only when it is really there: absent has to stay absent, or the
+        // default would be written into the blob on the first save and an
+        // emptied list could never be told from an untouched one.
+        if (Array.isArray(tl.icKeep)) divTruckLists.icKeep = tl.icKeep;
       }
       if (lists) {
         if (Array.isArray(lists.employees)) {
@@ -2627,6 +2616,7 @@
       { key: 'materials', label: 'Materials' },
       { key: 'locations', label: 'Locations' },
       { key: 'logins',    label: 'Driver Sign-ins' },
+      { key: 'icKeep',    label: 'Intercompany Rollup' },
     ];
 
     /** The names in one list, as plain strings — what the tab counts and the
@@ -2637,6 +2627,7 @@
       // A sign-in matches on either half: the office knows some by username and
       // some by the driver they belong to.
       if (key === 'logins')    return Object.keys(driverLoginMap || {}).map(u => u + ' ' + (driverLoginMap[u] || ''));
+      if (key === 'icKeep')    return icKeepList();
       return divTruckLists[key] || [];
     }
 
@@ -2864,6 +2855,65 @@
                   </div>`).join('')}
               </div>`}
           </div>`;
+      };
+
+      /* ── Intercompany Rollup ──
+         The one list that is about billing rather than about pickers. Every
+         other tab here decides what a dropdown offers; this one decides which
+         company Intercompany is invoiced for a haul, so it says out loud what
+         it does not do — the rows keep their own customer, and the rates,
+         Analytics and the CSV all go on reading it.
+
+         The count beside a name is how many stored rows it keeps OUT of the
+         pool, matched the way the rule matches: "XTO" counts the "XTO Energy"
+         rows too, because those are the rows that would move if it went. */
+      const icKeepHTML = () => {
+        const all   = icKeepList();
+        const items = all.filter(_listsMatch);
+        const keptBy = v => {
+          const k = _icPoolKey(v);
+          return divEntries.filter(e => _icNamesMatch(_icPoolKey(e.customer), k)).length;
+        };
+        const named  = divEntries.filter(e => (e.customer || '').trim());
+        const pooled = named.filter(e => isIcRolledUp(e.customer)).length;
+        return `
+        <div class="lists-section">
+          <div class="lists-hint">
+            Hauls for these companies bill under their own name. Everything else is
+            EES work: Truck Tracking shows <strong>EES</strong> over the customer the
+            haul was really for, and Intercompany bills one EES.
+            Whole names, so <em>Kinkead HC</em> and <em>XTO Energy</em> count as
+            Kinkead and XTO. Nothing here changes what a row stores — the rates,
+            Analytics and the CSV all still read the real customer.
+          </div>
+          <div class="lists-add-row">
+            <input type="text" id="lists-new-icKeep" placeholder="Add company…"
+              onkeydown="if(event.key==='Enter')addIcKeep()">
+            <button class="lists-add-btn" onclick="addIcKeep()">Add</button>
+          </div>
+          <div class="lists-items">
+            ${items.length === 0
+              ? emptyHTML('companies', all.length)
+              : items.map(c => {
+                  const n = keptBy(c);
+                  return `
+                  <div class="lists-item">
+                    <span class="li-name" title="${esc(c)}">${esc(c)}</span>
+                    <span class="li-count" title="${n} stored row${n === 1 ? '' : 's'} ${
+                      n === 1 ? 'bills' : 'bill'} under this name instead of ${esc(IC_POOL_NAME)}"${
+                      n ? '' : ' style="opacity:0.55"'}>${n || '—'}</span>
+                    <button class="lists-item-del" style="margin-left:0.4rem"
+                      onclick="removeIcKeep('${argEsc(c)}')"
+                      title="Its hauls pool under ${esc(IC_POOL_NAME)} from the next sync. The rows keep their own customer.">&#10005;</button>
+                  </div>`;
+                }).join('')
+            }
+          </div>
+          <div class="lists-hint" style="margin-top:0.6rem">
+            ${pooled.toLocaleString()} of ${named.length.toLocaleString()} row${named.length === 1 ? '' : 's'}
+            with a customer ${pooled === 1 ? 'bills' : 'bill'} as ${esc(IC_POOL_NAME)} right now.
+          </div>
+        </div>`;
       };
 
       const delBtn = (key, v) =>
@@ -3140,6 +3190,7 @@
         materials: () => section('materials', 'Materials', divTruckLists.materials || []),
         locations: () => locationsHTML(),
         logins:    () => driverLoginsHTML(esc),
+        icKeep:    () => icKeepHTML(),
       };
       const render = bodyFor[_listsTab] || bodyFor.drivers;
 
@@ -3171,6 +3222,39 @@
       renderListsPanel();
       renderTrackingTab();
       if (schedIsActive()) renderScheduler();
+    }
+
+    /* ── Editing the rollup list ──
+       Its own pair rather than addToList / removeFromList: those two keep the
+       deleted-name roster that stops a picker name being swept back out of the
+       stored rows, and this list is never swept from anything. Taking a name
+       off it is not a deletion to be remembered — it is an instruction to pool
+       that company's hauls, and the next save carries it out. */
+    function addIcKeep() {
+      const inp = document.getElementById('lists-new-icKeep');
+      if (!inp) return;
+      const val = inp.value.trim();
+      inp.value = '';
+      if (!val) return;
+      const next = icKeepList().slice();
+      if (!next.some(n => _icPoolKey(n) === _icPoolKey(val))) {
+        next.push(val);
+        next.sort((a, b) => a.localeCompare(b));
+        divTruckLists.icKeep = next;
+        saveTruckLists();
+        renderTrackingTab();
+      }
+      renderListsPanel();
+    }
+
+    function removeIcKeep(val) {
+      // Writes the array even when nothing matched, which is what turns an
+      // untouched list into an edited one — from here on the office's list is
+      // the answer and the default no longer stands.
+      divTruckLists.icKeep = icKeepList().filter(n => _icPoolKey(n) !== _icPoolKey(val));
+      saveTruckLists();
+      renderListsPanel();
+      renderTrackingTab();
     }
 
     function removeFromList(key, val) {
@@ -8969,6 +9053,7 @@
           if (Array.isArray(tl.materials)) divTruckLists.materials = tl.materials;
           if (tl.removed && typeof tl.removed === 'object') divTruckLists.removed = _normRemoved(tl.removed);
           if (tl.rates   && typeof tl.rates   === 'object') divTruckLists.rates   = _normRates(tl.rates);
+          if (Array.isArray(tl.icKeep)) divTruckLists.icKeep = tl.icKeep;
           const tab = _activeTabId();
           if (tab === 'dashboard')      renderDashboard();
           if (tab === 'truck-tracking') renderTrackingTab();
