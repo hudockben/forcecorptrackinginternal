@@ -951,7 +951,10 @@ CREATE INDEX IF NOT EXISTS idx_employees_supervisor ON employees(company_code, i
 -- blobs. Flagging the person once in "Manage Users → Drivers" (divisions.html)
 -- beats flagging them in three list blobs and having them disagree.
 -- syncLists in api/lib/sync-normalized.js deliberately leaves this column out
--- of its UPDATE SET so a per-division blob sync can never clear it.
+-- of its UPDATE SET so a per-division blob sync can never clear it. The same
+-- protection covers is_supervisor on the roster writes in api/employees.js:
+-- PUT and POST move that flag only when the payload actually carries it, since
+-- a division saving its employee list has no idea what it is set to.
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_driver BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_employees_driver ON employees(company_code, is_driver)
   WHERE is_driver = TRUE;
@@ -2047,3 +2050,29 @@ CREATE INDEX IF NOT EXISTS idx_mathis_job_facts_window
 -- Cleared whenever the rows are (un-approve, delete), so it can never outlive
 -- the cost it describes.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_destinations JSONB;
+
+-- ── EMPLOYEES — contact card: cell, email, and who they report to ──────────
+-- The roster already knew who everyone was and what they cost. It did not know
+-- how to reach them, so the phone numbers lived in six people's phones and the
+-- reporting line lived in whoever had been here longest. Both now sit on the
+-- person, once, and the Team Directory on divisions.html reads and writes them.
+--
+-- Global for the same reason is_supervisor and is_driver are: a man's cell
+-- number does not change when he works for paving instead of turf, and those
+-- divisions keep separate roster blobs. Written only through
+-- PATCH /api/employees?name= — the bulk PUT and syncLists both leave these
+-- columns out of their UPDATE SET, so saving a division's employee list can
+-- never blank a number nobody has written down anywhere else.
+--
+-- supervisor_name holds the NAME rather than an id on purpose: half the roster
+-- exists only in paving's list blob or in quarry_employees and has no
+-- employees.id to point at, and a foreign key would have made the field
+-- unfillable for exactly the field crews it is most useful for.
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS phone           TEXT;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS email           TEXT;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS supervisor_name TEXT;
+
+-- "Show me everyone reporting to X" — the directory's own grouping read.
+CREATE INDEX IF NOT EXISTS idx_employees_supervisor_name
+  ON employees(company_code, supervisor_name)
+  WHERE supervisor_name IS NOT NULL;
