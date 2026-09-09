@@ -69,6 +69,15 @@ const ROWEDIT = slice(TRUCKING, '    /** Re-total a row and keep', '\n    /* \u2
 // the drivers section and the tab strip both call.
 const RENDER  = slice(TRUCKING, '    /* \u2500\u2500 Reading a sign-in against the drivers list', '    function schedSave()', 'panel render');
 
+// The Manage Lists panel now carries an Intercompany Rollup tab, so the
+// pooling rule comes along with the panel it is part of rather than being
+// stubbed — a stub would let that tab render against a rule the page does
+// not have.
+const POOL = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       INTERCOMPANY CUSTOMER POOLING',
+                             '    /* ═══════════════════════════════════════════\n       INTERCOMPANY BILLING',
+                             'the EES customer pool');
+
+
 function newPage(state) {
   const sandbox = {
     console,
@@ -83,6 +92,9 @@ function newPage(state) {
     tdDivPut() { sandbox.saves++; },
     saveTruckLists() { sandbox.saves++; },
     renderListsPanel() {}, renderTrackingTab() {}, renderScheduler() {},
+    // The pooled "EES" line updateField repaints over a Customer box. These
+    // cases are about rates and rosters, and there are no cells here to paint.
+    _paintCustPool() {},
     // The pooled "EES" line updateField repaints over a Customer box. These
     // cases are about rates and rosters, and there are no cells here to paint.
     _paintCustPool() {},
@@ -114,7 +126,7 @@ function newPage(state) {
     labor:    { loaded: false, assignments: {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext(HELPERS + '\n' + PANEL + '\n' + ROWEDIT, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + HELPERS + '\n' + PANEL + '\n' + ROWEDIT, sandbox, { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -146,7 +158,7 @@ function renderPanel(state, drive) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(HELPERS + '\n' + RENDER + '\n' + ROWEDIT, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + HELPERS + '\n' + RENDER + '\n' + ROWEDIT, sandbox, { filename: 'trucking.html' });
   if (drive) drive(sandbox);
   sandbox.renderListsPanel();
   return { html, tabs: tabsHtml, page: sandbox };

@@ -63,6 +63,15 @@ const HELPERS = slice(TRUCKING, '    const _remKey =', '    function saveTruckLi
 const PANEL   = slice(TRUCKING, '    function addToList(key)', '    function schedSave()', 'panel handlers');
 const RENDER  = slice(TRUCKING, '    /* ── Reading a sign-in against the drivers list', '    function schedSave()', 'panel render');
 
+// The Manage Lists panel now carries an Intercompany Rollup tab, so the
+// pooling rule comes along with the panel it is part of rather than being
+// stubbed — a stub would let that tab render against a rule the page does
+// not have.
+const POOL = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       INTERCOMPANY CUSTOMER POOLING',
+                             '    /* ═══════════════════════════════════════════\n       INTERCOMPANY BILLING',
+                             'the EES customer pool');
+
+
 const freshLists = (over) => Object.assign({
   drivers: [], customers: [], units: [], locations: [], materials: [],
   rates: {}, notDrivers: [],
@@ -77,7 +86,7 @@ function matcher(drivers) {
     document: { getElementById: () => null, addEventListener() {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext(RENDER, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + RENDER, sandbox, { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -116,7 +125,7 @@ function newPage(state) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(HELPERS + '\n' + PANEL, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + HELPERS + '\n' + PANEL, sandbox, { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -148,7 +157,7 @@ function renderPanel(state) {
   vm.createContext(sandbox);
   // The panel counts how many stored rows name each driver, which is the
   // deleted-name helpers' key function — so the render needs both regions.
-  vm.runInContext(HELPERS + '\n' + RENDER, sandbox, { filename: 'trucking.html' });
+  vm.runInContext(POOL + '\n' + HELPERS + '\n' + RENDER, sandbox, { filename: 'trucking.html' });
   // Through the panel's own handler: which tab is open is declared inside the
   // region, so setting it from out here would only shadow it. The handler
   // renders, which is what these cases read.

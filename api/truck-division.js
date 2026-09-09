@@ -262,6 +262,11 @@ module.exports = async (req, res) => {
             // drivers: no table records that answer, so dropping it here would
             // put every office login back on the drivers tab as a name to add.
             notDrivers: (blobLists && blobLists.notDrivers) || undefined,
+            // And again for the companies whose hauls keep their own name
+            // instead of pooling under EES: no table records that choice, and
+            // dropping it here would put a division back on the default list
+            // and quietly re-point its Intercompany billing.
+            icKeep:     (blobLists && blobLists.icKeep)     || undefined,
           },
         });
       }
