@@ -248,7 +248,7 @@
    * number in this widget comes from a server digest, and a greeting fired
    * before a single question has been asked has no digest behind it. */
   var NUDGE_DELAY = 1100;              // let the page paint before he speaks
-  var NUDGE_LIFE  = 9000;              // long enough to read twice, short enough to ignore
+  var NUDGE_LIFE  = 15000;             // long enough to notice mid-scroll, short enough to ignore
   var nudgeEl = null;
   var nudgeTimers = [];
 
