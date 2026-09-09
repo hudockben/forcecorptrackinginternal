@@ -1,0 +1,344 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * Overtime: the one figure on the payroll report that is not the range added up.
+ *
+ * Run: node scripts/test-overtime.js
+ *
+ * Every other column on the Hours Report is a sum — total the fortnight and you
+ * have it. Overtime is not, and treating it like one is the mistake this test
+ * exists to prevent. The fortieth hour is a fact about a WEEK. A man who works
+ * 79.75 hours over two weeks has not worked 39.75 hours of overtime; he may
+ * have worked none. Split 50/30 he worked ten.
+ *
+ * The week runs MONDAY THROUGH SUNDAY, and that is not a preference. The pay
+ * period is built out of exactly two of them — biweeklyPayPeriod ends on a
+ * Sunday and opens thirteen days earlier on a Monday — so a Monday-start week
+ * nests inside the period with nothing straddling its edges.
+ *
+ * And the split that makes this worth showing at all: PREVAILING-WAGE OVERTIME
+ * IS NOT THE SAME MONEY AS STANDARD OVERTIME. The premium on covered work is
+ * one and a half times the BASE rate plus the FULL fringe, the fringe never
+ * multiplied. Payroll cannot run the week off a single overtime figure — it has
+ * to know how many of those hours were worked on the covered site. So the
+ * overtime is classified by the same prevailing/standard rule the columns
+ * beside it use, and the invariants below are what keep the two honest.
+ */
+
+const fs   = require('fs');
+const path = require('path');
+const {
+  payrollMetrics, weeklyOvertime, weekStartOf, weekEndOf, OT_WEEKLY_THRESHOLD,
+} = require(path.resolve(__dirname, '../api/lib/payroll-metrics.js'));
+// One brace matcher, shared — see scripts/lib/fn-source.js for why.
+const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const PAGE = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
+
+let passed = 0, failed = 0;
+function assert(label, cond, detail) {
+  if (cond) { passed++; console.log(`  ✓ ${label}`); }
+  else      { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
+}
+const near = (a, b) => Math.abs(a - b) < 0.001;
+
+// One approved 'daily' entry. Defaults describe the ordinary case: eight hours
+// on a non-prevailing job with no travel.
+function entry(work_date, over = {}) {
+  return Object.assign({
+    username:       'matt',
+    entry_type:     'daily',
+    status:         'approved',
+    division:       'paving',
+    work_date,
+    computed_hours: 8,
+    travel_hours:   0,
+    prevailing_wage: false,
+    haul_type:      null,
+  }, over);
+}
+
+// Mon 2026-08-24 through Sun 2026-08-30, then Mon 2026-08-31 onward.
+const MON = '2026-08-24', TUE = '2026-08-25', WED = '2026-08-26',
+      THU = '2026-08-27', FRI = '2026-08-28', SAT = '2026-08-29', SUN = '2026-08-30';
+const NEXT_MON = '2026-08-31', NEXT_TUE = '2026-09-01';
+
+const ot = (entries, range) => weeklyOvertime(entries, range || {});
+
+// ── The week, and where it starts ───────────────────────────────────────────
+console.log('\n[the week runs Monday through Sunday]');
+
+assert('the threshold is forty hours', OT_WEEKLY_THRESHOLD === 40);
+assert('Monday opens its own week', weekStartOf(MON) === MON);
+assert('  Wednesday belongs to that Monday', weekStartOf(WED) === MON);
+assert('  and SUNDAY IS THE LAST DAY OF IT, not the first',
+  weekStartOf(SUN) === MON, `got ${weekStartOf(SUN)}`);
+assert('the next Monday opens the next week', weekStartOf(NEXT_MON) === NEXT_MON);
+assert('a week closes on the Sunday six days later', weekEndOf(MON) === SUN);
+
+assert('a timestamp is read for its calendar date, not its clock',
+  weekStartOf('2026-08-30T23:30:00Z') === MON, `got ${weekStartOf('2026-08-30T23:30:00Z')}`);
+assert('and an unreadable date is left out rather than filed into an invented week',
+  weekStartOf('') === null && weekStartOf(null) === null && weekStartOf('not a date') === null);
+
+// ── A week at a time, never the range ───────────────────────────────────────
+console.log('\n[the fortieth hour is a fact about a week, not about the range]');
+
+// Five ten-hour days, then five more: eighty hours over a fortnight, ten of
+// them overtime — not forty.
+const twoBigWeeks = ot([
+  entry(MON, { computed_hours: 10 }), entry(TUE, { computed_hours: 10 }),
+  entry(WED, { computed_hours: 10 }), entry(THU, { computed_hours: 10 }),
+  entry(NEXT_MON, { computed_hours: 10 }), entry(NEXT_TUE, { computed_hours: 10 }),
+]);
+assert('two weeks of forty and twenty is no overtime at all — not twenty',
+  near(twoBigWeeks.totalHours, 60) && near(twoBigWeeks.otHours, 0),
+  `total=${twoBigWeeks.totalHours} ot=${twoBigWeeks.otHours}`);
+
+const oneBigWeek = ot([
+  entry(MON, { computed_hours: 10 }), entry(TUE, { computed_hours: 10 }),
+  entry(WED, { computed_hours: 10 }), entry(THU, { computed_hours: 10 }),
+  entry(FRI, { computed_hours: 10 }), entry(SAT, { computed_hours: 10 }),
+]);
+assert('sixty hours inside ONE week is twenty hours of overtime',
+  near(oneBigWeek.otHours, 20) && near(oneBigWeek.regHours, 40),
+  `ot=${oneBigWeek.otHours} reg=${oneBigWeek.regHours}`);
+
+// The same total in both cases. The difference is entirely which week the hours
+// landed in, which is the whole reason this cannot be a sum over the range.
+assert('  same sixty hours either way — only the weeks differ',
+  near(oneBigWeek.totalHours, 60) && near(twoBigWeeks.totalHours, 60));
+
+const sundayCarry = ot([
+  entry(MON, { computed_hours: 8 }), entry(TUE, { computed_hours: 8 }),
+  entry(WED, { computed_hours: 8 }), entry(THU, { computed_hours: 8 }),
+  entry(FRI, { computed_hours: 8 }), entry(SUN, { computed_hours: 8 }),
+]);
+assert('a Sunday still belongs to the week behind it: 48 h, 8 h overtime',
+  near(sundayCarry.otHours, 8) && sundayCarry.weeks.length === 1,
+  `ot=${sundayCarry.otHours} weeks=${sundayCarry.weeks.length}`);
+
+// ── What counts toward the forty ────────────────────────────────────────────
+console.log('\n[work and travel count toward it; paid leave does not]');
+
+const withTravel = ot([
+  entry(MON, { computed_hours: 8, travel_hours: 2 }),
+  entry(TUE, { computed_hours: 8, travel_hours: 2 }),
+  entry(WED, { computed_hours: 8, travel_hours: 2 }),
+  entry(THU, { computed_hours: 8, travel_hours: 2 }),
+  entry(FRI, { computed_hours: 8, travel_hours: 2 }),
+]);
+assert('travel time on the clock is time worked — 50 h is 10 h of overtime',
+  near(withTravel.totalHours, 50) && near(withTravel.otHours, 10),
+  `total=${withTravel.totalHours} ot=${withTravel.otHours}`);
+
+// A holiday plus five eight-hour days is forty-eight hours PAID and forty
+// hours WORKED. Only hours worked push a week into overtime.
+const withHoliday = ot([
+  { username: 'matt', entry_type: 'time_off', status: 'approved',
+    time_off_type: 'holiday', work_date: MON },
+  entry(TUE), entry(WED), entry(THU), entry(FRI), entry(SAT),
+]);
+assert('a holiday is paid leave, not hours worked — 40 h worked, no overtime',
+  near(withHoliday.totalHours, 40) && near(withHoliday.otHours, 0),
+  `total=${withHoliday.totalHours} ot=${withHoliday.otHours}`);
+
+const withDraft = ot([
+  entry(MON, { computed_hours: 10 }), entry(TUE, { computed_hours: 10 }),
+  entry(WED, { computed_hours: 10 }), entry(THU, { computed_hours: 10 }),
+  entry(FRI, { computed_hours: 10, status: 'draft' }),
+]);
+assert('a draft carries no hours here either — it is not payroll\'s business yet',
+  near(withDraft.totalHours, 40) && near(withDraft.otHours, 0),
+  `total=${withDraft.totalHours} ot=${withDraft.otHours}`);
+
+const submittedOnly = ot([
+  entry(MON, { computed_hours: 10, status: 'submitted' }),
+  entry(TUE, { computed_hours: 10, status: 'submitted' }),
+  entry(WED, { computed_hours: 10, status: 'submitted' }),
+  entry(THU, { computed_hours: 10, status: 'submitted' }),
+  entry(FRI, { computed_hours: 10, status: 'submitted' }),
+]);
+assert('but a SUBMITTED week is counted — overtime is visible before it is approved',
+  near(submittedOnly.otHours, 10), `ot=${submittedOnly.otHours}`);
+
+// ── Which hours are the overtime ones ───────────────────────────────────────
+console.log('\n[the overtime hours are the ones worked last]');
+
+// Four standard ten-hour days take him to forty. Friday is entirely on a
+// prevailing-wage job, so every overtime hour is a prevailing one.
+const pwFriday = ot([
+  entry(MON, { computed_hours: 10 }), entry(TUE, { computed_hours: 10 }),
+  entry(WED, { computed_hours: 10 }), entry(THU, { computed_hours: 10 }),
+  entry(FRI, { computed_hours: 8, prevailing_wage: true }),
+]);
+assert('a prevailing Friday after forty standard hours is 8 h of PREVAILING overtime',
+  near(pwFriday.otHours, 8) && near(pwFriday.otPwHours, 8) && near(pwFriday.otStdHours, 0),
+  `ot=${pwFriday.otHours} pw=${pwFriday.otPwHours} std=${pwFriday.otStdHours}`);
+
+// The mirror image: the prevailing work came first and was over by Thursday.
+// The overtime is standard, even though the week is full of prevailing hours.
+const pwFirst = ot([
+  entry(MON, { computed_hours: 10, prevailing_wage: true }),
+  entry(TUE, { computed_hours: 10, prevailing_wage: true }),
+  entry(WED, { computed_hours: 10, prevailing_wage: true }),
+  entry(THU, { computed_hours: 10, prevailing_wage: true }),
+  entry(FRI, { computed_hours: 8 }),
+]);
+assert('  and the same week worked the other way round is 8 h of STANDARD overtime',
+  near(pwFirst.otHours, 8) && near(pwFirst.otPwHours, 0) && near(pwFirst.otStdHours, 8),
+  `ot=${pwFirst.otHours} pw=${pwFirst.otPwHours} std=${pwFirst.otStdHours}`);
+
+// Travel on a prevailing day is standard — it is not paid at the prevailing
+// rate — so an overtime day that includes travel splits both ways.
+const straddle = ot([
+  entry(MON, { computed_hours: 9 }), entry(TUE, { computed_hours: 9 }),
+  entry(WED, { computed_hours: 9 }), entry(THU, { computed_hours: 9 }),
+  entry(FRI, { computed_hours: 8, travel_hours: 2, prevailing_wage: true }),
+]);
+// Thursday closes on 36. Friday's ten hours carry him past forty, so six of
+// them are overtime, split across that day's own 8 prevailing / 2 standard mix.
+assert('the day that CROSSES the fortieth hour splits pro rata, not by a guessed order',
+  near(straddle.otHours, 6) && near(straddle.otPwHours, 4.8) && near(straddle.otStdHours, 1.2),
+  `ot=${straddle.otHours} pw=${straddle.otPwHours} std=${straddle.otStdHours}`);
+
+// An off-site haul is standard for the same reason travel is — the man never
+// worked the covered site — so it is standard in overtime too.
+const haulOt = ot([
+  entry(MON, { computed_hours: 10 }), entry(TUE, { computed_hours: 10 }),
+  entry(WED, { computed_hours: 10 }), entry(THU, { computed_hours: 10 }),
+  entry(FRI, { computed_hours: 9, prevailing_wage: true, haul_type: 'off_site', haul_hours: 6.5 }),
+]);
+assert('an off-site haul in overtime is standard overtime, as it is standard everywhere else',
+  near(haulOt.otHours, 9) && near(haulOt.otPwHours, 2.5) && near(haulOt.otStdHours, 6.5),
+  `ot=${haulOt.otHours} pw=${haulOt.otPwHours} std=${haulOt.otStdHours}`);
+
+// ── The invariants ──────────────────────────────────────────────────────────
+console.log('\n[classifying hours never creates or destroys any]');
+
+const CASES = [
+  pwFriday, pwFirst, straddle, haulOt, oneBigWeek, twoBigWeeks, withTravel, sundayCarry,
+];
+assert('regular + overtime = the hours he is owed, in every case',
+  CASES.every(c => near(c.regHours + c.otHours, c.totalHours)));
+assert('prevailing overtime + standard overtime = overtime, in every case',
+  CASES.every(c => near(c.otPwHours + c.otStdHours, c.otHours)));
+assert('no week is ever more than forty regular hours',
+  CASES.every(c => c.weeks.every(w => w.regHours <= 40.001)),
+  JSON.stringify(CASES.flatMap(c => c.weeks.map(w => w.regHours))));
+assert('and a week under forty reports no overtime at all',
+  CASES.every(c => c.weeks.every(w => w.totalHours > 40.001 || near(w.otHours, 0))));
+
+// ── A week the filter cut in half ───────────────────────────────────────────
+console.log('\n[a week the date range cuts into is a floor, not an answer]');
+
+// Only Thursday and Friday of the week are in range. Whatever he worked Monday
+// to Wednesday was never loaded, so his forty may already have gone.
+const clipped = ot([entry(THU, { computed_hours: 10 }), entry(FRI, { computed_hours: 10 })],
+  { from: THU, to: NEXT_TUE });
+assert('a range starting mid-week flags the week it cut',
+  clipped.clipped && clipped.weeks[0].clipped);
+assert('  and it still reports the overtime it CAN see — zero here, honestly labelled',
+  near(clipped.weeks[0].otHours, 0) && near(clipped.weeks[0].totalHours, 20));
+
+const whole = ot([entry(MON, { computed_hours: 10 })], { from: MON, to: SUN });
+assert('a range covering the whole week flags nothing', !whole.clipped);
+
+const unbounded = ot([entry(WED, { computed_hours: 10 })], {});
+assert('and no range set flags nothing either — there is no filter to blame',
+  !unbounded.clipped);
+
+// ── Through payrollMetrics, which is what the pages read ────────────────────
+console.log('\n[the roll-up carries it per employee, never per crew]');
+
+const crew = payrollMetrics({
+  entries: [
+    entry(MON, { username: 'matt', computed_hours: 10 }),
+    entry(TUE, { username: 'matt', computed_hours: 10 }),
+    entry(WED, { username: 'matt', computed_hours: 10 }),
+    entry(THU, { username: 'matt', computed_hours: 10 }),
+    entry(FRI, { username: 'matt', computed_hours: 10, prevailing_wage: true }),
+    entry(MON, { username: 'jason', computed_hours: 10 }),
+    entry(TUE, { username: 'jason', computed_hours: 10 }),
+    entry(WED, { username: 'jason', computed_hours: 10 }),
+  ],
+  periodStart: MON, periodEnd: '2026-09-06',
+});
+const matt  = crew.employees.find(e => e.username === 'matt');
+const jason = crew.employees.find(e => e.username === 'jason');
+assert('matt worked fifty hours and ten of them are overtime',
+  near(matt.otHours, 10) && near(matt.regHours, 40), `ot=${matt.otHours}`);
+assert('  all ten on the prevailing job — the money payroll needs told apart',
+  near(matt.otPwHours, 10) && near(matt.otStdHours, 0), `pw=${matt.otPwHours}`);
+assert('jason worked thirty and none of it is overtime', near(jason.otHours, 0));
+assert('the crew total is the sum of the men, not a re-measurement of the crew',
+  near(crew.totals.otHours, 10) && near(crew.totals.totalHours, 80),
+  `ot=${crew.totals.otHours} total=${crew.totals.totalHours}`);
+assert('  which is the point: eighty crew hours, ten hours of overtime',
+  crew.totals.totalHours > 40 && near(crew.totals.otHours, 10));
+assert('every employee carries their weeks, so the report can say WHICH week',
+  matt.weeks.length === 1 && matt.weeks[0].weekStart === MON);
+
+// ── The two copies of the rule ──────────────────────────────────────────────
+// payroll.html carries its own, because the page cannot import this module. The
+// executive report renders the fortnight from here and payroll checks it there,
+// so a difference between them is two answers for one week.
+console.log('\n[payroll.html says the same thing]');
+{
+  assert('payroll.html carries its own weekly overtime arithmetic',
+    /function weeklyOvertime\(/.test(PAGE) && /function weekStartOf\(/.test(PAGE));
+  assert('  and the same forty-hour threshold, named the same way',
+    /const OT_WEEKLY_THRESHOLD = 40;/.test(PAGE)
+    && /const OT_WEEKLY_THRESHOLD = 40;/.test(
+      fs.readFileSync(path.resolve(__dirname, '../api/lib/payroll-metrics.js'), 'utf8')));
+
+  const page = new Function(`
+    const OT_WEEKLY_THRESHOLD = 40;
+    ${requireFn(PAGE, 'isOffSiteHaul',  'payroll.html')}
+    ${requireFn(PAGE, 'offSiteHaulWork','payroll.html')}
+    ${requireFn(PAGE, 'weekStartOf',    'payroll.html')}
+    ${requireFn(PAGE, 'weekEndOf',      'payroll.html')}
+    ${requireFn(PAGE, 'weeklyOvertime', 'payroll.html')}
+    return { weeklyOvertime, weekStartOf, weekEndOf };
+  `)();
+
+  assert('the page finds the same Monday for every day of a week',
+    [MON, TUE, WED, THU, FRI, SAT, SUN].every(d => page.weekStartOf(d) === weekStartOf(d)));
+
+  // Every case above, put through both copies. A number that differs is a week
+  // payroll and the executive report would report differently.
+  const SETS = [
+    [entry(MON, { computed_hours: 10 }), entry(TUE, { computed_hours: 10 }),
+     entry(WED, { computed_hours: 10 }), entry(THU, { computed_hours: 10 }),
+     entry(FRI, { computed_hours: 8, travel_hours: 2, prevailing_wage: true })],
+    [entry(MON, { computed_hours: 10, prevailing_wage: true }),
+     entry(TUE, { computed_hours: 10, prevailing_wage: true }),
+     entry(WED, { computed_hours: 10, prevailing_wage: true }),
+     entry(THU, { computed_hours: 10, prevailing_wage: true }),
+     entry(FRI, { computed_hours: 8 })],
+    [entry(MON, { computed_hours: 10 }), entry(TUE, { computed_hours: 10 }),
+     entry(WED, { computed_hours: 10 }), entry(THU, { computed_hours: 10 }),
+     entry(FRI, { computed_hours: 9, prevailing_wage: true, haul_type: 'off_site', haul_hours: 6.5 })],
+    [entry(SUN, { computed_hours: 12 }), entry(NEXT_MON, { computed_hours: 12 })],
+    [{ username: 'matt', entry_type: 'time_off', status: 'approved', work_date: MON },
+     entry(TUE), entry(WED), entry(THU), entry(FRI), entry(SAT)],
+    [entry(MON, { computed_hours: 10, status: 'draft' }), entry(TUE, { computed_hours: 10 })],
+    [entry('not a date', { computed_hours: 10 }), entry(TUE, { computed_hours: 10 })],
+  ];
+  const KEYS = ['totalHours', 'regHours', 'otHours', 'otPwHours', 'otStdHours'];
+  const range = { from: MON, to: '2026-09-06' };
+  const diffs = [];
+  SETS.forEach((set, i) => {
+    const a = weeklyOvertime(set, range);
+    const b = page.weeklyOvertime(set, range);
+    for (const k of KEYS) if (!near(a[k], b[k])) diffs.push(`set ${i} ${k}: ${a[k]} vs ${b[k]}`);
+    if (a.weeks.length !== b.weeks.length) diffs.push(`set ${i} weeks: ${a.weeks.length} vs ${b.weeks.length}`);
+    a.weeks.forEach((w, j) => {
+      if (w.weekStart !== b.weeks[j].weekStart) diffs.push(`set ${i} week ${j} start`);
+      if (w.clipped !== b.weeks[j].clipped)     diffs.push(`set ${i} week ${j} clipped`);
+    });
+  });
+  assert(`both copies agree across all ${SETS.length} weeks`, diffs.length === 0, diffs.join(' | '));
+}
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

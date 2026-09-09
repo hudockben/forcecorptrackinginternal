@@ -1609,7 +1609,18 @@ async function buildPayrollSummary(sql, companyCode) {
       { label: 'Hours',        value: hrs(t.workHours),   tone: 'plain', sub: 'worked on the job' },
       { label: 'Travel',       value: hrs(t.travelHours), tone: 'mute',
         sub: `to site ${hrs(t.travelToSite)} · to shop ${hrs(t.travelToShop)}` },
-      { label: 'Total Hours',  value: hrs(t.totalHours),  tone: 'green', sub: 'work + travel' },
+      {
+        // Overtime is measured a WEEK at a time — the pay period is two
+        // Monday-to-Sunday weeks and neither is added to the other to find it.
+        // The prevailing share is named because it is not the same money: 1.5x
+        // the base rate plus the FULL fringe, the fringe never multiplied.
+        label: 'Total Hours', value: hrs(t.totalHours), tone: 'green',
+        sub: t.otHours > 0.001
+          ? (t.otPwHours > 0.001
+              ? `work + travel · ${hrs(t.otHours)} h over 40 in a week, ${hrs(t.otPwHours)} h of it prevailing`
+              : `work + travel · ${hrs(t.otHours)} h over 40 in a week`)
+          : 'work + travel · no week passed 40 hours',
+      },
       {
         label: 'Prevailing Hrs', value: hrs(t.pwHours), tone: 'amber',
         sub: t.haulHours > 0.001
@@ -1639,7 +1650,11 @@ async function buildPayrollSummary(sql, companyCode) {
       travelToShop:  e.travelToShop,
       travelHours:   e.travelHours,
       totalHours:    e.totalHours,
+      regHours:      e.regHours,
+      otHours:       e.otHours,
       pwHours:       e.pwHours,
+      otPwHours:     e.otPwHours,
+      otStdHours:    e.otStdHours,
       stdHours:      e.stdHours,
       pendingHours:  e.pendingHours,
       approvedHours: e.approvedHours,
@@ -1655,7 +1670,11 @@ async function buildPayrollSummary(sql, companyCode) {
       travelToShop:  t.travelToShop,
       travelHours:   t.travelHours,
       totalHours:    t.totalHours,
+      regHours:      t.regHours,
+      otHours:       t.otHours,
       pwHours:       t.pwHours,
+      otPwHours:     t.otPwHours,
+      otStdHours:    t.otStdHours,
       stdHours:      t.stdHours,
       pendingHours:  t.pendingHours,
       approvedHours: t.approvedHours,

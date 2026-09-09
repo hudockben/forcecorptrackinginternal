@@ -1064,6 +1064,9 @@ const PAYROLL_LIMITS = [
   'Prevailing-wage hours are split by a flag on the job, not by a rate. It says which work was prevailing-wage, not what any of it paid.',
   'Two things move hours OUT of prevailing even on a prevailing-wage job, and both are about where the person was, not what they were paid. Travel is never prevailing. Nor is an off-site haul: a truck driver running to and from the site never worked it. Hauling ON the site stays prevailing. So a driver can show 0 prevailing hours on a prevailing-wage job and that is correct, not a data gap — do not explain it from the job flag alone.',
   'haulHours is the off-site haul work reclassified by that rule, and it is already counted inside the standard hours — it is a note on the split, not a third bucket. Prevailing + standard is the whole day; do not add haulHours to them.',
+  'OVERTIME IS PER WEEK, NEVER PER PAY PERIOD. otHours counts the hours past 40 in each MONDAY-TO-SUNDAY week, the two weeks of the period added together afterwards. Never derive it by subtracting 40 from a period total — 60 hours over a fortnight can be no overtime at all. regHours + otHours is the period total.',
+  'Work and travel both count toward the 40. Paid leave does not: a holiday or vacation day is not hours worked and never pushes a week into overtime.',
+  'otPwHours is the part of otHours worked on a prevailing-wage job, and it is already inside otHours — not a separate bucket. It is called out because it is not the same money: prevailing-wage overtime pays 1.5x the BASE rate plus the FULL fringe, the fringe never multiplied. That is a rate statement, and the rates are not in this data.',
 ];
 
 async function payrollDigest(c) {
@@ -1127,6 +1130,12 @@ async function payrollDigest(c) {
       approvedHours: round2(e.approvedHours),
       pwHours:       round2(e.pwHours),
       stdHours:      round2(e.stdHours),
+      // Overtime travels with the hours it splits. Without it the assistant
+      // would be asked "who went into overtime" over a fortnight of totals and
+      // have to guess, or worse, subtract 40 from a two-week figure.
+      regHours:      round2(e.regHours),
+      otHours:       round2(e.otHours),
+      otPwHours:     round2(e.otPwHours),
       daysWorked:    e.daysWorked,
     }))),
     limits: PAYROLL_LIMITS,

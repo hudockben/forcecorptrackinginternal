@@ -1565,7 +1565,10 @@
           <td class="col-num v-mute">${esc(fmtHours(r.travelToShop))}</td>
           <td class="col-num v-mute">${esc(fmtHours(r.travelHours))}</td>
           <td class="col-num v-profit-pos">${esc(fmtHours(r.totalHours))}</td>
+          <td class="col-num v-actual">${esc(fmtHours(r.regHours))}</td>
+          <td class="col-num ${r.otHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.otHours))}</td>
           <td class="col-num ${r.pwHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pwHours))}</td>
+          <td class="col-num ${r.otPwHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.otPwHours))}</td>
           <td class="col-num v-actual">${esc(fmtHours(r.stdHours))}</td>
           <td class="col-num ${r.pendingHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pendingHours))}</td>
           <td class="col-num ${r.approvedHours > 0.001 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtHours(r.approvedHours))}</td>
@@ -1584,7 +1587,10 @@
                 <th class="col-num" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
                 <th class="col-num" title="Travel to site + travel to shop">Travel</th>
                 <th class="col-num">Total</th>
+                <th class="col-num" title="Hours up to 40 in each Monday–Sunday week, added across the weeks in the period.">Reg Hrs</th>
+                <th class="col-num" title="Hours past 40 in a Monday–Sunday week. Counted one week at a time — the fortnight's hours are never added together to find it. Paid leave does not count toward the 40.">OT Hrs</th>
                 <th class="col-num" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
+                <th class="col-num" title="The prevailing-wage hours that fell in overtime — 1.5x the base rate plus the FULL fringe, the fringe never multiplied. Not the same money as standard overtime.">Prevailing OT</th>
                 <th class="col-num" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
                 <th class="col-num">Pending Hrs</th>
                 <th class="col-num">Approved Hrs</th>
