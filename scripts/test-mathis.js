@@ -3482,6 +3482,109 @@ console.log('\n══════════ every digest kind renders ══�
   }
 }
 
+// ── 13e3. The greeting that arrives before the first question ──────────────
+// A launcher nobody clicks is a feature nobody has. The bubble is the only
+// thing in this widget that speaks unprompted, so the properties worth
+// pinning are the ones that stop it becoming an ad: it says it once per
+// division per tab, it retires itself, and it carries no figure — because it
+// fires before any digest exists, and a number here would be a number the
+// server did not send.
+{
+  let JSDOM = null;
+  try { ({ JSDOM } = require('jsdom')); } catch { /* optional dev dependency */ }
+  if (!JSDOM) {
+    console.log('  ~ the opening greeting (skipped: jsdom not installed)');
+  } else {
+    console.log('\n══════════ the greeting on arrival ══════════');
+    const widget = fs.readFileSync(root('mathis.js'), 'utf8');
+
+    // Read the widget's own timings rather than restating them: a test that
+    // hardcodes 1100 stays green while the bubble takes ten seconds to arrive.
+    const DELAY = Number((/var NUDGE_DELAY = (\d+)/.exec(widget) || [])[1]);
+    const LIFE  = Number((/var NUDGE_LIFE  = (\d+)/.exec(widget) || [])[1]);
+    assert('the greeting waits for the page, then leaves on its own',
+      DELAY > 0 && DELAY < 3000 && LIFE > DELAY && LIFE < 20000, DELAY + '/' + LIFE);
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const boot = async (page, opts = {}) => {
+      const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+        url: 'https://example.test/' + page, runScripts: 'dangerously', pretendToBeVisual: true,
+      });
+      const win = dom.window;
+      if (opts.token !== false) win.localStorage.setItem('fct_token', 'test-token');
+      // What a reload in the same tab would find. jsdom gives each window its
+      // own sessionStorage, so a second visit is written rather than shared.
+      if (opts.seen) win.sessionStorage.setItem('fct_mathis_nudge_' + opts.seen, '1');
+      await new Promise(r => {
+        if (win.document.readyState === 'complete') r();
+        else win.addEventListener('load', r);
+      });
+      win.eval(widget);
+      return win;
+    };
+    const bubble = win => win.document.getElementById('mathis-nudge');
+    const panelOpen = win => win.document.getElementById('mathis-panel').classList.contains('on');
+
+    const paving = await boot('paving.html');
+    assert('nothing speaks over the page while it is loading', !bubble(paving));
+    await sleep(DELAY + 300);
+
+    const b = bubble(paving);
+    assert('a moment later Mathis introduces himself',
+      !!b && /I'm Mathis/.test(b.textContent), b && b.textContent);
+    assert('  naming the division the user just walked into',
+      !!b && /about paving/.test(b.textContent), b && b.textContent);
+    assert('  carrying no figure, since no digest has been fetched yet',
+      !/\d/.test(b.textContent) && !b.textContent.includes('$'),
+      'the only numbers in this widget come from the server');
+    assert('  announced politely rather than grabbing focus',
+      b.getAttribute('role') === 'status' && paving.document.activeElement !== b,
+      b.getAttribute('role'));
+    assert('  and the panel stays shut until somebody asks for it', !panelOpen(paving));
+
+    b.querySelector('.mathis-nudge-open').click();
+    assert('clicking it opens the panel', panelOpen(paving));
+    await sleep(500);
+    assert('  and the bubble gets out of the way', !bubble(paving));
+
+    // The property that separates a greeting from a nag.
+    const again = await boot('paving.html', { seen: 'paving' });
+    await sleep(DELAY + 300);
+    assert('the same division in the same tab does not greet twice', !bubble(again),
+      'a message that returns on every reload is one people learn to close');
+
+    // ...but another division IS somewhere new.
+    const quarry = await boot('quarry.html', { seen: 'paving' });
+    await sleep(DELAY + 300);
+    assert('  while walking into another division is a fresh arrival',
+      !!bubble(quarry) && /about quarry/.test(bubble(quarry).textContent));
+
+    bubble(quarry).querySelector('.mathis-nudge-x').click();
+    await sleep(500);
+    assert('  and it can be waved off without opening anything',
+      !bubble(quarry) && !panelOpen(quarry));
+
+    // A page about the person promises only what that page can keep.
+    const own = await boot('timesheet.html');
+    await sleep(DELAY + 300);
+    assert('on a personal page he offers the entries, not the division',
+      /your own entries/.test(bubble(own).textContent), bubble(own).textContent);
+
+    // Opening the panel first cancels the pending bubble rather than letting
+    // it arrive on top of a conversation already under way.
+    const eager = await boot('trucking.html');
+    eager.document.getElementById('mathis-launch').click();
+    await sleep(DELAY + 300);
+    assert('nothing pops up over a panel the user already opened', !bubble(eager));
+
+    const out = await boot('index.html', { token: false });
+    await sleep(DELAY + 300);
+    assert('and the login page is greeted by nobody',
+      !bubble(out) && !out.document.getElementById('mathis-launch'),
+      'no token, no division, nothing to ask about');
+  }
+}
+
 // ── 13f. The feedback endpoint ─────────────────────────────────────────────
 console.log('\n══════════ the feedback endpoint ══════════');
 {

@@ -126,6 +126,18 @@
     'border:1px solid var(--border,#2a2a35);background:var(--green,#22c55e);color:#08130c;font:600 15px/1 system-ui,sans-serif;',
     'cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}',
     '#mathis-launch:hover{filter:brightness(1.08)}',
+    '#mathis-nudge{position:fixed;right:18px;bottom:82px;z-index:' + Z + ';max-width:min(262px,calc(100vw - 36px));',
+    'display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border-radius:12px 12px 3px 12px;',
+    'background:var(--card,#14141c);border:1px solid var(--border,#2a2a35);box-shadow:0 8px 24px rgba(0,0,0,.4);',
+    'color:var(--text,#e0e0e0);font:12.5px/1.45 system-ui,-apple-system,sans-serif;',
+    'opacity:0;transform:translateY(6px);transition:opacity .35s ease,transform .35s ease}',
+    '#mathis-nudge.on{opacity:1;transform:none}',
+    '.mathis-nudge-open{flex:1 1 auto;background:none;border:none;margin:0;padding:0;text-align:left;',
+    'cursor:pointer;color:inherit;font:inherit}',
+    '.mathis-nudge-x{flex:0 0 auto;background:none;border:none;color:var(--muted,#8b8b9a);font-size:15px;',
+    'line-height:1;cursor:pointer;padding:0}',
+    '.mathis-nudge-x:hover{color:var(--text,#e0e0e0)}',
+    '@media(prefers-reduced-motion:reduce){#mathis-nudge{transition:none}}',
     '#mathis-panel{position:fixed;right:18px;bottom:80px;z-index:' + (Z + 1) + ';width:400px;max-width:calc(100vw - 36px);',
     'height:560px;max-height:calc(100vh - 120px);display:none;flex-direction:column;border-radius:12px;overflow:hidden;',
     'background:var(--card,#14141c);border:1px solid var(--border,#2a2a35);box-shadow:0 18px 50px rgba(0,0,0,.55);',
@@ -214,9 +226,105 @@
       input.style.height = 'auto';
       input.style.height = Math.min(input.scrollHeight, 110) + 'px';
     });
+
+    nudgeTimers.push(setTimeout(showNudge, NUDGE_DELAY));
+  }
+
+  /* The one time Mathis speaks first.
+   *
+   * A green circle marked M in the corner of a division page is not an
+   * introduction. Somebody who has never clicked it has no reason to think it
+   * knows anything about the division they just walked into, and the people
+   * this is for are foremen and estimators, not a team that reads release
+   * notes. So on arriving, the bubble says who he is and what he is for, and
+   * then gets out of the way on its own.
+   *
+   * Once per division per tab, in sessionStorage beside the thread id and for
+   * the same reason: a greeting that returns on every reload stops being an
+   * introduction and becomes one more thing to close. Moving from paving to
+   * quarry IS arriving somewhere new, so that one speaks again.
+   *
+   * It claims nothing a click would not deliver — no figure, no count. Every
+   * number in this widget comes from a server digest, and a greeting fired
+   * before a single question has been asked has no digest behind it. */
+  var NUDGE_DELAY = 1100;              // let the page paint before he speaks
+  var NUDGE_LIFE  = 15000;             // long enough to notice mid-scroll, short enough to ignore
+  var nudgeEl = null;
+  var nudgeTimers = [];
+
+  function nudgeKey(d) { return 'fct_mathis_nudge_' + (d || 'personal'); }
+
+  /* A storage read that throws (private windows do) degrades to showing the
+   * greeting rather than to suppressing it: repeating an introduction is a
+   * smaller failure than never making one. */
+  function nudgeSeen(d) {
+    try { return sessionStorage.getItem(nudgeKey(d)) === '1'; } catch (e) { return false; }
+  }
+  function markNudgeSeen(d) {
+    try { sessionStorage.setItem(nudgeKey(d), '1'); } catch (e) {}
+  }
+
+  /* Also the cancel path: clearing the pending timer is what stops the bubble
+   * arriving on top of a panel somebody has already opened. */
+  function dismissNudge() {
+    nudgeTimers.forEach(function (t) { clearTimeout(t); });
+    nudgeTimers = [];
+    markNudgeSeen(division());
+    if (!nudgeEl) return;
+    var el = nudgeEl;
+    nudgeEl = null;
+    el.classList.remove('on');
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 400);
+  }
+
+  function nudgeText() {
+    var d = division();
+    if (!d || isPersonalPage()) return 'Hi, I\'m Mathis — ask me anything about your own entries.';
+    // A division with no figures behind it gets the plain introduction. The
+    // panel's own greeting is where the limit is stated honestly; promising
+    // "anything about trucking" out here would be a promise he cannot keep.
+    if (HAS_FIGURES.indexOf(d) < 0) return 'Hi, I\'m Mathis — ask me anything.';
+    return 'Hi, I\'m Mathis — ask me anything about ' + d.replace(/_/g, ' ') + '.';
+  }
+
+  function showNudge() {
+    var d = division();
+    if (state.open || nudgeEl || nudgeSeen(d)) return;
+    markNudgeSeen(d);
+
+    nudgeEl = document.createElement('div');
+    nudgeEl.id = 'mathis-nudge';
+    // status, not alert: announced when the reader gets to it, never stealing
+    // focus from the page somebody came here to read.
+    nudgeEl.setAttribute('role', 'status');
+
+    var open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'mathis-nudge-open';
+    open.textContent = nudgeText();
+    open.onclick = function () { if (!state.open) toggle(); else dismissNudge(); };
+
+    var x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'mathis-nudge-x';
+    x.setAttribute('aria-label', 'Dismiss');
+    x.innerHTML = '&times;';
+    x.onclick = dismissNudge;
+
+    nudgeEl.appendChild(open);
+    nudgeEl.appendChild(x);
+    document.body.appendChild(nudgeEl);
+
+    // A tick between the insert and the class is what makes this a fade in
+    // rather than something that was suddenly there.
+    nudgeTimers.push(setTimeout(function () {
+      if (nudgeEl) nudgeEl.classList.add('on');
+    }, 30));
+    nudgeTimers.push(setTimeout(dismissNudge, NUDGE_LIFE));
   }
 
   function toggle() {
+    dismissNudge();
     state.open = !state.open;
     panel.classList.toggle('on', state.open);
     if (state.open) {
