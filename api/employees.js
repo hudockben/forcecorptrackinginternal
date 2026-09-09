@@ -1,8 +1,14 @@
 'use strict';
 /**
  * GET    /api/employees                 — list all active employees for the company
- * PUT    /api/employees                 — full replace: sync entire employee array
- * POST   /api/employees                 — create a single employee
+ * PUT    /api/employees                 — full replace: sync entire employee array.
+ *                                         Names absent from the array are deleted;
+ *                                         `is_supervisor` is only moved when the
+ *                                         payload actually carries it, since a
+ *                                         division's roster save does not know
+ *                                         about a global role flag.
+ * POST   /api/employees                 — create a single employee (upserts by
+ *                                         name, with the same is_supervisor rule)
  * PATCH  /api/employees?name=X          — partial update of one employee's global
  *                                         role flags (`is_supervisor`, `is_driver`)
  *                                         and contact card (`phone`, `email`,
@@ -250,25 +256,37 @@ module.exports = async (req, res) => {
         }
       }
 
-      // Upsert each employee. Same rule as syncLists: the role flags and the
-      // contact card stay out of the UPDATE SET. This body is a division's
-      // roster save, it carries no phone number, and adding the columns here
-      // would blank the directory every time a list was saved.
+      // Upsert each employee. The contact card (phone, email, supervisor_name)
+      // stays out of the UPDATE SET entirely, same rule as syncLists: this body
+      // is a division's roster save, it carries no phone number, and naming
+      // those columns here would blank the directory every time a list was
+      // saved.
+      //
+      // is_supervisor is in the payload contract, so it cannot simply be
+      // dropped — but it is a GLOBAL flag set from Manage Users → Roles, and a
+      // roster save that does not mention it must not clear it. `undefined`
+      // therefore means "leave it", exactly as it does on the PATCH, and only a
+      // caller who actually sends the field moves it. Sending EXCLUDED.
+      // is_supervisor unconditionally is what un-flagged every supervisor in
+      // the company the moment anyone saved an employee list.
+      //
+      // is_driver is not in this statement at all, which is why it was never
+      // exposed to the same bug.
       for (const e of incoming) {
         const pwRate    = parseFloat(e.prevailing_rate    ?? e.pw_rate)    || null;
         const nonPwRate = parseFloat(e.non_prevailing_rate ?? e.non_pw_rate) || null;
-        const isSup     = Boolean(e.is_supervisor);
+        const isSup     = typeof e.is_supervisor === 'undefined' ? null : Boolean(e.is_supervisor);
         await sql`
           INSERT INTO employees (company_code, name, job_class, pw_rate, non_pw_rate, is_supervisor, sort_order, active, updated_at)
           VALUES (
             ${companyCode}, ${e.name.trim()}, ${e.job_class || null},
-            ${pwRate}, ${nonPwRate}, ${isSup}, ${e._i}, TRUE, NOW()
+            ${pwRate}, ${nonPwRate}, COALESCE(${isSup}::boolean, FALSE), ${e._i}, TRUE, NOW()
           )
           ON CONFLICT (company_code, name) DO UPDATE SET
             job_class     = EXCLUDED.job_class,
             pw_rate       = EXCLUDED.pw_rate,
             non_pw_rate   = EXCLUDED.non_pw_rate,
-            is_supervisor = EXCLUDED.is_supervisor,
+            is_supervisor = COALESCE(${isSup}::boolean, employees.is_supervisor),
             sort_order    = EXCLUDED.sort_order,
             active        = TRUE,
             updated_at    = NOW()
@@ -278,9 +296,14 @@ module.exports = async (req, res) => {
     }
 
     // ── POST (single create) ──────────────────────────────────────────────
+    // "Create" that upserts, so it lands on an existing person often enough to
+    // need the same rule the PUT does: an unmentioned is_supervisor is left
+    // alone rather than cleared.
     if (req.method === 'POST') {
       const { name, job_class, prevailing_rate, non_prevailing_rate, is_supervisor } = req.body || {};
       if (!name?.trim()) return res.status(400).json({ error: 'name required' });
+
+      const isSup = typeof is_supervisor === 'undefined' ? null : Boolean(is_supervisor);
 
       const [row] = await sql`
         INSERT INTO employees (company_code, name, job_class, pw_rate, non_pw_rate, is_supervisor, sort_order, active, updated_at)
@@ -288,7 +311,7 @@ module.exports = async (req, res) => {
           ${companyCode}, ${name.trim()}, ${job_class || null},
           ${parseFloat(prevailing_rate) || null},
           ${parseFloat(non_prevailing_rate) || null},
-          ${Boolean(is_supervisor)},
+          COALESCE(${isSup}::boolean, FALSE),
           (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM employees WHERE company_code = ${companyCode}),
           TRUE, NOW()
         )
@@ -296,7 +319,7 @@ module.exports = async (req, res) => {
           job_class     = EXCLUDED.job_class,
           pw_rate       = EXCLUDED.pw_rate,
           non_pw_rate   = EXCLUDED.non_pw_rate,
-          is_supervisor = EXCLUDED.is_supervisor,
+          is_supervisor = COALESCE(${isSup}::boolean, employees.is_supervisor),
           active        = TRUE,
           updated_at    = NOW()
         RETURNING id, name, job_class,

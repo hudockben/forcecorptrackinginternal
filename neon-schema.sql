@@ -951,7 +951,10 @@ CREATE INDEX IF NOT EXISTS idx_employees_supervisor ON employees(company_code, i
 -- blobs. Flagging the person once in "Manage Users → Drivers" (divisions.html)
 -- beats flagging them in three list blobs and having them disagree.
 -- syncLists in api/lib/sync-normalized.js deliberately leaves this column out
--- of its UPDATE SET so a per-division blob sync can never clear it.
+-- of its UPDATE SET so a per-division blob sync can never clear it. The same
+-- protection covers is_supervisor on the roster writes in api/employees.js:
+-- PUT and POST move that flag only when the payload actually carries it, since
+-- a division saving its employee list has no idea what it is set to.
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_driver BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_employees_driver ON employees(company_code, is_driver)
   WHERE is_driver = TRUE;

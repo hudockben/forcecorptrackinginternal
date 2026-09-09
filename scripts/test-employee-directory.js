@@ -23,6 +23,8 @@
  *   - the roster reaches this page from four places (the employees table,
  *     paving's and kiewit's list blobs, quarry_employees). Anyone in it must be
  *     editable, and anyone in it must appear exactly once.
+ *   - a division saving its employee list knows about neither the flags nor the
+ *     contact card, so its write must move neither unless it says so.
  */
 
 const fs     = require('fs');
@@ -225,7 +227,70 @@ async function patchTests() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// 3) GET — everyone on the roster, from wherever they were entered
+// 3) PUT / POST — a roster save is not a role change
+// ────────────────────────────────────────────────────────────────────────────
+async function rosterWriteTests() {
+  console.log('\n[PUT / POST — a roster save is not a role change]');
+
+  async function put(employees) {
+    NEXT_AUTH   = ADMIN;
+    CURRENT_SQL = recordingSql(text => (/SELECT name FROM employees/i.test(text) ? [] : []));
+    const res = mockRes();
+    await handler({ method: 'PUT', query: {}, headers: {}, body: { employees } }, res);
+    // The first statement is the existing-names read; the upserts follow.
+    return { res, upserts: CURRENT_SQL.calls.filter(c => /INSERT INTO employees/i.test(c.text)) };
+  }
+
+  {
+    const { res, upserts } = await put([{ name: 'Dale Smith', job_class: 'Foreman' }]);
+    assert('a roster save succeeds', res.statusCode === 200 && res.body.ok === true);
+    assert('and upserts the person', upserts.length === 1);
+    // The bug: EXCLUDED.is_supervisor sends whatever the VALUES list carried,
+    // and a payload with no flag in it carried FALSE — so saving an employee
+    // list un-flagged every supervisor in the company.
+    assert('the flag is left to COALESCE, not to EXCLUDED',
+      /is_supervisor\s*=\s*COALESCE\(\?::boolean, employees\.is_supervisor\)/.test(upserts[0].text)
+      && !/is_supervisor\s*=\s*EXCLUDED/.test(upserts[0].text),
+      upserts[0].text.match(/is_supervisor[^,]*/)[0]);
+    assert('and the parameter is null, meaning "not sent"',
+      upserts[0].values.includes(null));
+    assert('the columns it does own still come from EXCLUDED',
+      /job_class\s*=\s*EXCLUDED/.test(upserts[0].text)
+      && /pw_rate\s*=\s*EXCLUDED/.test(upserts[0].text)
+      && /sort_order\s*=\s*EXCLUDED/.test(upserts[0].text));
+    assert('and the contact card is not named at all',
+      !/\bphone\b/.test(upserts[0].text) && !/\bemail\b/.test(upserts[0].text)
+      && !/supervisor_name/.test(upserts[0].text));
+  }
+
+  {
+    // Absent must not become "ignored" — is_supervisor is in the PUT contract.
+    const { upserts } = await put([
+      { name: 'Ben Hudock',  is_supervisor: true },
+      { name: 'Dale Smith',  is_supervisor: false },
+      { name: 'Paving Pete' },
+    ]);
+    assert('a sent true reaches the statement',  upserts[0].values.includes(true));
+    assert('a sent false reaches it too',        upserts[1].values.includes(false));
+    assert('and an absent flag stays null',      upserts[2].values.includes(null));
+  }
+
+  {
+    // POST upserts by name, so it needs the same rule.
+    NEXT_AUTH   = ADMIN;
+    CURRENT_SQL = recordingSql(() => [{ id: 1, name: 'Dale Smith', is_supervisor: true }]);
+    const res = mockRes();
+    await handler({ method: 'POST', query: {}, headers: {}, body: { name: 'Dale Smith', job_class: 'Foreman' } }, res);
+    const stmt = CURRENT_SQL.calls[0];
+    assert('a POST succeeds', res.statusCode === 201, String(res.statusCode));
+    assert('and leaves an unmentioned flag to COALESCE',
+      /is_supervisor\s*=\s*COALESCE\(\?::boolean, employees\.is_supervisor\)/.test(stmt.text)
+      && stmt.values.includes(null));
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 4) GET — everyone on the roster, from wherever they were entered
 // ────────────────────────────────────────────────────────────────────────────
 async function getTests() {
   console.log('\n[GET — the merged roster]');
@@ -274,7 +339,7 @@ async function getTests() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// 4) The panel on divisions.html
+// 5) The panel on divisions.html
 // ────────────────────────────────────────────────────────────────────────────
 const PAGE = fs.readFileSync(path.resolve(__dirname, '..', 'divisions.html'), 'utf8');
 const SCRIPT = PAGE.slice(PAGE.indexOf('<script>') + 8, PAGE.lastIndexOf('</script>'));
@@ -555,6 +620,7 @@ async function behaviourTests() {
 (async () => {
   normalizeTests();
   await patchTests();
+  await rosterWriteTests();
   await getTests();
   structuralTests();
   await behaviourTests();

@@ -20,6 +20,8 @@
  *
  *   - the role flags survive a contact save, and the contact card survives a
  *     flag toggle (two screens, one row, and no ordering between them)
+ *   - and both survive a division saving its own employee list, which knows
+ *     about neither
  *   - a field can still be CLEARED, which is a different thing from not being
  *     sent, even though both arrive as null
  *
@@ -214,11 +216,14 @@ async function rowFor(name) {
 
   // ── 7. A division saving its roster must not wipe the directory ──────────
   // This is the failure nobody would notice for a month: paving saves its
-  // employee list, the blob carries no phone numbers, and every number in the
-  // company goes with it.
+  // employee list, the blob carries no phone numbers and no role flags, and
+  // every number and every supervisor in the company goes with it.
   console.log('\n[a division saves its roster]');
   {
     AUTH = ADMIN;
+    const before = await rowFor('Ben Hudock');
+    assert('Ben is flagged a supervisor before the save', before.is_supervisor === true);
+
     const res = mockRes();
     await handler({
       method: 'PUT', query: {}, headers: {},
@@ -232,21 +237,67 @@ async function rowFor(name) {
 
     const dale = await rowFor('Dale Smith');
     const pete = await rowFor('Paving Pete');
+    const ben  = await rowFor('Ben Hudock');
     assert('the job class it does own is updated',
       (await client.query(`SELECT job_class FROM employees WHERE name='Dale Smith'`)).rows[0].job_class === 'Foreman');
     assert('but the email survives',      dale.email === 'dale.smith@forcecorp.com');
     assert('and the reporting line',      dale.supervisor_name === 'Ben Hudock');
     assert('and so does Pete\'s number',  pete.phone === '814-555-7788');
+    // The bug: a payload that never mentions is_supervisor used to send FALSE
+    // for it, so saving an employee list un-flagged every supervisor in the
+    // company and emptied the Timesheet's supervisor picker.
+    assert('and a flag the payload never mentioned is left standing',
+      ben.is_supervisor === true);
+    assert('as is the Driver flag this statement does not touch',
+      dale.is_driver === true);
+  }
+
+  // ── 7b. A caller who DOES send the flag still moves it ───────────────────
+  // "Leave it alone when absent" must not turn into "ignore it when present" —
+  // is_supervisor is in the PUT's payload contract.
+  {
+    AUTH = ADMIN;
+    const res = mockRes();
+    await handler({
+      method: 'PUT', query: {}, headers: {},
+      body: { employees: [
+        { name: 'Dale Smith', job_class: 'Foreman' },
+        { name: 'Ben Hudock', is_supervisor: false },
+        { name: 'Paving Pete', is_supervisor: true },
+      ] },
+    }, res);
+    assert('a sent false un-flags him',   (await rowFor('Ben Hudock')).is_supervisor === false);
+    assert('a sent true flags him',       (await rowFor('Paving Pete')).is_supervisor === true);
+    assert('and the man with no flag in the payload is still untouched',
+      (await rowFor('Dale Smith')).is_supervisor === true);
+    assert('with the contact card intact throughout',
+      (await rowFor('Paving Pete')).phone === '814-555-7788');
+  }
+
+  // ── 7c. POST upserts an existing person the same way ─────────────────────
+  {
+    AUTH = ADMIN;
+    const res = mockRes();
+    await handler({
+      method: 'POST', query: {}, headers: {},
+      body: { name: 'Paving Pete', job_class: 'Raker' },
+    }, res);
+    const pete = await rowFor('Paving Pete');
+    assert('a POST onto an existing person succeeds', res.statusCode === 201, String(res.statusCode));
+    assert('and leaves his supervisor flag alone', pete.is_supervisor === true);
+    assert('and his contact card',                  pete.phone === '814-555-7788');
+
+    const res2 = mockRes();
+    await handler({
+      method: 'POST', query: {}, headers: {},
+      body: { name: 'Paving Pete', job_class: 'Raker', is_supervisor: false },
+    }, res2);
+    assert('but a POST that sends the flag still moves it',
+      (await rowFor('Paving Pete')).is_supervisor === false);
   }
 
   // ── 8. syncLists — the other way a roster blob reaches this table ────────
-  // Note the re-flag: unlike syncLists, the bulk PUT above DOES carry
-  // is_supervisor in its UPDATE SET, so a payload without the flag clears it.
-  // That is long-standing behaviour of the PUT contract and nothing in the app
-  // sends it today — it is set here so this step tests syncLists rather than
-  // the previous step's leftovers.
   {
-    await patch('Dale Smith', { is_supervisor: true });
     const { syncLists } = require(path.resolve(__dirname, '..', 'api', 'lib', 'sync-normalized.js'));
     if (typeof syncLists === 'function') {
       await syncLists(makeSql(client), 'FCT', { employees: [{ name: 'Dale Smith', job_class: 'Operator' }] });
