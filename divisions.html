@@ -613,6 +613,108 @@
     .sup-table th:last-child, .sup-table td:last-child { text-align: right; }
     .mu-note { font-size: 0.75rem; color: var(--muted); line-height: 1.55; }
 
+    /* ── Team Directory table ──
+       Narrower than the Manage Users matrix: five columns, not seventeen. */
+    .dir-modal { max-width: 1040px; }
+    .dir-table col.c-dir-name  { width: 23%; }
+    .dir-table col.c-dir-phone { width: 17%; }
+    .dir-table col.c-dir-email { width: 26%; }
+    .dir-table col.c-dir-sup   { width: 20%; }
+    .dir-table col.c-dir-act   { width: 14%; }
+    .dir-table td { vertical-align: middle; }
+    .dir-table th:last-child, .dir-table td:last-child { text-align: right; }
+    .dir-name {
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .dir-tag {
+      font-size: 0.52rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border-radius: 3px;
+      padding: 0.08rem 0.28rem;
+      flex-shrink: 0;
+    }
+    .dir-tag.sup { color: var(--green); background: rgba(34,197,94,0.14); }
+    .dir-tag.drv { color: #60a5fa;      background: rgba(96,165,250,0.14); }
+    /* A number you can dial and an address you can write to — the whole point
+       of holding them here rather than in six people's phones. */
+    .dir-link {
+      color: var(--text);
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: inline-block;
+      max-width: 100%;
+      vertical-align: bottom;
+    }
+    .dir-link:hover { color: var(--green); border-bottom-color: rgba(34,197,94,0.4); }
+    .dir-blank { color: #3d3d4d; }
+    .dir-table input.dir-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 0.3rem 0.4rem;
+      font-size: 0.76rem;
+      font-family: inherit;
+      outline: none;
+    }
+    .dir-table input.dir-input:focus { border-color: var(--green); }
+    .dir-actions { display: flex; gap: 0.28rem; justify-content: flex-end; }
+    .dir-cancel-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 3px;
+      padding: 0.15rem 0.4rem;
+      font-size: 0.66rem;
+      font-family: inherit;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .dir-cancel-btn:hover { color: var(--text); border-color: #555; }
+    .dir-table tbody tr.editing { background: rgba(34,197,94,0.05); }
+
+    /* ── Narrow screens: five columns don't fit, so each person becomes a
+       card carrying only the lines that are filled in. ── */
+    @media (max-width: 820px) {
+      .dir-table, .dir-table tbody, .dir-table tr, .dir-table td { display: block; width: auto; }
+      .dir-table colgroup, .dir-table thead { display: none; }
+      .dir-table tr {
+        border-bottom: 1px solid var(--border);
+        padding: 0.75rem 0.85rem;
+        position: relative;
+      }
+      .dir-table tbody tr:last-child { border-bottom: none; }
+      .dir-table td { border: none; padding: 0.12rem 0; text-align: left; }
+      .dir-table td[data-col="name"] { margin-bottom: 0.35rem; padding-right: 7rem; }
+      .dir-table td[data-col="actions"] { position: absolute; top: 0.7rem; right: 0.85rem; }
+      /* An empty line on a card is noise — drop it and keep the label on the
+         ones that carry something. */
+      .dir-table tr:not(.editing) td.dir-cell.is-blank { display: none; }
+      .dir-table td.dir-cell::before {
+        content: attr(data-col-label);
+        display: inline-block;
+        min-width: 5.4rem;
+        font-size: 0.58rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+      }
+      .dir-table td.mu-empty-cell { display: block; }
+      .dir-table td.mu-empty-cell::before { content: none; }
+    }
+
     /* Between ~1180 and 1300px the division columns get tight enough that a
        longer header like TRUCKING would butt into its neighbour — a smaller,
        unspaced label buys back the room without dropping to cards early. */
@@ -789,6 +891,44 @@
       font-size: 0.82rem;
       color: var(--muted);
       letter-spacing: 0.01em;
+    }
+
+    /* ── Team Directory entry ──
+       Deliberately quiet. This screen's job is to put someone into a division,
+       and a phone number is something you go looking for rather than something
+       that should compete with the six cards below it. So it reads as one more
+       line of small print until you point at it. */
+    .dir-entry {
+      margin-top: 1.4rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.42rem;
+      background: none;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 0.34rem 0.8rem;
+      font-family: inherit;
+      font-size: 0.63rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 0.18s, border-color 0.18s, background 0.18s;
+    }
+    .dir-entry:hover,
+    .dir-entry:focus-visible {
+      color: var(--green);
+      border-color: rgba(34,197,94,0.28);
+      background: rgba(34,197,94,0.05);
+      outline: none;
+    }
+    .dir-entry svg {
+      width: 13px;
+      height: 13px;
+      stroke: currentColor;
+      fill: none;
+      flex-shrink: 0;
     }
 
     /* ── Cards ── */
@@ -1307,6 +1447,78 @@
     </div>
   </div>
 
+  <!-- ── Team Directory modal ──
+       Names, cell numbers, email addresses and reporting lines for everyone on
+       the roster. It sits on the welcome screen rather than inside a division
+       because the answer to "what's Dale's cell?" does not depend on which
+       division you happen to be standing in, and because everyone lands here
+       first. Read-only for the field; company and platform admins get the
+       inline editor. -->
+  <div class="modal-backdrop" id="dirModalBackdrop">
+    <div class="modal dir-modal" role="dialog" aria-modal="true" aria-labelledby="dirTitle" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title" id="dirTitle">Team Directory</div>
+        <button class="modal-close" onclick="closeDirectory()" aria-label="Close">&#10005;</button>
+      </div>
+
+      <div class="mu-body" id="dirBody">
+        <div class="mu-panel active">
+
+          <div class="mu-toolbar">
+            <div class="mu-search">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input id="dir-search" type="text" placeholder="Search name, cell, email…" oninput="renderDirectory()" aria-label="Search the directory" />
+            </div>
+            <select class="mu-filter" id="dir-filter-sup" onchange="renderDirectory()" aria-label="Filter by supervisor">
+              <option value="">All supervisors</option>
+            </select>
+            <button class="mu-tool-btn" id="dir-export-btn" onclick="exportDirectoryXlsx()" title="Download what the table is showing">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Export
+            </button>
+            <span class="mu-count" id="dir-count"></span>
+          </div>
+
+          <div id="dir-status" class="mu-status"></div>
+
+          <div class="mu-table-wrap">
+            <table class="user-table dir-table">
+              <colgroup>
+                <col class="c-dir-name"><col class="c-dir-phone"><col class="c-dir-email">
+                <col class="c-dir-sup"><col class="c-dir-act">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Cell Phone</th>
+                  <th scope="col">Email</th>
+                  <th scope="col">Supervisor</th>
+                  <th scope="col"><span id="dir-act-head"></span></th>
+                </tr>
+              </thead>
+              <tbody id="dirListBody">
+                <tr><td colspan="5" class="mu-empty-cell">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Typing a supervisor is free text with suggestions rather than a
+               closed dropdown: most of the roster lives in a division's list
+               blob and has never been flagged, so a closed list would leave the
+               field unfillable for exactly the crews that need it. -->
+          <datalist id="dirSupervisorNames"></datalist>
+
+          <div class="mu-note" id="dir-note"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <main>
     <a href="executive.html" class="exec-entry" id="execEntry" aria-label="Open Executive Division">
       <div class="exec-entry-logo">
@@ -1325,6 +1537,15 @@
       <div class="welcome-eyebrow">Force Corp Operations</div>
       <div class="welcome-heading" id="welcomeHeading">Select a Division</div>
       <div class="welcome-sub" id="welcomeSub">Choose the line of business you want to access.</div>
+      <button class="dir-entry" id="directoryLink" onclick="openDirectory()" aria-label="Open the team directory">
+        <svg viewBox="0 0 24 24" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+        Team Directory
+      </button>
     </div>
 
     <div class="cards" id="cardsGrid"></div>
@@ -1812,9 +2033,16 @@
       if (e.target === this) closeUserModal();
     });
 
+    document.getElementById('dirModalBackdrop').addEventListener('click', function(e) {
+      if (e.target === this) closeDirectory();
+    });
+
     document.addEventListener('keydown', function(e) {
       if (e.key !== 'Escape') return;
       if (document.getElementById('userModalBackdrop').classList.contains('open')) closeUserModal();
+      // A row being edited swallows Escape itself (dirEditKey) so a stray key
+      // backs out of the row rather than the whole directory.
+      if (document.getElementById('dirModalBackdrop').classList.contains('open')) closeDirectory();
     });
 
     // Populate the division filter once, from the same key list the table uses.
@@ -2527,6 +2755,314 @@
       setTimeout(() => {
         if (result.textContent.startsWith('Exported')) result.textContent = '';
       }, 4000);
+    }
+
+    // ── Team Directory ──────────────────────────────────────────────────────
+    // Names, cell numbers, email addresses and reporting lines, read off the
+    // same /api/employees roster the Roles tab uses — so a man shows up here
+    // whichever division's list he was entered in, and appears exactly once.
+    // The three contact columns are written back one person at a time with the
+    // same PATCH the role toggles use; it upserts, so someone who exists only
+    // in paving's list blob gets a real employees row the first time anyone
+    // fills in his number.
+    let dirEmployees   = [];    // roster from /api/employees
+    let dirLoaded      = false;
+    let dirEditName    = null;  // the row currently in edit mode, by name
+    let dirStatusTimer = null;
+
+    // Same rule as the Manage Users button — company admins and platform
+    // admins maintain the card, everyone else reads it. The API enforces this
+    // too; hiding the buttons just keeps the field from being offered an edit
+    // that would come back 403.
+    const dirCanEdit = Boolean(user && (user.role === 'admin' || isPlatformAdmin));
+
+    function openDirectory() {
+      document.getElementById('dirModalBackdrop').classList.add('open');
+      dirEditName = null;
+      dirStatus('');
+      const search = document.getElementById('dir-search');
+      if (search) search.value = '';
+      document.getElementById('dir-act-head').textContent = dirCanEdit ? 'Edit' : '';
+      document.getElementById('dir-note').textContent = dirCanEdit
+        ? 'Edit a row to add a cell number, an email address, or who that person reports to. The Supervisor and Driver badges come from Manage Users → Roles.'
+        : 'Cell numbers and reporting lines are maintained by your administrator.';
+      document.getElementById('dirBody').scrollTop = 0;
+      // Returned rather than dropped so a caller can wait for the roster —
+      // the panel's tests open it and then look at the table.
+      return loadDirectory();
+    }
+
+    function closeDirectory() {
+      document.getElementById('dirModalBackdrop').classList.remove('open');
+      dirEditName = null;
+    }
+
+    async function loadDirectory() {
+      const tbody = document.getElementById('dirListBody');
+      tbody.innerHTML = '<tr><td colspan="5" class="mu-empty-cell">Loading…</td></tr>';
+      try {
+        const res  = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token}` } });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load the roster');
+        dirEmployees = (Array.isArray(data.employees) ? data.employees : [])
+          .filter(e => e && e.name)
+          .map(e => ({
+            name:            String(e.name),
+            phone:           e.phone           || '',
+            email:           e.email           || '',
+            supervisor_name: e.supervisor_name || '',
+            is_supervisor:   e.is_supervisor === true,
+            is_driver:       e.is_driver     === true,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+        dirLoaded = true;
+        syncSupervisorOptions();
+        renderDirectory();
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="5" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
+      }
+    }
+
+    // Two controls, one source: everyone flagged Supervisor in Manage Users →
+    // Roles, plus anyone already named as somebody's supervisor. That second
+    // half matters — a name typed in before the flag was set must not drop out
+    // of the filter and strand the people reporting to them.
+    function directorySupervisors() {
+      const names = new Map(); // lowercased → the spelling to show
+      dirEmployees.forEach(e => { if (e.is_supervisor) names.set(e.name.toLowerCase(), e.name); });
+      dirEmployees.forEach(e => {
+        const sup = (e.supervisor_name || '').trim();
+        if (sup && !names.has(sup.toLowerCase())) names.set(sup.toLowerCase(), sup);
+      });
+      return Array.from(names.values())
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    }
+
+    function syncSupervisorOptions() {
+      const sups = directorySupervisors();
+      const sel  = document.getElementById('dir-filter-sup');
+      const keep = sel.value;
+      sel.innerHTML = '<option value="">All supervisors</option>'
+        + sups.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('')
+        + '<option value="__none__">— No supervisor set —</option>';
+      // Leave the filter where it was, unless that supervisor is gone.
+      sel.value = Array.prototype.some.call(sel.options, o => o.value === keep) ? keep : '';
+      document.getElementById('dirSupervisorNames').innerHTML =
+        sups.map(n => `<option value="${escHtml(n)}"></option>`).join('');
+    }
+
+    // Shared by the table and the Excel export so the two can't disagree.
+    function dirFiltered() {
+      const q   = (document.getElementById('dir-search').value || '').toLowerCase().trim();
+      const sup = document.getElementById('dir-filter-sup').value;
+      const qDigits = q.replace(/\D/g, '');
+
+      return dirEmployees.filter(e => {
+        if (sup === '__none__') {
+          if ((e.supervisor_name || '').trim()) return false;
+        } else if (sup && (e.supervisor_name || '').toLowerCase() !== sup.toLowerCase()) {
+          return false;
+        }
+        if (!q) return true;
+        if ([e.name, e.phone, e.email, e.supervisor_name]
+              .some(v => String(v || '').toLowerCase().includes(q))) return true;
+        // Digits-only, so typing 8145550142 finds "(814) 555-0142". Three is
+        // the floor: fewer matches most of the roster and reads as broken.
+        return qDigits.length >= 3
+          && String(e.phone || '').replace(/\D/g, '').includes(qDigits);
+      });
+    }
+
+    function renderDirectory() {
+      if (!dirLoaded) return;
+      const tbody = document.getElementById('dirListBody');
+      const count = document.getElementById('dir-count');
+      const list  = dirFiltered();
+      const withPhone = dirEmployees.filter(e => e.phone).length;
+
+      count.textContent = dirEmployees.length
+        ? (list.length === dirEmployees.length
+            ? `${dirEmployees.length} ${dirEmployees.length === 1 ? 'person' : 'people'} · ${withPhone} with a cell number`
+            : `${list.length} of ${dirEmployees.length} people`)
+        : '';
+
+      if (!list.length) {
+        tbody.innerHTML = `<tr><td colspan="5" class="mu-empty-cell">${
+          dirEmployees.length ? 'No one matches.' : 'No employees on the roster yet.'}</td></tr>`;
+        return;
+      }
+
+      const editing = (dirEditName || '').toLowerCase();
+      tbody.innerHTML = list
+        .map(e => (editing && e.name.toLowerCase() === editing ? dirEditRow(e) : dirReadRow(e)))
+        .join('');
+    }
+
+    function dirTags(e) {
+      return (e.is_supervisor ? '<span class="dir-tag sup">Supervisor</span>' : '')
+           + (e.is_driver     ? '<span class="dir-tag drv">Driver</span>'     : '');
+    }
+
+    // tel: wants the number without the formatting a person reads it by, so
+    // the href is stripped to digits while the cell keeps what was typed —
+    // extensions and all.
+    function dirPhoneCell(phone) {
+      if (!phone) return '<span class="dir-blank">—</span>';
+      const dial = String(phone).replace(/[^\d+]/g, '');
+      return dial
+        ? `<a class="dir-link" href="tel:${escHtml(dial)}">${escHtml(phone)}</a>`
+        : escHtml(phone);
+    }
+
+    function dirEmailCell(email) {
+      if (!email) return '<span class="dir-blank">—</span>';
+      return `<a class="dir-link" href="mailto:${escHtml(email)}" title="${escHtml(email)}">${escHtml(email)}</a>`;
+    }
+
+    function dirReadRow(e) {
+      return `
+        <tr>
+          <td data-col="name"><div class="dir-name"><span>${escHtml(e.name)}</span>${dirTags(e)}</div></td>
+          <td class="dir-cell${e.phone ? '' : ' is-blank'}" data-col="phone" data-col-label="Cell">${dirPhoneCell(e.phone)}</td>
+          <td class="dir-cell${e.email ? '' : ' is-blank'}" data-col="email" data-col-label="Email">${dirEmailCell(e.email)}</td>
+          <td class="dir-cell${e.supervisor_name ? '' : ' is-blank'}" data-col="sup" data-col-label="Reports to">${
+            e.supervisor_name ? escHtml(e.supervisor_name) : '<span class="dir-blank">—</span>'}</td>
+          <td data-col="actions">${dirCanEdit ? `<div class="dir-actions">
+            <button class="user-edit-btn" data-dir-name="${escHtml(e.name)}" onclick="dirEdit(this)">Edit</button>
+          </div>` : ''}</td>
+        </tr>`;
+    }
+
+    function dirEditRow(e) {
+      return `
+        <tr class="editing">
+          <td data-col="name"><div class="dir-name"><span>${escHtml(e.name)}</span>${dirTags(e)}</div></td>
+          <td class="dir-cell" data-col="phone" data-col-label="Cell">
+            <input class="dir-input" id="dir-edit-phone" type="tel" value="${escHtml(e.phone)}"
+                   placeholder="(000) 000-0000" aria-label="Cell phone"
+                   data-dir-name="${escHtml(e.name)}" onkeydown="dirEditKey(event, this)" />
+          </td>
+          <td class="dir-cell" data-col="email" data-col-label="Email">
+            <input class="dir-input" id="dir-edit-email" type="email" value="${escHtml(e.email)}"
+                   placeholder="name@company.com" aria-label="Email address"
+                   data-dir-name="${escHtml(e.name)}" onkeydown="dirEditKey(event, this)" />
+          </td>
+          <td class="dir-cell" data-col="sup" data-col-label="Reports to">
+            <input class="dir-input" id="dir-edit-sup" list="dirSupervisorNames" value="${escHtml(e.supervisor_name)}"
+                   placeholder="Supervisor" aria-label="Supervisor"
+                   data-dir-name="${escHtml(e.name)}" onkeydown="dirEditKey(event, this)" />
+          </td>
+          <td data-col="actions">
+            <div class="dir-actions">
+              <button class="user-edit-btn" id="dir-save-btn" data-dir-name="${escHtml(e.name)}" onclick="dirSave(this)">Save</button>
+              <button class="dir-cancel-btn" onclick="dirCancelEdit()">Cancel</button>
+            </div>
+          </td>
+        </tr>`;
+    }
+
+    function dirEdit(el) {
+      if (!dirCanEdit) return;
+      dirEditName = el.dataset.dirName || null;
+      dirStatus('');
+      renderDirectory();
+      const phone = document.getElementById('dir-edit-phone');
+      if (phone) phone.focus();
+    }
+
+    function dirCancelEdit() {
+      dirEditName = null;
+      dirStatus('');
+      renderDirectory();
+    }
+
+    // Enter saves, Escape backs out of the row rather than closing the whole
+    // modal — losing a half-typed number to a stray Escape is the kind of
+    // thing that stops people filling the directory in at all.
+    function dirEditKey(ev, el) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const btn = document.getElementById('dir-save-btn');
+        if (btn) dirSave(btn);
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        dirCancelEdit();
+      }
+    }
+
+    async function dirSave(el) {
+      const name  = el.dataset.dirName || '';
+      const phone = (document.getElementById('dir-edit-phone') || {}).value || '';
+      const email = (document.getElementById('dir-edit-email') || {}).value || '';
+      const sup   = (document.getElementById('dir-edit-sup')   || {}).value || '';
+
+      el.disabled = true;
+      dirStatus('Saving…', 'ok', true);
+      try {
+        // All three go in one PATCH: the row is edited as a card, and three
+        // separate requests would leave a half-saved person behind whenever
+        // one of them failed.
+        const res  = await fetch('/api/employees?name=' + encodeURIComponent(name), {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body:    JSON.stringify({ phone, email, supervisor_name: sup }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
+
+        // Trust what came back rather than what was typed — the server trims
+        // and lower-cases, and the table should show what is actually stored.
+        const saved = data.employee || {};
+        const emp   = dirEmployees.find(x => x.name.toLowerCase() === name.toLowerCase());
+        if (emp) {
+          emp.phone           = saved.phone           || '';
+          emp.email           = saved.email           || '';
+          emp.supervisor_name = saved.supervisor_name || '';
+        }
+        dirEditName = null;
+        syncSupervisorOptions();
+        renderDirectory();
+        dirStatus(`Saved ${saved.name || name}.`, 'ok');
+      } catch (err) {
+        // The row stays open so nothing typed is lost.
+        el.disabled = false;
+        dirStatus(err.message, 'err');
+      }
+    }
+
+    function dirStatus(msg, kind, sticky) {
+      const el = document.getElementById('dir-status');
+      if (!el) return;
+      clearTimeout(dirStatusTimer);
+      el.textContent = msg || '';
+      el.className = 'mu-status' + (msg ? ' show ' + (kind || 'ok') : '');
+      if (msg && kind === 'ok' && !sticky) {
+        dirStatusTimer = setTimeout(() => {
+          el.textContent = '';
+          el.className = 'mu-status';
+        }, 4000);
+      }
+    }
+
+    // Exports exactly what the table is showing — search and filter included.
+    function exportDirectoryXlsx() {
+      const list = dirFiltered();
+      if (!list.length) { dirStatus('Nothing to export — no one matches.', 'err'); return; }
+
+      const co   = (user && (user.companyName || user.companyCode)) || 'company';
+      const slug = String(co).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'company';
+      _downloadXlsx([{
+        name:   'Directory',
+        header: ['Name', 'Cell Phone', 'Email', 'Reports To', 'Supervisor', 'Driver'],
+        rows:   list.map(e => [
+          e.name, e.phone, e.email, e.supervisor_name,
+          e.is_supervisor ? 'Yes' : 'No',
+          e.is_driver     ? 'Yes' : 'No',
+        ]),
+        widths: [26, 18, 30, 22, 13, 10],
+      }], `${slug}-team-directory-${_todayStamp()}.xlsx`);
+      dirStatus(`Exported ${list.length} ${list.length === 1 ? 'person' : 'people'} to Excel.`, 'ok');
     }
 
     // ── Sign out ────────────────────────────────────────────────────────────

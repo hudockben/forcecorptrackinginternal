@@ -116,13 +116,18 @@ async function syncLists(sql, companyCode, lists) {
     const pwRate    = typeof e === 'object' ? safeFloat(e.pw_rate    ?? e.pwRate)   : null;
     const nonPwRate = typeof e === 'object' ? safeFloat(e.non_pw_rate ?? e.nonPwRate): null;
 
-    // is_supervisor and is_driver are intentionally NOT in the UPDATE SET —
-    // both flags are managed globally via the divisions.html "Manage Users"
-    // modal and must survive every sync of the per-division employee list blob.
+    // is_supervisor, is_driver and the contact card (phone, email,
+    // supervisor_name) are intentionally NOT in the UPDATE SET — all of them
+    // are managed globally from divisions.html ("Manage Users" for the flags,
+    // "Team Directory" for the contact card) and must survive every sync of the
+    // per-division employee list blob.
     // is_driver especially: a driver hauls for turf, paving AND kiewit, and
     // those divisions each own a separate roster blob. If a blob sync could
     // clear the flag, saving the turf employee list would silently stop asking
-    // that driver the hauling question on every job he touches.
+    // that driver the hauling question on every job he touches. The contact
+    // columns are the same bargain with worse odds of anyone noticing: a blob
+    // carries no phone number to sync back, so listing them here would blank a
+    // number that exists nowhere else the moment a division saved its roster.
     await sql`
       INSERT INTO employees (company_code, name, job_class, rate, pw_rate, non_pw_rate, sort_order, updated_at)
       VALUES (${companyCode}, ${name}, ${jobClass}, ${rate}, ${pwRate}, ${nonPwRate}, ${i}, NOW())
