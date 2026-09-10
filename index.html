@@ -65,7 +65,7 @@
       pointer-events: none;
       background:
         radial-gradient(ellipse 60% 50% at 50% 110%, rgba(34,197,94,0.08), transparent 70%),
-        radial-gradient(ellipse 50% 40% at 50% -10%, rgba(34,197,94,0.05), transparent 70%),
+        radial-gradient(ellipse 50% 40% at 50% -10%, rgba(99,102,241,0.06), transparent 70%),
         linear-gradient(180deg, rgba(0,0,0,0.55) 0%, transparent 30%, transparent 70%, rgba(0,0,0,0.65) 100%);
     }
 
@@ -193,6 +193,9 @@
       margin-bottom: 2.75rem;
     }
     .tagline .gt { color: var(--green); margin-right: 0.5rem; }
+
+    /* The backdrop runs behind this copy, so hold the text off it. */
+    .tagline, .hud { text-shadow: 0 1px 10px rgba(0,0,0,0.85); }
 
     .specs {
       display: inline-block;
@@ -666,232 +669,167 @@
 
   </div>
 
-  <!-- ── Eastern seaboard background (states + PA/FL counties) ─── -->
+  <!-- ── Cadence backdrop ───────────────────────────────────────
+       Stacked output curves, drawn back to front so the near ridges
+       occlude the far ones. Each ridge takes its colour from a ramp
+       that runs indigo → blue → sky → teal → green, with green held
+       across the front third so the brand accent lands beside the
+       sign-in card. Wide colour wells composite over the top in
+       'lighter' to make the hues read as atmosphere, and a grain
+       pass breaks up gradient banding.
+  ──────────────────────────────────────────────────────────────── -->
   <script>
     (function () {
       const canvas = document.getElementById('bgCanvas');
       const ctx    = canvas.getContext('2d');
-      let W, H, cx, cy, frame = 0;
-      let states = null;
-      const countyLayers = [
-        { src: 'pa-counties.json', highlightFips: '063', features: null, highlightCenter: null },
-        { src: 'fl-counties.json', highlightFips: '011', features: null, highlightCenter: null }
+      const DPR    = Math.min(window.devicePixelRatio || 1, 2);
+      const still  = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      let W = 0, H = 0, clock = 0, last = 0, grain = null;
+
+      const RIDGES = 15;
+
+      const RAMP = [
+        [124, 131, 248],  // indigo
+        [ 96, 165, 250],  // blue
+        [ 56, 189, 248],  // sky
+        [ 45, 212, 191],  // teal
+        [ 34, 197,  94],  // green
+        [ 34, 197,  94],
+        [ 34, 197,  94]
       ];
-      const WESTON_LON = -80.3997, WESTON_LAT = 26.1003;
-      const LON_MIN = -82.5, LON_MAX = -66.5;
-      const LAT_MIN = 24.3,  LAT_MAX = 47.5;
-      const LAT_MID = (LAT_MIN + LAT_MAX) / 2;
-      const COS_MID = Math.cos(LAT_MID * Math.PI / 180);
-      let scale = 1, offX = 0, offY = 0;
-      let westonCenter = null;
-      const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+      const WELLS = [
+        { c: [124,131,248], x: 0.24, y: 0.20, r: 0.62, a: 0.102, sx: 0.000021, sy: 0.000017, px: 0.0, py: 1.1, ax: 0.10, ay: 0.07 },
+        { c: [ 56,189,248], x: 0.78, y: 0.28, r: 0.50, a: 0.082, sx: 0.000016, sy: 0.000024, px: 2.1, py: 0.4, ax: 0.08, ay: 0.09 },
+        { c: [ 45,212,191], x: 0.50, y: 0.54, r: 0.46, a: 0.065, sx: 0.000013, sy: 0.000019, px: 4.0, py: 2.6, ax: 0.12, ay: 0.06 },
+        { c: [ 34,197, 94], x: 0.52, y: 0.92, r: 0.70, a: 0.128, sx: 0.000011, sy: 0.000015, px: 5.3, py: 1.7, ax: 0.07, ay: 0.05 }
+      ];
+
+      function rampAt(u) {
+        const p = Math.max(0, Math.min(0.9999, u)) * (RAMP.length - 1);
+        const i = Math.floor(p), f = p - i;
+        const a = RAMP[i], b = RAMP[i + 1];
+        return Math.round(a[0] + (b[0] - a[0]) * f) + ',' +
+               Math.round(a[1] + (b[1] - a[1]) * f) + ',' +
+               Math.round(a[2] + (b[2] - a[2]) * f);
+      }
+
+      function makeGrain() {
+        const s = 128;
+        const c = document.createElement('canvas');
+        c.width = s; c.height = s;
+        const g = c.getContext('2d');
+        const img = g.createImageData(s, s);
+        for (let i = 0; i < img.data.length; i += 4) {
+          const v = 128 + (Math.random() - 0.5) * 255;
+          img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+          img.data[i + 3] = 18;
+        }
+        g.putImageData(img, 0, 0);
+        grain = ctx.createPattern(c, 'repeat');
+      }
 
       function resize() {
         W = window.innerWidth;
         H = window.innerHeight;
-        canvas.width  = W * DPR;
-        canvas.height = H * DPR;
+        canvas.width  = Math.round(W * DPR);
+        canvas.height = Math.round(H * DPR);
         canvas.style.width  = W + 'px';
         canvas.style.height = H + 'px';
         ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-
-        cx = W * 0.5;
-        cy = H * 0.5;
-
-        const boxW = Math.min(W * 0.95, 1400);
-        const boxH = Math.min(H * 1.05, 1100);
-        const lonSpan = (LON_MAX - LON_MIN) * COS_MID;
-        const latSpan = (LAT_MAX - LAT_MIN);
-        scale = Math.min(boxW / lonSpan, boxH / latSpan);
-        offX  = cx - ((LON_MIN + LON_MAX) / 2) * COS_MID * scale;
-        offY  = cy + ((LAT_MIN + LAT_MAX) / 2) * scale;
+        if (!grain) makeGrain();
+        if (still) draw();
       }
 
-      function project(lon, lat) {
-        return [lon * COS_MID * scale + offX, -lat * scale + offY];
-      }
+      function drawRidges(t) {
+        const top   = H * 0.30;
+        const gap   = (H * 0.78) / RIDGES;
+        const stepX = 14;
 
-      function polygonCentroid(ring) {
-        let a = 0, x = 0, y = 0;
-        for (let i = 0, n = ring.length, j = n - 1; i < n; j = i++) {
-          const [xi, yi] = ring[i];
-          const [xj, yj] = ring[j];
-          const f = xj * yi - xi * yj;
-          a += f;
-          x += (xj + xi) * f;
-          y += (yj + yi) * f;
-        }
-        a *= 0.5;
-        if (a === 0) return ring[0];
-        return [x / (6 * a), y / (6 * a)];
-      }
+        for (let r = 0; r < RIDGES; r++) {
+          const baseY = top + r * gap;
+          const seed  = r * 1.37;
+          const near  = r / (RIDGES - 1);
+          const amp   = gap * (1.0 + near * 0.9);
+          const speed = 0.00007 + r * 0.0000075;
+          const c     = rampAt(near);
 
-      function tracePolygon(rings) {
-        rings.forEach(ring => {
-          ring.forEach((pt, i) => {
-            const [px, py] = project(pt[0], pt[1]);
-            if (i === 0) ctx.moveTo(px, py);
-            else         ctx.lineTo(px, py);
-          });
+          ctx.beginPath();
+          ctx.moveTo(-20, H + 20);
+          for (let x = -20; x <= W + 20; x += stepX) {
+            const u = x * 0.0026;
+            const h =
+              Math.sin(u        + t * speed        + seed)       * 0.55 +
+              Math.sin(u * 2.3  - t * speed * 1.6  + seed * 2.1) * 0.28 +
+              Math.sin(u * 4.7  + t * speed * 0.7  + seed * 3.3) * 0.13 +
+              Math.sin(u * 9.1  - t * speed * 2.2  + seed)       * 0.06;
+            ctx.lineTo(x, baseY - h * amp);
+          }
+          ctx.lineTo(W + 20, H + 20);
           ctx.closePath();
-        });
+
+          // Opaque ground so this ridge hides the ones behind it.
+          ctx.fillStyle = 'rgba(5,6,8,0.94)';
+          ctx.fill();
+
+          const grd = ctx.createLinearGradient(0, baseY - amp, 0, baseY + gap);
+          grd.addColorStop(0, 'rgba(' + c + ',' + (0.128 * (0.4 + near)).toFixed(4) + ')');
+          grd.addColorStop(1, 'rgba(' + c + ',0)');
+          ctx.fillStyle = grd;
+          ctx.fill();
+
+          ctx.strokeStyle = 'rgba(' + c + ',' + (0.17 + near * 0.34).toFixed(4) + ')';
+          ctx.lineWidth   = 0.9 + near * 0.5;
+          ctx.stroke();
+        }
       }
 
-      function traceFeature(f) {
-        const g = f.geometry;
-        if (g.type === 'Polygon')      tracePolygon(g.coordinates);
-        else if (g.type === 'MultiPolygon') g.coordinates.forEach(tracePolygon);
-      }
-
-      function computeCenters() {
-        countyLayers.forEach(layer => {
-          layer.highlightCenter = null;
-          if (!layer.features) return;
-          const hit = layer.features.find(f => f.properties.fips === layer.highlightFips);
-          if (!hit) return;
-          const g = hit.geometry;
-          const ring = g.type === 'Polygon'
-            ? g.coordinates[0]
-            : g.coordinates.reduce((b, r) => r[0].length > b.length ? r[0] : b, g.coordinates[0][0]);
-          const c = polygonCentroid(ring);
-          layer.highlightCenter = project(c[0], c[1]);
-        });
-        westonCenter = project(WESTON_LON, WESTON_LAT);
-      }
-
-      function drawPulse(center, phaseOffset) {
-        if (!center) return;
-        const [px, py] = center;
-
-        // outer rings (green to match scheme)
-        const t  = ((frame + phaseOffset) % 110) / 110;
-        ctx.beginPath();
-        ctx.arc(px, py, 4 + t * 34, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(34,197,94,${((1 - t) * 0.55).toFixed(3)})`;
-        ctx.lineWidth   = 1.2;
-        ctx.stroke();
-
-        const t2 = ((frame + phaseOffset + 55) % 110) / 110;
-        ctx.beginPath();
-        ctx.arc(px, py, 4 + t2 * 34, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(34,197,94,${((1 - t2) * 0.4).toFixed(3)})`;
-        ctx.lineWidth   = 1.0;
-        ctx.stroke();
-
-        // glow
-        const glow = ctx.createRadialGradient(px, py, 0, px, py, 22);
-        glow.addColorStop(0, 'rgba(34,197,94,0.45)');
-        glow.addColorStop(1, 'rgba(34,197,94,0)');
-        ctx.fillStyle = glow;
-        ctx.beginPath();
-        ctx.arc(px, py, 22, 0, Math.PI * 2);
-        ctx.fill();
-
-        // center dot
-        ctx.beginPath();
-        ctx.arc(px, py, 3, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255,255,255,0.95)';
-        ctx.fill();
-
-        // crosshair tick marks
-        ctx.strokeStyle = 'rgba(34,197,94,0.5)';
-        ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.moveTo(px - 10, py); ctx.lineTo(px - 6, py);
-        ctx.moveTo(px + 6, py);  ctx.lineTo(px + 10, py);
-        ctx.moveTo(px, py - 10); ctx.lineTo(px, py - 6);
-        ctx.moveTo(px, py + 6);  ctx.lineTo(px, py + 10);
-        ctx.stroke();
+      function drawWells(t) {
+        const min = Math.min(W, H);
+        ctx.globalCompositeOperation = 'lighter';
+        for (const b of WELLS) {
+          const x = W * b.x + Math.sin(t * b.sx + b.px) * W * b.ax;
+          const y = H * b.y + Math.cos(t * b.sy + b.py) * H * b.ay;
+          const rad = min * b.r;
+          const c = b.c.join(',');
+          const grd = ctx.createRadialGradient(x, y, 0, x, y, rad);
+          grd.addColorStop(0,   'rgba(' + c + ',' + b.a.toFixed(4) + ')');
+          grd.addColorStop(0.5, 'rgba(' + c + ',' + (b.a * 0.30).toFixed(4) + ')');
+          grd.addColorStop(1,   'rgba(' + c + ',0)');
+          ctx.fillStyle = grd;
+          ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+        }
+        ctx.globalCompositeOperation = 'source-over';
       }
 
       function draw() {
         ctx.clearRect(0, 0, W, H);
-        frame++;
-
-        if (!states) { requestAnimationFrame(draw); return; }
-
         ctx.lineJoin = 'round';
         ctx.lineCap  = 'round';
 
-        // Very faint state fills
-        ctx.fillStyle = 'rgba(34,197,94,0.018)';
-        states.forEach(f => {
-          ctx.beginPath();
-          traceFeature(f);
-          ctx.fill();
-        });
+        drawRidges(clock);
+        drawWells(clock);
 
-        // County fills + outlines for detail layers (PA, FL)
-        const pulseT = 0.5 + 0.5 * Math.sin(frame * 0.06);
-        countyLayers.forEach(layer => {
-          if (!layer.features) return;
-
-          // Faint county fills
-          ctx.fillStyle = 'rgba(34,197,94,0.025)';
-          layer.features.forEach(f => {
-            ctx.beginPath();
-            traceFeature(f);
-            ctx.fill();
-          });
-
-          // Highlighted county fill (green pulse)
-          const hit = layer.features.find(f => f.properties.fips === layer.highlightFips);
-          if (hit) {
-            ctx.beginPath();
-            traceFeature(hit);
-            ctx.fillStyle = `rgba(34,197,94,${(0.10 + 0.18 * pulseT).toFixed(3)})`;
-            ctx.fill();
-          }
-
-          // County borders (thin white)
-          ctx.strokeStyle = 'rgba(255,255,255,0.07)';
-          ctx.lineWidth   = 0.6;
-          layer.features.forEach(f => {
-            ctx.beginPath();
-            traceFeature(f);
-            ctx.stroke();
-          });
-
-          // Highlighted county outline (bright green)
-          if (hit) {
-            ctx.beginPath();
-            traceFeature(hit);
-            ctx.strokeStyle = 'rgba(34,197,94,0.9)';
-            ctx.lineWidth   = 1.4;
-            ctx.stroke();
-          }
-        });
-
-        // State outlines (white, more prominent on dark bg)
-        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
-        ctx.lineWidth   = 1.1;
-        states.forEach(f => {
-          ctx.beginPath();
-          traceFeature(f);
-          ctx.stroke();
-        });
-
-        // Active site pulses
-        drawPulse(countyLayers[0].highlightCenter, 0);   // Indiana, PA
-        drawPulse(westonCenter, 38);                     // Weston, FL
-
-        requestAnimationFrame(draw);
+        if (grain) {
+          ctx.globalAlpha = 0.45;
+          ctx.fillStyle = grain;
+          ctx.fillRect(0, 0, W, H);
+          ctx.globalAlpha = 1;
+        }
       }
 
-      window.addEventListener('resize', () => { resize(); computeCenters(); });
+      function frame(now) {
+        clock += last ? Math.min(now - last, 64) : 16;
+        last = now;
+        draw();
+        requestAnimationFrame(frame);
+      }
 
-      Promise.all([
-        fetch('eastern-seaboard.json').then(r => r.json()).catch(() => null),
-        ...countyLayers.map(l => fetch(l.src).then(r => r.json()).catch(() => null))
-      ]).then(([statesGeo, ...layerGeos]) => {
-        if (statesGeo) states = statesGeo.features;
-        layerGeos.forEach((geo, i) => { if (geo) countyLayers[i].features = geo.features; });
-        resize();
-        computeCenters();
-      });
-
+      window.addEventListener('resize', resize);
       resize();
-      draw();
+      if (still) draw();
+      else requestAnimationFrame(frame);
     })();
   </script>
 
