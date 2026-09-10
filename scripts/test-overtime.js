@@ -419,5 +419,66 @@ console.log('\n[the week band survives being printed]');
     /week-band[\s\S]{0,600}font-size/.test(printBlock));
 }
 
+// ── Two entries on one date ─────────────────────────────────────────────────
+// A split day is two rows sharing a work_date, and the walk counts them in
+// sequence: whichever sorts first keeps the regular hours and the other takes
+// the overtime. If the order is not pinned, the answer falls to however the
+// database returned the rows — and the executive report disagrees with the
+// Payroll page about the same driver's same day.
+console.log('\n[a split day is counted in a fixed order, not the order it arrived]');
+{
+  const split = (id, hours, pw, created_at) => ({
+    id, created_at, username: 'kris', entry_type: 'daily', status: 'approved',
+    division: 'turf', work_date: FRI, computed_hours: hours, travel_hours: 0,
+    prevailing_wage: pw, haul_type: null,
+  });
+  // Thirty-six hours in by Thursday. Friday is two blocks totalling eight, so
+  // four of them are overtime — and WHICH four decides how much prevailing
+  // overtime he is owed.
+  const upTo36 = [
+    entry(MON, { computed_hours: 9 }), entry(TUE, { computed_hours: 9 }),
+    entry(WED, { computed_hours: 9 }), entry(THU, { computed_hours: 9 }),
+  ];
+  const first  = split('b', 4, false, '2026-08-28T07:00:00Z');
+  const second = split('a', 4, true,  '2026-08-28T12:00:00Z');
+
+  const forwards  = ot([...upTo36, first, second]);
+  const backwards = ot([...upTo36, second, first]);
+  assert('the same two blocks give the same answer whichever order they arrive in',
+    near(forwards.otHours, backwards.otHours)
+    && near(forwards.otPwHours, backwards.otPwHours),
+    `${forwards.otPwHours} vs ${backwards.otPwHours}`);
+  assert('  and it is the LATER block that carries the overtime',
+    near(forwards.otHours, 4) && near(forwards.otPwHours, 4),
+    `ot=${forwards.otHours} pw=${forwards.otPwHours}`);
+
+  // With no created_at at all the comparator must still be deterministic, or a
+  // caller that forgets the column silently gets a different answer.
+  const noStamp = [split('b', 4, false), split('a', 4, true)];
+  const byId    = ot([...upTo36, ...noStamp]);
+  const byIdRev = ot([...upTo36, ...noStamp.slice().reverse()]);
+  assert('with no timestamps it falls through to id and is still deterministic',
+    near(byId.otPwHours, byIdRev.otPwHours), `${byId.otPwHours} vs ${byIdRev.otPwHours}`);
+
+  assert('payroll.html sorts by the same three keys',
+    /a\.work_date[\s\S]{0,220}a\.created_at[\s\S]{0,220}a\.id/.test(PAGE));
+
+  // Both server callers have to SELECT what the comparator sorts on, and order
+  // the rows themselves — the column list is explicit, so omitting one is
+  // silent.
+  const consumers = ['../api/executive/report.js', '../api/lib/mathis-digests.js'];
+  for (const rel of consumers) {
+    const src = fs.readFileSync(path.resolve(__dirname, rel), 'utf8');
+    // Anchor on the call, not on the table: report.js reads timesheet_entries
+    // for the truck grid as well, and that query is nowhere near this one.
+    const call = src.indexOf('payrollMetrics({');
+    const q    = src.slice(src.lastIndexOf('SELECT', call), call);
+    assert(`  ${rel.split('/').pop()} selects created_at and id`,
+      /\bcreated_at\b/.test(q) && /\bid\b/.test(q));
+    assert(`  ${rel.split('/').pop()} orders the rows it hands to payrollMetrics`,
+      /ORDER BY work_date, created_at, id/.test(q));
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

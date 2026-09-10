@@ -1570,12 +1570,21 @@ async function buildPayrollSummary(sql, companyCode) {
       -- pays his whole day at standard while the Payroll page pays part of it
       -- at prevailing.
       haul_type,
-      haul_hours::float                  AS haul_hours
+      haul_hours::float                  AS haul_hours,
+      -- id and created_at are here for the ORDER the overtime walk needs, not
+      -- for display. Two entries on one date — a split day — are counted in
+      -- sequence, and whichever comes first keeps the regular hours while the
+      -- other takes the overtime. Without these the rows arrive in whatever
+      -- order the database chose and this report can disagree with the Payroll
+      -- page about which of a driver's two blocks was the overtime one.
+      id,
+      created_at
     FROM timesheet_entries
     WHERE company_code = ${companyCode}
       AND status IN ('submitted', 'approved')
       AND work_date >= ${startIso}::date
       AND work_date <= ${endIso}::date
+    ORDER BY work_date, created_at, id
   `);
 
   const entries = rows || [];

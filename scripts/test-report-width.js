@@ -201,6 +201,86 @@ const PRINT_PX = 979;
   assert('  and is opaque, so nothing scrolls through underneath it',
     !/rgba\(0, 0, 0, 0\)/.test(held.background), held.background);
 
+  // ── Nothing leaks into the nested detail table ──
+  // The per-employee detail is a second table inside a CELL of the first, with
+  // its own thead and tbody. Written as descendant selectors, the sticky rule
+  // and the group dividers both reached into it: the detail's Date heading went
+  // sticky while its body cells did not, so the heading floated over other
+  // columns, and dividers landed on column edges that are not group edges.
+  console.log('\n[the nested detail table is left alone]');
+  await load(1440, 'screen');
+  const leak = await page.evaluate(() => {
+    const d = document.querySelector('.report-detail-table');
+    const heads = [...d.querySelectorAll(':scope > thead > tr > th')];
+    return {
+      datePosition: getComputedStyle(heads[0]).position,
+      bordered: heads.map((th, i) => ({ i: i + 1, h: th.textContent.replace(/\s+/g, ' ').trim(),
+                                        w: getComputedStyle(th).borderRightWidth }))
+                     .filter(x => x.w !== '0px').map(x => x.i),
+    };
+  });
+  assert('the detail\'s Date heading is not sticky — only the summary has a name column',
+    leak.datePosition === 'static', leak.datePosition);
+  // Project | ... | Total | OT | ... — the detail's own three group edges.
+  assert('and its dividers sit only on its own group edges',
+    JSON.stringify(leak.bordered) === JSON.stringify([3, 8, 9]),
+    'got columns ' + JSON.stringify(leak.bordered));
+
+  // ── The scroll cue is one that actually renders ──
+  // The first attempt faded the content into var(--surface) using a background
+  // on the scroller — which paints BEHIND the table, on a card that is already
+  // that exact colour, so it drew nothing at all.
+  console.log('\n[the scroll cue is visible]');
+  await load(900, 'screen');
+  const cue = await page.evaluate(() => {
+    const sc   = document.querySelector('.report-scroll');
+    const name = document.querySelector('.report tbody td.name');
+    return {
+      backgroundImage: getComputedStyle(sc).backgroundImage,
+      cardBackground:  getComputedStyle(document.querySelector('.report')).backgroundColor,
+      shadow:          getComputedStyle(name).boxShadow,
+    };
+  });
+  assert('no background gradient pretending to be a fade',
+    cue.backgroundImage === 'none', cue.backgroundImage.slice(0, 60));
+  assert('the sticky column casts a shadow, so figures visibly pass under it',
+    cue.shadow && cue.shadow !== 'none', cue.shadow);
+
+  // ── The executive report prints the same fifteen columns ──
+  // .ptable-wrap prints with overflow VISIBLE, so anything too wide is not
+  // scrolled off the PDF — it is cut off it, silently, every month.
+  console.log('\n[the executive PDF carries all fifteen columns too]');
+  const EXEC = fs.readFileSync(path.join(ROOT, 'executive.html'), 'utf8');
+  const stripI = t => { let prev; do { prev = t; t = t.replace(/\$\{[^{}]*\}/g, ''); } while (t !== prev); return t.replace(/`/g, ''); };
+  const sec  = EXEC.slice(EXEC.indexOf('function renderPayrollSection'));
+  const eHead = stripI(sec.match(/<thead>[\s\S]*?<\/thead>/)[0]);
+  const eRow  = stripI(sec.match(/<tr[\s\S]*?<\/tr>/)[0]);
+  // The widest content these cells realistically carry.
+  const EV = ['shuffstallmatt', '190.50', '10.00', '10.00', '20.00', '190.50', '185.25',
+    '15.25', '116.50', '14.25', '174.00', '10.00', '190.50', '12 pending / 34 approved',
+    '216.75 h pending'];
+  let n = 0;
+  const eBody = eRow.replace(/(<td[^>]*>)(\s*)(<\/td>)/g, (m, o, _w, c) => o + (EV[n++] ?? '') + c);
+  const eCss  = [...EXEC.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
+  await page.setViewport({ width: 400, height: 900 });   // narrow: measures min-content
+  await page.setContent(`<!doctype html><html><head><style>${eCss}</style></head><body><main>` +
+    `<div class="section"><div class="ptable-wrap"><table class="ptable">${eHead}` +
+    `<tbody>${eBody}</tbody></table></div></div></main></body></html>`, { waitUntil: 'load' });
+  await page.emulateMediaType('print');
+  const ex = await page.evaluate(() => {
+    const t = document.querySelector('.ptable');
+    return { need: Math.round(t.scrollWidth),
+             cols: t.querySelectorAll('thead th').length,
+             wrap: getComputedStyle(t.querySelector('thead th')).whiteSpace,
+             overflow: getComputedStyle(document.querySelector('.ptable-wrap')).overflowX };
+  });
+  console.log(`  the executive payroll table wants ${ex.need}px at its narrowest`);
+  assert('it is the same fifteen columns as the Payroll page', ex.cols === 15, `got ${ex.cols}`);
+  assert('  its headings wrap, so the figures set the column widths',
+    ex.wrap !== 'nowrap', ex.wrap);
+  assert(`  and it fits the ${PRINT_PX}px page — this table has no scrollbar to fall back on (overflow ${ex.overflow})`,
+    ex.need <= PRINT_PX, `${ex.need}px > ${PRINT_PX}px`);
+
   await browser.close();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

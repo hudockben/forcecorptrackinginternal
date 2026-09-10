@@ -130,9 +130,25 @@ function weekEndOf(weekStart) {
   return t.toISOString().slice(0, 10);
 }
 
+/**
+ * Oldest first, and DETERMINISTIC when two entries share a date.
+ *
+ * This order decides which hours are the overtime ones — the walk stops
+ * counting regular at the fortieth hour, so on a day that straddles it the
+ * entry sorted first keeps the regular hours and the other takes the overtime.
+ * A split day is two rows on one date, which is exactly the case where the
+ * question is live.
+ *
+ * `id` is the last resort because it is the only field every caller has: a
+ * caller that forgets to SELECT created_at would otherwise leave two rows
+ * comparing equal, and the answer would fall to whatever order the database
+ * happened to return them in — different from the Payroll page's, for the same
+ * fortnight, with nothing to show why.
+ */
 function byDateThenCreated(a, b) {
-  return String(a.work_date || '').localeCompare(String(b.work_date || ''))
-      || String(a.created_at || '').localeCompare(String(b.created_at || ''));
+  return String(a.work_date  || '').localeCompare(String(b.work_date  || ''))
+      || String(a.created_at || '').localeCompare(String(b.created_at || ''))
+      || String(a.id         || '').localeCompare(String(b.id         || ''));
 }
 
 /**

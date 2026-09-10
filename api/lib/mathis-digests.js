@@ -1091,12 +1091,18 @@ async function payrollDigest(c) {
              travel_to_site_hours::float AS travel_to_site_hours,
              travel_to_shop_hours::float AS travel_to_shop_hours,
              haul_type,
-             haul_hours::float           AS haul_hours
+             haul_hours::float           AS haul_hours,
+             -- For the ORDER the overtime walk needs, not for display: two
+             -- entries on one date are counted in sequence, and the first keeps
+             -- the regular hours while the second takes the overtime.
+             id,
+             created_at
         FROM timesheet_entries
        WHERE company_code = ${c.companyCode}
          AND status IN ('submitted', 'approved')
          AND work_date >= ${startIso}::date
          AND work_date <= ${endIso}::date
+       ORDER BY work_date, created_at, id
     `;
   } catch (err) {
     console.error('[mathis] payroll entries failed:', err.message);

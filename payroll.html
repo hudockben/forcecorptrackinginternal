@@ -554,35 +554,47 @@
        which is wider than the card on a laptop screen. Scroll it sideways
        rather than letting the status column fall off the edge. */
     /* When the table still will not fit — a laptop, a split screen — it
-       scrolls, and the two things that keep a scrolled table readable are a
-       header that stays put and a name column that does. The fade on the right
-       edge says there is more; without it the table simply appeared to end. */
+       scrolls. A visible scrollbar says so; the default overlay one on macOS
+       appears only once you are already scrolling, which is too late to be a
+       cue. */
     .report-scroll {
       overflow-x: auto;
       position: relative;
-      background:
-        linear-gradient(to left, var(--surface), rgba(20,20,29,0)) right center / 28px 100% no-repeat,
-        linear-gradient(to right, var(--surface), rgba(20,20,29,0)) left center / 28px 100% no-repeat;
-      background-attachment: local, local;
+      scrollbar-color: var(--border) transparent;
     }
+    .report-scroll::-webkit-scrollbar        { height: 10px; }
+    .report-scroll::-webkit-scrollbar-track  { background: var(--surface2); border-radius: 5px; }
+    .report-scroll::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 5px; }
+    .report-scroll::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+    /* EVERY SELECTOR BELOW IS A CHILD CHAIN, and has to stay one. The
+       per-employee detail is a whole second table nested inside a cell of this
+       one, with its own thead and its own tbody, so `.report thead th` reaches
+       into it: written as descendant selectors these made the detail's Date
+       heading sticky while its body cells were not, and scattered the group
+       rules across columns that are not group edges. */
+
     /* Employee is the row's subject; scrolled off, every figure to its right
        belongs to nobody. Both header and body cells have to be sticky, and the
-       header's z-index has to beat the body's or the two overlap at the corner. */
-    .report thead th:first-child,
-    .report tbody td.name,
-    .report tfoot td.name {
+       header's z-index has to beat the body's or the two overlap at the corner.
+       The fill must be opaque or the figures scroll through underneath, and the
+       shadow is what shows they are passing under it rather than ending. */
+    .report > .report-scroll > table > thead > tr > th:first-child,
+    .report > .report-scroll > table > tbody > tr > td.name,
+    .report > .report-scroll > table > tfoot > tr > td.name {
       position: sticky;
       left: 0;
       z-index: 1;
       background: var(--surface);
+      box-shadow: 6px 0 8px -6px rgba(0,0,0,0.65);
     }
-    .report thead th:first-child { background: var(--surface2); z-index: 3; }
-    .report tr.total td.name     { background: var(--surface2); }
+    .report > .report-scroll > table > thead > tr > th:first-child { background: var(--surface2); z-index: 3; }
+    .report > .report-scroll > table > tfoot > tr.total > td.name  { background: var(--surface2); }
     /* The sticky column needs its own right edge — the cell borders scroll away
        underneath it and the names would sit on top of the figures. */
-    .report thead th:first-child::after,
-    .report tbody td.name::after,
-    .report tfoot td.name::after {
+    .report > .report-scroll > table > thead > tr > th:first-child::after,
+    .report > .report-scroll > table > tbody > tr > td.name::after,
+    .report > .report-scroll > table > tfoot > tr > td.name::after {
       content: '';
       position: absolute;
       top: 0; right: 0; bottom: -1px;
@@ -592,15 +604,15 @@
        break them into the four questions the table actually answers: how long
        he was on the clock, how much of it was overtime, what rate it is paid
        at, and where it stands for approval. */
-    .report thead th:nth-child(6),
-    .report tbody td:nth-child(6),
-    .report tfoot td:nth-child(6),
-    .report thead th:nth-child(8),
-    .report tbody td:nth-child(8),
-    .report tfoot td:nth-child(8),
-    .report thead th:nth-child(11),
-    .report tbody td:nth-child(11),
-    .report tfoot td:nth-child(11) { border-right: 1px solid var(--border); }
+    .report > .report-scroll > table > thead > tr > th:nth-child(6),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(6),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(6),
+    .report > .report-scroll > table > thead > tr > th:nth-child(8),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(8),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(8),
+    .report > .report-scroll > table > thead > tr > th:nth-child(11),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(11),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(11) { border-right: 1px solid var(--border); }
     .report table {
       width: 100%;
       border-collapse: collapse;
@@ -811,16 +823,16 @@
          carry a dark surface colour for the dark theme; left alone the employee
          column printed as a black bar down the page. */
       .report-scroll { overflow: visible !important; background: none !important; }
-      .report thead th:first-child,
-      .report tbody td.name,
-      .report tfoot td.name,
-      .report tr.total td.name {
+      .report > .report-scroll > table > thead > tr > th:first-child,
+      .report > .report-scroll > table > tbody > tr > td.name,
+      .report > .report-scroll > table > tfoot > tr > td.name {
         position: static !important;
         background: transparent !important;
+        box-shadow: none !important;
       }
-      .report thead th:first-child::after,
-      .report tbody td.name::after,
-      .report tfoot td.name::after { display: none !important; }
+      .report > .report-scroll > table > thead > tr > th:first-child::after,
+      .report > .report-scroll > table > tbody > tr > td.name::after,
+      .report > .report-scroll > table > tfoot > tr > td.name::after { display: none !important; }
       /* The group rules stay — they are as useful on paper as on screen — but
          in the print palette, not the dark one. */
       .report thead th, .report tbody td, .report tfoot td,
@@ -4990,9 +5002,15 @@
 
       const weeks = [];
       for (const wk of [...byWeek.keys()].sort()) {
+        // Oldest first, and deterministic when two entries share a date — a
+        // split day is two rows on one date, and this order decides which of
+        // them keeps the regular hours and which takes the overtime. Falls
+        // through to id so the answer can never depend on the order the rows
+        // arrived in. Mirrors byDateThenCreated in api/lib/payroll-metrics.js.
         const list = byWeek.get(wk).slice().sort((a, b) =>
-          String(a.work_date || '').localeCompare(String(b.work_date || '')) ||
-          String(a.created_at || '').localeCompare(String(b.created_at || '')));
+          String(a.work_date  || '').localeCompare(String(b.work_date  || '')) ||
+          String(a.created_at || '').localeCompare(String(b.created_at || '')) ||
+          String(a.id         || '').localeCompare(String(b.id         || '')));
         let cum = 0, totalHours = 0, otHours = 0, otPwHours = 0, otStdHours = 0;
         const rows = [];
         for (const e of list) {
