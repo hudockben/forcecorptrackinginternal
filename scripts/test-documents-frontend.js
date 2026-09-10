@@ -200,7 +200,9 @@ console.log('\n[documents.js upload sequence]');
     calls[2].url.includes('/api/documents') && calls[2].method === 'POST',
     calls[2].url);
 
-  // The whole reason the flow has three steps.
+  // The whole reason the flow has three steps. There is a relay fallback for
+  // a bucket that refuses the direct PUT (asserted further down), but it must
+  // never be what happens when the bucket is reachable.
   const bytesThroughApi = calls.some(c => c.url.includes('/api/') && c.rawBody);
   assert('file bytes never pass through /api', !bytesThroughApi);
   assert('the file itself is the body of the storage PUT', calls[1].rawBody === file);
@@ -237,6 +239,113 @@ console.log('\n[documents.js upload sequence]');
   assert('folder seeding is not gated on the host page\'s perm',
     !/if \(cfg\.perm\.canUpload\) \{[\s\S]{0,200}\/documents\$\{q\(\{ projectId \}\)\}/.test(docsSrc),
     'the seed must run and let the server 403 if it disagrees');
+
+  // ── The bucket refuses the direct upload ───────────────────────────────
+  // PUT is not a CORS-safelisted method, so the browser's upload to the bucket
+  // always needs a preflight, and a bucket with no CORS rule refuses it before
+  // the request ever leaves the browser: no server sees it, and every upload in
+  // every division dies as a bare "Failed to fetch". Small files fall back
+  // through the API, which is same-origin and needs no CORS at all.
+  console.log('\n[the bucket refuses a direct upload]');
+
+  let relayAnswer = { ok: true, bytes: 0, relayed: true };
+  window.fetch = async (url, init = {}) => {
+    const isJson = typeof init.body === 'string';
+    const call = {
+      url: String(url),
+      method: init.method || 'GET',
+      body: isJson ? JSON.parse(init.body) : null,
+      rawBody: isJson ? null : init.body,
+    };
+    calls.push(call);
+
+    if (call.url.startsWith('https://storage.example')) throw new TypeError('Failed to fetch');
+    if (call.url.includes('/api/document-upload-url')) {
+      if (call.method === 'PUT') {
+        if (!relayAnswer.ok) {
+          return { ok: false, status: 502, json: async () => relayAnswer };
+        }
+        return { ok: true, status: 200, json: async () => relayAnswer };
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          documentId: 'doc-new', storageKey: 'FCT/turf/p1/doc-new/ticket.pdf',
+          uploadUrl: 'https://storage.example/put?sig=abc', contentType: 'application/pdf',
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ document: { id: 'doc-new' } }) };
+  };
+
+  const co = new window.File(['%PDF-1.7 change order'], 'INDIANA BORO CR.pdf', { type: 'application/pdf' });
+  calls.length = 0;
+  await FD._uploadOne(co, { folderId: 'f-contract', projectId: 'p1' });
+
+  assert('the upload survives a bucket that refuses the preflight', calls.length === 4,
+    calls.map(c => `${c.method} ${c.url}`).join(' | '));
+  assert('the direct PUT is still tried first',
+    calls[1] && calls[1].url.startsWith('https://storage.example'), calls[1] && calls[1].url);
+  assert('then the bytes are relayed through the API',
+    calls[2] && calls[2].method === 'PUT' && calls[2].url.includes('/api/document-upload-url'),
+    calls[2] && `${calls[2].method} ${calls[2].url}`);
+  assert('under the key the ticket minted, so registration still matches',
+    calls[2] && calls[2].body.storageKey === 'FCT/turf/p1/doc-new/ticket.pdf',
+    JSON.stringify(calls[2] && calls[2].body && calls[2].body.storageKey));
+  assert('the relayed bytes are the file, unaltered',
+    Buffer.from(calls[2].body.contentBase64, 'base64').toString() === '%PDF-1.7 change order',
+    Buffer.from(calls[2].body.contentBase64 || '', 'base64').toString().slice(0, 40));
+  assert('the division travels on the relay too',
+    calls[2] && calls[2].url.includes('division=turf'), calls[2] && calls[2].url);
+  assert('and the file is still registered afterwards',
+    calls[3] && calls[3].url.includes('/api/documents') && calls[3].method === 'POST',
+    calls[3] && `${calls[3].method} ${calls[3].url}`);
+
+  // The relay is a fallback, not a second front door. Past its ceiling the
+  // direct PUT is the only way through, so the answer is the bucket's CORS
+  // rule — routing a drawing set through a 4.5 MB request body is not.
+  calls.length = 0;
+  const drawings = new window.File([new Uint8Array(4 * 1024 * 1024)], 'plans.pdf', { type: 'application/pdf' });
+  let bigErr = null;
+  try { await FD._uploadOne(drawings, { folderId: 'f-plans', projectId: 'p1' }); }
+  catch (err) { bigErr = err; }
+  assert('a file past the relay ceiling is not pushed through the API',
+    !calls.some(c => c.method === 'PUT' && c.url.includes('/api/')),
+    calls.map(c => `${c.method} ${c.url}`).join(' | '));
+  assert('and it names the CORS rule as the fix',
+    bigErr && /CORS rule allowing PUT/.test(bigErr.message), bigErr && bigErr.message);
+
+  // When the relay fails too, the server has seen the store's own answer — a
+  // wrong endpoint, a bucket that does not exist — and that is the first real
+  // diagnosis anyone gets. Losing it behind the browser's opaque message would
+  // waste the round trip.
+  calls.length = 0;
+  relayAnswer = { ok: false, error: 'Storage refused the upload', detail: '403 SignatureDoesNotMatch' };
+  let relayErr = null;
+  try { await FD._uploadOne(co, { folderId: 'f-contract', projectId: 'p1' }); }
+  catch (err) { relayErr = err; }
+  assert('a failed relay reports what the server saw, not just what the browser saw',
+    relayErr && /CORS rule allowing PUT/.test(relayErr.message)
+             && /SignatureDoesNotMatch/.test(relayErr.message),
+    relayErr && relayErr.message);
+  assert('and nothing is registered for a file that never landed',
+    !calls.some(c => c.method === 'POST' && c.url.includes('/api/documents')),
+    calls.map(c => `${c.method} ${c.url}`).join(' | '));
+
+  // Back to a reachable bucket for everything below.
+  relayAnswer = { ok: true, bytes: 0, relayed: true };
+  window.fetch = async (url, init = {}) => {
+    const isJson = typeof init.body === 'string';
+    calls.push({ url: String(url), method: init.method || 'GET',
+      body: isJson ? JSON.parse(init.body) : null, rawBody: isJson ? null : init.body });
+    if (String(url).startsWith('https://storage.example')) return { ok: true, status: 200, json: async () => ({}) };
+    if (String(url).includes('/api/document-upload-url')) {
+      return { ok: true, status: 200, json: async () => ({
+        documentId: 'doc-new', storageKey: 'FCT/turf/p1/doc-new/ticket.pdf',
+        uploadUrl: 'https://storage.example/put?sig=abc', contentType: 'application/pdf' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ document: { id: 'doc-new' } }) };
+  };
 
   // ── Photo downscaling ──────────────────────────────────────────────────
   // jsdom ships neither createImageBitmap nor a canvas, so maybeDownscale()

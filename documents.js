@@ -165,7 +165,13 @@
     }
 
     if (!r.ok) {
-      const err = new Error((data && data.error) || `Request failed (${r.status})`);
+      // Several endpoints carry the underlying cause in `detail` — most usefully
+      // the object store's own answer behind a relayed upload. Dropping it left
+      // the toast saying only "Storage refused the upload", which is the one
+      // thing the browser could already work out for itself.
+      const parts = [(data && data.error) || `Request failed (${r.status})`];
+      if (data && data.detail) parts.push(String(data.detail));
+      const err = new Error(parts.join(' — '));
       err.status = r.status;
       throw err;
     }
@@ -1065,6 +1071,7 @@
 
       let done = 0, failed = 0;
       const errors = [];
+      relayedThisBatch = false;
       for (const file of picked) {
         progress.textContent = `Uploading ${done + failed + 1} of ${picked.length}: ${file.name}`;
         try {
@@ -1097,7 +1104,19 @@
       // a success and a failure raised together simply cover each other up.
       m.close();
       const landed = `${done} file${done === 1 ? '' : 's'} uploaded.`;
-      if (errors.length) toast(`${landed} ${failed} failed — ${errors.join('; ')}`, 'error');
+
+      // Something in this batch could not be PUT to the bucket and went through
+      // the API instead. Say it once per page: the relay is capped at 3 MB, so
+      // the next set of drawings fails until the bucket gets its CORS rule.
+      let relayNote = '';
+      if (relayedThisBatch && !relayWarned) {
+        relayWarned = true;
+        relayNote = ' Storage refused a direct upload, so the bytes went through the server —'
+                  + ' add a CORS rule to the bucket or anything over 3 MB will keep failing.';
+      }
+
+      if (errors.length) toast(`${landed} ${failed} failed — ${errors.join('; ')}${relayNote}`, 'error');
+      else if (relayNote) toast(landed + relayNote, 'error');
       else toast(landed);
 
       // The upload is committed; only the refresh can still fail. Left
@@ -1113,6 +1132,69 @@
         toast(`Uploaded, but the list could not be refreshed: ${err.message}. Reopen the tab to see it.`, 'error');
       }
     });
+  }
+
+  // Ceiling on the relay below, matched to RELAY_MAX_BYTES in
+  // api/document-upload-url.js. The platform caps a serverless request body at
+  // 4.5 MB and base64 costs a third on top, so 3 MB of file is about all that
+  // fits. Paperwork and a downscaled photo clear it; a drawing set does not.
+  const RELAY_MAX_BYTES = 3 * 1024 * 1024;
+
+  // The bucket has to be fixed properly for anything over that ceiling, so say
+  // so — but once per page, not once per file in a twenty-file drop, and folded
+  // into the toast the batch already raises rather than stacked on top of it.
+  // Toasts all print at the same spot and simply cover each other up.
+  let relayedThisBatch = false;
+  let relayWarned      = false;
+
+  /**
+   * Send a file's bytes to the API and let the server put them in the bucket.
+   *
+   * Strictly a fallback for a direct PUT the browser could not make at all.
+   * The direct path is what keeps big files off a 4.5 MB request body, so
+   * anything past the ceiling still fails here, with the fix named.
+   */
+  async function relayThroughApi(prepared, ticket, cause) {
+    const advice =
+      'Could not reach file storage. If this is a new deployment the storage '
+      + 'bucket most likely needs a CORS rule allowing PUT from this site — '
+      + 'see api/.env.example. (' + cause.message + ')';
+
+    if (prepared.blob.size > RELAY_MAX_BYTES) throw new Error(advice);
+
+    let relayed;
+    try {
+      relayed = await api('PUT', `/document-upload-url${q({})}`, {
+        storageKey:    ticket.storageKey,
+        contentBase64: await blobToBase64(prepared.blob),
+      });
+    } catch (err) {
+      // This one reached the API, so the message is the store's own answer
+      // rather than the browser's opaque one — a wrong S3_ENDPOINT, a bucket
+      // that does not exist, a key the credentials cannot write. Carry both:
+      // what the browser saw first, then what the server saw.
+      throw new Error(`${advice} Relaying it through the server failed too: ${err.message}`);
+    }
+    if (!relayed || !relayed.ok) throw new Error(advice);
+
+    relayedThisBatch = true;
+    console.warn('[documents] storage refused a direct upload; the bytes went through '
+               + 'the API instead. The bucket needs a CORS rule allowing PUT from this '
+               + 'site — see api/.env.example.');
+    return { ok: true, status: 200 };
+  }
+
+  async function blobToBase64(blob) {
+    if (typeof blob.arrayBuffer !== 'function') throw new Error('this browser cannot relay the file');
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    // btoa needs a binary string. Spreading three million bytes into
+    // String.fromCharCode blows the argument limit long before that, so chunk it.
+    let binary = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
   }
 
   async function uploadOne(file, { folderId, poId, poNumber, note, projectId }) {
@@ -1135,16 +1217,15 @@
         headers: { 'Content-Type': ticket.contentType },
       });
     } catch (err) {
-      // A cross-origin PUT with a non-safelisted Content-Type needs a preflight,
-      // and a bucket with no CORS rule refuses it — which surfaces as a bare
-      // "Failed to fetch" with nothing in any server log, because the request
-      // never reached us. It is the first thing that goes wrong on a new
-      // deployment, so name it rather than leaving people guessing.
-      throw new Error(
-        'Could not reach file storage. If this is a new deployment the storage '
-        + 'bucket most likely needs a CORS rule allowing PUT from this site — '
-        + 'see api/.env.example. (' + err.message + ')'
-      );
+      // A cross-origin PUT always needs a preflight — PUT is not a safelisted
+      // method — and a bucket with no CORS rule refuses it. That surfaces as a
+      // bare "Failed to fetch" with nothing in any server log, because the
+      // request never reached anyone. It is the first thing that goes wrong on
+      // a new deployment, and nothing on the server side can detect or fix it.
+      //
+      // Losing the upload over it is the wrong answer when the API itself is
+      // same-origin and reachable, so relay small files through that instead.
+      put = await relayThroughApi(prepared, ticket, err);
     }
     if (!put.ok) throw new Error(`Upload to storage failed (${put.status})`);
 
