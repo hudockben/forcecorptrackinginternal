@@ -49,6 +49,23 @@ function grab(signature) {
 const travelReSrc = (src.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0];
 if (!travelReSrc) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
 
+// The division override brought two module-level lists and one arrow const into
+// the render path. grab() only matches `function name(`, so these come across
+// by their own source lines — and by reading them off the page rather than
+// restating them, a division added to either list reaches this suite too.
+function destConstsFor(source) {
+  return ['SPLIT_DEST_DAILY', 'SPLIT_DEST_DIVISIONS'].map(name => {
+    const line = (source.match(new RegExp(`const ${name} = [^\\n]+`)) || [])[0];
+    if (!line) throw new Error(`payroll.html no longer defines ${name}`);
+    return line;
+  });
+}
+function haulIsSrcFor(source) {
+  const line = (source.match(/const splitHaulIs = \(\) =>\n[^\n]+/) || [])[0];
+  if (!line) throw new Error('payroll.html no longer defines splitHaulIs');
+  return line;
+}
+
 let repaints = 0;
 const sandbox = {
   console,
@@ -73,6 +90,14 @@ vm.runInContext([
     '_splitRowUid() {',
     '_blankSplitRow(isTravel) {',
     'splitCcListNow() {',
+    // A row may name its own destination division, and then it is coded
+    // against THAT division's job — so the codes a row offers are per row, not
+    // per entry. splitOnChange has read them through splitRowCcList since
+    // "Let payroll send a split row to any division"; lifting splitCcListNow
+    // alone left this suite throwing the moment it touched a cost code.
+    'splitRowDivision(r) {',
+    'splitRowJob(r) {',
+    'splitRowCcList(r) {',
     'splitTravelCandidates(ccList) {',
     'splitTravelSubsFor(ccList, costCode) {',
     'splitPickTravelCodes(ccList, workCostCode) {',
@@ -217,6 +242,50 @@ console.log('\n[a turf day with travel]');
     work.cost_code === '' && work.sub_code === '' && work.code_source === '');
   assert('the server would price that row as travel', sandbox.isTravelSplitRow(drive));
   assert('running it again is a no-op', sandbox.splitApplyTravelPrefill() === false);
+}
+
+// ── A row sent to another division ───────────────────────────────────────
+// A row may name its own destination, and then its cost lands against THAT
+// division's job. These codes are read off the timesheet's job, so filling them
+// in over there would file the drive under a code the destination has never
+// heard of — and it would read as decided while it did it. The rule went in
+// with the division override and had no test until this one.
+console.log('\n[a travel row sent to another division]');
+{
+  sandbox.splitEntry = { division: 'turf', job_id: 'J1', computed_hours: 6.5, travel_hours: 1.5 };
+  sandbox.splitCcCache['turf::J1'] = TURF;
+  const here  = sandbox._blankSplitRow(true);
+  const there = sandbox._blankSplitRow(true);
+  there.dest_division = 'paving';
+  there.dest_job      = 'P1';
+  sandbox.splitRows = [sandbox._blankSplitRow(false), here, there];
+  sandbox.splitApplyTravelPrefill();
+
+  assert('the row staying on this job is filled in as usual',
+    here.cost_code === 'Mobilization' && here.sub_code === 'Travel',
+    JSON.stringify(here));
+  assert('the row sent to paving is left blank — these codes are not its job\'s',
+    there.cost_code === '' && there.sub_code === '' && there.code_source !== 'auto',
+    JSON.stringify(there));
+
+  // And when the approver codes that row by hand, the options it offers come
+  // from the DESTINATION's bid items, not this job's.
+  sandbox.splitCcCache['paving::P1'] = PAVING;
+  assert('its own cost codes are the destination job\'s',
+    sandbox.splitRowCcList(there).map(c => c.cost_code).join(',') ===
+      PAVING.map(c => c.cost_code).join(','),
+    JSON.stringify(sandbox.splitRowCcList(there).map(c => c.cost_code)));
+  assert('  while a row with no destination still reads this job\'s',
+    sandbox.splitRowCcList(here).map(c => c.cost_code).join(',') ===
+      TURF.map(c => c.cost_code).join(','));
+  // A destination whose bid items were never fetched offers nothing rather
+  // than falling back to the timesheet's — a fallback would be the same wrong
+  // codes arriving by another route.
+  const unknown = sandbox._blankSplitRow(true);
+  unknown.dest_division = 'kiewit';
+  unknown.dest_job      = 'K9';
+  assert('a destination that never loaded offers nothing, not this job\'s codes',
+    sandbox.splitRowCcList(unknown).length === 0);
 }
 
 // ── The paving day: fills when the task is picked ────────────────────────
@@ -535,12 +604,20 @@ console.log('\n[the prefilled cells read as prefilled]');
 {
   const cbEscSrc = (src.match(/const _cbEsc = [^\n]+/) || [])[0];
   if (!cbEscSrc) throw new Error('payroll.html no longer defines _cbEsc');
+  // Read off the page, not restated here: a division added to it has to reach
+  // this suite too.
+  const haulIsSrc = haulIsSrcFor(src);
+  const destConsts = destConstsFor(src);
   const store = {};
   const render = {
     console,
     splitEntry: { division: 'turf', job_id: 'J1', computed_hours: 6.5, travel_hours: 1.5 },
     splitCcCache: { 'turf::J1': TURF },
     splitEquipmentList: ['320 Excavator'],
+    // No row in this block is sent to another division, so the destination
+    // caches are empty — which is exactly the state the ordinary split has.
+    splitDestJobsCache: {},
+    splitHaulAnswer: '',
     splitRows: [],
     num2: n => Number(n).toFixed(2),
     // No focused cell in this fixture, so the snapshot comes back empty and
@@ -551,11 +628,33 @@ console.log('\n[the prefilled cells read as prefilled]');
   vm.createContext(render);
   vm.runInContext([
     cbEscSrc,
+    travelReSrc,
+    ...destConsts,
+    haulIsSrc,
     'let _splitRowSeq = 0;',
     ...[
       'numInputVal(n) {',
       '_splitRowUid() {',
+      'isTravelSplitRow(r) {',
       'splitCcListNow() {',
+      // renderSplitRows reads a row's codes per row, not per modal — see the
+      // note on the first sandbox.
+      'splitRowDivision(r) {',
+      'splitRowJob(r) {',
+      'splitRowCcList(r) {',
+      'splitRowIsDaily(r) {',
+      // The destination cells and the haul column renderSplitRows grew with
+      // the division override. None of them is what this block asserts on, but
+      // they run on every row, so they come across rather than being stubbed —
+      // a stub here would be a second copy of the page to keep in step.
+      'splitRowIsHaul(r) {',
+      'splitTruckOnRow(r) {',
+      'splitPricedMachineOnRow(r) {',
+      'splitDestCellHtml(r, i) {',
+      'splitDestNoCodeHtml(r) {',
+      'splitDestWindowHtml(r, i) {',
+      'escapeHtml(s) {',
+      'prettyDiv(d) {',
       'findCostCode(ccList, code) {',
       '_cbHtml(rowIdx, field, currentValue, options, placeholder, opts) {',
       // renderSplitRows puts the cursor back after a repaint, so the two
@@ -754,6 +853,13 @@ console.log('\n[a repaint keeps the cursor where it was]');
     'isTravelSplitRow(r) {', '_splitRowUid() {', '_blankSplitRow(isTravel) {',
     'findCostCode(ccList, code) {', 'cbCloseAll() {', 'splitDeleteRow(idx) {',
     'splitCcListNow() {', 'splitTravelCandidates(ccList) {', 'splitTravelSubsFor(ccList, costCode) {',
+    // Per-row codes and the destination cells, both of which renderSplitRows
+    // and splitOnChange grew with the division override.
+    'splitRowDivision(r) {', 'splitRowJob(r) {', 'splitRowCcList(r) {',
+    'splitRowIsDaily(r) {', 'splitRowIsHaul(r) {',
+    'splitTruckOnRow(r) {', 'splitPricedMachineOnRow(r) {',
+    'splitDestCellHtml(r, i) {', 'splitDestNoCodeHtml(r) {', 'splitDestWindowHtml(r, i) {',
+    'escapeHtml(s) {', 'prettyDiv(d) {',
     'splitPickTravelCodes(ccList, workCostCode) {', 'splitApplyTravelPrefill() {',
     'splitFillTravelHours(row) {', 'numInputVal(n) {',
     '_cbHtml(rowIdx, field, currentValue, options, placeholder, opts) {', '_cbReadOptions(input) {',
@@ -766,6 +872,8 @@ console.log('\n[a repaint keeps the cursor where it was]');
   const harness = [
     travelReSrc,
     (src.match(/const _cbEsc = [^\n]+/) || [])[0],
+    ...destConstsFor(src),
+    haulIsSrcFor(src),
     'const _cbState = new WeakMap();',
     'let _splitRowSeq = 0;',
     ...names.map(grab),
@@ -781,6 +889,7 @@ console.log('\n[a repaint keeps the cursor where it was]');
     // until a save lands. '' throughout: these cases are not hauls.
     "var splitHaulAnswer = '';",
     'var splitProjEquipment = [];',
+    'var splitDestJobsCache = {};',
     'var splitRows = [_blankSplitRow(false), _blankSplitRow(true)];',
   ].join('\n\n');
 
@@ -1120,17 +1229,36 @@ console.log('\n[the form and the server agree on what is saveable]');
   const srv = { console };
   vm.createContext(srv);
   vm.runInContext([
-    'function safeStr(v,n){ if (v==null) return ""; return String(v).trim().slice(0,n); }',
     'function _r2(n){ return Math.round((Number(n)||0)*100)/100; }',
+    // normalizeSplitRow now runs a row's destination through the destination
+    // validators, so the whole closure comes across — including the real
+    // safeStr, which used to be stubbed here. A stub of a validator is a second
+    // opinion about what the server accepts, which is the one thing this
+    // section exists to check.
+    ...['safeStr', 'safeTime', 'dustNum', 'quarryNum', 'quarryRangeError',
+        'parseQuarryJob', 'validateQuarryInjection', 'validateTruckingLeg',
+        'validateDustLeg', 'normalizeSplitDest'].map(grabApi),
+    (api.match(/^const SPLIT_DEST_DIVISIONS = [^\n]+/m) || [])[0],
     grabApi('normalizeSplitRow'), grabApi('validateSplit'),
   ].join('\n\n'), srv);
 
   const NAMES = ['isTravelSplitRow', '_splitRowUid', '_blankSplitRow', 'findCostCode',
     'splitCcListNow', 'splitTravelCandidates', 'splitTravelSubsFor', 'splitPickTravelCodes',
     'splitApplyTravelPrefill', 'splitFillTravelHours', 'numInputVal', '_cbHtml',
+    // Per-row codes and the destination cells — see the note on the first
+    // sandbox. renderSplitRows reaches all of these on every row.
+    'splitRowDivision', 'splitRowJob', 'splitRowCcList', 'splitRowIsDaily',
+    'splitRowIsHaul', 'splitTruckOnRow', 'splitPricedMachineOnRow',
+    'splitDestCellHtml', 'splitDestNoCodeHtml', 'splitDestWindowHtml',
+    'escapeHtml', 'prettyDiv',
     '_cbReadOptions', 'cbOnFocus',
     'cbOnInput', 'cbRenderMenu', 'cbPositionMenu', 'cbCloseAll', 'cbScrollHi', 'cbClose',
     'cbCommit', '_splitFocusSnapshot', '_splitFocusRestore', 'renderSplitRows',
+    // splitSave sends each row through splitRowPayload now: the modal keeps a
+    // destination flat, the server takes it nested, and this is where the two
+    // shapes meet. Without it the form refused every split with a
+    // ReferenceError, which read here as "the form and the server disagree".
+    'splitRowPayload', 'splitDestJobLabel',
     'splitOnChange', 'splitFlushPendingCommits'];
   const byName = n => {
     const i = src.indexOf('function ' + n + '(');
@@ -1139,6 +1267,7 @@ console.log('\n[the form and the server agree on what is saveable]');
   };
   const harness = [
     travelReSrc, (src.match(/const _cbEsc = [^\n]+/) || [])[0],
+    ...destConstsFor(src), haulIsSrcFor(src),
     'const _cbState = new WeakMap();', 'let _splitRowSeq = 0;',
     ...NAMES.map(byName),
     'async ' + byName('splitSave'),
@@ -1155,6 +1284,7 @@ console.log('\n[the form and the server agree on what is saveable]');
     "var splitEntry = { id: 1, division: 'turf', job_id: 'J1', computed_hours: 20, travel_hours: 5 };",
     "var splitCcCache = { 'turf::J1': [{ cost_code: 'Silt Sock', sub_codes: ['12inch'] }] };",
     'var splitEquipmentList = [];  var splitRows = [];',
+    'var splitDestJobsCache = {};',
     'window.__sent = null;',
     'window.fetch = function (url, opts) { window.__sent = JSON.parse(opts.body);',
     '  return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ ok: true }); } }); };',
