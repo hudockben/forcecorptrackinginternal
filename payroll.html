@@ -760,6 +760,9 @@
     .report .report-detail-table > tbody > tr > td:nth-child(3),
     .report .report-detail-table > tbody > tr > td:nth-child(8),
     .report .report-detail-table > tbody > tr > td:nth-child(9),
+    .report .report-detail-table > tbody > tr.week-cols > th:nth-child(3),
+    .report .report-detail-table > tbody > tr.week-cols > th:nth-child(8),
+    .report .report-detail-table > tbody > tr.week-cols > th:nth-child(9),
     /* Totals row: cell 1 spans Date/Division/Project, so the same three edges
        are its 1st, 6th and 7th cells. */
     .report .report-detail-table > tfoot > tr > td:nth-child(1),
@@ -772,7 +775,7 @@
        row's. Without this the summary kept its names while the rows underneath
        lost their dates the moment the table scrolled — and a per-day OT figure
        with no date on it says nothing. */
-    .report .report-detail-table > thead > tr > th:first-child,
+    .report .report-detail-table > tbody > tr.week-cols > th:first-child,
     .report .report-detail-table > tbody > tr > td.date {
       position: sticky;
       left: 0;
@@ -809,6 +812,28 @@
       background: var(--band-ot);
       border-left: 3px solid var(--orange);
     }
+    /* The column labels, carried on the band itself. Same fill and no border
+       between them, so the two rows read as one bar with headings on it rather
+       than a header row that has come loose from its table. */
+    .report .report-detail-table tr.week-band > td { border-bottom: none; }
+    .report .report-detail-table tr.week-cols > th {
+      background: var(--band);
+      border-bottom: 1px solid var(--border);
+      border-top: none;
+      padding: 0.15rem 0.7rem 0.3rem;
+      font-size: 0.53rem;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      vertical-align: bottom;
+      white-space: normal;
+      line-height: 1.2;
+    }
+    .report .report-detail-table tr.week-band-ot + tr.week-cols > th { background: var(--band-ot); }
+    .report .report-detail-table tr.week-band-ot + tr.week-cols > th:first-child {
+      box-shadow: inset 3px 0 0 var(--orange);
+    }
+    .report .report-detail-table tr.week-cols > th.th-ot { color: var(--orange); }
+    .report .report-detail-table tr.week-cols > th.th-pw { color: var(--yellow); }
     .report .report-detail-table tr.week-band .wb-label {
       font-weight: 700;
       font-size: 0.7rem;
@@ -880,7 +905,7 @@
       .report > .report-scroll > table > thead > tr > th:first-child::after,
       .report > .report-scroll > table > tbody > tr > td.name::after,
       .report > .report-scroll > table > tfoot > tr > td.name::after { display: none !important; }
-      .report .report-detail-table > thead > tr > th:first-child,
+      .report .report-detail-table > tbody > tr.week-cols > th:first-child,
       .report .report-detail-table > tbody > tr > td.date {
         position: static !important;
         background: transparent !important;
@@ -3200,28 +3225,11 @@
             </tr>`;
         }).join('');
 
-        return weekBandHtml(wk, w, list) + lines;
+        return weekBandHtml(wk, w, list) + detailColumnsRowHtml() + lines;
       }).join('');
 
       return `
         <table class="report-detail-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Division</th>
-              <th>Project</th>
-              <th style="text-align:right">Work</th>
-              <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel to Site</th>
-              <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
-              <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
-              <th style="text-align:right">Total</th>
-              <th class="th-ot" style="text-align:right" title="How much of this day fell past the fortieth hour of its Monday–Sunday week.">OT</th>
-              <th class="th-pw" style="text-align:right" title="Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
-              <th>Lunch</th>
-              <th>Equipment</th>
-              <th>Status</th>
-            </tr>
-          </thead>
           <tbody>${bands}</tbody>
           <tfoot>
             <tr class="detail-total">
@@ -3239,6 +3247,37 @@
             </tr>
           </tfoot>
         </table>`;
+    }
+
+    // The detail's columns, in one place. They are written once and emitted
+    // under EVERY week band rather than once at the top of the block: a
+    // fortnight of entries pushes a single header row far enough away that the
+    // figures below it stop belonging to anything, and the nested table's
+    // columns do not line up with the parent's, so the parent's headings are no
+    // help either. Attached to the band, each week carries its own labels.
+    const DETAIL_COLUMNS = [
+      { label: 'Date' },
+      { label: 'Division' },
+      { label: 'Project' },
+      { label: 'Work',           num: true },
+      { label: 'Travel to Site', num: true, title: 'Timesheet field: Travel Time to Site' },
+      { label: 'Travel to Shop', num: true, title: 'Timesheet field: Travel Time to Shop' },
+      { label: 'Travel',         num: true, title: 'Travel to site + travel to shop' },
+      { label: 'Total',          num: true },
+      { label: 'OT',             num: true, cls: 'th-ot',
+        title: 'How much of this day fell past the fortieth hour of its Monday–Sunday week.' },
+      { label: 'Prevailing Hrs', num: true, cls: 'th-pw',
+        title: 'Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.' },
+      { label: 'Lunch' },
+      { label: 'Equipment' },
+      { label: 'Status' },
+    ];
+
+    function detailColumnsRowHtml() {
+      return `<tr class="week-cols">${DETAIL_COLUMNS.map(c =>
+        `<th class="${c.cls || ''}"${c.num ? ' style="text-align:right"' : ''}` +
+        `${c.title ? ` title="${escapeHtml(c.title)}"` : ''}>${escapeHtml(c.label)}</th>`
+      ).join('')}</tr>`;
     }
 
     // The header above each week's entries: the week's own dates, its hours,
