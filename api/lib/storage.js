@@ -246,6 +246,41 @@ async function headObject(key) {
 }
 
 /**
+ * Write bytes to the store from this process.
+ *
+ * Bytes are not supposed to come near this API — the browser PUTs them to the
+ * presigned URL itself, which is the whole reason a 40 MB drawing set is not
+ * bounded by a 4.5 MB request body. This exists for the one case where the
+ * browser cannot: a PUT is never a CORS-safelisted method, so a cross-origin
+ * upload always needs a preflight, and a bucket with no CORS rule refuses it.
+ * The request then never leaves the browser at all. api/document-upload-url.js
+ * relays small files here instead.
+ *
+ * Returns { ok, status, detail } rather than throwing, because the detail is
+ * most of the point. A failed direct PUT tells the browser only "Failed to
+ * fetch"; whatever the store answers here — SignatureDoesNotMatch, NoSuchBucket,
+ * a DNS failure on S3_ENDPOINT — is the first real diagnosis anyone gets.
+ */
+async function putObject(key, body, contentType) {
+  try {
+    const url = presign('PUT', key, { expiresIn: 60 });
+    const r = await fetch(url, {
+      method: 'PUT',
+      body,
+      // Unsigned, exactly as presignUpload leaves it for the browser: only
+      // `host` is in SignedHeaders, so sending this cannot break the signature.
+      headers: contentType ? { 'Content-Type': contentType } : {},
+    });
+    if (r.ok) return { ok: true, status: r.status, detail: null };
+    let detail = '';
+    try { detail = (await r.text()).slice(0, 400); } catch { /* opaque body */ }
+    return { ok: false, status: r.status, detail };
+  } catch (err) {
+    return { ok: false, status: 0, detail: err.message };
+  }
+}
+
+/**
  * Permanently remove an object. Called by the 30-day purge sweep, never by an
  * interactive delete — those only set project_documents.deleted_at.
  * Resolves false on failure rather than throwing so a purge run can continue.
@@ -320,6 +355,7 @@ module.exports = {
   presignUpload,
   presignDownload,
   headObject,
+  putObject,
   deleteObject,
   buildKey,
   // exported for scripts/test-document-storage.js
