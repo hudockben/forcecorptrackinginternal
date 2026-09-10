@@ -145,10 +145,50 @@ function weekEndOf(weekStart) {
  * happened to return them in — different from the Payroll page's, for the same
  * fortnight, with nothing to show why.
  */
+/**
+ * A timestamp the comparator can actually order.
+ *
+ * The Neon driver hands TIMESTAMPTZ back as a JS Date, and String(Date) is
+ * "Fri Aug 28 2026 09:00:00 GMT+0000" — which sorts BY THE NAME OF THE WEEKDAY.
+ * Two blocks on one work_date, split apart on different days, then order by
+ * whether their creation days were a "Fri" or a "Mon". The browser gets the same
+ * column as an ISO string over JSON and orders it correctly, so the two
+ * disagreed about which block was the overtime one on the same fortnight —
+ * exactly what the ORDER BY was added to prevent.
+ */
+function stampKey(v) {
+  if (v == null) return '';
+  // Duck-typed rather than instanceof: a Date from another realm is still a date.
+  if (typeof v === 'object' && typeof v.getTime === 'function') {
+    const t = v.getTime();
+    return Number.isNaN(t) ? '' : v.toISOString();
+  }
+  return String(v);
+}
+
+/**
+ * Compare two ids the way the DATABASE orders them.
+ *
+ * id is a bigserial, so it counts up with time and is the tiebreak of last
+ * resort. As text "10" sorts before "9", which is the reverse of both the
+ * SQL ORDER BY and the order the rows were actually created — the later block
+ * would take the regular hours and the earlier one the overtime. Digits are
+ * compared by length first, which is exact for a bigint of any size and needs
+ * no Number conversion to lose precision on.
+ */
+function compareIds(a, b) {
+  const sa = a == null ? '' : String(a);
+  const sb = b == null ? '' : String(b);
+  if (/^\d+$/.test(sa) && /^\d+$/.test(sb)) {
+    return sa.length - sb.length || (sa < sb ? -1 : sa > sb ? 1 : 0);
+  }
+  return sa.localeCompare(sb);
+}
+
 function byDateThenCreated(a, b) {
-  return String(a.work_date  || '').localeCompare(String(b.work_date  || ''))
-      || String(a.created_at || '').localeCompare(String(b.created_at || ''))
-      || String(a.id         || '').localeCompare(String(b.id         || ''));
+  return String(a.work_date || '').localeCompare(String(b.work_date || ''))
+      || stampKey(a.created_at).localeCompare(stampKey(b.created_at))
+      || compareIds(a.id, b.id);
 }
 
 /**
@@ -360,4 +400,5 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
 module.exports = {
   payrollMetrics, COUNTED_STATUSES, offSiteHaulWork,
   weeklyOvertime, weekStartOf, weekEndOf, OT_WEEKLY_THRESHOLD,
+  stampKey, compareIds,
 };

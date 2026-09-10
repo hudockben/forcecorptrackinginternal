@@ -1096,7 +1096,8 @@ async function payrollDigest(c) {
              -- entries on one date are counted in sequence, and the first keeps
              -- the regular hours while the second takes the overtime.
              id,
-             created_at
+             -- ::text for the same reason work_date is — see report.js.
+             created_at::text            AS created_at
         FROM timesheet_entries
        WHERE company_code = ${c.companyCode}
          AND status IN ('submitted', 'approved')

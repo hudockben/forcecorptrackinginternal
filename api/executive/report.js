@@ -1578,7 +1578,10 @@ async function buildPayrollSummary(sql, companyCode) {
       -- order the database chose and this report can disagree with the Payroll
       -- page about which of a driver's two blocks was the overtime one.
       id,
-      created_at
+      -- ::text for the same reason work_date is: the driver hands TIMESTAMPTZ
+      -- back as a JS Date, and the browser gets this column as an ISO string
+      -- over JSON. Casting here means both paths sort the same characters.
+      created_at::text                   AS created_at
     FROM timesheet_entries
     WHERE company_code = ${companyCode}
       AND status IN ('submitted', 'approved')

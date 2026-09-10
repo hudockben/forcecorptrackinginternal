@@ -29,6 +29,7 @@ const fs   = require('fs');
 const path = require('path');
 const {
   payrollMetrics, weeklyOvertime, weekStartOf, weekEndOf, OT_WEEKLY_THRESHOLD,
+  stampKey, compareIds,
 } = require(path.resolve(__dirname, '../api/lib/payroll-metrics.js'));
 // One brace matcher, shared — see scripts/lib/fn-source.js for why.
 const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
@@ -278,6 +279,54 @@ assert('  which is the point: eighty crew hours, ten hours of overtime',
 assert('every employee carries their weeks, so the report can say WHICH week',
   matt.weeks.length === 1 && matt.weeks[0].weekStart === MON);
 
+// ── The shape the timestamp arrives in ──────────────────────────────────────
+// The server reads created_at straight off the driver, which hands TIMESTAMPTZ
+// back as a JS Date; the browser gets the same column as an ISO string over
+// JSON. String(Date) is "Fri Aug 28 2026 09:00:00 GMT+0000" — it sorts by the
+// NAME OF THE WEEKDAY — so compared naively the two ordered the same fortnight
+// differently and reported different prevailing overtime for it.
+console.log('\n[a timestamp orders the same whichever shape it arrives in]');
+{
+  const upTo36 = [
+    entry(MON, { computed_hours: 9 }), entry(TUE, { computed_hours: 9 }),
+    entry(WED, { computed_hours: 9 }), entry(THU, { computed_hours: 9 }),
+  ];
+  // Mon 31 Aug is before Fri 4 Sep, but "Mon…" sorts after "Fri…" by weekday.
+  const EARLY = '2026-08-31T09:00:00Z', LATE = '2026-09-04T09:00:00Z';
+  const blocks = shape => [
+    entry(FRI, { id: 1, created_at: shape(EARLY), computed_hours: 4 }),
+    entry(FRI, { id: 2, created_at: shape(LATE),  computed_hours: 4, prevailing_wage: true }),
+  ];
+  const asDate = ot([...upTo36, ...blocks(v => new Date(v))]);
+  const asIso  = ot([...upTo36, ...blocks(v => v)]);
+  assert('a Date and its ISO string give the same prevailing overtime',
+    near(asDate.otPwHours, asIso.otPwHours),
+    `Date ${asDate.otPwHours} vs ISO ${asIso.otPwHours}`);
+  assert('  and it is the block created LATER that carries it',
+    near(asIso.otPwHours, 4), `${asIso.otPwHours}`);
+
+  assert('an unreadable date sorts as absent rather than as "Invalid Date"',
+    stampKey(new Date('nonsense')) === '' && stampKey(null) === '' && stampKey(undefined) === '');
+
+  // id is a bigserial, so it counts up with time — and the SQL orders it as a
+  // number. As text "10" comes before "9", which is the reverse.
+  console.log('\n[ids order the way the database orders them]');
+  assert('9 before 10, not after it', compareIds(9, 10) < 0, String(compareIds(9, 10)));
+  assert('  and 2 before 10',         compareIds(2, 10) < 0);
+  assert('  exact past the float limit, because bigints are compared as digits',
+    compareIds('9007199254740993', '9007199254740994') < 0);
+  assert('  a non-numeric id still orders deterministically',
+    compareIds('a', 'b') < 0 && compareIds(null, null) === 0);
+
+  const byId    = [...upTo36,
+    entry(FRI, { id: 10, computed_hours: 4 }),
+    entry(FRI, { id: 9,  computed_hours: 4, prevailing_wage: true })];
+  // id 9 was created first, so it keeps the regular hours and 10 takes the
+  // overtime — which here is the non-prevailing block.
+  assert('the lower id is counted first, matching ORDER BY work_date, created_at, id',
+    near(ot(byId).otPwHours, 0), `${ot(byId).otPwHours}`);
+}
+
 // ── The two copies of the rule ──────────────────────────────────────────────
 // payroll.html carries its own, because the page cannot import this module. The
 // executive report renders the fortnight from here and payroll checks it there,
@@ -296,8 +345,10 @@ console.log('\n[payroll.html says the same thing]');
     ${requireFn(PAGE, 'isOffSiteHaul',  'payroll.html')}
     ${requireFn(PAGE, 'offSiteHaulWork','payroll.html')}
     ${requireFn(PAGE, 'weekStartOf',    'payroll.html')}
-    ${requireFn(PAGE, 'weekEndOf',      'payroll.html')}
-    ${requireFn(PAGE, 'weeklyOvertime', 'payroll.html')}
+    ${requireFn(PAGE, 'weekEndOf',       'payroll.html')}
+    ${requireFn(PAGE, 'stampKey',        'payroll.html')}
+    ${requireFn(PAGE, 'compareIds',      'payroll.html')}
+    ${requireFn(PAGE, 'weeklyOvertime',  'payroll.html')}
     return { weeklyOvertime, weekStartOf, weekEndOf };
   `)();
 
@@ -323,6 +374,23 @@ console.log('\n[payroll.html says the same thing]');
      entry(TUE), entry(WED), entry(THU), entry(FRI), entry(SAT)],
     [entry(MON, { computed_hours: 10, status: 'draft' }), entry(TUE, { computed_hours: 10 })],
     [entry('not a date', { computed_hours: 10 }), entry(TUE, { computed_hours: 10 })],
+    // Two blocks on ONE date, which is the only case the created_at/id tiebreak
+    // is ever reached on. Without it the page copy could call a helper it does
+    // not have and this cross-check would never notice.
+    // 36 hours in, then two blocks of 4 on ONE date — so the fortieth hour falls
+    // BETWEEN them and the order genuinely decides which is the overtime one.
+    // Both blocks wholly past 40 would give the same answer either way and
+    // prove nothing.
+    [entry(MON, { computed_hours: 9 }), entry(TUE, { computed_hours: 9 }),
+     entry(WED, { computed_hours: 9 }), entry(THU, { computed_hours: 9 }),
+     entry(FRI, { computed_hours: 4, id: 10, created_at: new Date('2026-08-31T09:00:00Z') }),
+     entry(FRI, { computed_hours: 4, id: 9,  created_at: new Date('2026-09-04T09:00:00Z'),
+                  prevailing_wage: true })],
+    // The same day with no timestamps at all, so the id tiebreak is what decides.
+    [entry(MON, { computed_hours: 9 }), entry(TUE, { computed_hours: 9 }),
+     entry(WED, { computed_hours: 9 }), entry(THU, { computed_hours: 9 }),
+     entry(FRI, { computed_hours: 4, id: 10 }),
+     entry(FRI, { computed_hours: 4, id: 9, prevailing_wage: true })],
   ];
   const KEYS = ['totalHours', 'regHours', 'otHours', 'otPwHours', 'otStdHours'];
   const range = { from: MON, to: '2026-09-06' };
@@ -477,6 +545,11 @@ console.log('\n[a split day is counted in a fixed order, not the order it arrive
       /\bcreated_at\b/.test(q) && /\bid\b/.test(q));
     assert(`  ${rel.split('/').pop()} orders the rows it hands to payrollMetrics`,
       /ORDER BY work_date, created_at, id/.test(q));
+    // ::text, the way work_date already is. Left as TIMESTAMPTZ the driver
+    // returns a Date and the server sorts "Fri Aug 28 2026 …" while the browser
+    // sorts the ISO string it got over JSON.
+    assert(`  ${rel.split('/').pop()} hands created_at over as text`,
+      /created_at::text/.test(q));
   }
 }
 

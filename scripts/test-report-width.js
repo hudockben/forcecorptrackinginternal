@@ -213,18 +213,62 @@ const PRINT_PX = 979;
     const d = document.querySelector('.report-detail-table');
     const heads = [...d.querySelectorAll(':scope > thead > tr > th')];
     return {
-      datePosition: getComputedStyle(heads[0]).position,
+      datePosition:     getComputedStyle(heads[0]).position,
+      dateCellPosition: getComputedStyle(d.querySelector(':scope > tbody > tr > td.date')).position,
       bordered: heads.map((th, i) => ({ i: i + 1, h: th.textContent.replace(/\s+/g, ' ').trim(),
                                         w: getComputedStyle(th).borderRightWidth }))
                      .filter(x => x.w !== '0px').map(x => x.i),
     };
   });
-  assert('the detail\'s Date heading is not sticky — only the summary has a name column',
-    leak.datePosition === 'static', leak.datePosition);
+  // Date is the detail row's subject and IS meant to be sticky — but only
+  // together with its body cells. The bug this replaces was the heading going
+  // sticky on its own, through a descendant selector, while the cells beneath
+  // it scrolled away: the heading then floated over whatever column happened
+  // to be under it.
+  assert('the detail\'s Date heading and its cells are sticky together, or neither',
+    leak.datePosition === leak.dateCellPosition,
+    `heading ${leak.datePosition}, cells ${leak.dateCellPosition}`);
   // Project | ... | Total | OT | ... — the detail's own three group edges.
   assert('and its dividers sit only on its own group edges',
     JSON.stringify(leak.bordered) === JSON.stringify([3, 8, 9]),
     'got columns ' + JSON.stringify(leak.bordered));
+
+  // ── The dividers line up on every row, including the last ──
+  // nth-child counts elements, not columns, and the detail's totals row opens
+  // with a colspan="3" cell. Matched blindly the three rules jogged two columns
+  // right on the last line of the sheet.
+  console.log('\n[the group dividers line up on the totals row too]');
+  const rules = await page.evaluate(() => {
+    const d = document.querySelector('.report-detail-table');
+    const edges = sel => [...d.querySelectorAll(sel)]
+      .filter(c => getComputedStyle(c).borderRightWidth !== '0px')
+      .map(c => Math.round(c.getBoundingClientRect().right));
+    return { head: edges(':scope > thead > tr > th'), foot: edges(':scope > tfoot > tr > td') };
+  });
+  assert('the totals row divides the same three columns as the header',
+    rules.head.length === 3 && JSON.stringify(rules.head) === JSON.stringify(rules.foot),
+    `header at ${rules.head}, totals at ${rules.foot}`);
+
+  // ── Every row keeps its own subject when scrolled ──
+  // The summary keeps the employee name; the detail underneath has to keep the
+  // date, or a per-day overtime figure is left with nothing saying which day.
+  console.log('\n[the detail keeps its dates when the table scrolls]');
+  await load(900, 'screen');   // narrow enough that there is something to scroll
+  const subjects = await page.evaluate(() => {
+    const sc = document.querySelector('.report-scroll');
+    const date = () => document.querySelector('.report-detail-table > tbody > tr > td.date')
+                               .getBoundingClientRect();
+    const before = Math.round(date().left);
+    sc.scrollLeft = sc.scrollWidth - sc.clientWidth;
+    const after = Math.round(date().left);
+    const r = date();
+    return { scrolled: sc.scrollLeft, before, after,
+             visible: r.right > sc.getBoundingClientRect().left };
+  });
+  assert('the table is actually scrolled for this check', subjects.scrolled > 0,
+    JSON.stringify(subjects));
+  assert('  the detail Date column is still on screen after scrolling',
+    subjects.visible, `left ${subjects.before} -> ${subjects.after}`);
 
   // ── The scroll cue is one that actually renders ──
   // The first attempt faded the content into var(--surface) using a background

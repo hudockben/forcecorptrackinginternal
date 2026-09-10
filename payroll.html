@@ -23,6 +23,10 @@
          in adjacent columns and are different questions, and the one week they
          overlap is the week payroll most needs to tell them apart. */
       --orange:    #f97316;
+      /* The expanded detail panel, as a solid colour rather than a translucent
+         black over the card. A sticky cell inside it has to be opaque, and
+         "the card colour darkened by 18%" cannot be written as a fill. */
+      --sunken:    #10101a;
       --green:     #22c55e;
       --blue:      #60a5fa;
     }
@@ -713,7 +717,7 @@
       transition: transform 0.12s ease;
     }
     .report tbody tr.emp-row.expanded .exp-caret { transform: rotate(90deg); color: var(--accent); }
-    .report tr.report-detail > td { padding: 0 0 0.6rem 1.4rem; background: rgba(0,0,0,0.18); border-bottom: 1px solid var(--border); }
+    .report tr.report-detail > td { padding: 0 0 0.6rem 1.4rem; background: var(--sunken); border-bottom: 1px solid var(--border); }
     .report .report-detail-table {
       width: 100%;
       border-collapse: collapse;
@@ -734,14 +738,36 @@
       vertical-align: bottom;
     }
     /* The same four groups as the table above, so the eye reads the detail the
-       way it reads the summary. */
-    .report .report-detail-table th:nth-child(3),
-    .report .report-detail-table td:nth-child(3),
-    .report .report-detail-table th:nth-child(8),
-    .report .report-detail-table td:nth-child(8),
-    .report .report-detail-table th:nth-child(9),
-    .report .report-detail-table td:nth-child(9) { border-right: 1px solid var(--border); }
-    .report .report-detail-table tr.week-band > td { border-right: none; }
+       way it reads the summary. Written per section because nth-child counts
+       ELEMENTS, not columns: the totals row opens with a colspan="3" cell, so
+       its third <td> is the table's fifth column — matched blindly, the rules
+       jogged two columns right on the last line of the sheet. */
+    .report .report-detail-table > thead > tr > th:nth-child(3),
+    .report .report-detail-table > thead > tr > th:nth-child(8),
+    .report .report-detail-table > thead > tr > th:nth-child(9),
+    .report .report-detail-table > tbody > tr > td:nth-child(3),
+    .report .report-detail-table > tbody > tr > td:nth-child(8),
+    .report .report-detail-table > tbody > tr > td:nth-child(9),
+    /* Totals row: cell 1 spans Date/Division/Project, so the same three edges
+       are its 1st, 6th and 7th cells. */
+    .report .report-detail-table > tfoot > tr > td:nth-child(1),
+    .report .report-detail-table > tfoot > tr > td:nth-child(6),
+    .report .report-detail-table > tfoot > tr > td:nth-child(7) { border-right: 1px solid var(--border); }
+    /* The week band spans the whole table; it has no columns to divide. */
+    .report .report-detail-table > tbody > tr.week-band > td { border-right: none; }
+
+    /* Date is the detail row's subject, exactly as Employee is the summary
+       row's. Without this the summary kept its names while the rows underneath
+       lost their dates the moment the table scrolled — and a per-day OT figure
+       with no date on it says nothing. */
+    .report .report-detail-table > thead > tr > th:first-child,
+    .report .report-detail-table > tbody > tr > td.date {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      background: var(--sunken);
+      box-shadow: 6px 0 8px -6px rgba(0,0,0,0.65);
+    }
     .report .report-detail-table td {
       padding: 0.4rem 0.7rem;
       border-bottom: 1px solid rgba(42,42,58,0.5);
@@ -833,6 +859,12 @@
       .report > .report-scroll > table > thead > tr > th:first-child::after,
       .report > .report-scroll > table > tbody > tr > td.name::after,
       .report > .report-scroll > table > tfoot > tr > td.name::after { display: none !important; }
+      .report .report-detail-table > thead > tr > th:first-child,
+      .report .report-detail-table > tbody > tr > td.date {
+        position: static !important;
+        background: transparent !important;
+        box-shadow: none !important;
+      }
       /* The group rules stay — they are as useful on paper as on screen — but
          in the print palette, not the dark one. */
       .report thead th, .report tbody td, .report tfoot td,
@@ -4963,6 +4995,46 @@
       return t.toISOString().slice(0, 10);
     }
 
+    /**
+     * A timestamp the comparator can actually order.
+     *
+     * The Neon driver hands TIMESTAMPTZ back as a JS Date, and String(Date) is
+     * "Fri Aug 28 2026 09:00:00 GMT+0000" — which sorts BY THE NAME OF THE WEEKDAY.
+     * Two blocks on one work_date, split apart on different days, then order by
+     * whether their creation days were a "Fri" or a "Mon". The browser gets the same
+     * column as an ISO string over JSON and orders it correctly, so the two
+     * disagreed about which block was the overtime one on the same fortnight —
+     * exactly what the ORDER BY was added to prevent.
+     */
+    function stampKey(v) {
+      if (v == null) return '';
+      // Duck-typed rather than instanceof: a Date from another realm is still a date.
+      if (typeof v === 'object' && typeof v.getTime === 'function') {
+        const t = v.getTime();
+        return Number.isNaN(t) ? '' : v.toISOString();
+      }
+      return String(v);
+    }
+
+    /**
+     * Compare two ids the way the DATABASE orders them.
+     *
+     * id is a bigserial, so it counts up with time and is the tiebreak of last
+     * resort. As text "10" sorts before "9", which is the reverse of both the
+     * SQL ORDER BY and the order the rows were actually created — the later block
+     * would take the regular hours and the earlier one the overtime. Digits are
+     * compared by length first, which is exact for a bigint of any size and needs
+     * no Number conversion to lose precision on.
+     */
+    function compareIds(a, b) {
+      const sa = a == null ? '' : String(a);
+      const sb = b == null ? '' : String(b);
+      if (/^\d+$/.test(sa) && /^\d+$/.test(sb)) {
+        return sa.length - sb.length || (sa < sb ? -1 : sa > sb ? 1 : 0);
+      }
+      return sa.localeCompare(sb);
+    }
+
     // One employee's hours, split week by week into regular and overtime, with
     // the overtime split again by the rate it is paid at.
     //
@@ -5004,13 +5076,16 @@
       for (const wk of [...byWeek.keys()].sort()) {
         // Oldest first, and deterministic when two entries share a date — a
         // split day is two rows on one date, and this order decides which of
-        // them keeps the regular hours and which takes the overtime. Falls
-        // through to id so the answer can never depend on the order the rows
-        // arrived in. Mirrors byDateThenCreated in api/lib/payroll-metrics.js.
+        // them keeps the regular hours and which takes the overtime.
+        // Mirrors byDateThenCreated in api/lib/payroll-metrics.js, stampKey and
+        // compareIds included: the page receives created_at as an ISO string
+        // over JSON while the server receives it as a Date, and id as text
+        // where the database ordered it as a number. Compared naively the two
+        // sort the same fortnight differently.
         const list = byWeek.get(wk).slice().sort((a, b) =>
-          String(a.work_date  || '').localeCompare(String(b.work_date  || '')) ||
-          String(a.created_at || '').localeCompare(String(b.created_at || '')) ||
-          String(a.id         || '').localeCompare(String(b.id         || '')));
+          String(a.work_date || '').localeCompare(String(b.work_date || '')) ||
+          stampKey(a.created_at).localeCompare(stampKey(b.created_at)) ||
+          compareIds(a.id, b.id));
         let cum = 0, totalHours = 0, otHours = 0, otPwHours = 0, otStdHours = 0;
         const rows = [];
         for (const e of list) {
