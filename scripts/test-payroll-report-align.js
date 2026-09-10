@@ -63,6 +63,22 @@ function grab(src, re, what) {
 
 const reportSrc = between('function renderReport()', 'function reportDetailHtml(');
 const detailSrc = between('function reportDetailHtml(', 'function toggleReportRow(');
+
+// The detail's column labels are carried on each week band now, not in a
+// <thead>, and they are BUILT rather than written out — so they are generated
+// here by the page's own function instead of scraped. Stripping the
+// interpolation out of the template would leave a header row with no cells,
+// and this suite compares the totals row against the header column by column.
+const detailHeadHtml = (() => {
+  const cols = HTML.slice(HTML.indexOf('    const DETAIL_COLUMNS = ['),
+                          HTML.indexOf('];', HTML.indexOf('    const DETAIL_COLUMNS = [')) + 2);
+  const fn = (name) => {
+    const i = HTML.indexOf('function ' + name + '(');
+    if (i < 0) { console.error(`payroll.html no longer defines ${name}`); process.exit(1); }
+    return HTML.slice(i, HTML.indexOf('\n    }\n', i) + 6);
+  };
+  return new Function(`${fn('escapeHtml')}\n${cols}\n${fn('detailColumnsRowHtml')}\nreturn detailColumnsRowHtml();`)();
+})();
 const anaSrc    = between('const empBody = empRows.map', 'Hours by Supervisor');
 
 const TABLES = [
@@ -75,8 +91,13 @@ const TABLES = [
   },
   {
     label: 'per-employee detail table',
+    // The labels row lives in <tbody> with the entries now, so the fixture
+    // puts it there rather than in a <thead> it no longer has.
     wrap:  html => `<div class="report"><table class="report-detail-table">${html}</table></div>`,
-    head:  grab(detailSrc, /<thead>[\s\S]*?<\/thead>/,               'the detail <thead>'),
+    head:  detailHeadHtml,
+    headInBody: true,
+    headSel: 'tr.week-cols th',
+    bodySel: 'tbody tr:not(.week-cols)',
     body:  grab(detailSrc, /<tr>\s*<td class="date">[\s\S]*?<\/tr>/, 'the detail entry row'),
     foot:  grab(detailSrc, /<tr class="detail-total">[\s\S]*?<\/tr>/, 'the detail total row'),
   },
@@ -93,7 +114,9 @@ const css = [...HTML.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).joi
 const dom = new JSDOM(
   `<!doctype html><html><head><style>${css}</style></head><body>` +
   TABLES.map((t, i) =>
-    `<div id="t${i}">${t.wrap(`${t.head}<tbody>${t.body}</tbody><tfoot>${t.foot}</tfoot>`)}</div>`
+    `<div id="t${i}">${t.wrap(t.headInBody
+        ? `<tbody>${t.head}${t.body}</tbody><tfoot>${t.foot}</tfoot>`
+        : `${t.head}<tbody>${t.body}</tbody><tfoot>${t.foot}</tfoot>`)}</div>`
   ).join('') +
   '</body></html>'
 );
@@ -103,10 +126,10 @@ const align = elm => getComputedStyle(elm).textAlign || 'left';
 TABLES.forEach((t, i) => {
   console.log(`\n[${t.label}]`);
   const table = document.querySelector(`#t${i} table`);
-  const heads = [...table.querySelectorAll('thead th')];
+  const heads = [...table.querySelectorAll(t.headSel || 'thead th')];
   // The report's employee row is followed by its hidden detail row; take the
   // cells of the first body row only.
-  const bodys = [...table.querySelector('tbody tr').children];
+  const bodys = [...table.querySelector(t.bodySel || 'tbody tr').children];
   const foots = [...table.querySelector('tfoot tr').children];
 
   const span = td => Number(td.getAttribute('colspan') || 1);

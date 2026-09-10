@@ -57,7 +57,12 @@ function assert(label, cond, detail) {
 const RENDER_FNS = ['escapeHtml', 'prettyDate', 'prettyDateShort', 'prettyDiv', 'prettyOff',
   'dayFlagHtml', 'isOffSiteHaul', 'offSiteHaulWork', 'weekStartOf', 'weekEndOf',
   'stampKey', 'compareIds', 'byEntryOrder',
-  'weeklyOvertime', 'weekBandHtml', 'reportDetailHtml', 'buildReportModel', 'renderReport'];
+  'weeklyOvertime', 'detailColumnsRowHtml', 'weekBandHtml', 'reportDetailHtml',
+  'buildReportModel', 'renderReport'];
+
+// The detail's column labels are data now, carried on each week band.
+const DETAIL_COLS_SRC = PAGE.slice(PAGE.indexOf('    const DETAIL_COLUMNS = ['),
+  PAGE.indexOf('];', PAGE.indexOf('    const DETAIL_COLUMNS = [')) + 2);
 
 const FROM = '2026-08-27', TO = '2026-09-10';
 const dom = new JSDOM(`<!doctype html><body>
@@ -93,6 +98,7 @@ const filtered = [
 
 const api = new Function('document', 'filtered', 'user', 'expandedReportUsers', 'loadedScope', `
   const OT_WEEKLY_THRESHOLD = 40;
+  ${DETAIL_COLS_SRC}
   ${RENDER_FNS.map(n => requireFn(PAGE, n, 'payroll.html')).join('\n')}
   return { renderReport };
 `)(dom.window.document, filtered, { companyName: 'Force Corp', companyCode: 'FC' },
@@ -214,7 +220,7 @@ const PRINT_PX = 979;
   await load(1440, 'screen');
   const leak = await page.evaluate(() => {
     const d = document.querySelector('.report-detail-table');
-    const heads = [...d.querySelectorAll(':scope > thead > tr > th')];
+    const heads = [...d.querySelectorAll(':scope > tbody > tr.week-cols')].slice(0, 1).flatMap(tr => [...tr.children]);
     return {
       datePosition:     getComputedStyle(heads[0]).position,
       dateCellPosition: getComputedStyle(d.querySelector(':scope > tbody > tr > td.date')).position,
@@ -246,7 +252,15 @@ const PRINT_PX = 979;
     const edges = sel => [...d.querySelectorAll(sel)]
       .filter(c => getComputedStyle(c).borderRightWidth !== '0px')
       .map(c => Math.round(c.getBoundingClientRect().right));
-    return { head: edges(':scope > thead > tr > th'), foot: edges(':scope > tfoot > tr > td') };
+    // The labels ride on each week band now, so the first band's row is the
+    // header this compares the totals row against.
+    const first = d.querySelector(':scope > tbody > tr.week-cols');
+    return {
+      head: [...first.children]
+        .filter(c => getComputedStyle(c).borderRightWidth !== '0px')
+        .map(c => Math.round(c.getBoundingClientRect().right)),
+      foot: edges(':scope > tfoot > tr > td'),
+    };
   });
   assert('the totals row divides the same three columns as the header',
     rules.head.length === 3 && JSON.stringify(rules.head) === JSON.stringify(rules.foot),
