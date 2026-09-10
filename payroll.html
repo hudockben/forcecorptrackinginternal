@@ -27,6 +27,11 @@
          black over the card. A sticky cell inside it has to be opaque, and
          "the card colour darkened by 18%" cannot be written as a fill. */
       --sunken:    #10101a;
+      /* The week bands, blended against --sunken rather than layered over it,
+         for the same reason: the label inside them is sticky and has to be
+         opaque. --band is --sunken under 3.5% white, --band-ot under 9% orange. */
+      --band:      #181822;
+      --band-ot:   #25191a;
       --green:     #22c55e;
       --blue:      #60a5fa;
     }
@@ -708,6 +713,13 @@
     /* ── Expandable per-employee detail (Reports tab) ── */
     .report tbody tr.emp-row { cursor: pointer; }
     .report tbody tr.emp-row:hover td { background: rgba(255,255,255,0.03); }
+    /* The sticky name cell carries an opaque fill (it has to — the figures
+       scroll underneath it), and that fill outranks the hover rule above on
+       specificity. Layered as a background-image the same tint reaches it
+       without giving up the opacity. */
+    .report > .report-scroll > table > tbody > tr.emp-row:hover > td.name {
+      background-image: linear-gradient(rgba(255,255,255,0.03), rgba(255,255,255,0.03));
+    }
     .report .exp-caret {
       display: inline-block;
       width: 0.85em;
@@ -787,14 +799,14 @@
        band carries that week's own regular/overtime split; without it a flat
        list of fourteen days cannot show where the fortieth hour fell. */
     .report .report-detail-table tr.week-band > td {
-      background: rgba(255,255,255,0.035);
+      background: var(--band);
       border-bottom: 1px solid var(--border);
       border-top: 1px solid var(--border);
       padding: 0.4rem 0.7rem;
       white-space: normal;
     }
     .report .report-detail-table tr.week-band-ot > td {
-      background: rgba(249,115,22,0.09);
+      background: var(--band-ot);
       border-left: 3px solid var(--orange);
     }
     .report .report-detail-table tr.week-band .wb-label {
@@ -804,7 +816,16 @@
       text-transform: uppercase;
       color: var(--text);
       margin-right: 0.9rem;
+      /* Pinned for the same reason the Date cells below it are: scrolled away,
+         the band was cut off mid-phrase ("h worked  17.50 regular") over rows
+         that still knew their own dates. */
+      position: sticky;
+      left: 0;
+      display: inline-block;
+      background: var(--band);
+      padding-right: 0.5rem;
     }
+    .report .report-detail-table tr.week-band-ot .wb-label { background: var(--band-ot); }
     .report .report-detail-table tr.week-band > td > span { margin-right: 0.9rem; }
     .report .report-detail-table .wb-fig   { font-size: 0.72rem; color: var(--muted); }
     .report .report-detail-table .wb-fig strong { color: var(--text); font-variant-numeric: tabular-nums; }
@@ -969,7 +990,11 @@
          table prints at and came out half again as large as the figures it
          summarises — it read as the heading of the page rather than of a week. */
       .report .report-detail-table tr.week-band > td { padding: 0.3rem 0.16rem !important; }
-      .report .report-detail-table .wb-label { font-size: 0.5rem !important; }
+      .report .report-detail-table .wb-label {
+        font-size: 0.5rem !important;
+        position: static !important;
+        background: transparent !important;
+      }
       .report .report-detail-table .wb-fig,
       .report .report-detail-table .wb-note,
       .report .report-detail-table .wb-ot,
@@ -3117,9 +3142,9 @@
           sumTotal = 0, sumPw = 0, sumOt = 0, count = 0;
 
       const bands = weekKeys.map(wk => {
-        const list = byWeek.get(wk).slice().sort((a, b) =>
-          (a.work_date || '').localeCompare(b.work_date || '') ||
-          String(a.created_at || '').localeCompare(String(b.created_at || '')));
+        // The order the hours were COUNTED in — see byEntryOrder. A day's two
+        // blocks must be listed the way they were attributed.
+        const list = byWeek.get(wk).slice().sort(byEntryOrder);
         const w = weekByStart.get(wk);
 
         const lines = list.map(e => {
@@ -3743,9 +3768,7 @@
         // by the entry object so it needs no id.
         const otByEntry = new Map();
         for (const w of (r.weeks || [])) for (const wr of w.rows) otByEntry.set(wr.entry, wr);
-        const entries = r.entries.slice().sort((a, b) =>
-          (a.work_date || '').localeCompare(b.work_date || '') ||
-          String(a.created_at || '').localeCompare(String(b.created_at || '')));
+        const entries = r.entries.slice().sort(byEntryOrder);
         for (const e of entries) {
           const isOff  = e.entry_type === 'time_off';
           const work   = isOff ? null : Number(e.computed_hours || 0);
@@ -5035,6 +5058,20 @@
       return sa.localeCompare(sb);
     }
 
+    // The order a day's entries are counted AND shown in.
+    //
+    // Both have to be the same order. weeklyOvertime decides which of two
+    // blocks on one date takes the overtime by counting them in this sequence;
+    // if the detail table then listed them in another, the row carrying the OT
+    // could be printed above the row that does not — the report contradicting,
+    // on its own face, the rule it is applying. So this is the only comparator
+    // any of them uses.
+    function byEntryOrder(a, b) {
+      return String(a.work_date || '').localeCompare(String(b.work_date || ''))
+          || stampKey(a.created_at).localeCompare(stampKey(b.created_at))
+          || compareIds(a.id, b.id);
+    }
+
     // One employee's hours, split week by week into regular and overtime, with
     // the overtime split again by the rate it is paid at.
     //
@@ -5074,18 +5111,10 @@
 
       const weeks = [];
       for (const wk of [...byWeek.keys()].sort()) {
-        // Oldest first, and deterministic when two entries share a date — a
-        // split day is two rows on one date, and this order decides which of
-        // them keeps the regular hours and which takes the overtime.
-        // Mirrors byDateThenCreated in api/lib/payroll-metrics.js, stampKey and
-        // compareIds included: the page receives created_at as an ISO string
-        // over JSON while the server receives it as a Date, and id as text
-        // where the database ordered it as a number. Compared naively the two
-        // sort the same fortnight differently.
-        const list = byWeek.get(wk).slice().sort((a, b) =>
-          String(a.work_date || '').localeCompare(String(b.work_date || '')) ||
-          stampKey(a.created_at).localeCompare(stampKey(b.created_at)) ||
-          compareIds(a.id, b.id));
+        // Oldest first — this order decides which of two blocks on one date
+        // keeps the regular hours and which takes the overtime. Mirrors
+        // byDateThenCreated in api/lib/payroll-metrics.js.
+        const list = byWeek.get(wk).slice().sort(byEntryOrder);
         let cum = 0, totalHours = 0, otHours = 0, otPwHours = 0, otStdHours = 0;
         const rows = [];
         for (const e of list) {

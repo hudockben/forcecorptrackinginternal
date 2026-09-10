@@ -348,6 +348,7 @@ console.log('\n[payroll.html says the same thing]');
     ${requireFn(PAGE, 'weekEndOf',       'payroll.html')}
     ${requireFn(PAGE, 'stampKey',        'payroll.html')}
     ${requireFn(PAGE, 'compareIds',      'payroll.html')}
+    ${requireFn(PAGE, 'byEntryOrder',    'payroll.html')}
     ${requireFn(PAGE, 'weeklyOvertime',  'payroll.html')}
     return { weeklyOvertime, weekStartOf, weekEndOf };
   `)();
@@ -530,6 +531,17 @@ console.log('\n[a split day is counted in a fixed order, not the order it arrive
 
   assert('payroll.html sorts by the same three keys',
     /a\.work_date[\s\S]{0,220}a\.created_at[\s\S]{0,220}a\.id/.test(PAGE));
+
+  // The order the hours are COUNTED in and the order they are SHOWN in have to
+  // be one order. weeklyOvertime decides which of two blocks on a date takes
+  // the overtime; if the detail table or the workbook listed them the other way
+  // round, the row carrying the OT would print above the row that does not —
+  // the report contradicting the rule it is applying, on its own face.
+  const SORTERS = [...PAGE.matchAll(/\.slice\(\)\.sort\(([\s\S]{0,240}?)\);/g)].map(m => m[1]);
+  const entrySorters = SORTERS.filter(x => /work_date/.test(x) || /byEntryOrder/.test(x));
+  assert(`all ${entrySorters.length} places that order a day's entries use the one comparator`,
+    entrySorters.length >= 3 && entrySorters.every(x => /^byEntryOrder$/.test(x.trim())),
+    entrySorters.filter(x => !/^byEntryOrder$/.test(x.trim())).join(' | ') || 'none');
 
   // Both server callers have to SELECT what the comparator sorts on, and order
   // the rows themselves — the column list is explicit, so omitting one is

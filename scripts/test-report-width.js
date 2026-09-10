@@ -52,8 +52,11 @@ function assert(label, cond, detail) {
 // ── Render the report with the page's OWN renderer ──────────────────────────
 // Hand-built rows would measure a table nobody ships. Every class and every
 // figure below was put there by renderReport.
+// Every function renderReport reaches, including the ones its callees reach —
+// a missing name here is a ReferenceError at render time, not a quiet miss.
 const RENDER_FNS = ['escapeHtml', 'prettyDate', 'prettyDateShort', 'prettyDiv', 'prettyOff',
   'dayFlagHtml', 'isOffSiteHaul', 'offSiteHaulWork', 'weekStartOf', 'weekEndOf',
+  'stampKey', 'compareIds', 'byEntryOrder',
   'weeklyOvertime', 'weekBandHtml', 'reportDetailHtml', 'buildReportModel', 'renderReport'];
 
 const FROM = '2026-08-27', TO = '2026-09-10';
@@ -289,6 +292,50 @@ const PRINT_PX = 979;
     cue.backgroundImage === 'none', cue.backgroundImage.slice(0, 60));
   assert('the sticky column casts a shadow, so figures visibly pass under it',
     cue.shadow && cue.shadow !== 'none', cue.shadow);
+
+  // ── The sticky fills have to match what they sit on ──
+  // A sticky cell must be opaque or the figures scroll through it — and an
+  // opaque fill that does not match its row is a visible patch. Both band
+  // variants are checked: the label carries its own fill and there are two.
+  console.log('\n[the sticky fills match their rows exactly]');
+  await load(900, 'screen');
+  const fills = await page.evaluate(() => {
+    const out = { bands: [] };
+    for (const band of document.querySelectorAll('.report-detail-table tr.week-band')) {
+      const label = band.querySelector('.wb-label');
+      if (!label) continue;
+      out.bands.push({
+        ot:    band.classList.contains('week-band-ot'),
+        pos:   getComputedStyle(label).position,
+        label: getComputedStyle(label).backgroundColor,
+        band:  getComputedStyle(band.querySelector('td')).backgroundColor,
+      });
+    }
+    const name = document.querySelector('.report > .report-scroll > table > tbody > tr > td.name');
+    out.nameOpaque = !/rgba\(0, 0, 0, 0\)/.test(getComputedStyle(name).backgroundColor);
+    return out;
+  });
+  assert('both week-band variants are represented in this check',
+    fills.bands.some(b => b.ot) && fills.bands.some(b => !b.ot),
+    JSON.stringify(fills.bands.map(b => b.ot)));
+  for (const b of fills.bands) {
+    const which = b.ot ? 'overtime band' : 'ordinary band';
+    assert(`  the ${which} label is pinned like the dates below it`, b.pos === 'sticky', b.pos);
+    assert(`  and its fill matches the band exactly`, b.label === b.band, `${b.label} vs ${b.band}`);
+  }
+  assert('the employee cell is opaque, as a sticky cell has to be', fills.nameOpaque);
+
+  // An opaque fill outranks the row-hover rule on specificity, which left the
+  // employee name the one cell in the row that did not light up.
+  const hovered = await page.evaluate(() => {
+    const tr = document.querySelector('.report > .report-scroll > table > tbody > tr.emp-row');
+    tr.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    return getComputedStyle(tr.querySelector('td.name')).backgroundImage;
+  });
+  await page.hover('.report > .report-scroll > table > tbody > tr.emp-row > td.name');
+  const hoverTint = await page.evaluate(() =>
+    getComputedStyle(document.querySelector('.report > .report-scroll > table > tbody > tr.emp-row > td.name')).backgroundImage);
+  assert('the name cell still takes the row-hover tint', hoverTint !== 'none', hoverTint);
 
   // ── The executive report prints the same fifteen columns ──
   // .ptable-wrap prints with overflow VISIBLE, so anything too wide is not
