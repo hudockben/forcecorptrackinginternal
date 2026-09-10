@@ -28,6 +28,29 @@
       flex-direction: column;
     }
 
+    /* ── Backdrop ──────────────────────────────────────────────
+       Light pooled on the greeting and falling away over the card grid,
+       so the eye lands on the heading before it reaches the cards.
+
+       Achromatic on purpose. The cards carry fourteen different accents
+       between them, so any hue here would argue with several of them.
+
+       Fixed and behind everything at z-index -1, which keeps it still
+       while the grid scrolls and costs nothing to repaint. Pure CSS, so
+       there is no per-frame work on a page that already carries a dozen
+       cards, the user table and two modals. */
+    .backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        radial-gradient(84vmin 46vmin at 50% 4%,
+          rgba(226,232,240,0.13), rgba(226,232,240,0.04) 46%, transparent 76%),
+        linear-gradient(180deg, rgba(255,255,255,0.022) 0%, transparent 42%),
+        radial-gradient(120vmin 60vmin at 50% 120%, rgba(0,0,0,0.5), transparent 70%);
+    }
+
     /* ── Header ── */
     header {
       display: flex;
@@ -1090,6 +1113,7 @@
   </style>
 </head>
 <body>
+  <div class="backdrop" aria-hidden="true"></div>
 
   <header>
     <div class="brand">DataWatch</div>
