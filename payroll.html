@@ -82,6 +82,13 @@
       flex-direction: column;
       gap: 1rem;
     }
+    /* The Hours Report is fifteen columns and does not belong in a reading
+       column. 1280px is right for the review grid and the filter bar; here it
+       left a third of a wide screen empty on either side while the Status
+       column was cut off the right of the card. The Reports tab takes the
+       window it is given, and the cap keeps it from stretching to nothing on an
+       ultrawide monitor. */
+    main.main-wide { max-width: min(1800px, 98vw); }
 
     /* ── Stat strip ── */
     .stats {
@@ -546,7 +553,54 @@
     /* The travel legs and the overtime split take the report to 15 columns,
        which is wider than the card on a laptop screen. Scroll it sideways
        rather than letting the status column fall off the edge. */
-    .report-scroll { overflow-x: auto; }
+    /* When the table still will not fit — a laptop, a split screen — it
+       scrolls, and the two things that keep a scrolled table readable are a
+       header that stays put and a name column that does. The fade on the right
+       edge says there is more; without it the table simply appeared to end. */
+    .report-scroll {
+      overflow-x: auto;
+      position: relative;
+      background:
+        linear-gradient(to left, var(--surface), rgba(20,20,29,0)) right center / 28px 100% no-repeat,
+        linear-gradient(to right, var(--surface), rgba(20,20,29,0)) left center / 28px 100% no-repeat;
+      background-attachment: local, local;
+    }
+    /* Employee is the row's subject; scrolled off, every figure to its right
+       belongs to nobody. Both header and body cells have to be sticky, and the
+       header's z-index has to beat the body's or the two overlap at the corner. */
+    .report thead th:first-child,
+    .report tbody td.name,
+    .report tfoot td.name {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      background: var(--surface);
+    }
+    .report thead th:first-child { background: var(--surface2); z-index: 3; }
+    .report tr.total td.name     { background: var(--surface2); }
+    /* The sticky column needs its own right edge — the cell borders scroll away
+       underneath it and the names would sit on top of the figures. */
+    .report thead th:first-child::after,
+    .report tbody td.name::after,
+    .report tfoot td.name::after {
+      content: '';
+      position: absolute;
+      top: 0; right: 0; bottom: -1px;
+      border-right: 1px solid var(--border);
+    }
+    /* Fifteen columns of near-identical figures read as a wall. These rules
+       break them into the four questions the table actually answers: how long
+       he was on the clock, how much of it was overtime, what rate it is paid
+       at, and where it stands for approval. */
+    .report thead th:nth-child(6),
+    .report tbody td:nth-child(6),
+    .report tfoot td:nth-child(6),
+    .report thead th:nth-child(8),
+    .report tbody td:nth-child(8),
+    .report tfoot td:nth-child(8),
+    .report thead th:nth-child(11),
+    .report tbody td:nth-child(11),
+    .report tfoot td:nth-child(11) { border-right: 1px solid var(--border); }
     .report table {
       width: 100%;
       border-collapse: collapse;
@@ -557,12 +611,20 @@
       padding: 0.6rem 0.45rem;
       font-size: 0.62rem;
       text-transform: uppercase;
-      letter-spacing: 0.09em;
+      letter-spacing: 0.06em;
       color: var(--muted);
       border-bottom: 1px solid var(--border);
       background: var(--surface2);
-      white-space: nowrap;
+      /* Deliberately NOT nowrap. A two-word heading over a column of 0.00 was
+         setting the column's width from the heading rather than the figure —
+         together the headings wanted 1420px of a 1184px table, which is why the
+         Status column fell off the edge. They wrap to two lines now and the
+         figures decide how wide their own columns are. */
+      white-space: normal;
+      line-height: 1.25;
+      vertical-align: bottom;
     }
+
     /* Padding, tabular figures and right-alignment reach <tfoot> as well as
        <tbody>. The Totals row is a tfoot row, so while these were scoped to
        tbody it picked up neither the horizontal padding nor the
@@ -604,6 +666,7 @@
     }
     .report .pill {
       display: inline-block;
+      white-space: nowrap;
       font-size: 0.65rem;
       font-weight: 700;
       letter-spacing: 0.1em;
@@ -650,12 +713,23 @@
       padding: 0.4rem 0.7rem;
       font-size: 0.56rem;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.06em;
       color: var(--muted);
       background: transparent;
       border-bottom: 1px solid var(--border);
-      white-space: nowrap;
+      white-space: normal;
+      line-height: 1.25;
+      vertical-align: bottom;
     }
+    /* The same four groups as the table above, so the eye reads the detail the
+       way it reads the summary. */
+    .report .report-detail-table th:nth-child(3),
+    .report .report-detail-table td:nth-child(3),
+    .report .report-detail-table th:nth-child(8),
+    .report .report-detail-table td:nth-child(8),
+    .report .report-detail-table th:nth-child(9),
+    .report .report-detail-table td:nth-child(9) { border-right: 1px solid var(--border); }
+    .report .report-detail-table tr.week-band > td { border-right: none; }
     .report .report-detail-table td {
       padding: 0.4rem 0.7rem;
       border-bottom: 1px solid rgba(42,42,58,0.5);
@@ -732,8 +806,27 @@
          is wider still. */
       @page { size: landscape; margin: 0.4in; }
       body { background: white !important; color: black !important; }
-      /* On paper there is nothing to scroll — let the table print in full. */
-      .report-scroll { overflow: visible !important; }
+      /* On paper there is nothing to scroll — let the table print in full, and
+         drop the affordances that only make sense on a screen. The sticky cells
+         carry a dark surface colour for the dark theme; left alone the employee
+         column printed as a black bar down the page. */
+      .report-scroll { overflow: visible !important; background: none !important; }
+      .report thead th:first-child,
+      .report tbody td.name,
+      .report tfoot td.name,
+      .report tr.total td.name {
+        position: static !important;
+        background: transparent !important;
+      }
+      .report thead th:first-child::after,
+      .report tbody td.name::after,
+      .report tfoot td.name::after { display: none !important; }
+      /* The group rules stay — they are as useful on paper as on screen — but
+         in the print palette, not the dark one. */
+      .report thead th, .report tbody td, .report tfoot td,
+      .report .report-detail-table th, .report .report-detail-table td {
+        border-right-color: #bbb !important;
+      }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
       .pager, .modal-backdrop, .btn-print { display: none !important; }
       main { max-width: none !important; padding: 0 !important; }
@@ -754,31 +847,26 @@
       /* 15 columns across a landscape page. 10pt overflowed the sheet and
          Chrome clipped the status column off the right edge, so this has been
          8pt since the travel legs were split out — and at twelve columns 8pt
-         filled the page EXACTLY, with nothing to spare. The overtime split
-         needed three more columns, and it buys them out of the GUTTERS rather
-         than the type: a payroll sheet that has to be read on paper should not
-         get smaller every time a column is added. Measured, not guessed —
-         10.2in of usable width at 96dpi is 979px, and the table comes in at
-         919 with the figures still at the size payroll has been reading. */
+         filled the page EXACTLY, with nothing to spare.
+         What bought room for the overtime columns was letting the HEADINGS
+         wrap: a two-word heading over a column of 0.00 was setting that
+         column's width from the heading, and together they wanted 1420px of a
+         1184px table. Wrapping them to two lines took the printed table from
+         1045px to 748px of the 979px a landscape page gives at 96dpi, so the
+         type and the gutters both stay where payroll is used to reading them. */
       .report table { font-size: 8pt; }
       /* Headers and pills are sized in rem, so they don't follow the table's
          point size — shrink them here too or they set the width floor. */
       .report thead th {
-        font-size: 0.46rem !important;
-        letter-spacing: 0.03em !important;
-        padding: 0.5rem 0.16rem !important;
+        font-size: 0.5rem !important;
+        letter-spacing: 0.05em !important;
+        padding: 0.5rem 0.28rem !important;
       }
-      .report tbody td, .report tr.total td { padding: 0.4rem 0.16rem !important; }
+      .report tbody td, .report tr.total td { padding: 0.4rem 0.28rem !important; }
       /* The per-employee detail is a thirteen-column table printed INSIDE a
          cell of the fifteen-column one, indented, so it has less room than its
-         parent and its rem sizes ignore the point size above. Left alone it was
-         the widest thing on the page. */
-      .report .report-detail-table { font-size: 7pt !important; }
-      .report .report-detail-table th {
-        font-size: 0.48rem !important;
-        padding: 0.32rem 0.16rem !important;
-      }
-      .report .report-detail-table td { padding: 0.3rem 0.16rem !important; }
+         parent — and its rem sizes ignore the point size above. */
+      .report .report-detail-table { font-size: 7.5pt !important; }
       .report .pill {
         font-size: 0.5rem !important;
         letter-spacing: 0.06em !important;
@@ -2383,6 +2471,12 @@
       // leaves them hidden.
       hidePagers();
 
+      // The Hours Report is the one surface too wide for the reading column.
+      // Every other tab keeps 1280px, which is what makes the filter bar and
+      // the review grid readable.
+      const mainEl = document.getElementById('mainContent');
+      if (mainEl) mainEl.classList.toggle('main-wide', tab === 'reports');
+
       if (tab === 'reports') {
         if (reportWrap) reportWrap.style.display = '';
         if (quick)      quick.style.display      = 'flex';
@@ -2895,17 +2989,17 @@
               <tr>
                 <th>Employee</th>
                 <th style="text-align:right">Hours</th>
-                <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel&nbsp;to&nbsp;Site</th>
-                <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
+                <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel to Site</th>
+                <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
                 <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
                 <th style="text-align:right">Total</th>
-                <th style="text-align:right" title="Hours up to 40 in each Monday–Sunday week, added across the weeks in range.">Reg&nbsp;Hrs</th>
-                <th class="th-ot" style="text-align:right" title="Hours past 40 in a Monday–Sunday week. Counted one week at a time — a fortnight's hours are never added together to find it. Paid leave does not count toward the 40.">OT&nbsp;Hrs</th>
-                <th class="th-pw" style="text-align:right" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing&nbsp;Hrs</th>
-                <th class="th-ot" style="text-align:right" title="The prevailing-wage hours that fell in overtime — 1.5x the base rate plus the FULL fringe, the fringe never multiplied. Payroll needs this split out: it is not the same money as standard overtime.">Prevailing&nbsp;OT</th>
-                <th style="text-align:right" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard&nbsp;Hrs</th>
-                <th style="text-align:right">Pending&nbsp;Hrs</th>
-                <th style="text-align:right">Approved&nbsp;Hrs</th>
+                <th style="text-align:right" title="Hours up to 40 in each Monday–Sunday week, added across the weeks in range.">Reg Hrs</th>
+                <th class="th-ot" style="text-align:right" title="Hours past 40 in a Monday–Sunday week. Counted one week at a time — a fortnight's hours are never added together to find it. Paid leave does not count toward the 40.">OT Hrs</th>
+                <th class="th-pw" style="text-align:right" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
+                <th class="th-ot" style="text-align:right" title="The prevailing-wage hours that fell in overtime — 1.5x the base rate plus the FULL fringe, the fringe never multiplied. Payroll needs this split out: it is not the same money as standard overtime.">Prevailing OT</th>
+                <th style="text-align:right" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
+                <th style="text-align:right">Pending Hrs</th>
+                <th style="text-align:right">Approved Hrs</th>
                 <th>Time Off</th>
                 <th>Status</th>
               </tr>
@@ -3048,12 +3142,12 @@
               <th>Division</th>
               <th>Project</th>
               <th style="text-align:right">Work</th>
-              <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel&nbsp;to&nbsp;Site</th>
-              <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
+              <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel to Site</th>
+              <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
               <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
               <th style="text-align:right">Total</th>
               <th class="th-ot" style="text-align:right" title="How much of this day fell past the fortieth hour of its Monday–Sunday week.">OT</th>
-              <th class="th-pw" style="text-align:right" title="Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.">Prevailing&nbsp;Hrs</th>
+              <th class="th-pw" style="text-align:right" title="Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
               <th>Lunch</th>
               <th>Equipment</th>
               <th>Status</th>
