@@ -19,6 +19,19 @@
       --muted:     #888;
       --red:       #ef4444;
       --yellow:    #eab308;
+      /* Overtime. Deliberately not --yellow: overtime and prevailing wage sit
+         in adjacent columns and are different questions, and the one week they
+         overlap is the week payroll most needs to tell them apart. */
+      --orange:    #f97316;
+      /* The expanded detail panel, as a solid colour rather than a translucent
+         black over the card. A sticky cell inside it has to be opaque, and
+         "the card colour darkened by 18%" cannot be written as a fill. */
+      --sunken:    #10101a;
+      /* The week bands, blended against --sunken rather than layered over it,
+         for the same reason: the label inside them is sticky and has to be
+         opaque. --band is --sunken under 3.5% white, --band-ot under 9% orange. */
+      --band:      #181822;
+      --band-ot:   #25191a;
       --green:     #22c55e;
       --blue:      #60a5fa;
     }
@@ -78,6 +91,13 @@
       flex-direction: column;
       gap: 1rem;
     }
+    /* The Hours Report is fifteen columns and does not belong in a reading
+       column. 1280px is right for the review grid and the filter bar; here it
+       left a third of a wide screen empty on either side while the Status
+       column was cut off the right of the card. The Reports tab takes the
+       window it is given, and the cap keeps it from stretching to nothing on an
+       ultrawide monitor. */
+    main.main-wide { max-width: min(1800px, 98vw); }
 
     /* ── Stat strip ── */
     .stats {
@@ -539,10 +559,69 @@
       cursor: not-allowed;
     }
     .btn-excel:disabled:hover { background: transparent; }
-    /* Breaking travel into its two legs takes the report to 12 columns, which
-       is wider than the card on a laptop screen. Scroll it sideways rather
-       than letting the status column fall off the edge. */
-    .report-scroll { overflow-x: auto; }
+    /* The travel legs and the overtime split take the report to 15 columns,
+       which is wider than the card on a laptop screen. Scroll it sideways
+       rather than letting the status column fall off the edge. */
+    /* When the table still will not fit — a laptop, a split screen — it
+       scrolls. A visible scrollbar says so; the default overlay one on macOS
+       appears only once you are already scrolling, which is too late to be a
+       cue. */
+    .report-scroll {
+      overflow-x: auto;
+      position: relative;
+      scrollbar-color: var(--border) transparent;
+    }
+    .report-scroll::-webkit-scrollbar        { height: 10px; }
+    .report-scroll::-webkit-scrollbar-track  { background: var(--surface2); border-radius: 5px; }
+    .report-scroll::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 5px; }
+    .report-scroll::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+    /* EVERY SELECTOR BELOW IS A CHILD CHAIN, and has to stay one. The
+       per-employee detail is a whole second table nested inside a cell of this
+       one, with its own thead and its own tbody, so `.report thead th` reaches
+       into it: written as descendant selectors these made the detail's Date
+       heading sticky while its body cells were not, and scattered the group
+       rules across columns that are not group edges. */
+
+    /* Employee is the row's subject; scrolled off, every figure to its right
+       belongs to nobody. Both header and body cells have to be sticky, and the
+       header's z-index has to beat the body's or the two overlap at the corner.
+       The fill must be opaque or the figures scroll through underneath, and the
+       shadow is what shows they are passing under it rather than ending. */
+    .report > .report-scroll > table > thead > tr > th:first-child,
+    .report > .report-scroll > table > tbody > tr > td.name,
+    .report > .report-scroll > table > tfoot > tr > td.name {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      background: var(--surface);
+      box-shadow: 6px 0 8px -6px rgba(0,0,0,0.65);
+    }
+    .report > .report-scroll > table > thead > tr > th:first-child { background: var(--surface2); z-index: 3; }
+    .report > .report-scroll > table > tfoot > tr.total > td.name  { background: var(--surface2); }
+    /* The sticky column needs its own right edge — the cell borders scroll away
+       underneath it and the names would sit on top of the figures. */
+    .report > .report-scroll > table > thead > tr > th:first-child::after,
+    .report > .report-scroll > table > tbody > tr > td.name::after,
+    .report > .report-scroll > table > tfoot > tr > td.name::after {
+      content: '';
+      position: absolute;
+      top: 0; right: 0; bottom: -1px;
+      border-right: 1px solid var(--border);
+    }
+    /* Fifteen columns of near-identical figures read as a wall. These rules
+       break them into the four questions the table actually answers: how long
+       he was on the clock, how much of it was overtime, what rate it is paid
+       at, and where it stands for approval. */
+    .report > .report-scroll > table > thead > tr > th:nth-child(6),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(6),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(6),
+    .report > .report-scroll > table > thead > tr > th:nth-child(8),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(8),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(8),
+    .report > .report-scroll > table > thead > tr > th:nth-child(11),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(11),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(11) { border-right: 1px solid var(--border); }
     .report table {
       width: 100%;
       border-collapse: collapse;
@@ -553,12 +632,20 @@
       padding: 0.6rem 0.45rem;
       font-size: 0.62rem;
       text-transform: uppercase;
-      letter-spacing: 0.09em;
+      letter-spacing: 0.06em;
       color: var(--muted);
       border-bottom: 1px solid var(--border);
       background: var(--surface2);
-      white-space: nowrap;
+      /* Deliberately NOT nowrap. A two-word heading over a column of 0.00 was
+         setting the column's width from the heading rather than the figure —
+         together the headings wanted 1420px of a 1184px table, which is why the
+         Status column fell off the edge. They wrap to two lines now and the
+         figures decide how wide their own columns are. */
+      white-space: normal;
+      line-height: 1.25;
+      vertical-align: bottom;
     }
+
     /* Padding, tabular figures and right-alignment reach <tfoot> as well as
        <tbody>. The Totals row is a tfoot row, so while these were scoped to
        tbody it picked up neither the horizontal padding nor the
@@ -580,6 +667,10 @@
        black with !important, so the printed payroll sheet stays crisp. */
     .report td.num-pw      { color: var(--yellow); font-weight: 600; }
     .report thead th.th-pw { color: var(--yellow); }
+    /* Overtime columns. Only coloured when there ARE overtime hours — a column
+       of orange zeroes would put a warning on every clean week. */
+    .report td.num-ot      { color: var(--orange); font-weight: 700; }
+    .report thead th.th-ot { color: var(--orange); }
     .report tr.total td {
       border-top: 2px solid var(--border);
       border-bottom: none;
@@ -596,6 +687,7 @@
     }
     .report .pill {
       display: inline-block;
+      white-space: nowrap;
       font-size: 0.65rem;
       font-weight: 700;
       letter-spacing: 0.1em;
@@ -621,6 +713,13 @@
     /* ── Expandable per-employee detail (Reports tab) ── */
     .report tbody tr.emp-row { cursor: pointer; }
     .report tbody tr.emp-row:hover td { background: rgba(255,255,255,0.03); }
+    /* The sticky name cell carries an opaque fill (it has to — the figures
+       scroll underneath it), and that fill outranks the hover rule above on
+       specificity. Layered as a background-image the same tint reaches it
+       without giving up the opacity. */
+    .report > .report-scroll > table > tbody > tr.emp-row:hover > td.name {
+      background-image: linear-gradient(rgba(255,255,255,0.03), rgba(255,255,255,0.03));
+    }
     .report .exp-caret {
       display: inline-block;
       width: 0.85em;
@@ -630,7 +729,7 @@
       transition: transform 0.12s ease;
     }
     .report tbody tr.emp-row.expanded .exp-caret { transform: rotate(90deg); color: var(--accent); }
-    .report tr.report-detail > td { padding: 0 0 0.6rem 1.4rem; background: rgba(0,0,0,0.18); border-bottom: 1px solid var(--border); }
+    .report tr.report-detail > td { padding: 0 0 0.6rem 1.4rem; background: var(--sunken); border-bottom: 1px solid var(--border); }
     .report .report-detail-table {
       width: 100%;
       border-collapse: collapse;
@@ -642,11 +741,44 @@
       padding: 0.4rem 0.7rem;
       font-size: 0.56rem;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.06em;
       color: var(--muted);
       background: transparent;
       border-bottom: 1px solid var(--border);
-      white-space: nowrap;
+      white-space: normal;
+      line-height: 1.25;
+      vertical-align: bottom;
+    }
+    /* The same four groups as the table above, so the eye reads the detail the
+       way it reads the summary. Written per section because nth-child counts
+       ELEMENTS, not columns: the totals row opens with a colspan="3" cell, so
+       its third <td> is the table's fifth column — matched blindly, the rules
+       jogged two columns right on the last line of the sheet. */
+    .report .report-detail-table > thead > tr > th:nth-child(3),
+    .report .report-detail-table > thead > tr > th:nth-child(8),
+    .report .report-detail-table > thead > tr > th:nth-child(9),
+    .report .report-detail-table > tbody > tr > td:nth-child(3),
+    .report .report-detail-table > tbody > tr > td:nth-child(8),
+    .report .report-detail-table > tbody > tr > td:nth-child(9),
+    /* Totals row: cell 1 spans Date/Division/Project, so the same three edges
+       are its 1st, 6th and 7th cells. */
+    .report .report-detail-table > tfoot > tr > td:nth-child(1),
+    .report .report-detail-table > tfoot > tr > td:nth-child(6),
+    .report .report-detail-table > tfoot > tr > td:nth-child(7) { border-right: 1px solid var(--border); }
+    /* The week band spans the whole table; it has no columns to divide. */
+    .report .report-detail-table > tbody > tr.week-band > td { border-right: none; }
+
+    /* Date is the detail row's subject, exactly as Employee is the summary
+       row's. Without this the summary kept its names while the rows underneath
+       lost their dates the moment the table scrolled — and a per-day OT figure
+       with no date on it says nothing. */
+    .report .report-detail-table > thead > tr > th:first-child,
+    .report .report-detail-table > tbody > tr > td.date {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      background: var(--sunken);
+      box-shadow: 6px 0 8px -6px rgba(0,0,0,0.65);
     }
     .report .report-detail-table td {
       padding: 0.4rem 0.7rem;
@@ -659,6 +791,66 @@
     .report .report-detail-table td.num { text-align: right; white-space: nowrap; }
     .report .report-detail-table td.date { white-space: nowrap; }
     .report .report-detail-table td.num-pw { color: var(--yellow); }
+    .report .report-detail-table td.num-ot { color: var(--orange); font-weight: 700; }
+
+    /* ── Week bands in the per-employee detail ──────────────────────────
+       Overtime is a weekly fact and the report's range is a fortnight, so the
+       entries are banded by the Monday–Sunday week they were worked in. The
+       band carries that week's own regular/overtime split; without it a flat
+       list of fourteen days cannot show where the fortieth hour fell. */
+    .report .report-detail-table tr.week-band > td {
+      background: var(--band);
+      border-bottom: 1px solid var(--border);
+      border-top: 1px solid var(--border);
+      padding: 0.4rem 0.7rem;
+      white-space: normal;
+    }
+    .report .report-detail-table tr.week-band-ot > td {
+      background: var(--band-ot);
+      border-left: 3px solid var(--orange);
+    }
+    .report .report-detail-table tr.week-band .wb-label {
+      font-weight: 700;
+      font-size: 0.7rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text);
+      margin-right: 0.9rem;
+      /* Pinned for the same reason the Date cells below it are: scrolled away,
+         the band was cut off mid-phrase ("h worked  17.50 regular") over rows
+         that still knew their own dates. */
+      position: sticky;
+      left: 0;
+      display: inline-block;
+      background: var(--band);
+      padding-right: 0.5rem;
+    }
+    .report .report-detail-table tr.week-band-ot .wb-label { background: var(--band-ot); }
+    .report .report-detail-table tr.week-band > td > span { margin-right: 0.9rem; }
+    .report .report-detail-table .wb-fig   { font-size: 0.72rem; color: var(--muted); }
+    .report .report-detail-table .wb-fig strong { color: var(--text); font-variant-numeric: tabular-nums; }
+    .report .report-detail-table .wb-note  { font-size: 0.72rem; color: var(--muted); font-style: italic; }
+    .report .report-detail-table .wb-ot    { font-size: 0.72rem; color: var(--orange); font-weight: 700; }
+    .report .report-detail-table .wb-ot-pw { font-size: 0.72rem; color: var(--yellow); font-weight: 600; }
+    .report .report-detail-table .wb-warn  {
+      font-size: 0.68rem;
+      color: var(--red);
+      border: 1px solid rgba(239,68,68,0.4);
+      border-radius: 4px;
+      padding: 0.08rem 0.4rem;
+    }
+
+    /* Footnote under the report table, shown only when a filter cuts into a
+       week and the overtime figures above it are therefore a floor. */
+    .report .report-caveat {
+      margin: 0.7rem 0 0;
+      padding: 0.55rem 0.8rem;
+      border-left: 3px solid var(--orange);
+      background: rgba(249,115,22,0.07);
+      color: var(--muted);
+      font-size: 0.74rem;
+      line-height: 1.45;
+    }
     .report .report-detail-table tr.detail-total td {
       font-weight: 700;
       color: var(--text);
@@ -668,12 +860,38 @@
 
     /* ── Print: hide everything except the active report / audit log ── */
     @media print {
-      /* Landscape: the hours report runs 12 columns wide once travel is split
-         into its legs, and the audit log is wider still. */
+      /* Landscape: the hours report runs 15 columns wide once travel is split
+         into its legs and the overtime split is spelled out, and the audit log
+         is wider still. */
       @page { size: landscape; margin: 0.4in; }
       body { background: white !important; color: black !important; }
-      /* On paper there is nothing to scroll — let the table print in full. */
-      .report-scroll { overflow: visible !important; }
+      /* On paper there is nothing to scroll — let the table print in full, and
+         drop the affordances that only make sense on a screen. The sticky cells
+         carry a dark surface colour for the dark theme; left alone the employee
+         column printed as a black bar down the page. */
+      .report-scroll { overflow: visible !important; background: none !important; }
+      .report > .report-scroll > table > thead > tr > th:first-child,
+      .report > .report-scroll > table > tbody > tr > td.name,
+      .report > .report-scroll > table > tfoot > tr > td.name {
+        position: static !important;
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+      .report > .report-scroll > table > thead > tr > th:first-child::after,
+      .report > .report-scroll > table > tbody > tr > td.name::after,
+      .report > .report-scroll > table > tfoot > tr > td.name::after { display: none !important; }
+      .report .report-detail-table > thead > tr > th:first-child,
+      .report .report-detail-table > tbody > tr > td.date {
+        position: static !important;
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+      /* The group rules stay — they are as useful on paper as on screen — but
+         in the print palette, not the dark one. */
+      .report thead th, .report tbody td, .report tfoot td,
+      .report .report-detail-table th, .report .report-detail-table td {
+        border-right-color: #bbb !important;
+      }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
       .pager, .modal-backdrop, .btn-print { display: none !important; }
       main { max-width: none !important; padding: 0 !important; }
@@ -691,8 +909,16 @@
       }
       .report-title { color: #000 !important; font-size: 14pt; }
       .report-sub   { color: #555 !important; }
-      /* 12 columns across a landscape page — 10pt overflowed the sheet and
-         Chrome clipped the status column off the right edge. */
+      /* 15 columns across a landscape page. 10pt overflowed the sheet and
+         Chrome clipped the status column off the right edge, so this has been
+         8pt since the travel legs were split out — and at twelve columns 8pt
+         filled the page EXACTLY, with nothing to spare.
+         What bought room for the overtime columns was letting the HEADINGS
+         wrap: a two-word heading over a column of 0.00 was setting that
+         column's width from the heading, and together they wanted 1420px of a
+         1184px table. Wrapping them to two lines took the printed table from
+         1045px to 748px of the 979px a landscape page gives at 96dpi, so the
+         type and the gutters both stay where payroll is used to reading them. */
       .report table { font-size: 8pt; }
       /* Headers and pills are sized in rem, so they don't follow the table's
          point size — shrink them here too or they set the width floor. */
@@ -702,6 +928,10 @@
         padding: 0.5rem 0.28rem !important;
       }
       .report tbody td, .report tr.total td { padding: 0.4rem 0.28rem !important; }
+      /* The per-employee detail is a thirteen-column table printed INSIDE a
+         cell of the fifteen-column one, indented, so it has less room than its
+         parent — and its rem sizes ignore the point size above. */
+      .report .report-detail-table { font-size: 7.5pt !important; }
       .report .pill {
         font-size: 0.5rem !important;
         letter-spacing: 0.06em !important;
@@ -736,6 +966,46 @@
       }
       .report .report-detail-table td { color: #000 !important; border-bottom: 1px solid #ddd !important; }
       .report .report-detail-table tr.detail-total td { border-top: 1px solid #000 !important; }
+      /* Week bands and the overtime figures print as plain black on white —
+         the colour is a screen affordance, the numbers are the record. */
+      .report .report-detail-table tr.week-band > td {
+        background: #f2f2f2 !important;
+        border-top: 1px solid #999 !important;
+        border-bottom: 1px solid #999 !important;
+        border-left: none !important;
+      }
+      /* .wb-label included deliberately: it takes its colour from --text,
+         which is near-white, so leaving it out printed the week's own dates
+         invisibly on the page — the one part of the band you cannot do
+         without. */
+      .report .report-detail-table .wb-label,
+      .report .report-detail-table .wb-fig,
+      .report .report-detail-table .wb-fig strong,
+      .report .report-detail-table .wb-note,
+      .report .report-detail-table .wb-ot,
+      .report .report-detail-table .wb-ot-pw,
+      .report .report-detail-table .wb-warn { color: #000 !important; }
+      .report .report-detail-table .wb-warn { border-color: #000 !important; }
+      /* The band's text is sized in rem, so it ignored the point size the
+         table prints at and came out half again as large as the figures it
+         summarises — it read as the heading of the page rather than of a week. */
+      .report .report-detail-table tr.week-band > td { padding: 0.3rem 0.16rem !important; }
+      .report .report-detail-table .wb-label {
+        font-size: 0.5rem !important;
+        position: static !important;
+        background: transparent !important;
+      }
+      .report .report-detail-table .wb-fig,
+      .report .report-detail-table .wb-note,
+      .report .report-detail-table .wb-ot,
+      .report .report-detail-table .wb-ot-pw { font-size: 6.5pt !important; }
+      .report .report-detail-table .wb-warn  { font-size: 6pt !important; }
+      .report .report-detail-table tr.week-band > td > span { margin-right: 0.5rem !important; }
+      .report .report-caveat {
+        color: #000 !important;
+        background: #f7f7f7 !important;
+        border-left: 3px solid #000 !important;
+      }
 
       /* Audit Log tab */
       .audit-wrap {
@@ -2055,6 +2325,14 @@
     //     would be drawn back over the failure as if they were current.
     let entriesFetchSeq  = 0;      // bumped per request; older replies are dropped
     let entriesLoadError = null;   // message from the last failed load, else null
+    // The date range and division the rows IN MEMORY were fetched with — which
+    // is not necessarily what the filter bar says. The boxes re-render from
+    // allEntries without refetching (see above), so between editing a date and
+    // pressing Apply the two disagree. Anything making a claim ABOUT THE ROWS
+    // has to ask this and not the inputs. Overtime is the case that matters:
+    // "this week is only half loaded" is a fact about the fetch, never about
+    // what someone has typed into a box.
+    let loadedScope = { from: '', to: '', division: '' };
 
     // ── Approved-tab paging ───────────────────────────────────────────────
     // Pending is a queue payroll works to zero, so it stays whole. Approved is
@@ -2262,6 +2540,12 @@
       // leaves them hidden.
       hidePagers();
 
+      // The Hours Report is the one surface too wide for the reading column.
+      // Every other tab keeps 1280px, which is what makes the filter bar and
+      // the review grid readable.
+      const mainEl = document.getElementById('mainContent');
+      if (mainEl) mainEl.classList.toggle('main-wide', tab === 'reports');
+
       if (tab === 'reports') {
         if (reportWrap) reportWrap.style.display = '';
         if (quick)      quick.style.display      = 'flex';
@@ -2422,6 +2706,7 @@
         if (seq !== entriesFetchSeq) return;
         if (!res.ok) throw new Error(data.error || 'Failed');
         allEntries = Array.isArray(data.entries) ? data.entries : [];
+        loadedScope = { from, to, division };
         entriesLoadError = null;
         // Diagnostic log so the empty-Pending case is easy to debug from DevTools.
         console.log('[payroll] GET', url, '→', res.status, 'entries:', allEntries.length,
@@ -2437,6 +2722,7 @@
         // the refresh never landed.
         allEntries = [];
         filtered   = [];
+        loadedScope = { from: '', to: '', division: '' };
         selectedIds.clear();
         entriesLoadError = err.message || 'Failed to load time entries';
         filterAndRender();
@@ -2528,6 +2814,7 @@
       const to   = document.getElementById('flt-to').value;
       const div  = document.getElementById('flt-division').value;
       const userQ= document.getElementById('flt-user').value.trim();
+      const supFilter = document.getElementById('flt-supervisor').value.trim();
 
       // Aggregate by username
       const byUser = new Map();
@@ -2541,6 +2828,13 @@
           travelHours:   0,
           pwHours:       0,
           stdHours:      0,
+          // Filled in by weeklyOvertime once the whole week is in hand.
+          regHours:      0,
+          otHours:       0,
+          otPwHours:     0,
+          otStdHours:    0,
+          weeks:         [],
+          otClipped:     false,
           pendingHours:  0,
           approvedHours: 0,
           pendingOff:    0,
@@ -2596,6 +2890,22 @@
           if (e.status === 'approved')  acc.approvedOff++;
         }
       }
+      // Overtime, week by week, per employee. It cannot be accumulated in the
+      // loop above: whether an hour is overtime depends on the whole week
+      // around it, so the week has to have finished arriving first.
+      for (const r of byUser.values()) {
+        // The range the ROWS came back for, not the one in the boxes. A week is
+        // only half loaded because the fetch cut it, and the fetch is what
+        // loadedScope remembers.
+        const ot = weeklyOvertime(r.entries, loadedScope);
+        r.weeks      = ot.weeks;
+        r.regHours   = ot.regHours;
+        r.otHours    = ot.otHours;
+        r.otPwHours  = ot.otPwHours;
+        r.otStdHours = ot.otStdHours;
+        r.otClipped  = ot.clipped;
+      }
+
       const rows = Array.from(byUser.values())
         .sort((a, b) => a.username.localeCompare(b.username));
 
@@ -2607,11 +2917,19 @@
         travelHours:   acc.travelHours   + r.travelHours,
         pwHours:       acc.pwHours        + r.pwHours,
         stdHours:      acc.stdHours       + r.stdHours,
+        // Overtime is per person per week, so the crew figure is the sum of the
+        // people and never a re-measurement of the crew: four men at 30 hours
+        // is 120 hours and no overtime at all.
+        regHours:      acc.regHours       + r.regHours,
+        otHours:       acc.otHours        + r.otHours,
+        otPwHours:     acc.otPwHours      + r.otPwHours,
+        otStdHours:    acc.otStdHours     + r.otStdHours,
         pendingHours:  acc.pendingHours  + r.pendingHours,
         approvedHours: acc.approvedHours + r.approvedHours,
         pendingOff:    acc.pendingOff    + r.pendingOff,
         approvedOff:   acc.approvedOff   + r.approvedOff,
-      }), { workHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+      }), { workHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, regHours: 0, otHours: 0, otPwHours: 0, otStdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+      tot.otClipped = rows.some(r => r.otClipped);
 
       // Header subtitle
       const scopeBits = [];
@@ -2627,12 +2945,24 @@
       });
       const companyName = (user && (user.companyName || user.companyCode)) || '';
 
-      return { rows, tot, scopeLine, gen, companyName };
+      // Overtime is measured across a WHOLE week, and this report can only see
+      // the entries the filters let through. When they cut into a week, its
+      // overtime is a floor and not an answer — say so, rather than printing a
+      // figure that reads like the man's whole week.
+      const otNotes = [];
+      if (tot.otClipped)         otNotes.push('the date range starts or ends mid-week');
+      if (loadedScope.division)  otNotes.push(`only the ${prettyDiv(loadedScope.division)} division was loaded`);
+      if (supFilter)             otNotes.push('a supervisor filter is narrowing the entries');
+      const otCaveat = otNotes.length
+        ? `Overtime is counted per Monday–Sunday week from the entries in view. Here ${otNotes.join(', and ')}, so a week may be missing hours and its overtime understated.`
+        : '';
+
+      return { rows, tot, scopeLine, gen, companyName, otCaveat };
     }
 
     function renderReport() {
       const wrap = document.getElementById('reportWrap');
-      const { rows, tot, scopeLine, gen, companyName } = buildReportModel();
+      const { rows, tot, scopeLine, gen, companyName, otCaveat } = buildReportModel();
 
       // Empty state
       if (!rows.length) {
@@ -2663,6 +2993,18 @@
         const status = hasPending
           ? `<span class="pill pill-pending">${r.pendingHours.toFixed(2)} h pending</span>`
           : `<span class="pill pill-clear">All approved</span>`;
+        // The overtime cell is one number over a fortnight, and the question it
+        // always raises is WHICH WEEK. Name them in the tooltip, and again in
+        // the week bands the row expands into.
+        const hasOt  = r.otHours > 0.001;
+        const otWeeks = r.weeks.filter(w => w.otHours > 0.001);
+        const otTitle = otWeeks.length
+          ? `Hours past 40 in a Monday–Sunday week · ${otWeeks.map(w =>
+              `${prettyDateShort(w.weekStart)}–${prettyDateShort(w.weekEnd)}: ${w.otHours.toFixed(2)} h`).join(' · ')}`
+          : 'No week in this range passed 40 hours';
+        const pwOtTitle = r.otPwHours > 0.001
+          ? `Of the ${r.otHours.toFixed(2)} overtime hours, ${r.otPwHours.toFixed(2)} were prevailing-wage work — paid at 1.5x the base rate plus the full fringe. The other ${r.otStdHours.toFixed(2)} are standard overtime.`
+          : 'No overtime hours fell on prevailing-wage work';
         // Each employee row expands to a per-entry breakdown. Expansion state
         // is keyed by username so it survives the re-render the filter inputs
         // trigger on every keystroke.
@@ -2676,7 +3018,10 @@
             <td class="num">${r.travelToShop.toFixed(2)}</td>
             <td class="num">${r.travelHours.toFixed(2)}</td>
             <td class="num">${total.toFixed(2)}</td>
+            <td class="num">${r.regHours.toFixed(2)}</td>
+            <td class="num${hasOt ? ' num-ot' : ''}" title="${escapeHtml(otTitle)}">${r.otHours.toFixed(2)}</td>
             <td class="num num-pw">${r.pwHours.toFixed(2)}</td>
+            <td class="num${r.otPwHours > 0.001 ? ' num-ot' : ''}" title="${escapeHtml(pwOtTitle)}">${r.otPwHours.toFixed(2)}</td>
             <td class="num">${r.stdHours.toFixed(2)}</td>
             <td class="num">${r.pendingHours.toFixed(2)}</td>
             <td class="num">${r.approvedHours.toFixed(2)}</td>
@@ -2684,7 +3029,7 @@
             <td>${status}</td>
           </tr>
           <tr class="report-detail" data-user="${userAttr}"${expanded ? '' : ' hidden'}>
-            <td colspan="12">${reportDetailHtml(r.entries)}</td>
+            <td colspan="15">${reportDetailHtml(r)}</td>
           </tr>
         `;
       }).join('');
@@ -2713,14 +3058,17 @@
               <tr>
                 <th>Employee</th>
                 <th style="text-align:right">Hours</th>
-                <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel&nbsp;to&nbsp;Site</th>
-                <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
+                <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel to Site</th>
+                <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
                 <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
                 <th style="text-align:right">Total</th>
-                <th class="th-pw" style="text-align:right" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing&nbsp;Hrs</th>
-                <th style="text-align:right" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard&nbsp;Hrs</th>
-                <th style="text-align:right">Pending&nbsp;Hrs</th>
-                <th style="text-align:right">Approved&nbsp;Hrs</th>
+                <th style="text-align:right" title="Hours up to 40 in each Monday–Sunday week, added across the weeks in range.">Reg Hrs</th>
+                <th class="th-ot" style="text-align:right" title="Hours past 40 in a Monday–Sunday week. Counted one week at a time — a fortnight's hours are never added together to find it. Paid leave does not count toward the 40.">OT Hrs</th>
+                <th class="th-pw" style="text-align:right" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
+                <th class="th-ot" style="text-align:right" title="The prevailing-wage hours that fell in overtime — 1.5x the base rate plus the FULL fringe, the fringe never multiplied. Payroll needs this split out: it is not the same money as standard overtime.">Prevailing OT</th>
+                <th style="text-align:right" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
+                <th style="text-align:right">Pending Hrs</th>
+                <th style="text-align:right">Approved Hrs</th>
                 <th>Time Off</th>
                 <th>Status</th>
               </tr>
@@ -2734,7 +3082,10 @@
                 <td class="num">${tot.travelToShop.toFixed(2)}</td>
                 <td class="num">${tot.travelHours.toFixed(2)}</td>
                 <td class="num">${totalAll.toFixed(2)}</td>
+                <td class="num">${tot.regHours.toFixed(2)}</td>
+                <td class="num${tot.otHours > 0.001 ? ' num-ot' : ''}">${tot.otHours.toFixed(2)}</td>
                 <td class="num num-pw">${tot.pwHours.toFixed(2)}</td>
+                <td class="num${tot.otPwHours > 0.001 ? ' num-ot' : ''}">${tot.otPwHours.toFixed(2)}</td>
                 <td class="num">${tot.stdHours.toFixed(2)}</td>
                 <td class="num">${tot.pendingHours.toFixed(2)}</td>
                 <td class="num">${tot.approvedHours.toFixed(2)}</td>
@@ -2748,60 +3099,110 @@
             </tfoot>
           </table>
           </div>
+          ${otCaveat ? `<p class="report-caveat">${escapeHtml(otCaveat)}</p>` : ''}
         </div>
       `;
     }
 
     // Per-entry breakdown shown when an employee row in the report is expanded.
-    // Lists every entry in range (oldest first) with its division, project and
-    // prevailing-wage hours, then a Total row summing that employee's entries.
-    function reportDetailHtml(entries) {
-      const list = (entries || []).slice().sort((a, b) =>
-        (a.work_date || '').localeCompare(b.work_date || '') ||
-        String(a.created_at || '').localeCompare(String(b.created_at || '')));
-      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0, sumPw = 0;
-      const lines = list.map(e => {
-        const isOff  = e.entry_type === 'time_off';
-        const work   = isOff ? 0 : Number(e.computed_hours || 0);
-        const travel = isOff ? 0 : Number(e.travel_hours   || 0);
-        const total  = work + travel;
-        // Travel is entered on the timesheet as two legs — "Travel Time to
-        // Site" and "Travel Time to Shop" — and stored alongside their sum.
-        // Break the legs back out so payroll can see how the travel figure was
-        // built; the summed Travel and Total columns are unchanged. An entry
-        // saved with only the sum (no legs) shows a dash on both legs rather
-        // than a made-up split.
-        const toSite = isOff ? null : (e.travel_to_site_hours != null ? Number(e.travel_to_site_hours) : null);
-        const toShop = isOff ? null : (e.travel_to_shop_hours != null ? Number(e.travel_to_shop_hours) : null);
-        // Per entry, prevailing hours = the work hours when the tied job is
-        // prevailing wage, less whatever of them the truck bought. Travel is
-        // excluded — it isn't paid at the prevailing rate — which matches the
-        // aggregate column.
-        const pw     = (!isOff && e.prevailing_wage === true)
-          ? work - offSiteHaulWork(e, work) : 0;
-        sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw;
-        sumToSite += (toSite || 0); sumToShop += (toShop || 0);
-        const division = isOff ? '—' : (prettyDiv(e.division) || '—');
-        const project  = isOff ? `Time Off · ${prettyOff(e.time_off_type)}` : (e.job_label || '—');
-        const statusPill = e.status === 'approved'
-          ? '<span class="pill pill-clear">Approved</span>'
-          : '<span class="pill pill-pending">Pending</span>';
-        return `
-          <tr>
-            <td class="date">${prettyDate(e.work_date)}</td>
-            <td>${escapeHtml(division)}</td>
-            <td>${escapeHtml(project)}</td>
-            <td class="num">${isOff ? '—' : work.toFixed(2)}</td>
-            <td class="num">${toSite == null ? '—' : toSite.toFixed(2)}</td>
-            <td class="num">${toShop == null ? '—' : toShop.toFixed(2)}</td>
-            <td class="num">${isOff ? '—' : travel.toFixed(2)}</td>
-            <td class="num">${isOff ? '—' : total.toFixed(2)}</td>
-            <td class="num${pw > 0 ? ' num-pw' : ''}">${isOff ? '—' : pw.toFixed(2)}</td>
-            <td>${dayFlagHtml(e, 'lunch_break', 'Took a lunch break', 'No lunch break taken')}</td>
-            <td>${dayFlagHtml(e, 'operated_equipment', 'Operated equipment this day', 'Did not operate equipment')}</td>
-            <td>${statusPill}</td>
-          </tr>`;
+    //
+    // Banded BY WEEK, because overtime is a weekly fact and a flat list of
+    // fourteen days cannot show where the fortieth hour fell. Each band carries
+    // its own week's regular/overtime split, and the OT column on each day says
+    // how much of that day sat past the line — so an approver can see not just
+    // that a man went into overtime but which day took him there.
+    function reportDetailHtml(row) {
+      const entries = (row && row.entries) || [];
+      const weeks   = (row && row.weeks)   || [];
+
+      // The per-entry overtime weeklyOvertime already worked out, keyed by the
+      // entry object itself so it needs no id — a draft that was never given
+      // one still lines up with its row.
+      const otByEntry = new Map();
+      const weekByStart = new Map();
+      for (const w of weeks) {
+        weekByStart.set(w.weekStart, w);
+        for (const r of w.rows) otByEntry.set(r.entry, r);
+      }
+
+      // Group every entry in range — drafts and time off included — into the
+      // week it was worked. An entry with an unreadable date keeps its place at
+      // the end under a band that says so, rather than being filed into a week
+      // it may not belong to.
+      const byWeek = new Map();
+      for (const e of entries) {
+        const wk = weekStartOf(e.work_date) || '';
+        if (!byWeek.has(wk)) byWeek.set(wk, []);
+        byWeek.get(wk).push(e);
+      }
+      const weekKeys = [...byWeek.keys()].sort((a, b) =>
+        (a === '' ? 1 : 0) - (b === '' ? 1 : 0) || a.localeCompare(b));
+
+      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0,
+          sumTotal = 0, sumPw = 0, sumOt = 0, count = 0;
+
+      const bands = weekKeys.map(wk => {
+        // The order the hours were COUNTED in — see byEntryOrder. A day's two
+        // blocks must be listed the way they were attributed.
+        const list = byWeek.get(wk).slice().sort(byEntryOrder);
+        const w = weekByStart.get(wk);
+
+        const lines = list.map(e => {
+          const isOff  = e.entry_type === 'time_off';
+          const work   = isOff ? 0 : Number(e.computed_hours || 0);
+          const travel = isOff ? 0 : Number(e.travel_hours   || 0);
+          const total  = work + travel;
+          // Travel is entered on the timesheet as two legs — "Travel Time to
+          // Site" and "Travel Time to Shop" — and stored alongside their sum.
+          // Break the legs back out so payroll can see how the travel figure was
+          // built; the summed Travel and Total columns are unchanged. An entry
+          // saved with only the sum (no legs) shows a dash on both legs rather
+          // than a made-up split.
+          const toSite = isOff ? null : (e.travel_to_site_hours != null ? Number(e.travel_to_site_hours) : null);
+          const toShop = isOff ? null : (e.travel_to_shop_hours != null ? Number(e.travel_to_shop_hours) : null);
+          // Per entry, prevailing hours = the work hours when the tied job is
+          // prevailing wage, less whatever of them the truck bought. Travel is
+          // excluded — it isn't paid at the prevailing rate — which matches the
+          // aggregate column.
+          const pw     = (!isOff && e.prevailing_wage === true)
+            ? work - offSiteHaulWork(e, work) : 0;
+          // How much of THIS day sat past the fortieth hour of its week. Only
+          // counted entries have one; a draft or a time-off day has none,
+          // because neither is hours worked.
+          const otRow  = otByEntry.get(e);
+          const ot     = otRow ? otRow.otHours : 0;
+          sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw; sumOt += ot;
+          sumToSite += (toSite || 0); sumToShop += (toShop || 0);
+          count++;
+          const division = isOff ? '—' : (prettyDiv(e.division) || '—');
+          const project  = isOff ? `Time Off · ${prettyOff(e.time_off_type)}` : (e.job_label || '—');
+          const statusPill = e.status === 'approved'
+            ? '<span class="pill pill-clear">Approved</span>'
+            : '<span class="pill pill-pending">Pending</span>';
+          const otTitle = ot > 0.001
+            ? `${ot.toFixed(2)} of this day's ${total.toFixed(2)} hours fell past the fortieth hour of the week`
+            : 'None of this day was overtime';
+          return `
+            <tr>
+              <td class="date">${prettyDate(e.work_date)}</td>
+              <td>${escapeHtml(division)}</td>
+              <td>${escapeHtml(project)}</td>
+              <td class="num">${isOff ? '—' : work.toFixed(2)}</td>
+              <td class="num">${toSite == null ? '—' : toSite.toFixed(2)}</td>
+              <td class="num">${toShop == null ? '—' : toShop.toFixed(2)}</td>
+              <td class="num">${isOff ? '—' : travel.toFixed(2)}</td>
+              <td class="num">${isOff ? '—' : total.toFixed(2)}</td>
+              <td class="num${ot > 0.001 ? ' num-ot' : ''}" title="${escapeHtml(otTitle)}">${ot > 0.001 ? ot.toFixed(2) : '—'}</td>
+              <td class="num${pw > 0 ? ' num-pw' : ''}">${isOff ? '—' : pw.toFixed(2)}</td>
+              <td>${dayFlagHtml(e, 'lunch_break', 'Took a lunch break', 'No lunch break taken')}</td>
+              <td>${dayFlagHtml(e, 'operated_equipment', 'Operated equipment this day', 'Did not operate equipment')}</td>
+              <td>${statusPill}</td>
+            </tr>`;
+        }).join('');
+
+        return weekBandHtml(wk, w, list) + lines;
       }).join('');
+
       return `
         <table class="report-detail-table">
           <thead>
@@ -2810,25 +3211,27 @@
               <th>Division</th>
               <th>Project</th>
               <th style="text-align:right">Work</th>
-              <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel&nbsp;to&nbsp;Site</th>
-              <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel&nbsp;to&nbsp;Shop</th>
+              <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel to Site</th>
+              <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
               <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
               <th style="text-align:right">Total</th>
-              <th class="th-pw" style="text-align:right" title="Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.">Prevailing&nbsp;Hrs</th>
+              <th class="th-ot" style="text-align:right" title="How much of this day fell past the fortieth hour of its Monday–Sunday week.">OT</th>
+              <th class="th-pw" style="text-align:right" title="Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
               <th>Lunch</th>
               <th>Equipment</th>
               <th>Status</th>
             </tr>
           </thead>
-          <tbody>${lines}</tbody>
+          <tbody>${bands}</tbody>
           <tfoot>
             <tr class="detail-total">
-              <td colspan="3">Total — ${list.length} ${list.length === 1 ? 'entry' : 'entries'}</td>
+              <td colspan="3">Total — ${count} ${count === 1 ? 'entry' : 'entries'}</td>
               <td class="num">${sumWork.toFixed(2)}</td>
               <td class="num">${sumToSite.toFixed(2)}</td>
               <td class="num">${sumToShop.toFixed(2)}</td>
               <td class="num">${sumTravel.toFixed(2)}</td>
               <td class="num">${sumTotal.toFixed(2)}</td>
+              <td class="num${sumOt > 0.001 ? ' num-ot' : ''}">${sumOt.toFixed(2)}</td>
               <td class="num num-pw">${sumPw.toFixed(2)}</td>
               <td></td>
               <td></td>
@@ -2836,6 +3239,58 @@
             </tr>
           </tfoot>
         </table>`;
+    }
+
+    // The header above each week's entries: the week's own dates, its hours,
+    // and where the fortieth fell. This is the row that makes the fortnight
+    // legible — the same 79.75 hours is no overtime split evenly and ten hours
+    // of it if one week carried fifty.
+    function weekBandHtml(weekStart, w, list) {
+      if (!weekStart) {
+        return `<tr class="week-band week-band-odd"><td colspan="13">
+          <span class="wb-label">Entries with no readable work date</span>
+          <span class="wb-note">left out of the overtime count</span>
+        </td></tr>`;
+      }
+      const label = `Week of ${prettyDateShort(weekStart)} – ${prettyDateShort(weekEndOf(weekStart))}`;
+      // A week with no counted hours. It is NOT enough to say nothing was
+      // submitted or approved: a week of approved vacation has no hours worked
+      // and every row under this band reads "Approved". Printing "nothing
+      // submitted or approved" over them is simply false, and this is a sheet
+      // payroll prints. So the band says which of the two it actually is.
+      if (!w) {
+        const rows = list || [];
+        // Say what IS here, never what is missing. Naming a status would be a
+        // second thing to get wrong: the pills on the rows beside this band
+        // already say what each entry is, and a band that disagrees with them
+        // is worse than one that stays quiet.
+        const note = rows.every(e => e.entry_type === 'time_off')
+          ? 'time off only — no hours worked toward the 40'
+          : 'no hours counted toward the 40 this week';
+        return `<tr class="week-band"><td colspan="13">
+          <span class="wb-label">${escapeHtml(label)}</span>
+          <span class="wb-note">${escapeHtml(note)}</span>
+        </td></tr>`;
+      }
+      const ot = w.otHours > 0.001;
+      const bits = [
+        `<span class="wb-fig"><strong>${w.totalHours.toFixed(2)}</strong> h worked</span>`,
+        `<span class="wb-fig"><strong>${w.regHours.toFixed(2)}</strong> regular</span>`,
+        ot
+          ? `<span class="wb-ot"><strong>${w.otHours.toFixed(2)}</strong> overtime</span>`
+          : `<span class="wb-note">no overtime — the week stayed under 40</span>`,
+      ];
+      // Only worth saying when there IS overtime and some of it is prevailing:
+      // that is the case where the two halves are paid by different arithmetic.
+      if (ot && w.otPwHours > 0.001) {
+        bits.push(`<span class="wb-ot-pw" title="Prevailing-wage overtime is 1.5x the base rate plus the FULL fringe — the fringe is never multiplied. The standard overtime beside it is not the same money.">${w.otPwHours.toFixed(2)} h of it prevailing · ${w.otStdHours.toFixed(2)} h standard</span>`);
+      }
+      if (w.clipped) {
+        bits.push(`<span class="wb-warn" title="The date filter starts or ends inside this week, so days of it were never loaded. The 40-hour line may already have been passed on hours that are not on this screen.">partial week — overtime may be understated</span>`);
+      }
+      return `<tr class="week-band${ot ? ' week-band-ot' : ''}"><td colspan="13">
+        <span class="wb-label">${escapeHtml(label)}</span> ${bits.join(' ')}
+      </td></tr>`;
     }
 
     // Expand / collapse an employee's per-entry detail row (the <tr> right
@@ -3119,6 +3574,7 @@
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
         '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
         '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        '<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
         '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
       '</Types>';
 
@@ -3141,6 +3597,7 @@
         '<sheets>' +
           '<sheet name="Payroll Summary" sheetId="1" r:id="rId1"/>' +
           '<sheet name="All Submissions" sheetId="2" r:id="rId2"/>' +
+          '<sheet name="Overtime by Week" sheetId="3" r:id="rId3"/>' +
         '</sheets>' +
       '</workbook>';
 
@@ -3149,7 +3606,8 @@
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
         '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' +
-        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>' +
+        '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
       '</Relationships>';
 
     // Colours are spelled out as explicit ARGB rather than theme references so
@@ -3209,9 +3667,10 @@
       // Spreadsheets have no tooltips, so the prevailing/standard columns spell
       // out the travel treatment in the header itself.
       const headers = ['Employee', 'Work Hours', 'Travel to Site', 'Travel to Shop',
-        'Travel Hours', 'Total Hours', 'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
+        'Travel Hours', 'Total Hours', 'Regular Hrs (first 40/week)', 'OT Hrs (over 40/week)',
+        'Prevailing Hrs (work only)', 'Prevailing OT Hrs', 'Standard Hrs (incl. travel)',
         'Pending Hours', 'Approved Hours', 'Time Off', 'Status'];
-      const HEADER_ROW = 7;
+      const HEADER_ROW = 8;
 
       const sheet = [
         [cTxt('Payroll Hours Report', XS.title)],
@@ -3219,8 +3678,11 @@
         [cTxt(scopeLine, XS.sub)],
         [cTxt(`Generated ${gen}`, XS.sub)],
         [cTxt(`One row per employee — all ${entryCount} ${entryCount === 1 ? 'submission is' : 'submissions are'} itemised on the "All Submissions" sheet`, XS.bold)],
+        // Overtime is the one figure on this sheet that is NOT simply the range
+        // added up, so the sheet says how it was reached before showing it.
+        [cTxt('Overtime is counted per Monday–Sunday week (hours past 40 in a week, weeks added together), not across the whole range. Week by week on the "Overtime by Week" sheet.', XS.sub)],
         [],
-        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 9) ? XS.headNum : XS.head)),
+        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 12) ? XS.headNum : XS.head)),
       ];
 
       for (const r of rows) {
@@ -3235,7 +3697,10 @@
           cNum(r.travelToShop,  XS.num),
           cNum(r.travelHours,   XS.num),
           cNum(total,           XS.num),
+          cNum(r.regHours,      XS.num),
+          cNum(r.otHours,       XS.num),
           cNum(r.pwHours,       XS.numPw),
+          cNum(r.otPwHours,     XS.numPw),
           cNum(r.stdHours,      XS.num),
           cNum(r.pendingHours,  XS.num),
           cNum(r.approvedHours, XS.num),
@@ -3252,7 +3717,10 @@
         cNum(tot.travelToShop,  XS.totNum),
         cNum(tot.travelHours,   XS.totNum),
         cNum(totalAll,          XS.totNum),
+        cNum(tot.regHours,      XS.totNum),
+        cNum(tot.otHours,       XS.totNum),
         cNum(tot.pwHours,       XS.totPw),
+        cNum(tot.otPwHours,     XS.totPw),
         cNum(tot.stdHours,      XS.totNum),
         cNum(tot.pendingHours,  XS.totNum),
         cNum(tot.approvedHours, XS.totNum),
@@ -3263,10 +3731,10 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [26, 11, 13, 13, 12, 11, 16, 17, 13, 15, 26, 20],
+        colWidths: [26, 11, 13, 13, 12, 11, 17, 16, 16, 15, 17, 13, 15, 26, 20],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:L${HEADER_ROW + rows.length}`,
+        autoFilterRef: `A${HEADER_ROW}:O${HEADER_ROW + rows.length}`,
         tabSelected: true,
       });
     }
@@ -3277,10 +3745,12 @@
       const { rows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Date', 'Type', 'Division', 'Project / Job',
         'Start', 'End', 'Work Hours', 'Travel to Site', 'Travel to Shop',
-        'Travel Hours', 'Total Hours', 'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
+        'Travel Hours', 'Total Hours', 'OT Hrs (past 40 this week)',
+        'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
+        'Week Starting (Mon)',
         'Lunch Break', 'Operated Equipment', 'Supervisor', 'Status', 'Notes'];
       const HEADER_ROW = 4;
-      const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13]); // 0-based header indices that are numeric
+      const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13, 14]); // 0-based header indices that are numeric
 
       const sheet = [
         [cTxt('Payroll Hours Report — All Submissions', XS.title)],
@@ -3290,12 +3760,15 @@
       ];
 
       let n = 0;
-      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0, sumPw = 0, sumStd = 0;
+      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0,
+          sumPw = 0, sumStd = 0, sumOt = 0;
 
       for (const r of rows) {
-        const entries = r.entries.slice().sort((a, b) =>
-          (a.work_date || '').localeCompare(b.work_date || '') ||
-          String(a.created_at || '').localeCompare(String(b.created_at || '')));
+        // The overtime weeklyOvertime already attributed to each entry, keyed
+        // by the entry object so it needs no id.
+        const otByEntry = new Map();
+        for (const w of (r.weeks || [])) for (const wr of w.rows) otByEntry.set(wr.entry, wr);
+        const entries = r.entries.slice().sort(byEntryOrder);
         for (const e of entries) {
           const isOff  = e.entry_type === 'time_off';
           const work   = isOff ? null : Number(e.computed_hours || 0);
@@ -3313,9 +3786,16 @@
           // as a zero-hour leg.
           const toSite = isOff ? null : (e.travel_to_site_hours != null ? Number(e.travel_to_site_hours) : null);
           const toShop = isOff ? null : (e.travel_to_shop_hours != null ? Number(e.travel_to_shop_hours) : null);
+          // How much of this day sat past the fortieth hour of its week. A
+          // draft or a time-off day has none — neither is hours worked.
+          const otRow = otByEntry.get(e);
+          const ot    = isOff ? null : (otRow ? otRow.otHours : 0);
+          // The Monday the day's week opened, so the sheet can be pivoted or
+          // sorted by week without redoing the date arithmetic in Excel.
+          const wkStart = weekStartOf(e.work_date);
           if (!isOff) {
             sumWork += work; sumTravel += travel; sumTotal += total;
-            sumPw += pw; sumStd += std;
+            sumPw += pw; sumStd += std; sumOt += (ot || 0);
             sumToSite += (toSite || 0); sumToShop += (toShop || 0);
           }
           const flag = v => (isOff || v == null) ? '' : (v ? 'Yes' : 'No');
@@ -3332,8 +3812,10 @@
             cNum(toShop, XS.num),
             cNum(travel, XS.num),
             cNum(total,  XS.num),
+            cNum(ot,     XS.num),
             cNum(pw,     XS.numPw),
             cNum(std,    XS.num),
+            cNum(wkStart ? excelDateSerial(wkStart) : null, XS.date),
             cTxt(flag(e.lunch_break),        XS.text),
             cTxt(flag(e.operated_equipment), XS.text),
             cTxt(e.supervisor_name || '',    XS.text),
@@ -3353,17 +3835,86 @@
         cNum(sumToShop, XS.totNum),
         cNum(sumTravel, XS.totNum),
         cNum(sumTotal,  XS.totNum),
+        cNum(sumOt,     XS.totNum),
         cNum(sumPw,     XS.totPw),
         cNum(sumStd,    XS.totNum),
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
+        cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 16, 16, 17, 15, 12, 18, 20, 11, 40],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:U${HEADER_ROW + n}`,
+      });
+    }
+
+    // Sheet 3 — one row per employee PER WEEK, which is the shape overtime
+    // actually has. Sheets 1 and 2 add the range up; this one refuses to,
+    // because the fortieth hour is a fact about a week and adding two weeks
+    // together to look for it invents overtime that was never worked (and hides
+    // overtime that was). Payroll runs the premium off this sheet.
+    function reportOvertimeSheetXml(model) {
+      const { rows, scopeLine, gen, companyName } = model;
+      const headers = ['Employee', 'Week Starting (Mon)', 'Week Ending (Sun)',
+        'Hours Worked', 'Regular Hrs', 'OT Hrs',
+        'Prevailing OT Hrs', 'Standard OT Hrs', 'Partial Week', 'Note'];
+      const HEADER_ROW = 6;
+      const NUM_COLS = new Set([3, 4, 5, 6, 7]);
+
+      const sheet = [
+        [cTxt('Payroll Hours Report — Overtime by Week', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt('Overtime is hours past 40 in a MONDAY–SUNDAY week. Work + travel count toward the 40; paid leave does not. Prevailing-wage overtime is 1.5x the base rate plus the FULL fringe — the fringe is never multiplied — so it is split out from standard overtime here.', XS.sub)],
+        [cTxt('A week marked "Partial" reaches outside the report date range: days of it were never loaded, so its overtime is a floor and not a total.', XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      let n = 0;
+      let sumTotal = 0, sumReg = 0, sumOt = 0, sumOtPw = 0, sumOtStd = 0;
+
+      for (const r of rows) {
+        for (const w of (r.weeks || [])) {
+          sheet.push([
+            cTxt(r.username, XS.text),
+            cNum(excelDateSerial(w.weekStart), XS.date),
+            cNum(excelDateSerial(w.weekEnd),   XS.date),
+            cNum(w.totalHours, XS.num),
+            cNum(w.regHours,   XS.num),
+            cNum(w.otHours,    XS.num),
+            cNum(w.otPwHours,  XS.numPw),
+            cNum(w.otStdHours, XS.num),
+            cTxt(w.clipped ? 'Partial' : '', XS.text),
+            cTxt(w.otHours > 0.001
+              ? (w.otPwHours > 0.001
+                  ? 'Overtime includes prevailing-wage hours — premium is 1.5x base + full fringe on those'
+                  : 'Standard overtime')
+              : '', XS.text),
+          ]);
+          sumTotal += w.totalHours; sumReg += w.regHours; sumOt += w.otHours;
+          sumOtPw += w.otPwHours;   sumOtStd += w.otStdHours;
+          n++;
+        }
+      }
+
+      sheet.push([
+        cTxt(`Total — ${n} employee-week${n === 1 ? '' : 's'}`, XS.totText),
+        cTxt('', XS.totText), cTxt('', XS.totText),
+        cNum(sumTotal, XS.totNum),
+        cNum(sumReg,   XS.totNum),
+        cNum(sumOt,    XS.totNum),
+        cNum(sumOtPw,  XS.totPw),
+        cNum(sumOtStd, XS.totNum),
         cTxt('', XS.totText), cTxt('', XS.totText),
       ]);
 
       return xlsxSheetXml({
-        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 16, 17, 12, 18, 20, 11, 40],
+        colWidths: [26, 20, 20, 14, 13, 11, 18, 17, 13, 62],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:S${HEADER_ROW + n}`,
+        autoFilterRef: `A${HEADER_ROW}:J${HEADER_ROW + n}`,
       });
     }
 
@@ -3385,6 +3936,7 @@
         { name: 'xl/styles.xml',              data: enc.encode(XLSX_STYLES) },
         { name: 'xl/worksheets/sheet1.xml',   data: enc.encode(reportSummarySheetXml(model)) },
         { name: 'xl/worksheets/sheet2.xml',   data: enc.encode(reportDetailSheetXml(model)) },
+        { name: 'xl/worksheets/sheet3.xml',   data: enc.encode(reportOvertimeSheetXml(model)) },
       ];
 
       const companyCode = String((user && user.companyCode) || '').replace(/[^A-Za-z0-9_-]/g, '') || 'payroll';
@@ -4198,6 +4750,13 @@
       const d = new Date(s + 'T00:00:00');
       return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
     }
+    // "Aug 24" without the year — the week bands repeat it on every band and
+    // the report header already says which year is in view.
+    function prettyDateShort(s) {
+      if (!s) return '';
+      const d = new Date(s + 'T00:00:00');
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
     function prettyDiv(d) {
       if (!d) return '';
       if (d === 'kiewit') return 'Kiewit Pinetree';
@@ -4406,6 +4965,206 @@
       const h = Number(e.haul_hours);
       if (!Number.isFinite(h)) return work;
       return Math.min(Math.max(h, 0), work);
+    }
+
+    // ── Overtime ───────────────────────────────────────────────────────────
+    //
+    // Overtime is a WEEKLY fact, and this report's range is a fortnight. The
+    // two must not be confused: 79.75 hours over two weeks is not 39.75 hours
+    // of overtime, it is two weeks measured one at a time, and it may be no
+    // overtime at all. Anything past the fortieth hour OF A WEEK is overtime;
+    // nothing else is.
+    //
+    // The week runs MONDAY THROUGH SUNDAY, because the pay period is built out
+    // of exactly two of them — the biweekly cycle ends on a Sunday and opens
+    // thirteen days earlier on a Monday — so a Monday-start week nests inside
+    // the period with nothing straddling its edges.
+    //
+    // WHAT COUNTS TOWARD THE FORTY. Work plus travel, on submitted and approved
+    // daily entries: the hours the man is owed for the day, because travel time
+    // on the clock is time worked. TIME OFF DOES NOT COUNT — holiday and
+    // vacation are paid leave, not hours worked, and hours not worked never
+    // push a week into overtime.
+    //
+    // Mirrors weeklyOvertime in api/lib/payroll-metrics.js. The two must agree:
+    // the executive report renders the same fortnight from that module and this
+    // page is where payroll checks it.
+    const OT_WEEKLY_THRESHOLD = 40;
+
+    // The Monday of the week a YYYY-MM-DD work date falls in.
+    //
+    // Parsed as UTC on purpose. Read back through local getters, a date west of
+    // Greenwich comes out as the previous day — which would file Monday's hours
+    // in the week before and move the overtime line by a whole day. Every step
+    // stays in UTC so the calendar date is the only thing that matters.
+    //
+    // null for anything that is not a date, so an unreadable row is left out of
+    // the arithmetic rather than dropped into an invented week.
+    function weekStartOf(workDate) {
+      const d = String(workDate == null ? '' : workDate).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+      const t = new Date(`${d}T00:00:00Z`);
+      if (Number.isNaN(t.getTime())) return null;
+      // getUTCDay is 0=Sun..6=Sat; Monday is the start, so Sunday counts back six.
+      t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7));
+      return t.toISOString().slice(0, 10);
+    }
+
+    // The Sunday closing the week a Monday opens.
+    function weekEndOf(weekStart) {
+      const t = new Date(`${weekStart}T00:00:00Z`);
+      if (Number.isNaN(t.getTime())) return weekStart;
+      t.setUTCDate(t.getUTCDate() + 6);
+      return t.toISOString().slice(0, 10);
+    }
+
+    /**
+     * A timestamp the comparator can actually order.
+     *
+     * The Neon driver hands TIMESTAMPTZ back as a JS Date, and String(Date) is
+     * "Fri Aug 28 2026 09:00:00 GMT+0000" — which sorts BY THE NAME OF THE WEEKDAY.
+     * Two blocks on one work_date, split apart on different days, then order by
+     * whether their creation days were a "Fri" or a "Mon". The browser gets the same
+     * column as an ISO string over JSON and orders it correctly, so the two
+     * disagreed about which block was the overtime one on the same fortnight —
+     * exactly what the ORDER BY was added to prevent.
+     */
+    function stampKey(v) {
+      if (v == null) return '';
+      // Duck-typed rather than instanceof: a Date from another realm is still a date.
+      if (typeof v === 'object' && typeof v.getTime === 'function') {
+        const t = v.getTime();
+        return Number.isNaN(t) ? '' : v.toISOString();
+      }
+      return String(v);
+    }
+
+    /**
+     * Compare two ids the way the DATABASE orders them.
+     *
+     * id is a bigserial, so it counts up with time and is the tiebreak of last
+     * resort. As text "10" sorts before "9", which is the reverse of both the
+     * SQL ORDER BY and the order the rows were actually created — the later block
+     * would take the regular hours and the earlier one the overtime. Digits are
+     * compared by length first, which is exact for a bigint of any size and needs
+     * no Number conversion to lose precision on.
+     */
+    function compareIds(a, b) {
+      const sa = a == null ? '' : String(a);
+      const sb = b == null ? '' : String(b);
+      if (/^\d+$/.test(sa) && /^\d+$/.test(sb)) {
+        return sa.length - sb.length || (sa < sb ? -1 : sa > sb ? 1 : 0);
+      }
+      return sa.localeCompare(sb);
+    }
+
+    // The order a day's entries are counted AND shown in.
+    //
+    // Both have to be the same order. weeklyOvertime decides which of two
+    // blocks on one date takes the overtime by counting them in this sequence;
+    // if the detail table then listed them in another, the row carrying the OT
+    // could be printed above the row that does not — the report contradicting,
+    // on its own face, the rule it is applying. So this is the only comparator
+    // any of them uses.
+    function byEntryOrder(a, b) {
+      return String(a.work_date || '').localeCompare(String(b.work_date || ''))
+          || stampKey(a.created_at).localeCompare(stampKey(b.created_at))
+          || compareIds(a.id, b.id);
+    }
+
+    // One employee's hours, split week by week into regular and overtime, with
+    // the overtime split again by the rate it is paid at.
+    //
+    // THE SECOND SPLIT IS THE POINT. A prevailing-wage overtime hour and a
+    // standard overtime hour are not the same money: the prevailing premium is
+    // one and a half times the BASE rate plus the FULL fringe, the fringe never
+    // multiplied. Payroll cannot compute the week from a single overtime
+    // figure — it has to know how many of those hours were covered work.
+    //
+    // WHICH HOURS ARE THE OVERTIME ONES. The ones worked last. Entries are
+    // walked oldest first and the hours past the fortieth are the overtime;
+    // each keeps the classification it already had. For the single entry that
+    // STRADDLES the fortieth hour, its overtime is split across its own
+    // prevailing/standard mix pro rata — nothing on a timesheet says which hour
+    // of a day came last, and inventing an order to answer that is guessing at
+    // money.
+    //
+    // Either way prevailing OT + standard OT = OT, and regular + OT = the hours
+    // he is owed. Classifying hours may never create or destroy any.
+    //
+    // `range` is the window the entries were fetched for. A week reaching
+    // outside it is flagged `clipped`: its missing days were never loaded, so
+    // its overtime is a floor and not a total.
+    function weeklyOvertime(entries, range) {
+      const from = range && range.from ? String(range.from).slice(0, 10) : '';
+      const to   = range && range.to   ? String(range.to).slice(0, 10)   : '';
+
+      const byWeek = new Map();
+      for (const e of (Array.isArray(entries) ? entries : [])) {
+        if (!e || e.entry_type !== 'daily') continue;
+        if (e.status !== 'submitted' && e.status !== 'approved') continue;
+        const wk = weekStartOf(e.work_date);
+        if (!wk) continue;
+        if (!byWeek.has(wk)) byWeek.set(wk, []);
+        byWeek.get(wk).push(e);
+      }
+
+      const weeks = [];
+      for (const wk of [...byWeek.keys()].sort()) {
+        // Oldest first — this order decides which of two blocks on one date
+        // keeps the regular hours and which takes the overtime. Mirrors
+        // byDateThenCreated in api/lib/payroll-metrics.js.
+        const list = byWeek.get(wk).slice().sort(byEntryOrder);
+        let cum = 0, totalHours = 0, otHours = 0, otPwHours = 0, otStdHours = 0;
+        const rows = [];
+        for (const e of list) {
+          const work   = Number(e.computed_hours || 0);
+          const travel = Number(e.travel_hours   || 0);
+          const total  = work + travel;
+          // The same prevailing/standard split the columns beside these make,
+          // so the two can never disagree.
+          const pw  = e.prevailing_wage === true ? work - offSiteHaulWork(e, work) : 0;
+          const std = total - pw;
+
+          const before = cum;
+          cum += total;
+          const ot = Math.max(0,
+            Math.max(0, cum - OT_WEEKLY_THRESHOLD) - Math.max(0, before - OT_WEEKLY_THRESHOLD));
+          // 1 once the whole entry is past the line, 0 while it is under it,
+          // and a fraction only for the one entry that crosses it.
+          const share = total > 0.000001 ? Math.min(1, Math.max(0, ot / total)) : 0;
+          const otPw  = pw  * share;
+          const otStd = std * share;
+
+          rows.push({ entry: e, hours: total, pwHours: pw, stdHours: std,
+                      otHours: ot, otPwHours: otPw, otStdHours: otStd });
+          totalHours += total; otHours += ot; otPwHours += otPw; otStdHours += otStd;
+        }
+        const weekEnd = weekEndOf(wk);
+        weeks.push({
+          weekStart:  wk,
+          weekEnd,
+          totalHours,
+          regHours:   totalHours - otHours,
+          otHours, otPwHours, otStdHours,
+          // The filter cut this week in half. Days outside the range were never
+          // fetched, so the forty may already have been passed on hours nobody
+          // here can see — the figure is a floor, not an answer.
+          clipped: Boolean((from && wk < from) || (to && weekEnd > to)),
+          rows,
+        });
+      }
+
+      const sum = k => weeks.reduce((s, w) => s + w[k], 0);
+      return {
+        weeks,
+        totalHours: sum('totalHours'),
+        regHours:   sum('regHours'),
+        otHours:    sum('otHours'),
+        otPwHours:  sum('otPwHours'),
+        otStdHours: sum('otStdHours'),
+        clipped:    weeks.some(w => w.clipped),
+      };
     }
 
     // Prevailing-wage pill, derived from the job tied to the entry.

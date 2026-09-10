@@ -581,11 +581,20 @@
       padding: 0.85rem 0.6rem 0.6rem;
       font-size: 0.55rem;
       font-weight: 700;
-      letter-spacing: 0.16em;
+      letter-spacing: 0.1em;
       text-transform: uppercase;
       color: var(--muted);
       border-bottom: 1px solid var(--border);
-      white-space: nowrap;
+      /* Deliberately NOT nowrap, and the same reason as the Payroll page: a
+         two-word heading over a column of 0.00 sets that column's width from
+         the heading. At fifteen columns the headings wanted 1175px of the
+         977px a landscape page gives, and this table prints with overflow
+         VISIBLE — so Approved Hrs, Time Off and Status were not scrolled off
+         the executive PDF, they were cut off it. They wrap now and the figures
+         decide their own widths. */
+      white-space: normal;
+      line-height: 1.3;
+      vertical-align: bottom;
     }
     .ptable td {
       padding: 0.7rem 0.6rem;
@@ -716,7 +725,13 @@
       .section-head { border-color: #ccc; }
       .ptable-wrap { background: #fff; border: 1px solid #ccc; overflow: visible; }
       .ptable      { min-width: 0; font-size: 0.55rem; table-layout: auto; }
-      .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.3rem; font-size: 0.5rem; }
+      /* The payroll table is the widest on the sheet at fifteen columns, and
+         .ptable-wrap prints with overflow VISIBLE — anything that does not fit
+         is cut off the PDF, not scrolled. Tightening the heading's letter
+         spacing here (it is 0.1em on screen, which is most of a heading's
+         width at this size) leaves room to spare rather than a few pixels. */
+      .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.3rem; font-size: 0.5rem;
+                     letter-spacing: 0.04em; }
       .ptable td   { border-color: #eee; color: #000; padding: 0.3rem 0.3rem; }
       .ptable .pname-main { color: #000; font-size: 0.65rem; }
       .ptable .v-actual   { color: #000; }
@@ -1535,9 +1550,10 @@
 
     // ── Payroll ──
     // Mirrors the Payroll page's Reports tab: its Hours Report totals across the
-    // strip, then its per-employee table, twelve columns and a totals row. The
-    // travel split and the prevailing/standard split are the point — a single
-    // "total hours" figure cannot tell payroll what rate anything is paid at.
+    // strip, then its per-employee table, fifteen columns and a totals row. The
+    // travel split, the prevailing/standard split and the regular/overtime split
+    // are the point — a single "total hours" figure cannot tell payroll what
+    // rate anything is paid at, and overtime is not the period's hours minus 40.
     function renderPayrollSection(d) {
       const rows  = Array.isArray(d.rows) ? d.rows : [];
       const total = d.total || null;
@@ -1565,7 +1581,10 @@
           <td class="col-num v-mute">${esc(fmtHours(r.travelToShop))}</td>
           <td class="col-num v-mute">${esc(fmtHours(r.travelHours))}</td>
           <td class="col-num v-profit-pos">${esc(fmtHours(r.totalHours))}</td>
+          <td class="col-num v-actual">${esc(fmtHours(r.regHours))}</td>
+          <td class="col-num ${r.otHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.otHours))}</td>
           <td class="col-num ${r.pwHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pwHours))}</td>
+          <td class="col-num ${r.otPwHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.otPwHours))}</td>
           <td class="col-num v-actual">${esc(fmtHours(r.stdHours))}</td>
           <td class="col-num ${r.pendingHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pendingHours))}</td>
           <td class="col-num ${r.approvedHours > 0.001 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtHours(r.approvedHours))}</td>
@@ -1584,7 +1603,10 @@
                 <th class="col-num" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
                 <th class="col-num" title="Travel to site + travel to shop">Travel</th>
                 <th class="col-num">Total</th>
+                <th class="col-num" title="Hours up to 40 in each Monday–Sunday week, added across the weeks in the period.">Reg Hrs</th>
+                <th class="col-num" title="Hours past 40 in a Monday–Sunday week. Counted one week at a time — the fortnight's hours are never added together to find it. Paid leave does not count toward the 40.">OT Hrs</th>
                 <th class="col-num" title="Work hours on prevailing-wage jobs. Travel is excluded — it is not paid at the prevailing rate.">Prevailing Hrs</th>
+                <th class="col-num" title="The prevailing-wage hours that fell in overtime — 1.5x the base rate plus the FULL fringe, the fringe never multiplied. Not the same money as standard overtime.">Prevailing OT</th>
                 <th class="col-num" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
                 <th class="col-num">Pending Hrs</th>
                 <th class="col-num">Approved Hrs</th>

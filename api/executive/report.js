@@ -1570,12 +1570,24 @@ async function buildPayrollSummary(sql, companyCode) {
       -- pays his whole day at standard while the Payroll page pays part of it
       -- at prevailing.
       haul_type,
-      haul_hours::float                  AS haul_hours
+      haul_hours::float                  AS haul_hours,
+      -- id and created_at are here for the ORDER the overtime walk needs, not
+      -- for display. Two entries on one date — a split day — are counted in
+      -- sequence, and whichever comes first keeps the regular hours while the
+      -- other takes the overtime. Without these the rows arrive in whatever
+      -- order the database chose and this report can disagree with the Payroll
+      -- page about which of a driver's two blocks was the overtime one.
+      id,
+      -- ::text for the same reason work_date is: the driver hands TIMESTAMPTZ
+      -- back as a JS Date, and the browser gets this column as an ISO string
+      -- over JSON. Casting here means both paths sort the same characters.
+      created_at::text                   AS created_at
     FROM timesheet_entries
     WHERE company_code = ${companyCode}
       AND status IN ('submitted', 'approved')
       AND work_date >= ${startIso}::date
       AND work_date <= ${endIso}::date
+    ORDER BY work_date, created_at, id
   `);
 
   const entries = rows || [];
@@ -1609,7 +1621,18 @@ async function buildPayrollSummary(sql, companyCode) {
       { label: 'Hours',        value: hrs(t.workHours),   tone: 'plain', sub: 'worked on the job' },
       { label: 'Travel',       value: hrs(t.travelHours), tone: 'mute',
         sub: `to site ${hrs(t.travelToSite)} · to shop ${hrs(t.travelToShop)}` },
-      { label: 'Total Hours',  value: hrs(t.totalHours),  tone: 'green', sub: 'work + travel' },
+      {
+        // Overtime is measured a WEEK at a time — the pay period is two
+        // Monday-to-Sunday weeks and neither is added to the other to find it.
+        // The prevailing share is named because it is not the same money: 1.5x
+        // the base rate plus the FULL fringe, the fringe never multiplied.
+        label: 'Total Hours', value: hrs(t.totalHours), tone: 'green',
+        sub: t.otHours > 0.001
+          ? (t.otPwHours > 0.001
+              ? `work + travel · ${hrs(t.otHours)} h over 40 in a week, ${hrs(t.otPwHours)} h of it prevailing`
+              : `work + travel · ${hrs(t.otHours)} h over 40 in a week`)
+          : 'work + travel · no week passed 40 hours',
+      },
       {
         label: 'Prevailing Hrs', value: hrs(t.pwHours), tone: 'amber',
         sub: t.haulHours > 0.001
@@ -1639,7 +1662,11 @@ async function buildPayrollSummary(sql, companyCode) {
       travelToShop:  e.travelToShop,
       travelHours:   e.travelHours,
       totalHours:    e.totalHours,
+      regHours:      e.regHours,
+      otHours:       e.otHours,
       pwHours:       e.pwHours,
+      otPwHours:     e.otPwHours,
+      otStdHours:    e.otStdHours,
       stdHours:      e.stdHours,
       pendingHours:  e.pendingHours,
       approvedHours: e.approvedHours,
@@ -1655,7 +1682,11 @@ async function buildPayrollSummary(sql, companyCode) {
       travelToShop:  t.travelToShop,
       travelHours:   t.travelHours,
       totalHours:    t.totalHours,
+      regHours:      t.regHours,
+      otHours:       t.otHours,
       pwHours:       t.pwHours,
+      otPwHours:     t.otPwHours,
+      otStdHours:    t.otStdHours,
       stdHours:      t.stdHours,
       pendingHours:  t.pendingHours,
       approvedHours: t.approvedHours,

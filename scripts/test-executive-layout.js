@@ -224,24 +224,37 @@ assert('an unpaid invoice past 45 days reads overdue, and paid stays paid',
 // ── Payroll mirrors the Payroll page's Reports tab ──
 console.log('\n[payroll mirrors the Payroll page]');
 
-// The Hours Report's twelve columns, in the page's own words and order.
+// The Hours Report's fifteen columns, in the page's own words and order.
+//
+// Reg / OT / Prevailing OT sit where they do on purpose. Overtime splits the
+// Total beside it, so it follows Total; and Prevailing OT follows Prevailing
+// Hrs because it answers the question that column raises the moment a week runs
+// long — how much of this is owed at 1.5x base plus the full fringe.
 const PAYROLL_COLUMNS = [
   'Employee', 'Hours', 'Travel to Site', 'Travel to Shop', 'Travel', 'Total',
-  'Prevailing Hrs', 'Standard Hrs', 'Pending Hrs', 'Approved Hrs',
-  'Time Off', 'Status',
+  'Reg Hrs', 'OT Hrs', 'Prevailing Hrs', 'Prevailing OT', 'Standard Hrs',
+  'Pending Hrs', 'Approved Hrs', 'Time Off', 'Status',
 ];
 const execPayrollCols = headerLabels(exec, '<th>Employee</th>');
-assert('the executive payroll table has the same twelve columns',
-  PAYROLL_COLUMNS.every((c, i) => execPayrollCols[i] === c),
+assert('the executive payroll table has the same fifteen columns',
+  PAYROLL_COLUMNS.every((c, i) => execPayrollCols[i] === c)
+  && execPayrollCols.length === PAYROLL_COLUMNS.length,
   'got: ' + JSON.stringify(execPayrollCols));
 // Anchor inside the Reports tab's own table — the Pending tab's table also opens
-// with an Employee column and comes first in the file. The page writes these
-// headers with &nbsp; and inline alignment, so compare on the text.
-const pagePayrollCols = [...payroll.slice(payroll.indexOf('<div class="report-scroll">'))
-  .slice(0, 1800).matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)]
+// with an Employee column and comes first in the file. Sliced to the <thead>
+// that follows rather than a character count: the tooltips on these headers are
+// long, and a fixed window silently stopped covering the last of them.
+// The page writes the headers with &nbsp; and inline alignment, so compare on
+// the text.
+const payrollThead = (() => {
+  const from = payroll.indexOf('<div class="report-scroll">');
+  return payroll.slice(from, payroll.indexOf('</thead>', from));
+})();
+const pagePayrollCols = [...payrollThead.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)]
   .map(m => m[1].replace(/&nbsp;/g, ' ').replace(/<[^>]*>/g, '').trim());
 assert('and payroll.html\'s Hours Report still has them',
-  PAYROLL_COLUMNS.every((c, i) => pagePayrollCols[i] === c),
+  PAYROLL_COLUMNS.every((c, i) => pagePayrollCols[i] === c)
+  && pagePayrollCols.length === PAYROLL_COLUMNS.length,
   'got: ' + JSON.stringify(pagePayrollCols));
 
 assert('the two tooltips that explain the pay-rate split come across verbatim',
