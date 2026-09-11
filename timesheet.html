@@ -1577,28 +1577,66 @@
     // payroll's re-assign picker, which exists to correct exactly the entries
     // a narrowed list would otherwise make unfixable.
     //
-    // Spell each one as "Manage lists" spells it; the match ignores case and
-    // surrounding spaces. An EMPTY array offers the whole roster, which is
-    // what this form did before the list existed.
-    const TRUCKING_JOB_ALLOWLIST = [];
+    // Each item is the customer spelled as "Manage lists" spells it, matched
+    // ignoring case and surrounding spaces. { customer, show } offers the same
+    // customer under different words — see Force below. An EMPTY array offers
+    // the whole roster, which is what this form did before the list existed.
+    const TRUCKING_JOB_ALLOWLIST = [
+      'Kinkead',
+      'Kovalchick',
+      // The roster spells this one "Force", which on a page full of Force
+      // Corp's own divisions reads as the company rather than the customer.
+      // `show` changes the words on the option and NOTHING else: the entry
+      // still posts, bills and reports as "Force", which is the spelling the
+      // customer's agreed haul rate is filed under and the spelling every
+      // Truck Tracking row already carries. Renaming the customer itself is
+      // Manage Lists' job, and takes its rate and its history with it.
+      { customer: 'Force', show: 'Force Omni' },
+      'EES',
+      'XTO',
+    ];
 
     // Narrow one division's job list to what this form offers. Only trucking
     // has a list, so every other division is handed back untouched and adding
     // a division here is the only thing that can ever narrow one.
+    //
+    // Order follows the list, not the alphabet: these are picked on a phone,
+    // and which customers come first is the office's call.
     function jobsForPicker(div, jobs) {
       if (div !== 'trucking' || !TRUCKING_JOB_ALLOWLIST.length) return jobs;
-      const allow = new Set(TRUCKING_JOB_ALLOWLIST.map(n => String(n).trim().toLowerCase()));
-      const kept = jobs.filter(j => allow.has(String(j.label || '').trim().toLowerCase()));
+      // Matched on case and space the way api/timesheet-entries.js matches a
+      // customer to its rate, so a name that prices a haul also finds it here.
+      const key = v => String(v == null ? '' : v).trim().toLowerCase();
+      const picked  = [];
+      const missing = [];
+      for (const entry of TRUCKING_JOB_ALLOWLIST) {
+        const customer = typeof entry === 'string' ? entry : String((entry && entry.customer) || '');
+        const show     = (entry && entry.show) || customer;
+        if (!key(customer)) continue;
+        const hits = jobs.filter(j => key(j.label) === key(customer));
+        if (!hits.length) { missing.push(customer); continue; }
+        // The roster deliberately keeps differently-cased spellings as separate
+        // customers ("Force" and "FORCE"), so one name can answer twice. Take
+        // the spelling this list uses, and the first otherwise — two options
+        // reading alike is how a driver picks the wrong one.
+        const hit = hits.find(j => String(j.label).trim() === customer.trim()) || hits[0];
+        // `label` is what the option POSTS, and becomes the customer on the
+        // Truck Tracking row. `display` is only what the driver reads.
+        picked.push({ ...hit, display: show });
+      }
+      if (missing.length) {
+        console.warn('[timesheet] not on the trucking roster, so not offered: ' + missing.join(', '));
+      }
       // Not one name answered. Either the office renamed every customer on the
       // list or the roster came back empty — and a picker with nothing in it
       // stops the crew filing the day at all. Offer the roster and say so in
       // the console: a wrong customer is caught at approval, a missing day is
       // caught on payday.
-      if (!kept.length) {
+      if (!picked.length) {
         console.warn('[timesheet] TRUCKING_JOB_ALLOWLIST matched no customer on the roster — offering all of them.');
         return jobs;
       }
-      return kept;
+      return picked;
     }
 
     async function onDivisionChange(i = 0) {
@@ -1655,7 +1693,7 @@
           return;
         }
         jobSel.innerHTML = '<option value="">— pick —</option>' +
-          jobs.map(j => `<option value="${escapeHtml(j.id)}" data-label="${escapeHtml(j.label)}">${escapeHtml(j.label)}</option>`).join('');
+          jobs.map(j => `<option value="${escapeHtml(j.id)}" data-label="${escapeHtml(j.label)}">${escapeHtml(j.display || j.label)}</option>`).join('');
         jobSel.disabled = false;
       } catch (err) {
         console.error(`[timesheet] jobs failed to load for division "${div}":`, err);
