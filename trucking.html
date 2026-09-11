@@ -260,6 +260,24 @@
     .totals-bar .lbl { color: var(--muted); }
     .totals-bar .val { color: #facc15; font-weight: 700; margin-left: 0.35rem; }
 
+    /* Key to the row tints. The swatches are painted from the same ROW_TINT
+       values the rows are, over the table's own background, so what the legend
+       shows is what a row looks like rather than an approximation of it. */
+    .row-legend {
+      display: flex; align-items: center; gap: 1.15rem; flex-wrap: wrap;
+      margin-bottom: 0.7rem; font-size: 0.63rem; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .row-legend .lg-ttl { font-weight: 700; letter-spacing: 0.1em; }
+    .row-legend .lg-item {
+      display: inline-flex; align-items: center; gap: 0.42rem;
+      white-space: nowrap; cursor: help;
+    }
+    .row-legend .sw {
+      width: 24px; height: 13px; border-radius: 3px; flex: none;
+      background-color: var(--surface); border: 1px solid var(--border);
+    }
+
     .tr-tbl { width: 100%; border-collapse: collapse; background: var(--surface); min-width: 1600px; }
 
     /* ── Sticky column headers ── */
@@ -4491,6 +4509,24 @@
           <span><span class="lbl">Entries</span><span class="val">${filteredEntries.length}</span></span>
         </div>`;
 
+      // Read in invoice order — what has not been billed, what has been billed
+      // and is owed, what is part-paid, what is closed out. The untinted entry
+      // is listed too: a plain row is a state, not an absence of one.
+      const LEGEND = [
+        [ROW_TINT.unpaid,  'Not invoiced',       'Missing an invoiced date or a date sent to the customer, and not marked Paid or Partial'],
+        ['',               'Awaiting payment',   'Invoiced and sent, still marked Unpaid'],
+        [ROW_TINT.partial, 'Partial payment',    'Paid? is set to Partial'],
+        [ROW_TINT.paid,    'Paid',               'Paid? is set to Paid'],
+      ];
+      const legendHTML = `
+        <div class="row-legend">
+          <span class="lg-ttl">Row Color</span>
+          ${LEGEND.map(([tint, label, why]) => `
+            <span class="lg-item" title="${esc(why)}">
+              <span class="sw" style="background-image:linear-gradient(${tint || 'transparent'},${tint || 'transparent'})"></span>${label}
+            </span>`).join('')}
+        </div>`;
+
       const yearTabsHTML = `
         <div class="yr-tabs">
           <button class="yr-tab${activeYearFilter === 'all' ? ' active' : ''}" onclick="setYearFilter('all')">All</button>
@@ -4662,6 +4698,7 @@
           </div>
           ${yearTabsHTML}
           ${totalsHTML}
+          ${legendHTML}
         </div>
         <div style="padding:0 1.25rem 1.25rem">
           <div class="tbl-scroll-wrap">
