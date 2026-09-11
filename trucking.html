@@ -248,7 +248,11 @@
     .td-total    { text-align: right; color: #facc15; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
 
     /* ── Scrollable table wrapper ── */
-    .tbl-scroll-wrap { overflow: auto; max-height: calc(100vh - 290px); border-radius: 6px; }
+    /* 316px, not 290px: the colour key added a 26px line above the table, and
+       this wrapper is the tracking sheet's alone — nothing else on the page
+       uses it. It wraps and takes more on a narrow window, as the toolbar and
+       year tabs above it already do. */
+    .tbl-scroll-wrap { overflow: auto; max-height: calc(100vh - 316px); border-radius: 6px; }
 
     /* ── Totals bar ── */
     .totals-bar {
