@@ -25,9 +25,10 @@
  *      filing the day at all: a wrong customer is caught at approval, a
  *      missing day is caught on payday.
  *
- * A list carrying BOTH spellings across a rename is the point of rules 2-4
- * together: whichever one the roster holds is offered, the other is skipped
- * and named, and the deploy and the Manage Lists merge can land in any order.
+ * Rules 2-4 together are also what carries a customer through a Manage Lists
+ * rename: list both spellings, and whichever one the roster holds is offered
+ * while the other is skipped and named, so the merge and the deploy can land
+ * in any order. "Force" became "Force Omni" that way.
  *
  * Runs timesheet.html's own jobsForPicker in a vm, once per allow list, by
  * re-evaluating the function against a substituted constant — so the rules are
@@ -152,15 +153,16 @@ console.log('\n[one name, two spellings on the roster]');
 
 console.log('\n[both spellings across a Manage Lists rename]');
 {
-  // Whichever side of the merge the roster is on, the picker offers the
-  // customer once and never twice, so the deploy and the merge are independent.
-  const { pick } = pickerWith(['Force Omni', 'Force']);
-  const before = pick('trucking', jobs(['Kinkead', 'Force']));
-  const after  = pick('trucking', jobs(['Kinkead', 'Force Omni']));
+  // Listing the old name beside the new one is how a customer crosses a merge
+  // without a driver losing it: whichever side the roster is on, the picker
+  // offers that customer once and never twice.
+  const { pick } = pickerWith(['New Co', 'Old Co']);
+  const before = pick('trucking', jobs(['Kinkead', 'Old Co']));
+  const after  = pick('trucking', jobs(['Kinkead', 'New Co']));
   assert('before the merge the old name is offered',
-    JSON.stringify(labels(before)) === JSON.stringify(['Force']), JSON.stringify(labels(before)));
+    JSON.stringify(labels(before)) === JSON.stringify(['Old Co']), JSON.stringify(labels(before)));
   assert('after it the new one is, and only it',
-    JSON.stringify(labels(after)) === JSON.stringify(['Force Omni']), JSON.stringify(labels(after)));
+    JSON.stringify(labels(after)) === JSON.stringify(['New Co']), JSON.stringify(labels(after)));
 }
 
 console.log('\n[a name the roster has never heard of]');
@@ -189,29 +191,21 @@ console.log('\n[an empty roster cannot crash the picker]');
 
 console.log('\n[the shipped list]');
 {
-  const { pick } = pickerWith(null);
-  const extras = ['Antero', 'CNX'];
-  const core   = ['EES', 'Kinkead', 'Kovalchick', 'XTO'];
-  const want   = ['Kinkead', 'Kovalchick', 'EES', 'XTO'];
-
-  const before = pick('trucking', jobs([...extras, ...core, 'Force']));
-  assert('before the Manage Lists merge, Force is offered under its old name',
-    JSON.stringify(labels(before)) ===
-    JSON.stringify(['Kinkead', 'Kovalchick', 'Force', 'EES', 'XTO']),
-    JSON.stringify(labels(before)));
-
-  const after = pick('trucking', jobs([...extras, ...core, 'Force Omni']));
-  assert('after it, under the new one',
-    JSON.stringify(labels(after)) ===
+  const { pick, warnings } = pickerWith(null);
+  // The roster as it stands now: the Manage Lists merge of "Force" into
+  // "Force Omni" has run, so the old spelling is gone from it.
+  const roster = jobs(['Antero', 'CNX', 'EES', 'Force Omni', 'Kinkead', 'Kovalchick', 'XTO']);
+  const out = pick('trucking', roster);
+  assert('offers exactly the five customers the office asked for',
+    JSON.stringify(labels(out)) ===
     JSON.stringify(['Kinkead', 'Kovalchick', 'Force Omni', 'EES', 'XTO']),
-    JSON.stringify(labels(after)));
-
-  assert('the other four are offered either way',
-    want.every(n => labels(before).includes(n) && labels(after).includes(n)));
-  assert('Antero and CNX are offered neither way',
-    ![...labels(before), ...labels(after)].some(n => extras.includes(n)));
+    JSON.stringify(labels(out)));
+  assert('Antero and CNX are no longer offered',
+    !labels(out).some(n => n === 'Antero' || n === 'CNX'));
+  assert('every name on the list answers, so nothing is left warning',
+    warnings.length === 0, JSON.stringify(warnings));
   assert('and nothing outside trucking is narrowed',
-    pick('turf', jobs([...extras, ...core])).length === extras.length + core.length);
+    pick('turf', roster).length === roster.length);
 }
 
 console.log('\n[the filter is actually wired into the job picker]');
