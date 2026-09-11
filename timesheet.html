@@ -1563,6 +1563,44 @@
     // drops its result if a newer one has been issued since.
     let jobLoadToken = {};   // block index → id of that block's newest load
 
+    // ── Which trucking jobs this form offers ───────────────────────────────
+    // Trucking's "jobs" are the division's whole customer roster — see
+    // truckingJobs in api/timesheet-jobs.js. That roster is the office's
+    // billing list, and it is far longer than the handful of customers a
+    // driver ever files a day against. Scrolling it on a phone is how a day
+    // lands on the wrong customer, and a trucking day carries straight through
+    // to Truck Tracking on approval, so a wrong pick becomes a wrong invoice.
+    //
+    // Naming the customers here keeps THIS picker to those, and touches
+    // nothing else: the roster stays the Trucking division's to manage in
+    // trucking.html, stays what the office bills from, and stays whole in
+    // payroll's re-assign picker, which exists to correct exactly the entries
+    // a narrowed list would otherwise make unfixable.
+    //
+    // Spell each one as "Manage lists" spells it; the match ignores case and
+    // surrounding spaces. An EMPTY array offers the whole roster, which is
+    // what this form did before the list existed.
+    const TRUCKING_JOB_ALLOWLIST = [];
+
+    // Narrow one division's job list to what this form offers. Only trucking
+    // has a list, so every other division is handed back untouched and adding
+    // a division here is the only thing that can ever narrow one.
+    function jobsForPicker(div, jobs) {
+      if (div !== 'trucking' || !TRUCKING_JOB_ALLOWLIST.length) return jobs;
+      const allow = new Set(TRUCKING_JOB_ALLOWLIST.map(n => String(n).trim().toLowerCase()));
+      const kept = jobs.filter(j => allow.has(String(j.label || '').trim().toLowerCase()));
+      // Not one name answered. Either the office renamed every customer on the
+      // list or the roster came back empty — and a picker with nothing in it
+      // stops the crew filing the day at all. Offer the roster and say so in
+      // the console: a wrong customer is caught at approval, a missing day is
+      // caught on payday.
+      if (!kept.length) {
+        console.warn('[timesheet] TRUCKING_JOB_ALLOWLIST matched no customer on the roster — offering all of them.');
+        return jobs;
+      }
+      return kept;
+    }
+
     async function onDivisionChange(i = 0) {
       const div = bel(i, 'division').value;
       const jobSel = bel(i, 'job');
@@ -1608,7 +1646,9 @@
         // A newer pick is already loading (or the block has been removed) —
         // leave the picker to whoever owns it now.
         if (stale()) return;
-        const jobs = jobsCache[div];
+        // Filtered at render, never in the cache: the cache is the server's
+        // answer, and payroll reads the same endpoint unnarrowed.
+        const jobs = jobsForPicker(div, jobsCache[div]);
         if (!jobs.length) {
           jobSel.innerHTML = '<option value="">(no active jobs)</option>';
           jobSel.disabled = true;
