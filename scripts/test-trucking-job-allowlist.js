@@ -111,11 +111,29 @@ console.log('\n[an empty list offers the whole roster]');
   assert('and it is not treated as a misconfiguration', warnings.length === 0);
 }
 
-console.log('\n[matching is forgiving about case and stray spaces]');
+console.log('\n[two spellings are one company]');
 {
   const { pick } = pickerWith(['  kinkead ', 'KOVALCHICK']);
-  assert('both are found on a roster that spells them differently',
+  assert('case and stray spaces are forgiven',
     JSON.stringify(labels(pick('trucking', ROSTER))) === JSON.stringify(['Kinkead', 'Kovalchick']));
+
+  // The office types a customer onto the roster the way the invoice spells it,
+  // punctuation and all, and this list is typed somewhere else entirely. Only
+  // the letters and digits have to agree — the rule trucking.html's merge
+  // already uses to spot two spellings of one company.
+  const punctuated = jobs(['FORCE  OMNI', 'Force-Omni Corp.']);
+  const { pick: p2 } = pickerWith(['Force Omni']);
+  assert('so is the punctuation between the words',
+    JSON.stringify(labels(p2('trucking', punctuated))) === JSON.stringify(['FORCE  OMNI']),
+    JSON.stringify(labels(p2('trucking', punctuated))));
+
+  // But extra WORDS are a different customer, not a different spelling. Asked
+  // of a roster holding both, so the answer cannot come from the empty-match
+  // fallback further down.
+  const { pick: p3 } = pickerWith(['Kinkead']);
+  assert('an extra word still makes a different customer',
+    JSON.stringify(labels(p3('trucking', jobs(['Kinkead HC', 'Kinkead'])))) === JSON.stringify(['Kinkead']),
+    JSON.stringify(labels(p3('trucking', jobs(['Kinkead HC', 'Kinkead'])))));
 }
 
 console.log('\n[the picker follows the list, not the alphabet]');

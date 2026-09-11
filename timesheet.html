@@ -1577,10 +1577,10 @@
     // payroll's re-assign picker, which exists to correct exactly the entries
     // a narrowed list would otherwise make unfixable.
     //
-    // Each item is a customer spelled as "Manage lists" spells it, matched
-    // ignoring case and surrounding spaces. A name the roster does not hold is
-    // skipped and named in the console. An EMPTY array offers the whole roster,
-    // which is what this form did before the list existed.
+    // Each item is a customer as "Manage lists" names it, matched on its
+    // letters and digits alone. A name the roster does not hold is skipped and
+    // named in the console. An EMPTY array offers the whole roster, which is
+    // what this form did before the list existed.
     const TRUCKING_JOB_ALLOWLIST = [
       'Kinkead',
       'Kovalchick',
@@ -1597,9 +1597,13 @@
     // and which customers come first is the office's call.
     function jobsForPicker(div, jobs) {
       if (div !== 'trucking' || !TRUCKING_JOB_ALLOWLIST.length) return jobs;
-      // Matched on case and space the way api/timesheet-entries.js matches a
-      // customer to its rate, so a name that prices a haul also finds it here.
-      const key = v => String(v == null ? '' : v).trim().toLowerCase();
+      // Two spellings are one company, decided the way trucking.html's own
+      // merge decides it (_mergeSuggestion): letters and digits only, so case,
+      // spaces and punctuation cannot keep a customer off the picker while
+      // "Kinkead HC" stays a different customer from "Kinkead". Nothing
+      // downstream rides on this: the option still carries the ROSTER's
+      // spelling, which is the one the haul's agreed rate is filed under.
+      const key = v => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]/g, '');
       const picked  = [];
       const missing = [];
       for (const customer of TRUCKING_JOB_ALLOWLIST) {
