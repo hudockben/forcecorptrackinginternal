@@ -554,6 +554,28 @@
     .tot-label { font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
     .tot-val { font-size: 0.82rem; font-weight: 600; color: var(--amber); font-variant-numeric: tabular-nums; }
 
+    /* ── Row colour key ──
+       The swatches are painted from the same ROW_TINT values the rows are, over
+       the background a row actually sits on (the cells set none of their own, so
+       that is the page background, not the strip's), which makes the key show
+       what a row looks like rather than an approximation of it. */
+    .row-legend {
+      display: flex; gap: 1.15rem; align-items: center; flex-wrap: wrap;
+      padding: 0.4rem 1.25rem;
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+      font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted);
+    }
+    .row-legend .lg-ttl { font-weight: 700; letter-spacing: 0.1em; }
+    .row-legend .lg-item {
+      display: inline-flex; gap: 0.42rem; align-items: center;
+      white-space: nowrap; cursor: help;
+    }
+    .row-legend .sw {
+      width: 24px; height: 13px; border-radius: 3px; flex: none;
+      background-color: var(--bg); border: 1px solid var(--border);
+    }
+
     /* ── "Not reaching Intercompany" banner ── */
     .ic-pending-banner {
       display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap;
@@ -743,6 +765,11 @@
       overflow-y: auto;
       max-height: calc(100vh - 182px);
     }
+    /* The dust sheet carries the colour key above it, which the 182px does not
+       know about — the other tables using .table-wrap have nothing there. 29px
+       is the strip's rendered height on one line; it wraps and takes more on a
+       narrow window, the same way the totals bar above it already does. */
+    .table-wrap.sheet-wrap { max-height: calc(100vh - 211px); }
 
     /* ── Sheet table ── */
     .sheet-table {
@@ -1472,8 +1499,12 @@
          when the count is zero. -->
     <div class="ic-pending-banner" id="icPendingBanner" hidden></div>
 
+    <!-- Key to the row tints, filled in by renderRowLegend() from the same
+         table of colours the rows are painted from. -->
+    <div class="row-legend" id="rowLegend"></div>
+
     <!-- Table -->
-    <div class="table-wrap">
+    <div class="table-wrap sheet-wrap">
       <table class="sheet-table">
         <thead>
           <tr class="group-row">
@@ -3570,6 +3601,54 @@
     function round2(n) { return Math.round(n * 100) / 100; }
 
     /* ═══════════════════════════════════════════
+       ROW TINT BY INVOICE STATUS
+       A row says where its money is without being opened: green once the
+       invoice is paid, yellow while one that went out is still owed, red while
+       the job has not been invoiced at all. A fully invoiced row simply waiting
+       its turn is left plain, so red keeps meaning billing not done rather than
+       billing not collected.
+
+       Kept in one place because three readers need the same answer — the
+       render below, the in-place repaint in setInvStatus, and the colour key
+       above the sheet. A key that can disagree with the rows is worse than no
+       key at all.
+    ═══════════════════════════════════════════ */
+    const ROW_TINT = {
+      paid:    'rgba(34,197,94,0.18)',   // green
+      pending: 'rgba(251,191,36,0.18)',  // yellow
+      unpaid:  'rgba(239,68,68,0.18)',   // red
+    };
+
+    /** Background for a row, '' for no tint. */
+    function rowStatusBg(row) {
+      const effSt = effectiveInvStatus(row);
+      if (effSt === 'paid') return ROW_TINT.paid;
+      if (effSt === 'sent') return ROW_TINT.pending;
+      const missingInvoice = !row.inv_number || !row.inv_sent;
+      return missingInvoice ? ROW_TINT.unpaid : '';
+    }
+
+    // Read in invoice order — what has not been billed, what has been billed
+    // and is owed, what is out and pending, what is closed out. The untinted
+    // entry is listed too: a plain row is a state, not an absence of one. Each
+    // hover text states the rule the code actually applies, auto-overdue
+    // included (effectiveInvStatus), rather than an idealised one.
+    const ROW_LEGEND = [
+      [ROW_TINT.unpaid,  'Not invoiced',     'No invoice number or no sent date, and the status is not Paid or Pending'],
+      ['',               'Awaiting payment', 'Invoice number and sent date are filled in, and the status is not Paid or Pending'],
+      [ROW_TINT.pending, 'Pending',          'Status is Pending and the row has not gone Overdue'],
+      [ROW_TINT.paid,    'Paid',             'Status is Paid'],
+    ];
+
+    function renderRowLegend() {
+      const el = document.getElementById('rowLegend');
+      if (!el) return;
+      el.innerHTML = '<span class="lg-ttl">Row Color</span>' + ROW_LEGEND.map(([tint, label, why]) =>
+        `<span class="lg-item" title="${esc(why)}"><span class="sw" style="background-image:linear-gradient(${
+          tint || 'transparent'},${tint || 'transparent'})"></span>${label}</span>`).join('');
+    }
+
+    /* ═══════════════════════════════════════════
        RENDER
     ═══════════════════════════════════════════ */
     function renderTable() {
@@ -3677,12 +3756,7 @@
         const ro = (v, cls) =>
           `<td class="${cls}" style="color:var(--text);font-size:0.72rem;padding:0.3rem 0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(v == null || v === '' ? '—' : String(v))}</td>`;
 
-        const missingInvoice = !row.inv_number || !row.inv_sent;
-        const effSt = effectiveInvStatus(row);
-        let rowBg = '';
-        if (effSt === 'paid')      rowBg = 'rgba(34,197,94,0.18)';   // green
-        else if (effSt === 'sent') rowBg = 'rgba(251,191,36,0.18)';  // yellow (Pending)
-        else if (missingInvoice)   rowBg = 'rgba(239,68,68,0.18)';   // red
+        const rowBg = rowStatusBg(row);
         const rowStyle    = rowBg ? ` style="background:${rowBg}"` : '';
         const subRowStyle = rowBg ? ` background:${rowBg};`        : '';
         const lockTitle   = 'Posted from an approved timesheet entry — edit it in Payroll, not here.';
@@ -3895,13 +3969,7 @@
           if (html) cell.insertAdjacentHTML('beforeend', html);
         }
         // Update row background based on new status
-        const row    = rows[idx];
-        const effSt  = effectiveInvStatus(row);
-        const missingInvoice = !row.inv_number || !row.inv_sent;
-        let rowBg = '';
-        if (effSt === 'paid')      rowBg = 'rgba(34,197,94,0.18)';
-        else if (effSt === 'sent') rowBg = 'rgba(251,191,36,0.18)';
-        else if (missingInvoice)   rowBg = 'rgba(239,68,68,0.18)';
+        const rowBg = rowStatusBg(rows[idx]);
         tr.style.background = rowBg;
         const subTr = document.getElementById('inv-row-' + idx);
         if (subTr) subTr.style.background = rowBg;
@@ -6815,6 +6883,7 @@
     document.querySelector('[data-tab="product-cost"]')
       ?.addEventListener('click', pcRenderTable);
 
+    renderRowLegend();
     init();
 
     /* ═══════════════════════════════════════════

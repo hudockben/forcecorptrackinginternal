@@ -248,7 +248,11 @@
     .td-total    { text-align: right; color: #facc15; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
 
     /* ── Scrollable table wrapper ── */
-    .tbl-scroll-wrap { overflow: auto; max-height: calc(100vh - 290px); border-radius: 6px; }
+    /* 316px, not 290px: the colour key added a 26px line above the table, and
+       this wrapper is the tracking sheet's alone — nothing else on the page
+       uses it. It wraps and takes more on a narrow window, as the toolbar and
+       year tabs above it already do. */
+    .tbl-scroll-wrap { overflow: auto; max-height: calc(100vh - 316px); border-radius: 6px; }
 
     /* ── Totals bar ── */
     .totals-bar {
@@ -259,6 +263,24 @@
     }
     .totals-bar .lbl { color: var(--muted); }
     .totals-bar .val { color: #facc15; font-weight: 700; margin-left: 0.35rem; }
+
+    /* Key to the row tints. The swatches are painted from the same ROW_TINT
+       values the rows are, over the table's own background, so what the legend
+       shows is what a row looks like rather than an approximation of it. */
+    .row-legend {
+      display: flex; align-items: center; gap: 1.15rem; flex-wrap: wrap;
+      margin-bottom: 0.7rem; font-size: 0.63rem; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .row-legend .lg-ttl { font-weight: 700; letter-spacing: 0.1em; }
+    .row-legend .lg-item {
+      display: inline-flex; align-items: center; gap: 0.42rem;
+      white-space: nowrap; cursor: help;
+    }
+    .row-legend .sw {
+      width: 24px; height: 13px; border-radius: 3px; flex: none;
+      background-color: var(--surface); border: 1px solid var(--border);
+    }
 
     .tr-tbl { width: 100%; border-collapse: collapse; background: var(--surface); min-width: 1600px; }
 
@@ -4059,6 +4081,45 @@
       }
     }
 
+    /* ═══════════════════════════════════════════
+       ROW TINT BY INVOICE STATUS
+       Same scheme the Dust Control tab uses, so a row means the same thing in
+       both places at a glance: green once it is paid, yellow while money is
+       still owed on an invoice that went out, red while the haul has not been
+       invoiced at all. A row that is fully invoiced and simply waiting its
+       turn is left untinted — red is reserved for billing that has not been
+       done, not for billing that has not been collected.
+    ═══════════════════════════════════════════ */
+    const ROW_TINT = {
+      paid:    'rgba(34,197,94,0.18)',   // green
+      partial: 'rgba(251,191,36,0.18)',  // yellow
+      unpaid:  'rgba(239,68,68,0.18)',   // red
+    };
+
+    /** Background for a row, '' for no tint. */
+    function rowStatusBg(e) {
+      const st = String(e.invoice_status || 'Unpaid').trim().toLowerCase();
+      if (st === 'paid')    return ROW_TINT.paid;
+      if (st === 'partial') return ROW_TINT.partial;
+      const missingInvoice = !e.invoiced_date || !e.invoice_sent_date;
+      return missingInvoice ? ROW_TINT.unpaid : '';
+    }
+
+    /* Nothing re-renders after an edit, so the tint is repainted by hand the
+       way the pooled-customer line and the unit number are — otherwise picking
+       "Paid" in the expanded panel leaves the row red until a filter keystroke
+       or a year tab forces a render. The expanded panel underneath carries the
+       same tint so the pair still reads as one row. */
+    function _paintRowStatus(id) {
+      const e = divEntries.find(x => x.id === id);
+      if (!e) return;
+      const bg  = rowStatusBg(e);
+      const tr  = document.getElementById('tr-main-' + id);
+      const sub = document.getElementById('inv-row-' + id);
+      if (tr)  tr.style.background  = bg;
+      if (sub) sub.style.background = bg || 'var(--surface2)';
+    }
+
     function updateField(id, field, value) {
       const e = divEntries.find(e => e.id === id);
       if (!e) return;
@@ -4107,6 +4168,7 @@
         const numEl = document.getElementById('unit-num-' + id);
         if (numEl) numEl.textContent = unit ? unit.number : '';
       }
+      if (['invoice_status', 'invoiced_date', 'invoice_sent_date'].includes(field)) _paintRowStatus(id);
       schedSave();
     }
 
@@ -4451,6 +4513,24 @@
           <span><span class="lbl">Entries</span><span class="val">${filteredEntries.length}</span></span>
         </div>`;
 
+      // Read in invoice order — what has not been billed, what has been billed
+      // and is owed, what is part-paid, what is closed out. The untinted entry
+      // is listed too: a plain row is a state, not an absence of one.
+      const LEGEND = [
+        [ROW_TINT.unpaid,  'Not invoiced',       'Missing an invoiced date or a date sent to the customer, and not marked Paid or Partial'],
+        ['',               'Awaiting payment',   'Invoiced and sent, still marked Unpaid'],
+        [ROW_TINT.partial, 'Partial payment',    'Paid? is set to Partial'],
+        [ROW_TINT.paid,    'Paid',               'Paid? is set to Paid'],
+      ];
+      const legendHTML = `
+        <div class="row-legend">
+          <span class="lg-ttl">Row Color</span>
+          ${LEGEND.map(([tint, label, why]) => `
+            <span class="lg-item" title="${esc(why)}">
+              <span class="sw" style="background-image:linear-gradient(${tint || 'transparent'},${tint || 'transparent'})"></span>${label}
+            </span>`).join('')}
+        </div>`;
+
       const yearTabsHTML = `
         <div class="yr-tabs">
           <button class="yr-tab${activeYearFilter === 'all' ? ' active' : ''}" onclick="setYearFilter('all')">All</button>
@@ -4492,8 +4572,8 @@
             const isOpen  = expandedRows.has(e.id);
             const caretStyle = `display:inline-block;transition:transform 0.18s;transform:rotate(${isOpen?'90':'0'}deg);color:var(--muted);font-size:0.85rem;line-height:1;cursor:pointer;user-select:none`;
             const subLabel = `font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--orange);font-weight:700;margin-bottom:0.3rem`;
-            const missingInvoice = !e.invoiced_date || !e.invoice_sent_date;
-            const rowBg = missingInvoice ? 'background:rgba(239,68,68,0.18)' : '';
+            const rowTint = rowStatusBg(e);
+            const rowBg   = rowTint ? `background:${rowTint}` : '';
             const icEntry = icSentMap.get(e.id);
             const icBadge = icEntry
               ? `<div id="ic-main-${e.id}" style="font-size:0.62rem;color:#22c55e;font-weight:600;margin-top:0.18rem;white-space:nowrap;letter-spacing:0.01em">&#10003; IC ${fmtSentAt(icEntry.sent_at)}</div>`
@@ -4537,7 +4617,7 @@
             // (edited in Payroll), but the invoice sub-row below stays editable so
             // the trucking office can still manage billing.
             const mainRow = isInjected
-              ? `<tr style="${rowBg}" title="Injected from an approved timesheet entry — edit it in Payroll, not here. The haul fee is the exception: it can be set here as a backup.">
+              ? `<tr id="tr-main-${e.id}" style="${rowBg}" title="Injected from an approved timesheet entry — edit it in Payroll, not here. The haul fee is the exception: it can be set here as a backup.">
                   ${caretCell}
                   <td class="td-task-num">${tsTaskCell}</td>
                   <td style="min-width:110px">${ro(e.actual_date)}</td>
@@ -4554,7 +4634,7 @@
                   <td style="min-width:130px">${ro(e.notes)}${icBadge}</td>
                   <td style="text-align:center;width:36px"><span title="Locked — edit this row in Payroll. The haul fee can be set here as a backup." style="color:var(--muted);font-size:0.9rem">&#128274;</span></td>
                 </tr>`
-              : `<tr style="${rowBg}">
+              : `<tr id="tr-main-${e.id}" style="${rowBg}">
                   ${caretCell}
                   <td class="td-task-num">${esc(e.task_number)}</td>
                   <td style="min-width:110px">${inp(e.id,'actual_date','date','',e.actual_date)}</td>
@@ -4572,7 +4652,7 @@
                   <td style="text-align:center;width:36px"><button class="btn-del-row" onclick="deleteRow('${e.id}')" title="Delete">&#10005;</button></td>
                 </tr>`;
             return mainRow + `
-            <tr id="inv-row-${e.id}" style="display:${isOpen?'table-row':'none'};background:var(--surface2)">
+            <tr id="inv-row-${e.id}" style="display:${isOpen?'table-row':'none'};background:${rowTint || 'var(--surface2)'}">
               <td colspan="15" style="padding:0.65rem 1rem 0.75rem 2.5rem;border-bottom:2px solid var(--border)">
                 <div style="display:flex;gap:2rem;flex-wrap:wrap;align-items:flex-start">
                   <div style="min-width:120px">
@@ -4622,6 +4702,7 @@
           </div>
           ${yearTabsHTML}
           ${totalsHTML}
+          ${legendHTML}
         </div>
         <div style="padding:0 1.25rem 1.25rem">
           <div class="tbl-scroll-wrap">
