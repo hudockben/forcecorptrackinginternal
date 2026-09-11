@@ -1563,6 +1563,77 @@
     // drops its result if a newer one has been issued since.
     let jobLoadToken = {};   // block index → id of that block's newest load
 
+    // ── Which trucking jobs this form offers ───────────────────────────────
+    // Trucking's "jobs" are the division's whole customer roster — see
+    // truckingJobs in api/timesheet-jobs.js. That roster is the office's
+    // billing list, and it is far longer than the handful of customers a
+    // driver ever files a day against. Scrolling it on a phone is how a day
+    // lands on the wrong customer, and a trucking day carries straight through
+    // to Truck Tracking on approval, so a wrong pick becomes a wrong invoice.
+    //
+    // Naming the customers here keeps THIS picker to those, and touches
+    // nothing else: the roster stays the Trucking division's to manage in
+    // trucking.html, stays what the office bills from, and stays whole in
+    // payroll's re-assign picker, which exists to correct exactly the entries
+    // a narrowed list would otherwise make unfixable.
+    //
+    // Each item is a customer spelled as "Manage lists" spells it, matched
+    // ignoring case and surrounding spaces. A name the roster does not hold is
+    // skipped and named in the console. An EMPTY array offers the whole roster,
+    // which is what this form did before the list existed.
+    const TRUCKING_JOB_ALLOWLIST = [
+      'Kinkead',
+      'Kovalchick',
+      // Both spellings while the Manage Lists merge of "Force" into
+      // "Force Omni" is outstanding. Whichever one the roster actually holds
+      // is the one offered, so the merge and this deploy can happen in either
+      // order and a driver is never left without the customer he hauled for.
+      // Drop 'Force' once the merge has run: from then on it matches nothing
+      // and only warns in the console.
+      'Force Omni',
+      'Force',
+      'EES',
+      'XTO',
+    ];
+
+    // Narrow one division's job list to what this form offers. Only trucking
+    // has a list, so every other division is handed back untouched and adding
+    // a division here is the only thing that can ever narrow one.
+    //
+    // Order follows the list, not the alphabet: these are picked on a phone,
+    // and which customers come first is the office's call.
+    function jobsForPicker(div, jobs) {
+      if (div !== 'trucking' || !TRUCKING_JOB_ALLOWLIST.length) return jobs;
+      // Matched on case and space the way api/timesheet-entries.js matches a
+      // customer to its rate, so a name that prices a haul also finds it here.
+      const key = v => String(v == null ? '' : v).trim().toLowerCase();
+      const picked  = [];
+      const missing = [];
+      for (const customer of TRUCKING_JOB_ALLOWLIST) {
+        if (!key(customer)) continue;
+        const hits = jobs.filter(j => key(j.label) === key(customer));
+        if (!hits.length) { missing.push(customer); continue; }
+        // The roster deliberately keeps differently-cased spellings as separate
+        // customers ("Force" and "FORCE"), so one name can answer twice. Take
+        // the spelling this list uses, and the first otherwise — two options
+        // reading alike is how a driver picks the wrong one.
+        picked.push(hits.find(j => String(j.label).trim() === String(customer).trim()) || hits[0]);
+      }
+      if (missing.length) {
+        console.warn('[timesheet] not on the trucking roster, so not offered: ' + missing.join(', '));
+      }
+      // Not one name answered. Either the office renamed every customer on the
+      // list or the roster came back empty — and a picker with nothing in it
+      // stops the crew filing the day at all. Offer the roster and say so in
+      // the console: a wrong customer is caught at approval, a missing day is
+      // caught on payday.
+      if (!picked.length) {
+        console.warn('[timesheet] TRUCKING_JOB_ALLOWLIST matched no customer on the roster — offering all of them.');
+        return jobs;
+      }
+      return picked;
+    }
+
     async function onDivisionChange(i = 0) {
       const div = bel(i, 'division').value;
       const jobSel = bel(i, 'job');
@@ -1608,7 +1679,9 @@
         // A newer pick is already loading (or the block has been removed) —
         // leave the picker to whoever owns it now.
         if (stale()) return;
-        const jobs = jobsCache[div];
+        // Filtered at render, never in the cache: the cache is the server's
+        // answer, and payroll reads the same endpoint unnarrowed.
+        const jobs = jobsForPicker(div, jobsCache[div]);
         if (!jobs.length) {
           jobSel.innerHTML = '<option value="">(no active jobs)</option>';
           jobSel.disabled = true;
