@@ -1569,8 +1569,13 @@ async function buildPayrollSummary(sql, companyCode) {
       -- site. Without it every row arrives looking un-split, and the report
       -- pays his whole day at standard while the Payroll page pays part of it
       -- at prevailing.
+      -- haul_off_site_hours narrows that again to the legs he hauled TO OR FROM
+      -- the site, which are the only ones that lose the premium. On a day
+      -- holding both kinds of haul it is smaller than haul_hours, and leaving
+      -- it out sends the on-site legs to standard as well.
       haul_type,
       haul_hours::float                  AS haul_hours,
+      haul_off_site_hours::float         AS haul_off_site_hours,
       -- id and created_at are here for the ORDER the overtime walk needs, not
       -- for display. Two entries on one date — a split day — are counted in
       -- sequence, and whichever comes first keeps the regular hours while the

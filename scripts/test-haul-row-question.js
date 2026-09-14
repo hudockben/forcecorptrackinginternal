@@ -308,21 +308,28 @@ console.log('\n[the server keeps the row\'s answer]');
   assert('a row sent to a blob tab keeps its answer too',
     /row\.haul_type \? \{ haul_type: row\.haul_type \}/.test(blob));
 
-  // haul_hours is read THROUGH the day's classification, so an on-site leg
-  // counted inside an off-site day would pay the man the standard rate for
-  // hours he spent on the covered site.
+  // The entry keeps TWO figures, because one column cannot answer two
+  // questions: how many hours he spent in the truck, and how many of those lose
+  // the prevailing premium. They differ only on a day holding both kinds.
   const R = over => Object.assign({ cost_code: 'Earthwork', labor_hours: 0 }, over);
-  assert('a day holding both legs counts only its own kind into haul_hours',
-    T.haulWorkHoursOf({ haul_type: 'off_site' }, [
-      R({ labor_hours: 6, haul_type: 'off_site', is_haul: true }),
-      R({ labor_hours: 2, haul_type: 'on_site',  is_haul: true }),
-      R({ labor_hours: 1, haul_type: 'none',     is_haul: false }),
-    ]) === 6);
+  const MIXED = [
+    R({ labor_hours: 6, haul_type: 'off_site', is_haul: true }),
+    R({ labor_hours: 2, haul_type: 'on_site',  is_haul: true }),
+    R({ labor_hours: 1, haul_type: 'none',     is_haul: false }),
+  ];
+  assert('a day holding both legs counts every hour in the truck into haul_hours',
+    T.haulWorkHoursOf({ haul_type: 'off_site' }, MIXED) === 8);
+  assert('  and only the to-and-from legs into haul_off_site_hours',
+    T.offSiteHaulHoursOf({ haul_type: 'off_site' }, MIXED) === 6);
+  assert('  so the on-site leg reads as truck time AND keeps the premium',
+    T.haulWorkHoursOf({ haul_type: 'off_site' }, MIXED)
+      - T.offSiteHaulHoursOf({ haul_type: 'off_site' }, MIXED) === 2);
+  const LEGACY = [R({ labor_hours: 6, is_haul: true }), R({ labor_hours: 3, is_haul: false })];
   assert('  and a split from before the question moved counts exactly as it did',
-    T.haulWorkHoursOf({ haul_type: 'off_site' }, [
-      R({ labor_hours: 6, is_haul: true }),
-      R({ labor_hours: 3, is_haul: false }),
-    ]) === 6);
+    T.haulWorkHoursOf({ haul_type: 'off_site' }, LEGACY) === 6
+    && T.offSiteHaulHoursOf({ haul_type: 'off_site' }, LEGACY) === 6);
+  assert('  while an on-site day puts nothing in the off-site figure',
+    T.offSiteHaulHoursOf({ haul_type: 'on_site' }, LEGACY) === 0);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

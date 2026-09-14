@@ -336,14 +336,20 @@ const q = (sql, p) => client.query(sql, p).then(r => r.rows);
     assert('  and both post $0 labour — he was in the truck for both',
       rows.every(r => r.rate === 0), JSON.stringify(rows.map(r => r.rate)));
 
-    // haul_hours is read THROUGH the day's classification: off-site hours leave
-    // prevailing, on-site hours do not. Counting the on-site leg here would pay
-    // him the standard rate for two hours he spent on the covered site.
-    const [ent] = await q('SELECT haul_type, haul_hours::float hh FROM timesheet_entries WHERE id=$1',
-      [id6]);
+    // TWO figures, because the entry is asked two questions. haul_hours is
+    // every hour he spent in the truck — what the reports call his truck hours
+    // — and haul_off_site_hours is the share of them that loses the prevailing
+    // premium. Counting the on-site leg in the second would pay him the
+    // standard rate for two hours he spent on the covered site; leaving it out
+    // of the first would report him as labouring for those two hours.
+    const [ent] = await q(`SELECT haul_type, haul_hours::float hh,
+                                  haul_off_site_hours::float off
+                           FROM timesheet_entries WHERE id=$1`, [id6]);
     assert('the day is classified off-site', ent.haul_type === 'off_site');
-    assert('  and only the off-site leg counts toward the hours that leave prevailing',
-      ent.hh === 4, `haul_hours=${ent.hh}`);
+    assert('  with every hour in the truck counted as truck time',
+      ent.hh === 6, `haul_hours=${ent.hh}`);
+    assert('  and only the off-site leg counted out of prevailing',
+      ent.off === 4, `haul_off_site_hours=${ent.off}`);
 
     // Edit Split pre-fills from this. daily_tracking has no haul_type column —
     // the stamp IS the record — so the read-back has to recover each leg from it.
@@ -375,10 +381,11 @@ const q = (sql, p) => client.query(sql, p).then(r => r.rows);
       JSON.stringify(after.map(r => r.field_type)));
     assert('  with both still priced at $0 — the sweep re-derives the money too',
       after.every(r => r.rate === 0), JSON.stringify(after.map(r => r.rate)));
-    const [entAfter] = await q('SELECT haul_hours::float hh FROM timesheet_entries WHERE id=$1',
-      [id6]);
-    assert('  and the hours that leave prevailing unchanged', entAfter.hh === 4,
-      `haul_hours=${entAfter.hh}`);
+    const [entAfter] = await q(`SELECT haul_hours::float hh, haul_off_site_hours::float off
+                                FROM timesheet_entries WHERE id=$1`, [id6]);
+    assert('  and both hour figures unchanged',
+      entAfter.hh === 6 && entAfter.off === 4,
+      `haul_hours=${entAfter.hh} off=${entAfter.off}`);
   }
 
   // A split that says nothing per row is every split approved before the
@@ -404,8 +411,80 @@ const q = (sql, p) => client.query(sql, p).then(r => r.rows);
       JSON.stringify(rows[0]));
     assert('  while the row with no truck on it is paid his own rate',
       rows[1].field_type === null && rows[1].rate > 0, JSON.stringify(rows[1]));
-    const [ent] = await q('SELECT haul_hours::float hh FROM timesheet_entries WHERE id=$1', [id7]);
+    const [ent] = await q(`SELECT haul_hours::float hh, haul_off_site_hours::float off
+                           FROM timesheet_entries WHERE id=$1`, [id7]);
     assert('  and only the truck\'s hours land in haul_hours', ent.hh === 4, `haul_hours=${ent.hh}`);
+    // An on-site day: he was driving, but on the covered site, so nothing
+    // leaves prevailing however many hours the truck bought.
+    assert('  with nothing in the off-site figure, because none of it was off site',
+      ent.off === 0, `haul_off_site_hours=${ent.off}`);
+  }
+
+  // ── A row leaving the haul moves the right figure ────────────────────
+  // A supervisor may re-code an injected row in the division tab, and the sweep
+  // is what notices. Both hour figures have to follow it, and they follow it on
+  // DIFFERENT rules: every row leaving the haul gives back truck hours, but only
+  // an off-site one gives back hours that had left prevailing. Getting that
+  // wrong pays a man standard for time he spent on the covered site — silently,
+  // on a maintenance sweep nobody is watching.
+  console.log('\n[a row re-coded out of the haul moves the right figure]');
+  {
+    const mk6 = async () => {
+      const id = await mk();
+      const r = await call('POST', { action: 'approve', id }, {
+        split: [
+          { cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+            equipment: 'Triaxle Dump', labor_hours: 4, equip_hours: 4, quantity: 0,
+            is_haul: true, haul_type: 'off_site' },
+          { cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+            equipment: 'Triaxle Dump', labor_hours: 2, equip_hours: 2, quantity: 0,
+            is_haul: true, haul_type: 'on_site' },
+        ],
+        haul_type: 'off_site',
+      }, ADMIN);
+      if (r.statusCode !== 200) throw new Error('approve failed: ' + JSON.stringify(r.body));
+      return id;
+    };
+    // Re-code the ON-SITE leg onto a travel code. It leaves the haul, so the
+    // truck hours drop — but it never lost the premium, so it has none to give
+    // back and the off-site figure must not move.
+    const idOn = await mk6();
+    await client.query(
+      `UPDATE daily_tracking SET sub_code = 'Excess Cut - Travel'
+       WHERE timesheet_entry_id = $1 AND field_type = 'Haul — On Site'`, [idOn]);
+    const s1 = await call('POST', { action: 'refresh-rates', from: '2026-09-01', to: '2026-09-30' },
+      {}, ADMIN);
+    assert('the sweep runs', s1.statusCode === 200, JSON.stringify(s1.body).slice(0, 160));
+    const [onAfter] = await q(`SELECT haul_hours::float hh, haul_off_site_hours::float off
+                               FROM timesheet_entries WHERE id=$1`, [idOn]);
+    assert('an on-site leg leaving the haul gives back truck hours',
+      onAfter.hh === 4, `haul_hours=${onAfter.hh}`);
+    assert('  and nothing to prevailing, because it never left it',
+      onAfter.off === 4, `haul_off_site_hours=${onAfter.off}`);
+
+    // The off-site leg is the other case: it gives back both.
+    const idOff = await mk6();
+    await client.query(
+      `UPDATE daily_tracking SET sub_code = 'Excess Cut - Travel'
+       WHERE timesheet_entry_id = $1 AND field_type = 'Haul — To/From Site'`, [idOff]);
+    const s2 = await call('POST', { action: 'refresh-rates', from: '2026-09-01', to: '2026-09-30' },
+      {}, ADMIN);
+    assert('the sweep runs again', s2.statusCode === 200);
+    const [offAfter] = await q(`SELECT haul_hours::float hh, haul_off_site_hours::float off
+                                FROM timesheet_entries WHERE id=$1`, [idOff]);
+    assert('an off-site leg leaving the haul gives back both',
+      offAfter.hh === 2 && offAfter.off === 0,
+      `haul_hours=${offAfter.hh} off=${offAfter.off}`);
+
+    // And un-approving puts both back to "nobody has split this", so neither
+    // can outlive the split it describes.
+    const un = await call('POST', { action: 'unapprove', id: idOff }, {}, ADMIN);
+    assert('un-approve succeeds', un.statusCode === 200, JSON.stringify(un.body).slice(0, 160));
+    const [cleared] = await q(`SELECT haul_hours, haul_off_site_hours
+                               FROM timesheet_entries WHERE id=$1`, [idOff]);
+    assert('  and clears both hour figures together',
+      cleared.haul_hours === null && cleared.haul_off_site_hours === null,
+      JSON.stringify(cleared));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

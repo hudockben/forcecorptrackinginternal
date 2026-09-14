@@ -425,6 +425,11 @@ function dbToEntry(r) {
     // it reads as the haul — the way every haul day behaved before the split
     // could say otherwise. See the column comment in neon-schema.sql.
     haul_hours:          r.haul_hours != null ? Number(r.haul_hours) : null,
+    // How many of those hours were hauled to or from the site — the ones that
+    // pay at the standard rate on a prevailing job. Null carries the same
+    // "nobody has split this" meaning as the column above; see the column
+    // comment in neon-schema.sql for how each reader is to take it.
+    haul_off_site_hours: r.haul_off_site_hours != null ? Number(r.haul_off_site_hours) : null,
     supervisor_id:       r.supervisor_id,
     supervisor_name:     r.supervisor_name || '',
     notes:               r.notes || '',
@@ -1109,15 +1114,36 @@ function haulWorkHoursOf(entry, rows) {
   const haulType = haulTypeOf(entry);
   if (!haulType) return null;
   const total = (Array.isArray(rows) ? rows : []).reduce((sum, r) => (
+    (!isTravelSplitRow(r) && isHaulWorkRow(r, haulType, entry))
+      ? sum + (Number(r.labor_hours) || 0)
+      : sum
+  ), 0);
+  return _r2(total);
+}
+
+// Of those hours, the ones hauled TO OR FROM the site — what lands in
+// timesheet_entries.haul_off_site_hours.
+//
+// A DIFFERENT question from the one above, and the two are deliberately not one
+// function. That one asks what he was doing; this one asks which of those hours
+// lose the prevailing premium, and an on-site haul loses nothing — he is on the
+// covered site. They differ only on a day holding both kinds, which is exactly
+// the day the per-row question exists to describe, and the entry carries one
+// haul_type so the column cannot be inferred from it.
+//
+// Each row is read through its OWN answer, falling back to the day's for a row
+// that does not say — which is every row of every split saved before the
+// question moved onto the row, and on those the two figures come out equal, as
+// they always were.
+//
+// null on a day that was not a haul at all, matching haulWorkHoursOf: there is
+// nothing to say, and null is what un-approve puts back.
+function offSiteHaulHoursOf(entry, rows) {
+  const haulType = haulTypeOf(entry);
+  if (!haulType) return null;
+  const total = (Array.isArray(rows) ? rows : []).reduce((sum, r) => (
     (!isTravelSplitRow(r) && isHaulWorkRow(r, haulType, entry)
-      // ONLY the rows classified the same way the day is. The column is read
-      // through the day's haul_type — off-site hours leave prevailing, on-site
-      // hours do not — so counting an on-site leg inside an off-site day's
-      // haul_hours would pay the man the standard rate for hours he worked on
-      // the covered site. A row with no answer of its own matches by
-      // definition (rowHaulType falls back to the day), so a split saved
-      // before the question moved onto the row counts exactly as it always did.
-      && rowHaulType(r, entry) === haulType)
+      && rowHaulType(r, entry) === 'off_site')
       ? sum + (Number(r.labor_hours) || 0)
       : sum
   ), 0);
@@ -4650,6 +4676,10 @@ module.exports = async (req, res) => {
       // nothing there refines the day-level answer, so it keeps meaning the
       // whole day, exactly as it always has.
       const haulHours = splitRows ? haulWorkHoursOf(existing, splitRows) : null;
+      // And how many of those hours were hauled TO OR FROM the site, which is a
+      // different question and the one his cheque turns on. Written together
+      // and from the same rows, so the two can never describe different splits.
+      const haulOffHours = splitRows ? offSiteHaulHoursOf(existing, splitRows) : null;
 
       const [updated] = await sql`
         UPDATE timesheet_entries
@@ -4658,6 +4688,7 @@ module.exports = async (req, res) => {
             approved_by_user_id = ${userId},
             approved_by_name    = ${username},
             haul_hours          = ${haulHours},
+            haul_off_site_hours = ${haulOffHours},
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -4789,6 +4820,7 @@ module.exports = async (req, res) => {
                 approved_by_name    = NULL,
                 split_destinations  = NULL,
                 haul_hours          = NULL,
+                haul_off_site_hours = NULL,
                 updated_at          = NOW()
             WHERE id = ${id} AND company_code = ${companyCode}
           `;
@@ -5180,13 +5212,18 @@ module.exports = async (req, res) => {
       // moving a driver's hours out of prevailing for a split that was never
       // written is the one way this column could lie about money.
       const rsHaulHours = haulWorkHoursOf(existing, splitRows);
+      const rsOffHours  = offSiteHaulHoursOf(existing, splitRows);
       await sql`
-        UPDATE timesheet_entries SET haul_hours = ${rsHaulHours}, updated_at = NOW()
+        UPDATE timesheet_entries
+        SET haul_hours          = ${rsHaulHours},
+            haul_off_site_hours = ${rsOffHours},
+            updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
       `;
       // The response and the audit both render from this object, so it has to
       // carry what was just written — exactly as haul_type does above.
-      existing.haul_hours = rsHaulHours;
+      existing.haul_hours          = rsHaulHours;
+      existing.haul_off_site_hours = rsOffHours;
 
       await writeAudit(
         sql, companyCode, payload, id, 'ADMIN_EDIT',
@@ -5249,6 +5286,7 @@ module.exports = async (req, res) => {
             approved_by_name    = NULL,
             split_destinations  = NULL,
             haul_hours          = NULL,
+            haul_off_site_hours = NULL,
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -5466,11 +5504,23 @@ module.exports = async (req, res) => {
           //
           // The delta is exact for the one thing that changed, which is all
           // this sweep ever knows about.
-          if (stamped !== !!haulType && r.timesheet_entry_id) {
+          //
+          // TWO figures move, not one. haul_hours is every hour in the truck;
+          // haul_off_site_hours is the share of them hauled to or from the
+          // site, which is the share that loses the prevailing premium. A row
+          // joining or leaving the haul always moves the first, and moves the
+          // second only when the row is an off-site one — so an on-site leg
+          // being re-coded onto a travel code must not take prevailing hours
+          // with it.
+          const offBefore = stamped && (storedRowHaulType(r) || haulTypeOf(r)) === 'off_site';
+          const offAfter  = haulType === 'off_site';
+          if ((stamped !== !!haulType || offBefore !== offAfter) && r.timesheet_entry_id) {
             const key  = String(r.timesheet_entry_id);
             const seen = haulHoursMoved.get(key)
-              || { delta: 0, work: Number(r.computed_hours) || 0 };
-            seen.delta += (haulType ? 1 : -1) * (Number(r.labor_hours) || 0);
+              || { delta: 0, offDelta: 0, work: Number(r.computed_hours) || 0 };
+            const hrs = Number(r.labor_hours) || 0;
+            if (stamped !== !!haulType)   seen.delta    += (haulType ? 1 : -1) * hrs;
+            if (offBefore !== offAfter)   seen.offDelta += (offAfter ? 1 : -1) * hrs;
             haulHoursMoved.set(key, seen);
           }
 
@@ -5497,18 +5547,34 @@ module.exports = async (req, res) => {
       // A null haul_hours starts from the whole day, because that is what null
       // has always meant. Clamped to the day at both ends: the column may never
       // make prevailing + standard stop adding up to the hours the man is owed.
+      //
+      // A null haul_off_site_hours starts from whichever answer the day gives:
+      // haul_hours on an off-site day, where every hour in the truck was to or
+      // from the site because the entry only ever held one kind of haul, and 0
+      // on any other. Starting both from the same place would have written an
+      // off-site figure onto an on-site day out of nothing.
       if (haulHoursMoved.size) {
         const movedIds    = [...haulHoursMoved.keys()].map(Number);
         const movedDeltas = movedIds.map(id => _r2(haulHoursMoved.get(String(id)).delta));
+        const movedOffs   = movedIds.map(id => _r2(haulHoursMoved.get(String(id)).offDelta));
         const movedWork   = movedIds.map(id => haulHoursMoved.get(String(id)).work);
         await sql`
           UPDATE timesheet_entries te
           SET haul_hours = GREATEST(0, LEAST(
                 m.work, COALESCE(te.haul_hours, m.work) + m.delta
               )),
+              haul_off_site_hours = GREATEST(0, LEAST(
+                m.work,
+                COALESCE(
+                  te.haul_off_site_hours,
+                  CASE WHEN te.haul_type = 'off_site'
+                       THEN COALESCE(te.haul_hours, m.work) ELSE 0 END
+                ) + m.off_delta
+              )),
               updated_at = NOW()
-          FROM unnest(${movedIds}::bigint[], ${movedDeltas}::numeric[], ${movedWork}::numeric[])
-            AS m(id, delta, work)
+          FROM unnest(${movedIds}::bigint[], ${movedDeltas}::numeric[],
+                      ${movedOffs}::numeric[], ${movedWork}::numeric[])
+            AS m(id, delta, off_delta, work)
           WHERE te.id = m.id AND te.company_code = ${companyCode}
         `;
       }
@@ -5843,6 +5909,11 @@ module.exports = async (req, res) => {
           -- counted were counted under the old one.
           haul_hours         = CASE WHEN ${keepHaul}::boolean
                                     THEN haul_hours ELSE NULL END,
+          -- The off-site share of those hours is part of the same answer, so it
+          -- is kept and cleared with it. Left behind it would describe a split
+          -- the entry no longer has.
+          haul_off_site_hours = CASE WHEN ${keepHaul}::boolean
+                                    THEN haul_off_site_hours ELSE NULL END,
           supervisor_id      = ${data.supervisor_id},
           supervisor_name    = ${data.supervisor_name},
           notes              = ${data.notes},
@@ -5956,6 +6027,7 @@ module.exports._test = {
   truckOnRow,
   isHaulWorkRow,
   haulWorkHoursOf,
+  offSiteHaulHoursOf,
   rowHaulType,
   storedRowHaulType,
   HAUL_FIELD_TYPE,

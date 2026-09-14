@@ -228,15 +228,34 @@ assert('  and the stamp reads back as the answer that wrote it',
   && T.storedRowHaulType({ field_type: 'Haul - To/From Site' }) === 'off_site'
   && T.storedRowHaulType({ field_type: 'Travel' })              === null
   && T.storedRowHaulType({})                                    === null);
-// The on-site legs of a mixed day must NOT be counted into haul_hours: that
-// column is read through the day's classification, so an on-site hour counted
-// inside an off-site day would pay the man the standard rate for time he spent
-// on the covered site.
-assert('  so a day holding both answers counts only its own kind',
-  T.haulWorkHoursOf({ haul_type: 'off_site' }, [
-    { labor_hours: 6, haul_type: 'off_site', is_haul: true, cost_code: 'Earthwork' },
-    { labor_hours: 2, haul_type: 'on_site',  is_haul: true, cost_code: 'Earthwork' },
-  ]) === 6);
+// One column cannot answer two questions, so there are two. haul_hours is every
+// hour in the truck — what the reports call his truck hours — and
+// haul_off_site_hours is the share of them that loses the prevailing premium.
+{
+  const mixed = [
+    { labor_hours: 6, haul_type: 'off_site', is_haul: true,  cost_code: 'Earthwork' },
+    { labor_hours: 2, haul_type: 'on_site',  is_haul: true,  cost_code: 'Earthwork' },
+    { labor_hours: 1, haul_type: 'none',     is_haul: false, cost_code: 'Earthwork' },
+  ];
+  assert('  so a day holding both answers counts every hour in the truck',
+    T.haulWorkHoursOf({ haul_type: 'off_site' }, mixed) === 8);
+  assert('  and only the to-and-from legs into the hours that leave prevailing',
+    T.offSiteHaulHoursOf({ haul_type: 'off_site' }, mixed) === 6);
+  // A split saved before the question moved onto the row says nothing per row,
+  // so both figures fall back to the day and come out equal, as they always were.
+  const legacy = [
+    { labor_hours: 6, is_haul: true,  cost_code: 'Earthwork' },
+    { labor_hours: 2, is_haul: false, cost_code: 'Earthwork' },
+  ];
+  assert('  while a split from before the question comes out equal, as it always did',
+    T.haulWorkHoursOf({ haul_type: 'off_site' }, legacy) === 6
+    && T.offSiteHaulHoursOf({ haul_type: 'off_site' }, legacy) === 6);
+  assert('  and an on-site day leaves nothing in the off-site figure',
+    T.haulWorkHoursOf({ haul_type: 'on_site' }, legacy) === 6
+    && T.offSiteHaulHoursOf({ haul_type: 'on_site' }, legacy) === 0);
+  assert('  with both null on a day that was never a haul',
+    T.haulWorkHoursOf({}, legacy) === null && T.offSiteHaulHoursOf({}, legacy) === null);
+}
 
 console.log('\n[the re-rate sweep does not walk over the approver]');
 
@@ -273,15 +292,26 @@ assert('  which means it reads that column, and the truck the driver named',
 // travel code was enough to strip the prevailing premium off hours he really
 // worked on the covered site.
 assert('a row that changes sides adjusts its entry\'s haul_hours by its own hours',
-  /if \(stamped !== !!haulType && r\.timesheet_entry_id\) \{/.test(sweep)
-  && /seen\.delta \+= \(haulType \? 1 : -1\) \* \(Number\(r\.labor_hours\) \|\| 0\);/.test(sweep));
+  /if \(\(stamped !== !!haulType \|\| offBefore !== offAfter\) && r\.timesheet_entry_id\) \{/.test(sweep)
+  && /if \(stamped !== !!haulType\)\s+seen\.delta\s+\+= \(haulType \? 1 : -1\) \* hrs;/.test(sweep),
+  sweep.slice(sweep.indexOf('const offBefore'), sweep.indexOf('const offBefore') + 700));
 assert('  starting from the whole day when nothing was ever recorded',
   /COALESCE\(te\.haul_hours, m\.work\) \+ m\.delta/.test(sweep));
+// And the OFF-SITE share moves on its own rule. A row leaving the haul takes
+// prevailing hours with it only when it was an off-site leg — an on-site one
+// re-coded onto a travel code never lost the premium, so it has none to give
+// back, and moving it would pay him standard for covered-site work.
+assert('  while the off-site share moves only when the row was an off-site leg',
+  /const offBefore = stamped && \(storedRowHaulType\(r\) \|\| haulTypeOf\(r\)\) === 'off_site';/.test(sweep)
+  && /const offAfter\s+= haulType === 'off_site';/.test(sweep)
+  && /if \(offBefore !== offAfter\)\s+seen\.offDelta \+= \(offAfter \? 1 : -1\) \* hrs;/.test(sweep));
+assert('  starting from haul_hours on an off-site day and from nothing on any other',
+  /COALESCE\([\s\S]{0,40}te\.haul_off_site_hours,[\s\S]{0,160}?CASE WHEN te\.haul_type = 'off_site'[\s\S]{0,120}?THEN COALESCE\(te\.haul_hours, m\.work\) ELSE 0 END[\s\S]{0,40}\) \+ m\.off_delta/.test(sweep));
 // One statement for every entry that moved, not one per entry: a loop of
 // awaited updates costs a round-trip each, and the first sweep over a wide
 // range after a deploy is exactly when there are most of them.
 assert('  and written for every moved entry in a single statement',
-  /FROM unnest\(\$\{movedIds\}::bigint\[\], \$\{movedDeltas\}::numeric\[\], \$\{movedWork\}::numeric\[\]\)/
+  /FROM unnest\(\$\{movedIds\}::bigint\[\], \$\{movedDeltas\}::numeric\[\],[\s\S]{0,40}\$\{movedOffs\}::numeric\[\], \$\{movedWork\}::numeric\[\]\)/
     .test(sweep)
   && !/for \(const \[id, moved\] of haulHoursMoved\)/.test(sweep));
 assert('  and clamped to the day at both ends, so the split still adds up',

@@ -1123,6 +1123,39 @@ CREATE INDEX IF NOT EXISTS idx_ts_haul_type
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS haul_hours NUMERIC(6,2);
 
 -- ─────────────────────────────────────────────────
+-- TIMESHEET ENTRIES — haul_off_site_hours
+-- ─────────────────────────────────────────────────
+-- Of the hours above, how many were hauled TO OR FROM the site.
+--
+-- haul_hours says how many of the day's work hours the man spent in the truck.
+-- That is one question; "how many of them lose the prevailing premium" is a
+-- different one, and for a long time haul_type answered it for the whole day —
+-- on-site hauling is ordinary covered work and keeps the premium, hauling to
+-- and from the site is not and does not.
+--
+-- A day can hold both. A driver who runs to the job and then hauls inside the
+-- fence did both kinds in one block, and the entry carries ONE haul_type, so
+-- the day-level answer has to pick the one with consequences: off-site. Without
+-- this column the whole of haul_hours then read as off-site and the on-site
+-- legs lost a premium they are owed — or, if haul_hours were narrowed to the
+-- off-site legs instead, the truck-hours figure every report reads would
+-- undercount the time he actually spent driving. One column cannot be both
+-- answers, so there are two.
+--
+--   NULL → not split yet, or an entry from before this column existed. On an
+--          off-site day read as haul_hours (every such day holds one kind of
+--          haul, so the two figures are the same); on any other day read as 0.
+--          No approved fortnight changes its numbers on deploy.
+--   0    → split, and none of it was hauled off site.
+--   n    → n of the haul_hours were to or from the site and pay at the standard
+--          rate; the rest were on it and keep the prevailing premium.
+--
+-- Always <= haul_hours, and written, re-written and cleared in exactly the same
+-- places, so the two can never describe different splits. Travel is left out of
+-- both, for the same reason.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS haul_off_site_hours NUMERIC(6,2);
+
+-- ─────────────────────────────────────────────────
 -- DAILY TRACKING — is_haul
 -- ─────────────────────────────────────────────────
 -- "Did the truck buy this row's labour?" — the approver's own answer, in the
