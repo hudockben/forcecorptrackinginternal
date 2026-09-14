@@ -34,6 +34,12 @@
       --band-ot:   #25191a;
       --green:     #22c55e;
       --blue:      #60a5fa;
+      /* The hauling answers, and nothing else. Every other hue in this table is
+         already spoken for — amber is prevailing wage, orange is overtime,
+         green and grey are the day flags, blue is a split — and a haul has to
+         be readable as none of them at a glance. See the .pw-haul pill. */
+      --violet:    #a78bfa;
+      --teal:      #2dd4bf;
     }
 
     body {
@@ -1290,10 +1296,34 @@
     .split-table:not(.haul-on) .haul-col { display: none; }
     .pw-yes { background: rgba(234,179,8,0.16);  color: var(--yellow); }
     .pw-no  { background: rgba(136,136,136,0.15); color: var(--muted); }
-    /* Part haul: some of the day prevailing, some of it not. Its own colour
-       because it is its own answer — reading it as either "Yes" or "Haul"
-       sends the approver looking for a bug in the hours. */
-    .pw-part { background: rgba(96,165,250,0.16); color: var(--blue); }
+
+    /* ── The hauling answers ──
+       A haul takes this column over the plain Yes/No, because it is the answer
+       that decides what the day pays: the man rides inside a truck's hourly
+       cost at a $0 labour rate instead of being paid his wage on top of it.
+       Payroll has to see that FROM THE ROW — a haul that reads a plain grey
+       "No" looks like every other standard day on the tab. Each answer gets
+       its own colour because each is its own money:
+
+         Haul (violet, ringed)  every work hour of the day was in the truck.
+                                The loudest of the three on purpose: on a
+                                prevailing job it takes the premium off as
+                                well, since he never worked the covered site.
+         Partial haul (blue)    part truck, part site work. Its own answer —
+                                reading it as either of the other two sends the
+                                approver looking for a bug in the hours.
+         On site haul (teal)    hauled inside the fence. The labour is still the
+                                truck's, but the man IS on the covered site, so
+                                a prevailing job keeps its premium. */
+    .pw-haul {
+      background: rgba(167,139,250,0.22);
+      color: var(--violet);
+      /* Inset rather than a border: the ring has to make this pill louder than
+         the ones beside it without making it a different size. */
+      box-shadow: inset 0 0 0 1px rgba(167,139,250,0.55);
+    }
+    .pw-part   { background: rgba(96,165,250,0.16); color: var(--blue); }
+    .pw-onsite { background: rgba(45,212,191,0.16); color: var(--teal); }
     .pw-na  { color: var(--muted); }
 
     /* ── Split-day chip ──
@@ -2074,7 +2104,7 @@
             <th>Type</th>
             <th>Division</th>
             <th>Job</th>
-            <th class="th-wrap">Prevailing Wage</th>
+            <th class="th-wrap" title="Prevailing wage on the job tied to the entry — Yes or No — unless the day was a haul, in which case it says so instead, because that is what decides the pay: Haul (every work hour in the truck, at a $0 labour rate; a prevailing job loses its premium — he never worked the covered site) · Partial haul (some of it in the truck, the rest worked on the site) · On site haul (hauled inside the fence — the labour is still the truck's, but a prevailing job keeps its premium)">Prevailing Wage</th>
             <th class="th-wrap">Lunch Break</th>
             <th class="th-wrap">Operated Equipment</th>
             <th>Time</th>
@@ -5206,43 +5236,92 @@
       };
     }
 
-    // Prevailing-wage pill, derived from the job tied to the entry.
+    // Prevailing-wage pill, derived from the job tied to the entry AND from the
+    // day's hauling answer.
+    //
     // The server resolves e.prevailing_wage from the project blob:
     //   true/false → turf/paving job with a known prevailing-wage flag
     //   null       → time-off, or a division (dust/trucking/quarry) where
-    //                prevailing wage doesn't apply → show a neutral dash.
+    //                prevailing wage doesn't apply → a neutral dash.
     //
-    // A prevailing job worked as an off-site haul gets its own pill. Showing a
-    // plain "Yes" there would have the approver reading a prevailing job whose
-    // hours the report is deliberately paying at standard, with nothing on the
-    // row to explain the difference — the one place that mismatch would look
-    // like a bug rather than the rule.
+    // A HAUL takes the pill over that Yes/No, on ANY job — prevailing or not.
+    // Payroll reads this column to know what a day pays, and "hauled to & from
+    // site" changes that twice over: the driver's labour posts at $0 because he
+    // is already inside the truck's hourly cost, and on a prevailing job the
+    // premium comes off as well, since he never worked the covered site.
+    //
+    // Keying the pill on the prevailing flag alone hid the first half of that.
+    // A haul on a NON-prevailing job read a plain grey "No", identical to every
+    // ordinary standard day on the tab, and the one fact payroll needed off the
+    // row — he was in the truck — was only visible by opening the split.
+    //
+    // What the column can say, and its colour:
+    //   Haul          violet  every work hour of the day was in the truck
+    //   Partial haul  blue    some in the truck, the rest worked on the site
+    //   On site haul  teal    hauled inside the fence — the labour is still the
+    //                         truck's, but a prevailing job keeps its premium
+    //   Yes           amber   prevailing-wage job, no hauling
+    //   No            grey    standard-rate job, no hauling
+    //   —             muted   prevailing wage doesn't apply, and no hauling
     function prevailingWageHtml(e) {
-      if (e.entry_type === 'time_off' || e.prevailing_wage == null) {
-        return '<span class="pw-na" title="Prevailing wage does not apply to this entry">—</span>';
-      }
-      if (e.prevailing_wage && isOffSiteHaul(e)) {
-        // A day can now be part haul and part site work — he drove there and
-        // then got out and worked it — so the pill has to say WHICH, or an
-        // approver reading "Haul" beside a day that is mostly prevailing has
-        // no way to tell the report is right.
-        const work = Number(e.computed_hours || 0);
+      const pw = e.prevailing_wage;
+      // The job's own answer — and what a haul day falls back to when the split
+      // says the truck bought none of it. `note` carries that reason through,
+      // so a day answered as a haul reading "Yes" doesn't look like a lost
+      // answer to whoever filed it.
+      const plain = (note = '') => {
+        if (e.entry_type === 'time_off' || pw == null) {
+          return `<span class="pw-na" title="Prevailing wage does not apply to this entry${note}">—</span>`;
+        }
+        return pw
+          ? `<span class="pw-pill pw-yes" title="Prevailing wage job${note}">Yes</span>`
+          : `<span class="pw-pill pw-no" title="Standard (non-prevailing) wage job${note}">No</span>`;
+      };
+      // Time off is never a haul, whatever an older entry happens to carry.
+      if (e.entry_type === 'time_off') return plain();
+
+      const work = Number(e.computed_hours || 0);
+
+      if (isOffSiteHaul(e)) {
+        // The $0 labour rate is the same on any job; the premium is the part
+        // only a prevailing job has to lose, so only a prevailing job is told
+        // about it.
+        const premiumOff = pw
+          ? ' The job is prevailing wage, but the driver never worked the covered site, so these hours pay at the standard rate.'
+          : '';
+        // A day can be part haul and part site work — he drove there and then
+        // got out and worked it — so the pill has to say WHICH, or an approver
+        // reading "Haul" beside a day that is mostly prevailing has no way to
+        // tell the report is right.
         const haul = offSiteHaulWork(e, work);
         // The split found none of it was the truck — every hour was worked on
         // the site, and the Prevailing column beside this says so. A "Haul"
         // pill promising the standard rate next to a full prevailing figure is
         // the exact mismatch this pill exists to prevent, in reverse.
         if (haul <= 0) {
-          return '<span class="pw-pill pw-yes" title="Prevailing wage job. This day was answered as a haul, but the split found no hours in the truck — all of it was worked on the site, so all of it is prevailing">Yes</span>';
+          return plain('. This day was answered as a haul, but the split found no hours in the truck — all of it was worked on the site');
         }
         if (haul < work - 0.001) {
-          return `<span class="pw-pill pw-part" title="Prevailing-wage job. ${haul.toFixed(2)} h of this day was hauled to &amp; from the site and pays at the standard rate; the other ${(work - haul).toFixed(2)} h was worked on the site and stays prevailing">Part haul</span>`;
+          return `<span class="pw-pill pw-part" title="${haul.toFixed(2)} h of this day was hauled to &amp; from the site and rides inside the truck's hourly cost at a $0 labour rate. The other ${(work - haul).toFixed(2)} h was worked on the site and the job pays him for it${pw ? ', at the prevailing rate' : ''}">Partial haul</span>`;
         }
-        return '<span class="pw-pill pw-no" title="Prevailing-wage job, but this block was hauled to &amp; from the site — the driver never worked the site, so these hours pay at the standard rate">Haul</span>';
+        return `<span class="pw-pill pw-haul" title="Hauled to &amp; from the site — the whole day rides inside the truck's hourly cost at a $0 labour rate.${premiumOff}">Haul</span>`;
       }
-      return e.prevailing_wage
-        ? '<span class="pw-pill pw-yes" title="Prevailing wage job">Yes</span>'
-        : '<span class="pw-pill pw-no" title="Standard (non-prevailing) wage job">No</span>';
+
+      if (e.haul_type === 'on_site') {
+        // Hauled inside the fence. The truck's rate covers his labour the same
+        // way, but he IS on the covered site — so a prevailing job keeps its
+        // premium, and this is its own answer rather than "Haul".
+        //
+        // A split that ticked no row as the truck says the day wasn't run as a
+        // haul after all; fall back to the job's own answer rather than fly a
+        // haul pill with no hours behind it.
+        if (e.haul_hours != null && Number(e.haul_hours) <= 0) {
+          return plain('. This day was answered as a haul on site, but the split found no hours in the truck');
+        }
+        return `<span class="pw-pill pw-onsite" title="Hauled on the site — the labour rides inside the truck's hourly cost at a $0 labour rate.${pw ? ' The hours stay prevailing: he was on the covered site.' : ''}">On site haul</span>`;
+      }
+
+      return plain();
     }
     // Per-day Yes/No flag captured on the entry itself (lunch_break,
     // operated_equipment). Rendered as a Yes/No pill just like prevailing
