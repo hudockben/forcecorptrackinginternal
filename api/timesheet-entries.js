@@ -5395,11 +5395,21 @@ module.exports = async (req, res) => {
           // as the truck, so the site-labour row was re-stamped and re-zeroed on
           // every run, silently undoing the approver for as long as anyone kept
           // running it.
+          // And WHICH KIND it was is the row's to say, not the entry's. The
+          // question is answered per row now, and daily_tracking keeps that
+          // answer in the stamp itself — so re-stamping every haul row from the
+          // day would quietly rewrite the on-site leg of a day that holds both
+          // as a to/from one, with no rate change to make it visible and no
+          // haul_hours delta to correct. The next Edit Split then reads that
+          // back as the approved answer and moves those hours out of prevailing
+          // on the resave. A row with no stamp of its own still takes the day's,
+          // which is what lets a pre-flag row self-heal.
+          const rowType   = storedRowHaulType(r) || haulTypeOf(r);
           const haulType  = (!travelRow && isHaulWorkRow({
             equipment:   r.equipment,
             equip_hours: r.equip_hours,
             ...stored,
-          }, haulTypeOf(r), r)) ? haulTypeOf(r) : null;
+          }, haulTypeOf(r), r)) ? rowType : null;
           // A driver's labour is inside the truck's rate; pricing it again
           // bills the job twice for one man. Hours are left alone.
           const rate      = haulType
@@ -5614,6 +5624,7 @@ module.exports = async (req, res) => {
         const rowDiv = r.division || homeDiv;
         const rowJob = String(r.project_id == null ? '' : r.project_id);
         const moved  = rowDiv !== homeDiv || rowJob !== homeJob;
+        const rowHaulKind = storedRowHaulType(r);
         return {
           cost_code:   r.cost_code   || '',
           sub_code:    r.sub_code    || '',
@@ -5643,7 +5654,7 @@ module.exports = async (req, res) => {
           // the per-row answer the modal asks for. Absent on a row that was
           // never a haul, and on one stamped before the question moved onto
           // the row; the modal falls back to the day's answer for those.
-          ...(storedRowHaulType(r) ? { haul_type: storedRowHaulType(r) } : null),
+          ...(rowHaulKind ? { haul_type: rowHaulKind } : null),
           // job_label is not a daily_tracking column; the modal already holds
           // the destination division's job list and names it from there.
           ...(moved ? { dest: { division: rowDiv, job_id: rowJob } } : null),

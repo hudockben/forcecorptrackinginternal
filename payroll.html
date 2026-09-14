@@ -4942,10 +4942,18 @@
     // because some OTHER row was a haul pre-empts the answer — and then reads
     // back as a haul on the next repaint, since a priced truck is what an
     // unanswered row is judged by.
+    //
+    // The ANSWER, not splitRowIsHaul. That one falls back to the truck when
+    // nobody has ticked — which is the state a row seeded from the driver's own
+    // answer is deliberately left in — so asking it here says "no truck, so not
+    // a haul, so do not fill in the truck" and the default could never fire.
+    // The tick still overrules in the one direction it can: unticked says the
+    // job is not carrying the truck for these hours, so none is put there.
     function splitRowTakesTruck(r) {
       if (!r || isTravelSplitRow(r)) return false;
-      if (!splitRowHaulAnswer(r)) return false;
-      return splitRowIsHaul(r);
+      const ans = splitRowHaulAnswer(r);
+      if (ans !== 'on_site' && ans !== 'off_site') return false;
+      return r.is_haul !== false;
     }
 
     function splitDefaultHaulEquipment(r) {
@@ -5053,16 +5061,33 @@
       return (v === 'none' || v === 'on_site' || v === 'off_site') ? v : '';
     }
 
-    // The rows still owing an answer. Travel rows are left out — see above —
-    // and so is a row carrying neither labour nor equipment hours, which the
-    // save refuses for its own reasons before it ever gets here.
+    // Does this row still owe an answer?
+    //
+    // Travel rows never do — see above. Neither does a row with NO LABOUR
+    // HOURS: the question asks whose wage these hours are, and a row carrying
+    // only equipment hours has no wage on it to decide. That also keeps a
+    // freshly added blank row out of it, which would otherwise turn the tally
+    // red and answer "+ Add labor row" with a question about the hours it has
+    // not been given yet — the save has its own, better message for that one.
+    //
+    // One predicate, used by the tally and by the save, so the form cannot mark
+    // a row red and then refuse a different one.
+    function splitRowNeedsHaulAnswer(r) {
+      if (!r || isTravelSplitRow(r)) return false;
+      if ((Number(r.labor_hours) || 0) <= 0) return false;
+      return !splitRowHaulAnswer(r);
+    }
+
+    /** The rows still owing one, by row number — what the tally names. */
     function splitUnansweredHaulRows() {
       const out = [];
-      splitRows.forEach((r, i) => {
-        if (isTravelSplitRow(r)) return;
-        if (!splitRowHaulAnswer(r)) out.push(i + 1);
-      });
+      splitRows.forEach((r, i) => { if (splitRowNeedsHaulAnswer(r)) out.push(i + 1); });
       return out;
+    }
+
+    /** Every answer the day's labour rows carry. The two readers below share it. */
+    function splitHaulAnswersGiven() {
+      return splitRows.filter(r => !isTravelSplitRow(r)).map(splitRowHaulAnswer);
     }
 
     // The DAY's answer, derived from the rows rather than asked for twice.
@@ -5074,9 +5099,7 @@
     // the rows that were on-site are protected from it by carrying their own
     // answer to the server (see rowHaulType in api/timesheet-entries.js).
     function splitDeriveHaulAnswer() {
-      const answers = splitRows
-        .filter(r => !isTravelSplitRow(r))
-        .map(splitRowHaulAnswer);
+      const answers = splitHaulAnswersGiven();
       if (answers.includes('off_site')) return 'off_site';
       if (answers.includes('on_site'))  return 'on_site';
       return '';
@@ -5086,9 +5109,7 @@
     // carries one classification, so the Hours Report's Haul column reads the
     // off-site legs and leaves the on-site ones inside the prevailing total.
     function splitHaulMixed() {
-      const answers = splitRows
-        .filter(r => !isTravelSplitRow(r))
-        .map(splitRowHaulAnswer);
+      const answers = splitHaulAnswersGiven();
       return answers.includes('off_site') && answers.includes('on_site');
     }
 
@@ -5101,26 +5122,41 @@
       const opts = SPLIT_HAUL_ANSWERS
         .map(([v, label]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`)
         .join('');
-      // Marked until it is answered, on the same reasoning as the dust window:
-      // an empty box here is not a blank field, it is the row's classification
-      // missing — and the save will refuse it.
-      return `<select class="haul-pick${cur ? '' : ' needed'}"
+      // Marked while the save would refuse it, on the same reasoning as the
+      // dust window: an empty box here is not a blank field, it is the row's
+      // classification missing. Through splitRowNeedsHaulAnswer rather than off
+      // `cur`, so a row the save will happily take — one with no labour hours
+      // on it — is never painted as one it will not.
+      return `<select class="haul-pick${splitRowNeedsHaulAnswer(r) ? ' needed' : ''}"
         onchange="splitOnChange(${i},'haul_type',this.value)">${opts}</select>`;
     }
 
     // Re-render the consequences the moment an answer changes, so the approver
     // sees what they just decided rather than finding out in the cost tab.
-    function onSplitHaulChange() {
+    //
+    // `row` is the row that changed, where one did. The day-level picker moved
+    // every row at once and so triggered the pass over all of them; a per-row
+    // answer moves ONE, and running the pass over the rest reaches rows nobody
+    // touched. That is not idle: Edit Split deliberately skips that pass on
+    // open, because a haul row approved with no equipment on it is the
+    // documented "the truck is billed elsewhere" case — and answering some
+    // other row would have stamped a machine onto it that the approver never
+    // put there, at 0 hours, on a split they only opened to fix a quantity.
+    //
+    // The caller repaints. The Haul column, its ticks and their derived state
+    // all come from that repaint, and it must happen whether or not anything
+    // here changed — on an entry with no truck_unit and no single assigned
+    // unit there is nothing to fill in, and that is precisely the day the
+    // approver most needs the ticks.
+    function onSplitHaulChange(row) {
       if (!splitEntry) return;
       // Never onto splitEntry — see the declaration of splitHaulAnswer.
       splitHaulAnswer = splitDeriveHaulAnswer();
-      // Unconditionally. The Haul column, its ticks and their derived state all
-      // come from this repaint, and the helper below returns false whenever it
-      // had nothing to fill in — an entry with no truck_unit on a job with no
-      // single assigned unit, which is precisely the day the approver most
-      // needs the ticks. Answering "haul" then left the column hidden and the
-      // warning telling them to untick a checkbox that was not on screen.
-      splitMirrorHaulEquipHoursAll();
+      if (row) {
+        splitClearHaulAuto(row);
+        splitDefaultHaulEquipment(row);
+        splitMirrorHaulEquipHours(row);
+      }
       renderSplitHaulNote();
     }
 
@@ -5145,17 +5181,22 @@
         ? ' The rows answered <strong>to &amp; from site</strong> pay at the <strong>standard</strong> rate even though the job is prevailing wage — the premium is for work on the covered site. Every other row was worked on it, and keeps the premium.'
         : '';
       // A day holding both answers is legitimate — he ran to the job and then
-      // hauled inside the fence — but the entry carries ONE classification, and
-      // the Hours Report reads the day through it. Each row is still priced and
-      // stamped by its own answer; what the day-level column cannot show is the
-      // on-site legs, so say which figure is which rather than leaving payroll
-      // to reconcile a Haul column that is smaller than the ticks on screen.
+      // hauled inside the fence — but timesheet_entries.haul_type is ONE column
+      // and the Hours Report reads the day through it. The money is right
+      // either way: each row is priced and stamped by its own answer, and only
+      // the to-and-from hours leave prevailing. What the one column cannot also
+      // carry is the truck total, so the report's Haul figure counts the
+      // to-and-from legs and the on-site ones read as labour beside them. Said
+      // outright, because payroll would otherwise find a Haul column smaller
+      // than the ticks on screen and go looking for the error.
       const both = mixed
         ? ' <strong>This day holds both answers.</strong> Each row is priced and '
-          + 'stamped by its own, but the entry carries one classification — so the '
-          + 'Hours Report counts only the <strong>to &amp; from</strong> hours as haul, '
-          + 'and the on-site legs stay inside the prevailing total where they belong. '
-          + 'File them as separate job blocks if the two need reporting apart.'
+          + 'stamped by its own, and only the <strong>to &amp; from</strong> hours '
+          + 'leave prevailing — the on-site legs keep the premium, which is right. '
+          + 'The entry carries one classification, though, so the Hours Report\'s '
+          + '<strong>Haul</strong> figure counts the to &amp; from hours only and the '
+          + 'on-site ones read as labour beside them. File the two as separate job '
+          + 'blocks if they need reporting apart.'
         : '';
       return `<div id="splitHaulNote" style="grid-column:1/-1;margin-top:0.4rem;padding:0.5rem 0.6rem;`
         + `border:1px solid var(--border);border-radius:6px;line-height:1.45">`
@@ -6320,6 +6361,13 @@
           // deliberate "not a haul", so an approver switching the picker to
           // "hauled to & from site" re-stamped the day and re-priced nothing.
           is_haul:     r.is_haul,
+          // WHICH KIND of haul it was approved as, off its own 'Haul — …'
+          // stamp. Carried across explicitly: splitSeedRowHaul reads it from
+          // the row it is handed, and this map is what it is handed — left out,
+          // its first and only exact source was never consulted, and a day
+          // holding both legs reopened with both of them reading as the day's
+          // one answer.
+          haul_type:   r.haul_type,
           // Nobody's guess — this is what was approved. Spelled out so every
           // row in this array has the same shape.
           code_source: '',
@@ -6333,7 +6381,17 @@
         // And the question this modal now asks per row, answered from what was
         // approved rather than left blank. A reopened split must not make the
         // approver re-answer a day nobody is changing — see splitSeedRowHaul.
-        splitRows.forEach(r => { r.haul_type = splitSeedRowHaul(r); });
+        splitRows.forEach(r => {
+          r.haul_type = splitSeedRowHaul(r);
+          // A seeded "no" is written down rather than left to the truck. The
+          // answer came from there being no truck on the row, so leaving
+          // is_haul unset meant the approver typing a unit and its hours onto
+          // that row silently made it a haul again — a ticked box and a $0
+          // labour rate beside a picker still reading "No — worked on site".
+          // A seeded "yes" is left alone: unset there still prices exactly as
+          // the row was approved, and the tick beside it says so.
+          if (r.haul_type === 'none' && r.is_haul === undefined) r.is_haul = false;
+        });
       } else {
         // Sensible defaults: one labor row, and a travel row if travel > 0.
         //
@@ -6350,9 +6408,19 @@
         // and to say which of a split day's rows it applies to. Where he was
         // never asked — a non-driver, or an entry from before the question
         // existed — the row opens blank and the save will not take it.
+        //
+        // The CLASSIFICATION only — is_haul is left to the truck on the row,
+        // exactly as it was before the question moved. His answer is about the
+        // day, and asserting it per row is not the same statement: the truck
+        // picker on his timesheet is optional, so a driver who answered "to &
+        // from" and named no truck, on a job with no single assigned unit,
+        // would have had every row stamped a haul with nothing priced on it —
+        // the job billed for none of the day, and on a prevailing job his whole
+        // day moved to the standard rate. Unset, the truck decides, and the
+        // modal fills it in the moment it knows which one.
         const said = (entry && (entry.haul_type || '')) || '';
         if (said === 'on_site' || said === 'off_site') {
-          fresh.filter(r => !r.is_travel).forEach(r => { r.haul_type = said; r.is_haul = true; });
+          fresh.filter(r => !r.is_travel).forEach(r => { r.haul_type = said; });
         }
         splitRows = fresh;
       }
@@ -7350,9 +7418,9 @@
         // the old boolean behind would price a row the save is about to refuse.
         else r.is_haul = undefined;
         // The day's answer is the sum of the rows', so it moves with this —
-        // and with it the Haul column, the note, the truck defaults and the
+        // and with it the Haul column, the note, this row's truck and the
         // equipment hours that follow a haul row's labour.
-        onSplitHaulChange();
+        onSplitHaulChange(r);
         repaint = true;
       } else if (field === 'is_haul') {
         // Now a stored answer rather than one derived from the equipment, and
@@ -7361,19 +7429,23 @@
         // overrule them.
         r.is_haul = !!value;
         // Ticking says he was in the truck, which is the same thing the
-        // question asks — so a row still answered "No" is made to agree rather
-        // than left contradicting the box beside it. The column is only on
-        // screen when some row is a haul, so there is always a kind to take.
-        if (r.is_haul && splitRowHaulAnswer(r) === 'none') {
+        // question asks — so a row not already answered as a haul is made to
+        // agree rather than left contradicting the box beside it. BLANK counts:
+        // testing only for "No" left a freshly added row ticked AND still
+        // unanswered, so the tally named it and the save refused it while the
+        // box beside it said outright that he was in the truck. The column is
+        // only on screen when some row is a haul, so there is always a kind to
+        // take.
+        const said = splitRowHaulAnswer(r);
+        if (r.is_haul && said !== 'on_site' && said !== 'off_site') {
           r.haul_type = splitHaulIs() || r.haul_type;
         }
         // The truck follows the answer, the same way it follows the day-level
         // one — ticking says he was in it, so the modal offers the unit and
         // keeps its hours level with his; unticking takes back only what the
-        // modal itself filled in.
-        splitClearHaulAuto(r);
-        splitDefaultHaulEquipment(r);
-        splitMirrorHaulEquipHours(r);
+        // modal itself filled in. Through onSplitHaulChange, because promoting
+        // a blank answer above can have moved the day's classification too.
+        onSplitHaulChange(r);
         repaint = true;
       } else if (field === 'is_travel') {
         r.is_travel = !!value;
@@ -7384,7 +7456,7 @@
         if (r.is_travel && (r.haul_type || r.is_haul !== undefined)) {
           r.haul_type = '';
           r.is_haul   = undefined;
-          onSplitHaulChange();
+          onSplitHaulChange(r);
           repaint = true;
         }
         if (r.is_travel) {
@@ -7718,8 +7790,9 @@
         // expensive way to be wrong: it pays the driver his wage on top of the
         // truck already priced on the row, and on a prevailing job it pays that
         // wage at the covered-site premium for hours he spent on the road.
-        // Travel is never asked — the commute is not the truck's time.
-        if (!isTravelSplitRow(r) && !splitRowHaulAnswer(r)) {
+        // Asked through the same predicate the tally marks rows red with, so
+        // the two can never name different rows.
+        if (splitRowNeedsHaulAnswer(r)) {
           fail('answer "Was this a haul?" — No, hauled on site, or hauled to & from site.');
           return;
         }

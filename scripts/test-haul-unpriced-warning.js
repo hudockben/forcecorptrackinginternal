@@ -569,14 +569,25 @@ console.log('\n[trying an answer does not change the page behind the modal]');
   // being unwired from the one place that runs it over every row.
   assert('the un-fill is actually wired into the pass over every row',
     /splitClearHaulAuto\(r\)/.test(fnSource('splitMirrorHaulEquipHoursAll')));
-  assert('  and that pass is what the picker triggers',
-    /splitMirrorHaulEquipHoursAll\(\)/.test(fnSource('onSplitHaulChange')));
+  // That pass is what a FRESH approve runs, over rows nothing has touched yet.
+  assert('  and a fresh approve is what triggers it',
+    /splitMirrorHaulEquipHoursAll\(\)/.test(fnSource('openSplitModal')));
+  // An ANSWER only ever moves the row it was given on. Run over every row it
+  // would reach rows nobody touched — including, in Edit Split, a haul row
+  // approved with no equipment on it because the truck is billed elsewhere,
+  // which would come back carrying a machine the approver never put there.
+  assert('  while answering one row un-fills and re-fills that row alone',
+    /splitClearHaulAuto\(row\)/.test(fnSource('onSplitHaulChange'))
+    && /splitDefaultHaulEquipment\(row\)/.test(fnSource('onSplitHaulChange'))
+    && /splitMirrorHaulEquipHours\(row\)/.test(fnSource('onSplitHaulChange'))
+    && !/splitMirrorHaulEquipHoursAll/.test(fnSource('onSplitHaulChange')),
+    fnSource('onSplitHaulChange'));
   // Rows read back by Edit Split carry hours somebody already approved. Marked
   // touched, or the mirror rewrites a deliberate 5 h to the labour hours the
   // next time anything on the row changes — a silent over-charge for truck time
   // nobody logged.
   assert('rows read back by Edit Split are marked as hand-set',
-    /is_travel:\s*!!r\.is_travel,[\s\S]{0,1600}?_equipHoursTouched:\s*true,/.test(src));
+    /is_travel:\s*!!r\.is_travel,[\s\S]{0,2600}?_equipHoursTouched:\s*true,/.test(src));
   // And carry the answer they were APPROVED with, not one re-derived from the
   // truck now on the row. A day signed off before the answer was per-row comes
   // back with every work row ticked — which is what it was approved as — so

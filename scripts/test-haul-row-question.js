@@ -63,7 +63,10 @@ const PRELUDE =
   `${fn('splitTruckOnRow')}\n` +
   `${fn('splitRowIsHaul')}\n` +
   `${fn('splitRowHaulAnswer')}\n` +
+  `${fn('splitRowNeedsHaulAnswer')}\n` +
+  `${fn('splitRowTakesTruck')}\n` +
   `${fn('splitUnansweredHaulRows')}\n` +
+  `${fn('splitHaulAnswersGiven')}\n` +
   `${fn('splitDeriveHaulAnswer')}\n` +
   `${fn('splitHaulMixed')}\n` +
   `${fn('splitSeedRowHaul')}\n` +
@@ -101,6 +104,18 @@ console.log('\n[the four states of the answer]');
 console.log('\n[which rows still owe one]');
 {
   const owed = rows => run('return splitUnansweredHaulRows();', { rows });
+  const asked = row => run(`return splitRowNeedsHaulAnswer(${JSON.stringify(row)});`);
+  // The question asks whose wage these hours are. A row with no labour hours
+  // has no wage on it to decide — and a row just added by "+ Add labor row" has
+  // none either, so marking it red answers a button press with a question about
+  // hours nobody has typed yet. The save has its own message for that one.
+  assert('a row with no labour hours is not asked',
+    asked(LABOUR({ labor_hours: 0 })) === false);
+  assert('  nor is an equipment-only row, which is a legitimate split row',
+    asked(LABOUR({ labor_hours: 0, equipment: 'Roller', equip_hours: 4 })) === false);
+  assert('  and a freshly added blank row does not turn the tally red',
+    JSON.stringify(owed([LABOUR({ haul_type: 'none' }), LABOUR({ labor_hours: 0 })])) === '[]');
+  assert('a labour row with hours on it IS asked', asked(LABOUR()) === true);
   assert('a fresh split owes an answer on every labour row',
     JSON.stringify(owed([LABOUR(), LABOUR()])) === '[1,2]');
   assert('  named by row number, the way the save names them',
@@ -175,6 +190,32 @@ console.log('\n[a reopened split comes back answered as it was approved]');
     seed({ equipment: '', equip_hours: 0 }, { haul_type: null }) === 'none');
   assert('travel is never asked, however it was stored',
     seed({ is_travel: true, is_haul: true }, HAUL) === '');
+}
+
+// ── Which rows the modal puts the truck on ─────────────────────────────────
+// Keyed on the ANSWER, not on the derived tick. A row seeded from the driver's
+// own day-level answer deliberately carries no is_haul — the truck decides that,
+// as it always has — so asking splitRowIsHaul here would answer "no truck, so
+// not a haul, so do not fill in the truck" and the default could never fire.
+console.log('\n[which rows take the truck]');
+{
+  const takes = row => run(`return splitRowTakesTruck(${JSON.stringify(row)});`,
+    { day: 'off_site' });
+  assert('a row answered as a haul takes it, tick or no tick',
+    takes(LABOUR({ haul_type: 'off_site' })) === true
+    && takes(LABOUR({ haul_type: 'on_site' })) === true);
+  assert('  including one carrying the answer but no tick yet — the seeded state',
+    takes(LABOUR({ haul_type: 'off_site', is_haul: undefined })) === true);
+  assert('a row that has not answered takes nothing',
+    takes(LABOUR()) === false);
+  assert('  and neither does one answered "no"',
+    takes(LABOUR({ haul_type: 'none', is_haul: false })) === false);
+  // The tick still overrules in the one direction it can: unticked says the job
+  // is not carrying the truck for these hours, so none is put on the row.
+  assert('unticking a hauled row takes the truck off the table',
+    takes(LABOUR({ haul_type: 'off_site', is_haul: false })) === false);
+  assert('travel never takes one — the commute is not the truck\'s time',
+    takes(DRIVE({ haul_type: 'off_site', is_haul: true })) === false);
 }
 
 // ── What reaches the server ────────────────────────────────────────────────
@@ -257,7 +298,8 @@ console.log('\n[the server keeps the row\'s answer]');
   const getSplit = api.slice(api.indexOf("req.query.action === 'split'"),
                              api.indexOf('// ── PUT — update fields'));
   assert('the split read-back hands the answer back with each row',
-    /storedRowHaulType\(r\) \? \{ haul_type: storedRowHaulType\(r\) \}/.test(getSplit));
+    /const rowHaulKind = storedRowHaulType\(r\);/.test(getSplit)
+    && /rowHaulKind \? \{ haul_type: rowHaulKind \}/.test(getSplit));
 
   // The blob tabs have no field_type column to stamp, so the stored split row
   // is the only place a trucking/dust/quarry leg's answer can live.

@@ -516,6 +516,7 @@ console.log('\n[split tally: travel reconciliation]');
     // still owe one — "✓ balanced" beside an unanswered row would promise a
     // save that is about to be refused.
     grab('splitRowHaulAnswer(r) {'),
+    grab('splitRowNeedsHaulAnswer(r) {'),
     grab('splitUnansweredHaulRows() {'),
     grab('splitHaulUnpricedRows() {'),
     grab('splitHaulNoTruckHours() {'),

@@ -357,6 +357,28 @@ const q = (sql, p) => client.query(sql, p).then(r => r.rows);
     assert('  and with both still marked as hauls',
       back.body.split.every(r => r.is_haul === true),
       JSON.stringify(back.body.split.map(r => r.is_haul)));
+
+    // The re-rate sweep walks every approved row in a range and re-derives its
+    // money and its stamp. The stamp is the only record of which leg was which,
+    // so re-deriving it from the ENTRY would rewrite the on-site leg as a
+    // to/from one — with no rate change to make it visible, no haul_hours delta
+    // to correct it, and the next Edit Split reading it back as approved.
+    const sweep = await call('POST', { action: 'refresh-rates', from: '2026-09-01', to: '2026-09-30' },
+      {}, ADMIN);
+    assert('the re-rate sweep runs', sweep.statusCode === 200,
+      JSON.stringify(sweep.body).slice(0, 160));
+    const after = await q(`SELECT field_type, rate::float rate FROM daily_tracking
+                           WHERE timesheet_entry_id=$1 ORDER BY id`, [id6]);
+    assert('  and leaves each leg stamped as it was approved',
+      after[0].field_type === 'Haul — To/From Site'
+      && after[1].field_type === 'Haul — On Site',
+      JSON.stringify(after.map(r => r.field_type)));
+    assert('  with both still priced at $0 — the sweep re-derives the money too',
+      after.every(r => r.rate === 0), JSON.stringify(after.map(r => r.rate)));
+    const [entAfter] = await q('SELECT haul_hours::float hh FROM timesheet_entries WHERE id=$1',
+      [id6]);
+    assert('  and the hours that leave prevailing unchanged', entAfter.hh === 4,
+      `haul_hours=${entAfter.hh}`);
   }
 
   // A split that says nothing per row is every split approved before the
