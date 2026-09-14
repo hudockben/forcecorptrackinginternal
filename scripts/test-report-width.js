@@ -55,7 +55,7 @@ function assert(label, cond, detail) {
 // Every function renderReport reaches, including the ones its callees reach —
 // a missing name here is a ReferenceError at render time, not a quiet miss.
 const RENDER_FNS = ['escapeHtml', 'prettyDate', 'prettyDateShort', 'prettyDiv', 'prettyOff',
-  'dayFlagHtml', 'isOffSiteHaul', 'offSiteHaulWork', 'weekStartOf', 'weekEndOf',
+  'dayFlagHtml', 'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours', 'weekStartOf', 'weekEndOf',
   'stampKey', 'compareIds', 'byEntryOrder',
   'weeklyOvertime', 'detailColumnsRowHtml', 'weekBandHtml', 'reportDetailHtml',
   'buildReportModel', 'renderReport'];

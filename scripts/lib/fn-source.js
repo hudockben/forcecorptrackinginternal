@@ -12,15 +12,28 @@
  * None of the functions these tests lift does that today; keeping one copy is
  * what makes it fixable in one place if one ever does.
  *
+ * The parameter list is stepped over before the body is counted, because a
+ * DESTRUCTURED parameter opens a brace that is not the body:
+ * `function xlsxSheetXml({ colWidths, rows })` used to come back as its own
+ * signature and nothing else, and the test lifting it died on a syntax error
+ * pointing at the next function down.
+ *
  * Returns the function's full source, or null when it is not found.
  */
 function fnSource(src, name) {
   const start = src.indexOf(`function ${name}(`);
   if (start < 0) return null;
-  let depth = 0;
-  for (let i = src.indexOf('{', start); i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
+  let depth = 0, i = src.indexOf('(', start);
+  for (; i < src.length; i++) {
+    if (src[i] === '(') depth++;
+    else if (src[i] === ')' && --depth === 0) { i++; break; }
+  }
+  const open = src.indexOf('{', i);
+  if (open < 0) return null;
+  depth = 0;
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) return src.slice(start, j + 1);
   }
   return null;
 }

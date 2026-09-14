@@ -2878,6 +2878,11 @@
         if (!byUser.has(u)) byUser.set(u, {
           username:      u,
           workHours:     0,
+          // The part of workHours that was spent driving rather than labouring.
+          // Held apart rather than taken out: the on-screen report's Work column
+          // means hours worked and still does, and the Excel export is where the
+          // two are split — see reportSummarySheetXml.
+          haulHours:     0,
           travelToSite:  0,
           travelToShop:  0,
           travelHours:   0,
@@ -2937,6 +2942,12 @@
             } else {
               acc.stdHours += h;
             }
+            // Separately from the rate: how much of the day he was driving
+            // rather than labouring. An on-site haul counts here and does not
+            // count above, because it is still the truck's time even though it
+            // keeps the prevailing premium. This moves no money — it only says
+            // which hours produced work on the ground.
+            acc.haulHours += haulWorkHours(e, work);
           }
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
@@ -2967,6 +2978,7 @@
       // Totals
       const tot = rows.reduce((acc, r) => ({
         workHours:     acc.workHours     + r.workHours,
+        haulHours:     acc.haulHours     + r.haulHours,
         travelToSite:  acc.travelToSite  + r.travelToSite,
         travelToShop:  acc.travelToShop  + r.travelToShop,
         travelHours:   acc.travelHours   + r.travelHours,
@@ -2983,7 +2995,7 @@
         approvedHours: acc.approvedHours + r.approvedHours,
         pendingOff:    acc.pendingOff    + r.pendingOff,
         approvedOff:   acc.approvedOff   + r.approvedOff,
-      }), { workHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, regHours: 0, otHours: 0, otPwHours: 0, otStdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+      }), { workHours: 0, haulHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, regHours: 0, otHours: 0, otPwHours: 0, otStdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
       tot.otClipped = rows.some(r => r.otClipped);
 
       // Header subtitle
@@ -3583,6 +3595,9 @@
       head:    4, headNum: 5,
       text:    6, num:     7, numPw: 8, date: 9,
       totText: 10, totNum: 11, totPw: 12,
+      // The Haul column, tinted the way the prevailing one is: payroll scans
+      // these sheets for the two figures that are not simply hours worked.
+      numHaul: 13, totHaul: 14,
     };
 
     // Cell shorthands. `s` is a style index; a null/blank number renders as an
@@ -3685,20 +3700,24 @@
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
         '<numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts>' +
-        '<fonts count="6">' +
+        '<fonts count="7">' +
           '<font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><b/><sz val="16"/><color rgb="FF1F2A44"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><sz val="10"/><color rgb="FF6B7280"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><b/><sz val="11"/><color rgb="FF8A5A00"/><name val="Calibri"/><family val="2"/></font>' +
+          // The Haul column, in the violet the Haul pill wears on the approved
+          // tab. Payroll reads one and then the other; they should agree.
+          '<font><b/><sz val="11"/><color rgb="FF5B3FA8"/><name val="Calibri"/><family val="2"/></font>' +
         '</fonts>' +
-        '<fills count="5">' +
+        '<fills count="6">' +
           '<fill><patternFill patternType="none"/></fill>' +
           '<fill><patternFill patternType="gray125"/></fill>' +
           '<fill><patternFill patternType="solid"><fgColor rgb="FF1F2A44"/><bgColor indexed="64"/></patternFill></fill>' +
           '<fill><patternFill patternType="solid"><fgColor rgb="FFFFF4D6"/><bgColor indexed="64"/></patternFill></fill>' +
           '<fill><patternFill patternType="solid"><fgColor rgb="FFEDEFF3"/><bgColor indexed="64"/></patternFill></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FFEDE7FD"/><bgColor indexed="64"/></patternFill></fill>' +
         '</fills>' +
         '<borders count="3">' +
           '<border><left/><right/><top/><bottom/><diagonal/></border>' +
@@ -3706,7 +3725,7 @@
           '<border><left/><right/><top style="thin"><color rgb="FF9AA1AE"/></top><bottom/><diagonal/></border>' +
         '</borders>' +
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-        '<cellXfs count="13">' +
+        '<cellXfs count="15">' +
           '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
           '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
           '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
@@ -3722,6 +3741,8 @@
           '<xf numFmtId="0" fontId="1" fillId="4" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>' +
           '<xf numFmtId="2" fontId="1" fillId="4" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
           '<xf numFmtId="2" fontId="5" fillId="3" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="2" fontId="6" fillId="5" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="2" fontId="6" fillId="5" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
         '</cellXfs>' +
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
       '</styleSheet>';
@@ -3734,12 +3755,14 @@
       const { rows, tot, scopeLine, gen, companyName } = model;
       const entryCount = rows.reduce((n, r) => n + r.entries.length, 0);
       // Spreadsheets have no tooltips, so the prevailing/standard columns spell
-      // out the travel treatment in the header itself.
-      const headers = ['Employee', 'Work Hours', 'Travel to Site', 'Travel to Shop',
+      // out the travel treatment in the header itself — and so does the
+      // labour/haul split beside them.
+      const headers = ['Employee', 'Work Hours (labour)', 'Haul Hours (driving)',
+        'Travel to Site', 'Travel to Shop',
         'Travel Hours', 'Total Hours', 'Regular Hrs (first 40/week)', 'OT Hrs (over 40/week)',
         'Prevailing Hrs (work only)', 'Prevailing OT Hrs', 'Standard Hrs (incl. travel)',
         'Pending Hours', 'Approved Hours', 'Time Off', 'Status'];
-      const HEADER_ROW = 8;
+      const HEADER_ROW = 9;
 
       const sheet = [
         [cTxt('Payroll Hours Report', XS.title)],
@@ -3750,8 +3773,12 @@
         // Overtime is the one figure on this sheet that is NOT simply the range
         // added up, so the sheet says how it was reached before showing it.
         [cTxt('Overtime is counted per Monday–Sunday week (hours past 40 in a week, weeks added together), not across the whole range. Week by week on the "Overtime by Week" sheet.', XS.sub)],
+        // The Work column used to be every hour worked, hauling included. It is
+        // labour only now, with the driving beside it, so a crew's production
+        // can be read off the hours that actually produced it.
+        [cTxt('Work Hours are labour on the job. Haul Hours are time in the truck — hauling on site or to & from it — and the two add up to the hours worked; Total Hours adds travel on top.', XS.sub)],
         [],
-        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 12) ? XS.headNum : XS.head)),
+        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 13) ? XS.headNum : XS.head)),
       ];
 
       for (const r of rows) {
@@ -3761,7 +3788,8 @@
           : '—';
         sheet.push([
           cTxt(r.username,      XS.text),
-          cNum(r.workHours,     XS.num),
+          cNum(r.workHours - r.haulHours, XS.num),
+          cNum(r.haulHours,     XS.numHaul),
           cNum(r.travelToSite,  XS.num),
           cNum(r.travelToShop,  XS.num),
           cNum(r.travelHours,   XS.num),
@@ -3781,7 +3809,8 @@
       const totalAll = tot.pendingHours + tot.approvedHours;
       sheet.push([
         cTxt(`Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})`, XS.totText),
-        cNum(tot.workHours,     XS.totNum),
+        cNum(tot.workHours - tot.haulHours, XS.totNum),
+        cNum(tot.haulHours,     XS.totHaul),
         cNum(tot.travelToSite,  XS.totNum),
         cNum(tot.travelToShop,  XS.totNum),
         cNum(tot.travelHours,   XS.totNum),
@@ -3800,10 +3829,10 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [26, 11, 13, 13, 12, 11, 17, 16, 16, 15, 17, 13, 15, 26, 20],
+        colWidths: [26, 19, 19, 13, 13, 12, 11, 17, 16, 16, 15, 17, 13, 15, 26, 20],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:O${HEADER_ROW + rows.length}`,
+        autoFilterRef: `A${HEADER_ROW}:P${HEADER_ROW + rows.length}`,
         tabSelected: true,
       });
     }
@@ -3813,23 +3842,25 @@
     function reportDetailSheetXml(model) {
       const { rows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Date', 'Type', 'Division', 'Project / Job',
-        'Start', 'End', 'Work Hours', 'Travel to Site', 'Travel to Shop',
+        'Start', 'End', 'Work Hours (labour)', 'Haul Hours (driving)',
+        'Travel to Site', 'Travel to Shop',
         'Travel Hours', 'Total Hours', 'OT Hrs (past 40 this week)',
         'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
         'Week Starting (Mon)',
         'Lunch Break', 'Operated Equipment', 'Supervisor', 'Status', 'Notes'];
-      const HEADER_ROW = 4;
-      const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13, 14]); // 0-based header indices that are numeric
+      const HEADER_ROW = 5;
+      const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13, 14, 15]); // 0-based header indices that are numeric
 
       const sheet = [
         [cTxt('Payroll Hours Report — All Submissions', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt('Work Hours are labour on the job. Haul Hours are the part of the same day spent in the truck — hauling on site or to & from it — so the two add up to the hours worked, and Total Hours adds travel on top. A day nobody called a haul is all labour.', XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
       ];
 
       let n = 0;
-      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0,
+      let sumWork = 0, sumHaul = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0,
           sumPw = 0, sumStd = 0, sumOt = 0;
 
       for (const r of rows) {
@@ -3850,6 +3881,12 @@
           const pw  = isOff ? null
             : ((e.prevailing_wage === true) ? work - offSiteHaulWork(e, work) : 0);
           const std = isOff ? null : (total - pw);
+          // And the same day split the other way: the hours in the truck, and
+          // the labour left over. This is not the prevailing split — an on-site
+          // haul is driving but stays prevailing — it is what the man was doing,
+          // which is what a production rate is measured against.
+          const haul   = isOff ? null : haulWorkHours(e, work);
+          const labour = isOff ? null : work - haul;
           // The two travel legs the timesheet collects, kept alongside their
           // sum. Null (never itemised) stays an empty cell so it can't be read
           // as a zero-hour leg.
@@ -3863,7 +3900,7 @@
           // sorted by week without redoing the date arithmetic in Excel.
           const wkStart = weekStartOf(e.work_date);
           if (!isOff) {
-            sumWork += work; sumTravel += travel; sumTotal += total;
+            sumWork += labour; sumHaul += haul; sumTravel += travel; sumTotal += total;
             sumPw += pw; sumStd += std; sumOt += (ot || 0);
             sumToSite += (toSite || 0); sumToShop += (toShop || 0);
           }
@@ -3876,7 +3913,8 @@
             cTxt(isOff ? `Time Off · ${prettyOff(e.time_off_type)}` : (e.job_label || ''), XS.text),
             cTxt(isOff ? '' : (e.start_time || ''), XS.text),
             cTxt(isOff ? '' : (e.end_time   || ''), XS.text),
-            cNum(work,   XS.num),
+            cNum(labour, XS.num),
+            cNum(haul,   XS.numHaul),
             cNum(toSite, XS.num),
             cNum(toShop, XS.num),
             cNum(travel, XS.num),
@@ -3900,6 +3938,7 @@
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
         cNum(sumWork,   XS.totNum),
+        cNum(sumHaul,   XS.totHaul),
         cNum(sumToSite, XS.totNum),
         cNum(sumToShop, XS.totNum),
         cNum(sumTravel, XS.totNum),
@@ -3912,10 +3951,10 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 16, 16, 17, 15, 12, 18, 20, 11, 40],
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 19, 19, 13, 13, 12, 11, 16, 16, 17, 15, 12, 18, 20, 11, 40],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:U${HEADER_ROW + n}`,
+        autoFilterRef: `A${HEADER_ROW}:V${HEADER_ROW + n}`,
       });
     }
 
@@ -5030,6 +5069,31 @@
     // module and this page is where payroll checks it.
     function offSiteHaulWork(e, work) {
       if (!isOffSiteHaul(e)) return 0;
+      if (e.haul_hours == null) return work;
+      const h = Number(e.haul_hours);
+      if (!Number.isFinite(h)) return work;
+      return Math.min(Math.max(h, 0), work);
+    }
+
+    // How many of a day's WORK hours the man spent IN THE TRUCK — either haul,
+    // on site or off.
+    //
+    // This is a different question from offSiteHaulWork above, and the two are
+    // deliberately not one function. That one asks which hours lose the
+    // prevailing premium, and an on-site haul loses nothing: the man is on the
+    // covered site, so those hours stay prevailing. This one asks what he was
+    // DOING, and hauling inside the fence is still driving, not labour. Paving
+    // a lot and running the triaxle around it are different work at different
+    // production rates, and the export's Haul column is where payroll tells
+    // them apart.
+    //
+    // It reads the same two fields on the same rule: haul_hours is what
+    // payroll's split found in the truck, and null — never split, or an entry
+    // from before the column existed — still means what haul_type said alone,
+    // which is the whole day.
+    function haulWorkHours(e, work) {
+      const t = e && e.haul_type;
+      if (t !== 'on_site' && t !== 'off_site') return 0;
       if (e.haul_hours == null) return work;
       const h = Number(e.haul_hours);
       if (!Number.isFinite(h)) return work;
