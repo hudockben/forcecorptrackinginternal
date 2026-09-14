@@ -904,6 +904,180 @@
       border-bottom: none;
     }
 
+
+    /* ── Reports sub-tabs: Employees | Projects ── */
+    /* The Reports tab answers two different questions off ONE fetch. What does
+       this man's fortnight cost, and which JOB is buying the overtime. They
+       share the date range, the division filter and the employee filter above —
+       only the grouping changes — so they are sub-tabs of one tab rather than a
+       second tab with a second copy of the filter bar. */
+    .report-subtabs {
+      display: flex;
+      gap: 0.3rem;
+      margin-bottom: 0.9rem;
+      padding: 0 0.25rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .rst-btn {
+      padding: 0.5rem 0.95rem 0.6rem;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.01em;
+    }
+    .rst-btn:hover { color: var(--text); }
+    .rst-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+    /* ── Reports ▸ Projects ── */
+    .proj-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+      margin-bottom: 1.1rem;
+    }
+    .proj-stat {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.7rem 0.85rem;
+    }
+    .proj-stat-label {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .proj-stat-value {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.15rem;
+    }
+    .proj-stat-sub { font-size: 0.68rem; color: var(--muted); margin-top: 0.1rem; }
+    .proj-stat.ot   .proj-stat-value { color: var(--orange); }
+    .proj-stat.room .proj-stat-value { color: var(--teal); }
+
+    .proj-section-title {
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      font-weight: 700;
+      margin: 0 0 0.5rem;
+    }
+    .proj-note {
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.55;
+      margin: 0 0 1.1rem;
+      padding-left: 0.6rem;
+      border-left: 2px solid var(--border);
+    }
+    .proj-note strong { color: var(--text); font-weight: 600; }
+
+    /* The chart. One row per job: the bar is the hours worked on it, and the
+       orange head of the bar is the overtime inside them — so a job that is
+       simply BIG and a job that is running HOT do not look alike, which is the
+       whole reason this is a picture and not another column of figures. */
+    .proj-chart { margin-bottom: 1.3rem; }
+    .pc-row {
+      display: grid;
+      /* The label column is wide because job names here are real ones —
+         "Franklin Regional Softball · 26049" — and a truncated job name on a
+         chart of jobs is the one thing on the row that cannot be guessed. */
+      grid-template-columns: minmax(0, 310px) 1fr 175px;
+      gap: 0.7rem;
+      align-items: center;
+      padding: 0.3rem 0;
+    }
+    .pc-label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pc-label .pc-div { color: var(--muted); font-weight: 400; }
+    .pc-track {
+      display: flex;
+      height: 15px;
+      border-radius: 3px;
+      background: var(--surface2);
+      overflow: hidden;
+    }
+    /* Regular hours are deliberately a flat slate rather than a colour: the one
+       thing on this chart that has to catch the eye is the overtime. */
+    .pc-reg { background: #3d4a63; }
+    .pc-ot  { background: var(--orange); }
+    .pc-value {
+      font-size: 0.74rem;
+      color: var(--muted);
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .pc-value strong { color: var(--orange); font-weight: 700; }
+    .pc-legend {
+      display: flex;
+      gap: 1.1rem;
+      margin: 0.55rem 0 0 310px;
+      font-size: 0.68rem;
+      color: var(--muted);
+    }
+    .pc-legend span { display: flex; align-items: center; gap: 0.35rem; }
+    .pc-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+    .pc-key.reg { background: #3d4a63; }
+    .pc-key.ot  { background: var(--orange); }
+
+    /* One block per job, with the crew that worked it inside. */
+    .proj-block {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-bottom: 0.85rem;
+      overflow: hidden;
+    }
+    .proj-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      flex-wrap: wrap;
+      padding: 0.6rem 0.85rem;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    .proj-name { font-size: 0.88rem; font-weight: 700; color: var(--text); }
+    .proj-meta { font-size: 0.7rem; color: var(--muted); margin-top: 0.14rem; }
+    .proj-figs {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      font-size: 0.73rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .proj-figs strong { color: var(--text); font-weight: 700; }
+    .proj-figs .fig-ot strong { color: var(--orange); }
+    .proj-figs .fig-pw strong { color: var(--yellow); }
+    .proj-block table { font-size: 0.8rem; }
+    .proj-block thead th { padding: 0.5rem 0.55rem; }
+    .proj-block tbody td, .proj-block tfoot td { padding: 0.5rem 0.55rem; }
+    /* Hours still available before the fortieth. Teal, because every other hue
+       in these tables is spoken for — amber is prevailing wage, orange is
+       overtime, violet is hauling — and this is the only figure on the row that
+       is about what has NOT happened yet. */
+    .report td.num-room      { color: var(--teal); font-weight: 600; }
+    .report thead th.th-room { color: var(--teal); }
+
     /* ── Print: hide everything except the active report / audit log ── */
     @media print {
       /* Landscape: the hours report runs 15 columns wide once travel is split
@@ -1052,6 +1226,56 @@
         background: #f7f7f7 !important;
         border-left: 3px solid #000 !important;
       }
+
+
+      /* Reports ▸ Projects. The sub-tab bar is an affordance; the sub-tab the
+         admin left open is what prints. */
+      .report-subtabs { display: none !important; }
+      .proj-stat {
+        background: #f7f7f7 !important;
+        border: 1px solid #999 !important;
+        padding: 0.12in 0.14in !important;
+      }
+      .proj-stat-label, .proj-stat-sub { color: #444 !important; }
+      .proj-stat-value,
+      .proj-stat.ot   .proj-stat-value,
+      .proj-stat.room .proj-stat-value { color: #000 !important; font-size: 13pt !important; }
+      .proj-section-title { color: #000 !important; }
+      .proj-note {
+        color: #000 !important;
+        border-left: 2px solid #999 !important;
+      }
+      .proj-note strong { color: #000 !important; }
+      /* The bars ARE the visual this sheet exists for, so they are printed
+         rather than left to the browser's default of dropping every background
+         fill — which would put a column of empty tracks on the page. */
+      .pc-track, .pc-reg, .pc-ot, .pc-key {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      .pc-track { background: #e9e9e9 !important; border: 1px solid #999 !important; }
+      .pc-reg, .pc-key.reg { background: #b6bdc9 !important; }
+      .pc-ot,  .pc-key.ot  { background: #cc5b12 !important; }
+      .pc-label, .pc-value, .pc-legend { color: #000 !important; }
+      .pc-value strong { color: #000 !important; }
+      .pc-row { padding: 0.035in 0 !important; }
+      /* A job and its crew belong on one page — a project header orphaned at
+         the foot of a sheet with its employees overleaf is how a foreman reads
+         somebody else's hours onto the wrong job. */
+      .proj-chart, .proj-block { break-inside: avoid; page-break-inside: avoid; }
+      .proj-block { border: 1px solid #999 !important; }
+      .proj-head {
+        background: #f3f3f3 !important;
+        border-bottom: 1px solid #000 !important;
+        padding: 0.08in 0.1in !important;
+      }
+      .proj-name  { color: #000 !important; }
+      .proj-meta, .proj-figs { color: #333 !important; }
+      .proj-figs strong,
+      .proj-figs .fig-ot strong,
+      .proj-figs .fig-pw strong { color: #000 !important; }
+      /* Sized in rem, so it ignored the 8pt the report prints at. */
+      .proj-block table { font-size: 8pt !important; }
 
       /* Audit Log tab */
       .audit-wrap {
@@ -1892,11 +2116,16 @@
       .bulk .btn-approve { width: 100%; }
       .ana-bar-row { grid-template-columns: 90px 1fr 95px; gap: 0.45rem; }
       .ana-bar-label, .ana-bar-value { font-size: 0.78rem; }
+      .proj-stats { grid-template-columns: repeat(2, 1fr); }
+      .pc-row { grid-template-columns: 110px 1fr 120px; gap: 0.45rem; }
+      .pc-label, .pc-value { font-size: 0.72rem; }
+      .pc-legend { margin-left: 0; }
       main { padding: 1rem 0.85rem; }
     }
     @media (max-width: 480px) {
       .stats, .ana-stats { grid-template-columns: 1fr 1fr; }
       .ana-stat-value { font-size: 1.3rem; }
+      .proj-stat-value { font-size: 1.2rem; }
       .stat-value     { font-size: 1.3rem; }
     }
 
@@ -2085,8 +2314,20 @@
       <button class="qr-btn" onclick="setRange('last_biweekly')">Last Biweekly</button>
     </div>
 
+    <!-- ── Reports sub-tabs (only on the Reports tab) ──
+         Same fetch, same filters, two groupings: by employee, or by job. -->
+    <div class="report-subtabs" id="reportSubTabs" style="display:none">
+      <button class="rst-btn active" id="rst-employees" onclick="setReportSubTab('employees')"
+              title="One row per employee — hours, the overtime split and the rate split for the range above.">Employees</button>
+      <button class="rst-btn" id="rst-projects" onclick="setReportSubTab('projects')"
+              title="The same range grouped by job: which project is buying the overtime, who worked it, and how many hours each man has left before the fortieth.">Projects</button>
+    </div>
+
     <!-- ── Report container (Reports tab) ── -->
     <div id="reportWrap" style="display:none"></div>
+
+    <!-- ── Project overtime container (Reports ▸ Projects) ── -->
+    <div id="projectsWrap" style="display:none"></div>
 
     <!-- ── Audit log container (Audit Log tab) ── -->
     <div id="auditLogWrap" style="display:none"></div>
@@ -2379,6 +2620,9 @@
     let filtered     = [];          // after client-side username filter
     let selectedIds  = new Set();
     let expandedReportUsers = new Set(); // Reports tab: usernames whose per-entry detail is expanded
+    // Reports tab: which grouping is on show — 'employees' (the Hours Report)
+    // or 'projects' (the same range grouped by job). One fetch feeds both.
+    let reportSubTab = 'employees';
     let supervisors  = [];
     let jobsCache    = {};
     let editingEntry = null;
@@ -2592,6 +2836,8 @@
       const reportWrap = document.getElementById('reportWrap');
       const auditWrap  = document.getElementById('auditLogWrap');
       const anaWrap    = document.getElementById('analyticsWrap');
+      const projWrap   = document.getElementById('projectsWrap');
+      const subTabs    = document.getElementById('reportSubTabs');
       const bulkBar    = document.getElementById('bulkBar');
       const rateBar    = document.getElementById('rateBar');
       const quick      = document.getElementById('quickRanges');
@@ -2602,6 +2848,8 @@
       if (reportWrap) reportWrap.style.display = 'none';
       if (auditWrap)  auditWrap.style.display  = 'none';
       if (anaWrap)    anaWrap.style.display    = 'none';
+      if (projWrap)   projWrap.style.display   = 'none';
+      if (subTabs)    subTabs.style.display    = 'none';
       if (bulkBar)    bulkBar.classList.remove('open');
       if (rateBar)    rateBar.classList.remove('open');
       if (quick)      quick.style.display      = 'none';
@@ -2617,7 +2865,11 @@
       if (mainEl) mainEl.classList.toggle('main-wide', tab === 'reports');
 
       if (tab === 'reports') {
-        if (reportWrap) reportWrap.style.display = '';
+        // Whichever grouping was last open — the sub-tab is remembered across
+        // tab switches, the way the date range is.
+        if (subTabs)    subTabs.style.display    = 'flex';
+        if (reportWrap) reportWrap.style.display = reportSubTab === 'projects' ? 'none' : '';
+        if (projWrap)   projWrap.style.display   = reportSubTab === 'projects' ? '' : 'none';
         if (quick)      quick.style.display      = 'flex';
         selectedIds.clear();
       } else if (tab === 'auditlog') {
@@ -2813,7 +3065,7 @@
       // Reports and Analytics are built from the same dropped rows. Blank them
       // too, or switching tabs after a failure shows the last good report as if
       // it were still current.
-      ['reportWrap', 'analyticsWrap'].forEach(id => {
+      ['reportWrap', 'projectsWrap', 'analyticsWrap'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.innerHTML = `<div class="load-error">${body}</div>`;
       });
@@ -2853,7 +3105,8 @@
       // was none".
       if (entriesLoadError) { renderLoadError(); return; }
       if (currentTab === 'reports') {
-        renderReport();
+        if (reportSubTab === 'projects') renderProjectsReport();
+        else                             renderReport();
       } else if (currentTab === 'auditlog') {
         renderAuditLog();
       } else if (currentTab === 'analytics') {
@@ -3423,6 +3676,476 @@
       window.print();
     }
 
+    // ── Reports ▸ Projects ───────────────────────────────────────────────
+    //
+    // The Employees sub-tab answers "what does this man's fortnight cost?".
+    // This one answers the question the superintendent asks instead: WHICH JOB
+    // IS BUYING THE OVERTIME, and who on it is close to the fortieth hour.
+    //
+    // OVERTIME IS NOT RE-MEASURED PER PROJECT, and this must never try to. The
+    // fortieth hour is a fact about an EMPLOYEE'S WEEK across every job he
+    // touched — a man on 38 hours at the shop who then picks up six on a paving
+    // job put that job into overtime, and nothing about the paving job read on
+    // its own says so. Counting each job's hours to 40 separately would find no
+    // overtime anywhere and would be wrong about all of it.
+    //
+    // So the split is taken from weeklyOvertime, which has ALREADY decided
+    // which entries the overtime fell on, and those entries are posted to the
+    // jobs they were worked on. Add the project rows back up and you have the
+    // company's overtime exactly — the same figure the Employees sub-tab and
+    // the workbook's Overtime by Week sheet print.
+    //
+    // HOURS BEFORE OT is the other side of that figure, and it is likewise not
+    // a project number: it is what the man has left in his Monday–Sunday week
+    // before the fortieth, counted across ALL his jobs. It is shown on the
+    // project row because that is where the foreman is standing when he decides
+    // whether to keep him another day — but it is the same number under every
+    // job he worked that week, so it is never summed down the column, and the
+    // tooltip on every cell says which weeks it came from.
+    function setReportSubTab(which) {
+      if (which !== 'employees' && which !== 'projects') return;
+      reportSubTab = which;
+      const emp  = document.getElementById('rst-employees');
+      const proj = document.getElementById('rst-projects');
+      if (emp)  emp.classList.toggle('active',  which === 'employees');
+      if (proj) proj.classList.toggle('active', which === 'projects');
+      const reportWrap = document.getElementById('reportWrap');
+      const projWrap   = document.getElementById('projectsWrap');
+      if (reportWrap) reportWrap.style.display = which === 'employees' ? '' : 'none';
+      if (projWrap)   projWrap.style.display   = which === 'projects'  ? '' : 'none';
+      // Both groupings are built from the rows already in memory, so this is a
+      // re-render and not a refetch.
+      filterAndRender();
+    }
+
+    // Two jobs in different divisions can wear the same label, and the same job
+    // arrives with an id on some entries and only a label on others. Key on the
+    // division plus the id when there is one so neither collides, and fold the
+    // label's case so "Penn Energy" and "penn energy" are one job and not two.
+    function projectKeyOf(e) {
+      const div = String(e.division || '');
+      const id  = String(e.job_id    || '').trim();
+      const lbl = String(e.job_label || '').trim().toLowerCase();
+      return `${div} :: ${id || lbl || '(unassigned)'}`;
+    }
+
+    // The figures a project row and an employee-on-a-project row both carry.
+    // Written once: the two are added up by the same loop and printed by the
+    // same columns, and a key on one and not the other is a silent zero.
+    const PROJ_NUM_KEYS = [
+      'workHours', 'truckHours', 'travelHours', 'totalHours',
+      'pwHours', 'stdHours', 'otHours', 'otPwHours', 'otStdHours',
+      'pendingHours', 'approvedHours',
+    ];
+
+    function buildProjectsModel() {
+      // Every per-entry overtime attribution on the page comes from here, so
+      // the two sub-tabs can never disagree about a fortnight.
+      const base = buildReportModel();
+      const blank = () => PROJ_NUM_KEYS.reduce((o, k) => { o[k] = 0; return o; }, {});
+      const add = (acc, v) => { for (const k of PROJ_NUM_KEYS) acc[k] += v[k]; };
+
+      // Each employee's weeks, and what is left in them before the fortieth.
+      // A whole-week figure across every job — see the note above.
+      const crew = new Map();
+      for (const r of base.rows) {
+        const weeks = (r.weeks || []).map(w => ({
+          weekStart:  w.weekStart,
+          weekEnd:    w.weekEnd,
+          totalHours: w.totalHours,
+          otHours:    w.otHours,
+          // Never negative. A week already past 40 has no room left in it, it
+          // has overtime, and the OT column beside this is where that is said.
+          remaining:  Math.max(0, OT_WEEKLY_THRESHOLD - w.totalHours),
+          clipped:    w.clipped,
+        }));
+        crew.set(r.username, {
+          username:  r.username,
+          weeks,
+          // Which jobs he was on in each of those weeks, filled in below. The
+          // headroom is a whole-week figure, so the sheet that prints it has to
+          // be able to say which jobs the week was spread across.
+          byWeek:    new Map(),
+          remaining: weeks.reduce((s, w) => s + w.remaining, 0),
+          otHours:   r.otHours,
+          clipped:   r.otClipped,
+        });
+      }
+
+      const projects = new Map();
+      // The company's own work days and headcount, gathered as the entries go
+      // by. Neither can be read off the project rows afterwards: a day worked
+      // on four jobs is one day and a man on four jobs is one man, so summing
+      // either column would count both once per job.
+      const allDays = new Set();
+      const allCrew = new Set();
+      let offEntries = 0, countedEntries = 0;
+
+      for (const r of base.rows) {
+        // The overtime weeklyOvertime already attributed to each entry, keyed
+        // by the entry object itself so it needs no id.
+        const otByEntry = new Map();
+        for (const w of (r.weeks || [])) for (const wr of w.rows) otByEntry.set(wr.entry, wr);
+
+        for (const e of r.entries) {
+          // Time off belongs to no job — it is paid leave, not hours on a site —
+          // so it is counted here only to be named in the note under the head.
+          if (e.entry_type === 'time_off') { offEntries++; continue; }
+          if (e.entry_type !== 'daily') continue;
+          if (e.status !== 'submitted' && e.status !== 'approved') continue;
+
+          const key = projectKeyOf(e);
+          if (!projects.has(key)) {
+            projects.set(key, Object.assign({
+              key,
+              // A day filed with no job at all still has hours somebody is owed.
+              // Give it a name rather than dropping it: a blank row in this
+              // table is a day of labour nobody can cost.
+              name:      String(e.job_label || e.job_id || '').trim() || 'Unassigned',
+              division:  e.division || '',
+              employees: new Map(),
+              days:      new Set(),
+              entries:   0,
+            }, blank()));
+          }
+          const p = projects.get(key);
+          if (!p.employees.has(r.username)) {
+            p.employees.set(r.username, Object.assign({
+              username: r.username, days: new Set(), entries: 0,
+            }, blank()));
+          }
+          const emp = p.employees.get(r.username);
+
+          const work   = Number(e.computed_hours || 0);
+          const travel = Number(e.travel_hours   || 0);
+          const total  = work + travel;
+          // The same two splits the Hours Report makes, on the same rules: what
+          // the truck bought (which loses the prevailing premium off site), and
+          // what the man was DOING (which counts an on-site haul as driving
+          // even though those hours keep their premium). See offSiteHaulWork
+          // and haulWorkHours — they are different questions about one day.
+          const haul = haulWorkHours(e, work);
+          const pw   = e.prevailing_wage === true ? work - offSiteHaulWork(e, work) : 0;
+          const otRow = otByEntry.get(e);
+          const v = {
+            workHours:     work - haul,
+            truckHours:    haul,
+            travelHours:   travel,
+            totalHours:    total,
+            pwHours:       pw,
+            stdHours:      total - pw,
+            otHours:       otRow ? otRow.otHours    : 0,
+            otPwHours:     otRow ? otRow.otPwHours  : 0,
+            otStdHours:    otRow ? otRow.otStdHours : 0,
+            pendingHours:  e.status === 'submitted' ? total : 0,
+            approvedHours: e.status === 'approved'  ? total : 0,
+          };
+          add(p, v); add(emp, v);
+          p.entries++; emp.entries++;
+          allCrew.add(r.username);
+          if (e.work_date) { p.days.add(e.work_date); emp.days.add(e.work_date); allDays.add(e.work_date); }
+
+          const wk = weekStartOf(e.work_date);
+          const c  = crew.get(r.username);
+          if (c && wk) {
+            if (!c.byWeek.has(wk)) c.byWeek.set(wk, new Set());
+            c.byWeek.get(wk).add(p.name);
+          }
+          countedEntries++;
+        }
+      }
+
+      // Biggest overtime first — this table is read top-down to find the job
+      // that is running hot, and a job with no overtime at all is the one thing
+      // on it nobody is looking for.
+      const byOvertime = (a, b) => b.otHours - a.otHours || b.totalHours - a.totalHours;
+      const rows = [...projects.values()].map(p => Object.assign({}, p, {
+        employees: [...p.employees.values()]
+          .map(emp => Object.assign({}, emp, {
+            days:     emp.days.size,
+            regHours: emp.totalHours - emp.otHours,
+            room:     crew.get(emp.username) || null,
+          }))
+          .sort((a, b) => byOvertime(a, b) || a.username.localeCompare(b.username)),
+        days:     p.days.size,
+        regHours: p.totalHours - p.otHours,
+      })).sort((a, b) => byOvertime(a, b) || a.name.localeCompare(b.name));
+
+      const tot = Object.assign(blank(), { entries: 0, days: allDays.size, regHours: 0 });
+      for (const p of rows) { add(tot, p); tot.entries += p.entries; }
+      tot.regHours = tot.totalHours - tot.otHours;
+
+      // Only the men who actually worked a job in range. An employee whose
+      // whole fortnight was vacation has no headroom worth reporting — he has
+      // no counted week to have headroom in.
+      const crewRows = [...crew.values()]
+        .filter(c => allCrew.has(c.username))
+        .sort((a, b) => a.username.localeCompare(b.username));
+
+      return {
+        projects: rows,
+        tot,
+        crew,
+        crewRows,
+        employeeCount: allCrew.size,
+        // Summed across PEOPLE, never across project rows: the same man's
+        // headroom appears under every job he worked, and adding the column
+        // would count it once per job.
+        totRemaining:  crewRows.reduce((s, c) => s + c.remaining, 0),
+        inOt:          crewRows.filter(c => c.otHours > 0.001).length,
+        offEntries,
+        countedEntries,
+        scopeLine:   base.scopeLine,
+        gen:         base.gen,
+        companyName: base.companyName,
+        otCaveat:    base.otCaveat,
+      };
+    }
+
+    // The tooltip on an employee's "Before OT" cell. The figure is a whole-week
+    // one and the column it sits in is a job's, so the cell has to be able to
+    // say where it came from — otherwise it reads as this job's headroom, which
+    // it is not.
+    function projRoomTitle(room, username) {
+      if (!room || !room.weeks.length) return 'No counted week in this range';
+      const weeks = room.weeks.map(w => {
+        const label = `${prettyDateShort(w.weekStart)}–${prettyDateShort(w.weekEnd)}`;
+        const state = w.remaining > 0.001
+          ? `${w.remaining.toFixed(2)} h before the 40th`
+          : `already ${w.otHours.toFixed(2)} h past it`;
+        return `${label}: ${state}${w.clipped ? ' (partial week)' : ''}`;
+      });
+      return `Hours ${username} can still work before overtime starts — counted across EVERY job in range, not just this one · ${weeks.join(' · ')}`;
+    }
+
+    // One row per employee inside a project block.
+    function projEmployeeRowHtml(emp) {
+      const remaining = emp.room ? emp.room.remaining : 0;
+      const hasRoom   = remaining > 0.001;
+      const otTitle = emp.otHours > 0.001
+        ? `${emp.otHours.toFixed(2)} of ${emp.username}'s hours on this job fell past the fortieth hour of his week`
+        : `None of ${emp.username}'s hours on this job were overtime`;
+      const pwOtTitle = emp.otPwHours > 0.001
+        ? `Prevailing-wage overtime on this job — 1.5x the base rate plus the FULL fringe, the fringe never multiplied. The other ${emp.otStdHours.toFixed(2)} h of his overtime here is standard.`
+        : 'No overtime on this job fell on prevailing-wage work';
+      return `
+        <tr>
+          <td class="name">${escapeHtml(emp.username)}</td>
+          <td class="num">${emp.workHours.toFixed(2)}</td>
+          <td class="num${emp.truckHours > 0.001 ? ' num-haul' : ''}">${emp.truckHours.toFixed(2)}</td>
+          <td class="num">${emp.travelHours.toFixed(2)}</td>
+          <td class="num">${emp.totalHours.toFixed(2)}</td>
+          <td class="num">${emp.regHours.toFixed(2)}</td>
+          <td class="num${emp.otHours > 0.001 ? ' num-ot' : ''}" title="${escapeHtml(otTitle)}">${emp.otHours.toFixed(2)}</td>
+          <td class="num${emp.otPwHours > 0.001 ? ' num-ot' : ''}" title="${escapeHtml(pwOtTitle)}">${emp.otPwHours.toFixed(2)}</td>
+          <td class="num ${hasRoom ? 'num-room' : 'num-ot'}" title="${escapeHtml(projRoomTitle(emp.room, emp.username))}">${remaining.toFixed(2)}</td>
+          <td class="num">${emp.days}</td>
+        </tr>`;
+    }
+
+    // The crew table's columns, written once so the header and the totals row
+    // can never fall out of step.
+    const PROJ_COLUMNS = [
+      { label: 'Employee' },
+      { label: 'Work Hrs', num: true,
+        title: 'Hours worked ON THIS JOB — labour. Time in the truck is the Haul column beside it, so a crew’s production can be read against the hours that produced it.' },
+      { label: 'Haul Hrs', num: true, cls: 'th-haul',
+        title: 'Hours of the same day spent IN THE TRUCK — hauling on site or to & from it. The man is paid for them either way; they are held apart because driving is not labour on the job.' },
+      { label: 'Travel', num: true, title: 'Travel to site + travel to shop, on days worked on this job.' },
+      { label: 'Total', num: true, title: 'Work + haul + travel — the hours this job is charged for this man.' },
+      { label: 'Reg Hrs', num: true,
+        title: 'The hours here that fell inside the first 40 of the employee’s Monday–Sunday week.' },
+      { label: 'OT Hrs', num: true, cls: 'th-ot',
+        title: 'The hours here that fell PAST the fortieth hour of the employee’s Monday–Sunday week — counted across every job he worked that week, then posted back to the job each hour was worked on. Add the jobs up and you have his overtime exactly.' },
+      { label: 'Prevailing OT', num: true, cls: 'th-ot',
+        title: 'The overtime above that fell on prevailing-wage work — 1.5x the base rate plus the FULL fringe, the fringe never multiplied. Payroll needs it split out: it is not the same money as standard overtime.' },
+      { label: 'Before OT', num: true, cls: 'th-room',
+        title: 'Hours this employee can still work before overtime starts — a WHOLE-WEEK figure across every job in range, not this job’s alone. It is the same number under each job he worked that week, so it is never totalled down this column. 0.00 means the 40 is already passed.' },
+      { label: 'Days', num: true, title: 'Distinct work dates this man put on this job in range.' },
+    ];
+
+    function projColumnsHtml() {
+      return `<tr>${PROJ_COLUMNS.map(c =>
+        `<th class="${c.cls || ''}"${c.num ? ' style="text-align:right"' : ''}` +
+        `${c.title ? ` title="${escapeHtml(c.title)}"` : ''}>${escapeHtml(c.label)}</th>`
+      ).join('')}</tr>`;
+    }
+
+    // One project, its figures, and the crew that worked it.
+    function projBlockHtml(p) {
+      const crewCount = p.employees.length;
+      const meta = [
+        prettyDiv(p.division) || '—',
+        `${crewCount} employee${crewCount === 1 ? '' : 's'}`,
+        `${p.days} work day${p.days === 1 ? '' : 's'}`,
+        `${p.entries} ${p.entries === 1 ? 'entry' : 'entries'}`,
+      ].join(' · ');
+      const figs = [
+        `<span><strong>${p.totalHours.toFixed(2)}</strong> h total</span>`,
+        `<span><strong>${p.regHours.toFixed(2)}</strong> regular</span>`,
+        p.otHours > 0.001
+          ? `<span class="fig-ot"><strong>${p.otHours.toFixed(2)}</strong> overtime</span>`
+          : `<span>no overtime</span>`,
+      ];
+      if (p.pwHours > 0.001) figs.push(`<span class="fig-pw"><strong>${p.pwHours.toFixed(2)}</strong> prevailing</span>`);
+      // Headroom is a per-man figure and summing it down the column would count
+      // the same week once per job, so the totals row leaves it blank and says
+      // so rather than printing a number that cannot be read.
+      return `
+        <div class="proj-block">
+          <div class="proj-head">
+            <div>
+              <div class="proj-name">${escapeHtml(p.name)}</div>
+              <div class="proj-meta">${escapeHtml(meta)}</div>
+            </div>
+            <div class="proj-figs">${figs.join('')}</div>
+          </div>
+          <table>
+            <thead>${projColumnsHtml()}</thead>
+            <tbody>${p.employees.map(projEmployeeRowHtml).join('')}</tbody>
+            <tfoot>
+              <tr class="total">
+                <td class="name">${crewCount} employee${crewCount === 1 ? '' : 's'}</td>
+                <td class="num">${p.workHours.toFixed(2)}</td>
+                <td class="num${p.truckHours > 0.001 ? ' num-haul' : ''}">${p.truckHours.toFixed(2)}</td>
+                <td class="num">${p.travelHours.toFixed(2)}</td>
+                <td class="num">${p.totalHours.toFixed(2)}</td>
+                <td class="num">${p.regHours.toFixed(2)}</td>
+                <td class="num${p.otHours > 0.001 ? ' num-ot' : ''}">${p.otHours.toFixed(2)}</td>
+                <td class="num${p.otPwHours > 0.001 ? ' num-ot' : ''}">${p.otPwHours.toFixed(2)}</td>
+                <td class="num" title="Not totalled on purpose — the same man's remaining hours appear under every job he worked that week, so adding this column would count his week once per job.">—</td>
+                <td class="num">${p.days}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>`;
+    }
+
+    // The chart. One bar per job, scaled against the biggest job in range: the
+    // body of the bar is regular time and the head of it is overtime, so a job
+    // that is simply big and a job that is running hot are told apart at a
+    // glance — which no column of figures does.
+    function projChartHtml(projects) {
+      const max = projects.reduce((m, p) => Math.max(m, p.totalHours), 0) || 1;
+      const bars = projects.map(p => {
+        const hasOt = p.otHours > 0.001;
+        const pct = h => ((h / max) * 100).toFixed(2);
+        const share = p.totalHours > 0.001 ? (p.otHours / p.totalHours) * 100 : 0;
+        const title = hasOt
+          ? `${p.name} — ${p.totalHours.toFixed(2)} h worked, ${p.otHours.toFixed(2)} of them past the fortieth hour of somebody's week (${share.toFixed(1)}%)`
+          : `${p.name} — ${p.totalHours.toFixed(2)} h worked, none of it overtime`;
+        return `
+          <div class="pc-row" title="${escapeHtml(title)}">
+            <div class="pc-label">${escapeHtml(p.name)} <span class="pc-div">· ${escapeHtml(prettyDiv(p.division) || '—')}</span></div>
+            <div class="pc-track">
+              <div class="pc-reg" style="width:${pct(p.regHours)}%"></div>
+              <div class="pc-ot"  style="width:${pct(p.otHours)}%"></div>
+            </div>
+            <div class="pc-value">${hasOt
+              ? `<strong>${p.otHours.toFixed(2)} h OT</strong> of ${p.totalHours.toFixed(2)}`
+              : `no OT · ${p.totalHours.toFixed(2)} h`}</div>
+          </div>`;
+      }).join('');
+      return `
+        <div class="proj-chart">
+          <div class="proj-section-title">Overtime by project — bars are hours worked, scaled to the largest job in range</div>
+          ${bars}
+          <div class="pc-legend">
+            <span><i class="pc-key reg"></i>Regular hours</span>
+            <span><i class="pc-key ot"></i>Overtime — hours past the fortieth of an employee's Monday–Sunday week</span>
+          </div>
+        </div>`;
+    }
+
+    function renderProjectsReport() {
+      const wrap = document.getElementById('projectsWrap');
+      if (!wrap) return;
+      const m = buildProjectsModel();
+      const { projects, tot, scopeLine, gen, companyName, otCaveat } = m;
+
+      const head = (actions) => `
+        <div class="report-head">
+          <div>
+            <div class="report-title">Project Overtime Report</div>
+            <div class="report-sub">
+              <strong>${escapeHtml(companyName)}</strong><br/>
+              ${escapeHtml(scopeLine)}<br/>
+              Generated ${escapeHtml(gen)}
+            </div>
+          </div>
+          <div class="report-actions">${actions}</div>
+        </div>`;
+
+      if (!projects.length) {
+        const offNote = m.offEntries
+          ? `<br/>${m.offEntries} time-off ${m.offEntries === 1 ? 'entry is' : 'entries are'} in range — paid leave belongs to no job, so it is left out here.`
+          : '';
+        wrap.innerHTML = `
+          <div class="report">
+            ${head(`
+              <button class="btn-print btn-excel" disabled title="Nothing to export — no job hours in this range">&#8681; Export to Excel</button>
+              <button class="btn-print" onclick="printReport()">Print / Save PDF</button>`)}
+            <div class="report-empty">No job hours in this range.${offNote}</div>
+          </div>`;
+        return;
+      }
+
+      const otShare = tot.totalHours > 0.001
+        ? `${((tot.otHours / tot.totalHours) * 100).toFixed(1)}% of hours worked`
+        : '—';
+      const offNote = m.offEntries
+        ? ` ${m.offEntries} time-off ${m.offEntries === 1 ? 'entry in range is' : 'entries in range are'} left out — paid leave belongs to no job, and it never counts toward the 40.`
+        : '';
+
+      wrap.innerHTML = `
+        <div class="report">
+          ${head(`
+            <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download this report as an Excel workbook (.xlsx) — one sheet per job, one per employee on a job, and the week-by-week headroom behind the Before OT column">&#8681; Export to Excel</button>
+            <button class="btn-print" onclick="printReport()">Print / Save PDF</button>`)}
+
+          <div class="proj-stats">
+            <div class="proj-stat">
+              <div class="proj-stat-label">Jobs Worked</div>
+              <div class="proj-stat-value">${projects.length}</div>
+              <div class="proj-stat-sub">${m.employeeCount} employee${m.employeeCount === 1 ? '' : 's'} · ${tot.entries} ${tot.entries === 1 ? 'entry' : 'entries'}</div>
+            </div>
+            <div class="proj-stat">
+              <div class="proj-stat-label">Hours on Jobs</div>
+              <div class="proj-stat-value">${tot.totalHours.toFixed(2)}</div>
+              <div class="proj-stat-sub">${tot.regHours.toFixed(2)} regular · work, haul and travel</div>
+            </div>
+            <div class="proj-stat ot">
+              <div class="proj-stat-label">Overtime Hours</div>
+              <div class="proj-stat-value">${tot.otHours.toFixed(2)}</div>
+              <div class="proj-stat-sub">${escapeHtml(otShare)} · ${m.inOt} ${m.inOt === 1 ? 'man is' : 'men are'} past 40</div>
+            </div>
+            <div class="proj-stat room">
+              <div class="proj-stat-label">Hours Before OT</div>
+              <div class="proj-stat-value">${m.totRemaining.toFixed(2)}</div>
+              <div class="proj-stat-sub">left across the crew's weeks in range</div>
+            </div>
+          </div>
+
+          ${projChartHtml(projects)}
+
+          <p class="proj-note">
+            <strong>Overtime is an employee's week, not a job's.</strong>
+            The fortieth hour is counted across every job a man worked in his Monday–Sunday week,
+            and each overtime hour is then posted back to the job it was worked on — so adding the jobs
+            below returns the company's overtime exactly, while counting any one job to 40 on its own
+            would not.
+            <strong>Before OT</strong> is the same figure read forward: the hours that man can still work
+            before overtime starts, across all his jobs. It repeats under every job he worked that week
+            and is never totalled.${escapeHtml(offNote)}
+          </p>
+
+          <div class="proj-section-title">${projects.length} job${projects.length === 1 ? '' : 's'} · most overtime first</div>
+          ${projects.map(projBlockHtml).join('')}
+
+          ${otCaveat ? `<p class="report-caveat">${escapeHtml(otCaveat)}</p>` : ''}
+        </div>`;
+    }
+
     // ── CSV export ───────────────────────────────────────────────────────
     // Compliance-style fixed-column export of the audit log. Every event
     // produces a row with the same 21 columns in the same order — empty
@@ -3681,48 +4404,102 @@
         '</worksheet>';
     }
 
-    const XLSX_CONTENT_TYPES =
-      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-        '<Default Extension="xml" ContentType="application/xml"/>' +
-        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
-        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
-        '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
-        '<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
-        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
-      '</Types>';
+    // ── The package parts, for a book of any size ─────────────────────────
+    // These three were written out as constants describing exactly three
+    // sheets. Two different workbooks are built off this machinery now — the
+    // hours report and the project overtime one — and a hard-coded sheet count
+    // means adding a sheet anywhere edits three constants that all have to
+    // agree about the same number. They are generated from the sheet list
+    // instead, so the count is stated once, by the caller.
+    function xlsxContentTypes(sheetCount) {
+      let sheets = '';
+      for (let i = 1; i <= sheetCount; i++) {
+        sheets += `<Override PartName="/xl/worksheets/sheet${i}.xml"` +
+          ' ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>';
+      }
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+          sheets +
+          '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+        '</Types>';
+    }
+
+    // Excel refuses a workbook whose sheet name carries []:*?/\ or runs past 31
+    // characters, and it refuses it with "unreadable content" rather than
+    // naming the sheet — so a tab title a shade too long looks like a corrupt
+    // export. Clamped here, where every book goes through.
+    function xlsxSheetName(name) {
+      const s = String(name == null ? '' : name).replace(/[[\]:*?/\\]/g, ' ').trim();
+      return (s || 'Sheet').slice(0, 31);
+    }
+
+    function xlsxWorkbook(sheetNames) {
+      const sheets = sheetNames.map((n, i) =>
+        `<sheet name="${xmlEsc(xlsxSheetName(n))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('');
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+          '<workbookPr/>' +
+          // Spell the window out rather than leaving it to the reader's default,
+          // so the sheet tabs are always on show — the sheets behind the first
+          // one are no use to payroll if their tabs aren't visible.
+          '<bookViews><workbookView xWindow="0" yWindow="0" windowWidth="24000" windowHeight="14000"' +
+          ' firstSheet="0" activeTab="0" showSheetTabs="1"/></bookViews>' +
+          `<sheets>${sheets}</sheets>` +
+        '</workbook>';
+    }
+
+    function xlsxWorkbookRels(sheetCount) {
+      let rels = '';
+      for (let i = 1; i <= sheetCount; i++) {
+        rels += `<Relationship Id="rId${i}"` +
+          ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"' +
+          ` Target="worksheets/sheet${i}.xml"/>`;
+      }
+      // Styles take the id after the last sheet's — the numbering is positional
+      // and the workbook part above points at rId1..rIdN for the sheets.
+      rels += `<Relationship Id="rId${sheetCount + 1}"` +
+        ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"' +
+        ' Target="styles.xml"/>';
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          rels +
+        '</Relationships>';
+    }
+
+    // [{ name, xml }] → a finished .xlsx Blob.
+    function xlsxBlob(sheets) {
+      const enc = new TextEncoder();
+      const files = [
+        { name: '[Content_Types].xml',        data: enc.encode(xlsxContentTypes(sheets.length)) },
+        { name: '_rels/.rels',                data: enc.encode(XLSX_ROOT_RELS) },
+        { name: 'xl/workbook.xml',            data: enc.encode(xlsxWorkbook(sheets.map(s => s.name))) },
+        { name: 'xl/_rels/workbook.xml.rels', data: enc.encode(xlsxWorkbookRels(sheets.length)) },
+        { name: 'xl/styles.xml',              data: enc.encode(XLSX_STYLES) },
+      ];
+      sheets.forEach((s, i) => files.push({
+        name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(s.xml),
+      }));
+      return zipStore(files);
+    }
+
+    // <company>-<range> for an export filename, so two scopes never land on the
+    // same name on payroll's disk.
+    function exportScopeSuffix() {
+      const companyCode = String((user && user.companyCode) || '').replace(/[^A-Za-z0-9_-]/g, '') || 'payroll';
+      const from = document.getElementById('flt-from').value;
+      const to   = document.getElementById('flt-to').value;
+      const range = (from && to) ? `${from}_${to}` : ymd(new Date());
+      return `${companyCode}-${range}`;
+    }
 
     const XLSX_ROOT_RELS =
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
-      '</Relationships>';
-
-    const XLSX_WORKBOOK =
-      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-      '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
-      ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-        '<workbookPr/>' +
-        // Spell the window out rather than leaving it to the reader's default,
-        // so the sheet tabs are always on show — the submissions sheet is no
-        // use to payroll if its tab isn't visible.
-        '<bookViews><workbookView xWindow="0" yWindow="0" windowWidth="24000" windowHeight="14000"' +
-        ' firstSheet="0" activeTab="0" showSheetTabs="1"/></bookViews>' +
-        '<sheets>' +
-          '<sheet name="Payroll Summary" sheetId="1" r:id="rId1"/>' +
-          '<sheet name="All Submissions" sheetId="2" r:id="rId2"/>' +
-          '<sheet name="Overtime by Week" sheetId="3" r:id="rId3"/>' +
-        '</sheets>' +
-      '</workbook>';
-
-    const XLSX_WORKBOOK_RELS =
-      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
-        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' +
-        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>' +
-        '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
       '</Relationships>';
 
     // Colours are spelled out as explicit ARGB rather than theme references so
@@ -4066,23 +4843,250 @@
         alert('No timesheet entries in this range to export.');
         return;
       }
-      const enc = new TextEncoder();
-      const files = [
-        { name: '[Content_Types].xml',        data: enc.encode(XLSX_CONTENT_TYPES) },
-        { name: '_rels/.rels',                data: enc.encode(XLSX_ROOT_RELS) },
-        { name: 'xl/workbook.xml',            data: enc.encode(XLSX_WORKBOOK) },
-        { name: 'xl/_rels/workbook.xml.rels', data: enc.encode(XLSX_WORKBOOK_RELS) },
-        { name: 'xl/styles.xml',              data: enc.encode(XLSX_STYLES) },
-        { name: 'xl/worksheets/sheet1.xml',   data: enc.encode(reportSummarySheetXml(model)) },
-        { name: 'xl/worksheets/sheet2.xml',   data: enc.encode(reportDetailSheetXml(model)) },
-        { name: 'xl/worksheets/sheet3.xml',   data: enc.encode(reportOvertimeSheetXml(model)) },
+      downloadBlob(`payroll-hours-${exportScopeSuffix()}.xlsx`, xlsxBlob([
+        { name: 'Payroll Summary',  xml: reportSummarySheetXml(model) },
+        { name: 'All Submissions',  xml: reportDetailSheetXml(model) },
+        { name: 'Overtime by Week', xml: reportOvertimeSheetXml(model) },
+      ]));
+    }
+
+
+    // ── Excel export (Reports ▸ Projects) ────────────────────────────────
+    // Three sheets, and they are three because the question changes shape twice
+    // on the way down. Sheet 1 is the job. Sheet 2 is the man on the job. Sheet
+    // 3 is the man's WEEK, which is the only shape the fortieth hour actually
+    // has — and is therefore the sheet the Before OT column on the other two is
+    // answerable from.
+
+    // Sheet 1 — one row per job.
+    function projectSummarySheetXml(model) {
+      const { projects, tot, scopeLine, gen, companyName } = model;
+      const headers = ['Project / Job', 'Division', 'Employees', 'Days Worked',
+        'Work Hours (labour)', 'Haul Hours (driving)', 'Travel Hours', 'Total Hours',
+        'Regular Hrs', 'OT Hrs', 'Prevailing OT Hrs', 'Standard OT Hrs',
+        'Prevailing Hrs (work only)', 'Pending Hrs', 'Approved Hrs'];
+      const HEADER_ROW = 8;
+      const NUM_COLS = new Set([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+
+      const sheet = [
+        [cTxt('Project Overtime Report', XS.title)],
+        [cTxt(companyName, XS.bold)],
+        [cTxt(scopeLine, XS.sub)],
+        [cTxt(`Generated ${gen}`, XS.sub)],
+        // Spreadsheets have no tooltips, so the one rule this whole workbook
+        // rests on is written on the face of the first sheet.
+        [cTxt('OVERTIME IS AN EMPLOYEE’S WEEK, NOT A JOB’S. The fortieth hour is counted across every job a man worked in his Monday–Sunday week; each overtime hour is then posted back to the job it was worked on. Adding these rows up returns the company’s overtime exactly — counting any one job to 40 on its own would not.', XS.bold)],
+        [cTxt('Work Hours are labour on the job. Haul Hours are the same days’ time in the truck — hauling on site or to & from it — and the two add up to the hours worked; Total Hours adds travel on top. Prevailing-wage overtime is 1.5x the base rate plus the FULL fringe, the fringe never multiplied, so it is split out from standard overtime.', XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
       ];
 
-      const companyCode = String((user && user.companyCode) || '').replace(/[^A-Za-z0-9_-]/g, '') || 'payroll';
-      const from = document.getElementById('flt-from').value;
-      const to   = document.getElementById('flt-to').value;
-      const range = (from && to) ? `${from}_${to}` : ymd(new Date());
-      downloadBlob(`payroll-hours-${companyCode}-${range}.xlsx`, zipStore(files));
+      for (const p of projects) {
+        sheet.push([
+          cTxt(p.name,              XS.text),
+          cTxt(prettyDiv(p.division) || '', XS.text),
+          cNum(p.employees.length,  XS.num),
+          cNum(p.days,              XS.num),
+          cNum(p.workHours,         XS.num),
+          cNum(p.truckHours,        XS.numHaul),
+          cNum(p.travelHours,       XS.num),
+          cNum(p.totalHours,        XS.num),
+          cNum(p.regHours,          XS.num),
+          cNum(p.otHours,           XS.num),
+          cNum(p.otPwHours,         XS.numPw),
+          cNum(p.otStdHours,        XS.num),
+          cNum(p.pwHours,           XS.numPw),
+          cNum(p.pendingHours,      XS.num),
+          cNum(p.approvedHours,     XS.num),
+        ]);
+      }
+
+      sheet.push([
+        cTxt(`Totals (${projects.length} job${projects.length === 1 ? '' : 's'})`, XS.totText),
+        cTxt('', XS.totText),
+        // The company's headcount and its work days, not the columns added up:
+        // a man on four jobs is one man, and a day worked on four jobs is one
+        // day. Summing either column would count both once per job.
+        cNum(model.employeeCount, XS.totNum),
+        cNum(tot.days,            XS.totNum),
+        cNum(tot.workHours,       XS.totNum),
+        cNum(tot.truckHours,      XS.totHaul),
+        cNum(tot.travelHours,     XS.totNum),
+        cNum(tot.totalHours,      XS.totNum),
+        cNum(tot.regHours,        XS.totNum),
+        cNum(tot.otHours,         XS.totNum),
+        cNum(tot.otPwHours,       XS.totPw),
+        cNum(tot.otStdHours,      XS.totNum),
+        cNum(tot.pwHours,         XS.totPw),
+        cNum(tot.pendingHours,    XS.totNum),
+        cNum(tot.approvedHours,   XS.totNum),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [38, 14, 12, 12, 19, 20, 13, 12, 12, 11, 18, 17, 24, 13, 14],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:O${HEADER_ROW + projects.length}`,
+        tabSelected: true,
+      });
+    }
+
+    // Sheet 2 — one row per employee PER JOB: the crew tables on screen, flat.
+    function projectEmployeeSheetXml(model) {
+      const { projects, tot, scopeLine, gen, companyName } = model;
+      const headers = ['Project / Job', 'Division', 'Employee', 'Days Worked',
+        'Work Hours (labour)', 'Haul Hours (driving)', 'Travel Hours', 'Total Hours',
+        'Regular Hrs', 'OT Hrs', 'Prevailing OT Hrs', 'Standard OT Hrs',
+        'Hours Before OT (all jobs)', 'Weeks Behind That Figure'];
+      const HEADER_ROW = 7;
+      const NUM_COLS = new Set([3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+      const sheet = [
+        [cTxt('Project Overtime Report — Employees by Project', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt('OT Hrs is this man’s hours ON THIS JOB that fell past the fortieth hour of his Monday–Sunday week — the 40 counted across every job he worked that week, the overtime then posted back to the job each hour was worked on.', XS.sub)],
+        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. The weeks behind it are in the last column, and one row each on the "OT Headroom by Week" sheet.', XS.bold)],
+        [cTxt('A man already past 40 shows 0.00 — the hours he is over are in the OT column, not here.', XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      let n = 0;
+      for (const p of projects) {
+        for (const emp of p.employees) {
+          const room = emp.room;
+          const weeks = room && room.weeks.length
+            ? room.weeks.map(w => `${w.weekStart}: ${w.remaining > 0.001
+                ? `${w.remaining.toFixed(2)} h left`
+                : `${w.otHours.toFixed(2)} h over`}${w.clipped ? ' (partial)' : ''}`).join(' · ')
+            : '';
+          sheet.push([
+            cTxt(p.name,               XS.text),
+            cTxt(prettyDiv(p.division) || '', XS.text),
+            cTxt(emp.username,         XS.text),
+            cNum(emp.days,             XS.num),
+            cNum(emp.workHours,        XS.num),
+            cNum(emp.truckHours,       XS.numHaul),
+            cNum(emp.travelHours,      XS.num),
+            cNum(emp.totalHours,       XS.num),
+            cNum(emp.regHours,         XS.num),
+            cNum(emp.otHours,          XS.num),
+            cNum(emp.otPwHours,        XS.numPw),
+            cNum(emp.otStdHours,       XS.num),
+            cNum(room ? room.remaining : 0, XS.num),
+            cTxt(weeks,                XS.text),
+          ]);
+          n++;
+        }
+      }
+
+      sheet.push([
+        cTxt(`Total — ${n} employee-job row${n === 1 ? '' : 's'}`, XS.totText),
+        cTxt('', XS.totText), cTxt('', XS.totText),
+        cNum(tot.days,        XS.totNum),
+        cNum(tot.workHours,   XS.totNum),
+        cNum(tot.truckHours,  XS.totHaul),
+        cNum(tot.travelHours, XS.totNum),
+        cNum(tot.totalHours,  XS.totNum),
+        cNum(tot.regHours,    XS.totNum),
+        cNum(tot.otHours,     XS.totNum),
+        cNum(tot.otPwHours,   XS.totPw),
+        cNum(tot.otStdHours,  XS.totNum),
+        // Deliberately not a number. Adding this column counts one man's week
+        // once per job he worked in it; the crew's real headroom is the total
+        // on the "OT Headroom by Week" sheet, where each week appears once.
+        cTxt('see headroom sheet', XS.totText),
+        cTxt('', XS.totText),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [38, 14, 22, 12, 19, 20, 13, 12, 12, 11, 18, 17, 26, 56],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:N${HEADER_ROW + n}`,
+      });
+    }
+
+    // Sheet 3 — one row per employee PER WEEK, which is the shape the fortieth
+    // hour actually has. The two sheets above are grouped by job because that is
+    // how the work is bought; this one refuses to group by job at all, because
+    // the 40 is not a job's to pass. Here, and only here, the headroom column
+    // sums to something real.
+    function projectHeadroomSheetXml(model) {
+      const { crewRows, scopeLine, gen, companyName } = model;
+      const headers = ['Employee', 'Week Starting (Mon)', 'Week Ending (Sun)',
+        'Hours Worked (all jobs)', 'Regular Hrs', 'OT Hrs', 'Hours Before OT',
+        'Partial Week', 'Jobs Worked That Week'];
+      const HEADER_ROW = 7;
+      const NUM_COLS = new Set([3, 4, 5, 6]);
+
+      const sheet = [
+        [cTxt('Project Overtime Report — OT Headroom by Week', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt('One row per employee per Monday–Sunday week. Hours Before OT is 40 less the hours worked that week across EVERY job — what he can still be given before the premium starts. It is never negative: a week already past 40 reads 0.00, and the hours he is over are in the OT column.', XS.sub)],
+        [cTxt('Work + travel count toward the 40. Paid leave does not — holiday and vacation are not hours worked, and hours not worked never push a week into overtime.', XS.sub)],
+        [cTxt('A week marked "Partial" reaches outside the report date range: days of it were never loaded, so its overtime is a floor and its headroom a ceiling.', XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      let n = 0;
+      let sumWorked = 0, sumReg = 0, sumOt = 0, sumRoom = 0;
+
+      for (const c of crewRows) {
+        for (const w of c.weeks) {
+          const jobs = c.byWeek.get(w.weekStart);
+          sheet.push([
+            cTxt(c.username, XS.text),
+            cNum(excelDateSerial(w.weekStart), XS.date),
+            cNum(excelDateSerial(w.weekEnd),   XS.date),
+            cNum(w.totalHours, XS.num),
+            cNum(w.totalHours - w.otHours, XS.num),
+            cNum(w.otHours,    XS.num),
+            cNum(w.remaining,  XS.num),
+            cTxt(w.clipped ? 'Partial' : '', XS.text),
+            cTxt(jobs ? [...jobs].sort().join(' · ') : '', XS.text),
+          ]);
+          sumWorked += w.totalHours;
+          sumReg    += w.totalHours - w.otHours;
+          sumOt     += w.otHours;
+          sumRoom   += w.remaining;
+          n++;
+        }
+      }
+
+      sheet.push([
+        cTxt(`Total — ${n} employee-week${n === 1 ? '' : 's'}`, XS.totText),
+        cTxt('', XS.totText), cTxt('', XS.totText),
+        cNum(sumWorked, XS.totNum),
+        cNum(sumReg,    XS.totNum),
+        cNum(sumOt,     XS.totNum),
+        cNum(sumRoom,   XS.totNum),
+        cTxt('', XS.totText), cTxt('', XS.totText),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [24, 20, 20, 23, 13, 11, 18, 13, 60],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:I${HEADER_ROW + n}`,
+      });
+    }
+
+    // Downloads the Projects sub-tab as an .xlsx built from the same model the
+    // on-screen blocks render, so the workbook always matches the current date
+    // range, division, supervisor and employee filters.
+    function exportProjectsExcel() {
+      const model = buildProjectsModel();
+      if (!model.projects.length) {
+        alert('No job hours in this range to export.');
+        return;
+      }
+      downloadBlob(`project-overtime-${exportScopeSuffix()}.xlsx`, xlsxBlob([
+        { name: 'Overtime by Project',  xml: projectSummarySheetXml(model) },
+        { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
+        { name: 'OT Headroom by Week',  xml: projectHeadroomSheetXml(model) },
+      ]));
     }
 
     // ── Analytics tab ────────────────────────────────────────────────────
