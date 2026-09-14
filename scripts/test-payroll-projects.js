@@ -58,7 +58,8 @@ const FNS = [
   'projBarsHtml', 'projChartHtml', 'projCrewChartHtml',
   'colLetter', 'excelDateSerial', 'xmlEsc', 'xlsxRow', 'xlsxSheetXml',
   'xlsxContentTypes', 'xlsxSheetName', 'xlsxWorkbook', 'xlsxWorkbookRels',
-  'projectSummarySheetXml', 'projectEmployeeSheetXml', 'projectHeadroomSheetXml',
+  'projectSummarySheetXml', 'projectCrewSheetXml', 'projectEmployeeSheetXml',
+  'projectHeadroomSheetXml',
 ];
 
 // The consts the lifted functions reach for. Taken as slices rather than
@@ -390,18 +391,39 @@ function column(c, letter, first, last) {
 }
 
 {
+  const xml = api.projectCrewSheetXml(model);
+  const s2 = cells(xml);
+  const HEAD = 7, n = model.employees.length;
+  assert('sheet 2 is one row per man, across every job', n === 3, `got ${n}`);
+  assert('  its overtime column adds to the company overtime too',
+    near(column(s2, 'I', HEAD + 1, HEAD + n).reduce((a, b) => a + b, 0), base.tot.otHours));
+  assert('  and its hours match the by-job sheet, so the two charts agree',
+    near(val(s2, `G${HEAD + n + 1}`), sumJobs('totalHours')));
+  // The whole reason this sheet exists beside the per-job one.
+  assert('  HERE the headroom column totals — each man appears exactly once',
+    near(val(s2, `M${HEAD + n + 1}`), model.totRemaining),
+    `got ${val(s2, `M${HEAD + n + 1}`)} vs ${model.totRemaining}`);
+  assert('  the job count is the company\'s, not the column added up',
+    val(s2, `B${HEAD + n + 1}`) === model.projects.length &&
+    model.projects.length < column(s2, 'B', HEAD + 1, HEAD + n).reduce((a, b) => a + b, 0));
+  assert('  and the work days likewise', val(s2, `C${HEAD + n + 1}`) === model.tot.days);
+  assert('  the sheet says why its headroom totals and the other\'s does not',
+    /each man appears once/i.test(xml));
+}
+
+{
   const xml = api.projectEmployeeSheetXml(model);
   const s2 = cells(xml);
   const HEAD = 7;
   const n = model.projects.reduce((s, p) => s + p.employees.length, 0);
-  assert('sheet 2 is one row per employee per job', n === 4, `got ${n}`);
+  assert('sheet 3 is one row per employee per job', n === 4, `got ${n}`);
   assert('  its overtime column also adds to the company overtime',
     near(column(s2, 'J', HEAD + 1, HEAD + n).reduce((a, b) => a + b, 0), base.tot.otHours));
   assert('  the headroom column REFUSES to total — it would count a week per job',
     typeof val(s2, `M${HEAD + n + 1}`) === 'string',
     `got ${JSON.stringify(val(s2, `M${HEAD + n + 1}`))}`);
-  assert('  and it says where the real total is',
-    /headroom sheet/i.test(String(val(s2, `M${HEAD + n + 1}`))));
+  assert('  and it points at the sheet where that total is real',
+    /Overtime by Employee/i.test(String(val(s2, `M${HEAD + n + 1}`))));
   assert('  each row carries the weeks its headroom came from',
     String(val(s2, `N${HEAD + 1}`)).includes('2026-08-'));
 }
@@ -410,7 +432,7 @@ function column(c, letter, first, last) {
   const s3 = cells(api.projectHeadroomSheetXml(model));
   const HEAD = 7;
   const n = model.crewRows.reduce((s, c) => s + c.weeks.length, 0);
-  assert('sheet 3 is one row per employee per week', n === 4, `got ${n}`);
+  assert('sheet 4 is one row per employee per week', n === 4, `got ${n}`);
   assert('  here the headroom DOES total, because each week appears once',
     near(val(s3, `G${HEAD + n + 1}`), model.totRemaining));
   assert('  hours worked, regular and overtime still reconcile',
@@ -424,15 +446,20 @@ function column(c, letter, first, last) {
 
 console.log('\n[the package Excel actually has to open]');
 {
-  const names = ['Overtime by Project', 'Employees by Project', 'OT Headroom by Week'];
+  const names = ['Overtime by Project', 'Overtime by Employee',
+                 'Employees by Project', 'OT Headroom by Week'];
   const wb   = api.xlsxWorkbook(names);
   const rels = api.xlsxWorkbookRels(names.length);
   const ct   = api.xlsxContentTypes(names.length);
   assert('the workbook lists every sheet', names.every(n => wb.includes(`name="${n}"`)));
   assert('  every sheet has a relationship, and styles takes the id after them',
-    [1, 2, 3].every(i => rels.includes(`Id="rId${i}"`) && rels.includes(`worksheets/sheet${i}.xml`)) &&
-    rels.includes('Id="rId4"') && rels.includes('Target="styles.xml"'));
-  assert('  and a content type', [1, 2, 3].every(i => ct.includes(`/xl/worksheets/sheet${i}.xml`)));
+    [1, 2, 3, 4].every(i => rels.includes(`Id="rId${i}"`) && rels.includes(`worksheets/sheet${i}.xml`)) &&
+    rels.includes('Id="rId5"') && rels.includes('Target="styles.xml"'));
+  assert('  and a content type', [1, 2, 3, 4].every(i => ct.includes(`/xl/worksheets/sheet${i}.xml`)));
+  // The generated parts are the reason a fourth sheet was a one-line change.
+  assert('  the book grew to four sheets without touching the package parts',
+    /projectCrewSheetXml\(model\)[\s\S]{0,200}projectEmployeeSheetXml/.test(PAGE) &&
+    api.xlsxContentTypes(4).match(/worksheets\/sheet/g).length === 4);
   assert('  the sheet count is stated once, by the caller',
     api.xlsxContentTypes(2).match(/worksheets\/sheet/g).length === 2);
   assert('a sheet name Excel would reject is clamped rather than shipped',

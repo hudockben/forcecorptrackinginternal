@@ -5012,7 +5012,88 @@
       });
     }
 
-    // Sheet 2 — one row per employee PER JOB: the crew tables on screen, flat.
+
+    // Sheet 2 — one row per MAN, across every job he worked: the second chart,
+    // as figures. The sheet before it groups by job because that is how the work
+    // is bought; this one groups by the person the fortieth hour actually
+    // belongs to, so a man spread thin over four jobs — invisible on every job's
+    // own row — appears here at his full size.
+    //
+    // It is also the only sheet in the book where HOURS BEFORE OT can be added
+    // up, because it is the only one where each man appears exactly once. On
+    // "Employees by Project" the same week sits under every job he worked, and
+    // summing it there counts his week once per job.
+    function projectCrewSheetXml(model) {
+      const { employees, tot, scopeLine, gen, companyName } = model;
+      const headers = ['Employee', 'Jobs Worked', 'Days Worked',
+        'Work Hours (labour)', 'Haul Hours (driving)', 'Travel Hours', 'Total Hours',
+        'Regular Hrs', 'OT Hrs', 'Prevailing OT Hrs', 'Standard OT Hrs',
+        'Prevailing Hrs (work only)', 'Hours Before OT', 'Pending Hrs', 'Approved Hrs'];
+      const HEADER_ROW = 7;
+      const NUM_COLS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+
+      const sheet = [
+        [cTxt('Project Overtime Report — Overtime by Employee', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt('The same hours as the "Overtime by Project" sheet, grouped by the person rather than the job. Both add to the same fortnight and the same overtime — a man spread over four jobs is small on each of them and his full size here.', XS.bold)],
+        [cTxt('OT Hrs is hours past the fortieth of a MONDAY–SUNDAY week, counted across every job he worked that week. Work + travel count toward the 40; paid leave does not. Prevailing-wage overtime is 1.5x the base rate plus the FULL fringe — the fringe is never multiplied — so it is split out from standard overtime.', XS.sub)],
+        [cTxt('Hours Before OT is what he can still work before the premium starts. This sheet is the one place it can be totalled: each man appears once here, where on "Employees by Project" his week sits under every job he worked. Week by week on "OT Headroom by Week".', XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      let sumRoom = 0;
+      for (const e of employees) {
+        sheet.push([
+          cTxt(e.username,      XS.text),
+          cNum(e.jobs,          XS.num),
+          cNum(e.days,          XS.num),
+          cNum(e.workHours,     XS.num),
+          cNum(e.truckHours,    XS.numHaul),
+          cNum(e.travelHours,   XS.num),
+          cNum(e.totalHours,    XS.num),
+          cNum(e.regHours,      XS.num),
+          cNum(e.otHours,       XS.num),
+          cNum(e.otPwHours,     XS.numPw),
+          cNum(e.otStdHours,    XS.num),
+          cNum(e.pwHours,       XS.numPw),
+          cNum(e.remaining,     XS.num),
+          cNum(e.pendingHours,  XS.num),
+          cNum(e.approvedHours, XS.num),
+        ]);
+        sumRoom += e.remaining;
+      }
+
+      sheet.push([
+        cTxt(`Totals (${employees.length} employee${employees.length === 1 ? '' : 's'})`, XS.totText),
+        // The company's job count and work days, not the columns added up: a job
+        // three men worked is one job, and a day four men worked is one day.
+        cNum(model.projects.length, XS.totNum),
+        cNum(tot.days,            XS.totNum),
+        cNum(tot.workHours,       XS.totNum),
+        cNum(tot.truckHours,      XS.totHaul),
+        cNum(tot.travelHours,     XS.totNum),
+        cNum(tot.totalHours,      XS.totNum),
+        cNum(tot.regHours,        XS.totNum),
+        cNum(tot.otHours,         XS.totNum),
+        cNum(tot.otPwHours,       XS.totPw),
+        cNum(tot.otStdHours,      XS.totNum),
+        cNum(tot.pwHours,         XS.totPw),
+        // A real total — see the note above.
+        cNum(sumRoom,             XS.totNum),
+        cNum(tot.pendingHours,    XS.totNum),
+        cNum(tot.approvedHours,   XS.totNum),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [24, 13, 13, 19, 20, 13, 12, 12, 11, 18, 17, 24, 17, 13, 14],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:O${HEADER_ROW + employees.length}`,
+      });
+    }
+
+    // Sheet 3 — one row per employee PER JOB: the crew tables on screen, flat.
     function projectEmployeeSheetXml(model) {
       const { projects, tot, scopeLine, gen, companyName } = model;
       const headers = ['Project / Job', 'Division', 'Employee', 'Days Worked',
@@ -5026,7 +5107,7 @@
         [cTxt('Project Overtime Report — Employees by Project', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
         [cTxt('OT Hrs is this man’s hours ON THIS JOB that fell past the fortieth hour of his Monday–Sunday week — the 40 counted across every job he worked that week, the overtime then posted back to the job each hour was worked on.', XS.sub)],
-        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. The weeks behind it are in the last column, and one row each on the "OT Headroom by Week" sheet.', XS.bold)],
+        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. It totals on the "Overtime by Employee" sheet, where each man appears once, and the weeks behind it are in the last column here and one row each on "OT Headroom by Week".', XS.bold)],
         [cTxt('A man already past 40 shows 0.00 — the hours he is over are in the OT column, not here.', XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
@@ -5076,7 +5157,7 @@
         // Deliberately not a number. Adding this column counts one man's week
         // once per job he worked in it; the crew's real headroom is the total
         // on the "OT Headroom by Week" sheet, where each week appears once.
-        cTxt('see headroom sheet', XS.totText),
+        cTxt('see Overtime by Employee', XS.totText),
         cTxt('', XS.totText),
       ]);
 
@@ -5088,11 +5169,12 @@
       });
     }
 
-    // Sheet 3 — one row per employee PER WEEK, which is the shape the fortieth
-    // hour actually has. The two sheets above are grouped by job because that is
-    // how the work is bought; this one refuses to group by job at all, because
-    // the 40 is not a job's to pass. Here, and only here, the headroom column
-    // sums to something real.
+    // Sheet 4 — one row per employee PER WEEK, which is the shape the fortieth
+    // hour actually has. The sheets above group by job, or by the man over his
+    // whole range; this one refuses to group by job at all and splits the man
+    // into his weeks, because the 40 is not a job's to pass and not a
+    // fortnight's either. It is where a Before OT figure on any other sheet can
+    // be traced to the week it came out of.
     function projectHeadroomSheetXml(model) {
       const { crewRows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Week Starting (Mon)', 'Week Ending (Sun)',
@@ -5163,8 +5245,11 @@
         alert('No job hours in this range to export.');
         return;
       }
+      // The order the report reads in: the two charts, then the crew tables
+      // under them, then the weeks the overtime was actually measured in.
       downloadBlob(`project-overtime-${exportScopeSuffix()}.xlsx`, xlsxBlob([
         { name: 'Overtime by Project',  xml: projectSummarySheetXml(model) },
+        { name: 'Overtime by Employee', xml: projectCrewSheetXml(model) },
         { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
         { name: 'OT Headroom by Week',  xml: projectHeadroomSheetXml(model) },
       ]));
