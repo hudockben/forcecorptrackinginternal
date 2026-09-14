@@ -77,6 +77,33 @@ function offSiteHaulWork(e, work) {
   return Math.min(Math.max(h, 0), work);
 }
 
+/**
+ * How many of a day's WORK hours the man spent IN THE TRUCK — either haul, on
+ * site or off.
+ *
+ * A different question from offSiteHaulWork above, and deliberately not the
+ * same function. That one asks which hours lose the prevailing premium, and an
+ * on-site haul loses nothing: the man is on the covered site, so those hours
+ * stay prevailing. This one asks what he was DOING, and hauling inside the
+ * fence is still driving, not labour on the job.
+ *
+ * It feeds truckHours, which moves no money at all — it splits the hours
+ * already counted in workHours into the ones that produced work on the ground
+ * and the ones that moved a truck. Do not confuse it with haulHours, which is
+ * the narrower figure: off-site hours reclassified OUT of prevailing.
+ *
+ * Mirrored in payroll.html (haulWorkHours). The two must agree, for the same
+ * reason offSiteHaulWork's copies must.
+ */
+function haulWorkHours(e, work) {
+  const t = e && e.haul_type;
+  if (t !== 'on_site' && t !== 'off_site') return 0;
+  if (e.haul_hours == null) return work;
+  const h = Number(e.haul_hours);
+  if (!Number.isFinite(h)) return work;
+  return Math.min(Math.max(h, 0), work);
+}
+
 // ── Overtime ─────────────────────────────────────────────────────────────────
 //
 // Overtime is a WEEKLY fact, and everything else on this page is a fortnight.
@@ -289,6 +316,11 @@ function emptyEmployee(username) {
     username,
     workHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0,
     pwHours: 0, stdHours: 0, haulHours: 0,
+    // The part of workHours spent driving rather than labouring — both hauls,
+    // and a note on the split rather than a bucket of its own: it is already
+    // inside workHours. haulHours above is the OTHER haul figure (off-site
+    // hours taken out of prevailing); the two are not interchangeable.
+    truckHours: 0,
     // Filled in per employee by weeklyOvertime once every entry is in hand —
     // overtime cannot be accumulated a row at a time, because whether an hour
     // is overtime depends on the whole week around it.
@@ -305,7 +337,7 @@ function emptyEmployee(username) {
 
 const TOTAL_KEYS = [
   'workHours', 'travelToSite', 'travelToShop', 'travelHours',
-  'pwHours', 'stdHours', 'haulHours',
+  'pwHours', 'stdHours', 'haulHours', 'truckHours',
   'regHours', 'otHours', 'otPwHours', 'otStdHours',
   'pendingHours', 'approvedHours',
   'pendingOff', 'approvedOff', 'daysWorked',
@@ -349,6 +381,13 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
         } else {
           acc.stdHours += h;
         }
+        // Separately from the rate, and on every job: how much of the day was
+        // spent in the truck rather than working the ground. This moves no
+        // hours between buckets — it splits the ones already in workHours, so
+        // a production rate can be measured against the labour that produced
+        // it. An on-site haul counts here and not above, because it is driving
+        // that keeps its premium.
+        acc.truckHours += haulWorkHours(e, work);
         // Distinct dates worked, so two entries on one day are one day.
         const d = String(e.work_date || '').slice(0, 10);
         if (d) acc._dates.add(d);
@@ -398,7 +437,7 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
 }
 
 module.exports = {
-  payrollMetrics, COUNTED_STATUSES, offSiteHaulWork,
+  payrollMetrics, COUNTED_STATUSES, offSiteHaulWork, haulWorkHours,
   weeklyOvertime, weekStartOf, weekEndOf, OT_WEEKLY_THRESHOLD,
   stampKey, compareIds,
 };

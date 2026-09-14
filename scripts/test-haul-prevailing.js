@@ -91,6 +91,34 @@ assert('an off-site haul is reported separately so the exclusion is visible',
   near(offSite.haulHours, 8) && near(ordinary.haulHours, 0) && near(onSite.haulHours, 0),
   `off=${offSite.haulHours} ordinary=${ordinary.haulHours} on=${onSite.haulHours}`);
 
+// ── Labour versus driving ───────────────────────────────────────────────────
+// A second split of the same day, answering a different question. haulHours
+// above is about the RATE: which hours left prevailing. truckHours is about the
+// WORK: which hours moved a truck instead of producing anything on the ground.
+// A man hauling on the covered site scores on one and not the other, which is
+// exactly why they are two figures and never added together.
+console.log('\n[the same day split again — labour, and time in the truck]');
+
+assert('an off-site haul is all driving',      near(offSite.truckHours, 8));
+assert('an ON-SITE haul is all driving too — it is prevailing AND in the truck',
+  near(onSite.truckHours, 8) && near(onSite.pwHours, 8),
+  `truck=${onSite.truckHours} pw=${onSite.pwHours}`);
+assert('a day nobody called a haul is all labour', near(ordinary.truckHours, 0));
+assert('and it never leaves the hours worked: labour + driving = workHours',
+  near(offSite.workHours - offSite.truckHours, 0)
+  && near(ordinary.workHours - ordinary.truckHours, 8));
+
+const partialTruck = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: 6.5 }));
+assert('a day he drove there and then worked it splits 6.50 / 2.50',
+  near(partialTruck.truckHours, 6.5)
+  && near(partialTruck.workHours - partialTruck.truckHours, 2.5),
+  `truck=${partialTruck.truckHours}`);
+// The two figures answer different questions, and the on-site case is where
+// reading one for the other would show the office a driver with no prevailing
+// hours he is actually owed.
+assert('truckHours and haulHours are not the same number on an on-site haul',
+  near(onSite.truckHours, 8) && near(onSite.haulHours, 0));
+
 // ── Nothing else changes ─────────────────────────────────────────────────────
 console.log('\n[every other case behaves exactly as it did]');
 

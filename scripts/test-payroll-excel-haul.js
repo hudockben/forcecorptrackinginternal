@@ -165,7 +165,7 @@ console.log('\n[the summary sheet splits the same way]');
     && val(summary, `C${HDR}`) === 'Haul Hours (driving)');
   const r = model.rows[0];
   assert('the man hauled 41.50 h of his 54.00 h',
-    near(r.haulHours, 41.5) && near(r.workHours, 54), `${r.workHours} / ${r.haulHours}`);
+    near(r.truckHours, 41.5) && near(r.workHours, 54), `${r.workHours} / ${r.truckHours}`);
   assert('labour is what is left',   near(val(summary, `B${HDR + 1}`), 12.5));
   assert('driving is beside it',     near(val(summary, `C${HDR + 1}`), 41.5));
   assert('and the two still make the hours worked',

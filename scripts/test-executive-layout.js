@@ -49,7 +49,13 @@ const COLUMNS = [
 function headerLabels(html, marker, span = 1600) {
   const at = html.indexOf(marker);
   if (at < 0) return [];
-  const slice = html.slice(at, at + span);
+  // To the END OF THE HEADER, not a character count. A fixed window silently
+  // stopped covering the last columns the moment two headings picked up long
+  // tooltips, and the assertion then failed with a list that was merely cut
+  // short — the same trap the payroll slice below already had to climb out of.
+  // The span stays as a fallback for a header row with no </thead> after it.
+  const end = html.indexOf('</thead>', at);
+  const slice = html.slice(at, end < 0 ? at + span : end);
   return [...slice.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map(m => m[1].trim());
 }
 
@@ -224,19 +230,23 @@ assert('an unpaid invoice past 45 days reads overdue, and paid stays paid',
 // ── Payroll mirrors the Payroll page's Reports tab ──
 console.log('\n[payroll mirrors the Payroll page]');
 
-// The Hours Report's fifteen columns, in the page's own words and order.
+// The Hours Report's sixteen columns, in the page's own words and order.
 //
 // Reg / OT / Prevailing OT sit where they do on purpose. Overtime splits the
 // Total beside it, so it follows Total; and Prevailing OT follows Prevailing
 // Hrs because it answers the question that column raises the moment a week runs
 // long — how much of this is owed at 1.5x base plus the full fringe.
+//
+// Haul follows Work for the same reason: it splits the column beside it. The
+// day's hours are labour plus time in the truck, and the office reads the two
+// together or neither means anything.
 const PAYROLL_COLUMNS = [
-  'Employee', 'Hours', 'Travel to Site', 'Travel to Shop', 'Travel', 'Total',
+  'Employee', 'Work Hrs', 'Haul Hrs', 'Travel to Site', 'Travel to Shop', 'Travel', 'Total',
   'Reg Hrs', 'OT Hrs', 'Prevailing Hrs', 'Prevailing OT', 'Standard Hrs',
   'Pending Hrs', 'Approved Hrs', 'Time Off', 'Status',
 ];
 const execPayrollCols = headerLabels(exec, '<th>Employee</th>');
-assert('the executive payroll table has the same fifteen columns',
+assert('the executive payroll table has the same sixteen columns',
   PAYROLL_COLUMNS.every((c, i) => execPayrollCols[i] === c)
   && execPayrollCols.length === PAYROLL_COLUMNS.length,
   'got: ' + JSON.stringify(execPayrollCols));
@@ -388,6 +398,27 @@ assert('an on-site haul stays prevailing — only off_site is excluded',
   !!pmPredicate && /'off_site'/.test(pmPredicate) && !/'on_site'/.test(pmPredicate)
   && /'off_site'/.test(payrollPredicate) && !/'on_site'/.test(payrollPredicate),
   `pm: ${pmPredicate} | payroll: ${payrollPredicate}`);
+// The OTHER haul split, and the reason it is a second function rather than an
+// argument to the first: labour-versus-driving is not rate-versus-rate. An
+// on-site haul is driving that keeps its premium, so it counts here and not in
+// offSiteHaulWork — a single function serving both questions would have to get
+// one of them wrong. Mirrored for the same reason everything else here is: the
+// Payroll page and the executive report render the same fortnight.
+const pmTruck      = fnBody(pm, 'haulWorkHours');
+const payrollTruck = fnBody(payroll, 'haulWorkHours');
+assert('both implementations carry the labour/driving split too',
+  !!pmTruck && !!payrollTruck);
+assert('  and it counts BOTH hauls — unlike the prevailing rule above',
+  !!pmTruck && /'on_site'/.test(pmTruck) && /'off_site'/.test(pmTruck)
+  && /'on_site'/.test(payrollTruck) && /'off_site'/.test(payrollTruck));
+assert('  reading the same haul_hours column, clamped the same way',
+  !!pmTruck && /if \(e\.haul_hours == null\) return work;/.test(pmTruck)
+  && /Math\.min\(Math\.max\(h, 0\), work\)/.test(pmTruck)
+  && /if \(e\.haul_hours == null\) return work;/.test(payrollTruck)
+  && /Math\.min\(Math\.max\(h, 0\), work\)/.test(payrollTruck));
+assert('  and landing on the same field name in both',
+  /acc\.truckHours \+= haulWorkHours\(e, work\);/.test(pm)
+  && /acc\.truckHours \+= haulWorkHours\(e, work\);/.test(payroll));
 assert('only an explicit true is prevailing, so a division without the concept is standard',
   /=== true/.test(pm) && !/prevailing_wage\s*\?/.test(pm));
 assert('only submitted and approved entries carry hours',

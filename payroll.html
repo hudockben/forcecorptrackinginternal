@@ -619,15 +619,15 @@
        break them into the four questions the table actually answers: how long
        he was on the clock, how much of it was overtime, what rate it is paid
        at, and where it stands for approval. */
-    .report > .report-scroll > table > thead > tr > th:nth-child(6),
-    .report > .report-scroll > table > tbody > tr > td:nth-child(6),
-    .report > .report-scroll > table > tfoot > tr > td:nth-child(6),
-    .report > .report-scroll > table > thead > tr > th:nth-child(8),
-    .report > .report-scroll > table > tbody > tr > td:nth-child(8),
-    .report > .report-scroll > table > tfoot > tr > td:nth-child(8),
-    .report > .report-scroll > table > thead > tr > th:nth-child(11),
-    .report > .report-scroll > table > tbody > tr > td:nth-child(11),
-    .report > .report-scroll > table > tfoot > tr > td:nth-child(11) { border-right: 1px solid var(--border); }
+    .report > .report-scroll > table > thead > tr > th:nth-child(7),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(7),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(7),
+    .report > .report-scroll > table > thead > tr > th:nth-child(9),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(9),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(9),
+    .report > .report-scroll > table > thead > tr > th:nth-child(12),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(12),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(12) { border-right: 1px solid var(--border); }
     .report table {
       width: 100%;
       border-collapse: collapse;
@@ -635,7 +635,12 @@
     }
     .report thead th {
       text-align: left;
-      padding: 0.6rem 0.45rem;
+      /* 0.4rem of side padding, not 0.45: sixteen columns pay for each gutter
+         twice, and the Haul column had to come from somewhere. Taking it here
+         keeps every heading spelled out — the alternative was abbreviating
+         "Prevailing Hrs", and payroll reads these headings to know which
+         figure is which. */
+      padding: 0.6rem 0.4rem;
       font-size: 0.62rem;
       text-transform: uppercase;
       letter-spacing: 0.06em;
@@ -659,7 +664,7 @@
        with the header above it and the column of figures it sums. */
     .report tbody td,
     .report tfoot td {
-      padding: 0.65rem 0.45rem;
+      padding: 0.65rem 0.4rem;
       font-variant-numeric: tabular-nums;
     }
     .report tbody td { border-bottom: 1px solid rgba(42,42,58,0.6); }
@@ -677,6 +682,14 @@
        of orange zeroes would put a warning on every clean week. */
     .report td.num-ot      { color: var(--orange); font-weight: 700; }
     .report thead th.th-ot { color: var(--orange); }
+    /* Hauling. Violet on both tables, the colour the Haul pill wears on the
+       approved tab and the Haul column wears in the workbook — one answer, one
+       colour, wherever payroll happens to be reading it. Tinted only when there
+       ARE hours in the truck: a column of violet zeroes down a crew that never
+       hauled is noise, the same reason the overtime columns above stay grey on
+       a clean week. */
+    .report td.num-haul      { color: var(--violet); font-weight: 600; }
+    .report thead th.th-haul { color: var(--violet); }
     .report tr.total td {
       border-top: 2px solid var(--border);
       border-bottom: none;
@@ -744,7 +757,7 @@
     }
     .report .report-detail-table th {
       text-align: left;
-      padding: 0.4rem 0.7rem;
+      padding: 0.4rem 0.58rem;
       font-size: 0.56rem;
       text-transform: uppercase;
       letter-spacing: 0.06em;
@@ -761,19 +774,19 @@
        its third <td> is the table's fifth column — matched blindly, the rules
        jogged two columns right on the last line of the sheet. */
     .report .report-detail-table > thead > tr > th:nth-child(3),
-    .report .report-detail-table > thead > tr > th:nth-child(8),
     .report .report-detail-table > thead > tr > th:nth-child(9),
+    .report .report-detail-table > thead > tr > th:nth-child(10),
     .report .report-detail-table > tbody > tr > td:nth-child(3),
-    .report .report-detail-table > tbody > tr > td:nth-child(8),
     .report .report-detail-table > tbody > tr > td:nth-child(9),
+    .report .report-detail-table > tbody > tr > td:nth-child(10),
     .report .report-detail-table > tbody > tr.week-cols > th:nth-child(3),
-    .report .report-detail-table > tbody > tr.week-cols > th:nth-child(8),
     .report .report-detail-table > tbody > tr.week-cols > th:nth-child(9),
+    .report .report-detail-table > tbody > tr.week-cols > th:nth-child(10),
     /* Totals row: cell 1 spans Date/Division/Project, so the same three edges
-       are its 1st, 6th and 7th cells. */
+       are its 1st, 7th and 8th cells. */
     .report .report-detail-table > tfoot > tr > td:nth-child(1),
-    .report .report-detail-table > tfoot > tr > td:nth-child(6),
-    .report .report-detail-table > tfoot > tr > td:nth-child(7) { border-right: 1px solid var(--border); }
+    .report .report-detail-table > tfoot > tr > td:nth-child(7),
+    .report .report-detail-table > tfoot > tr > td:nth-child(8) { border-right: 1px solid var(--border); }
     /* The week band spans the whole table; it has no columns to divide. */
     .report .report-detail-table > tbody > tr.week-band > td { border-right: none; }
 
@@ -790,7 +803,7 @@
       box-shadow: 6px 0 8px -6px rgba(0,0,0,0.65);
     }
     .report .report-detail-table td {
-      padding: 0.4rem 0.7rem;
+      padding: 0.4rem 0.58rem;
       border-bottom: 1px solid rgba(42,42,58,0.5);
       font-variant-numeric: tabular-nums;
       color: var(--text);
@@ -801,6 +814,7 @@
     .report .report-detail-table td.date { white-space: nowrap; }
     .report .report-detail-table td.num-pw { color: var(--yellow); }
     .report .report-detail-table td.num-ot { color: var(--orange); font-weight: 700; }
+    .report .report-detail-table td.num-haul { color: var(--violet); font-weight: 600; }
 
     /* ── Week bands in the per-employee detail ──────────────────────────
        Overtime is a weekly fact and the report's range is a fortnight, so the
@@ -840,6 +854,7 @@
     }
     .report .report-detail-table tr.week-cols > th.th-ot { color: var(--orange); }
     .report .report-detail-table tr.week-cols > th.th-pw { color: var(--yellow); }
+    .report .report-detail-table tr.week-cols > th.th-haul { color: var(--violet); }
     .report .report-detail-table tr.week-band .wb-label {
       font-weight: 700;
       font-size: 0.7rem;
@@ -2879,10 +2894,11 @@
           username:      u,
           workHours:     0,
           // The part of workHours that was spent driving rather than labouring.
-          // Held apart rather than taken out: the on-screen report's Work column
-          // means hours worked and still does, and the Excel export is where the
-          // two are split — see reportSummarySheetXml.
-          haulHours:     0,
+          // NOT called haulHours: that name is taken in api/lib/payroll-metrics.js
+          // by a different figure — the off-site hours reclassified OUT of
+          // prevailing — and these two must never be read for one another. This
+          // one moves no money; it only says which hours were in the truck.
+          truckHours:    0,
           travelToSite:  0,
           travelToShop:  0,
           travelHours:   0,
@@ -2947,7 +2963,7 @@
             // count above, because it is still the truck's time even though it
             // keeps the prevailing premium. This moves no money — it only says
             // which hours produced work on the ground.
-            acc.haulHours += haulWorkHours(e, work);
+            acc.truckHours += haulWorkHours(e, work);
           }
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
@@ -2978,7 +2994,7 @@
       // Totals
       const tot = rows.reduce((acc, r) => ({
         workHours:     acc.workHours     + r.workHours,
-        haulHours:     acc.haulHours     + r.haulHours,
+        truckHours:    acc.truckHours    + r.truckHours,
         travelToSite:  acc.travelToSite  + r.travelToSite,
         travelToShop:  acc.travelToShop  + r.travelToShop,
         travelHours:   acc.travelHours   + r.travelHours,
@@ -2995,7 +3011,7 @@
         approvedHours: acc.approvedHours + r.approvedHours,
         pendingOff:    acc.pendingOff    + r.pendingOff,
         approvedOff:   acc.approvedOff   + r.approvedOff,
-      }), { workHours: 0, haulHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, regHours: 0, otHours: 0, otPwHours: 0, otStdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+      }), { workHours: 0, truckHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, regHours: 0, otHours: 0, otPwHours: 0, otStdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
       tot.otClipped = rows.some(r => r.otClipped);
 
       // Header subtitle
@@ -3080,7 +3096,8 @@
         return `
           <tr class="emp-row${hasPending ? ' has-pending' : ''}${expanded ? ' expanded' : ''}" data-user="${userAttr}" onclick="toggleReportRow(this)" title="Click to ${expanded ? 'collapse' : 'expand'} this employee's entries">
             <td class="name"><span class="exp-caret">▸</span>${escapeHtml(r.username)}</td>
-            <td class="num">${r.workHours.toFixed(2)}</td>
+            <td class="num">${(r.workHours - r.truckHours).toFixed(2)}</td>
+            <td class="num${r.truckHours > 0.001 ? ' num-haul' : ''}">${r.truckHours.toFixed(2)}</td>
             <td class="num">${r.travelToSite.toFixed(2)}</td>
             <td class="num">${r.travelToShop.toFixed(2)}</td>
             <td class="num">${r.travelHours.toFixed(2)}</td>
@@ -3096,7 +3113,7 @@
             <td>${status}</td>
           </tr>
           <tr class="report-detail" data-user="${userAttr}"${expanded ? '' : ' hidden'}>
-            <td colspan="15">${reportDetailHtml(r)}</td>
+            <td colspan="16">${reportDetailHtml(r)}</td>
           </tr>
         `;
       }).join('');
@@ -3124,7 +3141,8 @@
             <thead>
               <tr>
                 <th>Employee</th>
-                <th style="text-align:right">Hours</th>
+                <th style="text-align:right" title="Hours worked ON THE JOB — labour. Time in the truck is in the Haul column beside this, so a crew’s production can be read against the hours that produced it. The two add up to the hours worked.">Work Hrs</th>
+                <th class="th-haul" style="text-align:right" title="Hours of the same day spent IN THE TRUCK — hauling on site or to &amp; from it. The man is paid for them either way; they are held apart because driving is not labour on the job. This is not the prevailing split: a haul ON the site is driving and still prevailing.">Haul Hrs</th>
                 <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel to Site</th>
                 <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
                 <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
@@ -3144,7 +3162,8 @@
             <tfoot>
               <tr class="total">
                 <td class="name">Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})</td>
-                <td class="num">${tot.workHours.toFixed(2)}</td>
+                <td class="num">${(tot.workHours - tot.truckHours).toFixed(2)}</td>
+                <td class="num${tot.truckHours > 0.001 ? ' num-haul' : ''}">${tot.truckHours.toFixed(2)}</td>
                 <td class="num">${tot.travelToSite.toFixed(2)}</td>
                 <td class="num">${tot.travelToShop.toFixed(2)}</td>
                 <td class="num">${tot.travelHours.toFixed(2)}</td>
@@ -3205,7 +3224,7 @@
       const weekKeys = [...byWeek.keys()].sort((a, b) =>
         (a === '' ? 1 : 0) - (b === '' ? 1 : 0) || a.localeCompare(b));
 
-      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0,
+      let sumWork = 0, sumHaul = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0,
           sumTotal = 0, sumPw = 0, sumOt = 0, count = 0;
 
       const bands = weekKeys.map(wk => {
@@ -3238,7 +3257,14 @@
           // because neither is hours worked.
           const otRow  = otByEntry.get(e);
           const ot     = otRow ? otRow.otHours : 0;
-          sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw; sumOt += ot;
+          // The same day split the other way: what the truck took, and the
+          // labour left over. Not the prevailing split above — an on-site haul
+          // is driving and keeps its premium — but what the man was DOING,
+          // which is the figure a production rate is measured against.
+          const haul   = isOff ? 0 : haulWorkHours(e, work);
+          const labour = work - haul;
+          sumWork += labour; sumHaul += haul;
+          sumTravel += travel; sumTotal += total; sumPw += pw; sumOt += ot;
           sumToSite += (toSite || 0); sumToShop += (toShop || 0);
           count++;
           const division = isOff ? '—' : (prettyDiv(e.division) || '—');
@@ -3254,7 +3280,8 @@
               <td class="date">${prettyDate(e.work_date)}</td>
               <td>${escapeHtml(division)}</td>
               <td>${escapeHtml(project)}</td>
-              <td class="num">${isOff ? '—' : work.toFixed(2)}</td>
+              <td class="num">${isOff ? '—' : labour.toFixed(2)}</td>
+              <td class="num${haul > 0.001 ? ' num-haul' : ''}">${isOff ? '—' : haul.toFixed(2)}</td>
               <td class="num">${toSite == null ? '—' : toSite.toFixed(2)}</td>
               <td class="num">${toShop == null ? '—' : toShop.toFixed(2)}</td>
               <td class="num">${isOff ? '—' : travel.toFixed(2)}</td>
@@ -3277,6 +3304,7 @@
             <tr class="detail-total">
               <td colspan="3">Total — ${count} ${count === 1 ? 'entry' : 'entries'}</td>
               <td class="num">${sumWork.toFixed(2)}</td>
+              <td class="num${sumHaul > 0.001 ? ' num-haul' : ''}">${sumHaul.toFixed(2)}</td>
               <td class="num">${sumToSite.toFixed(2)}</td>
               <td class="num">${sumToShop.toFixed(2)}</td>
               <td class="num">${sumTravel.toFixed(2)}</td>
@@ -3301,7 +3329,10 @@
       { label: 'Date' },
       { label: 'Division' },
       { label: 'Project' },
-      { label: 'Work',           num: true },
+      { label: 'Work',           num: true,
+        title: 'Hours worked ON THE JOB — labour. Time in the truck is in the Haul column beside this, so a crew’s production can be read against the hours that produced it. The two add up to the hours worked.' },
+      { label: 'Haul',           num: true, cls: 'th-haul',
+        title: 'Hours of the same day spent IN THE TRUCK — hauling on site or to & from it. The man is paid for them either way; they are held apart because driving is not labour on the job. This is not the prevailing split: a haul ON the site is driving and still prevailing.' },
       { label: 'Travel to Site', num: true, title: 'Timesheet field: Travel Time to Site' },
       { label: 'Travel to Shop', num: true, title: 'Timesheet field: Travel Time to Shop' },
       { label: 'Travel',         num: true, title: 'Travel to site + travel to shop' },
@@ -3788,8 +3819,8 @@
           : '—';
         sheet.push([
           cTxt(r.username,      XS.text),
-          cNum(r.workHours - r.haulHours, XS.num),
-          cNum(r.haulHours,     XS.numHaul),
+          cNum(r.workHours - r.truckHours, XS.num),
+          cNum(r.truckHours,    XS.numHaul),
           cNum(r.travelToSite,  XS.num),
           cNum(r.travelToShop,  XS.num),
           cNum(r.travelHours,   XS.num),
@@ -3809,8 +3840,8 @@
       const totalAll = tot.pendingHours + tot.approvedHours;
       sheet.push([
         cTxt(`Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})`, XS.totText),
-        cNum(tot.workHours - tot.haulHours, XS.totNum),
-        cNum(tot.haulHours,     XS.totHaul),
+        cNum(tot.workHours - tot.truckHours, XS.totNum),
+        cNum(tot.truckHours,    XS.totHaul),
         cNum(tot.travelToSite,  XS.totNum),
         cNum(tot.travelToShop,  XS.totNum),
         cNum(tot.travelHours,   XS.totNum),

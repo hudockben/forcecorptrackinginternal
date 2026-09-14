@@ -460,6 +460,9 @@
     .tone-green   { color: var(--green); }
     .tone-teal    { color: #34d399; }
     .tone-amber   { color: var(--amber); }
+    /* Hauling, the same violet the Haul pill and the Haul column wear on the
+       Payroll page — one answer reads the same wherever it is printed. */
+    .tone-violet  { color: #a78bfa; }
     .tone-red     { color: var(--red); }
     .tone-awarded { color: #86efac; }
     .tone-mute    { color: var(--muted); }
@@ -789,6 +792,7 @@
       .tone-green, .tone-awarded,
       .tone-teal                 { color: #166534; }
       .tone-amber                { color: #92400e; }
+      .tone-violet               { color: #5b21b6; }
       .tone-red                  { color: #991b1b; }
       .ptable .pstatus.tone-mute { color: #555; }
       .metric-label, .metric-sub { color: #555; }
@@ -1576,7 +1580,8 @@
               ${r.meta ? `<span class="pname-sub">${esc(r.meta)}</span>` : ''}
             </div>
           </td>
-          <td class="col-num v-actual">${esc(fmtHours(r.workHours))}</td>
+          <td class="col-num v-actual">${esc(fmtHours(r.workHours - (r.truckHours || 0)))}</td>
+          <td class="col-num ${r.truckHours > 0.001 ? 'tone-violet' : 'v-mute'}">${esc(fmtHours(r.truckHours || 0))}</td>
           <td class="col-num v-mute">${esc(fmtHours(r.travelToSite))}</td>
           <td class="col-num v-mute">${esc(fmtHours(r.travelToShop))}</td>
           <td class="col-num v-mute">${esc(fmtHours(r.travelHours))}</td>
@@ -1598,7 +1603,8 @@
             <thead>
               <tr>
                 <th>Employee</th>
-                <th class="col-num">Hours</th>
+                <th class="col-num" title="Hours worked ON THE JOB — labour. Time in the truck is the Haul column beside this; the two add up to the hours worked.">Work Hrs</th>
+                <th class="col-num" title="Hours of the same day spent IN THE TRUCK — hauling on site or to &amp; from it. Paid either way; held apart because driving is not labour on the job. Not the prevailing split: a haul ON the site is driving and still prevailing.">Haul Hrs</th>
                 <th class="col-num" title="Timesheet field: Travel Time to Site">Travel to Site</th>
                 <th class="col-num" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
                 <th class="col-num" title="Travel to site + travel to shop">Travel</th>

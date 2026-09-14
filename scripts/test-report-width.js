@@ -7,8 +7,9 @@
  *      (skips cleanly when the bundled Chromium is not present)
  *
  * The report grew from twelve columns to fifteen when the overtime split was
- * added, and the Status column fell off the right edge of the card — on screen
- * and on paper both. Nothing caught it, because column width is not a property
+ * added, and then to sixteen when the day's hours were split into labour and
+ * hauling; the first time, the Status column fell off the right edge of the
+ * card — on screen and on paper both. Nothing caught it, because column width is not a property
  * of the markup or of any one rule: it is what the browser works out from the
  * headings, the figures, the padding and the space the card allows.
  *
@@ -149,9 +150,9 @@ const PRINT_PX = 979;
   console.log('\n[how narrow the table can get]');
   await load(400, 'screen');
   const min = await measure();
-  console.log(`  fifteen columns want ${min.needed}px at their narrowest`);
-  assert('the report is still the fifteen columns this measures',
-    min.columns === 15, `got ${min.columns}`);
+  console.log(`  sixteen columns want ${min.needed}px at their narrowest`);
+  assert('the report is still the sixteen columns this measures',
+    min.columns === 16, `got ${min.columns}`);
   // The old reading column: main's 1280px less its padding and the card's.
   const OLD_CARD = 1280 - (24 * 2) - (24 * 2);
   assert(`and fit even the old ${OLD_CARD}px reading column, so no width is load-bearing`,
@@ -238,9 +239,38 @@ const PRINT_PX = 979;
     leak.datePosition === leak.dateCellPosition,
     `heading ${leak.datePosition}, cells ${leak.dateCellPosition}`);
   // Project | ... | Total | OT | ... — the detail's own three group edges.
+  // Each moved one right when Haul was added between Work and the travel legs.
   assert('and its dividers sit only on its own group edges',
-    JSON.stringify(leak.bordered) === JSON.stringify([3, 8, 9]),
+    JSON.stringify(leak.bordered) === JSON.stringify([3, 9, 10]),
     'got columns ' + JSON.stringify(leak.bordered));
+
+  // ── The summary table's own group edges ──
+  // Written as nth-child, so every one of them moves when a column is inserted
+  // — and the Haul column was inserted in the middle. Two of the three were
+  // left pointing one column right when it went in, which put the rule between
+  // Prevailing Hrs and Prevailing OT: figures that belong to the same group,
+  // separated, while OT sat welded to the prevailing block. Nothing failed. The
+  // detail table below was checked and this one was not, so it is checked now.
+  console.log('\n[the summary table divides its four groups]');
+  const mainEdges = await page.evaluate(() => {
+    const t = document.querySelector('.report > .report-scroll > table');
+    const edged = sel => [...t.querySelectorAll(sel)]
+      .map((c, i) => ({ i: i + 1, h: c.textContent.replace(/\s+/g, ' ').trim() }))
+      .filter((_, i) => getComputedStyle(t.querySelectorAll(sel)[i]).borderRightWidth !== '0px');
+    return {
+      head: edged(':scope > thead th').map(x => `${x.i}:${x.h}`),
+      body: edged(':scope > tbody tr.emp-row td').map(x => x.i),
+      foot: edged(':scope > tfoot td').map(x => x.i),
+    };
+  });
+  // Hours | overtime | the pay-rate split | what is signed off.
+  assert('the rules fall after Total, OT Hrs and Standard Hrs',
+    JSON.stringify(mainEdges.head) === JSON.stringify(['7:Total', '9:OT Hrs', '12:Standard Hrs']),
+    'got ' + JSON.stringify(mainEdges.head));
+  assert('  and the body and totals rows divide the same columns',
+    JSON.stringify(mainEdges.body) === JSON.stringify([7, 9, 12])
+    && JSON.stringify(mainEdges.foot) === JSON.stringify([7, 9, 12]),
+    `body ${JSON.stringify(mainEdges.body)}, foot ${JSON.stringify(mainEdges.foot)}`);
 
   // ── The dividers line up on every row, including the last ──
   // nth-child counts elements, not columns, and the detail's totals row opens
@@ -351,19 +381,19 @@ const PRINT_PX = 979;
     getComputedStyle(document.querySelector('.report > .report-scroll > table > tbody > tr.emp-row > td.name')).backgroundImage);
   assert('the name cell still takes the row-hover tint', hoverTint !== 'none', hoverTint);
 
-  // ── The executive report prints the same fifteen columns ──
+  // ── The executive report prints the same sixteen columns ──
   // .ptable-wrap prints with overflow VISIBLE, so anything too wide is not
   // scrolled off the PDF — it is cut off it, silently, every month.
-  console.log('\n[the executive PDF carries all fifteen columns too]');
+  console.log('\n[the executive PDF carries all sixteen columns too]');
   const EXEC = fs.readFileSync(path.join(ROOT, 'executive.html'), 'utf8');
   const stripI = t => { let prev; do { prev = t; t = t.replace(/\$\{[^{}]*\}/g, ''); } while (t !== prev); return t.replace(/`/g, ''); };
   const sec  = EXEC.slice(EXEC.indexOf('function renderPayrollSection'));
   const eHead = stripI(sec.match(/<thead>[\s\S]*?<\/thead>/)[0]);
   const eRow  = stripI(sec.match(/<tr[\s\S]*?<\/tr>/)[0]);
   // The widest content these cells realistically carry.
-  const EV = ['shuffstallmatt', '190.50', '10.00', '10.00', '20.00', '190.50', '185.25',
-    '15.25', '116.50', '14.25', '174.00', '10.00', '190.50', '12 pending / 34 approved',
-    '216.75 h pending'];
+  const EV = ['shuffstallmatt', '190.50', '118.25', '10.00', '10.00', '20.00', '190.50',
+    '185.25', '15.25', '116.50', '14.25', '174.00', '10.00', '190.50',
+    '12 pending / 34 approved', '216.75 h pending'];
   let n = 0;
   const eBody = eRow.replace(/(<td[^>]*>)(\s*)(<\/td>)/g, (m, o, _w, c) => o + (EV[n++] ?? '') + c);
   const eCss  = [...EXEC.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
@@ -380,7 +410,7 @@ const PRINT_PX = 979;
              overflow: getComputedStyle(document.querySelector('.ptable-wrap')).overflowX };
   });
   console.log(`  the executive payroll table wants ${ex.need}px at its narrowest`);
-  assert('it is the same fifteen columns as the Payroll page', ex.cols === 15, `got ${ex.cols}`);
+  assert('it is the same sixteen columns as the Payroll page', ex.cols === 16, `got ${ex.cols}`);
   assert('  its headings wrap, so the figures set the column widths',
     ex.wrap !== 'nowrap', ex.wrap);
   assert(`  and it fits the ${PRINT_PX}px page — this table has no scrollbar to fall back on (overflow ${ex.overflow})`,
