@@ -108,7 +108,18 @@ console.log('\n[index.html — what the phone is told]');
 // Run the page's real onDivisionChange / onJobChange against a mock document.
 console.log('\n[timesheet.html — the picker, run for real]');
 
-const SRC = slice(TIMESHEET, 'async function onDivisionChange(i = 0)', '// The two standing EES activities', 'onDivisionChange')
+// From the allow list down, not from onDivisionChange down. The load calls
+// jobsForPicker to narrow what it just fetched, and that function (with the
+// const behind it) sits directly above it — leave them out and the sandbox
+// throws ReferenceError INSIDE the try, which the catch then dresses up as a
+// failed load. Every failure case below still passed, for the wrong reason,
+// while the three success cases quietly went red.
+//
+// The filter's own rules are not this suite's business — test-trucking-job-
+// allowlist.js runs it against a dozen rosters. It comes along so the success
+// path is the page's, not a stub's.
+const SRC = slice(TIMESHEET, '    const TRUCKING_JOB_ALLOWLIST = [', '// The two standing EES activities',
+                  'the job filter + onDivisionChange')
           + slice(TIMESHEET, 'function onJobChange(i = 0)', '// ── Entries list', 'onJobChange');
 
 function harness(responses) {
@@ -156,8 +167,16 @@ function harness(responses) {
   };
   vm.createContext(ctx);
   new vm.Script(SRC).runInContext(ctx);
-  return { ctx, els, calls, logged, signedOut: () => signedOut };
+  const h = { ctx, els, calls, logged, signedOut: () => signedOut };
+  ALL.push(h);
+  return h;
 }
+// Every harness built below. The load does its work inside a try/catch whose
+// job is to turn a failure into a retry the crew can press — which means it
+// catches a missing collaborator just as readily as a 403, and reports it the
+// same way. A ReferenceError is never a load failure; it is this file falling
+// behind the page.
+const ALL = [];
 
 (async () => {
   // A real, populated division.
@@ -224,6 +243,18 @@ function harness(responses) {
       !/\(no active jobs\)/.test(h.els.job.innerHTML), h.els.job.innerHTML);
     assert('nor caches anything', h.ctx.jobsCache.paving === undefined);
   }
+
+  // ── The sandbox still has everything the page reaches for ──
+  // The check that would have caught this file going stale. onDivisionChange
+  // does its work inside a try/catch that exists to turn a failed load into a
+  // retry — so when the page started calling jobsForPicker and the sandbox had
+  // no such function, the ReferenceError came out the same door a 403 does.
+  // The failure cases all still passed; the success cases went red and said
+  // only that some jobs were missing from a list.
+  console.log('\n[the sandbox has not fallen behind the page]');
+  const missing = ALL.flatMap(h => h.logged).filter(l => /is not defined/.test(l));
+  assert('no case lost a collaborator the page calls',
+    missing.length === 0, missing.join(' | '));
 
   console.log(`\n${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
