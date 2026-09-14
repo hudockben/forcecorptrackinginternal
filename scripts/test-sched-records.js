@@ -53,32 +53,38 @@ function eq(label, got, want) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const TRUCKING = read('trucking.html');
 
 // Everything Records is built out of, taken from the page rather than copied:
 // the boards and their state, the date helpers, the truck types the Truck Type
 // column reads, the division labels, the OOXML writer, and Records itself.
-const BOARDS  = slice(TRUCKING, '    const SCHED_BOARDS = [', '    function schedMerge(baseStr', 'boards + helpers');
+const BOARDS  = slice(TRUCKING, '    const SCHED_BOARDS = [', '    function schedMerge(baseStr', 'boards + helpers',
+                      'function schedBlobValue(');
 const TYPES   = slice(TRUCKING, '    /* ── What kind of truck a unit is ──',
-                                '    /** The dismissed sign-ins', 'unit types');
-const GROUPS  = slice(TRUCKING, '    const SCHED_GROUPS = [', '    /* ═══════ Dispatch sheet', 'grouping + schedNum');
-const XLSX    = slice(TRUCKING, '    function _crc32(bytes)', '    function schedSheetXlsx(date)', 'ooxml writer');
-const DIVS    = slice(TRUCKING, '    const SCHED_DIVISIONS = [', '    const schedJobsCache', 'divisions');
-const JOBOF   = slice(TRUCKING, '    function schedJobOf(a)', '    /** Layout A — by day.', 'job/division labels');
+                                '    /** The dismissed sign-ins', 'unit types',
+                      'function unitTypeLabel(');
+const GROUPS  = slice(TRUCKING, '    const SCHED_GROUPS = [', '    /* ═══════ Dispatch sheet', 'grouping + schedNum',
+                      'const schedNum =');
+const XLSX    = slice(TRUCKING, '    function _crc32(bytes)', '    function schedSheetXlsx(date)', 'ooxml writer',
+                      'function _xlsxPackage(');
+const DIVS    = slice(TRUCKING, '    const SCHED_DIVISIONS = [', '    const schedJobsCache', 'divisions',
+                      'const SCHED_DIVISIONS =');
+const JOBOF   = slice(TRUCKING, '    function schedJobOf(a)', '    /** Layout A — by day.', 'job/division labels',
+                      'function schedDivLabel(');
 const HOURS   = slice(TRUCKING, '    /** Decimal hours between two HH:MM times',
-                                '    /** "24.5 t · 3 loads', 'dispatch-sheet hours');
+                                '    /** "24.5 t · 3 loads', 'dispatch-sheet hours',
+                      'function schedHoursBetween(');
 const DELETE  = slice(TRUCKING, '    function schedDeleteEditor()',
                                 '    /* ═══════════════════════════════════════════\n       SCHEDULER RECORDS',
-                                'delete + archive');
+                                'delete + archive',
+                      'function schedRemoveById(');
 const RECORDS = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       SCHEDULER RECORDS',
-                                '    /* ═══════════════════════════════════════════\n       CSV UPLOAD', 'records tab');
+                                '    /* ═══════════════════════════════════════════\n       CSV UPLOAD', 'records tab',
+                      'function schedRecDownload(');
 
 /* A `const` at the top of a vm script is a lexical binding, not a property of
    the context — so the few the tests reach for are handed out explicitly. */
@@ -113,8 +119,8 @@ function page(opts) {
     renderScheduler:  () => {},
   };
   vm.createContext(sandbox);
-  vm.runInContext([BOARDS, TYPES, GROUPS, DIVS, JOBOF, HOURS, XLSX, DELETE, RECORDS, EXPORTS].join('\n'),
-    sandbox, { filename: 'trucking.html' });
+  evalSlice([BOARDS, TYPES, GROUPS, DIVS, JOBOF, HOURS, XLSX, DELETE, RECORDS, EXPORTS].join('\n'),
+    sandbox, 'the scheduler board, its records tab and its exports', { filename: 'trucking.html' });
 
   Object.keys(o.assignments || {}).forEach(board => {
     const st = sandbox._schedStates[board];
@@ -677,14 +683,18 @@ console.log('\n── The dispatch sheet is unchanged ──');
     document: { getElementById: () => null },
   };
   vm.createContext(sandbox);
-  vm.runInContext([
+  evalSlice([
     TYPES, GROUPS, DIVS, JOBOF, XLSX,
-    slice(TRUCKING, '    function schedPad(n)', '    /** True when the named board', 'date helpers'),
+    slice(TRUCKING, '    function schedPad(n)', '    /** True when the named board', 'date helpers',
+          'function schedMins('),
     HOURS,
-    slice(TRUCKING, '    function schedRepItems(date)', '    function schedRepCell(v)', 'rep items'),
-    slice(TRUCKING, '    const SCHED_SHEET_COLS = [', '    function schedSheetTitle(date)', 'sheet cols'),
-    slice(TRUCKING, '    function schedSheetXlsx(date)', '    function schedSheetDownload()', 'sheet xlsx'),
-  ].join('\n'), sandbox, { filename: 'trucking.html' });
+    slice(TRUCKING, '    function schedRepItems(date)', '    function schedRepCell(v)', 'rep items',
+          'function schedRepItems('),
+    slice(TRUCKING, '    const SCHED_SHEET_COLS = [', '    function schedSheetTitle(date)', 'sheet cols',
+          'function schedSheetRows('),
+    slice(TRUCKING, '    function schedSheetXlsx(date)', '    function schedSheetDownload()', 'sheet xlsx',
+          'function schedSheetXlsx('),
+  ].join('\n'), sandbox, 'the dispatch sheet and the plan report', { filename: 'trucking.html' });
 
   let files;
   try { files = unzip(sandbox.schedSheetXlsx(DAY)); assert('the dispatch sheet still zips', true); }
@@ -945,7 +955,8 @@ console.log('\n── The archive survives a save ──');
 
   // Both writers must agree, or the keepalive on the way out of the page drops
   // the archive on every unload.
-  const flush = slice(TRUCKING, '    async function schedFlush(board)', '    function schedStep(n)', 'flush');
+  const flush = slice(TRUCKING, '    async function schedFlush(board)', '    function schedStep(n)', 'flush',
+                      'function schedFlushKeepalive(');
   eq('the debounced save and the keepalive write the same shape',
     (flush.match(/JSON\.stringify\(\{ value: schedBlobValue\(st\) \}\)/g) || []).length, 2);
   assert('and nothing writes the blob by hand any more',
@@ -1000,8 +1011,8 @@ console.log('\n── On screen ──');
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL: () => {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext([BOARDS, TYPES, GROUPS, DIVS, JOBOF, HOURS, XLSX, RECORDS, EXPORTS].join('\n'),
-    sandbox, { filename: 'trucking.html' });
+  evalSlice([BOARDS, TYPES, GROUPS, DIVS, JOBOF, HOURS, XLSX, RECORDS, EXPORTS].join('\n'),
+    sandbox, 'the scheduler board, its records tab and its exports', { filename: 'trucking.html' });
 
   sandbox._schedStates.trucking.assignments = {
     '2026-03-02': [A('x1', { notes: 'call & <b>ask</b> for Ed' }),
@@ -1162,8 +1173,8 @@ function live(opts) {
     Blob: function () {}, URL: { createObjectURL: () => '', revokeObjectURL: () => {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext([BOARDS, TYPES, GROUPS, DIVS, JOBOF, HOURS, XLSX, RECORDS, EXPORTS].join('\n'),
-    sandbox, { filename: 'trucking.html' });
+  evalSlice([BOARDS, TYPES, GROUPS, DIVS, JOBOF, HOURS, XLSX, RECORDS, EXPORTS].join('\n'),
+    sandbox, 'the scheduler board, its records tab and its exports', { filename: 'trucking.html' });
   sandbox.__setView('records');
   SBOARDS(sandbox).forEach(id => {
     sandbox._schedStates[id].assignments = {};

@@ -26,6 +26,7 @@
 const fs   = require('fs');
 const path = require('path');
 const vm   = require('vm');
+const { missingGlobals } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 
 let passed = 0;
 let failed = 0;
@@ -113,8 +114,16 @@ const tableWrap = makeElement('table-wrap');
 let mockEntries = [];
 let mockFetchOk = true;
 let fetchQueue  = null;
+// What the page said while these cases ran — swept at the end of the file.
+const pageLogs = [];
 const sandbox = {
-  console: { log() {}, warn() {}, error() {} },
+  // Captured, not discarded. Page code that loads over a network runs inside a
+  // try/catch whose job is to turn a failure into something the user can act on
+  // — and that catch cannot tell a 403 from a ReferenceError. Thrown away, a
+  // collaborator this sandbox is missing leaves no trace at all; kept, the
+  // sweep at the end of the run names it.
+  console: { log() {}, warn: (...a) => pageLogs.push(a.join(' ')),
+             error: (...a) => pageLogs.push(a.join(' ')) },
   localStorage: {
     getItem: (k) => (storage.has(k) ? storage.get(k) : null),
     setItem: (k, v) => storage.set(k, String(v)),
@@ -494,6 +503,16 @@ assert('980 approved entries page into 20 pages',
 assert('only one page of DOM is built',  rowCount() === 50, `got ${rowCount()}`);
 run('gotoApprovedPage(20)');
 assert('the final page renders its 30 rows', rowCount() === 30, `got ${rowCount()}`);
+
+
+  // ── The sandbox still has everything the page reaches for ──
+  // A missing global is never a page failure, however much the page's own catch
+  // makes it look like one — see scripts/lib/fn-source.js.
+  {
+    const missing = missingGlobals(pageLogs);
+    assert('no page code hit a name this sandbox does not have', missing.length === 0,
+      missing.join(' | '));
+  }
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

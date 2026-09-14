@@ -59,12 +59,9 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const TRUCK = guardConfigFor('fct_truck_division');
 const CO = 'ACME', KEY = `${CO}:${TRUCK_DIVISION_BLOB}`;
@@ -107,16 +104,19 @@ function mockSql(store, mirror = new Map()) {
 const TRUCKING = read('trucking.html');
 const TOTALS   = slice(TRUCKING, '    /** Re-total a row and keep its Intercompany Billing mirror in step. */',
                                  '    /* ═══════════════════════════════════════════\n       BACKUP HAUL FEE',
-                                 '_syncRowTotal + updateField');
+                                 '_syncRowTotal + updateField',
+                       'function updateField(');
 const BACKUP   = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       BACKUP HAUL FEE',
                                  '    /* ═══════════════════════════════════════════\n       SCHEDULER',
-                                 'backup fee + column filters + renderTrackingTab');
+                                 'backup fee + column filters + renderTrackingTab',
+                       'function renderTrackingTab(');
 // The Customer column asks whether a haul pools under EES before it draws, so
 // the rule comes along rather than being stubbed — a stub here would let the
 // cell render against a rule the page does not have.
 const POOL     = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       INTERCOMPANY CUSTOMER POOLING',
                                  '    /* ═══════════════════════════════════════════\n       INTERCOMPANY BILLING',
-                                 'the EES customer pool');
+                                 'the EES customer pool',
+                       'function _setIcTruckCompanies(');
 
 function newPage(entries) {
   const dom = new JSDOM('<div id="tab-truck-tracking"></div>');
@@ -144,7 +144,8 @@ function newPage(entries) {
     triggerCSVUpload() {}, downloadCSVTemplate() {},
   };
   vm.createContext(sandbox);
-  vm.runInContext(POOL + '\n' + TOTALS + '\n' + BACKUP, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + TOTALS + '\n' + BACKUP, sandbox, 'the pool + the row editor + the backup fee',
+           { filename: 'trucking.html' });
   return { page: sandbox, dom, render: () => { sandbox.renderTrackingTab(); return dom.window.document; } };
 }
 

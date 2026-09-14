@@ -48,6 +48,7 @@ const SRC    = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8
 const SERVER = fs.readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
 const LIB    = fs.readFileSync(path.resolve(__dirname, '../api/lib/dust-injected.js'), 'utf8');
 const { MAX_DUST_ROWS } = require('../api/lib/dust-injected.js');
+const { evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 const { MAX_INJECTED_LEGS } = require('../api/lib/truck-injected.js');
 
 console.log('Payroll dust split modal\n');
@@ -215,36 +216,9 @@ console.log('\n[only a material haul reaches Truck Tracking]');
 
 // ── 2) Behavioural ──────────────────────────────────────────────────────────
 // The leg model, run for real against a stubbed DOM.
-/**
- * Evaluate one slice of payroll.html, and say something useful when it will
- * not evaluate.
- *
- * These suites lift ranges of the page by string anchors. Anything added
- * inside a range that reaches OUTSIDE it — a style constant declared 1,600
- * lines earlier, a helper defined near the top — takes the whole file down
- * with a bare `ReferenceError: X is not defined` and a stack pointing at
- * `evalmachine.<anonymous>`, before the first assertion runs. That has now
- * happened three times, and each one cost an investigation to work out that
- * the page was fine and the harness was missing a global.
- *
- * So the third time is the last: name the identifier and say what to do.
- */
-function evalSlice(code, ctx, what) {
-  try {
-    vm.runInContext(code, ctx);
-  } catch (err) {
-    const missing = /^(\w+) is not defined$/.exec(err.message);
-    if (missing) {
-      throw new Error(
-        `${what} reads "${missing[1]}", which payroll.html declares outside the slice `
-        + `lifted here. The page is fine; this harness is missing a global. Add `
-        + `\`${missing[1]}\`` + ` to the ctx object above — a no-op stub is enough unless an `
-        + `assertion below is actually about it.`);
-    }
-    throw err;
-  }
-}
-
+// evalSlice, the slice guards and the brace matcher all live in
+// scripts/lib/fn-source.js — this file was one of the two that taught it
+// what to say.
 function makeSandbox(entry, options, companies) {
   const els = new Map();
   const el = id => {

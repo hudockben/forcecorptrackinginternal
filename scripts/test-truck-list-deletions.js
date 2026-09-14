@@ -48,30 +48,9 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-/**
- * Lift a region of the page between two markers.
- *
- * `must` is what the region has to CONTAIN — the function this slice exists to
- * reach. A missing marker has always thrown; a marker matching too early never
- * did, and that is the one that actually happened: a banner written between the
- * start marker and updateField cut the slice short, the sandbox came up without
- * the function, and the failure surfaced two hundred lines later as a
- * TypeError with nothing in it about markers. Name what you came for and the
- * slice says so itself.
- */
-function slice(src, from, to, label, must) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  const out = src.slice(a, b);
-  for (const need of [].concat(must || [])) {
-    if (!out.includes(need)) {
-      throw new Error(`${label}: the slice stops short of ${JSON.stringify(need)} — `
-        + `the end marker ${JSON.stringify(to)} now matches earlier than it used to`);
-    }
-  }
-  return out;
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const TRUCKING = read('trucking.html');
 
@@ -152,7 +131,8 @@ function newPage(state) {
     labor:    { loaded: false, assignments: {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext(POOL + '\n' + HELPERS + '\n' + PANEL + '\n' + ROWEDIT, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + PANEL + '\n' + ROWEDIT, sandbox,
+           'the pool + list helpers + the panel + the row editor', { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -184,7 +164,8 @@ function renderPanel(state, drive) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(POOL + '\n' + HELPERS + '\n' + RENDER + '\n' + ROWEDIT, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + RENDER + '\n' + ROWEDIT, sandbox,
+           'the pool + list helpers + the render + the row editor', { filename: 'trucking.html' });
   if (drive) drive(sandbox);
   sandbox.renderListsPanel();
   return { html, tabs: tabsHtml, page: sandbox };

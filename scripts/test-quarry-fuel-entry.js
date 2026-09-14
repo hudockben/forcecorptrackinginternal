@@ -44,19 +44,21 @@ function assert(label, cond, detail) {
 }
 
 const SRC = fs.readFileSync(path.resolve(__dirname, '../quarry.html'), 'utf8');
-function slice(from, to, label) {
-  const a = SRC.indexOf(from);
-  const b = a < 0 ? -1 : SRC.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return SRC.slice(a, b);
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+// Every marker in this file is hunted in the one page it reads, so the source
+// is bound here rather than repeated at each call.
+const slice = (from, to, label, must) => sliceSource(SRC, from, to, label, must);
+
 // The real normHeader and the real column definitions, lifted out of the page.
 const ctx = { todayIso: () => '2026-09-01', console };
 vm.createContext(ctx);
-vm.runInContext(slice('function normHeader(h)', '\n    function parseCSV(text)', 'normHeader'), ctx);
+evalSlice(slice('function normHeader(h)', '\n    function parseCSV(text)', 'normHeader',
+                'function normHeader('), ctx, 'normHeader');
 // `const` in a vm script stays lexical, so hand it out explicitly.
-vm.runInContext(slice('const MAX_PER_GALLON =', '\n    const bulkParsed = {};', 'BULK_CONFIGS')
-  + '\nglobalThis.BULK_CONFIGS = BULK_CONFIGS;', ctx);
+evalSlice(slice('const MAX_PER_GALLON =', '\n    const bulkParsed = {};', 'BULK_CONFIGS',
+                'const BULK_CONFIGS =')
+  + '\nglobalThis.BULK_CONFIGS = BULK_CONFIGS;', ctx, 'the bulk fuel configs');
 const { normHeader, BULK_CONFIGS } = ctx;
 
 // The header row downloadBulkTemplate writes, for a given config.
@@ -173,7 +175,8 @@ console.log('\n[which column the importer reads the per-gallon rate from]');
 // ── 4) The matcher this test replicates ─────────────────────────────────────
 console.log('\n[the replica above still matches parseBulk]');
 {
-  const parse = slice('function parseBulk(key, text)', '\n      const missing =', 'parseBulk');
+  const parse = slice('function parseBulk(key, text)', '\n      const missing =', 'parseBulk',
+                      'function parseBulk(');
   assert('the normalized label is still tried before the aliases',
     /\[\.\.\.new Set\(\[labelAlias, \.\.\.f\.aliases\]\)\]/.test(parse));
   assert('and the first header that hits still wins',

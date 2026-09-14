@@ -38,12 +38,9 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
-}
+
+const { sliceSource } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const PAYROLL   = read('payroll.html');
 const TIMESHEET = read('timesheet.html');
@@ -64,7 +61,8 @@ console.log('\n[payroll.html — the approve / Edit Row modal]');
   // customer's rate — does write a box; it goes through the staleness and
   // touched guards to do it (see test-haul-fee-rate-prefill.js). Here the rule
   // is narrower and still absolute: the loader hands back data, nothing else.
-  const loader = slice(PAYROLL, 'function truckListsLoad()', 'const truckUnitRoster', 'payroll loader');
+  const loader = slice(PAYROLL, 'function truckListsLoad()', 'const truckUnitRoster', 'payroll loader',
+                       'function truckListsLoad(');
   assert('the roster never assigns an input value', !/\.value\s*=/.test(loader), loader.match(/.*\.value\s*=.*/) || '');
   // One fetch, two rosters. The customer list rides along because a split day's
   // hauls are picked from it, and a second call for one more array off the same
@@ -106,7 +104,8 @@ console.log('\n[timesheet.html — the driver\'s form]');
   assert('the roster comes from the lists-only route here too',
     /fetch\('\/api\/truck-division\?lists=1'/.test(TIMESHEET));
   // Most days on this form are not hauls; none of them should pay for a fetch.
-  const onJob = slice(TIMESHEET, 'function onJobChange(i = 0)', '\n    }', 'onJobChange');
+  const onJob = slice(TIMESHEET, 'function onJobChange(i = 0)', '\n    }', 'onJobChange',
+                      'function onJobChange(');
   assert('the roster is fetched only once a haul is on screen',
     /if \(isTruck\) \{[\s\S]*truckUnitRosterLoad\(\)/.test(onJob), onJob.slice(0, 200));
   assert('and the note is dropped when the field goes away',
@@ -151,7 +150,8 @@ const ROSTER = [
 // array — including the "no answer yet" case, which is a null accessor result
 // and not an empty list.
 function payrollHint(rosterValue, inputValue) {
-  const src  = slice(PAYROLL, 'function truckUnitHintRefresh()', '// ── The hauls a day is split into', 'payroll hint');
+  const src  = slice(PAYROLL, 'function truckUnitHintRefresh()', '// ── The hauls a day is split into', 'payroll hint',
+                     'function truckFeeHintRefresh(');
   const hint = hintNode();
   const ctx  = {
     truckUnitRoster: () => rosterValue,
@@ -163,7 +163,8 @@ function payrollHint(rosterValue, inputValue) {
 
 // timesheet.html: truckUnitHintFor(input) writes <input id>-hint.
 function driverHint(rosterValue, inputValue) {
-  const src   = slice(TIMESHEET, 'function truckUnitHintFor(input)', 'function truckUnitHintsRefresh()', 'driver hint');
+  const src   = slice(TIMESHEET, 'function truckUnitHintFor(input)', 'function truckUnitHintsRefresh()', 'driver hint',
+                      'function truckUnitHintFor(');
   const hint  = hintNode();
   const input = { id: 'f-truck-unit', value: inputValue };
   const ctx   = {

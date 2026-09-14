@@ -44,23 +44,24 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const TRUCKING = read('trucking.html');
 const ROUTE    = read('api/truck-division.js');
 const SCHEMA   = read('neon-schema.sql');
 
-const HELPERS = slice(TRUCKING, '    const _remKey =', '    function saveTruckLists()', 'list helpers + sweep');
-const PANEL   = slice(TRUCKING, '    function addToList(key)', '    function schedSave()', 'panel handlers');
+const HELPERS = slice(TRUCKING, '    const _remKey =', '    function saveTruckLists()', 'list helpers + sweep',
+                      'function _recoverEntriesFromIcBilling(');
+const PANEL   = slice(TRUCKING, '    function addToList(key)', '    function schedSave()', 'panel handlers',
+                      'function _undoRename(');
 const RENDER  = slice(TRUCKING, '    /* ── Reading a sign-in against the drivers list',
-                                '    function schedSave()', 'panel render');
+                                '    function schedSave()', 'panel render',
+                      'function _undoRename(');
 const REPORT  = slice(TRUCKING, '    /* ═══════ How the daily report is grouped',
-                                '    function schedSheetRows(date)', 'report grouping + sheet row');
+                                '    function schedSheetRows(date)', 'report grouping + sheet row',
+                      'function schedSheetRow(');
 
 // The Manage Lists panel now carries an Intercompany Rollup tab, so the
 // pooling rule comes along with the panel it is part of rather than being
@@ -68,7 +69,8 @@ const REPORT  = slice(TRUCKING, '    /* ═══════ How the daily repo
 // not have.
 const POOL = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       INTERCOMPANY CUSTOMER POOLING',
                              '    /* ═══════════════════════════════════════════\n       INTERCOMPANY BILLING',
-                             'the EES customer pool');
+                             'the EES customer pool',
+                   'function _setIcTruckCompanies(');
 
 
 const freshLists = () => ({
@@ -107,7 +109,8 @@ function newPage(state) {
     labor:    { loaded: state.laborLoaded === true,  assignments: state.labor || {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext(POOL + '\n' + HELPERS + '\n' + PANEL, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + PANEL, sandbox, 'the pool + list helpers + the panel',
+           { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -129,7 +132,8 @@ function newReport(lists, items, reports) {
     schedJobOf: a => (a && (a.project || a.customer)) || '',
   };
   vm.createContext(sandbox);
-  vm.runInContext(POOL + '\n' + HELPERS + '\n' + REPORT, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + REPORT, sandbox, 'the pool + list helpers + the report',
+           { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -158,7 +162,8 @@ function renderPanel(state, drive) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(POOL + '\n' + HELPERS + '\n' + RENDER, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + RENDER, sandbox, 'the pool + list helpers + the render',
+           { filename: 'trucking.html' });
   if (drive) drive(sandbox);
   sandbox.renderListsPanel();
   return { html, tabs: tabsHtml, page: sandbox };
@@ -406,8 +411,10 @@ function renderPanel(state, drive) {
     // that must agree: the screen table, the print/email sheet and the .xlsx.
     const cols  = evalIn(newReport(freshLists(), []), 'SCHED_SHEET_COLS');
     const tons  = cols.indexOf('Tons'), loads = cols.indexOf('Loads');
-    const html  = slice(TRUCKING, '    function schedSheetHTML(date)', '    function schedSheetPrint()', 'sheet html');
-    const xlsx  = slice(TRUCKING, '    function schedSheetXlsx(date)', '      return _xlsxPackage(', 'sheet xlsx');
+    const html  = slice(TRUCKING, '    function schedSheetHTML(date)', '    function schedSheetPrint()', 'sheet html',
+                        'function schedSheetHTML(');
+    const xlsx  = slice(TRUCKING, '    function schedSheetXlsx(date)', '      return _xlsxPackage(', 'sheet xlsx',
+                        'function schedSheetXlsx(');
     const nums  = `new Set([4, ${tons}, ${loads}])`;
     assert('the printed sheet right-aligns the figure columns', html.includes(nums), nums);
     assert('and the workbook writes them as numbers', xlsx.includes(nums), nums);
@@ -421,7 +428,8 @@ function renderPanel(state, drive) {
     // The day table on screen is the same sheet without Address and the
     // driver's notes; its band and subtotal rows span it.
     const day = slice(TRUCKING, '    function schedDayHTML()', '    /* ═══════ How the daily report',
-      'day table');
+      'day table',
+                      'function schedDayHTML(');
     const heads = (day.match(/<th>/g) || []).length;
     assert('the day table has a Truck Type column too', /<th>Truck Type<\/th>/.test(day));
     assert('and its section bands span the whole row',

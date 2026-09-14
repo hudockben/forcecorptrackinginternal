@@ -25,7 +25,10 @@
 const fs   = require('fs');
 const path = require('path');
 const vm   = require('vm');
+const { missingGlobals } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 
+// What the page said while these cases ran — swept at the end of the run.
+const pageLogs = [];
 let passed = 0;
 let failed = 0;
 function assert(label, cond, detail) {
@@ -156,7 +159,12 @@ function makeSandbox(prefix) {
     Date, Math, Object, Array, String, Number,
     encodeURIComponent,
     fetch:               fakeFetch,
-    console:             { warn: () => {}, log: () => {}, error: () => {} },
+    // Captured, not discarded: a collaborator this sandbox is missing reaches
+    // the page's own catch and comes out looking like a failed load. The sweep
+    // at the end of the run tells the two apart.
+    console:             { log: () => {},
+                           warn:  (...a) => pageLogs.push(a.join(' ')),
+                           error: (...a) => pageLogs.push(a.join(' ')) },
   };
 
   // Expose state we want to inspect from outside
@@ -266,6 +274,13 @@ async function behaviouralSuite(file, projectKeyPrefix, indexKey) {
     console.error('Behavioural suite crashed:', err);
     failed++;
   }
+  // ── The sandbox still has everything the page reaches for ──
+  // A missing global is never a page failure, however much the page's own catch
+  // makes it look like one — see scripts/lib/fn-source.js.
+  const missing = missingGlobals(pageLogs);
+  assert('no page code hit a name this sandbox does not have', missing.length === 0,
+    missing.join(' | '));
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();
