@@ -54,10 +54,12 @@ const FNS = [
   'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours',
   'weekStartOf', 'weekEndOf', 'stampKey', 'compareIds', 'byEntryOrder', 'weeklyOvertime',
   'buildReportModel', 'projectKeyOf', 'buildProjectsModel',
-  'projRoomTitle', 'projEmployeeRowHtml', 'projColumnsHtml', 'projBlockHtml', 'projChartHtml',
+  'projRoomTitle', 'projEmployeeRowHtml', 'projColumnsHtml', 'projBlockHtml',
+  'projBarsHtml', 'projChartHtml', 'projCrewChartHtml',
   'colLetter', 'excelDateSerial', 'xmlEsc', 'xlsxRow', 'xlsxSheetXml',
   'xlsxContentTypes', 'xlsxSheetName', 'xlsxWorkbook', 'xlsxWorkbookRels',
-  'projectSummarySheetXml', 'projectEmployeeSheetXml', 'projectHeadroomSheetXml',
+  'projectSummarySheetXml', 'projectCrewSheetXml', 'projectEmployeeSheetXml',
+  'projectHeadroomSheetXml',
 ];
 
 // The consts the lifted functions reach for. Taken as slices rather than
@@ -293,6 +295,60 @@ console.log('\n[the screen]');
     near(totalCells[heads.indexOf('OT Hrs')].textContent, byName['Shop Yard'].otHours));
 }
 
+// ── The same hours, the other way up ────────────────────────────────────────
+console.log('\n[one row per man, across every job he worked]');
+{
+  const crew = Object.fromEntries(model.employees.map(e => [e.username, e]));
+  assert('each man appears once, however many jobs he was on',
+    model.employees.length === 3 && crew.matt.jobs === 2, JSON.stringify(model.employees.map(e => e.username)));
+  assert('  his hours are his jobs\' hours added together',
+    near(crew.matt.totalHours,
+         empOn('Ridge Road Paving', 'matt').totalHours + empOn('Shop Yard', 'matt').totalHours));
+  assert('  and so is his overtime — the same figure the Hours Report prints',
+    near(crew.matt.otHours, base.rows.find(r => r.username === 'matt').otHours));
+  assert('the crew\'s overtime adds to the company\'s, exactly as the jobs\' does',
+    near(model.employees.reduce((s, e) => s + e.otHours, 0), base.tot.otHours));
+  assert('  and so do the hours, so the two charts draw the same fortnight',
+    near(model.employees.reduce((s, e) => s + e.totalHours, 0), sumJobs('totalHours')));
+  assert('a day worked on two jobs counts once against the man',
+    crew.matt.days === 8, `got ${crew.matt.days}`);
+  assert('he carries his headroom, so the chart can say what is left',
+    near(crew.matt.remaining, 10) && near(crew.ray.remaining, 16));
+  assert('the busiest overtime sorts to the top here too',
+    model.employees[0].otHours >= model.employees[model.employees.length - 1].otHours);
+}
+
+console.log('\n[the second chart]');
+{
+  const cdom = new JSDOM(`<!doctype html><body>${api.projCrewChartHtml(model.employees)}</body>`);
+  const rows = [...cdom.window.document.querySelectorAll('.pc-row')];
+  assert('the crew chart draws a bar per man', rows.length === model.employees.length);
+  const matt = rows.find(r => r.querySelector('.pc-label').textContent.includes('matt'));
+  const width = sel => parseFloat((matt.querySelector(sel).getAttribute('style') || '').replace(/\D*([\d.]+).*/, '$1'));
+  assert('  overtime is its own segment here as well', width('.pc-ot') > 0 && width('.pc-reg') > 0);
+  // Each chart is scaled inside itself, so the busiest man fills his own bar.
+  const busiest = Math.max(...model.employees.map(e => e.totalHours));
+  const share = (Object.fromEntries(model.employees.map(e => [e.username, e]))
+    .matt.totalHours / busiest) * 100;
+  assert('  and the bar is his share of the busiest man, not of the biggest job',
+    Math.abs(width('.pc-reg') + width('.pc-ot') - share) < 0.02,
+    `${(width('.pc-reg') + width('.pc-ot')).toFixed(2)}% vs ${share.toFixed(2)}%`);
+  assert('  the label says how many jobs the bar is spread over',
+    /2 jobs/.test(matt.querySelector('.pc-label').textContent));
+  assert('  and the tooltip carries the hours left before overtime starts again',
+    /before overtime/i.test(matt.getAttribute('title') || ''), matt.getAttribute('title'));
+
+  // Both charts are drawn by projBarsHtml, so the colours and the rounding
+  // cannot drift apart — that is the reason it is one function.
+  const jdom = new JSDOM(`<!doctype html><body>${api.projChartHtml(model.projects)}</body>`);
+  const cls = d => [...d.window.document.querySelectorAll('.pc-row > *')].map(e => e.className);
+  assert('both charts are built from the same row markup',
+    JSON.stringify(cls(jdom).slice(0, 3)) === JSON.stringify(cls(cdom).slice(0, 3)));
+  assert('  and each says which yardstick it was scaled against',
+    /largest job/.test(jdom.window.document.querySelector('.proj-section-title').textContent) &&
+    /busiest man/.test(cdom.window.document.querySelector('.proj-section-title').textContent));
+}
+
 // ── What the workbook says ──────────────────────────────────────────────────
 console.log('\n[the workbook]');
 
@@ -335,18 +391,39 @@ function column(c, letter, first, last) {
 }
 
 {
+  const xml = api.projectCrewSheetXml(model);
+  const s2 = cells(xml);
+  const HEAD = 7, n = model.employees.length;
+  assert('sheet 2 is one row per man, across every job', n === 3, `got ${n}`);
+  assert('  its overtime column adds to the company overtime too',
+    near(column(s2, 'I', HEAD + 1, HEAD + n).reduce((a, b) => a + b, 0), base.tot.otHours));
+  assert('  and its hours match the by-job sheet, so the two charts agree',
+    near(val(s2, `G${HEAD + n + 1}`), sumJobs('totalHours')));
+  // The whole reason this sheet exists beside the per-job one.
+  assert('  HERE the headroom column totals — each man appears exactly once',
+    near(val(s2, `M${HEAD + n + 1}`), model.totRemaining),
+    `got ${val(s2, `M${HEAD + n + 1}`)} vs ${model.totRemaining}`);
+  assert('  the job count is the company\'s, not the column added up',
+    val(s2, `B${HEAD + n + 1}`) === model.projects.length &&
+    model.projects.length < column(s2, 'B', HEAD + 1, HEAD + n).reduce((a, b) => a + b, 0));
+  assert('  and the work days likewise', val(s2, `C${HEAD + n + 1}`) === model.tot.days);
+  assert('  the sheet says why its headroom totals and the other\'s does not',
+    /each man appears once/i.test(xml));
+}
+
+{
   const xml = api.projectEmployeeSheetXml(model);
   const s2 = cells(xml);
   const HEAD = 7;
   const n = model.projects.reduce((s, p) => s + p.employees.length, 0);
-  assert('sheet 2 is one row per employee per job', n === 4, `got ${n}`);
+  assert('sheet 3 is one row per employee per job', n === 4, `got ${n}`);
   assert('  its overtime column also adds to the company overtime',
     near(column(s2, 'J', HEAD + 1, HEAD + n).reduce((a, b) => a + b, 0), base.tot.otHours));
   assert('  the headroom column REFUSES to total — it would count a week per job',
     typeof val(s2, `M${HEAD + n + 1}`) === 'string',
     `got ${JSON.stringify(val(s2, `M${HEAD + n + 1}`))}`);
-  assert('  and it says where the real total is',
-    /headroom sheet/i.test(String(val(s2, `M${HEAD + n + 1}`))));
+  assert('  and it points at the sheet where that total is real',
+    /Overtime by Employee/i.test(String(val(s2, `M${HEAD + n + 1}`))));
   assert('  each row carries the weeks its headroom came from',
     String(val(s2, `N${HEAD + 1}`)).includes('2026-08-'));
 }
@@ -355,7 +432,7 @@ function column(c, letter, first, last) {
   const s3 = cells(api.projectHeadroomSheetXml(model));
   const HEAD = 7;
   const n = model.crewRows.reduce((s, c) => s + c.weeks.length, 0);
-  assert('sheet 3 is one row per employee per week', n === 4, `got ${n}`);
+  assert('sheet 4 is one row per employee per week', n === 4, `got ${n}`);
   assert('  here the headroom DOES total, because each week appears once',
     near(val(s3, `G${HEAD + n + 1}`), model.totRemaining));
   assert('  hours worked, regular and overtime still reconcile',
@@ -369,15 +446,20 @@ function column(c, letter, first, last) {
 
 console.log('\n[the package Excel actually has to open]');
 {
-  const names = ['Overtime by Project', 'Employees by Project', 'OT Headroom by Week'];
+  const names = ['Overtime by Project', 'Overtime by Employee',
+                 'Employees by Project', 'OT Headroom by Week'];
   const wb   = api.xlsxWorkbook(names);
   const rels = api.xlsxWorkbookRels(names.length);
   const ct   = api.xlsxContentTypes(names.length);
   assert('the workbook lists every sheet', names.every(n => wb.includes(`name="${n}"`)));
   assert('  every sheet has a relationship, and styles takes the id after them',
-    [1, 2, 3].every(i => rels.includes(`Id="rId${i}"`) && rels.includes(`worksheets/sheet${i}.xml`)) &&
-    rels.includes('Id="rId4"') && rels.includes('Target="styles.xml"'));
-  assert('  and a content type', [1, 2, 3].every(i => ct.includes(`/xl/worksheets/sheet${i}.xml`)));
+    [1, 2, 3, 4].every(i => rels.includes(`Id="rId${i}"`) && rels.includes(`worksheets/sheet${i}.xml`)) &&
+    rels.includes('Id="rId5"') && rels.includes('Target="styles.xml"'));
+  assert('  and a content type', [1, 2, 3, 4].every(i => ct.includes(`/xl/worksheets/sheet${i}.xml`)));
+  // The generated parts are the reason a fourth sheet was a one-line change.
+  assert('  the book grew to four sheets without touching the package parts',
+    /projectCrewSheetXml\(model\)[\s\S]{0,200}projectEmployeeSheetXml/.test(PAGE) &&
+    api.xlsxContentTypes(4).match(/worksheets\/sheet/g).length === 4);
   assert('  the sheet count is stated once, by the caller',
     api.xlsxContentTypes(2).match(/worksheets\/sheet/g).length === 2);
   assert('a sheet name Excel would reject is clamped rather than shipped',

@@ -3773,12 +3773,15 @@
       }
 
       const projects = new Map();
-      // The company's own work days and headcount, gathered as the entries go
-      // by. Neither can be read off the project rows afterwards: a day worked
-      // on four jobs is one day and a man on four jobs is one man, so summing
-      // either column would count both once per job.
+      // The same hours gathered the other way up: per MAN, across every job he
+      // worked. The chart under the project one is drawn from this, and it
+      // cannot be read off the project rows afterwards — a man on four jobs has
+      // four rows there, and his week is one week.
+      const byEmployee = new Map();
+      // The company's own work days. Not readable off the project rows either:
+      // a day worked on four jobs is one day, so summing that column would
+      // count it four times.
       const allDays = new Set();
-      const allCrew = new Set();
       let offEntries = 0, countedEntries = 0;
 
       for (const r of base.rows) {
@@ -3840,10 +3843,20 @@
             pendingHours:  e.status === 'submitted' ? total : 0,
             approvedHours: e.status === 'approved'  ? total : 0,
           };
-          add(p, v); add(emp, v);
-          p.entries++; emp.entries++;
-          allCrew.add(r.username);
-          if (e.work_date) { p.days.add(e.work_date); emp.days.add(e.work_date); allDays.add(e.work_date); }
+          if (!byEmployee.has(r.username)) {
+            byEmployee.set(r.username, Object.assign({
+              username: r.username, days: new Set(), jobs: new Set(), entries: 0,
+            }, blank()));
+          }
+          const who = byEmployee.get(r.username);
+
+          add(p, v); add(emp, v); add(who, v);
+          p.entries++; emp.entries++; who.entries++;
+          who.jobs.add(key);
+          if (e.work_date) {
+            p.days.add(e.work_date); emp.days.add(e.work_date);
+            who.days.add(e.work_date); allDays.add(e.work_date);
+          }
 
           const wk = weekStartOf(e.work_date);
           const c  = crew.get(r.username);
@@ -3871,6 +3884,22 @@
         regHours: p.totalHours - p.otHours,
       })).sort((a, b) => byOvertime(a, b) || a.name.localeCompare(b.name));
 
+      // The same sort as the jobs, for the same reason: this chart is read
+      // top-down to find who is running hot.
+      const employees = [...byEmployee.values()].map(w => {
+        const room = crew.get(w.username);
+        return Object.assign({}, w, {
+          days:      w.days.size,
+          jobs:      w.jobs.size,
+          regHours:  w.totalHours - w.otHours,
+          // His headroom and his weeks, so the chart's tooltip can say how many
+          // hours are left before the premium starts again.
+          remaining: room ? room.remaining : 0,
+          clipped:   room ? room.clipped   : false,
+          room,
+        });
+      }).sort((a, b) => byOvertime(a, b) || a.username.localeCompare(b.username));
+
       const tot = Object.assign(blank(), { entries: 0, days: allDays.size, regHours: 0 });
       for (const p of rows) { add(tot, p); tot.entries += p.entries; }
       tot.regHours = tot.totalHours - tot.otHours;
@@ -3879,15 +3908,19 @@
       // whole fortnight was vacation has no headroom worth reporting — he has
       // no counted week to have headroom in.
       const crewRows = [...crew.values()]
-        .filter(c => allCrew.has(c.username))
+        .filter(c => byEmployee.has(c.username))
         .sort((a, b) => a.username.localeCompare(b.username));
 
       return {
         projects: rows,
+        // The crew, each man once, across every job he worked — what the second
+        // chart is drawn from. Not to be confused with a project's own
+        // `employees`, which is that one job's share of the same men.
+        employees,
         tot,
         crew,
         crewRows,
-        employeeCount: allCrew.size,
+        employeeCount: byEmployee.size,
         // Summed across PEOPLE, never across project rows: the same man's
         // headroom appears under every job he worked, and adding the column
         // would count it once per job.
@@ -4021,40 +4054,87 @@
         </div>`;
     }
 
-    // The chart. One bar per job, scaled against the biggest job in range: the
-    // body of the bar is regular time and the head of it is overtime, so a job
-    // that is simply big and a job that is running hot are told apart at a
-    // glance — which no column of figures does.
-    function projChartHtml(projects) {
-      const max = projects.reduce((m, p) => Math.max(m, p.totalHours), 0) || 1;
-      const bars = projects.map(p => {
-        const hasOt = p.otHours > 0.001;
-        const pct = h => ((h / max) * 100).toFixed(2);
-        const share = p.totalHours > 0.001 ? (p.otHours / p.totalHours) * 100 : 0;
-        const title = hasOt
-          ? `${p.name} — ${p.totalHours.toFixed(2)} h worked, ${p.otHours.toFixed(2)} of them past the fortieth hour of somebody's week (${share.toFixed(1)}%)`
-          : `${p.name} — ${p.totalHours.toFixed(2)} h worked, none of it overtime`;
-        return `
-          <div class="pc-row" title="${escapeHtml(title)}">
-            <div class="pc-label">${escapeHtml(p.name)} <span class="pc-div">· ${escapeHtml(prettyDiv(p.division) || '—')}</span></div>
+    // The charts. Two of them, drawn by one function, because they are the same
+    // question asked of a different subject: a job, and then a man. The bar is
+    // hours worked and the orange head of it is the overtime inside them, so a
+    // subject that is simply BIG and one that is running HOT do not look alike —
+    // which is the whole reason this is a picture and not another column of
+    // figures.
+    //
+    // Both are scaled against the largest bar in their OWN chart. The two
+    // therefore may not be compared across: a job's bar and a man's bar of the
+    // same length are not the same hours, and each chart's heading says which
+    // yardstick it used.
+    //
+    // rows: [{ label, sub, totalHours, regHours, otHours, title }]
+    function projBarsHtml(heading, rows) {
+      const max = rows.reduce((m, r) => Math.max(m, r.totalHours), 0) || 1;
+      const pct = h => ((h / max) * 100).toFixed(2);
+      const bars = rows.map(r => `
+          <div class="pc-row" title="${escapeHtml(r.title)}">
+            <div class="pc-label">${escapeHtml(r.label)} <span class="pc-div">· ${escapeHtml(r.sub)}</span></div>
             <div class="pc-track">
-              <div class="pc-reg" style="width:${pct(p.regHours)}%"></div>
-              <div class="pc-ot"  style="width:${pct(p.otHours)}%"></div>
+              <div class="pc-reg" style="width:${pct(r.regHours)}%"></div>
+              <div class="pc-ot"  style="width:${pct(r.otHours)}%"></div>
             </div>
-            <div class="pc-value">${hasOt
-              ? `<strong>${p.otHours.toFixed(2)} h OT</strong> of ${p.totalHours.toFixed(2)}`
-              : `no OT · ${p.totalHours.toFixed(2)} h`}</div>
-          </div>`;
-      }).join('');
+            <div class="pc-value">${r.otHours > 0.001
+              ? `<strong>${r.otHours.toFixed(2)} h OT</strong> of ${r.totalHours.toFixed(2)}`
+              : `no OT · ${r.totalHours.toFixed(2)} h`}</div>
+          </div>`).join('');
       return `
         <div class="proj-chart">
-          <div class="proj-section-title">Overtime by project — bars are hours worked, scaled to the largest job in range</div>
+          <div class="proj-section-title">${escapeHtml(heading)}</div>
           ${bars}
           <div class="pc-legend">
             <span><i class="pc-key reg"></i>Regular hours</span>
             <span><i class="pc-key ot"></i>Overtime — hours past the fortieth of an employee's Monday–Sunday week</span>
           </div>
         </div>`;
+    }
+
+    // Chart one: the jobs.
+    function projChartHtml(projects) {
+      return projBarsHtml(
+        'Overtime by project — bars are hours worked, scaled to the largest job in range',
+        projects.map(p => {
+          const share = p.totalHours > 0.001 ? (p.otHours / p.totalHours) * 100 : 0;
+          return {
+            label: p.name,
+            sub:   prettyDiv(p.division) || '—',
+            totalHours: p.totalHours, regHours: p.regHours, otHours: p.otHours,
+            title: p.otHours > 0.001
+              ? `${p.name} — ${p.totalHours.toFixed(2)} h worked, ${p.otHours.toFixed(2)} of them past the fortieth hour of somebody's week (${share.toFixed(1)}%)`
+              : `${p.name} — ${p.totalHours.toFixed(2)} h worked, none of it overtime`,
+          };
+        }));
+    }
+
+    // Chart two: the same hours the other way up, one bar per man across every
+    // job he worked. The chart above says which job is buying the overtime;
+    // this one says who is working it — and they are different questions,
+    // because one man spread thin over four jobs shows up nowhere on the first
+    // chart and at the top of this one.
+    //
+    // The tooltip carries the hours he has left before the premium starts
+    // again, which is the figure a foreman wants the moment he has found him.
+    function projCrewChartHtml(employees) {
+      return projBarsHtml(
+        'Overtime by employee — the same hours per man, scaled to the busiest man in range',
+        employees.map(e => {
+          const share = e.totalHours > 0.001 ? (e.otHours / e.totalHours) * 100 : 0;
+          const jobs  = `${e.jobs} job${e.jobs === 1 ? '' : 's'}`;
+          const room  = e.remaining > 0.001
+            ? `${e.remaining.toFixed(2)} h left before overtime starts again`
+            : 'no hours left in his weeks before overtime';
+          return {
+            label: e.username,
+            sub:   `${jobs} · ${e.days} day${e.days === 1 ? '' : 's'}`,
+            totalHours: e.totalHours, regHours: e.regHours, otHours: e.otHours,
+            title: e.otHours > 0.001
+              ? `${e.username} — ${e.totalHours.toFixed(2)} h over ${jobs}, ${e.otHours.toFixed(2)} of them past the fortieth hour of a Monday–Sunday week (${share.toFixed(1)}%) · ${room}`
+              : `${e.username} — ${e.totalHours.toFixed(2)} h over ${jobs}, none of it overtime · ${room}`,
+          };
+        }));
     }
 
     function renderProjectsReport() {
@@ -4127,6 +4207,7 @@
           </div>
 
           ${projChartHtml(projects)}
+          ${projCrewChartHtml(m.employees)}
 
           <p class="proj-note">
             <strong>Overtime is an employee's week, not a job's.</strong>
@@ -4931,7 +5012,88 @@
       });
     }
 
-    // Sheet 2 — one row per employee PER JOB: the crew tables on screen, flat.
+
+    // Sheet 2 — one row per MAN, across every job he worked: the second chart,
+    // as figures. The sheet before it groups by job because that is how the work
+    // is bought; this one groups by the person the fortieth hour actually
+    // belongs to, so a man spread thin over four jobs — invisible on every job's
+    // own row — appears here at his full size.
+    //
+    // It is also the only sheet in the book where HOURS BEFORE OT can be added
+    // up, because it is the only one where each man appears exactly once. On
+    // "Employees by Project" the same week sits under every job he worked, and
+    // summing it there counts his week once per job.
+    function projectCrewSheetXml(model) {
+      const { employees, tot, scopeLine, gen, companyName } = model;
+      const headers = ['Employee', 'Jobs Worked', 'Days Worked',
+        'Work Hours (labour)', 'Haul Hours (driving)', 'Travel Hours', 'Total Hours',
+        'Regular Hrs', 'OT Hrs', 'Prevailing OT Hrs', 'Standard OT Hrs',
+        'Prevailing Hrs (work only)', 'Hours Before OT', 'Pending Hrs', 'Approved Hrs'];
+      const HEADER_ROW = 7;
+      const NUM_COLS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+
+      const sheet = [
+        [cTxt('Project Overtime Report — Overtime by Employee', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt('The same hours as the "Overtime by Project" sheet, grouped by the person rather than the job. Both add to the same fortnight and the same overtime — a man spread over four jobs is small on each of them and his full size here.', XS.bold)],
+        [cTxt('OT Hrs is hours past the fortieth of a MONDAY–SUNDAY week, counted across every job he worked that week. Work + travel count toward the 40; paid leave does not. Prevailing-wage overtime is 1.5x the base rate plus the FULL fringe — the fringe is never multiplied — so it is split out from standard overtime.', XS.sub)],
+        [cTxt('Hours Before OT is what he can still work before the premium starts. This sheet is the one place it can be totalled: each man appears once here, where on "Employees by Project" his week sits under every job he worked. Week by week on "OT Headroom by Week".', XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      let sumRoom = 0;
+      for (const e of employees) {
+        sheet.push([
+          cTxt(e.username,      XS.text),
+          cNum(e.jobs,          XS.num),
+          cNum(e.days,          XS.num),
+          cNum(e.workHours,     XS.num),
+          cNum(e.truckHours,    XS.numHaul),
+          cNum(e.travelHours,   XS.num),
+          cNum(e.totalHours,    XS.num),
+          cNum(e.regHours,      XS.num),
+          cNum(e.otHours,       XS.num),
+          cNum(e.otPwHours,     XS.numPw),
+          cNum(e.otStdHours,    XS.num),
+          cNum(e.pwHours,       XS.numPw),
+          cNum(e.remaining,     XS.num),
+          cNum(e.pendingHours,  XS.num),
+          cNum(e.approvedHours, XS.num),
+        ]);
+        sumRoom += e.remaining;
+      }
+
+      sheet.push([
+        cTxt(`Totals (${employees.length} employee${employees.length === 1 ? '' : 's'})`, XS.totText),
+        // The company's job count and work days, not the columns added up: a job
+        // three men worked is one job, and a day four men worked is one day.
+        cNum(model.projects.length, XS.totNum),
+        cNum(tot.days,            XS.totNum),
+        cNum(tot.workHours,       XS.totNum),
+        cNum(tot.truckHours,      XS.totHaul),
+        cNum(tot.travelHours,     XS.totNum),
+        cNum(tot.totalHours,      XS.totNum),
+        cNum(tot.regHours,        XS.totNum),
+        cNum(tot.otHours,         XS.totNum),
+        cNum(tot.otPwHours,       XS.totPw),
+        cNum(tot.otStdHours,      XS.totNum),
+        cNum(tot.pwHours,         XS.totPw),
+        // A real total — see the note above.
+        cNum(sumRoom,             XS.totNum),
+        cNum(tot.pendingHours,    XS.totNum),
+        cNum(tot.approvedHours,   XS.totNum),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [24, 13, 13, 19, 20, 13, 12, 12, 11, 18, 17, 24, 17, 13, 14],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:O${HEADER_ROW + employees.length}`,
+      });
+    }
+
+    // Sheet 3 — one row per employee PER JOB: the crew tables on screen, flat.
     function projectEmployeeSheetXml(model) {
       const { projects, tot, scopeLine, gen, companyName } = model;
       const headers = ['Project / Job', 'Division', 'Employee', 'Days Worked',
@@ -4945,7 +5107,7 @@
         [cTxt('Project Overtime Report — Employees by Project', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
         [cTxt('OT Hrs is this man’s hours ON THIS JOB that fell past the fortieth hour of his Monday–Sunday week — the 40 counted across every job he worked that week, the overtime then posted back to the job each hour was worked on.', XS.sub)],
-        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. The weeks behind it are in the last column, and one row each on the "OT Headroom by Week" sheet.', XS.bold)],
+        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. It totals on the "Overtime by Employee" sheet, where each man appears once, and the weeks behind it are in the last column here and one row each on "OT Headroom by Week".', XS.bold)],
         [cTxt('A man already past 40 shows 0.00 — the hours he is over are in the OT column, not here.', XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
@@ -4995,7 +5157,7 @@
         // Deliberately not a number. Adding this column counts one man's week
         // once per job he worked in it; the crew's real headroom is the total
         // on the "OT Headroom by Week" sheet, where each week appears once.
-        cTxt('see headroom sheet', XS.totText),
+        cTxt('see Overtime by Employee', XS.totText),
         cTxt('', XS.totText),
       ]);
 
@@ -5007,11 +5169,12 @@
       });
     }
 
-    // Sheet 3 — one row per employee PER WEEK, which is the shape the fortieth
-    // hour actually has. The two sheets above are grouped by job because that is
-    // how the work is bought; this one refuses to group by job at all, because
-    // the 40 is not a job's to pass. Here, and only here, the headroom column
-    // sums to something real.
+    // Sheet 4 — one row per employee PER WEEK, which is the shape the fortieth
+    // hour actually has. The sheets above group by job, or by the man over his
+    // whole range; this one refuses to group by job at all and splits the man
+    // into his weeks, because the 40 is not a job's to pass and not a
+    // fortnight's either. It is where a Before OT figure on any other sheet can
+    // be traced to the week it came out of.
     function projectHeadroomSheetXml(model) {
       const { crewRows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Week Starting (Mon)', 'Week Ending (Sun)',
@@ -5082,8 +5245,11 @@
         alert('No job hours in this range to export.');
         return;
       }
+      // The order the report reads in: the two charts, then the crew tables
+      // under them, then the weeks the overtime was actually measured in.
       downloadBlob(`project-overtime-${exportScopeSuffix()}.xlsx`, xlsxBlob([
         { name: 'Overtime by Project',  xml: projectSummarySheetXml(model) },
+        { name: 'Overtime by Employee', xml: projectCrewSheetXml(model) },
         { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
         { name: 'OT Headroom by Week',  xml: projectHeadroomSheetXml(model) },
       ]));
