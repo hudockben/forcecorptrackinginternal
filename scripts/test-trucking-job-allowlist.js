@@ -40,6 +40,7 @@
 const fs   = require('fs');
 const path = require('path');
 const vm   = require('vm');
+const { evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -81,7 +82,7 @@ function pickerWith(names) {
   const decl = names === null
     ? ALLOWLIST_SRC
     : `const TRUCKING_JOB_ALLOWLIST = ${JSON.stringify(names)};`;
-  vm.runInContext(`${decl}\n${PICKER_SRC}\nvar __pick = jobsForPicker;`, sandbox);
+  evalSlice(`${decl}\n${PICKER_SRC}\nvar __pick = jobsForPicker;`, sandbox, 'jobsForPicker');
   return { pick: sandbox.__pick, warnings };
 }
 

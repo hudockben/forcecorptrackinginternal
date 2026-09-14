@@ -41,12 +41,9 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const SRC      = read('payroll.html');
 const TRUCKING = read('trucking.html');
@@ -104,12 +101,14 @@ console.log('\n[called wherever a fee or a customer can move]');
   const lookup = slice(SRC, 'haulApplyTruckRows(truckRows);', 'truckingRenderFields(row);', 're-edit pre-fill');
   assert('after a re-edit reads back the rows already posted', /haulRateApply\(\);/.test(lookup));
 
-  const company = slice(SRC, 'function haulSetCompany', 'function haulSetDest', 'haulSetCompany');
+  const company = slice(SRC, 'function haulSetCompany', 'function haulSetDest', 'haulSetCompany',
+                        'function haulSetCompany(');
   assert('when a haul is re-pointed at another customer', /haulRateApply\(\);/.test(company));
   assert('and only when the customer actually changed',
     company.indexOf('haulRateApply()') > company.indexOf("if (before !== leg.company.trim().toLowerCase())"));
 
-  const dest = slice(SRC, 'function haulSetDest', 'function haulAddLeg', 'haulSetDest');
+  const dest = slice(SRC, 'function haulSetDest', 'function haulAddLeg', 'haulSetDest',
+                     'function haulSetDest(');
   assert('and when a dust haul moves to the grid that posts a truck row',
     /haulRateApply\(\);/.test(dest));
 
@@ -125,7 +124,7 @@ console.log('\n[the marker stays on this side of the wire]');
   // feeFromRate is bookkeeping about where a number came from, not a column.
   // In HAUL_FIELDS it would be blanked on every fresh leg and, worse, offered
   // to the server as an answer.
-  const fields = slice(SRC, 'const HAUL_FIELDS = [', '];', 'HAUL_FIELDS');
+  const fields = slice(SRC, 'const HAUL_FIELDS = [', '];', 'HAUL_FIELDS', 'const HAUL_FIELDS =');
   assert('it is not one of the fields a leg sends', !/feeFromRate/.test(fields));
   const save = slice(SRC, 'trucking.rows = haulLegs.map', '// The dust half', 'the save payload');
   assert('and no leg carries it into the save', !/feeFromRate/.test(save));
@@ -144,7 +143,8 @@ console.log('\n[the marker stays on this side of the wire]');
 console.log('\n[a fee nobody answered]');
 {
   const save = slice(SRC, 'const btn = document.getElementById(\'truckingSaveBtn\');',
-                          '// The dust half', 'the trucking save payload');
+                          '// The dust half', 'the trucking save payload',
+                     'const btn =');
   assert('an answer is a number in the box, or a box the approver typed in',
     /const feeAnswered = leg =>\s*\n\s*haulTouchedHas\(leg, 'haul_fee'\) \|\| legStr\(leg\.haul_fee\)\.trim\(\) !== '';/.test(save));
   assert('the day\'s fee is only sent when it is one',
@@ -183,7 +183,8 @@ console.log('\n[the note under the box]');
 // ── 2. The server's normalizing, run for real ──────────────────────────────
 console.log('\n[what the route will serve]');
 {
-  const body = slice(ROUTE, 'const rates = {};', 'return res.json({', 'the rate normalizer');
+  const body = slice(ROUTE, 'const rates = {};', 'return res.json({', 'the rate normalizer',
+                     'const rates =');
   const norm = blob => {
     const ctx = {
       asObj: v => (v && typeof v === 'object' && !Array.isArray(v)) ? v : null,
@@ -214,36 +215,9 @@ console.log('\n[what the route will serve]');
 // boxes actually mounted, so a fee box that is not on screen reads as absent
 // rather than as an empty one — which is the difference between "no fee asked
 // for" and "fee deliberately left blank".
-/**
- * Evaluate one slice of payroll.html, and say something useful when it will
- * not evaluate.
- *
- * These suites lift ranges of the page by string anchors. Anything added
- * inside a range that reaches OUTSIDE it — a style constant declared 1,600
- * lines earlier, a helper defined near the top — takes the whole file down
- * with a bare `ReferenceError: X is not defined` and a stack pointing at
- * `evalmachine.<anonymous>`, before the first assertion runs. That has now
- * happened three times, and each one cost an investigation to work out that
- * the page was fine and the harness was missing a global.
- *
- * So the third time is the last: name the identifier and say what to do.
- */
-function evalSlice(code, ctx, what) {
-  try {
-    vm.runInContext(code, ctx);
-  } catch (err) {
-    const missing = /^(\w+) is not defined$/.exec(err.message);
-    if (missing) {
-      throw new Error(
-        `${what} reads "${missing[1]}", which payroll.html declares outside the slice `
-        + `lifted here. The page is fine; this harness is missing a global. Add `
-        + `\`${missing[1]}\`` + ` to the ctx object above — a no-op stub is enough unless an `
-        + `assertion below is actually about it.`);
-    }
-    throw err;
-  }
-}
-
+// evalSlice, the slice guards and the brace matcher all live in
+// scripts/lib/fn-source.js — this file was one of the two that taught it
+// what to say.
 function makeSandbox({ entry, rates, dust }) {
   const els = new Map();
   const mount = id => {
@@ -285,8 +259,10 @@ function makeSandbox({ entry, rates, dust }) {
   // The real accessors and the real note-writer, not stubs of them: whether a
   // rate matches, and what the box says about it, is the whole subject here.
   const helpers = slice(SRC, '    const truckUnitRoster     = ()',
-                             '    // ── The hauls a day is split into', 'the roster accessors');
-  const gate    = slice(SRC, '    const EES_JOB_IDS =', '    function truckingFieldsHtml(', 'entryNeedsTrucking');
+                             '    // ── The hauls a day is split into', 'the roster accessors',
+                        'function truckFeeHintRefresh(');
+  const gate    = slice(SRC, '    const EES_JOB_IDS =', '    function truckingFieldsHtml(', 'entryNeedsTrucking',
+                        ['function entryNeedsTrucking(', 'function eesSave(']);
   const model   = slice(SRC, '    // ── The hauls a day is split into',
                              "    const TK_LABEL = 'display:flex", 'the haul model');
   evalSlice(helpers, ctx, 'the roster accessors');
@@ -473,7 +449,8 @@ console.log('\n[bulk approve]');
   assert('the customer is resolved the way the server resolves it',
     /const bulkTruckCustomer = e =>\s*\n\s*String\(\(e && \(e\.job_label \|\| e\.job_id\)\) \|\| ''\)\.trim\(\);/.test(SRC));
 
-  const open = slice(SRC, 'const needTruckRates', 'for (const g of groups) bulkApplyTravelPrefill', 'the bulk loader');
+  const open = slice(SRC, 'const needTruckRates', 'for (const g of groups) bulkApplyTravelPrefill', 'the bulk loader',
+                     'const needTruckRates =');
   assert('the rates are fetched only when a card asks for a fee',
     /needTruckRates \? truckListsLoad\(\) : Promise\.resolve\(\)/.test(open)
     && /g\.type === 'trucking' && g\.division !== 'dust'/.test(open));

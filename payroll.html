@@ -34,6 +34,12 @@
       --band-ot:   #25191a;
       --green:     #22c55e;
       --blue:      #60a5fa;
+      /* The hauling answers, and nothing else. Every other hue in this table is
+         already spoken for — amber is prevailing wage, orange is overtime,
+         green and grey are the day flags, blue is a split — and a haul has to
+         be readable as none of them at a glance. See the .pw-haul pill. */
+      --violet:    #a78bfa;
+      --teal:      #2dd4bf;
     }
 
     body {
@@ -613,15 +619,15 @@
        break them into the four questions the table actually answers: how long
        he was on the clock, how much of it was overtime, what rate it is paid
        at, and where it stands for approval. */
-    .report > .report-scroll > table > thead > tr > th:nth-child(6),
-    .report > .report-scroll > table > tbody > tr > td:nth-child(6),
-    .report > .report-scroll > table > tfoot > tr > td:nth-child(6),
-    .report > .report-scroll > table > thead > tr > th:nth-child(8),
-    .report > .report-scroll > table > tbody > tr > td:nth-child(8),
-    .report > .report-scroll > table > tfoot > tr > td:nth-child(8),
-    .report > .report-scroll > table > thead > tr > th:nth-child(11),
-    .report > .report-scroll > table > tbody > tr > td:nth-child(11),
-    .report > .report-scroll > table > tfoot > tr > td:nth-child(11) { border-right: 1px solid var(--border); }
+    .report > .report-scroll > table > thead > tr > th:nth-child(7),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(7),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(7),
+    .report > .report-scroll > table > thead > tr > th:nth-child(9),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(9),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(9),
+    .report > .report-scroll > table > thead > tr > th:nth-child(12),
+    .report > .report-scroll > table > tbody > tr > td:nth-child(12),
+    .report > .report-scroll > table > tfoot > tr > td:nth-child(12) { border-right: 1px solid var(--border); }
     .report table {
       width: 100%;
       border-collapse: collapse;
@@ -629,7 +635,12 @@
     }
     .report thead th {
       text-align: left;
-      padding: 0.6rem 0.45rem;
+      /* 0.4rem of side padding, not 0.45: sixteen columns pay for each gutter
+         twice, and the Haul column had to come from somewhere. Taking it here
+         keeps every heading spelled out — the alternative was abbreviating
+         "Prevailing Hrs", and payroll reads these headings to know which
+         figure is which. */
+      padding: 0.6rem 0.4rem;
       font-size: 0.62rem;
       text-transform: uppercase;
       letter-spacing: 0.06em;
@@ -653,7 +664,7 @@
        with the header above it and the column of figures it sums. */
     .report tbody td,
     .report tfoot td {
-      padding: 0.65rem 0.45rem;
+      padding: 0.65rem 0.4rem;
       font-variant-numeric: tabular-nums;
     }
     .report tbody td { border-bottom: 1px solid rgba(42,42,58,0.6); }
@@ -671,6 +682,14 @@
        of orange zeroes would put a warning on every clean week. */
     .report td.num-ot      { color: var(--orange); font-weight: 700; }
     .report thead th.th-ot { color: var(--orange); }
+    /* Hauling. Violet on both tables, the colour the Haul pill wears on the
+       approved tab and the Haul column wears in the workbook — one answer, one
+       colour, wherever payroll happens to be reading it. Tinted only when there
+       ARE hours in the truck: a column of violet zeroes down a crew that never
+       hauled is noise, the same reason the overtime columns above stay grey on
+       a clean week. */
+    .report td.num-haul      { color: var(--violet); font-weight: 600; }
+    .report thead th.th-haul { color: var(--violet); }
     .report tr.total td {
       border-top: 2px solid var(--border);
       border-bottom: none;
@@ -738,7 +757,7 @@
     }
     .report .report-detail-table th {
       text-align: left;
-      padding: 0.4rem 0.7rem;
+      padding: 0.4rem 0.58rem;
       font-size: 0.56rem;
       text-transform: uppercase;
       letter-spacing: 0.06em;
@@ -755,19 +774,19 @@
        its third <td> is the table's fifth column — matched blindly, the rules
        jogged two columns right on the last line of the sheet. */
     .report .report-detail-table > thead > tr > th:nth-child(3),
-    .report .report-detail-table > thead > tr > th:nth-child(8),
     .report .report-detail-table > thead > tr > th:nth-child(9),
+    .report .report-detail-table > thead > tr > th:nth-child(10),
     .report .report-detail-table > tbody > tr > td:nth-child(3),
-    .report .report-detail-table > tbody > tr > td:nth-child(8),
     .report .report-detail-table > tbody > tr > td:nth-child(9),
+    .report .report-detail-table > tbody > tr > td:nth-child(10),
     .report .report-detail-table > tbody > tr.week-cols > th:nth-child(3),
-    .report .report-detail-table > tbody > tr.week-cols > th:nth-child(8),
     .report .report-detail-table > tbody > tr.week-cols > th:nth-child(9),
+    .report .report-detail-table > tbody > tr.week-cols > th:nth-child(10),
     /* Totals row: cell 1 spans Date/Division/Project, so the same three edges
-       are its 1st, 6th and 7th cells. */
+       are its 1st, 7th and 8th cells. */
     .report .report-detail-table > tfoot > tr > td:nth-child(1),
-    .report .report-detail-table > tfoot > tr > td:nth-child(6),
-    .report .report-detail-table > tfoot > tr > td:nth-child(7) { border-right: 1px solid var(--border); }
+    .report .report-detail-table > tfoot > tr > td:nth-child(7),
+    .report .report-detail-table > tfoot > tr > td:nth-child(8) { border-right: 1px solid var(--border); }
     /* The week band spans the whole table; it has no columns to divide. */
     .report .report-detail-table > tbody > tr.week-band > td { border-right: none; }
 
@@ -784,7 +803,7 @@
       box-shadow: 6px 0 8px -6px rgba(0,0,0,0.65);
     }
     .report .report-detail-table td {
-      padding: 0.4rem 0.7rem;
+      padding: 0.4rem 0.58rem;
       border-bottom: 1px solid rgba(42,42,58,0.5);
       font-variant-numeric: tabular-nums;
       color: var(--text);
@@ -795,6 +814,7 @@
     .report .report-detail-table td.date { white-space: nowrap; }
     .report .report-detail-table td.num-pw { color: var(--yellow); }
     .report .report-detail-table td.num-ot { color: var(--orange); font-weight: 700; }
+    .report .report-detail-table td.num-haul { color: var(--violet); font-weight: 600; }
 
     /* ── Week bands in the per-employee detail ──────────────────────────
        Overtime is a weekly fact and the report's range is a fortnight, so the
@@ -834,6 +854,7 @@
     }
     .report .report-detail-table tr.week-cols > th.th-ot { color: var(--orange); }
     .report .report-detail-table tr.week-cols > th.th-pw { color: var(--yellow); }
+    .report .report-detail-table tr.week-cols > th.th-haul { color: var(--violet); }
     .report .report-detail-table tr.week-band .wb-label {
       font-weight: 700;
       font-size: 0.7rem;
@@ -1290,10 +1311,34 @@
     .split-table:not(.haul-on) .haul-col { display: none; }
     .pw-yes { background: rgba(234,179,8,0.16);  color: var(--yellow); }
     .pw-no  { background: rgba(136,136,136,0.15); color: var(--muted); }
-    /* Part haul: some of the day prevailing, some of it not. Its own colour
-       because it is its own answer — reading it as either "Yes" or "Haul"
-       sends the approver looking for a bug in the hours. */
-    .pw-part { background: rgba(96,165,250,0.16); color: var(--blue); }
+
+    /* ── The hauling answers ──
+       A haul takes this column over the plain Yes/No, because it is the answer
+       that decides what the day pays: the man rides inside a truck's hourly
+       cost at a $0 labour rate instead of being paid his wage on top of it.
+       Payroll has to see that FROM THE ROW — a haul that reads a plain grey
+       "No" looks like every other standard day on the tab. Each answer gets
+       its own colour because each is its own money:
+
+         Haul (violet, ringed)  every work hour of the day was in the truck.
+                                The loudest of the three on purpose: on a
+                                prevailing job it takes the premium off as
+                                well, since he never worked the covered site.
+         Partial haul (blue)    part truck, part site work. Its own answer —
+                                reading it as either of the other two sends the
+                                approver looking for a bug in the hours.
+         On site haul (teal)    hauled inside the fence. The labour is still the
+                                truck's, but the man IS on the covered site, so
+                                a prevailing job keeps its premium. */
+    .pw-haul {
+      background: rgba(167,139,250,0.22);
+      color: var(--violet);
+      /* Inset rather than a border: the ring has to make this pill louder than
+         the ones beside it without making it a different size. */
+      box-shadow: inset 0 0 0 1px rgba(167,139,250,0.55);
+    }
+    .pw-part   { background: rgba(96,165,250,0.16); color: var(--blue); }
+    .pw-onsite { background: rgba(45,212,191,0.16); color: var(--teal); }
     .pw-na  { color: var(--muted); }
 
     /* ── Split-day chip ──
@@ -2074,7 +2119,7 @@
             <th>Type</th>
             <th>Division</th>
             <th>Job</th>
-            <th class="th-wrap">Prevailing Wage</th>
+            <th class="th-wrap" title="Prevailing wage on the job tied to the entry — Yes or No — unless the day was a haul, in which case it says so instead, because that is what decides the pay: Haul (every work hour in the truck, at a $0 labour rate; a prevailing job loses its premium — he never worked the covered site) · Partial haul (some of it in the truck, the rest worked on the site) · On site haul (hauled inside the fence — the labour is still the truck's, but a prevailing job keeps its premium)">Prevailing Wage</th>
             <th class="th-wrap">Lunch Break</th>
             <th class="th-wrap">Operated Equipment</th>
             <th>Time</th>
@@ -2848,6 +2893,12 @@
         if (!byUser.has(u)) byUser.set(u, {
           username:      u,
           workHours:     0,
+          // The part of workHours that was spent driving rather than labouring.
+          // NOT called haulHours: that name is taken in api/lib/payroll-metrics.js
+          // by a different figure — the off-site hours reclassified OUT of
+          // prevailing — and these two must never be read for one another. This
+          // one moves no money; it only says which hours were in the truck.
+          truckHours:    0,
           travelToSite:  0,
           travelToShop:  0,
           travelHours:   0,
@@ -2907,6 +2958,12 @@
             } else {
               acc.stdHours += h;
             }
+            // Separately from the rate: how much of the day he was driving
+            // rather than labouring. An on-site haul counts here and does not
+            // count above, because it is still the truck's time even though it
+            // keeps the prevailing premium. This moves no money — it only says
+            // which hours produced work on the ground.
+            acc.truckHours += haulWorkHours(e, work);
           }
           if (e.status === 'submitted') acc.pendingHours  += h;
           if (e.status === 'approved')  acc.approvedHours += h;
@@ -2937,6 +2994,7 @@
       // Totals
       const tot = rows.reduce((acc, r) => ({
         workHours:     acc.workHours     + r.workHours,
+        truckHours:    acc.truckHours    + r.truckHours,
         travelToSite:  acc.travelToSite  + r.travelToSite,
         travelToShop:  acc.travelToShop  + r.travelToShop,
         travelHours:   acc.travelHours   + r.travelHours,
@@ -2953,7 +3011,7 @@
         approvedHours: acc.approvedHours + r.approvedHours,
         pendingOff:    acc.pendingOff    + r.pendingOff,
         approvedOff:   acc.approvedOff   + r.approvedOff,
-      }), { workHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, regHours: 0, otHours: 0, otPwHours: 0, otStdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
+      }), { workHours: 0, truckHours: 0, travelToSite: 0, travelToShop: 0, travelHours: 0, pwHours: 0, stdHours: 0, regHours: 0, otHours: 0, otPwHours: 0, otStdHours: 0, pendingHours: 0, approvedHours: 0, pendingOff: 0, approvedOff: 0 });
       tot.otClipped = rows.some(r => r.otClipped);
 
       // Header subtitle
@@ -3038,7 +3096,8 @@
         return `
           <tr class="emp-row${hasPending ? ' has-pending' : ''}${expanded ? ' expanded' : ''}" data-user="${userAttr}" onclick="toggleReportRow(this)" title="Click to ${expanded ? 'collapse' : 'expand'} this employee's entries">
             <td class="name"><span class="exp-caret">▸</span>${escapeHtml(r.username)}</td>
-            <td class="num">${r.workHours.toFixed(2)}</td>
+            <td class="num">${(r.workHours - r.truckHours).toFixed(2)}</td>
+            <td class="num${r.truckHours > 0.001 ? ' num-haul' : ''}">${r.truckHours.toFixed(2)}</td>
             <td class="num">${r.travelToSite.toFixed(2)}</td>
             <td class="num">${r.travelToShop.toFixed(2)}</td>
             <td class="num">${r.travelHours.toFixed(2)}</td>
@@ -3054,7 +3113,7 @@
             <td>${status}</td>
           </tr>
           <tr class="report-detail" data-user="${userAttr}"${expanded ? '' : ' hidden'}>
-            <td colspan="15">${reportDetailHtml(r)}</td>
+            <td colspan="16">${reportDetailHtml(r)}</td>
           </tr>
         `;
       }).join('');
@@ -3082,7 +3141,8 @@
             <thead>
               <tr>
                 <th>Employee</th>
-                <th style="text-align:right">Hours</th>
+                <th style="text-align:right" title="Hours worked ON THE JOB — labour. Time in the truck is in the Haul column beside this, so a crew’s production can be read against the hours that produced it. The two add up to the hours worked.">Work Hrs</th>
+                <th class="th-haul" style="text-align:right" title="Hours of the same day spent IN THE TRUCK — hauling on site or to &amp; from it. The man is paid for them either way; they are held apart because driving is not labour on the job. This is not the prevailing split: a haul ON the site is driving and still prevailing.">Haul Hrs</th>
                 <th style="text-align:right" title="Timesheet field: Travel Time to Site">Travel to Site</th>
                 <th style="text-align:right" title="Timesheet field: Travel Time to Shop">Travel to Shop</th>
                 <th style="text-align:right" title="Travel to site + travel to shop">Travel</th>
@@ -3102,7 +3162,8 @@
             <tfoot>
               <tr class="total">
                 <td class="name">Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})</td>
-                <td class="num">${tot.workHours.toFixed(2)}</td>
+                <td class="num">${(tot.workHours - tot.truckHours).toFixed(2)}</td>
+                <td class="num${tot.truckHours > 0.001 ? ' num-haul' : ''}">${tot.truckHours.toFixed(2)}</td>
                 <td class="num">${tot.travelToSite.toFixed(2)}</td>
                 <td class="num">${tot.travelToShop.toFixed(2)}</td>
                 <td class="num">${tot.travelHours.toFixed(2)}</td>
@@ -3163,7 +3224,7 @@
       const weekKeys = [...byWeek.keys()].sort((a, b) =>
         (a === '' ? 1 : 0) - (b === '' ? 1 : 0) || a.localeCompare(b));
 
-      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0,
+      let sumWork = 0, sumHaul = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0,
           sumTotal = 0, sumPw = 0, sumOt = 0, count = 0;
 
       const bands = weekKeys.map(wk => {
@@ -3196,7 +3257,14 @@
           // because neither is hours worked.
           const otRow  = otByEntry.get(e);
           const ot     = otRow ? otRow.otHours : 0;
-          sumWork += work; sumTravel += travel; sumTotal += total; sumPw += pw; sumOt += ot;
+          // The same day split the other way: what the truck took, and the
+          // labour left over. Not the prevailing split above — an on-site haul
+          // is driving and keeps its premium — but what the man was DOING,
+          // which is the figure a production rate is measured against.
+          const haul   = isOff ? 0 : haulWorkHours(e, work);
+          const labour = work - haul;
+          sumWork += labour; sumHaul += haul;
+          sumTravel += travel; sumTotal += total; sumPw += pw; sumOt += ot;
           sumToSite += (toSite || 0); sumToShop += (toShop || 0);
           count++;
           const division = isOff ? '—' : (prettyDiv(e.division) || '—');
@@ -3212,7 +3280,8 @@
               <td class="date">${prettyDate(e.work_date)}</td>
               <td>${escapeHtml(division)}</td>
               <td>${escapeHtml(project)}</td>
-              <td class="num">${isOff ? '—' : work.toFixed(2)}</td>
+              <td class="num">${isOff ? '—' : labour.toFixed(2)}</td>
+              <td class="num${haul > 0.001 ? ' num-haul' : ''}">${isOff ? '—' : haul.toFixed(2)}</td>
               <td class="num">${toSite == null ? '—' : toSite.toFixed(2)}</td>
               <td class="num">${toShop == null ? '—' : toShop.toFixed(2)}</td>
               <td class="num">${isOff ? '—' : travel.toFixed(2)}</td>
@@ -3235,6 +3304,7 @@
             <tr class="detail-total">
               <td colspan="3">Total — ${count} ${count === 1 ? 'entry' : 'entries'}</td>
               <td class="num">${sumWork.toFixed(2)}</td>
+              <td class="num${sumHaul > 0.001 ? ' num-haul' : ''}">${sumHaul.toFixed(2)}</td>
               <td class="num">${sumToSite.toFixed(2)}</td>
               <td class="num">${sumToShop.toFixed(2)}</td>
               <td class="num">${sumTravel.toFixed(2)}</td>
@@ -3259,7 +3329,10 @@
       { label: 'Date' },
       { label: 'Division' },
       { label: 'Project' },
-      { label: 'Work',           num: true },
+      { label: 'Work',           num: true,
+        title: 'Hours worked ON THE JOB — labour. Time in the truck is in the Haul column beside this, so a crew’s production can be read against the hours that produced it. The two add up to the hours worked.' },
+      { label: 'Haul',           num: true, cls: 'th-haul',
+        title: 'Hours of the same day spent IN THE TRUCK — hauling on site or to & from it. The man is paid for them either way; they are held apart because driving is not labour on the job. This is not the prevailing split: a haul ON the site is driving and still prevailing.' },
       { label: 'Travel to Site', num: true, title: 'Timesheet field: Travel Time to Site' },
       { label: 'Travel to Shop', num: true, title: 'Timesheet field: Travel Time to Shop' },
       { label: 'Travel',         num: true, title: 'Travel to site + travel to shop' },
@@ -3553,6 +3626,9 @@
       head:    4, headNum: 5,
       text:    6, num:     7, numPw: 8, date: 9,
       totText: 10, totNum: 11, totPw: 12,
+      // The Haul column, tinted the way the prevailing one is: payroll scans
+      // these sheets for the two figures that are not simply hours worked.
+      numHaul: 13, totHaul: 14,
     };
 
     // Cell shorthands. `s` is a style index; a null/blank number renders as an
@@ -3655,20 +3731,24 @@
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
         '<numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts>' +
-        '<fonts count="6">' +
+        '<fonts count="7">' +
           '<font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><b/><sz val="16"/><color rgb="FF1F2A44"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><sz val="10"/><color rgb="FF6B7280"/><name val="Calibri"/><family val="2"/></font>' +
           '<font><b/><sz val="11"/><color rgb="FF8A5A00"/><name val="Calibri"/><family val="2"/></font>' +
+          // The Haul column, in the violet the Haul pill wears on the approved
+          // tab. Payroll reads one and then the other; they should agree.
+          '<font><b/><sz val="11"/><color rgb="FF5B3FA8"/><name val="Calibri"/><family val="2"/></font>' +
         '</fonts>' +
-        '<fills count="5">' +
+        '<fills count="6">' +
           '<fill><patternFill patternType="none"/></fill>' +
           '<fill><patternFill patternType="gray125"/></fill>' +
           '<fill><patternFill patternType="solid"><fgColor rgb="FF1F2A44"/><bgColor indexed="64"/></patternFill></fill>' +
           '<fill><patternFill patternType="solid"><fgColor rgb="FFFFF4D6"/><bgColor indexed="64"/></patternFill></fill>' +
           '<fill><patternFill patternType="solid"><fgColor rgb="FFEDEFF3"/><bgColor indexed="64"/></patternFill></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FFEDE7FD"/><bgColor indexed="64"/></patternFill></fill>' +
         '</fills>' +
         '<borders count="3">' +
           '<border><left/><right/><top/><bottom/><diagonal/></border>' +
@@ -3676,7 +3756,7 @@
           '<border><left/><right/><top style="thin"><color rgb="FF9AA1AE"/></top><bottom/><diagonal/></border>' +
         '</borders>' +
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-        '<cellXfs count="13">' +
+        '<cellXfs count="15">' +
           '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
           '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
           '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
@@ -3692,6 +3772,8 @@
           '<xf numFmtId="0" fontId="1" fillId="4" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>' +
           '<xf numFmtId="2" fontId="1" fillId="4" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
           '<xf numFmtId="2" fontId="5" fillId="3" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="2" fontId="6" fillId="5" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="2" fontId="6" fillId="5" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
         '</cellXfs>' +
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
       '</styleSheet>';
@@ -3704,12 +3786,14 @@
       const { rows, tot, scopeLine, gen, companyName } = model;
       const entryCount = rows.reduce((n, r) => n + r.entries.length, 0);
       // Spreadsheets have no tooltips, so the prevailing/standard columns spell
-      // out the travel treatment in the header itself.
-      const headers = ['Employee', 'Work Hours', 'Travel to Site', 'Travel to Shop',
+      // out the travel treatment in the header itself — and so does the
+      // labour/haul split beside them.
+      const headers = ['Employee', 'Work Hours (labour)', 'Haul Hours (driving)',
+        'Travel to Site', 'Travel to Shop',
         'Travel Hours', 'Total Hours', 'Regular Hrs (first 40/week)', 'OT Hrs (over 40/week)',
         'Prevailing Hrs (work only)', 'Prevailing OT Hrs', 'Standard Hrs (incl. travel)',
         'Pending Hours', 'Approved Hours', 'Time Off', 'Status'];
-      const HEADER_ROW = 8;
+      const HEADER_ROW = 9;
 
       const sheet = [
         [cTxt('Payroll Hours Report', XS.title)],
@@ -3720,8 +3804,12 @@
         // Overtime is the one figure on this sheet that is NOT simply the range
         // added up, so the sheet says how it was reached before showing it.
         [cTxt('Overtime is counted per Monday–Sunday week (hours past 40 in a week, weeks added together), not across the whole range. Week by week on the "Overtime by Week" sheet.', XS.sub)],
+        // The Work column used to be every hour worked, hauling included. It is
+        // labour only now, with the driving beside it, so a crew's production
+        // can be read off the hours that actually produced it.
+        [cTxt('Work Hours are labour on the job. Haul Hours are time in the truck — hauling on site or to & from it — and the two add up to the hours worked; Total Hours adds travel on top.', XS.sub)],
         [],
-        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 12) ? XS.headNum : XS.head)),
+        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 13) ? XS.headNum : XS.head)),
       ];
 
       for (const r of rows) {
@@ -3731,7 +3819,8 @@
           : '—';
         sheet.push([
           cTxt(r.username,      XS.text),
-          cNum(r.workHours,     XS.num),
+          cNum(r.workHours - r.truckHours, XS.num),
+          cNum(r.truckHours,    XS.numHaul),
           cNum(r.travelToSite,  XS.num),
           cNum(r.travelToShop,  XS.num),
           cNum(r.travelHours,   XS.num),
@@ -3751,7 +3840,8 @@
       const totalAll = tot.pendingHours + tot.approvedHours;
       sheet.push([
         cTxt(`Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})`, XS.totText),
-        cNum(tot.workHours,     XS.totNum),
+        cNum(tot.workHours - tot.truckHours, XS.totNum),
+        cNum(tot.truckHours,    XS.totHaul),
         cNum(tot.travelToSite,  XS.totNum),
         cNum(tot.travelToShop,  XS.totNum),
         cNum(tot.travelHours,   XS.totNum),
@@ -3770,10 +3860,10 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [26, 11, 13, 13, 12, 11, 17, 16, 16, 15, 17, 13, 15, 26, 20],
+        colWidths: [26, 19, 19, 13, 13, 12, 11, 17, 16, 16, 15, 17, 13, 15, 26, 20],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:O${HEADER_ROW + rows.length}`,
+        autoFilterRef: `A${HEADER_ROW}:P${HEADER_ROW + rows.length}`,
         tabSelected: true,
       });
     }
@@ -3783,23 +3873,25 @@
     function reportDetailSheetXml(model) {
       const { rows, scopeLine, gen, companyName } = model;
       const headers = ['Employee', 'Date', 'Type', 'Division', 'Project / Job',
-        'Start', 'End', 'Work Hours', 'Travel to Site', 'Travel to Shop',
+        'Start', 'End', 'Work Hours (labour)', 'Haul Hours (driving)',
+        'Travel to Site', 'Travel to Shop',
         'Travel Hours', 'Total Hours', 'OT Hrs (past 40 this week)',
         'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
         'Week Starting (Mon)',
         'Lunch Break', 'Operated Equipment', 'Supervisor', 'Status', 'Notes'];
-      const HEADER_ROW = 4;
-      const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13, 14]); // 0-based header indices that are numeric
+      const HEADER_ROW = 5;
+      const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13, 14, 15]); // 0-based header indices that are numeric
 
       const sheet = [
         [cTxt('Payroll Hours Report — All Submissions', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt('Work Hours are labour on the job. Haul Hours are the part of the same day spent in the truck — hauling on site or to & from it — so the two add up to the hours worked, and Total Hours adds travel on top. A day nobody called a haul is all labour.', XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
       ];
 
       let n = 0;
-      let sumWork = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0,
+      let sumWork = 0, sumHaul = 0, sumToSite = 0, sumToShop = 0, sumTravel = 0, sumTotal = 0,
           sumPw = 0, sumStd = 0, sumOt = 0;
 
       for (const r of rows) {
@@ -3820,6 +3912,12 @@
           const pw  = isOff ? null
             : ((e.prevailing_wage === true) ? work - offSiteHaulWork(e, work) : 0);
           const std = isOff ? null : (total - pw);
+          // And the same day split the other way: the hours in the truck, and
+          // the labour left over. This is not the prevailing split — an on-site
+          // haul is driving but stays prevailing — it is what the man was doing,
+          // which is what a production rate is measured against.
+          const haul   = isOff ? null : haulWorkHours(e, work);
+          const labour = isOff ? null : work - haul;
           // The two travel legs the timesheet collects, kept alongside their
           // sum. Null (never itemised) stays an empty cell so it can't be read
           // as a zero-hour leg.
@@ -3833,7 +3931,7 @@
           // sorted by week without redoing the date arithmetic in Excel.
           const wkStart = weekStartOf(e.work_date);
           if (!isOff) {
-            sumWork += work; sumTravel += travel; sumTotal += total;
+            sumWork += labour; sumHaul += haul; sumTravel += travel; sumTotal += total;
             sumPw += pw; sumStd += std; sumOt += (ot || 0);
             sumToSite += (toSite || 0); sumToShop += (toShop || 0);
           }
@@ -3846,7 +3944,8 @@
             cTxt(isOff ? `Time Off · ${prettyOff(e.time_off_type)}` : (e.job_label || ''), XS.text),
             cTxt(isOff ? '' : (e.start_time || ''), XS.text),
             cTxt(isOff ? '' : (e.end_time   || ''), XS.text),
-            cNum(work,   XS.num),
+            cNum(labour, XS.num),
+            cNum(haul,   XS.numHaul),
             cNum(toSite, XS.num),
             cNum(toShop, XS.num),
             cNum(travel, XS.num),
@@ -3870,6 +3969,7 @@
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
         cNum(sumWork,   XS.totNum),
+        cNum(sumHaul,   XS.totHaul),
         cNum(sumToSite, XS.totNum),
         cNum(sumToShop, XS.totNum),
         cNum(sumTravel, XS.totNum),
@@ -3882,10 +3982,10 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [22, 12, 10, 14, 34, 9, 9, 11, 13, 13, 12, 11, 16, 16, 17, 15, 12, 18, 20, 11, 40],
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 19, 19, 13, 13, 12, 11, 16, 16, 17, 15, 12, 18, 20, 11, 40],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:U${HEADER_ROW + n}`,
+        autoFilterRef: `A${HEADER_ROW}:V${HEADER_ROW + n}`,
       });
     }
 
@@ -5006,6 +5106,31 @@
       return Math.min(Math.max(h, 0), work);
     }
 
+    // How many of a day's WORK hours the man spent IN THE TRUCK — either haul,
+    // on site or off.
+    //
+    // This is a different question from offSiteHaulWork above, and the two are
+    // deliberately not one function. That one asks which hours lose the
+    // prevailing premium, and an on-site haul loses nothing: the man is on the
+    // covered site, so those hours stay prevailing. This one asks what he was
+    // DOING, and hauling inside the fence is still driving, not labour. Paving
+    // a lot and running the triaxle around it are different work at different
+    // production rates, and the export's Haul column is where payroll tells
+    // them apart.
+    //
+    // It reads the same two fields on the same rule: haul_hours is what
+    // payroll's split found in the truck, and null — never split, or an entry
+    // from before the column existed — still means what haul_type said alone,
+    // which is the whole day.
+    function haulWorkHours(e, work) {
+      const t = e && e.haul_type;
+      if (t !== 'on_site' && t !== 'off_site') return 0;
+      if (e.haul_hours == null) return work;
+      const h = Number(e.haul_hours);
+      if (!Number.isFinite(h)) return work;
+      return Math.min(Math.max(h, 0), work);
+    }
+
     // ── Overtime ───────────────────────────────────────────────────────────
     //
     // Overtime is a WEEKLY fact, and this report's range is a fortnight. The
@@ -5206,43 +5331,92 @@
       };
     }
 
-    // Prevailing-wage pill, derived from the job tied to the entry.
+    // Prevailing-wage pill, derived from the job tied to the entry AND from the
+    // day's hauling answer.
+    //
     // The server resolves e.prevailing_wage from the project blob:
     //   true/false → turf/paving job with a known prevailing-wage flag
     //   null       → time-off, or a division (dust/trucking/quarry) where
-    //                prevailing wage doesn't apply → show a neutral dash.
+    //                prevailing wage doesn't apply → a neutral dash.
     //
-    // A prevailing job worked as an off-site haul gets its own pill. Showing a
-    // plain "Yes" there would have the approver reading a prevailing job whose
-    // hours the report is deliberately paying at standard, with nothing on the
-    // row to explain the difference — the one place that mismatch would look
-    // like a bug rather than the rule.
+    // A HAUL takes the pill over that Yes/No, on ANY job — prevailing or not.
+    // Payroll reads this column to know what a day pays, and "hauled to & from
+    // site" changes that twice over: the driver's labour posts at $0 because he
+    // is already inside the truck's hourly cost, and on a prevailing job the
+    // premium comes off as well, since he never worked the covered site.
+    //
+    // Keying the pill on the prevailing flag alone hid the first half of that.
+    // A haul on a NON-prevailing job read a plain grey "No", identical to every
+    // ordinary standard day on the tab, and the one fact payroll needed off the
+    // row — he was in the truck — was only visible by opening the split.
+    //
+    // What the column can say, and its colour:
+    //   Haul          violet  every work hour of the day was in the truck
+    //   Partial haul  blue    some in the truck, the rest worked on the site
+    //   On site haul  teal    hauled inside the fence — the labour is still the
+    //                         truck's, but a prevailing job keeps its premium
+    //   Yes           amber   prevailing-wage job, no hauling
+    //   No            grey    standard-rate job, no hauling
+    //   —             muted   prevailing wage doesn't apply, and no hauling
     function prevailingWageHtml(e) {
-      if (e.entry_type === 'time_off' || e.prevailing_wage == null) {
-        return '<span class="pw-na" title="Prevailing wage does not apply to this entry">—</span>';
-      }
-      if (e.prevailing_wage && isOffSiteHaul(e)) {
-        // A day can now be part haul and part site work — he drove there and
-        // then got out and worked it — so the pill has to say WHICH, or an
-        // approver reading "Haul" beside a day that is mostly prevailing has
-        // no way to tell the report is right.
-        const work = Number(e.computed_hours || 0);
+      const pw = e.prevailing_wage;
+      // The job's own answer — and what a haul day falls back to when the split
+      // says the truck bought none of it. `note` carries that reason through,
+      // so a day answered as a haul reading "Yes" doesn't look like a lost
+      // answer to whoever filed it.
+      const plain = (note = '') => {
+        if (e.entry_type === 'time_off' || pw == null) {
+          return `<span class="pw-na" title="Prevailing wage does not apply to this entry${note}">—</span>`;
+        }
+        return pw
+          ? `<span class="pw-pill pw-yes" title="Prevailing wage job${note}">Yes</span>`
+          : `<span class="pw-pill pw-no" title="Standard (non-prevailing) wage job${note}">No</span>`;
+      };
+      // Time off is never a haul, whatever an older entry happens to carry.
+      if (e.entry_type === 'time_off') return plain();
+
+      const work = Number(e.computed_hours || 0);
+
+      if (isOffSiteHaul(e)) {
+        // The $0 labour rate is the same on any job; the premium is the part
+        // only a prevailing job has to lose, so only a prevailing job is told
+        // about it.
+        const premiumOff = pw
+          ? ' The job is prevailing wage, but the driver never worked the covered site, so these hours pay at the standard rate.'
+          : '';
+        // A day can be part haul and part site work — he drove there and then
+        // got out and worked it — so the pill has to say WHICH, or an approver
+        // reading "Haul" beside a day that is mostly prevailing has no way to
+        // tell the report is right.
         const haul = offSiteHaulWork(e, work);
         // The split found none of it was the truck — every hour was worked on
         // the site, and the Prevailing column beside this says so. A "Haul"
         // pill promising the standard rate next to a full prevailing figure is
         // the exact mismatch this pill exists to prevent, in reverse.
         if (haul <= 0) {
-          return '<span class="pw-pill pw-yes" title="Prevailing wage job. This day was answered as a haul, but the split found no hours in the truck — all of it was worked on the site, so all of it is prevailing">Yes</span>';
+          return plain('. This day was answered as a haul, but the split found no hours in the truck — all of it was worked on the site');
         }
         if (haul < work - 0.001) {
-          return `<span class="pw-pill pw-part" title="Prevailing-wage job. ${haul.toFixed(2)} h of this day was hauled to &amp; from the site and pays at the standard rate; the other ${(work - haul).toFixed(2)} h was worked on the site and stays prevailing">Part haul</span>`;
+          return `<span class="pw-pill pw-part" title="${haul.toFixed(2)} h of this day was hauled to &amp; from the site and rides inside the truck's hourly cost at a $0 labour rate. The other ${(work - haul).toFixed(2)} h was worked on the site and the job pays him for it${pw ? ', at the prevailing rate' : ''}">Partial haul</span>`;
         }
-        return '<span class="pw-pill pw-no" title="Prevailing-wage job, but this block was hauled to &amp; from the site — the driver never worked the site, so these hours pay at the standard rate">Haul</span>';
+        return `<span class="pw-pill pw-haul" title="Hauled to &amp; from the site — the whole day rides inside the truck's hourly cost at a $0 labour rate.${premiumOff}">Haul</span>`;
       }
-      return e.prevailing_wage
-        ? '<span class="pw-pill pw-yes" title="Prevailing wage job">Yes</span>'
-        : '<span class="pw-pill pw-no" title="Standard (non-prevailing) wage job">No</span>';
+
+      if (e.haul_type === 'on_site') {
+        // Hauled inside the fence. The truck's rate covers his labour the same
+        // way, but he IS on the covered site — so a prevailing job keeps its
+        // premium, and this is its own answer rather than "Haul".
+        //
+        // A split that ticked no row as the truck says the day wasn't run as a
+        // haul after all; fall back to the job's own answer rather than fly a
+        // haul pill with no hours behind it.
+        if (e.haul_hours != null && Number(e.haul_hours) <= 0) {
+          return plain('. This day was answered as a haul on site, but the split found no hours in the truck');
+        }
+        return `<span class="pw-pill pw-onsite" title="Hauled on the site — the labour rides inside the truck's hourly cost at a $0 labour rate.${pw ? ' The hours stay prevailing: he was on the covered site.' : ''}">On site haul</span>`;
+      }
+
+      return plain();
     }
     // Per-day Yes/No flag captured on the entry itself (lunch_break,
     // operated_equipment). Rendered as a Yes/No pill just like prevailing

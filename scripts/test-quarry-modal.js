@@ -50,19 +50,19 @@ function assert(label, cond, detail) {
 }
 
 const SRC = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
-function slice(from, to, label) {
-  const a = SRC.indexOf(from);
-  const b = a < 0 ? -1 : SRC.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return SRC.slice(a, b);
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+// Every marker in this file is hunted in the one page it reads, so the source
+// is bound here rather than repeated at each call.
+const slice = (from, to, label, must) => sliceSource(SRC, from, to, label, must);
 
 console.log('Payroll cost-tracking modal guards\n');
 
 // ── 1) Structural ───────────────────────────────────────────────────────────
 console.log('[the pre-fill cannot be mistaken for an empty row]');
 {
-  const open = slice('async function openQuarryModal(entry, mode)', '\n    function closeQuarry()', 'openQuarryModal');
+  const open = slice('async function openQuarryModal(entry, mode)', '\n    function closeQuarry()', 'openQuarryModal',
+                     'function openQuarryModal(');
   assert('a refusal is thrown rather than read as "no row"',
     /if \(!res\.ok\) throw new Error/.test(open));
   assert('…before anything is taken from the body',
@@ -75,11 +75,13 @@ console.log('[the pre-fill cannot be mistaken for an empty row]');
   assert('a fresh approve has nothing to load',
     /quarryRowLoad = mode === 'resplit' \? 'pending' : 'none'/.test(open));
 
-  const close = slice('function closeQuarry()', 'bindBackdropClose(document.getElementById(\'quarryBackdrop\')', 'closeQuarry');
+  const close = slice('function closeQuarry()', 'bindBackdropClose(document.getElementById(\'quarryBackdrop\')', 'closeQuarry',
+                      'function closeQuarry(');
   assert('closing orphans a pre-fill still in flight',
     /quarryFetchSeq\+\+/.test(close) && /quarryRowLoad = 'none'/.test(close));
 
-  const save = slice('async function quarrySave()', '\n    // ──', 'quarrySave');
+  const save = slice('async function quarrySave()', '\n    // ──', 'quarrySave',
+                     ['function quarrySave(', 'function unapproveEntry(']);
   assert('the save refuses while the posted row is unknown',
     /quarryRowLoad === 'pending' \|\| quarryRowLoad === 'failed'/.test(save));
   assert('…before it collects a single box',
@@ -121,7 +123,8 @@ function runSave(rowLoad, mode) {
     console,
   };
   vm.createContext(ctx);
-  vm.runInContext(slice('async function quarrySave()', '\n    // ──', 'quarrySave') + '\nquarrySave();', ctx);
+  evalSlice(slice('async function quarrySave()', '\n    // ──', 'quarrySave',
+                  ['function quarrySave(', 'function unapproveEntry(']) + '\nquarrySave();', ctx, 'quarrySave');
   return { posts, msg: boxes.quarryMsg };
 }
 
@@ -173,9 +176,10 @@ function fuelCtx(boxes) {
     console,
   };
   vm.createContext(ctx);
-  vm.runInContext(
-    slice('function _qNumField(id, label, val, span)', '\n    function openQuarryModalById(', 'quarry fuel fields'),
-    ctx);
+  evalSlice(
+    slice('function _qNumField(id, label, val, span)', '\n    function openQuarryModalById(', 'quarry fuel fields',
+          'function quarryFieldsHtml('),
+    ctx, 'the quarry fuel fields');
   return ctx;
 }
 // The <input …> tag carrying `id`, so readonly/value can be asserted per box.
@@ -235,9 +239,10 @@ console.log('\n[and what Save sends]');
   };
   const ctx = { _qval: id => (boxes[id] ? boxes[id].value : ''), console };
   vm.createContext(ctx);
-  vm.runInContext(
-    slice('function collectQuarryFields(activity)', '\n    async function quarrySave()', 'collectQuarryFields'),
-    ctx);
+  evalSlice(
+    slice('function collectQuarryFields(activity)', '\n    async function quarrySave()', 'collectQuarryFields',
+          'function collectQuarryFields('),
+    ctx, 'collectQuarryFields');
 
   const crush = ctx.collectQuarryFields('crushing');
   assert('crushing posts the typed $/gal as its per-gallon fuelCost',
@@ -258,7 +263,8 @@ console.log('\n[and what Save sends]');
 
 console.log('\n[the turf/paving split modal has the same guard]');
 {
-  const open = slice('async function openSplitModal(entry, mode)', '\n    function closeSplit()', 'openSplitModal');
+  const open = slice('async function openSplitModal(entry, mode)', '\n    function closeSplit()', 'openSplitModal',
+                     'function openSplitModal(');
   assert('a refusal is thrown rather than read as "no split"',
     /if \(!r\.ok\) throw new Error/.test(open));
   assert('the pre-fill records whether it landed',
@@ -268,11 +274,13 @@ console.log('\n[the turf/paving split modal has the same guard]');
   assert('and a fresh approve has nothing to load',
     /splitRowLoad = mode === 'resplit' \? 'pending' : 'none'/.test(open));
 
-  const close = slice('function closeSplit()', "bindBackdropClose(document.getElementById('splitBackdrop')", 'closeSplit');
+  const close = slice('function closeSplit()', "bindBackdropClose(document.getElementById('splitBackdrop')", 'closeSplit',
+                      'function closeSplit(');
   assert('closing orphans a pre-fill still in flight',
     /splitFetchSeq\+\+/.test(close) && /splitRowLoad = 'none'/.test(close));
 
-  const save = slice('async function splitSave()', '\n    // ──', 'splitSave');
+  const save = slice('async function splitSave()', '\n    // ──', 'splitSave',
+                     'function splitSave(');
   assert('the save refuses while the posted split is unknown',
     /splitRowLoad === 'pending' \|\| splitRowLoad === 'failed'/.test(save));
   // …and before the pre-validation that would otherwise wave the defaults

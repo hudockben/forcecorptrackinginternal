@@ -91,6 +91,34 @@ assert('an off-site haul is reported separately so the exclusion is visible',
   near(offSite.haulHours, 8) && near(ordinary.haulHours, 0) && near(onSite.haulHours, 0),
   `off=${offSite.haulHours} ordinary=${ordinary.haulHours} on=${onSite.haulHours}`);
 
+// ── Labour versus driving ───────────────────────────────────────────────────
+// A second split of the same day, answering a different question. haulHours
+// above is about the RATE: which hours left prevailing. truckHours is about the
+// WORK: which hours moved a truck instead of producing anything on the ground.
+// A man hauling on the covered site scores on one and not the other, which is
+// exactly why they are two figures and never added together.
+console.log('\n[the same day split again — labour, and time in the truck]');
+
+assert('an off-site haul is all driving',      near(offSite.truckHours, 8));
+assert('an ON-SITE haul is all driving too — it is prevailing AND in the truck',
+  near(onSite.truckHours, 8) && near(onSite.pwHours, 8),
+  `truck=${onSite.truckHours} pw=${onSite.pwHours}`);
+assert('a day nobody called a haul is all labour', near(ordinary.truckHours, 0));
+assert('and it never leaves the hours worked: labour + driving = workHours',
+  near(offSite.workHours - offSite.truckHours, 0)
+  && near(ordinary.workHours - ordinary.truckHours, 8));
+
+const partialTruck = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: 6.5 }));
+assert('a day he drove there and then worked it splits 6.50 / 2.50',
+  near(partialTruck.truckHours, 6.5)
+  && near(partialTruck.workHours - partialTruck.truckHours, 2.5),
+  `truck=${partialTruck.truckHours}`);
+// The two figures answer different questions, and the on-site case is where
+// reading one for the other would show the office a driver with no prevailing
+// hours he is actually owed.
+assert('truckHours and haulHours are not the same number on an on-site haul',
+  near(onSite.truckHours, 8) && near(onSite.haulHours, 0));
+
 // ── Nothing else changes ─────────────────────────────────────────────────────
 console.log('\n[every other case behaves exactly as it did]');
 
@@ -262,16 +290,64 @@ console.log('\n[the pill says what the hours say]');
     />Haul</.test(pill(day({ haul_hours: 9 }))), pill(day({ haul_hours: 9 })));
   assert('an unsplit haul day reads "Haul" too — it still means the whole day',
     />Haul</.test(pill(day({}))));
-  assert('part of it reads "Part haul", with both figures in the title',
-    />Part haul</.test(pill(day({ haul_hours: 6.5 })))
+  assert('part of it reads "Partial haul", with both figures in the title',
+    />Partial haul</.test(pill(day({ haul_hours: 6.5 })))
     && /6\.50/.test(pill(day({ haul_hours: 6.5 })))
     && /2\.50/.test(pill(day({ haul_hours: 6.5 }))));
   assert('and NONE of it in the truck reads "Yes" — every hour was worked on the site',
     />Yes</.test(pill(day({ haul_hours: 0 }))), pill(day({ haul_hours: 0 })));
   assert('an ordinary prevailing day is unchanged',
     />Yes</.test(pill(day({ haul_type: null }))));
-  assert('and a non-prevailing job still reads "No"',
+  assert('and a non-prevailing job with no hauling still reads "No"',
     />No</.test(pill(day({ prevailing_wage: false, haul_type: null }))));
+
+  // The haul is a fact about the DAY, not about the job's prevailing flag, and
+  // it is the fact payroll is reading this column for: those hours post at a $0
+  // labour rate because the man is already inside the truck's hourly cost.
+  // Keyed on the prevailing flag alone, a haul on a standard job read a plain
+  // "No" — indistinguishable from an ordinary day, on the one tab where the
+  // difference is money.
+  assert('a haul on a NON-prevailing job reads "Haul", not "No"',
+    />Haul</.test(pill(day({ prevailing_wage: false, haul_hours: 9 }))),
+    pill(day({ prevailing_wage: false, haul_hours: 9 })));
+  assert('part of one reads "Partial haul" the same way',
+    />Partial haul</.test(pill(day({ prevailing_wage: false, haul_hours: 4 }))));
+  assert('and a haul where prevailing wage does not apply at all still reads "Haul"',
+    />Haul</.test(pill(day({ prevailing_wage: null, haul_hours: 9 }))),
+    pill(day({ prevailing_wage: null, haul_hours: 9 })));
+  assert('while a non-haul day there is still the neutral dash',
+    /—/.test(pill(day({ prevailing_wage: null, haul_type: null }))));
+
+  // On site is its own answer: the truck's rate still covers his labour, but he
+  // IS on the covered site, so a prevailing job keeps its premium. Reading it
+  // as "Haul" would have payroll expecting the premium to come off.
+  assert('hauled on site reads "On site haul"',
+    />On site haul</.test(pill(day({ haul_type: 'on_site', haul_hours: 9 }))),
+    pill(day({ haul_type: 'on_site', haul_hours: 9 })));
+  assert('on a standard job too',
+    />On site haul</.test(pill(day({ haul_type: 'on_site', prevailing_wage: false }))));
+  assert('but a split that found no hours in the truck falls back to the job',
+    />Yes</.test(pill(day({ haul_type: 'on_site', haul_hours: 0 }))),
+    pill(day({ haul_type: 'on_site', haul_hours: 0 })));
+
+  // Time off is never a haul, whatever an older row happens to carry.
+  assert('time off is untouched by any of it',
+    /—/.test(pill(day({ entry_type: 'time_off', haul_hours: 9 }))));
+
+  // Each answer has to be its own colour, or "sticks out for payroll" is a
+  // label nobody scanning the column actually sees.
+  assert('and each answer carries its own class',
+    /pw-haul/.test(pill(day({ haul_hours: 9 })))
+    && /pw-part/.test(pill(day({ haul_hours: 6.5 })))
+    && /pw-onsite/.test(pill(day({ haul_type: 'on_site' })))
+    && /pw-yes/.test(pill(day({ haul_type: null })))
+    && /pw-no/.test(pill(day({ prevailing_wage: false, haul_type: null }))));
+
+  // A class with no rule behind it is a pill that renders as bare text.
+  const CSS = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
+  for (const cls of ['pw-haul', 'pw-part', 'pw-onsite', 'pw-yes', 'pw-no']) {
+    assert(`.${cls} is styled`, new RegExp(`\\.${cls}\\s*[,{]`).test(CSS));
+  }
 }
 
 // ── The invariant ───────────────────────────────────────────────────────────

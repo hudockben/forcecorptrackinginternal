@@ -38,24 +38,24 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const TRUCKING = read('trucking.html');
 const SCHED    = slice(TRUCKING, '    function schedPad(n)', '    function schedMerge(baseStr',
-  'scheduler day helpers');
+  'scheduler day helpers',
+                       'function schedBlobValue(');
 // Everything the Day view is drawn from, in one piece: the helpers above, the
 // toolbar, the timeline, the day sheet and the grouping it is sectioned by.
 // The sheet's sections are built from the truck types, which are declared with
 // the managed lists — so the real ones come along rather than a stand-in.
 const TYPES    = slice(TRUCKING, '    /* ── What kind of truck a unit is ──',
-                                 '    /** The dismissed sign-ins', 'unit types');
+                                 '    /** The dismissed sign-ins', 'unit types',
+                       'function unitTypeLabel(');
 const DAYVIEW  = TYPES + '\n' +
-  slice(TRUCKING, '    function schedPad(n)', '    function schedSheetRows(date)', 'day view');
+  slice(TRUCKING, '    function schedPad(n)', '    function schedSheetRows(date)', 'day view',
+        'function schedSheetRow(');
 
 const DATE = '2026-08-27';
 
@@ -68,7 +68,7 @@ function day(items) {
     schedS: () => ({ assignments: { [DATE]: items }, hidden: new Set() }),
   };
   vm.createContext(sandbox);
-  vm.runInContext(SCHED, sandbox, { filename: 'trucking.html' });
+  evalSlice(SCHED, sandbox, 'the scheduler day helpers', { filename: 'trucking.html' });
   const c = sandbox.schedConflicts(DATE);
   return {
     ...c,
@@ -102,7 +102,7 @@ function renderDay(items, units) {
     document: { getElementById: () => null, addEventListener() {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext(DAYVIEW, sandbox, { filename: 'trucking.html' });
+  evalSlice(DAYVIEW, sandbox, 'the day view', { filename: 'trucking.html' });
   return { html: sandbox.schedDayHTML(), toolbar: sandbox.schedToolbarHTML(), page: sandbox };
 }
 
@@ -254,21 +254,24 @@ function renderDay(items, units) {
   console.log('\n[the flag is shown where it applies]');
   {
     const sheet = slice(TRUCKING, '    function schedDayHTML()', '    /* ═══════ How the daily report',
-      'day table');
+      'day table',
+                        'function schedDayHTML(');
     assert('the day sheet flags the driver in the driver column',
       /schedEsc\(a\.driver\)[\s\S]{0,400}clash && clash\.driver[\s\S]{0,120}double-booked/.test(sheet));
     assert('and the truck in the truck column',
       /schedEsc\(a\.unit\)[\s\S]{0,80}clash && clash\.unit[\s\S]{0,160}overlap/.test(sheet));
 
     const bar = slice(TRUCKING, '    function schedToolbarHTML()', '    function schedNoDriversHTML()',
-      'toolbar');
+      'toolbar',
+                      'function schedToolbarHTML(');
     assert('the toolbar counts drivers double-booked', /driver\$\{[^}]*\} double-booked/.test(bar));
     assert('and trucks in conflict, separately', /truck conflict/.test(bar));
     assert('and no longer claims a missing time is one',
       !/can’t compare/.test(bar) && !/couldn’t compare/.test(bar));
 
     const rep = slice(TRUCKING, '    function schedRepByDay(dates)', '    function schedRepBody(scope',
-      'plan report');
+      'plan report',
+                      'function schedRepByDriver(');
     assert('the printed plan marks a double-booked driver', /\(double-booked\)/.test(rep));
     assert('and an overlapping truck', /\(overlap\)/.test(rep));
     assert('on the sheet each driver is handed, too',

@@ -1618,7 +1618,13 @@ async function buildPayrollSummary(sql, companyCode) {
         // across the crew. Two people on one date is two.
         sub: `${t.daysWorked} employee-day${t.daysWorked === 1 ? '' : 's'} logged`,
       },
-      { label: 'Hours',        value: hrs(t.workHours),   tone: 'plain', sub: 'worked on the job' },
+      { label: 'Hours',        value: hrs(t.workHours),   tone: 'plain',
+        // Split when there was any driving: an hour moving a truck and an hour
+        // laying material are both worked and paid, but only one of them shows
+        // up as production on the ground.
+        sub: t.truckHours > 0.001
+          ? `${hrs(t.workHours - t.truckHours)} h labour · ${hrs(t.truckHours)} h hauling`
+          : 'worked on the job' },
       { label: 'Travel',       value: hrs(t.travelHours), tone: 'mute',
         sub: `to site ${hrs(t.travelToSite)} · to shop ${hrs(t.travelToShop)}` },
       {
@@ -1658,6 +1664,7 @@ async function buildPayrollSummary(sql, companyCode) {
       meta:          e.divisions.length ? e.divisions.join(' · ') : '',
       daysWorked:    e.daysWorked,
       workHours:     e.workHours,
+      truckHours:    e.truckHours,
       travelToSite:  e.travelToSite,
       travelToShop:  e.travelToShop,
       travelHours:   e.travelHours,
@@ -1678,6 +1685,7 @@ async function buildPayrollSummary(sql, companyCode) {
       name:          `Totals · ${t.employees} employee${t.employees === 1 ? '' : 's'}`,
       meta:          '',
       workHours:     t.workHours,
+      truckHours:    t.truckHours,
       travelToSite:  t.travelToSite,
       travelToShop:  t.travelToShop,
       travelHours:   t.travelHours,

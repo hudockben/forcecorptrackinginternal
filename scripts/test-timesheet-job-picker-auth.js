@@ -43,12 +43,9 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
-}
+
+const { sliceSource, evalSlice, missingGlobals } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const TIMESHEET = read('timesheet.html');
 const INDEX     = read('index.html');
@@ -61,7 +58,8 @@ console.log('\n[timesheet.html — the session check]');
   assert('and it asks the same endpoint divisions.html does',
     /fetch\('\/api\/auth\/verify'/.test(TIMESHEET));
 
-  const expired = slice(TIMESHEET, 'function sessionExpired()', 'async function verifySession()', 'sessionExpired');
+  const expired = slice(TIMESHEET, 'function sessionExpired()', 'async function verifySession()', 'sessionExpired',
+                        'function sessionExpired(');
   for (const k of ['fct_token', 'fct_user', 'fct_division']) {
     assert(`signing out on a dead session clears ${k}`,
       new RegExp(`removeItem\\('${k}'\\)`).test(expired));
@@ -69,7 +67,8 @@ console.log('\n[timesheet.html — the session check]');
   assert('and lands on the login page saying why',
     /replace\('index\.html\?expired=1'\)/.test(expired));
 
-  const verify = slice(TIMESHEET, 'async function verifySession()', '// ── State ──', 'verifySession');
+  const verify = slice(TIMESHEET, 'async function verifySession()', '// ── State ──', 'verifySession',
+                       ['function verifySession(', 'function escapeHtml(']);
   // Crews work out of signal. An unreachable check must never sign anyone out —
   // only a server that actually answered 401 may.
   assert('an unreachable check keeps the cached session',
@@ -79,7 +78,8 @@ console.log('\n[timesheet.html — the session check]');
 
 console.log('\n[timesheet.html — the loaders]');
 {
-  const jobs = slice(TIMESHEET, 'async function onDivisionChange(i = 0)', '// The two standing EES activities', 'onDivisionChange');
+  const jobs = slice(TIMESHEET, 'async function onDivisionChange(i = 0)', '// The two standing EES activities', 'onDivisionChange',
+                     'function onDivisionChange(');
   assert('the job load routes a 401 to the sign-out path',
     /if \(res\.status === 401\) \{ sessionExpired\(\); return; \}/.test(jobs));
   assert('it refuses to read jobs off a non-2xx body',
@@ -91,7 +91,8 @@ console.log('\n[timesheet.html — the loaders]');
   assert('the error state is reachable by touch, not disabled',
     /couldn\\'t load jobs[\s\S]*?jobSel\.disabled = false/.test(jobs));
 
-  const sup = slice(TIMESHEET, 'async function loadSupervisors()', 'const JOB_RETRY', 'loadSupervisors');
+  const sup = slice(TIMESHEET, 'async function loadSupervisors()', 'const JOB_RETRY', 'loadSupervisors',
+                    'function loadSupervisors(');
   assert('the supervisor load tells a failure from an empty roster too',
     /if \(!res\.ok \|\| !Array\.isArray\(data && data\.supervisors\)\)/.test(sup));
   assert('and routes its own 401 to the sign-out path',
@@ -108,8 +109,21 @@ console.log('\n[index.html — what the phone is told]');
 // Run the page's real onDivisionChange / onJobChange against a mock document.
 console.log('\n[timesheet.html — the picker, run for real]');
 
-const SRC = slice(TIMESHEET, 'async function onDivisionChange(i = 0)', '// The two standing EES activities', 'onDivisionChange')
-          + slice(TIMESHEET, 'function onJobChange(i = 0)', '// ── Entries list', 'onJobChange');
+// From the allow list down, not from onDivisionChange down. The load calls
+// jobsForPicker to narrow what it just fetched, and that function (with the
+// const behind it) sits directly above it — leave them out and the sandbox
+// throws ReferenceError INSIDE the try, which the catch then dresses up as a
+// failed load. Every failure case below still passed, for the wrong reason,
+// while the three success cases quietly went red.
+//
+// The filter's own rules are not this suite's business — test-trucking-job-
+// allowlist.js runs it against a dozen rosters. It comes along so the success
+// path is the page's, not a stub's.
+const SRC = slice(TIMESHEET, '    const TRUCKING_JOB_ALLOWLIST = [', '// The two standing EES activities',
+                  'the job filter + onDivisionChange',
+                  'function onDivisionChange(')
+          + slice(TIMESHEET, 'function onJobChange(i = 0)', '// ── Entries list', 'onJobChange',
+                  'function onJobChange(');
 
 function harness(responses) {
   const els = {
@@ -155,9 +169,17 @@ function harness(responses) {
     },
   };
   vm.createContext(ctx);
-  new vm.Script(SRC).runInContext(ctx);
-  return { ctx, els, calls, logged, signedOut: () => signedOut };
+  evalSlice(SRC, ctx, 'the job filter + the two pickers');
+  const h = { ctx, els, calls, logged, signedOut: () => signedOut };
+  ALL.push(h);
+  return h;
 }
+// Every harness built below. The load does its work inside a try/catch whose
+// job is to turn a failure into a retry the crew can press — which means it
+// catches a missing collaborator just as readily as a 403, and reports it the
+// same way. A ReferenceError is never a load failure; it is this file falling
+// behind the page.
+const ALL = [];
 
 (async () => {
   // A real, populated division.
@@ -224,6 +246,18 @@ function harness(responses) {
       !/\(no active jobs\)/.test(h.els.job.innerHTML), h.els.job.innerHTML);
     assert('nor caches anything', h.ctx.jobsCache.paving === undefined);
   }
+
+  // ── The sandbox still has everything the page reaches for ──
+  // The check that would have caught this file going stale. onDivisionChange
+  // does its work inside a try/catch that exists to turn a failed load into a
+  // retry — so when the page started calling jobsForPicker and the sandbox had
+  // no such function, the ReferenceError came out the same door a 403 does.
+  // The failure cases all still passed; the success cases went red and said
+  // only that some jobs were missing from a list.
+  console.log('\n[the sandbox has not fallen behind the page]');
+  const missing = missingGlobals(ALL.flatMap(h => h.logged));
+  assert('no case lost a collaborator the page calls',
+    missing.length === 0, missing.join(' | '));
 
   console.log(`\n${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);

@@ -47,21 +47,21 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
-  const a = src.indexOf(from);
-  const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
-  if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
-}
+
+const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const slice = sliceSource;
 
 const TRUCKING = read('trucking.html');
 
 // The same three regions test-truck-list-deletions.js works in: the deleted-name
 // helpers plus the loader's sweep, the panel handlers, and the panel's markup
 // (which starts at the sign-in matchers the drivers section calls into).
-const HELPERS = slice(TRUCKING, '    const _remKey =', '    function saveTruckLists()', 'list helpers + sweep');
-const PANEL   = slice(TRUCKING, '    function addToList(key)', '    function schedSave()', 'panel handlers');
-const RENDER  = slice(TRUCKING, '    /* ── Reading a sign-in against the drivers list', '    function schedSave()', 'panel render');
+const HELPERS = slice(TRUCKING, '    const _remKey =', '    function saveTruckLists()', 'list helpers + sweep',
+                      'function _recoverEntriesFromIcBilling(');
+const PANEL   = slice(TRUCKING, '    function addToList(key)', '    function schedSave()', 'panel handlers',
+                      'function _undoRename(');
+const RENDER  = slice(TRUCKING, '    /* ── Reading a sign-in against the drivers list', '    function schedSave()', 'panel render',
+                      'function _undoRename(');
 
 // The Manage Lists panel now carries an Intercompany Rollup tab, so the
 // pooling rule comes along with the panel it is part of rather than being
@@ -69,7 +69,8 @@ const RENDER  = slice(TRUCKING, '    /* ── Reading a sign-in against the dri
 // not have.
 const POOL = slice(TRUCKING, '    /* ═══════════════════════════════════════════\n       INTERCOMPANY CUSTOMER POOLING',
                              '    /* ═══════════════════════════════════════════\n       INTERCOMPANY BILLING',
-                             'the EES customer pool');
+                             'the EES customer pool',
+                   'function _setIcTruckCompanies(');
 
 
 const freshLists = (over) => Object.assign({
@@ -86,7 +87,7 @@ function matcher(drivers) {
     document: { getElementById: () => null, addEventListener() {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext(POOL + '\n' + RENDER, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + RENDER, sandbox, 'the pool + the panel render', { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -125,7 +126,8 @@ function newPage(state) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(POOL + '\n' + HELPERS + '\n' + PANEL, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + PANEL, sandbox, 'the pool + list helpers + the panel',
+           { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -157,7 +159,8 @@ function renderPanel(state) {
   vm.createContext(sandbox);
   // The panel counts how many stored rows name each driver, which is the
   // deleted-name helpers' key function — so the render needs both regions.
-  vm.runInContext(POOL + '\n' + HELPERS + '\n' + RENDER, sandbox, { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + RENDER, sandbox, 'the pool + list helpers + the render',
+           { filename: 'trucking.html' });
   // Through the panel's own handler: which tab is open is declared inside the
   // region, so setting it from out here would only shadow it. The handler
   // renders, which is what these cases read.
