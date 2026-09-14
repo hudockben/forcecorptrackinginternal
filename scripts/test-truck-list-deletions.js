@@ -48,11 +48,29 @@ function assert(label, cond, detail) {
 }
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
-function slice(src, from, to, label) {
+/**
+ * Lift a region of the page between two markers.
+ *
+ * `must` is what the region has to CONTAIN — the function this slice exists to
+ * reach. A missing marker has always thrown; a marker matching too early never
+ * did, and that is the one that actually happened: a banner written between the
+ * start marker and updateField cut the slice short, the sandbox came up without
+ * the function, and the failure surfaced two hundred lines later as a
+ * TypeError with nothing in it about markers. Name what you came for and the
+ * slice says so itself.
+ */
+function slice(src, from, to, label, must) {
   const a = src.indexOf(from);
   const b = a < 0 ? -1 : src.indexOf(to, a + from.length);
   if (a < 0 || b < 0) throw new Error(`could not extract ${label} (marker moved: ${a < 0 ? from : to})`);
-  return src.slice(a, b);
+  const out = src.slice(a, b);
+  for (const need of [].concat(must || [])) {
+    if (!out.includes(need)) {
+      throw new Error(`${label}: the slice stops short of ${JSON.stringify(need)} — `
+        + `the end marker ${JSON.stringify(to)} now matches earlier than it used to`);
+    }
+  }
+  return out;
 }
 
 const TRUCKING = read('trucking.html');
@@ -62,7 +80,18 @@ const TRUCKING = read('trucking.html');
 // loader's sweep, and the panel's add/remove/restore handlers.
 const HELPERS = slice(TRUCKING, '    const _remKey =', '    function saveTruckLists()', 'list helpers + sweep');
 const PANEL   = slice(TRUCKING, '    function addToList(key)', '    function schedSave()', 'panel handlers');
-const ROWEDIT = slice(TRUCKING, '    /** Re-total a row and keep', '\n    /* \u2550', 'updateField');
+// To the BACKUP HAUL FEE banner by name, not to "the next banner". The end
+// marker used to be the banner RULE itself, and the rule matched the first one
+// after the start — so the day a ROW TINT section was written between
+// _syncRowTotal and updateField, the slice quietly stopped short of the very
+// function it is named for. slice() throws when a marker is MISSING, not when
+// one matches too early, so nothing said so: the cases below died on
+// "p.updateField is not a function" instead. test-haul-fee-override.js lifts
+// the same region between the same two markers.
+const ROWEDIT = slice(TRUCKING, '    /** Re-total a row and keep',
+                                '    /* \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n       BACKUP HAUL FEE',
+                                '_syncRowTotal + the row tint + updateField',
+                                ['function updateField', 'function _syncRowTotal']);
 // The panel's own markup, for the render smoke test below. Starts a little
 // earlier than PANEL so renderListsPanel and what it calls come along —
 // including the helpers that read a sign-in against the drivers list, which
@@ -92,9 +121,6 @@ function newPage(state) {
     tdDivPut() { sandbox.saves++; },
     saveTruckLists() { sandbox.saves++; },
     renderListsPanel() {}, renderTrackingTab() {}, renderScheduler() {},
-    // The pooled "EES" line updateField repaints over a Customer box. These
-    // cases are about rates and rosters, and there are no cells here to paint.
-    _paintCustPool() {},
     // The pooled "EES" line updateField repaints over a Customer box. These
     // cases are about rates and rosters, and there are no cells here to paint.
     _paintCustPool() {},
