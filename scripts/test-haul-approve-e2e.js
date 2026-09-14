@@ -302,6 +302,90 @@ const q = (sql, p) => client.query(sql, p).then(r => r.rows);
   assert('the server does not refuse it', r5.statusCode === 200,
     JSON.stringify(r5.body).slice(0, 160));
 
+  // ── One day, both kinds of haul ──────────────────────────────────────
+  // The hauling question is asked PER ROW in payroll's modal, because a man who
+  // runs to the job and then hauls inside the fence did both in one day. Only
+  // the to-and-from hours lose the prevailing premium, so the two legs must not
+  // be flattened onto one answer on the way in — or read back as one when the
+  // split is reopened.
+  console.log('\n[a day holding both kinds of haul]');
+  {
+    const id6 = await mk();
+    const r6 = await call('POST', { action: 'approve', id: id6 }, {
+      split: [
+        { cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+          equipment: 'Triaxle Dump', labor_hours: 4, equip_hours: 4, quantity: 0,
+          is_haul: true, haul_type: 'off_site' },
+        { cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+          equipment: 'Triaxle Dump', labor_hours: 2, equip_hours: 2, quantity: 0,
+          is_haul: true, haul_type: 'on_site' },
+      ],
+      // What the modal derives from those rows: off-site is the answer with
+      // consequences, so it is the one the day takes.
+      haul_type: 'off_site',
+    }, ADMIN);
+    assert('it approves', r6.statusCode === 200, JSON.stringify(r6.body).slice(0, 160));
+
+    const rows = await q(`SELECT field_type, rate::float rate, labor_hours::float lh
+                          FROM daily_tracking WHERE timesheet_entry_id=$1 ORDER BY id`, [id6]);
+    assert('each leg is stamped with its OWN answer, not the day\'s',
+      rows.length === 2
+      && rows[0].field_type === 'Haul — To/From Site'
+      && rows[1].field_type === 'Haul — On Site',
+      JSON.stringify(rows.map(r => r.field_type)));
+    assert('  and both post $0 labour — he was in the truck for both',
+      rows.every(r => r.rate === 0), JSON.stringify(rows.map(r => r.rate)));
+
+    // haul_hours is read THROUGH the day's classification: off-site hours leave
+    // prevailing, on-site hours do not. Counting the on-site leg here would pay
+    // him the standard rate for two hours he spent on the covered site.
+    const [ent] = await q('SELECT haul_type, haul_hours::float hh FROM timesheet_entries WHERE id=$1',
+      [id6]);
+    assert('the day is classified off-site', ent.haul_type === 'off_site');
+    assert('  and only the off-site leg counts toward the hours that leave prevailing',
+      ent.hh === 4, `haul_hours=${ent.hh}`);
+
+    // Edit Split pre-fills from this. daily_tracking has no haul_type column —
+    // the stamp IS the record — so the read-back has to recover each leg from it.
+    const back = await call('GET', { action: 'split', id: id6 }, {}, ADMIN);
+    assert('the split reopens with each leg\'s own answer',
+      back.statusCode === 200
+      && back.body.split.length === 2
+      && back.body.split[0].haul_type === 'off_site'
+      && back.body.split[1].haul_type === 'on_site',
+      JSON.stringify(back.body.split.map(r => r.haul_type)));
+    assert('  and with both still marked as hauls',
+      back.body.split.every(r => r.is_haul === true),
+      JSON.stringify(back.body.split.map(r => r.is_haul)));
+  }
+
+  // A split that says nothing per row is every split approved before the
+  // question moved onto it, and must be priced, stamped and counted exactly as
+  // it always was.
+  console.log('\n[a split from before the question moved onto the row]');
+  {
+    const id7 = await mk();
+    const r7 = await call('POST', { action: 'approve', id: id7 }, {
+      split: [
+        { cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+          equipment: 'Triaxle Dump', labor_hours: 4, equip_hours: 4, quantity: 0 },
+        { cost_code: 'Earthwork', sub_code: 'Excess Cut - Off Site Disposal',
+          equipment: '', labor_hours: 2, equip_hours: 0, quantity: 0 },
+      ],
+      haul_type: 'on_site',
+    }, ADMIN);
+    assert('it approves', r7.statusCode === 200, JSON.stringify(r7.body).slice(0, 160));
+    const rows = await q(`SELECT field_type, rate::float rate FROM daily_tracking
+                          WHERE timesheet_entry_id=$1 ORDER BY id`, [id7]);
+    assert('the truck on the row still decides, and takes the day\'s answer',
+      rows[0].field_type === 'Haul — On Site' && rows[0].rate === 0,
+      JSON.stringify(rows[0]));
+    assert('  while the row with no truck on it is paid his own rate',
+      rows[1].field_type === null && rows[1].rate > 0, JSON.stringify(rows[1]));
+    const [ent] = await q('SELECT haul_hours::float hh FROM timesheet_entries WHERE id=$1', [id7]);
+    assert('  and only the truck\'s hours land in haul_hours', ent.hh === 4, `haul_hours=${ent.hh}`);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   await client.end();
   process.exit(failed ? 1 : 0);

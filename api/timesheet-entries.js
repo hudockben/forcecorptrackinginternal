@@ -742,6 +742,11 @@ function normalizeSplitRow(raw, idx) {
   }
   const { dest, error: destError } = normalizeSplitDest(raw.dest, idx);
   if (destError) return { error: destError };
+  // WHICH KIND of haul this row was. Unreadable is no answer at all, the same
+  // rule safeHaulType applies to the day-level one, and for the same reason:
+  // guessing between 'on site' and 'to and from' moves a man's hours between
+  // prevailing and standard.
+  const haul_type = safeHaulType(raw.haul_type);
 
   // Cost codes are a daily_tracking idea. The three blob tabs have no such
   // column — a Truck Tracking row is a customer, a window and a fee — so
@@ -767,6 +772,12 @@ function normalizeSplitRow(raw, idx) {
       // "no opinion" into "definitely not a haul" and quietly pay a driver's
       // wage on top of the truck that is right there on the row.
       ...(raw.is_haul === true || raw.is_haul === false ? { is_haul: raw.is_haul } : null),
+      // WHICH KIND of haul this row was, asked per row because that is where
+      // the question is now answered — a man who hauls to the job and then
+      // hauls inside the fence did both in one day, and the two are not worth
+      // the same money. Absent means "whatever the day says", which is every
+      // row of every split saved before the question moved onto the row.
+      ...(haul_type ? { haul_type } : null),
       dest,
     },
   };
@@ -971,6 +982,19 @@ function haulTypeOf(entry) {
   return (t === 'on_site' || t === 'off_site') ? t : null;
 }
 
+// Which kind of haul THIS row was.
+//
+// The question is asked per row in payroll's split modal, because one day can
+// hold both answers: a driver who runs to the site and then hauls inside the
+// fence is off-site for one leg and on-site for the other, and only the
+// off-site hours lose the prevailing premium. A row that does not say falls
+// back to the day — which is every row approved before the question moved onto
+// the row, and every path that has no split to ask.
+function rowHaulType(row, entry) {
+  const t = row && row.haul_type;
+  return (t === 'on_site' || t === 'off_site') ? t : haulTypeOf(entry);
+}
+
 // Is the truck actually ON this row?
 //
 // A named unit is not a priced one: every split row starts at equip_hours 0, so
@@ -1026,6 +1050,28 @@ function storedHaulAnswer(row) {
   return null;
 }
 
+// WHICH KIND of haul an injected row was approved as, read back off the stamp.
+//
+// daily_tracking has no haul_type column and needs none: the row is stamped
+// 'Haul — On Site' or 'Haul — To/From Site' at injection, from the row's own
+// answer, so field_type already IS the per-row record. Reading it back here is
+// what lets Edit Split reopen a day holding both kinds of haul showing each
+// leg as it was approved, rather than flattening both onto the day's answer.
+//
+// Dashes are normalized on the way in for the same reason HAUL_FIELD_TYPE_RE
+// accepts all three: nothing stops a copy-pasted field type arriving with an
+// en dash or a hyphen where this file writes an em dash.
+function storedRowHaulType(row) {
+  const norm = v => String(v == null ? '' : v)
+    .replace(/[—–-]/g, '-').replace(/\s+/g, ' ').trim().toLowerCase();
+  const want = norm(row && row.field_type);
+  if (!want) return null;
+  for (const type of Object.keys(HAUL_FIELD_TYPE)) {
+    if (norm(HAUL_FIELD_TYPE[type]) === want) return type;
+  }
+  return null;
+}
+
 // Was THIS row bought by the truck?
 //
 // The day-level answer used to settle it for every row at once, and that is the
@@ -1063,7 +1109,15 @@ function haulWorkHoursOf(entry, rows) {
   const haulType = haulTypeOf(entry);
   if (!haulType) return null;
   const total = (Array.isArray(rows) ? rows : []).reduce((sum, r) => (
-    (!isTravelSplitRow(r) && isHaulWorkRow(r, haulType, entry))
+    (!isTravelSplitRow(r) && isHaulWorkRow(r, haulType, entry)
+      // ONLY the rows classified the same way the day is. The column is read
+      // through the day's haul_type — off-site hours leave prevailing, on-site
+      // hours do not — so counting an on-site leg inside an off-site day's
+      // haul_hours would pay the man the standard rate for hours he worked on
+      // the covered site. A row with no answer of its own matches by
+      // definition (rowHaulType falls back to the day), so a split saved
+      // before the question moved onto the row counts exactly as it always did.
+      && rowHaulType(r, entry) === haulType)
       ? sum + (Number(r.labor_hours) || 0)
       : sum
   ), 0);
@@ -1159,7 +1213,15 @@ async function insertSplitRows(sql, splitRows, entry, division, companyCode, emp
     // ones the truck was actually on. See isHaulWorkRow: a driver out of the
     // truck and working the site is owed that labour, and the job owes it.
     const isHaulRow = !isTravel && isHaulWorkRow(r, haulType, entry);
-    const fieldType = isTravel ? 'Travel' : (isHaulRow ? HAUL_FIELD_TYPE[haulType] : null);
+    // Stamped from the ROW's own answer, not the day's. The two differ only on
+    // a day that holds both kinds of haul, and on that day the stamp is the
+    // only record of which leg was which — it is what the cost tab shows and
+    // what storedHaulAnswer reads the classification back out of when the
+    // split is reopened. Falls back to the day's answer for every row that
+    // does not say, which is every split saved before the question moved onto
+    // the row.
+    const fieldType = isTravel ? 'Travel'
+      : (isHaulRow ? HAUL_FIELD_TYPE[rowHaulType(r, entry) || haulType] : null);
     await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -1317,6 +1379,10 @@ function blobBoundSplitRows(entry, rows) {
       // goes back to letting the truck decide, rather than coming back as a
       // deliberate "not a haul" nobody ever said.
       ...(row.is_haul === true || row.is_haul === false ? { is_haul: row.is_haul } : null),
+      // And which kind of haul it was. daily_tracking carries this in its
+      // field_type stamp; a blob tab has no such column, so the split row
+      // itself is the only place it can be kept for the reopen.
+      ...(row.haul_type ? { haul_type: row.haul_type } : null),
       dest: {
         division:  dest.division,
         job_id:    dest.job_id,
@@ -5573,6 +5639,11 @@ module.exports = async (req, res) => {
           // — the truck kept charging the job AND the man kept charging his
           // wage, and no hour left prevailing.
           ...storedHaulAnswer(r),
+          // And which kind of haul the row was approved as, off its stamp —
+          // the per-row answer the modal asks for. Absent on a row that was
+          // never a haul, and on one stamped before the question moved onto
+          // the row; the modal falls back to the day's answer for those.
+          ...(storedRowHaulType(r) ? { haul_type: storedRowHaulType(r) } : null),
           // job_label is not a daily_tracking column; the modal already holds
           // the destination division's job list and names it from there.
           ...(moved ? { dest: { division: rowDiv, job_id: rowJob } } : null),
@@ -5874,6 +5945,8 @@ module.exports._test = {
   truckOnRow,
   isHaulWorkRow,
   haulWorkHoursOf,
+  rowHaulType,
+  storedRowHaulType,
   HAUL_FIELD_TYPE,
   HAUL_FIELD_TYPE_RE,
   isTravelSplitRow,

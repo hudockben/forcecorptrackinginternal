@@ -70,6 +70,10 @@ const HAUL_PRELUDE =
   `${fnSource('splitPricedMachineOnRow')}\n` +
   `${fnSource('splitTruckOnRow')}\n` +
   `${fnSource('splitRowIsHaul')}\n` +
+  // The question is asked PER ROW now, and splitRowTakesTruck reads that
+  // answer rather than the day's: a row nobody has answered is not a haul, so
+  // the modal must not stamp a truck and its hours onto it.
+  `${fnSource('splitRowHaulAnswer')}\n` +
   `${fnSource('splitRowTakesTruck')}\n`;
 
 const run = (splitEntry, splitRows) => new Function(
@@ -366,7 +370,9 @@ console.log('\n[a haul row fills in its own truck and hours]');
       `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n` +
       `${fnSource('splitMirrorHaulEquipHours')}\n${fnSource('splitClearHaulAuto')}\n`, sb);
     const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
-                              equipment: '', labor_hours: 6, equip_hours: 0 }, over);
+                              equipment: '', labor_hours: 6, equip_hours: 0,
+                              haul_type: haul === undefined ? 'off_site' : (haul || ''),
+                              is_haul:   haul === undefined ? true : !!haul }, over);
     sb.splitRows = [r];
     const a = sb.splitDefaultHaulEquipment(r);
     const b = sb.splitMirrorHaulEquipHours(r);
@@ -382,7 +388,7 @@ console.log('\n[a haul row fills in its own truck and hours]');
     vm.runInContext(
       `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n`, sb);
     const r = { cost_code: 'Earthwork', sub_code: 'Excess Cut', equipment: '',
-                labor_hours: 6, equip_hours: 0 };
+                labor_hours: 6, equip_hours: 0, haul_type: 'off_site', is_haul: true };
     sb.splitDefaultHaulEquipment(r);
     return r;
   };
@@ -503,10 +509,15 @@ console.log('\n[what the modal guessed, the modal takes back]');
       `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n` +
       `${fnSource('splitMirrorHaulEquipHours')}\n${fnSource('splitClearHaulAuto')}\n`, sb);
     const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
-                              equipment: '', labor_hours: 6, equip_hours: 0 }, over);
+                              equipment: '', labor_hours: 6, equip_hours: 0,
+                              haul_type: 'off_site', is_haul: true }, over);
     sb.splitDefaultHaulEquipment(r);
     sb.splitMirrorHaulEquipHours(r);
-    sb.splitHaulAnswer = haul;          // the approver changes their mind
+    // The approver changes their mind — on the ROW, which is where the question
+    // is asked. The day's answer is derived from the rows and follows it.
+    r.haul_type = haul || 'none';
+    r.is_haul   = !!haul;
+    sb.splitHaulAnswer = haul;
     sb.splitClearHaulAuto(r);
     return r;
   };
@@ -543,8 +554,11 @@ console.log('\n[what the modal guessed, the modal takes back]');
 console.log('\n[trying an answer does not change the page behind the modal]');
 {
   const change = fnSource('onSplitHaulChange');
+  // Derived from the rows now rather than read off a day-level select: the
+  // question is asked per row, and the entry's one classification is the sum
+  // of those answers. Still held apart from splitEntry, for the same reason.
   assert('onSplitHaulChange writes the answer to splitHaulAnswer',
-    /splitHaulAnswer = el\.value/.test(change));
+    /splitHaulAnswer = splitDeriveHaulAnswer\(\)/.test(change));
   assert('  and never onto the cached entry',
     !/splitEntry\.haul_type\s*=/.test(change), change);
   assert('no code path writes haul_type onto splitEntry',

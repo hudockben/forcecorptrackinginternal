@@ -207,9 +207,36 @@ assert('an explicit "not a haul" is stored, not merely left unstamped',
   && /r\.is_haul === true \|\| r\.is_haul === false \? r\.is_haul : null/.test(insert));
 assert('a haul row is written at 0 and every other row at its real rate',
   /\$\{isHaulRow \? 0 : \(isTravel \? travelRate : workRate\)\}/.test(insert));
+// And from the ROW's answer, not the day's. The question is asked per row in
+// payroll's modal because one day holds both kinds of haul — a man who runs to
+// the job and then hauls inside the fence — and the stamp is where the
+// per-row answer is kept: daily_tracking has no haul_type column, so
+// 'Haul — On Site' vs 'Haul — To/From Site' IS the record, and storedRowHaulType
+// reads it back out when the split is reopened. A row that does not say falls
+// back to the day, which is every split saved before the question moved.
 assert('the stamp follows the same answer, so the rate and the marker cannot disagree',
-  /const fieldType = isTravel \? 'Travel' : \(isHaulRow \? HAUL_FIELD_TYPE\[haulType\] : null\);/
+  /const fieldType = isTravel \? 'Travel'\s*\n?\s*: \(isHaulRow \? HAUL_FIELD_TYPE\[rowHaulType\(r, entry\) \|\| haulType\] : null\);/
     .test(insert));
+assert('  and a row with no answer of its own falls back to the day',
+  T.rowHaulType({}, { haul_type: 'off_site' }) === 'off_site'
+  && T.rowHaulType({ haul_type: 'on_site' }, { haul_type: 'off_site' }) === 'on_site'
+  && T.rowHaulType({ haul_type: 'nonsense' }, { haul_type: 'on_site' }) === 'on_site'
+  && T.rowHaulType({}, {}) === null);
+assert('  and the stamp reads back as the answer that wrote it',
+  T.storedRowHaulType({ field_type: 'Haul — On Site' })      === 'on_site'
+  && T.storedRowHaulType({ field_type: 'Haul — To/From Site' }) === 'off_site'
+  && T.storedRowHaulType({ field_type: 'Haul - To/From Site' }) === 'off_site'
+  && T.storedRowHaulType({ field_type: 'Travel' })              === null
+  && T.storedRowHaulType({})                                    === null);
+// The on-site legs of a mixed day must NOT be counted into haul_hours: that
+// column is read through the day's classification, so an on-site hour counted
+// inside an off-site day would pay the man the standard rate for time he spent
+// on the covered site.
+assert('  so a day holding both answers counts only its own kind',
+  T.haulWorkHoursOf({ haul_type: 'off_site' }, [
+    { labor_hours: 6, haul_type: 'off_site', is_haul: true, cost_code: 'Earthwork' },
+    { labor_hours: 2, haul_type: 'on_site',  is_haul: true, cost_code: 'Earthwork' },
+  ]) === 6);
 
 console.log('\n[the re-rate sweep does not walk over the approver]');
 

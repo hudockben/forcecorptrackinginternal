@@ -65,6 +65,14 @@ function haulIsSrcFor(source) {
   if (!line) throw new Error('payroll.html no longer defines splitHaulIs');
   return line;
 }
+// The hauling question is asked per row, so renderSplitRows draws a select on
+// every one of them and needs the list of answers. Read off the page for the
+// same reason as the lists above: a fourth answer reaches this suite too.
+function haulAnswersSrcFor(source) {
+  const block = (source.match(/const SPLIT_HAUL_ANSWERS = \[[\s\S]*?\n    \];/) || [])[0];
+  if (!block) throw new Error('payroll.html no longer defines SPLIT_HAUL_ANSWERS');
+  return block;
+}
 
 let repaints = 0;
 const sandbox = {
@@ -631,6 +639,7 @@ console.log('\n[the prefilled cells read as prefilled]');
     travelReSrc,
     ...destConsts,
     haulIsSrc,
+    haulAnswersSrcFor(src),
     'let _splitRowSeq = 0;',
     ...[
       'numInputVal(n) {',
@@ -650,6 +659,8 @@ console.log('\n[the prefilled cells read as prefilled]');
       'splitRowIsHaul(r) {',
       'splitTruckOnRow(r) {',
       'splitPricedMachineOnRow(r) {',
+      'splitRowHaulAnswer(r) {',
+      'splitHaulCellHtml(r, i) {',
       'splitDestCellHtml(r, i) {',
       'splitDestNoCodeHtml(r) {',
       'splitDestWindowHtml(r, i) {',
@@ -858,6 +869,12 @@ console.log('\n[a repaint keeps the cursor where it was]');
     'splitRowDivision(r) {', 'splitRowJob(r) {', 'splitRowCcList(r) {',
     'splitRowIsDaily(r) {', 'splitRowIsHaul(r) {',
     'splitTruckOnRow(r) {', 'splitPricedMachineOnRow(r) {',
+    'splitRowHaulAnswer(r) {', 'splitHaulCellHtml(r, i) {',
+    'splitUnansweredHaulRows() {', 'splitDeriveHaulAnswer() {',
+    'onSplitHaulChange() {', 'renderSplitHaulNote() {',
+    'splitMirrorHaulEquipHoursAll() {', 'splitMirrorHaulEquipHours(r) {',
+    'splitClearHaulAuto(r) {', 'splitDefaultHaulEquipment(r) {',
+    'splitRowTakesTruck(r) {',
     'splitDestCellHtml(r, i) {', 'splitDestNoCodeHtml(r) {', 'splitDestWindowHtml(r, i) {',
     'escapeHtml(s) {', 'prettyDiv(d) {',
     'splitPickTravelCodes(ccList, workCostCode) {', 'splitApplyTravelPrefill() {',
@@ -874,6 +891,7 @@ console.log('\n[a repaint keeps the cursor where it was]');
     (src.match(/const _cbEsc = [^\n]+/) || [])[0],
     ...destConstsFor(src),
     haulIsSrcFor(src),
+    haulAnswersSrcFor(src),
     'const _cbState = new WeakMap();',
     'let _splitRowSeq = 0;',
     ...names.map(grab),
@@ -1235,10 +1253,13 @@ console.log('\n[the form and the server agree on what is saveable]');
     // safeStr, which used to be stubbed here. A stub of a validator is a second
     // opinion about what the server accepts, which is the one thing this
     // section exists to check.
-    ...['safeStr', 'safeTime', 'dustNum', 'quarryNum', 'quarryRangeError',
+    ...['safeStr', 'safeTime', 'safeHaulType', 'dustNum', 'quarryNum', 'quarryRangeError',
         'parseQuarryJob', 'validateQuarryInjection', 'validateTruckingLeg',
         'validateDustLeg', 'normalizeSplitDest'].map(grabApi),
     (api.match(/^const SPLIT_DEST_DIVISIONS = [^\n]+/m) || [])[0],
+    // safeHaulType reads this set — the hauling answer normalizer, which
+    // normalizeSplitRow now runs over each row's own answer.
+    (api.match(/^const HAUL_TYPES = [^\n]+/m) || [])[0],
     grabApi('normalizeSplitRow'), grabApi('validateSplit'),
   ].join('\n\n'), srv);
 
@@ -1249,6 +1270,7 @@ console.log('\n[the form and the server agree on what is saveable]');
     // sandbox. renderSplitRows reaches all of these on every row.
     'splitRowDivision', 'splitRowJob', 'splitRowCcList', 'splitRowIsDaily',
     'splitRowIsHaul', 'splitTruckOnRow', 'splitPricedMachineOnRow',
+    'splitRowHaulAnswer', 'splitHaulCellHtml',
     'splitDestCellHtml', 'splitDestNoCodeHtml', 'splitDestWindowHtml',
     'escapeHtml', 'prettyDiv',
     '_cbReadOptions', 'cbOnFocus',
@@ -1267,7 +1289,7 @@ console.log('\n[the form and the server agree on what is saveable]');
   };
   const harness = [
     travelReSrc, (src.match(/const _cbEsc = [^\n]+/) || [])[0],
-    ...destConstsFor(src), haulIsSrcFor(src),
+    ...destConstsFor(src), haulIsSrcFor(src), haulAnswersSrcFor(src),
     'const _cbState = new WeakMap();', 'let _splitRowSeq = 0;',
     ...NAMES.map(byName),
     'async ' + byName('splitSave'),
@@ -1301,6 +1323,10 @@ console.log('\n[the form and the server agree on what is saveable]');
   const ROW = ov => Object.assign({
     _uid: 'v' + (++seq), cost_code: 'Silt Sock', sub_code: '12inch', quantity: 0,
     equipment: '', labor_hours: 0, equip_hours: 0, is_travel: false, code_source: '',
+    // Answered, because these cases are about hours and codes. The form now
+    // asks every labour row whether the truck bought it and refuses a blank
+    // one; an unanswered row is its own case, at the end of this block.
+    haul_type: 'none', is_haul: false,
   }, ov);
   // 20 work + 5 travel, so one 25-hour row balances and the per-row cap of 24
   // is reachable without an impossible day.
@@ -1344,6 +1370,37 @@ console.log('\n[the form and the server agree on what is saveable]');
         `, server ${verdict.error ? 'rejects ("' + verdict.error + '")' : 'accepts'}`);
       pending--;
     }
+    // ── The one place the two ends deliberately differ ────────────────
+    // The form refuses a labour row that has not answered "was this a haul?";
+    // the server still takes one. That is the safe direction and it is on
+    // purpose: the answer is three-state on the wire (see normalizeSplitRow),
+    // a row that does not say leaves the truck to decide exactly as it always
+    // did, and a browser holding a payroll.html from before the question moved
+    // onto the row must keep being able to approve a day. What must never
+    // happen is the reverse — the form posting something the server refuses.
+    const blank = [ROW({ labor_hours: 20, haul_type: '', is_haul: undefined }),
+                   ROW({ labor_hours: 5, is_travel: true })];
+    window.eval('splitRows = ' + JSON.stringify(blank) + '; renderSplitRows();');
+    window.__sent = null;
+    window.document.getElementById('splitMsg').textContent = '';
+    await window.splitSave();
+    assert('  an unanswered hauling question is refused by the form',
+      window.__sent === null
+      && /Row 1: answer/.test(window.document.getElementById('splitMsg').textContent),
+      window.document.getElementById('splitMsg').textContent);
+    assert('  and the server still takes it, so an old client can still approve',
+      !srv.validateSplit(JSON.parse(JSON.stringify(blank)), ENTRY).error);
+    // Travel is never asked — the commute is not the truck's time — so a split
+    // whose only unanswered row is the drive still saves.
+    const driveOnly = [ROW({ labor_hours: 20 }),
+                       ROW({ labor_hours: 5, is_travel: true, haul_type: '', is_haul: undefined })];
+    window.eval('splitRows = ' + JSON.stringify(driveOnly) + '; renderSplitRows();');
+    window.__sent = null;
+    await window.splitSave();
+    assert('  but a travel row is never asked, so it does not block the save',
+      window.__sent !== null,
+      window.document.getElementById('splitMsg').textContent);
+
     console.log(`\n${passed} passed, ${failed} failed`);
     process.exit(failed ? 1 : 0);
   };
