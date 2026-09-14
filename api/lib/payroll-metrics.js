@@ -26,10 +26,14 @@
 //   • ONLY THE HOURS HE ACTUALLY HAULED. A driver who runs to the site and then
 //     gets out and works it did both in one day, and haul_type on its own
 //     cannot say how much of each — it answered for the whole block. Payroll's
-//     split says: haul_hours holds the work hours the truck bought, and the
-//     rest were worked on the covered site and are owed the premium. An entry
-//     with haul_hours null was never split, and reads as the whole day, which
-//     is exactly how it behaved before the column existed.
+//     split says so instead, in TWO figures, because one column cannot answer
+//     two questions: haul_hours is every work hour the truck bought, and
+//     haul_off_site_hours is the share of them hauled TO OR FROM the site. The
+//     second is what moves a man's hours out of prevailing; the first is what
+//     the reports call his truck hours. They differ only on a day holding both
+//     kinds of haul, which is a day payroll describes one row at a time. An
+//     entry with both null was never split, and reads as the whole day, which
+//     is exactly how it behaved before either column existed.
 //   • Only an explicit true is prevailing. false and null — the divisions with
 //     no prevailing-wage concept — are standard.
 //   • travel_to_site + travel_to_shop are the two legs behind travel_hours as
@@ -51,12 +55,23 @@ const COUNTED_STATUSES = new Set(['submitted', 'approved']);
  * Only an off-site haul moves anything: a haul on the site is ordinary covered
  * work, and a day that was not a haul at all has nothing to move.
  *
- *   haul_hours null → the day was never split, so the answer is still the one
- *                     haul_type gave on its own: all of it. This is what keeps
- *                     every fortnight approved before the column existed
- *                     reporting exactly the hours it always did.
- *   haul_hours n    → payroll separated the legs. n hours were in the truck;
- *                     the rest were worked on the site and stay prevailing.
+ * Read off haul_off_site_hours, which counts exactly those legs. haul_hours is
+ * the WIDER figure — every hour in the truck, on site or off — and the two
+ * differ on a day holding both kinds of haul, which is a day payroll can now
+ * describe one row at a time. Reading the wide one here would have paid the man
+ * the standard rate for hours he spent hauling on the covered site.
+ *
+ *   haul_off_site_hours n    → payroll separated the legs. n of the hours in
+ *                              the truck were to or from the site; every other
+ *                              hour of the day stays prevailing.
+ *   haul_off_site_hours null → the column predates this entry's approval. Fall
+ *                              back to haul_hours, which on such a day is the
+ *                              same number: the entry carried one haul_type, so
+ *                              every hour in the truck was an off-site one.
+ *   haul_hours null too      → never split at all, so the answer is still the
+ *                              one haul_type gave on its own: all of it. This is
+ *                              what keeps every fortnight approved before either
+ *                              column existed reporting the hours it always did.
  *
  * Clamped to the day, because prevailing + standard must still add up to the
  * hours the man is owed — reclassifying hours may never create or destroy any.
@@ -67,12 +82,15 @@ const COUNTED_STATUSES = new Set(['submitted', 'approved']);
  */
 function offSiteHaulWork(e, work) {
   if (!e || e.haul_type !== 'off_site') return 0;
-  if (e.haul_hours == null) return work;
-  const h = Number(e.haul_hours);
   // A figure we cannot read is not a zero. num() would make it one, and that
   // would pay a whole hauled day at the prevailing rate on the strength of a
-  // value nobody can parse. Unreadable falls back to what haul_type said on its
-  // own — all of it — which is the answer this column refines, never reverses.
+  // value nobody can parse. Each unreadable value falls through to the next
+  // answer below it, ending at what haul_type said on its own — all of it —
+  // which is the answer these columns refine, never reverse.
+  const off = e.haul_off_site_hours == null ? null : Number(e.haul_off_site_hours);
+  if (off != null && Number.isFinite(off)) return Math.min(Math.max(off, 0), work);
+  if (e.haul_hours == null) return work;
+  const h = Number(e.haul_hours);
   if (!Number.isFinite(h)) return work;
   return Math.min(Math.max(h, 0), work);
 }

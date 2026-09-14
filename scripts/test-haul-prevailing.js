@@ -122,10 +122,10 @@ assert('truckHours and haulHours are not the same number on an on-site haul',
 // ── Nothing else changes ─────────────────────────────────────────────────────
 console.log('\n[every other case behaves exactly as it did]');
 
-const legacy = only(entry({ haul_type: undefined }));
+const preColumn = only(entry({ haul_type: undefined }));
 assert('an entry saved before the question existed is ordinary work',
-  near(legacy.pwHours, 8) && near(legacy.stdHours, 0),
-  `pw=${legacy.pwHours} std=${legacy.stdHours}`);
+  near(preColumn.pwHours, 8) && near(preColumn.stdHours, 0),
+  `pw=${preColumn.pwHours} std=${preColumn.stdHours}`);
 
 const nonPw = only(entry({ prevailing_wage: false, haul_type: 'off_site' }));
 assert('an off-site haul on a NON-prevailing job is standard, as it always was',
@@ -232,6 +232,42 @@ assert('an on-site haul stays wholly prevailing however the rows were split',
   near(onSitePartial.pwHours, 9) && near(onSitePartial.stdHours, 0),
   `pw=${onSitePartial.pwHours} std=${onSitePartial.stdHours}`);
 
+// ── A day holding both kinds of haul ───────────────────────────────────────
+// haul_hours is every hour he spent in the truck; haul_off_site_hours is the
+// share of them hauled TO OR FROM the site. Only the second moves his pay — the
+// on-site legs are covered work and keep the premium — and one column cannot be
+// both answers, so the narrower one has its own.
+console.log('\n[a day holding both kinds of haul]');
+const bothKinds = only(entry({ computed_hours: 9, haul_type: 'off_site',
+                           haul_hours: 8, haul_off_site_hours: 6 }));
+assert('only the to-and-from legs leave prevailing',
+  near(bothKinds.pwHours, 3) && near(bothKinds.stdHours, 6),
+  `pw=${bothKinds.pwHours} std=${bothKinds.stdHours}`);
+assert('  and the on-site leg still counts as time in the truck',
+  near(bothKinds.truckHours, 8), `truck=${bothKinds.truckHours}`);
+assert('  with the reclassified figure naming only the hours that moved',
+  near(bothKinds.haulHours, 6), `haul=${bothKinds.haulHours}`);
+// Without the column — every entry approved before it existed — the day held
+// one kind of haul, so the wider figure IS the answer and nothing changes.
+const beforeOffCol = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: 6.5 }));
+assert('an entry from before the column falls back to haul_hours, as it always read',
+  near(beforeOffCol.pwHours, 2.5) && near(beforeOffCol.stdHours, 6.5),
+  `pw=${beforeOffCol.pwHours} std=${beforeOffCol.stdHours}`);
+assert('  and an explicit null falls back the same way',
+  near(only(entry({ computed_hours: 9, haul_type: 'off_site',
+                    haul_hours: 6.5, haul_off_site_hours: null })).stdHours, 6.5));
+// Zero is an answer, not an absence: a day hauled entirely ON the site keeps
+// every hour prevailing even though haul_hours says he was driving all day.
+const allOnSite = only(entry({ computed_hours: 9, haul_type: 'off_site',
+                               haul_hours: 9, haul_off_site_hours: 0 }));
+assert('a zero off-site figure keeps the whole day prevailing',
+  near(allOnSite.pwHours, 9) && near(allOnSite.stdHours, 0),
+  `pw=${allOnSite.pwHours} std=${allOnSite.stdHours}`);
+const badOff = only(entry({ computed_hours: 9, haul_type: 'off_site',
+                            haul_hours: 6.5, haul_off_site_hours: 'nonsense' }));
+assert('  and an unreadable one falls through rather than becoming zero',
+  near(badOff.stdHours, 6.5), `std=${badOff.stdHours}`);
+
 // A split whose hauled hours somehow exceed the day cannot be allowed to invent
 // negative prevailing hours — the invariant below is the whole contract.
 const overrun = only(entry({ computed_hours: 9, haul_type: 'off_site', haul_hours: 40 }));
@@ -265,6 +301,14 @@ console.log('\n[payroll.html says the same thing]');
     { haul_type: 'on_site',  haul_hours: 6.5 },
     { haul_type: null,       haul_hours: 6.5 },
     { haul_type: 'off_site', haul_hours: 'nonsense' },
+    // The narrower column, which is the one that actually moves his pay.
+    { haul_type: 'off_site', haul_hours: 8,   haul_off_site_hours: 6 },
+    { haul_type: 'off_site', haul_hours: 9,   haul_off_site_hours: 0 },
+    { haul_type: 'off_site', haul_hours: 6.5, haul_off_site_hours: null },
+    { haul_type: 'off_site', haul_hours: 6.5, haul_off_site_hours: 'nonsense' },
+    { haul_type: 'off_site', haul_hours: 2,   haul_off_site_hours: 40 },
+    { haul_type: 'off_site', haul_hours: 2,   haul_off_site_hours: -3 },
+    { haul_type: 'on_site',  haul_hours: 8,   haul_off_site_hours: 6 },
   ];
   let agree = 0;
   for (const c of CASES) if (near(pageFn(c, 9), offSiteHaulWork(c, 9))) agree++;

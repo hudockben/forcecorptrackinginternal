@@ -1073,11 +1073,14 @@ const PAYROLL_LIMITS = [
 async function payrollDigest(c) {
   const { startIso, endIso } = report.biweeklyPayPeriod(new Date());
 
-  // haul_type and haul_hours are in the column list on purpose: payrollMetrics
-  // sends an off-site haul's work hours to standard rather than prevailing, and
-  // haul_hours says how many of them there were — the driver who hauled to the
-  // job and then worked the site has some of each. This SELECT is explicit.
-  // Leave either out and every row reaches payrollMetrics looking un-split, so
+  // haul_type, haul_hours and haul_off_site_hours are in the column list on
+  // purpose: payrollMetrics sends an off-site haul's work hours to standard
+  // rather than prevailing, haul_hours says how many of the day's hours were in
+  // the truck at all — the driver who hauled to the job and then worked the site
+  // has some of each — and haul_off_site_hours says how many of THOSE were to
+  // and from it, which on a day holding both kinds of haul is the smaller
+  // figure and the only one that moves his pay. This SELECT is explicit.
+  // Leave any of them out and every row reaches payrollMetrics looking un-split, so
   // Mathis keeps answering with the OLD split — silently, and in disagreement
   // with both the Payroll page and the executive report. Written out here
   // rather than inside the query: the sql tag only sees text, and a backtick in
@@ -1093,6 +1096,7 @@ async function payrollDigest(c) {
              travel_to_shop_hours::float AS travel_to_shop_hours,
              haul_type,
              haul_hours::float           AS haul_hours,
+             haul_off_site_hours::float  AS haul_off_site_hours,
              -- For the ORDER the overtime walk needs, not for display: two
              -- entries on one date are counted in sequence, and the first keeps
              -- the regular hours while the second takes the overtime.

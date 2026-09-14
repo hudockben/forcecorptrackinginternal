@@ -511,6 +511,13 @@ console.log('\n[split tally: travel reconciliation]');
     grab('splitPricedMachineOnRow(r) {'),
     grab('splitTruckOnRow(r) {'),
     grab('splitRowIsHaul(r) {'),
+    // The hauling question is asked per row and every labour row has to answer
+    // it before the split can be saved, so the tally reports the rows that
+    // still owe one — "✓ balanced" beside an unanswered row would promise a
+    // save that is about to be refused.
+    grab('splitRowHaulAnswer(r) {'),
+    grab('splitRowNeedsHaulAnswer(r) {'),
+    grab('splitUnansweredHaulRows() {'),
     grab('splitHaulUnpricedRows() {'),
     grab('splitHaulNoTruckHours() {'),
     grab('splitUnnamedMachineRows() {'),
@@ -529,8 +536,12 @@ console.log('\n[split tally: travel reconciliation]');
     return store;
   }
   const E = { computed_hours: 7.5, travel_hours: 2 };
-  const drive = ov => Object.assign({ cost_code: 'Mobilization', sub_code: 'Travel', labor_hours: 2 }, ov);
-  const work  = ov => Object.assign({ cost_code: 'Silt Sock', sub_code: '12inch', labor_hours: 7.5 }, ov);
+  // Answered, because this block is about the travel reconciliation. A row that
+  // has not answered is its own case at the end.
+  const drive = ov => Object.assign({ cost_code: 'Mobilization', sub_code: 'Travel', labor_hours: 2,
+                                      haul_type: 'none', is_haul: false }, ov);
+  const work  = ov => Object.assign({ cost_code: 'Silt Sock', sub_code: '12inch', labor_hours: 7.5,
+                                      haul_type: 'none', is_haul: false }, ov);
 
   const wrong = tally([drive({ is_travel: false }), work({ is_travel: true })], E);
   assert('ticking Travel on the work row is no longer "balanced"',
@@ -554,11 +565,29 @@ console.log('\n[split tally: travel reconciliation]');
   assert('an hours mismatch still wins over the travel message',
     short.splitTallyStatus.textContent === 'under-allocated');
 
-  const noTravel = tally([{ cost_code: 'A', sub_code: 'B', labor_hours: 8, is_travel: false }],
+  const noTravel = tally([{ cost_code: 'A', sub_code: 'B', labor_hours: 8, is_travel: false,
+                            haul_type: 'none', is_haul: false }],
                          { computed_hours: 8, travel_hours: 0 });
   assert('a day with no travel hides the readout and balances',
     noTravel.splitTravelTally.style.display === 'none' &&
     /balanced/.test(noTravel.splitTallyStatus.textContent));
+
+  // The hauling question is asked per row now, and a labour row that has not
+  // answered it cannot be saved — so the tally must not read as ✓.
+  const unasked = tally([work({ haul_type: '', is_haul: undefined }), drive({ is_travel: true })], E);
+  assert('a row that has not answered "was this a haul?" is not balanced',
+    /Row 1: .*unanswered/.test(unasked.splitTallyStatus.textContent),
+    unasked.splitTallyStatus.textContent);
+  // Travel is never asked — the commute is not the truck's time.
+  const driveUnasked = tally([work(), drive({ is_travel: true, haul_type: '', is_haul: undefined })], E);
+  assert('  but the drive is never asked, so it does not hold the tally back',
+    /balanced/.test(driveUnasked.splitTallyStatus.textContent),
+    driveUnasked.splitTallyStatus.textContent);
+  // Hours are the more fundamental failure: a split that does not add up
+  // cannot be saved whatever anybody answered.
+  const bothOff = tally([work({ labor_hours: 5, haul_type: '', is_haul: undefined })], E);
+  assert('  and an hours mismatch still wins over it',
+    bothOff.splitTallyStatus.textContent === 'under-allocated');
 }
 
 // ── The cell's layout ──

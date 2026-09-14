@@ -50,6 +50,11 @@ const TOKEN = 'x.y.z';
 const USER  = { id: 7, username: 'hudockben', role: 'admin', companyCode: 'FCT',
               isPlatformAdmin: true, allowedDivisions: ['timesheet','payroll','turf'] };
 
+// What ?action=split hands back, so a test can reopen a posted split. Set
+// through the page-level variable below rather than per route, because the
+// route is installed once on boot and openSplitModal is called many times.
+let SPLIT_BACK = [];
+
 // Every API the two pages touch on boot, answered with the smallest honest body.
 function mockApi(page, { isDriver = true, equipment = [] } = {}) {
   return page.route('**/api/**', route => {
@@ -60,6 +65,7 @@ function mockApi(page, { isDriver = true, equipment = [] } = {}) {
     }
     if (u.includes('/api/equipment'))       return json({ equipment });
     if (u.includes('/api/timesheet-jobs'))  return json({ jobs: [{ id: '26049', label: 'Franklin Regional Multi · 26049' }] });
+    if (u.includes('action=split'))         return json({ split: SPLIT_BACK });
     if (u.includes('/api/timesheet-entries')) return json({ entries: [] });
     if (u.includes('/api/company/users'))   return json({ users: [] });
     if (u.includes('/api/employees'))       return json({ employees: [] });
@@ -246,109 +252,282 @@ async function boot(page, file, opts) {
     const errs = await boot(page, 'payroll.html');
     ok('the page boots with no uncaught error', errs.length === 0, errs.slice(0, 2).join(' | '));
 
+    // ── The question, on every row ─────────────────────────────────────
+    // It used to be asked once for the whole day, above the table. That made
+    // the approver answer for the majority of the day and then correct the rest
+    // with a checkbox — and a day holding both answers could not be said at all.
     const built = await page.evaluate(() => {
-      if (typeof splitHaulPickerHtml !== 'function') return { err: 'splitHaulPickerHtml missing' };
-      const host = document.createElement('div');
-      host.innerHTML = splitHaulPickerHtml({ haul_type: 'off_site' });
-      document.body.appendChild(host);
-      const sel = host.querySelector('#splitHaulPick');
+      splitEntry = { id: 1, computed_hours: 9, travel_hours: 1,
+                     haul_type: null, truck_unit: 'Triaxle Dump' };
+      splitHaulAnswer = '';
+      splitProjEquipment = [];
+      splitRows = [
+        { cost_code: 'Notch Milling', sub_code: 'Milling - Trucking', quantity: 0,
+          equipment: '', labor_hours: 6.5, equip_hours: 0, is_travel: false,
+          code_source: '', haul_type: '' },
+        { cost_code: 'Notch Milling', sub_code: 'Scratch/leveling - Labor', quantity: 0,
+          equipment: '', labor_hours: 2.5, equip_hours: 0, is_travel: false,
+          code_source: '', haul_type: '' },
+        { cost_code: 'Mobilization', sub_code: 'Travel', quantity: 0, equipment: '',
+          labor_hours: 1, equip_hours: 0, is_travel: true, code_source: '', haul_type: '' },
+      ];
+      renderSplitRows();
+      const picks = () => [...document.querySelectorAll('#splitTbody select.haul-pick')];
+      const cells = () => [...document.querySelectorAll('#splitTbody tr')]
+        .map(tr => tr.children[9] ? tr.children[9].textContent.trim() : null);
       return {
-        opts: sel ? [...sel.options].map(o => o.value) : null,
-        selected: sel ? sel.value : null,
-        answer: typeof splitHaulAnswer !== 'undefined' ? splitHaulAnswer : '(missing)',
+        count: picks().length,
+        opts: picks()[0] ? [...picks()[0].options].map(o => o.value) : null,
+        labels: picks()[0] ? [...picks()[0].options].map(o => o.textContent.trim()) : null,
+        marked: picks().every(p => p.classList.contains('needed')),
+        travelCell: cells()[2],
+        gone: typeof splitHaulPickerHtml === 'undefined'
+          && !document.getElementById('splitHaulPick'),
       };
     });
-    ok('the approve modal renders the hauling picker', !built.err, built.err);
-    ok('  with all three answers',
-      built.opts && built.opts.length === 3 && built.opts.includes('on_site'),
+    ok('every labour row carries the question', built.count === 2, String(built.count));
+    ok('  and the travel row is never asked — the commute is not the truck\'s time',
+      /not asked/.test(built.travelCell || ''), built.travelCell);
+    ok('  with all three answers plus the blank it opens on',
+      built.opts && built.opts.join('|') === '|none|on_site|off_site',
       JSON.stringify(built.opts));
-    ok('  defaulted to what the driver said', built.selected === 'off_site', built.selected);
-    ok('  and seeded into splitHaulAnswer, not onto the entry', built.answer === 'off_site', built.answer);
+    ok('  spelled out the way the driver was asked them',
+      built.labels && /No — worked on site/.test(built.labels[1])
+      && /hauled on site/.test(built.labels[2])
+      && /to & from site/.test(built.labels[3]),
+      JSON.stringify(built.labels));
+    ok('  marked until they are answered', built.marked === true);
+    ok('  and the one day-level picker is gone', built.gone === true);
 
+    // The day nobody could describe before: one leg in the truck, one on foot.
+    const perRow = await page.evaluate(() => {
+      const boxes = () => [...document.querySelectorAll('#splitTbody .haul-col input')]
+        .map(b => b.checked);
+      const colShown = () => {
+        const th = document.querySelector('.split-table thead .haul-col');
+        return !!th && getComputedStyle(th).display !== 'none';
+      };
+      const before = { col: colShown(), unanswered: splitUnansweredHaulRows() };
+      splitOnChange(0, 'haul_type', 'off_site');
+      const one = { col: colShown(), checked: boxes(), day: splitHaulAnswer,
+                    unit: splitRows[0].equipment, eqh: splitRows[0].equip_hours };
+      splitOnChange(1, 'haul_type', 'none');
+      const two = { checked: boxes(), day: splitHaulAnswer,
+                    unanswered: splitUnansweredHaulRows(),
+                    payload: splitRows.map(splitRowPayload),
+                    status: document.getElementById('splitTallyStatus').textContent };
+      return { before, one, two };
+    });
+    ok('the Haul column is hidden until a row says it was one',
+      perRow.before.col === false);
+    ok('  and both labour rows are listed as unanswered',
+      JSON.stringify(perRow.before.unanswered) === '[1,2]',
+      JSON.stringify(perRow.before.unanswered));
+    ok('answering "hauled to & from site" reveals the column', perRow.one.col === true);
+    ok('  and ticks that row\'s Haul box for the approver',
+      perRow.one.checked[0] === true, JSON.stringify(perRow.one.checked));
+    ok('  and puts the truck the driver named on it, hours and all',
+      perRow.one.unit === 'Triaxle Dump' && perRow.one.eqh === 6.5,
+      `${perRow.one.unit} / ${perRow.one.eqh}`);
+    ok('answering "no" on the site-labour row leaves its box unticked',
+      perRow.two.checked[1] === false, JSON.stringify(perRow.two.checked));
+    ok('  and the day is classified from the rows',
+      perRow.two.day === 'off_site', perRow.two.day);
+    ok('  with nothing left unanswered',
+      JSON.stringify(perRow.two.unanswered) === '[]', JSON.stringify(perRow.two.unanswered));
+    ok('the hauled row posts its own answer to the server',
+      perRow.two.payload[0].is_haul === true
+      && perRow.two.payload[0].haul_type === 'off_site',
+      JSON.stringify(perRow.two.payload[0]));
+    ok('  and the worked row says outright it was not one, so the job pays him',
+      perRow.two.payload[1].is_haul === false
+      && !('haul_type' in perRow.two.payload[1]),
+      JSON.stringify(perRow.two.payload[1]));
+    ok('  and the travel row is never classified either way',
+      !('is_haul' in perRow.two.payload[2]) && !('haul_type' in perRow.two.payload[2]),
+      JSON.stringify(perRow.two.payload[2]));
+    ok('  and the tally reads balanced once every row has answered',
+      /balanced/.test(perRow.two.status), perRow.two.status);
+
+    // Unanswered is not saveable — the tally says so before the Save button is
+    // reached, because a blank answer used to read as "no" and pay the driver
+    // his wage on top of the truck priced on the very same row.
+    const gate = await page.evaluate(async () => {
+      splitOnChange(1, 'haul_type', '');
+      const status = document.getElementById('splitTallyStatus').textContent;
+      splitMode = 'approve'; splitRowLoad = 'none';
+      let posted = false;
+      const realFetch = window.fetch;
+      window.fetch = () => { posted = true;
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) }); };
+      await splitSave();
+      const msg = document.getElementById('splitMsg').textContent;
+      window.fetch = realFetch;
+      return { status, posted, msg };
+    });
+    ok('a row that has not answered holds the tally back',
+      /Row 2/.test(gate.status) && /unanswered/.test(gate.status), gate.status);
+    ok('  and the save refuses it rather than guessing "no"',
+      gate.posted === false && /Row 2: answer/.test(gate.msg), gate.msg);
+
+    // A row added after the fact is unanswered, and its tick is still derived
+    // from the truck until it answers — so an edit to the equipment has to
+    // redraw it. Left stale it said the opposite of how the row would be
+    // priced: an unticked box, promising the job pays him, beside a row about
+    // to post $0.
+    const stale = await page.evaluate(() => {
+      const box = () => [...document.querySelectorAll('#splitTbody .haul-col input')][1].checked;
+      const start = box();
+      splitOnChange(1, 'equipment', 'Triaxle Dump');
+      const named = box();
+      splitOnChange(1, 'equip_hours', '2.5');
+      const priced = box();
+      return { start, named, priced, willPost0: splitRowIsHaul(splitRows[1]) };
+    });
+    ok('an unanswered row\'s tick follows the truck instead of going stale',
+      stale.start === false && stale.priced === true, JSON.stringify(stale));
+    ok('  and it agrees with how the row would be priced',
+      stale.priced === stale.willPost0, JSON.stringify(stale));
+
+    // And the day-level note, which is what tells payroll why a row is $0.
     const note = await page.evaluate(() => {
       const h = document.createElement('div');
       h.innerHTML = splitHaulNoteHtml({ prevailing_wage: true });
       return h.textContent;
     });
-    // The per-row Haul tick: the column only exists on a haul day, it follows
-    // the truck on the row, and unticking it is what pays a driver who got out
-    // and worked the site.
-    const perRow = await page.evaluate(() => {
-      splitEntry = { id: 1, computed_hours: 9, travel_hours: 0, haul_type: 'off_site' };
-      splitHaulAnswer = 'off_site';
-      splitProjEquipment = [];
+    const mixedNote = await page.evaluate(() => {
+      splitOnChange(1, 'haul_type', 'on_site');
+      const h = document.createElement('div');
+      h.innerHTML = splitHaulNoteHtml({ prevailing_wage: true });
+      return { text: h.textContent, day: splitHaulAnswer };
+    });
+    ok('a day holding both answers still classifies as the off-site one',
+      mixedNote.day === 'off_site', mixedNote.day);
+    ok('  and says so, rather than leaving payroll to reconcile the Haul column',
+      /both answers/.test(mixedNote.text), mixedNote.text.slice(0, 120));
+
+    // ── Ticking Haul on a row that has not answered ────────────────────
+    // The box and the picker ask the same question, so a ticked box must not
+    // leave the row unanswered — the tally named it and the save refused it
+    // while the box beside it said outright that he was in the truck.
+    const tickBlank = await page.evaluate(() => {
+      splitEntry = { id: 3, computed_hours: 8, travel_hours: 0, haul_type: null, truck_unit: '' };
+      splitHaulAnswer = ''; splitProjEquipment = [];
       splitRows = [
-        { cost_code: 'Notch Milling', sub_code: 'Milling - Trucking', quantity: 0,
-          equipment: 'Triaxle Dump', labor_hours: 6.5, equip_hours: 6.5, is_travel: false, code_source: '' },
-        { cost_code: 'Notch Milling', sub_code: 'Scratch/leveling - Labor', quantity: 0,
-          equipment: '', labor_hours: 2.5, equip_hours: 0, is_travel: false, code_source: '' },
+        { cost_code: 'Earthwork', sub_code: 'Stone', quantity: 0, equipment: '',
+          labor_hours: 6, equip_hours: 0, is_travel: false, code_source: '', haul_type: 'off_site',
+          is_haul: true },
+        { cost_code: 'Earthwork', sub_code: 'Stone', quantity: 0, equipment: '',
+          labor_hours: 2, equip_hours: 0, is_travel: false, code_source: '', haul_type: '' },
       ];
-      renderSplitRows();
-      const boxes = () => [...document.querySelectorAll('#splitTbody .haul-col input')];
-      const shown = () => getComputedStyle(document.querySelector('#splitTbody .haul-col')).display !== 'none';
-      const before = { onHaulDay: shown(), checked: boxes().map(b => b.checked) };
-      // Untick the site-labour row — he was out of the truck.
-      splitOnChange(1, 'is_haul', false);
-      const after = { checked: boxes().map(b => b.checked), payload: splitRows.map(splitRowPayload) };
-      // And the column disappears entirely once the day is not a haul.
-      splitHaulAnswer = '';
-      renderSplitRows();
-      const off = { colShown: shown() };
-      return { before, after, off };
-    });
-    ok('the Haul column is shown on a haul day', perRow.before.onHaulDay);
-    ok('  with the driving row ticked and the site-labour row not — no clicks needed',
-      JSON.stringify(perRow.before.checked) === '[true,false]', JSON.stringify(perRow.before.checked));
-    ok('  and it disappears on a day nobody called a haul', perRow.off.colShown === false);
-    ok('unticking a row sends is_haul false, so the server pays him for it',
-      perRow.after.payload[1].is_haul === false, JSON.stringify(perRow.after.payload[1]));
-    ok('  while the untouched driving row sends no answer at all — the truck decides',
-      !('is_haul' in perRow.after.payload[0]), JSON.stringify(perRow.after.payload[0]));
-
-    // The column has to appear the moment the ANSWER changes, not only when the
-    // repaint happens to be triggered by something else. It used to be revealed
-    // inside a repaint that onSplitHaulChange only ran `if` one of the auto-fill
-    // helpers had changed something — so on a day with no truck_unit and no
-    // single assigned unit, answering "haul" left the column hidden while the
-    // warning told the approver to untick a checkbox that was not on screen.
-    const reveal = await page.evaluate(async () => {
-      splitEntry = { id: 2, computed_hours: 8, travel_hours: 0, haul_type: null };
-      splitHaulAnswer = '';
-      splitProjEquipment = ['Triaxle Dump', 'Lowboy'];   // several: nothing to infer
-      splitRows = [{ cost_code: 'Earthwork', sub_code: 'Stone', quantity: 0,
-                     equipment: '', labor_hours: 8, equip_hours: 0, is_travel: false, code_source: '' }];
-      renderSplitRows();
-      const shown = () => {
-        const th = document.querySelector('.split-table thead .haul-col');
-        return !!th && getComputedStyle(th).display !== 'none';
+      splitHaulAnswer = splitDeriveHaulAnswer();
+      renderSplitRows(); renderSplitTally();
+      const before = document.getElementById('splitTallyStatus').textContent;
+      splitOnChange(1, 'is_haul', true);
+      return {
+        before,
+        answer: splitRows[1].haul_type,
+        shown: [...document.querySelectorAll('#splitTbody select.haul-pick')][1].value,
+        status: document.getElementById('splitTallyStatus').textContent,
       };
-      const before = shown();
-      document.getElementById('splitHaulPick').value = 'off_site';
-      onSplitHaulChange();
-      return { before, after: shown() };
     });
-    ok('answering the haul question reveals the column even when nothing else changes',
-      reveal.before === false && reveal.after === true, JSON.stringify(reveal));
+    ok('an unanswered row holds the tally back to begin with',
+      /Row 2/.test(tickBlank.before), tickBlank.before);
+    ok('  and ticking its Haul box answers it rather than leaving it refused',
+      tickBlank.answer === 'off_site' && tickBlank.shown === 'off_site',
+      `${tickBlank.answer} / ${tickBlank.shown}`);
+    ok('  so the tally clears instead of naming a row that is visibly a haul',
+      /balanced/.test(tickBlank.status), tickBlank.status);
 
-    // And the tick is derived, so an edit to the truck or its hours has to
-    // redraw it. Left stale it said the opposite of how the row would be
-    // priced — an unticked box, promising the job pays him, beside a row about
-    // to post $0.
-    const stale = await page.evaluate(() => {
-      const box = () => document.querySelector('#splitTbody .haul-col input').checked;
-      splitEntry.truck_unit = 'Triaxle Dump';
-      const start = box();
-      splitOnChange(0, 'equipment', 'Triaxle Dump');
-      const named = box();
-      splitOnChange(0, 'equip_hours', '8');
-      const priced = box();
-      // And the pricing rule the server will actually apply.
-      return { start, named, priced, willPost0: splitRowIsHaul(splitRows[0]) };
+    // ── A fresh approve seeds the DRIVER's answer ──────────────────────
+    // The classification, not the tick. His answer is about the day, and the
+    // truck picker on his timesheet is optional — so asserting it per row would
+    // stamp a haul onto a row with nothing priced on it, billing the job for
+    // none of the day and moving his whole day to the standard rate on a
+    // prevailing job.
+    const seeded = await page.evaluate(async () => {
+      const open = async truck => {
+        await openSplitModal({ id: 21, username: 'ben', work_date: '2026-09-08',
+          division: 'turf', job_id: '26049', job_label: 'x', computed_hours: 8,
+          travel_hours: 0, haul_type: 'off_site', truck_unit: truck }, 'approve');
+        const r = splitRows[0];
+        return { answer: r.haul_type, is_haul: r.is_haul, equip: r.equipment,
+                 payload: splitRowPayload(r),
+                 box: document.querySelector('#splitTbody .haul-col input').checked };
+      };
+      const named = await open('Triaxle Dump');
+      // A fresh row opens with no hours on it, so nothing is priced and there
+      // is nothing yet for the tick to be true ABOUT. Typing the day's labour
+      // is what mirrors the truck's hours and prices it.
+      splitOnChange(0, 'labor_hours', '8');
+      const worked = { equip: splitRows[0].equipment, eqh: splitRows[0].equip_hours,
+                       box: document.querySelector('#splitTbody .haul-col input').checked,
+                       payload: splitRowPayload(splitRows[0]) };
+      const blank = await open('');
+      return { named, worked, blank };
     });
-    ok('the tick follows the truck onto the row instead of going stale',
-      stale.start === false && stale.priced === true, JSON.stringify(stale));
-    ok('  and it agrees with how the row will be priced',
-      stale.priced === stale.willPost0, JSON.stringify(stale));
+    ok('the driver\'s answer pre-fills every labour row',
+      seeded.named.answer === 'off_site' && seeded.blank.answer === 'off_site',
+      `${seeded.named.answer} / ${seeded.blank.answer}`);
+    ok('  and where he named a truck it lands on the row straight away',
+      seeded.named.equip === 'Triaxle Dump', JSON.stringify(seeded.named));
+    ok('  with the box following the hours, since a truck at 0 h prices nothing',
+      seeded.named.box === false
+      && seeded.worked.eqh === 8 && seeded.worked.box === true,
+      JSON.stringify(seeded.worked));
+    ok('  but where he named none the box stays clear — nothing is priced',
+      seeded.blank.equip === '' && seeded.blank.box === false,
+      JSON.stringify(seeded.blank));
+    ok('  and neither row asserts a tick nobody gave, so the truck still decides',
+      !('is_haul' in seeded.worked.payload) && !('is_haul' in seeded.blank.payload),
+      JSON.stringify([seeded.worked.payload, seeded.blank.payload]));
+
+    // ── Reopening a posted split ───────────────────────────────────────
+    // Every leg comes back as it was approved. This is the whole round trip:
+    // the stamp the server read off daily_tracking, through ?action=split, into
+    // the picker on the row.
+    SPLIT_BACK = [
+      { cost_code: 'Earthwork', sub_code: 'Stone', equipment: 'Triaxle Dump',
+        labor_hours: 4, equip_hours: 4, quantity: 0, is_travel: false,
+        is_haul: true, haul_type: 'off_site' },
+      { cost_code: 'Earthwork', sub_code: 'Stone', equipment: 'Triaxle Dump',
+        labor_hours: 2, equip_hours: 2, quantity: 0, is_travel: false,
+        is_haul: true, haul_type: 'on_site' },
+      { cost_code: 'Earthwork', sub_code: 'Stone', equipment: '',
+        labor_hours: 2, equip_hours: 0, quantity: 0, is_travel: false },
+    ];
+    const reopened = await page.evaluate(async () => {
+      await openSplitModal({ id: 22, username: 'ben', work_date: '2026-09-09',
+        division: 'turf', job_id: '26049', job_label: 'x', computed_hours: 8,
+        travel_hours: 0, haul_type: 'off_site', truck_unit: 'Triaxle Dump' }, 'resplit');
+      const shown = () => [...document.querySelectorAll('#splitTbody select.haul-pick')]
+        .map(sel => sel.value);
+      const before = { shown: shown(), status: document.getElementById('splitTallyStatus').textContent,
+                       payload: splitRows.map(splitRowPayload) };
+      // The approver types a truck onto the row he was OUT of. The picker must
+      // not change its mind behind him.
+      splitOnChange(2, 'equipment', 'Triaxle Dump');
+      splitOnChange(2, 'equip_hours', '2');
+      const after = { shown: shown(),
+                      box: [...document.querySelectorAll('#splitTbody .haul-col input')][2].checked,
+                      payload: splitRowPayload(splitRows[2]) };
+      return { before, after };
+    });
+    ok('each leg reopens showing the answer it was approved with',
+      JSON.stringify(reopened.before.shown) === '["off_site","on_site","none"]',
+      JSON.stringify(reopened.before.shown));
+    ok('  so nothing is re-asked and the split is saveable as it stands',
+      /balanced/.test(reopened.before.status), reopened.before.status);
+    ok('  and each leg posts back the kind it was, not the day\'s one answer',
+      reopened.before.payload[0].haul_type === 'off_site'
+      && reopened.before.payload[1].haul_type === 'on_site'
+      && !('haul_type' in reopened.before.payload[2]),
+      JSON.stringify(reopened.before.payload.map(r => r.haul_type)));
+    ok('a seeded "no" is written down, so typing a truck cannot overturn it',
+      reopened.after.shown[2] === 'none' && reopened.after.box === false
+      && reopened.after.payload.is_haul === false,
+      JSON.stringify(reopened.after));
+    SPLIT_BACK = [];
 
     ok('the $0-labour note explains itself', /\$0 labour rate/.test(note), note.slice(0, 80));
     ok('  and says the hours pay at standard on a prevailing job',
