@@ -1080,6 +1080,17 @@
     .cc-col-ot   { color: var(--orange); }
     .cc-col-chip { text-align: center; }
     .cc-col-room { color: var(--teal); }
+    /* "This week" / "Last week" under the dates. The dates are what the figures
+       are, and this is only which of them you are standing in — so it sits
+       under, smaller, and never in place of them. */
+    .cc-rel {
+      display: block;
+      font-size: 0.55rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: var(--blue);
+      margin-top: 0.08rem;
+    }
     .cc-scale {
       font-size: 0.64rem;
       color: var(--muted);
@@ -1472,6 +1483,7 @@
       .cc-head { border-bottom: 1px solid #000 !important; }
       .cc-col, .cc-scale, .cc-sub, .cc-hrs, .cc-group-label,
       .cc-toggle-sub, .cc-legend-note { color: #333 !important; }
+      .cc-rel { color: #000 !important; }
       .cc-name, .cc-num { color: #000 !important; }
       .cc-col-ot, .cc-num-ot, .cc-hrs.cc-hot, .cc-group-hot { color: #a8460b !important; }
       .cc-clip { color: #8a6d00 !important; }
@@ -3538,7 +3550,11 @@
         ? `Overtime is counted per Monday–Sunday week from the entries in view. Here ${otNotes.join(', and ')}, so a week may be missing hours and its overtime understated.`
         : '';
 
-      return { rows, tot, scopeLine, gen, companyName, otCaveat };
+      // The range itself, not just the sentence describing it. The capacity
+      // board needs to tell a week that is missing hours from one that has
+      // simply not finished yet, and those are the same `clipped` flag until
+      // you can compare the week against the range's own ends.
+      return { rows, tot, scopeLine, gen, companyName, otCaveat, from, to };
     }
 
     function renderReport() {
@@ -4003,6 +4019,11 @@
           // has overtime, and the OT column beside this is where that is said.
           remaining:  Math.max(0, OT_WEEKLY_THRESHOLD - w.totalHours),
           clipped:    w.clipped,
+          // Distinct dates worked in THIS week. The capacity board shows a
+          // window of weeks rather than the whole range, and "7 jobs · 10 days"
+          // read off the range beside two weeks of hours would be describing
+          // days that are not on the screen.
+          days:       new Set(w.rows.map(x => x.entry.work_date).filter(Boolean)).size,
         }));
         crew.set(r.username, {
           username:  r.username,
@@ -4190,6 +4211,8 @@
         inOt:          crewRows.filter(c => c.otHours > 0.001).length,
         offEntries,
         countedEntries,
+        rangeFrom:   base.from,
+        rangeTo:     base.to,
         scopeLine:   base.scopeLine,
         gen:         base.gen,
         companyName: base.companyName,
@@ -4400,6 +4423,114 @@
     // thing the old chart could not promise. An empty cell is a week the man
     // did not work, and that blank is itself an answer to "who is free".
 
+    // HOW MANY WEEKS THE BOARD SHOWS: the previous Monday–Sunday week and the
+    // current one, which is the payroll cycle a supervisor is scheduling inside.
+    //
+    // The report's own date range is not that window and cannot be. A 14-day
+    // range that does not open on a Monday reaches back into a third week and
+    // drags a stub of it onto the board — three columns where the cycle has
+    // two, the oldest of them a few days nobody is rostering against any more.
+    const CC_WEEKS_SHOWN = 2;
+
+    // The weeks the board draws, newest last. The range may hold more (a stub
+    // week at its head, or a month-long range); it may hold fewer, and a range
+    // that ends before today has no "current week" in it at all — so this takes
+    // the last weeks actually IN the range rather than counting back from
+    // today, which would otherwise draw two empty columns over a past cycle.
+    function ccWeeksShown(weeks) {
+      return weeks.slice(-CC_WEEKS_SHOWN);
+    }
+
+    // "This week" / "Last week" against the real calendar, so a board built
+    // from a current range says so, and one built from a past cycle does not
+    // claim to. Empty for any other week.
+    function ccWeekRelation(weekStart) {
+      const thisWeek = weekStartOf(new Date().toISOString().slice(0, 10));
+      if (!thisWeek) return '';
+      if (weekStart === thisWeek) return 'This week';
+      const prev = new Date(`${thisWeek}T00:00:00Z`);
+      prev.setUTCDate(prev.getUTCDate() - 7);
+      return weekStart === prev.toISOString().slice(0, 10) ? 'Last week' : '';
+    }
+
+    // Is this week missing hours that ALREADY HAPPENED?
+    //
+    // `clipped` cannot answer that on its own: it is true at both ends of the
+    // range, and the two ends mean opposite things. A week cut at its HEAD is
+    // missing days a man may well have worked — days that count toward his 40
+    // and were never fetched. A week cut at its TAIL is the current week, whose
+    // remaining days have not happened yet; nothing is missing from it.
+    //
+    // The board turns on this. An untouched week is 40 hours of room only if we
+    // would have SEEN the hours had he worked any.
+    function ccWeekTrusted(w, rangeFrom) {
+      const from = rangeFrom ? String(rangeFrom).slice(0, 10) : '';
+      return !from || w.weekStart >= from;
+    }
+
+    // A man's figures across just the weeks the board shows.
+    //
+    // The row has to add up. A Total that included a week not drawn beside it
+    // would be a number nobody reading the board could check, and the whole
+    // point of the meters is that the hours in them are the hours in the row.
+    // So every figure here — total, overtime, room, jobs, days — is the window's
+    // and not the range's. The range's own totals are what the crew tables and
+    // the rest of the workbook are for.
+    function ccWindow(e, weeks, rangeFrom) {
+      const keys = new Set(weeks.map(w => w.weekStart));
+      const room = e.room;
+      const mine = (room ? room.weeks : []).filter(w => keys.has(w.weekStart));
+      const byWeek = new Map(mine.map(w => [w.weekStart, w]));
+      // Coerced, because a single missing field would otherwise put NaN on a
+      // sheet a supervisor is scheduling off — a figure that is not merely
+      // wrong but unreadable, and that spreads through every total it touches.
+      const sum  = k => mine.reduce((s, w) => s + (Number(w[k]) || 0), 0);
+      const jobs = new Set();
+      for (const w of mine) for (const j of (room && room.byWeek.get(w.weekStart)) || []) jobs.add(j);
+      const totalHours = sum('totalHours'), otHours = sum('otHours');
+
+      // ROOM COUNTS THE WEEKS HE DID NOT WORK, and this is the one place the
+      // board departs from the Before OT figures elsewhere in the report.
+      //
+      // Those are range-wide and count only weeks a man has hours in, because
+      // over an arbitrary range a silent week means nothing — he may not have
+      // been on the books. Read that way inside a two-week cycle the answer
+      // comes out backwards: a man who worked 39.75 h last week and has not
+      // been given a shift this week reads "At 40", when he is in fact the
+      // emptiest man on the crew. That is not a rounding difference, it is the
+      // board recommending against the very person it should be offering.
+      //
+      // So an untouched week here is a full 40 of room — but only where the
+      // range would have shown us the hours had he worked them. A week cut at
+      // its head is not trusted: the days before the range opened were never
+      // fetched, so silence there is ignorance, not availability.
+      let remaining = 0, assumed = 0;
+      for (const col of weeks) {
+        const w = byWeek.get(col.weekStart);
+        if (w) { remaining += Number(w.remaining) || 0; continue; }
+        if (ccWeekTrusted(col, rangeFrom)) { remaining += OT_WEEKLY_THRESHOLD; assumed++; }
+      }
+
+      return {
+        username:   e.username,
+        weeks:      mine,
+        byWeek,
+        totalHours,
+        otHours,
+        regHours:   totalHours - otHours,
+        remaining,
+        // How much of that room is weeks he simply was not on a job, as opposed
+        // to hours measured under a 40 he actually worked toward. The tooltip
+        // says so: it is a different kind of fact and a foreman reads it
+        // differently.
+        assumed,
+        // Weeks are disjoint, so a day counted in one is not counted in another.
+        days:       sum('days'),
+        jobs:       jobs.size,
+        clipped:    mine.some(w => w.clipped),
+      };
+    }
+
     // Room left that counts as standing on the line rather than having any.
     const CC_AT = 0.5;
     // And the room below which a man is no use to a scheduler — less than half
@@ -4435,6 +4566,10 @@
     // it out separately, which is how a man ends up "in overtime" on screen and
     // something else in the file a supervisor is actually holding.
     //
+    // It takes a WINDOW (see ccWindow), never an employee's range totals: the
+    // 40 is a week's line, and which weeks are being asked about is the whole
+    // question. A man past 40 a fortnight ago is not past it this cycle.
+    //
     // `chip` is read BEFORE overtime on purpose, and it is the part that is
     // easy to get wrong. A man can be deep past the 40 in one week and have a
     // whole open week beside it — if the chip led with "Over 40" it would hide
@@ -4444,28 +4579,37 @@
     // `watch` is the separate question, and it is NOT the chip: a man with
     // overtime behind him belongs with the ones being watched however much room
     // he has in the weeks since.
-    function ccStanding(e) {
-      // No counted week, no forty to measure against. The model gives such a
-      // man a remaining of 0, which would read as "At 40" — the one wrong
-      // answer here, because it is the opposite of what 0 means for everybody
-      // else on the board. Say nothing instead.
-      if (!e.room || !e.room.weeks.length) {
-        return { cls: 'unknown', chip: '—', label: 'No counted week', watch: true };
-      }
-      const inOt  = e.otHours > 0.001;
-      const watch = inOt || e.remaining < CC_NEAR;
-      if (e.remaining >= CC_AT) {
+    function ccStanding(win) {
+      const inOt  = win.otHours > 0.001;
+      const watch = inOt || win.remaining < CC_NEAR;
+
+      // Room first, and that ordering is load-bearing twice over. It keeps a
+      // man with overtime behind him and an open week ahead from reading as
+      // "Over 40"; and it keeps a man who worked NEITHER week — who now carries
+      // a full 80 of room — from falling into the no-data branch below and
+      // being reported as a blank when he is the emptiest man on the crew.
+      if (win.remaining >= CC_AT) {
         // Teal only where the room is worth rostering. A sliver under half a
         // day is amber: it is not nothing, but it is not a man you can put on
         // a job either, and it must not read like one at a glance.
-        const roomy = e.remaining >= CC_NEAR;
+        const roomy = win.remaining >= CC_NEAR;
         return {
           cls:   roomy ? 'room' : 'thin',
-          chip:  `${e.remaining.toFixed(2)} h`,
-          label: inOt ? 'In overtime, room in other weeks'
-                      : (roomy ? 'Room before the 40' : `Under ${CC_NEAR} h left`),
+          chip:  `${win.remaining.toFixed(2)} h`,
+          label: !win.weeks.length ? 'Free — no hours in these weeks'
+               : inOt              ? 'In overtime, room in the other week'
+               : roomy             ? 'Room before the 40'
+               :                     `Under ${CC_NEAR} h left`,
           watch,
         };
+      }
+
+      // Nothing worked and nothing to assume: every week on the board is one
+      // the range cuts at its head, so his silence is days nobody fetched
+      // rather than days nobody gave him. Say nothing instead of "At 40",
+      // which would be the opposite of what 0 means for everyone else here.
+      if (!win.weeks.length) {
+        return { cls: 'unknown', chip: '—', label: 'Weeks not covered by the range', watch: false };
       }
       if (inOt) return { cls: 'over', chip: 'Over 40', label: 'In overtime, no room left', watch };
       return { cls: 'at', chip: 'At 40', label: 'At the 40', watch };
@@ -4474,34 +4618,56 @@
     // THE BOARD'S READING ORDER, shared with the workbook.
     //
     // Two groups, because they are two different instructions. The men to watch
-    // keep the report's own sort (most overtime first). The pool with room is
-    // re-sorted MOST ROOM FIRST — that group is read to find somebody to give
-    // hours to, and the man with the most left is the first answer to it.
-    function ccOrdered(employees) {
-      const hot  = employees.filter(e => ccStanding(e).watch);
-      const open = employees.filter(e => !ccStanding(e).watch)
-        .sort((a, b) => b.remaining - a.remaining || a.username.localeCompare(b.username));
+    // lead with the most overtime in the window — not the report's own sort,
+    // which ranks on the whole range and would put a man at the top for a week
+    // that is no longer on the board. The pool with room is sorted MOST ROOM
+    // FIRST: that group is read to find somebody to give hours to, and the man
+    // with the most left is the first answer to it.
+    //
+    // Returns each man paired with his window, so nothing downstream has to
+    // work it out again and risk working it out differently.
+    function ccOrdered(employees, weeks, rangeFrom) {
+      const all  = employees.map(e => ({ e, win: ccWindow(e, weeks, rangeFrom) }));
+      const hot  = all.filter(r => ccStanding(r.win).watch)
+        .sort((a, b) => b.win.otHours - a.win.otHours
+                     || b.win.totalHours - a.win.totalHours
+                     || a.e.username.localeCompare(b.e.username));
+      const open = all.filter(r => !ccStanding(r.win).watch)
+        .sort((a, b) => b.win.remaining - a.win.remaining
+                     || a.e.username.localeCompare(b.e.username));
       return { hot, open, rows: [...hot, ...open] };
     }
 
     // The same verdict with the sentence the board's tooltip needs on it.
-    function ccStatus(e) {
-      const st = ccStanding(e);
+    function ccStatus(win) {
+      const st = ccStanding(win);
+      const openWeeks = win.assumed
+        ? ` · ${win.assumed} of the ${win.assumed === 1 ? 'week is' : 'weeks are'} a week he was on no job at all, counted as a full 40 open`
+        : '';
       const title =
-        st.cls === 'unknown' ? `No counted Monday–Sunday week for ${e.username} in this range — there is no forty to measure him against` :
-        st.cls === 'over'    ? `${e.username} is ${e.otHours.toFixed(2)} h past the fortieth hour with no room left in any week — every further hour is paid at the premium` :
-        st.cls === 'at'      ? `${e.username} has worked his weeks to the fortieth hour with nothing left — the next hour is overtime` :
-        `${e.username} can work ${e.remaining.toFixed(2)} h more before overtime starts, across all his jobs`
-          + (e.otHours > 0.001 ? ' — in the weeks he is not already past the 40' : '');
+        st.cls === 'unknown' ? `The range cuts into every week on this board, so ${win.username}'s hours in them were never fully fetched — his room cannot be read here` :
+        st.cls === 'over'    ? `${win.username} is ${win.otHours.toFixed(2)} h past the fortieth hour with no room left in either week — every further hour is paid at the premium` :
+        st.cls === 'at'      ? `${win.username} has worked these weeks to the fortieth hour with nothing left — the next hour is overtime` :
+        `${win.username} can work ${win.remaining.toFixed(2)} h more before overtime starts, across all his jobs`
+          + (win.otHours > 0.001 ? ' — in the week he is not already past the 40' : '') + openWeeks;
       return { cls: st.cls, text: st.chip, title };
+    }
+
+    // The scale every meter on the board shares. At least 50 h, so the 40 tick
+    // sits inside the track with room past it for the overtime to show; rounded
+    // up past the heaviest week anybody worked, so the longest bar in range
+    // still ends short of the edge instead of pinning flat against it.
+    function ccScaleMax(rows) {
+      let max = 0;
+      for (const r of rows) for (const w of r.win.weeks) max = Math.max(max, w.totalHours);
+      return Math.max(50, Math.ceil((max + 2) / 5) * 5);
     }
 
     // One week's meter for one man. Null where he did not work that week.
     function ccCellHtml(w, scaleMax, username, label) {
-      // No dash, no zero. Twenty-five men against three weeks is seventy-five
-      // cells, most of them empty, and a column of dashes is the noise the old
-      // chart was rewritten to get rid of. The empty track under its 40 tick
-      // already says the week is open.
+      // No dash, no zero. A blank track under its 40 tick already says the week
+      // is open, and a column of dashes is the noise the old chart was rewritten
+      // to get rid of.
       if (!w) {
         return `<div class="cc-cell" title="${escapeHtml(`${username} worked no job in ${label} — his whole 40 is open`)}">` +
                `<div class="cc-meter"><i class="cc-tick"></i></div>` +
@@ -4526,22 +4692,22 @@
     }
 
     // One man across every week column on the board.
-    function ccRowHtml(e, weeks, scaleMax, hidden) {
-      const byWeek = new Map((e.room ? e.room.weeks : []).map(w => [w.weekStart, w]));
-      const st   = ccStatus(e);
-      const jobs = `${e.jobs} job${e.jobs === 1 ? '' : 's'}`;
+    function ccRowHtml(row, weeks, scaleMax, hidden) {
+      const { win } = row;
+      const st   = ccStatus(win);
+      const jobs = `${win.jobs} job${win.jobs === 1 ? '' : 's'}`;
       const cells = weeks.map(col =>
-        ccCellHtml(byWeek.get(col.weekStart), scaleMax, e.username,
+        ccCellHtml(win.byWeek.get(col.weekStart), scaleMax, win.username,
                    `${prettyDateShort(col.weekStart)}–${prettyDateShort(col.weekEnd)}`)).join('');
       return `
         <div class="cc-row${hidden ? ' cc-tail' : ''}">
           <div class="cc-who">
-            <div class="cc-name">${escapeHtml(e.username)}</div>
-            <div class="cc-sub">${escapeHtml(`${jobs} · ${e.days} day${e.days === 1 ? '' : 's'}`)}</div>
+            <div class="cc-name">${escapeHtml(win.username)}</div>
+            <div class="cc-sub">${escapeHtml(win.weeks.length ? `${jobs} · ${win.days} day${win.days === 1 ? '' : 's'}` : 'not on a job these weeks')}</div>
           </div>
           ${cells}
-          <div class="cc-num" title="${escapeHtml(`${e.totalHours.toFixed(2)} h on jobs in range — work, haul and travel, across ${jobs}`)}">${e.totalHours.toFixed(2)}</div>
-          <div class="cc-num${e.otHours > 0.001 ? ' cc-num-ot' : ' cc-none'}">${e.otHours > 0.001 ? e.otHours.toFixed(2) : '—'}</div>
+          <div class="cc-num" title="${escapeHtml(`${win.totalHours.toFixed(2)} h on jobs across the weeks on this board — work, haul and travel, over ${jobs}`)}">${win.totalHours.toFixed(2)}</div>
+          <div class="cc-num${win.otHours > 0.001 ? ' cc-num-ot' : ' cc-none'}">${win.otHours > 0.001 ? win.otHours.toFixed(2) : '—'}</div>
           <div class="cc-chip cc-${st.cls}" title="${escapeHtml(st.title)}">${escapeHtml(st.text)}</div>
         </div>`;
     }
@@ -4552,34 +4718,46 @@
     function ccHeadHtml(weeks, scaleMax) {
       const cols = weeks.map(w => {
         const label = ccWeekLabel(w);
+        const rel   = ccWeekRelation(w.weekStart);
         const title = w.clipped
           ? `Week of ${label} — the filter cuts this week, so hours outside the range were never fetched and these figures are a floor`
           : `Monday–Sunday week of ${label}`;
-        return `<div class="cc-col" title="${escapeHtml(title)}">${escapeHtml(label)}${w.clipped ? '<span class="cc-clip">*</span>' : ''}</div>`;
+        return `<div class="cc-col" title="${escapeHtml(title)}">${escapeHtml(label)}${w.clipped ? '<span class="cc-clip">*</span>' : ''}`
+             + (rel ? `<span class="cc-rel">${escapeHtml(rel)}</span>` : '')
+             + `</div>`;
       }).join('');
       return `
         <div class="cc-row cc-head">
           <div class="cc-who cc-col">Employee</div>
           ${cols}
-          <div class="cc-col cc-col-num" title="Every hour on a job in range — work, haul and travel">Total</div>
+          <div class="cc-col cc-col-num" title="Every hour on a job in the weeks on this board — work, haul and travel">Total</div>
           <div class="cc-col cc-col-num cc-col-ot" title="Hours past the fortieth of a Monday–Sunday week, counted across every job he worked that week">OT</div>
-          <div class="cc-col cc-col-chip cc-col-room" title="Hours he can still be given before overtime starts, across every job and every week in range">Room</div>
+          <div class="cc-col cc-col-chip cc-col-room" title="Hours he can still be given before overtime starts, across every job in the weeks on this board. A week he was on no job counts as a full 40 open — so this is what is available in the cycle, not the range-wide Before OT figure in the tables below.">Room</div>
         </div>
-        <div class="cc-scale">Each meter is one week against a ${scaleMax}-hour track · the line is the 40th hour</div>`;
+        <div class="cc-scale">Each meter is one week against a ${scaleMax}-hour track · the line is the 40th hour · Total, OT and Room are these ${weeks.length === 1 ? 'week' : `${weeks.length} weeks`} only, not the whole range</div>`;
     }
 
     // The board. Two groups, because they are two different instructions: the
     // men at or past the line are a cost to watch, and the men with room are
     // the answer to "who do I put on it". The second group is the long tail —
-    // a fortnight of one-day hires — so it folds away on screen and always
+    // a cycle's worth of one-day hires — so it folds away on screen and always
     // prints in full, since paper has no disclosure triangle.
-    function projCapacityHtml(employees, weeks) {
+    function projCapacityHtml(employees, allWeeks, rangeFrom) {
+      const weeks = ccWeeksShown(allWeeks);
       if (!employees.length || !weeks.length) return '';
-      const scaleMax = ccScaleMax(employees);
+      const { hot, open } = ccOrdered(employees, weeks, rangeFrom);
+      const scaleMax = ccScaleMax([...hot, ...open]);
 
-      const { hot, open } = ccOrdered(employees);
+      // Say which weeks, in the heading, because the figures on this board are
+      // those weeks' and the rest of the report's are the whole range's. A
+      // reader who takes the Total here for the range total is reading a
+      // different question's answer.
+      const span = weeks.length === 1
+        ? ccWeekLabel(weeks[0])
+        : `${ccWeekLabel(weeks[0])} and ${ccWeekLabel(weeks[weeks.length - 1])}`;
+      const dropped = allWeeks.length - weeks.length;
 
-      const inOt   = hot.filter(e => e.otHours > 0.001).length;
+      const inOt   = hot.filter(r => r.win.otHours > 0.001).length;
       const atLine = hot.length - inOt;
       const hotLine = [
         inOt   ? `${inOt} already in overtime` : '',
@@ -4588,33 +4766,42 @@
 
       let tail = '';
       if (open.length) {
-        const lo = Math.min(...open.map(e => e.totalHours));
-        const hi = Math.max(...open.map(e => e.totalHours));
-        const room = open.reduce((s, e) => s + e.remaining, 0);
+        const worked = open.filter(r => r.win.weeks.length);
+        const idle   = open.length - worked.length;
+        const lo = worked.length ? Math.min(...worked.map(r => r.win.totalHours)) : 0;
+        const hi = worked.length ? Math.max(...worked.map(r => r.win.totalHours)) : 0;
+        const room = open.reduce((s, r) => s + r.win.remaining, 0);
+        const sub = [
+          worked.length ? `${lo.toFixed(2)}–${hi.toFixed(2)} h worked` : '',
+          idle ? `${idle} on no job at all` : '',
+          `${room.toFixed(2)} h available`,
+        ].filter(Boolean).join(' · ');
         tail = `
           <div class="cc-group">
             <button type="button" class="cc-toggle" onclick="toggleCrewTail(this)"
               title="These men have hours left before overtime — the pool to schedule out of">
               <span class="cc-caret">&#9656;</span>
               <span><strong>${open.length}</strong> with room before the 40</span>
-              <span class="cc-toggle-sub">${lo.toFixed(2)}–${hi.toFixed(2)} h worked · ${room.toFixed(2)} h available</span>
+              <span class="cc-toggle-sub">${escapeHtml(sub)}</span>
             </button>
           </div>
-          ${open.map(e => ccRowHtml(e, weeks, scaleMax, true)).join('')}`;
+          ${open.map(r => ccRowHtml(r, weeks, scaleMax, true)).join('')}`;
       }
 
       return `
         <div class="cc-board cc-collapsed" style="--cc-weeks:${weeks.length};--cc-tick:${((OT_WEEKLY_THRESHOLD / scaleMax) * 100).toFixed(2)}%">
-          <div class="proj-section-title">Crew capacity — hours worked per week against the 40</div>
+          <div class="proj-section-title">Crew capacity — ${escapeHtml(span)} against the 40</div>
           ${ccHeadHtml(weeks, scaleMax)}
           ${hot.length ? `<div class="cc-group"><span class="cc-group-label cc-group-hot">${escapeHtml(hotLine)}</span></div>` : ''}
-          ${hot.map(e => ccRowHtml(e, weeks, scaleMax, false)).join('')}
+          ${hot.map(r => ccRowHtml(r, weeks, scaleMax, false)).join('')}
           ${tail}
           <div class="pc-legend cc-legend">
             <span><i class="pc-key reg"></i>Hours inside the 40</span>
             <span><i class="pc-key ot"></i>Overtime — hours past the 40th of that week</span>
             <span><i class="pc-key tick"></i>The 40th hour</span>
-            <span class="cc-legend-note">An empty week is a week he worked no job. * marks a week the date filter cuts in half.</span>
+            <span class="cc-legend-note">An empty week is a week he worked no job. * marks a week the date filter cuts in half.${
+              dropped ? ` The range also covers ${dropped} earlier week${dropped === 1 ? '' : 's'}, which the jobs and crew tables below still count — this board is the current cycle.` : ''
+            }</span>
           </div>
         </div>`;
     }
@@ -4710,12 +4897,12 @@
             <div class="proj-stat room">
               <div class="proj-stat-label">Hours Before OT</div>
               <div class="proj-stat-value">${m.totRemaining.toFixed(2)}</div>
-              <div class="proj-stat-sub">left across the crew's weeks in range</div>
+              <div class="proj-stat-sub" title="Summed across every counted week in the report's date range, counting only weeks a man has hours in. The capacity board below answers a narrower question — what is open in the current cycle, where a week nobody put him on counts as a full 40 — so the two figures are meant to differ.">left across the crew's weeks in range — the board below counts the cycle only</div>
             </div>
           </div>
 
           ${projChartHtml(projects)}
-          ${projCapacityHtml(m.employees, m.weeks)}
+          ${projCapacityHtml(m.employees, m.weeks, m.rangeFrom)}
 
           <p class="proj-note">
             <strong>Overtime is an employee's week, not a job's.</strong>
@@ -5525,7 +5712,163 @@
     }
 
 
-    // Sheet 2 — one row per MAN, across every job he worked: the second chart,
+    // Sheet 2 — THE CREW CAPACITY BOARD, flat.
+    //
+    // The same men in the same order as the board on screen, over the same two
+    // weeks, with the same verdict in the Standing column — because a
+    // supervisor who sorts this sheet and a supervisor reading the tab have to
+    // reach the same answer about the same man.
+    //
+    // THIS SHEET IS THE CURRENT CYCLE, NOT THE REPORT'S RANGE. Every figure on
+    // it — the week blocks and the four totals that close each row — covers
+    // only the weeks shown, so the row adds up. Where the range reaches back
+    // further, those earlier hours are on "Overtime by Employee" and
+    // "Employees by Project", which are the whole range. The two are meant to
+    // disagree, and the note rows say so rather than leaving somebody to find
+    // out by subtracting.
+    //
+    // It is also the one sheet in the book laid out WIDE. "OT Headroom by Week"
+    // is the long form of exactly these figures and is the better shape for a
+    // pivot; this one is the better shape for the question the board exists to
+    // answer, read across a man's weeks at a glance: where did his hours go,
+    // and which week has room left in it.
+    //
+    // A week a man did not work is BLANK, not zero. Blank is what the board
+    // draws and it is also what keeps the arithmetic honest: his headroom is
+    // only counted in weeks he has a counted week in, so the per-week Before OT
+    // cells add across to Hours Before OT exactly, which a column of 40s for
+    // weeks he never worked would not.
+    function projectCapacitySheetXml(model) {
+      const { employees, scopeLine, gen, companyName } = model;
+      const weeks = ccWeeksShown(model.weeks);
+      const rows  = ccOrdered(employees, weeks, model.rangeFrom).rows;
+      const dropped = model.weeks.length - weeks.length;
+
+      // Three columns a week, in the order the eye reads the meter: what he
+      // worked, what of it was past the line, and what is still open.
+      const headers = ['Employee', 'Jobs Worked', 'Days Worked'];
+      const NUM_COLS = new Set([1, 2]);
+      for (const w of weeks) {
+        const rel   = ccWeekRelation(w.weekStart);
+        const label = `${ccWeekLabel(w)}${rel ? ` (${rel})` : ''}${w.clipped ? ' (partial)' : ''}`;
+        NUM_COLS.add(headers.length); headers.push(`${label} · Hours`);
+        NUM_COLS.add(headers.length); headers.push(`${label} · OT`);
+        NUM_COLS.add(headers.length); headers.push(`${label} · Before OT`);
+      }
+      // Named for the window, not just "Total": these columns are a different
+      // figure from the identically named ones on the whole-range sheets, and a
+      // header that did not say so is how the two get reconciled against each
+      // other and reported as a discrepancy.
+      const shown = weeks.length === 1 ? 'this week' : 'these weeks';
+      for (const h of [`Total Hours (${shown})`, `Regular Hrs (${shown})`,
+                       `OT Hrs (${shown})`, `Hours Before OT (${shown})`]) {
+        NUM_COLS.add(headers.length); headers.push(h);
+      }
+      headers.push('Standing');
+      const HEADER_ROW = 10;
+
+      const span = weeks.length === 1
+        ? ccWeekLabel(weeks[0])
+        : `${ccWeekLabel(weeks[0])} and ${ccWeekLabel(weeks[weeks.length - 1])}`;
+
+      const sheet = [
+        [cTxt('Project Overtime Report — Crew Capacity', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt(`One row per employee, one block of columns per Monday–Sunday week — the Crew Capacity board on the Projects tab, flat. Weeks shown: ${span}.`, XS.bold)],
+        [cTxt(`THIS SHEET COVERS THOSE ${weeks.length === 1 ? 'WEEK' : `${weeks.length} WEEKS`} ONLY, NOT THE WHOLE REPORT RANGE — it is the payroll cycle being scheduled. Every figure on the row, the totals included, is the weeks shown, so the week blocks add across to them.${dropped ? ` The range also covers ${dropped} earlier week${dropped === 1 ? '' : 's'}: those hours are on "Overtime by Employee" and "Employees by Project", which are the full range and will NOT match this sheet.` : ''}`, XS.bold)],
+        [cTxt('The 40 is a WEEK’s line, never a range’s. A man at 100 hours over a fortnight is not 60 hours of overtime — he is whatever each of his weeks ran past its own fortieth hour, which is why the hours are split into weeks here rather than totalled.', XS.sub)],
+        [cTxt('Before OT is what he can still be given in that week. Hours and OT are left BLANK for a week he was on no job — he worked none, and a zero would read as a measurement — but Before OT there is the full 40, because an untouched week inside the cycle is 40 hours of room. It is blank only where the range does not cover the week, which is ignorance rather than availability. The three week cells add across to the row totals either way.', XS.sub)],
+        [cTxt('That is the one figure here that does NOT mean what "Hours Before OT" means on the whole-range sheets, where a week a man has no hours in counts as no room at all. Over an arbitrary range a silent week says nothing; inside a two-week cycle it says he is free, and that is the answer this sheet exists to give. Week by week, one row each, on "OT Headroom by Week".', XS.sub)],
+        [cTxt(`Standing places him against the 40 the way the board’s chip does: in overtime, at the 40, under ${CC_NEAR} h left, room before it, or no hours in these weeks at all. Sort or filter on it to get the men you can still schedule without buying the premium.`, XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      // Totalled per week as well as per man, so the foot of a week column is
+      // the crew's hours in that week — which no other sheet in the book says.
+      const wkTot = weeks.map(() => ({ hours: 0, ot: 0, room: 0 }));
+      const grand = { hours: 0, reg: 0, ot: 0, room: 0, days: 0 };
+      // The company's jobs across the window. A job three men worked is one
+      // job, so it is a union and never the Jobs column added up.
+      const allJobs = new Set();
+
+      for (const { e, win } of rows) {
+        const row = [
+          cTxt(win.username, XS.text),
+          cNum(win.jobs,     XS.num),
+          cNum(win.days,     XS.num),
+        ];
+        weeks.forEach((col, i) => {
+          const w = win.byWeek.get(col.weekStart);
+          if (!w) {
+            // Hours and OT stay blank — he worked none, and a zero would read
+            // as a measurement. Before OT is the full 40 where the range covers
+            // the week, because that is the room he has; blank where it does
+            // not, because then we only failed to look. Either way the three
+            // week cells still add across to the row's totals.
+            const open = ccWeekTrusted(col, model.rangeFrom);
+            row.push(cNum(null, XS.num), cNum(null, XS.num),
+                     cNum(open ? OT_WEEKLY_THRESHOLD : null, XS.num));
+            if (open) wkTot[i].room += OT_WEEKLY_THRESHOLD;
+            return;
+          }
+          row.push(cNum(w.totalHours, XS.num),
+                   cNum(w.otHours,    XS.num),
+                   cNum(w.remaining,  XS.num));
+          wkTot[i].hours += w.totalHours;
+          wkTot[i].ot    += w.otHours;
+          wkTot[i].room  += w.remaining;
+        });
+        row.push(
+          cNum(win.totalHours, XS.num),
+          cNum(win.regHours,   XS.num),
+          cNum(win.otHours,    XS.num),
+          cNum(win.remaining,  XS.num),
+          cTxt(ccStanding(win).label, XS.text),
+        );
+        sheet.push(row);
+        grand.hours += win.totalHours; grand.reg  += win.regHours;
+        grand.ot    += win.otHours;    grand.room += win.remaining;
+        grand.days  += win.days;
+        for (const w of win.weeks) {
+          for (const j of (e.room && e.room.byWeek.get(w.weekStart)) || []) allJobs.add(j);
+        }
+      }
+
+      const totals = [
+        cTxt(`Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})`, XS.totText),
+        cNum(allJobs.size, XS.totNum),
+        // Days are a man's, not the company's: two men on one date are two
+        // employee-days here, which is what the column above holds.
+        cNum(grand.days,   XS.totNum),
+      ];
+      for (const w of wkTot) {
+        totals.push(cNum(w.hours, XS.totNum), cNum(w.ot, XS.totNum), cNum(w.room, XS.totNum));
+      }
+      totals.push(
+        cNum(grand.hours, XS.totNum),
+        cNum(grand.reg,   XS.totNum),
+        cNum(grand.ot,    XS.totNum),
+        // A real total: each man appears exactly once on this sheet, so unlike
+        // the Before OT column on "Employees by Project" this one adds up.
+        cNum(grand.room,  XS.totNum),
+        cTxt('', XS.totText),
+      );
+      sheet.push(totals);
+
+      const colWidths = [24, 13, 13];
+      for (let i = 0; i < weeks.length; i++) colWidths.push(24, 20, 24);
+      colWidths.push(20, 20, 17, 24, 32);
+
+      return xlsxSheetXml({
+        colWidths,
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:${colLetter(headers.length)}${HEADER_ROW + rows.length}`,
+      });
+    }
+
+    // Sheet 3 — one row per MAN, across every job he worked: the second chart,
     // as figures. The sheet before it groups by job because that is how the work
     // is bought; this one groups by the person the fortieth hour actually
     // belongs to, so a man spread thin over four jobs — invisible on every job's
@@ -5605,7 +5948,7 @@
       });
     }
 
-    // Sheet 3 — one row per employee PER JOB: the crew tables on screen, flat.
+    // Sheet 4 — one row per employee PER JOB: the crew tables on screen, flat.
     function projectEmployeeSheetXml(model) {
       const { projects, tot, scopeLine, gen, companyName } = model;
       const headers = ['Project / Job', 'Division', 'Employee', 'Days Worked',
@@ -5681,123 +6024,7 @@
       });
     }
 
-    // Sheet 2 — THE CREW CAPACITY BOARD, flat.
-    //
-    // The same rows in the same order as the board on screen, and the same
-    // verdict in the Standing column, because a supervisor who sorts this sheet
-    // and a supervisor reading the tab have to reach the same answer about the
-    // same man.
-    //
-    // It is the one sheet in the book laid out WIDE — three columns per
-    // Monday–Sunday week rather than a row per employee-week. "OT Headroom by
-    // Week" is the long form of exactly these figures and is the better shape
-    // for a pivot; this one is the better shape for the question the board
-    // exists to answer, which is read across a man's weeks at a glance: where
-    // did his hours go, and which week has room left in it.
-    //
-    // A week a man did not work is BLANK, not zero. Blank is what the board
-    // draws and it is also what keeps the arithmetic honest: his headroom is
-    // only counted in weeks he has a counted week in, so the per-week Before OT
-    // cells add across to the Hours Before OT column exactly, which a column of
-    // 40s for weeks he never worked would not.
-    function projectCapacitySheetXml(model) {
-      const { employees, weeks, tot, scopeLine, gen, companyName } = model;
-
-      // Three columns a week, in the order the eye reads the meter: what he
-      // worked, what of it was past the line, and what is still open.
-      const headers = ['Employee', 'Jobs Worked', 'Days Worked'];
-      const NUM_COLS = new Set([1, 2]);
-      for (const w of weeks) {
-        const label = `${ccWeekLabel(w)}${w.clipped ? ' (partial)' : ''}`;
-        NUM_COLS.add(headers.length); headers.push(`${label} · Hours`);
-        NUM_COLS.add(headers.length); headers.push(`${label} · OT`);
-        NUM_COLS.add(headers.length); headers.push(`${label} · Before OT`);
-      }
-      const FIRST_TOTAL = headers.length;
-      for (const h of ['Total Hours', 'Regular Hrs', 'OT Hrs', 'Hours Before OT']) {
-        NUM_COLS.add(headers.length); headers.push(h);
-      }
-      headers.push('Standing');
-      const HEADER_ROW = 8;
-
-      const sheet = [
-        [cTxt('Project Overtime Report — Crew Capacity', XS.title)],
-        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
-        [cTxt('One row per employee, one block of columns per Monday–Sunday week — the Crew Capacity board on the Projects tab, flat. Hours are every job he worked that week, so the week columns add across to Total Hours.', XS.bold)],
-        [cTxt('The 40 is a WEEK’s line, never a range’s. A man at 100 hours over a fortnight is not 60 hours of overtime — he is whatever each of his weeks ran past its own fortieth hour, which is why the hours are split into weeks here rather than totalled.', XS.sub)],
-        [cTxt('Before OT is what he can still be given in that week. A week he worked no job is left BLANK rather than 40: headroom is only counted in weeks he has a counted week in, so the week cells add across to Hours Before OT exactly. Same figures one row per employee-week on "OT Headroom by Week".', XS.sub)],
-        [cTxt(`Standing places him against the 40 the way the board’s chip does: in overtime, at the 40, under ${CC_NEAR} h left, or room before it. Sort or filter on it to get the men you can still schedule without buying the premium.`, XS.sub)],
-        [],
-        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
-      ];
-
-      // Totalled per week as well as per man, so the foot of a week column is
-      // the crew's hours in that week — which no other sheet in the book says.
-      const wkTot  = weeks.map(() => ({ hours: 0, ot: 0, room: 0 }));
-      let sumRoom  = 0;
-
-      for (const e of ccOrdered(employees).rows) {
-        const byWeek = new Map((e.room ? e.room.weeks : []).map(w => [w.weekStart, w]));
-        const row = [
-          cTxt(e.username, XS.text),
-          cNum(e.jobs,     XS.num),
-          cNum(e.days,     XS.num),
-        ];
-        weeks.forEach((col, i) => {
-          const w = byWeek.get(col.weekStart);
-          if (!w) { row.push(cNum(null, XS.num), cNum(null, XS.num), cNum(null, XS.num)); return; }
-          row.push(cNum(w.totalHours, XS.num),
-                   cNum(w.otHours,    XS.num),
-                   cNum(w.remaining,  XS.num));
-          wkTot[i].hours += w.totalHours;
-          wkTot[i].ot    += w.otHours;
-          wkTot[i].room  += w.remaining;
-        });
-        row.push(
-          cNum(e.totalHours, XS.num),
-          cNum(e.regHours,   XS.num),
-          cNum(e.otHours,    XS.num),
-          cNum(e.remaining,  XS.num),
-          cTxt(ccStanding(e).label, XS.text),
-        );
-        sheet.push(row);
-        sumRoom += e.remaining;
-      }
-
-      const totals = [
-        cTxt(`Totals (${employees.length} employee${employees.length === 1 ? '' : 's'})`, XS.totText),
-        // The company's jobs and work days, not the columns added up: a job
-        // three men worked is one job, and a day four men worked is one day.
-        cNum(model.projects.length, XS.totNum),
-        cNum(tot.days,              XS.totNum),
-      ];
-      for (const w of wkTot) {
-        totals.push(cNum(w.hours, XS.totNum), cNum(w.ot, XS.totNum), cNum(w.room, XS.totNum));
-      }
-      totals.push(
-        cNum(tot.totalHours, XS.totNum),
-        cNum(tot.regHours,   XS.totNum),
-        cNum(tot.otHours,    XS.totNum),
-        // A real total: each man appears exactly once on this sheet, so unlike
-        // the Before OT column on "Employees by Project" this one adds up.
-        cNum(sumRoom,        XS.totNum),
-        cTxt('', XS.totText),
-      );
-      sheet.push(totals);
-
-      const colWidths = [24, 13, 13];
-      for (let i = 0; i < weeks.length; i++) colWidths.push(19, 15, 19);
-      colWidths.push(13, 13, 11, 18, 30);
-
-      return xlsxSheetXml({
-        colWidths,
-        rows: sheet,
-        freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:${colLetter(headers.length)}${HEADER_ROW + employees.length}`,
-      });
-    }
-
-    // Sheet 4 — one row per employee PER WEEK, which is the shape the fortieth
+    // Sheet 5 — one row per employee PER WEEK, which is the shape the fortieth
     // hour actually has. The sheets above group by job, or by the man over his
     // whole range; this one refuses to group by job at all and splits the man
     // into his weeks, because the 40 is not a job's to pass and not a
