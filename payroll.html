@@ -1037,6 +1037,165 @@
     .pc-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
     .pc-key.reg { background: #3d4a63; }
     .pc-key.ot  { background: var(--orange); }
+    .pc-key.tick { width: 2px; height: 12px; border-radius: 0; background: var(--text); }
+
+    /* ── The crew capacity board ──────────────────────────────────────────
+       One row per man, one meter per Monday–Sunday week. Every meter on the
+       board shares one track width and one scale, so a length means the same
+       hours wherever it appears — and the 40th hour is a tick drawn on the
+       track rather than a number the reader has to hold in his head. */
+    .cc-board {
+      margin-bottom: 1.3rem;
+      --cc-weeks: 1;
+    }
+    .cc-row {
+      display: grid;
+      grid-template-columns:
+        minmax(0, 168px)
+        repeat(var(--cc-weeks), minmax(58px, 1fr))
+        64px 56px 84px;
+      gap: 0.5rem;
+      align-items: center;
+      padding: 0.26rem 0.3rem;
+      border-radius: 4px;
+    }
+    .cc-row:not(.cc-head):hover { background: var(--surface2); }
+    .cc-head {
+      padding-bottom: 0.3rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0.15rem;
+      align-items: end;
+    }
+    .cc-col {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cc-col-num  { text-align: right; }
+    .cc-col-ot   { color: var(--orange); }
+    .cc-col-chip { text-align: center; }
+    .cc-col-room { color: var(--teal); }
+    .cc-scale {
+      font-size: 0.64rem;
+      color: var(--muted);
+      margin: 0 0 0.35rem 0.3rem;
+    }
+
+    .cc-who { min-width: 0; }
+    .cc-name {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cc-sub { font-size: 0.64rem; color: var(--muted); margin-top: 0.05rem; }
+
+    .cc-cell { min-width: 0; }
+    /* The track is the shared yardstick. The tick is absolutely placed at the
+       40 rather than drawn as a third flex child, so it sits on top of the fill
+       instead of pushing it along — a man at 52 h must show orange crossing the
+       line, not orange starting after it. */
+    .cc-meter {
+      position: relative;
+      display: flex;
+      height: 13px;
+      border-radius: 3px;
+      background: var(--surface2);
+      overflow: hidden;
+    }
+    .cc-meter .cc-reg { background: #3d4a63; }
+    .cc-meter .cc-ot  { background: var(--orange); }
+    .cc-tick {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      /* 40 of the shared scale, handed down from the board as a percentage so
+         the one number that matters is never a hard-coded pixel. */
+      left: var(--cc-tick, 80%);
+      width: 2px;
+      margin-left: -1px;
+      background: var(--text);
+      opacity: 0.55;
+    }
+    .cc-hrs {
+      font-size: 0.64rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.12rem;
+      text-align: right;
+      padding-right: 0.1rem;
+    }
+    .cc-hrs.cc-hot { color: var(--orange); font-weight: 700; }
+    .cc-none { opacity: 0.45; }
+    .cc-clip { color: var(--yellow); font-weight: 700; }
+
+    .cc-num {
+      font-size: 0.74rem;
+      color: var(--text);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .cc-num-ot { color: var(--orange); font-weight: 700; }
+
+    /* Where the man stands, in one chip. Orange is money already spent, amber
+       is the next hour costing it, teal is hours still available — the same
+       three hues these tables use everywhere else for the same three things. */
+    .cc-chip {
+      font-size: 0.64rem;
+      font-weight: 700;
+      text-align: center;
+      padding: 0.16rem 0.3rem;
+      border-radius: 999px;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      border: 1px solid transparent;
+    }
+    .cc-chip.cc-over { color: var(--orange); border-color: var(--orange); background: rgba(249, 115, 22, 0.12); }
+    .cc-chip.cc-at,
+    .cc-chip.cc-thin { color: var(--yellow); border-color: var(--yellow); background: rgba(234, 179, 8, 0.12); }
+    .cc-chip.cc-room { color: var(--teal);   border-color: var(--border); background: var(--surface2); }
+    .cc-chip.cc-unknown { color: var(--muted); border-color: var(--border); background: var(--surface2); }
+
+    .cc-group { margin: 0.55rem 0 0.25rem; padding: 0 0.3rem; }
+    .cc-group-label {
+      font-size: 0.64rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .cc-group-hot { color: var(--orange); }
+    .cc-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      width: 100%;
+      background: none;
+      border: none;
+      border-top: 1px solid var(--border);
+      padding: 0.5rem 0 0.15rem;
+      font: inherit;
+      font-size: 0.7rem;
+      color: var(--muted);
+      cursor: pointer;
+      text-align: left;
+    }
+    .cc-toggle:hover { color: var(--text); }
+    .cc-toggle strong { color: var(--text); font-weight: 700; }
+    .cc-toggle-sub { margin-left: auto; font-variant-numeric: tabular-nums; }
+    .cc-caret { display: inline-block; transition: transform 0.12s ease; }
+    .cc-board.cc-collapsed .cc-tail { display: none; }
+    .cc-board:not(.cc-collapsed) .cc-caret { transform: rotate(90deg); }
+    .cc-legend { margin-left: 0.3rem; flex-wrap: wrap; row-gap: 0.3rem; }
+    .cc-legend-note { color: var(--muted); opacity: 0.8; }
 
     /* One block per job, with the crew that worked it inside. */
     .proj-block {
@@ -1054,7 +1213,46 @@
       padding: 0.6rem 0.85rem;
       background: var(--surface2);
       border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
     }
+    .proj-head:hover { background: #23232f; }
+    .proj-head:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .proj-head-main { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+    .proj-caret {
+      color: var(--muted);
+      font-size: 0.7rem;
+      transition: transform 0.12s ease;
+      line-height: 1;
+    }
+    /* Shut is the default: the list is read top-down for the job running hot,
+       and a dozen crew tables between one job name and the next is what made
+       that a scroll rather than a glance. */
+    .proj-block:not(.open) > table { display: none; }
+    .proj-block:not(.open) .proj-head { border-bottom: none; }
+    .proj-block.open .proj-caret { transform: rotate(90deg); }
+
+    .proj-section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    .proj-section-head .proj-section-title { margin: 0; }
+    .proj-expand {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 0.22rem 0.5rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .proj-expand:hover { color: var(--text); border-color: var(--muted); }
     .proj-name { font-size: 0.88rem; font-weight: 700; color: var(--text); }
     .proj-meta { font-size: 0.7rem; color: var(--muted); margin-top: 0.14rem; }
     .proj-figs {
@@ -1259,6 +1457,44 @@
       .pc-label, .pc-value, .pc-legend { color: #000 !important; }
       .pc-value strong { color: #000 !important; }
       .pc-row { padding: 0.035in 0 !important; }
+      .pc-key.tick { background: #000 !important; }
+
+      /* The capacity board. Paper has no disclosure triangle, so everything a
+         toggle hides on screen is printed in full and the toggles themselves
+         go — a supervisor holding the sheet must be able to see every man he
+         could schedule, not the eight the screen happened to be showing. */
+      .cc-board.cc-collapsed .cc-tail { display: grid !important; }
+      .cc-toggle { border-top: 1px solid #999 !important; color: #000 !important; }
+      .cc-caret { display: none !important; }
+      .cc-toggle strong { color: #000 !important; }
+      .cc-row:not(.cc-head):hover { background: none !important; }
+      .cc-row { break-inside: avoid; page-break-inside: avoid; padding: 0.03in 0 !important; }
+      .cc-head { border-bottom: 1px solid #000 !important; }
+      .cc-col, .cc-scale, .cc-sub, .cc-hrs, .cc-group-label,
+      .cc-toggle-sub, .cc-legend-note { color: #333 !important; }
+      .cc-name, .cc-num { color: #000 !important; }
+      .cc-col-ot, .cc-num-ot, .cc-hrs.cc-hot, .cc-group-hot { color: #a8460b !important; }
+      .cc-clip { color: #8a6d00 !important; }
+      .cc-meter, .cc-meter .cc-reg, .cc-meter .cc-ot, .cc-tick, .cc-chip {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      .cc-meter { background: #e9e9e9 !important; border: 1px solid #999 !important; height: 11px !important; }
+      .cc-meter .cc-reg { background: #b6bdc9 !important; }
+      .cc-meter .cc-ot  { background: #cc5b12 !important; }
+      .cc-tick { background: #000 !important; opacity: 1 !important; }
+      .cc-chip { border: 1px solid #999 !important; background: #fff !important; }
+      .cc-chip.cc-over { color: #a8460b !important; border-color: #a8460b !important; }
+      .cc-chip.cc-at,
+      .cc-chip.cc-thin { color: #8a6d00 !important; border-color: #8a6d00 !important; }
+      .cc-chip.cc-room { color: #000 !important; }
+      .cc-chip.cc-unknown { color: #666 !important; }
+
+      /* Same rule for the job blocks: shut on screen, printed open. */
+      .proj-block:not(.open) > table { display: table !important; }
+      .proj-block:not(.open) .proj-head { border-bottom: 1px solid #000 !important; }
+      .proj-caret, .proj-expand { display: none !important; }
+      .proj-head { cursor: default !important; }
       /* A job and its crew belong on one page — a project header orphaned at
          the foot of a sheet with its employees overleaf is how a foreman reads
          somebody else's hours onto the wrong job. */
@@ -3920,7 +4156,24 @@
         .filter(c => byEmployee.has(c.username))
         .sort((a, b) => a.username.localeCompare(b.username));
 
+      // Every Monday-Sunday week anybody worked in range, once, in order. The
+      // capacity board draws a column per week and every man is laid against
+      // the same ones, so a gap in a row means he did not work that week —
+      // which is itself the answer to "who is free". Read off the crew rather
+      // than off the range, because a range can open mid-week and a week
+      // nobody worked is a column of nothing.
+      const weekCols = new Map();
+      for (const c of crewRows) {
+        for (const w of c.weeks) {
+          const col = weekCols.get(w.weekStart);
+          if (!col) weekCols.set(w.weekStart, { weekStart: w.weekStart, weekEnd: w.weekEnd, clipped: w.clipped });
+          else if (w.clipped) col.clipped = true;
+        }
+      }
+      const weeks = [...weekCols.values()].sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+
       return {
+        weeks,
         projects: rows,
         // The crew, each man once, across every job he worked — what the second
         // chart is drawn from. Not to be confused with a project's own
@@ -4033,12 +4286,23 @@
       // Headroom is a per-man figure and summing it down the column would count
       // the same week once per job, so the totals row leaves it blank and says
       // so rather than printing a number that cannot be read.
+      // Shut by default. The list is read top-down to find the job that is
+      // running hot, and a dozen crew tables between one job name and the next
+      // is what made that a scroll rather than a glance. The header carries
+      // every figure the table would have been opened for; the crew is one
+      // click under it, and on paper it is always printed.
       return `
         <div class="proj-block">
-          <div class="proj-head">
-            <div>
-              <div class="proj-name">${escapeHtml(p.name)}</div>
-              <div class="proj-meta">${escapeHtml(meta)}</div>
+          <div class="proj-head" role="button" tabindex="0"
+               onclick="toggleProjBlock(this)"
+               onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleProjBlock(this);}"
+               title="Show or hide the ${crewCount} employee${crewCount === 1 ? '' : 's'} who worked this job">
+            <div class="proj-head-main">
+              <span class="proj-caret">&#9656;</span>
+              <div>
+                <div class="proj-name">${escapeHtml(p.name)}</div>
+                <div class="proj-meta">${escapeHtml(meta)}</div>
+              </div>
             </div>
             <div class="proj-figs">${figs.join('')}</div>
           </div>
@@ -4118,32 +4382,237 @@
         }));
     }
 
-    // Chart two: the same hours the other way up, one bar per man across every
-    // job he worked. The chart above says which job is buying the overtime;
-    // this one says who is working it — and they are different questions,
-    // because one man spread thin over four jobs shows up nowhere on the first
-    // chart and at the top of this one.
+    // ── The crew capacity board ──────────────────────────────────────────
     //
-    // The tooltip carries the hours he has left before the premium starts
-    // again, which is the figure a foreman wants the moment he has found him.
-    function projCrewChartHtml(employees) {
-      return projBarsHtml(
-        'Overtime by employee — the same hours per man, scaled to the busiest man in range',
-        employees.map(e => {
-          const share = e.totalHours > 0.001 ? (e.otHours / e.totalHours) * 100 : 0;
-          const jobs  = `${e.jobs} job${e.jobs === 1 ? '' : 's'}`;
-          const room  = e.remaining > 0.001
-            ? `${e.remaining.toFixed(2)} h left before overtime starts again`
-            : 'no hours left in his weeks before overtime';
-          return {
-            label: e.username,
-            sub:   `${jobs} · ${e.days} day${e.days === 1 ? '' : 's'}`,
-            totalHours: e.totalHours, regHours: e.regHours, otHours: e.otHours,
-            title: e.otHours > 0.001
-              ? `${e.username} — ${e.totalHours.toFixed(2)} h over ${jobs}, ${e.otHours.toFixed(2)} of them past the fortieth hour of a Monday–Sunday week (${share.toFixed(1)}%) · ${room}`
-              : `${e.username} — ${e.totalHours.toFixed(2)} h over ${jobs}, none of it overtime · ${room}`,
-          };
-        }));
+    // The chart above asks which JOB is buying the overtime. This asks the
+    // question a supervisor actually rosters against: who has hours left
+    // before the fortieth, and who is already past it.
+    //
+    // It is deliberately NOT the same picture as the chart above, and that is
+    // the whole point of rewriting it. A bar scaled to the busiest man says who
+    // worked the most, which is a fact nobody schedules on; and over a
+    // fortnight such a bar cannot be read against 40 at all, because the forty
+    // is a WEEK's line while the bar is two weeks of hours stacked end to end.
+    //
+    // So every meter here is ONE Monday–Sunday week, laid against one fixed
+    // scale with the 40 drawn on it as a real tick. Two meters of the same
+    // length are the same hours — in any row, in any week — which is the one
+    // thing the old chart could not promise. An empty cell is a week the man
+    // did not work, and that blank is itself an answer to "who is free".
+
+    // Room left that counts as standing on the line rather than having any.
+    const CC_AT = 0.5;
+    // And the room below which a man is no use to a scheduler — less than half
+    // a day left is not a man you can put on a job, so he belongs with the ones
+    // being watched rather than in the pool being picked from.
+    const CC_NEAR = 4;
+
+    // A week as a column head. "Sep 1–7" rather than "Sep 1–Sep 7": the month
+    // is said twice in a label that has to fit a 60px column, and the second
+    // one is the half nobody reads.
+    function ccWeekLabel(w) {
+      const a = prettyDateShort(w.weekStart), b = prettyDateShort(w.weekEnd);
+      const month = a.split(' ')[0];
+      return b.startsWith(month + ' ') ? `${a}\u2013${b.slice(month.length + 1)}` : `${a}\u2013${b}`;
+    }
+
+    // The scale every meter on the board shares. At least 50 h, so the 40 tick
+    // sits inside the track with room past it for the overtime to show; rounded
+    // up past the heaviest week anybody worked, so the longest bar in range
+    // still ends short of the edge instead of pinning flat against it.
+    function ccScaleMax(employees) {
+      let max = 0;
+      for (const e of employees) {
+        for (const w of (e.room ? e.room.weeks : [])) max = Math.max(max, w.totalHours);
+      }
+      return Math.max(50, Math.ceil((max + 2) / 5) * 5);
+    }
+
+    // Where a man stands, in the one figure a scheduler acts on: what is still
+    // open before the premium starts.
+    //
+    // Room is read BEFORE overtime on purpose, and it is the only part of this
+    // that is easy to get wrong. A man can be deep into overtime in one week
+    // and have a whole open week beside it — and if the chip led with "Over 40"
+    // it would hide the very hours the supervisor came here to find. The
+    // overtime he has already worked is a cost, and it has its own column an
+    // inch to the left; this chip is about what is left.
+    function ccStatus(e) {
+      // No counted week, no forty to measure against. The model gives such a
+      // man a remaining of 0, which would read as "At 40" — the one wrong
+      // answer here, because it is the opposite of what 0 means for everybody
+      // else on the board. Say nothing instead.
+      if (!e.room || !e.room.weeks.length) {
+        return { cls: 'unknown', text: '—',
+                 title: `No counted Monday–Sunday week for ${e.username} in this range — there is no forty to measure him against` };
+      }
+      if (e.remaining >= CC_AT) {
+        const where = e.otHours > 0.001 ? ' — in the weeks he is not already past the 40' : '';
+        // Teal only where the room is worth rostering. A sliver under half a
+        // day is amber: it is not nothing, but it is not a man you can put on
+        // a job either, and it must not read like one at a glance.
+        return { cls: e.remaining >= CC_NEAR ? 'room' : 'thin', text: `${e.remaining.toFixed(2)} h`,
+                 title: `${e.username} can work ${e.remaining.toFixed(2)} h more before overtime starts, across all his jobs${where}` };
+      }
+      if (e.otHours > 0.001) {
+        return { cls: 'over', text: 'Over 40',
+                 title: `${e.username} is ${e.otHours.toFixed(2)} h past the fortieth hour with no room left in any week — every further hour is paid at the premium` };
+      }
+      return { cls: 'at', text: 'At 40',
+               title: `${e.username} has worked his weeks to the fortieth hour with nothing left — the next hour is overtime` };
+    }
+
+    // One week's meter for one man. Null where he did not work that week.
+    function ccCellHtml(w, scaleMax, username, label) {
+      // No dash, no zero. Twenty-five men against three weeks is seventy-five
+      // cells, most of them empty, and a column of dashes is the noise the old
+      // chart was rewritten to get rid of. The empty track under its 40 tick
+      // already says the week is open.
+      if (!w) {
+        return `<div class="cc-cell" title="${escapeHtml(`${username} worked no job in ${label} — his whole 40 is open`)}">` +
+               `<div class="cc-meter"><i class="cc-tick"></i></div>` +
+               `<div class="cc-hrs">&nbsp;</div></div>`;
+      }
+      const reg = Math.max(0, w.totalHours - w.otHours);
+      const pct = h => ((h / scaleMax) * 100).toFixed(2);
+      const state = w.otHours > 0.001
+        ? `${w.otHours.toFixed(2)} h past the 40`
+        : `${w.remaining.toFixed(2)} h left before the 40`;
+      const title = `${username} · ${label}${w.clipped ? ' (partial week — the range cuts it, so this is a floor)' : ''} · `
+                  + `${w.totalHours.toFixed(2)} h worked · ${state}`;
+      return `
+        <div class="cc-cell" title="${escapeHtml(title)}">
+          <div class="cc-meter">
+            <i class="cc-reg" style="width:${pct(reg)}%"></i>
+            <i class="cc-ot"  style="width:${pct(w.otHours)}%"></i>
+            <i class="cc-tick"></i>
+          </div>
+          <div class="cc-hrs${w.otHours > 0.001 ? ' cc-hot' : ''}">${w.totalHours.toFixed(2)}${w.clipped ? '<span class="cc-clip" title="Partial week — the range cuts it">*</span>' : ''}</div>
+        </div>`;
+    }
+
+    // One man across every week column on the board.
+    function ccRowHtml(e, weeks, scaleMax, hidden) {
+      const byWeek = new Map((e.room ? e.room.weeks : []).map(w => [w.weekStart, w]));
+      const st   = ccStatus(e);
+      const jobs = `${e.jobs} job${e.jobs === 1 ? '' : 's'}`;
+      const cells = weeks.map(col =>
+        ccCellHtml(byWeek.get(col.weekStart), scaleMax, e.username,
+                   `${prettyDateShort(col.weekStart)}–${prettyDateShort(col.weekEnd)}`)).join('');
+      return `
+        <div class="cc-row${hidden ? ' cc-tail' : ''}">
+          <div class="cc-who">
+            <div class="cc-name">${escapeHtml(e.username)}</div>
+            <div class="cc-sub">${escapeHtml(`${jobs} · ${e.days} day${e.days === 1 ? '' : 's'}`)}</div>
+          </div>
+          ${cells}
+          <div class="cc-num" title="${escapeHtml(`${e.totalHours.toFixed(2)} h on jobs in range — work, haul and travel, across ${jobs}`)}">${e.totalHours.toFixed(2)}</div>
+          <div class="cc-num${e.otHours > 0.001 ? ' cc-num-ot' : ' cc-none'}">${e.otHours > 0.001 ? e.otHours.toFixed(2) : '—'}</div>
+          <div class="cc-chip cc-${st.cls}" title="${escapeHtml(st.title)}">${escapeHtml(st.text)}</div>
+        </div>`;
+    }
+
+    // The column heads: the weeks themselves, then the three figures that close
+    // every row. Written from the same `weeks` the rows are, so a column can
+    // never be captioned with a week it is not drawing.
+    function ccHeadHtml(weeks, scaleMax) {
+      const cols = weeks.map(w => {
+        const label = ccWeekLabel(w);
+        const title = w.clipped
+          ? `Week of ${label} — the filter cuts this week, so hours outside the range were never fetched and these figures are a floor`
+          : `Monday–Sunday week of ${label}`;
+        return `<div class="cc-col" title="${escapeHtml(title)}">${escapeHtml(label)}${w.clipped ? '<span class="cc-clip">*</span>' : ''}</div>`;
+      }).join('');
+      return `
+        <div class="cc-row cc-head">
+          <div class="cc-who cc-col">Employee</div>
+          ${cols}
+          <div class="cc-col cc-col-num" title="Every hour on a job in range — work, haul and travel">Total</div>
+          <div class="cc-col cc-col-num cc-col-ot" title="Hours past the fortieth of a Monday–Sunday week, counted across every job he worked that week">OT</div>
+          <div class="cc-col cc-col-chip cc-col-room" title="Hours he can still be given before overtime starts, across every job and every week in range">Room</div>
+        </div>
+        <div class="cc-scale">Each meter is one week against a ${scaleMax}-hour track · the line is the 40th hour</div>`;
+    }
+
+    // The board. Two groups, because they are two different instructions: the
+    // men at or past the line are a cost to watch, and the men with room are
+    // the answer to "who do I put on it". The second group is the long tail —
+    // a fortnight of one-day hires — so it folds away on screen and always
+    // prints in full, since paper has no disclosure triangle.
+    function projCapacityHtml(employees, weeks) {
+      if (!employees.length || !weeks.length) return '';
+      const scaleMax = ccScaleMax(employees);
+
+      const hot  = employees.filter(e => e.otHours > 0.001 || e.remaining < CC_NEAR);
+      const open = employees.filter(e => e.otHours <= 0.001 && e.remaining >= CC_NEAR)
+        // Most room first: this group is read to find somebody to give hours to,
+        // and the man with the most left is the first answer to that.
+        .sort((a, b) => b.remaining - a.remaining || a.username.localeCompare(b.username));
+
+      const inOt   = hot.filter(e => e.otHours > 0.001).length;
+      const atLine = hot.length - inOt;
+      const hotLine = [
+        inOt   ? `${inOt} already in overtime` : '',
+        atLine ? `${atLine} with under ${CC_NEAR} h before it` : '',
+      ].filter(Boolean).join(' · ');
+
+      let tail = '';
+      if (open.length) {
+        const lo = Math.min(...open.map(e => e.totalHours));
+        const hi = Math.max(...open.map(e => e.totalHours));
+        const room = open.reduce((s, e) => s + e.remaining, 0);
+        tail = `
+          <div class="cc-group">
+            <button type="button" class="cc-toggle" onclick="toggleCrewTail(this)"
+              title="These men have hours left before overtime — the pool to schedule out of">
+              <span class="cc-caret">&#9656;</span>
+              <span><strong>${open.length}</strong> with room before the 40</span>
+              <span class="cc-toggle-sub">${lo.toFixed(2)}–${hi.toFixed(2)} h worked · ${room.toFixed(2)} h available</span>
+            </button>
+          </div>
+          ${open.map(e => ccRowHtml(e, weeks, scaleMax, true)).join('')}`;
+      }
+
+      return `
+        <div class="cc-board cc-collapsed" style="--cc-weeks:${weeks.length};--cc-tick:${((OT_WEEKLY_THRESHOLD / scaleMax) * 100).toFixed(2)}%">
+          <div class="proj-section-title">Crew capacity — hours worked per week against the 40</div>
+          ${ccHeadHtml(weeks, scaleMax)}
+          ${hot.length ? `<div class="cc-group"><span class="cc-group-label cc-group-hot">${escapeHtml(hotLine)}</span></div>` : ''}
+          ${hot.map(e => ccRowHtml(e, weeks, scaleMax, false)).join('')}
+          ${tail}
+          <div class="pc-legend cc-legend">
+            <span><i class="pc-key reg"></i>Hours inside the 40</span>
+            <span><i class="pc-key ot"></i>Overtime — hours past the 40th of that week</span>
+            <span><i class="pc-key tick"></i>The 40th hour</span>
+            <span class="cc-legend-note">An empty week is a week he worked no job. * marks a week the date filter cuts in half.</span>
+          </div>
+        </div>`;
+    }
+
+    // Screen only — on paper the tail is always printed, so this never runs
+    // there and the button itself is hidden.
+    function toggleCrewTail(btn) {
+      const board = btn.closest('.cc-board');
+      if (!board) return;
+      board.classList.toggle('cc-collapsed');
+      btn.setAttribute('aria-expanded', board.classList.contains('cc-collapsed') ? 'false' : 'true');
+    }
+
+    // A job block opens and shuts on its header. Collapsed is the default: the
+    // page is read top-down for the job that is running hot, and twelve crew
+    // tables between the reader and the next job name is what made that hard.
+    function toggleProjBlock(head) {
+      const block = head.closest('.proj-block');
+      if (block) block.classList.toggle('open');
+    }
+
+    function toggleAllProjBlocks(btn) {
+      const wrap   = document.getElementById('projectsWrap');
+      if (!wrap) return;
+      const blocks = [...wrap.querySelectorAll('.proj-block')];
+      const open   = blocks.some(b => !b.classList.contains('open'));
+      blocks.forEach(b => b.classList.toggle('open', open));
+      btn.textContent = open ? 'Collapse all crews' : 'Expand all crews';
     }
 
     function renderProjectsReport() {
@@ -4216,7 +4685,7 @@
           </div>
 
           ${projChartHtml(projects)}
-          ${projCrewChartHtml(m.employees)}
+          ${projCapacityHtml(m.employees, m.weeks)}
 
           <p class="proj-note">
             <strong>Overtime is an employee's week, not a job's.</strong>
@@ -4229,7 +4698,11 @@
             and is never totalled.${escapeHtml(offNote)}
           </p>
 
-          <div class="proj-section-title">${projects.length} job${projects.length === 1 ? '' : 's'} · most overtime first</div>
+          <div class="proj-section-head">
+            <div class="proj-section-title">${projects.length} job${projects.length === 1 ? '' : 's'} · most overtime first</div>
+            <button type="button" class="proj-expand" onclick="toggleAllProjBlocks(this)"
+              title="Open or shut every job's crew table at once — on paper they always print in full">Expand all crews</button>
+          </div>
           ${projects.map(projBlockHtml).join('')}
 
           ${otCaveat ? `<p class="report-caveat">${escapeHtml(otCaveat)}</p>` : ''}
