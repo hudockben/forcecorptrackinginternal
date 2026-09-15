@@ -503,6 +503,15 @@
       letter-spacing: 0.01em;
     }
     .qr-btn:hover { border-color: var(--blue); color: var(--blue); }
+    /* The range you are actually looking at. Filled rather than merely
+       outlined, because the point is to be readable from across the desk
+       without comparing it to the three beside it. */
+    .qr-btn.active {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #0a0a0f;
+    }
+    .qr-btn.active:hover { color: #0a0a0f; filter: brightness(1.08); }
 
     /* ── Report layout ── */
     .report {
@@ -1037,6 +1046,177 @@
     .pc-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
     .pc-key.reg { background: #3d4a63; }
     .pc-key.ot  { background: var(--orange); }
+    .pc-key.tick { width: 2px; height: 12px; border-radius: 0; background: var(--text); }
+
+    /* ── The crew capacity board ──────────────────────────────────────────
+       One row per man, one meter per Monday–Sunday week. Every meter on the
+       board shares one track width and one scale, so a length means the same
+       hours wherever it appears — and the 40th hour is a tick drawn on the
+       track rather than a number the reader has to hold in his head. */
+    .cc-board {
+      margin-bottom: 1.3rem;
+      --cc-weeks: 1;
+    }
+    .cc-row {
+      display: grid;
+      grid-template-columns:
+        minmax(0, 168px)
+        repeat(var(--cc-weeks), minmax(58px, 1fr))
+        64px 56px 84px;
+      gap: 0.5rem;
+      align-items: center;
+      padding: 0.26rem 0.3rem;
+      border-radius: 4px;
+    }
+    .cc-row:not(.cc-head):hover { background: var(--surface2); }
+    .cc-head {
+      padding-bottom: 0.3rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0.15rem;
+      align-items: end;
+    }
+    .cc-col {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cc-col-num  { text-align: right; }
+    .cc-col-ot   { color: var(--orange); }
+    .cc-col-chip { text-align: center; }
+    .cc-col-room { color: var(--teal); }
+    /* "This week" / "Last week" under the dates. The dates are what the figures
+       are, and this is only which of them you are standing in — so it sits
+       under, smaller, and never in place of them. */
+    .cc-rel {
+      display: block;
+      font-size: 0.55rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: var(--blue);
+      margin-top: 0.08rem;
+    }
+    .cc-scale {
+      font-size: 0.64rem;
+      color: var(--muted);
+      margin: 0 0 0.35rem 0.3rem;
+    }
+
+    .cc-who { min-width: 0; }
+    .cc-name {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cc-sub { font-size: 0.64rem; color: var(--muted); margin-top: 0.05rem; }
+
+    .cc-cell { min-width: 0; }
+    /* The track is the shared yardstick. The tick is absolutely placed at the
+       40 rather than drawn as a third flex child, so it sits on top of the fill
+       instead of pushing it along — a man at 52 h must show orange crossing the
+       line, not orange starting after it. */
+    .cc-meter {
+      position: relative;
+      display: flex;
+      height: 13px;
+      border-radius: 3px;
+      background: var(--surface2);
+      overflow: hidden;
+    }
+    .cc-meter .cc-reg { background: #3d4a63; }
+    .cc-meter .cc-ot  { background: var(--orange); }
+    .cc-tick {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      /* 40 of the shared scale, handed down from the board as a percentage so
+         the one number that matters is never a hard-coded pixel. */
+      left: var(--cc-tick, 80%);
+      width: 2px;
+      margin-left: -1px;
+      background: var(--text);
+      opacity: 0.55;
+    }
+    .cc-hrs {
+      font-size: 0.64rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.12rem;
+      text-align: right;
+      padding-right: 0.1rem;
+    }
+    .cc-hrs.cc-hot { color: var(--orange); font-weight: 700; }
+    .cc-none { opacity: 0.45; }
+    .cc-clip { color: var(--yellow); font-weight: 700; }
+
+    .cc-num {
+      font-size: 0.74rem;
+      color: var(--text);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .cc-num-ot { color: var(--orange); font-weight: 700; }
+
+    /* Where the man stands, in one chip. Orange is money already spent, amber
+       is the next hour costing it, teal is hours still available — the same
+       three hues these tables use everywhere else for the same three things. */
+    .cc-chip {
+      font-size: 0.64rem;
+      font-weight: 700;
+      text-align: center;
+      padding: 0.16rem 0.3rem;
+      border-radius: 999px;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      border: 1px solid transparent;
+    }
+    .cc-chip.cc-over { color: var(--orange); border-color: var(--orange); background: rgba(249, 115, 22, 0.12); }
+    .cc-chip.cc-at,
+    .cc-chip.cc-thin { color: var(--yellow); border-color: var(--yellow); background: rgba(234, 179, 8, 0.12); }
+    .cc-chip.cc-room { color: var(--teal);   border-color: var(--border); background: var(--surface2); }
+    .cc-chip.cc-unknown { color: var(--muted); border-color: var(--border); background: var(--surface2); }
+
+    .cc-group { margin: 0.55rem 0 0.25rem; padding: 0 0.3rem; }
+    .cc-group-label {
+      font-size: 0.64rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .cc-group-hot { color: var(--orange); }
+    .cc-group-clear { color: var(--green); }
+    .cc-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      width: 100%;
+      background: none;
+      border: none;
+      border-top: 1px solid var(--border);
+      padding: 0.5rem 0 0.15rem;
+      font: inherit;
+      font-size: 0.7rem;
+      color: var(--muted);
+      cursor: pointer;
+      text-align: left;
+    }
+    .cc-toggle:hover { color: var(--text); }
+    .cc-toggle strong { color: var(--text); font-weight: 700; }
+    .cc-toggle-sub { margin-left: auto; font-variant-numeric: tabular-nums; }
+    .cc-caret { display: inline-block; transition: transform 0.12s ease; }
+    .cc-board.cc-collapsed .cc-tail { display: none; }
+    .cc-board:not(.cc-collapsed) .cc-caret { transform: rotate(90deg); }
+    .cc-legend { margin-left: 0.3rem; flex-wrap: wrap; row-gap: 0.3rem; }
+    .cc-legend-note { color: var(--muted); opacity: 0.8; }
 
     /* One block per job, with the crew that worked it inside. */
     .proj-block {
@@ -1054,7 +1234,122 @@
       padding: 0.6rem 0.85rem;
       background: var(--surface2);
       border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
     }
+    .proj-head:hover { background: #23232f; }
+    .proj-head:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .proj-head-main { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+    .proj-caret {
+      color: var(--muted);
+      font-size: 0.7rem;
+      transition: transform 0.12s ease;
+      line-height: 1;
+    }
+    /* Shut is the default: the list is read top-down for the job running hot,
+       and a dozen crew tables between one job name and the next is what made
+       that a scroll rather than a glance. */
+    .proj-block:not(.open) > table { display: none; }
+    .proj-block:not(.open) .proj-head { border-bottom: none; }
+    .proj-block.open .proj-caret { transform: rotate(90deg); }
+
+    .proj-section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    .proj-section-head .proj-section-title { margin: 0; }
+    .proj-expand {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 0.22rem 0.5rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .proj-expand:hover { color: var(--text); border-color: var(--muted); }
+
+    /* A section's own download pair. Quieter than the report-level buttons in
+       the header — these take a slice, not the whole thing — but the same two
+       verbs in the same order, so the pair reads the same wherever it appears. */
+    /* The DataWatch wordmark. Same treatment report-branding.js gives the
+       popup-print reports — uppercase, letter-spaced, green over a rule — so a
+       payroll sheet and a division one look like they came from one place.
+       That file brands documents written into a print window; this page prints
+       itself, so it carries the mark inline instead. */
+    .report-brand {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--green);
+      margin-bottom: 0.4rem;
+      line-height: 1;
+    }
+
+    .report-action-row { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+    /* Which sections leave the building. Sits under the buttons it governs,
+       quiet enough not to compete with them but attached to them. */
+    .print-picker {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      margin-top: 0.5rem;
+      font-size: 0.68rem;
+      color: var(--muted);
+    }
+    .pp-label {
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      font-weight: 700;
+      font-size: 0.6rem;
+    }
+    .pp-item {
+      display: flex;
+      align-items: center;
+      gap: 0.28rem;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .pp-item:hover { color: var(--text); }
+    .pp-item input { accent-color: var(--blue); cursor: pointer; margin: 0; }
+
+    /* The Projects report puts a row of ticks under its buttons, so its action
+       area stacks. Every other report passes bare buttons and is unaffected —
+       a single child in a column lays out exactly as it did in a row. */
+    .report-actions:has(.print-picker) { flex-direction: column; align-items: flex-end; gap: 0; }
+
+    .proj-part-tools { display: flex; gap: 0.35rem; flex-shrink: 0; }
+    .prt-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.66rem;
+      font-weight: 600;
+      padding: 0.2rem 0.5rem;
+      cursor: pointer;
+      white-space: nowrap;
+      letter-spacing: 0.01em;
+    }
+    .prt-btn:hover { color: var(--text); border-color: var(--muted); }
+    .prt-xlsx { color: var(--green); border-color: rgba(34, 197, 94, 0.4); }
+    .prt-xlsx:hover { color: var(--green); border-color: var(--green); background: rgba(34, 197, 94, 0.1); }
+    /* The chart and the board each own a header row now, so the title no longer
+       carries its own bottom margin there. */
+    .proj-chart .proj-section-head,
+    .cc-board .proj-section-head { margin-bottom: 0.5rem; }
+    .proj-part { display: block; }
     .proj-name { font-size: 0.88rem; font-weight: 700; color: var(--text); }
     .proj-meta { font-size: 0.7rem; color: var(--muted); margin-top: 0.14rem; }
     .proj-figs {
@@ -1113,7 +1408,35 @@
         border-right-color: #bbb !important;
       }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
-      .pager, .modal-backdrop, .btn-print { display: none !important; }
+      .pager, .modal-backdrop, .btn-print, .proj-part-tools,
+      .print-picker { display: none !important; }
+
+      /* The assistant's launcher, its panel and its nudge bubble. They float
+         over the page, so on paper they land on top of whatever row happens to
+         be beneath them — in the report that was sent, a hovering circle
+         covering two men's Room figures. Nothing about a chat widget belongs on
+         a printed timesheet. */
+      #mathis-launch, #mathis-panel, #mathis-nudge { display: none !important; }
+
+      /* WHICH SECTIONS PRINT. The attribute names what is OFF, so a report
+         without it prints whole. Written by the tick boxes for a full print and
+         by printProjectSection for a single one; it lives only in here, which
+         is why setting it needs no undo when the dialog closes.
+
+         The report head is never switchable: a sheet handed to a supervisor has
+         to say whose hours these are and over what dates. */
+      .report[data-print-off~="stats"]  .proj-stats,
+      .report[data-print-off~="crew"]   .proj-piece[data-piece="crew"],
+      .report[data-print-off~="chart"]  .proj-piece[data-piece="chart"],
+      .report[data-print-off~="tables"] .proj-piece[data-piece="tables"] { display: none !important; }
+
+      /* The wordmark, in the ink report-branding.js uses: the app's brighter
+         --green is thin on paper. */
+      .report-brand {
+        color: #16a34a !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
       main { max-width: none !important; padding: 0 !important; }
 
       /* Reports tab */
@@ -1259,6 +1582,45 @@
       .pc-label, .pc-value, .pc-legend { color: #000 !important; }
       .pc-value strong { color: #000 !important; }
       .pc-row { padding: 0.035in 0 !important; }
+      .pc-key.tick { background: #000 !important; }
+
+      /* The capacity board. Paper has no disclosure triangle, so everything a
+         toggle hides on screen is printed in full and the toggles themselves
+         go — a supervisor holding the sheet must be able to see every man he
+         could schedule, not the eight the screen happened to be showing. */
+      .cc-board.cc-collapsed .cc-tail { display: grid !important; }
+      .cc-toggle { border-top: 1px solid #999 !important; color: #000 !important; }
+      .cc-caret { display: none !important; }
+      .cc-toggle strong { color: #000 !important; }
+      .cc-row:not(.cc-head):hover { background: none !important; }
+      .cc-row { break-inside: avoid; page-break-inside: avoid; padding: 0.03in 0 !important; }
+      .cc-head { border-bottom: 1px solid #000 !important; }
+      .cc-col, .cc-scale, .cc-sub, .cc-hrs, .cc-group-label,
+      .cc-toggle-sub, .cc-legend-note { color: #333 !important; }
+      .cc-rel { color: #000 !important; }
+      .cc-name, .cc-num { color: #000 !important; }
+      .cc-col-ot, .cc-num-ot, .cc-hrs.cc-hot, .cc-group-hot { color: #a8460b !important; }
+      .cc-clip { color: #8a6d00 !important; }
+      .cc-meter, .cc-meter .cc-reg, .cc-meter .cc-ot, .cc-tick, .cc-chip {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      .cc-meter { background: #e9e9e9 !important; border: 1px solid #999 !important; height: 11px !important; }
+      .cc-meter .cc-reg { background: #b6bdc9 !important; }
+      .cc-meter .cc-ot  { background: #cc5b12 !important; }
+      .cc-tick { background: #000 !important; opacity: 1 !important; }
+      .cc-chip { border: 1px solid #999 !important; background: #fff !important; }
+      .cc-chip.cc-over { color: #a8460b !important; border-color: #a8460b !important; }
+      .cc-chip.cc-at,
+      .cc-chip.cc-thin { color: #8a6d00 !important; border-color: #8a6d00 !important; }
+      .cc-chip.cc-room { color: #000 !important; }
+      .cc-chip.cc-unknown { color: #666 !important; }
+
+      /* Same rule for the job blocks: shut on screen, printed open. */
+      .proj-block:not(.open) > table { display: table !important; }
+      .proj-block:not(.open) .proj-head { border-bottom: 1px solid #000 !important; }
+      .proj-caret, .proj-expand { display: none !important; }
+      .proj-head { cursor: default !important; }
       /* A job and its crew belong on one page — a project header orphaned at
          the foot of a sheet with its employees overleaf is how a foreman reads
          somebody else's hours onto the wrong job. */
@@ -1406,6 +1768,18 @@
       text-align: center;
       padding: 2rem 1rem;
       color: var(--muted);
+    }
+    /* Why an empty queue may not mean an empty week. Sits above the diagnostic
+       line and reads as prose, because it is an instruction rather than a
+       dump of what the server was asked. */
+    .empty-hint {
+      margin-top: 0.6rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+      max-width: 62ch;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.5;
     }
     .empty-diag {
       margin-top: 0.75rem;
@@ -2313,12 +2687,23 @@
 
     <!-- ── Payroll-cycle quick ranges (only on Reports tab) ── -->
     <div class="quick-ranges" id="quickRanges" style="display:none">
-      <span class="qr-label">Weekly:</span>
-      <button class="qr-btn" onclick="setRange('current_week')">Current Week</button>
-      <button class="qr-btn" onclick="setRange('last_week')">Last Week</button>
-      <span class="qr-label" style="margin-left:0.75rem">Biweekly:</span>
-      <button class="qr-btn" onclick="setRange('current_biweekly')">Current Biweekly</button>
-      <button class="qr-btn" onclick="setRange('last_biweekly')">Last Biweekly</button>
+      <span class="qr-label">Week:</span>
+      <button class="qr-btn" data-range="current_week"
+              data-range-note="The Monday–Sunday week in progress — the one the 40-hour line is being counted against right now"
+              onclick="setRange('current_week')">This Week</button>
+      <button class="qr-btn" data-range="last_week"
+              data-range-note="The Monday–Sunday week being paid this Friday"
+              onclick="setRange('last_week')">Last Week</button>
+      <button class="qr-btn" data-range="last_and_this_week"
+              data-range-note="Both weeks — what the capacity board draws. A rolling fortnight, not a payroll cycle: it moves every Monday and may straddle two cycles"
+              onclick="setRange('last_and_this_week')">Last + This</button>
+      <span class="qr-label" style="margin-left:0.75rem">Payroll cycle:</span>
+      <button class="qr-btn" data-range="current_biweekly"
+              data-range-note="The fortnight being worked now — two Monday–Sunday weeks ending on a Sunday"
+              onclick="setRange('current_biweekly')">This Cycle</button>
+      <button class="qr-btn" data-range="last_biweekly"
+              data-range-note="The fortnight before it, the one already closed"
+              onclick="setRange('last_biweekly')">Last Cycle</button>
     </div>
 
     <!-- ── Reports sub-tabs (only on the Reports tab) ──
@@ -2815,9 +3200,21 @@
     }
 
     function init() {
-      // Default range: last 14 days through today
-      const to = new Date();
-      const from = new Date(); from.setDate(from.getDate() - 14);
+      // Default range: THIS WEEK — the Monday–Sunday week in progress, which is
+      // the week the 40-hour line is being counted against right now.
+      //
+      // It opens on a Monday, which the old rolling 14 days did not. A range
+      // that starts mid-week cuts the week at its head: hours worked before it
+      // were never fetched, so that week's overtime reads as a floor and its
+      // headroom as a ceiling, and the capacity board has to mark the whole
+      // column untrustworthy. Anchoring the default to a week boundary means
+      // the figures on first load are whole ones.
+      //
+      // It is also narrower than what came before. Everything reached from
+      // here — Pending Review included — opens on one week rather than a
+      // fortnight, and anything older waits behind Last Week, Last + This or a
+      // cycle button rather than being on screen at load.
+      const [from, to] = rangeFor('current_week');
       document.getElementById('flt-from').value = ymd(from);
       document.getElementById('flt-to').value   = ymd(to);
       loadSupervisors();
@@ -2879,7 +3276,7 @@
         if (subTabs)    subTabs.style.display    = 'flex';
         if (reportWrap) reportWrap.style.display = reportSubTab === 'projects' ? 'none' : '';
         if (projWrap)   projWrap.style.display   = reportSubTab === 'projects' ? '' : 'none';
-        if (quick)      quick.style.display      = 'flex';
+        if (quick)    { quick.style.display      = 'flex'; labelQuickRanges(); }
         selectedIds.clear();
       } else if (tab === 'auditlog') {
         if (auditWrap) auditWrap.style.display = '';
@@ -2950,28 +3347,64 @@
       return [start, end];
     }
 
-    function setRange(kind) {
+    // What a quick-range button means, as dates — with no side effects, so the
+    // buttons, their tooltips and the highlight showing which one you are
+    // looking at all read the same definition. Three copies of "the current
+    // cycle" is how they end up disagreeing by a day.
+    function rangeFor(kind) {
       const monday = thisWeekMonday();
-      let from, to;
-      if (kind === 'current_week') {
-        from = monday;
-        to   = addDays(monday, 6);
-      } else if (kind === 'last_week') {
-        // The week being paid this Friday
-        from = addDays(monday, -7);
-        to   = addDays(monday, -1);
-      } else if (kind === 'current_biweekly') {
-        [from, to] = biweeklyCycleContaining(new Date());
-      } else if (kind === 'last_biweekly') {
+      if (kind === 'current_week') return [monday, addDays(monday, 6)];
+      // The week being paid this Friday
+      if (kind === 'last_week')    return [addDays(monday, -7), addDays(monday, -1)];
+      // The rolling fortnight the capacity board draws: the week just finished
+      // and the week in hand. NOT a payroll cycle — it ignores the anchor and
+      // moves every Monday, so on any given day it may straddle the boundary
+      // between two cycles. That is the point of it. Scheduling asks who has
+      // hours left in the week being worked and what he did in the one before;
+      // where the fortnight the accountant is paying happens to start is a
+      // different question, and the Cycle buttons are the ones that answer it.
+      if (kind === 'last_and_this_week') return [addDays(monday, -7), addDays(monday, 6)];
+      if (kind === 'current_biweekly') return biweeklyCycleContaining(new Date());
+      if (kind === 'last_biweekly') {
         const [curStart] = biweeklyCycleContaining(new Date());
-        from = addDays(curStart, -14);
-        to   = addDays(curStart, -1);
-      } else {
-        return;
+        return [addDays(curStart, -14), addDays(curStart, -1)];
       }
-      document.getElementById('flt-from').value = ymd(from);
-      document.getElementById('flt-to').value   = ymd(to);
+      return null;
+    }
+
+    function setRange(kind) {
+      const r = rangeFor(kind);
+      if (!r) return;
+      document.getElementById('flt-from').value = ymd(r[0]);
+      document.getElementById('flt-to').value   = ymd(r[1]);
       applyFilters();
+    }
+
+    // Light up the preset the current dates actually are. Without it the bar
+    // is four buttons that never look any different from each other, and
+    // "am I looking at this cycle or the last one?" is a question you can only
+    // answer by reading two date boxes and doing the arithmetic yourself.
+    // It matches on the dates, so typing a cycle's dates by hand lights it too.
+    function markActiveRange() {
+      const from = (document.getElementById('flt-from') || {}).value || '';
+      const to   = (document.getElementById('flt-to')   || {}).value || '';
+      document.querySelectorAll('#quickRanges .qr-btn[data-range]').forEach(btn => {
+        const r = rangeFor(btn.dataset.range);
+        btn.classList.toggle('active', Boolean(r) && from === ymd(r[0]) && to === ymd(r[1]));
+      });
+    }
+
+    // Each button says the dates it will set, worked out when the bar is shown
+    // rather than written into the markup — "This Cycle" means a different
+    // fortnight tomorrow than it did the day the page was written.
+    function labelQuickRanges() {
+      document.querySelectorAll('#quickRanges .qr-btn[data-range]').forEach(btn => {
+        const r = rangeFor(btn.dataset.range);
+        if (!r) return;
+        const span = `${prettyDateShort(ymd(r[0]))} – ${prettyDateShort(ymd(r[1]))}`;
+        btn.title = `${btn.dataset.rangeNote || ''}${btn.dataset.rangeNote ? ' · ' : ''}Sets the date range to ${span}`;
+      });
+      markActiveRange();
     }
 
     function ymd(d) {
@@ -3007,6 +3440,12 @@
       const from     = document.getElementById('flt-from').value;
       const to       = document.getElementById('flt-to').value;
       const division = document.getElementById('flt-division').value;
+
+      // Before the fetch, not after: the highlight is about the dates in the
+      // boxes, and it should move the instant they do rather than a round trip
+      // later. Every path that changes the range comes through here — the
+      // preset buttons, Apply, Reset and the first load.
+      markActiveRange();
 
       const params = new URLSearchParams();
       params.set('status', 'submitted_approved');
@@ -3302,7 +3741,11 @@
         ? `Overtime is counted per Monday–Sunday week from the entries in view. Here ${otNotes.join(', and ')}, so a week may be missing hours and its overtime understated.`
         : '';
 
-      return { rows, tot, scopeLine, gen, companyName, otCaveat };
+      // The range itself, not just the sentence describing it. The capacity
+      // board needs to tell a week that is missing hours from one that has
+      // simply not finished yet, and those are the same `clipped` flag until
+      // you can compare the week against the range's own ends.
+      return { rows, tot, scopeLine, gen, companyName, otCaveat, from, to };
     }
 
     function renderReport() {
@@ -3315,6 +3758,7 @@
           <div class="report">
             <div class="report-head">
               <div>
+                <div class="report-brand">DataWatch</div>
                 <div class="report-title">Payroll Hours Report</div>
                 <div class="report-sub">${escapeHtml(scopeLine)}<br/>${escapeHtml(companyName)} · Generated ${escapeHtml(gen)}</div>
               </div>
@@ -3386,6 +3830,7 @@
         <div class="report">
           <div class="report-head">
             <div>
+              <div class="report-brand">DataWatch</div>
               <div class="report-title">Payroll Hours Report</div>
               <div class="report-sub">
                 <strong>${escapeHtml(companyName)}</strong><br/>
@@ -3681,8 +4126,116 @@
       else            expandedReportUsers.delete(user);
     }
 
+    // WHAT THE PRINTED REPORT CARRIES.
+    //
+    // The screen always shows everything; this is only about what leaves the
+    // building. The sheet a supervisor is handed and the page you work from are
+    // not the same document — he is being asked to schedule a crew, not to
+    // audit a fortnight, and every block he did not need was a block between
+    // him and the one he did.
+    //
+    // Summary cards are off by default for that reason. They are whole-RANGE
+    // figures, and on a sheet whose board counts the current cycle they invite
+    // a reconciliation that is not supposed to balance.
+    const PRINT_PIECES = [
+      { key: 'stats',  label: 'Summary cards',   def: false,
+        note: 'The four figures across the top. Whole-range totals — they will not match a cycle-scoped board.' },
+      { key: 'crew',   label: 'Crew capacity',   def: true,
+        note: 'The board: one row per man against the 40.' },
+      { key: 'chart',  label: 'Job chart',       def: true,
+        note: 'Overtime by project — the bars.' },
+      { key: 'tables', label: 'Job crew tables', def: true,
+        note: 'One block per job with its crew, and the note explaining how the 40 is counted.' },
+    ];
+    const PRINT_PREF_KEY = 'fct_projects_print_pieces';
+
+    // Ticks survive a reload, because the choice is about how this company
+    // sends reports and not about one afternoon. A stored value that predates a
+    // piece falls back to that piece's default rather than to "off" — a new
+    // section should appear, not go silently missing.
+    function printPieceState() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(PRINT_PREF_KEY) || 'null'); } catch { saved = null; }
+      const out = {};
+      for (const p of PRINT_PIECES) {
+        out[p.key] = saved && typeof saved[p.key] === 'boolean' ? saved[p.key] : p.def;
+      }
+      return out;
+    }
+
+    function printPickerHtml() {
+      const st = printPieceState();
+      return `
+        <div class="print-picker">
+          <span class="pp-label">PDF includes</span>
+          ${PRINT_PIECES.map(p => `
+            <label class="pp-item" title="${escapeHtml(p.note)}">
+              <input type="checkbox" data-piece="${p.key}"${st[p.key] ? ' checked' : ''}
+                     onchange="onPrintPieceToggle()"/>${escapeHtml(p.label)}
+            </label>`).join('')}
+        </div>`;
+    }
+
+    function onPrintPieceToggle() {
+      const st = {};
+      document.querySelectorAll('.print-picker input[data-piece]')
+        .forEach(i => { st[i.dataset.piece] = i.checked; });
+      try { localStorage.setItem(PRINT_PREF_KEY, JSON.stringify(st)); } catch (e) { /* private window */ }
+    }
+
+    // The ticks become one attribute the print stylesheet reads. It names what
+    // is OFF, so a report carrying no attribute prints whole — which is the
+    // right fallback for any path that has not thought about this.
+    //
+    // Print-media only, so the attribute is inert on screen. That is what lets
+    // it be set and left rather than unwound when the dialog closes; every
+    // entry point below recomputes it, so nothing stale can survive into the
+    // next print.
+    function applyPrintPieces(off) {
+      const report = document.querySelector('#projectsWrap .report');
+      if (!report) return;
+      if (off && off.length) report.setAttribute('data-print-off', off.join(' '));
+      else report.removeAttribute('data-print-off');
+    }
+
     function printReport() {
+      const report = document.querySelector('#projectsWrap .report');
+      // Every other report on this page prints whole; only the Projects one has
+      // a picker to honour.
+      if (report && report.offsetParent !== null) {
+        const st  = printPieceState();
+        const off = PRINT_PIECES.filter(p => !st[p.key]).map(p => p.key);
+        if (off.length === PRINT_PIECES.length) {
+          alert('Nothing is ticked to print. Choose at least one section under "PDF includes".');
+          return;
+        }
+        applyPrintPieces(off);
+      }
       window.print();
+    }
+
+    // Print ONE section on its own — the crew capacity board without the job
+    // tables behind it, or the jobs without the board.
+    //
+    // A section button ignores the ticks on purpose: it is not a filtered
+    // report, it is a request for that section, and having to tick three boxes
+    // off first would make it the slower of two ways to do the same thing.
+    function printProjectSection(part) {
+      const keep = part === 'crew' ? ['crew'] : ['chart', 'tables'];
+      applyPrintPieces(PRINT_PIECES.map(p => p.key).filter(k => !keep.includes(k)));
+      window.print();
+    }
+
+    // The download pair a section carries. Both buttons are hidden on paper, so
+    // they never appear in the page they produce.
+    function projPartTools(part, xlsxFn, xlsxTitle, pdfTitle) {
+      return `
+        <div class="proj-part-tools">
+          <button type="button" class="prt-btn prt-xlsx" onclick="${xlsxFn}()"
+            title="${escapeHtml(xlsxTitle)}">&#8681; Excel</button>
+          <button type="button" class="prt-btn" onclick="printProjectSection('${part}')"
+            title="${escapeHtml(pdfTitle)}">&#8681; PDF</button>
+        </div>`;
     }
 
     // ── Reports ▸ Projects ───────────────────────────────────────────────
@@ -3767,6 +4320,11 @@
           // has overtime, and the OT column beside this is where that is said.
           remaining:  Math.max(0, OT_WEEKLY_THRESHOLD - w.totalHours),
           clipped:    w.clipped,
+          // Distinct dates worked in THIS week. The capacity board shows a
+          // window of weeks rather than the whole range, and "7 jobs · 10 days"
+          // read off the range beside two weeks of hours would be describing
+          // days that are not on the screen.
+          days:       new Set(w.rows.map(x => x.entry.work_date).filter(Boolean)).size,
         }));
         crew.set(r.username, {
           username:  r.username,
@@ -3920,7 +4478,24 @@
         .filter(c => byEmployee.has(c.username))
         .sort((a, b) => a.username.localeCompare(b.username));
 
+      // Every Monday-Sunday week anybody worked in range, once, in order. The
+      // capacity board draws a column per week and every man is laid against
+      // the same ones, so a gap in a row means he did not work that week —
+      // which is itself the answer to "who is free". Read off the crew rather
+      // than off the range, because a range can open mid-week and a week
+      // nobody worked is a column of nothing.
+      const weekCols = new Map();
+      for (const c of crewRows) {
+        for (const w of c.weeks) {
+          const col = weekCols.get(w.weekStart);
+          if (!col) weekCols.set(w.weekStart, { weekStart: w.weekStart, weekEnd: w.weekEnd, clipped: w.clipped });
+          else if (w.clipped) col.clipped = true;
+        }
+      }
+      const weeks = [...weekCols.values()].sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+
       return {
+        weeks,
         projects: rows,
         // The crew, each man once, across every job he worked — what the second
         // chart is drawn from. Not to be confused with a project's own
@@ -3937,6 +4512,8 @@
         inOt:          crewRows.filter(c => c.otHours > 0.001).length,
         offEntries,
         countedEntries,
+        rangeFrom:   base.from,
+        rangeTo:     base.to,
         scopeLine:   base.scopeLine,
         gen:         base.gen,
         companyName: base.companyName,
@@ -4033,12 +4610,23 @@
       // Headroom is a per-man figure and summing it down the column would count
       // the same week once per job, so the totals row leaves it blank and says
       // so rather than printing a number that cannot be read.
+      // Shut by default. The list is read top-down to find the job that is
+      // running hot, and a dozen crew tables between one job name and the next
+      // is what made that a scroll rather than a glance. The header carries
+      // every figure the table would have been opened for; the crew is one
+      // click under it, and on paper it is always printed.
       return `
         <div class="proj-block">
-          <div class="proj-head">
-            <div>
-              <div class="proj-name">${escapeHtml(p.name)}</div>
-              <div class="proj-meta">${escapeHtml(meta)}</div>
+          <div class="proj-head" role="button" tabindex="0"
+               onclick="toggleProjBlock(this)"
+               onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleProjBlock(this);}"
+               title="Show or hide the ${crewCount} employee${crewCount === 1 ? '' : 's'} who worked this job">
+            <div class="proj-head-main">
+              <span class="proj-caret">&#9656;</span>
+              <div>
+                <div class="proj-name">${escapeHtml(p.name)}</div>
+                <div class="proj-meta">${escapeHtml(meta)}</div>
+              </div>
             </div>
             <div class="proj-figs">${figs.join('')}</div>
           </div>
@@ -4076,7 +4664,7 @@
     // yardstick it used.
     //
     // rows: [{ label, sub, totalHours, regHours, otHours, title }]
-    function projBarsHtml(heading, rows) {
+    function projBarsHtml(heading, rows, tools) {
       const max = rows.reduce((m, r) => Math.max(m, r.totalHours), 0) || 1;
       const pct = h => ((h / max) * 100).toFixed(2);
       const bars = rows.map(r => `
@@ -4092,7 +4680,10 @@
           </div>`).join('');
       return `
         <div class="proj-chart">
-          <div class="proj-section-title">${escapeHtml(heading)}</div>
+          <div class="proj-section-head">
+            <div class="proj-section-title">${escapeHtml(heading)}</div>
+            ${tools || ''}
+          </div>
           ${bars}
           <div class="pc-legend">
             <span><i class="pc-key reg"></i>Regular hours</span>
@@ -4102,7 +4693,7 @@
     }
 
     // Chart one: the jobs.
-    function projChartHtml(projects) {
+    function projChartHtml(projects, tools) {
       return projBarsHtml(
         'Overtime by project — bars are hours worked, scaled to the largest job in range',
         projects.map(p => {
@@ -4115,35 +4706,453 @@
               ? `${p.name} — ${p.totalHours.toFixed(2)} h worked, ${p.otHours.toFixed(2)} of them past the fortieth hour of somebody's week (${share.toFixed(1)}%)`
               : `${p.name} — ${p.totalHours.toFixed(2)} h worked, none of it overtime`,
           };
-        }));
+        }), tools);
     }
 
-    // Chart two: the same hours the other way up, one bar per man across every
-    // job he worked. The chart above says which job is buying the overtime;
-    // this one says who is working it — and they are different questions,
-    // because one man spread thin over four jobs shows up nowhere on the first
-    // chart and at the top of this one.
+    // ── The crew capacity board ──────────────────────────────────────────
     //
-    // The tooltip carries the hours he has left before the premium starts
-    // again, which is the figure a foreman wants the moment he has found him.
-    function projCrewChartHtml(employees) {
-      return projBarsHtml(
-        'Overtime by employee — the same hours per man, scaled to the busiest man in range',
-        employees.map(e => {
-          const share = e.totalHours > 0.001 ? (e.otHours / e.totalHours) * 100 : 0;
-          const jobs  = `${e.jobs} job${e.jobs === 1 ? '' : 's'}`;
-          const room  = e.remaining > 0.001
-            ? `${e.remaining.toFixed(2)} h left before overtime starts again`
-            : 'no hours left in his weeks before overtime';
-          return {
-            label: e.username,
-            sub:   `${jobs} · ${e.days} day${e.days === 1 ? '' : 's'}`,
-            totalHours: e.totalHours, regHours: e.regHours, otHours: e.otHours,
-            title: e.otHours > 0.001
-              ? `${e.username} — ${e.totalHours.toFixed(2)} h over ${jobs}, ${e.otHours.toFixed(2)} of them past the fortieth hour of a Monday–Sunday week (${share.toFixed(1)}%) · ${room}`
-              : `${e.username} — ${e.totalHours.toFixed(2)} h over ${jobs}, none of it overtime · ${room}`,
-          };
-        }));
+    // The chart above asks which JOB is buying the overtime. This asks the
+    // question a supervisor actually rosters against: who has hours left
+    // before the fortieth, and who is already past it.
+    //
+    // It is deliberately NOT the same picture as the chart above, and that is
+    // the whole point of rewriting it. A bar scaled to the busiest man says who
+    // worked the most, which is a fact nobody schedules on; and over a
+    // fortnight such a bar cannot be read against 40 at all, because the forty
+    // is a WEEK's line while the bar is two weeks of hours stacked end to end.
+    //
+    // So every meter here is ONE Monday–Sunday week, laid against one fixed
+    // scale with the 40 drawn on it as a real tick. Two meters of the same
+    // length are the same hours — in any row, in any week — which is the one
+    // thing the old chart could not promise. An empty cell is a week the man
+    // did not work, and that blank is itself an answer to "who is free".
+
+    // HOW MANY WEEKS THE BOARD SHOWS: the previous Monday–Sunday week and the
+    // current one, which is the payroll cycle a supervisor is scheduling inside.
+    //
+    // The report's own date range is not that window and need not be. Any range
+    // that does not open on a Monday reaches back into an extra week and drags
+    // a stub of it onto the board — a column of a few days nobody is rostering
+    // against any more. The default range opens on a Monday now and the quick
+    // ranges all do, but a hand-typed one need not, so the cap stays.
+    const CC_WEEKS_SHOWN = 2;
+
+    // The weeks the board draws, newest last. The range may hold more (a stub
+    // week at its head, or a month-long range); it may hold fewer, and a range
+    // that ends before today has no "current week" in it at all — so this takes
+    // the last weeks actually IN the range rather than counting back from
+    // today, which would otherwise draw two empty columns over a past cycle.
+    function ccWeeksShown(weeks) {
+      return weeks.slice(-CC_WEEKS_SHOWN);
+    }
+
+    // "This week" / "Last week" against the real calendar, so a board built
+    // from a current range says so, and one built from a past cycle does not
+    // claim to. Empty for any other week.
+    function ccWeekRelation(weekStart) {
+      const thisWeek = weekStartOf(new Date().toISOString().slice(0, 10));
+      if (!thisWeek) return '';
+      if (weekStart === thisWeek) return 'This week';
+      const prev = new Date(`${thisWeek}T00:00:00Z`);
+      prev.setUTCDate(prev.getUTCDate() - 7);
+      return weekStart === prev.toISOString().slice(0, 10) ? 'Last week' : '';
+    }
+
+    // Is this week missing hours that ALREADY HAPPENED?
+    //
+    // `clipped` cannot answer that on its own: it is true at both ends of the
+    // range, and the two ends mean opposite things. A week cut at its HEAD is
+    // missing days a man may well have worked — days that count toward his 40
+    // and were never fetched. A week cut at its TAIL is the current week, whose
+    // remaining days have not happened yet; nothing is missing from it.
+    //
+    // The board turns on this. An untouched week is 40 hours of room only if we
+    // would have SEEN the hours had he worked any.
+    function ccWeekTrusted(w, rangeFrom) {
+      const from = rangeFrom ? String(rangeFrom).slice(0, 10) : '';
+      return !from || w.weekStart >= from;
+    }
+
+    // A man's figures across just the weeks the board shows.
+    //
+    // The row has to add up. A Total that included a week not drawn beside it
+    // would be a number nobody reading the board could check, and the whole
+    // point of the meters is that the hours in them are the hours in the row.
+    // So every figure here — total, overtime, room, jobs, days — is the window's
+    // and not the range's. The range's own totals are what the crew tables and
+    // the rest of the workbook are for.
+    function ccWindow(e, weeks, rangeFrom) {
+      const keys = new Set(weeks.map(w => w.weekStart));
+      const room = e.room;
+      const mine = (room ? room.weeks : []).filter(w => keys.has(w.weekStart));
+      const byWeek = new Map(mine.map(w => [w.weekStart, w]));
+      // Coerced, because a single missing field would otherwise put NaN on a
+      // sheet a supervisor is scheduling off — a figure that is not merely
+      // wrong but unreadable, and that spreads through every total it touches.
+      const sum  = k => mine.reduce((s, w) => s + (Number(w[k]) || 0), 0);
+      const jobs = new Set();
+      for (const w of mine) for (const j of (room && room.byWeek.get(w.weekStart)) || []) jobs.add(j);
+      const totalHours = sum('totalHours'), otHours = sum('otHours');
+
+      // ROOM COUNTS THE WEEKS HE DID NOT WORK, and this is the one place the
+      // board departs from the Before OT figures elsewhere in the report.
+      //
+      // Those are range-wide and count only weeks a man has hours in, because
+      // over an arbitrary range a silent week means nothing — he may not have
+      // been on the books. Read that way inside a two-week cycle the answer
+      // comes out backwards: a man who worked 39.75 h last week and has not
+      // been given a shift this week reads "At 40", when he is in fact the
+      // emptiest man on the crew. That is not a rounding difference, it is the
+      // board recommending against the very person it should be offering.
+      //
+      // So an untouched week here is a full 40 of room — but only where the
+      // range would have shown us the hours had he worked them. A week cut at
+      // its head is not trusted: the days before the range opened were never
+      // fetched, so silence there is ignorance, not availability.
+      let remaining = 0, assumed = 0;
+      for (const col of weeks) {
+        const w = byWeek.get(col.weekStart);
+        if (w) { remaining += Number(w.remaining) || 0; continue; }
+        if (ccWeekTrusted(col, rangeFrom)) { remaining += OT_WEEKLY_THRESHOLD; assumed++; }
+      }
+
+      return {
+        username:   e.username,
+        weeks:      mine,
+        byWeek,
+        totalHours,
+        otHours,
+        regHours:   totalHours - otHours,
+        remaining,
+        // How much of that room is weeks he simply was not on a job, as opposed
+        // to hours measured under a 40 he actually worked toward. The tooltip
+        // says so: it is a different kind of fact and a foreman reads it
+        // differently.
+        assumed,
+        // Weeks are disjoint, so a day counted in one is not counted in another.
+        days:       sum('days'),
+        jobs:       jobs.size,
+        clipped:    mine.some(w => w.clipped),
+      };
+    }
+
+    // Room left that counts as standing on the line rather than having any.
+    const CC_AT = 0.5;
+    // And the room below which a man is no use to a scheduler — less than half
+    // a day left is not a man you can put on a job, so he belongs with the ones
+    // being watched rather than in the pool being picked from.
+    const CC_NEAR = 4;
+
+    // A week as a column head. "Sep 1–7" rather than "Sep 1–Sep 7": the month
+    // is said twice in a label that has to fit a 60px column, and the second
+    // one is the half nobody reads.
+    function ccWeekLabel(w) {
+      const a = prettyDateShort(w.weekStart), b = prettyDateShort(w.weekEnd);
+      const month = a.split(' ')[0];
+      return b.startsWith(month + ' ') ? `${a}\u2013${b.slice(month.length + 1)}` : `${a}\u2013${b}`;
+    }
+
+    // The scale every meter on the board shares. At least 50 h, so the 40 tick
+    // sits inside the track with room past it for the overtime to show; rounded
+    // up past the heaviest week anybody worked, so the longest bar in range
+    // still ends short of the edge instead of pinning flat against it.
+    function ccScaleMax(employees) {
+      let max = 0;
+      for (const e of employees) {
+        for (const w of (e.room ? e.room.weeks : [])) max = Math.max(max, w.totalHours);
+      }
+      return Math.max(50, Math.ceil((max + 2) / 5) * 5);
+    }
+
+    // WHERE A MAN STANDS AGAINST THE FORTY — the one place it is decided.
+    //
+    // The chip on the board, the two groups the board splits into, and the
+    // Standing column in the workbook all read this function. They used to work
+    // it out separately, which is how a man ends up "in overtime" on screen and
+    // something else in the file a supervisor is actually holding.
+    //
+    // It takes a WINDOW (see ccWindow), never an employee's range totals: the
+    // 40 is a week's line, and which weeks are being asked about is the whole
+    // question. A man past 40 a fortnight ago is not past it this cycle.
+    //
+    // `chip` is read BEFORE overtime on purpose, and it is the part that is
+    // easy to get wrong. A man can be deep past the 40 in one week and have a
+    // whole open week beside it — if the chip led with "Over 40" it would hide
+    // the very hours the supervisor came here to find. The overtime he has
+    // already worked is a cost and has its own column an inch to the left.
+    //
+    // `watch` is the separate question, and it is NOT the chip: a man with
+    // overtime behind him belongs with the ones being watched however much room
+    // he has in the weeks since.
+    function ccStanding(win) {
+      const inOt  = win.otHours > 0.001;
+      const watch = inOt || win.remaining < CC_NEAR;
+
+      // Room first, and that ordering is load-bearing twice over. It keeps a
+      // man with overtime behind him and an open week ahead from reading as
+      // "Over 40"; and it keeps a man who worked NEITHER week — who now carries
+      // a full 80 of room — from falling into the no-data branch below and
+      // being reported as a blank when he is the emptiest man on the crew.
+      if (win.remaining >= CC_AT) {
+        // Teal only where the room is worth rostering. A sliver under half a
+        // day is amber: it is not nothing, but it is not a man you can put on
+        // a job either, and it must not read like one at a glance.
+        const roomy = win.remaining >= CC_NEAR;
+        return {
+          cls:   roomy ? 'room' : 'thin',
+          chip:  `${win.remaining.toFixed(2)} h`,
+          label: !win.weeks.length ? 'Free — no hours in these weeks'
+               : inOt              ? 'In overtime, room in the other week'
+               : roomy             ? 'Room before the 40'
+               :                     `Under ${CC_NEAR} h left`,
+          watch,
+        };
+      }
+
+      // Nothing worked and nothing to assume: every week on the board is one
+      // the range cuts at its head, so his silence is days nobody fetched
+      // rather than days nobody gave him. Say nothing instead of "At 40",
+      // which would be the opposite of what 0 means for everyone else here.
+      if (!win.weeks.length) {
+        return { cls: 'unknown', chip: '—', label: 'Weeks not covered by the range', watch: false };
+      }
+      if (inOt) return { cls: 'over', chip: 'Over 40', label: 'In overtime, no room left', watch };
+      return { cls: 'at', chip: 'At 40', label: 'At the 40', watch };
+    }
+
+    // THE BOARD'S READING ORDER, shared with the workbook.
+    //
+    // Two groups, because they are two different instructions. The men to watch
+    // lead with the most overtime in the window — not the report's own sort,
+    // which ranks on the whole range and would put a man at the top for a week
+    // that is no longer on the board. The pool with room is sorted MOST ROOM
+    // FIRST: that group is read to find somebody to give hours to, and the man
+    // with the most left is the first answer to it.
+    //
+    // Returns each man paired with his window, so nothing downstream has to
+    // work it out again and risk working it out differently.
+    function ccOrdered(employees, weeks, rangeFrom) {
+      const all  = employees.map(e => ({ e, win: ccWindow(e, weeks, rangeFrom) }));
+      const hot  = all.filter(r => ccStanding(r.win).watch)
+        .sort((a, b) => b.win.otHours - a.win.otHours
+                     || b.win.totalHours - a.win.totalHours
+                     || a.e.username.localeCompare(b.e.username));
+      const open = all.filter(r => !ccStanding(r.win).watch)
+        .sort((a, b) => b.win.remaining - a.win.remaining
+                     || a.e.username.localeCompare(b.e.username));
+      return { hot, open, rows: [...hot, ...open] };
+    }
+
+    // The same verdict with the sentence the board's tooltip needs on it.
+    function ccStatus(win) {
+      const st = ccStanding(win);
+      const openWeeks = win.assumed
+        ? ` · ${win.assumed} of the ${win.assumed === 1 ? 'week is' : 'weeks are'} a week he was on no job at all, counted as a full 40 open`
+        : '';
+      const title =
+        st.cls === 'unknown' ? `The range cuts into every week on this board, so ${win.username}'s hours in them were never fully fetched — his room cannot be read here` :
+        st.cls === 'over'    ? `${win.username} is ${win.otHours.toFixed(2)} h past the fortieth hour with no room left in either week — every further hour is paid at the premium` :
+        st.cls === 'at'      ? `${win.username} has worked these weeks to the fortieth hour with nothing left — the next hour is overtime` :
+        `${win.username} can work ${win.remaining.toFixed(2)} h more before overtime starts, across all his jobs`
+          + (win.otHours > 0.001 ? ' — in the week he is not already past the 40' : '') + openWeeks;
+      return { cls: st.cls, text: st.chip, title };
+    }
+
+    // The scale every meter on the board shares. At least 50 h, so the 40 tick
+    // sits inside the track with room past it for the overtime to show; rounded
+    // up past the heaviest week anybody worked, so the longest bar in range
+    // still ends short of the edge instead of pinning flat against it.
+    function ccScaleMax(rows) {
+      let max = 0;
+      for (const r of rows) for (const w of r.win.weeks) max = Math.max(max, w.totalHours);
+      return Math.max(50, Math.ceil((max + 2) / 5) * 5);
+    }
+
+    // One week's meter for one man. Null where he did not work that week.
+    function ccCellHtml(w, scaleMax, username, label) {
+      // No dash, no zero. A blank track under its 40 tick already says the week
+      // is open, and a column of dashes is the noise the old chart was rewritten
+      // to get rid of.
+      if (!w) {
+        return `<div class="cc-cell" title="${escapeHtml(`${username} worked no job in ${label} — his whole 40 is open`)}">` +
+               `<div class="cc-meter"><i class="cc-tick"></i></div>` +
+               `<div class="cc-hrs">&nbsp;</div></div>`;
+      }
+      const reg = Math.max(0, w.totalHours - w.otHours);
+      const pct = h => ((h / scaleMax) * 100).toFixed(2);
+      const state = w.otHours > 0.001
+        ? `${w.otHours.toFixed(2)} h past the 40`
+        : `${w.remaining.toFixed(2)} h left before the 40`;
+      const title = `${username} · ${label}${w.clipped ? ' (partial week — the range cuts it, so this is a floor)' : ''} · `
+                  + `${w.totalHours.toFixed(2)} h worked · ${state}`;
+      return `
+        <div class="cc-cell" title="${escapeHtml(title)}">
+          <div class="cc-meter">
+            <i class="cc-reg" style="width:${pct(reg)}%"></i>
+            <i class="cc-ot"  style="width:${pct(w.otHours)}%"></i>
+            <i class="cc-tick"></i>
+          </div>
+          <div class="cc-hrs${w.otHours > 0.001 ? ' cc-hot' : ''}">${w.totalHours.toFixed(2)}${w.clipped ? '<span class="cc-clip" title="Partial week — the range cuts it">*</span>' : ''}</div>
+        </div>`;
+    }
+
+    // One man across every week column on the board.
+    function ccRowHtml(row, weeks, scaleMax, hidden) {
+      const { win } = row;
+      const st   = ccStatus(win);
+      const jobs = `${win.jobs} job${win.jobs === 1 ? '' : 's'}`;
+      const cells = weeks.map(col =>
+        ccCellHtml(win.byWeek.get(col.weekStart), scaleMax, win.username,
+                   `${prettyDateShort(col.weekStart)}–${prettyDateShort(col.weekEnd)}`)).join('');
+      return `
+        <div class="cc-row${hidden ? ' cc-tail' : ''}">
+          <div class="cc-who">
+            <div class="cc-name">${escapeHtml(win.username)}</div>
+            <div class="cc-sub">${escapeHtml(win.weeks.length ? `${jobs} · ${win.days} day${win.days === 1 ? '' : 's'}` : 'not on a job these weeks')}</div>
+          </div>
+          ${cells}
+          <div class="cc-num" title="${escapeHtml(`${win.totalHours.toFixed(2)} h on jobs across the weeks on this board — work, haul and travel, over ${jobs}`)}">${win.totalHours.toFixed(2)}</div>
+          <div class="cc-num${win.otHours > 0.001 ? ' cc-num-ot' : ' cc-none'}">${win.otHours > 0.001 ? win.otHours.toFixed(2) : '—'}</div>
+          <div class="cc-chip cc-${st.cls}" title="${escapeHtml(st.title)}">${escapeHtml(st.text)}</div>
+        </div>`;
+    }
+
+    // The column heads: the weeks themselves, then the three figures that close
+    // every row. Written from the same `weeks` the rows are, so a column can
+    // never be captioned with a week it is not drawing.
+    function ccHeadHtml(weeks, scaleMax) {
+      const cols = weeks.map(w => {
+        const label = ccWeekLabel(w);
+        const rel   = ccWeekRelation(w.weekStart);
+        const title = w.clipped
+          ? `Week of ${label} — the filter cuts this week, so hours outside the range were never fetched and these figures are a floor`
+          : `Monday–Sunday week of ${label}`;
+        return `<div class="cc-col" title="${escapeHtml(title)}">${escapeHtml(label)}${w.clipped ? '<span class="cc-clip">*</span>' : ''}`
+             + (rel ? `<span class="cc-rel">${escapeHtml(rel)}</span>` : '')
+             + `</div>`;
+      }).join('');
+      return `
+        <div class="cc-row cc-head">
+          <div class="cc-who cc-col">Employee</div>
+          ${cols}
+          <div class="cc-col cc-col-num" title="Every hour on a job in the weeks on this board — work, haul and travel">Total</div>
+          <div class="cc-col cc-col-num cc-col-ot" title="Hours past the fortieth of a Monday–Sunday week, counted across every job he worked that week">OT</div>
+          <div class="cc-col cc-col-chip cc-col-room" title="Hours he can still be given before overtime starts, across every job in the weeks on this board. A week he was on no job counts as a full 40 open — so this is what is available in the cycle, not the range-wide Before OT figure in the tables below.">Room</div>
+        </div>
+        <div class="cc-scale">Each meter is one week against a ${scaleMax}-hour track · the line is the 40th hour · Total, OT and Room are these ${weeks.length === 1 ? 'week' : `${weeks.length} weeks`} only, not the whole range</div>`;
+    }
+
+    // The board. Two groups, because they are two different instructions: the
+    // men at or past the line are a cost to watch, and the men with room are
+    // the answer to "who do I put on it". The second group is the long tail —
+    // a cycle's worth of one-day hires — so it folds away on screen and always
+    // prints in full, since paper has no disclosure triangle.
+    function projCapacityHtml(employees, allWeeks, rangeFrom, tools) {
+      const weeks = ccWeeksShown(allWeeks);
+      if (!employees.length || !weeks.length) return '';
+      const { hot, open } = ccOrdered(employees, weeks, rangeFrom);
+      const scaleMax = ccScaleMax([...hot, ...open]);
+
+      // Say which weeks, in the heading, because the figures on this board are
+      // those weeks' and the rest of the report's are the whole range's. A
+      // reader who takes the Total here for the range total is reading a
+      // different question's answer.
+      const span = weeks.length === 1
+        ? ccWeekLabel(weeks[0])
+        : `${ccWeekLabel(weeks[0])} and ${ccWeekLabel(weeks[weeks.length - 1])}`;
+      const dropped = allWeeks.length - weeks.length;
+
+      // THE POOL FOLDS AWAY ONLY IF THERE IS SOMETHING ABOVE IT TO READ.
+      //
+      // Collapsing it by default assumed a watch group to collapse it beneath,
+      // and for most of every week there is not one: two days into a Monday
+      // week nobody has reached the 40, every man is in the pool, and the board
+      // rendered as a heading, a column head and a single folded line. Thirty
+      // men on the crew and not a row on screen — which reads as broken, not as
+      // calm, and is the exact moment the board is most worth looking at.
+      const collapsed = hot.length ? ' cc-collapsed' : '';
+
+      const inOt   = hot.filter(r => r.win.otHours > 0.001).length;
+      const atLine = hot.length - inOt;
+      const hotLine = [
+        inOt   ? `${inOt} already in overtime` : '',
+        atLine ? `${atLine} with under ${CC_NEAR} h before it` : '',
+      ].filter(Boolean).join(' · ');
+
+      let tail = '';
+      if (open.length) {
+        const worked = open.filter(r => r.win.weeks.length);
+        const idle   = open.length - worked.length;
+        const lo = worked.length ? Math.min(...worked.map(r => r.win.totalHours)) : 0;
+        const hi = worked.length ? Math.max(...worked.map(r => r.win.totalHours)) : 0;
+        const room = open.reduce((s, r) => s + r.win.remaining, 0);
+        const sub = [
+          worked.length ? `${lo.toFixed(2)}–${hi.toFixed(2)} h worked` : '',
+          idle ? `${idle} on no job at all` : '',
+          `${room.toFixed(2)} h available`,
+        ].filter(Boolean).join(' · ');
+        tail = `
+          <div class="cc-group">
+            <button type="button" class="cc-toggle" onclick="toggleCrewTail(this)"
+              title="These men have hours left before overtime — the pool to schedule out of">
+              <span class="cc-caret">&#9656;</span>
+              <span><strong>${open.length}</strong> with room before the 40</span>
+              <span class="cc-toggle-sub">${escapeHtml(sub)}</span>
+            </button>
+          </div>
+          ${open.map(r => ccRowHtml(r, weeks, scaleMax, true)).join('')}`;
+      }
+
+      return `
+        <div class="cc-board${collapsed}" style="--cc-weeks:${weeks.length};--cc-tick:${((OT_WEEKLY_THRESHOLD / scaleMax) * 100).toFixed(2)}%">
+          <div class="proj-section-head">
+            <div class="proj-section-title">Crew capacity — ${escapeHtml(span)} against the 40</div>
+            ${tools || ''}
+          </div>
+          ${ccHeadHtml(weeks, scaleMax)}
+          ${hot.length
+            ? `<div class="cc-group"><span class="cc-group-label cc-group-hot">${escapeHtml(hotLine)}</span></div>`
+            // Say it rather than leaving a gap where the group would be. "No
+            // rows here" and "nobody is near the line" look identical on a
+            // screen, and only one of them is good news.
+            : `<div class="cc-group"><span class="cc-group-label cc-group-clear">Nobody is at or past the 40 ${weeks.length === 1 ? 'this week' : 'in these weeks'} — the whole crew still has room</span></div>`}
+          ${hot.map(r => ccRowHtml(r, weeks, scaleMax, false)).join('')}
+          ${tail}
+          <div class="pc-legend cc-legend">
+            <span><i class="pc-key reg"></i>Hours inside the 40</span>
+            <span><i class="pc-key ot"></i>Overtime — hours past the 40th of that week</span>
+            <span><i class="pc-key tick"></i>The 40th hour</span>
+            <span class="cc-legend-note">An empty week is a week he worked no job. * marks a week the date filter cuts in half.${
+              dropped ? ` The range also covers ${dropped} earlier week${dropped === 1 ? '' : 's'}, which the job figures and crew tables in the full report still count — this board is the current cycle.` : ''
+            }</span>
+          </div>
+        </div>`;
+    }
+
+    // Screen only — on paper the tail is always printed, so this never runs
+    // there and the button itself is hidden.
+    function toggleCrewTail(btn) {
+      const board = btn.closest('.cc-board');
+      if (!board) return;
+      board.classList.toggle('cc-collapsed');
+      btn.setAttribute('aria-expanded', board.classList.contains('cc-collapsed') ? 'false' : 'true');
+    }
+
+    // A job block opens and shuts on its header. Collapsed is the default: the
+    // page is read top-down for the job that is running hot, and twelve crew
+    // tables between the reader and the next job name is what made that hard.
+    function toggleProjBlock(head) {
+      const block = head.closest('.proj-block');
+      if (block) block.classList.toggle('open');
+    }
+
+    function toggleAllProjBlocks(btn) {
+      const wrap   = document.getElementById('projectsWrap');
+      if (!wrap) return;
+      const blocks = [...wrap.querySelectorAll('.proj-block')];
+      const open   = blocks.some(b => !b.classList.contains('open'));
+      blocks.forEach(b => b.classList.toggle('open', open));
+      btn.textContent = open ? 'Collapse all crews' : 'Expand all crews';
     }
 
     function renderProjectsReport() {
@@ -4155,6 +5164,7 @@
       const head = (actions) => `
         <div class="report-head">
           <div>
+            <div class="report-brand">DataWatch</div>
             <div class="report-title">Project Overtime Report</div>
             <div class="report-sub">
               <strong>${escapeHtml(companyName)}</strong><br/>
@@ -4186,11 +5196,58 @@
         ? ` ${m.offEntries} time-off ${m.offEntries === 1 ? 'entry in range is' : 'entries in range are'} left out — paid leave belongs to no job, and it never counts toward the 40.`
         : '';
 
+      // The two halves of this tab, each able to leave on its own.
+      //
+      // The crew board goes FIRST. The question this tab is opened with is
+      // almost always who can still be given hours this week; what the jobs
+      // cost is what gets checked afterwards, and it was sitting above the
+      // answer.
+      const board = projCapacityHtml(m.employees, m.weeks, m.rangeFrom, projPartTools(
+        'crew', 'exportCapacityExcel',
+        'Download just the crew capacity board (.xlsx) — one row per man over the weeks shown, plus the week-by-week headroom behind every figure on it',
+        'Print or save just the crew capacity board — the job chart and crew tables are left off'));
+      const crewPart = board
+        ? `<section class="proj-part" data-part="crew"><div class="proj-piece" data-piece="crew">${board}</div></section>`
+        : '';
+
+      const jobsPart = `
+        <section class="proj-part" data-part="jobs">
+          <div class="proj-piece" data-piece="chart">
+          ${projChartHtml(projects, projPartTools(
+            'jobs', 'exportJobOvertimeExcel',
+            'Download just the job side (.xlsx) — one row per job, and the crew tables under it flattened one row per man per job',
+            'Print or save just the job overtime chart and the crew tables under it — the capacity board is left off'))}
+          </div>
+
+          <div class="proj-piece" data-piece="tables">
+          <p class="proj-note">
+            <strong>Overtime is an employee's week, not a job's.</strong>
+            The fortieth hour is counted across every job a man worked in his Monday–Sunday week,
+            and each overtime hour is then posted back to the job it was worked on — so adding the jobs
+            below returns the company's overtime exactly, while counting any one job to 40 on its own
+            would not.
+            <strong>Before OT</strong> is the same figure read forward: the hours that man can still work
+            before overtime starts, across all his jobs. It repeats under every job he worked that week
+            and is never totalled.${escapeHtml(offNote)}
+          </p>
+
+          <div class="proj-section-head">
+            <div class="proj-section-title">${projects.length} job${projects.length === 1 ? '' : 's'} · most overtime first</div>
+            <button type="button" class="proj-expand" onclick="toggleAllProjBlocks(this)"
+              title="Open or shut every job's crew table at once — on paper they always print in full">Expand all crews</button>
+          </div>
+          ${projects.map(projBlockHtml).join('')}
+          </div>
+        </section>`;
+
       wrap.innerHTML = `
         <div class="report">
           ${head(`
-            <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download this report as an Excel workbook (.xlsx) — one sheet per job, one per employee on a job, and the week-by-week headroom behind the Before OT column">&#8681; Export to Excel</button>
-            <button class="btn-print" onclick="printReport()">Print / Save PDF</button>`)}
+            <div class="report-action-row">
+              <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download the whole report as one Excel workbook (.xlsx) — the jobs, the crew capacity board week by week, each man once, each man per job, and the weeks behind every Before OT figure. Each section below can also be downloaded on its own.">&#8681; Export to Excel</button>
+              <button class="btn-print" onclick="printReport()" title="Print or save the sections ticked below. Each section also has its own PDF button beside its heading.">Print / Save PDF</button>
+            </div>
+            ${printPickerHtml()}`)}
 
           <div class="proj-stats">
             <div class="proj-stat">
@@ -4211,26 +5268,12 @@
             <div class="proj-stat room">
               <div class="proj-stat-label">Hours Before OT</div>
               <div class="proj-stat-value">${m.totRemaining.toFixed(2)}</div>
-              <div class="proj-stat-sub">left across the crew's weeks in range</div>
+              <div class="proj-stat-sub" title="Summed across every counted week in the report's date range, counting only weeks a man has hours in. The capacity board below answers a narrower question — what is open in the current cycle, where a week nobody put him on counts as a full 40 — so the two figures are meant to differ.">left across the crew's weeks in range — the board below counts the cycle only</div>
             </div>
           </div>
 
-          ${projChartHtml(projects)}
-          ${projCrewChartHtml(m.employees)}
-
-          <p class="proj-note">
-            <strong>Overtime is an employee's week, not a job's.</strong>
-            The fortieth hour is counted across every job a man worked in his Monday–Sunday week,
-            and each overtime hour is then posted back to the job it was worked on — so adding the jobs
-            below returns the company's overtime exactly, while counting any one job to 40 on its own
-            would not.
-            <strong>Before OT</strong> is the same figure read forward: the hours that man can still work
-            before overtime starts, across all his jobs. It repeats under every job he worked that week
-            and is never totalled.${escapeHtml(offNote)}
-          </p>
-
-          <div class="proj-section-title">${projects.length} job${projects.length === 1 ? '' : 's'} · most overtime first</div>
-          ${projects.map(projBlockHtml).join('')}
+          ${crewPart}
+          ${jobsPart}
 
           ${otCaveat ? `<p class="report-caveat">${escapeHtml(otCaveat)}</p>` : ''}
         </div>`;
@@ -5022,7 +6065,163 @@
     }
 
 
-    // Sheet 2 — one row per MAN, across every job he worked: the second chart,
+    // Sheet 2 — THE CREW CAPACITY BOARD, flat.
+    //
+    // The same men in the same order as the board on screen, over the same two
+    // weeks, with the same verdict in the Standing column — because a
+    // supervisor who sorts this sheet and a supervisor reading the tab have to
+    // reach the same answer about the same man.
+    //
+    // THIS SHEET IS THE CURRENT CYCLE, NOT THE REPORT'S RANGE. Every figure on
+    // it — the week blocks and the four totals that close each row — covers
+    // only the weeks shown, so the row adds up. Where the range reaches back
+    // further, those earlier hours are on "Overtime by Employee" and
+    // "Employees by Project", which are the whole range. The two are meant to
+    // disagree, and the note rows say so rather than leaving somebody to find
+    // out by subtracting.
+    //
+    // It is also the one sheet in the book laid out WIDE. "OT Headroom by Week"
+    // is the long form of exactly these figures and is the better shape for a
+    // pivot; this one is the better shape for the question the board exists to
+    // answer, read across a man's weeks at a glance: where did his hours go,
+    // and which week has room left in it.
+    //
+    // A week a man did not work is BLANK, not zero. Blank is what the board
+    // draws and it is also what keeps the arithmetic honest: his headroom is
+    // only counted in weeks he has a counted week in, so the per-week Before OT
+    // cells add across to Hours Before OT exactly, which a column of 40s for
+    // weeks he never worked would not.
+    function projectCapacitySheetXml(model) {
+      const { employees, scopeLine, gen, companyName } = model;
+      const weeks = ccWeeksShown(model.weeks);
+      const rows  = ccOrdered(employees, weeks, model.rangeFrom).rows;
+      const dropped = model.weeks.length - weeks.length;
+
+      // Three columns a week, in the order the eye reads the meter: what he
+      // worked, what of it was past the line, and what is still open.
+      const headers = ['Employee', 'Jobs Worked', 'Days Worked'];
+      const NUM_COLS = new Set([1, 2]);
+      for (const w of weeks) {
+        const rel   = ccWeekRelation(w.weekStart);
+        const label = `${ccWeekLabel(w)}${rel ? ` (${rel})` : ''}${w.clipped ? ' (partial)' : ''}`;
+        NUM_COLS.add(headers.length); headers.push(`${label} · Hours`);
+        NUM_COLS.add(headers.length); headers.push(`${label} · OT`);
+        NUM_COLS.add(headers.length); headers.push(`${label} · Before OT`);
+      }
+      // Named for the window, not just "Total": these columns are a different
+      // figure from the identically named ones on the whole-range sheets, and a
+      // header that did not say so is how the two get reconciled against each
+      // other and reported as a discrepancy.
+      const shown = weeks.length === 1 ? 'this week' : 'these weeks';
+      for (const h of [`Total Hours (${shown})`, `Regular Hrs (${shown})`,
+                       `OT Hrs (${shown})`, `Hours Before OT (${shown})`]) {
+        NUM_COLS.add(headers.length); headers.push(h);
+      }
+      headers.push('Standing');
+      const HEADER_ROW = 10;
+
+      const span = weeks.length === 1
+        ? ccWeekLabel(weeks[0])
+        : `${ccWeekLabel(weeks[0])} and ${ccWeekLabel(weeks[weeks.length - 1])}`;
+
+      const sheet = [
+        [cTxt('Project Overtime Report — Crew Capacity', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt(`One row per employee, one block of columns per Monday–Sunday week — the Crew Capacity board on the Projects tab, flat. Weeks shown: ${span}.`, XS.bold)],
+        [cTxt(`THIS SHEET COVERS THOSE ${weeks.length === 1 ? 'WEEK' : `${weeks.length} WEEKS`} ONLY, NOT THE WHOLE REPORT RANGE — it is the payroll cycle being scheduled. Every figure on the row, the totals included, is the weeks shown, so the week blocks add across to them.${dropped ? ` The range also covers ${dropped} earlier week${dropped === 1 ? '' : 's'}: those hours are on the full Project Overtime workbook’s "Overtime by Employee" and "Employees by Project" sheets, which cover the whole range and will NOT match this one.` : ''}`, XS.bold)],
+        [cTxt('The 40 is a WEEK’s line, never a range’s. A man at 100 hours over a fortnight is not 60 hours of overtime — he is whatever each of his weeks ran past its own fortieth hour, which is why the hours are split into weeks here rather than totalled.', XS.sub)],
+        [cTxt('Before OT is what he can still be given in that week. Hours and OT are left BLANK for a week he was on no job — he worked none, and a zero would read as a measurement — but Before OT there is the full 40, because an untouched week inside the cycle is 40 hours of room. It is blank only where the range does not cover the week, which is ignorance rather than availability. The three week cells add across to the row totals either way.', XS.sub)],
+        [cTxt('That is the one figure here that does NOT mean what "Hours Before OT" means on the whole-range sheets, where a week a man has no hours in counts as no room at all. Over an arbitrary range a silent week says nothing; inside a two-week cycle it says he is free, and that is the answer this sheet exists to give. Week by week, one row each, on "OT Headroom by Week".', XS.sub)],
+        [cTxt(`Standing places him against the 40 the way the board’s chip does: in overtime, at the 40, under ${CC_NEAR} h left, room before it, or no hours in these weeks at all. Sort or filter on it to get the men you can still schedule without buying the premium.`, XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      // Totalled per week as well as per man, so the foot of a week column is
+      // the crew's hours in that week — which no other sheet in the book says.
+      const wkTot = weeks.map(() => ({ hours: 0, ot: 0, room: 0 }));
+      const grand = { hours: 0, reg: 0, ot: 0, room: 0, days: 0 };
+      // The company's jobs across the window. A job three men worked is one
+      // job, so it is a union and never the Jobs column added up.
+      const allJobs = new Set();
+
+      for (const { e, win } of rows) {
+        const row = [
+          cTxt(win.username, XS.text),
+          cNum(win.jobs,     XS.num),
+          cNum(win.days,     XS.num),
+        ];
+        weeks.forEach((col, i) => {
+          const w = win.byWeek.get(col.weekStart);
+          if (!w) {
+            // Hours and OT stay blank — he worked none, and a zero would read
+            // as a measurement. Before OT is the full 40 where the range covers
+            // the week, because that is the room he has; blank where it does
+            // not, because then we only failed to look. Either way the three
+            // week cells still add across to the row's totals.
+            const open = ccWeekTrusted(col, model.rangeFrom);
+            row.push(cNum(null, XS.num), cNum(null, XS.num),
+                     cNum(open ? OT_WEEKLY_THRESHOLD : null, XS.num));
+            if (open) wkTot[i].room += OT_WEEKLY_THRESHOLD;
+            return;
+          }
+          row.push(cNum(w.totalHours, XS.num),
+                   cNum(w.otHours,    XS.num),
+                   cNum(w.remaining,  XS.num));
+          wkTot[i].hours += w.totalHours;
+          wkTot[i].ot    += w.otHours;
+          wkTot[i].room  += w.remaining;
+        });
+        row.push(
+          cNum(win.totalHours, XS.num),
+          cNum(win.regHours,   XS.num),
+          cNum(win.otHours,    XS.num),
+          cNum(win.remaining,  XS.num),
+          cTxt(ccStanding(win).label, XS.text),
+        );
+        sheet.push(row);
+        grand.hours += win.totalHours; grand.reg  += win.regHours;
+        grand.ot    += win.otHours;    grand.room += win.remaining;
+        grand.days  += win.days;
+        for (const w of win.weeks) {
+          for (const j of (e.room && e.room.byWeek.get(w.weekStart)) || []) allJobs.add(j);
+        }
+      }
+
+      const totals = [
+        cTxt(`Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})`, XS.totText),
+        cNum(allJobs.size, XS.totNum),
+        // Days are a man's, not the company's: two men on one date are two
+        // employee-days here, which is what the column above holds.
+        cNum(grand.days,   XS.totNum),
+      ];
+      for (const w of wkTot) {
+        totals.push(cNum(w.hours, XS.totNum), cNum(w.ot, XS.totNum), cNum(w.room, XS.totNum));
+      }
+      totals.push(
+        cNum(grand.hours, XS.totNum),
+        cNum(grand.reg,   XS.totNum),
+        cNum(grand.ot,    XS.totNum),
+        // A real total: each man appears exactly once on this sheet, so unlike
+        // the Before OT column on "Employees by Project" this one adds up.
+        cNum(grand.room,  XS.totNum),
+        cTxt('', XS.totText),
+      );
+      sheet.push(totals);
+
+      const colWidths = [24, 13, 13];
+      for (let i = 0; i < weeks.length; i++) colWidths.push(24, 20, 24);
+      colWidths.push(20, 20, 17, 24, 32);
+
+      return xlsxSheetXml({
+        colWidths,
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:${colLetter(headers.length)}${HEADER_ROW + rows.length}`,
+      });
+    }
+
+    // Sheet 3 — one row per MAN, across every job he worked: the second chart,
     // as figures. The sheet before it groups by job because that is how the work
     // is bought; this one groups by the person the fortieth hour actually
     // belongs to, so a man spread thin over four jobs — invisible on every job's
@@ -5102,7 +6301,7 @@
       });
     }
 
-    // Sheet 3 — one row per employee PER JOB: the crew tables on screen, flat.
+    // Sheet 4 — one row per employee PER JOB: the crew tables on screen, flat.
     function projectEmployeeSheetXml(model) {
       const { projects, tot, scopeLine, gen, companyName } = model;
       const headers = ['Project / Job', 'Division', 'Employee', 'Days Worked',
@@ -5116,7 +6315,7 @@
         [cTxt('Project Overtime Report — Employees by Project', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
         [cTxt('OT Hrs is this man’s hours ON THIS JOB that fell past the fortieth hour of his Monday–Sunday week — the 40 counted across every job he worked that week, the overtime then posted back to the job each hour was worked on.', XS.sub)],
-        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. It totals on the "Overtime by Employee" sheet, where each man appears once, and the weeks behind it are in the last column here and one row each on "OT Headroom by Week".', XS.bold)],
+        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. It totals on the full Project Overtime workbook’s "Overtime by Employee" sheet, where each man appears once, and the weeks behind it are in the last column here and one row each on its "OT Headroom by Week".', XS.bold)],
         [cTxt('A man already past 40 shows 0.00 — the hours he is over are in the OT column, not here.', XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
@@ -5178,7 +6377,7 @@
       });
     }
 
-    // Sheet 4 — one row per employee PER WEEK, which is the shape the fortieth
+    // Sheet 5 — one row per employee PER WEEK, which is the shape the fortieth
     // hour actually has. The sheets above group by job, or by the man over his
     // whole range; this one refuses to group by job at all and splits the man
     // into his weeks, because the 40 is not a job's to pass and not a
@@ -5254,13 +6453,48 @@
         alert('No job hours in this range to export.');
         return;
       }
-      // The order the report reads in: the two charts, then the crew tables
-      // under them, then the weeks the overtime was actually measured in.
+      // The order the report reads in: the project chart, the capacity board
+      // under it, then the crew tables, then the weeks the overtime was
+      // actually measured in.
       downloadBlob(`project-overtime-${exportScopeSuffix()}.xlsx`, xlsxBlob([
         { name: 'Overtime by Project',  xml: projectSummarySheetXml(model) },
+        { name: 'Crew Capacity',        xml: projectCapacitySheetXml(model) },
         { name: 'Overtime by Employee', xml: projectCrewSheetXml(model) },
         { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
         { name: 'OT Headroom by Week',  xml: projectHeadroomSheetXml(model) },
+      ]));
+    }
+
+    // The crew capacity board on its own, for the supervisor who is scheduling
+    // and has no use for the job costing.
+    //
+    // "OT Headroom by Week" comes with it rather than being left behind: the
+    // board's own note points at it for the week-by-week working behind every
+    // Before OT figure, and a file whose note cites a sheet that is not in it
+    // is a file that cannot be checked.
+    function exportCapacityExcel() {
+      const model = buildProjectsModel();
+      if (!model.employees.length) {
+        alert('No crew hours in this range to export.');
+        return;
+      }
+      downloadBlob(`crew-capacity-${exportScopeSuffix()}.xlsx`, xlsxBlob([
+        { name: 'Crew Capacity',       xml: projectCapacitySheetXml(model) },
+        { name: 'OT Headroom by Week', xml: projectHeadroomSheetXml(model) },
+      ]));
+    }
+
+    // The job side on its own: the bar chart's figures, and the crew tables
+    // under it flattened one row per man per job.
+    function exportJobOvertimeExcel() {
+      const model = buildProjectsModel();
+      if (!model.projects.length) {
+        alert('No job hours in this range to export.');
+        return;
+      }
+      downloadBlob(`job-overtime-${exportScopeSuffix()}.xlsx`, xlsxBlob([
+        { name: 'Overtime by Project',  xml: projectSummarySheetXml(model) },
+        { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
       ]));
     }
 
@@ -5270,10 +6504,12 @@
     // time window than the other tabs since meaningful aggregations need
     // more than a single week of data.
     async function loadAnalytics() {
-      // If the current date range is the default 14-day window (set on
-      // init), expand it to year-to-date the first time the user lands on
-      // the analytics tab — keeps the analytics view useful out of the
-      // box without ever clobbering an explicit choice.
+      // Analytics runs on whatever range the filters are set to, the same as
+      // every other tab. It does NOT widen that range on arrival — a comment
+      // here used to promise it did, describing an expand-to-year-to-date that
+      // was never written. The default is now one week, which is narrow for
+      // aggregate work, so the quick ranges under this tab (This Month, Year to
+      // Date, All Time) are how it gets opened up.
       const wrap = document.getElementById('analyticsWrap');
       wrap.innerHTML = '<div class="ana-empty">Loading analytics…</div>';
       await applyFilters();
@@ -5696,6 +6932,7 @@
           <div class="audit-wrap">
             <div class="audit-head">
               <div>
+                <div class="report-brand">DataWatch</div>
                 <div class="title">Audit Log</div>
                 <div class="sub">${escapeHtml(scopeLine)} · 0 events</div>
               </div>
@@ -5752,6 +6989,7 @@
         <div class="audit-wrap">
           <div class="audit-head">
             <div>
+              <div class="report-brand">DataWatch</div>
               <div class="title">Audit Log</div>
               <div class="sub">
                 <strong>${escapeHtml(companyName)}</strong><br/>
@@ -5921,9 +7159,15 @@
         supQ  ? `supervisor~"${supQ}"`   : null,
       ].filter(Boolean).join(', ') || 'none';
       const diag = `Server returned ${total} entries (${subCount} submitted, ${appCount} approved) · Range ${from} → ${to} · Filters: ${activeFlts}`;
+      // The default range is one week, so an empty queue now has a third cause
+      // that is not about the work at all: the entries are sitting just outside
+      // the dates. The old wording offered only the other two and read as an
+      // all-clear — and a review queue that looks settled when it is merely
+      // narrow is how a week of timesheets goes unapproved.
+      const outside = 'Entries outside these dates are not shown. The range opens on the current week — use Last Week, Last + This or a cycle button above to look further back.';
       const emptyMsg  = isPending
-        ? `Nothing to review in this range — everything has been approved or no entries have been submitted yet.<div class="empty-diag">${escapeHtml(diag)}</div>`
-        : `No approved entries in this range yet.<div class="empty-diag">${escapeHtml(diag)}</div>`;
+        ? `Nothing to review in this range — everything in it has been approved, or nothing has been submitted for it yet.<div class="empty-hint">${escapeHtml(outside)}</div><div class="empty-diag">${escapeHtml(diag)}</div>`
+        : `No approved entries in this range yet.<div class="empty-hint">${escapeHtml(outside)}</div><div class="empty-diag">${escapeHtml(diag)}</div>`;
 
       const banner = document.getElementById('hoursFlagBanner');
 
