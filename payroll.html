@@ -2612,6 +2612,9 @@
       <button class="qr-btn" data-range="last_week"
               data-range-note="The Monday–Sunday week being paid this Friday"
               onclick="setRange('last_week')">Last Week</button>
+      <button class="qr-btn" data-range="last_and_this_week"
+              data-range-note="Both weeks — what the capacity board draws. A rolling fortnight, not a payroll cycle: it moves every Monday and may straddle two cycles"
+              onclick="setRange('last_and_this_week')">Last + This</button>
       <span class="qr-label" style="margin-left:0.75rem">Payroll cycle:</span>
       <button class="qr-btn" data-range="current_biweekly"
               data-range-note="The fortnight being worked now — two Monday–Sunday weeks ending on a Sunday"
@@ -3259,6 +3262,14 @@
       if (kind === 'current_week') return [monday, addDays(monday, 6)];
       // The week being paid this Friday
       if (kind === 'last_week')    return [addDays(monday, -7), addDays(monday, -1)];
+      // The rolling fortnight the capacity board draws: the week just finished
+      // and the week in hand. NOT a payroll cycle — it ignores the anchor and
+      // moves every Monday, so on any given day it may straddle the boundary
+      // between two cycles. That is the point of it. Scheduling asks who has
+      // hours left in the week being worked and what he did in the one before;
+      // where the fortnight the accountant is paying happens to start is a
+      // different question, and the Cycle buttons are the ones that answer it.
+      if (kind === 'last_and_this_week') return [addDays(monday, -7), addDays(monday, 6)];
       if (kind === 'current_biweekly') return biweeklyCycleContaining(new Date());
       if (kind === 'last_biweekly') {
         const [curStart] = biweeklyCycleContaining(new Date());
