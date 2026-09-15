@@ -1278,6 +1278,56 @@
     /* A section's own download pair. Quieter than the report-level buttons in
        the header — these take a slice, not the whole thing — but the same two
        verbs in the same order, so the pair reads the same wherever it appears. */
+    /* The DataWatch wordmark. Same treatment report-branding.js gives the
+       popup-print reports — uppercase, letter-spaced, green over a rule — so a
+       payroll sheet and a division one look like they came from one place.
+       That file brands documents written into a print window; this page prints
+       itself, so it carries the mark inline instead. */
+    .report-brand {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--green);
+      margin-bottom: 0.4rem;
+      line-height: 1;
+    }
+
+    .report-action-row { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+    /* Which sections leave the building. Sits under the buttons it governs,
+       quiet enough not to compete with them but attached to them. */
+    .print-picker {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      margin-top: 0.5rem;
+      font-size: 0.68rem;
+      color: var(--muted);
+    }
+    .pp-label {
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      font-weight: 700;
+      font-size: 0.6rem;
+    }
+    .pp-item {
+      display: flex;
+      align-items: center;
+      gap: 0.28rem;
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .pp-item:hover { color: var(--text); }
+    .pp-item input { accent-color: var(--blue); cursor: pointer; margin: 0; }
+
+    /* The Projects report puts a row of ticks under its buttons, so its action
+       area stacks. Every other report passes bare buttons and is unaffected —
+       a single child in a column lays out exactly as it did in a row. */
+    .report-actions:has(.print-picker) { flex-direction: column; align-items: flex-end; gap: 0; }
+
     .proj-part-tools { display: flex; gap: 0.35rem; flex-shrink: 0; }
     .prt-btn {
       background: none;
@@ -1358,16 +1408,35 @@
         border-right-color: #bbb !important;
       }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
-      .pager, .modal-backdrop, .btn-print, .proj-part-tools { display: none !important; }
+      .pager, .modal-backdrop, .btn-print, .proj-part-tools,
+      .print-picker { display: none !important; }
 
-      /* One section on its own. Set by printProjectSection and inert outside
-         this block, which is what lets it be cleared lazily rather than unwound
-         when the dialog closes. The report head always prints: a sheet handed
-         to a supervisor has to say whose hours these are and over what dates. */
-      .report.print-part-crew > .proj-stats,
-      .report.print-part-crew > .proj-part:not([data-part="crew"]),
-      .report.print-part-jobs > .proj-stats,
-      .report.print-part-jobs > .proj-part:not([data-part="jobs"]) { display: none !important; }
+      /* The assistant's launcher, its panel and its nudge bubble. They float
+         over the page, so on paper they land on top of whatever row happens to
+         be beneath them — in the report that was sent, a hovering circle
+         covering two men's Room figures. Nothing about a chat widget belongs on
+         a printed timesheet. */
+      #mathis-launch, #mathis-panel, #mathis-nudge { display: none !important; }
+
+      /* WHICH SECTIONS PRINT. The attribute names what is OFF, so a report
+         without it prints whole. Written by the tick boxes for a full print and
+         by printProjectSection for a single one; it lives only in here, which
+         is why setting it needs no undo when the dialog closes.
+
+         The report head is never switchable: a sheet handed to a supervisor has
+         to say whose hours these are and over what dates. */
+      .report[data-print-off~="stats"]  .proj-stats,
+      .report[data-print-off~="crew"]   .proj-piece[data-piece="crew"],
+      .report[data-print-off~="chart"]  .proj-piece[data-piece="chart"],
+      .report[data-print-off~="tables"] .proj-piece[data-piece="tables"] { display: none !important; }
+
+      /* The wordmark, in the ink report-branding.js uses: the app's brighter
+         --green is thin on paper. */
+      .report-brand {
+        color: #16a34a !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
       main { max-width: none !important; padding: 0 !important; }
 
       /* Reports tab */
@@ -4055,33 +4124,103 @@
       else            expandedReportUsers.delete(user);
     }
 
+    // WHAT THE PRINTED REPORT CARRIES.
+    //
+    // The screen always shows everything; this is only about what leaves the
+    // building. The sheet a supervisor is handed and the page you work from are
+    // not the same document — he is being asked to schedule a crew, not to
+    // audit a fortnight, and every block he did not need was a block between
+    // him and the one he did.
+    //
+    // Summary cards are off by default for that reason. They are whole-RANGE
+    // figures, and on a sheet whose board counts the current cycle they invite
+    // a reconciliation that is not supposed to balance.
+    const PRINT_PIECES = [
+      { key: 'stats',  label: 'Summary cards',   def: false,
+        note: 'The four figures across the top. Whole-range totals — they will not match a cycle-scoped board.' },
+      { key: 'crew',   label: 'Crew capacity',   def: true,
+        note: 'The board: one row per man against the 40.' },
+      { key: 'chart',  label: 'Job chart',       def: true,
+        note: 'Overtime by project — the bars.' },
+      { key: 'tables', label: 'Job crew tables', def: true,
+        note: 'One block per job with its crew, and the note explaining how the 40 is counted.' },
+    ];
+    const PRINT_PREF_KEY = 'fct_projects_print_pieces';
+
+    // Ticks survive a reload, because the choice is about how this company
+    // sends reports and not about one afternoon. A stored value that predates a
+    // piece falls back to that piece's default rather than to "off" — a new
+    // section should appear, not go silently missing.
+    function printPieceState() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(PRINT_PREF_KEY) || 'null'); } catch { saved = null; }
+      const out = {};
+      for (const p of PRINT_PIECES) {
+        out[p.key] = saved && typeof saved[p.key] === 'boolean' ? saved[p.key] : p.def;
+      }
+      return out;
+    }
+
+    function printPickerHtml() {
+      const st = printPieceState();
+      return `
+        <div class="print-picker">
+          <span class="pp-label">PDF includes</span>
+          ${PRINT_PIECES.map(p => `
+            <label class="pp-item" title="${escapeHtml(p.note)}">
+              <input type="checkbox" data-piece="${p.key}"${st[p.key] ? ' checked' : ''}
+                     onchange="onPrintPieceToggle()"/>${escapeHtml(p.label)}
+            </label>`).join('')}
+        </div>`;
+    }
+
+    function onPrintPieceToggle() {
+      const st = {};
+      document.querySelectorAll('.print-picker input[data-piece]')
+        .forEach(i => { st[i.dataset.piece] = i.checked; });
+      try { localStorage.setItem(PRINT_PREF_KEY, JSON.stringify(st)); } catch (e) { /* private window */ }
+    }
+
+    // The ticks become one attribute the print stylesheet reads. It names what
+    // is OFF, so a report carrying no attribute prints whole — which is the
+    // right fallback for any path that has not thought about this.
+    //
+    // Print-media only, so the attribute is inert on screen. That is what lets
+    // it be set and left rather than unwound when the dialog closes; every
+    // entry point below recomputes it, so nothing stale can survive into the
+    // next print.
+    function applyPrintPieces(off) {
+      const report = document.querySelector('#projectsWrap .report');
+      if (!report) return;
+      if (off && off.length) report.setAttribute('data-print-off', off.join(' '));
+      else report.removeAttribute('data-print-off');
+    }
+
     function printReport() {
-      // A section print leaves its marker on the report. The rule that marker
-      // drives lives inside @media print, so it changes nothing on screen and
-      // nothing announces it — but left there it would quietly hand back one
-      // section the next time somebody asked for the whole report.
-      clearPrintParts();
+      const report = document.querySelector('#projectsWrap .report');
+      // Every other report on this page prints whole; only the Projects one has
+      // a picker to honour.
+      if (report && report.offsetParent !== null) {
+        const st  = printPieceState();
+        const off = PRINT_PIECES.filter(p => !st[p.key]).map(p => p.key);
+        if (off.length === PRINT_PIECES.length) {
+          alert('Nothing is ticked to print. Choose at least one section under "PDF includes".');
+          return;
+        }
+        applyPrintPieces(off);
+      }
       window.print();
     }
 
-    function clearPrintParts() {
-      document.querySelectorAll('.print-part-crew, .print-part-jobs')
-        .forEach(el => el.classList.remove('print-part-crew', 'print-part-jobs'));
-    }
-
-    // Print ONE section of the projects report on its own — the crew capacity
-    // board without the job tables behind it, or the jobs without the board.
+    // Print ONE section on its own — the crew capacity board without the job
+    // tables behind it, or the jobs without the board.
     //
-    // The browser prints what the page shows, so the section is isolated by
-    // hiding its neighbours for the duration. That hiding is print-media only,
-    // which is what makes this safe without timers or afterprint handlers: the
-    // marker is inert on screen, and every entry point clears it first, so
-    // there is no state to unwind if the dialog is cancelled or never fires an
-    // event back.
+    // A section button ignores the ticks on purpose: it is not a filtered
+    // report, it is a request for that section, and having to tick three boxes
+    // off first would make it the slower of two ways to do the same thing.
     function printProjectSection(part) {
-      const report = document.querySelector('#projectsWrap .report');
-      clearPrintParts();
-      if (report) report.classList.add(`print-part-${part}`);
+      const keep = part === 'crew' ? ['crew'] : ['chart', 'tables'];
+      applyPrintPieces(PRINT_PIECES.map(p => p.key).filter(k => !keep.includes(k)));
       window.print();
     }
 
@@ -5023,6 +5162,7 @@
       const head = (actions) => `
         <div class="report-head">
           <div>
+            <div class="report-brand">DataWatch</div>
             <div class="report-title">Project Overtime Report</div>
             <div class="report-sub">
               <strong>${escapeHtml(companyName)}</strong><br/>
@@ -5064,15 +5204,20 @@
         'crew', 'exportCapacityExcel',
         'Download just the crew capacity board (.xlsx) — one row per man over the weeks shown, plus the week-by-week headroom behind every figure on it',
         'Print or save just the crew capacity board — the job chart and crew tables are left off'));
-      const crewPart = board ? `<section class="proj-part" data-part="crew">${board}</section>` : '';
+      const crewPart = board
+        ? `<section class="proj-part" data-part="crew"><div class="proj-piece" data-piece="crew">${board}</div></section>`
+        : '';
 
       const jobsPart = `
         <section class="proj-part" data-part="jobs">
+          <div class="proj-piece" data-piece="chart">
           ${projChartHtml(projects, projPartTools(
             'jobs', 'exportJobOvertimeExcel',
             'Download just the job side (.xlsx) — one row per job, and the crew tables under it flattened one row per man per job',
             'Print or save just the job overtime chart and the crew tables under it — the capacity board is left off'))}
+          </div>
 
+          <div class="proj-piece" data-piece="tables">
           <p class="proj-note">
             <strong>Overtime is an employee's week, not a job's.</strong>
             The fortieth hour is counted across every job a man worked in his Monday–Sunday week,
@@ -5090,13 +5235,17 @@
               title="Open or shut every job's crew table at once — on paper they always print in full">Expand all crews</button>
           </div>
           ${projects.map(projBlockHtml).join('')}
+          </div>
         </section>`;
 
       wrap.innerHTML = `
         <div class="report">
           ${head(`
-            <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download the whole report as one Excel workbook (.xlsx) — the jobs, the crew capacity board week by week, each man once, each man per job, and the weeks behind every Before OT figure. Each section below can also be downloaded on its own.">&#8681; Export to Excel</button>
-            <button class="btn-print" onclick="printReport()">Print / Save PDF</button>`)}
+            <div class="report-action-row">
+              <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download the whole report as one Excel workbook (.xlsx) — the jobs, the crew capacity board week by week, each man once, each man per job, and the weeks behind every Before OT figure. Each section below can also be downloaded on its own.">&#8681; Export to Excel</button>
+              <button class="btn-print" onclick="printReport()" title="Print or save the sections ticked below. Each section also has its own PDF button beside its heading.">Print / Save PDF</button>
+            </div>
+            ${printPickerHtml()}`)}
 
           <div class="proj-stats">
             <div class="proj-stat">
