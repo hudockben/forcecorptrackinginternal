@@ -503,6 +503,15 @@
       letter-spacing: 0.01em;
     }
     .qr-btn:hover { border-color: var(--blue); color: var(--blue); }
+    /* The range you are actually looking at. Filled rather than merely
+       outlined, because the point is to be readable from across the desk
+       without comparing it to the three beside it. */
+    .qr-btn.active {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #0a0a0f;
+    }
+    .qr-btn.active:hover { color: #0a0a0f; filter: brightness(1.08); }
 
     /* ── Report layout ── */
     .report {
@@ -2596,12 +2605,20 @@
 
     <!-- ── Payroll-cycle quick ranges (only on Reports tab) ── -->
     <div class="quick-ranges" id="quickRanges" style="display:none">
-      <span class="qr-label">Weekly:</span>
-      <button class="qr-btn" onclick="setRange('current_week')">Current Week</button>
-      <button class="qr-btn" onclick="setRange('last_week')">Last Week</button>
-      <span class="qr-label" style="margin-left:0.75rem">Biweekly:</span>
-      <button class="qr-btn" onclick="setRange('current_biweekly')">Current Biweekly</button>
-      <button class="qr-btn" onclick="setRange('last_biweekly')">Last Biweekly</button>
+      <span class="qr-label">Week:</span>
+      <button class="qr-btn" data-range="current_week"
+              data-range-note="The Monday–Sunday week in progress — the one the 40-hour line is being counted against right now"
+              onclick="setRange('current_week')">This Week</button>
+      <button class="qr-btn" data-range="last_week"
+              data-range-note="The Monday–Sunday week being paid this Friday"
+              onclick="setRange('last_week')">Last Week</button>
+      <span class="qr-label" style="margin-left:0.75rem">Payroll cycle:</span>
+      <button class="qr-btn" data-range="current_biweekly"
+              data-range-note="The fortnight being worked now — two Monday–Sunday weeks ending on a Sunday"
+              onclick="setRange('current_biweekly')">This Cycle</button>
+      <button class="qr-btn" data-range="last_biweekly"
+              data-range-note="The fortnight before it, the one already closed"
+              onclick="setRange('last_biweekly')">Last Cycle</button>
     </div>
 
     <!-- ── Reports sub-tabs (only on the Reports tab) ──
@@ -3162,7 +3179,7 @@
         if (subTabs)    subTabs.style.display    = 'flex';
         if (reportWrap) reportWrap.style.display = reportSubTab === 'projects' ? 'none' : '';
         if (projWrap)   projWrap.style.display   = reportSubTab === 'projects' ? '' : 'none';
-        if (quick)      quick.style.display      = 'flex';
+        if (quick)    { quick.style.display      = 'flex'; labelQuickRanges(); }
         selectedIds.clear();
       } else if (tab === 'auditlog') {
         if (auditWrap) auditWrap.style.display = '';
@@ -3233,28 +3250,56 @@
       return [start, end];
     }
 
-    function setRange(kind) {
+    // What a quick-range button means, as dates — with no side effects, so the
+    // buttons, their tooltips and the highlight showing which one you are
+    // looking at all read the same definition. Three copies of "the current
+    // cycle" is how they end up disagreeing by a day.
+    function rangeFor(kind) {
       const monday = thisWeekMonday();
-      let from, to;
-      if (kind === 'current_week') {
-        from = monday;
-        to   = addDays(monday, 6);
-      } else if (kind === 'last_week') {
-        // The week being paid this Friday
-        from = addDays(monday, -7);
-        to   = addDays(monday, -1);
-      } else if (kind === 'current_biweekly') {
-        [from, to] = biweeklyCycleContaining(new Date());
-      } else if (kind === 'last_biweekly') {
+      if (kind === 'current_week') return [monday, addDays(monday, 6)];
+      // The week being paid this Friday
+      if (kind === 'last_week')    return [addDays(monday, -7), addDays(monday, -1)];
+      if (kind === 'current_biweekly') return biweeklyCycleContaining(new Date());
+      if (kind === 'last_biweekly') {
         const [curStart] = biweeklyCycleContaining(new Date());
-        from = addDays(curStart, -14);
-        to   = addDays(curStart, -1);
-      } else {
-        return;
+        return [addDays(curStart, -14), addDays(curStart, -1)];
       }
-      document.getElementById('flt-from').value = ymd(from);
-      document.getElementById('flt-to').value   = ymd(to);
+      return null;
+    }
+
+    function setRange(kind) {
+      const r = rangeFor(kind);
+      if (!r) return;
+      document.getElementById('flt-from').value = ymd(r[0]);
+      document.getElementById('flt-to').value   = ymd(r[1]);
       applyFilters();
+    }
+
+    // Light up the preset the current dates actually are. Without it the bar
+    // is four buttons that never look any different from each other, and
+    // "am I looking at this cycle or the last one?" is a question you can only
+    // answer by reading two date boxes and doing the arithmetic yourself.
+    // It matches on the dates, so typing a cycle's dates by hand lights it too.
+    function markActiveRange() {
+      const from = (document.getElementById('flt-from') || {}).value || '';
+      const to   = (document.getElementById('flt-to')   || {}).value || '';
+      document.querySelectorAll('#quickRanges .qr-btn[data-range]').forEach(btn => {
+        const r = rangeFor(btn.dataset.range);
+        btn.classList.toggle('active', Boolean(r) && from === ymd(r[0]) && to === ymd(r[1]));
+      });
+    }
+
+    // Each button says the dates it will set, worked out when the bar is shown
+    // rather than written into the markup — "This Cycle" means a different
+    // fortnight tomorrow than it did the day the page was written.
+    function labelQuickRanges() {
+      document.querySelectorAll('#quickRanges .qr-btn[data-range]').forEach(btn => {
+        const r = rangeFor(btn.dataset.range);
+        if (!r) return;
+        const span = `${prettyDateShort(ymd(r[0]))} – ${prettyDateShort(ymd(r[1]))}`;
+        btn.title = `${btn.dataset.rangeNote || ''}${btn.dataset.rangeNote ? ' · ' : ''}Sets the date range to ${span}`;
+      });
+      markActiveRange();
     }
 
     function ymd(d) {
@@ -3290,6 +3335,12 @@
       const from     = document.getElementById('flt-from').value;
       const to       = document.getElementById('flt-to').value;
       const division = document.getElementById('flt-division').value;
+
+      // Before the fetch, not after: the highlight is about the dates in the
+      // boxes, and it should move the instant they do rather than a round trip
+      // later. Every path that changes the range comes through here — the
+      // preset buttons, Apply, Reset and the first load.
+      markActiveRange();
 
       const params = new URLSearchParams();
       params.set('status', 'submitted_approved');
