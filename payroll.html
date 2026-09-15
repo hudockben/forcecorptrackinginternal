@@ -1264,6 +1264,32 @@
       white-space: nowrap;
     }
     .proj-expand:hover { color: var(--text); border-color: var(--muted); }
+
+    /* A section's own download pair. Quieter than the report-level buttons in
+       the header — these take a slice, not the whole thing — but the same two
+       verbs in the same order, so the pair reads the same wherever it appears. */
+    .proj-part-tools { display: flex; gap: 0.35rem; flex-shrink: 0; }
+    .prt-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.66rem;
+      font-weight: 600;
+      padding: 0.2rem 0.5rem;
+      cursor: pointer;
+      white-space: nowrap;
+      letter-spacing: 0.01em;
+    }
+    .prt-btn:hover { color: var(--text); border-color: var(--muted); }
+    .prt-xlsx { color: var(--green); border-color: rgba(34, 197, 94, 0.4); }
+    .prt-xlsx:hover { color: var(--green); border-color: var(--green); background: rgba(34, 197, 94, 0.1); }
+    /* The chart and the board each own a header row now, so the title no longer
+       carries its own bottom margin there. */
+    .proj-chart .proj-section-head,
+    .cc-board .proj-section-head { margin-bottom: 0.5rem; }
+    .proj-part { display: block; }
     .proj-name { font-size: 0.88rem; font-weight: 700; color: var(--text); }
     .proj-meta { font-size: 0.7rem; color: var(--muted); margin-top: 0.14rem; }
     .proj-figs {
@@ -1322,7 +1348,16 @@
         border-right-color: #bbb !important;
       }
       header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
-      .pager, .modal-backdrop, .btn-print { display: none !important; }
+      .pager, .modal-backdrop, .btn-print, .proj-part-tools { display: none !important; }
+
+      /* One section on its own. Set by printProjectSection and inert outside
+         this block, which is what lets it be cleared lazily rather than unwound
+         when the dialog closes. The report head always prints: a sheet handed
+         to a supervisor has to say whose hours these are and over what dates. */
+      .report.print-part-crew > .proj-stats,
+      .report.print-part-crew > .proj-part:not([data-part="crew"]),
+      .report.print-part-jobs > .proj-stats,
+      .report.print-part-jobs > .proj-part:not([data-part="jobs"]) { display: none !important; }
       main { max-width: none !important; padding: 0 !important; }
 
       /* Reports tab */
@@ -3934,7 +3969,45 @@
     }
 
     function printReport() {
+      // A section print leaves its marker on the report. The rule that marker
+      // drives lives inside @media print, so it changes nothing on screen and
+      // nothing announces it — but left there it would quietly hand back one
+      // section the next time somebody asked for the whole report.
+      clearPrintParts();
       window.print();
+    }
+
+    function clearPrintParts() {
+      document.querySelectorAll('.print-part-crew, .print-part-jobs')
+        .forEach(el => el.classList.remove('print-part-crew', 'print-part-jobs'));
+    }
+
+    // Print ONE section of the projects report on its own — the crew capacity
+    // board without the job tables behind it, or the jobs without the board.
+    //
+    // The browser prints what the page shows, so the section is isolated by
+    // hiding its neighbours for the duration. That hiding is print-media only,
+    // which is what makes this safe without timers or afterprint handlers: the
+    // marker is inert on screen, and every entry point clears it first, so
+    // there is no state to unwind if the dialog is cancelled or never fires an
+    // event back.
+    function printProjectSection(part) {
+      const report = document.querySelector('#projectsWrap .report');
+      clearPrintParts();
+      if (report) report.classList.add(`print-part-${part}`);
+      window.print();
+    }
+
+    // The download pair a section carries. Both buttons are hidden on paper, so
+    // they never appear in the page they produce.
+    function projPartTools(part, xlsxFn, xlsxTitle, pdfTitle) {
+      return `
+        <div class="proj-part-tools">
+          <button type="button" class="prt-btn prt-xlsx" onclick="${xlsxFn}()"
+            title="${escapeHtml(xlsxTitle)}">&#8681; Excel</button>
+          <button type="button" class="prt-btn" onclick="printProjectSection('${part}')"
+            title="${escapeHtml(pdfTitle)}">&#8681; PDF</button>
+        </div>`;
     }
 
     // ── Reports ▸ Projects ───────────────────────────────────────────────
@@ -4363,7 +4436,7 @@
     // yardstick it used.
     //
     // rows: [{ label, sub, totalHours, regHours, otHours, title }]
-    function projBarsHtml(heading, rows) {
+    function projBarsHtml(heading, rows, tools) {
       const max = rows.reduce((m, r) => Math.max(m, r.totalHours), 0) || 1;
       const pct = h => ((h / max) * 100).toFixed(2);
       const bars = rows.map(r => `
@@ -4379,7 +4452,10 @@
           </div>`).join('');
       return `
         <div class="proj-chart">
-          <div class="proj-section-title">${escapeHtml(heading)}</div>
+          <div class="proj-section-head">
+            <div class="proj-section-title">${escapeHtml(heading)}</div>
+            ${tools || ''}
+          </div>
           ${bars}
           <div class="pc-legend">
             <span><i class="pc-key reg"></i>Regular hours</span>
@@ -4389,7 +4465,7 @@
     }
 
     // Chart one: the jobs.
-    function projChartHtml(projects) {
+    function projChartHtml(projects, tools) {
       return projBarsHtml(
         'Overtime by project — bars are hours worked, scaled to the largest job in range',
         projects.map(p => {
@@ -4402,7 +4478,7 @@
               ? `${p.name} — ${p.totalHours.toFixed(2)} h worked, ${p.otHours.toFixed(2)} of them past the fortieth hour of somebody's week (${share.toFixed(1)}%)`
               : `${p.name} — ${p.totalHours.toFixed(2)} h worked, none of it overtime`,
           };
-        }));
+        }), tools);
     }
 
     // ── The crew capacity board ──────────────────────────────────────────
@@ -4742,7 +4818,7 @@
     // the answer to "who do I put on it". The second group is the long tail —
     // a cycle's worth of one-day hires — so it folds away on screen and always
     // prints in full, since paper has no disclosure triangle.
-    function projCapacityHtml(employees, allWeeks, rangeFrom) {
+    function projCapacityHtml(employees, allWeeks, rangeFrom, tools) {
       const weeks = ccWeeksShown(allWeeks);
       if (!employees.length || !weeks.length) return '';
       const { hot, open } = ccOrdered(employees, weeks, rangeFrom);
@@ -4790,7 +4866,10 @@
 
       return `
         <div class="cc-board cc-collapsed" style="--cc-weeks:${weeks.length};--cc-tick:${((OT_WEEKLY_THRESHOLD / scaleMax) * 100).toFixed(2)}%">
-          <div class="proj-section-title">Crew capacity — ${escapeHtml(span)} against the 40</div>
+          <div class="proj-section-head">
+            <div class="proj-section-title">Crew capacity — ${escapeHtml(span)} against the 40</div>
+            ${tools || ''}
+          </div>
           ${ccHeadHtml(weeks, scaleMax)}
           ${hot.length ? `<div class="cc-group"><span class="cc-group-label cc-group-hot">${escapeHtml(hotLine)}</span></div>` : ''}
           ${hot.map(r => ccRowHtml(r, weeks, scaleMax, false)).join('')}
@@ -4800,7 +4879,7 @@
             <span><i class="pc-key ot"></i>Overtime — hours past the 40th of that week</span>
             <span><i class="pc-key tick"></i>The 40th hour</span>
             <span class="cc-legend-note">An empty week is a week he worked no job. * marks a week the date filter cuts in half.${
-              dropped ? ` The range also covers ${dropped} earlier week${dropped === 1 ? '' : 's'}, which the jobs and crew tables below still count — this board is the current cycle.` : ''
+              dropped ? ` The range also covers ${dropped} earlier week${dropped === 1 ? '' : 's'}, which the job figures and crew tables in the full report still count — this board is the current cycle.` : ''
             }</span>
           </div>
         </div>`;
@@ -4872,10 +4951,48 @@
         ? ` ${m.offEntries} time-off ${m.offEntries === 1 ? 'entry in range is' : 'entries in range are'} left out — paid leave belongs to no job, and it never counts toward the 40.`
         : '';
 
+      // The two halves of this tab, each able to leave on its own.
+      //
+      // The crew board goes FIRST. The question this tab is opened with is
+      // almost always who can still be given hours this week; what the jobs
+      // cost is what gets checked afterwards, and it was sitting above the
+      // answer.
+      const board = projCapacityHtml(m.employees, m.weeks, m.rangeFrom, projPartTools(
+        'crew', 'exportCapacityExcel',
+        'Download just the crew capacity board (.xlsx) — one row per man over the weeks shown, plus the week-by-week headroom behind every figure on it',
+        'Print or save just the crew capacity board — the job chart and crew tables are left off'));
+      const crewPart = board ? `<section class="proj-part" data-part="crew">${board}</section>` : '';
+
+      const jobsPart = `
+        <section class="proj-part" data-part="jobs">
+          ${projChartHtml(projects, projPartTools(
+            'jobs', 'exportJobOvertimeExcel',
+            'Download just the job side (.xlsx) — one row per job, and the crew tables under it flattened one row per man per job',
+            'Print or save just the job overtime chart and the crew tables under it — the capacity board is left off'))}
+
+          <p class="proj-note">
+            <strong>Overtime is an employee's week, not a job's.</strong>
+            The fortieth hour is counted across every job a man worked in his Monday–Sunday week,
+            and each overtime hour is then posted back to the job it was worked on — so adding the jobs
+            below returns the company's overtime exactly, while counting any one job to 40 on its own
+            would not.
+            <strong>Before OT</strong> is the same figure read forward: the hours that man can still work
+            before overtime starts, across all his jobs. It repeats under every job he worked that week
+            and is never totalled.${escapeHtml(offNote)}
+          </p>
+
+          <div class="proj-section-head">
+            <div class="proj-section-title">${projects.length} job${projects.length === 1 ? '' : 's'} · most overtime first</div>
+            <button type="button" class="proj-expand" onclick="toggleAllProjBlocks(this)"
+              title="Open or shut every job's crew table at once — on paper they always print in full">Expand all crews</button>
+          </div>
+          ${projects.map(projBlockHtml).join('')}
+        </section>`;
+
       wrap.innerHTML = `
         <div class="report">
           ${head(`
-            <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download this report as an Excel workbook (.xlsx) — the jobs, the crew capacity board week by week, each man once, each man per job, and the weeks behind every Before OT figure">&#8681; Export to Excel</button>
+            <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download the whole report as one Excel workbook (.xlsx) — the jobs, the crew capacity board week by week, each man once, each man per job, and the weeks behind every Before OT figure. Each section below can also be downloaded on its own.">&#8681; Export to Excel</button>
             <button class="btn-print" onclick="printReport()">Print / Save PDF</button>`)}
 
           <div class="proj-stats">
@@ -4901,26 +5018,8 @@
             </div>
           </div>
 
-          ${projChartHtml(projects)}
-          ${projCapacityHtml(m.employees, m.weeks, m.rangeFrom)}
-
-          <p class="proj-note">
-            <strong>Overtime is an employee's week, not a job's.</strong>
-            The fortieth hour is counted across every job a man worked in his Monday–Sunday week,
-            and each overtime hour is then posted back to the job it was worked on — so adding the jobs
-            below returns the company's overtime exactly, while counting any one job to 40 on its own
-            would not.
-            <strong>Before OT</strong> is the same figure read forward: the hours that man can still work
-            before overtime starts, across all his jobs. It repeats under every job he worked that week
-            and is never totalled.${escapeHtml(offNote)}
-          </p>
-
-          <div class="proj-section-head">
-            <div class="proj-section-title">${projects.length} job${projects.length === 1 ? '' : 's'} · most overtime first</div>
-            <button type="button" class="proj-expand" onclick="toggleAllProjBlocks(this)"
-              title="Open or shut every job's crew table at once — on paper they always print in full">Expand all crews</button>
-          </div>
-          ${projects.map(projBlockHtml).join('')}
+          ${crewPart}
+          ${jobsPart}
 
           ${otCaveat ? `<p class="report-caveat">${escapeHtml(otCaveat)}</p>` : ''}
         </div>`;
@@ -5775,7 +5874,7 @@
         [cTxt('Project Overtime Report — Crew Capacity', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
         [cTxt(`One row per employee, one block of columns per Monday–Sunday week — the Crew Capacity board on the Projects tab, flat. Weeks shown: ${span}.`, XS.bold)],
-        [cTxt(`THIS SHEET COVERS THOSE ${weeks.length === 1 ? 'WEEK' : `${weeks.length} WEEKS`} ONLY, NOT THE WHOLE REPORT RANGE — it is the payroll cycle being scheduled. Every figure on the row, the totals included, is the weeks shown, so the week blocks add across to them.${dropped ? ` The range also covers ${dropped} earlier week${dropped === 1 ? '' : 's'}: those hours are on "Overtime by Employee" and "Employees by Project", which are the full range and will NOT match this sheet.` : ''}`, XS.bold)],
+        [cTxt(`THIS SHEET COVERS THOSE ${weeks.length === 1 ? 'WEEK' : `${weeks.length} WEEKS`} ONLY, NOT THE WHOLE REPORT RANGE — it is the payroll cycle being scheduled. Every figure on the row, the totals included, is the weeks shown, so the week blocks add across to them.${dropped ? ` The range also covers ${dropped} earlier week${dropped === 1 ? '' : 's'}: those hours are on the full Project Overtime workbook’s "Overtime by Employee" and "Employees by Project" sheets, which cover the whole range and will NOT match this one.` : ''}`, XS.bold)],
         [cTxt('The 40 is a WEEK’s line, never a range’s. A man at 100 hours over a fortnight is not 60 hours of overtime — he is whatever each of his weeks ran past its own fortieth hour, which is why the hours are split into weeks here rather than totalled.', XS.sub)],
         [cTxt('Before OT is what he can still be given in that week. Hours and OT are left BLANK for a week he was on no job — he worked none, and a zero would read as a measurement — but Before OT there is the full 40, because an untouched week inside the cycle is 40 hours of room. It is blank only where the range does not cover the week, which is ignorance rather than availability. The three week cells add across to the row totals either way.', XS.sub)],
         [cTxt('That is the one figure here that does NOT mean what "Hours Before OT" means on the whole-range sheets, where a week a man has no hours in counts as no room at all. Over an arbitrary range a silent week says nothing; inside a two-week cycle it says he is free, and that is the answer this sheet exists to give. Week by week, one row each, on "OT Headroom by Week".', XS.sub)],
@@ -5962,7 +6061,7 @@
         [cTxt('Project Overtime Report — Employees by Project', XS.title)],
         [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
         [cTxt('OT Hrs is this man’s hours ON THIS JOB that fell past the fortieth hour of his Monday–Sunday week — the 40 counted across every job he worked that week, the overtime then posted back to the job each hour was worked on.', XS.sub)],
-        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. It totals on the "Overtime by Employee" sheet, where each man appears once, and the weeks behind it are in the last column here and one row each on "OT Headroom by Week".', XS.bold)],
+        [cTxt('HOURS BEFORE OT IS NOT A JOB FIGURE. It is what the man can still work before overtime starts, across ALL his jobs, so it repeats unchanged under every job he worked that week and must never be summed. It totals on the full Project Overtime workbook’s "Overtime by Employee" sheet, where each man appears once, and the weeks behind it are in the last column here and one row each on its "OT Headroom by Week".', XS.bold)],
         [cTxt('A man already past 40 shows 0.00 — the hours he is over are in the OT column, not here.', XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
@@ -6109,6 +6208,39 @@
         { name: 'Overtime by Employee', xml: projectCrewSheetXml(model) },
         { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
         { name: 'OT Headroom by Week',  xml: projectHeadroomSheetXml(model) },
+      ]));
+    }
+
+    // The crew capacity board on its own, for the supervisor who is scheduling
+    // and has no use for the job costing.
+    //
+    // "OT Headroom by Week" comes with it rather than being left behind: the
+    // board's own note points at it for the week-by-week working behind every
+    // Before OT figure, and a file whose note cites a sheet that is not in it
+    // is a file that cannot be checked.
+    function exportCapacityExcel() {
+      const model = buildProjectsModel();
+      if (!model.employees.length) {
+        alert('No crew hours in this range to export.');
+        return;
+      }
+      downloadBlob(`crew-capacity-${exportScopeSuffix()}.xlsx`, xlsxBlob([
+        { name: 'Crew Capacity',       xml: projectCapacitySheetXml(model) },
+        { name: 'OT Headroom by Week', xml: projectHeadroomSheetXml(model) },
+      ]));
+    }
+
+    // The job side on its own: the bar chart's figures, and the crew tables
+    // under it flattened one row per man per job.
+    function exportJobOvertimeExcel() {
+      const model = buildProjectsModel();
+      if (!model.projects.length) {
+        alert('No job hours in this range to export.');
+        return;
+      }
+      downloadBlob(`job-overtime-${exportScopeSuffix()}.xlsx`, xlsxBlob([
+        { name: 'Overtime by Project',  xml: projectSummarySheetXml(model) },
+        { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
       ]));
     }
 
