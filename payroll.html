@@ -1193,6 +1193,7 @@
       color: var(--muted);
     }
     .cc-group-hot { color: var(--orange); }
+    .cc-group-clear { color: var(--green); }
     .cc-toggle {
       display: flex;
       align-items: center;
@@ -4920,6 +4921,16 @@
         : `${ccWeekLabel(weeks[0])} and ${ccWeekLabel(weeks[weeks.length - 1])}`;
       const dropped = allWeeks.length - weeks.length;
 
+      // THE POOL FOLDS AWAY ONLY IF THERE IS SOMETHING ABOVE IT TO READ.
+      //
+      // Collapsing it by default assumed a watch group to collapse it beneath,
+      // and for most of every week there is not one: two days into a Monday
+      // week nobody has reached the 40, every man is in the pool, and the board
+      // rendered as a heading, a column head and a single folded line. Thirty
+      // men on the crew and not a row on screen — which reads as broken, not as
+      // calm, and is the exact moment the board is most worth looking at.
+      const collapsed = hot.length ? ' cc-collapsed' : '';
+
       const inOt   = hot.filter(r => r.win.otHours > 0.001).length;
       const atLine = hot.length - inOt;
       const hotLine = [
@@ -4952,13 +4963,18 @@
       }
 
       return `
-        <div class="cc-board cc-collapsed" style="--cc-weeks:${weeks.length};--cc-tick:${((OT_WEEKLY_THRESHOLD / scaleMax) * 100).toFixed(2)}%">
+        <div class="cc-board${collapsed}" style="--cc-weeks:${weeks.length};--cc-tick:${((OT_WEEKLY_THRESHOLD / scaleMax) * 100).toFixed(2)}%">
           <div class="proj-section-head">
             <div class="proj-section-title">Crew capacity — ${escapeHtml(span)} against the 40</div>
             ${tools || ''}
           </div>
           ${ccHeadHtml(weeks, scaleMax)}
-          ${hot.length ? `<div class="cc-group"><span class="cc-group-label cc-group-hot">${escapeHtml(hotLine)}</span></div>` : ''}
+          ${hot.length
+            ? `<div class="cc-group"><span class="cc-group-label cc-group-hot">${escapeHtml(hotLine)}</span></div>`
+            // Say it rather than leaving a gap where the group would be. "No
+            // rows here" and "nobody is near the line" look identical on a
+            // screen, and only one of them is good news.
+            : `<div class="cc-group"><span class="cc-group-label cc-group-clear">Nobody is at or past the 40 ${weeks.length === 1 ? 'this week' : 'in these weeks'} — the whole crew still has room</span></div>`}
           ${hot.map(r => ccRowHtml(r, weeks, scaleMax, false)).join('')}
           ${tail}
           <div class="pc-legend cc-legend">
