@@ -4428,38 +4428,72 @@
       return Math.max(50, Math.ceil((max + 2) / 5) * 5);
     }
 
-    // Where a man stands, in the one figure a scheduler acts on: what is still
-    // open before the premium starts.
+    // WHERE A MAN STANDS AGAINST THE FORTY — the one place it is decided.
     //
-    // Room is read BEFORE overtime on purpose, and it is the only part of this
-    // that is easy to get wrong. A man can be deep into overtime in one week
-    // and have a whole open week beside it — and if the chip led with "Over 40"
-    // it would hide the very hours the supervisor came here to find. The
-    // overtime he has already worked is a cost, and it has its own column an
-    // inch to the left; this chip is about what is left.
-    function ccStatus(e) {
+    // The chip on the board, the two groups the board splits into, and the
+    // Standing column in the workbook all read this function. They used to work
+    // it out separately, which is how a man ends up "in overtime" on screen and
+    // something else in the file a supervisor is actually holding.
+    //
+    // `chip` is read BEFORE overtime on purpose, and it is the part that is
+    // easy to get wrong. A man can be deep past the 40 in one week and have a
+    // whole open week beside it — if the chip led with "Over 40" it would hide
+    // the very hours the supervisor came here to find. The overtime he has
+    // already worked is a cost and has its own column an inch to the left.
+    //
+    // `watch` is the separate question, and it is NOT the chip: a man with
+    // overtime behind him belongs with the ones being watched however much room
+    // he has in the weeks since.
+    function ccStanding(e) {
       // No counted week, no forty to measure against. The model gives such a
       // man a remaining of 0, which would read as "At 40" — the one wrong
       // answer here, because it is the opposite of what 0 means for everybody
       // else on the board. Say nothing instead.
       if (!e.room || !e.room.weeks.length) {
-        return { cls: 'unknown', text: '—',
-                 title: `No counted Monday–Sunday week for ${e.username} in this range — there is no forty to measure him against` };
+        return { cls: 'unknown', chip: '—', label: 'No counted week', watch: true };
       }
+      const inOt  = e.otHours > 0.001;
+      const watch = inOt || e.remaining < CC_NEAR;
       if (e.remaining >= CC_AT) {
-        const where = e.otHours > 0.001 ? ' — in the weeks he is not already past the 40' : '';
         // Teal only where the room is worth rostering. A sliver under half a
         // day is amber: it is not nothing, but it is not a man you can put on
         // a job either, and it must not read like one at a glance.
-        return { cls: e.remaining >= CC_NEAR ? 'room' : 'thin', text: `${e.remaining.toFixed(2)} h`,
-                 title: `${e.username} can work ${e.remaining.toFixed(2)} h more before overtime starts, across all his jobs${where}` };
+        const roomy = e.remaining >= CC_NEAR;
+        return {
+          cls:   roomy ? 'room' : 'thin',
+          chip:  `${e.remaining.toFixed(2)} h`,
+          label: inOt ? 'In overtime, room in other weeks'
+                      : (roomy ? 'Room before the 40' : `Under ${CC_NEAR} h left`),
+          watch,
+        };
       }
-      if (e.otHours > 0.001) {
-        return { cls: 'over', text: 'Over 40',
-                 title: `${e.username} is ${e.otHours.toFixed(2)} h past the fortieth hour with no room left in any week — every further hour is paid at the premium` };
-      }
-      return { cls: 'at', text: 'At 40',
-               title: `${e.username} has worked his weeks to the fortieth hour with nothing left — the next hour is overtime` };
+      if (inOt) return { cls: 'over', chip: 'Over 40', label: 'In overtime, no room left', watch };
+      return { cls: 'at', chip: 'At 40', label: 'At the 40', watch };
+    }
+
+    // THE BOARD'S READING ORDER, shared with the workbook.
+    //
+    // Two groups, because they are two different instructions. The men to watch
+    // keep the report's own sort (most overtime first). The pool with room is
+    // re-sorted MOST ROOM FIRST — that group is read to find somebody to give
+    // hours to, and the man with the most left is the first answer to it.
+    function ccOrdered(employees) {
+      const hot  = employees.filter(e => ccStanding(e).watch);
+      const open = employees.filter(e => !ccStanding(e).watch)
+        .sort((a, b) => b.remaining - a.remaining || a.username.localeCompare(b.username));
+      return { hot, open, rows: [...hot, ...open] };
+    }
+
+    // The same verdict with the sentence the board's tooltip needs on it.
+    function ccStatus(e) {
+      const st = ccStanding(e);
+      const title =
+        st.cls === 'unknown' ? `No counted Monday–Sunday week for ${e.username} in this range — there is no forty to measure him against` :
+        st.cls === 'over'    ? `${e.username} is ${e.otHours.toFixed(2)} h past the fortieth hour with no room left in any week — every further hour is paid at the premium` :
+        st.cls === 'at'      ? `${e.username} has worked his weeks to the fortieth hour with nothing left — the next hour is overtime` :
+        `${e.username} can work ${e.remaining.toFixed(2)} h more before overtime starts, across all his jobs`
+          + (e.otHours > 0.001 ? ' — in the weeks he is not already past the 40' : '');
+      return { cls: st.cls, text: st.chip, title };
     }
 
     // One week's meter for one man. Null where he did not work that week.
@@ -4543,11 +4577,7 @@
       if (!employees.length || !weeks.length) return '';
       const scaleMax = ccScaleMax(employees);
 
-      const hot  = employees.filter(e => e.otHours > 0.001 || e.remaining < CC_NEAR);
-      const open = employees.filter(e => e.otHours <= 0.001 && e.remaining >= CC_NEAR)
-        // Most room first: this group is read to find somebody to give hours to,
-        // and the man with the most left is the first answer to that.
-        .sort((a, b) => b.remaining - a.remaining || a.username.localeCompare(b.username));
+      const { hot, open } = ccOrdered(employees);
 
       const inOt   = hot.filter(e => e.otHours > 0.001).length;
       const atLine = hot.length - inOt;
@@ -4658,7 +4688,7 @@
       wrap.innerHTML = `
         <div class="report">
           ${head(`
-            <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download this report as an Excel workbook (.xlsx) — one sheet per job, one per employee on a job, and the week-by-week headroom behind the Before OT column">&#8681; Export to Excel</button>
+            <button class="btn-print btn-excel" onclick="exportProjectsExcel()" title="Download this report as an Excel workbook (.xlsx) — the jobs, the crew capacity board week by week, each man once, each man per job, and the weeks behind every Before OT figure">&#8681; Export to Excel</button>
             <button class="btn-print" onclick="printReport()">Print / Save PDF</button>`)}
 
           <div class="proj-stats">
@@ -5651,6 +5681,122 @@
       });
     }
 
+    // Sheet 2 — THE CREW CAPACITY BOARD, flat.
+    //
+    // The same rows in the same order as the board on screen, and the same
+    // verdict in the Standing column, because a supervisor who sorts this sheet
+    // and a supervisor reading the tab have to reach the same answer about the
+    // same man.
+    //
+    // It is the one sheet in the book laid out WIDE — three columns per
+    // Monday–Sunday week rather than a row per employee-week. "OT Headroom by
+    // Week" is the long form of exactly these figures and is the better shape
+    // for a pivot; this one is the better shape for the question the board
+    // exists to answer, which is read across a man's weeks at a glance: where
+    // did his hours go, and which week has room left in it.
+    //
+    // A week a man did not work is BLANK, not zero. Blank is what the board
+    // draws and it is also what keeps the arithmetic honest: his headroom is
+    // only counted in weeks he has a counted week in, so the per-week Before OT
+    // cells add across to the Hours Before OT column exactly, which a column of
+    // 40s for weeks he never worked would not.
+    function projectCapacitySheetXml(model) {
+      const { employees, weeks, tot, scopeLine, gen, companyName } = model;
+
+      // Three columns a week, in the order the eye reads the meter: what he
+      // worked, what of it was past the line, and what is still open.
+      const headers = ['Employee', 'Jobs Worked', 'Days Worked'];
+      const NUM_COLS = new Set([1, 2]);
+      for (const w of weeks) {
+        const label = `${ccWeekLabel(w)}${w.clipped ? ' (partial)' : ''}`;
+        NUM_COLS.add(headers.length); headers.push(`${label} · Hours`);
+        NUM_COLS.add(headers.length); headers.push(`${label} · OT`);
+        NUM_COLS.add(headers.length); headers.push(`${label} · Before OT`);
+      }
+      const FIRST_TOTAL = headers.length;
+      for (const h of ['Total Hours', 'Regular Hrs', 'OT Hrs', 'Hours Before OT']) {
+        NUM_COLS.add(headers.length); headers.push(h);
+      }
+      headers.push('Standing');
+      const HEADER_ROW = 8;
+
+      const sheet = [
+        [cTxt('Project Overtime Report — Crew Capacity', XS.title)],
+        [cTxt(`${companyName} · ${scopeLine} · Generated ${gen}`, XS.sub)],
+        [cTxt('One row per employee, one block of columns per Monday–Sunday week — the Crew Capacity board on the Projects tab, flat. Hours are every job he worked that week, so the week columns add across to Total Hours.', XS.bold)],
+        [cTxt('The 40 is a WEEK’s line, never a range’s. A man at 100 hours over a fortnight is not 60 hours of overtime — he is whatever each of his weeks ran past its own fortieth hour, which is why the hours are split into weeks here rather than totalled.', XS.sub)],
+        [cTxt('Before OT is what he can still be given in that week. A week he worked no job is left BLANK rather than 40: headroom is only counted in weeks he has a counted week in, so the week cells add across to Hours Before OT exactly. Same figures one row per employee-week on "OT Headroom by Week".', XS.sub)],
+        [cTxt(`Standing places him against the 40 the way the board’s chip does: in overtime, at the 40, under ${CC_NEAR} h left, or room before it. Sort or filter on it to get the men you can still schedule without buying the premium.`, XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
+      ];
+
+      // Totalled per week as well as per man, so the foot of a week column is
+      // the crew's hours in that week — which no other sheet in the book says.
+      const wkTot  = weeks.map(() => ({ hours: 0, ot: 0, room: 0 }));
+      let sumRoom  = 0;
+
+      for (const e of ccOrdered(employees).rows) {
+        const byWeek = new Map((e.room ? e.room.weeks : []).map(w => [w.weekStart, w]));
+        const row = [
+          cTxt(e.username, XS.text),
+          cNum(e.jobs,     XS.num),
+          cNum(e.days,     XS.num),
+        ];
+        weeks.forEach((col, i) => {
+          const w = byWeek.get(col.weekStart);
+          if (!w) { row.push(cNum(null, XS.num), cNum(null, XS.num), cNum(null, XS.num)); return; }
+          row.push(cNum(w.totalHours, XS.num),
+                   cNum(w.otHours,    XS.num),
+                   cNum(w.remaining,  XS.num));
+          wkTot[i].hours += w.totalHours;
+          wkTot[i].ot    += w.otHours;
+          wkTot[i].room  += w.remaining;
+        });
+        row.push(
+          cNum(e.totalHours, XS.num),
+          cNum(e.regHours,   XS.num),
+          cNum(e.otHours,    XS.num),
+          cNum(e.remaining,  XS.num),
+          cTxt(ccStanding(e).label, XS.text),
+        );
+        sheet.push(row);
+        sumRoom += e.remaining;
+      }
+
+      const totals = [
+        cTxt(`Totals (${employees.length} employee${employees.length === 1 ? '' : 's'})`, XS.totText),
+        // The company's jobs and work days, not the columns added up: a job
+        // three men worked is one job, and a day four men worked is one day.
+        cNum(model.projects.length, XS.totNum),
+        cNum(tot.days,              XS.totNum),
+      ];
+      for (const w of wkTot) {
+        totals.push(cNum(w.hours, XS.totNum), cNum(w.ot, XS.totNum), cNum(w.room, XS.totNum));
+      }
+      totals.push(
+        cNum(tot.totalHours, XS.totNum),
+        cNum(tot.regHours,   XS.totNum),
+        cNum(tot.otHours,    XS.totNum),
+        // A real total: each man appears exactly once on this sheet, so unlike
+        // the Before OT column on "Employees by Project" this one adds up.
+        cNum(sumRoom,        XS.totNum),
+        cTxt('', XS.totText),
+      );
+      sheet.push(totals);
+
+      const colWidths = [24, 13, 13];
+      for (let i = 0; i < weeks.length; i++) colWidths.push(19, 15, 19);
+      colWidths.push(13, 13, 11, 18, 30);
+
+      return xlsxSheetXml({
+        colWidths,
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:${colLetter(headers.length)}${HEADER_ROW + employees.length}`,
+      });
+    }
+
     // Sheet 4 — one row per employee PER WEEK, which is the shape the fortieth
     // hour actually has. The sheets above group by job, or by the man over his
     // whole range; this one refuses to group by job at all and splits the man
@@ -5727,10 +5873,12 @@
         alert('No job hours in this range to export.');
         return;
       }
-      // The order the report reads in: the two charts, then the crew tables
-      // under them, then the weeks the overtime was actually measured in.
+      // The order the report reads in: the project chart, the capacity board
+      // under it, then the crew tables, then the weeks the overtime was
+      // actually measured in.
       downloadBlob(`project-overtime-${exportScopeSuffix()}.xlsx`, xlsxBlob([
         { name: 'Overtime by Project',  xml: projectSummarySheetXml(model) },
+        { name: 'Crew Capacity',        xml: projectCapacitySheetXml(model) },
         { name: 'Overtime by Employee', xml: projectCrewSheetXml(model) },
         { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
         { name: 'OT Headroom by Week',  xml: projectHeadroomSheetXml(model) },
