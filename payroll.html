@@ -1699,6 +1699,18 @@
       padding: 2rem 1rem;
       color: var(--muted);
     }
+    /* Why an empty queue may not mean an empty week. Sits above the diagnostic
+       line and reads as prose, because it is an instruction rather than a
+       dump of what the server was asked. */
+    .empty-hint {
+      margin-top: 0.6rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+      max-width: 62ch;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.5;
+    }
     .empty-diag {
       margin-top: 0.75rem;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -3118,9 +3130,21 @@
     }
 
     function init() {
-      // Default range: last 14 days through today
-      const to = new Date();
-      const from = new Date(); from.setDate(from.getDate() - 14);
+      // Default range: THIS WEEK — the Monday–Sunday week in progress, which is
+      // the week the 40-hour line is being counted against right now.
+      //
+      // It opens on a Monday, which the old rolling 14 days did not. A range
+      // that starts mid-week cuts the week at its head: hours worked before it
+      // were never fetched, so that week's overtime reads as a floor and its
+      // headroom as a ceiling, and the capacity board has to mark the whole
+      // column untrustworthy. Anchoring the default to a week boundary means
+      // the figures on first load are whole ones.
+      //
+      // It is also narrower than what came before. Everything reached from
+      // here — Pending Review included — opens on one week rather than a
+      // fortnight, and anything older waits behind Last Week, Last + This or a
+      // cycle button rather than being on screen at load.
+      const [from, to] = rangeFor('current_week');
       document.getElementById('flt-from').value = ymd(from);
       document.getElementById('flt-to').value   = ymd(to);
       loadSupervisors();
@@ -4564,10 +4588,11 @@
     // HOW MANY WEEKS THE BOARD SHOWS: the previous Monday–Sunday week and the
     // current one, which is the payroll cycle a supervisor is scheduling inside.
     //
-    // The report's own date range is not that window and cannot be. A 14-day
-    // range that does not open on a Monday reaches back into a third week and
-    // drags a stub of it onto the board — three columns where the cycle has
-    // two, the oldest of them a few days nobody is rostering against any more.
+    // The report's own date range is not that window and need not be. Any range
+    // that does not open on a Monday reaches back into an extra week and drags
+    // a stub of it onto the board — a column of a few days nobody is rostering
+    // against any more. The default range opens on a Monday now and the quick
+    // ranges all do, but a hand-typed one need not, so the cap stays.
     const CC_WEEKS_SHOWN = 2;
 
     // The weeks the board draws, newest last. The range may hold more (a stub
@@ -6312,10 +6337,12 @@
     // time window than the other tabs since meaningful aggregations need
     // more than a single week of data.
     async function loadAnalytics() {
-      // If the current date range is the default 14-day window (set on
-      // init), expand it to year-to-date the first time the user lands on
-      // the analytics tab — keeps the analytics view useful out of the
-      // box without ever clobbering an explicit choice.
+      // Analytics runs on whatever range the filters are set to, the same as
+      // every other tab. It does NOT widen that range on arrival — a comment
+      // here used to promise it did, describing an expand-to-year-to-date that
+      // was never written. The default is now one week, which is narrow for
+      // aggregate work, so the quick ranges under this tab (This Month, Year to
+      // Date, All Time) are how it gets opened up.
       const wrap = document.getElementById('analyticsWrap');
       wrap.innerHTML = '<div class="ana-empty">Loading analytics…</div>';
       await applyFilters();
@@ -6963,9 +6990,15 @@
         supQ  ? `supervisor~"${supQ}"`   : null,
       ].filter(Boolean).join(', ') || 'none';
       const diag = `Server returned ${total} entries (${subCount} submitted, ${appCount} approved) · Range ${from} → ${to} · Filters: ${activeFlts}`;
+      // The default range is one week, so an empty queue now has a third cause
+      // that is not about the work at all: the entries are sitting just outside
+      // the dates. The old wording offered only the other two and read as an
+      // all-clear — and a review queue that looks settled when it is merely
+      // narrow is how a week of timesheets goes unapproved.
+      const outside = 'Entries outside these dates are not shown. The range opens on the current week — use Last Week, Last + This or a cycle button above to look further back.';
       const emptyMsg  = isPending
-        ? `Nothing to review in this range — everything has been approved or no entries have been submitted yet.<div class="empty-diag">${escapeHtml(diag)}</div>`
-        : `No approved entries in this range yet.<div class="empty-diag">${escapeHtml(diag)}</div>`;
+        ? `Nothing to review in this range — everything in it has been approved, or nothing has been submitted for it yet.<div class="empty-hint">${escapeHtml(outside)}</div><div class="empty-diag">${escapeHtml(diag)}</div>`
+        : `No approved entries in this range yet.<div class="empty-hint">${escapeHtml(outside)}</div><div class="empty-diag">${escapeHtml(diag)}</div>`;
 
       const banner = document.getElementById('hoursFlagBanner');
 
