@@ -20300,8 +20300,14 @@ let bidViewProjId = null;
 function openBidView(projId) {
   const p = getProj(projId); if (!p) return;
   bidViewProjId = projId;
-  document.getElementById('bid-fs-title').textContent =
-    (p['project-name'] || 'Untitled Project') + ' — Bid Line Items vs Actuals';
+  // Job number rides next to the project name — same 'Job #' treatment the
+  // project cards use, so the header names the job the way the field does.
+  const bvName  = p['project-name'] || 'Untitled Project';
+  const bvJobNo = String(p['job-number'] || '').trim();
+  document.getElementById('bid-fs-title').innerHTML =
+    escT(bvName)
+    + (bvJobNo ? ' <span style="font-weight:600;color:var(--muted)">Job #' + escT(bvJobNo) + '</span>' : '')
+    + ' — Bid Line Items vs Actuals';
   document.getElementById('bid-fs-add').onclick = () => { addBidItem(projId); };
   document.getElementById('bid-fs-pdf').onclick = () => showBidPDFOptions(projId, 'pdf');
   document.getElementById('bid-fs-email').onclick = () => showBidPDFOptions(projId, 'email');
