@@ -451,6 +451,27 @@ console.log('\n[upsertPO — merging into a division list]');
   assert('and it belongs to turf',      [...st.daily.values()][0].division === 'turf');
   assert('mirror row followed the move', st.poRows.get('mv').division === 'turf');
 
+  console.log('\n[a general order can carry no job]');
+  // daily_tracking's division CHECK does not admit 'purchase_orders'. The page
+  // clears the job when the division changes, but that is client-side — a stale
+  // tab or a replayed request still sends one. Without the server clearing it,
+  // the old job's rows are deleted and the insert that follows violates the
+  // constraint: the request 500s having already destroyed them.
+  st = makeStore();
+  po = makePO({ id: 'gen1', project_id: 'turfjob', lines: [{ id: 'L1', qty: '2', unit_cost: '5' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  assert('starts on a turf job', st.daily.size === 1);
+
+  await poSync.upsertPO(st.sql, {
+    companyCode: 'FCT', division: 'purchase_orders', po, from: 'turf',
+  });
+  assert('moving it to the general list clears the job', po.project_id === '');
+  assert('no cost row is written under purchasing', st.daily.size === 0);
+  assert('and the order is stored', st.getBlob(KEY('purchase_orders')).length === 1);
+  const genRows = [...st.daily.values()];
+  assert('nothing was filed under a division daily_tracking cannot hold',
+    !genRows.some(r => r.division === 'purchase_orders'), JSON.stringify(genRows));
+
   console.log('\n[a client copy that lost its row link]');
   // The link from a delivery line to the job cost row it created lives in the
   // ORDER, and the client only learns a newly minted one from the save's

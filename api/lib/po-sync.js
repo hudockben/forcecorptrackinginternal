@@ -23,6 +23,7 @@
  */
 
 const crypto = require('crypto');
+const { PO_GENERAL_DIVISION } = require('./auth');
 
 // How many times a losing writer re-reads and retries before giving up. Each
 // attempt is one round trip; a genuine pile-up on one division's list resolves
@@ -278,8 +279,16 @@ async function deletePORows(sql, companyCode, rowIds) {
  * every row the old project carried is removed before the new ones are written.
  */
 async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivision }) {
+  // An order filed under purchasing itself belongs to no job ledger, so it can
+  // carry no job — and daily_tracking's division CHECK does not admit
+  // 'purchase_orders' anyway. The page clears the job when the division
+  // changes, but that is client-side: a stale tab, a replayed request or any
+  // non-browser client with the same token can still send one. Without this the
+  // rows for the OLD job are deleted first and the insert that follows violates
+  // the constraint, so the request 500s having already destroyed them.
+  const lines = Array.isArray(po.lines) ? po.lines : [];
+  if (division === PO_GENERAL_DIVISION && po.project_id) po.project_id = '';
   const projectId = po.project_id || '';
-  const lines     = Array.isArray(po.lines) ? po.lines : [];
 
   const prevLines   = (prevPO && Array.isArray(prevPO.lines)) ? prevPO.lines : [];
   const movedJob    = Boolean(prevPO) && (prevPO.project_id || '') !== projectId;

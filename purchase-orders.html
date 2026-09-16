@@ -460,6 +460,21 @@ function esc(s) {
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+/**
+ * Escape a value for a JS string literal inside an HTML attribute.
+ *
+ * esc() is not enough here and never was: it turns ' into &#39;, which the HTML
+ * parser decodes back to ' before the JS parser ever sees the attribute — so
+ * for `onclick="f('...')"` it protects nothing. Ids are uid()-generated
+ * everywhere today, but the full-list PUT validates nothing about po.id or
+ * line.id, so a crafted id stored by any division user would land here and run
+ * in a purchasing session — which holds a carve-out into three divisions that
+ * the author does not. Backslash-escape first, then HTML-escape what is left.
+ */
+function jsAttr(v) {
+  return esc(String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 function fmt(n)  { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function qfmt(n) { const v = Number(n) || 0; return v % 1 === 0 ? v.toLocaleString('en-US') : v.toLocaleString('en-US', { maximumFractionDigits: 3 }); }
@@ -726,6 +741,12 @@ async function loadDocCounts() {
 const _saveTimers  = {};
 let   _inflight    = 0;
 
+// Orders whose latest save did NOT reach the server. Two jobs: the poll must
+// not overwrite them with the server's older copy — losing the edit with no
+// prompt and no way back — and the poll retries them, so a save lost to a
+// dropped connection lands on its own once the signal returns.
+const _unsaved = new Set();
+
 function poPayload(po) {
   const out = {};
   Object.keys(po).forEach(k => { if (k.charAt(0) !== '_') out[k] = po[k]; });
@@ -733,10 +754,16 @@ function poPayload(po) {
   return out;
 }
 
+/**
+ * Queue a save. Failures are reported and remembered, never thrown here —
+ * a debounce timer has nobody to throw to.
+ */
 function savePO(po, opts) {
   clearTimeout(_saveTimers[po.id]);
   const delay = (opts && opts.immediate) ? 0 : 500;
-  _saveTimers[po.id] = setTimeout(() => { _savePONow(po); }, delay);
+  _saveTimers[po.id] = setTimeout(() => {
+    _savePONow(po).catch(() => { /* reported by _savePONow; _unsaved holds it */ });
+  }, delay);
 }
 
 async function _savePONow(po) {
@@ -769,12 +796,23 @@ async function _savePONow(po) {
       _savedDivision[po.id] = po._division;
     }
 
+    _unsaved.delete(po.id);
     _inflight = Math.max(0, _inflight - 1);
     if (_inflight === 0) showSave('saved', 'Saved');
+    return po;
   } catch (err) {
+    // Remembered, so the poll keeps this copy instead of replacing it with the
+    // server's older one, and retries it on the next tick.
+    _unsaved.add(po.id);
     _inflight = Math.max(0, _inflight - 1);
     showSave('error', 'Not saved');
-    toast('Could not save ' + (po.po_number || 'the order') + ': ' + err.message, 'err');
+    toast('Could not save ' + (po.po_number || 'the order') + ': ' + err.message +
+          ' — it will be retried.', 'err');
+    // Rethrown so a caller awaiting this save learns it failed. commitScan told
+    // the user "Saved … with the receipt attached" for an order that was never
+    // written, because this swallowed the error and it fell through to the
+    // success path.
+    throw err;
   }
 }
 
@@ -961,16 +999,32 @@ function setLineField(poId, lineId, field, value) {
 function updateTotalsInPlace(po, line) {
   const tot = poTotals(po);
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+
   if (line) {
     const amt = lineAmt(line), tax = lineTax(line);
-    set('l-amt-' + line.id, amt > 0 ? '$' + fmt(amt) : '—');
-    set('l-tax-' + line.id, tax > 0 ? '$' + fmt(tax) : '');
-    set('l-tot-' + line.id, (amt + tax) > 0 ? '$' + fmt(amt + tax) : '—');
+    // Both surfaces. The table and the card editor are both in the document at
+    // all times — only one is displayed — so updating a single prefix leaves
+    // whichever the user is actually looking at frozen.
+    ['tbl', 'card'].forEach(sfc => {
+      set(sfc + '-amt-' + line.id, amt > 0 ? '$' + fmt(amt) : '—');
+      set(sfc + '-tax-' + line.id, tax > 0 ? '$' + fmt(tax) : '');
+      set(sfc + '-tot-' + line.id, (amt + tax) > 0 ? '$' + fmt(amt + tax) : '—');
+    });
   }
+
   set('po-qty-' + po.id, tot.qty > 0 ? qfmt(tot.qty) : '—');
   set('po-amt-' + po.id, tot.amt > 0 ? '$' + fmt(tot.amt) : '—');
   set('po-tot-' + po.id, tot.total > 0 ? '$' + fmt(tot.total) : '—');
   set('card-tot-' + po.id, '$' + fmt(tot.total));
+
+  // The RUNNING TOTAL under a multi-delivery order. Without this it kept the
+  // pre-edit figures while the order's header total moved, so the two
+  // disagreed on screen — and somebody reconciling against an invoice read the
+  // wrong sub-total — until an unrelated re-render happened to run.
+  set('run-qty-' + po.id, qfmt(tot.qty));
+  set('run-amt-' + po.id, '$' + fmt(tot.amt));
+  set('run-tax-' + po.id, '$' + fmt(tot.tax));
+  set('run-tot-' + po.id, '$' + fmt(tot.total));
 }
 
 /* ═══════════════════════════════════════════
@@ -1027,7 +1081,7 @@ function divisionSelectHTML(po) {
     .concat(sourceDivs.map(d =>
       '<option value="' + esc(d.division) + '"' + (po._division === d.division ? ' selected' : '') + '>' + esc(d.label) + '</option>'));
   return '<select ' + (perm.canEdit ? '' : 'disabled ') +
-    'onchange="setDivision(\'' + po.id + '\', this.value)" aria-label="Division">' + opts.join('') + '</select>';
+    'onchange="setDivision(\'' + jsAttr(po.id) + '\', this.value)" aria-label="Division">' + opts.join('') + '</select>';
 }
 
 function projectSelectHTML(po) {
@@ -1046,7 +1100,7 @@ function projectSelectHTML(po) {
     opts.push('<option value="' + esc(po.project_id) + '" selected>' + esc(po.project_id) + ' (missing)</option>');
   }
   return '<select ' + (perm.canEdit ? '' : 'disabled ') +
-    'onchange="setProject(\'' + po.id + '\', this.value)" aria-label="Job">' + opts.join('') + '</select>';
+    'onchange="setProject(\'' + jsAttr(po.id) + '\', this.value)" aria-label="Job">' + opts.join('') + '</select>';
 }
 
 function subCodeSelectHTML(po) {
@@ -1067,7 +1121,7 @@ function subCodeSelectHTML(po) {
       esc([po.cost_code, po.sub_code].filter(Boolean).join(' / ')) + ' (not on this job)</option>');
   }
   return '<select ' + (perm.canEdit ? '' : 'disabled ') +
-    'onchange="setSubCode(\'' + po.id + '\', this.value)" aria-label="Cost and sub code">' + opts.join('') + '</select>';
+    'onchange="setSubCode(\'' + jsAttr(po.id) + '\', this.value)" aria-label="Cost and sub code">' + opts.join('') + '</select>';
 }
 
 function statusSelectHTML(po) {
@@ -1075,12 +1129,12 @@ function statusSelectHTML(po) {
   const opts = [['pending','Pending'],['approved','Approved'],['closed','Closed']]
     .map(o => '<option value="' + o[0] + '"' + (cur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('');
   return '<select ' + (perm.canEdit ? '' : 'disabled ') +
-    'onchange="setField(\'' + po.id + '\', \'status\', this.value)" aria-label="Status">' + opts + '</select>';
+    'onchange="setField(\'' + jsAttr(po.id) + '\', \'status\', this.value)" aria-label="Status">' + opts + '</select>';
 }
 
 function docBtnHTML(po) {
   const n = docCounts[po.id] || 0;
-  return '<button class="icon-btn' + (n ? ' has' : '') + '" onclick="openDocs(\'' + po.id + '\')" ' +
+  return '<button class="icon-btn' + (n ? ' has' : '') + '" onclick="openDocs(\'' + jsAttr(po.id) + '\')" ' +
     'title="' + (n ? n + ' attached' : 'Attach a receipt') + '">&#128206;' + (n || '') + '</button>';
 }
 
@@ -1089,31 +1143,42 @@ function divChipHTML(key) {
     esc(divLabel(key)) + '</span>';
 }
 
-function lineRowsHTML(po) {
+/**
+ * Delivery rows for one order.
+ *
+ * `surface` prefixes the cell ids. Both the desktop table and the phone card
+ * editor render these into the live document — the media query only sets
+ * display:none, so both trees always exist — and without the prefix each id
+ * existed twice. getElementById returns the first match, which is the hidden
+ * desktop table, so on a phone the Amount, Tax and Total a user was typing
+ * into never moved off "—" while the order's headline total did.
+ */
+function lineRowsHTML(po, surface) {
+  const cell = (kind, id) => (surface || 'tbl') + '-' + kind + '-' + id;
   return (po.lines || []).map(l => {
     const amt = lineAmt(l), tax = lineTax(l);
     const inp = (field, type, val, extra) =>
       '<input type="' + type + '" class="boxed" value="' + esc(val == null ? '' : val) + '" ' +
       (perm.canEdit ? '' : 'disabled ') + (extra || '') +
-      ' oninput="setLineField(\'' + po.id + '\',\'' + l.id + '\',\'' + field + '\', this.value)">';
+      ' oninput="setLineField(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\',\'' + field + '\', this.value)">';
     return '<tr>' +
       '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + '</td>' +
       '<td style="min-width:118px">' + inp('date','date', l.date) + '</td>' +
       '<td style="min-width:74px">'  + inp('qty','number', l.qty, 'step="any" placeholder="0"') + '</td>' +
       '<td style="min-width:92px">'  + inp('unit_cost','number', l.unit_cost, 'step="any" placeholder="0.00"') + '</td>' +
-      '<td class="r" style="color:var(--ok)" id="l-amt-' + l.id + '">' + (amt > 0 ? '$' + fmt(amt) : '—') + '</td>' +
+      '<td class="r" style="color:var(--ok)" id="' + cell('amt', l.id) + '">' + (amt > 0 ? '$' + fmt(amt) : '—') + '</td>' +
       '<td style="min-width:92px">' +
         '<div style="display:flex;align-items:center;gap:0.15rem">' +
           inp('tax_pct','number', l.tax_pct, 'step="any" placeholder="0"') +
           '<span style="color:var(--muted);font-size:0.72rem">%</span></div>' +
-        '<div class="r" style="font-size:0.62rem;color:var(--muted);padding-right:0.6rem" id="l-tax-' + l.id + '">' +
+        '<div class="r" style="font-size:0.62rem;color:var(--muted);padding-right:0.6rem" id="' + cell('tax', l.id) + '">' +
           (tax > 0 ? '$' + fmt(tax) : '') + '</div>' +
       '</td>' +
-      '<td class="r" style="color:var(--yellow);font-weight:600" id="l-tot-' + l.id + '">' +
+      '<td class="r" style="color:var(--yellow);font-weight:600" id="' + cell('tot', l.id) + '">' +
         ((amt + tax) > 0 ? '$' + fmt(amt + tax) : '—') + '</td>' +
       '<td style="min-width:120px">' + inp('employee','text', l.employee, 'placeholder="Received by" list="employee-list"') + '</td>' +
       '<td style="width:30px;text-align:center">' +
-        (perm.canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + po.id + '\',\'' + l.id + '\')" title="Remove delivery">&#10005;</button>' : '') +
+        (perm.canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
       '</td></tr>';
   }).join('');
 }
@@ -1124,10 +1189,10 @@ function linesPanelHTML(po, colspan) {
   const totalRow = count > 1
     ? '<tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.03)">' +
         '<td colspan="2" style="font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ' + count + ' deliveries</td>' +
-        '<td class="r" style="font-weight:700">' + qfmt(tot.qty) + '</td><td></td>' +
-        '<td class="r" style="color:var(--ok);font-weight:700">$' + fmt(tot.amt) + '</td>' +
-        '<td class="r" style="color:var(--muted);font-weight:700">$' + fmt(tot.tax) + '</td>' +
-        '<td class="r" style="color:var(--yellow);font-weight:700">$' + fmt(tot.total) + '</td>' +
+        '<td class="r" style="font-weight:700" id="run-qty-' + po.id + '">' + qfmt(tot.qty) + '</td><td></td>' +
+        '<td class="r" style="color:var(--ok);font-weight:700" id="run-amt-' + po.id + '">$' + fmt(tot.amt) + '</td>' +
+        '<td class="r" style="color:var(--muted);font-weight:700" id="run-tax-' + po.id + '">$' + fmt(tot.tax) + '</td>' +
+        '<td class="r" style="color:var(--yellow);font-weight:700" id="run-tot-' + po.id + '">$' + fmt(tot.total) + '</td>' +
         '<td colspan="2"></td></tr>'
     : '';
   return '<td colspan="' + colspan + '" style="padding:0;border-bottom:2px solid var(--border)">' +
@@ -1137,17 +1202,17 @@ function linesPanelHTML(po, colspan) {
         '<thead><tr><th>Invoice / Ticket #</th><th>Delivery Date</th><th>Qty</th><th>Unit Cost</th>' +
         '<th style="text-align:right">Amount</th><th>Tax %</th><th style="text-align:right">Total</th>' +
         '<th>Received By</th><th></th></tr></thead>' +
-        '<tbody>' + lineRowsHTML(po) + '</tbody>' + totalRow +
+        '<tbody>' + lineRowsHTML(po, 'tbl') + '</tbody>' + totalRow +
       '</table></div>' +
       '<div style="display:flex;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap">' +
-        (perm.canEdit ? '<button class="btn" onclick="addLine(\'' + po.id + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem;background:rgba(129,140,248,0.12);border-color:rgba(129,140,248,0.35);color:var(--green)">+ Add Delivery</button>' : '') +
-        (perm.canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + po.id + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem">&#128247; Scan a receipt into this order</button>' : '') +
+        (perm.canEdit ? '<button class="btn" onclick="addLine(\'' + jsAttr(po.id) + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem;background:rgba(129,140,248,0.12);border-color:rgba(129,140,248,0.35);color:var(--green)">+ Add Delivery</button>' : '') +
+        (perm.canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + jsAttr(po.id) + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem">&#128247; Scan a receipt into this order</button>' : '') +
       '</div>' +
       '<div style="margin-top:0.7rem">' +
         '<div class="section-label">Notes</div>' +
         '<input type="text" class="boxed" style="width:100%;padding:0.35rem 0.5rem" placeholder="Anything worth recording about this order" ' +
           (perm.canEdit ? '' : 'disabled ') + 'value="' + esc(po.notes || '') + '" ' +
-          'oninput="setField(\'' + po.id + '\',\'notes\', this.value)">' +
+          'oninput="setField(\'' + jsAttr(po.id) + '\',\'notes\', this.value)">' +
       '</div>' +
     '</div></td>';
 }
@@ -1177,25 +1242,25 @@ function renderTable(rows) {
       : '';
 
     const head = '<tr class="po-head">' +
-      '<td style="text-align:center;cursor:pointer" onclick="toggleLines(\'' + po.id + '\')">' +
+      '<td style="text-align:center;cursor:pointer" onclick="toggleLines(\'' + jsAttr(po.id) + '\')">' +
         '<span style="display:inline-block;transition:transform 0.15s;transform:rotate(' + (open ? 90 : 0) + 'deg)">&#9654;</span></td>' +
       '<td style="white-space:nowrap"><span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">' + esc(po.po_number) + '</span>' + badge + '</td>' +
       '<td><input type="date" class="boxed" value="' + esc(po.date_created || '') + '" ' + (perm.canEdit ? '' : 'disabled ') +
-        'onchange="setField(\'' + po.id + '\',\'date_created\', this.value)"></td>' +
+        'onchange="setField(\'' + jsAttr(po.id) + '\',\'date_created\', this.value)"></td>' +
       '<td>' + divisionSelectHTML(po) + '</td>' +
       '<td>' + projectSelectHTML(po) + '</td>' +
       '<td>' + subCodeSelectHTML(po) + '</td>' +
       '<td><input type="text" class="boxed" placeholder="Material / description" value="' + esc(po.title || '') + '" ' +
-        (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'title\', this.value)"></td>' +
+        (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></td>' +
       '<td><input type="text" class="boxed" list="vendor-list" placeholder="Vendor" value="' + esc(po.supplier || '') + '" ' +
-        (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'supplier\', this.value)"></td>' +
+        (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></td>' +
       '<td class="r" style="color:var(--muted)" id="po-qty-' + po.id + '">' + (tot.qty > 0 ? qfmt(tot.qty) : '—') + '</td>' +
       '<td class="r" style="color:var(--ok);white-space:nowrap" id="po-amt-' + po.id + '">' + (tot.amt > 0 ? '$' + fmt(tot.amt) : '—') + '</td>' +
       '<td class="r" style="color:var(--yellow);font-weight:600;white-space:nowrap" id="po-tot-' + po.id + '">' + (tot.total > 0 ? '$' + fmt(tot.total) : '—') + '</td>' +
       '<td>' + statusSelectHTML(po) + meta + '</td>' +
       '<td style="text-align:center">' + docBtnHTML(po) + '</td>' +
       '<td style="text-align:center">' +
-        (perm.canDelete ? '<button class="del-btn" onclick="deletePO(\'' + po.id + '\')" title="Delete order">&#10005;</button>' : '') +
+        (perm.canDelete ? '<button class="del-btn" onclick="deletePO(\'' + jsAttr(po.id) + '\')" title="Delete order">&#10005;</button>' : '') +
       '</td></tr>';
 
     const lines = open ? '<tr>' + linesPanelHTML(po, COLS) + '</tr>' : '';
@@ -1232,9 +1297,9 @@ function renderCards(rows) {
       '<div class="meta">' + divChipHTML(po._division) + ' ' + esc(jobLine) + (codes ? ' · ' + esc(codes) : '') + '</div>' +
       '<div class="amt" id="card-tot-' + po.id + '" style="margin-top:0.4rem">$' + fmt(tot.total) + '</div>' +
       '<div class="card-actions">' +
-        '<button class="btn" onclick="toggleLines(\'' + po.id + '\')">' + (open ? 'Hide' : 'Edit') + ' details</button>' +
-        '<button class="icon-btn' + (n ? ' has' : '') + '" onclick="openDocs(\'' + po.id + '\')" style="padding:0.38rem 0.6rem">&#128206; ' + (n || 'Attach') + '</button>' +
-        (perm.canDelete ? '<button class="btn" onclick="deletePO(\'' + po.id + '\')" style="color:var(--red)">Delete</button>' : '') +
+        '<button class="btn" onclick="toggleLines(\'' + jsAttr(po.id) + '\')">' + (open ? 'Hide' : 'Edit') + ' details</button>' +
+        '<button class="icon-btn' + (n ? ' has' : '') + '" onclick="openDocs(\'' + jsAttr(po.id) + '\')" style="padding:0.38rem 0.6rem">&#128206; ' + (n || 'Attach') + '</button>' +
+        (perm.canDelete ? '<button class="btn" onclick="deletePO(\'' + jsAttr(po.id) + '\')" style="color:var(--red)">Delete</button>' : '') +
       '</div>' +
       (open ? '<div style="margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.6rem">' + cardEditorHTML(po) + '</div>' : '') +
     '</div>';
@@ -1248,13 +1313,13 @@ function cardEditorHTML(po) {
     '<div class="field"><label>Cost / Sub Code</label>' + subCodeSelectHTML(po) + '</div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Date</label><input type="date" value="' + esc(po.date_created || '') + '" ' +
-        (perm.canEdit ? '' : 'disabled ') + 'onchange="setField(\'' + po.id + '\',\'date_created\', this.value)"></div>' +
+        (perm.canEdit ? '' : 'disabled ') + 'onchange="setField(\'' + jsAttr(po.id) + '\',\'date_created\', this.value)"></div>' +
       '<div class="field"><label>Status</label>' + statusSelectHTML(po) + '</div>' +
     '</div>' +
     '<div class="field"><label>Description</label><input type="text" value="' + esc(po.title || '') + '" ' +
-      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'title\', this.value)"></div>' +
+      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></div>' +
     '<div class="field"><label>Vendor</label><input type="text" list="vendor-list" value="' + esc(po.supplier || '') + '" ' +
-      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'supplier\', this.value)"></div>' +
+      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></div>' +
     '<div class="section-label">Deliveries</div>' +
     '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:700px">' +
       '<thead><tr><th style="text-align:left;font-size:0.62rem;color:var(--muted)">Invoice</th>' +
@@ -1265,13 +1330,13 @@ function cardEditorHTML(po) {
       '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Tax %</th>' +
       '<th style="text-align:right;font-size:0.62rem;color:var(--muted)">Total</th>' +
       '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Received By</th><th></th></tr></thead>' +
-      '<tbody>' + lineRowsHTML(po) + '</tbody></table></div>' +
+      '<tbody>' + lineRowsHTML(po, 'card') + '</tbody></table></div>' +
     '<div style="display:flex;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap">' +
-      (perm.canEdit ? '<button class="btn" onclick="addLine(\'' + po.id + '\')">+ Delivery</button>' : '') +
-      (perm.canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + po.id + '\')">&#128247; Scan receipt</button>' : '') +
+      (perm.canEdit ? '<button class="btn" onclick="addLine(\'' + jsAttr(po.id) + '\')">+ Delivery</button>' : '') +
+      (perm.canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + jsAttr(po.id) + '\')">&#128247; Scan receipt</button>' : '') +
     '</div>' +
     '<div class="field" style="margin-top:0.7rem"><label>Notes</label><input type="text" value="' + esc(po.notes || '') + '" ' +
-      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'notes\', this.value)"></div>';
+      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'notes\', this.value)"></div>';
 }
 
 function render() {
@@ -1490,10 +1555,17 @@ async function attachToPO(po, blob, filename, note) {
 /* ═══════════════════════════════════════════
    SCAN SHEET
 ═══════════════════════════════════════════ */
-let scanState = null;   // { dataUrl, blob, filename, receipt, targetPoId }
+let scanState = null;   // { dataUrl, blob, filename, receipt, targetPoId, token }
+
+// Which scan is current. Every scan takes a number, and a reply whose number is
+// no longer the live one is dropped — that is what stops an abandoned scan
+// re-opening the sheet, and what stops two scans crossing receipt #1's figures
+// with receipt #2's photo.
+let _scanToken = 0;
 
 function closeScan() {
   document.getElementById('scan-backdrop').classList.remove('open');
+  _scanToken++;          // whatever is in flight is no longer wanted
   scanState = null;
 }
 
@@ -1509,10 +1581,19 @@ async function openScanSheet() { await beginScan(null); }
 /** Row entry point: a photo becomes another delivery on an existing order. */
 async function scanIntoPO(poId) { await beginScan(poId); }
 
+/** Guard against a double tap on Create/Add booking the same receipt twice. */
+let _committing = false;
+
 async function beginScan(targetPoId) {
   if (!perm.canEdit) return;
   const file = await pickImage('receipt-capture');
   if (!file) return;
+
+  // This scan's number. Every step below checks it is still the live one before
+  // touching the screen, so a scan the user dismissed — or one they replaced by
+  // starting another — finishes quietly instead of taking the page over.
+  const token = ++_scanToken;
+  const live  = () => _scanToken === token;
 
   renderScanSheet(
     '<h2>Reading the receipt</h2>' +
@@ -1523,12 +1604,14 @@ async function beginScan(targetPoId) {
   try {
     shot = await downscaleImage(file, 1600);
   } catch (err) {
+    if (!live()) return;
     renderScanSheet(
       '<h2>Could not read that photo</h2>' +
       '<div class="scan-status err">' + esc(err.message) + '</div>' +
       '<div class="sheet-actions"><button class="btn" onclick="closeScan()">Close</button></div>');
     return;
   }
+  if (!live()) return;
 
   scanState = {
     dataUrl: shot.dataUrl,
@@ -1536,6 +1619,7 @@ async function beginScan(targetPoId) {
     filename: 'receipt-' + localDateStr() + '-' + Date.now().toString(36) + '.jpg',
     receipt: null,
     targetPoId: targetPoId || null,
+    token,
   };
 
   let receipt = null, scanError = null;
@@ -1549,6 +1633,10 @@ async function beginScan(targetPoId) {
   } catch (err) {
     scanError = err.message;
   }
+
+  // Dismissed, or replaced by a later scan, while the model was reading. Say
+  // nothing and touch nothing.
+  if (!live()) return;
 
   // A scan that failed is not a dead end: the photo is still worth attaching
   // and the fields are still worth typing, so the form opens either way.
@@ -1615,7 +1703,8 @@ function renderScanForm(receipt, scanError) {
         '<input type="number" step="any" id="sc-total" value="' + esc(val(r.total)) + '"></div>' +
     '</div>' +
     '<div class="sub" id="sc-hint" style="margin-bottom:0">' +
-      'Leave Qty blank and the order is booked as one line at the total shown.</div>' +
+      'Qty and Unit Cost go together — with either missing, the order is booked ' +
+      'as one line at the Total shown.</div>' +
     '<div class="sheet-actions">' +
       '<button class="btn" onclick="closeScan()">Cancel</button>' +
       '<button class="btn btn-green" id="sc-save" onclick="commitScan()">' +
@@ -1654,6 +1743,11 @@ function onScanProject(projId) {
  * what the document endpoint checks before letting purchasing write there.
  */
 async function commitScan() {
+  // A second tap before the first finishes would raise a second order from the
+  // same receipt. The button is disabled below, but a phone can register both
+  // taps before the handler runs.
+  if (_committing || !scanState) return;
+  _committing = true;
   const btn = document.getElementById('sc-save');
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving…'; }
 
@@ -1662,14 +1756,29 @@ async function commitScan() {
   const total = parseFloat(document.getElementById('sc-total').value);
   const taxPct = document.getElementById('sc-taxpct').value;
 
-  // With no quantity there is still a bill to book, so the order goes in as a
-  // single unit priced at the total — the same shape the division tabs produce
-  // for a one-off purchase, and it keeps the job cost right.
+  // A line is only worth money when it has BOTH a quantity and a unit cost:
+  // amount is one times the other, so either alone books the delivery at zero
+  // while the job is charged for a real load. A thermal ticket printing
+  // "8.5 TON" with the price column illegible produces exactly that, and so
+  // does anyone tabbing past one of the two fields.
+  //
+  // So the fallback fires whenever the pair is incomplete and a total is
+  // known: the order goes in as a single unit priced at the total, which is
+  // the shape the division tabs produce for a one-off purchase and keeps the
+  // job cost right.
   let lineQty = qty, lineUnit = unit;
-  if (!lineQty && !lineUnit && !isNaN(total)) {
+  const pairIncomplete = !lineQty || !lineUnit;
+  if (pairIncomplete && !isNaN(total)) {
     const pct = parseFloat(taxPct);
     lineQty = '1';
     lineUnit = String(!isNaN(pct) && pct > 0 ? total / (1 + pct / 100) : total);
+  } else if (pairIncomplete) {
+    // No total either — there is no amount to book. Better to say so than to
+    // write a $0 delivery that reads as a real material entry on the job.
+    _committing = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Create order'; }
+    toast('Enter a Total, or both Qty and Unit Cost — otherwise the order books at $0.', 'err');
+    return;
   }
 
   const line = Object.assign(newLine(), {
@@ -1715,8 +1824,14 @@ async function commitScan() {
       await _savePONow(po);
     }
   } catch (err) {
+    // _savePONow rethrows now, so this catches a save that never landed. It
+    // used to swallow everything and fall through to "Saved … with the receipt
+    // attached" for an order that was never written — and scanState is nulled
+    // on close, so the photo was gone and there was no way to retry. The sheet
+    // stays open with the figures intact.
+    _committing = false;
     if (btn) { btn.disabled = false; btn.textContent = 'Try again'; }
-    toast('Could not save the order: ' + err.message, 'err');
+    toast('Could not save the order: ' + err.message + ' — nothing was saved. Try again.', 'err');
     return;
   }
 
@@ -1728,6 +1843,7 @@ async function commitScan() {
     attachError = err.message;
   }
 
+  _committing = false;
   closeScan();
   page = 0;
   render();
@@ -1770,7 +1886,7 @@ async function openDocs(poId) {
           '<div style="min-width:0"><div style="font-size:0.84rem;word-break:break-all">' + esc(d.filename) + '</div>' +
           '<div style="font-size:0.7rem;color:var(--muted)">' + esc(d.uploaded_by || '') +
             (d.uploaded_at ? ' · ' + esc(new Date(d.uploaded_at).toLocaleDateString('en-US')) : '') + '</div></div>' +
-          '<button class="btn" onclick="openDoc(\'' + esc(po._division) + '\',\'' + esc(d.id) + '\',\'' + esc(po.id) + '\')">Open</button>' +
+          '<button class="btn" onclick="openDoc(\'' + jsAttr(po._division) + '\',\'' + jsAttr(d.id) + '\',\'' + jsAttr(po.id) + '\')">Open</button>' +
         '</div>').join('')
     : '<div style="color:var(--muted);font-size:0.82rem;padding:0.5rem 0">Nothing attached yet.</div>';
 
@@ -1782,7 +1898,7 @@ async function openDocs(poId) {
     (loadError ? '<div class="scan-status err">' + esc(loadError) + '</div>' : list) +
     '<div class="sheet-actions">' +
       '<button class="btn" onclick="closeDocs()">Close</button>' +
-      (perm.canEdit ? '<button class="btn btn-green" id="doc-add" onclick="addAttachment(\'' + po.id + '\')">+ Add photo or file</button>' : '') +
+      (perm.canEdit ? '<button class="btn btn-green" id="doc-add" onclick="addAttachment(\'' + jsAttr(po.id) + '\')">+ Add photo or file</button>' : '') +
     '</div>';
 }
 
@@ -1827,17 +1943,22 @@ async function addAttachment(poId) {
   }
 }
 
-/* Close a sheet by clicking its backdrop, the way the other pages' modals do. */
-['scan-backdrop', 'docs-backdrop'].forEach(id => {
-  document.getElementById(id).addEventListener('click', function (e) {
-    if (e.target === this) this.classList.remove('open');
-  });
+/* Close a sheet by clicking its backdrop, the way the other pages' modals do.
+   The scan sheet goes through closeScan() rather than just hiding itself: a
+   dismissal while the spinner is up has to CANCEL the scan, or the reply lands
+   a few seconds later, re-opens the sheet over whatever the user moved on to,
+   and — if they started a second scan meanwhile — renders the first receipt's
+   figures against the second receipt's photo and order. */
+document.getElementById('scan-backdrop').addEventListener('click', function (e) {
+  if (e.target === this) closeScan();
+});
+document.getElementById('docs-backdrop').addEventListener('click', function (e) {
+  if (e.target === this) closeDocs();
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    document.getElementById('scan-backdrop').classList.remove('open');
-    document.getElementById('docs-backdrop').classList.remove('open');
-  }
+  if (e.key !== 'Escape') return;
+  if (document.getElementById('scan-backdrop').classList.contains('open')) closeScan();
+  if (document.getElementById('docs-backdrop').classList.contains('open')) closeDocs();
 });
 
 /* ═══════════════════════════════════════════
@@ -1853,10 +1974,12 @@ document.addEventListener('keydown', e => {
    without it a purchasing screen left open all morning shows the list as it
    was at login.
 
-   Nothing here risks a lost edit: this page saves one order at a time and the
-   server re-reads the stored list before merging, so a stale copy of an order
-   nobody touched can never be written back over a division's work. The poll is
-   about what is on screen.
+   Nothing here risks a lost edit. Saves go one order at a time and the server
+   re-reads the stored list before merging, so a stale copy of an order nobody
+   touched can never be written back over a division's work; and an order whose
+   save is still queued OR has failed keeps its local copy through the merge
+   below rather than being replaced by the server's older one. The poll is about
+   what is on screen.
 ═══════════════════════════════════════════ */
 (function () {
   const POLL_MS = 60_000;
@@ -1869,15 +1992,28 @@ document.addEventListener('keydown', e => {
     return Boolean(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
   }
 
-  /** Orders this page is still saving. Their local copy is the newer one. */
+  /**
+   * Orders whose local copy is newer than the server's: one with a debounce
+   * timer still to fire, and one whose save failed. Both have to survive the
+   * merge below or the poll quietly throws the user's typing away.
+   */
   function pendingIds() {
-    return new Set(Object.keys(_saveTimers));
+    return new Set(Object.keys(_saveTimers).concat([..._unsaved]));
   }
 
   async function poll() {
     if (document.visibilityState === 'hidden') return;
     if (_inflight > 0) return;          // a save is in the air; its result lands first
     if (isEditing()) return;
+
+    // Retry anything that failed to save. This is the only retry path there is:
+    // a save lost to a dropped connection at a supply counter otherwise sits
+    // unsaved until someone happens to edit that order again.
+    for (const id of [..._unsaved]) {
+      const po = purchaseOrders.find(p => p.id === id);
+      if (!po) { _unsaved.delete(id); continue; }
+      try { await _savePONow(po); } catch { /* stays in _unsaved for the next tick */ }
+    }
 
     let fetched;
     try {
@@ -1962,7 +2098,19 @@ document.addEventListener('keydown', e => {
 
   // Counts feed the paperclip badges, and are slow enough (one request per
   // division) that the table should not wait on them.
-  loadDocCounts().then(render);
+  // Counts feed the paperclip badges and arrive a second or two after the
+  // table. Re-rendering then would destroy whatever input the user had already
+  // started typing into, so it waits for them to finish — the same guard the
+  // poll uses. A badge is never worth a lost keystroke.
+  loadDocCounts().then(() => {
+    const el = document.activeElement;
+    const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+    if (typing) {
+      el.addEventListener('blur', () => render(), { once: true });
+      return;
+    }
+    render();
+  });
 })();
 </script>
 </body>

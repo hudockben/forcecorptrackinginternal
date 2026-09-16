@@ -324,6 +324,105 @@ console.log('\n[filtering]');
   assert('filters combine',                    ids("search=''; filters.vendor='Acme'; filters.status='pending';") === '1,3');
 }
 
+console.log('\n[a save that fails is never reported as success]');
+{
+  // commitScan told the user "Saved ... with the receipt attached" for an
+  // order that was never written, because _savePONow swallowed every error and
+  // execution fell through to the success toast. closeScan then nulled the
+  // photo, so there was nothing to retry with.
+  assert('a failed save is rethrown to whoever awaited it',
+    /throw err;\n  \}\n\}/.test(PAGE));
+  assert('the debounced path still handles its own failure',
+    /_savePONow\(po\)\.catch\(/.test(PAGE));
+  assert('commitScan says nothing was saved',
+    /nothing was saved\. Try again\./.test(PAGE));
+  assert('a failed order is remembered',  /_unsaved\.add\(po\.id\)/.test(PAGE));
+  assert('and forgotten once it lands',   /_unsaved\.delete\(po\.id\)/.test(PAGE));
+  assert('the poll retries it',           /for \(const id of \[\.\.\._unsaved\]\)/.test(PAGE));
+  assert('and keeps its local copy meanwhile',
+    /Object\.keys\(_saveTimers\)\.concat\(\[\.\.\._unsaved\]\)/.test(PAGE));
+  assert('a double tap cannot book the same receipt twice',
+    /if \(_committing \|\| !scanState\) return;/.test(PAGE));
+}
+
+console.log('\n[a scan the user walked away from]');
+{
+  assert('dismissing the sheet cancels the scan',
+    /if \(e\.target === this\) closeScan\(\);/.test(PAGE));
+  assert('Escape cancels it too',
+    /classList\.contains\('open'\)\) closeScan\(\)/.test(PAGE));
+  assert('every scan takes a number',   /const token = \+\+_scanToken;/.test(PAGE));
+  assert('closing retires it',          /_scanToken\+\+;/.test(PAGE));
+  // Without this, a reply for an abandoned scan re-opened the sheet over
+  // whatever the user had moved on to — and if they had started a second scan,
+  // rendered receipt #1's figures against receipt #2's photo and order.
+  assert('a late reply for a retired scan is dropped',
+    (PAGE.match(/if \(!live\(\)\) return;/g) || []).length >= 3);
+}
+
+console.log('\n[money the scan books]');
+{
+  const ctx = vm.createContext({ console });
+  vm.runInContext(requireFn(PAGE, 'lineAmt', 'purchase-orders.html'), ctx);
+  const amt = e => vm.runInContext(e, ctx);
+  // Amount is qty x unit cost, so either alone is zero — and lineHasCost is an
+  // OR, so a row still reaches the job. That is a real delivery charged at $0.
+  assert('a quantity with no unit cost is worth nothing',
+    amt("lineAmt({qty:'8.5', unit_cost:''})") === 0);
+  assert('and a unit cost with no quantity likewise',
+    amt("lineAmt({qty:'', unit_cost:'25'})") === 0);
+  assert('so the scan falls back whenever the pair is incomplete, not only when both are blank',
+    /const pairIncomplete = !lineQty \|\| !lineUnit;/.test(PAGE));
+  assert('and refuses rather than booking $0 when there is no total either',
+    /otherwise the order books at \$0/.test(PAGE));
+  assert('the hint no longer describes only the both-blank case',
+    /Qty and Unit Cost go together/.test(PAGE));
+}
+
+console.log('\n[totals on the surface the user is looking at]');
+{
+  // Both trees are always in the document — the media query only hides one — so
+  // an unprefixed id existed twice and getElementById always returned the
+  // desktop one. On a phone the line totals never moved.
+  assert('delivery cell ids are scoped per surface',
+    /function lineRowsHTML\(po, surface\)/.test(PAGE) &&
+    /const cell = \(kind, id\) => \(surface \|\| 'tbl'\)/.test(PAGE));
+  assert('the table asks for its own',  /lineRowsHTML\(po, 'tbl'\)/.test(PAGE));
+  assert('and the phone card for its own', /lineRowsHTML\(po, 'card'\)/.test(PAGE));
+  assert('an in-place update touches both',
+    /\['tbl', 'card'\]\.forEach\(sfc =>/.test(PAGE));
+  assert('the RUNNING TOTAL row updates too, instead of contradicting the header',
+    /set\('run-tot-' \+ po\.id/.test(PAGE) && /id="run-qty-' \+ po\.id/.test(PAGE));
+  assert('and the doc-count load waits rather than stealing focus',
+    /el\.addEventListener\('blur', \(\) => render\(\), \{ once: true \}\)/.test(PAGE));
+}
+
+console.log('\n[ids inside handler attributes]');
+{
+  const ctx = vm.createContext({});
+  vm.runInContext(requireFn(PAGE, 'esc', 'purchase-orders.html'), ctx);
+  vm.runInContext(requireFn(PAGE, 'jsAttr', 'purchase-orders.html'), ctx);
+  const enc = v => vm.runInContext('jsAttr(' + JSON.stringify(v) + ')', ctx);
+
+  // esc() alone is no protection inside onclick: it turns ' into &#39;, which
+  // the HTML parser decodes back to ' before the JS parser sees it.
+  const hostile = "x');alert(1);('";
+  const attr = new JSDOM(`<button onclick="deletePO('${enc(hostile)}')"></button>`)
+    .window.document.querySelector('button').getAttribute('onclick');
+  assert('a quote in an id cannot break out of the handler',
+    /^deletePO\('(?:[^'\\]|\\.)*'\)$/.test(attr), attr);
+  assert('a backslash cannot either',
+    /^deletePO\('(?:[^'\\]|\\.)*'\)$/.test(
+      new JSDOM(`<button onclick="deletePO('${enc('a\\b')}')"></button>`)
+        .window.document.querySelector('button').getAttribute('onclick')));
+  assert('an ordinary id is untouched', enc('abc123') === 'abc123');
+
+  // Ids are uid()-generated everywhere today, but the full-list PUT validates
+  // nothing about po.id or line.id — so a crafted one can reach this page.
+  const raw = PAGE.match(/(?:setDivision|setProject|setSubCode|setField|setLineField|deleteLine|deletePO|addLine|scanIntoPO|openDocs|toggleLines|addAttachment|openDoc)\(\\' \+ (?!jsAttr)[a-z]/g);
+  assert('every id in a handler goes through jsAttr', !raw, JSON.stringify(raw));
+}
+
 console.log('\n[an order re-tied after a page reload]');
 {
   // The bug this pins: _savedDivision was only written after a SAVE, so an

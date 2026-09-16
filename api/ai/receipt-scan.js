@@ -154,7 +154,17 @@ module.exports = async (req, res) => {
     const client  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const message = await client.messages.create({
       model:      'claude-opus-5',   // receipts are creased, thermal and badly lit — the flagship reads them
-      max_tokens: 1500,
+      // Thinking is ON BY DEFAULT on this model, and thinking tokens count
+      // against max_tokens. The 1500 this started at was a JSON-sized budget,
+      // which the reasoning alone could spend before a single field was
+      // emitted — leaving a truncated or empty response that surfaced as
+      // "Could not read that receipt" and blamed the photo.
+      max_tokens: 16000,
+      // Transcribing a printed ticket is extraction, not deep reasoning, and
+      // this runs on a phone at a supply counter where latency is the whole
+      // experience. Medium keeps the care a creased thermal receipt needs
+      // without the wait — and the endpoint has 60 seconds to answer in.
+      output_config: { effort: 'medium' },
       messages: [{
         role: 'user',
         content: [
@@ -163,6 +173,21 @@ module.exports = async (req, res) => {
         ],
       }],
     });
+
+    // stop_reason before content, always. A truncated or declined answer has
+    // content worth nothing, and parsing it raises an error that describes the
+    // wrong problem.
+    if (message.stop_reason === 'max_tokens') {
+      console.error('[ai/receipt-scan] truncated at max_tokens');
+      return res.status(502).json({
+        error: 'That receipt was too long to read in one go. Photograph it in sections.',
+      });
+    }
+    if (message.stop_reason === 'refusal') {
+      return res.status(422).json({
+        error: 'That photo could not be processed. Take a picture of the receipt itself and try again.',
+      });
+    }
 
     const text     = (message.content.find(c => c.type === 'text') || {}).text || '';
     const stripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
