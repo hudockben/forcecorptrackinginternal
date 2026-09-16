@@ -314,13 +314,25 @@ module.exports = async (req, res) => {
               }
             }
           }
+          // Advisory: it only decides whether a link is worth restoring. Its two
+          // siblings in this handler are wrapped and this was not, so a dropped
+          // connection on a lookup that changes nothing turned a save that used
+          // to succeed into a 500 with the blob unwritten — and the division
+          // tabs do not retry a non-409. On failure nothing is restored and
+          // nothing is deleted for this request; the next save reads it again.
           let liveRows = new Set();
+          let liveKnown = true;
           if (candidateRows.length) {
-            const found = await sql`
-              SELECT row_id FROM daily_tracking
-              WHERE company_code = ${companyCode} AND row_id = ANY(${candidateRows})
-            `;
-            liveRows = new Set(found.map(r => String(r.row_id)));
+            try {
+              const found = await sql`
+                SELECT row_id FROM daily_tracking
+                WHERE company_code = ${companyCode} AND row_id = ANY(${candidateRows})
+              `;
+              liveRows = new Set(found.map(r => String(r.row_id)));
+            } catch (err) {
+              liveKnown = false;
+              console.error('[purchase-orders] could not check cost rows, skipping relink:', err.message);
+            }
           }
 
           toWrite = toWrite.map(po => {
@@ -353,7 +365,7 @@ module.exports = async (req, res) => {
             const jobMoved = String(po.project_id || '') !== String(was.project_id || '');
             let relinked = 0;
             const superseded = [];
-            const kept = jobMoved ? mine : mine.map(l => {
+            const kept = (jobMoved || !liveKnown) ? mine : mine.map(l => {
               if (!l || !l.id) return l;
               const before = wasById.get(l.id);
               if (!before || !before.po_row_id) return l;
@@ -363,14 +375,51 @@ module.exports = async (req, res) => {
               // The row the tab minted from its stale copy. Nothing references
               // it once the stored link is back, and it would charge the job on
               // its own, so it goes with the merge.
-              if (l.po_row_id) superseded.push(String(l.po_row_id));
+              //
+              // Carried with the ORDER's project and PO number, because the id
+              // itself comes from the request body and daily_tracking.row_id is
+              // unique across the whole company. Deleting on the id alone let a
+              // caller with a role in one division name any cost row in the
+              // tenant — paving's labour, kiewit's equipment — and have it
+              // destroyed by a save that answered 200. The row has to prove it
+              // is this order's before it can be removed. Same reasoning as
+              // ownsRow in po-sync.js, which the POST path has had all along.
+              if (l.po_row_id) {
+                superseded.push({
+                  rowId:     String(l.po_row_id),
+                  projectId: String(po.project_id || ''),
+                  poNum:     String(po.po_number  || ''),
+                });
+              }
               relinked++;
               return { ...l, po_row_id: before.po_row_id };
             });
             if (superseded.length) supersededRows.push(...superseded);
 
             mergedLinks += relinked;
-            const missing = was.lines.filter(l => l && l.id && !have.has(l.id));
+
+            // A delivery this client never saw. When the JOB moved it cannot
+            // keep its link either: that row is on the old job, and because the
+            // link reads as present _ensurePOLineRow never mints a replacement
+            // on the new one — so the new job is never charged for the
+            // delivery while the old job still is. The guard above covered the
+            // relinked lines and this arm of the same block was left out.
+            const missing = was.lines
+              .filter(l => l && l.id && !have.has(l.id))
+              .map(l => {
+                if (!jobMoved || !l.po_row_id) return l;
+                // Removed with the move, the way the tab removes the rows for
+                // the lines it did hold. Matched against the OLD job, which is
+                // where the row actually sits.
+                if (!/^ts\d+-/.test(String(l.po_row_id))) {
+                  supersededRows.push({
+                    rowId:     String(l.po_row_id),
+                    projectId: String(was.project_id || ''),
+                    poNum:     String(was.po_number  || po.po_number || ''),
+                  });
+                }
+                return { ...l, po_row_id: null };
+              });
             if (!missing.length && !relinked) return po;
             mergedLines += missing.length;
             return { ...po, lines: kept.concat(missing) };
@@ -397,14 +446,28 @@ module.exports = async (req, res) => {
       // would lose the delivery's cost outright if the write then failed.
       // Payroll-injected rows are never ours to remove, the same exclusion
       // _syncPOs' orphan sweep makes.
-      const dropRows = supersededRows.filter(id => id && !/^ts\d+-/.test(String(id)));
+      const dropRows = supersededRows.filter(r =>
+        r && r.rowId && r.projectId && !/^ts\d+-/.test(r.rowId));
       if (dropRows.length) {
         try {
+          // Every column is checked, not just the id: the division this request
+          // was authorised for, the ORDER's own project and PO number, a
+          // material row, and no timesheet behind it. A row that fails any of
+          // them is not this order's duplicate, whatever the request called it.
           await sql`
-            DELETE FROM daily_tracking
-            WHERE company_code = ${companyCode} AND row_id = ANY(${dropRows})
+            DELETE FROM daily_tracking d
+            USING  unnest(${dropRows.map(r => r.rowId)}::text[],
+                          ${dropRows.map(r => r.projectId)}::text[],
+                          ${dropRows.map(r => r.poNum)}::text[]) AS t(row_id, project_id, po_num)
+            WHERE  d.company_code = ${companyCode}
+              AND  d.division     = ${division}
+              AND  d.row_id       = t.row_id
+              AND  d.project_id   = t.project_id
+              AND  COALESCE(d.po_num, '') = t.po_num
+              AND  d.field_type   = 'Material'
+              AND  d.timesheet_entry_id IS NULL
           `;
-          console.warn(`[purchase-orders] removed ${dropRows.length} duplicate cost row(s) a stale copy minted for ${blobKey}`);
+          console.warn(`[purchase-orders] removed up to ${dropRows.length} duplicate cost row(s) a stale copy minted for ${blobKey}`);
         } catch (err) {
           console.error('[purchase-orders] could not remove duplicate cost rows:', err.message);
         }

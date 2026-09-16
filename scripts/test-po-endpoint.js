@@ -618,6 +618,59 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       check('and only after the blob write has landed',
         seen.findIndex(c => /^INSERT INTO app_data/.test(c.q)) <
         seen.findIndex(c => /^DELETE FROM daily_tracking/.test(c.q)));
+      // The id comes from the REQUEST BODY and daily_tracking.row_id is unique
+      // across the whole company, so the id alone can never be what authorises
+      // the delete. Every other column has to agree as well.
+      check('and the delete is scoped past the row id alone',
+        Boolean(del) &&
+        /d\.division\s*=/.test(del.q) && /d\.project_id\s*=\s*t\.project_id/.test(del.q) &&
+        /COALESCE\(d\.po_num, ''\) = t\.po_num/.test(del.q) &&
+        /d\.field_type\s*=\s*'Material'/.test(del.q) &&
+        /d\.timesheet_entry_id IS NULL/.test(del.q), del ? del.q : 'no DELETE issued');
+      check('and carries the order\'s own project and number to check against',
+        Boolean(del) && JSON.stringify(del.vals).includes('job1') &&
+        JSON.stringify(del.vals).includes('PO-0001'), del ? JSON.stringify(del.vals) : '');
+    }
+    {
+      // The attack the scoping exists for. A caller with a role in ONE division
+      // names another division's cost row as their line's link. Before the
+      // scoping, the id went straight into a DELETE guarded only by
+      // company_code, and the request answered 200.
+      const STORED = [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1',
+          lines: [{ id: 'L1', po_row_id: 'row-server' }] },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED, updated_at: new Date(T_MOVED) }]);
+        }
+        if (/^SELECT row_id FROM daily_tracking/.test(q)) return Promise.resolve([{ row_id: 'row-server' }]);
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', project_id: 'job1',
+                                                 lines: [{ id: 'L1', po_row_id: 'paving-labour-row-42' }] }],
+                              baseUpdatedAt: T_READ } }, res);
+      const del = seen.find(c => /^DELETE FROM daily_tracking/.test(c.q));
+      // The id is still named — it has to be, it is what the client sent — but
+      // the statement can only match a row that is in THIS division, on THIS
+      // order's job, under THIS order's number, and is a material row with no
+      // timesheet behind it. A foreign row satisfies none of that.
+      check('a foreign row id cannot be deleted on the strength of the id alone',
+        !del || (/d\.division\s*=/.test(del.q) && /d\.project_id\s*=\s*t\.project_id/.test(del.q) &&
+                 /d\.timesheet_entry_id IS NULL/.test(del.q)),
+        del ? del.q : 'no DELETE issued');
+      check('and it is checked against this order, not the one the body claims',
+        !del || (JSON.stringify(del.vals).includes('turf') &&
+                 JSON.stringify(del.vals).includes('job1')),
+        del ? JSON.stringify(del.vals) : '');
     }
     {
       // The opposite reading of the same null. When somebody deletes a
@@ -689,6 +742,87 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
         !line.po_row_id, JSON.stringify(line));
       check('and nothing is reported as relinked', res.body && res.body.mergedLinks === 0,
         JSON.stringify(res.body));
+    }
+    {
+      // A merged-back delivery cannot keep its link either when the job moved.
+      // The guard covered the relinked lines and this arm of the same block was
+      // left out: the line kept a link to a row on the OLD job, and because the
+      // link reads as present nothing ever minted a replacement — the new job
+      // was never charged while the old one still was.
+      const STORED = [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1',
+          lines: [{ id: 'L1', po_row_id: 'row-old-1' }, { id: 'L2', po_row_id: 'row-old-2' }] },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED, updated_at: new Date(T_MOVED) }]);
+        }
+        if (/^SELECT row_id FROM daily_tracking/.test(q)) return Promise.resolve([]);
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      // The tab re-tied the order to job2, clearing the links on the line it
+      // held. L2 it never saw at all.
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', project_id: 'job2',
+                                                 lines: [{ id: 'L1', po_row_id: null }] }],
+                              baseUpdatedAt: T_READ } }, res);
+      const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+      const lines = (JSON.parse(hit.vals[1])[0] || {}).lines || [];
+      const l2 = lines.find(l => l.id === 'L2');
+      check('the unseen delivery still survives the move', Boolean(l2), JSON.stringify(lines));
+      check('but not with its link to the old job',
+        Boolean(l2) && !l2.po_row_id, JSON.stringify(l2));
+      const del = seen.find(c => /^DELETE FROM daily_tracking/.test(c.q));
+      check('and the old job\'s row is taken out with the move',
+        Boolean(del) && JSON.stringify(del.vals).includes('row-old-2') &&
+        JSON.stringify(del.vals).includes('job1'),
+        del ? JSON.stringify(del.vals) : 'no DELETE issued');
+    }
+    {
+      // The existence lookup is advisory — it only decides whether a link is
+      // worth restoring. A dropped connection on it must not discard the whole
+      // save: the division tabs do not retry a non-409, so the user's edits
+      // would only reach the server if they happened to type again.
+      const STORED = [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1',
+          lines: [{ id: 'L1', po_row_id: 'row-server' }] },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT row_id FROM daily_tracking/.test(q)) {
+          return Promise.reject(new Error('connection terminated'));
+        }
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED, updated_at: new Date(T_MOVED) }]);
+        }
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', project_id: 'job1',
+                                                 lines: [{ id: 'L1', po_row_id: 'row-tab' }] }],
+                              baseUpdatedAt: T_READ } }, res);
+      check('a failed existence check does not fail the save', res.statusCode === 200,
+        res.statusCode + ' ' + JSON.stringify(res.body));
+      check('and the blob is still written',
+        seen.some(c => /^INSERT INTO app_data/.test(c.q)));
+      // Nothing is restored and nothing destroyed on a state nobody could read.
+      check('but nothing is relinked on unverified state',
+        res.body && res.body.mergedLinks === 0, JSON.stringify(res.body));
+      check('and no row is deleted on it either',
+        !seen.some(c => /^DELETE FROM daily_tracking/.test(c.q)));
     }
     {
       // An up-to-date client that merged nothing must still get its version, or
