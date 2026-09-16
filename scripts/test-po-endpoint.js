@@ -552,6 +552,11 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
         if (/^SELECT value, updated_at FROM app_data/.test(q)) {
           return Promise.resolve([{ value: WITH_LINK, updated_at: new Date(T_MOVED) }]);
         }
+        // The stored row is still there, so the client's null is a stale copy
+        // rather than somebody having deleted the row on the job's daily tab.
+        if (/^SELECT row_id FROM daily_tracking/.test(q)) {
+          return Promise.resolve([{ row_id: 'row-1' }]);
+        }
         if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
         return Promise.resolve([]);
       };
@@ -586,6 +591,9 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
         if (/^SELECT value, updated_at FROM app_data/.test(q)) {
           return Promise.resolve([{ value: STORED, updated_at: new Date(T_MOVED) }]);
         }
+        if (/^SELECT row_id FROM daily_tracking/.test(q)) {
+          return Promise.resolve([{ row_id: 'row-server' }]);
+        }
         if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
         return Promise.resolve([]);
       };
@@ -610,6 +618,44 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       check('and only after the blob write has landed',
         seen.findIndex(c => /^INSERT INTO app_data/.test(c.q)) <
         seen.findIndex(c => /^DELETE FROM daily_tracking/.test(c.q)));
+    }
+    {
+      // The opposite reading of the same null. When somebody deletes a
+      // PO-generated cost row on the job's own daily tab, _detachLinkedRows
+      // clears the line's link and saves. Restoring it would point the line at
+      // a row that no longer exists — and _ensurePOLineRow would then never
+      // mint a replacement, because the link reads as present, so the job would
+      // be silently UNDER-charged. The row being gone is what says which null
+      // this is.
+      const STORED = [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1',
+          lines: [{ id: 'L1', po_row_id: 'row-deleted' }] },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED, updated_at: new Date(T_MOVED) }]);
+        }
+        // row-deleted is not in daily_tracking any more.
+        if (/^SELECT row_id FROM daily_tracking/.test(q)) return Promise.resolve([]);
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', project_id: 'job1',
+                                                 lines: [{ id: 'L1', po_row_id: null }] }],
+                              baseUpdatedAt: T_READ } }, res);
+      const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+      const line = ((JSON.parse(hit.vals[1])[0] || {}).lines || [])[0] || {};
+      check('a link cleared because the row was deleted stays cleared',
+        !line.po_row_id, JSON.stringify(line));
+      check('and nothing is reported as relinked for it',
+        res.body && res.body.mergedLinks === 0, JSON.stringify(res.body));
     }
     {
       // ...but not when the JOB moved. The tab deletes every row and nulls

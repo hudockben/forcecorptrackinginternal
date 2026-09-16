@@ -290,6 +290,39 @@ module.exports = async (req, res) => {
           // the client sent. A client that is up to date replaces its own
           // orders exactly as before, so removing a delivery still removes it.
           const storedById = new Map(stored.filter(p => p && p.id).map(p => [p.id, p]));
+
+          // A stored link is only worth restoring if the row it names is still
+          // there. A null from the client means one of two opposite things and
+          // the payload cannot tell them apart: the tab never had the link
+          // (stale copy — restore it), or the user deleted that cost row on the
+          // job's own daily tab and _detachLinkedRows cleared the link on
+          // purpose (deliberate — leave it). Restoring the second points the
+          // line at a row that no longer exists, and _ensurePOLineRow then never
+          // mints a replacement because the link reads as present, so the job is
+          // silently UNDER-charged. Whether the row still exists is exactly the
+          // distinction, so ask.
+          const candidateRows = [];
+          for (const po of toWrite) {
+            const was = po && po.id ? storedById.get(po.id) : null;
+            if (!was || !Array.isArray(was.lines)) continue;
+            if (String(po.project_id || '') !== String(was.project_id || '')) continue;
+            const mineIds = new Set((Array.isArray(po.lines) ? po.lines : [])
+              .map(l => l && l.id).filter(Boolean).map(String));
+            for (const l of was.lines) {
+              if (l && l.id && l.po_row_id && mineIds.has(String(l.id))) {
+                candidateRows.push(String(l.po_row_id));
+              }
+            }
+          }
+          let liveRows = new Set();
+          if (candidateRows.length) {
+            const found = await sql`
+              SELECT row_id FROM daily_tracking
+              WHERE company_code = ${companyCode} AND row_id = ANY(${candidateRows})
+            `;
+            liveRows = new Set(found.map(r => String(r.row_id)));
+          }
+
           toWrite = toWrite.map(po => {
             const was = po && po.id ? storedById.get(po.id) : null;
             if (!was || !Array.isArray(was.lines) || !was.lines.length) return po;
@@ -324,7 +357,9 @@ module.exports = async (req, res) => {
               if (!l || !l.id) return l;
               const before = wasById.get(l.id);
               if (!before || !before.po_row_id) return l;
-              if (l.po_row_id === before.po_row_id) return l;
+              if (String(l.po_row_id || '') === String(before.po_row_id)) return l;
+              // Gone from daily_tracking means somebody removed it deliberately.
+              if (!liveRows.has(String(before.po_row_id))) return l;
               // The row the tab minted from its stale copy. Nothing references
               // it once the stored link is back, and it would charge the job on
               // its own, so it goes with the merge.
