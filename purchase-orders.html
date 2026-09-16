@@ -617,6 +617,14 @@ function newLine() {
 // list is read, because an order that arrived before this page did is exactly
 // the one someone is most likely to re-tie.
 const _savedDivision = {};
+
+// Bumped by every write that reaches the server, so a poll can tell that its
+// own fetch predates one. _inflight only says whether a save is in the air at
+// the instant it is read — a save that both starts and finishes inside a poll's
+// fetch window is invisible to it, and the stale response that comes back then
+// shows a completed move as undone and points _savedDivision at the list the
+// order has already left.
+let _saveEpoch = 0;
 const DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)' };
 
 let catalog       = { divisions: [], vendors: [], employees: [], truncated: [] };
@@ -947,6 +955,7 @@ async function _savePOWrite(po) {
       _unsaved.delete(po.id);
     }
 
+    _saveEpoch++;
     _inflight = Math.max(0, _inflight - 1);
     if (_inflight === 0) showSave('saved', 'Saved');
     return po;
@@ -954,6 +963,9 @@ async function _savePOWrite(po) {
     // Remembered, so the poll keeps this copy instead of replacing it with the
     // server's older one, and retries it on the next tick.
     _unsaved.add(po.id);
+    // Bumped on failure too: a save can fail having already changed the server,
+    // and a poll that fetched before it has no way to know which.
+    _saveEpoch++;
     _inflight = Math.max(0, _inflight - 1);
     showSave('error', 'Not saved');
     toast('Could not save ' + (po.po_number || 'the order') + ': ' + err.message +
@@ -1102,6 +1114,9 @@ async function deletePO(poId) {
     delete _savedDivision[poId];
     delete _saveChain[poId];
     delete _deletedLines[poId];
+    // A DELETE is a server write like any other: a poll that fetched before it
+    // would otherwise bring the order back.
+    _saveEpoch++;
     showSave('saved', 'Deleted');
     render();
   } catch (err) {
@@ -2281,6 +2296,9 @@ document.addEventListener('keydown', e => {
     if (_inflight > 0) return;          // a save is in the air; its result lands first
     if (isEditing()) return;
 
+    // Read before the first GET leaves, compared after the last one lands.
+    const epochAtFetch = _saveEpoch;
+
     let fetched;
     try {
       fetched = await Promise.all(listKeys().map(async key => {
@@ -2316,6 +2334,16 @@ document.addEventListener('keydown', e => {
     // Checked again: the fetch above took time, and a keystroke may have
     // landed while it was in flight.
     if (isEditing() || _inflight > 0) return;
+
+    // ...and so may a whole save. _inflight was 0 when these GETs left and is 0
+    // again now, which says nothing about a save that started and finished in
+    // between: at least one of these responses was computed before it. Adopting
+    // them puts a completed move back where it came from on screen and writes
+    // that division into _savedDivision, so the next save sends the wrong
+    // `from` — or none at all, leaving the order live in two divisions' tabs
+    // with the job charged twice. A skipped tick costs 60 seconds; this costs a
+    // duplicate nothing is scheduled to clear.
+    if (_saveEpoch !== epochAtFetch) return;
 
     // Where the server has each order, recorded only now — with the list it
     // came from, and only once this poll has committed to adopting it. Writing

@@ -871,5 +871,79 @@ console.log('\n[the poll that picks up division-tab edits]');
   assert('and nothing is duplicated', merged.length === 4, JSON.stringify(merged.map(p => p.id)));
 }
 
+// Async, so it and the summary that follows run inside one IIFE — this file is
+// CommonJS and a top-level await would make its module format ambiguous.
+(async () => {
+console.log('\n[a poll whose fetch predates a save that landed]');
+{
+  // _inflight only says whether a save is in the air at the instant it is read.
+  // It is 0 when the GETs leave and 0 again when they land, which says nothing
+  // about a save that started and finished in between — and that response was
+  // computed BEFORE the save. Adopting it puts a completed move back where it
+  // came from on screen and points _savedDivision at the list the order has
+  // already left, so the next save sends the wrong `from` (every cost row the
+  // order owns deleted and re-minted) or none at all (the order live in two
+  // divisions' tabs, the job charged twice).
+  //
+  // The whole poll body is run here, not a regex over it.
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+
+  const runPoll = async ({ saveLandsDuringFetch }) => {
+    const ctx = vm.createContext({
+      document: dom.window.document, console, JSON, Promise, Array, Set, setTimeout,
+    });
+    vm.runInContext(`
+      const GENERAL = 'purchase_orders';
+      // The move has already completed: the server holds PO-0007 in turf.
+      let purchaseOrders = [{ id:'po1', po_number:'PO-0007', _division:'turf', lines:[] }];
+      const _savedDivision = { po1: 'turf' };
+      const _unsaved = new Set();
+      const _saveTimers = {};
+      let _inflight = 0;
+      let _saveEpoch = 0;
+      let renders = 0;
+      let landDuringFetch = ${saveLandsDuringFetch ? 'true' : 'false'};
+      function listKeys() { return ['paving']; }
+      function pendingIds() { return new Set(); }
+      function migratePO() {}
+      function isEditing() { return false; }
+      function render() { renders++; }
+      // The paving GET was computed before the move and answers after it.
+      async function api() {
+        if (landDuringFetch) {
+          // A save starts and finishes entirely inside the fetch window, so
+          // _inflight is 0 on both sides of it.
+          _inflight++;
+          _inflight--;
+          _saveEpoch++;
+        }
+        return { purchaseOrders: [{ id:'po1', po_number:'PO-0007', lines:[] }] };
+      }
+    `, ctx);
+    // requireFn brace-matches from `function <name>`, so the `async` in front of
+    // the declaration is not part of what it returns. Put it back.
+    vm.runInContext('async ' + requireFn(PAGE, 'poll', 'purchase-orders.html'), ctx);
+    await vm.runInContext('poll()', ctx);
+    return {
+      division: vm.runInContext('purchaseOrders[0]._division', ctx),
+      saved:    vm.runInContext('_savedDivision.po1', ctx),
+      renders:  vm.runInContext('renders', ctx),
+    };
+  };
+
+  const raced = await runPoll({ saveLandsDuringFetch: true });
+  assert('a stale response does not move the order back on screen',
+    raced.division === 'turf', JSON.stringify(raced));
+  assert('nor re-point the note at the list it has left',
+    raced.saved === 'turf', JSON.stringify(raced));
+  assert('and nothing is re-rendered from it', raced.renders === 0, JSON.stringify(raced));
+
+  // ...and an ordinary poll still works, or the guard would just stop polling.
+  const quiet = await runPoll({ saveLandsDuringFetch: false });
+  assert('a poll with no save in the window still adopts what it fetched',
+    quiet.saved === 'paving' && quiet.renders === 1, JSON.stringify(quiet));
+}
+
 console.log(`\n${failed === 0 ? 'All checks passed.' : failed + ' check(s) failed.'}`);
 process.exit(failed ? 1 : 0);
+})();
