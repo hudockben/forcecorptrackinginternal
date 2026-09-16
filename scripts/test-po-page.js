@@ -1117,8 +1117,11 @@ console.log('\n[a keystroke while a delete is in flight]');
   const run2 = expr => vm.runInContext(expr, ctx2);
   run2('const deleting2 = deletePO("new2");');
   // The poll's retry loop fires while the delete is still awaiting, reaching
-  // _savePONow without going through savePO at all.
-  run2('const retry = _savePONow(purchaseOrders[0]);');
+  // _savePONow without going through savePO at all. It REJECTS rather than
+  // quietly resolving: commitScan awaits this and, on anything that is not a
+  // throw, goes on to tell the user the order was saved with the receipt
+  // attached — which would be false for a save that never happened.
+  run2('let refusal = null; const retry = _savePONow(purchaseOrders[0]).catch(e => { refusal = e.message; });');
   run2('releaseFirstSave();');
   await new Promise(r => setTimeout(r, 30));
   await vm.runInContext('Promise.all([deleting2, retry])', ctx2);
@@ -1127,8 +1130,16 @@ console.log('\n[a keystroke while a delete is in flight]');
   const sent2 = run2('calls');
   assert('a retry that reaches _savePONow directly is refused too',
     !sent2.some(c => c.startsWith('POST')), JSON.stringify(sent2));
+  assert('and it rejects, so a caller cannot report success',
+    run2('refusal') === 'That order is being deleted', JSON.stringify(run2('refusal')));
   assert('and that row is gone as well',
     run2('purchaseOrders.length') === 0);
+  // Every direct caller has to handle that rejection. There are four, and each
+  // is either awaited inside a try, or has a .catch on it.
+  const direct = PAGE.split('\n').filter(l => /_savePONow\(/.test(l) && !/function _savePONow/.test(l));
+  assert('every direct _savePONow call handles a rejection',
+    direct.length === 4 && direct.every(l => /\.catch\(|await _savePONow/.test(l)),
+    JSON.stringify(direct.map(l => l.trim())));
 }
 
 console.log('\n[a poll whose fetch predates a save that landed]');

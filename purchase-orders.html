@@ -954,7 +954,15 @@ function savePO(po, opts) {
 function _savePONow(po) {
   // Checked here too, not only in savePO: the poll's retry loop and commitScan
   // reach this directly.
-  if (_deleting.has(po.id)) return Promise.resolve(null);
+  //
+  // Rejected rather than quietly resolved. commitScan awaits this and, on
+  // anything that is not a throw, goes on to tell the user the order was
+  // "Saved … with the receipt attached" — which would be false for a save that
+  // never happened. Its catch puts the sheet back with the figures and the
+  // photo intact. The other two direct callers already catch.
+  if (_deleting.has(po.id)) {
+    return Promise.reject(new Error('That order is being deleted'));
+  }
   const prior = _saveChain[po.id] || Promise.resolve();
   const next = prior
     .catch(() => {})          // a failure must not poison the orders behind it
