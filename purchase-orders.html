@@ -1819,6 +1819,94 @@ document.addEventListener('keydown', e => {
 });
 
 /* ═══════════════════════════════════════════
+   POLL — pick up what the division tabs change
+
+   An order raised here is stored in its division's OWN list, which is the same
+   list that division's tab reads and writes. So the traffic goes both ways: a
+   paving supervisor adding a delivery to an order, approving one, or raising
+   one of their own is editing a list this page is showing.
+
+   Their pages poll purchase orders every 60 seconds, so what happens here
+   reaches them on its own. This is the other direction, on the same interval —
+   without it a purchasing screen left open all morning shows the list as it
+   was at login.
+
+   Nothing here risks a lost edit: this page saves one order at a time and the
+   server re-reads the stored list before merging, so a stale copy of an order
+   nobody touched can never be written back over a division's work. The poll is
+   about what is on screen.
+═══════════════════════════════════════════ */
+(function () {
+  const POLL_MS = 60_000;
+
+  // Whatever the user is in the middle of. A <select> counts: the division and
+  // job pickers are how an order gets re-tied, and swapping the list out from
+  // under an open dropdown would drop the choice being made.
+  function isEditing() {
+    const el = document.activeElement;
+    return Boolean(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+  }
+
+  /** Orders this page is still saving. Their local copy is the newer one. */
+  function pendingIds() {
+    return new Set(Object.keys(_saveTimers));
+  }
+
+  async function poll() {
+    if (document.visibilityState === 'hidden') return;
+    if (_inflight > 0) return;          // a save is in the air; its result lands first
+    if (isEditing()) return;
+
+    let fetched;
+    try {
+      fetched = await Promise.all(listKeys().map(async key => {
+        const data = await api('GET', '/purchase-orders?division=' + encodeURIComponent(key));
+        const list = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+        list.forEach(po => { po._division = key; migratePO(po); });
+        return list;
+      }));
+    } catch (err) {
+      // A poll that fails changes nothing. The page keeps what it has.
+      console.warn('[po] poll failed:', err.message);
+      return;
+    }
+
+    const incoming = [].concat.apply([], fetched);
+
+    // An order with a debounced save outstanding keeps its LOCAL copy — the
+    // user typed it a moment ago and the server has not been told yet.
+    const pending = pendingIds();
+    const merged = incoming.map(po => {
+      if (!pending.has(po.id)) return po;
+      return purchaseOrders.find(p => p.id === po.id) || po;
+    });
+    // ...and one raised here but not yet stored is not dropped for being absent.
+    purchaseOrders.forEach(po => {
+      if (pending.has(po.id) && !merged.some(p => p.id === po.id)) merged.push(po);
+    });
+
+    // migratePO runs on both sides before this, so an unconverted blob does not
+    // read as a change on every poll and re-render the table in a loop.
+    if (JSON.stringify(merged) === JSON.stringify(purchaseOrders)) return;
+
+    // Checked again: the fetch above took time, and a keystroke may have
+    // landed while it was in flight.
+    if (isEditing() || _inflight > 0) return;
+
+    purchaseOrders = merged;
+    render();
+  }
+
+  setInterval(poll, POLL_MS);
+  // Coming back to a tab that has been in the background is exactly when the
+  // list is most out of date, and waiting out the rest of the interval to find
+  // out is the wrong behaviour.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') poll();
+  });
+})();
+
+/* ═══════════════════════════════════════════
    BOOT
 ═══════════════════════════════════════════ */
 (async function boot() {

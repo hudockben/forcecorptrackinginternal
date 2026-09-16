@@ -299,5 +299,63 @@ console.log('\n[filtering]');
   assert('filters combine',                    ids("search=''; filters.vendor='Acme'; filters.status='pending';") === '1,3');
 }
 
+console.log('\n[the poll that picks up division-tab edits]');
+{
+  // The division tabs write the same lists this page reads, so an edit made
+  // there has to reach this screen. The risk is the other way round: a poll
+  // that overwrites what the user is in the middle of typing.
+  assert('the page polls on the same 60s interval the division tabs use',
+    /const POLL_MS = 60_000;/.test(PAGE) && /setInterval\(poll, POLL_MS\)/.test(PAGE));
+  assert('it re-checks on returning to the tab, rather than waiting out the interval',
+    /visibilitychange[\s\S]{0,140}poll\(\)/.test(PAGE));
+  assert('it stands down while a save is in the air',
+    /if \(_inflight > 0\) return;/.test(PAGE));
+  assert('and while the user is in a field',
+    /if \(isEditing\(\)\) return;/.test(PAGE));
+  // A <select> has to count: the division and job pickers are how an order is
+  // re-tied, and swapping the list out under an open dropdown loses the choice.
+  assert('a dropdown counts as editing',
+    /el\.tagName === 'SELECT'/.test(PAGE));
+  assert('a failed poll changes nothing',
+    /console\.warn\('\[po\] poll failed:'[\s\S]{0,40}return;/.test(PAGE));
+
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const ctx = vm.createContext({ document: dom.window.document, console, JSON });
+  // The merge step, lifted out of poll() and run against the cases that matter.
+  const mergeSrc = sliceSource(PAGE,
+    '    const pending = pendingIds();',
+    '    if (JSON.stringify(merged)',
+    'poll() merge step', ['pending.has']);
+  vm.runInContext(`
+    let purchaseOrders = [
+      { id:'a', title:'local edit in progress' },
+      { id:'b', title:'untouched here' },
+      { id:'new', title:'raised here, not stored yet' },
+    ];
+    let incoming = [
+      { id:'a', title:'what paving stored' },
+      { id:'b', title:'what paving stored' },
+      { id:'c', title:'raised in the paving tab' },
+    ];
+    let _pending = new Set(['a', 'new']);
+    function pendingIds() { return _pending; }
+  `, ctx);
+  vm.runInContext(mergeSrc.replace(/^\s*const pending = pendingIds\(\);/m, 'const pending = pendingIds();'), ctx);
+  const merged = vm.runInContext('merged', ctx);
+  const byId = Object.fromEntries(merged.map(p => [p.id, p]));
+
+  // The user typed this a second ago and the debounced save has not gone yet.
+  // Taking the server's copy would silently discard what they wrote.
+  assert('an order with a save outstanding keeps the local copy',
+    byId.a && byId.a.title === 'local edit in progress', JSON.stringify(byId.a));
+  assert('an order nobody is editing takes the stored copy',
+    byId.b && byId.b.title === 'what paving stored', JSON.stringify(byId.b));
+  assert('an order raised in the division tab appears',  Boolean(byId.c));
+  // Absent from the server only because its first save is still in flight.
+  assert('an order raised here and not yet stored is not dropped',
+    byId.new && byId.new.title === 'raised here, not stored yet', JSON.stringify(byId.new));
+  assert('and nothing is duplicated', merged.length === 4, JSON.stringify(merged.map(p => p.id)));
+}
+
 console.log(`\n${failed === 0 ? 'All checks passed.' : failed + ' check(s) failed.'}`);
 process.exit(failed ? 1 : 0);
