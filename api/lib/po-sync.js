@@ -501,6 +501,38 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
 }
 
 /**
+ * Deliveries the stored order has that the incoming one does not mention.
+ *
+ * A save replaces the stored order outright, which is fine for its own fields
+ * but wrong for its deliveries: this page regularly holds a copy that is a
+ * minute out of date, and the division's own tab is adding deliveries to the
+ * same order the whole time. Replacing wholesale dropped the ones it had not
+ * heard about — and syncPOCostRows then read their absence as a deletion and
+ * removed the job cost rows behind them too. A supervisor's delivery and the
+ * money it put on the job both vanished, with nothing on either screen to say
+ * so.
+ *
+ * "Absent" alone cannot tell a delivery the caller DELETED from one it never
+ * saw, so the caller says which it deleted. Anything else the stored order
+ * carries is kept.
+ */
+function unseenLines(po, priorCopies, deletedLineIds) {
+  const sent    = new Set((Array.isArray(po.lines) ? po.lines : []).map(l => l && l.id).filter(Boolean).map(String));
+  const deleted = new Set((Array.isArray(deletedLineIds) ? deletedLineIds : []).map(String));
+  const keep = [], seen = new Set();
+  for (const copy of (priorCopies || [])) {
+    for (const l of ((copy && Array.isArray(copy.lines)) ? copy.lines : [])) {
+      if (!l || !l.id) continue;
+      const id = String(l.id);
+      if (sent.has(id) || deleted.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      keep.push(l);
+    }
+  }
+  return keep;
+}
+
+/**
  * Save one purchase order into `division`'s list.
  *
  * Order of operations matters: the cost rows are reconciled FIRST, because
@@ -512,7 +544,7 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
  * purchasing re-tied it to a different one. The order is removed from that list
  * in the same call, so it can never exist in two divisions at once.
  */
-async function upsertPO(sql, { companyCode, division, po, from }) {
+async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }) {
   const prevDivision = from && from !== division ? from : null;
 
   // Every list this order might already be stored in. The target's copy matters
@@ -532,6 +564,12 @@ async function upsertPO(sql, { companyCode, division, po, from }) {
     prevPO = sourceCopy;
     if (sourceCopy) priorCopies.push(sourceCopy);
   }
+
+  // Deliveries somebody else added while this caller was holding a stale copy.
+  // Merged back BEFORE the cost rows are reconciled, so their rows are not read
+  // as belonging to deleted lines and swept away.
+  const recovered = unseenLines(po, priorCopies, deletedLineIds);
+  if (recovered.length) po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(recovered);
 
   const rows = await syncPOCostRows(sql, {
     companyCode, division, po, prevPO, prevDivision, priorCopies,
@@ -591,6 +629,9 @@ async function upsertPO(sql, { companyCode, division, po, from }) {
 
   return {
     ok: true, purchaseOrder: po, staleCopy,
+    // So the caller can show what it had not heard about, instead of silently
+    // carrying on with a list it now knows is short.
+    mergedLines: recovered.length,
     rows: { removed, written: rows.written, writtenIds: rows.writtenIds },
   };
 }
@@ -664,6 +705,7 @@ async function resolvePODocScope(sql, { payload, division, poId, companyCode, ha
 
 module.exports = {
   CAS_ATTEMPTS,
+  unseenLines,
   findPOInDivision,
   resolvePODocScope,
   blobKeyFor,

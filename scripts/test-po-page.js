@@ -123,7 +123,7 @@ assert('permissions come from the per-division map, not the turf role',
 assert('it reads the catalogue from one endpoint, not the project blobs',
   PAGE.includes("api('GET', '/po-catalog')") && !/fct_paving_project_/.test(PAGE));
 assert('it saves one order at a time',
-  /api\('POST', qs, \{ purchaseOrder: poPayload\(po\) \}\)/.test(PAGE));
+  /api\('POST', qs, \{\s*purchaseOrder: poPayload\(po\),/.test(PAGE));
 
 // This is the invariant the whole design rests on. A full-list PUT from here
 // would erase whatever the division's own tab had saved since this page loaded.
@@ -396,6 +396,26 @@ console.log('\n[rights are per division, not per page]');
       c.canEdit === sv.canUpload && c.canDelete === sv.canManage,
       'client=' + JSON.stringify(c) + ' server=' + JSON.stringify({ canUpload: sv.canUpload, canManage: sv.canManage }));
   });
+}
+
+console.log('\n[deliveries this page did not know about]');
+{
+  // The server keeps any stored delivery this page did not send, because it
+  // cannot otherwise tell one the user DELETED from one somebody else added.
+  // So the page has to say which it deleted, or a removal is simply undone.
+  assert('removed deliveries are remembered per order',
+    /\(_deletedLines\[poId\] \|\| \(_deletedLines\[poId\] = new Set\(\)\)\)\.add\(lineId\);/.test(PAGE));
+  assert('and sent with the save',
+    /deletedLineIds: sentDeletions/.test(PAGE));
+  assert('only the ones this save carried are forgotten',
+    /sentDeletions\.forEach\(id => _deletedLines\[po\.id\]\.delete\(id\)\);/.test(PAGE));
+  assert('deleting the order drops its pending removals',
+    (PAGE.match(/delete _deletedLines\[poId\];/g) || []).length === 2);
+  // A merge means the list on screen is short — show what arrived.
+  assert('merged deliveries are taken on screen',
+    /if \(res\.mergedLines > 0 && !isTyping\(\)\)/.test(PAGE));
+  assert('but never while the user is mid-edit', /function isTyping\(\)/.test(PAGE));
+  assert('and the poll shares that same test', /const isEditing = isTyping;/.test(PAGE));
 }
 
 console.log('\n[every control on a row asks that row]');

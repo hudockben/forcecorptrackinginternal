@@ -437,8 +437,22 @@ console.log('\n[upsertPO — merging into a division list]');
   ] });
   await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
   assert('two rows for two deliveries', st.daily.size === 2);
+
+  // A delivery simply MISSING from the payload is one the caller may never
+  // have seen — somebody else could have added it — so it is kept. Removing
+  // one has to be said out loud.
+  const droppedId = po.lines[1].id;
   po.lines = [po.lines[0]];
   await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  assert('an undeclared omission keeps the delivery', st.daily.size === 2);
+
+  // The merge above put the delivery back on `po` — as it does on the page,
+  // which adopts what came back. Removing it for real means taking it out of
+  // the list AND declaring it, which is what deleteLine() now does.
+  po.lines = po.lines.filter(l => l.id !== droppedId);
+  await poSync.upsertPO(st.sql, {
+    companyCode: 'FCT', division: 'turf', po, deletedLineIds: [droppedId],
+  });
   assert('removing a delivery removes its row', st.daily.size === 1);
 
   // Moving the order to a different job takes its costs with it.
@@ -476,6 +490,65 @@ console.log('\n[upsertPO — merging into a division list]');
   assert('exactly one cost row remains', st.daily.size === 1);
   assert('and it belongs to turf',      [...st.daily.values()][0].division === 'turf');
   assert('mirror row followed the move', st.poRows.get('mv').division === 'turf');
+
+  console.log('\n[a delivery somebody else recorded]');
+  // The feature's own primary workflow: purchasing raises an order against a
+  // paving job, the paving supervisor records a delivery on it, and purchasing
+  // — still holding the copy it loaded a minute ago — types in the Notes. The
+  // save used to replace the order outright, so the supervisor's delivery went,
+  // and syncPOCostRows read its absence as a deletion and took the job cost row
+  // behind it too. Nothing on either screen said so.
+  st = makeStore();
+  po = makePO({ id: 'shared', project_id: 'job1',
+                lines: [{ id: 'L1', qty: '10', unit_cost: '5' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po });
+  const mine = JSON.parse(JSON.stringify(po));      // purchasing's copy, as loaded
+
+  // The supervisor's delivery lands, with its own cost row.
+  const theirs = JSON.parse(JSON.stringify(po));
+  theirs.lines.push({ id: 'L2', qty: '4', unit_cost: '25' });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: theirs });
+  const theirRow = theirs.lines[1].po_row_id;
+  assert('their delivery has a cost row', st.daily.size === 2 && Boolean(theirRow));
+
+  // Purchasing saves its stale copy, changing only the notes.
+  mine.notes = 'call the yard';
+  const merged = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: mine });
+  const storedNow = st.getBlob(KEY('paving'))[0];
+  assert('the save lands', merged.ok === true);
+  assert('their delivery survives',
+    storedNow.lines.some(l => l.id === 'L2'), JSON.stringify(storedNow.lines.map(l => l.id)));
+  assert('and so does the job cost row behind it', st.daily.has(theirRow));
+  assert('the edit still applied',   storedNow.notes === 'call the yard');
+  assert('and the caller is told',   merged.mergedLines === 1, String(merged.mergedLines));
+  assert('the job is charged for both', st.daily.size === 2);
+
+  // A delivery the caller really DID delete must still go.
+  const after = JSON.parse(JSON.stringify(storedNow));
+  const l2row = after.lines.find(l => l.id === 'L2').po_row_id;
+  after.lines = after.lines.filter(l => l.id !== 'L2');
+  const dropped = await poSync.upsertPO(st.sql, {
+    companyCode: 'FCT', division: 'paving', po: after, deletedLineIds: ['L2'],
+  });
+  assert('a deliberate deletion still deletes',
+    !st.getBlob(KEY('paving'))[0].lines.some(l => l.id === 'L2'));
+  assert('and takes its cost row with it', !st.daily.has(l2row) && st.daily.size === 1);
+  assert('nothing is reported merged',     dropped.mergedLines === 0);
+
+  console.log('\n[unseenLines on its own]');
+  const prior = [{ lines: [{ id: 'A' }, { id: 'B' }, { id: 'C' }] }];
+  assert('keeps what the caller never sent',
+    poSync.unseenLines({ lines: [{ id: 'A' }] }, prior, []).map(l => l.id).join() === 'B,C');
+  assert('drops what it says it deleted',
+    poSync.unseenLines({ lines: [{ id: 'A' }] }, prior, ['B']).map(l => l.id).join() === 'C');
+  assert('keeps nothing when the caller sent everything',
+    poSync.unseenLines({ lines: [{ id: 'A' }, { id: 'B' }, { id: 'C' }] }, prior, []).length === 0);
+  assert('survives an order with no lines at all',
+    poSync.unseenLines({}, prior, []).map(l => l.id).join() === 'A,B,C');
+  assert('and no prior copy',
+    poSync.unseenLines({ lines: [{ id: 'A' }] }, [], []).length === 0);
+  assert('never returns the same line twice',
+    poSync.unseenLines({ lines: [] }, [prior[0], prior[0]], []).length === 3);
 
   console.log('\n[the compare-and-set has to be able to match]');
   // app_data.updated_at is a MICROSECOND timestamptz. The driver parses a

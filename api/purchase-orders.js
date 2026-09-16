@@ -245,6 +245,30 @@ module.exports = async (req, res) => {
             console.warn(`[purchase-orders] merged ${unseen.length} order(s) the client had not seen for ${blobKey}`);
             toWrite = purchaseOrders.concat(unseen);
           }
+
+          // ...and the same one level down. An order this client DID send may
+          // still be missing deliveries added to it since — central purchasing
+          // records them against this division's orders all day. Replacing the
+          // order wholesale dropped those, and _syncPOs' orphan sweep then took
+          // the job cost rows behind them.
+          //
+          // Only on a detected race, and only for deliveries absent from what
+          // the client sent. A client that is up to date replaces its own
+          // orders exactly as before, so removing a delivery still removes it.
+          const storedById = new Map(stored.filter(p => p && p.id).map(p => [p.id, p]));
+          let recovered = 0;
+          toWrite = toWrite.map(po => {
+            const was = po && po.id ? storedById.get(po.id) : null;
+            if (!was || !Array.isArray(was.lines) || !was.lines.length) return po;
+            const have = new Set((Array.isArray(po.lines) ? po.lines : []).map(l => l && l.id).filter(Boolean));
+            const missing = was.lines.filter(l => l && l.id && !have.has(l.id));
+            if (!missing.length) return po;
+            recovered += missing.length;
+            return { ...po, lines: (Array.isArray(po.lines) ? po.lines : []).concat(missing) };
+          });
+          if (recovered) {
+            console.warn(`[purchase-orders] merged ${recovered} delivery line(s) the client had not seen for ${blobKey}`);
+          }
         }
       }
 
@@ -292,6 +316,12 @@ module.exports = async (req, res) => {
       if (po.lines != null && !Array.isArray(po.lines)) {
         return res.status(400).json({ error: 'purchaseOrder.lines must be an array' });
       }
+      // Deliveries the caller deliberately removed. Everything else the stored
+      // order carries but this request omits is a delivery the caller never saw
+      // — somebody else added it — and is kept rather than dropped.
+      const deletedLineIds = Array.isArray((req.body || {}).deletedLineIds)
+        ? (req.body || {}).deletedLineIds.map(String).slice(0, 500)
+        : [];
 
       // The division the order was stored under before this save. Purchasing
       // sends it when someone re-ties an order to a different division, so the
@@ -309,6 +339,7 @@ module.exports = async (req, res) => {
         division,
         po: { ...po, lines: Array.isArray(po.lines) ? po.lines : [] },
         from,
+        deletedLineIds,
       });
       if (!result.ok) {
         return res.status(409).json({
@@ -329,6 +360,7 @@ module.exports = async (req, res) => {
         purchaseOrder: result.purchaseOrder,
         rows: result.rows,
         staleCopy: Boolean(result.staleCopy),
+        mergedLines: result.mergedLines || 0,
       });
     }
 

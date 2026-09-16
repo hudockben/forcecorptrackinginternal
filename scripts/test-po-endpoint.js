@@ -455,6 +455,37 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
         ids.length === 1 && ids[0] === 'a', JSON.stringify(ids));
     }
     {
+      // The same protection one level down. An order the client DID send may
+      // still be missing deliveries added to it since — and dropping those took
+      // the job cost rows behind them via _syncPOs' orphan sweep.
+      const WITH_LINES = [
+        { id: 'a', po_number: 'PO-0001', lines: [{ id: 'L1' }, { id: 'L2' }] },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: WITH_LINES, updated_at: new Date(T_MOVED) }]);
+        }
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      // The client's copy of the same order, missing L2.
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', lines: [{ id: 'L1' }] }],
+                              baseUpdatedAt: T_READ } }, res);
+      const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+      const written = hit ? JSON.parse(hit.vals[1]) : [];
+      const lineIds = ((written[0] || {}).lines || []).map(l => l.id);
+      check('a delivery the client never saw survives its save',
+        lineIds.includes('L2'), JSON.stringify(lineIds));
+      check('and the one it did send is still there', lineIds.includes('L1'), JSON.stringify(lineIds));
+    }
+    {
       // ?force=1 is a genuine wipe and must stay one.
       const sqlStub = appDataStub({ storedUpdatedAt: new Date(T_MOVED) });
       const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });

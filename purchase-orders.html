@@ -534,6 +534,12 @@ function localDateStr() {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
+/** Whatever the user is in the middle of. A <select> counts. */
+function isTyping() {
+  const el = document.activeElement;
+  return Boolean(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+}
+
 let _toastTimer = null;
 function toast(msg, kind) {
   const el = document.getElementById('toast');
@@ -800,6 +806,12 @@ let   _inflight    = 0;
 // dropped connection lands on its own once the signal returns.
 const _unsaved = new Set();
 
+// Deliveries this page has removed, per order, until a save confirms it.
+// Without this the server cannot tell a delivery the user DELETED from one
+// somebody else added while this page held a stale copy — and it has to keep
+// the second kind, so it has to be told about the first.
+const _deletedLines = {};
+
 // The save in flight for each order, so a second one QUEUES behind it instead
 // of racing it. Without this, two saves of one order could both read the stored
 // order before either had written, neither would see a po_row_id for the
@@ -812,6 +824,11 @@ function poPayload(po) {
   Object.keys(po).forEach(k => { if (k.charAt(0) !== '_') out[k] = po[k]; });
   out.origin = 'purchasing';
   return out;
+}
+
+/** The deliveries removed from this order and not yet confirmed to the server. */
+function deletedLinesFor(poId) {
+  return _deletedLines[poId] ? [..._deletedLines[poId]] : [];
 }
 
 /**
@@ -849,7 +866,18 @@ async function _savePOWrite(po) {
     const from = _savedDivision[po.id];
     const qs = '/purchase-orders?division=' + encodeURIComponent(po._division)
              + (from && from !== po._division ? '&from=' + encodeURIComponent(from) : '');
-    const res = await api('POST', qs, { purchaseOrder: poPayload(po) });
+    const sentDeletions = deletedLinesFor(po.id);
+    const res = await api('POST', qs, {
+      purchaseOrder: poPayload(po),
+      deletedLineIds: sentDeletions,
+    });
+
+    // The deletions this save carried are now on the server, so stop resending
+    // them. Anything removed since is still pending and stays.
+    if (_deletedLines[po.id]) {
+      sentDeletions.forEach(id => _deletedLines[po.id].delete(id));
+      if (!_deletedLines[po.id].size) delete _deletedLines[po.id];
+    }
 
     // The server mints a po_row_id for any delivery line it created a job cost
     // row for. Keeping those is what stops the next save creating a SECOND row
@@ -860,6 +888,17 @@ async function _savePOWrite(po) {
       (po.lines || []).forEach(l => {
         if (l && byId[l.id]) l.po_row_id = byId[l.id].po_row_id || null;
       });
+
+      // Deliveries somebody else recorded on this order while this page held an
+      // older copy. The server kept them rather than letting this save drop
+      // them; take them on screen too, so the list stops being short and the
+      // user can see what arrived.
+      if (res.mergedLines > 0 && !isTyping()) {
+        po.lines = res.purchaseOrder.lines;
+        toast(res.mergedLines + ' ' + (res.mergedLines === 1 ? 'delivery was' : 'deliveries were') +
+              ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
+        render();
+      }
     }
     // Only once the server confirms the order is out of the list it came from.
     // staleCopy means the move half-landed: the order is saved, but the old
@@ -974,6 +1013,9 @@ function addLine(poId) {
 function deleteLine(poId, lineId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po || !capsFor(po._division).canEdit) return;
+  // Remembered until the save lands. The server keeps any stored delivery this
+  // page did not send, so without this a removal would simply be undone.
+  (_deletedLines[poId] || (_deletedLines[poId] = new Set())).add(lineId);
   po.lines = (po.lines || []).filter(l => l.id !== lineId);
   // The job cost row this delivery created goes with it — the server reconciles
   // that from the line list, so nothing else is needed here.
@@ -1000,6 +1042,7 @@ async function deletePO(poId) {
     expanded.delete(poId);
     _unsaved.delete(poId);
     delete _saveChain[poId];
+    delete _deletedLines[poId];
     showSave('saved', 'Removed');
     render();
     return;
@@ -1014,6 +1057,7 @@ async function deletePO(poId) {
     _unsaved.delete(poId);
     delete _savedDivision[poId];
     delete _saveChain[poId];
+    delete _deletedLines[poId];
     showSave('saved', 'Deleted');
     render();
   } catch (err) {
@@ -2135,10 +2179,7 @@ document.addEventListener('keydown', e => {
   // Whatever the user is in the middle of. A <select> counts: the division and
   // job pickers are how an order gets re-tied, and swapping the list out from
   // under an open dropdown would drop the choice being made.
-  function isEditing() {
-    const el = document.activeElement;
-    return Boolean(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
-  }
+  const isEditing = isTyping;
 
   /**
    * Orders whose local copy is newer than the server's: one with a debounce
