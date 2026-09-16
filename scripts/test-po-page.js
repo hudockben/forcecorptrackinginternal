@@ -115,10 +115,12 @@ assert('it guards on having come through the division selector',
 // fctUser.role is the caller's TURF role. Reading it here would answer about
 // the wrong division in both directions.
 assert('permissions come from the per-division map, not the turf role',
-  /fctUser\.divisionRoles && fctUser\.divisionRoles\[division\]/.test(PAGE) &&
-  // The trap is READING it, not naming it — the comments above _levelIn
-  // explain why it must not be read, and should keep saying so.
-  !/=\s*fctUser\.role\b/.test(PAGE));
+  // The map is consulted first and, when it exists, decides on its own: every
+  // path out of that branch returns, so the flat role below is unreachable for
+  // a token that has one. That is the trap — fctUser.role is the caller's TURF
+  // role, and reading it for another division answers about the wrong one in
+  // both directions.
+  /const dr = fctUser\.divisionRoles;\s*\n\s*if \(dr && typeof dr === 'object'\) \{\s*\n\s*const r = dr\[division\];\s*\n\s*return \(r && r !== 'no_access'\) \? r : 'no_access';\s*\n\s*\}/.test(PAGE));
 
 assert('it reads the catalogue from one endpoint, not the project blobs',
   PAGE.includes("api('GET', '/po-catalog')") && !/fct_paving_project_/.test(PAGE));
@@ -349,6 +351,11 @@ console.log('\n[rights are per division, not per page]');
   // refused.
   assert('the turf-role fallback is gone',
     !/else if \(fctUser && fctUser\.role\) level = fctUser\.role;/.test(PAGE));
+  // ...but the LEGACY fallback is not the same thing and must stay. It reads
+  // fctUser.role only when there is no divisionRoles map at all, which is what
+  // levelFor() does on the server; the bug above read it when a map existed.
+  assert('the legacy fallback only fires when there is no map at all',
+    /if \(dr && typeof dr === 'object'\) \{[\s\S]{0,160}return \(r && r !== 'no_access'\) \? r : 'no_access';/.test(PAGE));
   assert('rights are computed per division', /function capsFor\(division\)/.test(PAGE));
   assert('the page\'s source-division list matches the server\'s',
     /const PO_SOURCE = \['turf', 'paving', 'kiewit'\];/.test(PAGE) &&
@@ -396,15 +403,46 @@ console.log('\n[rights are per division, not per page]');
 
   // These must agree with poCapabilities on the server, or the page offers
   // buttons the API refuses — which is the whole bug.
+  // users.division_roles is nullable and login puts `divisionRoles: null` in the
+  // token when it is unset, so a token with no map at all is a real shape — and
+  // the server answers it from the flat role and allowedDivisions. Reading only
+  // the map made this page read-only for such a user while the API accepted
+  // every write they made.
+  const legacyAdmin  = { role: 'admin',  allowedDivisions: ['turf', 'paving', 'purchase_orders'] };
+  const legacyL3     = { role: 'level3', allowedDivisions: ['turf', 'paving'] };
+  const legacyL2     = { role: 'level2', allowedDivisions: ['turf'] };
+  const legacyL1     = { role: 'level1', allowedDivisions: ['turf', 'paving'] };
+  const legacyNoList = { role: 'admin' };
+  assert('a legacy token is not locked out of the lists it reaches',
+    caps(legacyAdmin, 'paving').canDelete === true);
+  assert('...nor of the general list when it reaches that too',
+    caps(legacyAdmin, 'purchase_orders').canDelete === true);
+  assert('but a division outside its list stays shut',
+    caps(legacyL2, 'paving').canEdit === false);
+  assert('and with no list at all it is turf only, as the server has it',
+    caps(legacyNoList, 'turf').canDelete === true &&
+    caps(legacyNoList, 'paving').canEdit === false);
+
+  // These must agree with poCapabilities on the server, or the page offers
+  // buttons the API refuses — or, the other way round, withholds ones it would
+  // have allowed. Every shape a token really comes in, against every division
+  // this page shows.
   const serverCaps = require('../api/lib/auth').poCapabilities;
-  [[turfAdmin, 'paving'], [turfAdmin, 'purchase_orders'], [buyer, 'paving'],
-   [buyer, 'purchase_orders'], [viewer, 'paving'], [inserter, 'paving'],
-   [{ isPlatformAdmin: true }, 'paving']].forEach(([u, d]) => {
+  const SHAPES = [turfAdmin, buyer, viewer, inserter, { isPlatformAdmin: true },
+                  legacyAdmin, legacyL3, legacyL2, legacyL1, legacyNoList];
+  const DIVS = ['turf', 'paving', 'kiewit', 'purchase_orders', 'dust'];
+  let disagreed = 0;
+  SHAPES.forEach(u => DIVS.forEach(d => {
     const c = caps(u, d), sv = serverCaps(u, d);
-    assert(`client and server agree for ${JSON.stringify(u.divisionRoles || 'platform-admin')} on ${d}`,
-      c.canEdit === sv.canUpload && c.canDelete === sv.canManage,
-      'client=' + JSON.stringify(c) + ' server=' + JSON.stringify({ canUpload: sv.canUpload, canManage: sv.canManage }));
-  });
+    if (c.canEdit !== sv.canUpload || c.canDelete !== sv.canManage) {
+      disagreed++;
+      console.log('      ' + JSON.stringify(u) + ' on ' + d +
+        ' client=' + JSON.stringify(c) +
+        ' server=' + JSON.stringify({ canUpload: sv.canUpload, canManage: sv.canManage }));
+    }
+  }));
+  assert(`client and server agree on all ${SHAPES.length * DIVS.length} token/division combinations`,
+    disagreed === 0, disagreed + ' disagreed');
 }
 
 console.log('\n[the division tabs and a crafted id]');

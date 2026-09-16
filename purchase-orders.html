@@ -428,12 +428,37 @@ function switchDivision() {
 // PO_SOURCE_DIVISIONS in api/lib/auth.js.
 const PO_SOURCE = ['turf', 'paving', 'kiewit'];
 
-/** This user's level in one division, with no cross-division guessing. */
+/**
+ * This user's level in one division, with no cross-division guessing.
+ *
+ * Mirrors levelFor() and hasDivisionAccess() in api/lib/auth.js TOGETHER, which
+ * is the only way to get the same answer the server gives. Reading only
+ * divisionRoles locked a user with no such map out of every list here while the
+ * API accepted every write they made: users.division_roles is nullable, login
+ * puts `divisionRoles: null` in the token when it is unset, and the server then
+ * falls back to the flat role for whatever allowedDivisions reaches.
+ *
+ * The fallback is ONLY for a token with no map at all. Reading fctUser.role
+ * when a map EXISTS is the trap that put a delete button on rows the server
+ * refused — that field is the caller's TURF role, whatever division is asked
+ * about.
+ */
 function _levelIn(division) {
   if (!fctUser) return 'no_access';
   if (fctUser.isPlatformAdmin) return 'admin';
-  const r = fctUser.divisionRoles && fctUser.divisionRoles[division];
-  return (r && r !== 'no_access') ? r : 'no_access';
+
+  const dr = fctUser.divisionRoles;
+  if (dr && typeof dr === 'object') {
+    const r = dr[division];
+    return (r && r !== 'no_access') ? r : 'no_access';
+  }
+
+  // Legacy token: the division is reachable through allowedDivisions — turf
+  // alone when even that is absent — and the level is the flat role.
+  const reach = Array.isArray(fctUser.allowedDivisions) && fctUser.allowedDivisions.length
+    ? fctUser.allowedDivisions.includes(division)
+    : division === 'turf';
+  return reach ? (fctUser.role || 'level1') : 'no_access';
 }
 
 /**
