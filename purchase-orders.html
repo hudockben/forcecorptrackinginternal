@@ -386,6 +386,10 @@ const fctUser     = (() => { try { return JSON.parse(localStorage.getItem('fct_u
 const fctDivision = localStorage.getItem('fct_division');
 
 const DIVISION = 'purchase_orders';
+// The list general orders live in — the same key, named for what it holds.
+// Declared here beside DIVISION because capsFor() below reads it, and a const
+// still in its temporal dead zone throws on load rather than reading undefined.
+const GENERAL  = 'purchase_orders';
 const API_BASE = '/api';
 
 if (!fctToken || !fctUser) {
@@ -420,17 +424,53 @@ function switchDivision() {
  * only the fallback for a legacy token that carries no map. This mirrors
  * levelFor() in api/lib/auth.js.
  */
-const perm = (() => {
-  let level = 'level1';
-  if (fctUser && fctUser.isPlatformAdmin) level = 'admin';
-  else if (fctUser && fctUser.divisionRoles && fctUser.divisionRoles[DIVISION]
-           && fctUser.divisionRoles[DIVISION] !== 'no_access') level = fctUser.divisionRoles[DIVISION];
-  else if (fctUser && fctUser.role) level = fctUser.role;
+// The job divisions purchasing raises orders against. Mirrors
+// PO_SOURCE_DIVISIONS in api/lib/auth.js.
+const PO_SOURCE = ['turf', 'paving', 'kiewit'];
+
+/** This user's level in one division, with no cross-division guessing. */
+function _levelIn(division) {
+  if (!fctUser) return 'no_access';
+  if (fctUser.isPlatformAdmin) return 'admin';
+  const r = fctUser.divisionRoles && fctUser.divisionRoles[division];
+  return (r && r !== 'no_access') ? r : 'no_access';
+}
+
+/**
+ * What this user may do with ONE division's orders.
+ *
+ * Rights here are per division, because that is how the server decides: an
+ * order tied to paving is checked against paving. Working it out once for the
+ * page and applying it to every row put a delete button on rows the server then
+ * refused — and it was worse than that, because the old code fell back to
+ * `fctUser.role` when there was no purchasing role, and that field is the
+ * caller's TURF role. A turf administrator with no purchasing role was told
+ * they could do anything here and could actually do nothing with the general
+ * list: the order they raised never saved, and the row could not be deleted
+ * either. Mirrors poCapabilities() in api/lib/auth.js.
+ */
+function capsFor(division) {
+  const own = _levelIn(division);
+  // The general list is purchasing's own, so only a purchasing role reaches it.
+  const viaPurchasing = (division === GENERAL || PO_SOURCE.includes(division))
+    ? _levelIn(DIVISION) : 'no_access';
+  const canUpload = l => ['admin', 'level3', 'level2'].includes(l);
+  const canManage = l => ['admin', 'level3'].includes(l);
   return {
-    level,
-    isAdmin:  level === 'admin',
-    canEdit:  ['admin', 'level3', 'level2'].includes(level),
-    canDelete:['admin', 'level3'].includes(level),
+    canEdit:   canUpload(own) || canUpload(viaPurchasing),
+    canDelete: canManage(own) || canManage(viaPurchasing),
+  };
+}
+
+// Page-level gating: what the toolbar offers. True when the user can act in at
+// least one list they can see — the per-row checks decide the rest.
+const perm = (() => {
+  const reachable = PO_SOURCE.concat([GENERAL]);
+  return {
+    level:     _levelIn(DIVISION),
+    isAdmin:   _levelIn(DIVISION) === 'admin',
+    canEdit:   reachable.some(d => capsFor(d).canEdit),
+    canDelete: reachable.some(d => capsFor(d).canDelete),
   };
 })();
 
@@ -571,7 +611,6 @@ function newLine() {
 // list is read, because an order that arrived before this page did is exactly
 // the one someone is most likely to re-tie.
 const _savedDivision = {};
-const GENERAL = 'purchase_orders';          // the blob general orders live in
 const DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)' };
 
 let catalog       = { divisions: [], vendors: [], employees: [], truncated: [] };
@@ -650,6 +689,9 @@ async function loadCatalog() {
     + vendors.map(v => '<option value="' + esc(v.name) + '">' + esc(v.name) + '</option>').join('');
 
   const notes = [];
+  if (!capsFor(GENERAL).canEdit) {
+    notes.push('You can work with Turf, Paving and Kiewit orders here, but not with general (non-job) ones — those need a Purchase Orders role. Ask an administrator to set one under Manage Users.');
+  }
   if (!sourceDivs.length) {
     notes.push('You do not have access to Turf, Paving or Kiewit, so only general orders — the ones tied to no division — can be raised here. Ask an administrator for a role in a division to raise orders against its jobs.');
   }
@@ -880,12 +922,22 @@ window.addEventListener('beforeunload', () => {
 /* ═══════════════════════════════════════════
    CRUD
 ═══════════════════════════════════════════ */
+/** The list a new order should start in: general when that is usable, else the
+ *  first job division this user can actually write to. Starting somewhere they
+ *  cannot save to produces an order that never reaches the server. */
+function defaultNewDivision() {
+  if (capsFor(GENERAL).canEdit) return GENERAL;
+  const usable = sourceDivs.map(d => d.division).find(d => capsFor(d).canEdit);
+  return usable || GENERAL;
+}
+
 function newPO(seed) {
   if (!perm.canEdit) return;
-  // A new order starts general. Picking a division is the first thing the form
-  // asks for, and until it is answered the order belongs to no job ledger —
-  // which is also the finished state for the many orders that never have one.
-  const div = (seed && seed._division) || GENERAL;
+  // A new order starts general where that is allowed. Picking a division is the
+  // first thing the form asks for, and until it is answered the order belongs to
+  // no job ledger — which is also the finished state for the many orders that
+  // never have one.
+  const div = (seed && seed._division) || defaultNewDivision();
   const po = {
     id:           uid(),
     po_number:    nextPONumber(div),
@@ -911,7 +963,7 @@ function newPO(seed) {
 
 function addLine(poId) {
   const po = purchaseOrders.find(p => p.id === poId);
-  if (!po || !perm.canEdit) return;
+  if (!po || !capsFor(po._division).canEdit) return;
   if (!po.lines) po.lines = [];
   po.lines.push(newLine());
   expanded.add(poId);
@@ -921,7 +973,7 @@ function addLine(poId) {
 
 function deleteLine(poId, lineId) {
   const po = purchaseOrders.find(p => p.id === poId);
-  if (!po || !perm.canEdit) return;
+  if (!po || !capsFor(po._division).canEdit) return;
   po.lines = (po.lines || []).filter(l => l.id !== lineId);
   // The job cost row this delivery created goes with it — the server reconciles
   // that from the line list, so nothing else is needed here.
@@ -931,24 +983,42 @@ function deleteLine(poId, lineId) {
 
 async function deletePO(poId) {
   const po = purchaseOrders.find(p => p.id === poId);
-  if (!po || !perm.canDelete) return;
+  if (!po || !capsFor(po._division).canDelete) return;
   const tied = po.project_id ? ' It will also be removed from that job’s costs.' : '';
   if (!confirm('Delete ' + (po.po_number || 'this order') + '?' + tied)) return;
 
   clearTimeout(_saveTimers[poId]);
   delete _saveTimers[poId];
+
+  // An order the server has never stored is only on this screen, so there is
+  // nothing to ask it to delete — and asking would fail. A new order whose
+  // first save never landed used to be undeletable for exactly that reason:
+  // the delete was refused, the row stayed, and it sat in the retry queue
+  // failing forever with no way to get rid of it.
+  if (!_savedDivision[poId]) {
+    purchaseOrders = purchaseOrders.filter(p => p.id !== poId);
+    expanded.delete(poId);
+    _unsaved.delete(poId);
+    delete _saveChain[poId];
+    showSave('saved', 'Removed');
+    render();
+    return;
+  }
+
   showSave('saving', 'Deleting…');
   try {
     await api('DELETE', '/purchase-orders?division=' + encodeURIComponent(po._division)
                       + '&id=' + encodeURIComponent(poId));
     purchaseOrders = purchaseOrders.filter(p => p.id !== poId);
     expanded.delete(poId);
+    _unsaved.delete(poId);
     delete _savedDivision[poId];
+    delete _saveChain[poId];
     showSave('saved', 'Deleted');
     render();
   } catch (err) {
     showSave('error', 'Not deleted');
-    toast('Could not delete: ' + err.message, 'err');
+    toast('Could not delete ' + (po.po_number || 'the order') + ': ' + err.message, 'err');
   }
 }
 
@@ -972,7 +1042,7 @@ function toggleLines(poId) {
  */
 function setDivision(poId, value) {
   const po = purchaseOrders.find(p => p.id === poId);
-  if (!po || !perm.canEdit) return;
+  if (!po || !capsFor(po._division).canEdit) return;
   const next = value || GENERAL;
   if (next === po._division) return;
   po._division = next;
@@ -989,7 +1059,7 @@ function setDivision(poId, value) {
 
 function setProject(poId, value) {
   const po = purchaseOrders.find(p => p.id === poId);
-  if (!po || !perm.canEdit) return;
+  if (!po || !capsFor(po._division).canEdit) return;
   if ((po.project_id || '') === (value || '')) return;
   po.project_id = value || '';
   // Codes come from the job's own bid items, so they cannot survive a job change.
@@ -1001,7 +1071,7 @@ function setProject(poId, value) {
 
 function setSubCode(poId, value) {
   const po = purchaseOrders.find(p => p.id === poId);
-  if (!po || !perm.canEdit) return;
+  if (!po || !capsFor(po._division).canEdit) return;
   const parts = String(value || '').split('||');
   po.cost_code = parts[0] || '';
   po.sub_code  = parts[1] || '';
@@ -1011,7 +1081,7 @@ function setSubCode(poId, value) {
 
 function setField(poId, field, value) {
   const po = purchaseOrders.find(p => p.id === poId);
-  if (!po || !perm.canEdit) return;
+  if (!po || !capsFor(po._division).canEdit) return;
   if (field === 'status' && po.status !== value) {
     po.status_changed_at = new Date().toISOString();
     po.status_changed_by = (fctUser && fctUser.username) || '';
@@ -1023,7 +1093,7 @@ function setField(poId, field, value) {
 
 function setLineField(poId, lineId, field, value) {
   const po = purchaseOrders.find(p => p.id === poId);
-  if (!po || !perm.canEdit) return;
+  if (!po || !capsFor(po._division).canEdit) return;
   const line = (po.lines || []).find(l => l.id === lineId);
   if (!line) return;
   line[field] = value;
@@ -1119,10 +1189,19 @@ function visiblePOs() {
    RENDER
 ═══════════════════════════════════════════ */
 function divisionSelectHTML(po) {
-  const opts = ['<option value="' + GENERAL + '"' + (po._division === GENERAL ? ' selected' : '') + '>General — no division</option>']
-    .concat(sourceDivs.map(d =>
-      '<option value="' + esc(d.division) + '"' + (po._division === d.division ? ' selected' : '') + '>' + esc(d.label) + '</option>'));
-  return '<select ' + (perm.canEdit ? '' : 'disabled ') +
+  // A division this user cannot write to is offered only when the order is
+  // already in it — moving an order somewhere it could never be saved just
+  // produces a failure the user cannot undo.
+  const offer = d => capsFor(d).canEdit || po._division === d;
+  const opts = [];
+  if (offer(GENERAL)) {
+    opts.push('<option value="' + GENERAL + '"' + (po._division === GENERAL ? ' selected' : '') + '>General — no division</option>');
+  }
+  sourceDivs.forEach(d => {
+    if (!offer(d.division)) return;
+    opts.push('<option value="' + esc(d.division) + '"' + (po._division === d.division ? ' selected' : '') + '>' + esc(d.label) + '</option>');
+  });
+  return '<select ' + (capsFor(po._division).canEdit ? '' : 'disabled ') +
     'onchange="setDivision(\'' + jsAttr(po.id) + '\', this.value)" aria-label="Division">' + opts.join('') + '</select>';
 }
 
@@ -1303,7 +1382,7 @@ function renderTable(rows) {
       '<td>' + statusSelectHTML(po) + meta + '</td>' +
       '<td style="text-align:center">' + docBtnHTML(po) + '</td>' +
       '<td style="text-align:center">' +
-        (perm.canDelete ? '<button class="del-btn" onclick="deletePO(\'' + jsAttr(po.id) + '\')" title="Delete order">&#10005;</button>' : '') +
+        (capsFor(po._division).canDelete ? '<button class="del-btn" onclick="deletePO(\'' + jsAttr(po.id) + '\')" title="Delete order">&#10005;</button>' : '') +
       '</td></tr>';
 
     const lines = open ? '<tr>' + linesPanelHTML(po, COLS) + '</tr>' : '';
@@ -1342,7 +1421,7 @@ function renderCards(rows) {
       '<div class="card-actions">' +
         '<button class="btn" onclick="toggleLines(\'' + jsAttr(po.id) + '\')">' + (open ? 'Hide' : 'Edit') + ' details</button>' +
         '<button class="icon-btn' + (n ? ' has' : '') + '" onclick="openDocs(\'' + jsAttr(po.id) + '\')" style="padding:0.38rem 0.6rem">&#128206; ' + (n || 'Attach') + '</button>' +
-        (perm.canDelete ? '<button class="btn" onclick="deletePO(\'' + jsAttr(po.id) + '\')" style="color:var(--red)">Delete</button>' : '') +
+        (capsFor(po._division).canDelete ? '<button class="btn" onclick="deletePO(\'' + jsAttr(po.id) + '\')" style="color:var(--red)">Delete</button>' : '') +
       '</div>' +
       (open ? '<div style="margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.6rem">' + cardEditorHTML(po) + '</div>' : '') +
     '</div>';

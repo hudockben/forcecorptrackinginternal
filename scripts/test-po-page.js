@@ -115,7 +115,10 @@ assert('it guards on having come through the division selector',
 // fctUser.role is the caller's TURF role. Reading it here would answer about
 // the wrong division in both directions.
 assert('permissions come from the per-division map, not the turf role',
-  /fctUser\.divisionRoles\[DIVISION\]/.test(PAGE));
+  /fctUser\.divisionRoles && fctUser\.divisionRoles\[division\]/.test(PAGE) &&
+  // The trap is READING it, not naming it — the comments above _levelIn
+  // explain why it must not be read, and should keep saying so.
+  !/=\s*fctUser\.role\b/.test(PAGE));
 
 assert('it reads the catalogue from one endpoint, not the project blobs',
   PAGE.includes("api('GET', '/po-catalog')") && !/fct_paving_project_/.test(PAGE));
@@ -231,7 +234,10 @@ console.log('\n[re-tying an order]');
       id:'x', po_number:'PO-0007', _division:'paving',
       project_id:'p1', cost_code:'420', sub_code:'Base', lines:[],
     }];
-    const perm = { canEdit: true };
+    const perm = { canEdit: true, canDelete: true };
+    // These blocks exercise the cascade and the move, not the rights — the
+    // rights have their own section above.
+    function capsFor() { return { canEdit: true, canDelete: true }; }
     const saves = [];
     function savePO(po, opts) { saves.push({ id: po.id, immediate: !!(opts && opts.immediate) }); }
     function render() {}
@@ -322,6 +328,93 @@ console.log('\n[filtering]');
   assert('search covers the PO number',        ids("search='PO-0002';") === '2');
   assert('search is case-insensitive',         ids("search='STONE';") === '1');
   assert('filters combine',                    ids("search=''; filters.vendor='Acme'; filters.status='pending';") === '1,3');
+}
+
+console.log('\n[rights are per division, not per page]');
+{
+  // The bug from the field: a turf/paving administrator with NO purchasing
+  // role opened this page, raised a general order, and could neither save nor
+  // delete it — the row sat there permanently. The page had worked its rights
+  // out ONCE and, finding no purchasing role, fallen back to fctUser.role,
+  // which is the caller's TURF role. So it showed a delete button the server
+  // refused.
+  assert('the turf-role fallback is gone',
+    !/else if \(fctUser && fctUser\.role\) level = fctUser\.role;/.test(PAGE));
+  assert('rights are computed per division', /function capsFor\(division\)/.test(PAGE));
+  assert('the page\'s source-division list matches the server\'s',
+    /const PO_SOURCE = \['turf', 'paving', 'kiewit'\];/.test(PAGE) &&
+    JSON.stringify(require('../api/lib/auth').PO_SOURCE_DIVISIONS) === JSON.stringify(['turf','paving','kiewit']));
+  assert('and GENERAL is declared before capsFor reads it',
+    PAGE.indexOf('const GENERAL') < PAGE.indexOf('function capsFor'));
+
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const ctx = vm.createContext({ document: dom.window.document, console });
+  vm.runInContext(`
+    const DIVISION = 'purchase_orders';
+    const GENERAL  = 'purchase_orders';
+    // Lifted from the page rather than restated, so the two cannot drift.
+    const PO_SOURCE = ['turf', 'paving', 'kiewit'];
+    let sourceDivs = [{ division: 'paving', label: 'Paving', projects: [] }];
+    let fctUser = null;
+  `, ctx);
+  ['_levelIn', 'capsFor'].forEach(n => vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
+  const caps = (user, div) => {
+    vm.runInContext('fctUser = ' + JSON.stringify(user) + ';', ctx);
+    return vm.runInContext('capsFor(' + JSON.stringify(div) + ')', ctx);
+  };
+
+  // Exactly the user from the screenshot.
+  const turfAdmin = { role: 'admin', divisionRoles: { turf: 'admin', paving: 'admin' } };
+  assert('a turf admin with no purchasing role can still work paving orders',
+    caps(turfAdmin, 'paving').canDelete === true);
+  // ...and is NOT offered a delete the server would refuse.
+  assert('but is not offered delete on the general list',
+    caps(turfAdmin, 'purchase_orders').canDelete === false);
+  assert('nor edit on it',
+    caps(turfAdmin, 'purchase_orders').canEdit === false);
+
+  const buyer = { divisionRoles: { purchase_orders: 'level3' } };
+  assert('a purchasing level3 reaches the general list', caps(buyer, 'purchase_orders').canDelete === true);
+  assert('and the job divisions',                        caps(buyer, 'paving').canDelete === true);
+  assert('but not a division outside the carve-out',     caps(buyer, 'dust').canDelete === false);
+
+  const viewer = { divisionRoles: { purchase_orders: 'level1' } };
+  assert('a view-only purchasing user edits nothing', caps(viewer, 'paving').canEdit === false);
+  const inserter = { divisionRoles: { purchase_orders: 'level2' } };
+  assert('level2 edits but does not delete',
+    caps(inserter, 'paving').canEdit === true && caps(inserter, 'paving').canDelete === false);
+  assert('a platform admin reaches everything', caps({ isPlatformAdmin: true }, 'paving').canDelete === true);
+
+  // These must agree with poCapabilities on the server, or the page offers
+  // buttons the API refuses — which is the whole bug.
+  const serverCaps = require('../api/lib/auth').poCapabilities;
+  [[turfAdmin, 'paving'], [turfAdmin, 'purchase_orders'], [buyer, 'paving'],
+   [buyer, 'purchase_orders'], [viewer, 'paving'], [inserter, 'paving'],
+   [{ isPlatformAdmin: true }, 'paving']].forEach(([u, d]) => {
+    const c = caps(u, d), sv = serverCaps(u, d);
+    assert(`client and server agree for ${JSON.stringify(u.divisionRoles || 'platform-admin')} on ${d}`,
+      c.canEdit === sv.canUpload && c.canDelete === sv.canManage,
+      'client=' + JSON.stringify(c) + ' server=' + JSON.stringify({ canUpload: sv.canUpload, canManage: sv.canManage }));
+  });
+}
+
+console.log('\n[an order the server never stored]');
+{
+  // The row the user could not get rid of. Its first save had failed, so the
+  // server had nothing to delete and the delete call was refused — leaving it
+  // on screen forever, retrying and failing.
+  assert('deleting an unsaved order does not call the API',
+    /if \(!_savedDivision\[poId\]\) \{/.test(PAGE));
+  assert('and it is taken out of the retry queue',
+    /_unsaved\.delete\(poId\);\n\s*delete _saveChain\[poId\];/.test(PAGE));
+  assert('a real delete clears the queue too',
+    (PAGE.match(/_unsaved\.delete\(poId\)/g) || []).length === 2);
+  assert('the delete button itself is per division',
+    /capsFor\(po\._division\)\.canDelete \? '<button class="del-btn"/.test(PAGE));
+  assert('a new order starts in a list the user can save to',
+    /function defaultNewDivision\(\)/.test(PAGE));
+  assert('and the page says so when the general list is out of reach',
+    /those need a Purchase Orders role/.test(PAGE));
 }
 
 console.log('\n[Mathis on the purchasing page]');
@@ -548,7 +641,10 @@ console.log('\n[an order re-tied after a page reload]');
   vm.runInContext(`
     const GENERAL = 'purchase_orders';
     let sourceDivs = [{ division:'turf', label:'Turf', projects:[] }];
-    const perm = { canEdit: true };
+    const perm = { canEdit: true, canDelete: true };
+    // These blocks exercise the cascade and the move, not the rights — the
+    // rights have their own section above.
+    function capsFor() { return { canEdit: true, canDelete: true }; }
     const _savedDivision = {};
     const sent = [];
     // The order was loaded from paving, as loadPurchaseOrders would leave it.
