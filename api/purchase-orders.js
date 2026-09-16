@@ -116,13 +116,17 @@ module.exports = async (req, res) => {
     if (req.method === 'GET') {
       // The JSON blob is the source of truth (PUT always awaits a write to it).
       const blobRows = await sql`
-        SELECT value FROM app_data WHERE key = ${blobKey}
+        SELECT value, updated_at FROM app_data WHERE key = ${blobKey}
       `;
       const blob = blobRows.length ? blobRows[0].value : null;
       const list = Array.isArray(blob) ? blob : [];
+      // The version this list came from. A client that sends it back on PUT
+      // gets its full-list save merged rather than clobbering anything written
+      // in between — see the PUT arm.
+      const updatedAt = blobRows.length ? blobRows[0].updated_at : null;
 
       if (list.length > 0) {
-        return res.json({ purchaseOrders: list });
+        return res.json({ purchaseOrders: list, updatedAt });
       }
 
       // ── Fallback: read from normalized table filtered by division ─────
@@ -133,7 +137,7 @@ module.exports = async (req, res) => {
       `;
 
       if (poRows.length === 0) {
-        return res.json({ purchaseOrders: [] });
+        return res.json({ purchaseOrders: [], updatedAt });
       }
 
       const poIds = poRows.map(r => r.id);
@@ -175,7 +179,7 @@ module.exports = async (req, res) => {
         lines:             linesByPO[r.id]   || [],
       }));
 
-      return res.json({ purchaseOrders });
+      return res.json({ purchaseOrders, updatedAt });
     }
 
     // ── PUT (full sync) ───────────────────────────────────────────────────
@@ -200,18 +204,61 @@ module.exports = async (req, res) => {
         }
       }
 
+      // ── Merge anything written since the client read this list ──────────
+      //
+      // This arm REPLACES the division's whole list, which was safe while that
+      // division's own tab was the only writer. Central purchasing writes here
+      // too now, so a tab whose 60-second refresh happened to be skipped — it
+      // skips while the user is typing — could save its stale list and erase an
+      // order raised in the meantime, deleting the mirror row with it and
+      // leaving the job charged for a purchase order that no longer exists
+      // anywhere.
+      //
+      // A client that sends back the `updatedAt` it read gets the safe path:
+      // when the stored list has moved on, an order that is in it but NOT in
+      // what the client sent is one the client never saw, so it is kept. An
+      // order the client did see and deliberately deleted is absent from BOTH
+      // and stays deleted. `?force=1` still means exactly what it says.
+      //
+      // The one imprecision is a delete racing an edit of the same order: the
+      // order comes back. That is the safe direction, and it is recoverable —
+      // the other way round is not.
+      const baseUpdatedAt = (req.body || {}).baseUpdatedAt || null;
+      let toWrite = purchaseOrders;
+
+      if (baseUpdatedAt && req.query.force !== '1') {
+        const cur = await sql`SELECT value, updated_at FROM app_data WHERE key = ${blobKey}`;
+        const stored = cur.length && Array.isArray(cur[0].value) ? cur[0].value : [];
+        const moved = cur.length && String(cur[0].updated_at) !== String(baseUpdatedAt);
+        if (moved && stored.length) {
+          const sent = new Set(purchaseOrders.map(p => p && p.id).filter(Boolean));
+          const unseen = stored.filter(p => p && p.id && !sent.has(p.id));
+          if (unseen.length) {
+            console.warn(`[purchase-orders] merged ${unseen.length} order(s) the client had not seen for ${blobKey}`);
+            toWrite = purchaseOrders.concat(unseen);
+          }
+        }
+      }
+
       // Always write to the division-specific JSON blob first — source of truth.
-      await sql`
+      const written = await sql`
         INSERT INTO app_data (key, value, updated_at)
-        VALUES (${blobKey}, ${JSON.stringify(purchaseOrders)}::jsonb, NOW())
+        VALUES (${blobKey}, ${JSON.stringify(toWrite)}::jsonb, NOW())
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        RETURNING updated_at
       `;
 
       // Mirror to normalized table (awaited so serverless doesn't kill it).
-      try { await _syncPOs(sql, companyCode, division, purchaseOrders); }
+      try { await _syncPOs(sql, companyCode, division, toWrite); }
       catch (err) { console.error('[purchase-orders] normalize failed:', err.message); }
 
-      return res.json({ ok: true });
+      // The new version, so the next save from this client takes the fast path
+      // instead of re-merging against a base it already knows is stale.
+      return res.json({
+        ok: true,
+        updatedAt: written.length ? written[0].updated_at : null,
+        merged: toWrite.length - purchaseOrders.length,
+      });
     }
 
     // ── POST (upsert one) ─────────────────────────────────────────────────
@@ -312,7 +359,34 @@ async function _syncPOs(sql, companyCode, division, list) {
   // refuse to wipe the mirror table — leaves a recovery option intact.
   if (incomingIds.length === 0) return;
 
-  // Remove POs for this division that are no longer in the list
+  // Remove POs for this division that are no longer in the list.
+  //
+  // The job cost rows they created go first. A division tab deleting its own
+  // order removes them client-side as it goes, so this is normally a no-op —
+  // but it is not for an order that tab never held, and a dropped order whose
+  // rows survive leaves the job charged for material with no purchase order
+  // anywhere behind it. Cheap, and it makes the invariant hold whatever the
+  // client did or failed to do.
+  const goneRows = await sql`
+    SELECT d.po_row_id
+    FROM   po_deliveries d
+    JOIN   purchase_orders p ON p.id = d.po_id
+    WHERE  d.company_code = ${companyCode}
+      AND  p.company_code = ${companyCode}
+      AND  p.division = ${division}
+      AND  p.id <> ALL(${incomingIds})
+      AND  d.po_row_id IS NOT NULL
+  `;
+  const orphanIds = goneRows
+    .map(r => r.po_row_id)
+    .filter(id => id && !/^ts\d+-/.test(String(id)));   // never a payroll-injected row
+  if (orphanIds.length) {
+    await sql`
+      DELETE FROM daily_tracking
+      WHERE company_code = ${companyCode} AND row_id = ANY(${orphanIds})
+    `;
+  }
+
   await sql`
     DELETE FROM purchase_orders
     WHERE company_code = ${companyCode} AND division = ${division}

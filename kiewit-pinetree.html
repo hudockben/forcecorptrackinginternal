@@ -6309,6 +6309,11 @@ function getProj(id) { return projectsList.find(p => p.id === id); }
 
 /* ── Purchase Orders store ── */
 let purchaseOrders = [];
+// The version of the stored list this page last read. Sent back on save so
+// the server can tell an order this page DELETED from one it never saw —
+// central purchasing writes into this same list, and without it a save made
+// from a stale list erases whatever it raised in the meantime.
+let _poBaseUpdatedAt = null;
 
 async function loadPurchaseOrders() {
   try {
@@ -6319,6 +6324,7 @@ async function loadPurchaseOrders() {
     if (r.ok) {
       const data = await r.json();
       purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+      _poBaseUpdatedAt = data.updatedAt || null;
     } else {
       purchaseOrders = [];
     }
@@ -6368,9 +6374,17 @@ function savePurchaseOrders() {
   fetch(`${API_BASE}/purchase-orders?division=kiewit`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body: JSON.stringify({ purchaseOrders })
+    body: JSON.stringify({ purchaseOrders, baseUpdatedAt: _poBaseUpdatedAt })
   }).then(async r => {
-    if (r.ok) return;
+    if (r.ok) {
+      // The version this save produced, so the next one is judged against
+      // what the server actually holds rather than a base already stale.
+      try {
+        const j = await r.json();
+        if (j && j.updatedAt) _poBaseUpdatedAt = j.updatedAt;
+      } catch {}
+      return;
+    }
     if (r.status === 409) {
       let detail = 'A purchase-order save was refused to prevent accidental data loss.';
       try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
@@ -21820,6 +21834,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (!r.ok) return;
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+    _poBaseUpdatedAt = data.updatedAt || _poBaseUpdatedAt;
     // Migrate before diffing: the conversion adds tax_pct to every line, so an
     // as-yet-unconverted blob would otherwise read as a change on every poll
     // and re-render the tab in a loop until someone saves a PO.

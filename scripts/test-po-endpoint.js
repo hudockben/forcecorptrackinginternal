@@ -47,7 +47,7 @@ const realAuth = require(authPath);
  * hasDivisionAccess / canAccessPODivision — only requireAuth is faked, so what
  * these tests assert about access is what the endpoint actually enforces.
  */
-function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult } = {}) {
+function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult, sqlStub = null } = {}) {
   [endpointPath, authPath, poSyncPath, neonPath].forEach(p => { delete require.cache[p]; });
 
   const payload = { companyCode: 'FCT', username: 'u1', divisionRoles: roles };
@@ -102,7 +102,7 @@ function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult } =
 
   require.cache[neonPath] = {
     id: neonPath, filename: neonPath, loaded: true,
-    exports: { neon: () => async () => [] },
+    exports: { neon: () => sqlStub || (async () => []) },
   };
 
   return require(endpointPath);
@@ -357,6 +357,89 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     const res = makeRes();
     await handler({ method: 'GET', query: { division: 'purchase_orders' }, headers: AUTHED }, res);
     check('a user with no roles at all reaches nothing', res.statusCode === 403);
+  }
+
+  console.log('\n[the full-list PUT no longer erases what it never saw]');
+  {
+    // A division tab refreshes its list every 60s, but skips while the user is
+    // typing. Purchasing raises an order in that window; the tab then saves its
+    // stale list. Before the merge, that order was gone — blob, mirror row and
+    // all — while the job kept the material charge its deliveries had created.
+    const STORED = [
+      { id: 'a', po_number: 'PO-0001' },
+      { id: 'b', po_number: 'PO-0002' },
+      { id: 'purchasing-raised', po_number: 'PO-0003', origin: 'purchasing' },
+    ];
+    function appDataStub({ storedUpdatedAt }) {
+      const seen = [];
+      const sql = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED, updated_at: storedUpdatedAt }]);
+        }
+        if (/^SELECT value FROM app_data/.test(q)) return Promise.resolve([{ value: STORED }]);
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: 'T9' }]);
+        return Promise.resolve([]);
+      };
+      sql.written = () => {
+        const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+        return hit ? JSON.parse(hit.vals[1]) : null;
+      };
+      return sql;
+    }
+
+    {
+      // The stale save: client read at T1, someone wrote since.
+      const sqlStub = appDataStub({ storedUpdatedAt: 'T2' });
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [STORED[0], STORED[1]], baseUpdatedAt: 'T1' } }, res);
+      const ids = (sqlStub.written() || []).map(p => p.id);
+      check('an order the client never saw survives its save',
+        ids.includes('purchasing-raised'), JSON.stringify(ids));
+      check('and what it did send is still there',
+        ids.includes('a') && ids.includes('b'), JSON.stringify(ids));
+      check('the merge is reported', res.body && res.body.merged === 1, JSON.stringify(res.body));
+      check('and the new version comes back so the next save is judged fresh',
+        res.body && res.body.updatedAt === 'T9', JSON.stringify(res.body));
+    }
+    {
+      // Nobody wrote in between: the list is replaced exactly as before, so a
+      // deliberate delete still deletes.
+      const sqlStub = appDataStub({ storedUpdatedAt: 'T1' });
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [STORED[0]], baseUpdatedAt: 'T1' } }, res);
+      const ids = (sqlStub.written() || []).map(p => p.id);
+      check('an up-to-date client still deletes what it dropped',
+        ids.length === 1 && ids[0] === 'a', JSON.stringify(ids));
+      check('and nothing is reported as merged', res.body.merged === 0);
+    }
+    {
+      // A client that sends no version keeps the old behaviour exactly.
+      const sqlStub = appDataStub({ storedUpdatedAt: 'T2' });
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [STORED[0]] } }, res);
+      const ids = (sqlStub.written() || []).map(p => p.id);
+      check('a client with no version behaves as it always did',
+        ids.length === 1 && ids[0] === 'a', JSON.stringify(ids));
+    }
+    {
+      // ?force=1 is a genuine wipe and must stay one.
+      const sqlStub = appDataStub({ storedUpdatedAt: 'T2' });
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf', force: '1' }, headers: AUTHED,
+                      body: { purchaseOrders: [], baseUpdatedAt: 'T1' } }, res);
+      const ids = (sqlStub.written() || []).map(p => p.id);
+      check('force=1 still means what it says', ids.length === 0, JSON.stringify(ids));
+    }
   }
 
   console.log(`\n${passed} passed, ${failed} failed.`);
