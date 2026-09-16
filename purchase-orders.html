@@ -666,7 +666,29 @@ const PER_PAGE    = 12;
 let search        = '';
 let filters       = { division: '', status: '', job: '', vendor: '' };
 
-function divMeta(key) { return sourceDivs.find(d => d.division === key) || null; }
+// The canonical labels, so a catalogue failure degrades to the right names
+// rather than to raw keys. Mirrors DIVISION_BLOBS in api/po-catalog.js.
+const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
+
+/**
+ * The division rows the UI offers.
+ *
+ * The catalogue's when it loaded, and the canonical ones when it did not. Every
+ * picker and label used to read sourceDivs directly, so a /api/po-catalog
+ * failure left it empty and the Division control on every turf, paving and
+ * kiewit order collapsed to a single "General" option — showing the general
+ * list as selected for orders that are really stored in a job division. The
+ * orders come from their own endpoint and arrive fine; only the JOB and CODE
+ * pickers genuinely need the catalogue, and those correctly stay empty because
+ * the fallback rows carry no projects.
+ */
+function listDivs() {
+  return sourceDivs.length
+    ? sourceDivs
+    : PO_SOURCE.map(d => ({ division: d, label: PO_SOURCE_LABELS[d] || d, projects: [] }));
+}
+
+function divMeta(key) { return listDivs().find(d => d.division === key) || null; }
 function divLabel(key) {
   if (!key || key === GENERAL) return 'General';
   const m = divMeta(key);
@@ -720,14 +742,21 @@ function nextPONumber(divKey, excludeId) {
 /* ═══════════════════════════════════════════
    LOAD
 ═══════════════════════════════════════════ */
+/** The division filter's options. Built from listDivs so the orders restored
+ *  after a catalogue failure stay filterable. */
+function renderDivisionFilter() {
+  const fDiv = document.getElementById('f-division');
+  if (!fDiv) return;
+  fDiv.innerHTML = '<option value="">All divisions</option>'
+    + listDivs().map(d => '<option value="' + esc(d.division) + '">' + esc(d.label) + '</option>').join('')
+    + '<option value="' + GENERAL + '">General — no division</option>';
+}
+
 async function loadCatalog() {
   catalog = await api('GET', '/po-catalog');
   sourceDivs = Array.isArray(catalog.divisions) ? catalog.divisions : [];
 
-  const fDiv = document.getElementById('f-division');
-  fDiv.innerHTML = '<option value="">All divisions</option>'
-    + sourceDivs.map(d => '<option value="' + esc(d.division) + '">' + esc(d.label) + '</option>').join('')
-    + '<option value="' + GENERAL + '">General — no division</option>';
+  renderDivisionFilter();
 
   const vendors = Array.isArray(catalog.vendors) ? catalog.vendors : [];
   document.getElementById('vendor-list').innerHTML =
@@ -772,8 +801,7 @@ async function loadCatalog() {
  * fine without the catalogue; only the job and vendor pickers need it.
  */
 function listKeys() {
-  const divs = sourceDivs.length ? sourceDivs.map(d => d.division) : PO_SOURCE.slice();
-  return divs.concat([GENERAL]);
+  return listDivs().map(d => d.division).concat([GENERAL]);
 }
 
 async function loadPurchaseOrders() {
@@ -1055,7 +1083,7 @@ window.addEventListener('beforeunload', () => {
 function defaultNewDivision() {
   const usable = d => capsFor(d).canEdit && loadedLists.has(d);
   if (usable(GENERAL)) return GENERAL;
-  return sourceDivs.map(d => d.division).find(usable) || null;
+  return listDivs().map(d => d.division).find(usable) || null;
 }
 
 function newPO(seed) {
@@ -1371,7 +1399,7 @@ function divisionSelectHTML(po) {
   if (offer(GENERAL)) {
     opts.push('<option value="' + GENERAL + '"' + (po._division === GENERAL ? ' selected' : '') + '>General — no division</option>');
   }
-  sourceDivs.forEach(d => {
+  listDivs().forEach(d => {
     if (!offer(d.division)) return;
     opts.push('<option value="' + esc(d.division) + '"' + (po._division === d.division ? ' selected' : '') + '>' + esc(d.label) + '</option>');
   });
@@ -1989,7 +2017,7 @@ function renderScanForm(receipt, scanError) {
   const divOpts = (writable(GENERAL)
       ? ['<option value="' + GENERAL + '"' + (scanDefault === GENERAL ? ' selected' : '') + '>General — no division</option>']
       : [])
-    .concat(sourceDivs.filter(d => writable(d.division)).map(d =>
+    .concat(listDivs().filter(d => writable(d.division)).map(d =>
       '<option value="' + esc(d.division) + '"' + (scanDefault === d.division ? ' selected' : '') + '>' + esc(d.label) + '</option>')).join('');
 
   renderScanSheet(
@@ -2467,6 +2495,10 @@ document.addEventListener('keydown', e => {
     document.getElementById('load-banner').textContent =
       'Could not load the jobs and vendors list: ' + err.message +
       ' — orders already raised are still shown below, but a new one cannot be tied to a job until this loads. Reload to try again.';
+    // loadCatalog threw before it got here, and the orders below are still
+    // shown — so they still need their filter. listDivs falls back to the
+    // canonical divisions, which is all this dropdown needs.
+    renderDivisionFilter();
   }
   try {
     await loadPurchaseOrders();

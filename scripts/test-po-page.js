@@ -202,7 +202,7 @@ console.log('\n[the cascade]');
     // back. A division absent from it has not loaded, and cannot be numbered.
     const loadedLists = new Set(['turf', 'paving', 'kiewit']);
   `, ctx);
-  ['divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'codeLabel', 'codeValue', 'nextPONumber']
+  ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'codeLabel', 'codeValue', 'nextPONumber']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
   const run = expr => vm.runInContext(expr, ctx);
 
@@ -255,7 +255,7 @@ console.log('\n[re-tying an order]');
     const toasted = [];
     function toast(msg) { toasted.push(msg); }
   `, ctx);
-  ['divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision', 'setProject', 'setSubCode']
+  ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision', 'setProject', 'setSubCode']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
   const run = expr => vm.runInContext(expr, ctx);
 
@@ -341,7 +341,7 @@ console.log('\n[filtering]');
       { id:'3', po_number:'PO-0003', _division:GENERAL,  project_id:'',   supplier:'Acme',  status:'pending',  title:'Office paper', lines:[] },
     ];
   `, ctx);
-  ['divMeta', 'divLabel', 'projectFor', 'projectsFor', 'visiblePOs'].forEach(name =>
+  ['listDivs', 'divMeta', 'divLabel', 'projectFor', 'projectsFor', 'visiblePOs'].forEach(name =>
     vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
   const ids = expr => {
     vm.runInContext(expr, ctx);
@@ -393,6 +393,7 @@ console.log('\n[rights are per division, not per page]');
     const GENERAL  = 'purchase_orders';
     // Lifted from the page rather than restated, so the two cannot drift.
     const PO_SOURCE = ['turf', 'paving', 'kiewit'];
+    const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
     let sourceDivs = [{ division: 'paving', label: 'Paving', projects: [] }];
     let fctUser = null;
   `, ctx);
@@ -521,9 +522,45 @@ console.log('\n[load failures do not corrupt numbering]');
   assert('and a new order will not start in one',
     /const usable = d => capsFor\(d\)\.canEdit && loadedLists\.has\(d\);/.test(PAGE));
   // A catalogue failure used to collapse the page to the general list, hiding
-  // every turf, paving and kiewit order while the banner said otherwise.
-  assert('a catalogue failure still fetches every list',
-    /sourceDivs\.length \? sourceDivs\.map\(d => d\.division\) : PO_SOURCE\.slice\(\)/.test(PAGE));
+  // every turf, paving and kiewit order while the banner said otherwise — and
+  // then, once the fetch was fixed, it still collapsed every ORDER's division
+  // control to a lone "General" option, reporting job-division orders as
+  // general. Both come from reading sourceDivs directly, so the fallback is
+  // exercised rather than matched.
+  {
+    const ctx = vm.createContext({ console });
+    vm.runInContext(`
+      const GENERAL = 'purchase_orders';
+      const PO_SOURCE = ['turf', 'paving', 'kiewit'];
+      const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
+      let sourceDivs = [];          // the catalogue failed
+    `, ctx);
+    ['listDivs', 'divMeta', 'divLabel', 'listKeys']
+      .forEach(n => vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
+    const r = e => vm.runInContext(e, ctx);
+    assert('a catalogue failure still fetches every list',
+      JSON.stringify(r('listKeys()')) ===
+      JSON.stringify(['turf', 'paving', 'kiewit', 'purchase_orders']), JSON.stringify(r('listKeys()')));
+    assert('and every division is still offered, so no order is mislabelled',
+      JSON.stringify(r('listDivs().map(d => d.division)')) ===
+      JSON.stringify(['turf', 'paving', 'kiewit']), JSON.stringify(r('listDivs()')));
+    assert('under its real name, not its key',
+      r("divLabel('kiewit')") === 'Kiewit Pinetree', r("divLabel('kiewit')"));
+    // The job and code pickers are the only things that genuinely need the
+    // catalogue, and they correctly stay empty.
+    assert('but no jobs are invented for it',
+      JSON.stringify(r("divMeta('kiewit').projects")) === '[]');
+    // ...and when the catalogue DID load, its own rows win.
+    r("sourceDivs = [{ division:'paving', label:'Paving Division', projects:[{id:'p1'}] }];");
+    assert('a loaded catalogue is used in preference',
+      JSON.stringify(r('listDivs().map(d => d.division)')) === JSON.stringify(['paving']) &&
+      r("divLabel('paving')") === 'Paving Division');
+  }
+  assert('the division filter is rebuilt from the same list',
+    /function renderDivisionFilter\(\)/.test(PAGE) &&
+    /listDivs\(\)\.map\(d => '<option value="'/.test(PAGE) &&
+    // ...including on the path where loadCatalog threw before building it.
+    /Reload to try again\.';[\s\S]{0,260}renderDivisionFilter\(\);/.test(PAGE));
   assert('the scan sheet offers only writable lists',
     /const writable = d => capsFor\(d\)\.canEdit && loadedLists\.has\(d\);/.test(PAGE));
   assert('and defaults to one of them',  /onScanDivision\(scanDefault \|\| GENERAL\)/.test(PAGE));
@@ -883,7 +920,7 @@ console.log('\n[an order re-tied after a page reload]');
     function savePO(po) { sent.push({ to: po._division, from: _savedDivision[po.id] }); }
     function render() {}
   `, ctx);
-  ['divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision']
+  ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
 
   vm.runInContext("setDivision('x','turf')", ctx);
