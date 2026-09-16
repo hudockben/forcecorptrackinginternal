@@ -1,7 +1,22 @@
 'use strict';
 /**
- * GET /api/purchase-orders?division=turf   — all POs for a division
- * PUT /api/purchase-orders?division=turf   — full sync: { purchaseOrders: [...] }
+ * GET    /api/purchase-orders?division=turf          — all POs for a division
+ * PUT    /api/purchase-orders?division=turf          — full sync: { purchaseOrders: [...] }
+ * POST   /api/purchase-orders?division=turf          — upsert ONE: { purchaseOrder: {...} }
+ * DELETE /api/purchase-orders?division=turf&id=X     — remove ONE
+ *
+ * GET and PUT are what the division tabs have always used: each page owns its
+ * division's list and rewrites the whole thing.
+ *
+ * POST and DELETE exist for central purchasing (purchase-orders.html), which
+ * writes into turf, paving and kiewit and so must never rewrite a list it does
+ * not own — a full PUT from it would erase whatever that division's own tab had
+ * saved since it loaded. They touch one order, under a compare-and-set, and
+ * reconcile that order's job cost rows server-side. See api/lib/po-sync.js.
+ *
+ * Read and single-order write resolve access through canAccessPODivision, so a
+ * purchasing user reaches the source divisions' lists. The full-list PUT keeps
+ * the plain division check: only a division's own people may replace its list.
  *
  * The `division` query param defaults to 'turf' for backward compatibility.
  * Each division's POs are stored separately in both the normalized table
@@ -20,8 +35,14 @@
  * source of truth on read, so the normalized fallback below losing it is fine:
  * the frontend re-derives the percentage from the dollar amount.
  */
-const { neon }            = require('@neondatabase/serverless');
-const { requireDivision } = require('./lib/auth');
+const { neon } = require('@neondatabase/serverless');
+const {
+  requireAuth,
+  requireDivision,
+  normalizeDivision,
+  canAccessPODivision,
+} = require('./lib/auth');
+const poSync = require('./lib/po-sync');
 
 function safeFloat(v) {
   const f = parseFloat(v);
@@ -35,13 +56,53 @@ function safeDate(v) {
   return s.length === 10 ? s : null;
 }
 
+/**
+ * Which access check this request gets.
+ *
+ * The full-list PUT stays on requireDivision: replacing a division's entire
+ * purchase-order list is something only that division's own people may do, and
+ * widening it would hand central purchasing a way to wipe paving's list in one
+ * call. Everything else — reading, and the single-order writes purchasing makes
+ * — goes through canAccessPODivision.
+ *
+ * The turf default is kept for GET and PUT because tracker.html has always
+ * relied on it. A single-order write has to name its division: purchasing is
+ * the only caller, and one that guessed would file the order against the wrong
+ * division's jobs.
+ */
+function _guardFor(req, res) {
+  if (req.method === 'PUT') return requireDivision(req, res);
+
+  const payload = requireAuth(req, res);
+  if (!payload) return null;
+
+  const raw = (req.query && req.query.division) || (req.body && req.body.division) || null;
+  const division = normalizeDivision(raw);
+  if (!division) {
+    if (req.method !== 'GET') {
+      res.status(400).json({ error: 'division query param is required' });
+      return null;
+    }
+    if (!canAccessPODivision(payload, 'turf')) {
+      res.status(403).json({ error: 'You do not have access to this division' });
+      return null;
+    }
+    return { payload, division: 'turf' };
+  }
+  if (!canAccessPODivision(payload, division)) {
+    res.status(403).json({ error: 'You do not have access to this division' });
+    return null;
+  }
+  return { payload, division };
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const guard = requireDivision(req, res);
+  const guard = _guardFor(req, res);
   if (!guard) return;
   const { payload, division } = guard;
 
@@ -107,6 +168,7 @@ module.exports = async (req, res) => {
         supplier:          r.supplier        || '',
         status:            r.status          || 'pending',
         notes:             r.notes           || '',
+        origin:            r.origin          || undefined,
         status_changed_at: r.status_changed_at ? String(r.status_changed_at) : undefined,
         status_changed_by: r.status_changed_by || undefined,
         lines:             linesByPO[r.id]   || [],
@@ -151,6 +213,76 @@ module.exports = async (req, res) => {
       return res.json({ ok: true });
     }
 
+    // ── POST (upsert one) ─────────────────────────────────────────────────
+    // What central purchasing saves with. One order, merged into this
+    // division's list under a compare-and-set, with its job cost rows
+    // reconciled in the same call.
+    if (req.method === 'POST') {
+      const po = (req.body || {}).purchaseOrder;
+      if (!po || typeof po !== 'object' || Array.isArray(po)) {
+        return res.status(400).json({ error: 'purchaseOrder object required' });
+      }
+      if (!po.id) {
+        return res.status(400).json({ error: 'purchaseOrder.id is required' });
+      }
+      if (po.lines != null && !Array.isArray(po.lines)) {
+        return res.status(400).json({ error: 'purchaseOrder.lines must be an array' });
+      }
+
+      // The division the order was stored under before this save. Purchasing
+      // sends it when someone re-ties an order to a different division, so the
+      // order moves lists instead of existing in two at once.
+      const from = normalizeDivision(req.query.from);
+      if (req.query.from && !from) {
+        return res.status(400).json({ error: 'Unknown `from` division' });
+      }
+      if (from && from !== division && !canAccessPODivision(payload, from)) {
+        return res.status(403).json({ error: 'You do not have access to the division this order is moving from' });
+      }
+
+      const result = await poSync.upsertPO(sql, {
+        companyCode,
+        division,
+        po: { ...po, lines: Array.isArray(po.lines) ? po.lines : [] },
+        from,
+      });
+      if (!result.ok) {
+        return res.status(409).json({
+          error: 'Purchase order not saved',
+          detail: 'Someone else is editing this division\'s purchase orders right now. Try again.',
+        });
+      }
+      // The saved order goes back because syncPOCostRows mints po_row_id on any
+      // line that did not have one. A client that kept its own copy instead
+      // would create a second cost row for that line on the next save.
+      //
+      // staleCopy means the order saved but the division it moved FROM still
+      // lists it. The client keeps its record of where the order was last
+      // stored so the next save repeats the move — see savePO in
+      // purchase-orders.html.
+      return res.json({
+        ok: true,
+        purchaseOrder: result.purchaseOrder,
+        rows: result.rows,
+        staleCopy: Boolean(result.staleCopy),
+      });
+    }
+
+    // ── DELETE (one) ──────────────────────────────────────────────────────
+    if (req.method === 'DELETE') {
+      const id = String(req.query.id || '').trim();
+      if (!id) return res.status(400).json({ error: 'id query param is required' });
+
+      const result = await poSync.removePO(sql, { companyCode, division, poId: id });
+      if (!result.ok) {
+        return res.status(409).json({
+          error: 'Purchase order not deleted',
+          detail: 'Someone else is editing this division\'s purchase orders right now. Try again.',
+        });
+      }
+      return res.json({ ok: true, found: result.found, rowsRemoved: result.rowsRemoved });
+    }
+
     return res.status(405).json({ error: 'Method not allowed' });
 
   } catch (err) {
@@ -179,7 +311,7 @@ async function _syncPOs(sql, companyCode, division, list) {
     await sql`
       INSERT INTO purchase_orders (
         id, company_code, division, po_num, title, supplier, project_id,
-        cost_code, sub_code, status, notes,
+        cost_code, sub_code, status, notes, origin,
         date_created, status_changed_at, status_changed_by, updated_at
       ) VALUES (
         ${po.id}, ${companyCode}, ${division},
@@ -191,6 +323,7 @@ async function _syncPOs(sql, companyCode, division, list) {
         ${po.sub_code       || null},
         ${po.status         || 'pending'},
         ${po.notes          || null},
+        ${po.origin         || null},
         ${safeDate(po.date_created)},
         ${po.status_changed_at || null},
         ${po.status_changed_by || null},
@@ -206,6 +339,7 @@ async function _syncPOs(sql, companyCode, division, list) {
         sub_code           = EXCLUDED.sub_code,
         status             = EXCLUDED.status,
         notes              = EXCLUDED.notes,
+        origin             = EXCLUDED.origin,
         date_created       = EXCLUDED.date_created,
         status_changed_at  = EXCLUDED.status_changed_at,
         status_changed_by  = EXCLUDED.status_changed_by,

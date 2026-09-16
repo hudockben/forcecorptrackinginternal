@@ -12,7 +12,7 @@ function adminSecretFrom(req) {
   return req.headers['x-admin-secret'] || (req.body && req.body.adminSecret) || '';
 }
 
-const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive'];
+const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'purchase_orders'];
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');

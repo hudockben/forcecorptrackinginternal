@@ -42,14 +42,31 @@ const neonPath     = require.resolve('@neondatabase/serverless');
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://stub/neondb';
 
 function loadEndpoint({ canUpload = true, companyCode = 'FORCE', division = 'paving',
-                        keyClaimed = false } = {}) {
+                        keyClaimed = false, poScope = null, divisionAccess = true } = {}) {
   delete require.cache[endpointPath];
   delete require.cache[authPath];
   require.cache[authPath] = {
     id: authPath, filename: authPath, loaded: true,
     exports: {
-      requireDivision: () => ({ payload: { companyCode, userId: 'u1' }, division }),
-      capabilities:    () => ({ canUpload }),
+      requireAuth:         () => ({ companyCode, userId: 'u1', username: 'u1' }),
+      capabilities:        () => ({ canUpload }),
+      // Stands in for both the normalizer and requireDivision's turf default:
+      // these cases exercise one fixture division, and every request below
+      // reaches the endpoint without a division in its query.
+      normalizeDivision:   v => (v ? String(v) : division),
+      hasDivisionAccess:   () => divisionAccess,
+      canAccessPODivision: () => true,
+    },
+  };
+  // Central purchasing's carve-out: the endpoint asks po-sync whether the
+  // request names a real order in this division before letting a caller with
+  // no role here upload.
+  const poSyncPath = path.resolve(__dirname, '../api/lib/po-sync.js');
+  delete require.cache[poSyncPath];
+  require.cache[poSyncPath] = {
+    id: poSyncPath, filename: poSyncPath, loaded: true,
+    exports: {
+      resolvePODocScope: async (_sql, { poId }) => (poScope && poId === poScope.poId ? poScope : null),
     },
   };
   // The relay's one query — does a document row already claim this key.
@@ -299,6 +316,61 @@ const FILE = Buffer.from('%PDF-1.7 pretend paving change order');
     check('and PUT is advertised alongside POST and DELETE',
       /PUT/.test(res.headers['Access-Control-Allow-Methods']),
       res.headers['Access-Control-Allow-Methods']);
+  }
+
+  console.log('\n[central purchasing\'s carve-out]');
+  {
+    // No role in this division and no order named — nothing to stand on.
+    const handler = loadEndpoint({ divisionAccess: false, poScope: null });
+    fakeStore();
+    const res = makeRes();
+    await handler({ method: 'POST', query: {}, headers: {}, body: { filename: 'r.jpg' } }, res);
+    check('a caller with no role here is refused', res.statusCode === 403, JSON.stringify(res.body));
+  }
+  {
+    // Naming an order that is not in this division's list is the same refusal.
+    const handler = loadEndpoint({
+      divisionAccess: false,
+      poScope: { poId: 'real-po', projectId: 'job9' },
+    });
+    fakeStore();
+    const res = makeRes();
+    await handler({ method: 'POST', query: { poId: 'invented' }, headers: {}, body: { filename: 'r.jpg' } }, res);
+    check('an order id that resolves to nothing is refused', res.statusCode === 403, JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({
+      divisionAccess: false,
+      poScope: { poId: 'real-po', projectId: 'job9' },
+    });
+    fakeStore();
+    const res = makeRes();
+    await handler(
+      { method: 'POST', query: { poId: 'real-po' }, headers: {}, body: { filename: 'receipt.jpg' } },
+      res,
+    );
+    check('a real order lets purchasing mint a ticket', res.statusCode === 200 && res.body.uploadUrl,
+      JSON.stringify(res.body));
+    // The key comes from the ORDER's job, never one the request named — so a
+    // caller cannot aim an upload at a job it has no business in.
+    check('keyed to the ORDER\'s job, not a requested one',
+      res.body.storageKey.startsWith('FORCE/paving/job9/'), res.body.storageKey);
+  }
+  {
+    // A job the caller named alongside a real order does not move the key.
+    const handler = loadEndpoint({
+      divisionAccess: false,
+      poScope: { poId: 'real-po', projectId: 'job9' },
+    });
+    fakeStore();
+    const res = makeRes();
+    await handler(
+      { method: 'POST', query: { poId: 'real-po' }, headers: {},
+        body: { filename: 'receipt.jpg', projectId: 'somebody-elses-job' } },
+      res,
+    );
+    check('a requested job cannot override the order\'s own',
+      res.body.storageKey.startsWith('FORCE/paving/job9/'), res.body.storageKey);
   }
 
   console.log(`\n${passed} passed, ${failed} failed.`);

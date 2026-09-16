@@ -22,7 +22,14 @@
  * where purchase orders with no job attached file their paperwork.
  */
 const { neon }            = require('@neondatabase/serverless');
-const { requireDivision, capabilities } = require('./lib/auth');
+const {
+  requireAuth,
+  capabilities,
+  normalizeDivision,
+  hasDivisionAccess,
+  canAccessPODivision,
+} = require('./lib/auth');
+const { resolvePODocScope } = require('./lib/po-sync');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -234,15 +241,55 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const guard = requireDivision(req, res);
-  if (!guard) return;
-  const { payload, division } = guard;
+  // Central purchasing raises orders in turf, paving and kiewit without holding
+  // a role in any of them, and a receipt it photographs has to file in the
+  // order's own division or that division's tab shows an empty paperclip. So
+  // the division check runs in two stages: the ordinary one first, and only if
+  // that fails, a carve-out limited to one named purchase order.
+  const payload = requireAuth(req, res);
+  if (!payload) return;
   const { companyCode } = payload;
-  const caps = capabilities(payload, division);
+  const division = normalizeDivision(req.query.division || (req.body && req.body.division)) || 'turf';
 
   const sql = neon(process.env.DATABASE_URL);
-  // '' and undefined both mean "the division-level General area".
-  const projectId = req.query.projectId ? String(req.query.projectId) : null;
+
+  const reqPoId = req.query.poId || (req.body && req.body.poId) || null;
+  const poScope = await resolvePODocScope(sql, {
+    payload, division, companyCode, poId: reqPoId,
+    hasDivisionAccess, canAccessPODivision,
+  });
+
+  if (!poScope && !hasDivisionAccess(payload, division)) {
+    return res.status(403).json({ error: 'You do not have access to this division' });
+  }
+
+  // Under the carve-out the caller is exactly a level2 uploader on this one
+  // order: it may read the order's paperwork and add to it, never rename,
+  // re-file or delete anything in a division it has no role in.
+  const caps = poScope
+    ? { level: 'level2', canUpload: true, canManage: false, canDelete: false }
+    : capabilities(payload, division);
+
+  // Filing is only ever into the ORDER's own job — never a project id the
+  // request named alongside it, which would be a way to reach another job's
+  // folder tree through an order that has nothing to do with it.
+  const projectId = poScope
+    ? poScope.projectId
+    : (req.query.projectId ? String(req.query.projectId) : null);
+
+  // The carve-out covers reading an order's paperwork, making sure the folders
+  // to file it in exist, and registering the upload. Everything else — the
+  // trash, renames, re-filing, deletes, folder creation — stays behind a real
+  // division role.
+  if (poScope) {
+    const allowed =
+      (req.method === 'GET'  && Boolean(req.query.poId)) ||
+      (req.method === 'PUT') ||
+      (req.method === 'POST' && !req.query.folder && Boolean(req.body && req.body.poId));
+    if (!allowed) {
+      return res.status(403).json({ error: 'You do not have access to this division' });
+    }
+  }
 
   try {
     // ── GET ──────────────────────────────────────────────────────────────

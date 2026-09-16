@@ -21,7 +21,14 @@
  * that branch. It exists so a bucket that has not been given a CORS rule
  * breaks large uploads instead of all of them.
  */
-const { requireDivision, capabilities } = require('./lib/auth');
+const {
+  requireAuth,
+  capabilities,
+  normalizeDivision,
+  hasDivisionAccess,
+  canAccessPODivision,
+} = require('./lib/auth');
+const { resolvePODocScope } = require('./lib/po-sync');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -47,15 +54,36 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const guard = requireDivision(req, res);
-  if (!guard) return;
-  const { payload, division } = guard;
+  const payload = requireAuth(req, res);
+  if (!payload) return;
   const { companyCode } = payload;
+  const division = normalizeDivision(req.query.division || (req.body && req.body.division)) || 'turf';
 
-  // Same capability test /api/documents applies to the matching POST — minting
-  // an upload ticket a view-only user could never redeem just wastes a round
-  // trip and hands them a writable URL.
-  if (!capabilities(payload, division).canUpload) {
+  // The same two-stage check /api/documents applies: an ordinary division role,
+  // or central purchasing working on one named order that really is in this
+  // division's list. See the comment on that guard.
+  let canUpload = hasDivisionAccess(payload, division)
+    && capabilities(payload, division).canUpload;
+
+  if (!canUpload && canAccessPODivision(payload, division)) {
+    const { neon } = require('@neondatabase/serverless');
+    const scope = await resolvePODocScope(neon(process.env.DATABASE_URL), {
+      payload, division, companyCode,
+      poId: req.query.poId || (req.body && req.body.poId) || null,
+      hasDivisionAccess, canAccessPODivision,
+    });
+    // A purchasing ticket is minted only for the order's own job, so the key it
+    // signs can never point into a job the caller has no business in.
+    if (scope) {
+      canUpload = true;
+      req.query.projectId = scope.projectId || undefined;
+      if (req.body && typeof req.body === 'object') req.body.projectId = scope.projectId || undefined;
+    }
+  }
+
+  // Minting an upload ticket a view-only user could never redeem just wastes a
+  // round trip and hands them a writable URL.
+  if (!canUpload) {
     return res.status(403).json({ error: 'You do not have permission to upload' });
   }
 

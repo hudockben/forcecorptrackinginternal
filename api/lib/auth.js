@@ -14,7 +14,22 @@ const jwt = require('jsonwebtoken');
 // 'quarry_sales' is the field side of the quarry. The scale house submits one
 // form per load and it posts straight into the quarry division's own Sales
 // Tracking tab, so — like driver — there is no second key for the review side.
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
+// 'purchase_orders' is central purchasing. It writes purchase orders into the
+// job divisions rather than holding a job ledger of its own: a PO raised there
+// against paving is stored in paving's own PO list, so it shows up in that
+// division's Purchase Orders tab and costs its project exactly as one entered
+// there would. Its own key holds only the general (non-job) orders.
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
+
+// The job divisions central purchasing raises orders against. A PO tied to one
+// of these lives in THAT division's purchase-order list — there is no second
+// copy to reconcile, which is what makes "shows up in the division's own tab"
+// true by construction rather than by a sync job.
+const PO_SOURCE_DIVISIONS = ['turf', 'paving', 'kiewit'];
+
+// Where a general (non-job) purchase order is filed. Orders with no division
+// belong to no job ledger, so they stay in purchasing's own list.
+const PO_GENERAL_DIVISION = 'purchase_orders';
 
 // Keys that are intentionally shared across every division within a company
 // (any logged-in user may read/write them regardless of their division roles).
@@ -154,6 +169,60 @@ function hasDivisionAccess(payload, division) {
 }
 
 /**
+ * May this caller read and write division `division`'s PURCHASE ORDERS?
+ *
+ * True the ordinary way — they hold a role in that division — and also for a
+ * central-purchasing user acting on one of the job divisions purchasing raises
+ * orders against. That second arm is what lets purchase-orders.html file an
+ * order into paving's list so it lands in paving's own tab.
+ *
+ * Deliberately narrow: it grants nothing but the purchase-order list and the
+ * cost rows those orders create. A purchasing user still cannot read paving's
+ * bids, its daily tracking, or any of its blobs — every other endpoint keeps
+ * using requireDivision unchanged.
+ */
+function canAccessPODivision(payload, division) {
+  if (!payload || !division) return false;
+  if (hasDivisionAccess(payload, division)) return true;
+  if (!hasDivisionAccess(payload, PO_GENERAL_DIVISION)) return false;
+  return PO_SOURCE_DIVISIONS.includes(division) || division === PO_GENERAL_DIVISION;
+}
+
+/**
+ * Every division whose purchase orders this caller may see, in display order:
+ * the job divisions they can reach, then the general (non-job) list.
+ */
+function poDivisionsFor(payload) {
+  const list = PO_SOURCE_DIVISIONS.filter(d => canAccessPODivision(payload, d));
+  if (canAccessPODivision(payload, PO_GENERAL_DIVISION)) list.push(PO_GENERAL_DIVISION);
+  return list;
+}
+
+/**
+ * Guard for the purchase-order endpoints. Same shape as requireDivision — it
+ * answers { payload, division } or sends the response and returns null — but
+ * resolves access through canAccessPODivision, and requires the division to be
+ * named rather than defaulting to turf: a cross-division writer that guessed
+ * would file the order against the wrong job.
+ */
+function requirePODivision(req, res) {
+  const payload = requireAuth(req, res);
+  if (!payload) return null;
+
+  const raw = (req.query && req.query.division) || (req.body && req.body.division) || null;
+  const division = normalizeDivision(raw);
+  if (!division) {
+    res.status(400).json({ error: 'division query param is required' });
+    return null;
+  }
+  if (!canAccessPODivision(payload, division)) {
+    res.status(403).json({ error: 'You do not have access to this division' });
+    return null;
+  }
+  return { payload, division };
+}
+
+/**
  * One-stop guard for division-scoped endpoints.
  *
  * Steps:
@@ -229,6 +298,11 @@ function capabilities(payload, division) {
 
 module.exports = {
   ALL_DIVISIONS,
+  PO_SOURCE_DIVISIONS,
+  PO_GENERAL_DIVISION,
+  canAccessPODivision,
+  poDivisionsFor,
+  requirePODivision,
   levelFor,
   capabilities,
   CROSS_DIVISION_CONTRIBUTORS,

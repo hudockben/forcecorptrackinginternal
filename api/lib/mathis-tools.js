@@ -38,7 +38,8 @@ const help    = require('./mathis-help');
 const JOB_HISTORY_DIVISIONS = ['turf', 'paving', 'kiewit'];
 
 const SUPPORTED = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
-                   'intercompany', 'payroll', 'scheduler', 'executive', 'fuel_admin'];
+                   'intercompany', 'payroll', 'scheduler', 'executive', 'fuel_admin',
+                   'purchase_orders'];
 
 // The field-side keys. These are not divisions you get FIGURES for — they are
 // queues you have your OWN rows in, so they belong to a different tool with a
@@ -50,6 +51,7 @@ const HUMAN = {
   quarry: 'Quarry', dust: 'Dust Control', trucking: 'Trucking',
   intercompany: 'Intercompany', payroll: 'Payroll', scheduler: 'Scheduler',
   executive: 'Executive', fuel_admin: 'Fuel Administration',
+  purchase_orders: 'Purchase Orders',
 };
 
 const MAX_LIMIT = digests.MAX_JOB_ROWS;

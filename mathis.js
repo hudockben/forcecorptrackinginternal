@@ -58,7 +58,8 @@
     'fuel.html':             'fuel',
     'fuel-admin.html':       'fuel_admin',
     'driver.html':           'driver',
-    'quarry-sales.html':     'quarry_sales'
+    'quarry-sales.html':     'quarry_sales',
+    'purchase-orders.html':  'purchase_orders'
   };
 
   /* Divisions Mathis has figures for. Kept here so the panel can say what it
@@ -67,7 +68,7 @@
    * the server's own list. */
   var HAS_FIGURES = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
                      'intercompany', 'payroll', 'scheduler', 'executive', 'fuel_admin',
-                     'timesheet', 'fuel', 'driver', 'quarry_sales'];
+                     'timesheet', 'fuel', 'driver', 'quarry_sales', 'purchase_orders'];
 
   function division() {
     try { if (typeof DIVISION !== 'undefined' && DIVISION) return String(DIVISION); } catch (e) {}

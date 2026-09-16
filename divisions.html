@@ -1217,11 +1217,12 @@
               <th scope="col" title="Fuel admin (review &amp; approve)">Fuel Adm</th>
               <th scope="col" title="Driver (field entry)">Driver</th>
               <th scope="col" title="Quarry Sales (field entry)">Qry Sales</th>
+              <th scope="col" title="Purchase Orders (central purchasing)">POs</th>
               <th scope="col"><span class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Actions</span></th>
             </tr>
           </thead>
           <tbody id="userListBody">
-            <tr><td colspan="17" class="mu-empty-cell">Loading…</td></tr>
+            <tr><td colspan="18" class="mu-empty-cell">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1349,6 +1350,16 @@
             <div class="div-role-row">
               <span class="div-role-label">Scheduler <span style="text-transform:none;color:var(--muted)">(cross-division)</span></span>
               <select id="mu-role-scheduler">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 — View only</option>
+                <option value="level2">Level 2 — Insert &amp; edit</option>
+                <option value="level3">Level 3 — Full access</option>
+                <option value="admin">Admin — Manage users</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Purchase Orders <span style="text-transform:none;color:var(--muted)">(central purchasing)</span></span>
+              <select id="mu-role-purchase_orders">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — View only</option>
                 <option value="level2">Level 2 — Insert &amp; edit</option>
@@ -1640,6 +1651,24 @@
                   <rect x="9" y="14" width="6" height="6"/>
                 </svg>`,
       },
+      // Central purchasing. It raises orders against turf, paving and kiewit and
+      // stores each one in that division's own list, so an order booked here is
+      // already in that division's Purchase Orders tab — there is no second copy
+      // and nothing to reconcile. Its own list holds only the general orders that
+      // belong to no job.
+      purchase_orders: {
+        name:  'Purchase Orders',
+        desc:  'Central purchasing across Turf, Paving and Kiewit — raise an order against any job or none, scan a receipt from your phone, and it lands in that division\u2019s books.',
+        color: '#818cf8',
+        href:  'purchase-orders.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 3h11l4 4v14H4z"/>
+                  <path d="M15 3v4h4"/>
+                  <line x1="8" y1="12" x2="16" y2="12"/>
+                  <line x1="8" y1="16" x2="13" y2="16"/>
+                </svg>`,
+      },
       trucking: {
         name:  'Trucking',
         desc:  'Fleet dispatch, load tracking, driver management, and haul cost reporting for trucking operations.',
@@ -1780,7 +1809,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -1980,16 +2009,16 @@
       level1:    'View only',
       no_access: 'No access',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
 
     // The five-level selects. The rest (timesheet, payroll, fuel, fuel_admin,
     // driver, quarry_sales) only offer one grant level each, so "set all"
     // skips them.
-    const DIV_KEYS_FULL_SCALE = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler'];
+    const DIV_KEYS_FULL_SCALE = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'purchase_orders'];
 
     // Column labels for the user table and the "saved" summary line. Only the
     // keys whose prettified form isn't just Capitalised need an entry.
-    const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver', quarry_sales: 'Qry Sales' };
+    const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver', quarry_sales: 'Qry Sales', purchase_orders: 'POs' };
     function divLabel(k) { return DIV_LABELS[k] || (k.charAt(0).toUpperCase() + k.slice(1)); }
 
     // Longer names for the division filter and the spreadsheet header, where
@@ -2002,6 +2031,7 @@
       payroll: 'Payroll (admin review)', fuel: 'Fuel Submissions (field entry)',
       fuel_admin: 'Fuel Admin (review & approve)', driver: 'Driver (field entry)',
       quarry_sales: 'Quarry Sales (field entry)',
+      purchase_orders: 'Purchase Orders (central purchasing)',
     };
     function divLongLabel(k) { return DIV_LONG[k] || divLabel(k); }
 

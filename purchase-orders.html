@@ -1,0 +1,1853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Purchase Orders</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --surface:   #111118;
+      --surface2:  #1a1a26;
+      --border:    #2a2a3a;
+      --green:     #818cf8;
+      --green-dim: #6366f1;
+      --red:       #ef4444;
+      --yellow:    #eab308;
+      --blue:      #60a5fa;
+      --text:      #e0e0e0;
+      --muted:     #666;
+      --ok:        #4ade80;
+
+      /* One colour per source division, used on the division chip so a long
+         list reads at a glance. They match each division's own card on
+         divisions.html — the same green means turf there and turf here. */
+      --div-turf:   #22c55e;
+      --div-paving: #60a5fa;
+      --div-kiewit: #fdb913;
+      --div-none:   #818cf8;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      min-height: 100vh;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.75rem; padding: 0.75rem 1.25rem;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 200;
+    }
+    header .brand {
+      font-size: 0.75rem; letter-spacing: 0.3em; text-transform: uppercase;
+      color: var(--green); font-weight: 600; white-space: nowrap;
+    }
+    header .actions { display: flex; gap: 0.5rem; align-items: center; }
+    .user-avatar {
+      width: 26px; height: 26px; border-radius: 50%; display: inline-flex;
+      align-items: center; justify-content: center; font-size: 0.66rem;
+      font-weight: 700; color: #fff;
+    }
+
+    .btn {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      border-radius: 5px; padding: 0.38rem 0.8rem; font-size: 0.78rem;
+      cursor: pointer; font-family: inherit; white-space: nowrap;
+    }
+    .btn:hover:not(:disabled) { border-color: var(--green); }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+    .btn-green { background: var(--green); border-color: var(--green); color: #12121c; font-weight: 600; }
+    .btn-green:hover:not(:disabled) { background: var(--green-dim); border-color: var(--green-dim); }
+
+    main { padding: 1.25rem; max-width: 1600px; margin: 0 auto; }
+
+    .toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.85rem;
+    }
+    .toolbar h1 {
+      font-size: 1rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--text);
+    }
+    .toolbar .tools { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+
+    .search {
+      width: 100%; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 5px; color: var(--text); font-size: 0.85rem;
+      padding: 0.5rem 0.75rem; outline: none; margin-bottom: 0.85rem;
+      font-family: inherit;
+    }
+    .search:focus { border-color: var(--green); }
+
+    .filter-bar {
+      display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+      margin-bottom: 0.85rem;
+    }
+    .filter-bar select {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      border-radius: 5px; font-size: 0.78rem; padding: 0.35rem 0.5rem;
+      outline: none; font-family: inherit;
+    }
+    .chip {
+      font-size: 0.72rem; padding: 0.25rem 0.6rem; border-radius: 12px;
+      border: 1px solid rgba(234,179,8,0.4); background: rgba(234,179,8,0.12);
+      color: var(--yellow); cursor: pointer; font-family: inherit;
+    }
+    .chip.on { background: var(--yellow); color: #1a1a26; font-weight: 700; }
+
+    /* ── Division chip ── */
+    .div-chip {
+      display: inline-block; font-size: 0.62rem; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 0.12rem 0.45rem; border-radius: 10px; white-space: nowrap;
+    }
+
+    /* ── Table ── */
+    .table-wrap { overflow-x: auto; }
+    table.po { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 6px; min-width: 1180px; }
+    table.po th {
+      padding: 0.55rem 0.6rem; color: var(--muted); font-size: 0.66rem;
+      letter-spacing: 0.08em; text-transform: uppercase; text-align: left;
+      border-bottom: 1px solid var(--border); white-space: nowrap; font-weight: 600;
+    }
+    table.po th.r, table.po td.r { text-align: right; }
+    table.po td { padding: 0.35rem 0.6rem; vertical-align: middle; }
+    table.po tr.po-head { border-bottom: 1px solid var(--border); }
+    table.po tr.po-head:hover { background: rgba(129,140,248,0.04); }
+
+    td input, td select {
+      width: 100%; background: transparent; border: none; color: var(--text);
+      font-size: 0.8rem; outline: none; padding: 0.15rem 0; font-family: inherit;
+    }
+    td select, td input.boxed {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 3px; padding: 0.15rem 0.25rem;
+    }
+    td input:focus, td select:focus { border-color: var(--green); }
+    td input[type="date"] { color-scheme: dark; }
+
+    .lines-wrap { padding: 0.5rem 1.25rem 0.75rem 2.25rem; background: #0b0b14; }
+    .lines-wrap table { width: 100%; border-collapse: collapse; font-size: 0.8rem; min-width: 760px; }
+    .lines-wrap th {
+      padding: 0.25rem 0.5rem; font-size: 0.62rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.06em; text-align: left; font-weight: 600;
+    }
+    .lines-wrap td { padding: 0.3rem 0.5rem; }
+    .lines-wrap tr { border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .section-label {
+      font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); margin: 0.4rem 0;
+    }
+
+    .del-btn {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      font-size: 0.85rem; opacity: 0.6; padding: 0.15rem 0.3rem; font-family: inherit;
+    }
+    .del-btn:hover { color: var(--red); opacity: 1; }
+    .icon-btn {
+      background: none; border: 1px solid var(--border); border-radius: 4px;
+      cursor: pointer; padding: 0.15rem 0.4rem; font-size: 0.72rem;
+      color: var(--muted); white-space: nowrap; font-family: inherit;
+    }
+    .icon-btn:hover { border-color: var(--green); }
+    .icon-btn.has { color: var(--ok); }
+
+    .empty { padding: 1.75rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
+
+    /* ── Save indicator ── */
+    .save-indicator {
+      position: fixed; right: 1rem; bottom: 1rem; z-index: 400;
+      font-size: 0.72rem; padding: 0.35rem 0.7rem; border-radius: 14px;
+      border: 1px solid var(--border); background: var(--surface2);
+      transition: opacity 0.2s; pointer-events: none;
+    }
+    .save-indicator.idle  { opacity: 0; }
+    .save-indicator.saving{ opacity: 1; color: var(--muted); }
+    .save-indicator.saved { opacity: 1; color: var(--ok); border-color: rgba(74,222,128,0.4); }
+    .save-indicator.error { opacity: 1; color: var(--red); border-color: rgba(239,68,68,0.5); pointer-events: auto; }
+
+    /* ── Modal / sheet ── */
+    .backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.72); z-index: 500;
+      display: none; align-items: center; justify-content: center; padding: 1rem;
+      overflow-y: auto;
+    }
+    .backdrop.open { display: flex; }
+    .sheet {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      width: 100%; max-width: 560px; max-height: 92vh; overflow-y: auto;
+      padding: 1.25rem;
+    }
+    .sheet h2 { font-size: 0.95rem; margin-bottom: 0.25rem; }
+    .sheet .sub { font-size: 0.76rem; color: var(--muted); margin-bottom: 1rem; }
+    .field { margin-bottom: 0.8rem; }
+    .field label {
+      display: block; font-size: 0.66rem; text-transform: uppercase;
+      letter-spacing: 0.07em; color: var(--muted); margin-bottom: 0.25rem;
+    }
+    .field input, .field select, .field textarea {
+      width: 100%; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; color: var(--text); font-size: 0.88rem;
+      padding: 0.5rem 0.6rem; outline: none; font-family: inherit;
+    }
+    .field input:focus, .field select:focus { border-color: var(--green); }
+    .field input[type="date"] { color-scheme: dark; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    .sheet-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+
+    .receipt-preview {
+      width: 100%; max-height: 240px; object-fit: contain; border-radius: 6px;
+      border: 1px solid var(--border); background: #000; margin-bottom: 0.85rem;
+    }
+    .scan-status {
+      font-size: 0.8rem; padding: 0.6rem 0.75rem; border-radius: 6px;
+      background: var(--surface2); border: 1px solid var(--border); margin-bottom: 0.85rem;
+    }
+    .scan-status.err { color: var(--red); border-color: rgba(239,68,68,0.4); }
+    .scan-status.warn { color: var(--yellow); border-color: rgba(234,179,8,0.4); }
+    .scanned-mark { color: var(--green); font-size: 0.62rem; margin-left: 0.3rem; }
+
+    .spinner {
+      display: inline-block; width: 13px; height: 13px; vertical-align: -2px;
+      border: 2px solid var(--border); border-top-color: var(--green);
+      border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 0.4rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .toast {
+      position: fixed; left: 50%; transform: translateX(-50%); bottom: 1.25rem;
+      z-index: 600; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.55rem 0.9rem; font-size: 0.82rem;
+      max-width: 90vw; display: none;
+    }
+    .toast.show { display: block; }
+    .toast.err { border-color: rgba(239,68,68,0.5); color: var(--red); }
+
+    .pager { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-top: 0.85rem; }
+
+    /* ── Phone ──
+       The table is the office view. On a phone the same orders render as
+       cards: this page's whole point on a phone is photographing a receipt at
+       the supply counter, and a thirteen-column grid cannot be used one-handed. */
+    @media (max-width: 860px) {
+      main { padding: 0.75rem; }
+      header { padding: 0.6rem 0.75rem; }
+      .table-wrap { display: none; }
+      .cards { display: block; }
+      .toolbar h1 { font-size: 0.9rem; }
+      .scan-cta { flex: 1 1 100%; }
+      .scan-cta button { width: 100%; padding: 0.7rem; font-size: 0.92rem; }
+    }
+    .cards { display: none; }
+    .po-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.75rem; margin-bottom: 0.65rem;
+    }
+    .po-card .row1 { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.4rem; }
+    .po-card .num { font-family: monospace; font-size: 0.8rem; color: var(--muted); }
+    .po-card .title { font-size: 0.92rem; font-weight: 600; margin-bottom: 0.15rem; word-break: break-word; }
+    .po-card .meta { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.15rem; word-break: break-word; }
+    .po-card .amt { font-size: 1.02rem; font-weight: 700; color: var(--yellow); }
+    .po-card .card-actions { display: flex; gap: 0.4rem; margin-top: 0.6rem; flex-wrap: wrap; }
+
+    .status-pill {
+      font-size: 0.66rem; font-weight: 700; padding: 0.15rem 0.5rem;
+      border-radius: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .status-pending  { background: rgba(234,179,8,0.15);  color: var(--yellow); }
+    .status-approved { background: rgba(74,222,128,0.15); color: var(--ok); }
+    .status-closed   { background: rgba(255,255,255,0.07);color: var(--muted); }
+
+    .banner {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-left: 3px solid var(--yellow); border-radius: 5px;
+      padding: 0.6rem 0.8rem; font-size: 0.8rem; margin-bottom: 0.85rem;
+      color: var(--muted);
+    }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div style="display:flex;align-items:center;gap:1rem;min-width:0">
+    <span class="brand">Purchase Orders</span>
+    <span id="user-badge" style="font-size:0.7rem;color:#444;letter-spacing:0.05em;"></span>
+  </div>
+  <div class="actions">
+    <button class="btn" onclick="switchDivision()">Divisions</button>
+    <button class="btn" onclick="logout()">Sign out</button>
+  </div>
+</header>
+
+<main>
+  <div class="toolbar">
+    <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+      <h1>Purchase Orders</h1>
+      <span id="pending-chip-slot"></span>
+    </div>
+    <div class="tools">
+      <div class="scan-cta">
+        <button class="btn btn-green" id="scan-btn" onclick="openScanSheet()">&#128247; Scan Receipt</button>
+      </div>
+      <button class="btn" id="clear-filters-btn" onclick="clearFilters()" style="display:none">Clear Filters</button>
+      <button class="btn" onclick="exportCSV()">&#8595; Export CSV</button>
+      <button class="btn btn-green" id="new-po-btn" onclick="newPO()">+ New PO</button>
+    </div>
+  </div>
+
+  <div id="load-banner" class="banner" style="display:none"></div>
+
+  <input class="search" id="po-search" type="text" placeholder="&#128269; Search orders — PO number, vendor, job, invoice…"
+         oninput="onSearch(this.value)" autocomplete="off" />
+
+  <div class="filter-bar">
+    <select id="f-division" onchange="onFilter('division', this.value)" aria-label="Filter by division">
+      <option value="">All divisions</option>
+    </select>
+    <select id="f-status" onchange="onFilter('status', this.value)" aria-label="Filter by status">
+      <option value="">All statuses</option>
+      <option value="pending">Pending</option>
+      <option value="approved">Approved</option>
+      <option value="closed">Closed</option>
+    </select>
+    <select id="f-job" onchange="onFilter('job', this.value)" aria-label="Filter by job">
+      <option value="">Job and non-job</option>
+      <option value="job">Tied to a job</option>
+      <option value="general">General — no job</option>
+    </select>
+    <select id="f-vendor" onchange="onFilter('vendor', this.value)" aria-label="Filter by vendor">
+      <option value="">All vendors</option>
+    </select>
+    <span id="result-count" style="font-size:0.74rem;color:var(--muted);margin-left:auto"></span>
+  </div>
+
+  <div class="table-wrap">
+    <table class="po">
+      <thead><tr>
+        <th style="width:26px"></th>
+        <th>PO #</th>
+        <th style="min-width:118px">Date</th>
+        <th style="min-width:130px">Division</th>
+        <th style="min-width:160px">Job</th>
+        <th style="min-width:180px">Cost / Sub Code</th>
+        <th style="min-width:140px">Description</th>
+        <th style="min-width:140px">Vendor</th>
+        <th class="r">Qty</th>
+        <th class="r">Amount</th>
+        <th class="r">Total</th>
+        <th style="min-width:118px">Status</th>
+        <th style="width:46px;text-align:center" title="Attached receipts">&#128206;</th>
+        <th style="width:34px"><span class="sr-only">Delete</span></th>
+      </tr></thead>
+      <tbody id="po-body"></tbody>
+    </table>
+  </div>
+
+  <div class="cards" id="po-cards"></div>
+
+  <div id="pager" class="pager" style="display:none"></div>
+</main>
+
+<div class="save-indicator idle" id="save-indicator"><span class="si-label"></span></div>
+<div class="toast" id="toast"></div>
+
+<!-- ══════════════ RECEIPT SCAN SHEET ══════════════ -->
+<div class="backdrop" id="scan-backdrop">
+  <div class="sheet" id="scan-sheet"></div>
+</div>
+
+<!-- ══════════════ ATTACHMENTS SHEET ══════════════ -->
+<div class="backdrop" id="docs-backdrop">
+  <div class="sheet" id="docs-sheet"></div>
+</div>
+
+<!-- Hidden capture inputs. `capture` asks a phone for the rear camera and is
+     ignored on a desktop, which then offers the file picker instead. -->
+<input type="file" id="receipt-capture" accept="image/*" capture="environment" style="display:none" />
+<input type="file" id="attach-capture"  accept="image/*,application/pdf" style="display:none" />
+
+<datalist id="vendor-list"></datalist>
+
+<script>
+/* ═══════════════════════════════════════════
+   AUTH
+═══════════════════════════════════════════ */
+const fctToken    = localStorage.getItem('fct_token');
+const fctUser     = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+const fctDivision = localStorage.getItem('fct_division');
+
+const DIVISION = 'purchase_orders';
+const API_BASE = '/api';
+
+if (!fctToken || !fctUser) {
+  window.location.replace('index.html');
+}
+// Arrived through the division selector for this system, same guard the other
+// division pages apply.
+if (fctDivision !== DIVISION) {
+  window.location.replace('divisions.html');
+}
+
+let _loggingOut = false;
+function logout() {
+  if (_loggingOut) return;
+  _loggingOut = true;
+  localStorage.removeItem('fct_token');
+  localStorage.removeItem('fct_user');
+  localStorage.removeItem('fct_division');
+  window.location.replace('index.html');
+}
+function switchDivision() {
+  localStorage.removeItem('fct_division');
+  window.location.replace('divisions.html');
+}
+
+/**
+ * What this user may do HERE.
+ *
+ * fctUser.role is the caller's TURF role — login.js sets it from
+ * divisionRoles.turf for tracker.html's benefit — so reading it directly would
+ * answer about the wrong division. The per-division map comes first and role is
+ * only the fallback for a legacy token that carries no map. This mirrors
+ * levelFor() in api/lib/auth.js.
+ */
+const perm = (() => {
+  let level = 'level1';
+  if (fctUser && fctUser.isPlatformAdmin) level = 'admin';
+  else if (fctUser && fctUser.divisionRoles && fctUser.divisionRoles[DIVISION]
+           && fctUser.divisionRoles[DIVISION] !== 'no_access') level = fctUser.divisionRoles[DIVISION];
+  else if (fctUser && fctUser.role) level = fctUser.role;
+  return {
+    level,
+    isAdmin:  level === 'admin',
+    canEdit:  ['admin', 'level3', 'level2'].includes(level),
+    canDelete:['admin', 'level3'].includes(level),
+  };
+})();
+
+(function renderUserBadge() {
+  const badge = document.getElementById('user-badge');
+  if (!badge || !fctUser) return;
+  const name = fctUser.name || fctUser.username || '';
+  const parts = name.trim().split(/\s+/);
+  const initials = parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.slice(0, 2).toUpperCase() || '?';
+  const palette = ['#2ecc71','#3498db','#9b59b6','#e67e22','#e74c3c','#1abc9c','#f39c12','#16a085'];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+  badge.style.cssText = 'display:flex;align-items:center;gap:0.5rem;min-width:0';
+  badge.innerHTML =
+    '<span class="user-avatar" style="background:' + palette[h % palette.length] + '">' + esc(initials) + '</span>' +
+    '<span style="font-size:0.7rem;color:#888;letter-spacing:0.05em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+    esc(fctUser.companyName || fctUser.companyCode) + ' &middot; ' + esc(fctUser.username) + '</span>';
+})();
+
+/* ═══════════════════════════════════════════
+   HELPERS
+═══════════════════════════════════════════ */
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+function fmt(n)  { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function qfmt(n) { const v = Number(n) || 0; return v % 1 === 0 ? v.toLocaleString('en-US') : v.toLocaleString('en-US', { maximumFractionDigits: 3 }); }
+function localDateStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+let _toastTimer = null;
+function toast(msg, kind) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (kind === 'err' ? ' err' : '');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.className = 'toast'; }, kind === 'err' ? 6000 : 3000);
+}
+
+let _saveHideTimer = null;
+function showSave(state, text) {
+  const el = document.getElementById('save-indicator');
+  el.className = 'save-indicator ' + state;
+  el.querySelector('.si-label').textContent = text || '';
+  clearTimeout(_saveHideTimer);
+  if (state === 'saved') {
+    _saveHideTimer = setTimeout(() => {
+      if (el.classList.contains('saved')) el.className = 'save-indicator idle';
+    }, 2500);
+  }
+}
+
+async function api(method, path, body) {
+  const init = {
+    method,
+    headers: { 'Authorization': 'Bearer ' + fctToken },
+  };
+  if (body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  const res = await fetch(API_BASE + path, init);
+  if (res.status === 401) { logout(); throw new Error('Signed out'); }
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON error page */ }
+  if (!res.ok) {
+    const msg = (data && (data.detail || data.error)) || ('HTTP ' + res.status);
+    throw new Error(msg);
+  }
+  return data;
+}
+
+/* ═══════════════════════════════════════════
+   LINE MATH
+   Mirrors api/lib/po-sync.js and the division tabs: tax is entered as a
+   percentage of the line amount and the dollar figure is kept in step with it,
+   so every downstream reader still sees dollars.
+═══════════════════════════════════════════ */
+function lineAmt(l)    { return (parseFloat(l.qty) || 0) * (parseFloat(l.unit_cost) || 0); }
+function lineTaxPct(l) { const p = parseFloat(l.tax_pct); return isNaN(p) ? null : p; }
+function lineTax(l)    { const p = lineTaxPct(l); return p === null ? (parseFloat(l.tax) || 0) : lineAmt(l) * p / 100; }
+function recalcLineTax(l) {
+  if (l.tax_pct == null) return;
+  const p = lineTaxPct(l);
+  const t = p === null ? 0 : lineAmt(l) * p / 100;
+  l.tax = t ? String(t) : '';
+}
+function poTotals(po) {
+  let qty = 0, amt = 0, tax = 0;
+  (po.lines || []).forEach(l => { qty += parseFloat(l.qty) || 0; amt += lineAmt(l); tax += lineTax(l); });
+  return { qty, amt, tax, total: amt + tax };
+}
+function newLine() {
+  return { id: uid(), invoice_num: '', date: localDateStr(), qty: '', unit_cost: '', tax: '', tax_pct: '', employee: '', po_row_id: null };
+}
+
+/* ═══════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════ */
+const GENERAL = 'purchase_orders';          // the blob general orders live in
+const DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)' };
+
+let catalog       = { divisions: [], vendors: [], employees: [], truncated: [] };
+let sourceDivs    = [];        // [{ division, label, projects: [...] }]
+let purchaseOrders = [];       // every order across every list, each tagged _division
+let docCounts     = {};        // poId → attached document count
+let expanded      = new Set();
+let page          = 0;
+const PER_PAGE    = 12;
+let search        = '';
+let filters       = { division: '', status: '', job: '', vendor: '' };
+
+function divMeta(key) { return sourceDivs.find(d => d.division === key) || null; }
+function divLabel(key) {
+  if (!key || key === GENERAL) return 'General';
+  const m = divMeta(key);
+  return m ? m.label : key;
+}
+function divColor(key) { return DIV_COLORS[key] || 'var(--div-none)'; }
+
+function projectsFor(divKey) {
+  const m = divMeta(divKey);
+  return m ? m.projects : [];
+}
+function projectFor(divKey, projId) {
+  return projectsFor(divKey).find(p => p.id === projId) || null;
+}
+function codesFor(divKey, projId) {
+  const p = projectFor(divKey, projId);
+  return p ? p.codes : [];
+}
+
+/** The label a cost/sub code pair renders as, matching the division tabs. */
+function codeLabel(c) {
+  const base = [c.cost_code, c.sub_code].filter(Boolean).join(' / ');
+  return c.description ? base + ' — ' + c.description : base;
+}
+function codeValue(c) { return (c.cost_code || '') + '||' + (c.sub_code || ''); }
+
+/**
+ * Next PO number for a division's own list.
+ *
+ * Scoped to that division on purpose: its own tab numbers the same way, off the
+ * same list, so an order raised here continues that division's sequence instead
+ * of starting a parallel one.
+ *
+ * `excludeId` is the order being renumbered. Re-tying an order sets its
+ * division first, so without this it counts ITSELF — an order carrying PO-0042
+ * moved into a list whose highest is PO-0003 would come out as PO-0043,
+ * skipping forty numbers of that division's sequence for no reason.
+ */
+function nextPONumber(divKey, excludeId) {
+  const nums = purchaseOrders
+    .filter(po => po._division === divKey && po.id !== excludeId)
+    .map(po => { const m = (po.po_number || '').match(/^PO-(\d+)$/); return m ? parseInt(m[1], 10) : 0; });
+  const next = nums.length ? Math.max.apply(null, nums) + 1 : 1;
+  return 'PO-' + String(next).padStart(4, '0');
+}
+
+/* ═══════════════════════════════════════════
+   LOAD
+═══════════════════════════════════════════ */
+async function loadCatalog() {
+  catalog = await api('GET', '/po-catalog');
+  sourceDivs = Array.isArray(catalog.divisions) ? catalog.divisions : [];
+
+  const fDiv = document.getElementById('f-division');
+  fDiv.innerHTML = '<option value="">All divisions</option>'
+    + sourceDivs.map(d => '<option value="' + esc(d.division) + '">' + esc(d.label) + '</option>').join('')
+    + '<option value="' + GENERAL + '">General — no division</option>';
+
+  const vendors = Array.isArray(catalog.vendors) ? catalog.vendors : [];
+  document.getElementById('vendor-list').innerHTML =
+    vendors.map(v => '<option value="' + esc(v.name) + '"></option>').join('');
+  document.getElementById('f-vendor').innerHTML = '<option value="">All vendors</option>'
+    + vendors.map(v => '<option value="' + esc(v.name) + '">' + esc(v.name) + '</option>').join('');
+
+  const notes = [];
+  if (!sourceDivs.length) {
+    notes.push('You do not have access to Turf, Paving or Kiewit, so only general orders — the ones tied to no division — can be raised here. Ask an administrator for a role in a division to raise orders against its jobs.');
+  }
+  (catalog.truncated || []).forEach(t => {
+    notes.push('Showing the first ' + t.shown + ' of ' + t.total + ' ' + divLabel(t.division) + ' jobs.');
+  });
+  const banner = document.getElementById('load-banner');
+  banner.style.display = notes.length ? '' : 'none';
+  banner.textContent = notes.join(' ');
+}
+
+/** Every list this user can see: the job divisions, then the general one. */
+function listKeys() {
+  return sourceDivs.map(d => d.division).concat([GENERAL]);
+}
+
+async function loadPurchaseOrders() {
+  const results = await Promise.all(listKeys().map(async key => {
+    try {
+      const data = await api('GET', '/purchase-orders?division=' + encodeURIComponent(key));
+      const list = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+      // _division is where the order is STORED, which is what makes it visible
+      // in that division's own tab. It is stripped before every save so it
+      // never reaches the blob the division tabs round-trip.
+      list.forEach(po => { po._division = key; migratePO(po); });
+      return list;
+    } catch (err) {
+      console.warn('[po] could not load ' + key + ':', err.message);
+      toast('Could not load ' + divLabel(key) + ' orders: ' + err.message, 'err');
+      return [];
+    }
+  }));
+  purchaseOrders = [].concat.apply([], results);
+}
+
+/**
+ * Same upgrade the division tabs apply on read: orders predating the lines[]
+ * format, and the move from a flat dollar tax to a percentage. Running it here
+ * too keeps an old order editable on this page rather than showing it blank.
+ */
+function migratePO(po) {
+  if (!po.lines) {
+    const hasData = po.qty || po.unit_cost;
+    po.lines = hasData ? [{
+      id: uid(), invoice_num: '', date: po.date_created || localDateStr(),
+      qty: po.qty || '', unit_cost: po.unit_cost || '', tax: po.tax || '',
+      employee: po.employee || '', po_row_id: po.po_row_id || null,
+    }] : [];
+  }
+  (po.lines || []).forEach(l => {
+    if (!l || l.tax_pct != null) return;
+    const t = parseFloat(l.tax) || 0;
+    if (t <= 0) { l.tax_pct = ''; return; }
+    const amt = lineAmt(l);
+    if (amt <= 0) return;
+    const pct = Math.round(t / amt * 1e6) / 1e4;
+    if (Math.abs(amt * pct / 100 - t) >= 0.005) return;
+    l.tax_pct = String(pct);
+    recalcLineTax(l);
+  });
+}
+
+async function loadDocCounts() {
+  const counts = {};
+  await Promise.all(listKeys().map(async key => {
+    try {
+      const data = await api('GET', '/documents?division=' + encodeURIComponent(key) + '&poCounts=1');
+      Object.assign(counts, data.counts || {});
+    } catch (err) {
+      // A division whose document vault is not reachable just shows no
+      // paperclip counts — never a reason to fail the page.
+      console.warn('[po] doc counts for ' + key + ':', err.message);
+    }
+  }));
+  docCounts = counts;
+}
+
+/* ═══════════════════════════════════════════
+   SAVE
+   One order at a time, through POST /api/purchase-orders. Never the full-list
+   PUT the division tabs use: this page writes into lists it does not own, and
+   replacing one wholesale would erase whatever that division saved meanwhile.
+═══════════════════════════════════════════ */
+const _saveTimers  = {};
+const _savedDivision = {};   // poId → the division its last successful save stored it under
+let   _inflight    = 0;
+
+function poPayload(po) {
+  const out = {};
+  Object.keys(po).forEach(k => { if (k.charAt(0) !== '_') out[k] = po[k]; });
+  out.origin = 'purchasing';
+  return out;
+}
+
+function savePO(po, opts) {
+  clearTimeout(_saveTimers[po.id]);
+  const delay = (opts && opts.immediate) ? 0 : 500;
+  _saveTimers[po.id] = setTimeout(() => { _savePONow(po); }, delay);
+}
+
+async function _savePONow(po) {
+  delete _saveTimers[po.id];
+  _inflight++;
+  showSave('saving', 'Saving…');
+  try {
+    const from = _savedDivision[po.id];
+    const qs = '/purchase-orders?division=' + encodeURIComponent(po._division)
+             + (from && from !== po._division ? '&from=' + encodeURIComponent(from) : '');
+    const res = await api('POST', qs, { purchaseOrder: poPayload(po) });
+
+    // The server mints a po_row_id for any delivery line it created a job cost
+    // row for. Keeping those is what stops the next save creating a SECOND row
+    // for the same delivery.
+    if (res && res.purchaseOrder && Array.isArray(res.purchaseOrder.lines)) {
+      const byId = {};
+      res.purchaseOrder.lines.forEach(l => { if (l && l.id) byId[l.id] = l; });
+      (po.lines || []).forEach(l => {
+        if (l && byId[l.id]) l.po_row_id = byId[l.id].po_row_id || null;
+      });
+    }
+    // Only once the server confirms the order is out of the list it came from.
+    // staleCopy means the move half-landed: the order is saved, but the old
+    // division still lists it. Leaving this note alone means the next save
+    // sends the same `from` and finishes the move.
+    if (res && res.staleCopy) {
+      toast('Saved, but ' + divLabel(from) + ' still shows a copy. Saving again will clear it.', 'err');
+    } else {
+      _savedDivision[po.id] = po._division;
+    }
+
+    _inflight = Math.max(0, _inflight - 1);
+    if (_inflight === 0) showSave('saved', 'Saved');
+  } catch (err) {
+    _inflight = Math.max(0, _inflight - 1);
+    showSave('error', 'Not saved');
+    toast('Could not save ' + (po.po_number || 'the order') + ': ' + err.message, 'err');
+  }
+}
+
+/** Flush anything still debounced before the tab goes away. */
+window.addEventListener('beforeunload', () => {
+  Object.keys(_saveTimers).forEach(id => {
+    const po = purchaseOrders.find(p => p.id === id);
+    if (!po) return;
+    clearTimeout(_saveTimers[id]);
+    const from = _savedDivision[id];
+    const qs = API_BASE + '/purchase-orders?division=' + encodeURIComponent(po._division)
+             + (from && from !== po._division ? '&from=' + encodeURIComponent(from) : '');
+    try {
+      fetch(qs, {
+        method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
+        body: JSON.stringify({ purchaseOrder: poPayload(po) }),
+      });
+    } catch { /* the tab is closing; nothing useful to do */ }
+  });
+});
+
+/* ═══════════════════════════════════════════
+   CRUD
+═══════════════════════════════════════════ */
+function newPO(seed) {
+  if (!perm.canEdit) return;
+  // A new order starts general. Picking a division is the first thing the form
+  // asks for, and until it is answered the order belongs to no job ledger —
+  // which is also the finished state for the many orders that never have one.
+  const div = (seed && seed._division) || GENERAL;
+  const po = {
+    id:           uid(),
+    po_number:    nextPONumber(div),
+    title:        (seed && seed.title)    || '',
+    supplier:     (seed && seed.supplier) || '',
+    status:       'pending',
+    date_created: (seed && seed.date_created) || localDateStr(),
+    project_id:   (seed && seed.project_id) || '',
+    cost_code:    (seed && seed.cost_code)  || '',
+    sub_code:     (seed && seed.sub_code)   || '',
+    notes:        (seed && seed.notes)      || '',
+    origin:       'purchasing',
+    lines:        (seed && seed.lines) || [newLine()],
+    _division:    div,
+  };
+  purchaseOrders.push(po);
+  expanded.add(po.id);
+  page = 0;
+  savePO(po, { immediate: true });
+  render();
+  return po;
+}
+
+function addLine(poId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !perm.canEdit) return;
+  if (!po.lines) po.lines = [];
+  po.lines.push(newLine());
+  expanded.add(poId);
+  savePO(po);
+  render();
+}
+
+function deleteLine(poId, lineId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !perm.canEdit) return;
+  po.lines = (po.lines || []).filter(l => l.id !== lineId);
+  // The job cost row this delivery created goes with it — the server reconciles
+  // that from the line list, so nothing else is needed here.
+  savePO(po, { immediate: true });
+  render();
+}
+
+async function deletePO(poId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !perm.canDelete) return;
+  const tied = po.project_id ? ' It will also be removed from that job’s costs.' : '';
+  if (!confirm('Delete ' + (po.po_number || 'this order') + '?' + tied)) return;
+
+  clearTimeout(_saveTimers[poId]);
+  delete _saveTimers[poId];
+  showSave('saving', 'Deleting…');
+  try {
+    await api('DELETE', '/purchase-orders?division=' + encodeURIComponent(po._division)
+                      + '&id=' + encodeURIComponent(poId));
+    purchaseOrders = purchaseOrders.filter(p => p.id !== poId);
+    expanded.delete(poId);
+    delete _savedDivision[poId];
+    showSave('saved', 'Deleted');
+    render();
+  } catch (err) {
+    showSave('error', 'Not deleted');
+    toast('Could not delete: ' + err.message, 'err');
+  }
+}
+
+function toggleLines(poId) {
+  if (expanded.has(poId)) expanded.delete(poId); else expanded.add(poId);
+  render();
+}
+
+/* ═══════════════════════════════════════════
+   FIELD EDITS
+═══════════════════════════════════════════ */
+
+/**
+ * Re-tie an order to a different division.
+ *
+ * The order MOVES list: it is written into the new division's and removed from
+ * the old one's in a single call, so it can never be in two at once. The job
+ * and its codes are cleared because they belonged to the old division — a
+ * paving job id means nothing in turf, and silently keeping it would cost the
+ * wrong job.
+ */
+function setDivision(poId, value) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !perm.canEdit) return;
+  const next = value || GENERAL;
+  if (next === po._division) return;
+  po._division = next;
+  po.project_id = '';
+  po.cost_code  = '';
+  po.sub_code   = '';
+  // Renumbered into the sequence of the list it is joining, so it does not
+  // collide with an order that division already has. Its own id is excluded —
+  // it has already been moved into that list above.
+  po.po_number = nextPONumber(next, po.id);
+  savePO(po, { immediate: true });
+  render();
+}
+
+function setProject(poId, value) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !perm.canEdit) return;
+  if ((po.project_id || '') === (value || '')) return;
+  po.project_id = value || '';
+  // Codes come from the job's own bid items, so they cannot survive a job change.
+  po.cost_code = '';
+  po.sub_code  = '';
+  savePO(po, { immediate: true });
+  render();
+}
+
+function setSubCode(poId, value) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !perm.canEdit) return;
+  const parts = String(value || '').split('||');
+  po.cost_code = parts[0] || '';
+  po.sub_code  = parts[1] || '';
+  savePO(po, { immediate: true });
+  render();
+}
+
+function setField(poId, field, value) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !perm.canEdit) return;
+  if (field === 'status' && po.status !== value) {
+    po.status_changed_at = new Date().toISOString();
+    po.status_changed_by = (fctUser && fctUser.username) || '';
+  }
+  po[field] = value;
+  savePO(po, field === 'status' ? { immediate: true } : undefined);
+  if (field === 'status') render();
+}
+
+function setLineField(poId, lineId, field, value) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !perm.canEdit) return;
+  const line = (po.lines || []).find(l => l.id === lineId);
+  if (!line) return;
+  line[field] = value;
+  if (field === 'qty' || field === 'unit_cost' || field === 'tax_pct') recalcLineTax(line);
+  savePO(po);
+  updateTotalsInPlace(po, line);
+}
+
+/**
+ * Repaint just the money on screen after a keystroke.
+ *
+ * A full re-render would tear the focus out of the input being typed in, which
+ * is what the division tabs avoid the same way.
+ */
+function updateTotalsInPlace(po, line) {
+  const tot = poTotals(po);
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  if (line) {
+    const amt = lineAmt(line), tax = lineTax(line);
+    set('l-amt-' + line.id, amt > 0 ? '$' + fmt(amt) : '—');
+    set('l-tax-' + line.id, tax > 0 ? '$' + fmt(tax) : '');
+    set('l-tot-' + line.id, (amt + tax) > 0 ? '$' + fmt(amt + tax) : '—');
+  }
+  set('po-qty-' + po.id, tot.qty > 0 ? qfmt(tot.qty) : '—');
+  set('po-amt-' + po.id, tot.amt > 0 ? '$' + fmt(tot.amt) : '—');
+  set('po-tot-' + po.id, tot.total > 0 ? '$' + fmt(tot.total) : '—');
+  set('card-tot-' + po.id, '$' + fmt(tot.total));
+}
+
+/* ═══════════════════════════════════════════
+   FILTER / SEARCH
+═══════════════════════════════════════════ */
+let _searchTimer = null;
+function onSearch(value) {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(() => { search = value; page = 0; render(); }, 180);
+}
+function onFilter(key, value) { filters[key] = value; page = 0; render(); }
+function clearFilters() {
+  filters = { division: '', status: '', job: '', vendor: '' };
+  search = '';
+  page = 0;
+  ['f-division','f-status','f-job','f-vendor'].forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('po-search').value = '';
+  render();
+}
+function hasFilters() {
+  return Boolean(search) || Object.keys(filters).some(k => filters[k]);
+}
+function togglePending() {
+  filters.status = filters.status === 'pending' ? '' : 'pending';
+  document.getElementById('f-status').value = filters.status;
+  page = 0;
+  render();
+}
+
+function visiblePOs() {
+  const q = search.trim().toLowerCase();
+  return purchaseOrders.filter(po => {
+    if (filters.division && po._division !== filters.division) return false;
+    if (filters.status   && (po.status || 'pending') !== filters.status) return false;
+    if (filters.vendor   && (po.supplier || '') !== filters.vendor) return false;
+    if (filters.job === 'job'     && !po.project_id) return false;
+    if (filters.job === 'general' && po.project_id)  return false;
+    if (!q) return true;
+    const proj = projectFor(po._division, po.project_id);
+    const lineHay = (po.lines || []).map(l => [l.invoice_num, l.employee, l.date].join(' ')).join(' ');
+    const hay = [
+      po.po_number, divLabel(po._division), proj ? proj.name : '', proj ? proj.jobNumber : '',
+      po.cost_code, po.sub_code, po.title, po.supplier, po.status, po.date_created, po.notes, lineHay,
+    ].join(' ').toLowerCase();
+    return hay.indexOf(q) !== -1;
+  });
+}
+
+/* ═══════════════════════════════════════════
+   RENDER
+═══════════════════════════════════════════ */
+function divisionSelectHTML(po) {
+  const opts = ['<option value="' + GENERAL + '"' + (po._division === GENERAL ? ' selected' : '') + '>General — no division</option>']
+    .concat(sourceDivs.map(d =>
+      '<option value="' + esc(d.division) + '"' + (po._division === d.division ? ' selected' : '') + '>' + esc(d.label) + '</option>'));
+  return '<select ' + (perm.canEdit ? '' : 'disabled ') +
+    'onchange="setDivision(\'' + po.id + '\', this.value)" aria-label="Division">' + opts.join('') + '</select>';
+}
+
+function projectSelectHTML(po) {
+  if (po._division === GENERAL) {
+    return '<span style="color:var(--muted);font-size:0.76rem">Pick a division first</span>';
+  }
+  const list = projectsFor(po._division);
+  const opts = ['<option value=""' + (!po.project_id ? ' selected' : '') + '>General — no job</option>']
+    .concat(list.map(p => {
+      const label = p.name + (p.jobNumber ? '  (#' + p.jobNumber + ')' : '');
+      return '<option value="' + esc(p.id) + '"' + (po.project_id === p.id ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }));
+  // A job that has since been removed from the division still labels its order,
+  // rather than the select silently snapping to another job.
+  if (po.project_id && !projectFor(po._division, po.project_id)) {
+    opts.push('<option value="' + esc(po.project_id) + '" selected>' + esc(po.project_id) + ' (missing)</option>');
+  }
+  return '<select ' + (perm.canEdit ? '' : 'disabled ') +
+    'onchange="setProject(\'' + po.id + '\', this.value)" aria-label="Job">' + opts.join('') + '</select>';
+}
+
+function subCodeSelectHTML(po) {
+  if (!po.project_id) {
+    return '<span style="color:var(--muted);font-size:0.76rem">' +
+      (po._division === GENERAL ? '—' : 'No job — no code') + '</span>';
+  }
+  const codes = codesFor(po._division, po.project_id);
+  const current = (po.cost_code || '') + '||' + (po.sub_code || '');
+  if (!codes.length) {
+    return '<span style="color:var(--muted);font-size:0.76rem">No bid items on this job</span>';
+  }
+  const opts = ['<option value=""' + (current === '||' ? ' selected' : '') + '>— select —</option>']
+    .concat(codes.map(c =>
+      '<option value="' + esc(codeValue(c)) + '"' + (codeValue(c) === current ? ' selected' : '') + '>' + esc(codeLabel(c)) + '</option>'));
+  if (current !== '||' && !codes.some(c => codeValue(c) === current)) {
+    opts.push('<option value="' + esc(current) + '" selected>' +
+      esc([po.cost_code, po.sub_code].filter(Boolean).join(' / ')) + ' (not on this job)</option>');
+  }
+  return '<select ' + (perm.canEdit ? '' : 'disabled ') +
+    'onchange="setSubCode(\'' + po.id + '\', this.value)" aria-label="Cost and sub code">' + opts.join('') + '</select>';
+}
+
+function statusSelectHTML(po) {
+  const cur = po.status || 'pending';
+  const opts = [['pending','Pending'],['approved','Approved'],['closed','Closed']]
+    .map(o => '<option value="' + o[0] + '"' + (cur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('');
+  return '<select ' + (perm.canEdit ? '' : 'disabled ') +
+    'onchange="setField(\'' + po.id + '\', \'status\', this.value)" aria-label="Status">' + opts + '</select>';
+}
+
+function docBtnHTML(po) {
+  const n = docCounts[po.id] || 0;
+  return '<button class="icon-btn' + (n ? ' has' : '') + '" onclick="openDocs(\'' + po.id + '\')" ' +
+    'title="' + (n ? n + ' attached' : 'Attach a receipt') + '">&#128206;' + (n || '') + '</button>';
+}
+
+function divChipHTML(key) {
+  return '<span class="div-chip" style="background:' + divColor(key) + '22;color:' + divColor(key) + '">' +
+    esc(divLabel(key)) + '</span>';
+}
+
+function lineRowsHTML(po) {
+  return (po.lines || []).map(l => {
+    const amt = lineAmt(l), tax = lineTax(l);
+    const inp = (field, type, val, extra) =>
+      '<input type="' + type + '" class="boxed" value="' + esc(val == null ? '' : val) + '" ' +
+      (perm.canEdit ? '' : 'disabled ') + (extra || '') +
+      ' oninput="setLineField(\'' + po.id + '\',\'' + l.id + '\',\'' + field + '\', this.value)">';
+    return '<tr>' +
+      '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + '</td>' +
+      '<td style="min-width:118px">' + inp('date','date', l.date) + '</td>' +
+      '<td style="min-width:74px">'  + inp('qty','number', l.qty, 'step="any" placeholder="0"') + '</td>' +
+      '<td style="min-width:92px">'  + inp('unit_cost','number', l.unit_cost, 'step="any" placeholder="0.00"') + '</td>' +
+      '<td class="r" style="color:var(--ok)" id="l-amt-' + l.id + '">' + (amt > 0 ? '$' + fmt(amt) : '—') + '</td>' +
+      '<td style="min-width:92px">' +
+        '<div style="display:flex;align-items:center;gap:0.15rem">' +
+          inp('tax_pct','number', l.tax_pct, 'step="any" placeholder="0"') +
+          '<span style="color:var(--muted);font-size:0.72rem">%</span></div>' +
+        '<div class="r" style="font-size:0.62rem;color:var(--muted);padding-right:0.6rem" id="l-tax-' + l.id + '">' +
+          (tax > 0 ? '$' + fmt(tax) : '') + '</div>' +
+      '</td>' +
+      '<td class="r" style="color:var(--yellow);font-weight:600" id="l-tot-' + l.id + '">' +
+        ((amt + tax) > 0 ? '$' + fmt(amt + tax) : '—') + '</td>' +
+      '<td style="min-width:120px">' + inp('employee','text', l.employee, 'placeholder="Received by" list="employee-list"') + '</td>' +
+      '<td style="width:30px;text-align:center">' +
+        (perm.canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + po.id + '\',\'' + l.id + '\')" title="Remove delivery">&#10005;</button>' : '') +
+      '</td></tr>';
+  }).join('');
+}
+
+function linesPanelHTML(po, colspan) {
+  const tot = poTotals(po);
+  const count = (po.lines || []).length;
+  const totalRow = count > 1
+    ? '<tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.03)">' +
+        '<td colspan="2" style="font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ' + count + ' deliveries</td>' +
+        '<td class="r" style="font-weight:700">' + qfmt(tot.qty) + '</td><td></td>' +
+        '<td class="r" style="color:var(--ok);font-weight:700">$' + fmt(tot.amt) + '</td>' +
+        '<td class="r" style="color:var(--muted);font-weight:700">$' + fmt(tot.tax) + '</td>' +
+        '<td class="r" style="color:var(--yellow);font-weight:700">$' + fmt(tot.total) + '</td>' +
+        '<td colspan="2"></td></tr>'
+    : '';
+  return '<td colspan="' + colspan + '" style="padding:0;border-bottom:2px solid var(--border)">' +
+    '<div class="lines-wrap">' +
+      '<div class="section-label">Deliveries / Invoices</div>' +
+      '<div style="overflow-x:auto"><table>' +
+        '<thead><tr><th>Invoice / Ticket #</th><th>Delivery Date</th><th>Qty</th><th>Unit Cost</th>' +
+        '<th style="text-align:right">Amount</th><th>Tax %</th><th style="text-align:right">Total</th>' +
+        '<th>Received By</th><th></th></tr></thead>' +
+        '<tbody>' + lineRowsHTML(po) + '</tbody>' + totalRow +
+      '</table></div>' +
+      '<div style="display:flex;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap">' +
+        (perm.canEdit ? '<button class="btn" onclick="addLine(\'' + po.id + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem;background:rgba(129,140,248,0.12);border-color:rgba(129,140,248,0.35);color:var(--green)">+ Add Delivery</button>' : '') +
+        (perm.canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + po.id + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem">&#128247; Scan a receipt into this order</button>' : '') +
+      '</div>' +
+      '<div style="margin-top:0.7rem">' +
+        '<div class="section-label">Notes</div>' +
+        '<input type="text" class="boxed" style="width:100%;padding:0.35rem 0.5rem" placeholder="Anything worth recording about this order" ' +
+          (perm.canEdit ? '' : 'disabled ') + 'value="' + esc(po.notes || '') + '" ' +
+          'oninput="setField(\'' + po.id + '\',\'notes\', this.value)">' +
+      '</div>' +
+    '</div></td>';
+}
+
+const COLS = 14;
+
+function renderTable(rows) {
+  const body = document.getElementById('po-body');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="' + COLS + '" class="empty">' +
+      (purchaseOrders.length === 0
+        ? 'No purchase orders yet. Click <strong>+ New PO</strong>, or scan a receipt.'
+        : 'No orders match the current filters.') + '</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(po => {
+    const tot  = poTotals(po);
+    const open = expanded.has(po.id);
+    const n    = (po.lines || []).length;
+    const badge = n
+      ? '<span style="background:rgba(96,165,250,0.18);color:#93c5fd;border-radius:10px;padding:0.1rem 0.45rem;font-size:0.66rem;font-weight:700;margin-left:0.35rem">' + n + '</span>'
+      : '';
+    const meta = po.status_changed_at
+      ? '<div style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap">' +
+        (po.status_changed_by ? esc(po.status_changed_by) + ' &middot; ' : '') +
+        esc(new Date(po.status_changed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })) + '</div>'
+      : '';
+
+    const head = '<tr class="po-head">' +
+      '<td style="text-align:center;cursor:pointer" onclick="toggleLines(\'' + po.id + '\')">' +
+        '<span style="display:inline-block;transition:transform 0.15s;transform:rotate(' + (open ? 90 : 0) + 'deg)">&#9654;</span></td>' +
+      '<td style="white-space:nowrap"><span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">' + esc(po.po_number) + '</span>' + badge + '</td>' +
+      '<td><input type="date" class="boxed" value="' + esc(po.date_created || '') + '" ' + (perm.canEdit ? '' : 'disabled ') +
+        'onchange="setField(\'' + po.id + '\',\'date_created\', this.value)"></td>' +
+      '<td>' + divisionSelectHTML(po) + '</td>' +
+      '<td>' + projectSelectHTML(po) + '</td>' +
+      '<td>' + subCodeSelectHTML(po) + '</td>' +
+      '<td><input type="text" class="boxed" placeholder="Material / description" value="' + esc(po.title || '') + '" ' +
+        (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'title\', this.value)"></td>' +
+      '<td><input type="text" class="boxed" list="vendor-list" placeholder="Vendor" value="' + esc(po.supplier || '') + '" ' +
+        (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'supplier\', this.value)"></td>' +
+      '<td class="r" style="color:var(--muted)" id="po-qty-' + po.id + '">' + (tot.qty > 0 ? qfmt(tot.qty) : '—') + '</td>' +
+      '<td class="r" style="color:var(--ok);white-space:nowrap" id="po-amt-' + po.id + '">' + (tot.amt > 0 ? '$' + fmt(tot.amt) : '—') + '</td>' +
+      '<td class="r" style="color:var(--yellow);font-weight:600;white-space:nowrap" id="po-tot-' + po.id + '">' + (tot.total > 0 ? '$' + fmt(tot.total) : '—') + '</td>' +
+      '<td>' + statusSelectHTML(po) + meta + '</td>' +
+      '<td style="text-align:center">' + docBtnHTML(po) + '</td>' +
+      '<td style="text-align:center">' +
+        (perm.canDelete ? '<button class="del-btn" onclick="deletePO(\'' + po.id + '\')" title="Delete order">&#10005;</button>' : '') +
+      '</td></tr>';
+
+    const lines = open ? '<tr>' + linesPanelHTML(po, COLS) + '</tr>' : '';
+    return head + lines;
+  }).join('');
+}
+
+function renderCards(rows) {
+  const wrap = document.getElementById('po-cards');
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="empty">' +
+      (purchaseOrders.length === 0
+        ? 'No purchase orders yet. Tap <strong>Scan Receipt</strong> to start one from a photo.'
+        : 'No orders match the current filters.') + '</div>';
+    return;
+  }
+  wrap.innerHTML = rows.map(po => {
+    const tot  = poTotals(po);
+    const proj = projectFor(po._division, po.project_id);
+    const jobLine = po.project_id
+      ? (proj ? proj.name + (proj.jobNumber ? ' · #' + proj.jobNumber : '') : po.project_id)
+      : 'General — no job';
+    const codes = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
+    const n = docCounts[po.id] || 0;
+    const open = expanded.has(po.id);
+
+    return '<div class="po-card">' +
+      '<div class="row1">' +
+        '<span class="num">' + esc(po.po_number) + '</span>' +
+        '<span class="status-pill status-' + esc(po.status || 'pending') + '">' + esc(po.status || 'pending') + '</span>' +
+      '</div>' +
+      '<div class="title">' + esc(po.title || 'Untitled order') + '</div>' +
+      '<div class="meta">' + esc(po.supplier || 'No vendor') + ' · ' + esc(po.date_created || '') + '</div>' +
+      '<div class="meta">' + divChipHTML(po._division) + ' ' + esc(jobLine) + (codes ? ' · ' + esc(codes) : '') + '</div>' +
+      '<div class="amt" id="card-tot-' + po.id + '" style="margin-top:0.4rem">$' + fmt(tot.total) + '</div>' +
+      '<div class="card-actions">' +
+        '<button class="btn" onclick="toggleLines(\'' + po.id + '\')">' + (open ? 'Hide' : 'Edit') + ' details</button>' +
+        '<button class="icon-btn' + (n ? ' has' : '') + '" onclick="openDocs(\'' + po.id + '\')" style="padding:0.38rem 0.6rem">&#128206; ' + (n || 'Attach') + '</button>' +
+        (perm.canDelete ? '<button class="btn" onclick="deletePO(\'' + po.id + '\')" style="color:var(--red)">Delete</button>' : '') +
+      '</div>' +
+      (open ? '<div style="margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.6rem">' + cardEditorHTML(po) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+/** The full editor for one order on a phone — the table's columns, stacked. */
+function cardEditorHTML(po) {
+  return '<div class="field"><label>Division</label>' + divisionSelectHTML(po) + '</div>' +
+    '<div class="field"><label>Job</label>' + projectSelectHTML(po) + '</div>' +
+    '<div class="field"><label>Cost / Sub Code</label>' + subCodeSelectHTML(po) + '</div>' +
+    '<div class="grid2">' +
+      '<div class="field"><label>Date</label><input type="date" value="' + esc(po.date_created || '') + '" ' +
+        (perm.canEdit ? '' : 'disabled ') + 'onchange="setField(\'' + po.id + '\',\'date_created\', this.value)"></div>' +
+      '<div class="field"><label>Status</label>' + statusSelectHTML(po) + '</div>' +
+    '</div>' +
+    '<div class="field"><label>Description</label><input type="text" value="' + esc(po.title || '') + '" ' +
+      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'title\', this.value)"></div>' +
+    '<div class="field"><label>Vendor</label><input type="text" list="vendor-list" value="' + esc(po.supplier || '') + '" ' +
+      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'supplier\', this.value)"></div>' +
+    '<div class="section-label">Deliveries</div>' +
+    '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:700px">' +
+      '<thead><tr><th style="text-align:left;font-size:0.62rem;color:var(--muted)">Invoice</th>' +
+      '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Date</th>' +
+      '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Qty</th>' +
+      '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Unit</th>' +
+      '<th style="text-align:right;font-size:0.62rem;color:var(--muted)">Amount</th>' +
+      '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Tax %</th>' +
+      '<th style="text-align:right;font-size:0.62rem;color:var(--muted)">Total</th>' +
+      '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Received By</th><th></th></tr></thead>' +
+      '<tbody>' + lineRowsHTML(po) + '</tbody></table></div>' +
+    '<div style="display:flex;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap">' +
+      (perm.canEdit ? '<button class="btn" onclick="addLine(\'' + po.id + '\')">+ Delivery</button>' : '') +
+      (perm.canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + po.id + '\')">&#128247; Scan receipt</button>' : '') +
+    '</div>' +
+    '<div class="field" style="margin-top:0.7rem"><label>Notes</label><input type="text" value="' + esc(po.notes || '') + '" ' +
+      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + po.id + '\',\'notes\', this.value)"></div>';
+}
+
+function render() {
+  const all = visiblePOs().slice().reverse();
+  const totalPages = Math.max(1, Math.ceil(all.length / PER_PAGE));
+  if (page >= totalPages) page = totalPages - 1;
+  if (page < 0) page = 0;
+  const rows = all.slice(page * PER_PAGE, (page + 1) * PER_PAGE);
+
+  renderTable(rows);
+  renderCards(rows);
+
+  const pending = purchaseOrders.filter(po => (po.status || 'pending') === 'pending').length;
+  document.getElementById('pending-chip-slot').innerHTML = pending
+    ? '<button class="chip' + (filters.status === 'pending' ? ' on' : '') + '" onclick="togglePending()">' +
+      pending + ' pending approval</button>'
+    : '';
+
+  document.getElementById('clear-filters-btn').style.display = hasFilters() ? '' : 'none';
+  document.getElementById('result-count').textContent =
+    all.length + ' order' + (all.length === 1 ? '' : 's') +
+    (all.length !== purchaseOrders.length ? ' of ' + purchaseOrders.length : '');
+
+  const pager = document.getElementById('pager');
+  if (totalPages > 1) {
+    pager.style.display = '';
+    pager.innerHTML =
+      '<button class="btn" ' + (page === 0 ? 'disabled' : '') + ' onclick="page=Math.max(0,page-1);render()">&larr; Prev</button>' +
+      '<span style="font-size:0.78rem;color:var(--muted)">Page ' + (page + 1) + ' of ' + totalPages + '</span>' +
+      '<button class="btn" ' + (page === totalPages - 1 ? 'disabled' : '') + ' onclick="page=Math.min(' + (totalPages - 1) + ',page+1);render()">Next &rarr;</button>';
+  } else {
+    pager.style.display = 'none';
+  }
+
+  if (!perm.canEdit) {
+    document.getElementById('new-po-btn').style.display = 'none';
+    document.getElementById('scan-btn').style.display = 'none';
+  }
+}
+
+/* ═══════════════════════════════════════════
+   CSV EXPORT
+═══════════════════════════════════════════ */
+function exportCSV() {
+  const rows = visiblePOs();
+  const head = ['PO #','Division','Job','Job #','Cost Code','Sub Code','Description','Vendor','Date','Status',
+                'Invoice #','Delivery Date','Qty','Unit Cost','Amount','Tax %','Tax','Line Total','Received By'];
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const out = [head.map(q).join(',')];
+  rows.forEach(po => {
+    const proj = projectFor(po._division, po.project_id);
+    const base = [
+      po.po_number || '', divLabel(po._division),
+      proj ? proj.name : (po.project_id || 'General — no job'),
+      proj ? proj.jobNumber : '',
+      po.cost_code || '', po.sub_code || '', po.title || '', po.supplier || '',
+      po.date_created || '', po.status || '',
+    ];
+    const lines = po.lines || [];
+    if (!lines.length) {
+      out.push(base.concat(['','','','','','','','','']).map(q).join(','));
+      return;
+    }
+    lines.forEach((l, i) => {
+      const amt = lineAmt(l), tax = lineTax(l), pct = lineTaxPct(l);
+      // The header repeats only on the first delivery, so an order reads as one
+      // block in a spreadsheet instead of the same job restated per line.
+      const lead = i === 0 ? base : base.map(() => '');
+      out.push(lead.concat([
+        l.invoice_num || '', l.date || '',
+        (parseFloat(l.qty) || '') , (parseFloat(l.unit_cost) || ''),
+        amt.toFixed(2), pct === null ? '' : pct, tax.toFixed(2), (amt + tax).toFixed(2),
+        l.employee || '',
+      ]).map(q).join(','));
+    });
+  });
+  const blob = new Blob([out.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'purchase_orders_' + localDateStr() + '.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+/* ═══════════════════════════════════════════
+   RECEIPT PHOTOS
+═══════════════════════════════════════════ */
+
+/**
+ * Shrink a camera photo before it goes anywhere.
+ *
+ * A modern phone shoots 4–12 MB, over both the platform's request ceiling and
+ * what the scan endpoint accepts. 1600px on the long edge is more than enough
+ * to read a receipt and lands around 200–400 KB, which also makes the upload
+ * survivable on jobsite LTE. Drawing through a canvas converts HEIC to JPEG on
+ * the way, which is the other reason this is not optional.
+ */
+function downscaleImage(file, maxEdge) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(blob => {
+        if (!blob) { reject(new Error('Could not read that photo')); return; }
+        resolve({ blob, dataUrl: canvas.toDataURL('image/jpeg', 0.85), width: w, height: h });
+      }, 'image/jpeg', 0.85);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That file is not an image this browser can read')); };
+    img.src = url;
+  });
+}
+
+/** Ask for one photo through a hidden input, and hand back the File. */
+function pickImage(inputId) {
+  return new Promise(resolve => {
+    const input = document.getElementById(inputId);
+    input.value = '';
+    const onChange = () => {
+      input.removeEventListener('change', onChange);
+      resolve(input.files && input.files[0] ? input.files[0] : null);
+    };
+    input.addEventListener('change', onChange);
+    input.click();
+  });
+}
+
+/**
+ * File a photo against an order, in the order's OWN division.
+ *
+ * That last part is the whole point: a receipt filed under purchasing would be
+ * invisible from the paperclip on the same order in the paving tab. The upload
+ * is the three-step dance every division page uses — ticket, bytes straight to
+ * storage, then register — with the relay fallback for a bucket that has no
+ * CORS rule, since a phone on LTE is exactly where that bites.
+ */
+async function attachToPO(po, blob, filename, note) {
+  const division = po._division;
+  const poQ = '&poId=' + encodeURIComponent(po.id);
+  const projQ = po.project_id ? '&projectId=' + encodeURIComponent(po.project_id) : '';
+
+  // 1. Make sure the folders exist, and find the one this belongs in. An
+  //    order's own folder is created by the registration below, so the first
+  //    receipt files into the job's Purchase Orders root (or Unassigned POs
+  //    when the order has no job) and later ones join it there.
+  let folderId = null;
+  try {
+    const tree = await api('PUT', '/documents?division=' + encodeURIComponent(division) + poQ + projQ, {});
+    const folders = (tree && tree.folders) || [];
+    const bySlug = slug => (folders.find(f => f.slug === slug) || {}).id || null;
+    folderId = bySlug('po-' + po.id)
+            || (po.project_id ? bySlug('purchase-orders') : bySlug('unassigned-pos'))
+            || (folders[0] || {}).id || null;
+  } catch (err) {
+    throw new Error('Could not open the document folders: ' + err.message);
+  }
+  if (!folderId) throw new Error('No folder to file this receipt in');
+
+  // 2. Ticket.
+  const ticket = await api('POST', '/document-upload-url?division=' + encodeURIComponent(division) + poQ, {
+    filename, sizeBytes: blob.size, projectId: po.project_id || undefined, poId: po.id,
+  });
+
+  // 3. Bytes.
+  let put;
+  try {
+    put = await fetch(ticket.uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': ticket.contentType } });
+  } catch (err) {
+    // A cross-origin PUT needs a preflight and a bucket with no CORS rule
+    // refuses it, which surfaces as a bare "Failed to fetch" with nothing in
+    // any log. Relay through the API, which is same-origin.
+    const b64 = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload  = () => resolve(String(fr.result).split(',')[1] || '');
+      fr.onerror = () => reject(new Error('Could not read the photo back'));
+      fr.readAsDataURL(blob);
+    });
+    await api('PUT', '/document-upload-url?division=' + encodeURIComponent(division) + poQ,
+              { storageKey: ticket.storageKey, contentBase64: b64, poId: po.id });
+    put = { ok: true };
+  }
+  if (!put.ok) throw new Error('Upload to storage failed (' + put.status + ')');
+
+  // 4. Register — and clean up the stored bytes if it does not land, or they
+  //    sit in the bucket with nothing pointing at them.
+  try {
+    await api('POST', '/documents?division=' + encodeURIComponent(division) + projQ, {
+      documentId: ticket.documentId,
+      filename,
+      storageKey: ticket.storageKey,
+      sizeBytes:  blob.size,
+      folderId,
+      poId:       po.id,
+      poNumber:   po.po_number,
+      note:       note || undefined,
+    });
+  } catch (err) {
+    try {
+      await api('DELETE', '/document-upload-url?division=' + encodeURIComponent(division) +
+                '&storageKey=' + encodeURIComponent(ticket.storageKey) + poQ);
+    } catch (cleanupErr) {
+      console.warn('[po] could not remove the orphaned upload:', cleanupErr.message);
+    }
+    throw err;
+  }
+
+  docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+}
+
+/* ═══════════════════════════════════════════
+   SCAN SHEET
+═══════════════════════════════════════════ */
+let scanState = null;   // { dataUrl, blob, filename, receipt, targetPoId }
+
+function closeScan() {
+  document.getElementById('scan-backdrop').classList.remove('open');
+  scanState = null;
+}
+
+function renderScanSheet(body) {
+  const sheet = document.getElementById('scan-sheet');
+  sheet.innerHTML = body;
+  document.getElementById('scan-backdrop').classList.add('open');
+}
+
+/** Toolbar entry point: a photo becomes a brand-new order. */
+async function openScanSheet() { await beginScan(null); }
+
+/** Row entry point: a photo becomes another delivery on an existing order. */
+async function scanIntoPO(poId) { await beginScan(poId); }
+
+async function beginScan(targetPoId) {
+  if (!perm.canEdit) return;
+  const file = await pickImage('receipt-capture');
+  if (!file) return;
+
+  renderScanSheet(
+    '<h2>Reading the receipt</h2>' +
+    '<div class="sub">This takes a few seconds.</div>' +
+    '<div class="scan-status"><span class="spinner"></span>Looking at the photo…</div>');
+
+  let shot;
+  try {
+    shot = await downscaleImage(file, 1600);
+  } catch (err) {
+    renderScanSheet(
+      '<h2>Could not read that photo</h2>' +
+      '<div class="scan-status err">' + esc(err.message) + '</div>' +
+      '<div class="sheet-actions"><button class="btn" onclick="closeScan()">Close</button></div>');
+    return;
+  }
+
+  scanState = {
+    dataUrl: shot.dataUrl,
+    blob: shot.blob,
+    filename: 'receipt-' + localDateStr() + '-' + Date.now().toString(36) + '.jpg',
+    receipt: null,
+    targetPoId: targetPoId || null,
+  };
+
+  let receipt = null, scanError = null;
+  try {
+    const res = await api('POST', '/ai/receipt-scan', {
+      imageBase64: shot.dataUrl.split(',')[1],
+      mediaType: 'image/jpeg',
+      vendors: (catalog.vendors || []).map(v => v.name),
+    });
+    receipt = res && res.receipt ? res.receipt : null;
+  } catch (err) {
+    scanError = err.message;
+  }
+
+  // A scan that failed is not a dead end: the photo is still worth attaching
+  // and the fields are still worth typing, so the form opens either way.
+  scanState.receipt = receipt;
+  renderScanForm(receipt, scanError);
+}
+
+function renderScanForm(receipt, scanError) {
+  const r = receipt || {};
+  const target = scanState.targetPoId ? purchaseOrders.find(p => p.id === scanState.targetPoId) : null;
+
+  let status;
+  if (scanError) {
+    status = '<div class="scan-status err">Could not read the receipt automatically (' + esc(scanError) +
+             '). Fill it in below — the photo still gets attached.</div>';
+  } else if (r.confidence === 'low') {
+    status = '<div class="scan-status warn">Read with low confidence — check every figure before saving.' +
+             (r.notes ? ' ' + esc(r.notes) : '') + '</div>';
+  } else {
+    status = '<div class="scan-status">Read from the photo. Check the figures, then save.' +
+             (r.notes ? ' <span style="color:var(--muted)">' + esc(r.notes) + '</span>' : '') + '</div>';
+  }
+
+  const mark = v => v == null || v === '' ? '' : '<span class="scanned-mark">scanned</span>';
+  const val  = v => v == null ? '' : String(v);
+
+  // An order tied to a job is the common case but not the only one, so the
+  // division picker leads and "General" is a real answer, not a placeholder.
+  const divOpts = ['<option value="' + GENERAL + '">General — no division</option>']
+    .concat(sourceDivs.map(d => '<option value="' + esc(d.division) + '">' + esc(d.label) + '</option>')).join('');
+
+  renderScanSheet(
+    '<h2>' + (target ? 'Add to ' + esc(target.po_number) : 'New purchase order') + '</h2>' +
+    '<div class="sub">' + (target ? 'From a photographed receipt.' : 'Everything here can be changed afterwards.') + '</div>' +
+    '<img class="receipt-preview" src="' + scanState.dataUrl + '" alt="The receipt being read" />' +
+    status +
+    (target ? '' :
+      '<div class="field"><label>Division' + '</label>' +
+        '<select id="sc-division" onchange="onScanDivision(this.value)">' + divOpts + '</select></div>' +
+      '<div class="field"><label>Job</label><select id="sc-project" onchange="onScanProject(this.value)">' +
+        '<option value="">General — no job</option></select></div>' +
+      '<div class="field"><label>Cost / Sub Code</label><select id="sc-code">' +
+        '<option value="">— pick a job first —</option></select></div>') +
+    '<div class="field"><label>Vendor' + mark(r.vendor) + '</label>' +
+      '<input type="text" id="sc-vendor" list="vendor-list" value="' + esc(val(r.vendor)) + '" placeholder="Who it was bought from"></div>' +
+    '<div class="field"><label>Description' + mark(r.description) + '</label>' +
+      '<input type="text" id="sc-title" value="' + esc(val(r.description)) + '" placeholder="What was bought"></div>' +
+    '<div class="grid2">' +
+      '<div class="field"><label>Date' + mark(r.date) + '</label>' +
+        '<input type="date" id="sc-date" value="' + esc(r.date || localDateStr()) + '"></div>' +
+      '<div class="field"><label>Invoice #' + mark(r.invoice_number) + '</label>' +
+        '<input type="text" id="sc-invoice" value="' + esc(val(r.invoice_number)) + '"></div>' +
+    '</div>' +
+    '<div class="grid2">' +
+      '<div class="field"><label>Qty' + mark(r.qty) + '</label>' +
+        '<input type="number" step="any" id="sc-qty" value="' + esc(val(r.qty)) + '" placeholder="1"></div>' +
+      '<div class="field"><label>Unit Cost' + mark(r.unit_cost) + '</label>' +
+        '<input type="number" step="any" id="sc-unit" value="' + esc(val(r.unit_cost)) + '"></div>' +
+    '</div>' +
+    '<div class="grid2">' +
+      '<div class="field"><label>Tax %' + mark(r.tax_pct) + '</label>' +
+        '<input type="number" step="any" id="sc-taxpct" value="' + esc(val(r.tax_pct)) + '"></div>' +
+      '<div class="field"><label>Total' + mark(r.total) + '</label>' +
+        '<input type="number" step="any" id="sc-total" value="' + esc(val(r.total)) + '"></div>' +
+    '</div>' +
+    '<div class="sub" id="sc-hint" style="margin-bottom:0">' +
+      'Leave Qty blank and the order is booked as one line at the total shown.</div>' +
+    '<div class="sheet-actions">' +
+      '<button class="btn" onclick="closeScan()">Cancel</button>' +
+      '<button class="btn btn-green" id="sc-save" onclick="commitScan()">' +
+        (target ? 'Add delivery' : 'Create order') + '</button>' +
+    '</div>');
+
+  if (!target) onScanDivision(GENERAL);
+}
+
+function onScanDivision(divKey) {
+  const projSel = document.getElementById('sc-project');
+  const codeSel = document.getElementById('sc-code');
+  if (!projSel) return;
+  const list = divKey === GENERAL ? [] : projectsFor(divKey);
+  projSel.innerHTML = '<option value="">General — no job</option>' + list.map(p =>
+    '<option value="' + esc(p.id) + '">' + esc(p.name + (p.jobNumber ? '  (#' + p.jobNumber + ')' : '')) + '</option>').join('');
+  projSel.disabled = divKey === GENERAL;
+  codeSel.innerHTML = '<option value="">' + (divKey === GENERAL ? '—' : '— pick a job first —') + '</option>';
+  codeSel.disabled = true;
+}
+
+function onScanProject(projId) {
+  const divKey = document.getElementById('sc-division').value;
+  const codeSel = document.getElementById('sc-code');
+  const codes = projId ? codesFor(divKey, projId) : [];
+  codeSel.innerHTML = '<option value="">' + (projId ? '— select —' : 'No job — no code') + '</option>' +
+    codes.map(c => '<option value="' + esc(codeValue(c)) + '">' + esc(codeLabel(c)) + '</option>').join('');
+  codeSel.disabled = !projId || !codes.length;
+}
+
+/**
+ * Turn the reviewed scan into a saved order, then attach the photo to it.
+ *
+ * The order is saved first and the photo second, deliberately: the attachment
+ * needs an order id that already exists in the division's list, because that is
+ * what the document endpoint checks before letting purchasing write there.
+ */
+async function commitScan() {
+  const btn = document.getElementById('sc-save');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving…'; }
+
+  const qty   = document.getElementById('sc-qty').value;
+  const unit  = document.getElementById('sc-unit').value;
+  const total = parseFloat(document.getElementById('sc-total').value);
+  const taxPct = document.getElementById('sc-taxpct').value;
+
+  // With no quantity there is still a bill to book, so the order goes in as a
+  // single unit priced at the total — the same shape the division tabs produce
+  // for a one-off purchase, and it keeps the job cost right.
+  let lineQty = qty, lineUnit = unit;
+  if (!lineQty && !lineUnit && !isNaN(total)) {
+    const pct = parseFloat(taxPct);
+    lineQty = '1';
+    lineUnit = String(!isNaN(pct) && pct > 0 ? total / (1 + pct / 100) : total);
+  }
+
+  const line = Object.assign(newLine(), {
+    invoice_num: document.getElementById('sc-invoice').value || '',
+    date:        document.getElementById('sc-date').value || localDateStr(),
+    qty:         lineQty || '',
+    unit_cost:   lineUnit || '',
+    tax_pct:     taxPct || '',
+  });
+  recalcLineTax(line);
+
+  let po;
+  try {
+    if (scanState.targetPoId) {
+      po = purchaseOrders.find(p => p.id === scanState.targetPoId);
+      if (!po) throw new Error('That order is no longer on this page');
+      po.lines = (po.lines || []).concat([line]);
+      if (!po.supplier) po.supplier = document.getElementById('sc-vendor').value || '';
+      if (!po.title)    po.title    = document.getElementById('sc-title').value || '';
+      expanded.add(po.id);
+      await _savePONow(po);
+    } else {
+      const divKey  = document.getElementById('sc-division').value || GENERAL;
+      const projId  = document.getElementById('sc-project').value || '';
+      const codeVal = (document.getElementById('sc-code').value || '').split('||');
+      po = {
+        id:           uid(),
+        po_number:    nextPONumber(divKey),
+        title:        document.getElementById('sc-title').value || '',
+        supplier:     document.getElementById('sc-vendor').value || '',
+        status:       'pending',
+        date_created: document.getElementById('sc-date').value || localDateStr(),
+        project_id:   projId,
+        cost_code:    codeVal[0] || '',
+        sub_code:     codeVal[1] || '',
+        notes:        '',
+        origin:       'purchasing',
+        lines:        [line],
+        _division:    divKey,
+      };
+      purchaseOrders.push(po);
+      expanded.add(po.id);
+      await _savePONow(po);
+    }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Try again'; }
+    toast('Could not save the order: ' + err.message, 'err');
+    return;
+  }
+
+  if (btn) btn.innerHTML = '<span class="spinner"></span>Attaching photo…';
+  let attachError = null;
+  try {
+    await attachToPO(po, scanState.blob, scanState.filename, 'Scanned receipt');
+  } catch (err) {
+    attachError = err.message;
+  }
+
+  closeScan();
+  page = 0;
+  render();
+  if (attachError) {
+    // The order is saved either way — say which half did not land rather than
+    // implying the whole thing failed.
+    toast('Order saved, but the photo did not attach: ' + attachError, 'err');
+  } else {
+    toast('Saved ' + po.po_number + ' with the receipt attached.');
+  }
+}
+
+/* ═══════════════════════════════════════════
+   ATTACHMENTS SHEET
+═══════════════════════════════════════════ */
+function closeDocs() { document.getElementById('docs-backdrop').classList.remove('open'); }
+
+async function openDocs(poId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po) return;
+  const sheet = document.getElementById('docs-sheet');
+  sheet.innerHTML = '<h2>' + esc(po.po_number) + ' — attachments</h2>' +
+    '<div class="scan-status"><span class="spinner"></span>Loading…</div>';
+  document.getElementById('docs-backdrop').classList.add('open');
+
+  let docs = [];
+  let loadError = null;
+  try {
+    const res = await api('GET', '/documents?division=' + encodeURIComponent(po._division) +
+                          '&poId=' + encodeURIComponent(po.id));
+    docs = (res && res.documents) || [];
+    docCounts[po.id] = docs.length;
+  } catch (err) {
+    loadError = err.message;
+  }
+
+  const list = docs.length
+    ? docs.map(d =>
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;padding:0.45rem 0;border-bottom:1px solid var(--border)">' +
+          '<div style="min-width:0"><div style="font-size:0.84rem;word-break:break-all">' + esc(d.filename) + '</div>' +
+          '<div style="font-size:0.7rem;color:var(--muted)">' + esc(d.uploaded_by || '') +
+            (d.uploaded_at ? ' · ' + esc(new Date(d.uploaded_at).toLocaleDateString('en-US')) : '') + '</div></div>' +
+          '<button class="btn" onclick="openDoc(\'' + esc(po._division) + '\',\'' + esc(d.id) + '\',\'' + esc(po.id) + '\')">Open</button>' +
+        '</div>').join('')
+    : '<div style="color:var(--muted);font-size:0.82rem;padding:0.5rem 0">Nothing attached yet.</div>';
+
+  sheet.innerHTML =
+    '<h2>' + esc(po.po_number) + ' — attachments</h2>' +
+    '<div class="sub">Filed under ' + esc(divLabel(po._division)) +
+      (po.project_id ? ', on ' + esc((projectFor(po._division, po.project_id) || {}).name || po.project_id) : ', with no job') +
+      ' — so it is on the paperclip in that division’s own tab too.</div>' +
+    (loadError ? '<div class="scan-status err">' + esc(loadError) + '</div>' : list) +
+    '<div class="sheet-actions">' +
+      '<button class="btn" onclick="closeDocs()">Close</button>' +
+      (perm.canEdit ? '<button class="btn btn-green" id="doc-add" onclick="addAttachment(\'' + po.id + '\')">+ Add photo or file</button>' : '') +
+    '</div>';
+}
+
+async function openDoc(division, docId, poId) {
+  try {
+    // poId is what lets a purchasing user open a receipt filed in a division it
+    // holds no role in — the endpoint checks the document is linked to it.
+    const res = await api('GET', '/document-download?division=' + encodeURIComponent(division) +
+                          '&id=' + encodeURIComponent(docId) +
+                          '&poId=' + encodeURIComponent(poId));
+    if (res && res.url) window.open(res.url, '_blank', 'noopener');
+    else toast('That file has no download link.', 'err');
+  } catch (err) {
+    toast('Could not open it: ' + err.message, 'err');
+  }
+}
+
+async function addAttachment(poId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po) return;
+  const file = await pickImage('attach-capture');
+  if (!file) return;
+
+  const btn = document.getElementById('doc-add');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Uploading…'; }
+  try {
+    // Images go through the downscale; a PDF is passed along untouched, since
+    // rasterizing one would destroy it.
+    let blob = file, filename = file.name;
+    if (/^image\//.test(file.type)) {
+      const shot = await downscaleImage(file, 1600);
+      blob = shot.blob;
+      filename = (file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg';
+    }
+    await attachToPO(po, blob, filename);
+    toast('Attached.');
+    await openDocs(poId);
+    render();
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = '+ Add photo or file'; }
+    toast('Could not attach: ' + err.message, 'err');
+  }
+}
+
+/* Close a sheet by clicking its backdrop, the way the other pages' modals do. */
+['scan-backdrop', 'docs-backdrop'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function (e) {
+    if (e.target === this) this.classList.remove('open');
+  });
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.getElementById('scan-backdrop').classList.remove('open');
+    document.getElementById('docs-backdrop').classList.remove('open');
+  }
+});
+
+/* ═══════════════════════════════════════════
+   BOOT
+═══════════════════════════════════════════ */
+(async function boot() {
+  try {
+    await loadCatalog();
+  } catch (err) {
+    document.getElementById('load-banner').style.display = '';
+    document.getElementById('load-banner').textContent =
+      'Could not load the jobs and vendors list: ' + err.message + ' — orders already raised are still shown below.';
+  }
+  try {
+    await loadPurchaseOrders();
+  } catch (err) {
+    toast('Could not load purchase orders: ' + err.message, 'err');
+  }
+  render();
+
+  // The employee datalist is built after the first paint: the delivery rows
+  // reference it by id, and nothing needs it before one is opened.
+  const emps = (catalog.employees || []).map(e => '<option value="' + esc(e.name) + '"></option>').join('');
+  const dl = document.createElement('datalist');
+  dl.id = 'employee-list';
+  dl.innerHTML = emps;
+  document.body.appendChild(dl);
+
+  // Counts feed the paperclip badges, and are slow enough (one request per
+  // division) that the table should not wait on them.
+  loadDocCounts().then(render);
+})();
+</script>
+</body>
+</html>

@@ -421,6 +421,12 @@ ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_che
 -- Division column so turf and paving POs are stored separately
 ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS division TEXT NOT NULL DEFAULT 'turf';
 CREATE INDEX IF NOT EXISTS idx_po_company_division ON purchase_orders(company_code, division);
+-- Which screen raised the order. NULL for one entered on a division's own
+-- Purchase Orders tab, 'purchasing' for one raised centrally in the Purchase
+-- Orders division. The division column already says which job ledger the order
+-- belongs to; this says who typed it, which is what the division's tab needs in
+-- order to label an order that arrived from somewhere else.
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS origin TEXT;
 
 -- trucking_entries: add tr_row_id, status audit, and division columns
 ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS tr_row_id          TEXT;
@@ -451,7 +457,11 @@ CREATE INDEX IF NOT EXISTS idx_deadlines_division ON deadlines(company_code, div
 -- DROP-then-ADD is idempotent and safe to re-run on every deploy.
 -- ─────────────────────────────────────────────────
 ALTER TABLE purchase_orders   DROP CONSTRAINT IF EXISTS purchase_orders_division_chk;
-ALTER TABLE purchase_orders   ADD  CONSTRAINT purchase_orders_division_chk   CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany'));
+-- 'purchase_orders' is the central-purchasing division. Only its GENERAL
+-- (non-job) orders carry it: an order raised there against a job division is
+-- stored under that division, which is what puts it in that division's own
+-- Purchase Orders tab without a second copy to reconcile.
+ALTER TABLE purchase_orders   ADD  CONSTRAINT purchase_orders_division_chk   CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','purchase_orders'));
 
 ALTER TABLE trucking_entries  DROP CONSTRAINT IF EXISTS trucking_entries_division_chk;
 ALTER TABLE trucking_entries  ADD  CONSTRAINT trucking_entries_division_chk  CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany'));
@@ -1649,7 +1659,7 @@ ALTER TABLE project_folders ADD  CONSTRAINT project_folders_kind_chk
 
 ALTER TABLE project_folders DROP CONSTRAINT IF EXISTS project_folders_division_chk;
 ALTER TABLE project_folders ADD  CONSTRAINT project_folders_division_chk
-  CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry'));
+  CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry','purchase_orders'));
 
 -- COALESCE(project_id, '') matches the predicate the handler uses. Plain
 -- project_id could not: the queries originally said
@@ -1703,7 +1713,7 @@ ALTER TABLE project_documents ADD COLUMN IF NOT EXISTS purge_last_error TIMESTAM
 
 ALTER TABLE project_documents DROP CONSTRAINT IF EXISTS project_documents_division_chk;
 ALTER TABLE project_documents ADD  CONSTRAINT project_documents_division_chk
-  CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry'));
+  CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry','purchase_orders'));
 
 DROP INDEX IF EXISTS idx_pd_scope;
 CREATE INDEX IF NOT EXISTS idx_pd_company_div_proj ON project_documents(company_code, division, COALESCE(project_id, ''));
