@@ -372,6 +372,59 @@ console.log('\n[upsertPO — merging into a division list]');
   assert('the other writer\'s order survived', list.some(p => p.id === 'sneaked-in'));
   assert('ours landed too',                   list.some(p => p.id === 'ours'));
   assert('nothing was lost',                  list.length === 3);
+
+  // ...and the same one level down, which the order-level merge did not cover.
+  // upsertPO merges unseen deliveries from the list it read at the TOP of the
+  // call, then spends several round trips reconciling cost rows. A delivery
+  // recorded inside that window — or, on a lost race, between the retry's
+  // re-read and its write — was not in that snapshot, so replacing the order
+  // wholesale dropped it: gone from the stored order, gone from po_deliveries,
+  // and its daily_tracking row left with nothing naming it. Not even deleting
+  // the order finds such a row, because removePO reads the ids off the lines.
+  st = makeStore();
+  st.setBlob(KEY('paving'), [makePO({ id: 'p1', project_id: 'job1', lines: [{ id: 'L1', qty: '1', unit_cost: '100' }] })]);
+  st.onNextWrite(() => {
+    // The supervisor's tab records a second delivery, with the cost row it
+    // minted, while our save is mid-flight.
+    st.setBlob(KEY('paving'), [makePO({ id: 'p1', project_id: 'job1', lines: [
+      { id: 'L1', qty: '1', unit_cost: '100' },
+      { id: 'L2', qty: '1', unit_cost: '50', po_row_id: 'their-row' },
+    ] })]);
+  });
+  r = await poSync.upsertPO(st.sql, {
+    companyCode: 'FCT', division: 'paving',
+    po: makePO({ id: 'p1', project_id: 'job1', title: 'retitled by us',
+                 lines: [{ id: 'L1', qty: '1', unit_cost: '100' }] }),
+  });
+  let stored = st.getBlob(KEY('paving')).find(p => p.id === 'p1');
+  let lineIds = (stored.lines || []).map(l => l.id);
+  assert('a delivery recorded inside the write window survives',
+    lineIds.includes('L2'), JSON.stringify(lineIds));
+  assert('and ours is still there',            lineIds.includes('L1'), JSON.stringify(lineIds));
+  assert('and our own edit landed',            stored.title === 'retitled by us');
+  // Its row is live and correct for that delivery; clearing the link would
+  // orphan it rather than fix anything.
+  assert('the row the other writer minted is still named',
+    (stored.lines.find(l => l.id === 'L2') || {}).po_row_id === 'their-row',
+    JSON.stringify(stored.lines));
+  assert('and the caller is told, rather than carrying on with a short list',
+    r.mergedLines === 1, String(r.mergedLines));
+
+  // A delivery the caller DECLARED deleted is still deleted, race or no race.
+  st = makeStore();
+  st.setBlob(KEY('paving'), [makePO({ id: 'p2', project_id: 'job1', lines: [{ id: 'L1' }, { id: 'L2' }] })]);
+  st.onNextWrite(() => {
+    st.setBlob(KEY('paving'), [makePO({ id: 'p2', project_id: 'job1', lines: [{ id: 'L1' }, { id: 'L2' }] })]);
+  });
+  r = await poSync.upsertPO(st.sql, {
+    companyCode: 'FCT', division: 'paving',
+    po: makePO({ id: 'p2', project_id: 'job1', lines: [{ id: 'L1' }] }),
+    deletedLineIds: ['L2'],
+  });
+  stored = st.getBlob(KEY('paving')).find(p => p.id === 'p2');
+  assert('a declared deletion is not undone by the late merge',
+    (stored.lines || []).map(l => l.id).join(',') === 'L1',
+    JSON.stringify(stored.lines));
 })()
 
 // ════════════════════════════════════════════════════════════════════════════

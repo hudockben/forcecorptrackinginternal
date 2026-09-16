@@ -581,9 +581,32 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
   // compare-and-set that runs out of attempts in that window loses it outright.
   // This way the worst case is a duplicate, which is visible, harmless to the
   // job's costs (the rows were already moved) and cleaned up by the retry.
+  // The merge above ran against the list as it was at the TOP of this call, and
+  // several round trips have happened since — syncPOCostRows alone is a handful,
+  // and on a lost compare-and-set this mutator runs again over the winner's
+  // list. A delivery recorded by somebody else inside that window is not in
+  // `priorCopies`, so it was not merged, and replacing the order wholesale drops
+  // it: the delivery is gone from the stored order, gone from po_deliveries, and
+  // its daily_tracking row survives with nothing naming it — not even deleting
+  // the order finds it, because removePO reads the row ids off the stored lines.
+  // So merge again here, from the list actually being written over.
+  let lateMerged = 0;
   const saved = await mutatePOBlob(sql, blobKeyFor(companyCode, division), list => {
     const idx = list.findIndex(p => p && p.id === po.id);
     if (idx === -1) return [...list, po];
+
+    // Idempotent across retries: unseenLines skips any id already in po.lines.
+    const late = unseenLines(po, [list[idx]], deletedLineIds);
+    if (late.length) {
+      lateMerged += late.length;
+      // Kept exactly as the other writer stored it, po_row_id included — that
+      // row is live and correct for this delivery. Even when this save moved the
+      // order to another job, clearing the link would orphan the row rather than
+      // fix it; leaving it means the next save reads it out of the stored order
+      // and re-points the row at the new job.
+      po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(late);
+    }
+
     // Replaced in place: the purchase-order tables are drawn in list order, so
     // appending an edited order would jump it to the end of everyone's screen.
     const next = list.slice();
@@ -632,7 +655,7 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
     ok: true, purchaseOrder: po, staleCopy,
     // So the caller can show what it had not heard about, instead of silently
     // carrying on with a list it now knows is short.
-    mergedLines: recovered.length,
+    mergedLines: recovered.length + lateMerged,
     rows: { removed, written: rows.written, writtenIds: rows.writtenIds },
   };
 }

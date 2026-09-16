@@ -1020,7 +1020,14 @@ window.addEventListener('beforeunload', () => {
       fetch(qs, {
         method: 'POST', keepalive: true,
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + fctToken },
-        body: JSON.stringify({ purchaseOrder: poPayload(po) }),
+        // The deletions go too. Without them the server cannot tell a delivery
+        // this tab REMOVED from one it never saw, so unseenLines merges it back
+        // and the removal the user watched happen is undone by the save meant
+        // to record it.
+        body: JSON.stringify({
+          purchaseOrder:  poPayload(po),
+          deletedLineIds: deletedLinesFor(id),
+        }),
       });
     } catch { /* the tab is closing; nothing useful to do */ }
   });

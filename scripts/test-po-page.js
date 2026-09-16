@@ -660,6 +660,16 @@ console.log('\n[round-2 fixes]');
     PAGE.indexOf('for (const id of [..._unsaved])') < PAGE.indexOf('if (isEditing()) return;'));
   assert('and a failed save is flushed on unload too',
     /Object\.keys\(_saveTimers\)\.concat\(\[\.\.\._unsaved\]\)/.test(PAGE));
+  // ...carrying the deletions with it. Without them the server cannot tell a
+  // delivery this tab removed from one it never saw, so unseenLines merges it
+  // back and the removal is undone by the very save meant to record it.
+  assert('and that flush declares its deletions',
+    /purchaseOrder:\s*poPayload\(po\),\s*\n\s*deletedLineIds: deletedLinesFor\(id\),/.test(PAGE));
+  // Every path that POSTs an order has to declare them, not just the debounced
+  // one — there are exactly two.
+  assert('every single-order POST declares them',
+    (PAGE.match(/deletedLineIds:\s*(sentDeletions|deletedLinesFor\(id\))/g) || []).length === 2,
+    JSON.stringify(PAGE.match(/deletedLineIds:[^,\n]*/g)));
 
   // A half-landed move has to converge.
   assert('staleCopy keeps the order queued', /_unsaved\.add\(po\.id\);/.test(PAGE));
