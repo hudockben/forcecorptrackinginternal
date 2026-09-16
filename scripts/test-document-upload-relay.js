@@ -56,6 +56,9 @@ function loadEndpoint({ canUpload = true, companyCode = 'FORCE', division = 'pav
       normalizeDivision:   v => (v ? String(v) : division),
       hasDivisionAccess:   () => divisionAccess,
       canAccessPODivision: () => true,
+      // Whether the carve-out caller may upload comes from their PURCHASING
+      // level, so a view-only purchasing user is never handed a writable URL.
+      poCapabilities:      () => ({ canUpload }),
     },
   };
   // Central purchasing's carve-out: the endpoint asks po-sync whether the
@@ -319,6 +322,18 @@ const FILE = Buffer.from('%PDF-1.7 pretend paving change order');
   }
 
   console.log('\n[central purchasing\'s carve-out]');
+  {
+    // Reaching the division is not permission to write it. A view-only
+    // purchasing clerk gets no ticket, even naming one of its own orders.
+    const handler = loadEndpoint({
+      canUpload: false, divisionAccess: false,
+      poScope: { poId: 'real-po', projectId: 'job9' },
+    });
+    fakeStore();
+    const res = makeRes();
+    await handler({ method: 'POST', query: { poId: 'real-po' }, headers: {}, body: { filename: 'r.jpg' } }, res);
+    check('a view-only purchasing user gets no ticket', res.statusCode === 403, JSON.stringify(res.body));
+  }
   {
     // No role in this division and no order named — nothing to stand on.
     const handler = loadEndpoint({ divisionAccess: false, poScope: null });

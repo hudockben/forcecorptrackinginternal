@@ -538,6 +538,13 @@ function newLine() {
 /* ═══════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════ */
+
+// poId → the division the SERVER has this order under, which is not always
+// where the screen now shows it: re-tying an order sets po._division straight
+// away, and this still says where it has to be removed from. Seeded whenever a
+// list is read, because an order that arrived before this page did is exactly
+// the one someone is most likely to re-tie.
+const _savedDivision = {};
 const GENERAL = 'purchase_orders';          // the blob general orders live in
 const DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)' };
 
@@ -641,7 +648,15 @@ async function loadPurchaseOrders() {
       // _division is where the order is STORED, which is what makes it visible
       // in that division's own tab. It is stripped before every save so it
       // never reaches the blob the division tabs round-trip.
-      list.forEach(po => { po._division = key; migratePO(po); });
+      list.forEach(po => {
+        po._division = key;
+        // Where the server ALREADY has this order. Re-tying it to another
+        // division sends this as `from` so the order moves lists instead of
+        // being copied into the second one — without it the same id goes live
+        // in two divisions' tabs at once and the old job keeps its costs.
+        _savedDivision[po.id] = key;
+        migratePO(po);
+      });
       return list;
     } catch (err) {
       console.warn('[po] could not load ' + key + ':', err.message);
@@ -683,7 +698,15 @@ async function loadDocCounts() {
   const counts = {};
   await Promise.all(listKeys().map(async key => {
     try {
-      const data = await api('GET', '/documents?division=' + encodeURIComponent(key) + '&poCounts=1');
+      // poId names the order the carve-out is granted for. The counts come
+      // back for the whole division either way — purchasing can list those
+      // orders regardless — but without an order to check against, a caller
+      // holding no role in the division is refused and every paperclip on the
+      // page reads zero however many receipts are attached.
+      const anyPO = purchaseOrders.find(po => po._division === key);
+      const q = '/documents?division=' + encodeURIComponent(key) + '&poCounts=1'
+              + (anyPO ? '&poId=' + encodeURIComponent(anyPO.id) : '');
+      const data = await api('GET', q);
       Object.assign(counts, data.counts || {});
     } catch (err) {
       // A division whose document vault is not reachable just shows no
@@ -701,7 +724,6 @@ async function loadDocCounts() {
    replacing one wholesale would erase whatever that division saved meanwhile.
 ═══════════════════════════════════════════ */
 const _saveTimers  = {};
-const _savedDivision = {};   // poId → the division its last successful save stored it under
 let   _inflight    = 0;
 
 function poPayload(po) {
@@ -1862,7 +1884,13 @@ document.addEventListener('keydown', e => {
       fetched = await Promise.all(listKeys().map(async key => {
         const data = await api('GET', '/purchase-orders?division=' + encodeURIComponent(key));
         const list = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
-        list.forEach(po => { po._division = key; migratePO(po); });
+        list.forEach(po => {
+          po._division = key;
+          // Same reason as on load — an order raised in a division tab since
+          // this page opened must be movable, not copyable.
+          _savedDivision[po.id] = key;
+          migratePO(po);
+        });
         return list;
       }));
     } catch (err) {

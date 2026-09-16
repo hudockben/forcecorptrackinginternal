@@ -416,10 +416,15 @@
       font-size: 0.78rem;
     }
 
-    /* Column widths — username + 14 divisions + actions, adding to 100%. */
-    .user-table col.c-user   { width: 12.5%; }
-    .user-table col.c-div    { width: 5.5%;  }
-    .user-table col.c-act    { width: 10.5%; }
+    /* Column widths — username + 16 divisions + actions, adding to 100%.
+       There must be one <col class="c-div"> per division column in the header:
+       table-layout is fixed, so a header column with no <col> of its own takes
+       whatever is left, and adding one without adding a <col> here slides
+       c-act onto the last division and collapses Actions — with the Edit and
+       Remove buttons — to nothing. */
+    .user-table col.c-user   { width: 12%;     }
+    .user-table col.c-div    { width: 4.875%;  }  /* × 16 = 78% */
+    .user-table col.c-act    { width: 10%;     }
 
     .mu-sort-btn {
       background: none;
@@ -1193,6 +1198,7 @@
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-div" /><col class="c-div" /><col class="c-div" />
+            <col class="c-div" />
             <col class="c-act" />
           </colgroup>
           <thead>

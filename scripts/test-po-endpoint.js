@@ -256,6 +256,46 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       /try again/i.test(JSON.stringify(res.body)), JSON.stringify(res.body));
   }
 
+  console.log('\n[writing needs the purchasing LEVEL, not just reach]');
+  {
+    // Reaching paving's orders and being allowed to change them are different
+    // questions. A view-only purchasing clerk could raise orders against any
+    // paving job before this check existed.
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level1' } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a view-only purchasing user cannot raise an order', res.statusCode === 403, JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level2' } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a level2 purchasing user can', res.statusCode === 200, JSON.stringify(res.body));
+  }
+  {
+    // Deleting an order takes the job's cost rows with it.
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level2' } });
+    const res = makeRes();
+    await handler({ method: 'DELETE', query: { division: 'paving', id: 'po1' }, headers: AUTHED }, res);
+    check('but cannot delete one', res.statusCode === 403, JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' } });
+    const res = makeRes();
+    await handler({ method: 'DELETE', query: { division: 'paving', id: 'po1' }, headers: AUTHED }, res);
+    check('a level3 purchasing user can', res.statusCode === 200, JSON.stringify(res.body));
+  }
+  {
+    // A view-only user in the division is unchanged by any of this.
+    const handler = loadEndpoint({ roles: { paving: 'level1' } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a view-only paving user still cannot write', res.statusCode === 403);
+  }
+
   console.log('\n[single-order delete]');
   {
     const calls = [];

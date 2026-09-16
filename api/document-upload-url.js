@@ -27,6 +27,7 @@ const {
   normalizeDivision,
   hasDivisionAccess,
   canAccessPODivision,
+  poCapabilities,
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
 const storage             = require('./lib/storage');
@@ -69,12 +70,14 @@ module.exports = async (req, res) => {
     const { neon } = require('@neondatabase/serverless');
     const scope = await resolvePODocScope(neon(process.env.DATABASE_URL), {
       payload, division, companyCode,
-      poId: req.query.poId || (req.body && req.body.poId) || null,
+      poId: req.query.poId ? String(req.query.poId) : null,
       hasDivisionAccess, canAccessPODivision,
     });
     // A purchasing ticket is minted only for the order's own job, so the key it
-    // signs can never point into a job the caller has no business in.
-    if (scope) {
+    // signs can never point into a job the caller has no business in — and only
+    // when the caller's PURCHASING level allows uploading at all, so a view-only
+    // purchasing user is not handed a writable URL.
+    if (scope && poCapabilities(payload, division).canUpload) {
       canUpload = true;
       req.query.projectId = scope.projectId || undefined;
       if (req.body && typeof req.body === 'object') req.body.projectId = scope.projectId || undefined;

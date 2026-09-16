@@ -39,7 +39,7 @@ function assert(label, cond, detail) {
 const auth = require('../api/lib/auth');
 const {
   canAccessPODivision, poDivisionsFor, requirePODivision,
-  hasDivisionAccess, PO_SOURCE_DIVISIONS, PO_GENERAL_DIVISION,
+  hasDivisionAccess, poCapabilities, PO_SOURCE_DIVISIONS, PO_GENERAL_DIVISION,
 } = auth;
 const poSync = require('../api/lib/po-sync');
 
@@ -125,14 +125,31 @@ function makeStore() {
     if (/^INSERT INTO daily_tracking/.test(q)) {
       // 'Material' is a literal in the INSERT, so it is NOT one of the
       // parameters — the columns after date shift down by one.
-      daily.set(vals[0], {
-        row_id: vals[0], project_id: vals[1], company_code: vals[2], division: vals[3],
-        date: vals[4], field_type: 'Material', employee: vals[5],
-        cost_code: vals[6], sub_code: vals[7],
-        material: vals[8], supplier: vals[9], po_num: vals[10],
-        units_purchased: vals[11], unit_cost: vals[12], material_cost: vals[13],
+      const [rowId, projectId, companyCode, division, date, employee,
+             costCode, subCode, material, supplier, poNum,
+             qty, unitCost, cost, codesChanged] = vals;
+      const existing = daily.get(rowId);
+      if (existing) {
+        // The conflict arm: scoped to this company, never a payroll-injected
+        // row, and the codes only follow the order when the order changed them.
+        if (existing.company_code !== companyCode) return Promise.resolve([]);
+        if (existing.timesheet_entry_id) return Promise.resolve([]);
+        Object.assign(existing, {
+          project_id: projectId, division, date, employee,
+          material, supplier, po_num: poNum,
+          units_purchased: qty, unit_cost: unitCost, material_cost: cost,
+        });
+        if (codesChanged) { existing.cost_code = costCode; existing.sub_code = subCode; }
+        return Promise.resolve([{ row_id: rowId }]);
+      }
+      daily.set(rowId, {
+        row_id: rowId, project_id: projectId, company_code: companyCode, division,
+        date, field_type: 'Material', employee,
+        cost_code: costCode, sub_code: subCode,
+        material, supplier, po_num: poNum,
+        units_purchased: qty, unit_cost: unitCost, material_cost: cost,
       });
-      return Promise.resolve([]);
+      return Promise.resolve([{ row_id: rowId }]);
     }
     if (/^SELECT 1 FROM document_links/.test(q)) return Promise.resolve([]);
 
@@ -184,6 +201,47 @@ console.log('\n[the carve-out does not leak into the ordinary division check]');
 assert('hasDivisionAccess(purchasing, paving) still false', hasDivisionAccess(purchasing, 'paving') === false);
 assert('hasDivisionAccess(purchasing, turf) still false',   hasDivisionAccess(purchasing, 'turf') === false);
 assert('hasDivisionAccess(purchasing, purchase_orders)',    hasDivisionAccess(purchasing, 'purchase_orders') === true);
+
+console.log('\n[poCapabilities — reaching a division is not permission to write it]');
+{
+  const cap = (roles, div) => poCapabilities({ divisionRoles: roles }, div);
+
+  // Reaching paving's orders and being allowed to change them are different
+  // questions, and the answer to the second comes from the PURCHASING level.
+  assert('a view-only purchasing user cannot write paving orders',
+    cap({ purchase_orders: 'level1' }, 'paving').canUpload === false);
+  assert('and cannot delete them',
+    cap({ purchase_orders: 'level1' }, 'paving').canManage === false);
+  assert('a level2 purchasing user can write them',
+    cap({ purchase_orders: 'level2' }, 'paving').canUpload === true);
+  assert('but not delete them',
+    cap({ purchase_orders: 'level2' }, 'paving').canManage === false);
+  assert('a level3 purchasing user can do both',
+    cap({ purchase_orders: 'level3' }, 'paving').canUpload === true &&
+    cap({ purchase_orders: 'level3' }, 'paving').canManage === true);
+
+  // Granting a purchasing user READ access to a division must not take a
+  // capability away — the division role used to win outright, so adding
+  // paving:level1 silently stopped their receipts uploading.
+  assert('adding a view-only division role takes nothing away',
+    cap({ purchase_orders: 'level3', paving: 'level1' }, 'paving').canUpload === true);
+  assert('and a view-only division role alone still grants nothing',
+    cap({ paving: 'level1' }, 'paving').canUpload === false);
+  assert('a real division role answers for itself',
+    cap({ paving: 'level3' }, 'paving').canUpload === true);
+
+  // Destroying a file belongs to the division that owns it. Raising an order
+  // there is not a reason to hand purchasing that.
+  assert('purchasing never gets delete rights in a division',
+    cap({ purchase_orders: 'admin' }, 'paving').canDelete === false);
+  assert('a division admin keeps them',
+    cap({ paving: 'admin' }, 'paving').canDelete === true);
+
+  assert('and none of it reaches a division outside the carve-out',
+    cap({ purchase_orders: 'admin' }, 'dust').canUpload === false);
+  assert('a user with no roles gets nothing',
+    cap({}, 'paving').canUpload === false);
+}
 
 console.log('\n[poDivisionsFor]');
 assert('purchasing sees all four lists',
@@ -370,7 +428,7 @@ console.log('\n[upsertPO — merging into a division list]');
 
   // A payroll-injected row is never touched, whatever a corrupted link says.
   st = makeStore();
-  st.daily.set('ts99-abc-0-x', { row_id: 'ts99-abc-0-x', project_id: 'job1' });
+  st.daily.set('ts99-abc-0-x', { row_id: 'ts99-abc-0-x', project_id: 'job1', company_code: 'FCT', timesheet_entry_id: 42 });
   po = makePO({ id: 'p7', project_id: 'job1', lines: [{ id: 'L1', qty: '1', unit_cost: '1', po_row_id: 'ts99-abc-0-x' }] });
   await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
   assert('a payroll-injected row survives', st.daily.has('ts99-abc-0-x'));
@@ -392,6 +450,55 @@ console.log('\n[upsertPO — merging into a division list]');
   assert('exactly one cost row remains', st.daily.size === 1);
   assert('and it belongs to turf',      [...st.daily.values()][0].division === 'turf');
   assert('mirror row followed the move', st.poRows.get('mv').division === 'turf');
+
+  console.log('\n[a client copy that lost its row link]');
+  // The link from a delivery line to the job cost row it created lives in the
+  // ORDER, and the client only learns a newly minted one from the save's
+  // response. A response that never arrives — a dropped connection, a second
+  // tab that loaded before the first filled the quantity in — leaves a client
+  // holding a line with no link. Minting a fresh row for it would charge the
+  // job twice for one delivery, and orphan the first row beyond the reach of
+  // even deleting the order.
+  st = makeStore();
+  po = makePO({ id: 'relink', project_id: 'job1', lines: [{ id: 'L1', qty: '10', unit_cost: '12' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  const firstRowId = po.lines[0].po_row_id;
+  assert('one row to begin with', st.daily.size === 1 && Boolean(firstRowId));
+
+  // The same order as a client that never saw the response would send it.
+  const amnesiac = JSON.parse(JSON.stringify(po));
+  amnesiac.lines[0].po_row_id = null;
+  amnesiac.title = 'edited elsewhere';
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: amnesiac });
+  assert('the stored link is reused, not replaced',
+    st.daily.size === 1, `rows=${st.daily.size}`);
+  assert('and it is the same row',  amnesiac.lines[0].po_row_id === firstRowId);
+  assert('the job is charged once',
+    [...st.daily.values()].reduce((n, r) => n + Number(r.material_cost), 0) === 120);
+
+  console.log('\n[a supervisor re-coding a PO row on the job]');
+  // A PO-generated material row is fully editable on the job's own cost tab,
+  // and re-coding one is a real workflow. Purchasing flipping the status later
+  // must not drag it back — only a change to the ORDER's own codes should.
+  st = makeStore();
+  po = makePO({ id: 'recode', project_id: 'job1', cost_code: '100', sub_code: 'A',
+                lines: [{ id: 'L1', qty: '1', unit_cost: '50' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  const recodedId = po.lines[0].po_row_id;
+  // The supervisor re-codes it on the job.
+  Object.assign(st.daily.get(recodedId), { cost_code: '250', sub_code: 'B' });
+
+  po.status = 'approved';                       // purchasing touches something else
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  assert('a status change leaves the supervisor\'s codes alone',
+    st.daily.get(recodedId).cost_code === '250' && st.daily.get(recodedId).sub_code === 'B',
+    JSON.stringify(st.daily.get(recodedId)));
+
+  po.cost_code = '300'; po.sub_code = 'C';      // now the ORDER's codes change
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  assert('but changing the order\'s own codes does carry through',
+    st.daily.get(recodedId).cost_code === '300' && st.daily.get(recodedId).sub_code === 'C',
+    JSON.stringify(st.daily.get(recodedId)));
 
   console.log('\n[a move that only half lands]');
   // The new list is written before the old one is emptied, so a compare-and-set

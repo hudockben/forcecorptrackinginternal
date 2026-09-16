@@ -28,6 +28,7 @@ const {
   normalizeDivision,
   hasDivisionAccess,
   canAccessPODivision,
+  poCapabilities,
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
 const storage             = require('./lib/storage');
@@ -253,7 +254,11 @@ module.exports = async (req, res) => {
 
   const sql = neon(process.env.DATABASE_URL);
 
-  const reqPoId = req.query.poId || (req.body && req.body.poId) || null;
+  // ONE order identifies the carve-out, and it is the one in the query string.
+  // Reading it from either place let the two disagree: the gate could clear a
+  // request on the strength of the query's order while the handler filed the
+  // document against a different id in the body.
+  const reqPoId = req.query.poId ? String(req.query.poId) : null;
   const poScope = await resolvePODocScope(sql, {
     payload, division, companyCode, poId: reqPoId,
     hasDivisionAccess, canAccessPODivision,
@@ -263,11 +268,12 @@ module.exports = async (req, res) => {
     return res.status(403).json({ error: 'You do not have access to this division' });
   }
 
-  // Under the carve-out the caller is exactly a level2 uploader on this one
-  // order: it may read the order's paperwork and add to it, never rename,
-  // re-file or delete anything in a division it has no role in.
+  // Under the carve-out the caller may read this one order's paperwork and add
+  // to it — never rename, re-file or destroy anything in a division it holds no
+  // role in. Whether it may add at all comes from its PURCHASING level, so a
+  // view-only purchasing user cannot upload here either.
   const caps = poScope
-    ? { level: 'level2', canUpload: true, canManage: false, canDelete: false }
+    ? { level: 'level2', canUpload: poCapabilities(payload, division).canUpload, canManage: false, canDelete: false }
     : capabilities(payload, division);
 
   // Filing is only ever into the ORDER's own job — never a project id the
@@ -277,18 +283,30 @@ module.exports = async (req, res) => {
     ? poScope.projectId
     : (req.query.projectId ? String(req.query.projectId) : null);
 
-  // The carve-out covers reading an order's paperwork, making sure the folders
-  // to file it in exist, and registering the upload. Everything else — the
-  // trash, renames, re-filing, deletes, folder creation — stays behind a real
-  // division role.
+  // The carve-out covers reading this order's paperwork, making sure the
+  // folders to file it in exist, and registering the upload. Everything else —
+  // the trash, renames, re-filing, deletes, folder creation — stays behind a
+  // real division role.
   if (poScope) {
+    const isRegister = req.method === 'POST' && !req.query.folder;
     const allowed =
-      (req.method === 'GET'  && Boolean(req.query.poId)) ||
-      (req.method === 'PUT') ||
-      (req.method === 'POST' && !req.query.folder && Boolean(req.body && req.body.poId));
+      (req.method === 'GET' && (Boolean(req.query.poId) || Boolean(req.query.poCounts))) ||
+      req.method === 'PUT' ||
+      isRegister;
     if (!allowed) {
       return res.status(403).json({ error: 'You do not have access to this division' });
     }
+    // The document is filed against the order the carve-out was granted for,
+    // whatever the body says. Anything else writes a link to an order this
+    // request was never checked against.
+    if (isRegister && String((req.body && req.body.poId) || '') !== poScope.poId) {
+      return res.status(403).json({ error: 'That upload does not belong to this purchase order' });
+    }
+    // The folder generator takes a caller-supplied cost-code list and both
+    // creates folders from it and RELABELS existing ones. Seeding the standard
+    // tree is all the carve-out needs; naming folders in a division it has no
+    // role in is not.
+    if (req.method === 'PUT' && req.body && req.body.costCodes) req.body.costCodes = [];
   }
 
   try {
@@ -697,11 +715,22 @@ module.exports = async (req, res) => {
       const trueSize = head.size;
 
       const folder = await sql`
-        SELECT id FROM project_folders
+        SELECT id, slug FROM project_folders
         WHERE id = ${folderId} AND company_code = ${companyCode} AND division = ${division}
           AND COALESCE(project_id, '') = ${projectId || ''}
       `;
       if (!folder.length) return res.status(404).json({ error: 'Folder not found' });
+
+      // A carve-out upload goes where purchase-order paperwork goes, and
+      // nowhere else. Being inside the order's job is not enough on its own —
+      // Contract, Permits & Insurance and Safety are all in that job too, and
+      // a purchasing user has no business writing into them.
+      if (poScope) {
+        const allowedSlugs = [`po-${poScope.poId}`, PO_ROOT.slug, 'unassigned-pos'];
+        if (!allowedSlugs.includes(folder[0].slug)) {
+          return res.status(403).json({ error: 'A receipt can only be filed under its purchase order' });
+        }
+      }
 
       try {
         await sql`
@@ -733,7 +762,10 @@ module.exports = async (req, res) => {
         // duplicated at the job level" behaviour the design calls for.
         const poFolderId = await ensurePoFolder(sql, {
           companyCode, division, projectId, poId,
-          poNumber: body.poNumber, username: payload.username,
+          // Same ceiling a hand-made folder name gets. It is caller input and
+          // becomes a folder name; nothing else bounded it.
+          poNumber: body.poNumber ? String(body.poNumber).slice(0, 60) : undefined,
+          username: payload.username,
         });
         if (poFolderId) {
           await sql`

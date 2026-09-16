@@ -199,6 +199,45 @@ function poDivisionsFor(payload) {
 }
 
 /**
+ * What a caller may DO with `division`'s purchase orders and their paperwork.
+ *
+ * canAccessPODivision answers whether they get in at all; this answers at what
+ * level, and the two are not the same question. A purchasing clerk given
+ * view-only rights must not be able to raise orders in paving just because
+ * purchasing can reach paving.
+ *
+ * A real role in the division answers for itself. Otherwise the answer comes
+ * from the caller's role in PURCHASING — never a hardcoded level, and never
+ * payload.role, which is the caller's TURF role and would be the wrong
+ * division's answer in both directions.
+ *
+ * The two are combined rather than one shadowing the other, so granting a
+ * purchasing user read access to a division cannot take a capability away.
+ * Adding paving:level1 to a purchasing level3 used to do exactly that: the
+ * division role won, said view-only, and the receipts they could attach the
+ * day before stopped uploading.
+ */
+function poCapabilities(payload, division) {
+  const own = hasDivisionAccess(payload, division) ? capabilities(payload, division) : null;
+  const viaPurchasing = canAccessPODivision(payload, division) && hasDivisionAccess(payload, PO_GENERAL_DIVISION)
+    ? capabilities(payload, PO_GENERAL_DIVISION)
+    : null;
+
+  if (!own && !viaPurchasing) return { level: 'no_access', canUpload: false, canManage: false, canDelete: false };
+  return {
+    level:     (own && own.canManage) ? own.level : (viaPurchasing || own).level,
+    canUpload: Boolean((own && own.canUpload) || (viaPurchasing && viaPurchasing.canUpload)),
+    canManage: Boolean((own && own.canManage) || (viaPurchasing && viaPurchasing.canManage)),
+    // Destroying a stored FILE stays with the division that owns it, and comes
+    // from `own` alone — a purchasing administrator is an administrator of
+    // purchasing, not of paving's document vault. Note this is a narrower thing
+    // than canManage above, which does travel: purchasing owning the life of an
+    // order it raised is the feature.
+    canDelete: Boolean(own && own.canDelete),
+  };
+}
+
+/**
  * Guard for the purchase-order endpoints. Same shape as requireDivision — it
  * answers { payload, division } or sends the response and returns null — but
  * resolves access through canAccessPODivision, and requires the division to be
@@ -301,6 +340,7 @@ module.exports = {
   PO_SOURCE_DIVISIONS,
   PO_GENERAL_DIVISION,
   canAccessPODivision,
+  poCapabilities,
   poDivisionsFor,
   requirePODivision,
   levelFor,

@@ -286,6 +286,37 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   const movedDiv    = Boolean(prevDivision) && prevDivision !== division;
   const startAfresh = movedJob || movedDiv;
 
+  // The link from a delivery to its cost row is minted here and travels back in
+  // the response, so a client that never saw that response sends the line with
+  // no link at all — a dropped connection, a second tab that loaded before the
+  // first filled in a quantity, a save that raced another. Minting a fresh row
+  // for a delivery the STORED order already has one for would charge the job
+  // twice and orphan the first row past the reach of even deleting the order,
+  // since nothing would name it any more. So the stored list is what the link
+  // is read from; the client's copy only adds to it.
+  //
+  // Not consulted when the order MOVED: every row it had is being deleted, so
+  // reusing one of their ids would resurrect the id the move just retired and
+  // undo the reset a few lines below.
+  const storedRowIdFor = new Map();
+  if (!startAfresh) {
+    for (const l of prevLines) {
+      if (l && l.id && l.po_row_id) storedRowIdFor.set(l.id, l.po_row_id);
+    }
+  }
+
+  // Whether the ORDER's own cost/sub code changed in this save. A PO-generated
+  // material row is fully editable on the job's own cost tab, and re-coding one
+  // is a real workflow — so purchasing flipping a status or fixing a typo must
+  // not drag it back. Only a change to the order's codes carries through, which
+  // is exactly the `syncCodes` distinction _syncPOHeaderToLines draws in
+  // tracker.html. A brand-new row takes the order's codes regardless: there is
+  // no supervisor decision on it yet to preserve.
+  const codesChanged = !prevPO
+    || startAfresh
+    || (prevPO.cost_code || '') !== (po.cost_code || '')
+    || (prevPO.sub_code  || '') !== (po.sub_code  || '');
+
   // Rows that must go: everything from the previous project when the order
   // moved, otherwise the rows of lines that were deleted or emptied out.
   const liveLineIds = new Set(lines.filter(lineHasCost).map(l => l.id));
@@ -322,21 +353,26 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   // case, and it is a first-class state rather than an incomplete order.
   if (!projectId) return { removed, written: 0 };
 
-  let written = 0;
-  for (const line of lines) {
-    if (!line || !lineHasCost(line)) continue;
-    if (line.po_row_id && isInjectedRowId(line.po_row_id)) continue;
-
-    const rowId = line.po_row_id || crypto.randomUUID();
-    const cost  = lineAmt(line) + lineTax(line);
-    const date  = safeDate(line.date) || safeDate(po.date_created) || new Date().toISOString().slice(0, 10);
-
-    // One statement for both the create and the update. The INSERT arm matches
-    // defaultDailyRow()'s material shape; the UPDATE arm sets only the columns
-    // a purchase order owns, so a supervisor's re-categorization on the job's
-    // own cost tab survives — except for cost/sub code, which follow the order
-    // when the order itself changed them (syncCodes in _syncPOHeaderToLines).
-    await sql`
+  /**
+   * Write one delivery's cost row under `rowId`, and say whether it landed.
+   *
+   * One statement for both the create and the update. The INSERT arm matches
+   * defaultDailyRow()'s material shape; the UPDATE arm sets only the columns a
+   * purchase order owns, so a supervisor's re-categorisation on the job's own
+   * cost tab survives — cost and sub code included, unless the ORDER's own
+   * codes are what changed.
+   *
+   * The conflict arm is scoped to this company, the mirror of the DELETE above.
+   * daily_tracking.row_id is globally unique, and po_row_id arrives in the
+   * request body, so without it a crafted or stale id could rewrite a row
+   * belonging to another order, another division or another tenant. RETURNING
+   * is what makes that safe to act on: a row the WHERE excludes comes back
+   * empty instead of silently doing nothing.
+   */
+  async function writeRow(rowId, line) {
+    const cost = lineAmt(line) + lineTax(line);
+    const date = safeDate(line.date) || safeDate(po.date_created) || new Date().toISOString().slice(0, 10);
+    const out = await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
         date, field_type, employee, cost_code, sub_code,
@@ -354,8 +390,8 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
         division        = EXCLUDED.division,
         date            = EXCLUDED.date,
         employee        = EXCLUDED.employee,
-        cost_code       = EXCLUDED.cost_code,
-        sub_code        = EXCLUDED.sub_code,
+        cost_code       = CASE WHEN ${codesChanged} THEN EXCLUDED.cost_code ELSE daily_tracking.cost_code END,
+        sub_code        = CASE WHEN ${codesChanged} THEN EXCLUDED.sub_code  ELSE daily_tracking.sub_code  END,
         material        = EXCLUDED.material,
         supplier        = EXCLUDED.supplier,
         po_num          = EXCLUDED.po_num,
@@ -363,8 +399,35 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
         unit_cost       = EXCLUDED.unit_cost,
         material_cost   = EXCLUDED.material_cost,
         updated_at      = NOW()
-      WHERE daily_tracking.timesheet_entry_id IS NULL
+      WHERE daily_tracking.company_code = ${companyCode}
+        AND daily_tracking.timesheet_entry_id IS NULL
+      RETURNING row_id
     `;
+    return out.length > 0;
+  }
+
+  let written = 0;
+  for (const line of lines) {
+    if (!line || !lineHasCost(line)) continue;
+
+    // The stored order is the authority on which row a delivery already owns.
+    const linked = line.po_row_id || storedRowIdFor.get(line.id) || null;
+    // Nothing here may touch a payroll-injected row, however a link came to
+    // point at one. Only payroll creates and removes those.
+    if (linked && isInjectedRowId(linked)) continue;
+
+    let rowId = linked || crypto.randomUUID();
+    let ok = await writeRow(rowId, line);
+    if (!ok && linked) {
+      // The id named a row this caller has no claim to — another tenant's, or
+      // one payroll owns. Give the delivery a row of its own rather than
+      // dropping it: a fresh uuid cannot collide, so this write always lands,
+      // and the job gets charged exactly once either way.
+      rowId = crypto.randomUUID();
+      ok = await writeRow(rowId, line);
+    }
+    if (!ok) continue;
+
     line.po_row_id = rowId;
     written++;
   }

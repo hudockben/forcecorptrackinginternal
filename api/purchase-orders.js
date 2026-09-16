@@ -41,6 +41,7 @@ const {
   requireDivision,
   normalizeDivision,
   canAccessPODivision,
+  poCapabilities,
 } = require('./lib/auth');
 const poSync = require('./lib/po-sync');
 
@@ -218,6 +219,14 @@ module.exports = async (req, res) => {
     // division's list under a compare-and-set, with its job cost rows
     // reconciled in the same call.
     if (req.method === 'POST') {
+      // Reaching a division's orders and being allowed to WRITE them are
+      // different questions. A purchasing clerk given view-only rights must not
+      // be able to raise an order against a paving job, and the answer has to
+      // come from their purchasing level — payload.role is their TURF role and
+      // would answer about the wrong division entirely.
+      if (!poCapabilities(payload, division).canUpload) {
+        return res.status(403).json({ error: 'You do not have permission to change purchase orders' });
+      }
       const po = (req.body || {}).purchaseOrder;
       if (!po || typeof po !== 'object' || Array.isArray(po)) {
         return res.status(400).json({ error: 'purchaseOrder object required' });
@@ -270,6 +279,11 @@ module.exports = async (req, res) => {
 
     // ── DELETE (one) ──────────────────────────────────────────────────────
     if (req.method === 'DELETE') {
+      // Deleting an order removes the job's cost rows with it, so this is the
+      // destructive end of the same capability the upsert checks.
+      if (!poCapabilities(payload, division).canManage) {
+        return res.status(403).json({ error: 'You do not have permission to delete purchase orders' });
+      }
       const id = String(req.query.id || '').trim();
       if (!id) return res.status(400).json({ error: 'id query param is required' });
 

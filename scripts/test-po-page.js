@@ -56,14 +56,39 @@ console.log('\n[the division is registered everywhere it has to be]');
     /DIV_KEYS_FULL_SCALE = \[[^\]]*'purchase_orders'\]/.test(divs));
   assert('the user table has a column for it', /title="Purchase Orders \(central purchasing\)">POs<\/th>/.test(divs));
 
-  // The empty-state colspan has to count the new column or "Loading…" sits
-  // short of the table's width — invisible until the list is empty. Scoped to
-  // the user table's own header row; the modal holds more than one table.
-  const userHead = divs.slice(divs.indexOf('toggleUserSort()'));
-  const headerCols = (userHead.slice(0, userHead.indexOf('</tr>')).match(/<th scope="col"/g) || []).length + 1;
+  // The user table is table-layout: fixed with a <colgroup>, and it does NOT
+  // scroll sideways. Three things have to stay in step or a column silently
+  // loses its width — which is how adding the POS header without a matching
+  // <col> slid c-act onto it and collapsed Actions, Edit button and all, to
+  // nothing. None of it is visible in the markup; it only shows on screen.
+  const dom = new JSDOM(divs);
+  const table = dom.window.document.querySelector('.user-table');
+  const cols  = [...table.querySelectorAll('colgroup col')];
+  const ths   = [...table.querySelectorAll('thead th')];
+
+  assert('every header column has a <col> of its own',
+    cols.length === ths.length, `cols=${cols.length} headers=${ths.length}`);
+  assert('and Actions is still the last one, not a division',
+    cols[cols.length - 1].className === 'c-act', cols[cols.length - 1].className);
+  assert('there is one c-div per division column',
+    cols.filter(c => c.className === 'c-div').length === ths.length - 2);
+
+  // Over 100% is scaled down silently, so it does not break outright — it just
+  // squeezes every column and stops meaning what the stylesheet says.
+  const pct = { 'c-user': 12, 'c-div': 4.875, 'c-act': 10 };
+  Object.entries(pct).forEach(([cls, want]) => {
+    const re = new RegExp('col\\.' + cls + '\\s*\\{\\s*width:\\s*([\\d.]+)%');
+    const got = (divs.match(re) || [])[1];
+    assert(`${cls} is still ${want}%`, Number(got) === want, `got ${got}`);
+  });
+  const total = cols.reduce((n, c) => n + (pct[c.className] || 0), 0);
+  assert('the column widths add to 100%', Math.abs(total - 100) < 0.001, total.toFixed(3) + '%');
+
+  // "Loading…" sits short of the table's width without this — invisible until
+  // the list is empty.
   const colspan = (divs.match(/<tr><td colspan="(\d+)" class="mu-empty-cell">/) || [])[1];
   assert('the empty-state colspan matches the header',
-    Number(colspan) === headerCols, `colspan=${colspan} headers=${headerCols}`);
+    Number(colspan) === ths.length, `colspan=${colspan} headers=${ths.length}`);
 }
 
 console.log('\n[the schema lets the new division exist]');
@@ -297,6 +322,43 @@ console.log('\n[filtering]');
   assert('search covers the PO number',        ids("search='PO-0002';") === '2');
   assert('search is case-insensitive',         ids("search='STONE';") === '1');
   assert('filters combine',                    ids("search=''; filters.vendor='Acme'; filters.status='pending';") === '1,3');
+}
+
+console.log('\n[an order re-tied after a page reload]');
+{
+  // The bug this pins: _savedDivision was only written after a SAVE, so an
+  // order that existed before this page loaded carried no record of where the
+  // server has it. Re-tying it then sent no `from`, the server never emptied
+  // the old list, and the same order id went live in two divisions' tabs at
+  // once — with the old job still carrying its costs.
+  assert('loading a list records where the server has each order',
+    /_savedDivision\[po\.id\] = key;[\s\S]{0,120}migratePO\(po\);/.test(PAGE));
+  assert('the poll records it too, for orders raised in a division tab since',
+    (PAGE.match(/_savedDivision\[po\.id\] = key;/g) || []).length === 2);
+  assert('and it is declared before the loaders that seed it',
+    PAGE.indexOf('const _savedDivision = {};') < PAGE.indexOf('async function loadPurchaseOrders'));
+
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const ctx = vm.createContext({ document: dom.window.document, console });
+  vm.runInContext(`
+    const GENERAL = 'purchase_orders';
+    let sourceDivs = [{ division:'turf', label:'Turf', projects:[] }];
+    const perm = { canEdit: true };
+    const _savedDivision = {};
+    const sent = [];
+    // The order was loaded from paving, as loadPurchaseOrders would leave it.
+    let purchaseOrders = [{ id:'x', po_number:'PO-0007', _division:'paving', project_id:'p1', lines:[] }];
+    _savedDivision['x'] = 'paving';
+    function savePO(po) { sent.push({ to: po._division, from: _savedDivision[po.id] }); }
+    function render() {}
+  `, ctx);
+  ['divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision']
+    .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
+
+  vm.runInContext("setDivision('x','turf')", ctx);
+  const sent = vm.runInContext('sent', ctx);
+  assert('re-tying a loaded order still knows the list it is leaving',
+    sent.length === 1 && sent[0].from === 'paving' && sent[0].to === 'turf', JSON.stringify(sent));
 }
 
 console.log('\n[the poll that picks up division-tab edits]');
