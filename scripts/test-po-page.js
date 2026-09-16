@@ -547,7 +547,14 @@ console.log('\n[a cost row this page has not loaded]');
       !/if \(!r\) return;/.test(body) && /proj\.dailyRows\.push\(r\);/.test(body));
     assert(`${f}: and written under the id the order already names`,
       /id:\s*line\.po_row_id,/.test(body));
+    // ...but only AFTER the job's rows have been read. The PUT is a full
+    // upsert, so a reconstruction carries defaultDailyRow's blanks straight
+    // over whatever the stored row held.
+    assert(`${f}: the job's rows are read before a row is invented`,
+      /if \(!proj\._drFullLoaded\)/.test(body) &&
+      body.indexOf('drGetAll({ projectId: po.project_id })') < body.indexOf('...defaultDailyRow()'));
   });
+
 }
 
 console.log('\n[load failures do not corrupt numbering]');
@@ -1045,6 +1052,55 @@ console.log('\n[the poll that picks up division-tab edits]');
 // Async, so it and the summary that follows run inside one IIFE — this file is
 // CommonJS and a top-level await would make its module format ambiguous.
 (async () => {
+console.log('\n[a cost row this page has not loaded — run]');
+{
+  // Run it. The row exists on the server, this page has not loaded it, and a
+  // supervisor has set an installed quantity, a job class and their own cost
+  // code on it. None of those belong to the purchase order.
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const ctx = vm.createContext({ document: dom.window.document, console, JSON, Promise, String });
+  vm.runInContext(`
+    const written = [];
+    const STORED_ROW = {
+      id: 'row-1', _projectId: 'p1', date: '2026-01-01', field_type: 'Material',
+      employee: '', cost_code: '999', sub_code: 'SUPERVISOR', job_class: 'Operator',
+      quantity: '250', material: 'Stone', supplier: 'Acme', po_num: 'PO-0007',
+      units_purchased: '1', unit_cost: '1', material_cost: '1',
+    };
+    const proj = { id: 'p1', dailyRows: [] };          // not loaded
+    let fetched = 0;
+    function getProj() { return proj; }
+    function defaultDailyRow() {
+      return { id:'', _projectId:'', date:'', field_type:'', employee:'', cost_code:'',
+               sub_code:'', job_class:'', rate:'', labor_hours:'', equipment:'',
+               equip_unit_cost:'', equip_hours:'', material:'', supplier:'', po_num:'',
+               units_purchased:'', unit_cost:'', material_cost:'', quantity:'' };
+    }
+    async function drGetAll() { fetched++; return { rows: [Object.assign({}, STORED_ROW)] }; }
+    function drPutNow(id, row) { written.push(JSON.parse(JSON.stringify(row))); }
+    function renderDailyTable() {}
+    function _lineAmt(l) { return (parseFloat(l.qty)||0) * (parseFloat(l.unit_cost)||0); }
+    function _lineTax() { return 0; }
+  `, ctx);
+  vm.runInContext('async ' + requireFn(read('tracker.html'), '_syncPOLineToRow', 'tracker.html'), ctx);
+  await vm.runInContext(`_syncPOLineToRow(
+    { project_id:'p1', cost_code:'100', sub_code:'A', title:'Stone', supplier:'Acme', po_number:'PO-0007' },
+    { id:'L1', po_row_id:'row-1', date:'2026-02-02', employee:'Sam', qty:'10', unit_cost:'5' })`, ctx);
+
+  const out = vm.runInContext('written[0]', ctx);
+  assert('the job\'s rows are fetched rather than assumed empty',
+    vm.runInContext('fetched', ctx) === 1, String(vm.runInContext('fetched', ctx)));
+  assert('the delivery figures reach the row',
+    out && out.units_purchased === '10' && out.unit_cost === '5' && out.material_cost === '50',
+    JSON.stringify(out));
+  assert('and the installed quantity is left alone',      out.quantity  === '250', JSON.stringify(out));
+  assert('and the job class',                             out.job_class === 'Operator', JSON.stringify(out));
+  assert('and the cost code the supervisor re-coded',
+    out.cost_code === '999' && out.sub_code === 'SUPERVISOR', JSON.stringify(out));
+  assert('and it is the stored row that was written, not a new one',
+    out.id === 'row-1' && vm.runInContext('written.length', ctx) === 1);
+}
+
 console.log('\n[a keystroke while a delete is in flight]');
 {
   // deletePO yields twice — waiting out a save already in flight, then the

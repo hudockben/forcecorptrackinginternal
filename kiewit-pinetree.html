@@ -10782,19 +10782,47 @@ function _syncPOHeaderToLines(po, syncCodes) {
 }
 
 // Sync one line's fields to its daily row
-function _syncPOLineToRow(po, line) {
+async function _syncPOLineToRow(po, line) {
   if (!po.project_id || !line.po_row_id) return;
   const proj = getProj(po.project_id);
   if (!proj) return;
   let r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
+
   if (!r) {
-    // The row exists, just not in this page's copy of the job: central
-    // purchasing creates the cost rows for the orders it raises, server-side,
-    // and this page loaded its rows before that happened. Returning here meant
-    // a supervisor's edit to such an order updated the purchase order and
-    // nothing else — the job kept the old figures with no sign anything had
-    // been missed. The row is rebuilt and written under the id the order
-    // already names, which the server upserts.
+    // The row may well exist and simply not be in this page's copy of the job:
+    // the first load takes the last 90 days and the rest arrives on a
+    // background pass that can fail, be truncated, or not have run yet.
+    // Returning here meant a supervisor's edit to a purchasing-raised order
+    // updated the order and nothing else, so the job kept the old figures.
+    //
+    // Fabricating one and PUTting it was worse. The PUT is a full upsert, and a
+    // reconstruction carries defaultDailyRow's blanks — so it wrote quantity 0
+    // and an empty job_class over a row a supervisor had filled in, and snapped
+    // cost_code and sub_code back to the order's, destroying exactly the
+    // re-categorisation _syncPOHeaderToLines' syncCodes flag exists to protect.
+    // It cannot be seen happening, because the page is writing over a row it
+    // has never read.
+    //
+    // So read it. Once per project, and only when the background pass has not
+    // already brought everything in.
+    if (!proj._drFullLoaded) {
+      try {
+        const answer = await drGetAll({ projectId: po.project_id });
+        const fetched = Array.isArray(answer) ? answer : (answer && answer.rows) || [];
+        fetched.forEach(row => {
+          if (!proj.dailyRows.some(x => String(x.id) === String(row.id))) proj.dailyRows.push(row);
+        });
+        proj._drFullLoaded = true;
+      } catch (err) {
+        console.warn('[po] could not load the job rows for a PO sync:', err.message);
+      }
+      r = proj.dailyRows.find(x => String(x.id) === String(line.po_row_id));
+    }
+  }
+
+  if (!r) {
+    // Genuinely absent: the order names a row nothing has. Build it, which is
+    // the same thing _ensurePOLineRow would have done had the link been empty.
     r = {
       ...defaultDailyRow(),
       id:         line.po_row_id,
@@ -10808,6 +10836,10 @@ function _syncPOLineToRow(po, line) {
     };
     proj.dailyRows.push(r);
   }
+
+  // Only ever the fields the purchase order owns. Everything else on the row —
+  // the installed quantity, the job class, a cost code a supervisor re-coded —
+  // is theirs and is left exactly as it was read.
   r.date           = line.date     || '';
   r.employee       = line.employee || '';
   r.units_purchased= line.qty      || '';
@@ -11370,7 +11402,11 @@ function _handlePOEvent(e) {
     }
     // Ensure a daily row exists once we have qty data
     if (po.project_id && (line.qty || line.unit_cost)) _ensurePOLineRow(po, line);
-    _syncPOLineToRow(po, line);
+    // Fire and forget: it may now have to read the job's rows before it can
+    // safely write one, and nothing after this depends on its result. Caught so
+    // a failed read is a warning rather than an unhandled rejection.
+    _syncPOLineToRow(po, line).catch(err =>
+      console.warn('[po] could not sync the delivery to its cost row:', err.message));
     savePurchaseOrders();
     if (po.project_id) renderProjectPOs(po.project_id);
     return;
