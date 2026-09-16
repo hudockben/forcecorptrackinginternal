@@ -328,6 +328,49 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     check('an unrelated division cannot delete turf\'s orders', res.statusCode === 403);
   }
 
+  console.log('\n[a division no purchase order can be filed under]');
+  {
+    // normalizeDivision accepts all sixteen divisions and the access guard
+    // passes anyone holding a role in the one they named, but both mirror
+    // tables' CHECK constraints admit only the job divisions plus the general
+    // list. The INSERT that violated one ran AFTER the blob write committed:
+    // the order was stored, the caller was told "Database error", and the
+    // retry hit the same wall forever.
+    for (const method of ['POST', 'PUT', 'DELETE']) {
+      const handler = loadEndpoint({ roles: { fuel: 'level3' } });
+      const res = makeRes();
+      await handler({
+        method,
+        query: { division: 'fuel', id: 'po1' },
+        headers: AUTHED,
+        body: { purchaseOrder: { id: 'po1', po_number: 'PO-0001', lines: [] }, purchaseOrders: [] },
+      }, res);
+      check(`a ${method} against fuel is refused before anything is written`,
+        res.statusCode === 400, method + ' -> ' + res.statusCode + ' ' + JSON.stringify(res.body));
+    }
+  }
+  {
+    // Reading is not writing. A GET names no row in either mirror table, and
+    // refusing it would break a division that legitimately has no orders.
+    const handler = loadEndpoint({ roles: { fuel: 'level3' }, calls: [] });
+    const res = makeRes();
+    await handler({ method: 'GET', query: { division: 'fuel' }, headers: AUTHED }, res);
+    check('but a GET against it still answers', res.statusCode === 200, JSON.stringify(res.body));
+  }
+  {
+    // The four that ARE storable keep working.
+    for (const division of ['turf', 'paving', 'kiewit', 'purchase_orders']) {
+      const handler = loadEndpoint({ roles: { [division]: 'level3' } });
+      const res = makeRes();
+      await handler({
+        method: 'PUT', query: { division },
+        headers: AUTHED, body: { purchaseOrders: [] },
+      }, res);
+      check(`${division} is still storable`, res.statusCode !== 400,
+        division + ' -> ' + res.statusCode + ' ' + JSON.stringify(res.body));
+    }
+  }
+
   console.log('\n[the basics]');
   {
     const handler = loadEndpoint({ roles: { turf: 'level3' } });
@@ -484,6 +527,134 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       check('a delivery the client never saw survives its save',
         lineIds.includes('L2'), JSON.stringify(lineIds));
       check('and the one it did send is still there', lineIds.includes('L1'), JSON.stringify(lineIds));
+      // The client withholds the new version whenever `merged` is non-zero. A
+      // delivery merged back that reported 0 let the tab adopt the post-merge
+      // version: its next save then matched the compare-and-set, the merge did
+      // not fire, and the delivery was written straight back out — along with
+      // the job cost row behind it.
+      check('and the merge is reported, so the client does not adopt the version',
+        res.body && res.body.merged > 0 && res.body.mergedLines === 1,
+        JSON.stringify(res.body));
+    }
+    {
+      // The same again for a cost-row link. A tab that loaded the order before
+      // purchasing minted the row sends the line with no po_row_id; the server
+      // restores it. Reporting 0 for that let the next save write the null back
+      // and _ensurePOLineRow mint a SECOND row — the job charged twice.
+      const WITH_LINK = [
+        { id: 'a', po_number: 'PO-0001', lines: [{ id: 'L1', po_row_id: 'row-1' }] },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: WITH_LINK, updated_at: new Date(T_MOVED) }]);
+        }
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', lines: [{ id: 'L1' }] }],
+                              baseUpdatedAt: T_READ } }, res);
+      const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+      const written = hit ? JSON.parse(hit.vals[1]) : [];
+      const line = ((written[0] || {}).lines || [])[0] || {};
+      check('a dropped cost-row link is restored', line.po_row_id === 'row-1', JSON.stringify(line));
+      check('and that restoration is reported too',
+        res.body && res.body.merged > 0 && res.body.mergedLinks === 1,
+        JSON.stringify(res.body));
+    }
+    {
+      // The case that actually happens. _ensurePOLineRow mints a row id and
+      // POSTs it to /api/daily-rows BEFORE savePurchaseOrders runs, so a stale
+      // tab's line arrives carrying a link — just not the stored one. Judging
+      // only the linkless case let that through: the job was charged twice and
+      // the server's original row orphaned.
+      const STORED = [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1',
+          lines: [{ id: 'L1', po_row_id: 'row-server' }] },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED, updated_at: new Date(T_MOVED) }]);
+        }
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', project_id: 'job1',
+                                                 lines: [{ id: 'L1', po_row_id: 'row-tab-minted' }] }],
+                              baseUpdatedAt: T_READ } }, res);
+      const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+      const line = ((JSON.parse(hit.vals[1])[0] || {}).lines || [])[0] || {};
+      check('the stored link wins over one a stale copy minted',
+        line.po_row_id === 'row-server', JSON.stringify(line));
+      check('and that counts as a merge', res.body && res.body.mergedLinks === 1,
+        JSON.stringify(res.body));
+      // The tab already POSTed its row to /api/daily-rows. Nothing references it
+      // now, and on its own it charges the job a second time.
+      const del = seen.find(c => /^DELETE FROM daily_tracking/.test(c.q));
+      check('and the duplicate row the tab minted is removed',
+        Boolean(del) && JSON.stringify(del.vals).includes('row-tab-minted'),
+        del ? JSON.stringify(del.vals) : 'no DELETE issued');
+      check('and only after the blob write has landed',
+        seen.findIndex(c => /^INSERT INTO app_data/.test(c.q)) <
+        seen.findIndex(c => /^DELETE FROM daily_tracking/.test(c.q)));
+    }
+    {
+      // ...but not when the JOB moved. The tab deletes every row and nulls
+      // every link on purpose then, and restoring one points the line at a row
+      // that no longer exists — after which nothing ever mints a replacement,
+      // because the link reads as present, and the job is UNDER-charged.
+      const STORED = [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1',
+          lines: [{ id: 'L1', po_row_id: 'row-old-job' }] },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED, updated_at: new Date(T_MOVED) }]);
+        }
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', project_id: 'job2',
+                                                 lines: [{ id: 'L1', po_row_id: null }] }],
+                              baseUpdatedAt: T_READ } }, res);
+      const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+      const line = ((JSON.parse(hit.vals[1])[0] || {}).lines || [])[0] || {};
+      check('a job that moved keeps the client\'s cleared link',
+        !line.po_row_id, JSON.stringify(line));
+      check('and nothing is reported as relinked', res.body && res.body.mergedLinks === 0,
+        JSON.stringify(res.body));
+    }
+    {
+      // An up-to-date client that merged nothing must still get its version, or
+      // every save would re-enter the merge arm forever.
+      const sqlStub = appDataStub({ storedUpdatedAt: new Date(T_READ) });
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [{ id: 'a', po_number: 'PO-0001', lines: [] }],
+                              baseUpdatedAt: T_READ } }, res);
+      check('a save that merged nothing reports nothing',
+        res.body && res.body.merged === 0, JSON.stringify(res.body));
     }
     {
       // ?force=1 is a genuine wipe and must stay one.

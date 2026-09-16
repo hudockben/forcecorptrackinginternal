@@ -415,14 +415,21 @@ console.log('\n[the division tabs and a crafted id]');
   // neither po.id nor line.id — ran in a supervisor's authenticated session.
   ['tracker.html', 'paving.html', 'kiewit-pinetree.html'].forEach(f => {
     const src = read(f);
+    // Both spellings. The inp()/selOpts() helpers rename the ids to poId and
+    // lineId on the way in, and checking only `po.id` declared those four
+    // data- attributes clean while they were still interpolating raw — a `"`
+    // in an id closed the attribute and the rest of it became markup.
     assert(`${f}: no raw id reaches the purchase-order markup`,
-      !/\$\{po\.id\}|\$\{line\.id\}/.test(src));
+      !/\$\{po\.id\}|\$\{line\.id\}|\$\{poId\}|\$\{lineId\}/.test(src));
     assert(`${f}: handler arguments go through escJs`,
       /_togglePOLines\('\$\{escJs\(po\.id\)\}'\)/.test(src) &&
       /deletePOLine\('\$\{escJs\(po\.id\)\}','\$\{escJs\(line\.id\)\}'\)/.test(src) &&
       /addPOLine\('\$\{escJs\(po\.id\)\}'\)/.test(src));
     assert(`${f}: id and data- attributes go through esc`,
       /id="po-qty-\$\{esc\(po\.id\)\}"/.test(src) && /data-po-id="\$\{esc\(po\.id\)\}"/.test(src));
+    assert(`${f}: the input helpers escape the ids they are handed`,
+      (src.match(/data-po-id="\$\{esc\(poId\)\}" data-line-id="\$\{esc\(lineId\)\}"/g) || []).length === 2 &&
+      (src.match(/data-po-id="\$\{esc\(poId\)\}" data-po-field=/g) || []).length === 2);
   });
 }
 

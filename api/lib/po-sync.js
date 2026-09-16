@@ -288,20 +288,15 @@ async function deletePORows(sql, companyCode, rowIds) {
  * every row the old project carried is removed before the new ones are written.
  */
 async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivision, priorCopies }) {
-  // An order filed under purchasing itself belongs to no job ledger, so it can
-  // carry no job — and daily_tracking's division CHECK does not admit
-  // 'purchase_orders' anyway. The page clears the job when the division
-  // changes, but that is client-side: a stale tab, a replayed request or any
-  // non-browser client with the same token can still send one. Without this the
-  // rows for the OLD job are deleted first and the insert that follows violates
-  // the constraint, so the request 500s having already destroyed them.
   const lines = Array.isArray(po.lines) ? po.lines : [];
-  // Only the job divisions keep a cost ledger, and daily_tracking's own CHECK
-  // admits only those. An order filed anywhere else can carry no job — the
-  // general list by design, and anything else because the INSERT would violate
-  // that constraint and 500 with the raw constraint name. The page clears the
-  // job when the division changes, but that is client-side: a stale tab or a
-  // replayed request still sends one.
+  // Only turf, paving and kiewit keep a job ledger a purchase order can charge.
+  // An order filed anywhere else carries no job: the general list by design,
+  // and every other division because normalizeDivision accepts all sixteen and
+  // daily_tracking's own CHECK admits six — so the INSERT would 500 with the
+  // raw constraint name, after the DELETE above had already removed the rows
+  // for the old job. The page clears the job when the division changes, but
+  // that is client-side: a stale tab, a replayed request or any non-browser
+  // client with the same token still sends one.
   if (!PO_SOURCE_DIVISIONS.includes(division) && po.project_id) po.project_id = '';
   const projectId = po.project_id || '';
 

@@ -42,8 +42,15 @@ const {
   normalizeDivision,
   canAccessPODivision,
   poCapabilities,
+  PO_SOURCE_DIVISIONS,
+  PO_GENERAL_DIVISION,
 } = require('./lib/auth');
 const poSync = require('./lib/po-sync');
+
+// The only divisions a purchase order can be stored under — the three job
+// divisions plus the general purchasing list. Both purchase_orders_division_chk
+// and daily_tracking_division_chk are written to match.
+const PO_STORABLE = PO_SOURCE_DIVISIONS.concat([PO_GENERAL_DIVISION]);
 
 function safeFloat(v) {
   const f = parseFloat(v);
@@ -72,6 +79,24 @@ function safeDate(v) {
  * division's jobs.
  */
 function _guardFor(req, res) {
+  const guarded = _guardDivision(req, res);
+  if (!guarded) return null;
+  // Both mirror tables' CHECK constraints admit only the job divisions and the
+  // general list, while normalizeDivision accepts all sixteen and either guard
+  // above passes anyone holding a role in the one they named — so a level2 fuel
+  // user reached a write for `fuel`. The INSERT that violated the constraint ran
+  // AFTER the blob write had committed: the order was stored, the caller was
+  // told "Database error", and every retry hit the same wall. Refuse it here,
+  // before anything is written, and say why. GET is untouched: reading names no
+  // row in either table.
+  if (req.method !== 'GET' && !PO_STORABLE.includes(guarded.division)) {
+    res.status(400).json({ error: 'Purchase orders cannot be filed under this division' });
+    return null;
+  }
+  return guarded;
+}
+
+function _guardDivision(req, res) {
   if (req.method === 'PUT') return requireDivision(req, res);
 
   const payload = requireAuth(req, res);
@@ -226,6 +251,15 @@ module.exports = async (req, res) => {
       const baseUpdatedAt = (req.body || {}).baseUpdatedAt || null;
       const baseTs = baseUpdatedAt ? Date.parse(baseUpdatedAt) : NaN;
       let toWrite = purchaseOrders;
+      // Everything the merge arm put back, at any level. The response reports
+      // the SUM, because the client withholds the new version whenever this is
+      // non-zero — and a merge it is not told about is worse than no merge at
+      // all: the client adopts the post-merge version, its next save matches
+      // the compare-and-set, the merge does not fire, and what was just
+      // recovered is written straight back out.
+      let mergedLines = 0;      // deliveries the client had not seen
+      let mergedLinks = 0;      // po_row_ids restored onto lines it had
+      const supersededRows = [];  // cost rows a stale copy minted over a stored one
 
       if (!isNaN(baseTs) && req.query.force !== '1') {
         const cur = await sql`SELECT value, updated_at FROM app_data WHERE key = ${blobKey}`;
@@ -256,7 +290,6 @@ module.exports = async (req, res) => {
           // the client sent. A client that is up to date replaces its own
           // orders exactly as before, so removing a delivery still removes it.
           const storedById = new Map(stored.filter(p => p && p.id).map(p => [p.id, p]));
-          let recovered = 0;
           toWrite = toWrite.map(po => {
             const was = po && po.id ? storedById.get(po.id) : null;
             if (!was || !Array.isArray(was.lines) || !was.lines.length) return po;
@@ -264,28 +297,54 @@ module.exports = async (req, res) => {
             const mine = Array.isArray(po.lines) ? po.lines : [];
             const have = new Set(mine.map(l => l && l.id).filter(Boolean));
 
-            // A delivery the client HAS but whose cost-row link it does not:
-            // central purchasing creates those rows server-side, so a tab that
-            // loaded the order beforehand carries the line without the link.
-            // Letting that through made the tab mint a SECOND cost row for the
-            // same delivery — the job charged twice, and the first row orphaned
-            // because the stored order then named only the new one.
+            // A delivery the client HAS but whose cost-row link is not the
+            // stored one. Central purchasing creates those rows server-side, so
+            // a tab that loaded the order beforehand carries the line either
+            // with no link or — once the user touches it — with a fresh one the
+            // tab minted and POSTed to /api/daily-rows itself. Both end the same
+            // way if they are written: the job is charged TWICE for the one
+            // delivery, and the server's original row is orphaned, because the
+            // stored order then names only the tab's.
+            //
+            // Judging only the linkless case missed the one that matters, since
+            // _ensurePOLineRow always mints before savePurchaseOrders runs. A
+            // differing link is always the stale copy's: the tabs only ever
+            // write po_row_id null -> new, or -> null, never one non-null value
+            // over a different one.
+            //
+            // Unless the JOB moved. Then the tab deleted every row and nulled
+            // every link deliberately, and restoring one would point the line at
+            // a row that no longer exists — after which _ensurePOLineRow never
+            // mints a replacement, because the link reads as present, and the
+            // job is silently UNDER-charged instead.
+            const jobMoved = String(po.project_id || '') !== String(was.project_id || '');
             let relinked = 0;
-            const kept = mine.map(l => {
-              if (!l || !l.id || l.po_row_id) return l;
+            const superseded = [];
+            const kept = jobMoved ? mine : mine.map(l => {
+              if (!l || !l.id) return l;
               const before = wasById.get(l.id);
               if (!before || !before.po_row_id) return l;
+              if (l.po_row_id === before.po_row_id) return l;
+              // The row the tab minted from its stale copy. Nothing references
+              // it once the stored link is back, and it would charge the job on
+              // its own, so it goes with the merge.
+              if (l.po_row_id) superseded.push(String(l.po_row_id));
               relinked++;
               return { ...l, po_row_id: before.po_row_id };
             });
+            if (superseded.length) supersededRows.push(...superseded);
 
+            mergedLinks += relinked;
             const missing = was.lines.filter(l => l && l.id && !have.has(l.id));
             if (!missing.length && !relinked) return po;
-            recovered += missing.length;
+            mergedLines += missing.length;
             return { ...po, lines: kept.concat(missing) };
           });
-          if (recovered) {
-            console.warn(`[purchase-orders] merged ${recovered} delivery line(s) the client had not seen for ${blobKey}`);
+          if (mergedLines) {
+            console.warn(`[purchase-orders] merged ${mergedLines} delivery line(s) the client had not seen for ${blobKey}`);
+          }
+          if (mergedLinks) {
+            console.warn(`[purchase-orders] restored ${mergedLinks} cost-row link(s) a stale copy had dropped for ${blobKey}`);
           }
         }
       }
@@ -298,16 +357,40 @@ module.exports = async (req, res) => {
         RETURNING updated_at
       `;
 
+      // Only once the blob naming the STORED links has landed: until then the
+      // tab's row is the only one anything references, and deleting it first
+      // would lose the delivery's cost outright if the write then failed.
+      // Payroll-injected rows are never ours to remove, the same exclusion
+      // _syncPOs' orphan sweep makes.
+      const dropRows = supersededRows.filter(id => id && !/^ts\d+-/.test(String(id)));
+      if (dropRows.length) {
+        try {
+          await sql`
+            DELETE FROM daily_tracking
+            WHERE company_code = ${companyCode} AND row_id = ANY(${dropRows})
+          `;
+          console.warn(`[purchase-orders] removed ${dropRows.length} duplicate cost row(s) a stale copy minted for ${blobKey}`);
+        } catch (err) {
+          console.error('[purchase-orders] could not remove duplicate cost rows:', err.message);
+        }
+      }
+
       // Mirror to normalized table (awaited so serverless doesn't kill it).
       try { await _syncPOs(sql, companyCode, division, toWrite); }
       catch (err) { console.error('[purchase-orders] normalize failed:', err.message); }
 
       // The new version, so the next save from this client takes the fast path
       // instead of re-merging against a base it already knows is stale.
+      // `merged` is every level summed, not just whole orders. The client reads
+      // it as "did the server have to put anything back" and withholds the new
+      // version when it did, so a delivery or a link merged back has to count
+      // too — reporting 0 for those let the next save erase them again.
+      const mergedOrders = toWrite.length - purchaseOrders.length;
       return res.json({
         ok: true,
         updatedAt: written.length ? written[0].updated_at : null,
-        merged: toWrite.length - purchaseOrders.length,
+        merged: mergedOrders + mergedLines + mergedLinks,
+        mergedOrders, mergedLines, mergedLinks,
       });
     }
 
@@ -405,8 +488,10 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
 
   } catch (err) {
+    // Logged in full, never echoed: the driver's message carries constraint,
+    // table and column names, and the client has nothing to do with them.
     console.error('[purchase-orders]', err.message);
-    return res.status(500).json({ error: 'Database error', detail: err.message });
+    return res.status(500).json({ error: 'Could not save the purchase order. Try again.' });
   }
 };
 

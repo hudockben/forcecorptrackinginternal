@@ -11141,8 +11141,8 @@ function renderPOTab() {
 
   const selOpts = (field, options, current, poId, lineId) => {
     const attr = lineId
-      ? `data-po-id="${poId}" data-line-id="${lineId}" data-line-field="${field}"`
-      : `data-po-id="${poId}" data-po-field="${field}"`;
+      ? `data-po-id="${esc(poId)}" data-line-id="${esc(lineId)}" data-line-field="${esc(field)}"`
+      : `data-po-id="${esc(poId)}" data-po-field="${esc(field)}"`;
     const style = 'background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem';
     // Preserve a saved value that's no longer in the list (renamed/removed) so
     // the cell keeps showing it instead of silently reverting to another option.
@@ -11157,8 +11157,8 @@ function renderPOTab() {
   };
   const inp = (field, type, current, poId, lineId, extra='') => {
     const attr = lineId
-      ? `data-po-id="${poId}" data-line-id="${lineId}" data-line-field="${field}"`
-      : `data-po-id="${poId}" data-po-field="${field}"`;
+      ? `data-po-id="${esc(poId)}" data-line-id="${esc(lineId)}" data-line-field="${esc(field)}"`
+      : `data-po-id="${esc(poId)}" data-po-field="${esc(field)}"`;
     return `<input type="${type}" value="${esc(String(current??''))}" ${attr} style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.8rem;outline:none;padding:0.15rem 0" ${extra}>`;
   };
 
