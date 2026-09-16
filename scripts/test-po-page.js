@@ -252,6 +252,8 @@ console.log('\n[re-tying an order]');
     const loadedLists = new Set(['turf', 'paving', 'kiewit']);
     function savePO(po, opts) { saves.push({ id: po.id, immediate: !!(opts && opts.immediate) }); }
     function render() {}
+    const toasted = [];
+    function toast(msg) { toasted.push(msg); }
   `, ctx);
   ['divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision', 'setProject', 'setSubCode']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
@@ -282,6 +284,27 @@ console.log('\n[re-tying an order]');
   run("setSubCode('x','')");
   assert('clearing the picker clears both',
     run('purchaseOrders[0].cost_code') === '' && run('purchaseOrders[0].sub_code') === '');
+
+  // A list that never loaded cannot be numbered against — nextPONumber says so
+  // with ''. Storing that put the order live in the other division's tab with a
+  // BLANK PO number, which nothing on this page or the division tabs can set,
+  // so every order re-tied that way read the same and any report keying on the
+  // number conflated them. The move has to be refused outright, and refused
+  // before anything is mutated.
+  run("purchaseOrders[0]._division = 'paving'; purchaseOrders[0].project_id = 'p1';");
+  run("purchaseOrders[0].cost_code = '430'; purchaseOrders[0].sub_code = 'Paving';");
+  run("purchaseOrders[0].po_number = 'PO-0007';");
+  run("loadedLists.delete('kiewit'); saves.length = 0; toasted.length = 0;");
+  run("setDivision('x','kiewit')");
+  const stuck = run('purchaseOrders[0]');
+  assert('a move into a list that never loaded is refused',
+    stuck._division === 'paving', JSON.stringify(stuck));
+  assert('and nothing about the order is touched on the way out',
+    stuck.po_number === 'PO-0007' && stuck.project_id === 'p1' &&
+    stuck.cost_code === '430' && stuck.sub_code === 'Paving', JSON.stringify(stuck));
+  assert('nor is a save queued for it', run('saves.length') === 0);
+  assert('and the user is told why', run('toasted.length') === 1 &&
+    /could not be loaded/.test(run('toasted[0]')), JSON.stringify(run('toasted')));
 }
 
 console.log('\n[the payload sent to the server]');

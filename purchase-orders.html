@@ -1205,14 +1205,27 @@ function setDivision(poId, value) {
   if (!po || !capsFor(po._division).canEdit) return;
   const next = value || GENERAL;
   if (next === po._division) return;
-  po._division = next;
+
+  // Renumbered into the sequence of the list it is joining, so it does not
+  // collide with an order that division already has. Its own id is excluded —
+  // it is about to be moved into that list.
+  //
+  // Worked out BEFORE anything is mutated, because a list that did not load
+  // cannot be numbered against and nextPONumber says so with ''. Storing that
+  // put the order live in the other division's tab with a blank PO number,
+  // which nothing on this page or the division tabs can ever set.
+  const num = nextPONumber(next, po.id);
+  if (!num) {
+    toast(divLabel(next) + ' orders could not be loaded, so an order cannot be moved into that list yet. Reload and try again.', 'err');
+    render();   // put the dropdown back on the division the order is still in
+    return;
+  }
+
+  po._division  = next;
   po.project_id = '';
   po.cost_code  = '';
   po.sub_code   = '';
-  // Renumbered into the sequence of the list it is joining, so it does not
-  // collide with an order that division already has. Its own id is excluded —
-  // it has already been moved into that list above.
-  po.po_number = nextPONumber(next, po.id);
+  po.po_number  = num;
   savePO(po, { immediate: true });
   render();
 }
@@ -1351,8 +1364,9 @@ function visiblePOs() {
 function divisionSelectHTML(po) {
   // A division this user cannot write to is offered only when the order is
   // already in it — moving an order somewhere it could never be saved just
-  // produces a failure the user cannot undo.
-  const offer = d => capsFor(d).canEdit || po._division === d;
+  // produces a failure the user cannot undo. A list that did not LOAD is the
+  // same: its orders are not here, so nothing could be numbered against them.
+  const offer = d => (capsFor(d).canEdit && loadedLists.has(d)) || po._division === d;
   const opts = [];
   if (offer(GENERAL)) {
     opts.push('<option value="' + GENERAL + '"' + (po._division === GENERAL ? ' selected' : '') + '>General — no division</option>');
@@ -1881,6 +1895,13 @@ let _committing = false;
 
 async function beginScan(targetPoId) {
   if (!perm.canEdit) return;
+  // The same check "+ New PO" makes, before the camera opens rather than after
+  // the photo is taken and the figures reviewed. A scan with nowhere to land
+  // used to fall back to the general list, which may be the one that failed.
+  if (!targetPoId && !defaultNewDivision()) {
+    toast('No purchase-order list is available to raise an order in right now. Reload and try again.', 'err');
+    return;
+  }
   const file = await pickImage('receipt-capture');
   if (!file) return;
 
@@ -2132,7 +2153,14 @@ async function commitScan() {
       expanded.add(po.id);
       await _savePONow(po);
     } else {
-      const divKey  = document.getElementById('sc-division').value || GENERAL;
+      // No `|| GENERAL` fallback. The picker only offers lists this user can
+      // write to that have loaded, so an empty value means there is no such
+      // list — and defaulting to the general one put the order in a division
+      // the save would refuse, or numbered it off a list that never arrived.
+      const divKey  = document.getElementById('sc-division').value;
+      if (!divKey || !loadedLists.has(divKey) || !capsFor(divKey).canEdit) {
+        throw new Error('No purchase-order list is available to save this into. Reload and try again.');
+      }
       const projId  = document.getElementById('sc-project').value || '';
       const codeVal = (document.getElementById('sc-code').value || '').split('||');
       po = {
