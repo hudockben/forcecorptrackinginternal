@@ -654,7 +654,7 @@ async function loadCatalog() {
     notes.push('You do not have access to Turf, Paving or Kiewit, so only general orders — the ones tied to no division — can be raised here. Ask an administrator for a role in a division to raise orders against its jobs.');
   }
   (catalog.truncated || []).forEach(t => {
-    notes.push('Showing the first ' + t.shown + ' of ' + t.total + ' ' + divLabel(t.division) + ' jobs.');
+    notes.push('Showing the ' + t.shown + ' most recent of ' + t.total + ' ' + divLabel(t.division) + ' jobs.');
   });
   const banner = document.getElementById('load-banner');
   banner.style.display = notes.length ? '' : 'none';

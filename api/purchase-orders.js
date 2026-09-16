@@ -224,12 +224,20 @@ module.exports = async (req, res) => {
       // order comes back. That is the safe direction, and it is recoverable —
       // the other way round is not.
       const baseUpdatedAt = (req.body || {}).baseUpdatedAt || null;
+      const baseTs = baseUpdatedAt ? Date.parse(baseUpdatedAt) : NaN;
       let toWrite = purchaseOrders;
 
-      if (baseUpdatedAt && req.query.force !== '1') {
+      if (!isNaN(baseTs) && req.query.force !== '1') {
         const cur = await sql`SELECT value, updated_at FROM app_data WHERE key = ${blobKey}`;
         const stored = cur.length && Array.isArray(cur[0].value) ? cur[0].value : [];
-        const moved = cur.length && String(cur[0].updated_at) !== String(baseUpdatedAt);
+        // Compare instants, not strings — the driver hands back a Date and the
+        // client always sends the ISO form, so the two never match textually.
+        // Comparing them as text made `moved` true on EVERY save: a deleted
+        // order looked like one the client had never seen and was written
+        // straight back, so no division tab could delete a purchase order at
+        // all. api/data/[key].js carries the same warning over its own guard.
+        const curTs = cur.length && cur[0].updated_at ? new Date(cur[0].updated_at).getTime() : null;
+        const moved = curTs !== null && curTs !== baseTs;
         if (moved && stored.length) {
           const sent = new Set(purchaseOrders.map(p => p && p.id).filter(Boolean));
           const unseen = stored.filter(p => p && p.id && !sent.has(p.id));

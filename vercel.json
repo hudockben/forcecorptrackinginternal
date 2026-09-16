@@ -13,6 +13,11 @@
       "memory": 1024,
       "maxDuration": 60
     },
+    "api/ai/receipt-scan.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 60
+    },
     "api/cron/job-snapshot.js": {
       "includeFiles": "api/**",
       "memory": 1024,
@@ -23,41 +28,71 @@
     }
   },
   "crons": [
-    { "path": "/api/cron/job-snapshot", "schedule": "20 7 * * *" }
+    {
+      "path": "/api/cron/job-snapshot",
+      "schedule": "20 7 * * *"
+    }
   ],
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "same-origin" },
-        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
-        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" },
-        { "key": "Permissions-Policy", "value": "geolocation=(), microphone=(), camera=()" }
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "same-origin"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        },
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=31536000; includeSubDomains"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "geolocation=(), microphone=(), camera=()"
+        }
       ]
     },
     {
       "source": "/:path*.html",
       "headers": [
-        { "key": "Cache-Control", "value": "private, max-age=300, stale-while-revalidate=600" }
+        {
+          "key": "Cache-Control",
+          "value": "private, max-age=300, stale-while-revalidate=600"
+        }
       ]
     },
     {
       "source": "/:path*.js",
       "headers": [
-        { "key": "Cache-Control", "value": "private, max-age=300, stale-while-revalidate=600" }
+        {
+          "key": "Cache-Control",
+          "value": "private, max-age=300, stale-while-revalidate=600"
+        }
       ]
     },
     {
       "source": "/:path*.png",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=86400, immutable" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400, immutable"
+        }
       ]
     },
     {
       "source": "/:path*.jpg",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=86400, immutable" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400, immutable"
+        }
       ]
     }
   ]

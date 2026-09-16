@@ -120,9 +120,14 @@ module.exports = async (req, res) => {
     const truncated = [];
     for (const division of allowed) {
       const { prefix } = DIVISION_BLOBS[division];
+      // The index is append-ordered, oldest first, so take from the END: the
+      // newest jobs are the ones purchasing is most likely to be buying for,
+      // and slicing from the front dropped exactly those.
       const all = idsFromIndex(heads[`${prefix}projects_index`]);
-      const ids = all.slice(0, MAX_PROJECTS_PER_DIVISION);
-      if (all.length > ids.length) truncated.push({ division, shown: ids.length, total: all.length });
+      const ids = all.length > MAX_PROJECTS_PER_DIVISION
+        ? all.slice(all.length - MAX_PROJECTS_PER_DIVISION)
+        : all;
+      if (all.length > ids.length) truncated.push({ division, total: all.length });
       wantedByDivision[division] = ids;
       for (const id of ids) projectKeys.push(`${prefix}project_${id}`);
     }
@@ -178,6 +183,11 @@ module.exports = async (req, res) => {
         });
       }
       projects.sort((a, b) => a.name.localeCompare(b.name));
+
+      // What actually reached the picker, which is not the same as what was
+      // requested: a job whose blob is missing is counted by neither.
+      const cut = truncated.find(t => t.division === division);
+      if (cut) cut.shown = projects.length;
 
       return { division, label, projects };
     });

@@ -365,6 +365,11 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     // typing. Purchasing raises an order in that window; the tab then saves its
     // stale list. Before the merge, that order was gone — blob, mirror row and
     // all — while the job kept the material charge its deliveries had created.
+    // The driver hands back a Date; the client sends the ISO string the GET
+    // serialised from it. Both shapes appear below on purpose.
+    const T_READ = '2026-09-16T12:00:00.000Z';   // when the client read the list
+    const T_MOVED = '2026-09-16T12:05:00.000Z';  // somebody else wrote since
+    const T_NEW = '2026-09-16T12:09:00.000Z';    // what this save produces
     const STORED = [
       { id: 'a', po_number: 'PO-0001' },
       { id: 'b', po_number: 'PO-0002' },
@@ -380,7 +385,7 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
           return Promise.resolve([{ value: STORED, updated_at: storedUpdatedAt }]);
         }
         if (/^SELECT value FROM app_data/.test(q)) return Promise.resolve([{ value: STORED }]);
-        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: 'T9' }]);
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
         return Promise.resolve([]);
       };
       sql.written = () => {
@@ -392,11 +397,11 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
 
     {
       // The stale save: client read at T1, someone wrote since.
-      const sqlStub = appDataStub({ storedUpdatedAt: 'T2' });
+      const sqlStub = appDataStub({ storedUpdatedAt: new Date(T_MOVED) });
       const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
       const res = makeRes();
       await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
-                      body: { purchaseOrders: [STORED[0], STORED[1]], baseUpdatedAt: 'T1' } }, res);
+                      body: { purchaseOrders: [STORED[0], STORED[1]], baseUpdatedAt: T_READ } }, res);
       const ids = (sqlStub.written() || []).map(p => p.id);
       check('an order the client never saw survives its save',
         ids.includes('purchasing-raised'), JSON.stringify(ids));
@@ -404,16 +409,35 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
         ids.includes('a') && ids.includes('b'), JSON.stringify(ids));
       check('the merge is reported', res.body && res.body.merged === 1, JSON.stringify(res.body));
       check('and the new version comes back so the next save is judged fresh',
-        res.body && res.body.updatedAt === 'T9', JSON.stringify(res.body));
+        res.body && new Date(res.body.updatedAt).getTime() === Date.parse(T_NEW),
+        JSON.stringify(res.body));
+    }
+    {
+      // The driver hands back a Date; the client sends the ISO string the GET
+      // serialised. Comparing them as text made `moved` true on EVERY save, so
+      // a deleted order looked like one the client had never seen and was
+      // written straight back — no division tab could delete a purchase order
+      // at all. This is the shape the real driver returns.
+      const iso = T_READ;
+      const sqlStub = appDataStub({ storedUpdatedAt: new Date(iso) });
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [STORED[0], STORED[2]], baseUpdatedAt: iso } }, res);
+      const ids = (sqlStub.written() || []).map(p => p.id);
+      check('a Date and its own ISO string count as unchanged',
+        res.body.merged === 0, JSON.stringify(res.body));
+      check('so deleting an order from a division tab actually deletes it',
+        !ids.includes('b'), JSON.stringify(ids));
     }
     {
       // Nobody wrote in between: the list is replaced exactly as before, so a
       // deliberate delete still deletes.
-      const sqlStub = appDataStub({ storedUpdatedAt: 'T1' });
+      const sqlStub = appDataStub({ storedUpdatedAt: new Date(T_READ) });
       const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
       const res = makeRes();
       await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
-                      body: { purchaseOrders: [STORED[0]], baseUpdatedAt: 'T1' } }, res);
+                      body: { purchaseOrders: [STORED[0]], baseUpdatedAt: T_READ } }, res);
       const ids = (sqlStub.written() || []).map(p => p.id);
       check('an up-to-date client still deletes what it dropped',
         ids.length === 1 && ids[0] === 'a', JSON.stringify(ids));
@@ -421,7 +445,7 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     }
     {
       // A client that sends no version keeps the old behaviour exactly.
-      const sqlStub = appDataStub({ storedUpdatedAt: 'T2' });
+      const sqlStub = appDataStub({ storedUpdatedAt: new Date(T_MOVED) });
       const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
       const res = makeRes();
       await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
@@ -432,11 +456,11 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     }
     {
       // ?force=1 is a genuine wipe and must stay one.
-      const sqlStub = appDataStub({ storedUpdatedAt: 'T2' });
+      const sqlStub = appDataStub({ storedUpdatedAt: new Date(T_MOVED) });
       const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
       const res = makeRes();
       await handler({ method: 'PUT', query: { division: 'turf', force: '1' }, headers: AUTHED,
-                      body: { purchaseOrders: [], baseUpdatedAt: 'T1' } }, res);
+                      body: { purchaseOrders: [], baseUpdatedAt: T_READ } }, res);
       const ids = (sqlStub.written() || []).map(p => p.id);
       check('force=1 still means what it says', ids.length === 0, JSON.stringify(ids));
     }

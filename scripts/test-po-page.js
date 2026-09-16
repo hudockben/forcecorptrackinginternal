@@ -324,6 +324,43 @@ console.log('\n[filtering]');
   assert('filters combine',                    ids("search=''; filters.vendor='Acme'; filters.status='pending';") === '1,3');
 }
 
+console.log('\n[Mathis on the purchasing page]');
+{
+  const mathis = read('mathis.js');
+  // The panel is built from the server's digest, never from the reply text —
+  // so a digest kind with no renderer is fetched, paid for, and shows nothing.
+  assert('purchase_orders is offered as having figures',
+    /HAS_FIGURES = \[[\s\S]*?'purchase_orders'/.test(mathis));
+  assert('and the panel can actually draw them',
+    /purchasing:\s+renderPurchasing/.test(mathis) && /function renderPurchasing\(d\)/.test(mathis));
+  assert('the digest kind the server sends matches the renderer key',
+    /kind: 'purchasing'/.test(read('api/lib/mathis-digests.js')));
+  // A roll-up across only the divisions this user can reach; calling that
+  // company-wide would be wrong for anyone whose access is partial.
+  assert('the panel says which divisions the figures cover',
+    /divisionsCovered/.test(mathis));
+
+  // Every kind the server can send needs an entry, or the same gap reopens.
+  const map = mathis.slice(mathis.indexOf('var by = {'));
+  const keys = new Set((map.slice(0, map.indexOf('};')).match(/^\s*(\w+):/gm) || [])
+    .map(k => k.trim().replace(':', '')));
+  ['jobs', 'personal', 'purchasing', 'executive', 'payroll'].forEach(k =>
+    assert(`renderer registered for "${k}"`, keys.has(k)));
+}
+
+console.log('\n[the scan endpoint gets the time it needs]');
+{
+  const vercel = JSON.parse(read('vercel.json'));
+  const fn = vercel.functions['api/ai/receipt-scan.js'];
+  // An Opus 5 vision call with thinking on does not finish inside a default
+  // 10-15s window, and the in-file module.exports.config is not what the
+  // platform reads for these handlers — api/ai/mathis.js, the same shape of
+  // call in the same directory, needed this entry for the same reason.
+  assert('receipt-scan has an explicit duration', Boolean(fn), JSON.stringify(Object.keys(vercel.functions)));
+  assert('and it is at least as long as the other AI endpoints',
+    fn && fn.maxDuration >= 60, JSON.stringify(fn));
+}
+
 console.log('\n[round-2 fixes]');
 {
   // The headline feature: every leg of the upload has to name the order, or the
