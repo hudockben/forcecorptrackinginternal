@@ -59,7 +59,12 @@ function makeStore() {
   const poRows    = new Map();   // id → row
   const deliveries= [];          // { po_id, line_id, ... }
   const daily     = new Map();   // row_id → row
-  let clock = 1000;
+  // Microsecond-precision TEXT stamps, which is what app_data.updated_at
+  // actually holds and what the driver would destroy if it parsed the column
+  // into a JS Date. Whole-second stamps could not express that failure, which
+  // is how a compare-and-set that could NEVER match survived three reviews.
+  let tick = 0;
+  const stamp = () => '2026-07-01T00:00:00.' + String(++tick).padStart(6, '0') + 'Z';
   const log = [];
   // Set to a function to interfere with a write once — used to simulate
   // another writer landing between this one's read and its update.
@@ -72,9 +77,13 @@ function makeStore() {
     log.push(q);
 
     // ── app_data reads ──
-    if (/^SELECT value, updated_at FROM app_data WHERE key =/.test(q)) {
+    // The real read casts to text so the microseconds survive the round trip.
+    if (/^SELECT value, updated_at::text AS updated_at FROM app_data WHERE key =/.test(q)) {
       const row = appData.get(vals[0]);
       return Promise.resolve(row ? [{ value: row.value, updated_at: row.updatedAt }] : []);
+    }
+    if (/^SELECT value, updated_at FROM app_data WHERE key =/.test(q)) {
+      throw new Error('read app_data.updated_at without ::text — microseconds would be lost');
     }
     // ── app_data compare-and-set ──
     if (/^UPDATE app_data SET value =/.test(q)) {
@@ -82,14 +91,14 @@ function makeStore() {
       if (interfere) { const f = interfere; interfere = null; f(); }
       const row = appData.get(key);
       if (!row || row.updatedAt !== base) return Promise.resolve([]);
-      appData.set(key, { value: JSON.parse(json), updatedAt: ++clock });
+      appData.set(key, { value: JSON.parse(json), updatedAt: stamp() });
       return Promise.resolve([{ key }]);
     }
     if (/^INSERT INTO app_data .* ON CONFLICT \(key\) DO NOTHING/.test(q)) {
       const [key, json] = vals;
       if (interfere) { const f = interfere; interfere = null; f(); }
       if (appData.has(key)) return Promise.resolve([]);
-      appData.set(key, { value: JSON.parse(json), updatedAt: ++clock });
+      appData.set(key, { value: JSON.parse(json), updatedAt: stamp() });
       return Promise.resolve([{ key }]);
     }
 
@@ -158,7 +167,7 @@ function makeStore() {
 
   return {
     sql, appData, poRows, deliveries, daily, log,
-    setBlob(key, list) { appData.set(key, { value: list, updatedAt: ++clock }); },
+    setBlob(key, list) { appData.set(key, { value: list, updatedAt: stamp() }); },
     getBlob(key) { const r = appData.get(key); return r ? r.value : null; },
     onNextWrite(f) { interfere = f; },
   };
@@ -467,6 +476,72 @@ console.log('\n[upsertPO — merging into a division list]');
   assert('exactly one cost row remains', st.daily.size === 1);
   assert('and it belongs to turf',      [...st.daily.values()][0].division === 'turf');
   assert('mirror row followed the move', st.poRows.get('mv').division === 'turf');
+
+  console.log('\n[the compare-and-set has to be able to match]');
+  // app_data.updated_at is a MICROSECOND timestamptz. The driver parses a
+  // timestamptz into a JS Date, which holds only milliseconds — so reading the
+  // column raw threw the microseconds away and the value re-bound in the WHERE
+  // could never equal the stored one. Every compare-and-set lost all six
+  // attempts and every purchasing save and delete answered 409: the division
+  // was entirely non-functional. The mock above refuses an uncast read.
+  st = makeStore();
+  st.setBlob(KEY('paving'), [makePO({ id: 'first' })]);
+  let n = 0;
+  for (let i = 0; i < 5; i++) {
+    const r = await poSync.upsertPO(st.sql, {
+      companyCode: 'FCT', division: 'paving', po: makePO({ id: 'p' + i }),
+    });
+    if (r.ok) n++;
+  }
+  assert('five consecutive saves all land', n === 5, n + '/5');
+  assert('and every one of them is in the list',
+    st.getBlob(KEY('paving')).length === 6, JSON.stringify(st.getBlob(KEY('paving')).map(p => p.id)));
+  // ...and the guard still guards: a writer on a stale base must still lose.
+  const staleBase = { list: [], updatedAt: '2026-07-01T00:00:00.000001Z', exists: true };
+  const lost = await poSync.mutatePOBlob(st.sql, KEY('paving'), list => list.concat([makePO({ id: 'z' })]));
+  assert('a normal write still succeeds through mutatePOBlob', lost.ok === true);
+
+  console.log('\n[a failed save must not take the job\'s costs with it]');
+  // The rollback deleted every row the save had TOUCHED, including ones it only
+  // updated — rows the stored order still names and the job still needs. With
+  // the compare-and-set broken above, that fired on every save.
+  st = makeStore();
+  po = makePO({ id: 'keep', project_id: 'job1', lines: [{ id: 'L1', qty: '10', unit_cost: '5' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  const liveRow = po.lines[0].po_row_id;
+  assert('the first save creates the cost row', st.daily.size === 1 && Boolean(liveRow));
+
+  // Second save, edited, with the blob write losing every attempt.
+  po.lines[0].qty = '12';
+  const realSql3 = st.sql;
+  const loseBlob = (strings, ...vals) => {
+    const q = strings.join(' ').replace(/\s+/g, ' ');
+    if (/^ *UPDATE app_data SET value =/.test(q) && vals[1] === KEY('turf')) return Promise.resolve([]);
+    return realSql3(strings, ...vals);
+  };
+  // Not `failed` — that is the suite's own counter, and shadowing it made the
+  // summary print an object instead of a number.
+  const conflicted = await poSync.upsertPO(loseBlob, { companyCode: 'FCT', division: 'turf', po });
+  assert('the save is reported as a conflict', conflicted.ok === false);
+  assert('but the job KEEPS the cost row it already had',
+    st.daily.has(liveRow), JSON.stringify([...st.daily.keys()]));
+  assert('and the order still points at it', po.lines[0].po_row_id === liveRow);
+
+  console.log('\n[deleting an order that is not in this list]');
+  // mutatePOBlob reports ok when there is nothing to remove, and unmirrorPO
+  // scopes on id and company alone — so this used to delete the order's mirror
+  // row and every delivery row wherever they really lived.
+  st = makeStore();
+  po = makePO({ id: 'elsewhere', project_id: 'job1', lines: [{ id: 'L1', qty: '1', unit_cost: '5' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po });
+  assert('it is mirrored under paving', st.poRows.has('elsewhere'));
+
+  const wrong = await poSync.removePO(st.sql, { companyCode: 'FCT', division: 'turf', poId: 'elsewhere' });
+  assert('deleting it from the wrong list reports not-found', wrong.ok === true && wrong.found === false);
+  assert('and leaves the mirror row alone',   st.poRows.has('elsewhere'));
+  assert('and its deliveries alone',          st.deliveries.some(d => d.po_id === 'elsewhere'));
+  assert('and the job cost row alone',        st.daily.size === 1);
+  assert('while paving still lists it',       st.getBlob(KEY('paving')).length === 1);
 
   console.log('\n[a row id the order does not own]');
   // po_row_id arrives in the request body and daily_tracking.row_id is unique

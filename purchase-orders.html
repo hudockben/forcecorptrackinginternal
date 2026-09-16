@@ -1220,7 +1220,7 @@ function projectSelectHTML(po) {
   if (po.project_id && !projectFor(po._division, po.project_id)) {
     opts.push('<option value="' + esc(po.project_id) + '" selected>' + esc(po.project_id) + ' (missing)</option>');
   }
-  return '<select ' + (perm.canEdit ? '' : 'disabled ') +
+  return '<select ' + (capsFor(po._division).canEdit ? '' : 'disabled ') +
     'onchange="setProject(\'' + jsAttr(po.id) + '\', this.value)" aria-label="Job">' + opts.join('') + '</select>';
 }
 
@@ -1241,7 +1241,7 @@ function subCodeSelectHTML(po) {
     opts.push('<option value="' + esc(current) + '" selected>' +
       esc([po.cost_code, po.sub_code].filter(Boolean).join(' / ')) + ' (not on this job)</option>');
   }
-  return '<select ' + (perm.canEdit ? '' : 'disabled ') +
+  return '<select ' + (capsFor(po._division).canEdit ? '' : 'disabled ') +
     'onchange="setSubCode(\'' + jsAttr(po.id) + '\', this.value)" aria-label="Cost and sub code">' + opts.join('') + '</select>';
 }
 
@@ -1249,7 +1249,7 @@ function statusSelectHTML(po) {
   const cur = po.status || 'pending';
   const opts = [['pending','Pending'],['approved','Approved'],['closed','Closed']]
     .map(o => '<option value="' + o[0] + '"' + (cur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('');
-  return '<select ' + (perm.canEdit ? '' : 'disabled ') +
+  return '<select ' + (capsFor(po._division).canEdit ? '' : 'disabled ') +
     'onchange="setField(\'' + jsAttr(po.id) + '\', \'status\', this.value)" aria-label="Status">' + opts + '</select>';
 }
 
@@ -1281,7 +1281,7 @@ function lineRowsHTML(po, surface) {
     const amt = lineAmt(l), tax = lineTax(l);
     const inp = (field, type, val, extra) =>
       '<input type="' + type + '" class="boxed" value="' + esc(val == null ? '' : val) + '" ' +
-      (perm.canEdit ? '' : 'disabled ') + (extra || '') +
+      (capsFor(po._division).canEdit ? '' : 'disabled ') + (extra || '') +
       ' oninput="setLineField(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\',\'' + field + '\', this.value)">';
     return '<tr>' +
       '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + '</td>' +
@@ -1300,7 +1300,7 @@ function lineRowsHTML(po, surface) {
         ((amt + tax) !== 0 ? '$' + fmt(amt + tax) : '—') + '</td>' +
       '<td style="min-width:120px">' + inp('employee','text', l.employee, 'placeholder="Received by" list="employee-list"') + '</td>' +
       '<td style="width:30px;text-align:center">' +
-        (perm.canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
+        (capsFor(po._division).canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
       '</td></tr>';
   }).join('');
 }
@@ -1327,13 +1327,13 @@ function linesPanelHTML(po, colspan) {
         '<tbody>' + lineRowsHTML(po, 'tbl') + '</tbody>' + totalRow +
       '</table></div>' +
       '<div style="display:flex;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap">' +
-        (perm.canEdit ? '<button class="btn" onclick="addLine(\'' + jsAttr(po.id) + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem;background:rgba(129,140,248,0.12);border-color:rgba(129,140,248,0.35);color:var(--green)">+ Add Delivery</button>' : '') +
-        (perm.canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + jsAttr(po.id) + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem">&#128247; Scan a receipt into this order</button>' : '') +
+        (capsFor(po._division).canEdit ? '<button class="btn" onclick="addLine(\'' + jsAttr(po.id) + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem;background:rgba(129,140,248,0.12);border-color:rgba(129,140,248,0.35);color:var(--green)">+ Add Delivery</button>' : '') +
+        (capsFor(po._division).canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + jsAttr(po.id) + '\')" style="font-size:0.72rem;padding:0.25rem 0.75rem">&#128247; Scan a receipt into this order</button>' : '') +
       '</div>' +
       '<div style="margin-top:0.7rem">' +
         '<div class="section-label">Notes</div>' +
         '<input type="text" class="boxed" style="width:100%;padding:0.35rem 0.5rem" placeholder="Anything worth recording about this order" ' +
-          (perm.canEdit ? '' : 'disabled ') + 'value="' + esc(po.notes || '') + '" ' +
+          (capsFor(po._division).canEdit ? '' : 'disabled ') + 'value="' + esc(po.notes || '') + '" ' +
           'oninput="setField(\'' + jsAttr(po.id) + '\',\'notes\', this.value)">' +
       '</div>' +
     '</div></td>';
@@ -1367,15 +1367,15 @@ function renderTable(rows) {
       '<td style="text-align:center;cursor:pointer" onclick="toggleLines(\'' + jsAttr(po.id) + '\')">' +
         '<span style="display:inline-block;transition:transform 0.15s;transform:rotate(' + (open ? 90 : 0) + 'deg)">&#9654;</span></td>' +
       '<td style="white-space:nowrap"><span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">' + esc(po.po_number) + '</span>' + badge + '</td>' +
-      '<td><input type="date" class="boxed" value="' + esc(po.date_created || '') + '" ' + (perm.canEdit ? '' : 'disabled ') +
+      '<td><input type="date" class="boxed" value="' + esc(po.date_created || '') + '" ' + (capsFor(po._division).canEdit ? '' : 'disabled ') +
         'onchange="setField(\'' + jsAttr(po.id) + '\',\'date_created\', this.value)"></td>' +
       '<td>' + divisionSelectHTML(po) + '</td>' +
       '<td>' + projectSelectHTML(po) + '</td>' +
       '<td>' + subCodeSelectHTML(po) + '</td>' +
       '<td><input type="text" class="boxed" placeholder="Material / description" value="' + esc(po.title || '') + '" ' +
-        (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></td>' +
+        (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></td>' +
       '<td><input type="text" class="boxed" list="vendor-list" placeholder="Vendor" value="' + esc(po.supplier || '') + '" ' +
-        (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></td>' +
+        (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></td>' +
       '<td class="r" style="color:var(--muted)" id="po-qty-' + idAttr(po.id) + '">' + (tot.qty !== 0 ? qfmt(tot.qty) : '—') + '</td>' +
       '<td class="r" style="color:var(--ok);white-space:nowrap" id="po-amt-' + idAttr(po.id) + '">' + (tot.amt !== 0 ? '$' + fmt(tot.amt) : '—') + '</td>' +
       '<td class="r" style="color:var(--yellow);font-weight:600;white-space:nowrap" id="po-tot-' + idAttr(po.id) + '">' + (tot.total !== 0 ? '$' + fmt(tot.total) : '—') + '</td>' +
@@ -1435,13 +1435,13 @@ function cardEditorHTML(po) {
     '<div class="field"><label>Cost / Sub Code</label>' + subCodeSelectHTML(po) + '</div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Date</label><input type="date" value="' + esc(po.date_created || '') + '" ' +
-        (perm.canEdit ? '' : 'disabled ') + 'onchange="setField(\'' + jsAttr(po.id) + '\',\'date_created\', this.value)"></div>' +
+        (capsFor(po._division).canEdit ? '' : 'disabled ') + 'onchange="setField(\'' + jsAttr(po.id) + '\',\'date_created\', this.value)"></div>' +
       '<div class="field"><label>Status</label>' + statusSelectHTML(po) + '</div>' +
     '</div>' +
     '<div class="field"><label>Description</label><input type="text" value="' + esc(po.title || '') + '" ' +
-      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></div>' +
+      (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></div>' +
     '<div class="field"><label>Vendor</label><input type="text" list="vendor-list" value="' + esc(po.supplier || '') + '" ' +
-      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></div>' +
+      (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></div>' +
     '<div class="section-label">Deliveries</div>' +
     '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:700px">' +
       '<thead><tr><th style="text-align:left;font-size:0.62rem;color:var(--muted)">Invoice</th>' +
@@ -1454,11 +1454,11 @@ function cardEditorHTML(po) {
       '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Received By</th><th></th></tr></thead>' +
       '<tbody>' + lineRowsHTML(po, 'card') + '</tbody></table></div>' +
     '<div style="display:flex;gap:0.5rem;margin-top:0.6rem;flex-wrap:wrap">' +
-      (perm.canEdit ? '<button class="btn" onclick="addLine(\'' + jsAttr(po.id) + '\')">+ Delivery</button>' : '') +
-      (perm.canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + jsAttr(po.id) + '\')">&#128247; Scan receipt</button>' : '') +
+      (capsFor(po._division).canEdit ? '<button class="btn" onclick="addLine(\'' + jsAttr(po.id) + '\')">+ Delivery</button>' : '') +
+      (capsFor(po._division).canEdit ? '<button class="btn" onclick="scanIntoPO(\'' + jsAttr(po.id) + '\')">&#128247; Scan receipt</button>' : '') +
     '</div>' +
     '<div class="field" style="margin-top:0.7rem"><label>Notes</label><input type="text" value="' + esc(po.notes || '') + '" ' +
-      (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'notes\', this.value)"></div>';
+      (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'notes\', this.value)"></div>';
 }
 
 function render() {
@@ -2046,7 +2046,7 @@ async function openDocs(poId) {
     (loadError ? '<div class="scan-status err">' + esc(loadError) + '</div>' : list) +
     '<div class="sheet-actions">' +
       '<button class="btn" onclick="closeDocs()">Close</button>' +
-      (perm.canEdit ? '<button class="btn btn-green" id="doc-add" onclick="addAttachment(\'' + jsAttr(po.id) + '\')">+ Add photo or file</button>' : '') +
+      (capsFor(po._division).canEdit ? '<button class="btn btn-green" id="doc-add" onclick="addAttachment(\'' + jsAttr(po.id) + '\')">+ Add photo or file</button>' : '') +
     '</div>';
 }
 

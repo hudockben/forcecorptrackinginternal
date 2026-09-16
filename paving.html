@@ -6289,7 +6289,12 @@ function savePurchaseOrders() {
       // what the server actually holds rather than a base already stale.
       try {
         const j = await r.json();
-        if (j && j.updatedAt) _poBaseUpdatedAt = j.updatedAt;
+        // Not after a merge. The server kept orders this tab has never seen, so
+        // the list here is already behind what is stored; adopting the new
+        // version would make the next save look up to date and erase them
+        // again. Keeping the old version keeps the merge protecting them until
+        // the poll brings the real list in.
+        if (j && j.updatedAt && !j.merged) _poBaseUpdatedAt = j.updatedAt;
       } catch {}
       return;
     }
@@ -22007,13 +22012,17 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (!r.ok) return;
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
-    _poBaseUpdatedAt = data.updatedAt || _poBaseUpdatedAt;
     // Migrate before diffing: the conversion adds tax_pct to every line, so an
     // as-yet-unconverted blob would otherwise read as a change on every poll
     // and re-render the tab in a loop until someone saves a PO.
     _migratePOs(incoming);
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
     if (_isEditing()) return; // don't overwrite pending edits
+    // The version is adopted HERE, with the list it belongs to. Taking it
+    // before the bail above left this tab believing it held the newest list
+    // while still showing the old one, so its next save skipped the merge that
+    // protects orders raised elsewhere and erased them.
+    _poBaseUpdatedAt = data.updatedAt || _poBaseUpdatedAt;
     purchaseOrders = incoming;
     if (activeTab === 'po') renderPOTab();
   }

@@ -398,6 +398,42 @@ console.log('\n[rights are per division, not per page]');
   });
 }
 
+console.log('\n[every control on a row asks that row]');
+{
+  // b45edce moved the HANDLERS to per-division rights but left 18 render sites
+  // on the page-level perm, so a user who could not edit paving orders still
+  // saw an enabled job picker, status select, delivery inputs, + Add Delivery
+  // and Scan — every one of which silently did nothing.
+  const rowSites = (PAGE.match(/perm\.canEdit \? '' : 'disabled '/g) || []).length;
+  assert('no row control is disabled by a page-level right', rowSites === 0, rowSites + ' left');
+  const rowBtns = PAGE.match(/perm\.canEdit \? '<button[^\n]*jsAttr\(po\.id\)/g);
+  assert('no row button is gated by a page-level right', !rowBtns, JSON.stringify(rowBtns));
+  // The three that SHOULD stay page-level: raising a new order, showing the
+  // toolbar, starting a scan — all "can this user act anywhere".
+  assert('the page-level right survives only where it belongs',
+    (PAGE.match(/if \(!perm\.canEdit\)/g) || []).length === 3);
+  assert('and it means "can act in at least one list"',
+    /reachable\.some\(d => capsFor\(d\)\.canEdit\)/.test(PAGE));
+}
+
+console.log('\n[the division tabs and the version they hold]');
+{
+  ['tracker.html', 'paving.html', 'kiewit-pinetree.html'].forEach(f => {
+    const src = read(f);
+    // Adopting the version before the _isEditing bail left the tab believing it
+    // held the newest list while still showing the old one, so its next save
+    // skipped the merge and erased orders raised elsewhere.
+    const poll = src.slice(src.indexOf('async function _pollPurchaseOrders'));
+    const body = poll.slice(0, poll.indexOf('async function _pollTrucking'));
+    assert(`${f}: the version is adopted with the list, not before it`,
+      body.indexOf("if (_isEditing()) return;") < body.indexOf('_poBaseUpdatedAt = data.updatedAt'),
+      'adopt-before-bail');
+    // A merged save means the server kept orders this tab has never seen.
+    assert(`${f}: a merged save does not adopt the new version`,
+      /if \(j && j\.updatedAt && !j\.merged\) _poBaseUpdatedAt = j\.updatedAt;/.test(src));
+  });
+}
+
 console.log('\n[an order the server never stored]');
 {
   // The row the user could not get rid of. Its first save had failed, so the

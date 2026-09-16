@@ -108,7 +108,15 @@ function lineHasCost(line) {
  * holding an empty list — they need different SQL to write.
  */
 async function readPOBlob(sql, blobKey) {
-  const rows = await sql`SELECT value, updated_at FROM app_data WHERE key = ${blobKey}`;
+  // updated_at comes back as TEXT on purpose. app_data.updated_at is a
+  // microsecond-precision timestamptz, and the driver parses a timestamptz into
+  // a JS Date, which only holds milliseconds — so the microseconds were thrown
+  // away on the way out and the value re-bound in casWritePOBlob's WHERE could
+  // never equal the stored one. Every compare-and-set lost, all six attempts,
+  // and every save and delete central purchasing made answered 409. Text
+  // survives the round trip exactly, and Postgres infers timestamptz for the
+  // parameter from the comparison.
+  const rows = await sql`SELECT value, updated_at::text AS updated_at FROM app_data WHERE key = ${blobKey}`;
   if (!rows.length) return { list: [], updatedAt: null, exists: false };
   const value = rows[0].value;
   return {
@@ -132,7 +140,7 @@ async function casWritePOBlob(sql, blobKey, list, base) {
     const updated = await sql`
       UPDATE app_data
       SET    value = ${json}::jsonb, updated_at = clock_timestamp()
-      WHERE  key = ${blobKey} AND updated_at = ${base.updatedAt}
+      WHERE  key = ${blobKey} AND updated_at = ${base.updatedAt}::timestamptz
       RETURNING key
     `;
     return updated.length > 0;
@@ -212,6 +220,7 @@ async function mirrorOnePO(sql, companyCode, division, po) {
       status_changed_at  = EXCLUDED.status_changed_at,
       status_changed_by  = EXCLUDED.status_changed_by,
       updated_at         = NOW()
+    WHERE purchase_orders.company_code = ${companyCode}
   `;
 
   // Deliveries are rewritten wholesale for this one order. Unlike the
@@ -383,11 +392,17 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
     for (const line of lines) if (line) line.po_row_id = null;
   }
 
-  const removed = await deletePORows(sql, companyCode, stale);
+  // The stale rows are named here but deleted by the CALLER, once the order is
+  // actually stored. Deleting them now loses them outright when the write then
+  // fails — the save is reported as a conflict while the job has quietly lost
+  // a cost row. Nothing can collide in the gap: a cleared line has its link
+  // nulled just above and is skipped by lineHasCost, and under startAfresh
+  // every line is nulled and takes a fresh id.
+  const staleIds = stale;
 
   // An order with no job has no cost rows at all — that is the general-purchase
   // case, and it is a first-class state rather than an incomplete order.
-  if (!projectId) return { removed, written: 0, writtenIds: [] };
+  if (!projectId) return { staleIds, written: 0, writtenIds: [], createdIds: [] };
 
   /**
    * Write one delivery's cost row under `rowId`, and say whether it landed.
@@ -446,6 +461,11 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
 
   let written = 0;
   const writtenIds = [];
+  // Ids MINTED by this call. A reused id names a row the stored order already
+  // owns and that was only UPDATED here, so rolling it back would delete a live
+  // cost row the order still points at — which is what a routine second save
+  // was doing to the job every time.
+  const createdIds = [];
   for (const line of lines) {
     if (!line || !lineHasCost(line)) continue;
 
@@ -473,10 +493,11 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
 
     line.po_row_id = rowId;
     writtenIds.push(rowId);
+    if (rowId !== linked) createdIds.push(rowId);
     written++;
   }
 
-  return { removed, written, writtenIds };
+  return { staleIds, written, writtenIds, createdIds };
 }
 
 /**
@@ -533,15 +554,24 @@ async function upsertPO(sql, { companyCode, division, po, from }) {
   if (!saved.ok) {
     // The cost rows were reconciled before this, because reconciling is what
     // mints the po_row_id links the order has to be stored WITH. With the order
-    // unstored, nothing anywhere names the rows just written — no later save,
-    // no project change and not even deleting the order would find them, and
-    // the retry would write a second set on top. So they go back.
-    if (rows.writtenIds && rows.writtenIds.length) {
-      try { await deletePORows(sql, companyCode, rows.writtenIds); }
+    // unstored, nothing anywhere names the rows this call CREATED — no later
+    // save, no project change and not even deleting the order would find them,
+    // and the retry would write a second set on top. So those go back.
+    //
+    // Only those. A row this call merely updated is one the stored order still
+    // names and the job still needs; deleting it turned a failed save into a
+    // job quietly losing its material cost, every time.
+    if (rows.createdIds && rows.createdIds.length) {
+      try { await deletePORows(sql, companyCode, rows.createdIds); }
       catch (err) { console.error('[po-sync] could not roll back cost rows:', err.message); }
     }
     return { ok: false, reason: 'conflict' };
   }
+
+  // The order is stored, so the rows its old deliveries left behind can go.
+  let removed = 0;
+  try { removed = await deletePORows(sql, companyCode, rows.staleIds || []); }
+  catch (err) { console.error('[po-sync] could not clear replaced cost rows:', err.message); }
 
   await mirrorOnePO(sql, companyCode, division, po);
 
@@ -559,7 +589,10 @@ async function upsertPO(sql, { companyCode, division, po, from }) {
     staleCopy = !dropped.ok;
   }
 
-  return { ok: true, purchaseOrder: po, rows, staleCopy };
+  return {
+    ok: true, purchaseOrder: po, staleCopy,
+    rows: { removed, written: rows.written, writtenIds: rows.writtenIds },
+  };
 }
 
 /** Remove one purchase order, its deliveries, and the cost rows it created. */
@@ -573,13 +606,21 @@ async function removePO(sql, { companyCode, division, poId }) {
   });
   if (!removed.ok) return { ok: false, reason: 'conflict' };
 
-  const rowIds = existing && Array.isArray(existing.lines)
+  // Nothing was in this division's list, so there is nothing of this
+  // division's to clean up. unmirrorPO scopes on id and company alone, so
+  // running it anyway deleted the order's mirror row and every one of its
+  // delivery rows wherever they actually lived — a stale tab deleting an order
+  // another tab had already moved would destroy the recovery copy the GET
+  // fallback reads, in a division the caller may hold no role in.
+  if (!existing) return { ok: true, found: false, rowsRemoved: 0 };
+
+  const rowIds = existing.lines && Array.isArray(existing.lines)
     ? existing.lines.filter(l => l && l.po_row_id).map(l => l.po_row_id)
     : [];
   const gone = await deletePORows(sql, companyCode, rowIds);
   await unmirrorPO(sql, companyCode, poId);
 
-  return { ok: true, found: Boolean(existing), rowsRemoved: gone };
+  return { ok: true, found: true, rowsRemoved: gone };
 }
 
 // ── Receipt paperwork ───────────────────────────────────────────────────────
