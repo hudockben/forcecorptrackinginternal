@@ -656,8 +656,27 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
 
   let staleCopy = false;
   if (prevDivision) {
+    // The old list is re-read here, long after the copy this call merged from
+    // was taken at the top — syncPOCostRows' round trips, the target write and
+    // mirrorOnePO all happened in between, and that division's own tab still
+    // shows the order for all of it, because this is what removes it. A
+    // delivery recorded in that window is on the copy about to be filtered out
+    // and on nothing else: it would go from the blob, and from po_deliveries
+    // too, since mirrorOnePO has already re-inserted only the lines the new
+    // list carries. Its cost row would then sit on the old job with nothing
+    // naming it — no later save finds it, and neither does deleting the order.
+    //
+    // So look before dropping. Something unaccounted for means the move is not
+    // finished: leave the copy where it is and report it, which is the same
+    // answer a half-landed move already gives. The caller keeps its note, the
+    // next save repeats the move, and by then the delivery is in priorCopies
+    // and reconciled like any other.
+    let leftBehind = 0;
     const dropped = await mutatePOBlob(sql, blobKeyFor(companyCode, prevDivision), list => {
-      if (!list.some(p => p && p.id === po.id)) return null;
+      const hit = list.find(p => p && p.id === po.id) || null;
+      if (!hit) return null;
+      const unaccounted = unseenLines(po, [hit], deletedLineIds);
+      if (unaccounted.length) { leftBehind = unaccounted.length; return null; }
       return list.filter(p => !p || p.id !== po.id);
     });
     // Saved, but the old division still shows a copy. The caller is told so it
@@ -665,7 +684,10 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
     // save then repeats the move and clears the copy. Reporting this as a
     // failure would be worse: the order IS saved, and a caller that retried
     // from scratch would raise a second one.
-    staleCopy = !dropped.ok;
+    staleCopy = !dropped.ok || leftBehind > 0;
+    if (leftBehind) {
+      console.warn(`[po-sync] ${leftBehind} delivery(s) reached ${po.id} in ${prevDivision} during its move; leaving the copy for the next save`);
+    }
   }
 
   return {

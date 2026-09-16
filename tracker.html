@@ -10972,13 +10972,36 @@ function deletePO(id) {
 // changed (syncCodes). Editing an unrelated header field — title, supplier,
 // date, status — used to stamp the PO's codes onto the daily row as well,
 // silently undoing any re-categorization a supervisor had made there.
-function _syncPOHeaderToLines(po, syncCodes) {
+async function _syncPOHeaderToLines(po, syncCodes) {
   if (!po.project_id) return;
   const proj = getProj(po.project_id);
   if (!proj) return;
+
+  // The same reason _syncPOLineToRow reads before it writes: a row older than
+  // the first load's ninety days is not in memory until a background pass that
+  // can fail or be truncated brings it in, and giving up here meant a retitled
+  // order, a corrected supplier or a re-coded PO reached the order and never
+  // the job. Read once, and only if that pass has not already run.
+  if (!proj._drFullLoaded && (po.lines || []).some(l =>
+        l.po_row_id && !proj.dailyRows.some(r => String(r.id) === String(l.po_row_id)))) {
+    try {
+      const answer = await drGetAll({ projectId: po.project_id });
+      const fetched = Array.isArray(answer) ? answer : (answer && answer.rows) || [];
+      fetched.forEach(row => {
+        if (!proj.dailyRows.some(x => String(x.id) === String(row.id))) proj.dailyRows.push(row);
+      });
+      proj._drFullLoaded = true;
+    } catch (err) {
+      console.warn('[po] could not load the job rows for a PO header sync:', err.message);
+    }
+  }
+
   (po.lines || []).forEach(line => {
     if (!line.po_row_id) return;
     const r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
+    // Still absent after the read: the order names a row nothing has. Nothing
+    // to update, and nothing here should invent one — the delivery's own sync
+    // owns that decision.
     if (!r) return;
     r.material  = po.title    || '';
     r.supplier  = po.supplier || '';
@@ -11161,7 +11184,21 @@ function applyPOFilters() {
 function exportPOCSV() {
   const pos = applyPOFilters();
   const headers = ['PO #','Project','Sub Code','Title','Supplier','Invoice #','Delivery Date','Qty','Unit Cost','Amount','Tax %','Tax','Total','Employee','Status'];
-  const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  // Quoting makes the file parse; it does not stop a spreadsheet EVALUATING a
+  // field that begins with =, +, - or @. A supplier recorded as =HYPERLINK(...)
+  // runs the moment somebody opens the export — and central purchasing can
+  // write that supplier into this division's orders. A leading apostrophe is
+  // the standard defusing, and both Excel and Sheets hide it.
+  //
+  // Not for a plain number: prefixing one makes the cell text, so a credit or a
+  // return drops out of every column sum. Same rule as the purchasing page's
+  // own export, which had this and the division tabs did not.
+  const NUMERIC = /^-?\d+(\.\d+)?([eE][-+]?\d+)?$/;
+  const escape = v => {
+    let t = String(v ?? '');
+    if (/^[=+\-@\t\r]/.test(t) && !NUMERIC.test(t)) t = "'" + t;
+    return '"' + t.replace(/"/g, '""') + '"';
+  };
   const csvLines = [headers.map(escape).join(',')];
   pos.forEach(po => {
     const proj = projectsList.find(p => p.id === po.project_id);
@@ -11664,7 +11701,10 @@ function _handlePOEvent(e) {
     po.sub_code  = sc || '';
     savePurchaseOrders();
     // The codes themselves changed here, so they do propagate to the rows.
-    _syncPOHeaderToLines(po, true);
+    // Fire and forget: it may read the job's rows first, and nothing after
+    // this depends on its result.
+    _syncPOHeaderToLines(po, true).catch(err =>
+      console.warn('[po] could not sync the order header to its cost rows:', err.message));
     if (po.project_id) renderProjectPOs(po.project_id);
     return;
   }
@@ -11731,7 +11771,8 @@ function _handlePOEvent(e) {
   } else {
     // title / supplier / date_created changes — push to daily rows, but leave
     // the row's cost/sub code alone: nothing about them changed here.
-    _syncPOHeaderToLines(po);
+    _syncPOHeaderToLines(po).catch(err =>
+      console.warn('[po] could not sync the order header to its cost rows:', err.message));
     if (po.project_id) renderProjectPOs(po.project_id);
   }
 

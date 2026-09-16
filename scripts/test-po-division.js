@@ -870,6 +870,45 @@ console.log('\n[upsertPO — merging into a division list]');
   assert('turf still has exactly one',      st.getBlob(KEY('turf')).length === 1);
   assert('and exactly ONE cost row — not the retry\'s plus the first attempt\'s',
     st.daily.size === 1, `rows=${st.daily.size}`);
+
+  // The old division's own tab still shows the order for the whole of a move —
+  // this drop is what removes it — so it can record a delivery against it right
+  // up to the last moment. That delivery is on the copy about to be filtered
+  // out and on nothing else: it would go from the blob, and from po_deliveries
+  // too, because mirrorOnePO has already re-inserted only the new list's lines.
+  // Its cost row would then sit on the old job with nothing naming it.
+  st = makeStore();
+  st.setBlob(KEY('paving'), [makePO({ id: 'moving', project_id: 'job1',
+    lines: [{ id: 'L1', qty: '1', unit_cost: '100' }] })]);
+  st.setBlob(KEY('turf'), []);
+  st.onNextWrite(() => {
+    // Paving's tab records L2 while the move is in flight.
+    st.onNextWrite(() => {
+      const cur = st.getBlob(KEY('paving'));
+      st.setBlob(KEY('paving'), cur.map(p => p.id !== 'moving' ? p : Object.assign({}, p, {
+        lines: (p.lines || []).concat([{ id: 'L2', qty: '1', unit_cost: '250', po_row_id: 'R2' }]),
+      })));
+      st.daily.set('R2', { row_id: 'R2', project_id: 'job1', company_code: 'FCT' });
+    });
+  });
+  const moveRes = await poSync.upsertPO(st.sql, {
+    companyCode: 'FCT', division: 'turf', from: 'paving',
+    po: makePO({ id: 'moving', project_id: 'turf1',
+                 lines: [{ id: 'L1', qty: '1', unit_cost: '100' }] }),
+  });
+  assert('the move still reports saved',        moveRes.ok === true);
+  assert('and the order really is in turf',     st.getBlob(KEY('turf')).some(p => p.id === 'moving'));
+  const leftovers = st.getBlob(KEY('paving')) || [];
+  const leftCopy  = leftovers.find(p => p.id === 'moving');
+  assert('the old copy is left rather than dropped over a delivery it holds',
+    Boolean(leftCopy), JSON.stringify(leftovers));
+  assert('...which still carries that delivery',
+    Boolean(leftCopy) && (leftCopy.lines || []).some(l => l.id === 'L2'),
+    JSON.stringify(leftCopy && leftCopy.lines));
+  assert('and the caller is told, so its next save repeats the move',
+    moveRes.staleCopy === true, JSON.stringify({ staleCopy: moveRes.staleCopy }));
+  assert('so the cost row behind it is still named by something',
+    st.daily.has('R2'), JSON.stringify([...st.daily.keys()]));
   assert('on the new job',                  [...st.daily.values()][0].project_id === 'turf1');
 
   console.log('\n[removePO]');

@@ -75,12 +75,15 @@ function structuralChecks(file) {
     !/r\.supplier  = po\.supplier \|\| '';\s*\n\s*r\.cost_code = po\.cost_code/.test(src));
   assert('material / supplier / po_num still sync unconditionally',
     /r\.material  = po\.title    \|\| '';\s*\n\s*r\.supplier  = po\.supplier \|\| '';\s*\n\s*r\.po_num    = po\.po_number\|\| '';/.test(src));
+  // The call is awaited-or-caught now, because the sync may have to read the
+  // job's rows before it can safely write one — so the opt-in is no longer
+  // followed by a bare semicolon.
   assert('the sub-code commit opts in to the code sync',
-    /_syncPOHeaderToLines\(po, true\);/.test(src));
+    /_syncPOHeaderToLines\(po, true\)(;|\.catch\()/.test(src));
   assert('exactly one call site opts in',
     (src.match(/_syncPOHeaderToLines\(po, true\)/g) || []).length === 1);
   assert('the title / supplier / date branch does not',
-    /title \/ supplier \/ date_created changes[\s\S]{0,140}\n\s*_syncPOHeaderToLines\(po\);/.test(src));
+    /title \/ supplier \/ date_created changes[\s\S]{0,400}\n\s*_syncPOHeaderToLines\(po\)(;|\.catch\()/.test(src));
 
   // — fill-handle drag —
   assert('the drag no longer walks the raw index range',
@@ -100,7 +103,10 @@ function structuralChecks(file) {
 function poSyncChecks(file) {
   console.log(`\n[behavioural: PO header sync — ${file}]`);
   const src = readApp(file);
-  const fn  = extractFn(src, 'function _syncPOHeaderToLines(po, syncCodes) {');
+  // Declared `async` now — it may have to read the job's rows before it can
+  // safely write one — and extractFn matches from `function`, so the keyword
+  // has to go back on or the await inside is a syntax error.
+  const fn  = 'async ' + extractFn(src, 'function _syncPOHeaderToLines(po, syncCodes) {');
   assert('extracted _syncPOHeaderToLines', !!fn);
   if (!fn) return;
 
@@ -127,6 +133,8 @@ function poSyncChecks(file) {
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
     vm.runInContext(fn, sandbox);
+    // proj.dailyRows already holds r1, so the "read the job's rows first"
+    // branch is not taken and the body runs to completion before it yields.
     sandbox._syncPOHeaderToLines(po, syncCodes);
     return { row, puts };
   }

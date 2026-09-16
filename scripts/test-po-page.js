@@ -553,6 +553,29 @@ console.log('\n[a cost row this page has not loaded]');
     assert(`${f}: the job's rows are read before a row is invented`,
       /if \(!proj\._drFullLoaded\)/.test(body) &&
       body.indexOf('drGetAll({ projectId: po.project_id })') < body.indexOf('...defaultDailyRow()'));
+
+    // Its sibling had the same bail-out for the same reason: a retitled order,
+    // a corrected supplier or a re-coded PO reached the order and never the job
+    // whenever the row was outside the first load's ninety days.
+    const header = src.slice(src.indexOf('async function _syncPOHeaderToLines'));
+    // Bounded at its own closing brace — the next declaration is `async
+    // function` too, so '\nfunction ' would run on past it.
+    const hBody  = header.slice(0, header.indexOf('\n}\n') + 3);
+    assert(`${f}: the header sync reads the job's rows too`,
+      /if \(!proj\._drFullLoaded/.test(hBody) &&
+      /drGetAll\(\{ projectId: po\.project_id \}\)/.test(hBody));
+    assert(`${f}: and still invents nothing when the row really is absent`,
+      /if \(!r\) return;/.test(hBody) && !/defaultDailyRow/.test(hBody));
+    assert(`${f}: both its call sites catch`,
+      (src.match(/_syncPOHeaderToLines\(po(?:, true)?\)\.catch\(/g) || []).length === 2);
+
+    // The division tabs export the same purchase orders the purchasing page
+    // does, and only that page's export had the formula guard.
+    const csv = src.slice(src.indexOf('function exportPOCSV()'));
+    const cBody = csv.slice(0, csv.indexOf('\n}\n') + 3);
+    assert(`${f}: exportPOCSV defuses a leading formula character`,
+      /if \(\/\^\[=\+\\-@\\t\\r\]\/\.test\(t\) && !NUMERIC\.test\(t\)\)/.test(cBody), cBody.slice(0, 300));
+    assert(`${f}: but leaves a plain number alone`, /const NUMERIC = /.test(cBody));
   });
 
 }
@@ -782,8 +805,16 @@ console.log('\n[round-2 fixes]');
 
   // "nothing was saved" has to be true.
   assert('a failed scan undoes its local change', /if \(undo\) undo\(\);/.test(PAGE));
-  assert('and takes the order out of the retry queue',
-    /if \(po\) \{ _unsaved\.delete\(po\.id\)/.test(PAGE));
+  // ...and takes it out of the retry queue — but only when the scan RAISED it.
+  // Attaching to an existing order leaves it on the page, and it may have been
+  // queued for an edit made long before the scan that the page has promised to
+  // retry; clearing that left nothing to write it.
+  assert('and takes an order it raised out of the retry queue',
+    /if \(created && po\) \{ _unsaved\.delete\(po\.id\)/.test(PAGE));
+  assert('but leaves the queue alone for one it merely attached to',
+    /let created = false;/.test(PAGE) &&
+    (PAGE.match(/created = true;/g) || []).length === 1 &&
+    PAGE.indexOf('created = true;') > PAGE.indexOf('purchaseOrders.push(po);'));
 
   // A retry promised must be a retry given.
   assert('the retry runs before the typing guard',
@@ -1359,6 +1390,7 @@ console.log('\n[a poll whose fetch predates a save that landed]');
       let _inflight = 0;
       let _saveEpoch = 0;
       let renders = 0;
+      const loadedLists = new Set(['paving']);
       let landDuringFetch = ${saveLandsDuringFetch ? 'true' : 'false'};
       function listKeys() { return ['paving']; }
       function pendingIds() { return new Set(); }
@@ -1399,6 +1431,39 @@ console.log('\n[a poll whose fetch predates a save that landed]');
   const quiet = await runPoll({ saveLandsDuringFetch: false });
   assert('a poll with no save in the window still adopts what it fetched',
     quiet.saved === 'paving' && quiet.renders === 1, JSON.stringify(quiet));
+
+  // A list that failed at boot and answered on a later tick has proved itself.
+  // Only boot wrote to loadedLists, so such a list stayed marked unusable for
+  // the life of the page: its orders were on screen while numbering refused it,
+  // the division picker did not offer it, and neither "+ New PO" nor the scan
+  // sheet would land there — every one of them telling the user to reload a
+  // list they could already see.
+  {
+    const ctx = vm.createContext({
+      document: dom.window.document, console, JSON, Promise, Array, Set, setTimeout,
+    });
+    vm.runInContext(`
+      const GENERAL = 'purchase_orders';
+      let purchaseOrders = [];
+      const _savedDivision = {};
+      const _unsaved = new Set();
+      const _saveTimers = {};
+      let _inflight = 0, _saveEpoch = 0, renders = 0;
+      const loadedLists = new Set();        // paving's GET failed at boot
+      function listKeys() { return ['paving']; }
+      function pendingIds() { return new Set(); }
+      function migratePO() {}
+      function isEditing() { return false; }
+      function render() { renders++; }
+      async function api() { return { purchaseOrders: [{ id:'p1', po_number:'PO-0001', lines:[] }] }; }
+    `, ctx);
+    vm.runInContext('async ' + requireFn(PAGE, 'poll', 'purchase-orders.html'), ctx);
+    await vm.runInContext('poll()', ctx);
+    assert('a list the poll fetched is marked loaded',
+      vm.runInContext("loadedLists.has('paving')", ctx) === true);
+    assert('and its orders are adopted',
+      vm.runInContext('purchaseOrders.length', ctx) === 1);
+  }
 }
 
 console.log(`\n${failed === 0 ? 'All checks passed.' : failed + ' check(s) failed.'}`);

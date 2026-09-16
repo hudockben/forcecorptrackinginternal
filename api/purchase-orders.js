@@ -589,7 +589,13 @@ module.exports = async (req, res) => {
     // Logged in full, never echoed: the driver's message carries constraint,
     // table and column names, and the client has nothing to do with them.
     console.error('[purchase-orders]', err.message);
-    return res.status(500).json({ error: 'Could not save the purchase order. Try again.' });
+    // One handler covers every method, so it cannot say "save" for all of them —
+    // a failed GET told the user their save had not landed when they had not
+    // saved anything, and a failed DELETE told them the same about a delete.
+    const doing = req.method === 'GET'    ? 'load the purchase orders'
+                : req.method === 'DELETE' ? 'delete the purchase order'
+                : 'save the purchase order';
+    return res.status(500).json({ error: `Could not ${doing}. Try again.` });
   }
 };
 

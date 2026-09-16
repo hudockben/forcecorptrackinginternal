@@ -2204,6 +2204,7 @@ async function commitScan() {
   const shotName = scanState.filename;
 
   let po;
+  let created = false;  // did this scan RAISE the order, or attach to one?
   let undo = null;   // how to put the page back if the save does not land
   try {
     if (scanState.targetPoId) {
@@ -2244,6 +2245,7 @@ async function commitScan() {
         _division:    divKey,
       };
       purchaseOrders.push(po);
+      created = true;
       undo = () => { purchaseOrders = purchaseOrders.filter(p => p.id !== po.id); };
       expanded.add(po.id);
       await _savePONow(po);
@@ -2259,7 +2261,13 @@ async function commitScan() {
     // would write it anyway, and tapping "Try again" would append a SECOND
     // delivery for the same receipt on top of it.
     if (undo) undo();
-    if (po) { _unsaved.delete(po.id); clearTimeout(_saveTimers[po.id]); delete _saveTimers[po.id]; }
+    // Only for an order this scan RAISED. Attaching to an existing one leaves
+    // it on the page — undo() has put its lines back — and it may have been in
+    // the retry queue for an edit made long before the scan, which the page has
+    // promised to retry. Clearing that took the queue entry and the timer with
+    // it, so nothing was left to write the edit and the next poll replaced it
+    // with the server's older copy.
+    if (created && po) { _unsaved.delete(po.id); clearTimeout(_saveTimers[po.id]); delete _saveTimers[po.id]; }
     _committing = false;
     if (btn) { btn.disabled = false; btn.textContent = 'Try again'; }
     toast('Could not save the order: ' + err.message + ' — nothing was saved. Try again.', 'err');
@@ -2454,6 +2462,14 @@ document.addEventListener('keydown', e => {
       fetched = await Promise.all(listKeys().map(async key => {
         const data = await api('GET', '/purchase-orders?division=' + encodeURIComponent(key));
         const list = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+        // A response is exactly the evidence loadedLists is meant to hold, and
+        // boot was the only thing writing to it. A list that 502'd at load and
+        // came back on the next tick stayed marked unusable for the life of the
+        // page: its orders were on screen while numbering refused it, the
+        // division picker did not offer it, and "+ New PO" and the scan sheet
+        // both left it out — all telling the user to reload a list they could
+        // already see.
+        loadedLists.add(key);
         list.forEach(po => { po._division = key; migratePO(po); });
         return list;
       }));
