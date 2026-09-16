@@ -591,6 +591,12 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
   // the order finds it, because removePO reads the row ids off the stored lines.
   // So merge again here, from the list actually being written over.
   let lateMerged = 0;
+  const lateStale = [];
+  // The same test syncPOCostRows makes, recomputed here because it is local to
+  // that function. po.project_id has already been through its clearing pass, so
+  // this reads the value the rows were actually reconciled against.
+  const movedOrder = (Boolean(prevPO) && (prevPO.project_id || '') !== (po.project_id || ''))
+    || (Boolean(prevDivision) && prevDivision !== division);
   const saved = await mutatePOBlob(sql, blobKeyFor(companyCode, division), list => {
     const idx = list.findIndex(p => p && p.id === po.id);
     if (idx === -1) return [...list, po];
@@ -599,12 +605,23 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
     const late = unseenLines(po, [list[idx]], deletedLineIds);
     if (late.length) {
       lateMerged += late.length;
-      // Kept exactly as the other writer stored it, po_row_id included — that
-      // row is live and correct for this delivery. Even when this save moved the
-      // order to another job, clearing the link would orphan the row rather than
-      // fix it; leaving it means the next save reads it out of the stored order
-      // and re-points the row at the new job.
-      po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(late);
+      // Normally the other writer's po_row_id is kept: that row is live and
+      // correct for this delivery, and syncPOCostRows has already run, so
+      // nothing here would reconcile a fresh one.
+      //
+      // Not when this save MOVED the order. writeRow's ON CONFLICT predicate
+      // pins project_id and division, so a row sitting on the old job can never
+      // be re-pointed at the new one — the UPDATE matches nothing, RETURNING
+      // comes back empty, and the next save mints a SECOND row instead. Both
+      // jobs then carry the delivery. So the link is cleared, and the row it
+      // named goes out with the rest of the move's stale rows.
+      po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(
+        movedOrder
+          ? late.map(l => {
+              if (l && l.po_row_id && !isInjectedRowId(l.po_row_id)) lateStale.push(String(l.po_row_id));
+              return { ...l, po_row_id: null };
+            })
+          : late);
     }
 
     // Replaced in place: the purchase-order tables are drawn in list order, so
@@ -632,7 +649,7 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
 
   // The order is stored, so the rows its old deliveries left behind can go.
   let removed = 0;
-  try { removed = await deletePORows(sql, companyCode, rows.staleIds || []); }
+  try { removed = await deletePORows(sql, companyCode, (rows.staleIds || []).concat(lateStale)); }
   catch (err) { console.error('[po-sync] could not clear replaced cost rows:', err.message); }
 
   await mirrorOnePO(sql, companyCode, division, po);
@@ -662,11 +679,18 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
 
 /** Remove one purchase order, its deliveries, and the cost rows it created. */
 async function removePO(sql, { companyCode, division, poId }) {
-  const base = await readPOBlob(sql, blobKeyFor(companyCode, division));
-  const existing = base.list.find(p => p && p.id === poId) || null;
-
+  // The copy the compare-and-set actually removed, captured inside the mutator.
+  // Reading it from a snapshot taken beforehand meant a delivery recorded in
+  // between — mutatePOBlob re-reads on every attempt, so the window is at least
+  // one round trip and unbounded across retries — was not in the list whose row
+  // ids get deleted here. Its daily_tracking row then survived the order that
+  // named it, charging the job with nothing anywhere pointing at it: the exact
+  // orphan this function exists to prevent.
+  let existing = null;
   const removed = await mutatePOBlob(sql, blobKeyFor(companyCode, division), list => {
-    if (!list.some(p => p && p.id === poId)) return null;
+    const hit = list.find(p => p && p.id === poId) || null;
+    if (!hit) { existing = null; return null; }
+    existing = hit;
     return list.filter(p => !p || p.id !== poId);
   });
   if (!removed.ok) return { ok: false, reason: 'conflict' };
@@ -683,7 +707,19 @@ async function removePO(sql, { companyCode, division, poId }) {
     ? existing.lines.filter(l => l && l.po_row_id).map(l => l.po_row_id)
     : [];
   const gone = await deletePORows(sql, companyCode, rowIds);
-  await unmirrorPO(sql, companyCode, poId);
+
+  // ...and the mirror only when it is THIS division's copy being removed. A
+  // half-landed move leaves the order in both lists on purpose, so `existing`
+  // is truthy for the leftover copy too — and unmirrorPO scopes on id and
+  // company alone, so clearing the leftover wiped the mirror of the order that
+  // is live in the other division, taking its delivery rows with it.
+  const mirror = await sql`
+    SELECT division FROM purchase_orders
+    WHERE id = ${poId} AND company_code = ${companyCode}
+  `;
+  if (!mirror.length || String(mirror[0].division) === String(division)) {
+    await unmirrorPO(sql, companyCode, poId);
+  }
 
   return { ok: true, found: true, rowsRemoved: gone };
 }

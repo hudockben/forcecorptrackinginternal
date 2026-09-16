@@ -112,6 +112,13 @@ function makeStore() {
       return Promise.resolve([]);
     }
 
+    // The mirror's division, so removePO can tell its own copy from the one a
+    // half-landed move left live in another division's list.
+    if (/^SELECT division FROM purchase_orders WHERE id =/.test(q)) {
+      const row = poRows.get(vals[0]);
+      return Promise.resolve(row ? [{ division: row.division }] : []);
+    }
+
     // ── po_deliveries mirror ──
     if (/^DELETE FROM po_deliveries WHERE po_id =/.test(q)) {
       for (let i = deliveries.length - 1; i >= 0; i--) {
@@ -409,6 +416,36 @@ console.log('\n[upsertPO — merging into a division list]');
     JSON.stringify(stored.lines));
   assert('and the caller is told, rather than carrying on with a short list',
     r.mergedLines === 1, String(r.mergedLines));
+
+  // ...but when the save MOVED the order, the late line's link has to go.
+  // writeRow's ON CONFLICT predicate pins project_id and division, so a row on
+  // the OLD job can never be re-pointed at the new one — the UPDATE matches
+  // nothing and the next save mints a SECOND row, leaving both jobs charged for
+  // the one delivery. The stale row goes out with the rest of the move's.
+  st = makeStore();
+  st.setBlob(KEY('paving'), [makePO({ id: 'mv2', project_id: 'job1', cost_code: '420', sub_code: 'Base',
+    lines: [{ id: 'L1', qty: '1', unit_cost: '100' }] })]);
+  st.onNextWrite(() => {
+    const cur = st.getBlob(KEY('paving'));
+    st.daily.set('old-job-row', { row_id: 'old-job-row', project_id: 'job1', company_code: 'FCT' });
+    st.setBlob(KEY('paving'), cur.map(p => p.id !== 'mv2' ? p : Object.assign({}, p, {
+      lines: (p.lines || []).concat([{ id: 'L2', qty: '1', unit_cost: '50', po_row_id: 'old-job-row' }]),
+    })));
+  });
+  // The same order, re-tied to a different job.
+  r = await poSync.upsertPO(st.sql, {
+    companyCode: 'FCT', division: 'paving',
+    po: makePO({ id: 'mv2', project_id: 'job2', cost_code: '430', sub_code: 'Sub',
+                 lines: [{ id: 'L1', qty: '1', unit_cost: '100' }] }),
+  });
+  stored = st.getBlob(KEY('paving')).find(p => p.id === 'mv2');
+  const lateLine = (stored.lines || []).find(l => l.id === 'L2');
+  assert('a delivery recorded during a move still survives it', Boolean(lateLine),
+    JSON.stringify(stored.lines));
+  assert('but its link to the old job is cleared, not carried over',
+    Boolean(lateLine) && !lateLine.po_row_id, JSON.stringify(lateLine));
+  assert('and the row it named on the old job goes with the move',
+    !st.daily.has('old-job-row'), JSON.stringify([...st.daily.keys()]));
 
   // A delivery the caller DECLARED deleted is still deleted, race or no race.
   st = makeStore();
@@ -854,7 +891,51 @@ console.log('\n[upsertPO — merging into a division list]');
 
   del = await poSync.removePO(st.sql, { companyCode: 'FCT', division: 'kiewit', poId: 'never-existed' });
   assert('deleting a missing order is not an error', del.ok === true && del.found === false);
-  assert('and leaves the list alone',               st.getBlob(KEY('kiewit')).length === 1);
+  assert('and leaves the list alone',                st.getBlob(KEY('kiewit')).length === 1);
+
+  // The row ids come from the copy the compare-and-set actually removed, not
+  // from a snapshot read beforehand. mutatePOBlob re-reads on every attempt, so
+  // a delivery recorded in between was absent from the list whose rows get
+  // deleted — and its daily_tracking row then outlived the order that named it,
+  // charging the job with nothing anywhere pointing at it.
+  st = makeStore();
+  st.setBlob(KEY('kiewit'), [makePO({ id: 'race', project_id: 'job9', cost_code: '420', sub_code: 'Base',
+    lines: [{ id: 'L1', qty: '1', unit_cost: '100' }] })]);
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'kiewit',
+    po: makePO({ id: 'race', project_id: 'job9', cost_code: '420', sub_code: 'Base',
+                 lines: [{ id: 'L1', qty: '1', unit_cost: '100' }] }) });
+  assert('one cost row to start with', st.daily.size === 1);
+  // Somebody records a second delivery, with its own cost row, between the
+  // delete's read and its write.
+  st.onNextWrite(() => {
+    const cur = st.getBlob(KEY('kiewit'));
+    const withLate = cur.map(p => p.id !== 'race' ? p : Object.assign({}, p, {
+      lines: (p.lines || []).concat([{ id: 'L2', qty: '1', unit_cost: '50', po_row_id: 'late-row' }]),
+    }));
+    st.daily.set('late-row', { row_id: 'late-row', project_id: 'job9' });
+    st.setBlob(KEY('kiewit'), withLate);
+  });
+  del = await poSync.removePO(st.sql, { companyCode: 'FCT', division: 'kiewit', poId: 'race' });
+  assert('the delete still lands',              del.ok === true && del.found === true);
+  assert('and takes the cost row of a delivery recorded inside its own window',
+    !st.daily.has('late-row'), JSON.stringify([...st.daily.keys()]));
+  assert('leaving no cost row behind at all',   st.daily.size === 0, JSON.stringify([...st.daily.keys()]));
+
+  // A half-landed move leaves the order in BOTH lists on purpose. Clearing the
+  // leftover copy must not wipe the mirror of the one that is live elsewhere —
+  // unmirrorPO scopes on id and company alone, so it would take the live
+  // order's row and every delivery row with it.
+  st = makeStore();
+  st.setBlob(KEY('paving'), [makePO({ id: 'both' })]);   // the leftover copy
+  st.setBlob(KEY('turf'),   [makePO({ id: 'both' })]);   // where it really lives
+  st.poRows.set('both', { id: 'both', company_code: 'FCT', division: 'turf', po_num: 'PO-0001' });
+  st.deliveries.push({ po_id: 'both', line_id: 'L1', po_row_id: null });
+  del = await poSync.removePO(st.sql, { companyCode: 'FCT', division: 'paving', poId: 'both' });
+  assert('the leftover copy is dropped',        del.ok === true && del.found === true);
+  assert('and paving no longer lists it',       (st.getBlob(KEY('paving')) || []).length === 0);
+  assert('but the live order keeps its mirror', st.poRows.has('both'));
+  assert('and its delivery rows',               st.deliveries.some(d => d.po_id === 'both'));
+  assert('while turf still lists it',           st.getBlob(KEY('turf')).some(p => p.id === 'both'));
 
   console.log('\n[resolvePODocScope — the receipt carve-out]');
   st = makeStore();
