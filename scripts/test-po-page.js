@@ -1039,6 +1039,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     const firstSave = new Promise(r => { releaseFirstSave = r; });
     const _saveChain = { new1: firstSave };
     const _deleting = new Set();
+    const _deferredSaves = new Set();
     function capsFor() { return { canEdit: true, canDelete: true }; }
     function confirm() { return true; }
     function showSave() {}
@@ -1096,6 +1097,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     const _savedDivision = {};
     const expanded = new Set();
     const _deleting = new Set();
+    const _deferredSaves = new Set();
     let _inflight = 0, _saveEpoch = 0;
     let releaseFirstSave;
     const firstSave = new Promise(r => { releaseFirstSave = r; });
@@ -1140,6 +1142,99 @@ console.log('\n[a keystroke while a delete is in flight]');
   assert('every direct _savePONow call handles a rejection',
     direct.length === 4 && direct.every(l => /\.catch\(|await _savePONow/.test(l)),
     JSON.stringify(direct.map(l => l.trim())));
+
+  // ...and when the DELETE FAILS the order is still there, so what was typed
+  // into it has to be saved after all. Refusing the save outright meant no
+  // timer, no retry-queue entry and nothing in the unload flush — the poll
+  // replaced the row with the server's copy 60 seconds later and the only
+  // thing the page had said was "Not deleted".
+  const ctx3 = vm.createContext({
+    document: dom.window.document, console, JSON, Promise, Set, Math,
+    setTimeout, clearTimeout,
+  });
+  vm.runInContext(`
+    const GENERAL = 'purchase_orders';
+    const calls = [];
+    let purchaseOrders = [{ id:'kept', po_number:'PO-0003', _division:'purchase_orders',
+                            title:'', lines:[], project_id:'' }];
+    const _saveTimers = {};
+    const _unsaved = new Set();
+    const _deletedLines = {};
+    const _savedDivision = { kept: 'purchase_orders' };   // stored, so a DELETE is sent
+    const expanded = new Set();
+    const _deleting = new Set();
+    const _deferredSaves = new Set();
+    const _saveChain = {};
+    let _inflight = 0, _saveEpoch = 0;
+    let releaseDelete;
+    const deletePromise = new Promise((_, rej) => { releaseDelete = () => rej(new Error('network')); });
+    function capsFor() { return { canEdit: true, canDelete: true }; }
+    function confirm() { return true; }
+    function showSave() {}
+    function toast() {}
+    function render() {}
+    function poPayload(po) { return po; }
+    function deletedLinesFor() { return []; }
+    function deletedLineIdsSent() { return []; }
+    async function api(method, path) {
+      calls.push(method + ' ' + path);
+      if (method === 'DELETE') return deletePromise;
+      return {};
+    }
+  `, ctx3);
+  ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
+    .forEach(n => vm.runInContext(
+      (/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') +
+      requireFn(PAGE, n, 'purchase-orders.html'), ctx3));
+
+  const run3 = expr => vm.runInContext(expr, ctx3);
+  run3('const del = deletePO("kept");');
+  // The row is still on screen for the whole of the DELETE, so it can be typed
+  // into — which is the premise of the guard in the first place.
+  run3('setField("kept", "title", "typed while the delete was in flight");');
+  run3('releaseDelete();');
+  await vm.runInContext('del', ctx3);
+  await new Promise(r => setTimeout(r, 60));
+
+  assert('a failed delete leaves the order on the page',
+    run3('purchaseOrders.length') === 1);
+  assert('...still showing what was typed',
+    run3('purchaseOrders[0].title') === 'typed while the delete was in flight');
+  assert('and the edit is saved after all, not silently dropped',
+    run3('calls').some(c => c.startsWith('POST')), JSON.stringify(run3('calls')));
+  assert('and nothing is left deferred',
+    run3('_deferredSaves.size') === 0);
+}
+
+console.log('\n[the unload flush and an order on its way out]');
+{
+  // The flush is the one writer the delete guard did not reach, and the worst
+  // placed to miss it: the DELETE is an ordinary fetch the unload aborts, while
+  // this POST is keepalive and is delivered regardless. Closing the tab right
+  // after a delete re-created the order and its job cost rows behind the user.
+  // Sliced without requiring the guard, so its absence reads as a failed
+  // assertion rather than a thrown extraction error.
+  const flushStart = PAGE.indexOf('  const outstanding = new Set(Object.keys(_saveTimers)');
+  const flush = PAGE.slice(flushStart, PAGE.indexOf('\n});', flushStart));
+  assert('the flush skips an order that is being deleted',
+    /if \(_deleting\.has\(id\)\) return;/.test(flush), flush.slice(0, 400));
+  assert('and does so before it reads the order at all',
+    flush.indexOf('_deleting.has(id)') > -1 &&
+    flush.indexOf('purchaseOrders.find') > -1 &&
+    flush.indexOf('_deleting.has(id)') < flush.indexOf('purchaseOrders.find'));
+  // All three writers consult it. Measured inside each one's own body, so a
+  // guard deleted from one is not covered by another's further down the file.
+  const bodyOf = (from, to) => {
+    const a = PAGE.indexOf(from);
+    return a < 0 ? '' : PAGE.slice(a, PAGE.indexOf(to, a + from.length));
+  };
+  [['function savePO(po, opts)', '\n}'],
+   ['function _savePONow(po)',   '\n}'],
+   ['window.addEventListener(\'beforeunload\'', '\n});']].forEach(([from, to]) => {
+    const body = bodyOf(from, to);
+    assert(`${from.split('(')[0]} is guarded`,
+      body.length > 0 && /_deleting\.has\(/.test(body), body.slice(0, 200));
+  });
 }
 
 console.log('\n[a poll whose fetch predates a save that landed]');

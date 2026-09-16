@@ -920,6 +920,16 @@ const _saveChain = {};
 // screen does not show and cannot remove.
 const _deleting = new Set();
 
+// Edits made while a delete was in flight. The row stays on screen and editable
+// for the whole of it — that is the premise of the guard — so a keystroke lands
+// on an order savePO is refusing to queue. On the two paths where the order
+// really does go, that is right. On the path where the DELETE FAILS the order
+// is still there, still showing what was typed, with nothing queued to write
+// it: no timer, no retry-queue entry, and the beforeunload flush reads only
+// those two, so the poll silently replaced it with the server's copy 60 seconds
+// later and the only thing the page had said was "Not deleted".
+const _deferredSaves = new Set();
+
 function poPayload(po) {
   const out = {};
   Object.keys(po).forEach(k => { if (k.charAt(0) !== '_') out[k] = po[k]; });
@@ -937,7 +947,9 @@ function deletedLinesFor(poId) {
  * a debounce timer has nobody to throw to.
  */
 function savePO(po, opts) {
-  if (_deleting.has(po.id)) return;   // on its way out; do not resurrect it
+  // On its way out: do not resurrect it — but remember that something wanted
+  // saving, in case the delete fails and the order survives after all.
+  if (_deleting.has(po.id)) { _deferredSaves.add(po.id); return; }
   clearTimeout(_saveTimers[po.id]);
   const delay = (opts && opts.immediate) ? 0 : 500;
   _saveTimers[po.id] = setTimeout(() => {
@@ -1059,6 +1071,12 @@ window.addEventListener('beforeunload', () => {
   // — and had been told would be retried — leave with the tab.
   const outstanding = new Set(Object.keys(_saveTimers).concat([..._unsaved]));
   outstanding.forEach(id => {
+    // An order on its way out leaves with the tab. This is the one writer the
+    // delete guard did not reach, and the worst placed to miss it: the DELETE
+    // is an ordinary fetch the unload aborts, while this POST is keepalive and
+    // gets delivered regardless — so closing the tab straight after a delete
+    // re-created the order and its job cost rows behind the user.
+    if (_deleting.has(id)) return;
     const po = purchaseOrders.find(p => p.id === id);
     if (!po) return;
     clearTimeout(_saveTimers[id]);
@@ -1215,6 +1233,13 @@ async function deletePO(poId) {
     }
   } finally {
     _deleting.delete(poId);
+    // Replayed only if the order is still here, which means the delete failed.
+    // On both success paths it has been spliced out and there is nothing to
+    // save; the entry is dropped either way.
+    if (_deferredSaves.delete(poId)) {
+      const survived = purchaseOrders.find(p => p.id === poId);
+      if (survived) savePO(survived, { immediate: true });
+    }
   }
 }
 
