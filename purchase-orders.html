@@ -883,6 +883,15 @@ const _deletedLines = {};
 // orphaning one of the rows past the reach of even deleting the order.
 const _saveChain = {};
 
+// Orders deletePO is part-way through. It yields twice — once waiting out a
+// save already in flight, once for the DELETE itself — and the row stays on
+// screen and editable across both, because nothing re-renders until it is done.
+// A keystroke in that window arms a save that outlives the row: the POST lands
+// after the order is gone from this page, and for a brand-new order there is no
+// DELETE to follow it, so what is left is an order on the server that this
+// screen does not show and cannot remove.
+const _deleting = new Set();
+
 function poPayload(po) {
   const out = {};
   Object.keys(po).forEach(k => { if (k.charAt(0) !== '_') out[k] = po[k]; });
@@ -900,6 +909,7 @@ function deletedLinesFor(poId) {
  * a debounce timer has nobody to throw to.
  */
 function savePO(po, opts) {
+  if (_deleting.has(po.id)) return;   // on its way out; do not resurrect it
   clearTimeout(_saveTimers[po.id]);
   const delay = (opts && opts.immediate) ? 0 : 500;
   _saveTimers[po.id] = setTimeout(() => {
@@ -914,6 +924,9 @@ function savePO(po, opts) {
  * different orders still save in parallel.
  */
 function _savePONow(po) {
+  // Checked here too, not only in savePO: the poll's retry loop and commitScan
+  // reach this directly.
+  if (_deleting.has(po.id)) return Promise.resolve(null);
   const prior = _saveChain[po.id] || Promise.resolve();
   const next = prior
     .catch(() => {})          // a failure must not poison the orders behind it
@@ -1108,52 +1121,64 @@ async function deletePO(poId) {
   const tied = po.project_id ? ' It will also be removed from that job’s costs.' : '';
   if (!confirm('Delete ' + (po.po_number || 'this order') + '?' + tied)) return;
 
-  clearTimeout(_saveTimers[poId]);
-  delete _saveTimers[poId];
-
-  // "Never stored" is not the same as "not stored YET". An order whose first
-  // save is still on the wire will exist a moment from now, so let that save
-  // settle before deciding — otherwise the row leaves the screen, no DELETE is
-  // sent, and the POST lands afterwards leaving an order nobody can see and
-  // nobody will ever remove.
-  if (_saveChain[poId]) {
-    try { await _saveChain[poId]; } catch { /* it failed, so nothing was stored */ }
-  }
-
-  // An order the server has never stored is only on this screen, so there is
-  // nothing to ask it to delete — and asking would fail. A new order whose
-  // first save never landed used to be undeletable for exactly that reason:
-  // the delete was refused, the row stayed, and it sat in the retry queue
-  // failing forever with no way to get rid of it.
-  if (!_savedDivision[poId]) {
-    purchaseOrders = purchaseOrders.filter(p => p.id !== poId);
-    expanded.delete(poId);
-    _unsaved.delete(poId);
-    delete _saveChain[poId];
-    delete _deletedLines[poId];
-    showSave('saved', 'Removed');
-    render();
-    return;
-  }
-
-  showSave('saving', 'Deleting…');
+  // Held for the whole of what follows. Both awaits below leave the row on
+  // screen and editable, and savePO/_savePONow check this — otherwise a
+  // keystroke in either window arms a save that outlives the row.
+  _deleting.add(poId);
   try {
-    await api('DELETE', '/purchase-orders?division=' + encodeURIComponent(po._division)
-                      + '&id=' + encodeURIComponent(poId));
-    purchaseOrders = purchaseOrders.filter(p => p.id !== poId);
-    expanded.delete(poId);
-    _unsaved.delete(poId);
-    delete _savedDivision[poId];
-    delete _saveChain[poId];
-    delete _deletedLines[poId];
-    // A DELETE is a server write like any other: a poll that fetched before it
-    // would otherwise bring the order back.
-    _saveEpoch++;
-    showSave('saved', 'Deleted');
-    render();
-  } catch (err) {
-    showSave('error', 'Not deleted');
-    toast('Could not delete ' + (po.po_number || 'the order') + ': ' + err.message, 'err');
+    clearTimeout(_saveTimers[poId]);
+    delete _saveTimers[poId];
+
+    // "Never stored" is not the same as "not stored YET". An order whose first
+    // save is still on the wire will exist a moment from now, so let that save
+    // settle before deciding — otherwise the row leaves the screen, no DELETE is
+    // sent, and the POST lands afterwards leaving an order nobody can see and
+    // nobody will ever remove.
+    if (_saveChain[poId]) {
+      try { await _saveChain[poId]; } catch { /* it failed, so nothing was stored */ }
+    }
+
+    // An order the server has never stored is only on this screen, so there is
+    // nothing to ask it to delete — and asking would fail. A new order whose
+    // first save never landed used to be undeletable for exactly that reason:
+    // the delete was refused, the row stayed, and it sat in the retry queue
+    // failing forever with no way to get rid of it.
+    if (!_savedDivision[poId]) {
+      purchaseOrders = purchaseOrders.filter(p => p.id !== poId);
+      expanded.delete(poId);
+      _unsaved.delete(poId);
+      clearTimeout(_saveTimers[poId]);
+      delete _saveTimers[poId];
+      delete _saveChain[poId];
+      delete _deletedLines[poId];
+      showSave('saved', 'Removed');
+      render();
+      return;
+    }
+
+    showSave('saving', 'Deleting…');
+    try {
+      await api('DELETE', '/purchase-orders?division=' + encodeURIComponent(po._division)
+                        + '&id=' + encodeURIComponent(poId));
+      purchaseOrders = purchaseOrders.filter(p => p.id !== poId);
+      expanded.delete(poId);
+      _unsaved.delete(poId);
+      clearTimeout(_saveTimers[poId]);
+      delete _saveTimers[poId];
+      delete _savedDivision[poId];
+      delete _saveChain[poId];
+      delete _deletedLines[poId];
+      // A DELETE is a server write like any other: a poll that fetched before it
+      // would otherwise bring the order back.
+      _saveEpoch++;
+      showSave('saved', 'Deleted');
+      render();
+    } catch (err) {
+      showSave('error', 'Not deleted');
+      toast('Could not delete ' + (po.po_number || 'the order') + ': ' + err.message, 'err');
+    }
+  } finally {
+    _deleting.delete(poId);
   }
 }
 

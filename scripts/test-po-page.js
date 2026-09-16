@@ -581,10 +581,18 @@ console.log('\n[an order the server never stored]');
   // on screen forever, retrying and failing.
   assert('deleting an unsaved order does not call the API',
     /if \(!_savedDivision\[poId\]\) \{/.test(PAGE));
-  assert('and it is taken out of the retry queue',
-    /_unsaved\.delete\(poId\);\n\s*delete _saveChain\[poId\];/.test(PAGE));
-  assert('a real delete clears the queue too',
-    (PAGE.match(/_unsaved\.delete\(poId\)/g) || []).length === 2);
+  // Both exit branches have to leave nothing behind that could fire later: the
+  // retry queue entry, the debounce timer, and the save chain. Checked per
+  // branch rather than by adjacency, which broke the moment a line moved.
+  const branches = PAGE.split('async function deletePO(')[1].split('\nfunction toggleLines')[0]
+    .split('showSave(\'saving\', \'Deleting…\')');
+  assert('deletePO has the two exit branches this checks', branches.length === 2);
+  branches.forEach((b, i) => {
+    const which = i === 0 ? 'the never-stored branch' : 'the real delete';
+    assert(`${which} clears the retry queue`,   /_unsaved\.delete\(poId\)/.test(b));
+    assert(`${which} clears the debounce timer`, /clearTimeout\(_saveTimers\[poId\]\)/.test(b));
+    assert(`${which} clears the save chain`,     /delete _saveChain\[poId\]/.test(b));
+  });
   assert('the delete button itself is per division',
     /capsFor\(po\._division\)\.canDelete \? '<button class="del-btn"/.test(PAGE));
   assert('a new order starts in a list the user can save to',
@@ -922,6 +930,130 @@ console.log('\n[the poll that picks up division-tab edits]');
 // Async, so it and the summary that follows run inside one IIFE — this file is
 // CommonJS and a top-level await would make its module format ambiguous.
 (async () => {
+console.log('\n[a keystroke while a delete is in flight]');
+{
+  // deletePO yields twice — waiting out a save already in flight, then the
+  // DELETE — and the row stays on screen and editable across both, because
+  // nothing re-renders until it is done. A save armed in either window used to
+  // survive the deletion and POST afterwards: for a brand-new order that leaves
+  // an order on the server this screen does not show and cannot remove, and for
+  // a stored one it re-creates the order and its job cost rows after the DELETE.
+  //
+  // The real functions, run against a stubbed api().
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const calls = [];
+  const ctx = vm.createContext({
+    document: dom.window.document, console, JSON, Promise, Set, Math,
+    setTimeout, clearTimeout,
+  });
+  vm.runInContext(`
+    const GENERAL = 'purchase_orders';
+    const calls = [];
+    let purchaseOrders = [{ id:'new1', po_number:'PO-0001', _division:'purchase_orders',
+                            title:'', lines:[], project_id:'' }];
+    const _saveTimers = {};
+    const _unsaved = new Set();
+    const _deletedLines = {};
+    const _savedDivision = {};        // never stored
+    const expanded = new Set();
+    let _inflight = 0, _saveEpoch = 0;
+    // The first save is still on the wire when delete is clicked.
+    let releaseFirstSave;
+    const firstSave = new Promise(r => { releaseFirstSave = r; });
+    const _saveChain = { new1: firstSave };
+    const _deleting = new Set();
+    function capsFor() { return { canEdit: true, canDelete: true }; }
+    function confirm() { return true; }
+    function showSave() {}
+    function toast() {}
+    function render() {}
+    function poPayload(po) { return po; }
+    function deletedLinesFor() { return []; }
+    async function api(method, path) { calls.push(method + ' ' + path); return {}; }
+  `, ctx);
+  ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
+    .forEach(n => {
+      const src = requireFn(PAGE, n, 'purchase-orders.html');
+      // requireFn brace-matches from `function <name>`; async declarations lose
+      // their keyword, so put it back for the two that need it.
+      vm.runInContext((/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') + src, ctx);
+    });
+
+  const run = expr => vm.runInContext(expr, ctx);
+  // Delete is clicked and starts awaiting the in-flight first save...
+  run('const deleting = deletePO("new1");');
+  // ...and the user types into the row, which is still on screen.
+  run('setField("new1", "title", "typed after the delete was clicked");');
+  // The first save now lands, and the delete resumes.
+  run('releaseFirstSave();');
+  await new Promise(r => setTimeout(r, 30));
+  await vm.runInContext('deleting', ctx);
+  // Let any debounce that was armed fire.
+  await new Promise(r => setTimeout(r, 700));
+
+  const left  = run('purchaseOrders.map(p => p.id)');
+  const sent  = run('calls');
+  const timer = run('Object.keys(_saveTimers)');
+  assert('the row is gone', left.length === 0, JSON.stringify(left));
+  assert('and nothing was POSTed for it afterwards',
+    !sent.some(c => c.startsWith('POST')), JSON.stringify(sent));
+  assert('and no debounce is left armed to do it later',
+    timer.length === 0, JSON.stringify(timer));
+
+  // Clearing the timer on the way out covers the debounce, but not every path
+  // into a save: the poll's retry loop and commitScan call _savePONow directly,
+  // and an `immediate` save fires on a 0ms timer that can land mid-await. Those
+  // need the guard itself, so drive one of them.
+  const ctx2 = vm.createContext({
+    document: dom.window.document, console, JSON, Promise, Set, Math,
+    setTimeout, clearTimeout,
+  });
+  vm.runInContext(`
+    const GENERAL = 'purchase_orders';
+    const calls = [];
+    let purchaseOrders = [{ id:'new2', po_number:'PO-0002', _division:'purchase_orders',
+                            title:'', lines:[], project_id:'' }];
+    const _saveTimers = {};
+    const _unsaved = new Set(['new2']);     // a failed save left it queued
+    const _deletedLines = {};
+    const _savedDivision = {};
+    const expanded = new Set();
+    const _deleting = new Set();
+    let _inflight = 0, _saveEpoch = 0;
+    let releaseFirstSave;
+    const firstSave = new Promise(r => { releaseFirstSave = r; });
+    const _saveChain = { new2: firstSave };
+    function capsFor() { return { canEdit: true, canDelete: true }; }
+    function confirm() { return true; }
+    function showSave() {}
+    function toast() {}
+    function render() {}
+    function poPayload(po) { return po; }
+    function deletedLinesFor() { return []; }
+    async function api(method, path) { calls.push(method + ' ' + path); return {}; }
+  `, ctx2);
+  ['savePO', '_savePONow', '_savePOWrite', 'deletePO']
+    .forEach(n => vm.runInContext(
+      (/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') +
+      requireFn(PAGE, n, 'purchase-orders.html'), ctx2));
+
+  const run2 = expr => vm.runInContext(expr, ctx2);
+  run2('const deleting2 = deletePO("new2");');
+  // The poll's retry loop fires while the delete is still awaiting, reaching
+  // _savePONow without going through savePO at all.
+  run2('const retry = _savePONow(purchaseOrders[0]);');
+  run2('releaseFirstSave();');
+  await new Promise(r => setTimeout(r, 30));
+  await vm.runInContext('Promise.all([deleting2, retry])', ctx2);
+  await new Promise(r => setTimeout(r, 50));
+
+  const sent2 = run2('calls');
+  assert('a retry that reaches _savePONow directly is refused too',
+    !sent2.some(c => c.startsWith('POST')), JSON.stringify(sent2));
+  assert('and that row is gone as well',
+    run2('purchaseOrders.length') === 0);
+}
+
 console.log('\n[a poll whose fetch predates a save that landed]');
 {
   // _inflight only says whether a save is in the air at the instant it is read.
