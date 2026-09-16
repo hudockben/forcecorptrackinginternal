@@ -1713,9 +1713,13 @@ function exportCSV() {
   // or a WEBSERVICE payload runs the moment somebody opens the export. A
   // leading apostrophe is the standard defusing and Excel and Sheets both hide
   // it.
+  // A negative NUMBER is not a formula. Prefixing one makes the cell text, so a
+  // credit or a return drops out of every column sum and the export stops
+  // reconciling with what this page shows — the exact thing an export is for.
+  const NUMERIC = /^-?\d+(\.\d+)?([eE][-+]?\d+)?$/;
   const q = v => {
     let t = String(v == null ? '' : v);
-    if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;
+    if (/^[=+\-@\t\r]/.test(t) && !NUMERIC.test(t)) t = "'" + t;
     return '"' + t.replace(/"/g, '""') + '"';
   };
   const out = [head.map(q).join(',')];

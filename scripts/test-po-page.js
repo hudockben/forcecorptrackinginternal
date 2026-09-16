@@ -573,9 +573,26 @@ console.log('\n[the receipt total is not thrown away]');
   assert('and the user is told which figure won',
     /booked at the receipt total/.test(PAGE));
   // Quoting makes a CSV parse; it does not stop a spreadsheet evaluating a
-  // field that starts with = or @.
-  assert('CSV fields that look like formulas are defused',
-    /if \(\/\^\[=\+\\-@\\t\\r\]\/\.test\(t\)\) t = "'" \+ t;/.test(PAGE));
+  // field that starts with = or @. But a negative NUMBER is not a formula, and
+  // prefixing one makes the cell text — so a credit or a return drops out of
+  // every column sum and the export stops reconciling with the page. Run the
+  // real helper over both.
+  {
+    const ctx = vm.createContext({ console });
+    vm.runInContext(sliceSource(PAGE,
+      '  const NUMERIC =', '  const out = [head.map(q)', 'exportCSV quoting helper', ['NUMERIC']), ctx);
+    const q = v => vm.runInContext('q(' + JSON.stringify(v) + ')', ctx);
+    const APOS = '"' + String.fromCharCode(39);
+
+    assert('a formula vendor name is defused', q('=HYPERLINK("http://x","y")').startsWith(APOS));
+    assert('...and every other lead character',
+      ['+WEBSERVICE(1)', '-2+3', '@SUM(A1)', '\tx', '\rx'].every(v => q(v).startsWith(APOS)));
+    assert('a negative amount is left as a number',   q('-76.50') === '"-76.50"', q('-76.50'));
+    assert('...as is a negative quantity',            q('-3')     === '"-3"',     q('-3'));
+    assert('...and a negative in exponent form',      q('-1e-7')  === '"-1e-7"',  q('-1e-7'));
+    assert('a positive number is untouched',          q('76.50')  === '"76.50"');
+    assert('and quotes are still doubled',            q('say "hi"') === '"say ""hi"""', q('say "hi"'));
+  }
 }
 
 console.log('\n[deliveries this page did not know about]');
