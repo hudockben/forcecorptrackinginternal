@@ -259,12 +259,21 @@ module.exports = async (req, res) => {
   // request on the strength of the query's order while the handler filed the
   // document against a different id in the body.
   const reqPoId = req.query.poId ? String(req.query.poId) : null;
-  const poScope = await resolvePODocScope(sql, {
+
+  // The carve-out is a floor, not a ceiling. It is resolved only when the
+  // caller's own role in this division cannot already do the upload — a user
+  // who holds a real role here and can upload with it is judged on that role
+  // alone, so naming an order can never DEMOTE an administrator to the
+  // carve-out's level2. A role that cannot upload is no longer a reason to skip
+  // it: a purchasing administrator with read-only rights in paving used to come
+  // out worse than one with no paving rights at all.
+  const ownCaps = hasDivisionAccess(payload, division) ? capabilities(payload, division) : null;
+  const poScope = (ownCaps && ownCaps.canUpload) ? null : await resolvePODocScope(sql, {
     payload, division, companyCode, poId: reqPoId,
-    hasDivisionAccess, canAccessPODivision,
+    canAccessPODivision,
   });
 
-  if (!poScope && !hasDivisionAccess(payload, division)) {
+  if (!poScope && !ownCaps) {
     return res.status(403).json({ error: 'You do not have access to this division' });
   }
 
@@ -274,7 +283,7 @@ module.exports = async (req, res) => {
   // view-only purchasing user cannot upload here either.
   const caps = poScope
     ? { level: 'level2', canUpload: poCapabilities(payload, division).canUpload, canManage: false, canDelete: false }
-    : capabilities(payload, division);
+    : ownCaps;
 
   // Filing is only ever into the ORDER's own job — never a project id the
   // request named alongside it, which would be a way to reach another job's

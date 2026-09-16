@@ -68,10 +68,14 @@ module.exports = async (req, res) => {
 
   if (!canUpload && canAccessPODivision(payload, division)) {
     const { neon } = require('@neondatabase/serverless');
+    // Reached only because the caller's own role here could not upload, which
+    // is the gate the carve-out is meant to sit behind — including for a
+    // purchasing administrator whose read-only rights in this division used to
+    // disqualify them from it.
     const scope = await resolvePODocScope(neon(process.env.DATABASE_URL), {
       payload, division, companyCode,
       poId: req.query.poId ? String(req.query.poId) : null,
-      hasDivisionAccess, canAccessPODivision,
+      canAccessPODivision,
     });
     // A purchasing ticket is minted only for the order's own job, so the key it
     // signs can never point into a job the caller has no business in — and only

@@ -196,6 +196,9 @@ console.log('\n[the cascade]');
         { id: 'p1', name: 'Paving Job', jobNumber: '200', codes: [] } ] },
     ];
     let purchaseOrders = [];
+    // loadPurchaseOrders adds a key here once that division's list has come
+    // back. A division absent from it has not loaded, and cannot be numbered.
+    const loadedLists = new Set(['turf', 'paving', 'kiewit']);
   `, ctx);
   ['divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'codeLabel', 'codeValue', 'nextPONumber']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
@@ -220,6 +223,11 @@ console.log('\n[the cascade]');
   assert('numbering continues the division\'s own sequence', run("nextPONumber('turf')") === 'PO-0004');
   assert('each division numbers independently',              run("nextPONumber('paving')") === 'PO-0012');
   assert('an empty list starts at one',                      run("nextPONumber('kiewit')") === 'PO-0001');
+  // A list whose fetch failed is NOT an empty list. Numbering off it would hand
+  // out a PO-0001 that division may already be using.
+  run("loadedLists.delete('kiewit')");
+  assert('a list that never loaded refuses to number',       run("nextPONumber('kiewit')") === '');
+  run("loadedLists.add('kiewit')");
 }
 
 console.log('\n[re-tying an order]');
@@ -239,6 +247,7 @@ console.log('\n[re-tying an order]');
     // rights have their own section above.
     function capsFor() { return { canEdit: true, canDelete: true }; }
     const saves = [];
+    const loadedLists = new Set(['turf', 'paving', 'kiewit']);
     function savePO(po, opts) { saves.push({ id: po.id, immediate: !!(opts && opts.immediate) }); }
     function render() {}
   `, ctx);
@@ -398,6 +407,72 @@ console.log('\n[rights are per division, not per page]');
   });
 }
 
+console.log('\n[the division tabs and a crafted id]');
+{
+  // The mirror image of this page's own jsAttr/idAttr hardening. These pages
+  // already carry escJs for exactly this; the purchase-order table never used
+  // it, so a crafted id stored through the full-list PUT — which validates
+  // neither po.id nor line.id — ran in a supervisor's authenticated session.
+  ['tracker.html', 'paving.html', 'kiewit-pinetree.html'].forEach(f => {
+    const src = read(f);
+    assert(`${f}: no raw id reaches the purchase-order markup`,
+      !/\$\{po\.id\}|\$\{line\.id\}/.test(src));
+    assert(`${f}: handler arguments go through escJs`,
+      /_togglePOLines\('\$\{escJs\(po\.id\)\}'\)/.test(src) &&
+      /deletePOLine\('\$\{escJs\(po\.id\)\}','\$\{escJs\(line\.id\)\}'\)/.test(src) &&
+      /addPOLine\('\$\{escJs\(po\.id\)\}'\)/.test(src));
+    assert(`${f}: id and data- attributes go through esc`,
+      /id="po-qty-\$\{esc\(po\.id\)\}"/.test(src) && /data-po-id="\$\{esc\(po\.id\)\}"/.test(src));
+  });
+}
+
+console.log('\n[a cost row this page has not loaded]');
+{
+  // Purchasing creates the cost rows for the orders it raises, server-side. A
+  // division tab that loaded the job beforehand does not have them in memory —
+  // and used to give up, so a supervisor's edit updated the order and left the
+  // job on the old figures.
+  ['tracker.html', 'paving.html', 'kiewit-pinetree.html'].forEach(f => {
+    const src = read(f);
+    const fn = src.slice(src.indexOf('function _syncPOLineToRow'));
+    const body = fn.slice(0, fn.indexOf('function _ensurePOLineRow'));
+    assert(`${f}: an absent row is rebuilt, not abandoned`,
+      !/if \(!r\) return;/.test(body) && /proj\.dailyRows\.push\(r\);/.test(body));
+    assert(`${f}: and written under the id the order already names`,
+      /id:\s*line\.po_row_id,/.test(body));
+  });
+}
+
+console.log('\n[load failures do not corrupt numbering]');
+{
+  assert('the page records which lists came back', /let loadedLists   = new Set\(\);/.test(PAGE));
+  // A list that failed is not an empty list — numbering off it starts at
+  // PO-0001 in a division that already has one.
+  assert('numbering refuses a list that did not load',
+    /if \(!loadedLists\.has\(divKey\)\) return '';/.test(PAGE));
+  assert('and a new order will not start in one',
+    /const usable = d => capsFor\(d\)\.canEdit && loadedLists\.has\(d\);/.test(PAGE));
+  // A catalogue failure used to collapse the page to the general list, hiding
+  // every turf, paving and kiewit order while the banner said otherwise.
+  assert('a catalogue failure still fetches every list',
+    /sourceDivs\.length \? sourceDivs\.map\(d => d\.division\) : PO_SOURCE\.slice\(\)/.test(PAGE));
+  assert('the scan sheet offers only writable lists',
+    /const writable = d => capsFor\(d\)\.canEdit && loadedLists\.has\(d\);/.test(PAGE));
+  assert('and defaults to one of them',  /onScanDivision\(scanDefault \|\| GENERAL\)/.test(PAGE));
+}
+
+console.log('\n[the receipt total is not thrown away]');
+{
+  assert('a disagreeing pair is booked at the receipt total',
+    /Math\.abs\(withTax\(pairAmount\) - total\) > 0\.01/.test(PAGE));
+  assert('and the user is told which figure won',
+    /booked at the receipt total/.test(PAGE));
+  // Quoting makes a CSV parse; it does not stop a spreadsheet evaluating a
+  // field that starts with = or @.
+  assert('CSV fields that look like formulas are defused',
+    /if \(\/\^\[=\+\\-@\\t\\r\]\/\.test\(t\)\) t = "'" \+ t;/.test(PAGE));
+}
+
 console.log('\n[deliveries this page did not know about]');
 {
   // The server keeps any stored delivery this page did not send, because it
@@ -544,7 +619,7 @@ console.log('\n[round-2 fixes]');
   // A half-landed move has to converge.
   assert('staleCopy keeps the order queued', /_unsaved\.add\(po\.id\);/.test(PAGE));
   assert('and the poll leaves its division note alone',
-    /if \(!_unsaved\.has\(po\.id\) && !_saveTimers\[po\.id\]\) _savedDivision\[po\.id\] = key;/.test(PAGE));
+    /merged\.forEach\(po => \{\s*\n\s*if \(_unsaved\.has\(po\.id\) \|\| _saveTimers\[po\.id\]\) return;\s*\n\s*_savedDivision\[po\.id\] = po\._division;/.test(PAGE));
 
   // The photo, read before anything can clear it.
   assert('the receipt is captured before the save',
@@ -688,7 +763,19 @@ console.log('\n[an order re-tied after a page reload]');
   assert('loading a list records where the server has each order',
     /_savedDivision\[po\.id\] = key;[\s\S]{0,120}migratePO\(po\);/.test(PAGE));
   assert('the poll records it too, for orders raised in a division tab since',
-    (PAGE.match(/_savedDivision\[po\.id\] = key;/g) || []).length === 2);
+    /_savedDivision\[po\.id\] = po\._division;/.test(PAGE));
+  // ...but only once the poll has committed to adopting what it fetched. The
+  // fetch takes time; a move that lands while it is in flight would otherwise
+  // be undone by a note naming the list the order has already left.
+  // savePO writes the same note on a successful move, so measure inside the
+  // poll's own body rather than across the whole page.
+  {
+    const pollBody = PAGE.slice(PAGE.indexOf('async function poll()'));
+    assert('and only after the poll re-checks that it is still safe to adopt',
+      pollBody.indexOf('if (isEditing() || _inflight > 0) return;') > -1 &&
+      pollBody.indexOf('if (isEditing() || _inflight > 0) return;')
+        < pollBody.indexOf('_savedDivision[po.id] = po._division;'));
+  }
   assert('and it is declared before the loaders that seed it',
     PAGE.indexOf('const _savedDivision = {};') < PAGE.indexOf('async function loadPurchaseOrders'));
 
@@ -706,6 +793,7 @@ console.log('\n[an order re-tied after a page reload]');
     // The order was loaded from paving, as loadPurchaseOrders would leave it.
     let purchaseOrders = [{ id:'x', po_number:'PO-0007', _division:'paving', project_id:'p1', lines:[] }];
     _savedDivision['x'] = 'paving';
+    const loadedLists = new Set(['turf', 'paving', 'kiewit']);
     function savePO(po) { sent.push({ to: po._division, from: _savedDivision[po.id] }); }
     function render() {}
   `, ctx);

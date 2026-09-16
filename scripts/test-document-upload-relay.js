@@ -42,7 +42,8 @@ const neonPath     = require.resolve('@neondatabase/serverless');
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://stub/neondb';
 
 function loadEndpoint({ canUpload = true, companyCode = 'FORCE', division = 'paving',
-                        keyClaimed = false, poScope = null, divisionAccess = true } = {}) {
+                        keyClaimed = false, poScope = null, divisionAccess = true,
+                        poUpload = null } = {}) {
   delete require.cache[endpointPath];
   delete require.cache[authPath];
   require.cache[authPath] = {
@@ -58,7 +59,9 @@ function loadEndpoint({ canUpload = true, companyCode = 'FORCE', division = 'pav
       canAccessPODivision: () => true,
       // Whether the carve-out caller may upload comes from their PURCHASING
       // level, so a view-only purchasing user is never handed a writable URL.
-      poCapabilities:      () => ({ canUpload }),
+      // Separately settable from the division level, because the two disagreeing
+      // is exactly the case the carve-out exists for.
+      poCapabilities:      () => ({ canUpload: poUpload === null ? canUpload : poUpload }),
     },
   };
   // Central purchasing's carve-out: the endpoint asks po-sync whether the
@@ -370,6 +373,38 @@ const FILE = Buffer.from('%PDF-1.7 pretend paving change order');
     // caller cannot aim an upload at a job it has no business in.
     check('keyed to the ORDER\'s job, not a requested one',
       res.body.storageKey.startsWith('FORCE/paving/job9/'), res.body.storageKey);
+  }
+  {
+    // A read-only role in this division used to be WORSE than no role at all: it
+    // failed the ordinary check and then disqualified the caller from the
+    // carve-out, so a purchasing administrator lost the ability to attach a
+    // receipt in a division they had merely been given a look at.
+    const handler = loadEndpoint({
+      canUpload: false, poUpload: true, divisionAccess: true,
+      poScope: { poId: 'real-po', projectId: 'job9' },
+    });
+    fakeStore();
+    const res = makeRes();
+    await handler(
+      { method: 'POST', query: { poId: 'real-po' }, headers: {}, body: { filename: 'receipt.jpg' } },
+      res,
+    );
+    check('a read-only role here does not cancel out purchasing\'s own',
+      res.statusCode === 200 && res.body.uploadUrl, JSON.stringify(res.body));
+    check('and that ticket is still bound to the order\'s job',
+      res.body.storageKey.startsWith('FORCE/paving/job9/'), res.body.storageKey);
+  }
+  {
+    // ...but the bound holds. A role here is not a licence to upload anywhere in
+    // the division without naming an order that is really in its list.
+    const handler = loadEndpoint({
+      canUpload: false, poUpload: true, divisionAccess: true,
+      poScope: { poId: 'real-po', projectId: 'job9' },
+    });
+    fakeStore();
+    const res = makeRes();
+    await handler({ method: 'POST', query: {}, headers: {}, body: { filename: 'r.jpg' } }, res);
+    check('and naming no order at all is still refused', res.statusCode === 403, JSON.stringify(res.body));
   }
   {
     // A job the caller named alongside a real order does not move the key.

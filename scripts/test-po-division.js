@@ -825,13 +825,44 @@ console.log('\n[upsertPO — merging into a division list]');
     Object.assign({ payload: purchasing, division: 'dust', poId: 'real' }, args));
   assert('never applies to a division outside purchasing\'s reach', scope === null);
 
+  // Holding a role here is NOT a disqualification. It used to be, and it made a
+  // purchasing administrator with read-only rights in paving worse off than one
+  // with no paving rights at all: the division role answered "view only" and
+  // the carve-out was skipped for the sole reason that a role existed. The bound
+  // that keeps this safe is the order, not the absence of a role — and the two
+  // callers only reach here once the caller's own role has come up short.
   scope = await poSync.resolvePODocScope(st.sql,
     Object.assign({ payload: bothRoles, division: 'paving', poId: 'real' }, args));
-  assert('a real division role is judged on its own role, not the carve-out', scope === null);
+  assert('a role here no longer disqualifies a caller from the carve-out',
+    scope && scope.poId === 'real');
+  assert('and it is still bound to that order\'s own job', scope.projectId === 'job3');
 
   scope = await poSync.resolvePODocScope(st.sql,
     Object.assign({ payload: dustOnly, division: 'paving', poId: 'real' }, args));
   assert('an unrelated division gets nothing', scope === null);
+
+  // The bound lives in the CALLERS now, so it is worth holding their shape.
+  // /api/documents resolves the carve-out only once the caller's own role has
+  // come up short — otherwise naming an order would DEMOTE a division
+  // administrator to the carve-out's level2 and take away their delete.
+  console.log('\n[the callers keep the carve-out behind their own role]');
+  {
+    const fs = require('fs');
+    const DOCS   = fs.readFileSync(require('path').resolve(__dirname, '../api/documents.js'), 'utf8');
+    const UPLOAD = fs.readFileSync(require('path').resolve(__dirname, '../api/document-upload-url.js'), 'utf8');
+    assert('documents.js reads its own role first',
+      /const ownCaps = hasDivisionAccess\(payload, division\) \? capabilities\(payload, division\) : null;/.test(DOCS));
+    assert('and only resolves the carve-out when that role cannot upload',
+      /const poScope = \(ownCaps && ownCaps\.canUpload\) \? null : await resolvePODocScope\(/.test(DOCS));
+    assert('so an order id can never demote a real division role',
+      /: ownCaps;/.test(DOCS) && !/: capabilities\(payload, division\);/.test(DOCS));
+    assert('the upload endpoint judges stage one on the division role alone',
+      /let canUpload = hasDivisionAccess\(payload, division\)\s*\n\s*&& capabilities\(payload, division\)\.canUpload;/.test(UPLOAD));
+    assert('and reaches the carve-out only when that came up short',
+      /if \(!canUpload && canAccessPODivision\(payload, division\)\) \{/.test(UPLOAD));
+    assert('with the ticket gated on the PURCHASING level, not the division one',
+      /if \(scope && poCapabilities\(payload, division\)\.canUpload\) \{/.test(UPLOAD));
+  }
 
   console.log('\n[line math matches the division tabs]');
   assert('amount is qty × unit cost', poSync.lineAmt({ qty: '3', unit_cost: '4' }) === 12);

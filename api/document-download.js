@@ -65,7 +65,7 @@ module.exports = async (req, res) => {
   if (!hasDivisionAccess(payload, division)) {
     poScope = await resolvePODocScope(sql, {
       payload, division, companyCode, poId: req.query.poId || null,
-      hasDivisionAccess, canAccessPODivision,
+      canAccessPODivision,
     });
     if (!poScope) return res.status(403).json({ error: 'You do not have access to this division' });
 

@@ -623,6 +623,10 @@ let catalog       = { divisions: [], vendors: [], employees: [], truncated: [] }
 let sourceDivs    = [];        // [{ division, label, projects: [...] }]
 let purchaseOrders = [];       // every order across every list, each tagged _division
 let docCounts     = {};        // poId → attached document count
+// Lists that came back this load. A list that FAILED is not an empty list, and
+// treating it as one numbers new orders from PO-0001 straight into a division
+// that already has a PO-0001.
+let loadedLists   = new Set();
 let expanded      = new Set();
 let page          = 0;
 const PER_PAGE    = 12;
@@ -669,6 +673,10 @@ function codeValue(c) { return (c.cost_code || '') + '||' + (c.sub_code || ''); 
  * skipping forty numbers of that division's sequence for no reason.
  */
 function nextPONumber(divKey, excludeId) {
+  // A list that did not load is not an empty one. Numbering off it would start
+  // at PO-0001 in a division that already has a PO-0001, and both orders would
+  // then live in that division's tab sharing a number.
+  if (!loadedLists.has(divKey)) return '';
   const nums = purchaseOrders
     .filter(po => po._division === divKey && po.id !== excludeId)
     .map(po => { const m = (po.po_number || '').match(/^PO-(\d+)$/); return m ? parseInt(m[1], 10) : 0; });
@@ -694,12 +702,23 @@ async function loadCatalog() {
   document.getElementById('f-vendor').innerHTML = '<option value="">All vendors</option>'
     + vendors.map(v => '<option value="' + esc(v.name) + '">' + esc(v.name) + '</option>').join('');
 
+  // What this user can actually do, said once and correctly. The old wording
+  // promised Turf, Paving and Kiewit to exactly the users who could not use
+  // them either — capsFor(GENERAL) and the purchasing role are the same thing,
+  // so it fired for a view-only purchasing user, who can edit nothing anywhere.
   const notes = [];
-  if (!capsFor(GENERAL).canEdit) {
-    notes.push('You can work with Turf, Paving and Kiewit orders here, but not with general (non-job) ones — those need a Purchase Orders role. Ask an administrator to set one under Manage Users.');
+  const editable = PO_SOURCE.concat([GENERAL]).filter(d => capsFor(d).canEdit);
+  const named = d => (d === GENERAL ? 'general (non-job)' : divLabel(d));
+  if (!editable.length) {
+    notes.push('You can read purchase orders here but not change them. Ask an administrator for a higher level under Manage Users.');
+  } else if (!editable.includes(GENERAL)) {
+    notes.push('You can raise orders against ' + editable.map(named).join(', ') +
+               ' jobs, but not general (non-job) ones — those need a Purchase Orders role.');
+  } else if (editable.length === 1) {
+    notes.push('You can raise general (non-job) orders here. Raising one against a Turf, Paving or Kiewit job needs a role in that division.');
   }
   if (!sourceDivs.length) {
-    notes.push('You do not have access to Turf, Paving or Kiewit, so only general orders — the ones tied to no division — can be raised here. Ask an administrator for a role in a division to raise orders against its jobs.');
+    notes.push('The job and vendor lists are unavailable, so orders cannot be tied to a job right now.');
   }
   (catalog.truncated || []).forEach(t => {
     notes.push('Showing the ' + t.shown + ' most recent of ' + t.total + ' ' + divLabel(t.division) + ' jobs.');
@@ -709,9 +728,19 @@ async function loadCatalog() {
   banner.textContent = notes.join(' ');
 }
 
-/** Every list this user can see: the job divisions, then the general one. */
+/**
+ * Every list this user can see: the job divisions, then the general one.
+ *
+ * Falls back to the canonical source divisions when the catalogue did not load.
+ * Reading the list off `sourceDivs` alone meant a catalogue failure silently
+ * collapsed this to the general list, so every turf, paving and kiewit order
+ * disappeared from the page — while the banner said orders already raised were
+ * still shown below. The orders live behind their own endpoint and are fetched
+ * fine without the catalogue; only the job and vendor pickers need it.
+ */
 function listKeys() {
-  return sourceDivs.map(d => d.division).concat([GENERAL]);
+  const divs = sourceDivs.length ? sourceDivs.map(d => d.division) : PO_SOURCE.slice();
+  return divs.concat([GENERAL]);
 }
 
 async function loadPurchaseOrders() {
@@ -731,10 +760,12 @@ async function loadPurchaseOrders() {
         _savedDivision[po.id] = key;
         migratePO(po);
       });
+      loadedLists.add(key);
       return list;
     } catch (err) {
       console.warn('[po] could not load ' + key + ':', err.message);
-      toast('Could not load ' + divLabel(key) + ' orders: ' + err.message, 'err');
+      toast(divLabel(key) + ' orders could not be loaded — you cannot raise one there until they are: '
+            + err.message, 'err');
       return [];
     }
   }));
@@ -965,13 +996,17 @@ window.addEventListener('beforeunload', () => {
  *  first job division this user can actually write to. Starting somewhere they
  *  cannot save to produces an order that never reaches the server. */
 function defaultNewDivision() {
-  if (capsFor(GENERAL).canEdit) return GENERAL;
-  const usable = sourceDivs.map(d => d.division).find(d => capsFor(d).canEdit);
-  return usable || GENERAL;
+  const usable = d => capsFor(d).canEdit && loadedLists.has(d);
+  if (usable(GENERAL)) return GENERAL;
+  return sourceDivs.map(d => d.division).find(usable) || null;
 }
 
 function newPO(seed) {
   if (!perm.canEdit) return;
+  if (!(seed && seed._division) && !defaultNewDivision()) {
+    toast('No purchase-order list is available to raise an order in right now. Reload and try again.', 'err');
+    return;
+  }
   // A new order starts general where that is allowed. Picking a division is the
   // first thing the form asks for, and until it is answered the order belongs to
   // no job ledger — which is also the finished state for the many orders that
@@ -1031,6 +1066,15 @@ async function deletePO(poId) {
 
   clearTimeout(_saveTimers[poId]);
   delete _saveTimers[poId];
+
+  // "Never stored" is not the same as "not stored YET". An order whose first
+  // save is still on the wire will exist a moment from now, so let that save
+  // settle before deciding — otherwise the row leaves the screen, no DELETE is
+  // sent, and the POST lands afterwards leaving an order nobody can see and
+  // nobody will ever remove.
+  if (_saveChain[poId]) {
+    try { await _saveChain[poId]; } catch { /* it failed, so nothing was stored */ }
+  }
 
   // An order the server has never stored is only on this screen, so there is
   // nothing to ask it to delete — and asking would fail. A new order whose
@@ -1550,7 +1594,16 @@ function exportCSV() {
   const rows = visiblePOs();
   const head = ['PO #','Division','Job','Job #','Cost Code','Sub Code','Description','Vendor','Date','Status',
                 'Invoice #','Delivery Date','Qty','Unit Cost','Amount','Tax %','Tax','Line Total','Received By'];
-  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  // Quoting makes the CSV parse; it does not stop a spreadsheet EVALUATING a
+  // field that begins with =, +, - or @. A vendor recorded as =HYPERLINK(...)
+  // or a WEBSERVICE payload runs the moment somebody opens the export. A
+  // leading apostrophe is the standard defusing and Excel and Sheets both hide
+  // it.
+  const q = v => {
+    let t = String(v == null ? '' : v);
+    if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;
+    return '"' + t.replace(/"/g, '""') + '"';
+  };
   const out = [head.map(q).join(',')];
   rows.forEach(po => {
     const proj = projectFor(po._division, po.project_id);
@@ -1835,8 +1888,16 @@ function renderScanForm(receipt, scanError) {
 
   // An order tied to a job is the common case but not the only one, so the
   // division picker leads and "General" is a real answer, not a placeholder.
-  const divOpts = ['<option value="' + GENERAL + '">General — no division</option>']
-    .concat(sourceDivs.map(d => '<option value="' + esc(d.division) + '">' + esc(d.label) + '</option>')).join('');
+  // Only lists this user can actually save into — the same rule "+ New PO" and
+  // the row picker follow. Offering the rest produced a scan that reviewed
+  // cleanly and then 403'd on save, with the photo already taken.
+  const writable = d => capsFor(d).canEdit && loadedLists.has(d);
+  const scanDefault = defaultNewDivision();
+  const divOpts = (writable(GENERAL)
+      ? ['<option value="' + GENERAL + '"' + (scanDefault === GENERAL ? ' selected' : '') + '>General — no division</option>']
+      : [])
+    .concat(sourceDivs.filter(d => writable(d.division)).map(d =>
+      '<option value="' + esc(d.division) + '"' + (scanDefault === d.division ? ' selected' : '') + '>' + esc(d.label) + '</option>')).join('');
 
   renderScanSheet(
     '<h2>' + (target ? 'Add to ' + esc(target.po_number) : 'New purchase order') + '</h2>' +
@@ -1881,7 +1942,7 @@ function renderScanForm(receipt, scanError) {
         (target ? 'Add delivery' : 'Create order') + '</button>' +
     '</div>');
 
-  if (!target) onScanDivision(GENERAL);
+  if (!target) onScanDivision(scanDefault || GENERAL);
 }
 
 function onScanDivision(divKey) {
@@ -1940,12 +2001,26 @@ async function commitScan() {
   // string, so a ticket read as 8.5 TON at a unit cost of 0 looked like a
   // complete pair, discarded the Total, and booked the delivery at nothing.
   let lineQty = qty, lineUnit = unit;
+  const pct = parseFloat(taxPct);
+  const withTax = amt => (!isNaN(pct) && pct !== 0) ? amt * (1 + pct / 100) : amt;
   const pairAmount = (parseFloat(lineQty) || 0) * (parseFloat(lineUnit) || 0);
   const pairIncomplete = pairAmount === 0;
-  if (pairIncomplete && !isNaN(total) && total !== 0) {
-    const pct = parseFloat(taxPct);
+
+  // The Total is what the supplier charged, and it is the figure the user just
+  // checked against the receipt. Where the quantity and unit price do not come
+  // to it — a ticket listing more than one item, an illegible price column, a
+  // rounded unit rate — the Total wins and the unit price is derived from it,
+  // because booking the job for less than it was billed charges the difference
+  // to nobody. It used to be read and then silently thrown away.
+  if (!pairIncomplete && !isNaN(total) && total !== 0
+      && Math.abs(withTax(pairAmount) - total) > 0.01) {
+    const q = parseFloat(lineQty) || 1;
+    lineUnit = String((!isNaN(pct) && pct !== 0 ? total / (1 + pct / 100) : total) / q);
+    toast('Quantity × unit cost came to $' + fmt(withTax(pairAmount)) + ', not the $' + fmt(total) +
+          ' on the receipt — booked at the receipt total.');
+  } else if (pairIncomplete && !isNaN(total) && total !== 0) {
     lineQty = '1';
-    lineUnit = String(!isNaN(pct) && pct > 0 ? total / (1 + pct / 100) : total);
+    lineUnit = String(!isNaN(pct) && pct !== 0 ? total / (1 + pct / 100) : total);
   } else if (pairIncomplete) {
     // No total either — there is no amount to book. Better to say so than to
     // write a $0 delivery that reads as a real material entry on the job.
@@ -2211,19 +2286,7 @@ document.addEventListener('keydown', e => {
       fetched = await Promise.all(listKeys().map(async key => {
         const data = await api('GET', '/purchase-orders?division=' + encodeURIComponent(key));
         const list = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
-        list.forEach(po => {
-          po._division = key;
-          // Same reason as on load — an order raised in a division tab since
-          // this page opened must be movable, not copyable.
-          //
-          // Except for an order this page is still saving: a half-landed move
-          // leaves it in BOTH lists, and re-seeding from whichever fetch
-          // happened to finish last could set this to the division it was
-          // moving TO. The next save would then send no `from`, the old copy
-          // would never be cleared, and the duplicate would be permanent.
-          if (!_unsaved.has(po.id) && !_saveTimers[po.id]) _savedDivision[po.id] = key;
-          migratePO(po);
-        });
+        list.forEach(po => { po._division = key; migratePO(po); });
         return list;
       }));
     } catch (err) {
@@ -2254,6 +2317,19 @@ document.addEventListener('keydown', e => {
     // landed while it was in flight.
     if (isEditing() || _inflight > 0) return;
 
+    // Where the server has each order, recorded only now — with the list it
+    // came from, and only once this poll has committed to adopting it. Writing
+    // it during the fetch undid a move that completed while the fetch was in
+    // flight: the note named the list the order had already left, the next save
+    // sent that as `from`, and every cost row the order owned was deleted and
+    // re-minted. An order this page is still saving keeps its own note, because
+    // a half-landed move leaves it in BOTH lists and either fetch could finish
+    // last.
+    merged.forEach(po => {
+      if (_unsaved.has(po.id) || _saveTimers[po.id]) return;
+      _savedDivision[po.id] = po._division;
+    });
+
     purchaseOrders = merged;
     render();
   }
@@ -2276,7 +2352,8 @@ document.addEventListener('keydown', e => {
   } catch (err) {
     document.getElementById('load-banner').style.display = '';
     document.getElementById('load-banner').textContent =
-      'Could not load the jobs and vendors list: ' + err.message + ' — orders already raised are still shown below.';
+      'Could not load the jobs and vendors list: ' + err.message +
+      ' — orders already raised are still shown below, but a new one cannot be tied to a job until this loads. Reload to try again.';
   }
   try {
     await loadPurchaseOrders();

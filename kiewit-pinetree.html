@@ -10786,8 +10786,28 @@ function _syncPOLineToRow(po, line) {
   if (!po.project_id || !line.po_row_id) return;
   const proj = getProj(po.project_id);
   if (!proj) return;
-  const r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
-  if (!r) return;
+  let r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
+  if (!r) {
+    // The row exists, just not in this page's copy of the job: central
+    // purchasing creates the cost rows for the orders it raises, server-side,
+    // and this page loaded its rows before that happened. Returning here meant
+    // a supervisor's edit to such an order updated the purchase order and
+    // nothing else — the job kept the old figures with no sign anything had
+    // been missed. The row is rebuilt and written under the id the order
+    // already names, which the server upserts.
+    r = {
+      ...defaultDailyRow(),
+      id:         line.po_row_id,
+      _projectId: po.project_id,
+      cost_code:  po.cost_code || '',
+      sub_code:   po.sub_code  || '',
+      material:   po.title     || '',
+      supplier:   po.supplier  || '',
+      po_num:     po.po_number || '',
+      field_type: 'Material',
+    };
+    proj.dailyRows.push(r);
+  }
   r.date           = line.date     || '';
   r.employee       = line.employee || '';
   r.units_purchased= line.qty      || '';
@@ -11070,9 +11090,9 @@ function renderPOTab() {
         if (po.status_changed_at) {
           const d=new Date(po.status_changed_at);
           const who = po.status_changed_by ? esc(po.status_changed_by)+' &middot; ' : '';
-          statusMeta = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap">${who}${d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>`;
+          statusMeta = `<div id="po-status-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap">${who}${d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>`;
         } else {
-          statusMeta = `<div id="po-status-meta-${po.id}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
+          statusMeta = `<div id="po-status-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
         }
 
         // Badge showing delivery count
@@ -11081,28 +11101,28 @@ function renderPOTab() {
           : `<span style="color:var(--muted);font-size:0.68rem;margin-left:0.4rem">no deliveries</span>`;
 
         // ── PO header row ──────────────────────────────────────────────
-        const headerRow = `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="if(!event.target.closest('.del-btn'))_togglePOLines('${po.id}')">
+        const headerRow = `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="if(!event.target.closest('.del-btn'))_togglePOLines('${escJs(po.id)}')">
           <td style="padding:0.35rem 0.5rem;font-size:0.75rem;color:var(--muted);text-align:center;width:28px">
-            <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${expanded?90:0}deg)" id="po-arrow-${po.id}">▶</span>
+            <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${expanded?90:0}deg)" id="po-arrow-${esc(po.id)}">▶</span>
           </td>
           <td style="padding:0.35rem 0.6rem;white-space:nowrap" onclick="event.stopPropagation()">
             <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</span>${badge}
           </td>
           <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${po.id}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${po.id}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${po.id}" data-po-field="sub_code_sel"${(po.cost_code || po.sub_code) ? ` data-cb-value="${esc((po.cost_code||'') + '||' + (po.sub_code||''))}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${esc(po.id)}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${esc(po.id)}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${esc(po.id)}" data-po-field="sub_code_sel"${(po.cost_code || po.sub_code) ? ` data-cb-value="${esc((po.cost_code||'') + '||' + (po.sub_code||''))}"` : ''}`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${inp('title','text',po.title,po.id,null,'placeholder="Material / Description"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${po.id}" data-po-field="supplier"`)}</td>
-          <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${po.id}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
-          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${po.id}">${tot.amt > 0 ? '$'+fmt(tot.amt) : '—'}</td>
-          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${po.id}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${esc(po.id)}" data-po-field="supplier"`)}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${esc(po.id)}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${esc(po.id)}">${tot.amt > 0 ? '$'+fmt(tot.amt) : '—'}</td>
+          <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${esc(po.id)}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}" onclick="event.stopPropagation()">${selOpts('status',statusOpts,po.status,po.id,null)}${statusMeta}</td>
           <td style="padding:0.25rem 0.4rem;text-align:center" onclick="event.stopPropagation()">
             <button data-po-docs="${esc(po.id)}" onclick="openPODocs(this.dataset.poDocs)" title="${docCount ? `${docCount} attached document${docCount === 1 ? '' : 's'}` : 'Attach a document'}"
               style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:0.15rem 0.4rem;
                      font-size:0.72rem;white-space:nowrap;color:${docCount ? 'var(--green)' : 'var(--muted)'}">&#128206;${docCount || ''}</button>
           </td>
-          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${po.id}">&#10005;</button></td>` : '<td></td>'}
+          ${perm.canEdit ? `<td style="padding:0.25rem 0.4rem;text-align:center"><button class="del-btn" data-tab="po" data-po-id="${esc(po.id)}">&#10005;</button></td>` : '<td></td>'}
         </tr>`;
 
         // ── Delivery lines sub-table (when expanded) ───────────────────
@@ -11113,31 +11133,31 @@ function renderPOTab() {
             <td style="padding:0.3rem 0.5rem;min-width:115px">${inp('date','date',line.date,po.id,line.id)}</td>
             <td style="padding:0.3rem 0.5rem;min-width:70px">${inp('qty','number',line.qty,po.id,line.id,'step="any" placeholder="0"')}</td>
             <td style="padding:0.3rem 0.5rem;min-width:90px">${inp('unit_cost','number',line.unit_cost,po.id,line.id,'step="any" placeholder="0.00"')}</td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem" id="po-line-amt-${line.id}">${lineAmt > 0 ? '$'+fmt(lineAmt) : '—'}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem" id="po-line-amt-${esc(line.id)}">${lineAmt > 0 ? '$'+fmt(lineAmt) : '—'}</td>
             <td style="padding:0.3rem 0.5rem;min-width:95px">
               <div style="display:flex;align-items:center;gap:0.15rem">
                 ${inp('tax_pct','number',line.tax_pct,po.id,line.id,'step="any" placeholder="0"')}<span style="color:var(--muted);font-size:0.72rem">%</span>
               </div>
-              <div id="po-line-tax-${line.id}" style="text-align:right;font-size:0.62rem;color:var(--muted);padding-right:0.6rem">${lineTax > 0 ? '$'+fmt(lineTax) : ''}</div>
+              <div id="po-line-tax-${esc(line.id)}" style="text-align:right;font-size:0.62rem;color:var(--muted);padding-right:0.6rem">${lineTax > 0 ? '$'+fmt(lineTax) : ''}</div>
             </td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600" id="po-line-tot-${line.id}">${lineTot > 0 ? '$'+fmt(lineTot) : '—'}</td>
-            <td style="padding:0.3rem 0.5rem;min-width:130px">${cbHtml('employees', line.employee || '', '— select —', `data-po-id="${po.id}" data-line-id="${line.id}" data-line-field="employee"`)}</td>
-            ${perm.canEdit ? `<td style="padding:0.3rem 0.4rem;text-align:center"><button onclick="deletePOLine('${po.id}','${line.id}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;opacity:0.6" title="Remove delivery">&#10005;</button></td>` : '<td></td>'}
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600" id="po-line-tot-${esc(line.id)}">${lineTot > 0 ? '$'+fmt(lineTot) : '—'}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:130px">${cbHtml('employees', line.employee || '', '— select —', `data-po-id="${esc(po.id)}" data-line-id="${esc(line.id)}" data-line-field="employee"`)}</td>
+            ${perm.canEdit ? `<td style="padding:0.3rem 0.4rem;text-align:center"><button onclick="deletePOLine('${escJs(po.id)}','${escJs(line.id)}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;opacity:0.6" title="Remove delivery">&#10005;</button></td>` : '<td></td>'}
           </tr>`;
         }).join('');
 
         const totRow = (po.lines||[]).length > 1 ? `
           <tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.03)">
             <td colspan="2" style="padding:0.3rem 0.5rem;font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ${lCount} deliveries</td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--text);font-size:0.8rem;font-weight:700" id="po-sub-qty-${po.id}">${qfmt(tot.qty)}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--text);font-size:0.8rem;font-weight:700" id="po-sub-qty-${esc(po.id)}">${qfmt(tot.qty)}</td>
             <td></td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:700" id="po-sub-amt-${po.id}">$${fmt(tot.amt)}</td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);font-size:0.8rem;font-weight:700" id="po-sub-tax-${po.id}">$${fmt(tot.tax)}</td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:700" id="po-sub-tot-${po.id}">$${fmt(tot.total)}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:700" id="po-sub-amt-${esc(po.id)}">$${fmt(tot.amt)}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);font-size:0.8rem;font-weight:700" id="po-sub-tax-${esc(po.id)}">$${fmt(tot.tax)}</td>
+            <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:700" id="po-sub-tot-${esc(po.id)}">$${fmt(tot.total)}</td>
             <td colspan="2"></td>
           </tr>` : '';
 
-        const linesRow = `<tr id="po-lines-${po.id}" style="display:${expanded?'table-row':'none'}">
+        const linesRow = `<tr id="po-lines-${esc(po.id)}" style="display:${expanded?'table-row':'none'}">
           <td colspan="${COLS}" style="padding:0;background:#0b0b14;border-bottom:2px solid var(--border)">
             <div style="padding:0.5rem 1.25rem 0.75rem 2.5rem">
               <div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.4rem;margin-top:0.4rem">Deliveries / Invoices</div>
@@ -11158,7 +11178,7 @@ function renderPOTab() {
                   ${totRow}
                 </table>
               </div>
-              ${perm.canEdit ? `<button onclick="addPOLine('${po.id}')" style="margin-top:0.6rem;font-size:0.72rem;padding:0.25rem 0.75rem;background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.3);color:#4ade80;border-radius:4px;cursor:pointer">+ Add Delivery</button>` : ''}
+              ${perm.canEdit ? `<button onclick="addPOLine('${escJs(po.id)}')" style="margin-top:0.6rem;font-size:0.72rem;padding:0.25rem 0.75rem;background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.3);color:#4ade80;border-radius:4px;cursor:pointer">+ Add Delivery</button>` : ''}
             </div>
           </td>
         </tr>`;

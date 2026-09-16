@@ -260,11 +260,29 @@ module.exports = async (req, res) => {
           toWrite = toWrite.map(po => {
             const was = po && po.id ? storedById.get(po.id) : null;
             if (!was || !Array.isArray(was.lines) || !was.lines.length) return po;
-            const have = new Set((Array.isArray(po.lines) ? po.lines : []).map(l => l && l.id).filter(Boolean));
+            const wasById = new Map(was.lines.filter(l => l && l.id).map(l => [l.id, l]));
+            const mine = Array.isArray(po.lines) ? po.lines : [];
+            const have = new Set(mine.map(l => l && l.id).filter(Boolean));
+
+            // A delivery the client HAS but whose cost-row link it does not:
+            // central purchasing creates those rows server-side, so a tab that
+            // loaded the order beforehand carries the line without the link.
+            // Letting that through made the tab mint a SECOND cost row for the
+            // same delivery — the job charged twice, and the first row orphaned
+            // because the stored order then named only the new one.
+            let relinked = 0;
+            const kept = mine.map(l => {
+              if (!l || !l.id || l.po_row_id) return l;
+              const before = wasById.get(l.id);
+              if (!before || !before.po_row_id) return l;
+              relinked++;
+              return { ...l, po_row_id: before.po_row_id };
+            });
+
             const missing = was.lines.filter(l => l && l.id && !have.has(l.id));
-            if (!missing.length) return po;
+            if (!missing.length && !relinked) return po;
             recovered += missing.length;
-            return { ...po, lines: (Array.isArray(po.lines) ? po.lines : []).concat(missing) };
+            return { ...po, lines: kept.concat(missing) };
           });
           if (recovered) {
             console.warn(`[purchase-orders] merged ${recovered} delivery line(s) the client had not seen for ${blobKey}`);

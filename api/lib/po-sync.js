@@ -23,7 +23,7 @@
  */
 
 const crypto = require('crypto');
-const { PO_GENERAL_DIVISION } = require('./auth');
+const { PO_GENERAL_DIVISION, PO_SOURCE_DIVISIONS } = require('./auth');
 
 // How many times a losing writer re-reads and retries before giving up. Each
 // attempt is one round trip; a genuine pile-up on one division's list resolves
@@ -296,7 +296,13 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   // rows for the OLD job are deleted first and the insert that follows violates
   // the constraint, so the request 500s having already destroyed them.
   const lines = Array.isArray(po.lines) ? po.lines : [];
-  if (division === PO_GENERAL_DIVISION && po.project_id) po.project_id = '';
+  // Only the job divisions keep a cost ledger, and daily_tracking's own CHECK
+  // admits only those. An order filed anywhere else can carry no job — the
+  // general list by design, and anything else because the INSERT would violate
+  // that constraint and 500 with the raw constraint name. The page clears the
+  // job when the division changes, but that is client-side: a stale tab or a
+  // replayed request still sends one.
+  if (!PO_SOURCE_DIVISIONS.includes(division) && po.project_id) po.project_id = '';
   const projectId = po.project_id || '';
 
   const prevLines   = (prevPO && Array.isArray(prevPO.lines)) ? prevPO.lines : [];
@@ -692,10 +698,17 @@ async function findPOInDivision(sql, companyCode, division, poId) {
  * answers with is the ORDER's project, not the one the request asked for, so a
  * caller cannot reach another job's folders by naming it alongside a real order.
  */
-async function resolvePODocScope(sql, { payload, division, poId, companyCode, hasDivisionAccess, canAccessPODivision }) {
+async function resolvePODocScope(sql, { payload, division, poId, companyCode, canAccessPODivision }) {
   if (!poId) return null;
-  if (hasDivisionAccess(payload, division)) return null;
   if (!canAccessPODivision(payload, division)) return null;
+  // Holding a role in this division does NOT disqualify a caller. It used to:
+  // a purchasing administrator who had also been given read-only rights in
+  // paving came out worse than one with no paving rights at all — the division
+  // role answered "view only", and the carve-out that would have let them
+  // attach a receipt was skipped for the sole reason that they had a role.
+  // What keeps this safe is not the absence of a role, it is the bound: the
+  // scope is a single order that really is in this division's list, and the
+  // callers resolve it only once the caller's own role has come up short.
 
   const po = await findPOInDivision(sql, companyCode, division, poId);
   if (!po) return null;
