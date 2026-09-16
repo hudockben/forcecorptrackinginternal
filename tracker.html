@@ -20135,14 +20135,19 @@ function _pvUpdateBanner() {
 }
 
 /* Header for the full-screen project views: project name, then the job
-   number in the same muted "Job #" treatment the project cards use, then
-   the view label. Built as HTML, so the project's own strings go through
-   escT(). Projects with no job number read exactly as they did before. */
+   number, then the view label. Built as HTML, so the project's own strings
+   go through escT(). Projects with no job number read exactly as they did
+   before.
+
+   The job number sits on #9ca3af rather than var(--muted): #666 only makes
+   3.3:1 against this header's #111118, which is under AA and hard to read
+   on a screen in the field. #9ca3af gives 7.4:1 and still reads as
+   secondary next to the project name's bold var(--text). */
 function _fsTitleHTML(p, viewLabel) {
   const name  = p['project-name'] || 'Untitled Project';
   const jobNo = String(p['job-number'] || '').trim();
   return escT(name)
-    + (jobNo ? ' <span style="font-weight:600;color:var(--muted)">Job #' + escT(jobNo) + '</span>' : '')
+    + (jobNo ? ' <span style="font-weight:600;color:#9ca3af">Job #' + escT(jobNo) + '</span>' : '')
     + ' — ' + escT(viewLabel);
 }
 
