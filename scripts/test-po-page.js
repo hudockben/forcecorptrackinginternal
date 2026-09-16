@@ -489,6 +489,44 @@ console.log('\n[the division tabs and a crafted id]');
       /addPOLine\('\$\{escJs\(po\.id\)\}'\)/.test(src));
     assert(`${f}: id and data- attributes go through esc`,
       /id="po-qty-\$\{esc\(po\.id\)\}"/.test(src) && /data-po-id="\$\{esc\(po\.id\)\}"/.test(src));
+    // esc() covers ONE layer: the quote that would end an attribute. A value
+    // reaching a TEXT node through it is raw HTML — `<img src=x onerror=…>`
+    // comes back unchanged — and central purchasing can write a title or a
+    // supplier straight into this division's blob without holding a role here.
+    {
+      const ectx = vm.createContext({});
+      ['esc', 'escT'].forEach(n => vm.runInContext(requireFn(src, n, f), ectx));
+      const payload = '<img src=x onerror=alert(1)>';
+      const e  = vm.runInContext('esc(' + JSON.stringify(payload) + ')', ectx);
+      const et = vm.runInContext('escT(' + JSON.stringify(payload) + ')', ectx);
+      assert(`${f}: esc alone does not make a payload safe as text`, e === payload, e);
+      assert(`${f}: escT does`, !/[<>]/.test(et), et);
+      assert(`${f}: and it still escapes the ampersand`,
+        vm.runInContext("escT('a & b')", ectx) === 'a &amp; b');
+    }
+    // Every purchase-order value that lands in a text node goes through escT.
+    ['po.po_number', 'po.title', 'po.supplier', 'po.status', 'po.status_changed_by']
+      .forEach(field => {
+        const textSinks = (src.match(new RegExp('>\\$\\{esc\\(' + field.replace('.', '\\.'), 'g')) || []);
+        assert(`${f}: ${field} never reaches a text node through esc`,
+          textSinks.length === 0, JSON.stringify(textSinks));
+      });
+    // ...and they are actually there, rather than the field simply being absent.
+    // Counted loosely at the call, because some of these cells go on to
+    // `|| dash` before the brace closes.
+    [['po.po_number', 3], ['po.title', 2], ['po.supplier', 1], ['po.status ', 1]]
+      .forEach(([field, least]) => {
+        const n = (src.match(new RegExp('\\$\\{escT\\(' + field.replace('.', '\\.'), 'g')) || []).length;
+        assert(`${f}: ${field} reaches its text cells through escT (${n})`, n >= least, String(n));
+      });
+    // A <option> label is a text node too; its value is the attribute.
+    // Built by concatenation rather than interpolation, so it is not in the
+    // ${...} sweep above.
+    assert(`${f}: the status-change byline is escaped as text too`,
+      /escT\(po\.status_changed_by\)/.test(src) && !/esc\(po\.status_changed_by\)/.test(src));
+    assert(`${f}: an option's label is escaped as text, its value as an attribute`,
+      /<option value="\$\{esc\(v\)\}" \$\{v===current\?'selected':''\}>\$\{escT\(l\)\}<\/option>/.test(src));
+
     assert(`${f}: the input helpers escape the ids they are handed`,
       (src.match(/data-po-id="\$\{esc\(poId\)\}" data-line-id="\$\{esc\(lineId\)\}"/g) || []).length === 2 &&
       (src.match(/data-po-id="\$\{esc\(poId\)\}" data-po-field=/g) || []).length === 2);

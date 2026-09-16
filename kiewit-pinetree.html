@@ -11052,7 +11052,10 @@ function renderPOTab() {
                   && !options.some(([v]) => v === current))
       ? [...options, [current, current.includes('||') ? current.split('||').filter(Boolean).join(' / ') : current]]
       : options;
-    const optHtml = opts.map(([v,l]) => `<option value="${esc(v)}" ${v===current?'selected':''}>${esc(l)}</option>`).join('');
+    // The VALUE is an attribute and the LABEL is a text node, and they need
+    // different escapes: esc() covers only the quote that would end an
+    // attribute, so a label reaching the text layer through it is raw HTML.
+    const optHtml = opts.map(([v,l]) => `<option value="${esc(v)}" ${v===current?'selected':''}>${escT(l)}</option>`).join('');
     return `<select ${attr} style="${style}">${optHtml}</select>`;
   };
   const inp = (field, type, current, poId, lineId, extra='') => {
@@ -11089,7 +11092,7 @@ function renderPOTab() {
         let statusMeta = '';
         if (po.status_changed_at) {
           const d=new Date(po.status_changed_at);
-          const who = po.status_changed_by ? esc(po.status_changed_by)+' &middot; ' : '';
+          const who = po.status_changed_by ? escT(po.status_changed_by)+' &middot; ' : '';
           statusMeta = `<div id="po-status-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap">${who}${d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>`;
         } else {
           statusMeta = `<div id="po-status-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
@@ -11106,7 +11109,7 @@ function renderPOTab() {
             <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${expanded?90:0}deg)" id="po-arrow-${esc(po.id)}">▶</span>
           </td>
           <td style="padding:0.35rem 0.6rem;white-space:nowrap" onclick="event.stopPropagation()">
-            <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</span>${badge}
+            <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${escT(po.po_number)}</span>${badge}
           </td>
           <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${esc(po.id)}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}</td>
@@ -11304,11 +11307,11 @@ function renderProjectPOs(projId, bodyIdOverride) {
     const sc = po.status === 'approved' ? 'color:#86efac' : po.status === 'closed' ? 'color:var(--muted)' : 'color:var(--yellow)';
     const delivNote = lCount > 1 ? `<span style="font-size:0.68rem;color:var(--muted);margin-left:0.35rem">(${lCount} deliveries)</span>` : '';
     return `<tr>
-      <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(po.po_number)}</td>
-      <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${esc(po.title || '—')}${delivNote}</td>
+      <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted)">${escT(po.po_number)}</td>
+      <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${escT(po.title || '—')}${delivNote}</td>
       <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--muted)">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
       <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--yellow);font-weight:600">$${fmt(tot.total)}</td>
-      <td style="padding:0.35rem 0.6rem;font-size:0.78rem;text-transform:capitalize;${sc}">${esc(po.status || '')}</td>
+      <td style="padding:0.35rem 0.6rem;font-size:0.78rem;text-transform:capitalize;${sc}">${escT(po.status || '')}</td>
     </tr>`;
   }).join('');
 }
@@ -17944,10 +17947,10 @@ async function exportJobSummary(projId, opts = {}) {
     const codeLbl = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
     purchTotal += t.total;
     purchRowsHTML += `<tr>
-      <td class="src">${esc(po.po_number) || dash}</td>
-      <td>${esc(po.supplier) || dash}</td>
+      <td class="src">${escT(po.po_number) || dash}</td>
+      <td>${escT(po.supplier) || dash}</td>
       <td>${esc(codeLbl) || dash}</td>
-      <td>${esc(po.title) || dash}</td>
+      <td>${escT(po.title) || dash}</td>
       <td class="num">${t.qty ? qfmt(t.qty) : dash}</td>
       <td class="num">${t.total ? '$' + fmt(t.total) : dash}</td>
     </tr>`;
