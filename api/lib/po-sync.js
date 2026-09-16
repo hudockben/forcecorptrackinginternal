@@ -278,7 +278,7 @@ async function deletePORows(sql, companyCode, rowIds) {
  * re-tied order clean up after itself: when the project or the division moves,
  * every row the old project carried is removed before the new ones are written.
  */
-async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivision }) {
+async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivision, priorCopies }) {
   // An order filed under purchasing itself belongs to no job ledger, so it can
   // carry no job — and daily_tracking's division CHECK does not admit
   // 'purchase_orders' anyway. The page clears the job when the division
@@ -314,6 +314,31 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
     }
   }
 
+  // The cost rows this order actually owns — taken from what is STORED, never
+  // from the request.
+  //
+  // po_row_id arrives in the body, and daily_tracking.row_id is unique across
+  // the whole company, so a request naming a row id it did not create could
+  // otherwise reach any job-cost row in the tenant: emptying a line's quantity
+  // deleted whatever id the line pointed at, and a line carrying a live id
+  // rewrote that row's job, division and cost. Neither needed a role in the
+  // division that owned it. An id the stored order does not name is simply not
+  // this order's to touch, so it is ignored and the delivery gets a row of its
+  // own instead.
+  // Every stored copy counts, not just the previous one. A move that half
+  // landed leaves the order in both lists — the new one already naming the rows
+  // this call's first attempt wrote, the old one still naming the ones it
+  // replaced — and the retry has to recognise both as its own. Treating only
+  // the old copy as authoritative made the retry mint a third set and orphan
+  // the second.
+  const ownedRowIds = new Set();
+  for (const copy of (Array.isArray(priorCopies) && priorCopies.length ? priorCopies : [prevPO])) {
+    for (const l of ((copy && Array.isArray(copy.lines)) ? copy.lines : [])) {
+      if (l && l.po_row_id) ownedRowIds.add(String(l.po_row_id));
+    }
+  }
+  const ownsRow = id => Boolean(id) && ownedRowIds.has(String(id));
+
   // Whether the ORDER's own cost/sub code changed in this save. A PO-generated
   // material row is fully editable on the job's own cost tab, and re-coding one
   // is a real workflow — so purchasing flipping a status or fixing a typo must
@@ -341,14 +366,16 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   // retry re-creates every row and leaves the first attempt's behind, and the
   // job is charged for the delivery twice.
   if (startAfresh) {
-    for (const line of lines) if (line && line.po_row_id) stale.push(line.po_row_id);
+    for (const line of lines) if (line && ownsRow(line.po_row_id)) stale.push(line.po_row_id);
   }
 
   // A line the caller sent with a po_row_id but no cost left on it — the user
-  // cleared the quantity. Its row goes too, and the stale link with it.
+  // cleared the quantity. Its row goes too, and the stale link with it. Only
+  // when the row is one this order owns: otherwise the link is dropped and
+  // somebody else's row is left alone.
   for (const line of lines) {
     if (line && line.po_row_id && !lineHasCost(line)) {
-      stale.push(line.po_row_id);
+      if (ownsRow(line.po_row_id)) stale.push(line.po_row_id);
       line.po_row_id = null;
     }
   }
@@ -360,7 +387,7 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
 
   // An order with no job has no cost rows at all — that is the general-purchase
   // case, and it is a first-class state rather than an incomplete order.
-  if (!projectId) return { removed, written: 0 };
+  if (!projectId) return { removed, written: 0, writtenIds: [] };
 
   /**
    * Write one delivery's cost row under `rowId`, and say whether it landed.
@@ -409,6 +436,8 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
         material_cost   = EXCLUDED.material_cost,
         updated_at      = NOW()
       WHERE daily_tracking.company_code = ${companyCode}
+        AND daily_tracking.division   = ${division}
+        AND daily_tracking.project_id = ${projectId}
         AND daily_tracking.timesheet_entry_id IS NULL
       RETURNING row_id
     `;
@@ -416,11 +445,16 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   }
 
   let written = 0;
+  const writtenIds = [];
   for (const line of lines) {
     if (!line || !lineHasCost(line)) continue;
 
-    // The stored order is the authority on which row a delivery already owns.
-    const linked = line.po_row_id || storedRowIdFor.get(line.id) || null;
+    // The stored order is the authority on which row a delivery already owns —
+    // an id the request supplied is honoured only when the stored order names
+    // it too, so a crafted one falls through to a fresh row of its own.
+    const linked = (ownsRow(line.po_row_id) && line.po_row_id)
+      || storedRowIdFor.get(line.id)
+      || null;
     // Nothing here may touch a payroll-injected row, however a link came to
     // point at one. Only payroll creates and removes those.
     if (linked && isInjectedRowId(linked)) continue;
@@ -438,10 +472,11 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
     if (!ok) continue;
 
     line.po_row_id = rowId;
+    writtenIds.push(rowId);
     written++;
   }
 
-  return { removed, written };
+  return { removed, written, writtenIds };
 }
 
 /**
@@ -459,16 +494,27 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
 async function upsertPO(sql, { companyCode, division, po, from }) {
   const prevDivision = from && from !== division ? from : null;
 
-  let prevPO = null;
+  // Every list this order might already be stored in. The target's copy matters
+  // as much as the source's after a move that half landed, when the order is in
+  // both — see the ownership note in syncPOCostRows.
+  const targetCopy = (await readPOBlob(sql, blobKeyFor(companyCode, division)))
+    .list.find(p => p && p.id === po.id) || null;
+
+  let prevPO = targetCopy;
+  const priorCopies = [];
+  if (targetCopy) priorCopies.push(targetCopy);
   if (prevDivision) {
     const old = await readPOBlob(sql, blobKeyFor(companyCode, prevDivision));
-    prevPO = old.list.find(p => p && p.id === po.id) || null;
-  } else {
-    const cur = await readPOBlob(sql, blobKeyFor(companyCode, division));
-    prevPO = cur.list.find(p => p && p.id === po.id) || null;
+    const sourceCopy = old.list.find(p => p && p.id === po.id) || null;
+    // `prevPO` is what this order looked like BEFORE the save, which after a
+    // move is the copy in the list it is leaving.
+    prevPO = sourceCopy;
+    if (sourceCopy) priorCopies.push(sourceCopy);
   }
 
-  const rows = await syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivision });
+  const rows = await syncPOCostRows(sql, {
+    companyCode, division, po, prevPO, prevDivision, priorCopies,
+  });
 
   // The new list is written FIRST, and only then is the old one emptied.
   // The reverse order has a window where the order is in neither list, and a
@@ -484,7 +530,18 @@ async function upsertPO(sql, { companyCode, division, po, from }) {
     next[idx] = po;
     return next;
   });
-  if (!saved.ok) return { ok: false, reason: 'conflict' };
+  if (!saved.ok) {
+    // The cost rows were reconciled before this, because reconciling is what
+    // mints the po_row_id links the order has to be stored WITH. With the order
+    // unstored, nothing anywhere names the rows just written — no later save,
+    // no project change and not even deleting the order would find them, and
+    // the retry would write a second set on top. So they go back.
+    if (rows.writtenIds && rows.writtenIds.length) {
+      try { await deletePORows(sql, companyCode, rows.writtenIds); }
+      catch (err) { console.error('[po-sync] could not roll back cost rows:', err.message); }
+    }
+    return { ok: false, reason: 'conflict' };
+  }
 
   await mirrorOnePO(sql, companyCode, division, po);
 

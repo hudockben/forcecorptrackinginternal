@@ -471,6 +471,17 @@ function esc(s) {
  * in a purchasing session — which holds a carve-out into three divisions that
  * the author does not. Backslash-escape first, then HTML-escape what is left.
  */
+/**
+ * Escape a value for use inside an id="..." attribute.
+ *
+ * The companion to jsAttr below, and the other half of the same hole: jsAttr
+ * closed the handler ARGUMENTS, but ids were interpolated into id= attributes
+ * with no escaping at all, so a double quote in one closed the attribute and
+ * could add an event handler of its own. getElementById is given the raw value,
+ * which is what it matches on, so only the markup side is encoded.
+ */
+function idAttr(v) { return esc(v); }
+
 function jsAttr(v) {
   return esc(String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
 }
@@ -747,6 +758,13 @@ let   _inflight    = 0;
 // dropped connection lands on its own once the signal returns.
 const _unsaved = new Set();
 
+// The save in flight for each order, so a second one QUEUES behind it instead
+// of racing it. Without this, two saves of one order could both read the stored
+// order before either had written, neither would see a po_row_id for the
+// delivery, and both would insert a job cost row — charging the job twice and
+// orphaning one of the rows past the reach of even deleting the order.
+const _saveChain = {};
+
 function poPayload(po) {
   const out = {};
   Object.keys(po).forEach(k => { if (k.charAt(0) !== '_') out[k] = po[k]; });
@@ -766,7 +784,22 @@ function savePO(po, opts) {
   }, delay);
 }
 
-async function _savePONow(po) {
+/**
+ * Save an order, never concurrently with another save of the same order.
+ *
+ * Everything that saves goes through here. The chain is per order, so two
+ * different orders still save in parallel.
+ */
+function _savePONow(po) {
+  const prior = _saveChain[po.id] || Promise.resolve();
+  const next = prior
+    .catch(() => {})          // a failure must not poison the orders behind it
+    .then(() => _savePOWrite(po));
+  _saveChain[po.id] = next.catch(() => {});
+  return next;
+}
+
+async function _savePOWrite(po) {
   delete _saveTimers[po.id];
   _inflight++;
   showSave('saving', 'Saving…');
@@ -791,12 +824,17 @@ async function _savePONow(po) {
     // division still lists it. Leaving this note alone means the next save
     // sends the same `from` and finishes the move.
     if (res && res.staleCopy) {
-      toast('Saved, but ' + divLabel(from) + ' still shows a copy. Saving again will clear it.', 'err');
+      // The move half landed: stored in the new list, still listed in the old.
+      // _savedDivision stays on the old division so the next save repeats the
+      // move — and the order stays in _unsaved so there IS a next save. Without
+      // that nothing was scheduled and the duplicate became permanent.
+      toast('Saved, but ' + divLabel(from) + ' still shows a copy. Clearing it…', 'err');
+      _unsaved.add(po.id);
     } else {
       _savedDivision[po.id] = po._division;
+      _unsaved.delete(po.id);
     }
 
-    _unsaved.delete(po.id);
     _inflight = Math.max(0, _inflight - 1);
     if (_inflight === 0) showSave('saved', 'Saved');
     return po;
@@ -818,7 +856,11 @@ async function _savePONow(po) {
 
 /** Flush anything still debounced before the tab goes away. */
 window.addEventListener('beforeunload', () => {
-  Object.keys(_saveTimers).forEach(id => {
+  // Debounced saves AND ones that failed. A failed save has no timer, so
+  // flushing only the timers let a delivery the user could still see on screen
+  // — and had been told would be retried — leave with the tab.
+  const outstanding = new Set(Object.keys(_saveTimers).concat([..._unsaved]));
+  outstanding.forEach(id => {
     const po = purchaseOrders.find(p => p.id === id);
     if (!po) return;
     clearTimeout(_saveTimers[id]);
@@ -1006,15 +1048,15 @@ function updateTotalsInPlace(po, line) {
     // all times — only one is displayed — so updating a single prefix leaves
     // whichever the user is actually looking at frozen.
     ['tbl', 'card'].forEach(sfc => {
-      set(sfc + '-amt-' + line.id, amt > 0 ? '$' + fmt(amt) : '—');
-      set(sfc + '-tax-' + line.id, tax > 0 ? '$' + fmt(tax) : '');
-      set(sfc + '-tot-' + line.id, (amt + tax) > 0 ? '$' + fmt(amt + tax) : '—');
+      set(sfc + '-amt-' + line.id, amt !== 0 ? '$' + fmt(amt) : '—');
+      set(sfc + '-tax-' + line.id, tax !== 0 ? '$' + fmt(tax) : '');
+      set(sfc + '-tot-' + line.id, (amt + tax) !== 0 ? '$' + fmt(amt + tax) : '—');
     });
   }
 
-  set('po-qty-' + po.id, tot.qty > 0 ? qfmt(tot.qty) : '—');
-  set('po-amt-' + po.id, tot.amt > 0 ? '$' + fmt(tot.amt) : '—');
-  set('po-tot-' + po.id, tot.total > 0 ? '$' + fmt(tot.total) : '—');
+  set('po-qty-' + po.id, tot.qty !== 0 ? qfmt(tot.qty) : '—');
+  set('po-amt-' + po.id, tot.amt !== 0 ? '$' + fmt(tot.amt) : '—');
+  set('po-tot-' + po.id, tot.total !== 0 ? '$' + fmt(tot.total) : '—');
   set('card-tot-' + po.id, '$' + fmt(tot.total));
 
   // The RUNNING TOTAL under a multi-delivery order. Without this it kept the
@@ -1154,7 +1196,8 @@ function divChipHTML(key) {
  * into never moved off "—" while the order's headline total did.
  */
 function lineRowsHTML(po, surface) {
-  const cell = (kind, id) => (surface || 'tbl') + '-' + kind + '-' + id;
+  // Markup-encoded; getElementById is still given the raw value it matches on.
+  const cell = (kind, id) => esc((surface || 'tbl') + '-' + kind + '-' + id);
   return (po.lines || []).map(l => {
     const amt = lineAmt(l), tax = lineTax(l);
     const inp = (field, type, val, extra) =>
@@ -1166,16 +1209,16 @@ function lineRowsHTML(po, surface) {
       '<td style="min-width:118px">' + inp('date','date', l.date) + '</td>' +
       '<td style="min-width:74px">'  + inp('qty','number', l.qty, 'step="any" placeholder="0"') + '</td>' +
       '<td style="min-width:92px">'  + inp('unit_cost','number', l.unit_cost, 'step="any" placeholder="0.00"') + '</td>' +
-      '<td class="r" style="color:var(--ok)" id="' + cell('amt', l.id) + '">' + (amt > 0 ? '$' + fmt(amt) : '—') + '</td>' +
+      '<td class="r" style="color:var(--ok)" id="' + cell('amt', l.id) + '">' + (amt !== 0 ? '$' + fmt(amt) : '—') + '</td>' +
       '<td style="min-width:92px">' +
         '<div style="display:flex;align-items:center;gap:0.15rem">' +
           inp('tax_pct','number', l.tax_pct, 'step="any" placeholder="0"') +
           '<span style="color:var(--muted);font-size:0.72rem">%</span></div>' +
         '<div class="r" style="font-size:0.62rem;color:var(--muted);padding-right:0.6rem" id="' + cell('tax', l.id) + '">' +
-          (tax > 0 ? '$' + fmt(tax) : '') + '</div>' +
+          (tax !== 0 ? '$' + fmt(tax) : '') + '</div>' +
       '</td>' +
       '<td class="r" style="color:var(--yellow);font-weight:600" id="' + cell('tot', l.id) + '">' +
-        ((amt + tax) > 0 ? '$' + fmt(amt + tax) : '—') + '</td>' +
+        ((amt + tax) !== 0 ? '$' + fmt(amt + tax) : '—') + '</td>' +
       '<td style="min-width:120px">' + inp('employee','text', l.employee, 'placeholder="Received by" list="employee-list"') + '</td>' +
       '<td style="width:30px;text-align:center">' +
         (perm.canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
@@ -1189,10 +1232,10 @@ function linesPanelHTML(po, colspan) {
   const totalRow = count > 1
     ? '<tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.03)">' +
         '<td colspan="2" style="font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ' + count + ' deliveries</td>' +
-        '<td class="r" style="font-weight:700" id="run-qty-' + po.id + '">' + qfmt(tot.qty) + '</td><td></td>' +
-        '<td class="r" style="color:var(--ok);font-weight:700" id="run-amt-' + po.id + '">$' + fmt(tot.amt) + '</td>' +
-        '<td class="r" style="color:var(--muted);font-weight:700" id="run-tax-' + po.id + '">$' + fmt(tot.tax) + '</td>' +
-        '<td class="r" style="color:var(--yellow);font-weight:700" id="run-tot-' + po.id + '">$' + fmt(tot.total) + '</td>' +
+        '<td class="r" style="font-weight:700" id="run-qty-' + idAttr(po.id) + '">' + qfmt(tot.qty) + '</td><td></td>' +
+        '<td class="r" style="color:var(--ok);font-weight:700" id="run-amt-' + idAttr(po.id) + '">$' + fmt(tot.amt) + '</td>' +
+        '<td class="r" style="color:var(--muted);font-weight:700" id="run-tax-' + idAttr(po.id) + '">$' + fmt(tot.tax) + '</td>' +
+        '<td class="r" style="color:var(--yellow);font-weight:700" id="run-tot-' + idAttr(po.id) + '">$' + fmt(tot.total) + '</td>' +
         '<td colspan="2"></td></tr>'
     : '';
   return '<td colspan="' + colspan + '" style="padding:0;border-bottom:2px solid var(--border)">' +
@@ -1254,9 +1297,9 @@ function renderTable(rows) {
         (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></td>' +
       '<td><input type="text" class="boxed" list="vendor-list" placeholder="Vendor" value="' + esc(po.supplier || '') + '" ' +
         (perm.canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></td>' +
-      '<td class="r" style="color:var(--muted)" id="po-qty-' + po.id + '">' + (tot.qty > 0 ? qfmt(tot.qty) : '—') + '</td>' +
-      '<td class="r" style="color:var(--ok);white-space:nowrap" id="po-amt-' + po.id + '">' + (tot.amt > 0 ? '$' + fmt(tot.amt) : '—') + '</td>' +
-      '<td class="r" style="color:var(--yellow);font-weight:600;white-space:nowrap" id="po-tot-' + po.id + '">' + (tot.total > 0 ? '$' + fmt(tot.total) : '—') + '</td>' +
+      '<td class="r" style="color:var(--muted)" id="po-qty-' + idAttr(po.id) + '">' + (tot.qty !== 0 ? qfmt(tot.qty) : '—') + '</td>' +
+      '<td class="r" style="color:var(--ok);white-space:nowrap" id="po-amt-' + idAttr(po.id) + '">' + (tot.amt !== 0 ? '$' + fmt(tot.amt) : '—') + '</td>' +
+      '<td class="r" style="color:var(--yellow);font-weight:600;white-space:nowrap" id="po-tot-' + idAttr(po.id) + '">' + (tot.total !== 0 ? '$' + fmt(tot.total) : '—') + '</td>' +
       '<td>' + statusSelectHTML(po) + meta + '</td>' +
       '<td style="text-align:center">' + docBtnHTML(po) + '</td>' +
       '<td style="text-align:center">' +
@@ -1295,7 +1338,7 @@ function renderCards(rows) {
       '<div class="title">' + esc(po.title || 'Untitled order') + '</div>' +
       '<div class="meta">' + esc(po.supplier || 'No vendor') + ' · ' + esc(po.date_created || '') + '</div>' +
       '<div class="meta">' + divChipHTML(po._division) + ' ' + esc(jobLine) + (codes ? ' · ' + esc(codes) : '') + '</div>' +
-      '<div class="amt" id="card-tot-' + po.id + '" style="margin-top:0.4rem">$' + fmt(tot.total) + '</div>' +
+      '<div class="amt" id="card-tot-' + idAttr(po.id) + '" style="margin-top:0.4rem">$' + fmt(tot.total) + '</div>' +
       '<div class="card-actions">' +
         '<button class="btn" onclick="toggleLines(\'' + jsAttr(po.id) + '\')">' + (open ? 'Hide' : 'Edit') + ' details</button>' +
         '<button class="icon-btn' + (n ? ' has' : '') + '" onclick="openDocs(\'' + jsAttr(po.id) + '\')" style="padding:0.38rem 0.6rem">&#128206; ' + (n || 'Attach') + '</button>' +
@@ -1529,7 +1572,11 @@ async function attachToPO(po, blob, filename, note) {
   // 4. Register — and clean up the stored bytes if it does not land, or they
   //    sit in the bucket with nothing pointing at them.
   try {
-    await api('POST', '/documents?division=' + encodeURIComponent(division) + projQ, {
+    // poQ as well as projQ: the carve-out reads the order it was granted for
+    // from the QUERY, so without it this leg 403s and the bytes already in the
+    // bucket are thrown away — no receipt could be filed against a turf,
+    // paving or kiewit order at all.
+    await api('POST', '/documents?division=' + encodeURIComponent(division) + projQ + poQ, {
       documentId: ticket.documentId,
       filename,
       storageKey: ticket.storageKey,
@@ -1766,9 +1813,13 @@ async function commitScan() {
   // known: the order goes in as a single unit priced at the total, which is
   // the shape the division tabs produce for a one-off purchase and keeps the
   // job cost right.
+  // On the AMOUNT, not on whether the boxes are blank: "0" is a non-empty
+  // string, so a ticket read as 8.5 TON at a unit cost of 0 looked like a
+  // complete pair, discarded the Total, and booked the delivery at nothing.
   let lineQty = qty, lineUnit = unit;
-  const pairIncomplete = !lineQty || !lineUnit;
-  if (pairIncomplete && !isNaN(total)) {
+  const pairAmount = (parseFloat(lineQty) || 0) * (parseFloat(lineUnit) || 0);
+  const pairIncomplete = pairAmount === 0;
+  if (pairIncomplete && !isNaN(total) && total !== 0) {
     const pct = parseFloat(taxPct);
     lineQty = '1';
     lineUnit = String(!isNaN(pct) && pct > 0 ? total / (1 + pct / 100) : total);
@@ -1790,14 +1841,24 @@ async function commitScan() {
   });
   recalcLineTax(line);
 
+  // The photo, read before anything can clear it: dismissing the sheet during
+  // the attach nulls scanState, and reading it afterwards threw a raw
+  // TypeError at the user instead of a sentence.
+  const shotBlob = scanState.blob;
+  const shotName = scanState.filename;
+
   let po;
+  let undo = null;   // how to put the page back if the save does not land
   try {
     if (scanState.targetPoId) {
       po = purchaseOrders.find(p => p.id === scanState.targetPoId);
       if (!po) throw new Error('That order is no longer on this page');
+      const before = (po.lines || []).slice();
+      const hadSupplier = po.supplier, hadTitle = po.title;
       po.lines = (po.lines || []).concat([line]);
       if (!po.supplier) po.supplier = document.getElementById('sc-vendor').value || '';
       if (!po.title)    po.title    = document.getElementById('sc-title').value || '';
+      undo = () => { po.lines = before; po.supplier = hadSupplier; po.title = hadTitle; };
       expanded.add(po.id);
       await _savePONow(po);
     } else {
@@ -1820,6 +1881,7 @@ async function commitScan() {
         _division:    divKey,
       };
       purchaseOrders.push(po);
+      undo = () => { purchaseOrders = purchaseOrders.filter(p => p.id !== po.id); };
       expanded.add(po.id);
       await _savePONow(po);
     }
@@ -1829,16 +1891,23 @@ async function commitScan() {
     // attached" for an order that was never written — and scanState is nulled
     // on close, so the photo was gone and there was no way to retry. The sheet
     // stays open with the figures intact.
+    // Put the page back. Saying "nothing was saved" while leaving the order in
+    // purchaseOrders AND in _unsaved was false twice over: the poll's retry
+    // would write it anyway, and tapping "Try again" would append a SECOND
+    // delivery for the same receipt on top of it.
+    if (undo) undo();
+    if (po) { _unsaved.delete(po.id); clearTimeout(_saveTimers[po.id]); delete _saveTimers[po.id]; }
     _committing = false;
     if (btn) { btn.disabled = false; btn.textContent = 'Try again'; }
     toast('Could not save the order: ' + err.message + ' — nothing was saved. Try again.', 'err');
+    render();
     return;
   }
 
   if (btn) btn.innerHTML = '<span class="spinner"></span>Attaching photo…';
   let attachError = null;
   try {
-    await attachToPO(po, scanState.blob, scanState.filename, 'Scanned receipt');
+    await attachToPO(po, shotBlob, shotName, 'Scanned receipt');
   } catch (err) {
     attachError = err.message;
   }
@@ -2003,17 +2072,19 @@ document.addEventListener('keydown', e => {
 
   async function poll() {
     if (document.visibilityState === 'hidden') return;
-    if (_inflight > 0) return;          // a save is in the air; its result lands first
-    if (isEditing()) return;
 
-    // Retry anything that failed to save. This is the only retry path there is:
-    // a save lost to a dropped connection at a supply counter otherwise sits
-    // unsaved until someone happens to edit that order again.
+    // Retry anything that failed to save, BEFORE the guards below. It touches
+    // no DOM, and a cursor resting in the field someone just typed into — the
+    // normal state right after an edit — would otherwise hold the only retry
+    // path this page has for as long as it stayed there.
     for (const id of [..._unsaved]) {
       const po = purchaseOrders.find(p => p.id === id);
       if (!po) { _unsaved.delete(id); continue; }
       try { await _savePONow(po); } catch { /* stays in _unsaved for the next tick */ }
     }
+
+    if (_inflight > 0) return;          // a save is in the air; its result lands first
+    if (isEditing()) return;
 
     let fetched;
     try {
@@ -2024,7 +2095,13 @@ document.addEventListener('keydown', e => {
           po._division = key;
           // Same reason as on load — an order raised in a division tab since
           // this page opened must be movable, not copyable.
-          _savedDivision[po.id] = key;
+          //
+          // Except for an order this page is still saving: a half-landed move
+          // leaves it in BOTH lists, and re-seeding from whichever fetch
+          // happened to finish last could set this to the division it was
+          // moving TO. The next save would then send no `from`, the old copy
+          // would never be cleared, and the duplicate would be permanent.
+          if (!_unsaved.has(po.id) && !_saveTimers[po.id]) _savedDivision[po.id] = key;
           migratePO(po);
         });
         return list;

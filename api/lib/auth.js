@@ -224,16 +224,26 @@ function poCapabilities(payload, division) {
     : null;
 
   if (!own && !viaPurchasing) return { level: 'no_access', canUpload: false, canManage: false, canDelete: false };
+
+  const canUpload = Boolean((own && own.canUpload) || (viaPurchasing && viaPurchasing.canUpload));
+  const canManage = Boolean((own && own.canManage) || (viaPurchasing && viaPurchasing.canManage));
+  const canDelete = Boolean(own && own.canDelete);
+
   return {
-    level:     (own && own.canManage) ? own.level : (viaPurchasing || own).level,
-    canUpload: Boolean((own && own.canUpload) || (viaPurchasing && viaPurchasing.canUpload)),
-    canManage: Boolean((own && own.canManage) || (viaPurchasing && viaPurchasing.canManage)),
+    // Derived from the booleans, never carried over from whichever role won.
+    // Taking it from the purchasing side could answer 'admin' for a caller
+    // whose canDelete was false — an object contradicting itself, and the first
+    // consumer to do the natural thing and test `level === 'admin'` would have
+    // handed a purchasing administrator a division's document vault.
+    level:     canDelete ? 'admin' : canManage ? 'level3' : canUpload ? 'level2' : 'level1',
+    canUpload,
+    canManage,
     // Destroying a stored FILE stays with the division that owns it, and comes
     // from `own` alone — a purchasing administrator is an administrator of
     // purchasing, not of paving's document vault. Note this is a narrower thing
     // than canManage above, which does travel: purchasing owning the life of an
     // order it raised is the feature.
-    canDelete: Boolean(own && own.canDelete),
+    canDelete,
   };
 }
 

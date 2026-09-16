@@ -234,6 +234,23 @@ console.log('\n[poCapabilities — reaching a division is not permission to writ
   // there is not a reason to hand purchasing that.
   assert('purchasing never gets delete rights in a division',
     cap({ purchase_orders: 'admin' }, 'paving').canDelete === false);
+  // ...and `level` is derived from the booleans rather than carried over from
+  // whichever role won, or it could answer 'admin' alongside canDelete false —
+  // an object contradicting itself, and the first consumer to test
+  // `level === 'admin'` would hand over a division's document vault.
+  [
+    [{ purchase_orders: 'admin' },  'paving'], [{ purchase_orders: 'level3' }, 'paving'],
+    [{ purchase_orders: 'level2' }, 'paving'], [{ purchase_orders: 'level1' }, 'paving'],
+    [{ paving: 'level1', purchase_orders: 'admin' }, 'paving'],
+    [{ paving: 'admin' }, 'paving'], [{ paving: 'level1' }, 'paving'],
+    [{ purchase_orders: 'admin' }, 'dust'],
+  ].forEach(([roles, div]) => {
+    const c = cap(roles, div);
+    const coherent = (c.level === 'admin') === c.canDelete
+      && (!c.canDelete || c.canManage) && (!c.canManage || c.canUpload);
+    assert(`level agrees with the rights: ${JSON.stringify(roles)} -> ${div}`, coherent,
+      JSON.stringify(c));
+  });
   assert('a division admin keeps them',
     cap({ paving: 'admin' }, 'paving').canDelete === true);
 
@@ -450,6 +467,65 @@ console.log('\n[upsertPO — merging into a division list]');
   assert('exactly one cost row remains', st.daily.size === 1);
   assert('and it belongs to turf',      [...st.daily.values()][0].division === 'turf');
   assert('mirror row followed the move', st.poRows.get('mv').division === 'turf');
+
+  console.log('\n[a row id the order does not own]');
+  // po_row_id arrives in the request body and daily_tracking.row_id is unique
+  // across the whole company, so a crafted one could otherwise reach any job
+  // cost row in the tenant — from a division the caller holds no role in.
+  st = makeStore();
+  st.daily.set('VICTIM', {
+    row_id: 'VICTIM', project_id: 'dustjob', company_code: 'FCT', division: 'dust',
+    material: 'Somebody else\'s row', material_cost: 500,
+  });
+
+  // (a) Emptying a line that points at it must not delete it.
+  po = makePO({ id: 'evil1', project_id: 'turfjob',
+                lines: [{ id: 'L1', qty: '', unit_cost: '', po_row_id: 'VICTIM' }] });
+  let ev = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  assert('an unowned row is not deleted', st.daily.has('VICTIM'));
+  assert('and nothing is reported removed', ev.rows.removed === 0, JSON.stringify(ev.rows));
+  assert('the bogus link is dropped',      po.lines[0].po_row_id === null);
+
+  // (b) A live line pointing at it must not overwrite it either.
+  po = makePO({ id: 'evil2', project_id: 'turfjob', title: 'Stone',
+                lines: [{ id: 'L1', qty: '1', unit_cost: '9999', po_row_id: 'VICTIM' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  const victim = st.daily.get('VICTIM');
+  assert('an unowned row is not rewritten',
+    victim.division === 'dust' && victim.project_id === 'dustjob' && Number(victim.material_cost) === 500,
+    JSON.stringify(victim));
+  assert('the delivery gets a row of its own instead',
+    po.lines[0].po_row_id !== 'VICTIM' && st.daily.size === 2, po.lines[0].po_row_id);
+
+  // (c) A row the order DOES own still works — the guard must not break the
+  //     ordinary case it is wrapped around.
+  st = makeStore();
+  po = makePO({ id: 'ok1', project_id: 'job1', lines: [{ id: 'L1', qty: '2', unit_cost: '10' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  const ownId = po.lines[0].po_row_id;
+  po.lines[0].unit_cost = '12';
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+  assert('an owned row is still updated in place',
+    st.daily.size === 1 && po.lines[0].po_row_id === ownId &&
+    Number(st.daily.get(ownId).material_cost) === 24, JSON.stringify([...st.daily.values()]));
+
+  console.log('\n[an order that could not be stored leaves no rows behind]');
+  // The cost rows are reconciled BEFORE the order is written, because that is
+  // what mints the links it has to be stored with. If the write then loses,
+  // nothing anywhere names those rows — and the retry would add a second set.
+  st = makeStore();
+  st.setBlob(KEY('turf'), []);
+  po = makePO({ id: 'doomed', project_id: 'job1', lines: [{ id: 'L1', qty: '3', unit_cost: '10' }] });
+  const realSql2 = st.sql;
+  const alwaysLose = (strings, ...vals) => {
+    const q = strings.join(' ').replace(/\s+/g, ' ');
+    if (/^ *UPDATE app_data SET value =/.test(q) && vals[1] === KEY('turf')) return Promise.resolve([]);
+    return realSql2(strings, ...vals);
+  };
+  const doomed = await poSync.upsertPO(alwaysLose, { companyCode: 'FCT', division: 'turf', po });
+  assert('the save is reported as a conflict', doomed.ok === false);
+  assert('and the job carries no rows for an order that was never stored',
+    st.daily.size === 0, JSON.stringify([...st.daily.values()]));
 
   console.log('\n[a general order can carry no job]');
   // daily_tracking's division CHECK does not admit 'purchase_orders'. The page

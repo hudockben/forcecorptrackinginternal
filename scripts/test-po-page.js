@@ -324,6 +324,75 @@ console.log('\n[filtering]');
   assert('filters combine',                    ids("search=''; filters.vendor='Acme'; filters.status='pending';") === '1,3');
 }
 
+console.log('\n[round-2 fixes]');
+{
+  // The headline feature: every leg of the upload has to name the order, or the
+  // carve-out — which reads it from the QUERY — refuses and the bytes already
+  // in the bucket are thrown away.
+  const attach = sliceSource(PAGE, 'async function attachToPO', '/* ═══', 'attachToPO', ['poQ']);
+  // A leg is one api(...) call, and several wrap across lines — match up to
+  // the next call rather than to the end of the line.
+  const legs = attach.split(/api\('(?:POST|PUT|DELETE)', '\//).slice(1)
+    .map(chunk => chunk.split(/\n\s*(?:await |const |let )/)[0]);
+  assert('every upload leg names the purchase order',
+    legs.length >= 4 && legs.every(l => l.includes('poQ')),
+    'legs=' + legs.length + ' missing: ' + legs.filter(l => !l.includes('poQ')).join(' | '));
+
+  // Two saves of one order overlapping made both mint a row id.
+  assert('saves of one order are serialized',
+    /const _saveChain = \{\};/.test(PAGE) && /_saveChain\[po\.id\] = next/.test(PAGE));
+  assert('and different orders still save in parallel',
+    /const prior = _saveChain\[po\.id\] \|\| Promise\.resolve\(\);/.test(PAGE));
+
+  // "nothing was saved" has to be true.
+  assert('a failed scan undoes its local change', /if \(undo\) undo\(\);/.test(PAGE));
+  assert('and takes the order out of the retry queue',
+    /if \(po\) \{ _unsaved\.delete\(po\.id\)/.test(PAGE));
+
+  // A retry promised must be a retry given.
+  assert('the retry runs before the typing guard',
+    PAGE.indexOf('for (const id of [..._unsaved])') < PAGE.indexOf('if (isEditing()) return;'));
+  assert('and a failed save is flushed on unload too',
+    /Object\.keys\(_saveTimers\)\.concat\(\[\.\.\._unsaved\]\)/.test(PAGE));
+
+  // A half-landed move has to converge.
+  assert('staleCopy keeps the order queued', /_unsaved\.add\(po\.id\);/.test(PAGE));
+  assert('and the poll leaves its division note alone',
+    /if \(!_unsaved\.has\(po\.id\) && !_saveTimers\[po\.id\]\) _savedDivision\[po\.id\] = key;/.test(PAGE));
+
+  // The photo, read before anything can clear it.
+  assert('the receipt is captured before the save',
+    /const shotBlob = scanState\.blob;/.test(PAGE) &&
+    /attachToPO\(po, shotBlob, shotName/.test(PAGE));
+
+  // Ids reach id= attributes as well as handlers.
+  assert('ids in id= attributes are escaped too', /function idAttr\(v\)/.test(PAGE));
+  const rawIds = PAGE.match(/id="[a-z-]+-' \+ (?!idAttr)(?:po|l)\.id/g);
+  assert('no id attribute takes a raw id', !rawIds, JSON.stringify(rawIds));
+}
+
+console.log('\n[a credit or return is a real figure]');
+{
+  const ctx = vm.createContext({ console });
+  ['lineAmt', 'lineTaxPct', 'lineTax', 'poTotals'].forEach(n =>
+    vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
+  const tot = vm.runInContext("poTotals({lines:[{qty:'1', unit_cost:'-85'}]})", ctx);
+  assert('a return totals negative', tot.total === -85);
+  // Every money guard tested > 0, so a credit rendered as "—" in the table
+  // while the RUNNING TOTAL beneath it and the phone card both showed -$85.
+  assert('the table shows a negative rather than a dash',
+    !/tot\.(?:amt|total|qty) > 0 \?/.test(PAGE) && /tot\.total !== 0 \?/.test(PAGE));
+  assert('and so does each delivery line',
+    !/\bamt > 0 \? '\$'/.test(PAGE) && /amt !== 0 \? '\$'/.test(PAGE));
+
+  // "0" is a non-empty string, so the old guard let a 0-priced ticket through.
+  assert('the $0 guard tests the amount, not whether the boxes are blank',
+    /const pairAmount = \(parseFloat\(lineQty\) \|\| 0\) \* \(parseFloat\(lineUnit\) \|\| 0\);/.test(PAGE) &&
+    /const pairIncomplete = pairAmount === 0;/.test(PAGE));
+  assert('and a zero total is not treated as a usable one',
+    /!isNaN\(total\) && total !== 0/.test(PAGE));
+}
+
 console.log('\n[a save that fails is never reported as success]');
 {
   // commitScan told the user "Saved ... with the receipt attached" for an
@@ -371,8 +440,8 @@ console.log('\n[money the scan books]');
     amt("lineAmt({qty:'8.5', unit_cost:''})") === 0);
   assert('and a unit cost with no quantity likewise',
     amt("lineAmt({qty:'', unit_cost:'25'})") === 0);
-  assert('so the scan falls back whenever the pair is incomplete, not only when both are blank',
-    /const pairIncomplete = !lineQty \|\| !lineUnit;/.test(PAGE));
+  assert('so the scan falls back whenever the pair is worth nothing, not only when both are blank',
+    /const pairIncomplete = pairAmount === 0;/.test(PAGE));
   assert('and refuses rather than booking $0 when there is no total either',
     /otherwise the order books at \$0/.test(PAGE));
   assert('the hint no longer describes only the both-blank case',
@@ -386,13 +455,13 @@ console.log('\n[totals on the surface the user is looking at]');
   // desktop one. On a phone the line totals never moved.
   assert('delivery cell ids are scoped per surface',
     /function lineRowsHTML\(po, surface\)/.test(PAGE) &&
-    /const cell = \(kind, id\) => \(surface \|\| 'tbl'\)/.test(PAGE));
+    /const cell = \(kind, id\) => esc\(\(surface \|\| 'tbl'\)/.test(PAGE));
   assert('the table asks for its own',  /lineRowsHTML\(po, 'tbl'\)/.test(PAGE));
   assert('and the phone card for its own', /lineRowsHTML\(po, 'card'\)/.test(PAGE));
   assert('an in-place update touches both',
     /\['tbl', 'card'\]\.forEach\(sfc =>/.test(PAGE));
   assert('the RUNNING TOTAL row updates too, instead of contradicting the header',
-    /set\('run-tot-' \+ po\.id/.test(PAGE) && /id="run-qty-' \+ po\.id/.test(PAGE));
+    /set\('run-tot-' \+ po\.id/.test(PAGE) && /id="run-qty-' \+ idAttr\(po\.id\)/.test(PAGE));
   assert('and the doc-count load waits rather than stealing focus',
     /el\.addEventListener\('blur', \(\) => render\(\), \{ once: true \}\)/.test(PAGE));
 }
