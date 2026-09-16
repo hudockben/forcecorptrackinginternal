@@ -20134,11 +20134,22 @@ function _pvUpdateBanner() {
   });
 }
 
+/* Header for the full-screen project views: project name, then the job
+   number in the same muted "Job #" treatment the project cards use, then
+   the view label. Built as HTML, so the project's own strings go through
+   escT(). Projects with no job number read exactly as they did before. */
+function _fsTitleHTML(p, viewLabel) {
+  const name  = p['project-name'] || 'Untitled Project';
+  const jobNo = String(p['job-number'] || '').trim();
+  return escT(name)
+    + (jobNo ? ' <span style="font-weight:600;color:var(--muted)">Job #' + escT(jobNo) + '</span>' : '')
+    + ' — ' + escT(viewLabel);
+}
+
 function openDailyView(projId) {
   const p = getProj(projId); if (!p) return;
   dailyViewProjId = projId;
-  document.getElementById('daily-fs-title').textContent =
-    (p['project-name'] || 'Untitled Project') + ' — Daily Tracking';
+  document.getElementById('daily-fs-title').innerHTML = _fsTitleHTML(p, 'Daily Tracking');
   const addBtn = document.getElementById('daily-fs-add');
   addBtn.style.display = perm.canEdit ? '' : 'none';
   addBtn.onclick = () => addDailyRow(projId);
@@ -20300,8 +20311,7 @@ let bidViewProjId = null;
 function openBidView(projId) {
   const p = getProj(projId); if (!p) return;
   bidViewProjId = projId;
-  document.getElementById('bid-fs-title').textContent =
-    (p['project-name'] || 'Untitled Project') + ' — Bid Line Items vs Actuals';
+  document.getElementById('bid-fs-title').innerHTML = _fsTitleHTML(p, 'Bid Line Items vs Actuals');
   document.getElementById('bid-fs-add').onclick = () => { addBidItem(projId); };
   document.getElementById('bid-fs-pdf').onclick = () => showBidPDFOptions(projId, 'pdf');
   document.getElementById('bid-fs-email').onclick = () => showBidPDFOptions(projId, 'email');
@@ -20338,8 +20348,7 @@ let prodViewProjId = null;
 function openProductionRateView(projId) {
   const p = getProj(projId); if (!p) return;
   prodViewProjId = projId;
-  document.getElementById('prod-fs-title').textContent =
-    (p['project-name'] || 'Untitled Project') + ' — Daily Production Rate';
+  document.getElementById('prod-fs-title').innerHTML = _fsTitleHTML(p, 'Daily Production Rate');
   document.getElementById('prod-fullscreen').style.display = 'flex';
   renderProductionRateView(projId);
 }
