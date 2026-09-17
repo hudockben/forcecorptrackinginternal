@@ -1079,9 +1079,44 @@
       return out;
     }
 
-    // The hours box for one line. Not in BLOCK0_IDS because there is one per
-    // LINE, not one per block — the list is redrawn, the ids go with it.
+    // The two controls on one line. Not in BLOCK0_IDS because there is one pair
+    // per LINE, not one per block — the list is redrawn, the ids go with it.
     function equipHrsId(i, slot) { return `${i === 0 ? '' : 's' + i + '-'}equip-hrs-${slot}`; }
+    function equipSelId(i, slot) { return `${i === 0 ? '' : 's' + i + '-'}equip-sel-${slot}`; }
+
+    // The machine picker's options, with `cur` selected. Kept in one place
+    // because two callers need them: the full redraw, and the late-arriving
+    // company list below. A name no longer on that list is appended rather than
+    // dropped, so re-opening an older entry cannot silently lose the machine it
+    // was saved with — the same rule haulUnitFill follows.
+    function equipOptionsHtml(cur) {
+      const names = (equipmentNames || []).slice();
+      if (cur && !names.includes(cur)) names.push(cur);
+      return '<option value="">&mdash; pick &mdash;</option>' + names
+        .map(n => `<option value="${escapeHtml(n)}"${n === cur ? ' selected' : ''}>${escapeHtml(n)}</option>`)
+        .join('');
+    }
+
+    // Put the company list into the pickers once it lands, WITHOUT rebuilding
+    // the lines.
+    //
+    // A full redraw replaces the hours <input> beside each picker, and there
+    // may be a thumb on it: the keystrokes not yet committed go with the node,
+    // and on a type="number" box a half-typed "9." already reads as '' — so the
+    // late paint writes that '' back and the digits on screen vanish too. That
+    // is precisely what setEquipHours refuses to do on every keystroke, and it
+    // is no more acceptable for arriving late. The fetch only ever has options
+    // to add, so options are all it touches.
+    function fillEquipOptions(i) {
+      const slots = equipUsed[i] || [];
+      for (let slot = 0; slot < slots.length; slot++) {
+        const sel = document.getElementById(equipSelId(i, slot));
+        if (!sel) continue;
+        const cur = String((slots[slot] && slots[slot].name) || '');
+        sel.innerHTML = equipOptionsHtml(cur);
+        sel.value = cur;
+      }
+    }
 
     // What the block's clock says, for the prefill below.
     function blockHours(i) {
@@ -1102,16 +1137,12 @@
       // reads as "nothing to answer here".
       if (!slots.length) slots.push({ name: '', hours: '' });
       list.innerHTML = slots.map((piece, slot) => {
-        const cur   = String((piece && piece.name) || '');
-        const hrs   = String((piece && piece.hours) || '');
-        const names = (equipmentNames || []).slice();
-        if (cur && !names.includes(cur)) names.push(cur);
-        const opts = '<option value="">&mdash; pick &mdash;</option>' + names
-          .map(n => `<option value="${escapeHtml(n)}"${n === cur ? ' selected' : ''}>${escapeHtml(n)}</option>`)
-          .join('');
+        const cur  = String((piece && piece.name) || '');
+        const hrs  = String((piece && piece.hours) || '');
+        const opts = equipOptionsHtml(cur);
         return `
           <div class="equip-piece">
-            <select onchange="setEquipPiece(${i}, ${slot}, this.value)">${opts}</select>
+            <select id="${equipSelId(i, slot)}" onchange="setEquipPiece(${i}, ${slot}, this.value)">${opts}</select>
             <input type="number" class="equip-hours" id="${equipHrsId(i, slot)}"
                    inputmode="decimal" min="0" max="24" step="0.25" placeholder="hrs"
                    value="${escapeHtml(hrs)}"
@@ -1285,9 +1316,11 @@
         row.style.display = on ? 'flex' : 'none';
         if (!on) continue;
         // Fetch once, then fill. Until it lands the lines hold just whatever
-        // was saved, so an entry being edited never shows a blank machine.
+        // was saved, so an entry being edited never shows a blank machine —
+        // and that window is usable, so what lands in it may only add options,
+        // never rebuild the line. See fillEquipOptions.
         renderEquipUsed(b);
-        equipmentNamesLoad().then(() => renderEquipUsed(b));
+        equipmentNamesLoad().then(() => fillEquipOptions(b));
       }
     }
 

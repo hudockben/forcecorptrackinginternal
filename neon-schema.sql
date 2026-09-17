@@ -2101,9 +2101,14 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_destinations JSONB;
 -- job — and a pickup priced as an excavator is not a rounding error.
 --
 -- An ARRAY because a day is routinely more than one piece: the pickup that got
--- the operator to the job, then the excavator he ran once he arrived. Order is
--- the order he named them (biggest first, per the form's prompt); nothing
--- downstream depends on it.
+-- the operator to the job, then the excavator he ran once he arrived.
+--
+-- ORDER IS MEANINGFUL, so do not sort or reverse this. It is the order he named
+-- them, biggest first per the form's prompt, and payroll's split modal walks it
+-- in that order: the first machine lands on the row that already carries the
+-- job's cost code, and each one after it opens a row the approver still has to
+-- code. Re-ordering the array silently re-assigns which machine's hours are
+-- billed under the coded row. See splitFillNamedEquipment in payroll.html.
 --
 -- Each element is { "name": <equipment_list name>, "hours": <number|null> }.
 -- The HOURS are what make the field pay for itself: payroll's split modal codes

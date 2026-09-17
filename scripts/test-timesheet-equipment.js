@@ -82,6 +82,7 @@ function sandbox(opts = {}) {
     equipVals: opts.equipVals || { 0: true },
     equipUsed: opts.equipUsed || { 0: [] },
     equipmentNames: opts.names === undefined ? ['Excavator', 'Pickup Truck', 'Roller'] : opts.names,
+    __el: el,
     MAX_EQUIP_PIECES: 6,
     blockOrder: () => opts.blocks || [0],
     bel: (i, key) => el(i === 0 ? key : `s${i}-${key}`),
@@ -97,10 +98,10 @@ function sandbox(opts = {}) {
   };
   vm.createContext(sb);
   vm.runInContext(
-    ['equipUsedClean', 'equipHrsId', 'blockHours', 'renderEquipUsed', 'equipSlot',
-     'writeEquipHours', 'equipAutoRemainder', 'refreshEquipAutoHours', 'setEquipPiece',
-     'setEquipHours', 'commitEquipHours', 'addEquipPiece', 'removeEquipPiece',
-     'applyEquipUsedVisibility']
+    ['equipUsedClean', 'equipHrsId', 'equipSelId', 'equipOptionsHtml', 'fillEquipOptions',
+     'blockHours', 'renderEquipUsed', 'equipSlot', 'writeEquipHours', 'equipAutoRemainder',
+     'refreshEquipAutoHours', 'setEquipPiece', 'setEquipHours', 'commitEquipHours',
+     'addEquipPiece', 'removeEquipPiece', 'applyEquipUsedVisibility']
       .map(fnSource).join('\n'), sb);
   return sb;
 }
@@ -871,5 +872,48 @@ assert('  and it only ever runs on a fresh approve, never on Edit Split',
 assert('  after the haul rules, so the truck on a haul row still wins',
   PAY.indexOf("splitMirrorHaulEquipHoursAll();") < PAY.indexOf("splitFillNamedEquipment();"));
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+// Runs LAST, because it is the only asynchronous check in here.
+async function lateCompanyListChecks() {
+  console.log('\n[the company list arriving late must not take the box out from under him]');
+  // applyEquipUsedVisibility paints the lines from saved state and then waits
+  // on /api/equipment — and that window is DELIBERATELY usable, so a re-opened
+  // draft shows its machine at once. Whatever lands in it may therefore only
+  // add options. A full redraw replaces the hours <input>, and on a
+  // type="number" box a half-typed "9." already reads as '' — so the late paint
+  // wrote that '' back and the digits on screen went with the node. That is
+  // exactly what setEquipHours refuses to do on every keystroke.
+  let land;
+  const held = new Promise(r => { land = r; });
+  const sb = sandbox({ equipUsed: { 0: [{ name: 'Excavator', hours: '', auto: false, touched: true }] },
+                       names: null });
+  sb.equipmentNamesLoad = () => held;
+  sb.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+  sb.applyEquipUsedVisibility(0);
+
+  const box = sb.__el(sb.equipHrsId(0, 0));
+  sb.setEquipHours(0, 0, '9.'); box.value = '9.';       // mid-entry
+  sb.setEquipHours(0, 0, '9.5'); box.value = '9.5';
+
+  sb.equipmentNames = ['Excavator', 'Roller'];
+  land(sb.equipmentNames);
+  await held;
+  await new Promise(r => setImmediate(r));
+  {
+    assert('the hours box he is typing into is not replaced',
+      sb.__el(sb.equipHrsId(0, 0)) === box);
+    assert('  so the keystrokes he had not committed survive',
+      box.value === '9.5' && JSON.stringify(sb.equipUsedClean(0))
+        === JSON.stringify([{ name: 'Excavator', hours: 9.5 }]),
+      box.value + ' / ' + JSON.stringify(sb.equipUsedClean(0)));
+    assert('  while the picker still gains the company list',
+      /Roller/.test(sb.__el(sb.equipSelId(0, 0)).innerHTML));
+    assert('  because the late arrival fills options, it does not redraw',
+      /equipmentNamesLoad\(\)\.then\(\(\) => fillEquipOptions\(b\)\);/.test(HTML));
+  }
+}
+
+
+lateCompanyListChecks().then(() => {
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+}).catch(err => { console.error(err); process.exit(1); });
