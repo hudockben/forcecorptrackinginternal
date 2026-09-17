@@ -2119,10 +2119,14 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_destinations JSONB;
 -- retired afterwards must not make an already-filed day unsaveable, the same
 -- latitude truck_unit has.
 --
---   NULL → no machine named. Every entry filed before this existed, every
---          entry whose answer is No, and every time-off row. api/
---          timesheet-entries.js forces it to NULL on any answer but Yes, so
---          the two fields can never disagree.
+--   NULL → no machine named. Every entry whose answer is No, every time-off
+--          row, every entry filed before this existed — AND every ordinary Yes
+--          whose operator did not fill this in, which is a routine answer and
+--          not a defect: naming the machine is optional on the timesheet and
+--          never blocks the save, so a Yes with no names means the approver
+--          codes the machine himself, exactly as he did before this column.
+--          api/timesheet-entries.js forces it to NULL on any answer but Yes,
+--          so the two fields can never disagree.
 -- Idempotent so existing deployments pick it up the next time run-schema runs.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS equipment_used JSONB;
 

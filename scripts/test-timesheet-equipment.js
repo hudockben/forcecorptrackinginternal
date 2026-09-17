@@ -11,14 +11,17 @@
  * schedule, by someone who was not there. A pickup priced as an excavator is
  * not a rounding error.
  *
- * So a block that answers Yes now names the iron, from the company's own
- * equipment list — the same vocabulary daily_tracking.equipment uses, so the
- * two compare without translation. A LIST, because a day is routinely more than
- * one piece: the pickup that got him to the job and the excavator he ran once
- * he arrived. And AN HOURS BOX per machine, because the cost row is priced per
- * machine per hour and the figure belongs to the man on the seat — payroll's
- * split modal now opens with both already filled in, the same way the travel
- * legs fill the travel row's hours.
+ * So a block that answers Yes is now OFFERED the iron to name, from the
+ * company's own equipment list — the same vocabulary daily_tracking.equipment
+ * uses, so the two compare without translation. A LIST, because a day is
+ * routinely more than one piece: the pickup that got him to the job and the
+ * excavator he ran once he arrived. And AN HOURS BOX per machine, because the
+ * cost row is priced per machine per hour and the figure belongs to the man on
+ * the seat — payroll's split modal now opens with both already filled in, the
+ * same way the travel legs fill the travel row's hours.
+ *
+ * Offered, never demanded: see 3 below. Every assertion in here is about what
+ * the field does WHEN HE ANSWERS IT, not about making him.
  *
  * What this suite holds down, in the order the answer travels:
  *
@@ -27,9 +30,13 @@
  *      carries in full, applied to the control beside it.
  *   2. WHAT IS POSTED. Blank lines dropped, a machine named twice counted once,
  *      and nothing at all posted for a block that said No.
- *   3. THE GATE. Yes with nothing named will not save — but only when there is
- *      a list to pick FROM, so an empty equipment list or a 401 on the roster
- *      call cannot leave a crew unable to file the day.
+ *   3. NO GATE. Both the machine and its hours are OPTIONAL and the save never
+ *      waits on either. The Yes/No above is the answer payroll cannot do
+ *      without; these two only make the cost coding easier, and a man standing
+ *      in the mud at six in the evening must never be unable to file his day
+ *      because the machine he ran is not on the office's list. A blank list
+ *      posts as a blank list and the approver fills it in — exactly where he
+ *      was before this field existed.
  *   4. THE PREFILL. What he named lands on the cost rows the approver would
  *      otherwise type it onto — filling blanks only, never overwriting the
  *      truck the haul rules put there or a figure anybody typed.
@@ -90,9 +97,9 @@ function sandbox(opts = {}) {
   };
   vm.createContext(sb);
   vm.runInContext(
-    ['equipUsedClean', 'equipHrsId', 'blockHours', 'renderEquipNeed',
-     'renderEquipUsed', 'equipSlot', 'setEquipPiece', 'setEquipHours',
-     'addEquipPiece', 'removeEquipPiece', 'applyEquipUsedVisibility']
+    ['equipUsedClean', 'equipHrsId', 'blockHours', 'renderEquipUsed', 'equipSlot',
+     'writeEquipHours', 'refreshEquipAutoHours', 'setEquipPiece', 'setEquipHours',
+     'commitEquipHours', 'addEquipPiece', 'removeEquipPiece', 'applyEquipUsedVisibility']
       .map(fnSource).join('\n'), sb);
   return sb;
 }
@@ -114,14 +121,31 @@ console.log('\n[the pickers follow the answer]');
   assert('  offering the company equipment list',
     /Excavator/.test(sb.__els['equip-list'].innerHTML)
     && /Pickup Truck/.test(sb.__els['equip-list'].innerHTML));
-  assert('  and the "name at least one" marker up until something is picked',
-    sb.__els['equip-need'].style.display === '');
+  // Both blocks say "(optional)" on the label, and neither wears the hauling
+  // question's amber "needs an answer" marking — that styling means "this will
+  // stop you", and this no longer does.
+  {
+    const rows = [
+      HTML.slice(HTML.indexOf('id="row-equip-used"'), HTML.indexOf('id="equip-add"')),
+      HTML.slice(HTML.indexOf('id="s${i}-row-equip-used"'), HTML.indexOf('id="s${i}-equip-add"')),
+    ];
+    assert('  saying out loud that it is optional, not that it is owed',
+      rows.every(r => r.includes('(optional)')), JSON.stringify(rows.map(r => r.length)));
+    assert('  and never wearing the hauling question\'s "you must answer" marking',
+      rows.every(r => !/haul-need/.test(r)), JSON.stringify(rows.filter(r => /haul-need/.test(r))));
+  }
 
   sb.setEquipPiece(0, 0, 'Excavator');
-  assert('picking one puts the marker away', sb.__els['equip-need'].style.display === 'none');
   assert('  and every line offers an hours box beside the machine',
     /id="equip-hrs-0"/.test(sb.__els['equip-list'].innerHTML)
     && /step="0.25"/.test(sb.__els['equip-list'].innerHTML));
+}
+
+// One line carrying a raw figure, straight through equipUsedClean — the path a
+// box that is never blurred takes.
+function sandboxPosts(hours) {
+  const c = sandbox({ equipUsed: { 0: [{ name: 'Excavator', hours: String(hours) }] } });
+  return c.equipUsedClean(0);
 }
 
 console.log('\n[the hours, which are the point of asking]');
@@ -142,6 +166,68 @@ console.log('\n[the hours, which are the point of asking]');
   sb.setEquipPiece(0, 0, 'Roller');
   eq('changing the machine never moves hours he typed',
     sb.equipUsedClean(0), [{ name: 'Roller', hours: 6.5 }]);
+
+  // The guess follows the clock it was guessed FROM. Without this, a clock
+  // corrected after the machine was picked left a figure on screen that no
+  // longer matched the day beside it.
+  {
+    const c = sandbox();
+    c.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+    c.applyEquipUsedVisibility(0);
+    c.setEquipPiece(0, 0, 'Excavator');
+    eq('the guess opens on the block\'s hours', c.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }]);
+    c.__els['hours'].textContent = '8.00';
+    c.refreshEquipAutoHours(0);
+    eq('  and follows the clock while it is still the form\'s guess',
+      c.equipUsedClean(0), [{ name: 'Excavator', hours: 8 }]);
+    assert('  writing it back into the box on screen too',
+      c.__els['equip-hrs-0'].value === '8.00', c.__els['equip-hrs-0'].value);
+    c.setEquipHours(0, 0, '3');
+    c.__els['hours'].textContent = '9.00';
+    c.refreshEquipAutoHours(0);
+    eq('  but never once he has touched the box', c.equipUsedClean(0), [{ name: 'Excavator', hours: 3 }]);
+  }
+
+  // A line with no machine posts nothing, so it must not sit there showing a
+  // figure that the save throws away without a word.
+  {
+    const c = sandbox();
+    c.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+    c.applyEquipUsedVisibility(0);
+    c.setEquipPiece(0, 0, 'Excavator');
+    c.setEquipPiece(0, 0, '');
+    eq('clearing the machine clears the guess that came with it', c.equipUsedClean(0), []);
+    assert('  and empties the box, so nothing on screen is quietly discarded',
+      c.__els['equip-hrs-0'].value === '', c.__els['equip-hrs-0'].value);
+  }
+
+  // max="24" on an <input> does nothing without a <form>, and this page has
+  // none — so an over-24 typo used to reach safeHours, which reads it as NO
+  // answer. The save then reported success with the figure simply gone.
+  {
+    const c = sandbox();
+    c.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+    c.applyEquipUsedVisibility(0);
+    c.setEquipPiece(0, 0, 'Excavator');
+    c.commitEquipHours(0, 0, '88');
+    eq('a fat-fingered 88 is held to a day, not dropped',
+      c.equipUsedClean(0), [{ name: 'Excavator', hours: 24 }]);
+    assert('  and he is shown that it was held',
+      c.__els['equip-hrs-0'].value === '24', c.__els['equip-hrs-0'].value);
+    assert('  with the same bound in equipUsedClean, for a box that never blurs',
+      JSON.stringify(sandboxPosts(99)) === JSON.stringify([{ name: 'Excavator', hours: 24 }]));
+  }
+
+  // A saved draft's figures are HIS, flag or no flag — re-opening one must not
+  // invent hours he deliberately left blank.
+  {
+    const c = sandbox({ equipUsed: { 0: [{ name: 'Excavator', hours: '' }] } });
+    c.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+    c.applyEquipUsedVisibility(0);
+    c.refreshEquipAutoHours(0);
+    eq('a re-opened draft saved with no hours is left with none',
+      c.equipUsedClean(0), [{ name: 'Excavator', hours: null }]);
+  }
 
   // Only the first line. A second machine is a second answer, and guessing it
   // would bill the job for two full days of iron on a one-man day.
@@ -173,7 +259,7 @@ console.log('\n[the hours, which are the point of asking]');
 }
 
 // And the guard itself: a render that writes the Yes/No answer is the bug.
-for (const name of ['renderEquipUsed', 'applyEquipUsedVisibility', 'renderEquipNeed']) {
+for (const name of ['renderEquipUsed', 'applyEquipUsedVisibility']) {
   const fn = fnSource(name);
   assert(`${name} never assigns to equipVals — it only renders`,
     !/equipVals\s*\[[^\]]*\]\s*=(?!=)/.test(fn), fn);
@@ -229,21 +315,29 @@ console.log('\n[more than one piece, because a day is more than one piece]');
 
 console.log('\n[what the form will and will not save]');
 {
-  // Source-pinned, the way the hauling gate beside it is: these are the three
-  // lines that decide what leaves the page.
+  // Source-pinned, the way the hauling gate beside it is: these are the lines
+  // that decide what leaves the page.
   const build = HTML.slice(HTML.indexOf('function buildPayloads('),
                            HTML.indexOf('function buildPayloads(') + 14000);
   assert('only a block that said Yes posts machines at all',
     /const _equipUsed = equipVals\[i\] === true \? equipUsedClean\(i\) : \[\];/.test(build));
-  assert('Yes with nothing named will not save',
-    /if \(equipVals\[i\] === true && !_equipUsed\.length && \(equipmentNames \|\| \[\]\)\.length\) \{/.test(build)
-    && /Name the equipment you ran, or answer No\./.test(build));
-  assert('  but an empty equipment list never blocks the day',
-    /\(equipmentNames \|\| \[\]\)\.length/.test(build));
   assert('the list rides on the payload as its own field',
     /equipment_used: b\.equipUsed,/.test(build));
   assert('  and is always sent, so a list picked by mistake can be cleared',
     !/equipment_used:[^\n]*\?\s*b\.equipUsed\s*:/.test(build));
+
+  // The whole point of this section: NOTHING here refuses a day. The machine
+  // is optional and so are its hours, and no wording anywhere in buildPayloads
+  // says otherwise.
+  const refusals = (build.match(/return \{ error:[^\n]*/g) || []).join('\n');
+  assert('naming no machine never refuses the day',
+    !/Name the equipment|name at least one|equipment you ran|pick a machine/i.test(refusals), refusals);
+  assert('  nor does leaving its hours blank',
+    !/equipment hours|hours you were on|machine hours/i.test(refusals), refusals);
+  assert('  and the equipment answer is the only thing this section gates on',
+    /if \(equipVals\[i\] == null\) return \{ error: at\(i, 'Operated equipment\? Yes or No\.'\) \};/.test(build));
+  assert('  with the reason written down where the next person will read it',
+    /OPTIONAL, both of\n\s*\/\/ them, and deliberately not a gate/.test(build));
 }
 
 console.log('\n[the form remembers, and forgets, in the right places]');
@@ -391,21 +485,26 @@ assert('the audit CSV follows the field too',
 
 console.log('\n[the approver opens on what the operator already answered]');
 {
+  // The REAL haul predicates, not stubs: the whole hazard this section guards
+  // lives in how they and the prefill read the same row.
   const fnPay = name => requireFn(PAY, name, 'payroll.html');
+  const PAY_FNS = ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck',
+    'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
+    'splitMirrorHaulEquipHours', 'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow',
+    'splitTruckOnRow', 'splitRowIsHaul', '_splitRowUid', '_blankSplitRow',
+    'equipUsedPieces', 'splitFillNamedEquipment', 'onSplitHaulChange'];
   const ctx = {
     console,
-    splitRows: [],
-    splitEntry: null,
-    _uid: 0,
-    isTravelSplitRow: r => !!(r && r.is_travel),
-    _blankSplitRow: isTravel => ({
-      _uid: 'u' + (++ctx._uid), cost_code: '', sub_code: '', quantity: 0,
-      equipment: '', labor_hours: 0, equip_hours: 0, is_travel: !!isTravel,
-      is_haul: undefined, haul_type: '', code_source: '',
-    }),
+    splitRows: [], splitEntry: null, splitProjEquipment: [], _splitRowSeq: 0,
+    splitHaulAnswer: '',
+    // The day IS a haul day in these cases — that is when the hazard exists.
+    splitHaulIs: () => 'off_site',
+    splitDeriveHaulAnswer: () => 'off_site',
+    renderSplitHaulNote: () => {},
   };
   vm.createContext(ctx);
-  vm.runInContext(fnPay('equipUsedPieces') + '\n' + fnPay('splitFillNamedEquipment'), ctx);
+  vm.runInContext('const TRAVEL_CODE_RE = /\\btravel\\b/i;', ctx);
+  for (const f of PAY_FNS) vm.runInContext(fnPay(f), ctx);
 
   // The ordinary day: one man, one machine, all day. Nothing to type.
   ctx.splitEntry = { equipment_used: [{ name: 'Excavator', hours: 9 }] };
@@ -434,8 +533,9 @@ console.log('\n[the approver opens on what the operator already answered]');
     && ctx.splitRows[1].equip_hours === 1.5, JSON.stringify(ctx.splitRows[1]));
   assert('  and no labour hours, so the day still adds up to itself',
     (Number(ctx.splitRows[1].labor_hours) || 0) === 0);
-  assert('  answering the haul question the way the rows beside it do, so it can be saved',
-    ctx.splitRows[1].haul_type === 'none');
+  assert('  answering the haul question as NOT a haul, so it can be saved',
+    ctx.splitRows[1].haul_type === 'none' && ctx.splitRows[1].is_haul === false,
+    JSON.stringify(ctx.splitRows[1]));
 
   // A machine he named without hours cannot have a row of its own: the save
   // refuses a row with neither labour nor equipment hours on it.
@@ -469,6 +569,95 @@ console.log('\n[the approver opens on what the operator already answered]');
   assert('an entry that named no machines changes nothing',
     ctx.splitFillNamedEquipment() === false);
 }
+console.log('\n[and it never turns the operator\'s machine into the haul truck]');
+{
+  // THE BUG THIS SECTION EXISTS FOR.
+  //
+  // splitDefaultHaulEquipment leaves a haul row's equipment BLANK when the
+  // driver named no truck and the job has no single assigned unit, and
+  // splitMirrorHaulEquipHours then refuses its hours for the same reason —
+  // "a row with no unit is simply not a haul, and prices the man's labour".
+  // That blank is a deliberate refusal, not a gap.
+  //
+  // The prefill used to fill it. splitTruckOnRow reads ANY machine as the truck
+  // when the driver named none (`if (!said) return true`), so writing his
+  // Roller there flipped the row to a haul: his whole day priced at $0 labour
+  // and the job billed for the Roller as if it had hauled — silently, because
+  // every warning that would have caught it read the row as a properly priced
+  // haul. And the server applies the same rule (truckOnRow in
+  // api/timesheet-entries.js), so it was not a display fault.
+  const ctx = {
+    console,
+    splitRows: [], splitEntry: null, splitProjEquipment: [], _splitRowSeq: 0,
+    splitHaulAnswer: '',
+    splitHaulIs: () => 'off_site',
+    splitDeriveHaulAnswer: () => 'off_site',
+    renderSplitHaulNote: () => {},
+  };
+  vm.createContext(ctx);
+  vm.runInContext('const TRAVEL_CODE_RE = /\\btravel\\b/i;', ctx);
+  for (const f of ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck',
+    'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
+    'splitMirrorHaulEquipHours', 'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow',
+    'splitTruckOnRow', 'splitRowIsHaul', '_splitRowUid', '_blankSplitRow',
+    'equipUsedPieces', 'splitFillNamedEquipment', 'onSplitHaulChange']) {
+    vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
+  }
+
+  // A flagged driver: "to & from site", truck picker left blank, and he ran a
+  // Roller for 8 h. The job has no single assigned unit.
+  ctx.splitEntry = { truck_unit: '', haul_type: 'off_site', prevailing_wage: true,
+                     equipment_used: [{ name: 'Roller', hours: 8 }] };
+  const haulRow = ctx._blankSplitRow(false);
+  haulRow.haul_type = 'off_site'; haulRow.labor_hours = 8;
+  ctx.splitRows = [haulRow];
+  ctx.splitMirrorHaulEquipHoursAll();
+  ctx.splitFillNamedEquipment();
+
+  assert('a truckless haul row keeps the blank the haul rules left it',
+    !haulRow.equipment && !((Number(haulRow.equip_hours) || 0) > 0),
+    JSON.stringify(haulRow));
+  assert('  so the driver\'s hours are still his, not the truck\'s',
+    ctx.splitRowIsHaul(haulRow) === false);
+  assert('  and his machine gets a cost row of its own instead',
+    ctx.splitRows.length === 2 && ctx.splitRows[1].equipment === 'Roller'
+      && ctx.splitRows[1].equip_hours === 8 && (Number(ctx.splitRows[1].labor_hours) || 0) === 0,
+    JSON.stringify(ctx.splitRows[1]));
+  assert('  which is not a haul either, so nothing on it reads as the truck',
+    ctx.splitRowIsHaul(ctx.splitRows[1]) === false);
+
+  // The other half: a row prefilled while still unanswered, that the approver
+  // then calls a haul. The machine has to come back off it.
+  ctx.splitEntry = { truck_unit: '', haul_type: '', equipment_used: [{ name: 'Roller', hours: 8 }] };
+  const later = ctx._blankSplitRow(false);
+  later.labor_hours = 8;
+  ctx.splitRows = [later];
+  ctx.splitMirrorHaulEquipHoursAll();
+  ctx.splitFillNamedEquipment();
+  assert('an unanswered row is still prefilled', later.equipment === 'Roller');
+  later.haul_type = 'off_site'; later.is_haul = true;
+  ctx.onSplitHaulChange(later);
+  assert('  and the moment the approver calls it a haul, the machine comes back off',
+    !later.equipment && !((Number(later.equip_hours) || 0) > 0), JSON.stringify(later));
+  assert('  leaving the row untouched again, for the truck logic to own',
+    later._equipHoursTouched === false && later._namedAutoEquip === false,
+    JSON.stringify(later));
+
+  // A machine the APPROVER picked is theirs, and is never taken back.
+  const mine = ctx._blankSplitRow(false);
+  mine.labor_hours = 8; mine.equipment = 'Triaxle Dump'; mine.equip_hours = 8;
+  ctx.splitRows = [mine];
+  mine.haul_type = 'off_site'; mine.is_haul = true;
+  ctx.onSplitHaulChange(mine);
+  assert('a machine the approver picked is never taken back',
+    mine.equipment === 'Triaxle Dump', JSON.stringify(mine));
+}
+assert('  the take-back runs on both UI paths, which both funnel through onSplitHaulChange',
+  /splitClearNamedOnHaul\(row\);/.test(PAY)
+  && /changed = splitClearNamedOnHaul\(r\)\s*\|\| changed;/.test(PAY));
+assert('  and the prefill refuses a haul row outright',
+  /!isTravelSplitRow\(r\) && !splitRowTakesTruck\(r\)/.test(PAY));
+
 assert('  and it only ever runs on a fresh approve, never on Edit Split',
   /if \(mode !== 'resplit'\) splitFillNamedEquipment\(\);/.test(PAY));
 assert('  after the haul rules, so the truck on a haul row still wins',

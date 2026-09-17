@@ -7454,11 +7454,39 @@
       return true;
     }
 
+    // Take back the machine splitFillNamedEquipment prefilled, once the row has
+    // become a HAUL row.
+    //
+    // On a haul row the machine IS the truck — that is what truckOnRow reads it
+    // as, and when the driver named no unit it reads ANY machine as the truck
+    // (see splitTruckOnRow: `if (!said) return true`). So a Roller the operator
+    // happened to run, sitting on a row the approver has just called a haul,
+    // zeroes his labour and bills the job for the Roller as if it had hauled.
+    // splitFillNamedEquipment refuses to put it there in the first place; this
+    // is the other half, for the row that turns into a haul afterwards.
+    //
+    // Only ever what THIS MODAL prefilled (_namedAutoEquip) — a machine the
+    // approver picked is theirs, exactly as splitClearHaulAuto treats its own.
+    // Clearing hands the row back to splitDefaultHaulEquipment below, which
+    // either names the real truck or leaves the row deliberately blank.
+    function splitClearNamedOnHaul(r) {
+      if (!r || !r._namedAutoEquip) return false;
+      if (!splitRowTakesTruck(r)) return false;
+      r.equipment          = '';
+      r.equip_hours        = 0;
+      r._namedAutoEquip    = false;
+      // The figure went with the machine, so the row is untouched again and the
+      // mirror below may level it to the labour hours once a truck lands.
+      r._equipHoursTouched = false;
+      return true;
+    }
+
     // Apply it to every row — used when the haul answer itself changes, since
     // that is the moment rows already carrying hours become haul rows.
     function splitMirrorHaulEquipHoursAll() {
       let changed = false;
       for (const r of splitRows) {
+        changed = splitClearNamedOnHaul(r)     || changed;
         changed = splitClearHaulAuto(r)        || changed;
         changed = splitDefaultHaulEquipment(r) || changed;
         changed = splitMirrorHaulEquipHours(r) || changed;
@@ -7600,6 +7628,12 @@
       // Never onto splitEntry — see the declaration of splitHaulAnswer.
       splitHaulAnswer = splitDeriveHaulAnswer();
       if (row) {
+        // First, because the row may have just BECOME a haul — and a machine
+        // this modal prefilled from the operator's timesheet must come off it
+        // before splitDefaultHaulEquipment is asked for the truck. Both the
+        // picker and the Haul tick arrive here, so this is the one place that
+        // has to know. See splitClearNamedOnHaul.
+        splitClearNamedOnHaul(row);
         splitClearHaulAuto(row);
         splitDefaultHaulEquipment(row);
         splitMirrorHaulEquipHours(row);
@@ -8026,14 +8060,6 @@
         ? `<span class="yn-pill yn-yes" title="${escapeHtml(yesTitle)}">Yes</span>`
         : `<span class="yn-pill yn-no" title="${escapeHtml(noTitle)}">No</span>`;
     }
-    // The equipment cell: the Yes/No pill every other day-flag gets, plus the
-    // machines the operator actually named. Which piece it was is the whole
-    // point of the answer on the cost side — a pickup and an excavator are the
-    // same "Yes" and nothing like the same rate — so showing only the pill
-    // sends the approver back to the schedule to guess.
-    //
-    // Entries filed before the question existed carry no names and read exactly
-    // as they always have.
     // What the operator named, in one shape: [{ name, hours }]. A bare string
     // in an older row reads as a machine with no hours.
     function equipUsedPieces(e) {
@@ -8051,6 +8077,17 @@
     function equipUsedNames(e) {
       return equipUsedPieces(e).map(x => x.hours != null ? `${x.name} ${x.hours.toFixed(2)} h` : x.name);
     }
+    // The equipment cell: the Yes/No pill every other day-flag gets, plus the
+    // machines the operator actually named. Which piece it was is the whole
+    // point of the answer on the cost side — a pickup and an excavator are the
+    // same "Yes" and nothing like the same rate — so showing only the pill
+    // sends the approver back to the schedule to guess.
+    //
+    // A Yes carrying NO names is ordinary, not a fault to flag: naming the
+    // machine is optional on the timesheet and never blocks the save, so this
+    // reads as the plain pill for an entry filed before the question existed
+    // and for one whose operator simply did not fill it in. Either way the
+    // approver codes the machine himself, which is where he always was.
     function equipFlagHtml(e) {
       const names = equipUsedNames(e);
       const pill  = dayFlagHtml(e, 'operated_equipment',
@@ -9546,13 +9583,25 @@
       if (!splitEntry) return false;
       const pieces = equipUsedPieces(splitEntry);
       if (!pieces.length) return false;
-      const workRows = () => splitRows.filter(r => !isTravelSplitRow(r));
+      // Rows this prefill may touch: not travel, and NOT A HAUL ROW.
+      //
+      // A haul row's machine is the TRUCK — truckOnRow reads it that way, and
+      // when the driver named no unit it reads ANY machine as the truck. So the
+      // blank splitDefaultHaulEquipment leaves on a truckless haul row is a
+      // deliberate refusal, not a gap to fill: writing the operator's Roller
+      // into it flips splitRowIsHaul to true, prices his whole day at $0
+      // labour and bills the job for the Roller as the haul truck — silently,
+      // because every warning that would have caught it reads the row as a
+      // properly priced haul. His "which equipment" answer and his "which
+      // truck" answer are two different questions, and only the second one
+      // belongs on a haul row.
+      const fillable = () => splitRows.filter(r => !isTravelSplitRow(r) && !splitRowTakesTruck(r));
       let changed = false;
       for (const piece of pieces) {
-        // Already on the form, wherever it came from. Naming it twice would
-        // bill the job for two of the same machine.
+        // Already on the form, wherever it came from — including on a haul row.
+        // Naming it twice would bill the job for two of the same machine.
         if (splitRows.some(r => String(r.equipment || '').trim().toLowerCase() === piece.name.toLowerCase())) continue;
-        let row = workRows().find(r => !String(r.equipment || '').trim());
+        let row = fillable().find(r => !String(r.equipment || '').trim());
         if (!row) {
           // Every row already names a machine, so this one needs its own — but
           // only where he gave it hours: the save refuses a row carrying
@@ -9561,15 +9610,25 @@
           if (!(piece.hours > 0)) continue;
           row = _blankSplitRow(false);
           // The haul question is asked per row and a blank answer cannot be
-          // saved. Carry what the rows beside it already say rather than making
-          // the approver answer the same day twice. These rows carry no labour
-          // hours, so the answer moves no money either way — it only has to be
-          // an answer.
-          const seed = workRows()[0];
-          if (seed) { row.haul_type = seed.haul_type; row.is_haul = seed.is_haul; }
+          // saved, so this row answers it: NOT a haul.
+          //
+          // Not inherited from the row beside it, which is the trap the rule
+          // above exists to avoid — a row that carries a machine and says it
+          // hauled reads that machine as the truck. This row carries a machine
+          // and no labour hours: it is a machine's cost line, not hauling
+          // labour, and there is nothing on it for a truck to buy. Where the
+          // machine really WAS the truck the driver named it in the truck
+          // picker and splitDefaultHaulEquipment has already put it on the haul
+          // row, so this branch never sees it.
+          row.haul_type = 'none';
+          row.is_haul   = false;
           splitRows.push(row);
         }
-        row.equipment = piece.name;
+        row.equipment      = piece.name;
+        // Flagged so splitClearNamedOnHaul can take it back if this row later
+        // becomes a haul. Distinct from _haulAutoEquip, which marks what the
+        // HAUL rules guessed and is taken back when a row stops being one.
+        row._namedAutoEquip = true;
         changed = true;
         if (piece.hours > 0 && !((Number(row.equip_hours) || 0) > 0)) {
           row.equip_hours = piece.hours;

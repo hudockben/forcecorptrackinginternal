@@ -702,12 +702,12 @@
              vocabulary the cost row uses — so what he picks lands on the row
              unchanged rather than having to be translated. -->
         <div class="row" id="row-equip-used" style="display:none">
-          <label>Which equipment, and for how long? <span class="haul-need" id="equip-need">&mdash; name at least one</span></label>
+          <label>Which equipment, and for how long? <span style="text-transform:none;font-weight:400">(optional)</span></label>
           <div class="equip-list" id="equip-list"></div>
           <button type="button" class="split-add equip-add" id="equip-add" onclick="addEquipPiece(0)">
             + Add another piece
           </button>
-          <div class="hint">Name every piece you ran, biggest first &mdash; a pickup used to get to the job counts &mdash; and the hours you were on it. The office codes the job's cost per machine off these hours, so they save the guesswork later. If what you ran is not on the list, pick the closest and say which it was in Notes.</div>
+          <div class="hint">Optional, and worth the ten seconds: the office codes the job's cost per machine off these hours, so what you put here saves it being guessed at later. Name every piece you ran, biggest first &mdash; a pickup used to get to the job counts &mdash; and the hours you were on each. If what you ran is not on the list, pick the closest and say which it was in Notes, or leave it blank and the office will fill it in.</div>
         </div>
 
         <!-- ── The hauling question ──
@@ -1059,7 +1059,13 @@
         const name = String((raw && raw.name) || '').trim();
         if (!name) continue;
         const n = Number(raw && raw.hours);
-        const hours = (Number.isFinite(n) && n > 0) ? Math.round(n * 100) / 100 : null;
+        // Bounded here as well as on the box, because max="24" on an <input>
+        // does nothing without a <form> around it and this page has none. Left
+        // unbounded, one fat-fingered "88" reached safeHours on the server,
+        // which reads anything over a day as no answer at all — so the figure
+        // he typed vanished and the save still said it worked. The merge branch
+        // below has always clamped; a single line now does too.
+        const hours = (Number.isFinite(n) && n > 0) ? Math.min(24, Math.round(n * 100) / 100) : null;
         const key = name.toLowerCase();
         if (seen.has(key)) {
           const at = out[seen.get(key)];
@@ -1082,15 +1088,6 @@
       const out = bel(i, 'hours');
       const n = Number(out && out.textContent);
       return Number.isFinite(n) ? n : 0;
-    }
-
-    // Light the "name at least one" marker beside the label, or put it away.
-    // Split out of the full redraw because it is the only part that has to
-    // react to a pick — rebuilding the list on every change would tear down
-    // the <select> the operator's finger is still on.
-    function renderEquipNeed(i) {
-      const need = bel(i, 'equip-need');
-      if (need) need.style.display = equipUsedClean(i).length ? 'none' : '';
     }
 
     // Draw one block's lines from equipUsed. Keeps whatever each line already
@@ -1119,46 +1116,98 @@
                    inputmode="decimal" min="0" max="24" step="0.25" placeholder="hrs"
                    value="${escapeHtml(hrs)}"
                    oninput="setEquipHours(${i}, ${slot}, this.value)"
-                   onchange="setEquipHours(${i}, ${slot}, this.value)" />
+                   onchange="commitEquipHours(${i}, ${slot}, this.value)" />
             ${slot === 0 ? '' : `<button type="button" class="link-btn" onclick="removeEquipPiece(${i}, ${slot})">Remove</button>`}
           </div>`;
       }).join('');
       const add = bel(i, 'equip-add');
       if (add) add.disabled = slots.length >= MAX_EQUIP_PIECES;
-      renderEquipNeed(i);
     }
 
     function equipSlot(i, slot) {
       const slots = equipUsed[i] || (equipUsed[i] = []);
-      while (slots.length <= slot) slots.push({ name: '', hours: '' });
+      while (slots.length <= slot) slots.push({ name: '', hours: '', auto: false });
       return slots[slot];
+    }
+
+    // Put a figure in one line's hours box AND on screen, without a redraw.
+    function writeEquipHours(i, slot, text) {
+      equipSlot(i, slot).hours = text;
+      const box = document.getElementById(equipHrsId(i, slot));
+      if (box) box.value = text;
+    }
+
+    // The first machine named is almost always the one he was on all day, so
+    // its hours open on the block's own hours instead of on nothing — the same
+    // courtesy the travel legs get. Written INTO THE BOX, where he can see it
+    // and change it, not left as a default nobody can tell from an answer.
+    //
+    // The `auto` flag is what makes that safe. It marks a figure as THE FORM'S
+    // GUESS rather than his, so the guess can be corrected — when he changes
+    // the machine on that line, or when the block's clock moves — while a
+    // figure he typed is never touched again. Without it the guess simply stuck:
+    // pick "Excavator" on a ten-hour day, realise it was the pickup, change the
+    // picker, and the pickup rode out of the form with ten machine-hours on it.
+    // Re-guess line 1's hours from the block's clock — but ONLY while they are
+    // still the form's own guess. `auto` is set where the guess is made, below,
+    // and cleared the instant he touches the box. A saved draft's figures come
+    // back with no flag at all, so re-opening one never has this invent hours
+    // he deliberately left blank.
+    function refreshEquipAutoHours(i) {
+      const piece = (equipUsed[i] || [])[0];
+      if (!piece || !piece.name || piece.auto !== true) return;
+      const h = blockHours(i);
+      if (!(h > 0)) return;
+      writeEquipHours(i, 0, h.toFixed(2));
+      piece.auto = true;                       // writeEquipHours only moves the text
     }
 
     function setEquipPiece(i, slot, val) {
       const piece = equipSlot(i, slot);
       piece.name = val || '';
-      // The first machine named is almost always the one he was on all day, so
-      // its hours open on the block's own hours instead of on nothing. Written
-      // INTO THE BOX, where he can see it and change it — not left as a default
-      // nobody can tell from an answer, which is the mistake the hauling
-      // question beside this one was built to undo. Only ever fills a box
-      // sitting empty, so a figure he typed is never moved.
-      if (val && slot === 0 && !String(piece.hours || '').trim()) {
-        const h = blockHours(i);
-        if (h > 0) {
-          piece.hours = h.toFixed(2);
-          const box = document.getElementById(equipHrsId(i, slot));
-          if (box) box.value = piece.hours;
-        }
+      if (!piece.name) {
+        // A line with no machine posts nothing, so leaving hours visible beside
+        // "— pick —" shows him a figure that is quietly thrown away on save.
+        piece.auto = false;
+        writeEquipHours(i, slot, '');
+        return;
       }
-      renderEquipNeed(i);
+      if (slot !== 0) return;
+      // An empty box is the form's to fill; anything in it is already somebody's
+      // answer and stays put.
+      if (!String(piece.hours || '').trim()) piece.auto = true;
+      refreshEquipAutoHours(i);
     }
 
     // Deliberately does NOT redraw: this fires on every keystroke, and a redraw
     // takes the box out from under the thumb typing into it.
     function setEquipHours(i, slot, val) {
-      equipSlot(i, slot).hours = val == null ? '' : String(val);
+      const piece = equipSlot(i, slot);
+      piece.hours = val == null ? '' : String(val);
+      // Touched by hand: from here on it is his box, and nothing re-guesses it
+      // — including a box he deliberately emptied.
+      piece.auto = false;
     }
+
+    // On blur (the box's onchange), hold the figure to a real day and show him
+    // that it was held. Silently dropping an over-24 typo on the server is the
+    // one outcome worse than refusing it: the save reports success and the
+    // hours he entered are simply gone.
+    function commitEquipHours(i, slot, val) {
+      setEquipHours(i, slot, val);
+      const piece = equipSlot(i, slot);
+      const raw = String(piece.hours || '').trim();
+      if (!raw) return;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) { writeEquipHours(i, slot, ''); piece.auto = false; return; }
+      const held = Math.min(24, Math.round(n * 100) / 100);
+      writeEquipHours(i, slot, String(held));
+      piece.auto = false;
+    }
+
+    // writeEquipHours is the only thing that moves the text, and it must never
+    // be mistaken for the guess being re-made — the flag is owned by the three
+    // functions above.
 
     function addEquipPiece(i) {
       const slots = equipUsed[i] || (equipUsed[i] = []);
@@ -1244,7 +1293,6 @@
       'row-equip-used': 'row-equip-used',
       'equip-list':     'equip-list',
       'equip-add':      'equip-add',
-      'equip-need':     'equip-need',
       'seg-haul':       'seg-haul',
       'haul-need':      'haul-need',
       'row-haul':       'row-haul',
@@ -1363,12 +1411,12 @@
           </div>
 
           <div class="row" id="s${i}-row-equip-used" style="display:none">
-            <label>Which equipment, and for how long? <span class="haul-need" id="s${i}-equip-need">&mdash; name at least one</span></label>
+            <label>Which equipment, and for how long? <span style="text-transform:none;font-weight:400">(optional)</span></label>
             <div class="equip-list" id="s${i}-equip-list"></div>
             <button type="button" class="split-add equip-add" id="s${i}-equip-add" onclick="addEquipPiece(${i})">
               + Add another piece
             </button>
-            <div class="hint">Name every piece you ran on this job, biggest first, and the hours you were on it. Not on the list? Pick the closest and say which it was in Notes.</div>
+            <div class="hint">Optional. Name every piece you ran on this job, biggest first, and the hours you were on it. Not on the list? Pick the closest and say which it was in Notes, or leave it blank.</div>
           </div>
 
           <div class="row" id="s${i}-row-haul" style="display:none">
@@ -1732,6 +1780,11 @@
       if (mins == null) { out.textContent = '0.00'; updateDayTotal(); return; }
       if (i === 0 && lunchVal === true) mins = Math.max(0, mins - 30);
       out.textContent = (mins / 60).toFixed(2);
+      // The first machine's hours are guessed from this figure, so they follow
+      // it — otherwise a clock corrected after the machine was picked leaves a
+      // guess on screen that no longer matches the day it was guessed from.
+      // Only ever a guess: see refreshEquipAutoHours.
+      refreshEquipAutoHours(i);
       updateDayTotal();
     }
 
@@ -2573,17 +2626,15 @@
           return { error: at(i, 'Start and end times are the same — that comes to 0 hours.') };
         }
         if (equipVals[i] == null) return { error: at(i, 'Operated equipment? Yes or No.') };
-        // Yes on its own is half an answer — a cost row is coded per machine,
-        // so "a machine was out" with no name on it is reconstructed later by
-        // someone who wasn't there. Gated only when there is a list to pick
-        // FROM: a company with no equipment on file, or a list call that came
-        // back 401 on an expired token, must not leave the crew unable to file
-        // the day. equipmentNamesLoad caches nothing but a real answer, so
-        // this reads as empty exactly while there is genuinely nothing to name.
+        // The machines and their hours, where he gave them. OPTIONAL, both of
+        // them, and deliberately not a gate: the Yes/No above is the answer
+        // payroll cannot do without, and these two only make the cost coding
+        // easier. A man standing in the mud at six in the evening must never be
+        // unable to file his day because a machine he ran is not on the
+        // office's list, or because the list call came back 401 on an expired
+        // token. A blank list posts as a blank list and the approver fills it
+        // in, which is exactly where he was before this field existed.
         const _equipUsed = equipVals[i] === true ? equipUsedClean(i) : [];
-        if (equipVals[i] === true && !_equipUsed.length && (equipmentNames || []).length) {
-          return { error: at(i, 'Name the equipment you ran, or answer No.') };
-        }
         // Only a flagged driver is ever asked — and now that the control has no
         // default, this is a gate exactly like the equipment question above.
         // A blank three-way used to save itself as "No", which billed an
