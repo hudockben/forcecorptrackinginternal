@@ -2094,6 +2094,47 @@ CREATE INDEX IF NOT EXISTS idx_mathis_job_facts_window
 -- the cost it describes.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_destinations JSONB;
 
+-- ── WHICH equipment was run, not merely whether ───────────────────────────
+-- operated_equipment is a boolean, and a boolean is half an answer: a cost row
+-- is coded per MACHINE, at that machine's rate. "Yes" with no name on it was
+-- reconstructed days later from the schedule, by someone who was not on the
+-- job — and a pickup priced as an excavator is not a rounding error.
+--
+-- An ARRAY because a day is routinely more than one piece: the pickup that got
+-- the operator to the job, then the excavator he ran once he arrived.
+--
+-- ORDER IS MEANINGFUL, so do not sort or reverse this. It is the order he named
+-- them, biggest first per the form's prompt, and payroll's split modal walks it
+-- in that order: the first machine lands on the row that already carries the
+-- job's cost code, and each one after it opens a row the approver still has to
+-- code. Re-ordering the array silently re-assigns which machine's hours are
+-- billed under the coded row. See splitFillNamedEquipment in payroll.html.
+--
+-- Each element is { "name": <equipment_list name>, "hours": <number|null> }.
+-- The HOURS are what make the field pay for itself: payroll's split modal codes
+-- a cost row per machine at that machine's hourly rate, and it now opens with
+-- both already filled in from the man who was on the seat — the same way the
+-- travel legs fill the travel row's hours. null hours mean he named the machine
+-- and not the time, and the modal leaves that figure to the approver rather
+-- than inventing one the job gets billed for.
+--
+-- Names are the company's own equipment_list vocabulary — the timesheet picks
+-- them from that list — so they compare directly against daily_tracking.
+-- equipment without translation. They are NOT a foreign key: a piece renamed or
+-- retired afterwards must not make an already-filed day unsaveable, the same
+-- latitude truck_unit has.
+--
+--   NULL → no machine named. Every entry whose answer is No, every time-off
+--          row, every entry filed before this existed — AND every ordinary Yes
+--          whose operator did not fill this in, which is a routine answer and
+--          not a defect: naming the machine is optional on the timesheet and
+--          never blocks the save, so a Yes with no names means the approver
+--          codes the machine himself, exactly as he did before this column.
+--          api/timesheet-entries.js forces it to NULL on any answer but Yes,
+--          so the two fields can never disagree.
+-- Idempotent so existing deployments pick it up the next time run-schema runs.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS equipment_used JSONB;
+
 -- ── EMPLOYEES — contact card: cell, email, and who they report to ──────────
 -- The roster already knew who everyone was and what they cost. It did not know
 -- how to reach them, so the phone numbers lived in six people's phones and the

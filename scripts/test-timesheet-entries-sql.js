@@ -252,10 +252,99 @@ async function run() {
   await theUnitIsOnlyWrittenOnceTheRowExists();
   await eesFieldsSurviveAnEdit();
   await eesRowIsEditableWithoutUnapproving();
+  await theMachinesNamedSurviveTheRoundTrip();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   await client.end();
   process.exit(failed ? 1 : 0);
+}
+
+// The machines an entry says it ran and the hours on each, out to Postgres and
+// back.
+//
+// The column is JSONB holding an array of { name, hours }, so unlike every
+// other field on this row there is a serialization in the middle of it — which
+// is exactly the kind of thing the mocked suites cannot see. It carries the two
+// rules the field lives by as well: it is tied to the Yes/No answer beside it
+// (a day that says it ran no equipment can never name any), and payroll's Edit
+// Entry modal sends no such key, so an absent one has to keep what is stored
+// the way haul_type and the EES columns do.
+async function theMachinesNamedSurviveTheRoundTrip() {
+  console.log('\n[the machines named survive the round trip]');
+  const RAN = {
+    entry_type: 'daily', work_date: '2026-08-20', division: 'paving',
+    job_id: '26019', job_label: 'Punxsy Storage Lot',
+    start_time: '07:00', end_time: '15:30', lunch_break: false,
+    operated_equipment: true,
+    equipment_used: [{ name: 'Roller', hours: 7 }, { name: 'Pickup Truck', hours: 1.5 }],
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: '',
+  };
+  const made = await call('POST', {}, RAN, FIELD);
+  const rid  = made.body.entry.id;
+  assert('a day naming two machines is created', made.statusCode === 200, JSON.stringify(made.body));
+  assert('  and both come back with their hours, in the order he named them',
+    JSON.stringify(made.body.entry.equipment_used)
+      === JSON.stringify([{ name: 'Roller', hours: 7 }, { name: 'Pickup Truck', hours: 1.5 }]),
+    JSON.stringify(made.body.entry.equipment_used));
+  const stored = (await client.query(
+    `SELECT equipment_used FROM timesheet_entries WHERE id=$1`, [rid])).rows[0];
+  assert('  stored as a JSON array of objects, not as a string of one',
+    Array.isArray(stored.equipment_used) && stored.equipment_used.length === 2
+      && stored.equipment_used[0].name === 'Roller' && Number(stored.equipment_used[0].hours) === 7,
+    JSON.stringify(stored.equipment_used));
+
+  // Payroll's Edit Entry modal: it edits the day and sends no equipment_used.
+  await call('PUT', { id: rid }, {
+    entry_type: 'daily', work_date: '2026-08-20', division: 'paving',
+    job_id: '26019', job_label: 'Punxsy Storage Lot',
+    start_time: '06:30', end_time: '15:30',
+    lunch_break: false, operated_equipment: true,
+    supervisor_id: 3, supervisor_name: 'Steve Travis', notes: '',
+  }, ADMIN);
+  const kept = (await client.query(
+    `SELECT start_time, equipment_used FROM timesheet_entries WHERE id=$1`, [rid])).rows[0];
+  assert('an edit that never mentions them keeps them, hours and all',
+    Array.isArray(kept.equipment_used) && kept.equipment_used.length === 2
+      && Number(kept.equipment_used[1].hours) === 1.5,
+    JSON.stringify(kept.equipment_used));
+  assert('  while the edit it DID ask about landed', String(kept.start_time).startsWith('06:30'),
+    String(kept.start_time));
+
+  // Answering No takes them with it — a row claiming no equipment while naming
+  // an excavator is a row nobody can price.
+  await call('PUT', { id: rid }, Object.assign({}, RAN, {
+    operated_equipment: false, equipment_used: undefined,
+  }), ADMIN);
+  const off = (await client.query(
+    `SELECT operated_equipment, equipment_used FROM timesheet_entries WHERE id=$1`, [rid])).rows[0];
+  assert('turning the answer off clears the machines',
+    off.operated_equipment === false && off.equipment_used == null, JSON.stringify(off));
+
+  // Present still wins — this is how the operator's own form clears a mistake.
+  await call('PUT', { id: rid }, Object.assign({}, RAN, {
+    equipment_used: [{ name: 'Excavator', hours: 8 }],
+  }), ADMIN);
+  await call('PUT', { id: rid }, Object.assign({}, RAN, { equipment_used: [] }), ADMIN);
+  const blanked = (await client.query(
+    `SELECT equipment_used FROM timesheet_entries WHERE id=$1`, [rid])).rows[0];
+  assert('sending an empty list still clears them',
+    blanked.equipment_used == null, JSON.stringify(blanked));
+
+  // And the normalizer's rules hold over the wire, not just in a unit test.
+  await call('PUT', { id: rid }, Object.assign({}, RAN, {
+    equipment_used: [
+      { name: '  Roller  ', hours: 4 }, { name: 'roller', hours: 2.5 },
+      { name: '', hours: 3 }, { name: 'Excavator', hours: null },
+    ],
+  }), ADMIN);
+  const tidied = (await client.query(
+    `SELECT equipment_used FROM timesheet_entries WHERE id=$1`, [rid])).rows[0];
+  assert('blanks drop, one machine named twice stays one, and its hours add up',
+    JSON.stringify(tidied.equipment_used)
+      === JSON.stringify([{ name: 'Roller', hours: 6.5 }, { name: 'Excavator', hours: null }]),
+    JSON.stringify(tidied.equipment_used));
+
+  await call('DELETE', { id: rid }, {}, ADMIN);
 }
 
 // A haul carries two fields no other division has — the truck unit and the haul

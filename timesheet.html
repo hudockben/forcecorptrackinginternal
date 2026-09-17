@@ -246,6 +246,33 @@
       letter-spacing: 0.06em;
     }
 
+    /* ── Which equipment was run ──
+       One line per machine, because a day is routinely more than one: the
+       pickup that got him to the job and the excavator he ran once he was
+       there. The Remove link sits beside the picker rather than under it so a
+       gloved thumb can't take out the wrong line. */
+    .equip-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .equip-piece {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .equip-piece select { flex: 1 1 auto; min-width: 0; }
+    /* Narrow enough that the machine's name keeps the room, wide enough for
+       "10.25" and a thumb. */
+    .equip-piece .equip-hours { flex: 0 0 5rem; text-align: right; padding-left: 0.4rem; padding-right: 0.4rem; }
+    .equip-piece .link-btn { flex: 0 0 auto; }
+    /* Same dashed "+" as the split button, at the size of a field rather than
+       a section — this adds a line, not another job. */
+    .equip-add {
+      min-height: 42px;
+      font-size: 0.8rem;
+    }
+
     /* ── Time-off type radio grid ── */
     .pills {
       display: grid;
@@ -653,11 +680,40 @@
         </div>
 
         <div class="row">
-          <label>Operated equipment?</label>
+          <!-- "Or drove pickup truck" is not a widening of the question — it is
+               the same question, asked in words the crew answers correctly. To
+               a man who runs a dozer, a pickup is not equipment, so he ticked
+               No and the drive was never costed to the job. The field it opens
+               books a pickup to travel, which only ever happens if he says
+               Yes here first. -->
+          <label>Operated equipment or drove pickup truck?</label>
           <div class="seg" id="seg-equip">
             <button type="button" data-val="true"  onclick="setSeg('equip', true)">Yes</button>
             <button type="button" data-val="false" onclick="setSeg('equip', false)">No</button>
           </div>
+        </div>
+
+        <!-- ── Which equipment did he run ──
+             Shown only once the answer above is Yes. "Operated equipment? Yes"
+             on its own says a machine was out and nothing about WHICH, and a
+             cost row is coded per machine — so the answer was reconstructed
+             from the schedule days later, by someone who wasn't there.
+
+             A LIST rather than one picker, because a day is routinely more
+             than one piece: the pickup that got him to the job, then the
+             excavator he ran once he arrived. Both cost the job, at very
+             different rates.
+
+             The options are the company's own equipment list — the same
+             vocabulary the cost row uses — so what he picks lands on the row
+             unchanged rather than having to be translated. -->
+        <div class="row" id="row-equip-used" style="display:none">
+          <label>Which equipment, and for how long? <span style="text-transform:none;font-weight:400">(optional)</span></label>
+          <div class="equip-list" id="equip-list"></div>
+          <button type="button" class="split-add equip-add" id="equip-add" onclick="addEquipPiece(0)">
+            + Add another piece
+          </button>
+          <div class="hint">Optional, and worth the ten seconds: the office codes the job's cost per machine off these hours, so what you put here saves it being guessed at later. Name every piece you ran, biggest first, and the hours you were on each. A pickup you used to get to the job counts too &mdash; name it and it opens on your travel time, because that is what it was doing, and the office books it to travel. If what you ran is not on the list, pick the closest and say which it was in Notes, or leave it blank and the office will fill it in.</div>
         </div>
 
         <!-- ── The hauling question ──
@@ -912,6 +968,20 @@
     let splitIdxs      = [];        // extra block indices, in display order
     let nextSplitIdx   = 0;         // monotonic: a removed block's ids never come back
     let equipVals      = { 0: null }; // block index → true / false / null
+    // block index → the machines that block says it ran: one { name, hours }
+    // per picker line, hours held as the raw input string. A line with no name
+    // is unfilled and is dropped on the way out; see equipUsedClean. Only ever
+    // posted for a block whose answer IS Yes.
+    //
+    // The HOURS are what make this worth asking twice over: payroll's split
+    // modal codes a cost row per machine, at that machine's hourly rate, and
+    // the figure it wants is the one the man on the seat knows. Captured here,
+    // it arrives on the row already filled in — the same way the travel legs
+    // fill the travel row's hours today.
+    let equipUsed      = { 0: [] };
+    // How many pieces one job block can name. Six is the cap for the same
+    // reason MAX_JOB_BLOCKS is: past that it is not a day, it is a typo.
+    const MAX_EQUIP_PIECES = 6;
     // block index → null | '' | 'on_site' | 'off_site'.
     //   null → NOT ANSWERED, and where every driver's block starts. There is no
     //          default any more: a lit "No" nobody chose looks exactly like one
@@ -979,6 +1049,346 @@
 
     function setHaulUnit(val, i = 0) { haulUnits[i] = val || ''; }
 
+    // ── Which equipment this block ran, and for how long ────────────────────
+    // What one block actually posts: { name, hours } per machine, trimmed,
+    // unnamed lines dropped, and no machine counted twice however many lines
+    // carry it — a duplicate is a slip of the thumb, not a second machine, and
+    // posted as one it would read on the cost side as two pieces on the job.
+    // Where it IS two stints on the same machine the hours are added, which is
+    // the one reading of a repeat that costs the job the right amount either
+    // way. `hours` is null where he named the machine and not the time: the
+    // split modal fills what it is given and leaves the rest to the approver.
+    function equipUsedClean(i) {
+      const seen = new Map();
+      const out  = [];
+      for (const raw of (equipUsed[i] || [])) {
+        const name = String((raw && raw.name) || '').trim();
+        if (!name) continue;
+        const n = Number(raw && raw.hours);
+        // Bounded here as well as on the box, because max="24" on an <input>
+        // does nothing without a <form> around it and this page has none. Left
+        // unbounded, one fat-fingered "88" reached safeHours on the server,
+        // which reads anything over a day as no answer at all — so the figure
+        // he typed vanished and the save still said it worked. The merge branch
+        // below has always clamped; a single line now does too.
+        const hours = (Number.isFinite(n) && n > 0) ? Math.min(24, Math.round(n * 100) / 100) : null;
+        const key = name.toLowerCase();
+        if (seen.has(key)) {
+          const at = out[seen.get(key)];
+          if (hours != null) at.hours = Math.min(24, Math.round(((at.hours || 0) + hours) * 100) / 100);
+          continue;
+        }
+        seen.set(key, out.length);
+        out.push({ name, hours });
+        if (out.length >= MAX_EQUIP_PIECES) break;
+      }
+      return out;
+    }
+
+    // The two controls on one line. Not in BLOCK0_IDS because there is one pair
+    // per LINE, not one per block — the list is redrawn, the ids go with it.
+    function equipHrsId(i, slot) { return `${i === 0 ? '' : 's' + i + '-'}equip-hrs-${slot}`; }
+    function equipSelId(i, slot) { return `${i === 0 ? '' : 's' + i + '-'}equip-sel-${slot}`; }
+
+    // The machine picker's options, with `cur` selected. Kept in one place
+    // because two callers need them: the full redraw, and the late-arriving
+    // company list below. A name no longer on that list is appended rather than
+    // dropped, so re-opening an older entry cannot silently lose the machine it
+    // was saved with — the same rule haulUnitFill follows.
+    function equipOptionsHtml(cur) {
+      const names = (equipmentNames || []).slice();
+      if (cur && !names.includes(cur)) names.push(cur);
+      return '<option value="">&mdash; pick &mdash;</option>' + names
+        .map(n => `<option value="${escapeHtml(n)}"${n === cur ? ' selected' : ''}>${escapeHtml(n)}</option>`)
+        .join('');
+    }
+
+    // Put the company list into the pickers once it lands, WITHOUT rebuilding
+    // the lines.
+    //
+    // A full redraw replaces the hours <input> beside each picker, and there
+    // may be a thumb on it: the keystrokes not yet committed go with the node,
+    // and on a type="number" box a half-typed "9." already reads as '' — so the
+    // late paint writes that '' back and the digits on screen vanish too. That
+    // is precisely what setEquipHours refuses to do on every keystroke, and it
+    // is no more acceptable for arriving late. The fetch only ever has options
+    // to add, so options are all it touches.
+    function fillEquipOptions(i) {
+      const slots = equipUsed[i] || [];
+      for (let slot = 0; slot < slots.length; slot++) {
+        const sel = document.getElementById(equipSelId(i, slot));
+        if (!sel) continue;
+        const cur = String((slots[slot] && slots[slot].name) || '');
+        sel.innerHTML = equipOptionsHtml(cur);
+        sel.value = cur;
+      }
+    }
+
+    // What this block records as DRIVING: the leg that got him to this job,
+    // plus the drive home when this is the last job of the day. Exactly the two
+    // legs buildPayloads posts for this block, and what the server adds up into
+    // the entry's travel_hours — so the figure the pickup opens on here is the
+    // one payroll's travel row will carry.
+    function blockTravelHours(i) {
+      const order = blockOrder();
+      let total = parseTravelLeg(bel(i, 'travel-in'));
+      if (order[order.length - 1] === i) {
+        total += parseTravelLeg(document.getElementById('f-travel-to-shop'));
+      }
+      return Math.round(total * 100) / 100;
+    }
+
+    // What the block's clock says, for the prefill below.
+    function blockHours(i) {
+      const out = bel(i, 'hours');
+      const n = Number(out && out.textContent);
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    // Draw one block's lines from equipUsed. Keeps whatever each line already
+    // holds — including a name no longer on the company list, so re-opening an
+    // older entry cannot silently drop the machine it was saved with, the same
+    // rule haulUnitFill follows.
+    function renderEquipUsed(i) {
+      const list = bel(i, 'equip-list');
+      if (!list) return;
+      const slots = equipUsed[i] || (equipUsed[i] = []);
+      // There is always a line to fill in: an empty list with a "+" under it
+      // reads as "nothing to answer here".
+      if (!slots.length) slots.push({ name: '', hours: '' });
+      list.innerHTML = slots.map((piece, slot) => {
+        const cur  = String((piece && piece.name) || '');
+        const hrs  = String((piece && piece.hours) || '');
+        const opts = equipOptionsHtml(cur);
+        return `
+          <div class="equip-piece">
+            <select id="${equipSelId(i, slot)}" onchange="setEquipPiece(${i}, ${slot}, this.value)">${opts}</select>
+            <input type="number" class="equip-hours" id="${equipHrsId(i, slot)}"
+                   inputmode="decimal" min="0" max="24" step="0.25" placeholder="hrs"
+                   value="${escapeHtml(hrs)}"
+                   oninput="setEquipHours(${i}, ${slot}, this.value)"
+                   onchange="commitEquipHours(${i}, ${slot}, this.value)" />
+            ${slot === 0 ? '' : `<button type="button" class="link-btn" onclick="removeEquipPiece(${i}, ${slot})">Remove</button>`}
+          </div>`;
+      }).join('');
+      const add = bel(i, 'equip-add');
+      if (add) add.disabled = slots.length >= MAX_EQUIP_PIECES;
+    }
+
+    function equipSlot(i, slot) {
+      const slots = equipUsed[i] || (equipUsed[i] = []);
+      while (slots.length <= slot) slots.push({ name: '', hours: '', auto: false, touched: false });
+      return slots[slot];
+    }
+
+    // Put a figure in one line's hours box AND on screen, without a redraw.
+    function writeEquipHours(i, slot, text) {
+      equipSlot(i, slot).hours = text;
+      const box = document.getElementById(equipHrsId(i, slot));
+      if (box) box.value = text;
+    }
+
+    // ── The guess on line 1 ────────────────────────────────────────────────
+    // The first machine named is usually the one he was on for the bulk of the
+    // block, so its box opens on the hours THE BLOCK HAS LEFT rather than on
+    // nothing — the block's own clock, less whatever the other lines already
+    // account for. That is splitFillTravelHours' rule for the travel row, and
+    // it is here for the same reason: the entry already states the figure, so
+    // there is nothing to type on the ordinary day.
+    //
+    // The REMAINDER, not the whole, is what keeps the arithmetic honest. Filled
+    // with the whole block, line 1 kept ten hours after a second machine was
+    // added for two — twelve machine-hours billed against a ten-hour day, off a
+    // figure the form invented rather than one he gave.
+    //
+    // Two flags decide whether it may write at all:
+    //   auto    → this figure is THE FORM'S, so it may be re-guessed when the
+    //             clock moves or another line changes.
+    //   touched → he has been in this box. Set by the only two functions that
+    //             take a keystroke, never cleared, and set on every line of a
+    //             re-opened draft — because a saved figure is his, and so is a
+    //             saved BLANK. "Leave it blank and the office will fill it in"
+    //             is what the hint under this section offers him, and a guess
+    //             that reappears the next time he touches the picker takes that
+    //             offer back without saying so.
+    // Is this machine the pickup that got him to the job?
+    //
+    // It matters here because the pickup is not site work: the block's clock is
+    // start-to-finish ON THE JOB, and the drive is recorded separately in the
+    // travel legs above. So a pickup's hours are not part of the block's share
+    // to divide, and the form does not guess them from it. Payroll books the
+    // pickup onto the travel line under the travel sub code for the same
+    // reason — see splitEquipIsPickup in payroll.html, which spells the rule
+    // the same way. Matched on the word, not an exact name: the equipment list
+    // spells it "Pickup", "Pickup Truck", "F-250 Pickup" from company to
+    // company. Never on "truck" alone — a Triaxle Dump Truck is a haul unit.
+    function equipIsPickup(name) {
+      return /\bpick\s*-?\s*ups?\b/i.test(String(name == null ? '' : name));
+    }
+
+    // What the block has left for line 1: its clock, less the hours the other
+    // lines account for. null only when there is no clock to reckon from —
+    // ZERO AND NEGATIVE ARE REAL ANSWERS and the caller has to act on them.
+    //
+    // Only lines that NAME a machine count against the share. equipUsedClean
+    // drops an unnamed line on the way out, so counting its hours here would
+    // take them off line 1 and then post them nowhere.
+    function equipAutoRemainder(i) {
+      const slots = equipUsed[i] || [];
+      const block = blockHours(i);
+      if (!(block > 0)) return null;
+      let spoken = 0;
+      for (let k = 1; k < slots.length; k++) {
+        const piece = slots[k];
+        if (!piece || !String(piece.name || '').trim()) continue;
+        // The pickup was the drive, not the job. Taking its hours out of the
+        // block would leave the machine he actually ran short by the length of
+        // his commute.
+        if (equipIsPickup(piece.name)) continue;
+        const n = Number(piece.hours);
+        if (Number.isFinite(n) && n > 0) spoken += n;
+      }
+      return Math.round((block - spoken) * 100) / 100;
+    }
+
+    // The pickup's hours are the DRIVE's hours — the travel legs he has already
+    // filled in at the top of the form, which is the figure payroll's travel row
+    // will carry. It opens on those rather than on the block's clock (he was in
+    // the pickup for the commute, not for the eight hours on the job) and rather
+    // than on nothing.
+    //
+    // Only the FIRST pickup line: two lines both naming one would each take the
+    // whole drive and bill it twice.
+    function refreshEquipPickupHours(i) {
+      const slots = equipUsed[i] || [];
+      const at = slots.findIndex(x => x && equipIsPickup(x.name));
+      if (at < 0) return;
+      const piece = slots[at];
+      if (piece.auto !== true) return;
+      const drive = blockTravelHours(i);
+      writeEquipHours(i, at, drive > 0 ? drive.toFixed(2) : '');
+      piece.auto = true;                       // writeEquipHours only moves the text
+    }
+
+    function refreshEquipAutoHours(i) {
+      // The pickup is not site work, so it is guessed from the drive instead —
+      // and it is guessed on whichever line it sits on, not only the first.
+      refreshEquipPickupHours(i);
+      const piece = (equipUsed[i] || [])[0];
+      if (!piece || !piece.name || piece.auto !== true) return;
+      // Line 1's share of the BLOCK is for machines that worked it. A pickup
+      // there has already been given the drive, just above.
+      if (equipIsPickup(piece.name)) return;
+      const rest = equipAutoRemainder(i);
+      // No clock yet, so nothing to reckon a share from. Leave the box alone;
+      // buildPayloads refuses a block with no start and end anyway.
+      if (rest == null) return;
+      // Nothing left of the block — the other lines have all of it, or more
+      // than all of it. A guess with no share to take is WITHDRAWN, not left
+      // standing: leaving it was the whole bug, and it doubled the day. Named
+      // biggest-first the way the hint asks, line 1 is guessed before the
+      // others exist, so this is the ordinary path, not the corner.
+      writeEquipHours(i, 0, rest > 0 ? rest.toFixed(2) : '');
+      piece.auto = true;                       // writeEquipHours only moves the text
+    }
+
+    function setEquipPiece(i, slot, val) {
+      const piece = equipSlot(i, slot);
+      piece.name = val || '';
+      if (!piece.name) {
+        // A line with no machine posts nothing, so leaving hours visible beside
+        // "— pick —" shows him a figure that is quietly thrown away on save.
+        piece.auto = false;
+        writeEquipHours(i, slot, '');
+        // Its hours no longer count against line 1's share of the block.
+        if (slot !== 0) refreshEquipAutoHours(i);
+        return;
+      }
+      // A box he has never been in is the form's to fill. A box he HAS been in
+      // is his, whatever is in it — including nothing. Line 1 gets the block's
+      // share; a pickup on ANY line gets the drive.
+      if (!piece.touched && (slot === 0 || equipIsPickup(piece.name))) piece.auto = true;
+      // Either line can move line 1's share: its own, or one of the others.
+      refreshEquipAutoHours(i);
+    }
+
+    // Deliberately does NOT redraw: this fires on every keystroke, and a redraw
+    // takes the box out from under the thumb typing into it.
+    function setEquipHours(i, slot, val) {
+      const piece = equipSlot(i, slot);
+      piece.hours = val == null ? '' : String(val);
+      // Touched by hand: from here on it is his box, and nothing re-guesses it
+      // — including a box he deliberately emptied.
+      piece.auto    = false;
+      piece.touched = true;
+      // What he gives another line comes out of line 1's share.
+      if (slot !== 0) refreshEquipAutoHours(i);
+    }
+
+    // On blur (the box's onchange), hold the figure to a real day and show him
+    // that it was held. Silently dropping an over-24 typo on the server is the
+    // one outcome worse than refusing it: the save reports success and the
+    // hours he entered are simply gone.
+    function commitEquipHours(i, slot, val) {
+      setEquipHours(i, slot, val);
+      const piece = equipSlot(i, slot);
+      const raw = String(piece.hours || '').trim();
+      if (!raw) return;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) { writeEquipHours(i, slot, ''); piece.auto = false; return; }
+      const held = Math.min(24, Math.round(n * 100) / 100);
+      writeEquipHours(i, slot, String(held));
+      piece.auto = false;
+    }
+
+    // writeEquipHours is the only thing that moves the text, and it must never
+    // be mistaken for the guess being re-made — the flag is owned by the three
+    // functions above.
+
+    function addEquipPiece(i) {
+      const slots = equipUsed[i] || (equipUsed[i] = []);
+      if (slots.length >= MAX_EQUIP_PIECES) return;
+      slots.push({ name: '', hours: '', auto: false, touched: false });
+      renderEquipUsed(i);
+    }
+
+    function removeEquipPiece(i, slot) {
+      const slots = equipUsed[i] || (equipUsed[i] = []);
+      slots.splice(slot, 1);
+      if (!slots.length) slots.push({ name: '', hours: '', auto: false, touched: false });
+      // The block has those hours back, so line 1's share grows again — but
+      // only if line 1 is still the form's to guess.
+      refreshEquipAutoHours(i);
+      renderEquipUsed(i);
+    }
+
+    // Show one block's lines, or every block's when `i` is omitted. They follow
+    // the ANSWER: up the moment the block says Yes, away again if that is taken
+    // back.
+    //
+    // PURELY PRESENTATIONAL, for the reason applyHaulVisibility spells out at
+    // length further down — a redraw must never answer on the operator's
+    // behalf. Hiding the row leaves equipUsed alone, so a mis-tap on "No" and
+    // back on "Yes" does not cost him the list he already built. Nothing leaks
+    // out of a hidden row either: buildPayloads posts these names only for a
+    // block whose answer is Yes, and posts an empty list for every other.
+    function applyEquipUsedVisibility(i) {
+      const idxs = (i == null) ? blockOrder() : [i];
+      for (const b of idxs) {
+        const row = bel(b, 'row-equip-used');
+        if (!row) continue;
+        const on = equipVals[b] === true;
+        row.style.display = on ? 'flex' : 'none';
+        if (!on) continue;
+        // Fetch once, then fill. Until it lands the lines hold just whatever
+        // was saved, so an entry being edited never shows a blank machine —
+        // and that window is usable, so what lands in it may only add options,
+        // never rebuild the line. See fillEquipOptions.
+        renderEquipUsed(b);
+        equipmentNamesLoad().then(() => fillEquipOptions(b));
+      }
+    }
+
     // Set from /api/timesheet-supervisors on load. Decides whether the hauling
     // question is asked at all — nothing else in this page branches on it.
     //   true  → ask, and post the answer
@@ -1021,6 +1431,9 @@
       'end':            'f-end',
       'hours':          'f-hours',
       'seg-equip':      'seg-equip',
+      'row-equip-used': 'row-equip-used',
+      'equip-list':     'equip-list',
+      'equip-add':      'equip-add',
       'seg-haul':       'seg-haul',
       'haul-need':      'haul-need',
       'row-haul':       'row-haul',
@@ -1131,11 +1544,20 @@
           </div>
 
           <div class="row">
-            <label>Operated equipment?</label>
+            <label>Operated equipment or drove pickup truck?</label>
             <div class="seg" id="s${i}-seg-equip">
               <button type="button" data-val="true"  onclick="setSeg('equip', true, ${i})">Yes</button>
               <button type="button" data-val="false" onclick="setSeg('equip', false, ${i})">No</button>
             </div>
+          </div>
+
+          <div class="row" id="s${i}-row-equip-used" style="display:none">
+            <label>Which equipment, and for how long? <span style="text-transform:none;font-weight:400">(optional)</span></label>
+            <div class="equip-list" id="s${i}-equip-list"></div>
+            <button type="button" class="split-add equip-add" id="s${i}-equip-add" onclick="addEquipPiece(${i})">
+              + Add another piece
+            </button>
+            <div class="hint">Optional. Name every piece you ran on this job, biggest first, and the hours you were on it. Not on the list? Pick the closest and say which it was in Notes, or leave it blank.</div>
           </div>
 
           <div class="row" id="s${i}-row-haul" style="display:none">
@@ -1178,6 +1600,7 @@
       const prev = blockOrder()[blockOrder().length - 1];
       const i = ++nextSplitIdx;
       splitIdxs.push(i);
+      equipUsed[i] = [];
       equipVals[i] = null;
       haulVals[i]  = null;
       haulUnits[i] = '';
@@ -1217,6 +1640,7 @@
 
       splitIdxs = splitIdxs.filter(x => x !== i);
       delete equipVals[i];
+      delete equipUsed[i];
       delete haulVals[i];
       delete haulUnits[i];
       delete editingIds[i];
@@ -1366,7 +1790,7 @@
         b.classList.toggle('off', v !== val);
       });
       if (which === 'lunch') { lunchVal = val; updateHours(0); }
-      else                     equipVals[i] = val;
+      else                   { equipVals[i] = val; applyEquipUsedVisibility(i); }
     }
 
     function clearSeg(which, i = 0) {
@@ -1374,7 +1798,7 @@
       if (!seg) return;
       seg.querySelectorAll('button').forEach(b => b.classList.remove('on', 'off'));
       if (which === 'lunch') { lunchVal = null; updateHours(0); }
-      else                     equipVals[i] = null;
+      else                   { equipVals[i] = null; applyEquipUsedVisibility(i); }
     }
 
     // ── The hauling question ────────────────────────────────────────────────
@@ -1497,6 +1921,11 @@
       if (mins == null) { out.textContent = '0.00'; updateDayTotal(); return; }
       if (i === 0 && lunchVal === true) mins = Math.max(0, mins - 30);
       out.textContent = (mins / 60).toFixed(2);
+      // The first machine's hours are guessed from this figure, so they follow
+      // it — otherwise a clock corrected after the machine was picked leaves a
+      // guess on screen that no longer matches the day it was guessed from.
+      // Only ever a guess: see refreshEquipAutoHours.
+      refreshEquipAutoHours(i);
       updateDayTotal();
     }
 
@@ -1516,6 +1945,10 @@
       const total = blockOrder().reduce((s, i) => s + parseTravelLeg(bel(i, 'travel-in')), 0)
                   + parseTravelLeg(document.getElementById('f-travel-to-shop'));
       document.getElementById('f-travel-hours').textContent = total.toFixed(2);
+      // A pickup's hours are guessed from these legs, so they follow them —
+      // and the drive home belongs to the LAST block, so a change to it moves
+      // that block's pickup, not the first one's. Every block, for that reason.
+      for (const i of blockOrder()) refreshEquipPickupHours(i);
     }
 
     // ── Load supervisors + jobs ───────────────────────────────────────────
@@ -1943,6 +2376,14 @@
         if (e.entry_type === 'daily' && e.computed_hours != null) hoursParts.push(`${Number(e.computed_hours).toFixed(2)} h`);
         if (e.entry_type === 'daily' && e.travel_hours != null && e.travel_hours > 0) hoursParts.push(`+${Number(e.travel_hours).toFixed(2)} h travel`);
         const hours = hoursParts.join(' ');
+        // The machines he named, on the card he reads back. A day filed under
+        // the wrong piece is worth catching here, while it is still a draft he
+        // can tap — not three weeks later on a cost report.
+        const ran = (e.entry_type === 'daily' && Array.isArray(e.equipment_used))
+          ? e.equipment_used
+              .filter(x => x && String(x.name || '').trim())
+              .map(x => `${String(x.name).trim()}${x.hours != null ? ` ${Number(x.hours).toFixed(2)} h` : ''}`)
+          : [];
         const audit = entryAuditLine(e);
         // One job of a split day. Says so on the card, otherwise two entries on
         // the same date read as an accidental double submission.
@@ -1958,7 +2399,7 @@
               </div>
             </div>
             <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:flex-end">
-              <div class="entry-meta">${meta}</div>
+              <div class="entry-meta">${meta}${ran.length ? `<br/>Ran: ${escapeHtml(ran.join(', '))}` : ''}</div>
               ${hours ? `<div class="entry-hours">${hours}</div>` : ''}
             </div>
             ${audit ? `<div class="entry-audit">${audit}</div>` : ''}
@@ -2074,6 +2515,19 @@
       updateTravelHours();
       bel(i, 'start').value = e.start_time || '';
       bel(i, 'end').value   = e.end_time   || '';
+      // The machines come back before the Yes/No that reveals them: setSeg
+      // draws the lines, and reading these afterwards would paint an empty list
+      // over a saved one. Hours come back as the string the box holds, so a
+      // re-opened draft edits exactly what it shows.
+      equipUsed[i] = (Array.isArray(e.equipment_used) ? e.equipment_used : []).map(x => ({
+        name:  String((x && x.name) || ''),
+        hours: (x && x.hours != null) ? String(x.hours) : '',
+        auto:  false,
+        // Saved, so it is his — and a saved BLANK is his answer too. Without
+        // this, changing the machine on a re-opened draft handed the empty box
+        // back to the guesser and invented hours he had deliberately refused.
+        touched: true,
+      })).filter(x => x.name);
       if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment, i);
       else clearSeg('equip', i);
       // Re-open a saved haul on the answer it was saved with — a stored row is
@@ -2208,6 +2662,7 @@
       document.getElementById('f-end').value   = '';
       updateHours();
       clearSeg('lunch');
+      equipUsed = { 0: [] };
       clearSeg('equip');
       haulVals  = { 0: null };
       haulUnits = { 0: '' };
@@ -2320,7 +2775,16 @@
         if (spanMinutes(start, end) <= 0) {
           return { error: at(i, 'Start and end times are the same — that comes to 0 hours.') };
         }
-        if (equipVals[i] == null) return { error: at(i, 'Operated equipment? Yes or No.') };
+        if (equipVals[i] == null) return { error: at(i, 'Operated equipment or drove pickup truck? Yes or No.') };
+        // The machines and their hours, where he gave them. OPTIONAL, both of
+        // them, and deliberately not a gate: the Yes/No above is the answer
+        // payroll cannot do without, and these two only make the cost coding
+        // easier. A man standing in the mud at six in the evening must never be
+        // unable to file his day because a machine he ran is not on the
+        // office's list, or because the list call came back 401 on an expired
+        // token. A blank list posts as a blank list and the approver fills it
+        // in, which is exactly where he was before this field existed.
+        const _equipUsed = equipVals[i] === true ? equipUsedClean(i) : [];
         // Only a flagged driver is ever asked — and now that the control has no
         // default, this is a gate exactly like the equipment question above.
         // A blank three-way used to save itself as "No", which billed an
@@ -2339,6 +2803,7 @@
         const _haulUnit = (isDriver && _haul && HAUL_UNIT_DIVISIONS.includes(div))
           ? (haulUnits[i] || '') : null;
         blocks.push({ i, div, jobId, jobLabel, start, end, equip: equipVals[i],
+                      equipUsed: _equipUsed,
                       haulUnit: _haulUnit,
                       haulKey: isDriver === null ? {} : { haul_type: _haul } });
       }
@@ -2392,6 +2857,13 @@
             // first job. The others record that no break fell inside them.
             lunch_break: pos === 0 ? lunchVal : false,
             operated_equipment: b.equip,
+            // The machines behind that Yes and the hours on each, in the
+            // company's own equipment vocabulary — so payroll's split modal
+            // fills the cost row's machine and its hours from this instead of
+            // asking the approver to reconstruct both. Always sent: an empty
+            // list is a real answer ("no machine on this job") and has to be
+            // able to clear a list the operator filled in by mistake.
+            equipment_used: b.equipUsed,
             supervisor_id: supId,
             supervisor_name: supName,
             // Repeated on every row on purpose — payroll reads these entries

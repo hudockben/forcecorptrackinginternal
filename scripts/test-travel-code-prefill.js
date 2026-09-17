@@ -113,6 +113,16 @@ vm.runInContext([
     'splitFillTravelHours(row) {',
     'splitAddRow(isTravel) {',
     'splitOnChange(idx, field, value) {',
+    // Ticking Travel now takes a machine this modal prefilled off the commute,
+    // and levels a PICKUP to the drive instead — both reached from splitOnChange's
+    // is_travel branch, so both come across rather than being stubbed.
+    'isTravelSplitRow(r) {',
+    'splitRowHaulAnswer(r) {',
+    'splitRowTakesTruck(r) {',
+    'splitEquipIsPickup(name) {',
+    'splitMirrorPickupEquipHours(r) {',
+    'splitClearNamedOnHaul(r) {',
+    'splitHaulTruckName() {',
     'findCostCode(ccList, code) {',
   ].map(grab),
 ].join('\n\n'), sandbox);
@@ -875,7 +885,9 @@ console.log('\n[a repaint keeps the cursor where it was]');
     'splitUnansweredHaulRows() {', 'splitHaulAnswersGiven() {', 'splitDeriveHaulAnswer() {',
     'onSplitHaulChange(row) {', 'renderSplitHaulNote() {',
     'splitMirrorHaulEquipHoursAll() {', 'splitMirrorHaulEquipHours(r) {',
-    'splitClearHaulAuto(r) {', 'splitDefaultHaulEquipment(r) {',
+    'splitClearHaulAuto(r) {', 'splitClearNamedOnHaul(r) {',
+    'splitEquipIsPickup(name) {', 'splitMirrorPickupEquipHours(r) {',
+    'splitHaulTruckName() {', 'splitDefaultHaulEquipment(r) {',
     'splitRowTakesTruck(r) {',
     'splitDestCellHtml(r, i) {', 'splitDestNoCodeHtml(r) {', 'splitDestWindowHtml(r, i) {',
     'escapeHtml(s) {', 'prettyDiv(d) {',

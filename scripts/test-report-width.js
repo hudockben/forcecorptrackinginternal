@@ -56,7 +56,8 @@ function assert(label, cond, detail) {
 // Every function renderReport reaches, including the ones its callees reach —
 // a missing name here is a ReferenceError at render time, not a quiet miss.
 const RENDER_FNS = ['escapeHtml', 'prettyDate', 'prettyDateShort', 'prettyDiv', 'prettyOff',
-  'dayFlagHtml', 'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours', 'weekStartOf', 'weekEndOf',
+  'dayFlagHtml', 'equipUsedPieces', 'equipUsedNames',
+  'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours', 'weekStartOf', 'weekEndOf',
   'stampKey', 'compareIds', 'byEntryOrder',
   'weeklyOvertime', 'detailColumnsRowHtml', 'weekBandHtml', 'reportDetailHtml',
   'buildReportModel', 'renderReport'];
@@ -64,6 +65,11 @@ const RENDER_FNS = ['escapeHtml', 'prettyDate', 'prettyDateShort', 'prettyDiv', 
 // The detail's column labels are data now, carried on each week band.
 const DETAIL_COLS_SRC = PAGE.slice(PAGE.indexOf('    const DETAIL_COLUMNS = ['),
   PAGE.indexOf('];', PAGE.indexOf('    const DETAIL_COLUMNS = [')) + 2);
+
+// The equipment pill's tooltip sentence, lifted rather than restated so the
+// two cannot drift. Same reason as DETAIL_COLS_SRC above.
+const FULL_SRC = PAGE.slice(PAGE.indexOf("    const FULL = '"),
+  PAGE.indexOf(';', PAGE.indexOf("    const FULL = '")) + 1);
 
 const FROM = '2026-08-27', TO = '2026-09-10';
 const dom = new JSDOM(`<!doctype html><body>
@@ -99,6 +105,7 @@ const filtered = [
 
 const api = new Function('document', 'filtered', 'user', 'expandedReportUsers', 'loadedScope', `
   const OT_WEEKLY_THRESHOLD = 40;
+  ${FULL_SRC}
   ${DETAIL_COLS_SRC}
   ${RENDER_FNS.map(n => requireFn(PAGE, n, 'payroll.html')).join('\n')}
   return { renderReport };
