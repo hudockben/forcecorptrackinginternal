@@ -1160,25 +1160,40 @@
     //             is what the hint under this section offers him, and a guess
     //             that reappears the next time he touches the picker takes that
     //             offer back without saying so.
+    // What the block has left for line 1: its clock, less the hours the other
+    // lines account for. null only when there is no clock to reckon from —
+    // ZERO AND NEGATIVE ARE REAL ANSWERS and the caller has to act on them.
+    //
+    // Only lines that NAME a machine count against the share. equipUsedClean
+    // drops an unnamed line on the way out, so counting its hours here would
+    // take them off line 1 and then post them nowhere.
     function equipAutoRemainder(i) {
       const slots = equipUsed[i] || [];
       const block = blockHours(i);
       if (!(block > 0)) return null;
       let spoken = 0;
       for (let k = 1; k < slots.length; k++) {
-        const n = Number(slots[k] && slots[k].hours);
+        const piece = slots[k];
+        if (!piece || !String(piece.name || '').trim()) continue;
+        const n = Number(piece.hours);
         if (Number.isFinite(n) && n > 0) spoken += n;
       }
-      const rest = Math.round((block - spoken) * 100) / 100;
-      return rest > 0 ? rest : null;
+      return Math.round((block - spoken) * 100) / 100;
     }
 
     function refreshEquipAutoHours(i) {
       const piece = (equipUsed[i] || [])[0];
       if (!piece || !piece.name || piece.auto !== true) return;
       const rest = equipAutoRemainder(i);
+      // No clock yet, so nothing to reckon a share from. Leave the box alone;
+      // buildPayloads refuses a block with no start and end anyway.
       if (rest == null) return;
-      writeEquipHours(i, 0, rest.toFixed(2));
+      // Nothing left of the block — the other lines have all of it, or more
+      // than all of it. A guess with no share to take is WITHDRAWN, not left
+      // standing: leaving it was the whole bug, and it doubled the day. Named
+      // biggest-first the way the hint asks, line 1 is guessed before the
+      // others exist, so this is the ordinary path, not the corner.
+      writeEquipHours(i, 0, rest > 0 ? rest.toFixed(2) : '');
       piece.auto = true;                       // writeEquipHours only moves the text
     }
 

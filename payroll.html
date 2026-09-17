@@ -7403,14 +7403,24 @@
       return r.is_haul !== false;
     }
 
+    // The machine the haul rules would put on a haul row: the unit the driver
+    // named on his timesheet, or the job's single assigned one where there is
+    // exactly one. '' when neither settles it, which is the deliberate blank
+    // splitDefaultHaulEquipment leaves. One source of truth, because the
+    // take-back below has to ask the same question.
+    function splitHaulTruckName() {
+      const said = String((splitEntry && splitEntry.truck_unit) || '').trim();
+      if (said) return said;
+      const only = (splitProjEquipment || []).filter(Boolean);
+      return only.length === 1 ? String(only[0]) : '';
+    }
+
     function splitDefaultHaulEquipment(r) {
       if (!r || String(r.equipment || '').trim()) return false;
       if (!splitRowTakesTruck(r)) return false;
-      const said = String((splitEntry && splitEntry.truck_unit) || '').trim();
-      if (said) { r.equipment = said; r._haulAutoEquip = true; return true; }
-      const only = (splitProjEquipment || []).filter(Boolean);
-      if (only.length !== 1) return false;
-      r.equipment = only[0];
+      const truck = splitHaulTruckName();
+      if (!truck) return false;
+      r.equipment = truck;
       r._haulAutoEquip = true;
       return true;
     }
@@ -7454,29 +7464,53 @@
       return true;
     }
 
-    // Take back the machine splitFillNamedEquipment prefilled, once the row has
-    // become a HAUL row.
+    // Take back the machine splitFillNamedEquipment prefilled, once the row is
+    // somewhere that machine does not belong.
     //
-    // On a haul row the machine IS the truck — that is what truckOnRow reads it
-    // as, and when the driver named no unit it reads ANY machine as the truck
-    // (see splitTruckOnRow: `if (!said) return true`). So a Roller the operator
-    // happened to run, sitting on a row the approver has just called a haul,
-    // zeroes his labour and bills the job for the Roller as if it had hauled.
-    // splitFillNamedEquipment refuses to put it there in the first place; this
-    // is the other half, for the row that turns into a haul afterwards.
+    // TWO SUCH PLACES, and splitClearHaulAuto is the mirror of this one for the
+    // machines the HAUL rules guessed:
+    //   a HAUL row — the machine there is the TRUCK. truckOnRow reads it that
+    //     way, and when the driver named no unit it reads ANY machine as the
+    //     truck (splitTruckOnRow: `if (!said) return true`). So a roller the
+    //     operator happened to run, on a row just called a haul, zeroes his
+    //     labour and bills the job for the roller as if it had hauled.
+    //   a TRAVEL row — the commute is not the machine's time. This is the bug
+    //     splitClearHaulAuto names in its own comment, and a prefilled machine
+    //     walked straight back into it: insertSplitRows still writes equipment
+    //     and equip_hours on a Travel-stamped row, so the machine's cost lands
+    //     on the drive.
     //
     // Only ever what THIS MODAL prefilled (_namedAutoEquip) — a machine the
-    // approver picked is theirs, exactly as splitClearHaulAuto treats its own.
-    // Clearing hands the row back to splitDefaultHaulEquipment below, which
-    // either names the real truck or leaves the row deliberately blank.
+    // approver picked is theirs, which is why an equipment edit clears the flag.
+    //
+    // EXCEPT where the machine IS the truck. When the operator named the same
+    // unit the driver did, it belongs on the haul row and the hours he gave are
+    // his answer to how long he was in it. Blanking it there achieved nothing
+    // except to let splitDefaultHaulEquipment put the identical unit back with
+    // _equipHoursTouched cleared — whereupon splitMirrorHaulEquipHours levelled
+    // the truck to the LABOUR hours, billing the job ten hours of truck for the
+    // six the driver stated, on a row that posts $0 labour so that line is the
+    // only thing the job pays.
     function splitClearNamedOnHaul(r) {
       if (!r || !r._namedAutoEquip) return false;
-      if (!splitRowTakesTruck(r)) return false;
+      const isHaul   = splitRowTakesTruck(r);
+      const isTravel = isTravelSplitRow(r);
+      if (!isHaul && !isTravel) return false;
+      const mine = String(r.equipment || '').trim();
+      if (isHaul && !isTravel) {
+        const truck = splitHaulTruckName();
+        if (truck && truck.toLowerCase() === mine.toLowerCase()) {
+          // It is the truck. Nothing to take back — just stop calling it ours,
+          // so the hours he gave stay his and the mirror leaves them alone.
+          r._namedAutoEquip = false;
+          return true;
+        }
+      }
       r.equipment          = '';
       r.equip_hours        = 0;
       r._namedAutoEquip    = false;
       // The figure went with the machine, so the row is untouched again and the
-      // mirror below may level it to the labour hours once a truck lands.
+      // mirror may level it to the labour hours once a truck lands.
       r._equipHoursTouched = false;
       return true;
     }
@@ -10070,6 +10104,11 @@
         // and is never asked. Its answer is dropped rather than parked: kept,
         // it would still count toward the day's classification from a row the
         // picker no longer shows, and come back the moment Travel is unticked.
+        // The commute is not the machine's time either, so a machine THIS MODAL
+        // prefilled comes off with the answer — the same rule splitClearHaulAuto
+        // applies to the ones the haul rules guessed. Run before the haul branch
+        // below, which only fires when there was an answer to drop.
+        if (r.is_travel && splitClearNamedOnHaul(r)) repaint = true;
         if (r.is_travel && (r.haul_type || r.is_haul !== undefined)) {
           r.haul_type = '';
           r.is_haul   = undefined;

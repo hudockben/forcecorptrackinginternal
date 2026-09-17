@@ -303,6 +303,47 @@ console.log('\n[the guess is the block\'s REMAINDER, never more than the day]');
   full.setEquipPiece(0, 0, 'Excavator');
   eq('a block already fully accounted for guesses nothing',
     full.equipUsedClean(0), [{ name: 'Excavator', hours: null }, { name: 'Pickup Truck', hours: 8 }]);
+
+  // AND THE ORDER THE HINT ACTUALLY ASKS FOR — biggest machine first, so line 1
+  // is guessed BEFORE the others exist. A guess with no share left has to be
+  // withdrawn, not left standing: leaving it doubled the day.
+  const first = sandbox();
+  first.__els['hours'] = { id: 'hours', style: {}, textContent: '8.00' };
+  first.applyEquipUsedVisibility(0);
+  first.setEquipPiece(0, 0, 'Excavator');
+  first.addEquipPiece(0);
+  first.setEquipPiece(0, 1, 'Pickup Truck');
+  first.commitEquipHours(0, 1, '8');
+  eq('a guess left with no share is withdrawn, not left standing',
+    first.equipUsedClean(0), [{ name: 'Excavator', hours: null }, { name: 'Pickup Truck', hours: 8 }]);
+  assert('  so the day never posts more machine-hours than it has',
+    first.equipUsedClean(0).reduce((t, x) => t + (x.hours || 0), 0) === 8);
+
+  // Same when the CLOCK shrinks under the lines already named.
+  const shrunk = sandbox();
+  shrunk.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+  shrunk.applyEquipUsedVisibility(0);
+  shrunk.setEquipPiece(0, 0, 'Excavator');
+  shrunk.addEquipPiece(0);
+  shrunk.setEquipPiece(0, 1, 'Roller');
+  shrunk.commitEquipHours(0, 1, '3');
+  eq('a ten-hour block splits seven and three',
+    shrunk.equipUsedClean(0), [{ name: 'Excavator', hours: 7 }, { name: 'Roller', hours: 3 }]);
+  shrunk.__els['hours'].textContent = '3.00';
+  shrunk.refreshEquipAutoHours(0);
+  eq('  and a clock corrected down to three withdraws the guess',
+    shrunk.equipUsedClean(0), [{ name: 'Excavator', hours: null }, { name: 'Roller', hours: 3 }]);
+
+  // Hours on a line that names no machine are posted by nobody, so they must
+  // not come off line 1's share either.
+  const unnamed = sandbox();
+  unnamed.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+  unnamed.applyEquipUsedVisibility(0);
+  unnamed.setEquipPiece(0, 0, 'Excavator');
+  unnamed.addEquipPiece(0);
+  unnamed.commitEquipHours(0, 1, '3');            // hours typed, machine never picked
+  eq('an unnamed line never takes hours off the machine that is named',
+    unnamed.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }]);
 }
 
 console.log('\n[a box he has been in is his, blank included]');
@@ -556,7 +597,7 @@ console.log('\n[the approver opens on what the operator already answered]');
   // lives in how they and the prefill read the same row.
   const fnPay = name => requireFn(PAY, name, 'payroll.html');
   const PAY_FNS = ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck',
-    'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
+    'splitHaulTruckName', 'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
     'splitMirrorHaulEquipHours', 'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow',
     'splitTruckOnRow', 'splitRowIsHaul', '_splitRowUid', '_blankSplitRow',
     'equipUsedPieces', 'splitFillNamedEquipment', 'onSplitHaulChange'];
@@ -664,7 +705,7 @@ console.log('\n[and it never turns the operator\'s machine into the haul truck]'
   vm.createContext(ctx);
   vm.runInContext('const TRAVEL_CODE_RE = /\\btravel\\b/i;', ctx);
   for (const f of ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck',
-    'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
+    'splitHaulTruckName', 'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
     'splitMirrorHaulEquipHours', 'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow',
     'splitTruckOnRow', 'splitRowIsHaul', '_splitRowUid', '_blankSplitRow',
     'equipUsedPieces', 'splitFillNamedEquipment', 'onSplitHaulChange']) {
@@ -741,6 +782,82 @@ console.log('\n[and it never turns the operator\'s machine into the haul truck]'
       row.equipment === 'Triaxle Dump' && row.equip_hours === 9, JSON.stringify(row));
   }
 }
+console.log('\n[and it never re-levels the truck, nor bills the commute for a machine]');
+{
+  const ctx = {
+    console,
+    splitRows: [], splitEntry: null, splitProjEquipment: [], _splitRowSeq: 0,
+    splitHaulAnswer: '',
+    splitHaulIs: () => 'off_site',
+    splitDeriveHaulAnswer: () => 'off_site',
+    renderSplitHaulNote: () => {},
+  };
+  vm.createContext(ctx);
+  vm.runInContext('const TRAVEL_CODE_RE = /\\btravel\\b/i;', ctx);
+  for (const f of ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck', 'splitHaulTruckName',
+    'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
+    'splitMirrorHaulEquipHours', 'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow',
+    'splitTruckOnRow', 'splitRowIsHaul', '_splitRowUid', '_blankSplitRow',
+    'equipUsedPieces', 'splitFillNamedEquipment', 'onSplitHaulChange']) {
+    vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
+  }
+  const fresh = (entry, labor) => {
+    ctx.splitEntry = entry;
+    const row = ctx._blankSplitRow(false);
+    row.labor_hours = labor;
+    ctx.splitRows = [row];
+    ctx.splitMirrorHaulEquipHoursAll();
+    ctx.splitFillNamedEquipment();
+    return row;
+  };
+
+  // The operator named the SAME unit the driver did. Blanking it achieved
+  // nothing except to let splitDefaultHaulEquipment put the identical unit back
+  // with _equipHoursTouched cleared — whereupon the mirror levelled the truck to
+  // the LABOUR hours, billing ten hours of truck for the six he stated, on a row
+  // that posts $0 labour so that line is all the job pays.
+  {
+    const row = fresh({ truck_unit: 'Triaxle Dump 12', haul_type: null,
+                        equipment_used: [{ name: 'Triaxle Dump 12', hours: 6 }] }, 10);
+    assert('the operator\'s own truck is prefilled with the hours he stated',
+      row.equipment === 'Triaxle Dump 12' && row.equip_hours === 6, JSON.stringify(row));
+    row.haul_type = 'off_site'; row.is_haul = true;
+    ctx.onSplitHaulChange(row);
+    assert('  and answering "haul" leaves both alone, because it IS the truck',
+      row.equipment === 'Triaxle Dump 12' && row.equip_hours === 6, JSON.stringify(row));
+    assert('  keeping his figure marked as somebody\'s, so nothing re-levels it',
+      row._equipHoursTouched === true);
+  }
+
+  // A DIFFERENT machine on a haul row still comes off — that is the $0-labour
+  // hazard the take-back exists for.
+  {
+    const row = fresh({ truck_unit: 'Triaxle Dump 12', haul_type: null,
+                        equipment_used: [{ name: 'Roller', hours: 8 }] }, 8);
+    row.haul_type = 'off_site'; row.is_haul = true;
+    ctx.onSplitHaulChange(row);
+    assert('a machine that is NOT the truck still gives the row back to the haul rules',
+      row.equipment === 'Triaxle Dump 12', JSON.stringify(row));
+  }
+
+  // The commute is not the machine's time. splitClearHaulAuto names this as the
+  // bug it was written for; a prefilled machine walked straight back into it.
+  {
+    const row = fresh({ truck_unit: '', haul_type: null,
+                        equipment_used: [{ name: 'Roller', hours: 8 }] }, 8);
+    assert('a prefilled machine is on the row to begin with', row.equipment === 'Roller');
+    row.is_travel = true;
+    const changed = ctx.splitClearNamedOnHaul(row);
+    assert('ticking Travel takes the machine off the commute',
+      changed && !row.equipment && !((Number(row.equip_hours) || 0) > 0), JSON.stringify(row));
+  }
+}
+assert('  the is_travel branch runs the take-back before it drops the haul answer',
+  /if \(r\.is_travel && splitClearNamedOnHaul\(r\)\) repaint = true;/.test(PAY));
+assert('  and one helper answers "which machine would the haul rules name"',
+  /function splitHaulTruckName\(\)/.test(PAY)
+  && /const truck = splitHaulTruckName\(\);/.test(PAY));
+
 assert('  an equipment edit clears BOTH auto-fill flags, so neither take-back overreaches',
   /if \(field === 'equipment'\) \{ r\._namedAutoEquip = false; r\._haulAutoEquip = false; \}/.test(PAY));
 assert('  the take-back runs on both UI paths, which both funnel through onSplitHaulChange',
