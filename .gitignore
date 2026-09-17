@@ -1,3 +1,7 @@
 api/.env
 node_modules/
 api/node_modules/
+
+# Scratch harnesses review agents write while driving code with stubs.
+# They landed in a commit once via `git add -A`; they are never part of the app.
+.tmpcheck/

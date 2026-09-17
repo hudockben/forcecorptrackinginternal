@@ -3,7 +3,7 @@
 const jwt        = require('jsonwebtoken');
 const { neon }   = require('@neondatabase/serverless');
 
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
 // timesheet/payroll/fuel/fuel_admin/driver/quarry_sales require an explicit
 // positive grant in division_roles — they're never granted implicitly through
 // user.divisions or company.allowed_divisions.

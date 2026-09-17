@@ -27,6 +27,7 @@
 
 const report   = require('../executive/report');
 const jobFin   = require('./job-financials');
+const auth     = require('./auth');
 const ctx      = require('./mathis-context');
 const quarryM  = require('./quarry-metrics');
 const dustM    = require('./dust-metrics');
@@ -88,6 +89,7 @@ const COVERS = {
   own_fuel: ['the asking user\'s own fuel fill-ups'],
   own_driver: ['the hauls assigned to the asking user'],
   own_quarry_sales: ['the asking user\'s own scale-house loads'],
+  purchasing: ['purchase orders across every division the user can reach and the general non-job list — order value, status, vendor and where each is filed'],
 };
 
 const asArray = v => (Array.isArray(v) ? v : []);
@@ -1637,6 +1639,107 @@ async function personalDigest(c) {
 
 // ── The router ─────────────────────────────────────────────────────────────
 
+const PURCHASING_LIMITS = [
+  'These are purchase orders across every division this user can reach, plus the general (non-job) list. An order tied to a division is stored in THAT division\'s own list, so what is counted here is the same order that division\'s own Purchase Orders tab shows — never a second copy, and never a total to add to that division\'s own.',
+  'A purchase order\'s value is what was ORDERED — quantity times unit cost, plus tax, across its delivery lines. It is not what has been spent, not what has been invoiced, and it must never be added to a job\'s actual cost, which already counts the delivered material.',
+  'An order with no job is a general purchase and is a normal, finished state — not an incomplete order and not something to flag as missing a job.',
+  'An order with no division is a company-level general purchase. It belongs to no job ledger at all.',
+  'byDivision counts where each order is FILED, which is the division whose books it lands in. It is not who raised it.',
+  'Only the divisions this user can reach are here. A total described as company-wide would be wrong whenever their access is partial — say which divisions it covers.',
+];
+
+/**
+ * Central purchasing.
+ *
+ * Every other digest answers for one division. This one is a roll-up across
+ * several by design, because that is what the division IS: a buyer raising
+ * orders against turf, paving and kiewit needs to see them side by side, and
+ * seeing one at a time would be the same view their own tabs already give.
+ *
+ * It stays defensible because the widening is bounded by the same rule that
+ * bounds the page — canAccessPODivision, which reaches the three job divisions
+ * and the general list and nothing else — and because purchase orders are all
+ * it ever reads. No bids, no daily rows, no pay.
+ */
+async function purchasingDigest(c) {
+  const divisions = auth.PO_SOURCE_DIVISIONS
+    .filter(d => auth.canAccessPODivision(c.authz, d))
+    .concat(auth.canAccessPODivision(c.authz, auth.PO_GENERAL_DIVISION) ? [auth.PO_GENERAL_DIVISION] : []);
+
+  const lists = await Promise.all(divisions.map(async division => {
+    try {
+      const rows = await c.sql`
+        SELECT value FROM app_data
+        WHERE key = ${`${c.companyCode}:fct_purchase_orders:${division}`}
+      `;
+      return { division, list: rows.length ? asArray(rows[0].value) : [] };
+    } catch (err) {
+      console.error(`[mathis] purchasing read failed for ${division}:`, err.message);
+      return { division, list: [] };
+    }
+  }));
+
+  const byDivision = {}, byStatus = {}, bySupplier = new Map();
+  let total = 0, count = 0, general = 0, pending = 0;
+  const rows = [];
+
+  for (const { division, list } of lists) {
+    let divTotal = 0, divCount = 0;
+    for (const po of list) {
+      if (!po || typeof po !== 'object') continue;
+      const value = round2(poValue(po));
+      const st  = safeText(po.status, 30) || 'Open';
+      const sup = safeText(po.supplier, 60) || '(none)';
+
+      total += value; count++; divTotal += value; divCount++;
+      if (!po.project_id) general++;
+      if (st === 'pending') pending++;
+      byStatus[st] = (byStatus[st] || 0) + 1;
+      bySupplier.set(sup, round2((bySupplier.get(sup) || 0) + value));
+
+      rows.push({
+        poNumber: safeText(po.po_number, 40),
+        // Where the order is filed. 'purchase_orders' is the general list,
+        // which is why it reads as a division here at all.
+        division: division === auth.PO_GENERAL_DIVISION ? null : division,
+        title:    safeText(po.title),
+        supplier: sup,
+        status:   st,
+        // The job id, not its name: this digest never reads the job blobs, so
+        // there is no name to give and inventing one would be worse than an id.
+        jobId:    po.project_id ? safeText(po.project_id, 60) : null,
+        costCode: safeText(po.cost_code, 20),
+        subCode:  safeText(po.sub_code, 20),
+        dated:    safeText(po.date_created, 20),
+        raisedBy: po.origin === 'purchasing' ? 'purchasing' : 'division',
+        value,
+        lines:    Array.isArray(po.lines) ? po.lines.length : 0,
+      });
+    }
+    byDivision[division] = { count: divCount, value: round2(divTotal) };
+  }
+
+  rows.sort((a, b) => b.value - a.value);
+
+  return {
+    division: 'purchase_orders',
+    kind: 'purchasing',
+    covers: COVERS.purchasing,
+    divisionsCovered: divisions,
+    count,
+    pending,
+    generalCount: general,
+    totalValue: round2(total),
+    byDivision,
+    byStatus,
+    bySupplier: capList([...bySupplier.entries()]
+      .map(([supplier, value]) => ({ supplier, value }))
+      .sort((a, b) => b.value - a.value)),
+    rows: capList(rows),
+    limits: PURCHASING_LIMITS,
+  };
+}
+
 const BUILDERS = {
   executive:    executiveDigest,
   fuel_admin:   fuelAdminDigest,
@@ -1646,6 +1749,7 @@ const BUILDERS = {
   trucking:     truckingDigest,
   intercompany: icDigest,
   payroll:      payrollDigest,
+  purchase_orders: purchasingDigest,
 };
 
 /**
@@ -1695,6 +1799,7 @@ module.exports = {
   TRUCKING_LIMITS,
   IC_LIMITS,
   PAYROLL_LIMITS,
+  PURCHASING_LIMITS,
   capList,
   buildDigest,
   jobDigest,

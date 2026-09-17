@@ -2,7 +2,7 @@
 
 const { neon } = require('@neondatabase/serverless');
 
-const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive'];
+const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'purchase_orders'];
 
 /**
  * The shared admin secret, read from the X-Admin-Secret header or the request

@@ -4,6 +4,7 @@
  *
  * GET /api/document-download?division=turf&id=X            — download
  * GET /api/document-download?division=turf&id=X&inline=1   — preview in place
+ * GET /api/document-download?division=paving&id=X&poId=Y   — central purchasing
  *   → { url, filename, contentType, expiresIn }
  *
  * Returns JSON rather than a 302 on purpose. A redirect cannot carry the
@@ -16,8 +17,15 @@
  * This is also the gate that keeps company_code scoping intact: object storage
  * has no idea who is asking, so the check has to live here.
  */
-const { neon }            = require('@neondatabase/serverless');
-const { requireDivision, capabilities } = require('./lib/auth');
+const { neon } = require('@neondatabase/serverless');
+const {
+  requireAuth,
+  capabilities,
+  normalizeDivision,
+  hasDivisionAccess,
+  canAccessPODivision,
+} = require('./lib/auth');
+const { resolvePODocScope } = require('./lib/po-sync');
 const storage             = require('./lib/storage');
 
 const DOWNLOAD_WINDOW_SECONDS = 300; // 5 minutes
@@ -35,10 +43,10 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  const guard = requireDivision(req, res);
-  if (!guard) return;
-  const { payload, division } = guard;
+  const payload = requireAuth(req, res);
+  if (!payload) return;
   const { companyCode } = payload;
+  const division = normalizeDivision(req.query.division) || 'turf';
 
   const id = req.query.id ? String(req.query.id) : null;
   if (!id) return res.status(400).json({ error: 'id is required' });
@@ -48,6 +56,29 @@ module.exports = async (req, res) => {
   }
 
   const sql = neon(process.env.DATABASE_URL);
+
+  // The two-stage check /api/documents applies. Central purchasing must be able
+  // to open the receipt it attached to one of its own orders in this division,
+  // and nothing else here — so under the carve-out the document has to be
+  // linked to the order the request names.
+  let poScope = null;
+  if (!hasDivisionAccess(payload, division)) {
+    poScope = await resolvePODocScope(sql, {
+      payload, division, companyCode, poId: req.query.poId || null,
+      canAccessPODivision,
+    });
+    if (!poScope) return res.status(403).json({ error: 'You do not have access to this division' });
+
+    const linked = await sql`
+      SELECT 1 FROM document_links
+      WHERE document_id = ${id} AND company_code = ${companyCode}
+        AND link_type = 'po' AND target_id = ${poScope.poId}
+      LIMIT 1
+    `;
+    // Same 404 an id that does not exist gets — a caller learns nothing about
+    // documents belonging to orders it has no business in.
+    if (!linked.length) return res.status(404).json({ error: 'Document not found' });
+  }
 
   try {
     // company_code AND division both in the WHERE clause: a turf user asking
@@ -69,7 +100,7 @@ module.exports = async (req, res) => {
     // tracker.html's benefit, so testing it here read the wrong division's role
     // in both directions — it let a turf admin read documents deleted in
     // paving, and it refused a real paving admin their own deleted file.
-    if (doc.deleted_at && !capabilities(payload, division).canDelete) {
+    if (doc.deleted_at && (poScope || !capabilities(payload, division).canDelete)) {
       return res.status(404).json({ error: 'Document not found' });
     }
 

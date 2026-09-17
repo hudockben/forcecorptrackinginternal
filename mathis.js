@@ -58,7 +58,8 @@
     'fuel.html':             'fuel',
     'fuel-admin.html':       'fuel_admin',
     'driver.html':           'driver',
-    'quarry-sales.html':     'quarry_sales'
+    'quarry-sales.html':     'quarry_sales',
+    'purchase-orders.html':  'purchase_orders'
   };
 
   /* Divisions Mathis has figures for. Kept here so the panel can say what it
@@ -67,7 +68,7 @@
    * the server's own list. */
   var HAS_FIGURES = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
                      'intercompany', 'payroll', 'scheduler', 'executive', 'fuel_admin',
-                     'timesheet', 'fuel', 'driver', 'quarry_sales'];
+                     'timesheet', 'fuel', 'driver', 'quarry_sales', 'purchase_orders'];
 
   function division() {
     try { if (typeof DIVISION !== 'undefined' && DIVISION) return String(DIVISION); } catch (e) {}
@@ -572,7 +573,8 @@
       own_fuel:         renderOwnFuel,
       own_driver:       renderOwnDriver,
       own_quarry_sales: renderOwnQuarrySales,
-      job_history:      renderJobHistory
+      job_history:      renderJobHistory,
+      purchasing:       renderPurchasing
     };
     var fn = by[digest.kind];
     if (fn) fn(digest);
@@ -651,6 +653,36 @@
       return text(x.name) + money(x.revenue) + num(x.hours);
     }, 'customers');
     post(html, ['Revenue is hours x haul fee, worked out at read time. No haul cost is recorded, so there is no profit figure.']);
+  }
+
+  function renderPurchasing(d) {
+    var byDiv = d.byDivision || {};
+    var html = kv([
+      ['Orders',            num(d.count, 0)],
+      ['Ordered — total',   money(d.totalValue)],
+      ['Pending approval',  num(d.pending, 0)],
+      ['No job attached',   num(d.generalCount, 0)]
+    ]);
+    html += breakdown(['Division', 'Ordered'], Object.keys(byDiv).map(function (k) {
+      return { name: k === 'purchase_orders' ? 'General' : k, v: byDiv[k] };
+    }), function (x) {
+      return text(x.name) + money(x.v && x.v.value);
+    }, 'divisions');
+    html += breakdown(['Vendor', 'Ordered'], d.bySupplier, function (x) {
+      return text(x.supplier) + money(x.value);
+    }, 'vendors');
+
+    // The caveat PURCHASING_LIMITS insists on. This is a roll-up across only
+    // the divisions this user can reach, so a total described as company-wide
+    // would be wrong for anyone whose access is partial — and the panel is
+    // where that has to be said, because it is built from the digest rather
+    // than from the model's prose.
+    var covered = (d.divisionsCovered || []).map(function (k) {
+      return k === 'purchase_orders' ? 'General' : k;
+    });
+    var notes = ['What was ORDERED — quantity times unit cost plus tax. Not what has been spent, and never added to a job\u2019s actual cost.'];
+    if (covered.length) notes.push('Covers ' + covered.join(', ') + ' only.');
+    post(html, notes);
   }
 
   function renderIc(d) {

@@ -6,7 +6,7 @@ const jwt      = require('jsonwebtoken');
 
 const ALLOWED_ROLES     = ['admin', 'level3', 'level2', 'level1'];
 const DIV_ROLE_VALUES   = ['admin', 'level3', 'level2', 'level1', 'no_access'];
-const ALL_DIVISIONS     = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales'];
+const ALL_DIVISIONS     = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
 
 function verifyToken(req) {
   const authHeader = req.headers.authorization || '';
