@@ -600,6 +600,65 @@ console.log('\n[the phone]');
     /\.receipt-preview \{ max-height: 22vh; min-height: 110px; \}/.test(phoneBlock));
 }
 
+console.log('\n[the receipt, when things go wrong]');
+{
+  // Backing out of the camera fires no `change` at all on most phones, so the
+  // listener stayed attached and its promise never settled. The next photo then
+  // fired EVERY listener still on the input: one receipt decoded, uploaded and
+  // read once per abandoned attempt — each a paid call — with the sheets racing.
+  assert('a new pick abandons the one before it',
+    /if \(_pickCleanup\[inputId\]\) \{ _pickCleanup\[inputId\]\(\); \}/.test(PAGE));
+  assert('and a settled pick cannot settle twice',
+    /let done = false;[\s\S]{0,200}if \(done\) return;\s*\n\s*done = true;/.test(PAGE));
+  // The input's own `cancel` event would be the direct way to notice a
+  // dismissed picker, but a programmatic click() can raise it immediately —
+  // before any chooser is shown — which kills the scan before the photo lands.
+  assert('the picker does not lean on the cancel event',
+    !/addEventListener\('cancel'/.test(PAGE));
+
+  // A thumb resting on the strip beside the sheet threw the photo away with no
+  // message, after the receipt may already be back in the bin.
+  assert('a backdrop tap cannot destroy a scan mid-read',
+    /if \(_scanBusy\) \{[\s\S]{0,160}return;\s*\n\s*\}\s*\n\s*closeScan\(\);/.test(PAGE));
+  assert('but Cancel still stops it deliberately',
+    /function cancelScan\(\)/.test(PAGE) && /onclick="cancelScan\(\)"/.test(PAGE));
+  assert('and the flag is cleared on every way out of the read',
+    (PAGE.match(/_scanBusy = false;/g) || []).length >= 3);
+
+  // A failed read used to leave one way forward: type all seven fields. The
+  // photo is still in hand, and most of these failures are the request rather
+  // than the receipt.
+  assert('a failed read offers the photo again',
+    /function rereadScan\(\)/.test(PAGE) && /onclick="rereadScan\(\)"/.test(PAGE));
+  assert('and re-reads what it already holds, not a new photo',
+    /const held = scanState;[\s\S]{0,600}imageBase64: held\.dataUrl\.split\(','\)\[1\]/.test(PAGE));
+
+  // The order saved, the photo did not, and closing threw the only copy away —
+  // leaving an order that looks exactly like one that never had a receipt.
+  assert('a failed attach keeps the sheet and the photo',
+    /_attachRetry = \{ poId: po\.id, blob: shotBlob, filename: shotName \};/.test(PAGE));
+  assert('and offers both ways out by name',
+    /onclick="retryAttach\(\)"/.test(PAGE) && /onclick="discardAttach\(\)"/.test(PAGE));
+  assert('the retry path does not re-save the order, only the photo',
+    /async function retryAttach\(\)[\s\S]{0,700}await attachToPO\(/.test(PAGE) &&
+    !/async function retryAttach\(\)[\s\S]{0,700}_savePONow\(/.test(PAGE));
+
+  // The endpoint's own message lands on a phone screen at a supply counter.
+  {
+    const ep = read('api/ai/receipt-scan.js');
+    assert('the scan endpoint no longer echoes the SDK error',
+      !/detail: err\.message/.test(ep));
+    assert('and says something a person can act on',
+      /Try the photo again, or type the figures in/.test(ep) &&
+      /Type the figures in — the photo still attaches/.test(ep));
+  }
+
+  // "A few seconds" set the expectation at two or three, so at fifteen the
+  // reasonable conclusion is that it has hung.
+  assert('the waiting state is honest about how long it takes',
+    /Usually under half a minute/.test(PAGE) && !/This takes a few seconds/.test(PAGE));
+}
+
 console.log('\n[a cost row this page has not loaded]');
 {
   // Purchasing creates the cost rows for the orders it raises, server-side. A
@@ -976,8 +1035,13 @@ console.log('\n[a save that fails is never reported as success]');
 
 console.log('\n[a scan the user walked away from]');
 {
+  // Dismissing still cancels — but only when nothing is being read. The sheet
+  // fills a phone screen and the backdrop is a strip down each side, so a thumb
+  // resting there was enough to throw the photo away with no message at all.
   assert('dismissing the sheet cancels the scan',
-    /if \(e\.target === this\) closeScan\(\);/.test(PAGE));
+    /if \(e\.target !== this\) return;[\s\S]{0,420}closeScan\(\);/.test(PAGE));
+  assert('...unless it is mid-read, which needs Cancel',
+    /if \(_scanBusy\) \{[\s\S]{0,160}return;/.test(PAGE));
   assert('Escape cancels it too',
     /classList\.contains\('open'\)\) closeScan\(\)/.test(PAGE));
   assert('every scan takes a number',   /const token = \+\+_scanToken;/.test(PAGE));

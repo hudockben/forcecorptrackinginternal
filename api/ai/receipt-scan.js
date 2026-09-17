@@ -240,8 +240,17 @@ module.exports = async (req, res) => {
     });
 
   } catch (err) {
+    // Logged in full, never echoed. This message goes straight onto a phone
+    // screen at a supply counter, and the SDK's own text there reads as
+    // gibberish at best — "Connection error." — and at worst names internals.
     console.error('[ai/receipt-scan] error:', err.message);
-    return res.status(500).json({ error: 'Could not read that receipt', detail: err.message });
+    const transient = /timeout|timed out|ECONNRESET|ETIMEDOUT|socket|network|fetch failed|overloaded|rate.?limit|429|50\d/i
+      .test(String(err.message || ''));
+    return res.status(transient ? 503 : 500).json({
+      error: transient
+        ? 'Could not reach the reader just now. Try the photo again, or type the figures in.'
+        : 'Could not read that receipt. Type the figures in — the photo still attaches.',
+    });
   }
 };
 

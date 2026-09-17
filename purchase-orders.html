@@ -1860,15 +1860,45 @@ function downscaleImage(file, maxEdge) {
 }
 
 /** Ask for one photo through a hidden input, and hand back the File. */
+/** The listeners a previous pick left behind, so a new one can clear them. */
+const _pickCleanup = {};
+
 function pickImage(inputId) {
   return new Promise(resolve => {
     const input = document.getElementById(inputId);
-    input.value = '';
-    const onChange = () => {
-      input.removeEventListener('change', onChange);
-      resolve(input.files && input.files[0] ? input.files[0] : null);
+
+    // Opening the camera and backing out fires no `change` at all on most
+    // phones, so the old listener stayed attached and its promise never
+    // settled. The next photo then fired EVERY listener still on the input:
+    // one receipt was decoded, uploaded and read once per abandoned attempt,
+    // each a paid call to the scan endpoint, with the sheets racing each other.
+    if (_pickCleanup[inputId]) { _pickCleanup[inputId](); }
+
+    let done = false;
+    const finish = file => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(file);
     };
+    const onChange = () => finish(input.files && input.files[0] ? input.files[0] : null);
+    function cleanup() {
+      input.removeEventListener('change', onChange);
+      if (_pickCleanup[inputId] === abandon) delete _pickCleanup[inputId];
+    }
+    // Called by the NEXT pick: settle this one as a cancellation so its caller
+    // unwinds instead of waiting forever, and detach its listener.
+    //
+    // Deliberately NOT the input's own `cancel` event, which would be the
+    // direct way to notice a dismissed picker. Its firing is not consistent —
+    // a programmatic click() can raise it immediately, before any chooser is
+    // shown, and that kills the scan before the photo arrives. Settling on the
+    // next attempt is later but cannot misfire, and the leak is what mattered.
+    const abandon = () => finish(null);
+
+    input.value = '';
     input.addEventListener('change', onChange);
+    _pickCleanup[inputId] = abandon;
     input.click();
   });
 }
@@ -2017,6 +2047,15 @@ async function scanIntoPO(poId) { await beginScan(poId); }
 /** Guard against a double tap on Create/Add booking the same receipt twice. */
 let _committing = false;
 
+/** True from the moment the photo is taken until the figures are on screen. */
+let _scanBusy = false;
+
+/** The Cancel the reading state offers — deliberate, unlike a stray backdrop tap. */
+function cancelScan() {
+  _scanBusy = false;
+  closeScan();
+}
+
 async function beginScan(targetPoId) {
   if (!perm.canEdit) return;
   // The same check "+ New PO" makes, before the camera opens rather than after
@@ -2035,15 +2074,21 @@ async function beginScan(targetPoId) {
   const token = ++_scanToken;
   const live  = () => _scanToken === token;
 
+  _scanBusy = true;
   renderScanSheet(
     '<h2>Reading the receipt</h2>' +
-    '<div class="sub">This takes a few seconds.</div>' +
-    '<div class="scan-status"><span class="spinner"></span>Looking at the photo…</div>');
+    // Honest about the wait. "A few seconds" set the expectation at two or
+    // three, so at fifteen the reasonable conclusion is that it has hung.
+    '<div class="sub">Usually under half a minute. The photo is already saved — ' +
+    'if the read fails you can still type the figures in.</div>' +
+    '<div class="scan-status"><span class="spinner"></span>Looking at the photo…</div>' +
+    '<div class="sheet-actions"><button class="btn" onclick="cancelScan()">Cancel</button></div>');
 
   let shot;
   try {
     shot = await downscaleImage(file, 1600);
   } catch (err) {
+    _scanBusy = false;
     if (!live()) return;
     renderScanSheet(
       '<h2>Could not read that photo</h2>' +
@@ -2074,6 +2119,7 @@ async function beginScan(targetPoId) {
     scanError = err.message;
   }
 
+  _scanBusy = false;
   // Dismissed, or replaced by a later scan, while the model was reading. Say
   // nothing and touch nothing.
   if (!live()) return;
@@ -2090,8 +2136,13 @@ function renderScanForm(receipt, scanError) {
 
   let status;
   if (scanError) {
+    // A failed read left only one way forward: type all seven fields. The photo
+    // is still in scanState, so reading it again costs one tap — and most of
+    // these failures are a dropped request rather than an unreadable receipt.
     status = '<div class="scan-status err">Could not read the receipt automatically (' + esc(scanError) +
-             '). Fill it in below — the photo still gets attached.</div>';
+             '). Try again, or fill it in below — the photo still gets attached.' +
+             '<div style="margin-top:0.5rem"><button class="btn" onclick="rereadScan()">Read the photo again</button></div>' +
+             '</div>';
   } else if (r.confidence === 'low') {
     status = '<div class="scan-status warn">Read with low confidence — check every figure before saving.' +
              (r.notes ? ' ' + esc(r.notes) : '') + '</div>';
@@ -2261,6 +2312,9 @@ async function commitScan() {
   // TypeError at the user instead of a sentence.
   const shotBlob = scanState.blob;
   const shotName = scanState.filename;
+  // ...and the preview with them, so the retry sheet can show the person which
+  // photo it is still holding.
+  const shotDataUrl = scanState.dataUrl;
 
   let po;
   let created = false;  // did this scan RAISE the order, or attach to one?
@@ -2343,16 +2397,101 @@ async function commitScan() {
   }
 
   _committing = false;
-  closeScan();
   page = 0;
-  render();
+
   if (attachError) {
-    // The order is saved either way — say which half did not land rather than
-    // implying the whole thing failed.
-    toast('Order saved, but the photo did not attach: ' + attachError, 'err');
-  } else {
-    toast('Saved ' + po.po_number + ' with the receipt attached.');
+    // The order is saved, the photo is not, and the receipt may already be back
+    // in the bin. Closing here threw the only copy away and left a six-second
+    // toast as the only notice — and the order then looked exactly like one
+    // that never had a receipt. So keep the sheet, keep the photo, and offer
+    // the half that failed again.
+    render();
+    _attachRetry = { poId: po.id, blob: shotBlob, filename: shotName };
+    renderScanSheet(
+      '<h2>Saved ' + esc(po.po_number) + ' — the photo did not attach</h2>' +
+      '<div class="sub">The order is saved. Only the receipt failed to upload.</div>' +
+      '<div class="scan-status err">' + esc(attachError) + '</div>' +
+      '<img class="receipt-preview" alt="The receipt just photographed" src="' + esc(shotDataUrl) + '">' +
+      '<div class="sheet-actions">' +
+        '<button class="btn" onclick="discardAttach()">Without the photo</button>' +
+        '<button class="btn btn-green" onclick="retryAttach()">Try the photo again</button>' +
+      '</div>');
+    return;
   }
+
+  closeScan();
+  render();
+  toast('Saved ' + po.po_number + ' with the receipt attached.');
+}
+
+/**
+ * Read the photo already in hand again, without re-photographing anything.
+ *
+ * The usual reason a read fails on a jobsite is the request, not the receipt —
+ * LTE dropping, the reader busy — and re-taking the photo to get another go at
+ * it is a poor trade when the receipt may already be back in the bin.
+ */
+async function rereadScan() {
+  if (!scanState || !scanState.dataUrl) { toast('That photo is no longer here — take it again.', 'err'); return; }
+  const held = scanState;
+  const token = ++_scanToken;
+  const live  = () => _scanToken === token;
+  held.token = token;
+
+  _scanBusy = true;
+  renderScanSheet(
+    '<h2>Reading the receipt</h2>' +
+    '<div class="sub">Second attempt. The photo is already saved.</div>' +
+    '<div class="scan-status"><span class="spinner"></span>Looking at the photo…</div>' +
+    '<div class="sheet-actions"><button class="btn" onclick="cancelScan()">Cancel</button></div>');
+
+  let receipt = null, scanError = null;
+  try {
+    const res = await api('POST', '/ai/receipt-scan', {
+      imageBase64: held.dataUrl.split(',')[1],
+      mediaType: 'image/jpeg',
+      vendors: (catalog.vendors || []).map(v => v.name),
+    });
+    receipt = res && res.receipt ? res.receipt : null;
+  } catch (err) {
+    scanError = err.message;
+  }
+  _scanBusy = false;
+  if (!live()) return;
+  scanState = held;
+  scanState.receipt = receipt;
+  renderScanForm(receipt, scanError);
+}
+
+/** The photo a save stored the order for but could not upload. */
+let _attachRetry = null;
+
+async function retryAttach() {
+  if (!_attachRetry) { closeScan(); return; }
+  const po = purchaseOrders.find(p => p.id === _attachRetry.poId);
+  if (!po) { _attachRetry = null; closeScan(); toast('That order is no longer on this page.', 'err'); return; }
+  const btn = document.querySelector('#scan-sheet .btn-green');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Attaching…'; }
+  try {
+    await attachToPO(po, _attachRetry.blob, _attachRetry.filename, 'Scanned receipt');
+    _attachRetry = null;
+    closeScan();
+    render();
+    toast('Receipt attached to ' + po.po_number + '.');
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Try the photo again'; }
+    const box = document.querySelector('#scan-sheet .scan-status');
+    if (box) box.textContent = err.message;
+    toast('Still could not attach it: ' + err.message, 'err');
+  }
+}
+
+/** Keep the order, let the photo go — said out loud, not by a stray tap. */
+function discardAttach() {
+  _attachRetry = null;
+  closeScan();
+  render();
+  toast('Order kept without the receipt. You can attach one later from the order.', 'err');
 }
 
 /* ═══════════════════════════════════════════
@@ -2453,7 +2592,16 @@ async function addAttachment(poId) {
    and — if they started a second scan meanwhile — renders the first receipt's
    figures against the second receipt's photo and order. */
 document.getElementById('scan-backdrop').addEventListener('click', function (e) {
-  if (e.target === this) closeScan();
+  if (e.target !== this) return;
+  // Not while it is reading. The sheet fills the screen on a phone but the
+  // backdrop is still a strip down each side, and a thumb resting there threw
+  // the photo away with no message at all — after the receipt may already be
+  // back in the bin. Stopping it is still possible, but it has to be deliberate.
+  if (_scanBusy) {
+    toast('Still reading the receipt — use Cancel to stop.');
+    return;
+  }
+  closeScan();
 });
 document.getElementById('docs-backdrop').addEventListener('click', function (e) {
   if (e.target === this) closeDocs();
