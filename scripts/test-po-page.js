@@ -570,12 +570,28 @@ console.log('\n[a cost row this page has not loaded]');
       (src.match(/_syncPOHeaderToLines\(po(?:, true)?\)\.catch\(/g) || []).length === 2);
 
     // The division tabs export the same purchase orders the purchasing page
-    // does, and only that page's export had the formula guard.
-    const csv = src.slice(src.indexOf('function exportPOCSV()'));
-    const cBody = csv.slice(0, csv.indexOf('\n}\n') + 3);
-    assert(`${f}: exportPOCSV defuses a leading formula character`,
-      /if \(\/\^\[=\+\\-@\\t\\r\]\/\.test\(t\) && !NUMERIC\.test\(t\)\)/.test(cBody), cBody.slice(0, 300));
-    assert(`${f}: but leaves a plain number alone`, /const NUMERIC = /.test(cBody));
+    // does, and only that page's export had the formula guard. Its trucking
+    // twin sits in the same file with the same helper and the same free-text
+    // columns — a driver, a truck type, a material hauled, a note.
+    const APOS = String.fromCharCode(34) + String.fromCharCode(39);
+    [['exportPOCSV', '  const csvLines = ['], ['exportTRCSV', '  const lines = [']].forEach(([fn, endMark]) => {
+      const csv   = src.slice(src.indexOf('function ' + fn + '()'));
+      const cBody = csv.slice(0, csv.indexOf('\n}\n') + 3);
+      assert(`${f}: ${fn} defuses a leading formula character`,
+        /if \(\/\^\[=\+\\-@\\t\\r\]\/\.test\(t\) && !NUMERIC\.test\(t\)\)/.test(cBody), cBody.slice(0, 300));
+      assert(`${f}: ${fn} leaves a plain number alone`, /const NUMERIC = /.test(cBody));
+      // Run the real helper, rather than trusting that the line is present.
+      const ectx = vm.createContext({});
+      vm.runInContext(sliceSource(cBody, '  const NUMERIC =', endMark,
+        `${f} ${fn} quoting helper`, ['NUMERIC']), ectx);
+      const q = v => vm.runInContext('escape(' + JSON.stringify(v) + ')', ectx);
+      assert(`${f}: ${fn} defuses a formula`, q('=HYPERLINK(1)').startsWith(APOS), q('=HYPERLINK(1)'));
+      assert(`${f}: ${fn} defuses every lead character`,
+        ['+WEBSERVICE(1)', '-2+3', '@SUM(A1)'].every(v => q(v).startsWith(APOS)));
+      assert(`${f}: ${fn} keeps a negative amount numeric`, q('-76.50') === '"-76.50"', q('-76.50'));
+      assert(`${f}: ${fn} still doubles the quote`, q('say ' + String.fromCharCode(34) + 'hi' + String.fromCharCode(34)) ===
+        String.fromCharCode(34) + 'say ' + String.fromCharCode(34,34) + 'hi' + String.fromCharCode(34,34,34), q('say "hi"'));
+    });
   });
 
 }

@@ -11929,7 +11929,21 @@ function applyTRFilters() {
 function exportTRCSV() {
   const rows = applyTRFilters();
   const headers = ['TR #','Project','Driver','Truck Type','Material Hauled','Loads','Rate','Hours','Total','Date','Sub Code','Status','Notes'];
-  const escape = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  // Quoting makes the file parse; it does not stop a spreadsheet EVALUATING a
+  // field that begins with =, +, - or @. A driver, truck type, material or note
+  // recorded as =HYPERLINK(...) or @SUM(...) runs the moment somebody opens the
+  // export. A leading apostrophe is the standard defusing, and both Excel and
+  // Sheets hide it.
+  //
+  // Not for a plain number: prefixing one makes the cell text, so a negative
+  // rate or a corrective adjustment drops out of every column sum and the
+  // export stops reconciling with the page. Same rule as exportPOCSV's.
+  const NUMERIC = /^-?\d+(\.\d+)?([eE][-+]?\d+)?$/;
+  const escape = v => {
+    let t = String(v ?? '');
+    if (/^[=+\-@\t\r]/.test(t) && !NUMERIC.test(t)) t = "'" + t;
+    return '"' + t.replace(/"/g, '""') + '"';
+  };
   const lines = [headers.map(escape).join(',')];
   rows.forEach(tr => {
     const proj = projectsList.find(p => p.id === tr.project_id);
