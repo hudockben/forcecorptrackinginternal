@@ -27,6 +27,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const jwt       = require('jsonwebtoken');
+const { numeric } = require('../lib/numeric');
 
 // Vercel caps a serverless request body at 4.5 MB and base64 costs a third on
 // top of the file, so this is about as large a photo as can arrive at all. The
@@ -59,9 +60,17 @@ function stripDataUrl(s) {
   return m ? { mediaType: m[1], b64: m[2] } : { mediaType: null, b64: s };
 }
 
+/**
+ * A figure the model read off the photograph, as a number or nothing.
+ *
+ * The comma handling belongs to api/lib/numeric.js, which the whole
+ * purchase-order path shares. Doing it here instead — stripping commas as
+ * thousands separators — read a receipt printed '360,82' as 36082, a hundred
+ * times the real amount, on any till whose region uses a decimal comma.
+ */
 function numOrNull(v) {
   if (v === null || v === undefined || v === '') return null;
-  const f = typeof v === 'number' ? v : parseFloat(String(v).replace(/[$,]/g, ''));
+  const f = numeric(v);
   return isNaN(f) ? null : f;
 }
 
@@ -151,7 +160,25 @@ module.exports = async (req, res) => {
     : '';
 
   try {
-    const client  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    // The SDK's defaults do not fit inside this function.
+    //
+    // `timeout` defaults to ten minutes and `maxRetries` to 2, and a timeout is
+    // itself retried — so the worst case is timeout x (retries + 1), thirty
+    // minutes, inside a function whose maxDuration is 60 seconds. The platform
+    // therefore always won the race: the request was killed at 60s and the
+    // phone got a gateway error page instead of the sentence below, with no
+    // log line from here at all.
+    //
+    // One attempt with a generous window instead. Forty seconds is far longer
+    // than reading one receipt takes and still leaves the handler room to
+    // answer inside its own budget. Retrying is the caller's job now — the scan
+    // sheet has a "Read the photo again" button — and one 40s attempt beats two
+    // truncated ones, since a read cut off by a timeout returns nothing.
+    const client = new Anthropic({
+      apiKey:     process.env.ANTHROPIC_API_KEY,
+      timeout:    40_000,   // milliseconds in this SDK, unlike the Python one
+      maxRetries: 0,
+    });
     const message = await client.messages.create({
       model:      'claude-opus-5',   // receipts are creased, thermal and badly lit — the flagship reads them
       // Thinking is ON BY DEFAULT on this model, and thinking tokens count
@@ -240,8 +267,17 @@ module.exports = async (req, res) => {
     });
 
   } catch (err) {
+    // Logged in full, never echoed. This message goes straight onto a phone
+    // screen at a supply counter, and the SDK's own text there reads as
+    // gibberish at best — "Connection error." — and at worst names internals.
     console.error('[ai/receipt-scan] error:', err.message);
-    return res.status(500).json({ error: 'Could not read that receipt', detail: err.message });
+    const transient = /timeout|timed out|ECONNRESET|ETIMEDOUT|socket|network|fetch failed|overloaded|rate.?limit|429|50\d/i
+      .test(String(err.message || ''));
+    return res.status(transient ? 503 : 500).json({
+      error: transient
+        ? 'Could not reach the reader just now. Try the photo again, or type the figures in.'
+        : 'Could not read that receipt. Type the figures in — the photo still attaches.',
+    });
   }
 };
 

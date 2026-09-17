@@ -18,7 +18,10 @@
       --yellow:    #eab308;
       --blue:      #60a5fa;
       --text:      #e0e0e0;
-      --muted:     #666;
+      /* 5.8:1 against the page background. #666 measured 3.41:1 — under AA for
+         text this small, and --muted carries the vendor, the date, the job line
+         and every field label, on a screen used outdoors in the sun. */
+      --muted:     #8a8a99;
       --ok:        #4ade80;
 
       /* One colour per source division, used on the division chip so a long
@@ -200,7 +203,17 @@
     }
     .field input:focus, .field select:focus { border-color: var(--green); }
     .field input[type="date"] { color-scheme: dark; }
-    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    /* Two across when there is room for two, one when there is not. At 200%
+       accessibility text the fixed pair kept its second column and pushed it
+       off the side of the screen: Invoice #, Unit Cost and Total all ran past
+       the viewport edge, and the sheet clips rather than scrolling sideways, so
+       three of the figures the person is there to check simply could not be
+       seen or reached. */
+    .grid2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+      gap: 0.6rem;
+    }
     .sheet-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
 
     .receipt-preview {
@@ -233,11 +246,22 @@
 
     .pager { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-top: 0.85rem; }
 
+    /* The office view is the table; the phone view is the cards. This default
+       has to sit BEFORE the media query below, not after it: both rules are a
+       single class, so at equal specificity the later one wins, and declaring
+       it afterwards hid the cards at EVERY width — the phone got a header, a
+       filter bar, "4 orders", and then nothing at all. */
+    .cards { display: none; }
+
     /* ── Phone ──
        The table is the office view. On a phone the same orders render as
        cards: this page's whole point on a phone is photographing a receipt at
        the supply counter, and a thirteen-column grid cannot be used one-handed. */
-    @media (max-width: 860px) {
+    /* Narrow OR short. Keying on width alone put a big phone in landscape —
+       932px on an iPhone 15 Pro Max, 892px on a Pixel 7 Pro — back on the
+       thirteen-column office table, in a viewport 430px tall. Any laptop window
+       short enough to match this is one the cards suit better anyway. */
+    @media (max-width: 860px), (max-height: 540px) {
       main { padding: 0.75rem; }
       header { padding: 0.6rem 0.75rem; }
       .table-wrap { display: none; }
@@ -245,8 +269,44 @@
       .toolbar h1 { font-size: 0.9rem; }
       .scan-cta { flex: 1 1 100%; }
       .scan-cta button { width: 100%; padding: 0.7rem; font-size: 0.92rem; }
+
+      /* Touch targets. This page exists to be used one-handed at a supply
+         counter, often with a glove on, and the sheet's controls came out at
+         34-36px with its buttons at 29 — under the 44px both Apple's and
+         Android's guidance ask for, and under WCAG 2.5.5. 16px on the inputs
+         is the other half of it: iOS Safari ZOOMS THE PAGE IN on focusing any
+         field with a smaller font, and it does not zoom back out, so tapping
+         the vendor box left the whole sheet scaled up and off to one side. */
+      .field input, .field select, .field textarea {
+        min-height: 44px; font-size: 16px; padding: 0.55rem 0.7rem;
+      }
+      .sheet-actions button, .po-card .card-actions button { min-height: 44px; }
+      /* Wraps, and each button may shrink to its text. Two side by side stopped
+         fitting at 200% accessibility text and Cancel was pushed off the edge —
+         which is also the only way back out of the sheet. */
+      .sheet-actions { gap: 0.6rem; flex-wrap: wrap; }
+      .sheet-actions button { flex: 1 1 8rem; min-width: 0; font-size: 0.92rem; }
+
+      /* The preview was a fixed 240px on a 664px screen, so every field — and
+         the figures the person is here to check — started below the fold. Its
+         job on a phone is to confirm the right receipt was photographed, which
+         a smaller one does just as well. */
+      .receipt-preview { max-height: 22vh; min-height: 110px; }
+
+      .sheet { max-height: 100%; border-radius: 12px; }
+      .backdrop { padding: 0.5rem; align-items: flex-start; }
+
+      /* The filter row and the search box are taps too, and were left out of
+         the pass above. 16px again so focusing one does not zoom the page. */
+      .filter-bar select, .search, .chip {
+        min-height: 44px; font-size: 16px;
+      }
+      /* A <select> sizes to its widest option, so one long supplier name made
+         the whole page wider than the screen and left it scrolling sideways.
+         The names are long by nature — "Tri-State Aggregates & Supply Co". */
+      .filter-bar select { max-width: 100%; flex: 1 1 8rem; min-width: 0; }
+      .filter-bar { flex-wrap: wrap; }
     }
-    .cards { display: none; }
     .po-card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 8px; padding: 0.75rem; margin-bottom: 0.65rem;
@@ -272,6 +332,10 @@
       padding: 0.6rem 0.8rem; font-size: 0.8rem; margin-bottom: 0.85rem;
       color: var(--muted);
     }
+    /* Set while a sheet is open. `fixed` rather than `overflow:hidden` because
+       iOS Safari ignores the latter on body. */
+    body.sheet-open { position: fixed; width: 100%; overflow: hidden; left: 0; right: 0; }
+
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   </style>
 </head>
@@ -370,9 +434,16 @@
   <div class="sheet" id="docs-sheet"></div>
 </div>
 
-<!-- Hidden capture inputs. `capture` asks a phone for the rear camera and is
+<!-- Hidden capture inputs. `capture="environment"` was on the receipt input to
+     jump straight to the rear camera, and on iOS that is all it offers: the
+     camera roll is unreachable, so a receipt photographed before signing in, or
+     one a driver sent through, could not be used at all. Without it both phones
+     show a chooser whose first option is still the camera, which costs one tap
+     and buys back every photo already on the device. The old comment below
+     described the attach input, which never had it.
+     `capture` asks a phone for the rear camera and is
      ignored on a desktop, which then offers the file picker instead. -->
-<input type="file" id="receipt-capture" accept="image/*" capture="environment" style="display:none" />
+<input type="file" id="receipt-capture" accept="image/*" style="display:none" />
 <input type="file" id="attach-capture"  accept="image/*,application/pdf" style="display:none" />
 
 <datalist id="vendor-list"></datalist>
@@ -609,14 +680,64 @@ async function api(method, path, body) {
 }
 
 /* ═══════════════════════════════════════════
+   READING A TYPED NUMBER
+   A COPY of api/lib/numeric.js, which the server reads the same blob with, and
+   of _normalizeNumeric in tracker / paving / kiewit-pinetree, where the job
+   divisions read it. All of them have to agree: this decides what purchasing's
+   screen shows, the server's decides what goes in the database, and a
+   disagreement is one order whose total reads differently in three places.
+   Change one and change the rest — scripts/test-numeric.js runs every copy
+   over the same table of cases and fails if they diverge.
+
+   The reason any of it exists: parseFloat stops at the first character it does
+   not understand, so a comma is silently destructive rather than an error.
+   parseFloat('360,82') is 360 and the cents are gone; parseFloat('1,234.56')
+   is 1. A comma gets into these fields without anyone travelling — a phone set
+   to a region that uses a decimal comma, a figure pasted off a supplier's
+   invoice, a number a receipt photograph was read as.
+════════════════════════════════════════════ */
+function normalizeNumeric(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return String(v);
+  let t = String(v).trim().replace(/[\s '$£€]/g, '');
+  if (!t) return '';
+
+  const neg = /^\(.*\)$/.test(t);
+  if (neg) t = t.slice(1, -1);
+
+  const lastComma = t.lastIndexOf(',');
+  const lastDot   = t.lastIndexOf('.');
+
+  if (lastComma > -1 && lastDot > -1) {
+    // Whichever separator comes LAST is the decimal one, which reads both
+    // '1,234.56' and '1.234,56' as 1234.56 without being told a locale.
+    if (lastComma > lastDot) t = t.replace(/\./g, '').replace(',', '.');
+    else                     t = t.replace(/,/g, '');
+  } else if (lastComma > -1) {
+    // One comma trailed by one or two digits is cents; anything else —
+    // '1,234', '1,234,567' — is a thousands separator.
+    const tail = t.length - lastComma - 1;
+    const once = t.indexOf(',') === lastComma;
+    t = (once && tail >= 1 && tail <= 2) ? t.replace(',', '.') : t.replace(/,/g, '');
+  }
+
+  if (neg) t = '-' + t;
+  return t;
+}
+/** parseFloat with the reading above in front of it. NaN for nothing usable. */
+function num(v)     { return parseFloat(normalizeNumeric(v)); }
+/** …and the same as 0 rather than NaN, for the cost arithmetic. */
+function num0(v)    { const f = num(v); return isNaN(f) ? 0 : f; }
+
+/* ═══════════════════════════════════════════
    LINE MATH
    Mirrors api/lib/po-sync.js and the division tabs: tax is entered as a
    percentage of the line amount and the dollar figure is kept in step with it,
    so every downstream reader still sees dollars.
 ═══════════════════════════════════════════ */
-function lineAmt(l)    { return (parseFloat(l.qty) || 0) * (parseFloat(l.unit_cost) || 0); }
-function lineTaxPct(l) { const p = parseFloat(l.tax_pct); return isNaN(p) ? null : p; }
-function lineTax(l)    { const p = lineTaxPct(l); return p === null ? (parseFloat(l.tax) || 0) : lineAmt(l) * p / 100; }
+function lineAmt(l)    { return num0(l.qty) * num0(l.unit_cost); }
+function lineTaxPct(l) { const p = num(l.tax_pct); return isNaN(p) ? null : p; }
+function lineTax(l)    { const p = lineTaxPct(l); return p === null ? num0(l.tax) : lineAmt(l) * p / 100; }
 function recalcLineTax(l) {
   if (l.tax_pct == null) return;
   const p = lineTaxPct(l);
@@ -625,7 +746,7 @@ function recalcLineTax(l) {
 }
 function poTotals(po) {
   let qty = 0, amt = 0, tax = 0;
-  (po.lines || []).forEach(l => { qty += parseFloat(l.qty) || 0; amt += lineAmt(l); tax += lineTax(l); });
+  (po.lines || []).forEach(l => { qty += num0(l.qty); amt += lineAmt(l); tax += lineTax(l); });
   return { qty, amt, tax, total: amt + tax };
 }
 function newLine() {
@@ -849,7 +970,7 @@ function migratePO(po) {
   }
   (po.lines || []).forEach(l => {
     if (!l || l.tax_pct != null) return;
-    const t = parseFloat(l.tax) || 0;
+    const t = num0(l.tax);
     if (t <= 0) { l.tax_pct = ''; return; }
     const amt = lineAmt(l);
     if (amt <= 0) return;
@@ -1275,8 +1396,8 @@ function setDivision(poId, value) {
   // cannot be numbered against and nextPONumber says so with ''. Storing that
   // put the order live in the other division's tab with a blank PO number,
   // which nothing on this page or the division tabs can ever set.
-  const num = nextPONumber(next, po.id);
-  if (!num) {
+  const nextNum = nextPONumber(next, po.id);
+  if (!nextNum) {
     toast(divLabel(next) + ' orders could not be loaded, so an order cannot be moved into that list yet. Reload and try again.', 'err');
     render();   // put the dropdown back on the division the order is still in
     return;
@@ -1286,7 +1407,7 @@ function setDivision(poId, value) {
   po.project_id = '';
   po.cost_code  = '';
   po.sub_code   = '';
-  po.po_number  = num;
+  po.po_number  = nextNum;
   savePO(po, { immediate: true });
   render();
 }
@@ -1777,7 +1898,7 @@ function exportCSV() {
       const lead = i === 0 ? base : base.map(() => '');
       out.push(lead.concat([
         l.invoice_num || '', l.date || '',
-        (parseFloat(l.qty) || '') , (parseFloat(l.unit_cost) || ''),
+        (num(l.qty) || '') , (num(l.unit_cost) || ''),
         amt.toFixed(2), pct === null ? '' : pct, tax.toFixed(2), (amt + tax).toFixed(2),
         l.employee || '',
       ]).map(q).join(','));
@@ -1827,15 +1948,45 @@ function downscaleImage(file, maxEdge) {
 }
 
 /** Ask for one photo through a hidden input, and hand back the File. */
+/** The listeners a previous pick left behind, so a new one can clear them. */
+const _pickCleanup = {};
+
 function pickImage(inputId) {
   return new Promise(resolve => {
     const input = document.getElementById(inputId);
-    input.value = '';
-    const onChange = () => {
-      input.removeEventListener('change', onChange);
-      resolve(input.files && input.files[0] ? input.files[0] : null);
+
+    // Opening the camera and backing out fires no `change` at all on most
+    // phones, so the old listener stayed attached and its promise never
+    // settled. The next photo then fired EVERY listener still on the input:
+    // one receipt was decoded, uploaded and read once per abandoned attempt,
+    // each a paid call to the scan endpoint, with the sheets racing each other.
+    if (_pickCleanup[inputId]) { _pickCleanup[inputId](); }
+
+    let done = false;
+    const finish = file => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(file);
     };
+    const onChange = () => finish(input.files && input.files[0] ? input.files[0] : null);
+    function cleanup() {
+      input.removeEventListener('change', onChange);
+      if (_pickCleanup[inputId] === abandon) delete _pickCleanup[inputId];
+    }
+    // Called by the NEXT pick: settle this one as a cancellation so its caller
+    // unwinds instead of waiting forever, and detach its listener.
+    //
+    // Deliberately NOT the input's own `cancel` event, which would be the
+    // direct way to notice a dismissed picker. Its firing is not consistent —
+    // a programmatic click() can raise it immediately, before any chooser is
+    // shown, and that kills the scan before the photo arrives. Settling on the
+    // next attempt is later but cannot misfire, and the leak is what mattered.
+    const abandon = () => finish(null);
+
+    input.value = '';
     input.addEventListener('change', onChange);
+    _pickCleanup[inputId] = abandon;
     input.click();
   });
 }
@@ -1937,8 +2088,29 @@ let scanState = null;   // { dataUrl, blob, filename, receipt, targetPoId, token
 // with receipt #2's photo.
 let _scanToken = 0;
 
+// Where the list was when a sheet took over the screen.
+let _scrollUnderSheet = 0;
+
+/** Stop the page behind a sheet scrolling with it, without losing the reader's
+ *  place. `position: fixed` is the only thing iOS Safari honours here, and it
+ *  resets the scroll to the top on its own, so the offset is put back by hand. */
+function lockBodyScroll() {
+  if (document.body.classList.contains('sheet-open')) return;
+  _scrollUnderSheet = window.scrollY || document.documentElement.scrollTop || 0;
+  document.body.style.top = '-' + _scrollUnderSheet + 'px';
+  document.body.classList.add('sheet-open');
+}
+
+function unlockBodyScroll() {
+  if (!document.body.classList.contains('sheet-open')) return;
+  document.body.classList.remove('sheet-open');
+  document.body.style.top = '';
+  window.scrollTo(0, _scrollUnderSheet);
+}
+
 function closeScan() {
   document.getElementById('scan-backdrop').classList.remove('open');
+  unlockBodyScroll();
   _scanToken++;          // whatever is in flight is no longer wanted
   scanState = null;
 }
@@ -1947,6 +2119,11 @@ function renderScanSheet(body) {
   const sheet = document.getElementById('scan-sheet');
   sheet.innerHTML = body;
   document.getElementById('scan-backdrop').classList.add('open');
+  // The page behind a sheet must not scroll with it. Without this, a flick
+  // that starts on the sheet and runs past its end carries on scrolling the
+  // order list underneath — so the sheet appears to drift over a moving
+  // background, and closing it leaves the list somewhere else entirely.
+  lockBodyScroll();
 }
 
 /** Toolbar entry point: a photo becomes a brand-new order. */
@@ -1957,6 +2134,15 @@ async function scanIntoPO(poId) { await beginScan(poId); }
 
 /** Guard against a double tap on Create/Add booking the same receipt twice. */
 let _committing = false;
+
+/** True from the moment the photo is taken until the figures are on screen. */
+let _scanBusy = false;
+
+/** The Cancel the reading state offers — deliberate, unlike a stray backdrop tap. */
+function cancelScan() {
+  _scanBusy = false;
+  closeScan();
+}
 
 async function beginScan(targetPoId) {
   if (!perm.canEdit) return;
@@ -1976,20 +2162,35 @@ async function beginScan(targetPoId) {
   const token = ++_scanToken;
   const live  = () => _scanToken === token;
 
+  _scanBusy = true;
   renderScanSheet(
     '<h2>Reading the receipt</h2>' +
-    '<div class="sub">This takes a few seconds.</div>' +
-    '<div class="scan-status"><span class="spinner"></span>Looking at the photo…</div>');
+    // Honest about the wait. "A few seconds" set the expectation at two or
+    // three, so at fifteen the reasonable conclusion is that it has hung.
+    '<div class="sub">Usually under half a minute. The photo is already saved — ' +
+    'if the read fails you can still type the figures in.</div>' +
+    '<div class="scan-status"><span class="spinner"></span>Looking at the photo…</div>' +
+    '<div class="sheet-actions"><button class="btn" onclick="cancelScan()">Cancel</button></div>');
 
   let shot;
   try {
     shot = await downscaleImage(file, 1600);
   } catch (err) {
+    _scanBusy = false;
     if (!live()) return;
+    // Close was the only way out, so a photo this browser could not decode —
+    // an odd HEIC variant, a file the camera wrote badly — ended the attempt
+    // entirely. Offer another photo from here instead of sending the person
+    // back to the toolbar, and say that typing it out is still an option.
     renderScanSheet(
       '<h2>Could not read that photo</h2>' +
       '<div class="scan-status err">' + esc(err.message) + '</div>' +
-      '<div class="sheet-actions"><button class="btn" onclick="closeScan()">Close</button></div>');
+      '<div class="sub">Try another photo, or raise the order by hand and attach the receipt to it afterwards.</div>' +
+      '<div class="sheet-actions">' +
+        '<button class="btn" onclick="closeScan()">Close</button>' +
+        '<button class="btn btn-green" onclick="closeScan(); beginScan(' +
+          (targetPoId ? "'" + jsAttr(targetPoId) + "'" : 'null') + ');">Another photo</button>' +
+      '</div>');
     return;
   }
   if (!live()) return;
@@ -2015,6 +2216,7 @@ async function beginScan(targetPoId) {
     scanError = err.message;
   }
 
+  _scanBusy = false;
   // Dismissed, or replaced by a later scan, while the model was reading. Say
   // nothing and touch nothing.
   if (!live()) return;
@@ -2031,8 +2233,13 @@ function renderScanForm(receipt, scanError) {
 
   let status;
   if (scanError) {
+    // A failed read left only one way forward: type all seven fields. The photo
+    // is still in scanState, so reading it again costs one tap — and most of
+    // these failures are a dropped request rather than an unreadable receipt.
     status = '<div class="scan-status err">Could not read the receipt automatically (' + esc(scanError) +
-             '). Fill it in below — the photo still gets attached.</div>';
+             '). Try again, or fill it in below — the photo still gets attached.' +
+             '<div style="margin-top:0.5rem"><button class="btn" onclick="rereadScan()">Read the photo again</button></div>' +
+             '</div>';
   } else if (r.confidence === 'low') {
     status = '<div class="scan-status warn">Read with low confidence — check every figure before saving.' +
              (r.notes ? ' ' + esc(r.notes) : '') + '</div>';
@@ -2070,26 +2277,26 @@ function renderScanForm(receipt, scanError) {
       '<div class="field"><label>Cost / Sub Code</label><select id="sc-code">' +
         '<option value="">— pick a job first —</option></select></div>') +
     '<div class="field"><label>Vendor' + mark(r.vendor) + '</label>' +
-      '<input type="text" id="sc-vendor" list="vendor-list" value="' + esc(val(r.vendor)) + '" placeholder="Who it was bought from"></div>' +
+      '<input type="text" id="sc-vendor" list="vendor-list" autocorrect="off" spellcheck="false" autocapitalize="words" value="' + esc(val(r.vendor)) + '" placeholder="Who it was bought from"></div>' +
     '<div class="field"><label>Description' + mark(r.description) + '</label>' +
       '<input type="text" id="sc-title" value="' + esc(val(r.description)) + '" placeholder="What was bought"></div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Date' + mark(r.date) + '</label>' +
         '<input type="date" id="sc-date" value="' + esc(r.date || localDateStr()) + '"></div>' +
       '<div class="field"><label>Invoice #' + mark(r.invoice_number) + '</label>' +
-        '<input type="text" id="sc-invoice" value="' + esc(val(r.invoice_number)) + '"></div>' +
+        '<input type="text" id="sc-invoice" autocapitalize="characters" autocorrect="off" spellcheck="false" value="' + esc(val(r.invoice_number)) + '"></div>' +
     '</div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Qty' + mark(r.qty) + '</label>' +
-        '<input type="number" step="any" id="sc-qty" value="' + esc(val(r.qty)) + '" placeholder="1"></div>' +
+        '<input type="number" step="any" inputmode="decimal" id="sc-qty" value="' + esc(val(r.qty)) + '" placeholder="1"></div>' +
       '<div class="field"><label>Unit Cost' + mark(r.unit_cost) + '</label>' +
-        '<input type="number" step="any" id="sc-unit" value="' + esc(val(r.unit_cost)) + '"></div>' +
+        '<input type="number" step="any" inputmode="decimal" id="sc-unit" value="' + esc(val(r.unit_cost)) + '"></div>' +
     '</div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Tax %' + mark(r.tax_pct) + '</label>' +
-        '<input type="number" step="any" id="sc-taxpct" value="' + esc(val(r.tax_pct)) + '"></div>' +
+        '<input type="number" step="any" inputmode="decimal" id="sc-taxpct" value="' + esc(val(r.tax_pct)) + '"></div>' +
       '<div class="field"><label>Total' + mark(r.total) + '</label>' +
-        '<input type="number" step="any" id="sc-total" value="' + esc(val(r.total)) + '"></div>' +
+        '<input type="number" step="any" inputmode="decimal" id="sc-total" value="' + esc(val(r.total)) + '"></div>' +
     '</div>' +
     '<div class="sub" id="sc-hint" style="margin-bottom:0">' +
       'Qty and Unit Cost go together — with either missing, the order is booked ' +
@@ -2142,7 +2349,7 @@ async function commitScan() {
 
   const qty   = document.getElementById('sc-qty').value;
   const unit  = document.getElementById('sc-unit').value;
-  const total = parseFloat(document.getElementById('sc-total').value);
+  const total = num(document.getElementById('sc-total').value);
   const taxPct = document.getElementById('sc-taxpct').value;
 
   // A line is only worth money when it has BOTH a quantity and a unit cost:
@@ -2159,9 +2366,9 @@ async function commitScan() {
   // string, so a ticket read as 8.5 TON at a unit cost of 0 looked like a
   // complete pair, discarded the Total, and booked the delivery at nothing.
   let lineQty = qty, lineUnit = unit;
-  const pct = parseFloat(taxPct);
+  const pct = num(taxPct);
   const withTax = amt => (!isNaN(pct) && pct !== 0) ? amt * (1 + pct / 100) : amt;
-  const pairAmount = (parseFloat(lineQty) || 0) * (parseFloat(lineUnit) || 0);
+  const pairAmount = num0(lineQty) * num0(lineUnit);
   const pairIncomplete = pairAmount === 0;
 
   // The Total is what the supplier charged, and it is the figure the user just
@@ -2172,7 +2379,7 @@ async function commitScan() {
   // to nobody. It used to be read and then silently thrown away.
   if (!pairIncomplete && !isNaN(total) && total !== 0
       && Math.abs(withTax(pairAmount) - total) > 0.01) {
-    const q = parseFloat(lineQty) || 1;
+    const q = num(lineQty) || 1;
     lineUnit = String((!isNaN(pct) && pct !== 0 ? total / (1 + pct / 100) : total) / q);
     toast('Quantity × unit cost came to $' + fmt(withTax(pairAmount)) + ', not the $' + fmt(total) +
           ' on the receipt — booked at the receipt total.');
@@ -2202,6 +2409,9 @@ async function commitScan() {
   // TypeError at the user instead of a sentence.
   const shotBlob = scanState.blob;
   const shotName = scanState.filename;
+  // ...and the preview with them, so the retry sheet can show the person which
+  // photo it is still holding.
+  const shotDataUrl = scanState.dataUrl;
 
   let po;
   let created = false;  // did this scan RAISE the order, or attach to one?
@@ -2284,22 +2494,110 @@ async function commitScan() {
   }
 
   _committing = false;
-  closeScan();
   page = 0;
-  render();
+
   if (attachError) {
-    // The order is saved either way — say which half did not land rather than
-    // implying the whole thing failed.
-    toast('Order saved, but the photo did not attach: ' + attachError, 'err');
-  } else {
-    toast('Saved ' + po.po_number + ' with the receipt attached.');
+    // The order is saved, the photo is not, and the receipt may already be back
+    // in the bin. Closing here threw the only copy away and left a six-second
+    // toast as the only notice — and the order then looked exactly like one
+    // that never had a receipt. So keep the sheet, keep the photo, and offer
+    // the half that failed again.
+    render();
+    _attachRetry = { poId: po.id, blob: shotBlob, filename: shotName };
+    renderScanSheet(
+      '<h2>Saved ' + esc(po.po_number) + ' — the photo did not attach</h2>' +
+      '<div class="sub">The order is saved. Only the receipt failed to upload.</div>' +
+      '<div class="scan-status err">' + esc(attachError) + '</div>' +
+      '<img class="receipt-preview" alt="The receipt just photographed" src="' + esc(shotDataUrl) + '">' +
+      '<div class="sheet-actions">' +
+        '<button class="btn" onclick="discardAttach()">Without the photo</button>' +
+        '<button class="btn btn-green" onclick="retryAttach()">Try the photo again</button>' +
+      '</div>');
+    return;
   }
+
+  closeScan();
+  render();
+  toast('Saved ' + po.po_number + ' with the receipt attached.');
+}
+
+/**
+ * Read the photo already in hand again, without re-photographing anything.
+ *
+ * The usual reason a read fails on a jobsite is the request, not the receipt —
+ * LTE dropping, the reader busy — and re-taking the photo to get another go at
+ * it is a poor trade when the receipt may already be back in the bin.
+ */
+async function rereadScan() {
+  if (!scanState || !scanState.dataUrl) { toast('That photo is no longer here — take it again.', 'err'); return; }
+  const held = scanState;
+  const token = ++_scanToken;
+  const live  = () => _scanToken === token;
+  held.token = token;
+
+  _scanBusy = true;
+  renderScanSheet(
+    '<h2>Reading the receipt</h2>' +
+    '<div class="sub">Second attempt. The photo is already saved.</div>' +
+    '<div class="scan-status"><span class="spinner"></span>Looking at the photo…</div>' +
+    '<div class="sheet-actions"><button class="btn" onclick="cancelScan()">Cancel</button></div>');
+
+  let receipt = null, scanError = null;
+  try {
+    const res = await api('POST', '/ai/receipt-scan', {
+      imageBase64: held.dataUrl.split(',')[1],
+      mediaType: 'image/jpeg',
+      vendors: (catalog.vendors || []).map(v => v.name),
+    });
+    receipt = res && res.receipt ? res.receipt : null;
+  } catch (err) {
+    scanError = err.message;
+  }
+  _scanBusy = false;
+  if (!live()) return;
+  scanState = held;
+  scanState.receipt = receipt;
+  renderScanForm(receipt, scanError);
+}
+
+/** The photo a save stored the order for but could not upload. */
+let _attachRetry = null;
+
+async function retryAttach() {
+  if (!_attachRetry) { closeScan(); return; }
+  const po = purchaseOrders.find(p => p.id === _attachRetry.poId);
+  if (!po) { _attachRetry = null; closeScan(); toast('That order is no longer on this page.', 'err'); return; }
+  const btn = document.querySelector('#scan-sheet .btn-green');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Attaching…'; }
+  try {
+    await attachToPO(po, _attachRetry.blob, _attachRetry.filename, 'Scanned receipt');
+    _attachRetry = null;
+    closeScan();
+    render();
+    toast('Receipt attached to ' + po.po_number + '.');
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Try the photo again'; }
+    const box = document.querySelector('#scan-sheet .scan-status');
+    if (box) box.textContent = err.message;
+    toast('Still could not attach it: ' + err.message, 'err');
+  }
+}
+
+/** Keep the order, let the photo go — said out loud, not by a stray tap. */
+function discardAttach() {
+  _attachRetry = null;
+  closeScan();
+  render();
+  toast('Order kept without the receipt. You can attach one later from the order.', 'err');
 }
 
 /* ═══════════════════════════════════════════
    ATTACHMENTS SHEET
 ═══════════════════════════════════════════ */
-function closeDocs() { document.getElementById('docs-backdrop').classList.remove('open'); }
+function closeDocs() {
+  document.getElementById('docs-backdrop').classList.remove('open');
+  unlockBodyScroll();
+}
 
 async function openDocs(poId) {
   const po = purchaseOrders.find(p => p.id === poId);
@@ -2308,6 +2606,7 @@ async function openDocs(poId) {
   sheet.innerHTML = '<h2>' + esc(po.po_number) + ' — attachments</h2>' +
     '<div class="scan-status"><span class="spinner"></span>Loading…</div>';
   document.getElementById('docs-backdrop').classList.add('open');
+  lockBodyScroll();
 
   let docs = [];
   let loadError = null;
@@ -2390,7 +2689,16 @@ async function addAttachment(poId) {
    and — if they started a second scan meanwhile — renders the first receipt's
    figures against the second receipt's photo and order. */
 document.getElementById('scan-backdrop').addEventListener('click', function (e) {
-  if (e.target === this) closeScan();
+  if (e.target !== this) return;
+  // Not while it is reading. The sheet fills the screen on a phone but the
+  // backdrop is still a strip down each side, and a thumb resting there threw
+  // the photo away with no message at all — after the receipt may already be
+  // back in the bin. Stopping it is still possible, but it has to be deliberate.
+  if (_scanBusy) {
+    toast('Still reading the receipt — use Cancel to stop.');
+    return;
+  }
+  closeScan();
 });
 document.getElementById('docs-backdrop').addEventListener('click', function (e) {
   if (e.target === this) closeDocs();

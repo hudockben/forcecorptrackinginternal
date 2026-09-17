@@ -6358,7 +6358,7 @@ function _migratePOs(list = purchaseOrders) {
     // fallback goes on returning the exact stored figure.
     (po.lines || []).forEach(l => {
       if (!l || l.tax_pct != null) return;
-      const t = parseFloat(l.tax) || 0;
+      const t = _poNum0(l.tax);
       if (t <= 0) { l.tax_pct = ''; return; }
       const amt = _lineAmt(l);
       if (amt <= 0) return;
@@ -8757,9 +8757,19 @@ function _pcUnit(raw) { return _PC_UNIT_MAP[_pcNorm(raw)] || ''; }
 
 // Numeric cell → number, or null when the cell isn't a number at all.
 // The null case is what keeps the estimate's summary/label rows ("Profit",
-// "Total labor") from being mistaken for line items.
+// "Total labor") from being mistaken for line items — _normalizeNumeric leaves
+// a word a word, so the test below still rejects it.
+//
+// It used to strip every comma as a thousands separator, which is right for the
+// '$81,760.70' a US export writes and a hundredfold wrong for a decimal comma:
+// a unit cost of '360,82' came in as 36082, and a bid quantity of '8,5' as 85.
+// A bid quantity is the denominator of percent-complete and of the labour hours
+// per unit this page models production from, so that error hid inside a ratio
+// instead of showing up as a dollar figure somebody would have queried. Only
+// .csv exports carry it — an .xlsx stores the raw number whatever the cell is
+// formatted to show.
 function _pcNum(v) {
-  const s = String(v == null ? '' : v).replace(/[$,\s]/g, '').replace(/^\((.*)\)$/, '-$1');
+  const s = _normalizeNumeric(v);
   if (!s) return null;
   if (!/^-?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return null;
   const n = parseFloat(s);
@@ -10648,21 +10658,69 @@ function docsProjPick(input) {
 let _poExpanded = new Set();   // PO ids with delivery lines visible
 let _poDocCountsLoaded = false; // attached-document counts fetched once per session
 
+// A number typed, pasted, scanned or imported into a money or quantity field.
+// Used by the purchase-order lines below, by the Procore estimate importer and
+// by the daily-row CSV importer.
+//
+// A COPY of api/lib/numeric.js, which the server reads the same blob with, and
+// of the same function in purchase-orders.html, the other two job tabs and
+// dust.html — six in all, because the pages carry no module loader. They have
+// to agree: the total shown in this tab, the total shown on the purchasing page
+// and the figure in po_deliveries are the same money, and a disagreement is one
+// of them being wrong. scripts/test-numeric.js runs every copy over the same
+// table of cases and fails if they diverge.
+//
+// parseFloat alone stops at the first character it does not understand, so a
+// comma is silently destructive rather than an error: parseFloat('360,82') is
+// 360 and the cents are gone. A comma reaches these fields from a phone set to
+// a region that uses a decimal comma, from a figure pasted off a supplier's
+// invoice, or from a receipt photograph read by the scanner.
+function _normalizeNumeric(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return String(v);
+  let t = String(v).trim().replace(/[\s '$£€]/g, '');
+  if (!t) return '';
+
+  const neg = /^\(.*\)$/.test(t);
+  if (neg) t = t.slice(1, -1);
+
+  const lastComma = t.lastIndexOf(',');
+  const lastDot   = t.lastIndexOf('.');
+
+  if (lastComma > -1 && lastDot > -1) {
+    // Whichever separator comes LAST is the decimal one, so '1,234.56' and
+    // '1.234,56' both read as 1234.56 without being told a locale.
+    if (lastComma > lastDot) t = t.replace(/\./g, '').replace(',', '.');
+    else                     t = t.replace(/,/g, '');
+  } else if (lastComma > -1) {
+    // One comma trailed by one or two digits is cents; anything else is a
+    // thousands separator.
+    const tail = t.length - lastComma - 1;
+    const once = t.indexOf(',') === lastComma;
+    t = (once && tail >= 1 && tail <= 2) ? t.replace(',', '.') : t.replace(/,/g, '');
+  }
+
+  if (neg) t = '-' + t;
+  return t;
+}
+function _poNum(v)  { return parseFloat(_normalizeNumeric(v)); }
+function _poNum0(v) { const f = _poNum(v); return isNaN(f) ? 0 : f; }
+
 // Delivery-line math. Tax is entered as a percentage (`tax_pct`) and applied on
 // top of the line amount; the resulting dollar figure is mirrored into `tax` so
 // every downstream consumer — daily rows, project rollups, CSV exports, the
 // normalized po_deliveries table — keeps reading a dollar amount. Lines saved
 // before the percent field existed fall back to their stored dollar tax.
 function _lineAmt(line) {
-  return (parseFloat(line.qty) || 0) * (parseFloat(line.unit_cost) || 0);
+  return _poNum0(line.qty) * _poNum0(line.unit_cost);
 }
 function _lineTaxPct(line) {
-  const p = parseFloat(line.tax_pct);
+  const p = _poNum(line.tax_pct);
   return isNaN(p) ? null : p;
 }
 function _lineTax(line) {
   const p = _lineTaxPct(line);
-  return p === null ? (parseFloat(line.tax) || 0) : _lineAmt(line) * p / 100;
+  return p === null ? _poNum0(line.tax) : _lineAmt(line) * p / 100;
 }
 // Re-derive the stored dollar tax after qty / unit cost / tax % changes.
 // A line with no tax_pct key at all is a legacy dollar-tax line — leave it
@@ -10679,7 +10737,7 @@ function _recalcLineTax(line) {
 function _poTotals(po) {
   let qty = 0, amt = 0, tax = 0;
   (po.lines || []).forEach(l => {
-    qty += parseFloat(l.qty) || 0;
+    qty += _poNum0(l.qty);
     amt += _lineAmt(l);
     tax += _lineTax(l);
   });
@@ -10997,7 +11055,7 @@ function exportPOCSV() {
       csvLines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', '', '', '', '', '', '', '', '', '', po.status||''].map(escape).join(','));
     } else {
       lines.forEach((l, i) => {
-        const q = parseFloat(l.qty) || 0, u = parseFloat(l.unit_cost) || 0;
+        const q = _poNum0(l.qty), u = _poNum0(l.unit_cost);
         const amt = _lineAmt(l), t = _lineTax(l), pct = _lineTaxPct(l);
         csvLines.push([
           i === 0 ? po.po_number : '', // only show PO # on first line
@@ -11348,7 +11406,7 @@ function exportProjectPOsCSV(projId) {
       rows.push([po.po_number||'', po.title||'', '', '', '', '', '', '', '', '', '', po.status||'']);
     } else {
       lines.forEach((l, i) => {
-        const q=parseFloat(l.qty)||0, u=parseFloat(l.unit_cost)||0;
+        const q=_poNum0(l.qty), u=_poNum0(l.unit_cost);
         const amt=_lineAmt(l), t=_lineTax(l), pct=_lineTaxPct(l);
         rows.push([i===0?po.po_number:'', i===0?po.title||'':'', l.invoice_num||'', l.date||'', q||'', u||'', amt.toFixed(2), pct === null ? '' : pct, t.toFixed(2), (amt+t).toFixed(2), l.employee||'', i===0?po.status||'':'']);
       });
@@ -22200,8 +22258,13 @@ function parseImportCSV() {
         let val = cells[ci] || '';
         if (field === '_project') { projName = val; return; }
         if (field === '_bid_qty') return;   // skip
-        // Strip $ signs and thousands-separator commas from numeric fields (e.g. "$81,760.70" → "81760.70")
-        if (NUMERIC_FIELDS.has(field)) val = val.replace(/\$/g, '').replace(/,(?=\d)/g, '');
+        // Read the figure the way the rest of the app reads it, and STORE it
+        // canonically so nothing downstream has to guess. '$81,760.70' still
+        // comes in as 81760.70; what changes is a decimal comma, which the old
+        // strip turned into a hundredfold error — '360,82' became 36082 and a
+        // quantity of '8,5' became 85. This covers a labour rate and a total
+        // cost as well as material, so it reached payroll figures too.
+        if (NUMERIC_FIELDS.has(field)) val = _normalizeNumeric(val);
         if (val !== '') row[field] = val;
       });
 

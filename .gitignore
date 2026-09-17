@@ -5,3 +5,9 @@ api/node_modules/
 # Scratch harnesses review agents write while driving code with stubs.
 # They landed in a commit once via `git add -A`; they are never part of the app.
 .tmpcheck/
+
+# Scratch harnesses: browser-driving scripts have to live inside the repo for
+# require('playwright') to resolve, so they are named to be ignored rather than
+# tidied up by hand. A stray one was committed once already.
+.scratch-*.js
+.mobile-shoot.js

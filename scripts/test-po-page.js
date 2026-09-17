@@ -35,6 +35,12 @@ const assert = (msg, cond, detail) => {
 
 const PAGE = read('purchase-orders.html');
 
+// The line math sits on top of the page's own number reading — a comma in a
+// money field is read the same way here, in the division tabs and on the
+// server. Any context that runs lineAmt / lineTax needs these three lifted
+// with it, so they are named once rather than in each sandbox.
+const NUM_FNS = ['normalizeNumeric', 'num', 'num0'];
+
 // ── 1. Registration ────────────────────────────────────────────────────────
 console.log('\n[the division is registered everywhere it has to be]');
 {
@@ -138,8 +144,12 @@ assert('receipts are filed in the ORDER\'s division',
   /const division = po\._division;/.test(PAGE));
 assert('opening a receipt names its order, so the carve-out can apply',
   /'&poId=' \+ encodeURIComponent\(poId\)/.test(PAGE));
-assert('the camera is asked for by default on a phone',
-  /id="receipt-capture"[^>]*capture="environment"/.test(PAGE));
+// NOT capture="environment" on the receipt input. It jumps straight to the rear
+// camera, and on iOS that is all it offers — a receipt photographed before
+// signing in, or one a driver sent through, could not be used at all. Without
+// it both phones still show the camera as the first option in the chooser.
+assert('the receipt input does not force the camera',
+  !/id="receipt-capture"[^>]*capture=/.test(PAGE));
 assert('photos are downscaled before they are sent anywhere',
   /downscaleImage\(file, 1600\)/.test(PAGE));
 assert('the scan endpoint is given the vendor list to match against',
@@ -151,7 +161,7 @@ assert('a phone gets cards instead of the thirteen-column table',
 console.log('\n[line math agrees with the division tabs]');
 {
   const ctx = vm.createContext({});
-  ['lineAmt', 'lineTaxPct', 'lineTax', 'recalcLineTax', 'poTotals'].forEach(name => {
+  NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax', 'recalcLineTax', 'poTotals']).forEach(name => {
     vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx);
   });
   const run = expr => vm.runInContext(expr, ctx);
@@ -533,6 +543,199 @@ console.log('\n[the division tabs and a crafted id]');
   });
 }
 
+console.log('\n[the phone]');
+{
+  // This page's whole point on a phone is photographing a receipt at the supply
+  // counter, so the phone layout is not a nice-to-have here.
+
+  // The list renders as cards below 860px, and the table above it. The default
+  // `display:none` has to come BEFORE the media query: both rules are a single
+  // class, so at equal specificity the later one wins, and declaring it after
+  // hid the cards at EVERY width — the phone showed a header, a filter bar,
+  // "4 orders", and then nothing at all.
+  const cardsDefault = PAGE.indexOf('.cards { display: none; }');
+  const phoneQuery   = PAGE.indexOf('@media (max-width: 860px)');
+  assert('the cards default is declared before the phone media query',
+    cardsDefault > -1 && phoneQuery > -1 && cardsDefault < phoneQuery,
+    `default at ${cardsDefault}, query at ${phoneQuery}`);
+  assert('and the query turns them on while turning the table off',
+    /@media \(max-width: 860px\)[\s\S]{0,900}\.table-wrap \{ display: none; \}[\s\S]{0,120}\.cards \{ display: block; \}/.test(PAGE));
+
+  // A 44px target is what both Apple's and Android's guidance ask for, and a
+  // 16px font is what stops iOS Safari zooming the page in on focus — it does
+  // not zoom back out, so the sheet was left scaled up and off to one side.
+  const phoneBlock = PAGE.slice(phoneQuery, PAGE.indexOf('\n    }', phoneQuery));
+  assert('the sheet\'s fields are thumb-sized on a phone',
+    /min-height: 44px; font-size: 16px;/.test(phoneBlock), phoneBlock.slice(0, 200));
+  assert('and so are its buttons, and a card\'s',
+    /\.sheet-actions button, \.po-card \.card-actions button \{ min-height: 44px; \}/.test(phoneBlock));
+
+  // Money on a phone keypad: type=number alone does not guarantee a decimal
+  // point on iOS.
+  ['sc-qty', 'sc-unit', 'sc-taxpct', 'sc-total'].forEach(id => {
+    assert(`${id} asks for the decimal keypad`,
+      new RegExp('inputmode="decimal" id="' + id + '"').test(PAGE));
+  });
+  // An invoice number is a code, and a vendor is a proper noun. Neither wants
+  // autocorrect — "Fastenal" becoming "Fastened" is the sort of thing nobody
+  // notices until the report.
+  assert('the invoice field does not autocorrect',
+    /id="sc-invoice" autocapitalize="characters" autocorrect="off" spellcheck="false"/.test(PAGE));
+  assert('nor does the vendor field',
+    /id="sc-vendor"[^>]*autocorrect="off" spellcheck="false"/.test(PAGE));
+
+  // The page behind a sheet must not scroll with it, and must not lose the
+  // reader's place either: `position: fixed` is the only thing iOS honours, and
+  // it resets scroll to the top on its own.
+  assert('opening a sheet locks the page behind it',
+    /function lockBodyScroll\(\)/.test(PAGE) &&
+    /body\.sheet-open \{ position: fixed;/.test(PAGE));
+  assert('and the scroll position is put back on close',
+    /_scrollUnderSheet = window\.scrollY/.test(PAGE) &&
+    /window\.scrollTo\(0, _scrollUnderSheet\)/.test(PAGE));
+  // Both sheets — the scan and the documents list. Counted with a boundary,
+  // because "unlockBodyScroll();" contains "lockBodyScroll();".
+  assert('both sheets lock and unlock',
+    (PAGE.match(/(?<![A-Za-z])lockBodyScroll\(\);/g) || []).length === 2 &&
+    (PAGE.match(/(?<![A-Za-z])unlockBodyScroll\(\);/g) || []).length === 2,
+    JSON.stringify({
+      lock:   (PAGE.match(/(?<![A-Za-z])lockBodyScroll\(\);/g) || []).length,
+      unlock: (PAGE.match(/(?<![A-Za-z])unlockBodyScroll\(\);/g) || []).length,
+    }));
+
+  // The preview's job on a phone is to confirm the right receipt was
+  // photographed. At a fixed 240px on a 664px screen it pushed every figure the
+  // person is there to check below the fold.
+  assert('the receipt preview is sized against the viewport on a phone',
+    /\.receipt-preview \{ max-height: 22vh; min-height: 110px; \}/.test(phoneBlock));
+
+  // Narrow OR short. On width alone a big phone in landscape — 932px on an
+  // iPhone 15 Pro Max, 892px on a Pixel 7 Pro — went back to the thirteen-column
+  // office table in a viewport 430px tall.
+  assert('a phone in landscape still gets the phone layout',
+    /@media \(max-width: 860px\), \(max-height: 540px\)/.test(PAGE));
+
+  // At 200% accessibility text the fixed pair kept its second column and pushed
+  // it off the screen: Invoice #, Unit Cost and Total all ran past the edge, and
+  // the sheet clips rather than scrolling sideways.
+  assert('the paired money fields can stack when there is no room for two',
+    /grid-template-columns: repeat\(auto-fit, minmax\(9rem, 1fr\)\);/.test(PAGE));
+  assert('and the sheet buttons wrap rather than pushing Cancel off the edge',
+    /\.sheet-actions \{ gap: 0\.6rem; flex-wrap: wrap; \}/.test(phoneBlock));
+
+  // The filter row is taps too, and a <select> sizes to its widest option — one
+  // long supplier name made the whole page wider than the screen.
+  assert('the filter row and search box are thumb-sized too',
+    /\.filter-bar select, \.search, \.chip \{\s*\n\s*min-height: 44px; font-size: 16px;/.test(phoneBlock));
+  assert('and a long supplier name cannot widen the page',
+    /\.filter-bar select \{ max-width: 100%; flex: 1 1 8rem; min-width: 0; \}/.test(phoneBlock));
+
+  // --muted carries the vendor, the date, the job line and every field label,
+  // on a screen read outdoors. #666 measured 3.41:1 against the background,
+  // under the 4.5:1 AA wants for text this small.
+  assert('muted text clears AA against the page background', /--muted:     #8a8a99;/.test(PAGE));
+  {
+    const lum = hex => {
+      const c = [1, 3, 5].map(i => parseInt(hex.substr(i, 2), 16) / 255)
+        .map(v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    };
+    const bg = (PAGE.match(/--bg:\s*(#[0-9a-f]{6})/i) || [])[1];
+    const muted = (PAGE.match(/--muted:\s*(#[0-9a-f]{6})/i) || [])[1];
+    const ratio = (a, b) => {
+      const la = lum(a), lb = lum(b);
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    };
+    assert('...measured, not asserted', Boolean(bg && muted) && ratio(muted, bg) >= 4.5,
+      `${muted} on ${bg} = ${bg && muted ? ratio(muted, bg).toFixed(2) : '?'}:1`);
+  }
+
+  // capture="environment" jumps straight to the rear camera, and on iOS that is
+  // ALL it offers — a receipt photographed before signing in, or one a driver
+  // sent through, could not be used at all.
+  assert('a photo already on the phone can be used',
+    /<input type="file" id="receipt-capture" accept="image\/\*" style="display:none"/.test(PAGE));
+
+  // Close was the only way out of an undecodable photo, ending the attempt.
+  assert('an undecodable photo offers another one',
+    /Could not read that photo[\s\S]{0,500}Another photo<\/button>/.test(PAGE));
+}
+
+console.log('\n[the receipt, when things go wrong]');
+{
+  // Backing out of the camera fires no `change` at all on most phones, so the
+  // listener stayed attached and its promise never settled. The next photo then
+  // fired EVERY listener still on the input: one receipt decoded, uploaded and
+  // read once per abandoned attempt — each a paid call — with the sheets racing.
+  assert('a new pick abandons the one before it',
+    /if \(_pickCleanup\[inputId\]\) \{ _pickCleanup\[inputId\]\(\); \}/.test(PAGE));
+  assert('and a settled pick cannot settle twice',
+    /let done = false;[\s\S]{0,200}if \(done\) return;\s*\n\s*done = true;/.test(PAGE));
+  // The input's own `cancel` event would be the direct way to notice a
+  // dismissed picker, but a programmatic click() can raise it immediately —
+  // before any chooser is shown — which kills the scan before the photo lands.
+  assert('the picker does not lean on the cancel event',
+    !/addEventListener\('cancel'/.test(PAGE));
+
+  // A thumb resting on the strip beside the sheet threw the photo away with no
+  // message, after the receipt may already be back in the bin.
+  assert('a backdrop tap cannot destroy a scan mid-read',
+    /if \(_scanBusy\) \{[\s\S]{0,160}return;\s*\n\s*\}\s*\n\s*closeScan\(\);/.test(PAGE));
+  assert('but Cancel still stops it deliberately',
+    /function cancelScan\(\)/.test(PAGE) && /onclick="cancelScan\(\)"/.test(PAGE));
+  assert('and the flag is cleared on every way out of the read',
+    (PAGE.match(/_scanBusy = false;/g) || []).length >= 3);
+
+  // A failed read used to leave one way forward: type all seven fields. The
+  // photo is still in hand, and most of these failures are the request rather
+  // than the receipt.
+  assert('a failed read offers the photo again',
+    /function rereadScan\(\)/.test(PAGE) && /onclick="rereadScan\(\)"/.test(PAGE));
+  assert('and re-reads what it already holds, not a new photo',
+    /const held = scanState;[\s\S]{0,600}imageBase64: held\.dataUrl\.split\(','\)\[1\]/.test(PAGE));
+
+  // The order saved, the photo did not, and closing threw the only copy away —
+  // leaving an order that looks exactly like one that never had a receipt.
+  assert('a failed attach keeps the sheet and the photo',
+    /_attachRetry = \{ poId: po\.id, blob: shotBlob, filename: shotName \};/.test(PAGE));
+  assert('and offers both ways out by name',
+    /onclick="retryAttach\(\)"/.test(PAGE) && /onclick="discardAttach\(\)"/.test(PAGE));
+  assert('the retry path does not re-save the order, only the photo',
+    /async function retryAttach\(\)[\s\S]{0,700}await attachToPO\(/.test(PAGE) &&
+    !/async function retryAttach\(\)[\s\S]{0,700}_savePONow\(/.test(PAGE));
+
+  // The endpoint's own message lands on a phone screen at a supply counter.
+  {
+    const ep = read('api/ai/receipt-scan.js');
+    assert('the scan endpoint no longer echoes the SDK error',
+      !/detail: err\.message/.test(ep));
+    assert('and says something a person can act on',
+      /Try the photo again, or type the figures in/.test(ep) &&
+      /Type the figures in — the photo still attaches/.test(ep));
+  }
+
+  // "A few seconds" set the expectation at two or three, so at fifteen the
+  // reasonable conclusion is that it has hung.
+  assert('the waiting state is honest about how long it takes',
+    /Usually under half a minute/.test(PAGE) && !/This takes a few seconds/.test(PAGE));
+
+  // The SDK's own defaults do not fit the function it runs in: a ten-minute
+  // timeout, two retries, and a retried timeout — thirty minutes of wall clock
+  // inside a 60-second maxDuration. The platform always won that race, so the
+  // phone got a gateway error instead of any message from this handler.
+  {
+    const ep = read('api/ai/receipt-scan.js');
+    const timeout = Number((ep.match(/timeout:\s*([\d_]+)/) || [])[1].replace(/_/g, ''));
+    const retries = Number((ep.match(/maxRetries:\s*(\d+)/) || [])[1]);
+    const budget  = Number((ep.match(/maxDuration:\s*(\d+)/) || [])[1]) * 1000;
+    assert('the reader is given an explicit timeout and retry count',
+      Number.isFinite(timeout) && Number.isFinite(retries));
+    assert('and the worst case fits inside the function it runs in',
+      timeout * (retries + 1) < budget,
+      `${timeout}ms x ${retries + 1} = ${timeout * (retries + 1)}ms vs ${budget}ms`);
+  }
+}
+
 console.log('\n[a cost row this page has not loaded]');
 {
   // Purchasing creates the cost rows for the orders it raises, server-side. A
@@ -867,7 +1070,7 @@ console.log('\n[round-2 fixes]');
 console.log('\n[a credit or return is a real figure]');
 {
   const ctx = vm.createContext({ console });
-  ['lineAmt', 'lineTaxPct', 'lineTax', 'poTotals'].forEach(n =>
+  NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax', 'poTotals']).forEach(n =>
     vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
   const tot = vm.runInContext("poTotals({lines:[{qty:'1', unit_cost:'-85'}]})", ctx);
   assert('a return totals negative', tot.total === -85);
@@ -879,8 +1082,11 @@ console.log('\n[a credit or return is a real figure]');
     !/\bamt > 0 \? '\$'/.test(PAGE) && /amt !== 0 \? '\$'/.test(PAGE));
 
   // "0" is a non-empty string, so the old guard let a 0-priced ticket through.
+  // num0 rather than parseFloat: a unit cost the phone wrote as '1.234,56' has
+  // to be worth $1,234.56 here too, or the fallback replaces a real price with
+  // the receipt total.
   assert('the $0 guard tests the amount, not whether the boxes are blank',
-    /const pairAmount = \(parseFloat\(lineQty\) \|\| 0\) \* \(parseFloat\(lineUnit\) \|\| 0\);/.test(PAGE) &&
+    /const pairAmount = num0\(lineQty\) \* num0\(lineUnit\);/.test(PAGE) &&
     /const pairIncomplete = pairAmount === 0;/.test(PAGE));
   assert('and a zero total is not treated as a usable one',
     /!isNaN\(total\) && total !== 0/.test(PAGE));
@@ -909,8 +1115,13 @@ console.log('\n[a save that fails is never reported as success]');
 
 console.log('\n[a scan the user walked away from]');
 {
+  // Dismissing still cancels — but only when nothing is being read. The sheet
+  // fills a phone screen and the backdrop is a strip down each side, so a thumb
+  // resting there was enough to throw the photo away with no message at all.
   assert('dismissing the sheet cancels the scan',
-    /if \(e\.target === this\) closeScan\(\);/.test(PAGE));
+    /if \(e\.target !== this\) return;[\s\S]{0,420}closeScan\(\);/.test(PAGE));
+  assert('...unless it is mid-read, which needs Cancel',
+    /if \(_scanBusy\) \{[\s\S]{0,160}return;/.test(PAGE));
   assert('Escape cancels it too',
     /classList\.contains\('open'\)\) closeScan\(\)/.test(PAGE));
   assert('every scan takes a number',   /const token = \+\+_scanToken;/.test(PAGE));
@@ -925,7 +1136,8 @@ console.log('\n[a scan the user walked away from]');
 console.log('\n[money the scan books]');
 {
   const ctx = vm.createContext({ console });
-  vm.runInContext(requireFn(PAGE, 'lineAmt', 'purchase-orders.html'), ctx);
+  NUM_FNS.concat(['lineAmt']).forEach(n =>
+    vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
   const amt = e => vm.runInContext(e, ctx);
   // Amount is qty x unit cost, so either alone is zero — and lineHasCost is an
   // OR, so a row still reaches the job. That is a real delivery charged at $0.
@@ -1479,6 +1691,75 @@ console.log('\n[a poll whose fetch predates a save that landed]');
       vm.runInContext("loadedLists.has('paving')", ctx) === true);
     assert('and its orders are adopted',
       vm.runInContext('purchaseOrders.length', ctx) === 1);
+  }
+}
+
+// ── a number with a comma in it ────────────────────────────────────────
+console.log('\n[a number with a comma in it]');
+{
+  // The reading itself, and the six copies of it, are scripts/test-numeric.js.
+  // What belongs here is the purchase-order path specifically: the receipt
+  // reader, the digest that answers questions about purchasing, and the page
+  // agreeing with the server on one order's money.
+  const server = require('../api/lib/numeric');
+
+  // The receipt reader is where the hundredfold error was. Run its own
+  // extractor, not a restatement of it.
+  {
+    const scan = read('api/ai/receipt-scan.js');
+    const ctx = vm.createContext({ numeric: server.numeric });
+    vm.runInContext(requireFn(scan, 'numOrNull', 'receipt-scan.js') + ';this.f = numOrNull;', ctx);
+    const numOrNull = vm.runInContext('f', ctx);
+    assert('a scanned "360,82" is $360.82, not $36,082',  numOrNull('360,82') === 360.82);
+    assert('a scanned "1.234,56" is $1,234.56',           numOrNull('1.234,56') === 1234.56);
+    assert('a scanned "1,234.56" is $1,234.56',           numOrNull('1,234.56') === 1234.56);
+    assert('a blank field is still nothing',              numOrNull('') === null);
+    assert('and so is an unreadable one',                 numOrNull('illegible') === null);
+    assert('the comma-stripping that caused it is gone',
+      !/replace\(\/\[\$,\]\/g/.test(scan), 'receipt-scan.js still strips commas');
+  }
+
+  // What Mathis is told a job has spent. This read the line with Number(),
+  // which is NaN for '360,82' — so the delivery counted as zero and the answer
+  // was short by the whole line, with nothing on screen to say so.
+  {
+    const digests = read('api/lib/mathis-digests.js');
+    const src = sliceSource(digests, 'const poValue =', '}, 0);',
+      'poValue in mathis-digests.js', 'l.unit_cost') + '}, 0);';
+    const ctx = vm.createContext({ numericOrZero: server.numericOrZero });
+    vm.runInContext(src + ';this.f = poValue;', ctx);
+    const poValue = vm.runInContext('f', ctx);
+    assert('a plain order is worth qty × cost plus tax',
+      poValue({ lines: [{ qty: '2', unit_cost: '10', tax: '1.40' }] }) === 21.40);
+    assert('and a comma-priced one is worth the same, not nothing',
+      Math.abs(poValue({ lines: [{ qty: '2', unit_cost: '10,00', tax: '1,40' }] }) - 21.40) < 1e-9,
+      poValue({ lines: [{ qty: '2', unit_cost: '10,00', tax: '1,40' }] }));
+    assert('a European invoice over a thousand is not dropped either',
+      Math.abs(poValue({ lines: [{ qty: '1', unit_cost: '1.234,56' }] }) - 1234.56) < 1e-9);
+    assert('an order with no lines is worth nothing',
+      poValue({}) === 0 && poValue({ lines: [] }) === 0);
+  }
+
+  // Both writers of the blob read a stored comma the same way, so the figure
+  // the division tab shows is the figure that lands in po_deliveries.
+  {
+    const line = { qty: '8,5', unit_cost: '1.234,56', tax_pct: '7,5' };
+    const poSync = require('../api/lib/po-sync');
+    const ctxPage = vm.createContext({});
+    vm.runInContext(
+      NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax'])
+        .map(n => requireFn(PAGE, n, 'purchase-orders.html')).join('\n') +
+      ';this.amt = lineAmt; this.tax = lineTax;', ctxPage);
+    const pageAmt = vm.runInContext('amt', ctxPage)(line);
+    const pageTax = vm.runInContext('tax', ctxPage)(line);
+    assert('8,5 × 1.234,56 is $10,493.76 on the purchasing page',
+      Math.abs(pageAmt - 10493.76) < 0.005, pageAmt);
+    assert('and the server agrees to the cent',
+      Math.abs(poSync.lineAmt(line) - pageAmt) < 1e-9,
+      `${poSync.lineAmt(line)} vs ${pageAmt}`);
+    assert('the tax does too',
+      Math.abs(poSync.lineTax(line) - pageTax) < 1e-9,
+      `${poSync.lineTax(line)} vs ${pageTax}`);
   }
 }
 

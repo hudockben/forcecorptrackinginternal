@@ -3183,9 +3183,48 @@
       return s;
     }
 
+    // A number typed, pasted or imported into a money or quantity field.
+    //
+    // A COPY of api/lib/numeric.js, and of the same function in
+    // purchase-orders.html and the three job tabs. None of them may drift:
+    // scripts/test-numeric.js runs every copy over one table of cases and
+    // fails if any two disagree. See the server module for the reasoning.
+    function _normalizeNumeric(v) {
+      if (v === null || v === undefined) return '';
+      if (typeof v === 'number') return String(v);
+      let t = String(v).trim().replace(/[\s '$£€]/g, '');
+      if (!t) return '';
+
+      const neg = /^\(.*\)$/.test(t);
+      if (neg) t = t.slice(1, -1);
+
+      const lastComma = t.lastIndexOf(',');
+      const lastDot   = t.lastIndexOf('.');
+
+      if (lastComma > -1 && lastDot > -1) {
+        // Whichever separator comes LAST is the decimal one, so '1,234.56' and
+        // '1.234,56' both read as 1234.56 without being told a locale.
+        if (lastComma > lastDot) t = t.replace(/\./g, '').replace(',', '.');
+        else                     t = t.replace(/,/g, '');
+      } else if (lastComma > -1) {
+        // One comma trailed by one or two digits is cents; anything else is a
+        // thousands separator.
+        const tail = t.length - lastComma - 1;
+        const once = t.indexOf(',') === lastComma;
+        t = (once && tail >= 1 && tail <= 2) ? t.replace(',', '.') : t.replace(/,/g, '');
+      }
+
+      if (neg) t = '-' + t;
+      return t;
+    }
+
+    // Vehicle rates and gallons off an imported ticket sheet. This stripped
+    // every comma as a thousands separator, so a rate of '360,82' was read as
+    // 36082 — a hundred times the real figure, on a truck rate that multiplies
+    // straight into the job's equipment cost.
     function importParseNum(raw) {
       if (!raw || !raw.trim()) return '';
-      const n = parseFloat(String(raw).replace(/[$,\s]/g,''));
+      const n = parseFloat(_normalizeNumeric(raw));
       return isNaN(n) ? '' : n;
     }
 

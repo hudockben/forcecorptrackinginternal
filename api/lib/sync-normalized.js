@@ -9,9 +9,13 @@
  * Errors are thrown so callers can decide whether to surface or swallow them.
  */
 
+// The comma handling lives in ./numeric, which every reader of this money
+// shares. A bare parseFloat here read a unit cost of '1.234,56' as 1.234.
+const { numeric } = require('./numeric');
+
 function safeFloat(v) {
   if (v === null || v === undefined || v === '') return null;
-  const f = parseFloat(v);
+  const f = numeric(v);
   return isNaN(f) ? null : f;
 }
 

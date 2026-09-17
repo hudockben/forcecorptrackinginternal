@@ -24,6 +24,7 @@
 
 const crypto = require('crypto');
 const { PO_GENERAL_DIVISION, PO_SOURCE_DIVISIONS } = require('./auth');
+const { numeric } = require('./numeric');
 
 // How many times a losing writer re-reads and retries before giving up. Each
 // attempt is one round trip; a genuine pile-up on one division's list resolves
@@ -39,13 +40,16 @@ function isInjectedRowId(id) {
   return /^ts\d+-/.test(String(id == null ? '' : id));
 }
 
+// Quantities and costs arrive as strings typed on a phone or read off a
+// photograph, so both go through the shared reading in ./numeric first — a bare
+// parseFloat stops at a comma and drops the cents from '360,82'.
 function safeFloat(v) {
-  const f = parseFloat(v);
+  const f = numeric(v);
   return isNaN(f) ? null : f;
 }
 
 function floatOrZero(v) {
-  const f = parseFloat(v);
+  const f = numeric(v);
   return isNaN(f) ? 0 : f;
 }
 
