@@ -35,6 +35,12 @@ const assert = (msg, cond, detail) => {
 
 const PAGE = read('purchase-orders.html');
 
+// The line math sits on top of the page's own number reading — a comma in a
+// money field is read the same way here, in the division tabs and on the
+// server. Any context that runs lineAmt / lineTax needs these three lifted
+// with it, so they are named once rather than in each sandbox.
+const NUM_FNS = ['normalizeNumeric', 'num', 'num0'];
+
 // ── 1. Registration ────────────────────────────────────────────────────────
 console.log('\n[the division is registered everywhere it has to be]');
 {
@@ -155,7 +161,7 @@ assert('a phone gets cards instead of the thirteen-column table',
 console.log('\n[line math agrees with the division tabs]');
 {
   const ctx = vm.createContext({});
-  ['lineAmt', 'lineTaxPct', 'lineTax', 'recalcLineTax', 'poTotals'].forEach(name => {
+  NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax', 'recalcLineTax', 'poTotals']).forEach(name => {
     vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx);
   });
   const run = expr => vm.runInContext(expr, ctx);
@@ -1064,7 +1070,7 @@ console.log('\n[round-2 fixes]');
 console.log('\n[a credit or return is a real figure]');
 {
   const ctx = vm.createContext({ console });
-  ['lineAmt', 'lineTaxPct', 'lineTax', 'poTotals'].forEach(n =>
+  NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax', 'poTotals']).forEach(n =>
     vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
   const tot = vm.runInContext("poTotals({lines:[{qty:'1', unit_cost:'-85'}]})", ctx);
   assert('a return totals negative', tot.total === -85);
@@ -1076,8 +1082,11 @@ console.log('\n[a credit or return is a real figure]');
     !/\bamt > 0 \? '\$'/.test(PAGE) && /amt !== 0 \? '\$'/.test(PAGE));
 
   // "0" is a non-empty string, so the old guard let a 0-priced ticket through.
+  // num0 rather than parseFloat: a unit cost the phone wrote as '1.234,56' has
+  // to be worth $1,234.56 here too, or the fallback replaces a real price with
+  // the receipt total.
   assert('the $0 guard tests the amount, not whether the boxes are blank',
-    /const pairAmount = \(parseFloat\(lineQty\) \|\| 0\) \* \(parseFloat\(lineUnit\) \|\| 0\);/.test(PAGE) &&
+    /const pairAmount = num0\(lineQty\) \* num0\(lineUnit\);/.test(PAGE) &&
     /const pairIncomplete = pairAmount === 0;/.test(PAGE));
   assert('and a zero total is not treated as a usable one',
     /!isNaN\(total\) && total !== 0/.test(PAGE));
@@ -1127,7 +1136,8 @@ console.log('\n[a scan the user walked away from]');
 console.log('\n[money the scan books]');
 {
   const ctx = vm.createContext({ console });
-  vm.runInContext(requireFn(PAGE, 'lineAmt', 'purchase-orders.html'), ctx);
+  NUM_FNS.concat(['lineAmt']).forEach(n =>
+    vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
   const amt = e => vm.runInContext(e, ctx);
   // Amount is qty x unit cost, so either alone is zero — and lineHasCost is an
   // OR, so a row still reaches the job. That is a real delivery charged at $0.
@@ -1681,6 +1691,152 @@ console.log('\n[a poll whose fetch predates a save that landed]');
       vm.runInContext("loadedLists.has('paving')", ctx) === true);
     assert('and its orders are adopted',
       vm.runInContext('purchaseOrders.length', ctx) === 1);
+  }
+}
+
+// ── a number with a comma in it ────────────────────────────────────────
+console.log('\n[a number with a comma in it]');
+{
+  // Five copies of one rule read the same money: the server module, the
+  // purchasing page, and the three division tabs. Each of the five decides
+  // something a user sees — what the database stores, what purchasing's screen
+  // says, what the division tab that owns the job says — so they do not get to
+  // disagree. The table below is run through all five and every answer has to
+  // be the same string.
+  const server = require('../api/lib/numeric');
+  const copies = [
+    ['api/lib/numeric.js (server)', server.normalizeNumeric],
+  ];
+  const lift = (file, name) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(requireFn(read(file), name, file) + `;this.f = ${name};`, ctx);
+    return vm.runInContext('f', ctx);
+  };
+  copies.push(['purchase-orders.html', lift('purchase-orders.html', 'normalizeNumeric')]);
+  ['tracker.html', 'paving.html', 'kiewit-pinetree.html'].forEach(f => {
+    copies.push([f, lift(f, '_normalizeNumeric')]);
+  });
+  assert('all five copies of the rule were found', copies.length === 5);
+
+  // input, what the number is, why it turns up
+  const CASES = [
+    ['360.82',        360.82,    'a plain US amount'],
+    [360.82,          360.82,    'a number the scan endpoint already parsed'],
+    ['0',             0,         'zero'],
+    ['8.5',           8.5,       'a tonnage'],
+    // The bug this exists for. parseFloat gives 360 and the cents vanish;
+    // stripping commas as thousands separators — which the receipt endpoint
+    // used to do — gives 36082, a hundred times the real amount.
+    ['360,82',        360.82,    'a till set to a decimal-comma region'],
+    ['8,5',           8.5,       'the same, on a tonnage'],
+    ['-360,82',       -360.82,   'a credit on such a till'],
+    ['0,00',          0,         'a zero line on such a till'],
+    // Both separators present: whichever comes LAST is the decimal one, which
+    // reads either convention right without being told a locale.
+    ['1,234.56',      1234.56,   'a US invoice over a thousand dollars'],
+    ['1.234,56',      1234.56,   'a European invoice for the same amount'],
+    ['1,234,567.89',  1234567.89,'a US figure in the millions'],
+    ['1.234.567,89',  1234567.89,'the European spelling of it'],
+    ['$1,234.56',     1234.56,   'pasted with the dollar sign still on it'],
+    ['\u20ac1.234,56',  1234.56,   'pasted off a euro invoice'],
+    ['\u00a31,234.56',  1234.56,   'and off a sterling one'],
+    ['1 234,56',      1234.56,   'a space as the thousands separator'],
+    ['1\u00a0234,56',   1234.56,   'the same, with the non-breaking space a PDF pastes'],
+    ["1'234.56",      1234.56,   'the apostrophe a Swiss supplier prints'],
+    ['(76.50)',       -76.50,    'accounting notation for a credit'],
+    ['(1.234,56)',    -1234.56,  'both at once'],
+    ['  42  ',        42,        'padded with spaces'],
+    // The genuinely ambiguous pair. No rule can read both the way everyone
+    // means them, so they resolve the way a US crew writes them.
+    ['1,234',         1234,      'a thousands separator and no cents'],
+    ['1.234',         1.234,     'three decimal places'],
+    ['12,345,678',    12345678,  'grouped thousands with no decimal at all'],
+  ];
+
+  let disagreed = 0, wrong = 0;
+  CASES.forEach(([input, want, why]) => {
+    const answers = copies.map(([name, fn]) => [name, fn(input)]);
+    const first = answers[0][1];
+    const split = answers.filter(([, v]) => v !== first);
+    if (split.length) {
+      disagreed++;
+      assert(`the five copies agree on ${JSON.stringify(input)}`, false,
+        answers.map(([n, v]) => `${n} -> ${JSON.stringify(v)}`).join(' | '));
+      return;
+    }
+    const got = parseFloat(first);
+    if (Math.abs(got - want) > 1e-9) {
+      wrong++;
+      assert(`${JSON.stringify(input)} is ${want} — ${why}`, false, `got ${got}`);
+    }
+  });
+  assert(`all ${CASES.length} cases read the same in all five copies`, disagreed === 0);
+  assert(`all ${CASES.length} cases read the right number`, wrong === 0);
+
+  // Nothing usable stays nothing usable, so a blank field is still blank
+  // rather than becoming a zero-dollar delivery.
+  ['', '   ', null, undefined, 'abc', '$', '()'].forEach(v => {
+    assert(`${JSON.stringify(v)} is not a number`, isNaN(server.numeric(v)));
+    assert(`${JSON.stringify(v)} is 0 for the cost arithmetic`, server.numericOrZero(v) === 0);
+  });
+
+  // The receipt reader is where the hundredfold error was. Run its own
+  // extractor, not a restatement of it.
+  {
+    const scan = read('api/ai/receipt-scan.js');
+    const ctx = vm.createContext({ numeric: server.numeric });
+    vm.runInContext(requireFn(scan, 'numOrNull', 'receipt-scan.js') + ';this.f = numOrNull;', ctx);
+    const numOrNull = vm.runInContext('f', ctx);
+    assert('a scanned "360,82" is $360.82, not $36,082',  numOrNull('360,82') === 360.82);
+    assert('a scanned "1.234,56" is $1,234.56',           numOrNull('1.234,56') === 1234.56);
+    assert('a scanned "1,234.56" is $1,234.56',           numOrNull('1,234.56') === 1234.56);
+    assert('a blank field is still nothing',              numOrNull('') === null);
+    assert('and so is an unreadable one',                 numOrNull('illegible') === null);
+    assert('the comma-stripping that caused it is gone',
+      !/replace\(\/\[\$,\]\/g/.test(scan), 'receipt-scan.js still strips commas');
+  }
+
+  // What Mathis is told a job has spent. This read the line with Number(),
+  // which is NaN for '360,82' — so the delivery counted as zero and the answer
+  // was short by the whole line, with nothing on screen to say so.
+  {
+    const digests = read('api/lib/mathis-digests.js');
+    const src = sliceSource(digests, 'const poValue =', '}, 0);',
+      'poValue in mathis-digests.js', 'l.unit_cost') + '}, 0);';
+    const ctx = vm.createContext({ numericOrZero: server.numericOrZero });
+    vm.runInContext(src + ';this.f = poValue;', ctx);
+    const poValue = vm.runInContext('f', ctx);
+    assert('a plain order is worth qty × cost plus tax',
+      poValue({ lines: [{ qty: '2', unit_cost: '10', tax: '1.40' }] }) === 21.40);
+    assert('and a comma-priced one is worth the same, not nothing',
+      Math.abs(poValue({ lines: [{ qty: '2', unit_cost: '10,00', tax: '1,40' }] }) - 21.40) < 1e-9,
+      poValue({ lines: [{ qty: '2', unit_cost: '10,00', tax: '1,40' }] }));
+    assert('a European invoice over a thousand is not dropped either',
+      Math.abs(poValue({ lines: [{ qty: '1', unit_cost: '1.234,56' }] }) - 1234.56) < 1e-9);
+    assert('an order with no lines is worth nothing',
+      poValue({}) === 0 && poValue({ lines: [] }) === 0);
+  }
+
+  // Both writers of the blob read a stored comma the same way, so the figure
+  // the division tab shows is the figure that lands in po_deliveries.
+  {
+    const line = { qty: '8,5', unit_cost: '1.234,56', tax_pct: '7,5' };
+    const poSync = require('../api/lib/po-sync');
+    const ctxPage = vm.createContext({});
+    vm.runInContext(
+      NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax'])
+        .map(n => requireFn(PAGE, n, 'purchase-orders.html')).join('\n') +
+      ';this.amt = lineAmt; this.tax = lineTax;', ctxPage);
+    const pageAmt = vm.runInContext('amt', ctxPage)(line);
+    const pageTax = vm.runInContext('tax', ctxPage)(line);
+    assert('8,5 × 1.234,56 is $10,493.76 on the purchasing page',
+      Math.abs(pageAmt - 10493.76) < 0.005, pageAmt);
+    assert('and the server agrees to the cent',
+      Math.abs(poSync.lineAmt(line) - pageAmt) < 1e-9,
+      `${poSync.lineAmt(line)} vs ${pageAmt}`);
+    assert('the tax does too',
+      Math.abs(poSync.lineTax(line) - pageTax) < 1e-9,
+      `${poSync.lineTax(line)} vs ${pageTax}`);
   }
 }
 

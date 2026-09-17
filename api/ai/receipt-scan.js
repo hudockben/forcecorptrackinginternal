@@ -27,6 +27,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const jwt       = require('jsonwebtoken');
+const { numeric } = require('../lib/numeric');
 
 // Vercel caps a serverless request body at 4.5 MB and base64 costs a third on
 // top of the file, so this is about as large a photo as can arrive at all. The
@@ -59,9 +60,17 @@ function stripDataUrl(s) {
   return m ? { mediaType: m[1], b64: m[2] } : { mediaType: null, b64: s };
 }
 
+/**
+ * A figure the model read off the photograph, as a number or nothing.
+ *
+ * The comma handling belongs to api/lib/numeric.js, which the whole
+ * purchase-order path shares. Doing it here instead — stripping commas as
+ * thousands separators — read a receipt printed '360,82' as 36082, a hundred
+ * times the real amount, on any till whose region uses a decimal comma.
+ */
 function numOrNull(v) {
   if (v === null || v === undefined || v === '') return null;
-  const f = typeof v === 'number' ? v : parseFloat(String(v).replace(/[$,]/g, ''));
+  const f = numeric(v);
   return isNaN(f) ? null : f;
 }
 

@@ -46,14 +46,17 @@ const {
   PO_GENERAL_DIVISION,
 } = require('./lib/auth');
 const poSync = require('./lib/po-sync');
+const { numeric } = require('./lib/numeric');
 
 // The only divisions a purchase order can be stored under — the three job
 // divisions plus the general purchasing list. Both purchase_orders_division_chk
 // and daily_tracking_division_chk are written to match.
 const PO_STORABLE = PO_SOURCE_DIVISIONS.concat([PO_GENERAL_DIVISION]);
 
+// ./lib/numeric, not a bare parseFloat: these are figures somebody typed, and
+// parseFloat reads '1.234,56' as 1.234.
 function safeFloat(v) {
-  const f = parseFloat(v);
+  const f = numeric(v);
   return isNaN(f) ? null : f;
 }
 

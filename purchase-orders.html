@@ -680,14 +680,64 @@ async function api(method, path, body) {
 }
 
 /* ═══════════════════════════════════════════
+   READING A TYPED NUMBER
+   A COPY of api/lib/numeric.js, which the server reads the same blob with, and
+   of _normalizeNumeric in tracker / paving / kiewit-pinetree, where the job
+   divisions read it. All of them have to agree: this decides what purchasing's
+   screen shows, the server's decides what goes in the database, and a
+   disagreement is one order whose total reads differently in three places.
+   Change one and change the rest — scripts/test-po-page.js runs all five over
+   the same table of cases and fails if they diverge.
+
+   The reason any of it exists: parseFloat stops at the first character it does
+   not understand, so a comma is silently destructive rather than an error.
+   parseFloat('360,82') is 360 and the cents are gone; parseFloat('1,234.56')
+   is 1. A comma gets into these fields without anyone travelling — a phone set
+   to a region that uses a decimal comma, a figure pasted off a supplier's
+   invoice, a number a receipt photograph was read as.
+════════════════════════════════════════════ */
+function normalizeNumeric(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return String(v);
+  let t = String(v).trim().replace(/[\s '$£€]/g, '');
+  if (!t) return '';
+
+  const neg = /^\(.*\)$/.test(t);
+  if (neg) t = t.slice(1, -1);
+
+  const lastComma = t.lastIndexOf(',');
+  const lastDot   = t.lastIndexOf('.');
+
+  if (lastComma > -1 && lastDot > -1) {
+    // Whichever separator comes LAST is the decimal one, which reads both
+    // '1,234.56' and '1.234,56' as 1234.56 without being told a locale.
+    if (lastComma > lastDot) t = t.replace(/\./g, '').replace(',', '.');
+    else                     t = t.replace(/,/g, '');
+  } else if (lastComma > -1) {
+    // One comma trailed by one or two digits is cents; anything else —
+    // '1,234', '1,234,567' — is a thousands separator.
+    const tail = t.length - lastComma - 1;
+    const once = t.indexOf(',') === lastComma;
+    t = (once && tail >= 1 && tail <= 2) ? t.replace(',', '.') : t.replace(/,/g, '');
+  }
+
+  if (neg) t = '-' + t;
+  return t;
+}
+/** parseFloat with the reading above in front of it. NaN for nothing usable. */
+function num(v)     { return parseFloat(normalizeNumeric(v)); }
+/** …and the same as 0 rather than NaN, for the cost arithmetic. */
+function num0(v)    { const f = num(v); return isNaN(f) ? 0 : f; }
+
+/* ═══════════════════════════════════════════
    LINE MATH
    Mirrors api/lib/po-sync.js and the division tabs: tax is entered as a
    percentage of the line amount and the dollar figure is kept in step with it,
    so every downstream reader still sees dollars.
 ═══════════════════════════════════════════ */
-function lineAmt(l)    { return (parseFloat(l.qty) || 0) * (parseFloat(l.unit_cost) || 0); }
-function lineTaxPct(l) { const p = parseFloat(l.tax_pct); return isNaN(p) ? null : p; }
-function lineTax(l)    { const p = lineTaxPct(l); return p === null ? (parseFloat(l.tax) || 0) : lineAmt(l) * p / 100; }
+function lineAmt(l)    { return num0(l.qty) * num0(l.unit_cost); }
+function lineTaxPct(l) { const p = num(l.tax_pct); return isNaN(p) ? null : p; }
+function lineTax(l)    { const p = lineTaxPct(l); return p === null ? num0(l.tax) : lineAmt(l) * p / 100; }
 function recalcLineTax(l) {
   if (l.tax_pct == null) return;
   const p = lineTaxPct(l);
@@ -696,7 +746,7 @@ function recalcLineTax(l) {
 }
 function poTotals(po) {
   let qty = 0, amt = 0, tax = 0;
-  (po.lines || []).forEach(l => { qty += parseFloat(l.qty) || 0; amt += lineAmt(l); tax += lineTax(l); });
+  (po.lines || []).forEach(l => { qty += num0(l.qty); amt += lineAmt(l); tax += lineTax(l); });
   return { qty, amt, tax, total: amt + tax };
 }
 function newLine() {
@@ -920,7 +970,7 @@ function migratePO(po) {
   }
   (po.lines || []).forEach(l => {
     if (!l || l.tax_pct != null) return;
-    const t = parseFloat(l.tax) || 0;
+    const t = num0(l.tax);
     if (t <= 0) { l.tax_pct = ''; return; }
     const amt = lineAmt(l);
     if (amt <= 0) return;
@@ -1346,8 +1396,8 @@ function setDivision(poId, value) {
   // cannot be numbered against and nextPONumber says so with ''. Storing that
   // put the order live in the other division's tab with a blank PO number,
   // which nothing on this page or the division tabs can ever set.
-  const num = nextPONumber(next, po.id);
-  if (!num) {
+  const nextNum = nextPONumber(next, po.id);
+  if (!nextNum) {
     toast(divLabel(next) + ' orders could not be loaded, so an order cannot be moved into that list yet. Reload and try again.', 'err');
     render();   // put the dropdown back on the division the order is still in
     return;
@@ -1357,7 +1407,7 @@ function setDivision(poId, value) {
   po.project_id = '';
   po.cost_code  = '';
   po.sub_code   = '';
-  po.po_number  = num;
+  po.po_number  = nextNum;
   savePO(po, { immediate: true });
   render();
 }
@@ -1848,7 +1898,7 @@ function exportCSV() {
       const lead = i === 0 ? base : base.map(() => '');
       out.push(lead.concat([
         l.invoice_num || '', l.date || '',
-        (parseFloat(l.qty) || '') , (parseFloat(l.unit_cost) || ''),
+        (num(l.qty) || '') , (num(l.unit_cost) || ''),
         amt.toFixed(2), pct === null ? '' : pct, tax.toFixed(2), (amt + tax).toFixed(2),
         l.employee || '',
       ]).map(q).join(','));
@@ -2299,7 +2349,7 @@ async function commitScan() {
 
   const qty   = document.getElementById('sc-qty').value;
   const unit  = document.getElementById('sc-unit').value;
-  const total = parseFloat(document.getElementById('sc-total').value);
+  const total = num(document.getElementById('sc-total').value);
   const taxPct = document.getElementById('sc-taxpct').value;
 
   // A line is only worth money when it has BOTH a quantity and a unit cost:
@@ -2316,9 +2366,9 @@ async function commitScan() {
   // string, so a ticket read as 8.5 TON at a unit cost of 0 looked like a
   // complete pair, discarded the Total, and booked the delivery at nothing.
   let lineQty = qty, lineUnit = unit;
-  const pct = parseFloat(taxPct);
+  const pct = num(taxPct);
   const withTax = amt => (!isNaN(pct) && pct !== 0) ? amt * (1 + pct / 100) : amt;
-  const pairAmount = (parseFloat(lineQty) || 0) * (parseFloat(lineUnit) || 0);
+  const pairAmount = num0(lineQty) * num0(lineUnit);
   const pairIncomplete = pairAmount === 0;
 
   // The Total is what the supplier charged, and it is the figure the user just
@@ -2329,7 +2379,7 @@ async function commitScan() {
   // to nobody. It used to be read and then silently thrown away.
   if (!pairIncomplete && !isNaN(total) && total !== 0
       && Math.abs(withTax(pairAmount) - total) > 0.01) {
-    const q = parseFloat(lineQty) || 1;
+    const q = num(lineQty) || 1;
     lineUnit = String((!isNaN(pct) && pct !== 0 ? total / (1 + pct / 100) : total) / q);
     toast('Quantity × unit cost came to $' + fmt(withTax(pairAmount)) + ', not the $' + fmt(total) +
           ' on the receipt — booked at the receipt total.');

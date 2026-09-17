@@ -6266,7 +6266,7 @@ function _migratePOs(list = purchaseOrders) {
     // fallback goes on returning the exact stored figure.
     (po.lines || []).forEach(l => {
       if (!l || l.tax_pct != null) return;
-      const t = parseFloat(l.tax) || 0;
+      const t = _poNum0(l.tax);
       if (t <= 0) { l.tax_pct = ''; return; }
       const amt = _lineAmt(l);
       if (amt <= 0) return;
@@ -10748,21 +10748,66 @@ function docsProjPick(input) {
 let _poExpanded = new Set();   // PO ids with delivery lines visible
 let _poDocCountsLoaded = false; // attached-document counts fetched once per session
 
+// A number typed, pasted or scanned into a purchase-order money field.
+//
+// A COPY of api/lib/numeric.js, which the server reads the same blob with, and
+// of normalizeNumeric in purchase-orders.html, where purchasing edits it. All
+// three have to agree: the total shown in this tab, the total shown on the
+// purchasing page and the figure in po_deliveries are the same money, and a
+// disagreement is one of them being wrong. scripts/test-po-page.js runs them
+// over the same table of cases and fails if they diverge.
+//
+// parseFloat alone stops at the first character it does not understand, so a
+// comma is silently destructive rather than an error: parseFloat('360,82') is
+// 360 and the cents are gone. A comma reaches these fields from a phone set to
+// a region that uses a decimal comma, from a figure pasted off a supplier's
+// invoice, or from a receipt photograph read by the scanner.
+function _normalizeNumeric(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return String(v);
+  let t = String(v).trim().replace(/[\s '$£€]/g, '');
+  if (!t) return '';
+
+  const neg = /^\(.*\)$/.test(t);
+  if (neg) t = t.slice(1, -1);
+
+  const lastComma = t.lastIndexOf(',');
+  const lastDot   = t.lastIndexOf('.');
+
+  if (lastComma > -1 && lastDot > -1) {
+    // Whichever separator comes LAST is the decimal one, so '1,234.56' and
+    // '1.234,56' both read as 1234.56 without being told a locale.
+    if (lastComma > lastDot) t = t.replace(/\./g, '').replace(',', '.');
+    else                     t = t.replace(/,/g, '');
+  } else if (lastComma > -1) {
+    // One comma trailed by one or two digits is cents; anything else is a
+    // thousands separator.
+    const tail = t.length - lastComma - 1;
+    const once = t.indexOf(',') === lastComma;
+    t = (once && tail >= 1 && tail <= 2) ? t.replace(',', '.') : t.replace(/,/g, '');
+  }
+
+  if (neg) t = '-' + t;
+  return t;
+}
+function _poNum(v)  { return parseFloat(_normalizeNumeric(v)); }
+function _poNum0(v) { const f = _poNum(v); return isNaN(f) ? 0 : f; }
+
 // Delivery-line math. Tax is entered as a percentage (`tax_pct`) and applied on
 // top of the line amount; the resulting dollar figure is mirrored into `tax` so
 // every downstream consumer — daily rows, project rollups, CSV exports, the
 // normalized po_deliveries table — keeps reading a dollar amount. Lines saved
 // before the percent field existed fall back to their stored dollar tax.
 function _lineAmt(line) {
-  return (parseFloat(line.qty) || 0) * (parseFloat(line.unit_cost) || 0);
+  return _poNum0(line.qty) * _poNum0(line.unit_cost);
 }
 function _lineTaxPct(line) {
-  const p = parseFloat(line.tax_pct);
+  const p = _poNum(line.tax_pct);
   return isNaN(p) ? null : p;
 }
 function _lineTax(line) {
   const p = _lineTaxPct(line);
-  return p === null ? (parseFloat(line.tax) || 0) : _lineAmt(line) * p / 100;
+  return p === null ? _poNum0(line.tax) : _lineAmt(line) * p / 100;
 }
 // Re-derive the stored dollar tax after qty / unit cost / tax % changes.
 // A line with no tax_pct key at all is a legacy dollar-tax line — leave it
@@ -10779,7 +10824,7 @@ function _recalcLineTax(line) {
 function _poTotals(po) {
   let qty = 0, amt = 0, tax = 0;
   (po.lines || []).forEach(l => {
-    qty += parseFloat(l.qty) || 0;
+    qty += _poNum0(l.qty);
     amt += _lineAmt(l);
     tax += _lineTax(l);
   });
@@ -11097,7 +11142,7 @@ function exportPOCSV() {
       csvLines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', '', '', '', '', '', '', '', '', '', po.status||''].map(escape).join(','));
     } else {
       lines.forEach((l, i) => {
-        const q = parseFloat(l.qty) || 0, u = parseFloat(l.unit_cost) || 0;
+        const q = _poNum0(l.qty), u = _poNum0(l.unit_cost);
         const amt = _lineAmt(l), t = _lineTax(l), pct = _lineTaxPct(l);
         csvLines.push([
           i === 0 ? po.po_number : '', // only show PO # on first line
@@ -11448,7 +11493,7 @@ function exportProjectPOsCSV(projId) {
       rows.push([po.po_number||'', po.title||'', '', '', '', '', '', '', '', '', '', po.status||'']);
     } else {
       lines.forEach((l, i) => {
-        const q=parseFloat(l.qty)||0, u=parseFloat(l.unit_cost)||0;
+        const q=_poNum0(l.qty), u=_poNum0(l.unit_cost);
         const amt=_lineAmt(l), t=_lineTax(l), pct=_lineTaxPct(l);
         rows.push([i===0?po.po_number:'', i===0?po.title||'':'', l.invoice_num||'', l.date||'', q||'', u||'', amt.toFixed(2), pct === null ? '' : pct, t.toFixed(2), (amt+t).toFixed(2), l.employee||'', i===0?po.status||'':'']);
       });

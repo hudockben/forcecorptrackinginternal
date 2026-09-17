@@ -30,6 +30,7 @@ const jobFin   = require('./job-financials');
 const auth     = require('./auth');
 const ctx      = require('./mathis-context');
 const quarryM  = require('./quarry-metrics');
+const { numericOrZero } = require('./numeric');
 const dustM    = require('./dust-metrics');
 const dustCost = require('./dust-cost-metrics');
 const dailyM   = require('./daily-cost-metrics');
@@ -180,10 +181,14 @@ const COST_ROW_KEYS = {
   kiewit: 'fct_kiewit_cost_rows',
 };
 
+// ./numeric, not Number(): these are strings somebody typed, and Number('360,82')
+// is NaN, so a line priced on a decimal-comma keyboard was worth NOTHING here.
+// The figure feeds what Mathis answers about purchasing, and quietly dropping a
+// delivery from a total is worse than not having the total at all.
 const poValue = po => (Array.isArray(po && po.lines) ? po.lines : []).reduce((sum, l) => {
-  const qty  = Number(l && l.qty) || 0;
-  const cost = Number(l && l.unit_cost) || 0;
-  const tax  = Number(l && l.tax) || 0;
+  const qty  = numericOrZero(l && l.qty);
+  const cost = numericOrZero(l && l.unit_cost);
+  const tax  = numericOrZero(l && l.tax);
   return sum + qty * cost + tax;
 }, 0);
 
