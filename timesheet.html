@@ -707,7 +707,7 @@
           <button type="button" class="split-add equip-add" id="equip-add" onclick="addEquipPiece(0)">
             + Add another piece
           </button>
-          <div class="hint">Optional, and worth the ten seconds: the office codes the job's cost per machine off these hours, so what you put here saves it being guessed at later. Name every piece you ran, biggest first, and the hours you were on each. A pickup you used to get to the job counts too &mdash; name it and the office books it to travel, off the travel time you gave above. If what you ran is not on the list, pick the closest and say which it was in Notes, or leave it blank and the office will fill it in.</div>
+          <div class="hint">Optional, and worth the ten seconds: the office codes the job's cost per machine off these hours, so what you put here saves it being guessed at later. Name every piece you ran, biggest first, and the hours you were on each. A pickup you used to get to the job counts too &mdash; name it and it opens on your travel time, because that is what it was doing, and the office books it to travel. If what you ran is not on the list, pick the closest and say which it was in Notes, or leave it blank and the office will fill it in.</div>
         </div>
 
         <!-- ── The hauling question ──
@@ -1118,6 +1118,20 @@
       }
     }
 
+    // What this block records as DRIVING: the leg that got him to this job,
+    // plus the drive home when this is the last job of the day. Exactly the two
+    // legs buildPayloads posts for this block, and what the server adds up into
+    // the entry's travel_hours — so the figure the pickup opens on here is the
+    // one payroll's travel row will carry.
+    function blockTravelHours(i) {
+      const order = blockOrder();
+      let total = parseTravelLeg(bel(i, 'travel-in'));
+      if (order[order.length - 1] === i) {
+        total += parseTravelLeg(document.getElementById('f-travel-to-shop'));
+      }
+      return Math.round(total * 100) / 100;
+    }
+
     // What the block's clock says, for the prefill below.
     function blockHours(i) {
       const out = bel(i, 'hours');
@@ -1231,13 +1245,34 @@
       return Math.round((block - spoken) * 100) / 100;
     }
 
+    // The pickup's hours are the DRIVE's hours — the travel legs he has already
+    // filled in at the top of the form, which is the figure payroll's travel row
+    // will carry. It opens on those rather than on the block's clock (he was in
+    // the pickup for the commute, not for the eight hours on the job) and rather
+    // than on nothing.
+    //
+    // Only the FIRST pickup line: two lines both naming one would each take the
+    // whole drive and bill it twice.
+    function refreshEquipPickupHours(i) {
+      const slots = equipUsed[i] || [];
+      const at = slots.findIndex(x => x && equipIsPickup(x.name));
+      if (at < 0) return;
+      const piece = slots[at];
+      if (piece.auto !== true) return;
+      const drive = blockTravelHours(i);
+      writeEquipHours(i, at, drive > 0 ? drive.toFixed(2) : '');
+      piece.auto = true;                       // writeEquipHours only moves the text
+    }
+
     function refreshEquipAutoHours(i) {
+      // The pickup is not site work, so it is guessed from the drive instead —
+      // and it is guessed on whichever line it sits on, not only the first.
+      refreshEquipPickupHours(i);
       const piece = (equipUsed[i] || [])[0];
       if (!piece || !piece.name || piece.auto !== true) return;
-      // Nothing to guess for a pickup: the block's clock is time on the job and
-      // the pickup's is the drive, which the travel legs above already state.
-      // He gives it, or payroll takes it from the travel row it is booked to.
-      if (equipIsPickup(piece.name)) { writeEquipHours(i, 0, ''); return; }
+      // Line 1's share of the BLOCK is for machines that worked it. A pickup
+      // there has already been given the drive, just above.
+      if (equipIsPickup(piece.name)) return;
       const rest = equipAutoRemainder(i);
       // No clock yet, so nothing to reckon a share from. Leave the box alone;
       // buildPayloads refuses a block with no start and end anyway.
@@ -1264,8 +1299,9 @@
         return;
       }
       // A box he has never been in is the form's to fill. A box he HAS been in
-      // is his, whatever is in it — including nothing.
-      if (slot === 0 && !piece.touched) piece.auto = true;
+      // is his, whatever is in it — including nothing. Line 1 gets the block's
+      // share; a pickup on ANY line gets the drive.
+      if (!piece.touched && (slot === 0 || equipIsPickup(piece.name))) piece.auto = true;
       // Either line can move line 1's share: its own, or one of the others.
       refreshEquipAutoHours(i);
     }
@@ -1903,6 +1939,10 @@
       const total = blockOrder().reduce((s, i) => s + parseTravelLeg(bel(i, 'travel-in')), 0)
                   + parseTravelLeg(document.getElementById('f-travel-to-shop'));
       document.getElementById('f-travel-hours').textContent = total.toFixed(2);
+      // A pickup's hours are guessed from these legs, so they follow them —
+      // and the drive home belongs to the LAST block, so a change to it moves
+      // that block's pickup, not the first one's. Every block, for that reason.
+      for (const i of blockOrder()) refreshEquipPickupHours(i);
     }
 
     // ── Load supervisors + jobs ───────────────────────────────────────────

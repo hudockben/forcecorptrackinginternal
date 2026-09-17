@@ -109,9 +109,10 @@ function sandbox(opts = {}) {
   vm.createContext(sb);
   vm.runInContext(
     ['equipUsedClean', 'equipHrsId', 'equipSelId', 'equipOptionsHtml', 'fillEquipOptions',
-     'blockHours', 'renderEquipUsed', 'equipSlot', 'writeEquipHours', 'equipIsPickup',
-     'equipAutoRemainder', 'refreshEquipAutoHours', 'setEquipPiece', 'setEquipHours',
-     'commitEquipHours', 'addEquipPiece', 'removeEquipPiece', 'applyEquipUsedVisibility']
+     'parseTravelLeg', 'blockTravelHours', 'blockHours', 'renderEquipUsed', 'equipSlot',
+     'writeEquipHours', 'equipIsPickup', 'equipAutoRemainder', 'refreshEquipPickupHours',
+     'refreshEquipAutoHours', 'setEquipPiece', 'setEquipHours', 'commitEquipHours',
+     'addEquipPiece', 'removeEquipPiece', 'applyEquipUsedVisibility', 'updateTravelHours']
       .map(fnSource).join('\n'), sb);
   return sb;
 }
@@ -376,12 +377,56 @@ console.log('\n[the pickup is the drive, not the job]');
   eq('the drive is not taken out of the machine that worked the job',
     sb.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }, { name: 'Pickup Truck', hours: 1.5 }]);
 
-  // And nothing guesses a day of SITE hours for one.
+  // What it DOES open on is the drive he already filled in at the top of the
+  // form — an hour out and an hour back is two hours of pickup, not the eight
+  // he spent on the job. This is the exact day in the report that prompted it:
+  // 07:00-15:00, one hour each way.
+  const drive = () => {
+    const c = sandbox();
+    c.__els['hours'] = { id: 'hours', style: {}, textContent: '8.00' };
+    c.__el('travel-in').value = '1';
+    c.__el('f-travel-to-shop').value = '1';
+    c.applyEquipUsedVisibility(0);
+    return c;
+  };
+  {
+    const c = drive();
+    c.setEquipPiece(0, 0, 'Pickup Truck');
+    eq('a pickup opens on the DRIVE, not on the day it spent parked on the job',
+      c.equipUsedClean(0), [{ name: 'Pickup Truck', hours: 2 }]);
+    assert('  and the box on screen says so',
+      c.__el(c.equipHrsId(0, 0)).value === '2.00', c.__el(c.equipHrsId(0, 0)).value);
+
+    // The legs move, the pickup moves with them — that is what makes it a guess
+    // rather than a figure.
+    c.__el('f-travel-to-shop').value = '1.5';
+    c.updateTravelHours();
+    eq('  and follows the legs while it is still the form\'s guess',
+      c.equipUsedClean(0), [{ name: 'Pickup Truck', hours: 2.5 }]);
+
+    c.commitEquipHours(0, 0, '3');
+    c.__el('f-travel-to-shop').value = '2';
+    c.updateTravelHours();
+    eq('  but never once he has typed one',
+      c.equipUsedClean(0), [{ name: 'Pickup Truck', hours: 3 }]);
+  }
+
+  // Alongside a machine that DID work the job, each opens on its own figure.
+  {
+    const c = drive();
+    c.setEquipPiece(0, 0, 'Excavator');
+    c.addEquipPiece(0);
+    c.setEquipPiece(0, 1, 'Pickup Truck');
+    eq('the machine takes the site hours and the pickup takes the drive',
+      c.equipUsedClean(0), [{ name: 'Excavator', hours: 8 }, { name: 'Pickup Truck', hours: 2 }]);
+  }
+
+  // A day with no drive recorded has nothing to guess from.
   const lone = sandbox();
   lone.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
   lone.applyEquipUsedVisibility(0);
   lone.setEquipPiece(0, 0, 'Pickup Truck');
-  eq('a pickup named first is never guessed a day on the job',
+  eq('a pickup on a day with no drive recorded is never guessed a day on the job',
     lone.equipUsedClean(0), [{ name: 'Pickup Truck', hours: null }]);
   assert('  and its box is left empty rather than showing one',
     lone.__el(lone.equipHrsId(0, 0)).value === '', lone.__el(lone.equipHrsId(0, 0)).value);
