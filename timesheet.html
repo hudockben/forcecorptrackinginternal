@@ -246,6 +246,33 @@
       letter-spacing: 0.06em;
     }
 
+    /* ── Which equipment was run ──
+       One line per machine, because a day is routinely more than one: the
+       pickup that got him to the job and the excavator he ran once he was
+       there. The Remove link sits beside the picker rather than under it so a
+       gloved thumb can't take out the wrong line. */
+    .equip-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .equip-piece {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .equip-piece select { flex: 1 1 auto; min-width: 0; }
+    /* Narrow enough that the machine's name keeps the room, wide enough for
+       "10.25" and a thumb. */
+    .equip-piece .equip-hours { flex: 0 0 5rem; text-align: right; padding-left: 0.4rem; padding-right: 0.4rem; }
+    .equip-piece .link-btn { flex: 0 0 auto; }
+    /* Same dashed "+" as the split button, at the size of a field rather than
+       a section — this adds a line, not another job. */
+    .equip-add {
+      min-height: 42px;
+      font-size: 0.8rem;
+    }
+
     /* ── Time-off type radio grid ── */
     .pills {
       display: grid;
@@ -660,6 +687,29 @@
           </div>
         </div>
 
+        <!-- ── Which equipment did he run ──
+             Shown only once the answer above is Yes. "Operated equipment? Yes"
+             on its own says a machine was out and nothing about WHICH, and a
+             cost row is coded per machine — so the answer was reconstructed
+             from the schedule days later, by someone who wasn't there.
+
+             A LIST rather than one picker, because a day is routinely more
+             than one piece: the pickup that got him to the job, then the
+             excavator he ran once he arrived. Both cost the job, at very
+             different rates.
+
+             The options are the company's own equipment list — the same
+             vocabulary the cost row uses — so what he picks lands on the row
+             unchanged rather than having to be translated. -->
+        <div class="row" id="row-equip-used" style="display:none">
+          <label>Which equipment, and for how long? <span class="haul-need" id="equip-need">&mdash; name at least one</span></label>
+          <div class="equip-list" id="equip-list"></div>
+          <button type="button" class="split-add equip-add" id="equip-add" onclick="addEquipPiece(0)">
+            + Add another piece
+          </button>
+          <div class="hint">Name every piece you ran, biggest first &mdash; a pickup used to get to the job counts &mdash; and the hours you were on it. The office codes the job's cost per machine off these hours, so they save the guesswork later. If what you ran is not on the list, pick the closest and say which it was in Notes.</div>
+        </div>
+
         <!-- ── The hauling question ──
              Shown only to a user flagged as a driver in Manage Users
              (employees.is_driver, delivered by /api/timesheet-supervisors).
@@ -912,6 +962,20 @@
     let splitIdxs      = [];        // extra block indices, in display order
     let nextSplitIdx   = 0;         // monotonic: a removed block's ids never come back
     let equipVals      = { 0: null }; // block index → true / false / null
+    // block index → the machines that block says it ran: one { name, hours }
+    // per picker line, hours held as the raw input string. A line with no name
+    // is unfilled and is dropped on the way out; see equipUsedClean. Only ever
+    // posted for a block whose answer IS Yes.
+    //
+    // The HOURS are what make this worth asking twice over: payroll's split
+    // modal codes a cost row per machine, at that machine's hourly rate, and
+    // the figure it wants is the one the man on the seat knows. Captured here,
+    // it arrives on the row already filled in — the same way the travel legs
+    // fill the travel row's hours today.
+    let equipUsed      = { 0: [] };
+    // How many pieces one job block can name. Six is the cap for the same
+    // reason MAX_JOB_BLOCKS is: past that it is not a day, it is a typo.
+    const MAX_EQUIP_PIECES = 6;
     // block index → null | '' | 'on_site' | 'off_site'.
     //   null → NOT ANSWERED, and where every driver's block starts. There is no
     //          default any more: a lit "No" nobody chose looks exactly like one
@@ -979,6 +1043,162 @@
 
     function setHaulUnit(val, i = 0) { haulUnits[i] = val || ''; }
 
+    // ── Which equipment this block ran, and for how long ────────────────────
+    // What one block actually posts: { name, hours } per machine, trimmed,
+    // unnamed lines dropped, and no machine counted twice however many lines
+    // carry it — a duplicate is a slip of the thumb, not a second machine, and
+    // posted as one it would read on the cost side as two pieces on the job.
+    // Where it IS two stints on the same machine the hours are added, which is
+    // the one reading of a repeat that costs the job the right amount either
+    // way. `hours` is null where he named the machine and not the time: the
+    // split modal fills what it is given and leaves the rest to the approver.
+    function equipUsedClean(i) {
+      const seen = new Map();
+      const out  = [];
+      for (const raw of (equipUsed[i] || [])) {
+        const name = String((raw && raw.name) || '').trim();
+        if (!name) continue;
+        const n = Number(raw && raw.hours);
+        const hours = (Number.isFinite(n) && n > 0) ? Math.round(n * 100) / 100 : null;
+        const key = name.toLowerCase();
+        if (seen.has(key)) {
+          const at = out[seen.get(key)];
+          if (hours != null) at.hours = Math.min(24, Math.round(((at.hours || 0) + hours) * 100) / 100);
+          continue;
+        }
+        seen.set(key, out.length);
+        out.push({ name, hours });
+        if (out.length >= MAX_EQUIP_PIECES) break;
+      }
+      return out;
+    }
+
+    // The hours box for one line. Not in BLOCK0_IDS because there is one per
+    // LINE, not one per block — the list is redrawn, the ids go with it.
+    function equipHrsId(i, slot) { return `${i === 0 ? '' : 's' + i + '-'}equip-hrs-${slot}`; }
+
+    // What the block's clock says, for the prefill below.
+    function blockHours(i) {
+      const out = bel(i, 'hours');
+      const n = Number(out && out.textContent);
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    // Light the "name at least one" marker beside the label, or put it away.
+    // Split out of the full redraw because it is the only part that has to
+    // react to a pick — rebuilding the list on every change would tear down
+    // the <select> the operator's finger is still on.
+    function renderEquipNeed(i) {
+      const need = bel(i, 'equip-need');
+      if (need) need.style.display = equipUsedClean(i).length ? 'none' : '';
+    }
+
+    // Draw one block's lines from equipUsed. Keeps whatever each line already
+    // holds — including a name no longer on the company list, so re-opening an
+    // older entry cannot silently drop the machine it was saved with, the same
+    // rule haulUnitFill follows.
+    function renderEquipUsed(i) {
+      const list = bel(i, 'equip-list');
+      if (!list) return;
+      const slots = equipUsed[i] || (equipUsed[i] = []);
+      // There is always a line to fill in: an empty list with a "+" under it
+      // reads as "nothing to answer here".
+      if (!slots.length) slots.push({ name: '', hours: '' });
+      list.innerHTML = slots.map((piece, slot) => {
+        const cur   = String((piece && piece.name) || '');
+        const hrs   = String((piece && piece.hours) || '');
+        const names = (equipmentNames || []).slice();
+        if (cur && !names.includes(cur)) names.push(cur);
+        const opts = '<option value="">&mdash; pick &mdash;</option>' + names
+          .map(n => `<option value="${escapeHtml(n)}"${n === cur ? ' selected' : ''}>${escapeHtml(n)}</option>`)
+          .join('');
+        return `
+          <div class="equip-piece">
+            <select onchange="setEquipPiece(${i}, ${slot}, this.value)">${opts}</select>
+            <input type="number" class="equip-hours" id="${equipHrsId(i, slot)}"
+                   inputmode="decimal" min="0" max="24" step="0.25" placeholder="hrs"
+                   value="${escapeHtml(hrs)}"
+                   oninput="setEquipHours(${i}, ${slot}, this.value)"
+                   onchange="setEquipHours(${i}, ${slot}, this.value)" />
+            ${slot === 0 ? '' : `<button type="button" class="link-btn" onclick="removeEquipPiece(${i}, ${slot})">Remove</button>`}
+          </div>`;
+      }).join('');
+      const add = bel(i, 'equip-add');
+      if (add) add.disabled = slots.length >= MAX_EQUIP_PIECES;
+      renderEquipNeed(i);
+    }
+
+    function equipSlot(i, slot) {
+      const slots = equipUsed[i] || (equipUsed[i] = []);
+      while (slots.length <= slot) slots.push({ name: '', hours: '' });
+      return slots[slot];
+    }
+
+    function setEquipPiece(i, slot, val) {
+      const piece = equipSlot(i, slot);
+      piece.name = val || '';
+      // The first machine named is almost always the one he was on all day, so
+      // its hours open on the block's own hours instead of on nothing. Written
+      // INTO THE BOX, where he can see it and change it — not left as a default
+      // nobody can tell from an answer, which is the mistake the hauling
+      // question beside this one was built to undo. Only ever fills a box
+      // sitting empty, so a figure he typed is never moved.
+      if (val && slot === 0 && !String(piece.hours || '').trim()) {
+        const h = blockHours(i);
+        if (h > 0) {
+          piece.hours = h.toFixed(2);
+          const box = document.getElementById(equipHrsId(i, slot));
+          if (box) box.value = piece.hours;
+        }
+      }
+      renderEquipNeed(i);
+    }
+
+    // Deliberately does NOT redraw: this fires on every keystroke, and a redraw
+    // takes the box out from under the thumb typing into it.
+    function setEquipHours(i, slot, val) {
+      equipSlot(i, slot).hours = val == null ? '' : String(val);
+    }
+
+    function addEquipPiece(i) {
+      const slots = equipUsed[i] || (equipUsed[i] = []);
+      if (slots.length >= MAX_EQUIP_PIECES) return;
+      slots.push({ name: '', hours: '' });
+      renderEquipUsed(i);
+    }
+
+    function removeEquipPiece(i, slot) {
+      const slots = equipUsed[i] || (equipUsed[i] = []);
+      slots.splice(slot, 1);
+      if (!slots.length) slots.push({ name: '', hours: '' });
+      renderEquipUsed(i);
+    }
+
+    // Show one block's lines, or every block's when `i` is omitted. They follow
+    // the ANSWER: up the moment the block says Yes, away again if that is taken
+    // back.
+    //
+    // PURELY PRESENTATIONAL, for the reason applyHaulVisibility spells out at
+    // length further down — a redraw must never answer on the operator's
+    // behalf. Hiding the row leaves equipUsed alone, so a mis-tap on "No" and
+    // back on "Yes" does not cost him the list he already built. Nothing leaks
+    // out of a hidden row either: buildPayloads posts these names only for a
+    // block whose answer is Yes, and posts an empty list for every other.
+    function applyEquipUsedVisibility(i) {
+      const idxs = (i == null) ? blockOrder() : [i];
+      for (const b of idxs) {
+        const row = bel(b, 'row-equip-used');
+        if (!row) continue;
+        const on = equipVals[b] === true;
+        row.style.display = on ? 'flex' : 'none';
+        if (!on) continue;
+        // Fetch once, then fill. Until it lands the lines hold just whatever
+        // was saved, so an entry being edited never shows a blank machine.
+        renderEquipUsed(b);
+        equipmentNamesLoad().then(() => renderEquipUsed(b));
+      }
+    }
+
     // Set from /api/timesheet-supervisors on load. Decides whether the hauling
     // question is asked at all — nothing else in this page branches on it.
     //   true  → ask, and post the answer
@@ -1021,6 +1241,10 @@
       'end':            'f-end',
       'hours':          'f-hours',
       'seg-equip':      'seg-equip',
+      'row-equip-used': 'row-equip-used',
+      'equip-list':     'equip-list',
+      'equip-add':      'equip-add',
+      'equip-need':     'equip-need',
       'seg-haul':       'seg-haul',
       'haul-need':      'haul-need',
       'row-haul':       'row-haul',
@@ -1138,6 +1362,15 @@
             </div>
           </div>
 
+          <div class="row" id="s${i}-row-equip-used" style="display:none">
+            <label>Which equipment, and for how long? <span class="haul-need" id="s${i}-equip-need">&mdash; name at least one</span></label>
+            <div class="equip-list" id="s${i}-equip-list"></div>
+            <button type="button" class="split-add equip-add" id="s${i}-equip-add" onclick="addEquipPiece(${i})">
+              + Add another piece
+            </button>
+            <div class="hint">Name every piece you ran on this job, biggest first, and the hours you were on it. Not on the list? Pick the closest and say which it was in Notes.</div>
+          </div>
+
           <div class="row" id="s${i}-row-haul" style="display:none">
             <label>Was this a haul? <span class="haul-need" id="s${i}-haul-need">&mdash; pick one</span></label>
             <div class="seg seg-3 needs" id="s${i}-seg-haul">
@@ -1178,6 +1411,7 @@
       const prev = blockOrder()[blockOrder().length - 1];
       const i = ++nextSplitIdx;
       splitIdxs.push(i);
+      equipUsed[i] = [];
       equipVals[i] = null;
       haulVals[i]  = null;
       haulUnits[i] = '';
@@ -1217,6 +1451,7 @@
 
       splitIdxs = splitIdxs.filter(x => x !== i);
       delete equipVals[i];
+      delete equipUsed[i];
       delete haulVals[i];
       delete haulUnits[i];
       delete editingIds[i];
@@ -1366,7 +1601,7 @@
         b.classList.toggle('off', v !== val);
       });
       if (which === 'lunch') { lunchVal = val; updateHours(0); }
-      else                     equipVals[i] = val;
+      else                   { equipVals[i] = val; applyEquipUsedVisibility(i); }
     }
 
     function clearSeg(which, i = 0) {
@@ -1374,7 +1609,7 @@
       if (!seg) return;
       seg.querySelectorAll('button').forEach(b => b.classList.remove('on', 'off'));
       if (which === 'lunch') { lunchVal = null; updateHours(0); }
-      else                     equipVals[i] = null;
+      else                   { equipVals[i] = null; applyEquipUsedVisibility(i); }
     }
 
     // ── The hauling question ────────────────────────────────────────────────
@@ -1943,6 +2178,14 @@
         if (e.entry_type === 'daily' && e.computed_hours != null) hoursParts.push(`${Number(e.computed_hours).toFixed(2)} h`);
         if (e.entry_type === 'daily' && e.travel_hours != null && e.travel_hours > 0) hoursParts.push(`+${Number(e.travel_hours).toFixed(2)} h travel`);
         const hours = hoursParts.join(' ');
+        // The machines he named, on the card he reads back. A day filed under
+        // the wrong piece is worth catching here, while it is still a draft he
+        // can tap — not three weeks later on a cost report.
+        const ran = (e.entry_type === 'daily' && Array.isArray(e.equipment_used))
+          ? e.equipment_used
+              .filter(x => x && String(x.name || '').trim())
+              .map(x => `${String(x.name).trim()}${x.hours != null ? ` ${Number(x.hours).toFixed(2)} h` : ''}`)
+          : [];
         const audit = entryAuditLine(e);
         // One job of a split day. Says so on the card, otherwise two entries on
         // the same date read as an accidental double submission.
@@ -1958,7 +2201,7 @@
               </div>
             </div>
             <div style="display:flex;justify-content:space-between;gap:0.6rem;align-items:flex-end">
-              <div class="entry-meta">${meta}</div>
+              <div class="entry-meta">${meta}${ran.length ? `<br/>Ran: ${escapeHtml(ran.join(', '))}` : ''}</div>
               ${hours ? `<div class="entry-hours">${hours}</div>` : ''}
             </div>
             ${audit ? `<div class="entry-audit">${audit}</div>` : ''}
@@ -2074,6 +2317,14 @@
       updateTravelHours();
       bel(i, 'start').value = e.start_time || '';
       bel(i, 'end').value   = e.end_time   || '';
+      // The machines come back before the Yes/No that reveals them: setSeg
+      // draws the lines, and reading these afterwards would paint an empty list
+      // over a saved one. Hours come back as the string the box holds, so a
+      // re-opened draft edits exactly what it shows.
+      equipUsed[i] = (Array.isArray(e.equipment_used) ? e.equipment_used : []).map(x => ({
+        name:  String((x && x.name) || ''),
+        hours: (x && x.hours != null) ? String(x.hours) : '',
+      })).filter(x => x.name);
       if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment, i);
       else clearSeg('equip', i);
       // Re-open a saved haul on the answer it was saved with — a stored row is
@@ -2208,6 +2459,7 @@
       document.getElementById('f-end').value   = '';
       updateHours();
       clearSeg('lunch');
+      equipUsed = { 0: [] };
       clearSeg('equip');
       haulVals  = { 0: null };
       haulUnits = { 0: '' };
@@ -2321,6 +2573,17 @@
           return { error: at(i, 'Start and end times are the same — that comes to 0 hours.') };
         }
         if (equipVals[i] == null) return { error: at(i, 'Operated equipment? Yes or No.') };
+        // Yes on its own is half an answer — a cost row is coded per machine,
+        // so "a machine was out" with no name on it is reconstructed later by
+        // someone who wasn't there. Gated only when there is a list to pick
+        // FROM: a company with no equipment on file, or a list call that came
+        // back 401 on an expired token, must not leave the crew unable to file
+        // the day. equipmentNamesLoad caches nothing but a real answer, so
+        // this reads as empty exactly while there is genuinely nothing to name.
+        const _equipUsed = equipVals[i] === true ? equipUsedClean(i) : [];
+        if (equipVals[i] === true && !_equipUsed.length && (equipmentNames || []).length) {
+          return { error: at(i, 'Name the equipment you ran, or answer No.') };
+        }
         // Only a flagged driver is ever asked — and now that the control has no
         // default, this is a gate exactly like the equipment question above.
         // A blank three-way used to save itself as "No", which billed an
@@ -2339,6 +2602,7 @@
         const _haulUnit = (isDriver && _haul && HAUL_UNIT_DIVISIONS.includes(div))
           ? (haulUnits[i] || '') : null;
         blocks.push({ i, div, jobId, jobLabel, start, end, equip: equipVals[i],
+                      equipUsed: _equipUsed,
                       haulUnit: _haulUnit,
                       haulKey: isDriver === null ? {} : { haul_type: _haul } });
       }
@@ -2392,6 +2656,13 @@
             // first job. The others record that no break fell inside them.
             lunch_break: pos === 0 ? lunchVal : false,
             operated_equipment: b.equip,
+            // The machines behind that Yes and the hours on each, in the
+            // company's own equipment vocabulary — so payroll's split modal
+            // fills the cost row's machine and its hours from this instead of
+            // asking the approver to reconstruct both. Always sent: an empty
+            // list is a real answer ("no machine on this job") and has to be
+            // able to clear a list the operator filled in by mistake.
+            equipment_used: b.equipUsed,
             supervisor_id: supId,
             supervisor_name: supName,
             // Repeated on every row on purpose — payroll reads these entries

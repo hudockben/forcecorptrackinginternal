@@ -1981,6 +1981,19 @@
       margin-top: 0.3rem;
     }
     .status-meta strong { color: var(--text); font-weight: 600; }
+    /* The machines named behind an "operated equipment: Yes". Sits under the
+       pill rather than beside it — a day can carry several, and a wide cell
+       here pushes the hours columns off a laptop screen. */
+    .equip-used {
+      font-size: 0.56rem;
+      color: var(--muted);
+      line-height: 1.35;
+      margin-top: 0.25rem;
+      max-width: 9rem;
+    }
+    /* The same caption in the Edit Entry modal, where the column it has to fit
+       beside does not exist. */
+    #em-equip-used { max-width: none; margin-top: 0.35rem; }
 
     /* ── Same-day / same-job hours-mismatch flag ── */
     .hours-flag {
@@ -3996,7 +4009,16 @@
               <td class="num${ot > 0.001 ? ' num-ot' : ''}" title="${escapeHtml(otTitle)}">${ot > 0.001 ? ot.toFixed(2) : '—'}</td>
               <td class="num${pw > 0 ? ' num-pw' : ''}">${isOff ? '—' : pw.toFixed(2)}</td>
               <td>${dayFlagHtml(e, 'lunch_break', 'Took a lunch break', 'No lunch break taken')}</td>
-              <td>${dayFlagHtml(e, 'operated_equipment', 'Operated equipment this day', 'Did not operate equipment')}</td>
+              <!-- Pill only, deliberately. The machines are named on the review
+                   grid and in the Excel export; this table is the printed Hours
+                   Report, which fits a landscape page by exactly nothing to
+                   spare (see scripts/test-report-width.js) and a second line in
+                   this cell is what pushes Status off the right edge. -->
+              <td>${dayFlagHtml(e, 'operated_equipment',
+                    equipUsedNames(e).length
+                      ? `Ran: ${equipUsedNames(e).join(', ')}`
+                      : 'Operated equipment this day',
+                    'Did not operate equipment')}</td>
               <td>${statusPill}</td>
             </tr>`;
         }).join('');
@@ -5292,7 +5314,7 @@
       'Work Date', 'Type', 'Division', 'Job',
       'Site Start Time', 'Site End Time', 'Hours',
       'Travel to Site (h)', 'Travel to Shop (h)', 'Travel Hours',
-      'Lunch Break', 'Operated Equipment', 'Supervisor',
+      'Lunch Break', 'Operated Equipment', 'Equipment Run', 'Supervisor',
       'Time Off Type', 'Notes', 'Changes (JSON)',
     ];
 
@@ -5336,6 +5358,11 @@
           snap.travel_hours != null ? Number(snap.travel_hours).toFixed(2) : '',
           yn(snap.lunch_break),
           yn(snap.operated_equipment),
+          // The audit trail follows the field: an entry whose machines or their
+          // hours changed between two snapshots has to show WHICH, or the log
+          // records that something about the equipment moved and nothing about
+          // what — and those hours are what the cost row is priced on.
+          equipUsedNames(snap).join(', '),
           snap.supervisor_name || '',
           snap.time_off_type || '',
           snap.notes || '',
@@ -5788,7 +5815,7 @@
         'Travel Hours', 'Total Hours', 'OT Hrs (past 40 this week)',
         'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
         'Week Starting (Mon)',
-        'Lunch Break', 'Operated Equipment', 'Supervisor', 'Status', 'Notes'];
+        'Lunch Break', 'Operated Equipment', 'Equipment Run (hrs)', 'Supervisor', 'Status', 'Notes'];
       const HEADER_ROW = 5;
       const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13, 14, 15]); // 0-based header indices that are numeric
 
@@ -5866,6 +5893,11 @@
             cNum(wkStart ? excelDateSerial(wkStart) : null, XS.date),
             cTxt(flag(e.lunch_break),        XS.text),
             cTxt(flag(e.operated_equipment), XS.text),
+            // The machines behind that Yes with the hours on each, comma-
+            // separated. A production rate is measured per machine per hour, so
+            // this is the column the rate is pivoted on — which is why it is
+            // here in full rather than only as the tooltip the grid shows.
+            cTxt(isOff ? '' : equipUsedNames(e).join(', '), XS.text),
             cTxt(e.supervisor_name || '',    XS.text),
             cTxt(e.status === 'approved' ? 'Approved' : 'Pending', XS.text),
             cTxt(e.notes || '', XS.text),
@@ -5889,13 +5921,14 @@
         cNum(sumStd,    XS.totNum),
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
         cTxt('', XS.totText), cTxt('', XS.totText), cTxt('', XS.totText),
+        cTxt('', XS.totText),
       ]);
 
       return xlsxSheetXml({
-        colWidths: [22, 12, 10, 14, 34, 9, 9, 19, 19, 13, 13, 12, 11, 16, 16, 17, 15, 12, 18, 20, 11, 40],
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 19, 19, 13, 13, 12, 11, 16, 16, 17, 15, 12, 18, 30, 20, 11, 40],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:V${HEADER_ROW + n}`,
+        autoFilterRef: `A${HEADER_ROW}:W${HEADER_ROW + n}`,
       });
     }
 
@@ -7282,7 +7315,7 @@
                   Number(e.split_index) > 1
                     ? `No break inside this job's hours — the day's 30-minute lunch deduction is taken on job 1 of this split`
                     : 'No lunch break taken')}</td>
-            <td>${dayFlagHtml(e, 'operated_equipment', 'Operated equipment this day', 'Did not operate equipment')}</td>
+            <td>${equipFlagHtml(e)}</td>
             <td>${timeCell}</td>
             <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}</td>
             <td style="font-variant-numeric:tabular-nums">${travel}</td>
@@ -7993,6 +8026,40 @@
         ? `<span class="yn-pill yn-yes" title="${escapeHtml(yesTitle)}">Yes</span>`
         : `<span class="yn-pill yn-no" title="${escapeHtml(noTitle)}">No</span>`;
     }
+    // The equipment cell: the Yes/No pill every other day-flag gets, plus the
+    // machines the operator actually named. Which piece it was is the whole
+    // point of the answer on the cost side — a pickup and an excavator are the
+    // same "Yes" and nothing like the same rate — so showing only the pill
+    // sends the approver back to the schedule to guess.
+    //
+    // Entries filed before the question existed carry no names and read exactly
+    // as they always have.
+    // What the operator named, in one shape: [{ name, hours }]. A bare string
+    // in an older row reads as a machine with no hours.
+    function equipUsedPieces(e) {
+      if (!Array.isArray(e && e.equipment_used)) return [];
+      return e.equipment_used
+        .map(x => (x && typeof x === 'object') ? x : { name: x })
+        .map(x => ({
+          name:  String((x && x.name) || '').trim(),
+          hours: (x && x.hours != null && Number.isFinite(Number(x.hours))) ? Number(x.hours) : null,
+        }))
+        .filter(x => x.name);
+    }
+    // The same, as the one-line caption every reader of this shows: the machine
+    // and, where he gave it, the hours he was on it.
+    function equipUsedNames(e) {
+      return equipUsedPieces(e).map(x => x.hours != null ? `${x.name} ${x.hours.toFixed(2)} h` : x.name);
+    }
+    function equipFlagHtml(e) {
+      const names = equipUsedNames(e);
+      const pill  = dayFlagHtml(e, 'operated_equipment',
+        names.length ? `Ran: ${names.join(', ')}` : 'Operated equipment this day',
+        'Did not operate equipment');
+      if (!names.length || e.operated_equipment !== true) return pill;
+      return `${pill}<div class="equip-used" title="${escapeHtml(names.join(', '))}">${escapeHtml(names.join(', '))}</div>`;
+    }
+
     function fmtTimestamp(iso) {
       if (!iso) return '';
       const d = new Date(iso);
@@ -8397,6 +8464,13 @@
               <option value="true">Yes</option>
               <option value="false">No</option>
             </select>
+            <!-- What the operator named, read-only: this modal corrects the
+                 DAY, and which machines were on the job is his answer, not the
+                 office's. Correcting the machines themselves belongs in the
+                 split modal, where they are priced. Answering No here takes
+                 them with it — the API clears the list with the answer it
+                 belongs to. -->
+            <div class="equip-used" id="em-equip-used"></div>
           </div>
           <div class="full">
             <label>Supervisor</label>
@@ -8431,6 +8505,9 @@
         document.getElementById('em-end').value   = e.end_time   || '';
         document.getElementById('em-lunch').value = e.lunch_break === true ? 'true' : 'false';
         document.getElementById('em-equip').value = e.operated_equipment === true ? 'true' : 'false';
+        const emEquipUsed = document.getElementById('em-equip-used');
+        const emRan = equipUsedNames(e);
+        emEquipUsed.textContent = emRan.length ? `Ran: ${emRan.join(', ')}` : '';
         const emSupSel = document.getElementById('em-sup');
         if (e.supervisor_id && !supervisors.some(s => String(s.id) === String(e.supervisor_id))) {
           // Supervisor no longer in the list — keep current value as a synthetic
@@ -8857,6 +8934,11 @@
       // the equipment and hours it was approved with, and those are the
       // supervisor's, not this modal's to restate.
       if (mode !== 'resplit') splitMirrorHaulEquipHoursAll();
+      // And the machines the operator named, onto whatever rows are still
+      // blank. Last, deliberately: the haul rules above own the truck on a
+      // haul row, and this must fill the gaps they leave rather than get in
+      // front of them.
+      if (mode !== 'resplit') splitFillNamedEquipment();
       // The day's answer is the rows' now, so it cannot be settled until they
       // are. The note above was written from the driver's answer while the
       // lookups were in flight; this is what puts the approved one back.
@@ -9443,6 +9525,62 @@
       if (!(rest > 0)) return false;
       row.labor_hours = rest;
       return true;
+    }
+
+    // ── The machines the operator named, onto the rows they get priced on ──
+    //
+    // He answered "which equipment, and for how long" on his own timesheet, and
+    // until now that answer stopped at the entry: the approver retyped the
+    // machine and reconstructed its hours on every row, from a schedule that
+    // does not know what actually ran. This is the same courtesy
+    // splitFillTravelHours does for the drive — the entry already states the
+    // figure, so there is nothing to type.
+    //
+    // FILLS, NEVER OVERWRITES. Anything already on a row — the truck the haul
+    // logic put there, a machine the approver picked, hours anybody typed —
+    // stands. His answer is the starting point for a row nobody has touched,
+    // not a correction of one somebody has.
+    //
+    // Returns true when it changed something, so the caller repaints.
+    function splitFillNamedEquipment() {
+      if (!splitEntry) return false;
+      const pieces = equipUsedPieces(splitEntry);
+      if (!pieces.length) return false;
+      const workRows = () => splitRows.filter(r => !isTravelSplitRow(r));
+      let changed = false;
+      for (const piece of pieces) {
+        // Already on the form, wherever it came from. Naming it twice would
+        // bill the job for two of the same machine.
+        if (splitRows.some(r => String(r.equipment || '').trim().toLowerCase() === piece.name.toLowerCase())) continue;
+        let row = workRows().find(r => !String(r.equipment || '').trim());
+        if (!row) {
+          // Every row already names a machine, so this one needs its own — but
+          // only where he gave it hours: the save refuses a row carrying
+          // neither labour nor equipment hours, and a blank row the approver
+          // has to fill in or delete is not less work than typing it.
+          if (!(piece.hours > 0)) continue;
+          row = _blankSplitRow(false);
+          // The haul question is asked per row and a blank answer cannot be
+          // saved. Carry what the rows beside it already say rather than making
+          // the approver answer the same day twice. These rows carry no labour
+          // hours, so the answer moves no money either way — it only has to be
+          // an answer.
+          const seed = workRows()[0];
+          if (seed) { row.haul_type = seed.haul_type; row.is_haul = seed.is_haul; }
+          splitRows.push(row);
+        }
+        row.equipment = piece.name;
+        changed = true;
+        if (piece.hours > 0 && !((Number(row.equip_hours) || 0) > 0)) {
+          row.equip_hours = piece.hours;
+          // HIS figure, not this modal's guess — so the haul mirror leaves it
+          // alone instead of levelling it to the row's labour hours. A man off
+          // the machine for part of the day is exactly what this field exists
+          // to record.
+          row._equipHoursTouched = true;
+        }
+      }
+      return changed;
     }
 
     function splitAddRow(isTravel) {

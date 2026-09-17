@@ -400,6 +400,63 @@ function safeHours(v) {
   return Math.round(n * 100) / 100;
 }
 
+// The machines a daily entry says it ran, normalized to what the column holds:
+// an array of { name, hours }, or null for "none named".
+//
+// `hours` is how long the man was on that machine, and it is the point of the
+// field: payroll's split modal codes a cost row per machine at that machine's
+// hourly rate, and the figure it needs is the one the operator knows. null
+// means he named the machine and not the time — the modal fills what it is
+// given and leaves the rest to the approver, rather than inventing a figure the
+// job gets billed for.
+//
+// Names are trimmed and a machine named twice is kept once, case-insensitively:
+// "Excavator" and "excavator" are one piece of iron, and posted as two they
+// would read on the cost side as two machines on the job. Where the repeat IS
+// two stints on the same machine the hours add up, which is the reading that
+// costs the job the right amount either way.
+//
+// A bare string is accepted as a name with no hours, so a client that has not
+// been reloaded since this grew the hours box still files a usable day.
+//
+// Deliberately NOT validated against equipment_list. The names are picked from
+// that list on the way in, but a piece renamed or retired afterwards must not
+// make an already-filed day unsaveable — the same latitude truck_unit has.
+const MAX_EQUIPMENT_USED = 6;
+function safeEquipmentUsed(v) {
+  if (!Array.isArray(v)) return null;
+  const seen = new Map();
+  const out  = [];
+  for (const raw of v) {
+    const piece = (raw && typeof raw === 'object') ? raw : { name: raw };
+    const name  = safeStr(piece.name, 255);
+    if (!name) continue;
+    const hours = safeHours(piece.hours);
+    const key   = name.toLowerCase();
+    if (seen.has(key)) {
+      const at = out[seen.get(key)];
+      if (hours != null) at.hours = Math.min(24, Math.round(((at.hours || 0) + hours) * 100) / 100);
+      continue;
+    }
+    seen.set(key, out.length);
+    out.push({ name, hours: hours != null && hours > 0 ? hours : null });
+    if (out.length >= MAX_EQUIPMENT_USED) break;
+  }
+  return out.length ? out : null;
+}
+
+// What is in the equipment_used column, in the one shape every reader expects.
+function normalizeEquipmentUsedRow(v) {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map(x => (x && typeof x === 'object') ? x : { name: x })
+    .map(x => ({
+      name:  String((x && x.name) || '').trim(),
+      hours: (x && x.hours != null && Number.isFinite(Number(x.hours))) ? Number(x.hours) : null,
+    }))
+    .filter(x => x.name);
+}
+
 function dbToEntry(r) {
   return {
     id:                  String(r.id),
@@ -420,6 +477,12 @@ function dbToEntry(r) {
     travel_hours:          r.travel_hours != null ? Number(r.travel_hours) : null,
     lunch_break:           r.lunch_break,
     operated_equipment:  r.operated_equipment,
+    // Always an array of { name, hours }, so timesheet.html and payroll.html can
+    // read it without each inventing its own "null means empty" rule, and a
+    // bare string in the column — from a client that predates the hours box —
+    // reads as a machine with no hours rather than as nothing at all. Entries
+    // filed before the question existed simply come back [].
+    equipment_used:      normalizeEquipmentUsedRow(r.equipment_used),
     haul_type:           r.haul_type || '',
     // Null is not zero here: it means the day was never split, so the whole of
     // it reads as the haul — the way every haul day behaved before the split
@@ -4188,6 +4251,7 @@ function normalizeEntryBody(body) {
         travel_hours:         null,
         lunch_break:          null,
         operated_equipment:   null,
+        equipment_used:       null,
         haul_type:            null,
         supervisor_id,
         supervisor_name,
@@ -4278,6 +4342,14 @@ function normalizeEntryBody(body) {
   const ees_job_number = isEes ? safeStr(body.ees_job_number, 100) : null;
   const ees_billing    = isEes ? (safeStr(body.ees_billing, 50) || 'Non-Billable') : null;
 
+  // The machines behind "operated equipment: yes". Forced to null on any other
+  // answer so a stray list can't survive a correction back to No — the same
+  // rule the trucking and EES extras follow above, and the reason this is not
+  // simply passed through: the two fields are one answer, and a row saying "no
+  // equipment" while naming an excavator is a row nobody can price.
+  const operated_equipment = safeBool(body.operated_equipment);
+  const equipment_used = operated_equipment === true ? safeEquipmentUsed(body.equipment_used) : null;
+
   return {
     data: {
       entry_type,
@@ -4292,7 +4364,8 @@ function normalizeEntryBody(body) {
       travel_to_shop_hours,
       travel_hours,
       lunch_break,
-      operated_equipment: safeBool(body.operated_equipment),
+      operated_equipment,
+      equipment_used,
       haul_type:          haulType,
       supervisor_id,
       supervisor_name,
@@ -4422,7 +4495,7 @@ module.exports = async (req, res) => {
           division, job_id, job_label,
           start_time, end_time, computed_hours,
           travel_to_site_hours, travel_to_shop_hours, travel_hours,
-          lunch_break, operated_equipment, haul_type,
+          lunch_break, operated_equipment, equipment_used, haul_type,
           supervisor_id, supervisor_name,
           notes, time_off_type,
           truck_unit, truck_description,
@@ -4433,7 +4506,8 @@ module.exports = async (req, res) => {
           ${data.division}, ${data.job_id}, ${data.job_label},
           ${data.start_time}, ${data.end_time}, ${data.computed_hours},
           ${data.travel_to_site_hours}, ${data.travel_to_shop_hours}, ${data.travel_hours},
-          ${data.lunch_break}, ${data.operated_equipment}, ${data.haul_type},
+          ${data.lunch_break}, ${data.operated_equipment},
+          ${data.equipment_used ? JSON.stringify(data.equipment_used) : null}, ${data.haul_type},
           ${data.supervisor_id}, ${data.supervisor_name},
           ${data.notes}, ${data.time_off_type},
           ${data.truck_unit}, ${data.truck_description},
@@ -5880,6 +5954,23 @@ module.exports = async (req, res) => {
       const keepHaul = data.entry_type === 'daily'
         && !Object.prototype.hasOwnProperty.call(body, 'haul_type');
 
+      // Same hazard again for the machines named on the day. Payroll's Edit
+      // Entry modal edits the DAY and sends no equipment_used key, so writing
+      // data.equipment_used unconditionally would blank the list on every
+      // correction to the hours or the job — and the cost rows are coded off
+      // those names, so losing them puts the approver back to guessing which
+      // iron was on the job.
+      //
+      // Kept only while the answer it belongs to is still YES: an edit that
+      // turns operated_equipment off (or to time off) has to take the machines
+      // with it, or the row claims no equipment while still naming some.
+      // normalizeEntryBody already nulls the list on any other answer, so the
+      // ELSE branch does that clearing by itself. Present still wins, empty
+      // included, so timesheet.html can clear a list picked by mistake.
+      const keepEquipUsed = data.entry_type === 'daily'
+        && data.operated_equipment === true
+        && !Object.prototype.hasOwnProperty.call(body, 'equipment_used');
+
       const [updated] = await sql`
         UPDATE timesheet_entries SET
           entry_type         = ${data.entry_type},
@@ -5895,6 +5986,9 @@ module.exports = async (req, res) => {
           travel_hours         = ${data.travel_hours},
           lunch_break        = ${data.lunch_break},
           operated_equipment = ${data.operated_equipment},
+          equipment_used     = CASE WHEN ${keepEquipUsed}::boolean
+                                    THEN equipment_used
+                                    ELSE ${data.equipment_used ? JSON.stringify(data.equipment_used) : null}::jsonb END,
           haul_type          = CASE WHEN ${keepHaul}::boolean
                                     THEN haul_type ELSE ${data.haul_type}::text END,
           -- How much of the day the truck bought, kept or dropped with the
