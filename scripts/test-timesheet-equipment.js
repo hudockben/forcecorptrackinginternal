@@ -63,6 +63,16 @@ const eq = (label, a, b) =>
   assert(label, JSON.stringify(a) === JSON.stringify(b), `${JSON.stringify(a)} ≠ ${JSON.stringify(b)}`);
 
 const ROOT = path.resolve(__dirname, '..');
+
+// The split modal's own machinery, lifted whole wherever a section needs it —
+// the hazards here live in how these read the SAME row, so stubbing any of them
+// would test the stub.
+const PAY_SPLIT_FNS = ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck',
+  'splitHaulTruckName', 'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
+  'splitEquipIsPickup', 'splitMirrorPickupEquipHours', 'splitMirrorHaulEquipHours',
+  'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow', 'splitTruckOnRow', 'splitRowIsHaul',
+  '_splitRowUid', '_blankSplitRow', 'splitFillTravelHours', 'equipUsedPieces',
+  'splitFillNamedEquipment', 'onSplitHaulChange'];
 const HTML = fs.readFileSync(path.join(ROOT, 'timesheet.html'), 'utf8');
 const API  = fs.readFileSync(path.join(ROOT, 'api', 'timesheet-entries.js'), 'utf8');
 const SQL  = fs.readFileSync(path.join(ROOT, 'neon-schema.sql'), 'utf8');
@@ -99,9 +109,9 @@ function sandbox(opts = {}) {
   vm.createContext(sb);
   vm.runInContext(
     ['equipUsedClean', 'equipHrsId', 'equipSelId', 'equipOptionsHtml', 'fillEquipOptions',
-     'blockHours', 'renderEquipUsed', 'equipSlot', 'writeEquipHours', 'equipAutoRemainder',
-     'refreshEquipAutoHours', 'setEquipPiece', 'setEquipHours', 'commitEquipHours',
-     'addEquipPiece', 'removeEquipPiece', 'applyEquipUsedVisibility']
+     'blockHours', 'renderEquipUsed', 'equipSlot', 'writeEquipHours', 'equipIsPickup',
+     'equipAutoRemainder', 'refreshEquipAutoHours', 'setEquipPiece', 'setEquipHours',
+     'commitEquipHours', 'addEquipPiece', 'removeEquipPiece', 'applyEquipUsedVisibility']
       .map(fnSource).join('\n'), sb);
   return sb;
 }
@@ -283,10 +293,10 @@ console.log('\n[the guess is the block\'s REMAINDER, never more than the day]');
   eq('one machine takes the whole block', sb.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }]);
 
   sb.addEquipPiece(0);
-  sb.setEquipPiece(0, 1, 'Pickup Truck');
+  sb.setEquipPiece(0, 1, 'Roller');
   sb.commitEquipHours(0, 1, '2');
   eq('a second machine comes out of the first\'s share',
-    sb.equipUsedClean(0), [{ name: 'Excavator', hours: 8 }, { name: 'Pickup Truck', hours: 2 }]);
+    sb.equipUsedClean(0), [{ name: 'Excavator', hours: 8 }, { name: 'Roller', hours: 2 }]);
   assert('  so the day never bills more machine-hours than it has',
     sb.equipUsedClean(0).reduce((t, x) => t + (x.hours || 0), 0) === 10);
 
@@ -299,11 +309,11 @@ console.log('\n[the guess is the block\'s REMAINDER, never more than the day]');
   full.__els['hours'] = { id: 'hours', style: {}, textContent: '8.00' };
   full.applyEquipUsedVisibility(0);
   full.addEquipPiece(0);
-  full.setEquipPiece(0, 1, 'Pickup Truck');
+  full.setEquipPiece(0, 1, 'Roller');
   full.commitEquipHours(0, 1, '8');
   full.setEquipPiece(0, 0, 'Excavator');
   eq('a block already fully accounted for guesses nothing',
-    full.equipUsedClean(0), [{ name: 'Excavator', hours: null }, { name: 'Pickup Truck', hours: 8 }]);
+    full.equipUsedClean(0), [{ name: 'Excavator', hours: null }, { name: 'Roller', hours: 8 }]);
 
   // AND THE ORDER THE HINT ACTUALLY ASKS FOR — biggest machine first, so line 1
   // is guessed BEFORE the others exist. A guess with no share left has to be
@@ -313,10 +323,10 @@ console.log('\n[the guess is the block\'s REMAINDER, never more than the day]');
   first.applyEquipUsedVisibility(0);
   first.setEquipPiece(0, 0, 'Excavator');
   first.addEquipPiece(0);
-  first.setEquipPiece(0, 1, 'Pickup Truck');
+  first.setEquipPiece(0, 1, 'Roller');
   first.commitEquipHours(0, 1, '8');
   eq('a guess left with no share is withdrawn, not left standing',
-    first.equipUsedClean(0), [{ name: 'Excavator', hours: null }, { name: 'Pickup Truck', hours: 8 }]);
+    first.equipUsedClean(0), [{ name: 'Excavator', hours: null }, { name: 'Roller', hours: 8 }]);
   assert('  so the day never posts more machine-hours than it has',
     first.equipUsedClean(0).reduce((t, x) => t + (x.hours || 0), 0) === 8);
 
@@ -345,6 +355,46 @@ console.log('\n[the guess is the block\'s REMAINDER, never more than the day]');
   unnamed.commitEquipHours(0, 1, '3');            // hours typed, machine never picked
   eq('an unnamed line never takes hours off the machine that is named',
     unnamed.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }]);
+}
+
+console.log('\n[the pickup is the drive, not the job]');
+{
+  // The crew's pickup is how they GOT to the job, not something that worked
+  // it. On the timesheet that means its hours are not part of the block's
+  // share: the block's clock is time on the job, the drive is in the travel
+  // legs above, and taking the commute out of the block would leave the machine
+  // he actually ran short by exactly the length of it. Payroll books the pickup
+  // to the travel line for the same reason — the two sides spell the rule the
+  // same way, on purpose.
+  const sb = sandbox();
+  sb.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+  sb.applyEquipUsedVisibility(0);
+  sb.setEquipPiece(0, 0, 'Excavator');
+  sb.addEquipPiece(0);
+  sb.setEquipPiece(0, 1, 'Pickup Truck');
+  sb.commitEquipHours(0, 1, '1.5');
+  eq('the drive is not taken out of the machine that worked the job',
+    sb.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }, { name: 'Pickup Truck', hours: 1.5 }]);
+
+  // And nothing guesses a day of SITE hours for one.
+  const lone = sandbox();
+  lone.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+  lone.applyEquipUsedVisibility(0);
+  lone.setEquipPiece(0, 0, 'Pickup Truck');
+  eq('a pickup named first is never guessed a day on the job',
+    lone.equipUsedClean(0), [{ name: 'Pickup Truck', hours: null }]);
+  assert('  and its box is left empty rather than showing one',
+    lone.__el(lone.equipHrsId(0, 0)).value === '', lone.__el(lone.equipHrsId(0, 0)).value);
+  lone.commitEquipHours(0, 0, '1.5');
+  eq('  until he gives it', lone.equipUsedClean(0), [{ name: 'Pickup Truck', hours: 1.5 }]);
+
+  // The word, not an exact name — the list spells it differently per company.
+  // Never "truck" alone: a Triaxle Dump Truck is a haul unit.
+  for (const [name, want] of [['Pickup', true], ['Pickup Truck', true], ['F-250 Pick-up', true],
+                              ['pickups', true], ['Triaxle Dump Truck', false],
+                              ['Excavator', false], ['Roller', false], ['', false]]) {
+    assert(`"${name || '(blank)'}" reads as a pickup: ${want}`, sb.equipIsPickup(name) === want);
+  }
 }
 
 console.log('\n[a box he has been in is his, blank included]');
@@ -597,11 +647,7 @@ console.log('\n[the approver opens on what the operator already answered]');
   // The REAL haul predicates, not stubs: the whole hazard this section guards
   // lives in how they and the prefill read the same row.
   const fnPay = name => requireFn(PAY, name, 'payroll.html');
-  const PAY_FNS = ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck',
-    'splitHaulTruckName', 'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
-    'splitMirrorHaulEquipHours', 'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow',
-    'splitTruckOnRow', 'splitRowIsHaul', '_splitRowUid', '_blankSplitRow',
-    'equipUsedPieces', 'splitFillNamedEquipment', 'onSplitHaulChange'];
+  const PAY_FNS = PAY_SPLIT_FNS;
   const ctx = {
     console,
     splitRows: [], splitEntry: null, splitProjEquipment: [], _splitRowSeq: 0,
@@ -610,6 +656,17 @@ console.log('\n[the approver opens on what the operator already answered]');
     splitHaulIs: () => 'off_site',
     splitDeriveHaulAnswer: () => 'off_site',
     renderSplitHaulNote: () => {},
+    // Stand-in for the real prefill, which reads the job's bid items: it only
+    // has to prove the new travel row gets ASKED for its codes.
+    splitApplyTravelPrefill() {
+      let changed = false;
+      for (const r of ctx.splitRows) {
+        if (!ctx.isTravelSplitRow(r) || String(r.cost_code || '').trim()) continue;
+        r.cost_code = '02-900'; r.sub_code = 'TRAVEL'; r.code_source = 'auto';
+        changed = true;
+      }
+      return changed;
+    },
   };
   vm.createContext(ctx);
   vm.runInContext('const TRAVEL_CODE_RE = /\\btravel\\b/i;', ctx);
@@ -631,14 +688,14 @@ console.log('\n[the approver opens on what the operator already answered]');
 
   // Two machines: the second gets its own row, because a cost row is one
   // machine and the approver would otherwise add it by hand.
-  ctx.splitEntry = { equipment_used: [{ name: 'Excavator', hours: 6 }, { name: 'Pickup Truck', hours: 1.5 }] };
+  ctx.splitEntry = { equipment_used: [{ name: 'Excavator', hours: 6 }, { name: 'Roller', hours: 1.5 }] };
   ctx.splitRows  = [ctx._blankSplitRow(false)];
   ctx.splitRows[0].labor_hours = 7.5;
   ctx.splitRows[0].haul_type   = 'none';
   ctx.splitFillNamedEquipment();
   assert('a second machine gets a row of its own', ctx.splitRows.length === 2,
     JSON.stringify(ctx.splitRows));
-  assert('  carrying the machine and its hours', ctx.splitRows[1].equipment === 'Pickup Truck'
+  assert('  carrying the machine and its hours', ctx.splitRows[1].equipment === 'Roller'
     && ctx.splitRows[1].equip_hours === 1.5, JSON.stringify(ctx.splitRows[1]));
   assert('  and no labour hours, so the day still adds up to itself',
     (Number(ctx.splitRows[1].labor_hours) || 0) === 0);
@@ -702,16 +759,21 @@ console.log('\n[and it never turns the operator\'s machine into the haul truck]'
     splitHaulIs: () => 'off_site',
     splitDeriveHaulAnswer: () => 'off_site',
     renderSplitHaulNote: () => {},
+    // Stand-in for the real prefill, which reads the job's bid items: it only
+    // has to prove the new travel row gets ASKED for its codes.
+    splitApplyTravelPrefill() {
+      let changed = false;
+      for (const r of ctx.splitRows) {
+        if (!ctx.isTravelSplitRow(r) || String(r.cost_code || '').trim()) continue;
+        r.cost_code = '02-900'; r.sub_code = 'TRAVEL'; r.code_source = 'auto';
+        changed = true;
+      }
+      return changed;
+    },
   };
   vm.createContext(ctx);
   vm.runInContext('const TRAVEL_CODE_RE = /\\btravel\\b/i;', ctx);
-  for (const f of ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck',
-    'splitHaulTruckName', 'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
-    'splitMirrorHaulEquipHours', 'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow',
-    'splitTruckOnRow', 'splitRowIsHaul', '_splitRowUid', '_blankSplitRow',
-    'equipUsedPieces', 'splitFillNamedEquipment', 'onSplitHaulChange']) {
-    vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
-  }
+  for (const f of PAY_SPLIT_FNS) vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
 
   // A flagged driver: "to & from site", truck picker left blank, and he ran a
   // Roller for 8 h. The job has no single assigned unit.
@@ -792,16 +854,21 @@ console.log('\n[and it never re-levels the truck, nor bills the commute for a ma
     splitHaulIs: () => 'off_site',
     splitDeriveHaulAnswer: () => 'off_site',
     renderSplitHaulNote: () => {},
+    // Stand-in for the real prefill, which reads the job's bid items: it only
+    // has to prove the new travel row gets ASKED for its codes.
+    splitApplyTravelPrefill() {
+      let changed = false;
+      for (const r of ctx.splitRows) {
+        if (!ctx.isTravelSplitRow(r) || String(r.cost_code || '').trim()) continue;
+        r.cost_code = '02-900'; r.sub_code = 'TRAVEL'; r.code_source = 'auto';
+        changed = true;
+      }
+      return changed;
+    },
   };
   vm.createContext(ctx);
   vm.runInContext('const TRAVEL_CODE_RE = /\\btravel\\b/i;', ctx);
-  for (const f of ['isTravelSplitRow', 'splitRowHaulAnswer', 'splitRowTakesTruck', 'splitHaulTruckName',
-    'splitDefaultHaulEquipment', 'splitClearHaulAuto', 'splitClearNamedOnHaul',
-    'splitMirrorHaulEquipHours', 'splitMirrorHaulEquipHoursAll', 'splitPricedMachineOnRow',
-    'splitTruckOnRow', 'splitRowIsHaul', '_splitRowUid', '_blankSplitRow',
-    'equipUsedPieces', 'splitFillNamedEquipment', 'onSplitHaulChange']) {
-    vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
-  }
+  for (const f of PAY_SPLIT_FNS) vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
   const fresh = (entry, labor) => {
     ctx.splitEntry = entry;
     const row = ctx._blankSplitRow(false);
@@ -853,6 +920,104 @@ console.log('\n[and it never re-levels the truck, nor bills the commute for a ma
       changed && !row.equipment && !((Number(row.equip_hours) || 0) > 0), JSON.stringify(row));
   }
 }
+console.log('\n[and payroll books that pickup to the travel line]');
+{
+  const ctx = {
+    console,
+    splitRows: [], splitEntry: null, splitProjEquipment: [], _splitRowSeq: 0,
+    splitHaulAnswer: '',
+    splitHaulIs: () => '',
+    splitDeriveHaulAnswer: () => '',
+    renderSplitHaulNote: () => {},
+    // Stand-in for the real prefill, which reads the job's bid items: it only
+    // has to prove the new travel row gets ASKED for its codes.
+    splitApplyTravelPrefill() {
+      let changed = false;
+      for (const r of ctx.splitRows) {
+        if (!ctx.isTravelSplitRow(r) || String(r.cost_code || '').trim()) continue;
+        r.cost_code = '02-900'; r.sub_code = 'TRAVEL'; r.code_source = 'auto';
+        changed = true;
+      }
+      return changed;
+    },
+  };
+  vm.createContext(ctx);
+  vm.runInContext('const TRAVEL_CODE_RE = /\\btravel\\b/i;', ctx);
+  for (const f of PAY_SPLIT_FNS) vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
+
+  // The ordinary day: excavator on the job, pickup to get there.
+  {
+    ctx.splitEntry = { truck_unit: '', haul_type: null, travel_hours: 1.5,
+                       equipment_used: [{ name: 'Excavator', hours: 8 }, { name: 'Pickup Truck', hours: 2 }] };
+    const work = ctx._blankSplitRow(false); work.labor_hours = 8; work.cost_code = '02-100';
+    const trav = ctx._blankSplitRow(true);  trav.labor_hours = 1.5; trav.cost_code = '02-900'; trav.sub_code = 'TRAVEL';
+    ctx.splitRows = [work, trav];
+    ctx.splitFillNamedEquipment();
+    assert('the machine that worked the job lands on the work row',
+      work.equipment === 'Excavator' && work.equip_hours === 8, JSON.stringify(work));
+    assert('and the pickup lands on the TRAVEL row, under the travel sub code',
+      trav.equipment === 'Pickup Truck' && trav.sub_code === 'TRAVEL', JSON.stringify(trav));
+    assert('  with its hours matching the drive, not the figure he guessed at',
+      trav.equip_hours === 1.5 && trav.labor_hours === 1.5, JSON.stringify(trav));
+    assert('  and left untouched, so it keeps following the drive',
+      trav._equipHoursTouched !== true);
+  }
+
+  // No travel row on the form yet — one is made, and asked for its codes.
+  {
+    ctx.splitEntry = { truck_unit: '', haul_type: null, travel_hours: 1,
+                       equipment_used: [{ name: 'Pickup', hours: 3 }] };
+    const work = ctx._blankSplitRow(false); work.labor_hours = 9; work.cost_code = '02-100';
+    ctx.splitRows = [work];
+    ctx.splitFillNamedEquipment();
+    const trav = ctx.splitRows.find(r => r.is_travel);
+    assert('a day with no travel row yet gets one for the pickup', !!trav, JSON.stringify(ctx.splitRows));
+    assert('  carrying the drive the entry declares', trav && trav.labor_hours === 1);
+    assert('  the pickup, level with it', trav && trav.equipment === 'Pickup' && trav.equip_hours === 1);
+    assert('  and a travel cost code, without which it could not be saved',
+      trav && !!trav.cost_code, JSON.stringify(trav));
+    assert('  while the work row is left for the approver to code as usual',
+      !work.equipment, JSON.stringify(work));
+
+    // The drive moves; the pickup moves with it.
+    trav.labor_hours = 2.5;
+    ctx.splitMirrorPickupEquipHours(trav);
+    assert('correcting the drive moves the pickup with it', trav.equip_hours === 2.5);
+
+    // Unless the approver has said otherwise.
+    trav.equip_hours = 4; trav._equipHoursTouched = true;
+    trav.labor_hours = 2;
+    ctx.splitMirrorPickupEquipHours(trav);
+    assert('  but an approver who types the hours keeps them', trav.equip_hours === 4);
+  }
+
+  // The take-back must not strip a pickup off the commute — that is where it
+  // belongs. A machine that is NOT a pickup still comes off.
+  {
+    ctx.splitEntry = { truck_unit: '', haul_type: null, travel_hours: 1,
+                       equipment_used: [{ name: 'Pickup', hours: 1 }] };
+    const work = ctx._blankSplitRow(false); work.labor_hours = 9; work.cost_code = '02-100';
+    ctx.splitRows = [work];
+    ctx.splitFillNamedEquipment();
+    const trav = ctx.splitRows.find(r => r.is_travel);
+    ctx.splitClearNamedOnHaul(trav);
+    assert('the pickup stays on the commute — it IS the commute',
+      trav.equipment === 'Pickup', JSON.stringify(trav));
+
+    const stray = ctx._blankSplitRow(true);
+    stray.equipment = 'Roller'; stray.equip_hours = 8; stray._namedAutoEquip = true;
+    ctx.splitRows.push(stray);
+    ctx.splitClearNamedOnHaul(stray);
+    assert('  while a machine that is not a pickup still comes off it',
+      !stray.equipment, JSON.stringify(stray));
+  }
+}
+assert('  the drive is what the pickup follows, on every path the hours can move',
+  /if \(field === 'labor_hours'\) repaint = splitMirrorPickupEquipHours\(r\) \|\| repaint;/.test(PAY)
+  && /if \(r\.is_travel\) repaint = splitMirrorPickupEquipHours\(r\) \|\| repaint;/.test(PAY));
+assert('  and both sides spell "is this the pickup" the same way',
+  /\\bpick\\s\*-\?\\s\*ups\?\\b/.test(PAY) && /\\bpick\\s\*-\?\\s\*ups\?\\b/.test(HTML));
+
 assert('  the is_travel branch runs the take-back before it drops the haul answer',
   /if \(r\.is_travel && splitClearNamedOnHaul\(r\)\) repaint = true;/.test(PAY));
 assert('  and one helper answers "which machine would the haul rules name"',

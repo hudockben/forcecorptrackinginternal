@@ -707,7 +707,7 @@
           <button type="button" class="split-add equip-add" id="equip-add" onclick="addEquipPiece(0)">
             + Add another piece
           </button>
-          <div class="hint">Optional, and worth the ten seconds: the office codes the job's cost per machine off these hours, so what you put here saves it being guessed at later. Name every piece you ran, biggest first &mdash; a pickup used to get to the job counts &mdash; and the hours you were on each. If what you ran is not on the list, pick the closest and say which it was in Notes, or leave it blank and the office will fill it in.</div>
+          <div class="hint">Optional, and worth the ten seconds: the office codes the job's cost per machine off these hours, so what you put here saves it being guessed at later. Name every piece you ran, biggest first, and the hours you were on each. A pickup you used to get to the job counts too &mdash; name it and the office books it to travel, off the travel time you gave above. If what you ran is not on the list, pick the closest and say which it was in Notes, or leave it blank and the office will fill it in.</div>
         </div>
 
         <!-- ── The hauling question ──
@@ -1191,6 +1191,21 @@
     //             is what the hint under this section offers him, and a guess
     //             that reappears the next time he touches the picker takes that
     //             offer back without saying so.
+    // Is this machine the pickup that got him to the job?
+    //
+    // It matters here because the pickup is not site work: the block's clock is
+    // start-to-finish ON THE JOB, and the drive is recorded separately in the
+    // travel legs above. So a pickup's hours are not part of the block's share
+    // to divide, and the form does not guess them from it. Payroll books the
+    // pickup onto the travel line under the travel sub code for the same
+    // reason — see splitEquipIsPickup in payroll.html, which spells the rule
+    // the same way. Matched on the word, not an exact name: the equipment list
+    // spells it "Pickup", "Pickup Truck", "F-250 Pickup" from company to
+    // company. Never on "truck" alone — a Triaxle Dump Truck is a haul unit.
+    function equipIsPickup(name) {
+      return /\bpick\s*-?\s*ups?\b/i.test(String(name == null ? '' : name));
+    }
+
     // What the block has left for line 1: its clock, less the hours the other
     // lines account for. null only when there is no clock to reckon from —
     // ZERO AND NEGATIVE ARE REAL ANSWERS and the caller has to act on them.
@@ -1206,6 +1221,10 @@
       for (let k = 1; k < slots.length; k++) {
         const piece = slots[k];
         if (!piece || !String(piece.name || '').trim()) continue;
+        // The pickup was the drive, not the job. Taking its hours out of the
+        // block would leave the machine he actually ran short by the length of
+        // his commute.
+        if (equipIsPickup(piece.name)) continue;
         const n = Number(piece.hours);
         if (Number.isFinite(n) && n > 0) spoken += n;
       }
@@ -1215,6 +1234,10 @@
     function refreshEquipAutoHours(i) {
       const piece = (equipUsed[i] || [])[0];
       if (!piece || !piece.name || piece.auto !== true) return;
+      // Nothing to guess for a pickup: the block's clock is time on the job and
+      // the pickup's is the drive, which the travel legs above already state.
+      // He gives it, or payroll takes it from the travel row it is booked to.
+      if (equipIsPickup(piece.name)) { writeEquipHours(i, 0, ''); return; }
       const rest = equipAutoRemainder(i);
       // No clock yet, so nothing to reckon a share from. Leave the box alone;
       // buildPayloads refuses a block with no start and end anyway.

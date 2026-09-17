@@ -7440,6 +7440,42 @@
       return changed;
     }
 
+    // ── The pickup ─────────────────────────────────────────────────────────
+    // The crew's pickup is not a machine that worked the job — it is how they
+    // got there. Its cost belongs on the TRAVEL line, under the travel sub
+    // code, which is where the drive is already booked.
+    //
+    // Matched on the word rather than an exact name because the equipment list
+    // spells it differently from company to company: "Pickup", "Pickup Truck",
+    // "F-250 Pickup", "Pick-up". Deliberately NOT a match on "truck" — a
+    // Triaxle Dump Truck is a haul unit and has nothing to do with the drive.
+    function splitEquipIsPickup(name) {
+      return /\bpick\s*-?\s*ups?\b/i.test(String(name == null ? '' : name));
+    }
+
+    // Keep a travel row's pickup level with the drive it is on.
+    //
+    // The pickup was running for exactly as long as the man was driving, so its
+    // hours follow the row's labour hours — the same rule
+    // splitMirrorHaulEquipHours applies to a haul row's truck, and for the same
+    // reason. Only while nobody has set them by hand: an approver who says the
+    // pickup was on site longer than the drive has said something, and it
+    // sticks.
+    //
+    // Note the deliberate asymmetry with splitMirrorHaulEquipHours, which
+    // refuses travel rows outright on the grounds that "the commute is not the
+    // truck's time". That is true of a truck and exactly wrong for a pickup:
+    // the commute is the only time it IS on the clock.
+    function splitMirrorPickupEquipHours(r) {
+      if (!r || r._equipHoursTouched) return false;
+      if (!isTravelSplitRow(r)) return false;
+      if (!splitEquipIsPickup(r.equipment)) return false;
+      const want = Number(r.labor_hours) || 0;
+      if ((Number(r.equip_hours) || 0) === want) return false;
+      r.equip_hours = want;
+      return true;
+    }
+
     // Keep a haul row's equipment hours level with its labour hours.
     //
     // Only while nobody has set them by hand (_equipHoursTouched) — a driver who
@@ -7497,6 +7533,10 @@
       const isTravel = isTravelSplitRow(r);
       if (!isHaul && !isTravel) return false;
       const mine = String(r.equipment || '').trim();
+      // A pickup on a travel row is not a machine that wandered onto the
+      // commute — it IS the commute, booked under the travel sub code on
+      // purpose. Leave it, and stop calling it ours so nothing else moves it.
+      if (isTravel && splitEquipIsPickup(mine)) { r._namedAutoEquip = false; return true; }
       if (isHaul && !isTravel) {
         const truck = splitHaulTruckName();
         if (truck && truck.toLowerCase() === mine.toLowerCase()) {
@@ -9630,11 +9670,47 @@
       // truck" answer are two different questions, and only the second one
       // belongs on a haul row.
       const fillable = () => splitRows.filter(r => !isTravelSplitRow(r) && !splitRowTakesTruck(r));
+      // And the rows a PICKUP may touch, which are the opposite set: the crew's
+      // pickup is how they got to the job, not something that worked it, so its
+      // cost belongs on the travel line under the travel sub code.
+      const travelRows = () => splitRows.filter(isTravelSplitRow);
       let changed = false;
+      let addedTravel = false;
       for (const piece of pieces) {
         // Already on the form, wherever it came from — including on a haul row.
         // Naming it twice would bill the job for two of the same machine.
         if (splitRows.some(r => String(r.equipment || '').trim().toLowerCase() === piece.name.toLowerCase())) continue;
+
+        if (splitEquipIsPickup(piece.name)) {
+          let t = travelRows().find(r => !String(r.equipment || '').trim());
+          if (!t) {
+            // No travel row to put it on. Worth making one only when something
+            // will end up on it — the drive the entry declares, or the hours he
+            // gave the pickup. The save refuses a row carrying neither.
+            const declared = Math.round((Number(splitEntry.travel_hours) || 0) * 100) / 100;
+            if (!(declared > 0) && !(piece.hours > 0)) continue;
+            t = _blankSplitRow(true);
+            splitRows.push(t);
+            // The drive the entry states, less whatever the other travel rows
+            // already account for — splitFillTravelHours' own rule.
+            splitFillTravelHours(t);
+            addedTravel = true;
+          }
+          t.equipment       = piece.name;
+          t._namedAutoEquip = true;
+          changed = true;
+          // Its hours are the DRIVE's hours: the pickup was running for exactly
+          // as long as the man was in it. Left untouched (no _equipHoursTouched)
+          // so it keeps following the travel hours as the approver adjusts them.
+          // Only where the drive has hours at all — otherwise fall back to what
+          // he stated, so the row is not left empty and unsaveable.
+          if (!splitMirrorPickupEquipHours(t) && !((Number(t.equip_hours) || 0) > 0)
+              && piece.hours > 0) {
+            t.equip_hours = piece.hours;
+          }
+          continue;
+        }
+
         let row = fillable().find(r => !String(r.equipment || '').trim());
         if (!row) {
           // Every row already names a machine, so this one needs its own — but
@@ -9673,6 +9749,10 @@
           row._equipHoursTouched = true;
         }
       }
+      // A travel row made here arrives after the codes were handed out, so ask
+      // for them again — it is the travel sub code that ties the pickup to the
+      // drive, and a row without one cannot be saved.
+      if (addedTravel) splitApplyTravelPrefill();
       return changed;
     }
 
@@ -10054,6 +10134,10 @@
         // the whole day free to the job — which is exactly what the approver is
         // NOT trying to say by calling it a haul.
         if (field === 'labor_hours') repaint = splitMirrorHaulEquipHours(r) || repaint;
+        // And the pickup on a travel row follows the drive the same way the
+        // truck follows a haul — it was running for exactly as long as he was
+        // in it. See splitMirrorPickupEquipHours.
+        if (field === 'labor_hours') repaint = splitMirrorPickupEquipHours(r) || repaint;
       } else if (field === 'haul_type') {
         // The question itself. It settles the Haul tick beside it — that is
         // what "he was in the truck" MEANS — so the approver answers once
@@ -10109,6 +10193,8 @@
         // applies to the ones the haul rules guessed. Run before the haul branch
         // below, which only fires when there was an answer to drop.
         if (r.is_travel && splitClearNamedOnHaul(r)) repaint = true;
+        // A pickup stays on the commute — and its hours become the drive's.
+        if (r.is_travel) repaint = splitMirrorPickupEquipHours(r) || repaint;
         if (r.is_travel && (r.haul_type || r.is_haul !== undefined)) {
           r.haul_type = '';
           r.is_haul   = undefined;
