@@ -1757,8 +1757,11 @@
     .table-wrap table    { font-size: 0.78rem; }
     .table-wrap thead th { padding: 0.5rem 0.34rem; font-size: 0.58rem; letter-spacing: 0.03em; }
     .table-wrap tbody td { padding: 0.45rem 0.34rem; }
-    /* Headers allowed to stack onto two lines so a Yes/No column tracks its pill
-       width instead of the long label ("Prevailing Wage", "Operated Equipment"). */
+    /* Headers allowed to stack so a Yes/No column tracks its pill width instead
+       of the long label ("Prevailing Wage", "Operated Equipment or Drove
+       Pickup"). They wrap at the spaces, so what sets the column's width is the
+       longest WORD, not the length of the heading — which is why naming the
+       pickup in the heading costs a taller header row and no width. */
     .table-wrap thead th.th-wrap { white-space: normal; line-height: 1.15; }
     tbody tr:hover { background: rgba(255,255,255,0.015); }
     tbody tr.selected { background: rgba(236,72,153,0.06); }
@@ -2767,7 +2770,7 @@
             <th>Job</th>
             <th class="th-wrap" title="Prevailing wage on the job tied to the entry — Yes or No — unless the day was a haul, in which case it says so instead, because that is what decides the pay: Haul (every work hour in the truck, at a $0 labour rate; a prevailing job loses its premium — he never worked the covered site) · Partial haul (some of it in the truck, the rest worked on the site) · On site haul (hauled inside the fence — the labour is still the truck's, but a prevailing job keeps its premium)">Prevailing Wage</th>
             <th class="th-wrap">Lunch Break</th>
-            <th class="th-wrap">Operated Equipment</th>
+            <th class="th-wrap" title="The timesheet question, asked as the crew reads it: &quot;Operated equipment or drove pickup truck?&quot; A pickup is not a machine to a man who runs a dozer, so it is named in the question itself — and a named pickup is booked to the travel line, not to the job.">Operated Equipment or Drove Pickup</th>
             <th>Time</th>
             <th>Hours</th>
             <th>Travel</th>
@@ -4017,8 +4020,8 @@
               <td>${dayFlagHtml(e, 'operated_equipment',
                     equipUsedNames(e).length
                       ? `Ran: ${equipUsedNames(e).join(', ')}`
-                      : 'Operated equipment this day',
-                    'Did not operate equipment')}</td>
+                      : `${FULL}`,
+                    'Operated no equipment and drove no pickup')}</td>
               <td>${statusPill}</td>
             </tr>`;
         }).join('');
@@ -4071,7 +4074,13 @@
       { label: 'Prevailing Hrs', num: true, cls: 'th-pw',
         title: 'Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.' },
       { label: 'Lunch' },
-      { label: 'Equipment' },
+      // The label stays short on purpose. This is the printed Hours Report, and
+      // its headings are what set the column widths — see
+      // scripts/test-report-width.js, where a heading wider than its figures
+      // pushed Status off the right edge of a landscape page. The question is
+      // in the tooltip instead, the way the other columns here carry theirs.
+      { label: 'Equipment',
+        title: 'Timesheet question: "Operated equipment or drove pickup truck?" A pickup counts — it is named in the question because a man who runs a machine all day does not read a pickup as equipment. Which machines, and the hours on each, are in the Equipment Run column of the Excel export.' },
       { label: 'Status' },
     ];
 
@@ -5314,7 +5323,7 @@
       'Work Date', 'Type', 'Division', 'Job',
       'Site Start Time', 'Site End Time', 'Hours',
       'Travel to Site (h)', 'Travel to Shop (h)', 'Travel Hours',
-      'Lunch Break', 'Operated Equipment', 'Equipment Run', 'Supervisor',
+      'Lunch Break', 'Operated Equipment or Drove Pickup Truck', 'Equipment Run', 'Supervisor',
       'Time Off Type', 'Notes', 'Changes (JSON)',
     ];
 
@@ -5815,7 +5824,8 @@
         'Travel Hours', 'Total Hours', 'OT Hrs (past 40 this week)',
         'Prevailing Hrs (work only)', 'Standard Hrs (incl. travel)',
         'Week Starting (Mon)',
-        'Lunch Break', 'Operated Equipment', 'Equipment Run (hrs)', 'Supervisor', 'Status', 'Notes'];
+        'Lunch Break', 'Operated Equipment or Drove Pickup Truck', 'Equipment Run (hrs)',
+        'Supervisor', 'Status', 'Notes'];
       const HEADER_ROW = 5;
       const NUM_COLS = new Set([7, 8, 9, 10, 11, 12, 13, 14, 15]); // 0-based header indices that are numeric
 
@@ -5925,7 +5935,7 @@
       ]);
 
       return xlsxSheetXml({
-        colWidths: [22, 12, 10, 14, 34, 9, 9, 19, 19, 13, 13, 12, 11, 16, 16, 17, 15, 12, 18, 30, 20, 11, 40],
+        colWidths: [22, 12, 10, 14, 34, 9, 9, 19, 19, 13, 13, 12, 11, 16, 16, 17, 15, 12, 36, 30, 20, 11, 40],
         rows: sheet,
         freezeRow: HEADER_ROW,
         autoFilterRef: `A${HEADER_ROW}:W${HEADER_ROW + n}`,
@@ -8134,6 +8144,11 @@
         ? `<span class="yn-pill yn-yes" title="${escapeHtml(yesTitle)}">Yes</span>`
         : `<span class="yn-pill yn-no" title="${escapeHtml(noTitle)}">No</span>`;
     }
+    // The timesheet's question, as the pill's tooltip says it. Kept beside the
+    // readers so the grid and the printed report cannot drift from each other
+    // or from the form the answer came off.
+    const FULL = 'Operated equipment or drove a pickup truck this day';
+
     // What the operator named, in one shape: [{ name, hours }]. A bare string
     // in an older row reads as a machine with no hours.
     function equipUsedPieces(e) {
@@ -8165,8 +8180,8 @@
     function equipFlagHtml(e) {
       const names = equipUsedNames(e);
       const pill  = dayFlagHtml(e, 'operated_equipment',
-        names.length ? `Ran: ${names.join(', ')}` : 'Operated equipment this day',
-        'Did not operate equipment');
+        names.length ? `Ran: ${names.join(', ')}` : `${FULL}`,
+        'Operated no equipment and drove no pickup');
       if (!names.length || e.operated_equipment !== true) return pill;
       return `${pill}<div class="equip-used" title="${escapeHtml(names.join(', '))}">${escapeHtml(names.join(', '))}</div>`;
     }

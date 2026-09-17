@@ -373,6 +373,36 @@ console.log('\n[the question is asked in words the crew answers correctly]');
     /'Operated equipment or drove pickup truck\? Yes or No\.'/.test(HTML));
   assert('and payroll\'s own label says the same thing beside the same answer',
     /<label>Operated equipment or drove pickup<\/label>/.test(PAY));
+
+  // The office's headers say it too, so a column nobody can read back to a
+  // question on the form is not what an approver is left holding.
+  assert('the review grid heading names the pickup',
+    /<th class="th-wrap" title="[^"]*"?>Operated Equipment or Drove Pickup<\/th>/.test(PAY)
+    || /Operated Equipment or Drove Pickup<\/th>/.test(PAY));
+  assert('the Excel and audit exports name it in full',
+    (PAY.match(/'Operated Equipment or Drove Pickup Truck'/g) || []).length === 2);
+  assert('and no payroll header still reads the old, narrower label',
+    !/>Operated Equipment<\/th>/.test(PAY)
+    && !/'Operated Equipment',/.test(PAY));
+
+  // The printed Hours Report is the one that CANNOT grow a heading: its
+  // headings set the column widths, and a wide one pushed Status off a
+  // landscape page (scripts/test-report-width.js). It carries the question in
+  // a tooltip instead, the way the other columns there already do.
+  {
+    const cols = PAY.match(/const DETAIL_COLUMNS = \[([\s\S]*?)\n    \];/)[1];
+    assert('the printed report keeps its short heading', /\{ label: 'Equipment',/.test(cols));
+    assert('  and carries the question in the tooltip instead',
+      /Operated equipment or drove pickup truck\?/.test(cols));
+  }
+
+  // The Yes/No pill's own tooltips are read off one sentence, so the grid and
+  // the printed report cannot drift apart.
+  assert('one sentence serves every tooltip that states the question',
+    /const FULL = 'Operated equipment or drove a pickup truck this day';/.test(PAY)
+    && (PAY.match(/`\$\{FULL\}`/g) || []).length === 2);
+  assert('and the No side says both halves too',
+    (PAY.match(/'Operated no equipment and drove no pickup'/g) || []).length === 2);
 }
 
 console.log('\n[the pickup is the drive, not the job]');
@@ -685,9 +715,9 @@ assert('the printed Hours Report keeps the pill alone — that table has no room
 assert('  and says so where the next person will look',
   /scripts\/test-report-width\.js/.test(PAY));
 assert('the Excel detail sheet gets its own column, which is what a rate pivots on',
-  /'Operated Equipment', 'Equipment Run \(hrs\)',/.test(PAY));
+  /'Operated Equipment or Drove Pickup Truck', 'Equipment Run \(hrs\)',/.test(PAY));
 assert('the audit CSV follows the field too',
-  /'Operated Equipment', 'Equipment Run', 'Supervisor',/.test(PAY));
+  /'Operated Equipment or Drove Pickup Truck', 'Equipment Run', 'Supervisor',/.test(PAY));
 {
   const sheet = PAY.slice(PAY.indexOf('function reportDetailSheetXml'),
                           PAY.indexOf('function reportOvertimeSheetXml'));
