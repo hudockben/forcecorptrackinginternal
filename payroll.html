@@ -4074,12 +4074,13 @@
       { label: 'Prevailing Hrs', num: true, cls: 'th-pw',
         title: 'Work hours on a prevailing-wage job. Travel is excluded — it is not paid at the prevailing rate.' },
       { label: 'Lunch' },
-      // The label stays short on purpose. This is the printed Hours Report, and
-      // its headings are what set the column widths — see
-      // scripts/test-report-width.js, where a heading wider than its figures
-      // pushed Status off the right edge of a landscape page. The question is
-      // in the tooltip instead, the way the other columns here carry theirs.
-      { label: 'Equipment',
+      // Spelled out here as it is everywhere else, and it costs no width: this
+      // table's headings wrap (white-space: normal), so what sets a column is
+      // its longest WORD — still "Equipment" — and the extra words only make
+      // the header row taller. That is the same reason the heading could be
+      // lengthened at all; see scripts/test-report-width.js, which measures it
+      // and is the check to run before touching any heading in this table.
+      { label: 'Operated Equipment or Drove Pickup',
         title: 'Timesheet question: "Operated equipment or drove pickup truck?" A pickup counts — it is named in the question because a man who runs a machine all day does not read a pickup as equipment. Which machines, and the hours on each, are in the Equipment Run column of the Excel export.' },
       { label: 'Status' },
     ];

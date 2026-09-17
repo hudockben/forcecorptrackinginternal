@@ -385,15 +385,21 @@ console.log('\n[the question is asked in words the crew answers correctly]');
     !/>Operated Equipment<\/th>/.test(PAY)
     && !/'Operated Equipment',/.test(PAY));
 
-  // The printed Hours Report is the one that CANNOT grow a heading: its
-  // headings set the column widths, and a wide one pushed Status off a
-  // landscape page (scripts/test-report-width.js). It carries the question in
-  // a tooltip instead, the way the other columns there already do.
+  // The printed Hours Report spells it out too, and it costs no width: that
+  // table's headings wrap, so a column is sized by its longest WORD — still
+  // "Equipment" — and the extra words only make the header row taller. Proved
+  // rather than argued: scripts/test-report-width.js measures the table in a
+  // real browser and reports the same 1180px narrowest / 979px printed as it
+  // did with the one-word heading. THAT is the check to run before touching a
+  // heading in this table; it needs puppeteer-core and jsdom installed.
   {
     const cols = PAY.match(/const DETAIL_COLUMNS = \[([\s\S]*?)\n    \];/)[1];
-    assert('the printed report keeps its short heading', /\{ label: 'Equipment',/.test(cols));
-    assert('  and carries the question in the tooltip instead',
+    assert('the printed report names the pickup in the heading itself',
+      /\{ label: 'Operated Equipment or Drove Pickup',/.test(cols));
+    assert('  and still carries the full question in its tooltip',
       /Operated equipment or drove pickup truck\?/.test(cols));
+    assert('  with the width check named where the next person will look',
+      /test-report-width\.js/.test(cols));
   }
 
   // The Yes/No pill's own tooltips are read off one sentence, so the grid and

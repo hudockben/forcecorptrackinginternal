@@ -367,7 +367,7 @@ console.log('\n[a haul row fills in its own truck and hours]');
     };
     vm.createContext(sb);
     vm.runInContext(
-      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n` +
+      `${HAUL_PRELUDE}${fnSource('splitHaulTruckName') + '\n' + fnSource('splitDefaultHaulEquipment')}\n` +
       `${fnSource('splitMirrorHaulEquipHours')}\n${fnSource('splitClearHaulAuto')}\n`, sb);
     const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
                               equipment: '', labor_hours: 6, equip_hours: 0,
@@ -386,7 +386,7 @@ console.log('\n[a haul row fills in its own truck and hours]');
                  splitRows: [], splitProjEquipment: proj || [] };
     vm.createContext(sb);
     vm.runInContext(
-      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n`, sb);
+      `${HAUL_PRELUDE}${fnSource('splitHaulTruckName') + '\n' + fnSource('splitDefaultHaulEquipment')}\n`, sb);
     const r = { cost_code: 'Earthwork', sub_code: 'Excess Cut', equipment: '',
                 labor_hours: 6, equip_hours: 0, haul_type: 'off_site', is_haul: true };
     sb.splitDefaultHaulEquipment(r);
@@ -506,7 +506,7 @@ console.log('\n[what the modal guessed, the modal takes back]');
                  splitRows: [], splitProjEquipment: [] };
     vm.createContext(sb);
     vm.runInContext(
-      `${HAUL_PRELUDE}${fnSource('splitDefaultHaulEquipment')}\n` +
+      `${HAUL_PRELUDE}${fnSource('splitHaulTruckName') + '\n' + fnSource('splitDefaultHaulEquipment')}\n` +
       `${fnSource('splitMirrorHaulEquipHours')}\n${fnSource('splitClearHaulAuto')}\n`, sb);
     const r = Object.assign({ cost_code: 'Earthwork', sub_code: 'Excess Cut',
                               equipment: '', labor_hours: 6, equip_hours: 0,

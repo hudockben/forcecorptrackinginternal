@@ -46,6 +46,8 @@ const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.005;
 const FNS = ['prettyDiv', 'prettyOff', 'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours',
   'weekStartOf', 'weekEndOf', 'stampKey', 'compareIds', 'byEntryOrder', 'weeklyOvertime',
   'buildReportModel', 'colLetter', 'excelDateSerial', 'xmlEsc', 'xlsxRow', 'xlsxSheetXml',
+  // The detail sheet carries a column of the machines the operator named.
+  'equipUsedPieces', 'equipUsedNames',
   'reportSummarySheetXml', 'reportDetailSheetXml'];
 // XS and the cell shorthands are consts, not functions — taken as a slice,
 // along with the one constant weeklyOvertime reaches for.
@@ -188,10 +190,13 @@ console.log('\n[the sheets declare the width they now have]');
 {
   const dXml = api.reportDetailSheetXml(model);
   const sXml = api.reportSummarySheetXml(model);
-  assert('the detail sheet filters and sizes 22 columns',
-    /<autoFilter ref="A5:V\d+"\/>/.test(dXml)
-    && (dXml.match(/<col /g) || []).length === 22
-    && /<dimension ref="A1:V\d+"\/>/.test(dXml));
+  // 23 since the detail sheet grew "Equipment Run (hrs)" — the machines the
+  // operator named and the hours on each, which is what a production rate is
+  // pivoted on.
+  assert('the detail sheet filters and sizes 23 columns',
+    /<autoFilter ref="A5:W\d+"\/>/.test(dXml)
+    && (dXml.match(/<col /g) || []).length === 23
+    && /<dimension ref="A1:W\d+"\/>/.test(dXml));
   assert('the summary sheet filters and sizes 16',
     /<autoFilter ref="A9:P\d+"\/>/.test(sXml)
     && (sXml.match(/<col /g) || []).length === 16
