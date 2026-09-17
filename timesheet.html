@@ -680,7 +680,13 @@
         </div>
 
         <div class="row">
-          <label>Operated equipment?</label>
+          <!-- "Or drove pickup truck" is not a widening of the question — it is
+               the same question, asked in words the crew answers correctly. To
+               a man who runs a dozer, a pickup is not equipment, so he ticked
+               No and the drive was never costed to the job. The field it opens
+               books a pickup to travel, which only ever happens if he says
+               Yes here first. -->
+          <label>Operated equipment or drove pickup truck?</label>
           <div class="seg" id="seg-equip">
             <button type="button" data-val="true"  onclick="setSeg('equip', true)">Yes</button>
             <button type="button" data-val="false" onclick="setSeg('equip', false)">No</button>
@@ -1538,7 +1544,7 @@
           </div>
 
           <div class="row">
-            <label>Operated equipment?</label>
+            <label>Operated equipment or drove pickup truck?</label>
             <div class="seg" id="s${i}-seg-equip">
               <button type="button" data-val="true"  onclick="setSeg('equip', true, ${i})">Yes</button>
               <button type="button" data-val="false" onclick="setSeg('equip', false, ${i})">No</button>
@@ -2769,7 +2775,7 @@
         if (spanMinutes(start, end) <= 0) {
           return { error: at(i, 'Start and end times are the same — that comes to 0 hours.') };
         }
-        if (equipVals[i] == null) return { error: at(i, 'Operated equipment? Yes or No.') };
+        if (equipVals[i] == null) return { error: at(i, 'Operated equipment or drove pickup truck? Yes or No.') };
         // The machines and their hours, where he gave them. OPTIONAL, both of
         // them, and deliberately not a gate: the Yes/No above is the answer
         // payroll cannot do without, and these two only make the cost coding

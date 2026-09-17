@@ -358,6 +358,23 @@ console.log('\n[the guess is the block\'s REMAINDER, never more than the day]');
     unnamed.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }]);
 }
 
+console.log('\n[the question is asked in words the crew answers correctly]');
+{
+  // To a man who runs a dozer all day, a pickup is not "equipment" — so he
+  // ticked No and the drive was never costed to the job. The whole pickup path
+  // below only ever opens if he says Yes here first, which makes the wording of
+  // this one label load-bearing.
+  const asked = (HTML.match(/<label>Operated equipment or drove pickup truck\?<\/label>/g) || []).length;
+  assert('both job blocks spell the pickup out in the question itself', asked === 2,
+    `${asked} occurrence(s)`);
+  assert('and no block still asks the old, narrower question',
+    !/<label>Operated equipment\?<\/label>/.test(HTML));
+  assert('the refusal names the question as it appears on screen',
+    /'Operated equipment or drove pickup truck\? Yes or No\.'/.test(HTML));
+  assert('and payroll\'s own label says the same thing beside the same answer',
+    /<label>Operated equipment or drove pickup<\/label>/.test(PAY));
+}
+
 console.log('\n[the pickup is the drive, not the job]');
 {
   // The crew's pickup is how they GOT to the job, not something that worked
@@ -539,7 +556,7 @@ console.log('\n[what the form will and will not save]');
   assert('  nor does leaving its hours blank',
     !/equipment hours|hours you were on|machine hours/i.test(refusals), refusals);
   assert('  and the equipment answer is the only thing this section gates on',
-    /if \(equipVals\[i\] == null\) return \{ error: at\(i, 'Operated equipment\? Yes or No\.'\) \};/.test(build));
+    /if \(equipVals\[i\] == null\) return \{ error: at\(i, 'Operated equipment or drove pickup truck\? Yes or No\.'\) \};/.test(build));
   assert('  with the reason written down where the next person will read it',
     /OPTIONAL, both of\n\s*\/\/ them, and deliberately not a gate/.test(build));
 }
