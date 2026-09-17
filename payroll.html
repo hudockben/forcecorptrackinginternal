@@ -10109,6 +10109,14 @@
           // naming the truck is what makes an underived row a haul, so the tick
           // beside it has to be redrawn or it contradicts the price.
           if (field === 'equipment' && splitHaulIs() && r.is_haul === undefined) repaint = true;
+          // Whatever this modal guessed onto this row, the approver has just
+          // overruled — so the two take-backs must stop treating the machine as
+          // theirs to remove. Without this, splitClearNamedOnHaul blanked the
+          // unit the approver had typed the moment they answered the row's haul
+          // question, and splitClearHaulAuto did the same when they answered it
+          // the other way: both comments promise "a machine the approver picked
+          // is theirs", and neither was true until the flags were cleared here.
+          if (field === 'equipment') { r._namedAutoEquip = false; r._haulAutoEquip = false; }
           if (field === 'cost_code' || field === 'sub_code') r.code_source = 'manual';
           if (field === 'cost_code') {
             r.sub_code = '';                       // sub codes are scoped to a cost code

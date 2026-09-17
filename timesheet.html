@@ -1126,7 +1126,7 @@
 
     function equipSlot(i, slot) {
       const slots = equipUsed[i] || (equipUsed[i] = []);
-      while (slots.length <= slot) slots.push({ name: '', hours: '', auto: false });
+      while (slots.length <= slot) slots.push({ name: '', hours: '', auto: false, touched: false });
       return slots[slot];
     }
 
@@ -1137,28 +1137,48 @@
       if (box) box.value = text;
     }
 
-    // The first machine named is almost always the one he was on all day, so
-    // its hours open on the block's own hours instead of on nothing — the same
-    // courtesy the travel legs get. Written INTO THE BOX, where he can see it
-    // and change it, not left as a default nobody can tell from an answer.
+    // ── The guess on line 1 ────────────────────────────────────────────────
+    // The first machine named is usually the one he was on for the bulk of the
+    // block, so its box opens on the hours THE BLOCK HAS LEFT rather than on
+    // nothing — the block's own clock, less whatever the other lines already
+    // account for. That is splitFillTravelHours' rule for the travel row, and
+    // it is here for the same reason: the entry already states the figure, so
+    // there is nothing to type on the ordinary day.
     //
-    // The `auto` flag is what makes that safe. It marks a figure as THE FORM'S
-    // GUESS rather than his, so the guess can be corrected — when he changes
-    // the machine on that line, or when the block's clock moves — while a
-    // figure he typed is never touched again. Without it the guess simply stuck:
-    // pick "Excavator" on a ten-hour day, realise it was the pickup, change the
-    // picker, and the pickup rode out of the form with ten machine-hours on it.
-    // Re-guess line 1's hours from the block's clock — but ONLY while they are
-    // still the form's own guess. `auto` is set where the guess is made, below,
-    // and cleared the instant he touches the box. A saved draft's figures come
-    // back with no flag at all, so re-opening one never has this invent hours
-    // he deliberately left blank.
+    // The REMAINDER, not the whole, is what keeps the arithmetic honest. Filled
+    // with the whole block, line 1 kept ten hours after a second machine was
+    // added for two — twelve machine-hours billed against a ten-hour day, off a
+    // figure the form invented rather than one he gave.
+    //
+    // Two flags decide whether it may write at all:
+    //   auto    → this figure is THE FORM'S, so it may be re-guessed when the
+    //             clock moves or another line changes.
+    //   touched → he has been in this box. Set by the only two functions that
+    //             take a keystroke, never cleared, and set on every line of a
+    //             re-opened draft — because a saved figure is his, and so is a
+    //             saved BLANK. "Leave it blank and the office will fill it in"
+    //             is what the hint under this section offers him, and a guess
+    //             that reappears the next time he touches the picker takes that
+    //             offer back without saying so.
+    function equipAutoRemainder(i) {
+      const slots = equipUsed[i] || [];
+      const block = blockHours(i);
+      if (!(block > 0)) return null;
+      let spoken = 0;
+      for (let k = 1; k < slots.length; k++) {
+        const n = Number(slots[k] && slots[k].hours);
+        if (Number.isFinite(n) && n > 0) spoken += n;
+      }
+      const rest = Math.round((block - spoken) * 100) / 100;
+      return rest > 0 ? rest : null;
+    }
+
     function refreshEquipAutoHours(i) {
       const piece = (equipUsed[i] || [])[0];
       if (!piece || !piece.name || piece.auto !== true) return;
-      const h = blockHours(i);
-      if (!(h > 0)) return;
-      writeEquipHours(i, 0, h.toFixed(2));
+      const rest = equipAutoRemainder(i);
+      if (rest == null) return;
+      writeEquipHours(i, 0, rest.toFixed(2));
       piece.auto = true;                       // writeEquipHours only moves the text
     }
 
@@ -1170,12 +1190,14 @@
         // "— pick —" shows him a figure that is quietly thrown away on save.
         piece.auto = false;
         writeEquipHours(i, slot, '');
+        // Its hours no longer count against line 1's share of the block.
+        if (slot !== 0) refreshEquipAutoHours(i);
         return;
       }
-      if (slot !== 0) return;
-      // An empty box is the form's to fill; anything in it is already somebody's
-      // answer and stays put.
-      if (!String(piece.hours || '').trim()) piece.auto = true;
+      // A box he has never been in is the form's to fill. A box he HAS been in
+      // is his, whatever is in it — including nothing.
+      if (slot === 0 && !piece.touched) piece.auto = true;
+      // Either line can move line 1's share: its own, or one of the others.
       refreshEquipAutoHours(i);
     }
 
@@ -1186,7 +1208,10 @@
       piece.hours = val == null ? '' : String(val);
       // Touched by hand: from here on it is his box, and nothing re-guesses it
       // — including a box he deliberately emptied.
-      piece.auto = false;
+      piece.auto    = false;
+      piece.touched = true;
+      // What he gives another line comes out of line 1's share.
+      if (slot !== 0) refreshEquipAutoHours(i);
     }
 
     // On blur (the box's onchange), hold the figure to a real day and show him
@@ -1212,14 +1237,17 @@
     function addEquipPiece(i) {
       const slots = equipUsed[i] || (equipUsed[i] = []);
       if (slots.length >= MAX_EQUIP_PIECES) return;
-      slots.push({ name: '', hours: '' });
+      slots.push({ name: '', hours: '', auto: false, touched: false });
       renderEquipUsed(i);
     }
 
     function removeEquipPiece(i, slot) {
       const slots = equipUsed[i] || (equipUsed[i] = []);
       slots.splice(slot, 1);
-      if (!slots.length) slots.push({ name: '', hours: '' });
+      if (!slots.length) slots.push({ name: '', hours: '', auto: false, touched: false });
+      // The block has those hours back, so line 1's share grows again — but
+      // only if line 1 is still the form's to guess.
+      refreshEquipAutoHours(i);
       renderEquipUsed(i);
     }
 
@@ -2377,6 +2405,11 @@
       equipUsed[i] = (Array.isArray(e.equipment_used) ? e.equipment_used : []).map(x => ({
         name:  String((x && x.name) || ''),
         hours: (x && x.hours != null) ? String(x.hours) : '',
+        auto:  false,
+        // Saved, so it is his — and a saved BLANK is his answer too. Without
+        // this, changing the machine on a re-opened draft handed the empty box
+        // back to the guesser and invented hours he had deliberately refused.
+        touched: true,
       })).filter(x => x.name);
       if (e.operated_equipment === true || e.operated_equipment === false) setSeg('equip', e.operated_equipment, i);
       else clearSeg('equip', i);

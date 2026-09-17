@@ -98,8 +98,9 @@ function sandbox(opts = {}) {
   vm.createContext(sb);
   vm.runInContext(
     ['equipUsedClean', 'equipHrsId', 'blockHours', 'renderEquipUsed', 'equipSlot',
-     'writeEquipHours', 'refreshEquipAutoHours', 'setEquipPiece', 'setEquipHours',
-     'commitEquipHours', 'addEquipPiece', 'removeEquipPiece', 'applyEquipUsedVisibility']
+     'writeEquipHours', 'equipAutoRemainder', 'refreshEquipAutoHours', 'setEquipPiece',
+     'setEquipHours', 'commitEquipHours', 'addEquipPiece', 'removeEquipPiece',
+     'applyEquipUsedVisibility']
       .map(fnSource).join('\n'), sb);
   return sb;
 }
@@ -238,6 +239,8 @@ console.log('\n[the hours, which are the point of asking]');
   sb.setEquipHours(0, 1, '2.5');
   eq('  until he gives them',
     sb.equipUsedClean(0), [{ name: 'Roller', hours: 6.5 }, { name: 'Pickup Truck', hours: 2.5 }]);
+  assert('  and line 1 keeps the figure HE typed, share or no share',
+    sb.equipUsedClean(0)[0].hours === 6.5);
 
   assert('typing hours never redraws the list under the thumb',
     !/render/.test(fnSource('setEquipHours')), fnSource('setEquipHours'));
@@ -263,6 +266,70 @@ for (const name of ['renderEquipUsed', 'applyEquipUsedVisibility']) {
   const fn = fnSource(name);
   assert(`${name} never assigns to equipVals — it only renders`,
     !/equipVals\s*\[[^\]]*\]\s*=(?!=)/.test(fn), fn);
+}
+
+console.log('\n[the guess is the block\'s REMAINDER, never more than the day]');
+{
+  // A guess that filled the WHOLE block kept ten hours on line 1 after a second
+  // machine was added for two: twelve machine-hours billed against a ten-hour
+  // day, off a figure the form invented rather than one he gave. It fills what
+  // the block has LEFT — which is splitFillTravelHours' rule for the travel
+  // row, and it is here for the same reason.
+  const sb = sandbox();
+  sb.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+  sb.applyEquipUsedVisibility(0);
+  sb.setEquipPiece(0, 0, 'Excavator');
+  eq('one machine takes the whole block', sb.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }]);
+
+  sb.addEquipPiece(0);
+  sb.setEquipPiece(0, 1, 'Pickup Truck');
+  sb.commitEquipHours(0, 1, '2');
+  eq('a second machine comes out of the first\'s share',
+    sb.equipUsedClean(0), [{ name: 'Excavator', hours: 8 }, { name: 'Pickup Truck', hours: 2 }]);
+  assert('  so the day never bills more machine-hours than it has',
+    sb.equipUsedClean(0).reduce((t, x) => t + (x.hours || 0), 0) === 10);
+
+  sb.removeEquipPiece(0, 1);
+  eq('  and removing it gives the share back', sb.equipUsedClean(0), [{ name: 'Excavator', hours: 10 }]);
+
+  // Nothing left over means nothing to guess — better no figure than a zero or
+  // a negative one.
+  const full = sandbox();
+  full.__els['hours'] = { id: 'hours', style: {}, textContent: '8.00' };
+  full.applyEquipUsedVisibility(0);
+  full.addEquipPiece(0);
+  full.setEquipPiece(0, 1, 'Pickup Truck');
+  full.commitEquipHours(0, 1, '8');
+  full.setEquipPiece(0, 0, 'Excavator');
+  eq('a block already fully accounted for guesses nothing',
+    full.equipUsedClean(0), [{ name: 'Excavator', hours: null }, { name: 'Pickup Truck', hours: 8 }]);
+}
+
+console.log('\n[a box he has been in is his, blank included]');
+{
+  // "Leave it blank and the office will fill it in" is what the hint offers
+  // him. A guess that reappears the next time he touches the picker takes that
+  // offer back without saying so — and the schema comment promises null hours
+  // mean the approver decides, not that the form invents a figure the job is
+  // billed for.
+  const draft = sandbox({ equipUsed: { 0: [{ name: 'Excavator', hours: '', auto: false, touched: true }] } });
+  draft.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+  draft.applyEquipUsedVisibility(0);
+  draft.setEquipPiece(0, 0, 'Roller');
+  eq('a re-opened draft saved with no hours is not re-guessed when the machine changes',
+    draft.equipUsedClean(0), [{ name: 'Roller', hours: null }]);
+
+  const cleared = sandbox();
+  cleared.__els['hours'] = { id: 'hours', style: {}, textContent: '10.00' };
+  cleared.applyEquipUsedVisibility(0);
+  cleared.setEquipPiece(0, 0, 'Excavator');
+  cleared.commitEquipHours(0, 0, '');
+  eq('a box he empties by hand stays empty', cleared.equipUsedClean(0), [{ name: 'Excavator', hours: null }]);
+  cleared.setEquipPiece(0, 0, 'Roller');
+  eq('  and stays empty across a machine change', cleared.equipUsedClean(0), [{ name: 'Roller', hours: null }]);
+
+  assert('fillBlockFromEntry marks every restored line as his',
+    /touched: true,/.test(HTML) && /auto:  false,/.test(HTML));
 }
 
 console.log('\n[more than one piece, because a day is more than one piece]');
@@ -298,7 +365,7 @@ console.log('\n[more than one piece, because a day is more than one piece]');
   sb.equipUsed[0] = [{ name: 'Excavator', hours: '3' }];
   sb.removeEquipPiece(0, 0);
   eq('removing the last line still leaves one to fill in',
-    sb.equipUsed[0], [{ name: '', hours: '' }]);
+    sb.equipUsed[0], [{ name: '', hours: '', auto: false, touched: false }]);
 }
 
 {
@@ -651,7 +718,31 @@ console.log('\n[and it never turns the operator\'s machine into the haul truck]'
   ctx.onSplitHaulChange(mine);
   assert('a machine the approver picked is never taken back',
     mine.equipment === 'Triaxle Dump', JSON.stringify(mine));
+
+  // And the flag that gates the take-back has to STOP being set the moment the
+  // approver overrules the machine — otherwise the take-back reaches past its
+  // own comment and deletes what they typed.
+  {
+    const c2 = ctx;
+    const row = c2._blankSplitRow(false);
+    row.labor_hours = 9;
+    c2.splitEntry = { truck_unit: '', haul_type: '', equipment_used: [{ name: 'Roller', hours: 9 }] };
+    c2.splitRows = [row];
+    c2.splitMirrorHaulEquipHoursAll();
+    c2.splitFillNamedEquipment();
+    assert('the prefill marks the machine as its own', row._namedAutoEquip === true);
+    // What payroll.html's generic field branch now does on an equipment edit.
+    row.equipment = 'Triaxle Dump';
+    row._namedAutoEquip = false; row._haulAutoEquip = false;
+    row.equip_hours = 9; row._equipHoursTouched = true;
+    row.haul_type = 'off_site'; row.is_haul = true;
+    c2.onSplitHaulChange(row);
+    assert('and once the approver overrules it, the take-back leaves it alone',
+      row.equipment === 'Triaxle Dump' && row.equip_hours === 9, JSON.stringify(row));
+  }
 }
+assert('  an equipment edit clears BOTH auto-fill flags, so neither take-back overreaches',
+  /if \(field === 'equipment'\) \{ r\._namedAutoEquip = false; r\._haulAutoEquip = false; \}/.test(PAY));
 assert('  the take-back runs on both UI paths, which both funnel through onSplitHaulChange',
   /splitClearNamedOnHaul\(row\);/.test(PAY)
   && /changed = splitClearNamedOnHaul\(r\)\s*\|\| changed;/.test(PAY));
