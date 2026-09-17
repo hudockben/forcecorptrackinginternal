@@ -233,6 +233,13 @@
 
     .pager { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-top: 0.85rem; }
 
+    /* The office view is the table; the phone view is the cards. This default
+       has to sit BEFORE the media query below, not after it: both rules are a
+       single class, so at equal specificity the later one wins, and declaring
+       it afterwards hid the cards at EVERY width — the phone got a header, a
+       filter bar, "4 orders", and then nothing at all. */
+    .cards { display: none; }
+
     /* ── Phone ──
        The table is the office view. On a phone the same orders render as
        cards: this page's whole point on a phone is photographing a receipt at
@@ -245,8 +252,30 @@
       .toolbar h1 { font-size: 0.9rem; }
       .scan-cta { flex: 1 1 100%; }
       .scan-cta button { width: 100%; padding: 0.7rem; font-size: 0.92rem; }
+
+      /* Touch targets. This page exists to be used one-handed at a supply
+         counter, often with a glove on, and the sheet's controls came out at
+         34-36px with its buttons at 29 — under the 44px both Apple's and
+         Android's guidance ask for, and under WCAG 2.5.5. 16px on the inputs
+         is the other half of it: iOS Safari ZOOMS THE PAGE IN on focusing any
+         field with a smaller font, and it does not zoom back out, so tapping
+         the vendor box left the whole sheet scaled up and off to one side. */
+      .field input, .field select, .field textarea {
+        min-height: 44px; font-size: 16px; padding: 0.55rem 0.7rem;
+      }
+      .sheet-actions button, .po-card .card-actions button { min-height: 44px; }
+      .sheet-actions { gap: 0.6rem; }
+      .sheet-actions button { flex: 1 1 0; font-size: 0.92rem; }
+
+      /* The preview was a fixed 240px on a 664px screen, so every field — and
+         the figures the person is here to check — started below the fold. Its
+         job on a phone is to confirm the right receipt was photographed, which
+         a smaller one does just as well. */
+      .receipt-preview { max-height: 22vh; min-height: 110px; }
+
+      .sheet { max-height: 100%; border-radius: 12px; }
+      .backdrop { padding: 0.5rem; align-items: flex-start; }
     }
-    .cards { display: none; }
     .po-card {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 8px; padding: 0.75rem; margin-bottom: 0.65rem;
@@ -272,6 +301,10 @@
       padding: 0.6rem 0.8rem; font-size: 0.8rem; margin-bottom: 0.85rem;
       color: var(--muted);
     }
+    /* Set while a sheet is open. `fixed` rather than `overflow:hidden` because
+       iOS Safari ignores the latter on body. */
+    body.sheet-open { position: fixed; width: 100%; overflow: hidden; left: 0; right: 0; }
+
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   </style>
 </head>
@@ -1937,8 +1970,29 @@ let scanState = null;   // { dataUrl, blob, filename, receipt, targetPoId, token
 // with receipt #2's photo.
 let _scanToken = 0;
 
+// Where the list was when a sheet took over the screen.
+let _scrollUnderSheet = 0;
+
+/** Stop the page behind a sheet scrolling with it, without losing the reader's
+ *  place. `position: fixed` is the only thing iOS Safari honours here, and it
+ *  resets the scroll to the top on its own, so the offset is put back by hand. */
+function lockBodyScroll() {
+  if (document.body.classList.contains('sheet-open')) return;
+  _scrollUnderSheet = window.scrollY || document.documentElement.scrollTop || 0;
+  document.body.style.top = '-' + _scrollUnderSheet + 'px';
+  document.body.classList.add('sheet-open');
+}
+
+function unlockBodyScroll() {
+  if (!document.body.classList.contains('sheet-open')) return;
+  document.body.classList.remove('sheet-open');
+  document.body.style.top = '';
+  window.scrollTo(0, _scrollUnderSheet);
+}
+
 function closeScan() {
   document.getElementById('scan-backdrop').classList.remove('open');
+  unlockBodyScroll();
   _scanToken++;          // whatever is in flight is no longer wanted
   scanState = null;
 }
@@ -1947,6 +2001,11 @@ function renderScanSheet(body) {
   const sheet = document.getElementById('scan-sheet');
   sheet.innerHTML = body;
   document.getElementById('scan-backdrop').classList.add('open');
+  // The page behind a sheet must not scroll with it. Without this, a flick
+  // that starts on the sheet and runs past its end carries on scrolling the
+  // order list underneath — so the sheet appears to drift over a moving
+  // background, and closing it leaves the list somewhere else entirely.
+  lockBodyScroll();
 }
 
 /** Toolbar entry point: a photo becomes a brand-new order. */
@@ -2070,26 +2129,26 @@ function renderScanForm(receipt, scanError) {
       '<div class="field"><label>Cost / Sub Code</label><select id="sc-code">' +
         '<option value="">— pick a job first —</option></select></div>') +
     '<div class="field"><label>Vendor' + mark(r.vendor) + '</label>' +
-      '<input type="text" id="sc-vendor" list="vendor-list" value="' + esc(val(r.vendor)) + '" placeholder="Who it was bought from"></div>' +
+      '<input type="text" id="sc-vendor" list="vendor-list" autocorrect="off" spellcheck="false" autocapitalize="words" value="' + esc(val(r.vendor)) + '" placeholder="Who it was bought from"></div>' +
     '<div class="field"><label>Description' + mark(r.description) + '</label>' +
       '<input type="text" id="sc-title" value="' + esc(val(r.description)) + '" placeholder="What was bought"></div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Date' + mark(r.date) + '</label>' +
         '<input type="date" id="sc-date" value="' + esc(r.date || localDateStr()) + '"></div>' +
       '<div class="field"><label>Invoice #' + mark(r.invoice_number) + '</label>' +
-        '<input type="text" id="sc-invoice" value="' + esc(val(r.invoice_number)) + '"></div>' +
+        '<input type="text" id="sc-invoice" autocapitalize="characters" autocorrect="off" spellcheck="false" value="' + esc(val(r.invoice_number)) + '"></div>' +
     '</div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Qty' + mark(r.qty) + '</label>' +
-        '<input type="number" step="any" id="sc-qty" value="' + esc(val(r.qty)) + '" placeholder="1"></div>' +
+        '<input type="number" step="any" inputmode="decimal" id="sc-qty" value="' + esc(val(r.qty)) + '" placeholder="1"></div>' +
       '<div class="field"><label>Unit Cost' + mark(r.unit_cost) + '</label>' +
-        '<input type="number" step="any" id="sc-unit" value="' + esc(val(r.unit_cost)) + '"></div>' +
+        '<input type="number" step="any" inputmode="decimal" id="sc-unit" value="' + esc(val(r.unit_cost)) + '"></div>' +
     '</div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Tax %' + mark(r.tax_pct) + '</label>' +
-        '<input type="number" step="any" id="sc-taxpct" value="' + esc(val(r.tax_pct)) + '"></div>' +
+        '<input type="number" step="any" inputmode="decimal" id="sc-taxpct" value="' + esc(val(r.tax_pct)) + '"></div>' +
       '<div class="field"><label>Total' + mark(r.total) + '</label>' +
-        '<input type="number" step="any" id="sc-total" value="' + esc(val(r.total)) + '"></div>' +
+        '<input type="number" step="any" inputmode="decimal" id="sc-total" value="' + esc(val(r.total)) + '"></div>' +
     '</div>' +
     '<div class="sub" id="sc-hint" style="margin-bottom:0">' +
       'Qty and Unit Cost go together — with either missing, the order is booked ' +
@@ -2299,7 +2358,10 @@ async function commitScan() {
 /* ═══════════════════════════════════════════
    ATTACHMENTS SHEET
 ═══════════════════════════════════════════ */
-function closeDocs() { document.getElementById('docs-backdrop').classList.remove('open'); }
+function closeDocs() {
+  document.getElementById('docs-backdrop').classList.remove('open');
+  unlockBodyScroll();
+}
 
 async function openDocs(poId) {
   const po = purchaseOrders.find(p => p.id === poId);
@@ -2308,6 +2370,7 @@ async function openDocs(poId) {
   sheet.innerHTML = '<h2>' + esc(po.po_number) + ' — attachments</h2>' +
     '<div class="scan-status"><span class="spinner"></span>Loading…</div>';
   document.getElementById('docs-backdrop').classList.add('open');
+  lockBodyScroll();
 
   let docs = [];
   let loadError = null;

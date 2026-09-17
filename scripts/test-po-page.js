@@ -533,6 +533,73 @@ console.log('\n[the division tabs and a crafted id]');
   });
 }
 
+console.log('\n[the phone]');
+{
+  // This page's whole point on a phone is photographing a receipt at the supply
+  // counter, so the phone layout is not a nice-to-have here.
+
+  // The list renders as cards below 860px, and the table above it. The default
+  // `display:none` has to come BEFORE the media query: both rules are a single
+  // class, so at equal specificity the later one wins, and declaring it after
+  // hid the cards at EVERY width — the phone showed a header, a filter bar,
+  // "4 orders", and then nothing at all.
+  const cardsDefault = PAGE.indexOf('.cards { display: none; }');
+  const phoneQuery   = PAGE.indexOf('@media (max-width: 860px)');
+  assert('the cards default is declared before the phone media query',
+    cardsDefault > -1 && phoneQuery > -1 && cardsDefault < phoneQuery,
+    `default at ${cardsDefault}, query at ${phoneQuery}`);
+  assert('and the query turns them on while turning the table off',
+    /@media \(max-width: 860px\)[\s\S]{0,900}\.table-wrap \{ display: none; \}[\s\S]{0,120}\.cards \{ display: block; \}/.test(PAGE));
+
+  // A 44px target is what both Apple's and Android's guidance ask for, and a
+  // 16px font is what stops iOS Safari zooming the page in on focus — it does
+  // not zoom back out, so the sheet was left scaled up and off to one side.
+  const phoneBlock = PAGE.slice(phoneQuery, PAGE.indexOf('\n    }', phoneQuery));
+  assert('the sheet\'s fields are thumb-sized on a phone',
+    /min-height: 44px; font-size: 16px;/.test(phoneBlock), phoneBlock.slice(0, 200));
+  assert('and so are its buttons, and a card\'s',
+    /\.sheet-actions button, \.po-card \.card-actions button \{ min-height: 44px; \}/.test(phoneBlock));
+
+  // Money on a phone keypad: type=number alone does not guarantee a decimal
+  // point on iOS.
+  ['sc-qty', 'sc-unit', 'sc-taxpct', 'sc-total'].forEach(id => {
+    assert(`${id} asks for the decimal keypad`,
+      new RegExp('inputmode="decimal" id="' + id + '"').test(PAGE));
+  });
+  // An invoice number is a code, and a vendor is a proper noun. Neither wants
+  // autocorrect — "Fastenal" becoming "Fastened" is the sort of thing nobody
+  // notices until the report.
+  assert('the invoice field does not autocorrect',
+    /id="sc-invoice" autocapitalize="characters" autocorrect="off" spellcheck="false"/.test(PAGE));
+  assert('nor does the vendor field',
+    /id="sc-vendor"[^>]*autocorrect="off" spellcheck="false"/.test(PAGE));
+
+  // The page behind a sheet must not scroll with it, and must not lose the
+  // reader's place either: `position: fixed` is the only thing iOS honours, and
+  // it resets scroll to the top on its own.
+  assert('opening a sheet locks the page behind it',
+    /function lockBodyScroll\(\)/.test(PAGE) &&
+    /body\.sheet-open \{ position: fixed;/.test(PAGE));
+  assert('and the scroll position is put back on close',
+    /_scrollUnderSheet = window\.scrollY/.test(PAGE) &&
+    /window\.scrollTo\(0, _scrollUnderSheet\)/.test(PAGE));
+  // Both sheets — the scan and the documents list. Counted with a boundary,
+  // because "unlockBodyScroll();" contains "lockBodyScroll();".
+  assert('both sheets lock and unlock',
+    (PAGE.match(/(?<![A-Za-z])lockBodyScroll\(\);/g) || []).length === 2 &&
+    (PAGE.match(/(?<![A-Za-z])unlockBodyScroll\(\);/g) || []).length === 2,
+    JSON.stringify({
+      lock:   (PAGE.match(/(?<![A-Za-z])lockBodyScroll\(\);/g) || []).length,
+      unlock: (PAGE.match(/(?<![A-Za-z])unlockBodyScroll\(\);/g) || []).length,
+    }));
+
+  // The preview's job on a phone is to confirm the right receipt was
+  // photographed. At a fixed 240px on a 664px screen it pushed every figure the
+  // person is there to check below the fold.
+  assert('the receipt preview is sized against the viewport on a phone',
+    /\.receipt-preview \{ max-height: 22vh; min-height: 110px; \}/.test(phoneBlock));
+}
+
 console.log('\n[a cost row this page has not loaded]');
 {
   // Purchasing creates the cost rows for the orders it raises, server-side. A
