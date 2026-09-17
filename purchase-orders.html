@@ -18,7 +18,10 @@
       --yellow:    #eab308;
       --blue:      #60a5fa;
       --text:      #e0e0e0;
-      --muted:     #666;
+      /* 5.8:1 against the page background. #666 measured 3.41:1 — under AA for
+         text this small, and --muted carries the vendor, the date, the job line
+         and every field label, on a screen used outdoors in the sun. */
+      --muted:     #8a8a99;
       --ok:        #4ade80;
 
       /* One colour per source division, used on the division chip so a long
@@ -200,7 +203,17 @@
     }
     .field input:focus, .field select:focus { border-color: var(--green); }
     .field input[type="date"] { color-scheme: dark; }
-    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    /* Two across when there is room for two, one when there is not. At 200%
+       accessibility text the fixed pair kept its second column and pushed it
+       off the side of the screen: Invoice #, Unit Cost and Total all ran past
+       the viewport edge, and the sheet clips rather than scrolling sideways, so
+       three of the figures the person is there to check simply could not be
+       seen or reached. */
+    .grid2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+      gap: 0.6rem;
+    }
     .sheet-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
 
     .receipt-preview {
@@ -244,7 +257,11 @@
        The table is the office view. On a phone the same orders render as
        cards: this page's whole point on a phone is photographing a receipt at
        the supply counter, and a thirteen-column grid cannot be used one-handed. */
-    @media (max-width: 860px) {
+    /* Narrow OR short. Keying on width alone put a big phone in landscape —
+       932px on an iPhone 15 Pro Max, 892px on a Pixel 7 Pro — back on the
+       thirteen-column office table, in a viewport 430px tall. Any laptop window
+       short enough to match this is one the cards suit better anyway. */
+    @media (max-width: 860px), (max-height: 540px) {
       main { padding: 0.75rem; }
       header { padding: 0.6rem 0.75rem; }
       .table-wrap { display: none; }
@@ -264,8 +281,11 @@
         min-height: 44px; font-size: 16px; padding: 0.55rem 0.7rem;
       }
       .sheet-actions button, .po-card .card-actions button { min-height: 44px; }
-      .sheet-actions { gap: 0.6rem; }
-      .sheet-actions button { flex: 1 1 0; font-size: 0.92rem; }
+      /* Wraps, and each button may shrink to its text. Two side by side stopped
+         fitting at 200% accessibility text and Cancel was pushed off the edge —
+         which is also the only way back out of the sheet. */
+      .sheet-actions { gap: 0.6rem; flex-wrap: wrap; }
+      .sheet-actions button { flex: 1 1 8rem; min-width: 0; font-size: 0.92rem; }
 
       /* The preview was a fixed 240px on a 664px screen, so every field — and
          the figures the person is here to check — started below the fold. Its
@@ -275,6 +295,17 @@
 
       .sheet { max-height: 100%; border-radius: 12px; }
       .backdrop { padding: 0.5rem; align-items: flex-start; }
+
+      /* The filter row and the search box are taps too, and were left out of
+         the pass above. 16px again so focusing one does not zoom the page. */
+      .filter-bar select, .search, .chip {
+        min-height: 44px; font-size: 16px;
+      }
+      /* A <select> sizes to its widest option, so one long supplier name made
+         the whole page wider than the screen and left it scrolling sideways.
+         The names are long by nature — "Tri-State Aggregates & Supply Co". */
+      .filter-bar select { max-width: 100%; flex: 1 1 8rem; min-width: 0; }
+      .filter-bar { flex-wrap: wrap; }
     }
     .po-card {
       background: var(--surface); border: 1px solid var(--border);
@@ -403,9 +434,16 @@
   <div class="sheet" id="docs-sheet"></div>
 </div>
 
-<!-- Hidden capture inputs. `capture` asks a phone for the rear camera and is
+<!-- Hidden capture inputs. `capture="environment"` was on the receipt input to
+     jump straight to the rear camera, and on iOS that is all it offers: the
+     camera roll is unreachable, so a receipt photographed before signing in, or
+     one a driver sent through, could not be used at all. Without it both phones
+     show a chooser whose first option is still the camera, which costs one tap
+     and buys back every photo already on the device. The old comment below
+     described the attach input, which never had it.
+     `capture` asks a phone for the rear camera and is
      ignored on a desktop, which then offers the file picker instead. -->
-<input type="file" id="receipt-capture" accept="image/*" capture="environment" style="display:none" />
+<input type="file" id="receipt-capture" accept="image/*" style="display:none" />
 <input type="file" id="attach-capture"  accept="image/*,application/pdf" style="display:none" />
 
 <datalist id="vendor-list"></datalist>
@@ -2090,10 +2128,19 @@ async function beginScan(targetPoId) {
   } catch (err) {
     _scanBusy = false;
     if (!live()) return;
+    // Close was the only way out, so a photo this browser could not decode —
+    // an odd HEIC variant, a file the camera wrote badly — ended the attempt
+    // entirely. Offer another photo from here instead of sending the person
+    // back to the toolbar, and say that typing it out is still an option.
     renderScanSheet(
       '<h2>Could not read that photo</h2>' +
       '<div class="scan-status err">' + esc(err.message) + '</div>' +
-      '<div class="sheet-actions"><button class="btn" onclick="closeScan()">Close</button></div>');
+      '<div class="sub">Try another photo, or raise the order by hand and attach the receipt to it afterwards.</div>' +
+      '<div class="sheet-actions">' +
+        '<button class="btn" onclick="closeScan()">Close</button>' +
+        '<button class="btn btn-green" onclick="closeScan(); beginScan(' +
+          (targetPoId ? "'" + jsAttr(targetPoId) + "'" : 'null') + ');">Another photo</button>' +
+      '</div>');
     return;
   }
   if (!live()) return;

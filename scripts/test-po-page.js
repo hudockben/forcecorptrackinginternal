@@ -138,8 +138,12 @@ assert('receipts are filed in the ORDER\'s division',
   /const division = po\._division;/.test(PAGE));
 assert('opening a receipt names its order, so the carve-out can apply',
   /'&poId=' \+ encodeURIComponent\(poId\)/.test(PAGE));
-assert('the camera is asked for by default on a phone',
-  /id="receipt-capture"[^>]*capture="environment"/.test(PAGE));
+// NOT capture="environment" on the receipt input. It jumps straight to the rear
+// camera, and on iOS that is all it offers — a receipt photographed before
+// signing in, or one a driver sent through, could not be used at all. Without
+// it both phones still show the camera as the first option in the chooser.
+assert('the receipt input does not force the camera',
+  !/id="receipt-capture"[^>]*capture=/.test(PAGE));
 assert('photos are downscaled before they are sent anywhere',
   /downscaleImage\(file, 1600\)/.test(PAGE));
 assert('the scan endpoint is given the vendor list to match against',
@@ -598,6 +602,57 @@ console.log('\n[the phone]');
   // person is there to check below the fold.
   assert('the receipt preview is sized against the viewport on a phone',
     /\.receipt-preview \{ max-height: 22vh; min-height: 110px; \}/.test(phoneBlock));
+
+  // Narrow OR short. On width alone a big phone in landscape — 932px on an
+  // iPhone 15 Pro Max, 892px on a Pixel 7 Pro — went back to the thirteen-column
+  // office table in a viewport 430px tall.
+  assert('a phone in landscape still gets the phone layout',
+    /@media \(max-width: 860px\), \(max-height: 540px\)/.test(PAGE));
+
+  // At 200% accessibility text the fixed pair kept its second column and pushed
+  // it off the screen: Invoice #, Unit Cost and Total all ran past the edge, and
+  // the sheet clips rather than scrolling sideways.
+  assert('the paired money fields can stack when there is no room for two',
+    /grid-template-columns: repeat\(auto-fit, minmax\(9rem, 1fr\)\);/.test(PAGE));
+  assert('and the sheet buttons wrap rather than pushing Cancel off the edge',
+    /\.sheet-actions \{ gap: 0\.6rem; flex-wrap: wrap; \}/.test(phoneBlock));
+
+  // The filter row is taps too, and a <select> sizes to its widest option — one
+  // long supplier name made the whole page wider than the screen.
+  assert('the filter row and search box are thumb-sized too',
+    /\.filter-bar select, \.search, \.chip \{\s*\n\s*min-height: 44px; font-size: 16px;/.test(phoneBlock));
+  assert('and a long supplier name cannot widen the page',
+    /\.filter-bar select \{ max-width: 100%; flex: 1 1 8rem; min-width: 0; \}/.test(phoneBlock));
+
+  // --muted carries the vendor, the date, the job line and every field label,
+  // on a screen read outdoors. #666 measured 3.41:1 against the background,
+  // under the 4.5:1 AA wants for text this small.
+  assert('muted text clears AA against the page background', /--muted:     #8a8a99;/.test(PAGE));
+  {
+    const lum = hex => {
+      const c = [1, 3, 5].map(i => parseInt(hex.substr(i, 2), 16) / 255)
+        .map(v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    };
+    const bg = (PAGE.match(/--bg:\s*(#[0-9a-f]{6})/i) || [])[1];
+    const muted = (PAGE.match(/--muted:\s*(#[0-9a-f]{6})/i) || [])[1];
+    const ratio = (a, b) => {
+      const la = lum(a), lb = lum(b);
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    };
+    assert('...measured, not asserted', Boolean(bg && muted) && ratio(muted, bg) >= 4.5,
+      `${muted} on ${bg} = ${bg && muted ? ratio(muted, bg).toFixed(2) : '?'}:1`);
+  }
+
+  // capture="environment" jumps straight to the rear camera, and on iOS that is
+  // ALL it offers — a receipt photographed before signing in, or one a driver
+  // sent through, could not be used at all.
+  assert('a photo already on the phone can be used',
+    /<input type="file" id="receipt-capture" accept="image\/\*" style="display:none"/.test(PAGE));
+
+  // Close was the only way out of an undecodable photo, ending the attempt.
+  assert('an undecodable photo offers another one',
+    /Could not read that photo[\s\S]{0,500}Another photo<\/button>/.test(PAGE));
 }
 
 console.log('\n[the receipt, when things go wrong]');
@@ -657,6 +712,22 @@ console.log('\n[the receipt, when things go wrong]');
   // reasonable conclusion is that it has hung.
   assert('the waiting state is honest about how long it takes',
     /Usually under half a minute/.test(PAGE) && !/This takes a few seconds/.test(PAGE));
+
+  // The SDK's own defaults do not fit the function it runs in: a ten-minute
+  // timeout, two retries, and a retried timeout — thirty minutes of wall clock
+  // inside a 60-second maxDuration. The platform always won that race, so the
+  // phone got a gateway error instead of any message from this handler.
+  {
+    const ep = read('api/ai/receipt-scan.js');
+    const timeout = Number((ep.match(/timeout:\s*([\d_]+)/) || [])[1].replace(/_/g, ''));
+    const retries = Number((ep.match(/maxRetries:\s*(\d+)/) || [])[1]);
+    const budget  = Number((ep.match(/maxDuration:\s*(\d+)/) || [])[1]) * 1000;
+    assert('the reader is given an explicit timeout and retry count',
+      Number.isFinite(timeout) && Number.isFinite(retries));
+    assert('and the worst case fits inside the function it runs in',
+      timeout * (retries + 1) < budget,
+      `${timeout}ms x ${retries + 1} = ${timeout * (retries + 1)}ms vs ${budget}ms`);
+  }
 }
 
 console.log('\n[a cost row this page has not loaded]');

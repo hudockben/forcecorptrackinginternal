@@ -151,7 +151,25 @@ module.exports = async (req, res) => {
     : '';
 
   try {
-    const client  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    // The SDK's defaults do not fit inside this function.
+    //
+    // `timeout` defaults to ten minutes and `maxRetries` to 2, and a timeout is
+    // itself retried — so the worst case is timeout x (retries + 1), thirty
+    // minutes, inside a function whose maxDuration is 60 seconds. The platform
+    // therefore always won the race: the request was killed at 60s and the
+    // phone got a gateway error page instead of the sentence below, with no
+    // log line from here at all.
+    //
+    // One attempt with a generous window instead. Forty seconds is far longer
+    // than reading one receipt takes and still leaves the handler room to
+    // answer inside its own budget. Retrying is the caller's job now — the scan
+    // sheet has a "Read the photo again" button — and one 40s attempt beats two
+    // truncated ones, since a read cut off by a timeout returns nothing.
+    const client = new Anthropic({
+      apiKey:     process.env.ANTHROPIC_API_KEY,
+      timeout:    40_000,   // milliseconds in this SDK, unlike the Python one
+      maxRetries: 0,
+    });
     const message = await client.messages.create({
       model:      'claude-opus-5',   // receipts are creased, thermal and badly lit — the flagship reads them
       // Thinking is ON BY DEFAULT on this model, and thinking tokens count
