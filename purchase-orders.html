@@ -686,8 +686,8 @@ async function api(method, path, body) {
    divisions read it. All of them have to agree: this decides what purchasing's
    screen shows, the server's decides what goes in the database, and a
    disagreement is one order whose total reads differently in three places.
-   Change one and change the rest — scripts/test-po-page.js runs all five over
-   the same table of cases and fails if they diverge.
+   Change one and change the rest — scripts/test-numeric.js runs every copy
+   over the same table of cases and fails if they diverge.
 
    The reason any of it exists: parseFloat stops at the first character it does
    not understand, so a comma is silently destructive rather than an error.

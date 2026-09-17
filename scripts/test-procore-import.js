@@ -28,6 +28,7 @@
 const fs   = require('fs');
 const path = require('path');
 const vm   = require('vm');
+const { fnSource } = require('./lib/fn-source');
 
 // The importer ships in all three division pages. With no argument this
 // re-runs itself once per file so each one is checked independently.
@@ -105,6 +106,10 @@ function extractBlock(startLabel, endLabel) {
 const sandbox = {};
 vm.createContext(sandbox);
 vm.runInContext(
+  // _pcNum reads the number through the page's shared _normalizeNumeric, which
+  // lives with the delivery-line math rather than in the importer's own block.
+  // Lifted by name so this sandbox keeps working wherever it is declared.
+  fnSource(src, '_normalizeNumeric') +
   extractBlock('// Procore writes free-text units', '/* ── Import modal ── */') +
   extractBlock('// Decide add-vs-update for every line', 'function _pcRenderPreview'),
   sandbox

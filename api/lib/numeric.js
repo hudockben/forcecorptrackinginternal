@@ -37,8 +37,13 @@
  *
  * Returns a STRING for parseFloat to finish, or '' for nothing usable, so it
  * can sit in front of an existing parse without changing what that parse does
- * with a blank. purchase-orders.html carries a copy of this function; the test
- * suite runs both over the same table and fails if they ever disagree.
+ * with a blank.
+ *
+ * The pages carry no module loader, so five of them hold a COPY of this
+ * function: purchase-orders.html, tracker.html, paving.html,
+ * kiewit-pinetree.html and dust.html. Change one and change the rest —
+ * scripts/test-numeric.js runs every copy over one table of cases and fails if
+ * any two of them disagree.
  */
 function normalizeNumeric(v) {
   if (v === null || v === undefined) return '';
