@@ -2010,6 +2010,14 @@
     /* The same caption in the Edit Entry modal, where the column it has to fit
        beside does not exist. */
     #em-equip-used { max-width: none; margin-top: 0.35rem; }
+    /* Caption under a modal field that needs one — the paid-hours box, where
+       BLANK is a meaningful answer and the box cannot say so on its own. */
+    .em-note {
+      font-size: 0.6rem;
+      color: var(--muted);
+      line-height: 1.4;
+      margin-top: 0.35rem;
+    }
 
     /* ── Same-day / same-job hours-mismatch flag ── */
     .hours-flag {
@@ -3707,7 +3715,7 @@
           // follow the same submitted/approved line the daily hours do.
           // offHours is what payroll owes; pendingOffHours is what the approval
           // queue is worth, and is never added into a paid total.
-          if (e.status === 'submitted') { acc.pendingOff++;  acc.pendingOffHours += PAID_LEAVE_HOURS; }
+          if (e.status === 'submitted') { acc.pendingOff++;  acc.pendingOffHours += leaveHoursOf(e); }
           if (e.status === 'approved')  { acc.approvedOff++; acc.offHours        += timeOffPayHours(e); }
         }
       }
@@ -3901,7 +3909,7 @@
                 <th style="text-align:right" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
                 <th style="text-align:right">Pending Hrs</th>
                 <th style="text-align:right">Approved Hrs</th>
-                <th class="th-off" style="text-align:right" title="Paid leave: every APPROVED day off in range at 8.00 hours, whatever the reason on it. A day still waiting on a supervisor pays nothing yet and is named in the tooltip on the cell, not added in. These hours are paid but never worked — they count toward no week's 40 and are never prevailing.">Time Off Hrs</th>
+                <th class="th-off" style="text-align:right" title="Paid leave: every APPROVED day off in range, at the hours the entry says — a half day is 4.00, and one that says nothing is a full 8.00. A day still waiting on a supervisor pays nothing yet and is named in the tooltip on the cell, not added in. These hours are paid but never worked — they count toward no week's 40 and are never prevailing.">Time Off Hrs</th>
                 <th style="text-align:right" title="Total + Time Off Hrs — the hours the check is cut for. Total above is the hours WORKED, which is what the regular/overtime split is measured against; this is that plus the approved leave.">Total Paid</th>
                 <th>Status</th>
               </tr>
@@ -3937,6 +3945,33 @@
       `;
     }
 
+    // What one day off is, in a sentence: how long, whether it is owed yet, and
+    // where the figure came from — the entry's own hours, or the full day an
+    // entry that says nothing has always meant.
+    //
+    // One copy, because the same sentence is wanted in three places (the
+    // printed breakdown, the review grid, and the tooltip behind either) and
+    // three copies of a sentence about money is three chances to describe a
+    // half day as a whole one.
+    function offDayTitle(e, paid) {
+      const kind  = prettyOff(e.time_off_type);
+      const asked = leaveHoursOf(e);
+      // Said out loud only when the entry did NOT narrow the day, because that
+      // is the case where the figure comes from a rule rather than from the
+      // timesheet, and an approver looking for where 8.00 came from will not
+      // find it on the row.
+      const whence = e.time_off_hours == null
+        ? ` The entry does not say how long the day was, so it reads as a full day at ${PAID_LEAVE_HOURS.toFixed(2)} h.`
+        : '';
+      if (e.status === 'approved') {
+        const what = paid > 0.001
+          ? `${paid.toFixed(2)} h paid`
+          : 'an UNPAID day off — the entry says zero hours';
+        return `Approved ${kind} — ${what}.${whence} Paid, but not worked: it counts toward no week's 40 and is never prevailing.`;
+      }
+      return `${kind} still pending approval — ${asked.toFixed(2)} h once a supervisor signs it off, and nothing until then.${whence}`;
+    }
+
     // The Time Off column, as HOURS rather than a count of requests.
     //
     // The days are still named — in the tooltip, beside the figure they
@@ -3962,8 +3997,13 @@
       const pend = Number(r.pendingOffHours) || 0;
       const days = n => `${n} day${n === 1 ? '' : 's'}`;
       if (!off && !pend) return { cls: '', title: 'No time off in this range', text: '&mdash;' };
+      // Never "N days × 8.00 h each". That stopped being true the day half days
+      // could be filed, and from a total and a count there is no way to tell
+      // 4 + 12 from 8 + 8 — so the cell states what it knows, the hours and the
+      // days, and leaves the per-day lengths to the breakdown the row expands
+      // into, where each one is on its own line.
       const bits = [r.approvedOff
-        ? `${days(r.approvedOff)} off, approved — ${PAID_LEAVE_HOURS.toFixed(2)} h each`
+        ? `${days(r.approvedOff)} off, approved — ${off.toFixed(2)} h in all; expand the row for each day's own hours`
         : 'No approved time off'];
       if (r.pendingOff) {
         bits.push(`${days(r.pendingOff)} still pending approval — ${pend.toFixed(2)} h more once signed off, not counted here`);
@@ -4073,9 +4113,7 @@
           // because the figure comes from the approval and not from the sheet.
           const totalTitle = !isOff
             ? 'Work + travel — the hours this day is paid for'
-            : (leave > 0.001
-                ? `Approved ${prettyOff(e.time_off_type)} — a full paid day at ${PAID_LEAVE_HOURS.toFixed(2)} h. Paid, but not worked: it counts toward no week's 40 and is never prevailing.`
-                : `${prettyOff(e.time_off_type)} still pending approval — ${PAID_LEAVE_HOURS.toFixed(2)} h once a supervisor signs it off, and nothing until then`);
+            : offDayTitle(e, leave);
           return `
             <tr>
               <td class="date">${prettyDate(e.work_date)}</td>
@@ -4086,7 +4124,7 @@
               <td class="num">${toSite == null ? '—' : toSite.toFixed(2)}</td>
               <td class="num">${toShop == null ? '—' : toShop.toFixed(2)}</td>
               <td class="num">${isOff ? '—' : travel.toFixed(2)}</td>
-              <td class="num${leave > 0.001 ? ' num-off' : ''}" title="${escapeHtml(totalTitle)}">${isOff ? (leave > 0.001 ? leave.toFixed(2) : '—') : total.toFixed(2)}</td>
+              <td class="num${leave > 0.001 ? ' num-off' : ''}" title="${escapeHtml(totalTitle)}">${isOff ? (e.status === 'approved' ? leave.toFixed(2) : '—') : total.toFixed(2)}</td>
               <td class="num${ot > 0.001 ? ' num-ot' : ''}" title="${escapeHtml(otTitle)}">${ot > 0.001 ? ot.toFixed(2) : '—'}</td>
               <td class="num${pw > 0 ? ' num-pw' : ''}">${isOff ? '—' : pw.toFixed(2)}</td>
               <td>${dayFlagHtml(e, 'lunch_break', 'Took a lunch break', 'No lunch break taken')}</td>
@@ -4150,7 +4188,7 @@
       { label: 'Travel to Shop', num: true, title: 'Timesheet field: Travel Time to Shop' },
       { label: 'Travel',         num: true, title: 'Travel to site + travel to shop' },
       { label: 'Total',          num: true,
-        title: 'What this day is paid for: work + travel on a day worked, and a full paid day — 8.00 h — on approved time off. A day off still waiting on a supervisor is owed nothing yet and shows a dash.' },
+        title: 'What this day is paid for: work + travel on a day worked, and on approved time off the hours the entry says — a half day is 4.00, and one that says nothing is a full 8.00. A day off still waiting on a supervisor is owed nothing yet and shows a dash.' },
       { label: 'OT',             num: true, cls: 'th-ot',
         title: 'How much of this day fell past the fortieth hour of its Monday–Sunday week.' },
       { label: 'Prevailing Hrs', num: true, cls: 'th-pw',
@@ -5419,7 +5457,7 @@
       'Site Start Time', 'Site End Time', 'Hours',
       'Travel to Site (h)', 'Travel to Shop (h)', 'Travel Hours',
       'Lunch Break', 'Operated Equipment or Drove Pickup Truck', 'Equipment Run', 'Supervisor',
-      'Time Off Type', 'Notes', 'Changes (JSON)',
+      'Time Off Type', 'Time Off Paid Hours', 'Notes', 'Changes (JSON)',
     ];
 
     function csvEscape(v) {
@@ -5469,6 +5507,12 @@
           equipUsedNames(snap).join(', '),
           snap.supervisor_name || '',
           snap.time_off_type || '',
+          // Money on a time-off row, so it belongs in the trail: an entry
+          // changed from a half day to a whole one is four hours of pay, and
+          // the log has to show which snapshot said what. Blank when the entry
+          // does not say — that reads as a full day, and writing 8.00 here
+          // would record an answer nobody gave.
+          snap.time_off_hours != null ? Number(snap.time_off_hours).toFixed(2) : '',
           snap.notes || '',
           ev.changes ? JSON.stringify(ev.changes) : '',
         ];
@@ -5866,7 +5910,7 @@
         // The one column here that is not on any timesheet. It has to say where
         // the figure comes from, or a workbook mailed to the office reads as
         // though somebody typed it in.
-        [cTxt('Time Off Hrs is paid leave: every APPROVED day off at 8.00 hours, whatever the reason on it. A day still pending pays nothing yet and is not in the figure. Leave is paid but not worked — it counts toward no week\'s 40 and is never prevailing — so it is in none of the splits above and rejoins the row only in Total Paid Hours.', XS.sub)],
+        [cTxt('Time Off Hrs is paid leave: every APPROVED day off, at the hours its entry says — a half day is 4.00, and an entry that does not say is a full 8.00. A day still pending pays nothing yet and is not in the figure. Leave is paid but not worked — it counts toward no week\'s 40 and is never prevailing — so it is in none of the splits above and rejoins the row only in Total Paid Hours.', XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, (i >= 1 && i <= 15) ? XS.headNum : XS.head)),
       ];
@@ -5947,7 +5991,7 @@
         // A Time Off row has no hours on it anywhere else, so Total Hours is
         // the only column that can carry the day's pay — and it has to say so,
         // or the eight hours look like a figure somebody typed in.
-        [cTxt('A Time Off row carries its pay in Total Hours: 8.00 for an APPROVED day off, and blank while it is still pending, because nothing is owed until a supervisor signs it off. Those hours are paid but not worked — they are in no other column, count toward no week\'s 40, and are never prevailing.', XS.sub)],
+        [cTxt('A Time Off row carries its pay in Total Hours: what the entry says the day off was worth on an APPROVED row — 8.00 for a full day, 4.00 for a half, and 8.00 for an entry that does not say — and blank while it is still pending, because nothing is owed until a supervisor signs it off. Those hours are paid but not worked — they are in no other column, count toward no week\'s 40, and are never prevailing.', XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
       ];
@@ -5969,10 +6013,14 @@
           const total  = isOff ? null : work + travel;
           // What an approved day off pays. It lands in Total Hours and nowhere
           // else: leave is not work, so it is in none of the splits beside it.
-          // A pending day stays blank rather than posting a zero — nothing is
-          // owed yet, and 0.00 would read as a day that paid nothing.
+          //
+          // Keyed on APPROVAL, not on the figure being above zero. A pending day
+          // stays blank because nothing is owed yet — but an approved day of
+          // zero hours is an UNPAID day off, which is somebody's answer and
+          // posts as 0.00. Blanking it would make a deliberate unpaid day
+          // indistinguishable from one still sitting with a supervisor.
           const leave  = timeOffPayHours(e);
-          const paidTotal = isOff ? (leave > 0 ? leave : null) : total;
+          const paidTotal = isOff ? (e.status === 'approved' ? leave : null) : total;
           // Per entry, prevailing hours are the day's work hours when the tied
           // job is prevailing wage, less the ones the truck bought — the same
           // split the summary columns use. Travel is never prevailing-rate, so
@@ -7124,6 +7172,11 @@
         const detailBits = [];
         if (snap.entry_type === 'time_off') {
           detailBits.push(`Time Off · ${prettyOff(snap.time_off_type)}`);
+          // How long the day off was, when the entry says. Left off when it
+          // does not — the row would otherwise claim an answer nobody gave.
+          if (snap.time_off_hours != null) {
+            detailBits.push(`${Number(snap.time_off_hours).toFixed(2)} h`);
+          }
         } else if (snap.entry_type === 'daily') {
           if (snap.division) detailBits.push(prettyDiv(snap.division));
           if (snap.job_label) detailBits.push(escapeHtml(snap.job_label));
@@ -7435,9 +7488,9 @@
         const totalH   = (workH || 0) + (travelH || 0);
         const leaveH   = timeOffPayHours(e);
         const total    = e.entry_type === 'time_off'
-          ? (leaveH > 0
-              ? `<span class="leave-hrs" title="Approved ${escapeHtml(prettyOff(e.time_off_type))} — a full paid day at ${PAID_LEAVE_HOURS.toFixed(2)} h. Paid, but not worked: it counts toward no week's 40 and is never prevailing.">${leaveH.toFixed(2)}</span>`
-              : `<span class="pw-na" title="Pending approval — ${PAID_LEAVE_HOURS.toFixed(2)} h once a supervisor signs it off, and nothing until then">—</span>`)
+          ? (e.status === 'approved'
+              ? `<span class="leave-hrs" title="${escapeHtml(offDayTitle(e, leaveH))}">${leaveH.toFixed(2)}</span>`
+              : `<span class="pw-na" title="${escapeHtml(offDayTitle(e, leaveH))}">—</span>`)
           : (workH != null || travelH != null ? totalH.toFixed(2) : '');
         const sup      = e.supervisor_name || '—';
         const hoursFlag = mismatchFlags.get(e.id);
@@ -7982,20 +8035,28 @@
 
     // ── Paid leave ─────────────────────────────────────────────────────────
     //
-    // AN APPROVED DAY OFF IS EIGHT PAID HOURS. Vacation, holiday, sick, jury
-    // duty, bereavement — the reason changes nothing about the pay.
+    // AN APPROVED DAY OFF IS PAID, AND THE ENTRY SAYS FOR HOW LONG. Vacation,
+    // holiday, sick, jury duty, bereavement — the reason changes nothing about
+    // the pay. The LENGTH does: half days happen, and the four hours a man is
+    // owed for a morning off are four, not eight.
     //
-    // The hours are not on the row to read. A time-off entry carries a date and
-    // a type and nothing else, so eight hours is not something the timesheet
-    // reports — it is what APPROVING the day MEANS. This report used to say
-    // nothing about it at all: a fortnight with two approved vacation days read
-    // 25.00 hours across every column, and the sixteen hours the man was owed
-    // lived in whoever remembered them.
+    // The figure is read off the entry's time_off_hours. PAID_LEAVE_HOURS is
+    // what a day off means when nobody narrowed it — a full one:
+    //
+    //   n     → n paid hours. A half day is 4, and 0 is a real answer — an
+    //           UNPAID day off, not the same fact as nobody answering.
+    //   null  → nobody said, or an entry approved before the column existed.
+    //           Reads as a FULL day, which is what it has always paid.
+    //
+    // This report used to say nothing about any of it: a fortnight with two
+    // approved vacation days read 25.00 hours across every column, and the
+    // sixteen hours the man was owed lived in whoever remembered them.
     //
     // ONLY AN APPROVED DAY, for the same reason approvedHours counts only
     // approved entries. A request still waiting on a supervisor is owed nothing
-    // yet; it is carried separately so the office can see what the queue is
-    // worth, and it is never added into a paid total.
+    // yet, whatever hours it asks for; it is carried separately — at the hours
+    // it asks for — so the office can see what the queue is worth, and it is
+    // never added into a paid total.
     //
     // NEVER TOWARD THE FORTY, and never prevailing. Paid leave is hours PAID,
     // not hours WORKED — it cannot push a week into overtime, and the premium
@@ -8004,16 +8065,35 @@
     // hours WORKED by the rate they are paid at, and leave is not among them.
     // It is counted on its own and added back once, in the Total Paid column.
     //
-    // Mirrors PAID_LEAVE_HOURS / timeOffPayHours in api/lib/payroll-metrics.js.
-    // The two must agree: the executive report renders the same fortnight from
-    // that module and this page is where payroll checks it.
+    // Mirrors PAID_LEAVE_HOURS / timeOffPayHours / leaveHoursOf in
+    // api/lib/payroll-metrics.js. The two must agree: the executive report
+    // renders the same fortnight from that module and this page is where
+    // payroll checks it.
     const PAID_LEAVE_HOURS = 8;
+    // The longest one day off can pay, so a single bad row cannot invent a week.
+    const MAX_LEAVE_HOURS = 24;
 
-    // What a time-off entry pays: eight hours once approved, nothing before
+    // What a time-off entry PAYS: its own hours once approved, nothing before
     // that, and nothing at all for a daily row — so it is safe on any entry.
     function timeOffPayHours(e) {
       if (!e || e.entry_type !== 'time_off') return 0;
-      return e.status === 'approved' ? PAID_LEAVE_HOURS : 0;
+      if (e.status !== 'approved') return 0;
+      return leaveHoursOf(e);
+    }
+
+    // How long a time-off entry SAYS it is, approved or not — the pending queue
+    // is measured in the hours it will eventually be paid in.
+    //
+    // A figure that cannot be read is not a zero, the same judgement
+    // offSiteHaulWork makes: turning it into 0 would pay a man nothing for a day
+    // the office signed off. It falls through to the answer the column refines,
+    // which is a full day.
+    function leaveHoursOf(e) {
+      if (!e || e.entry_type !== 'time_off') return 0;
+      if (e.time_off_hours == null) return PAID_LEAVE_HOURS;
+      const h = Number(e.time_off_hours);
+      if (!Number.isFinite(h) || h < 0) return PAID_LEAVE_HOURS;
+      return Math.min(h, MAX_LEAVE_HOURS);
     }
 
     // ── Overtime ───────────────────────────────────────────────────────────
@@ -8681,6 +8761,16 @@
             <label>Date</label>
             <input type="date" id="em-date" />
           </div>
+          <div>
+            <!-- The only figure on a time-off row, and the one payroll has to be
+                 able to correct: a half day filed as a whole one is four hours
+                 of pay nobody meant to give. Blank is a real answer — it means
+                 nobody narrowed the day, which pays a full 8.00 h. -->
+            <label>Paid hours</label>
+            <input type="number" inputmode="decimal" min="0" max="24" step="0.25" id="em-off-hours"
+                   placeholder="${PAID_LEAVE_HOURS.toFixed(2)} (full day)" />
+            <div class="em-note">Blank = a full day at ${PAID_LEAVE_HOURS.toFixed(2)} h. Half day is ${(PAID_LEAVE_HOURS / 2).toFixed(2)}. Zero records an unpaid day off.</div>
+          </div>
           <div class="full">
             <label>Supervisor</label>
             <select id="em-sup">
@@ -8695,6 +8785,13 @@
         `;
         document.getElementById('em-off-type').value = e.time_off_type || 'vacation';
         document.getElementById('em-date').value     = e.work_date || '';
+        // Left EMPTY when the entry carries no hours, rather than prefilled
+        // with 8. Prefilling would have the first save of any old entry write a
+        // figure nobody chose, and "nobody said" would stop being tellable from
+        // "somebody said eight" — which is the distinction the nullable column
+        // exists to keep. The placeholder says what blank means.
+        document.getElementById('em-off-hours').value =
+          e.time_off_hours == null ? '' : String(Number(e.time_off_hours));
         const emOffSupSel = document.getElementById('em-sup');
         if (e.supervisor_id && !supervisors.some(s => String(s.id) === String(e.supervisor_id))) {
           // Supervisor no longer in the list — keep current value as a synthetic
@@ -8867,10 +8964,26 @@
         const offSupSel = document.getElementById('em-sup');
         const offSupOpt = offSupSel.options[offSupSel.selectedIndex];
         if (!offSupSel.value) { msg.textContent = 'Pick a supervisor.'; msg.classList.add('error'); return; }
+        // Validated here rather than left to the API, so the modal can say
+        // which box is wrong instead of surfacing a bare server error. An empty
+        // box is sent as null on purpose — that is "a full day", the reading
+        // every entry filed before this question existed already has.
+        const offHrsRaw = (document.getElementById('em-off-hours').value || '').trim();
+        let offHrs = null;
+        if (offHrsRaw !== '') {
+          const n = Number(offHrsRaw);
+          if (!Number.isFinite(n) || n < 0 || n > 24) {
+            msg.textContent = 'Paid hours must be between 0 and 24, or blank for a full day.';
+            msg.classList.add('error');
+            return;
+          }
+          offHrs = Math.round(n * 100) / 100;
+        }
         body = {
           entry_type: 'time_off',
           work_date: document.getElementById('em-date').value,
           time_off_type: document.getElementById('em-off-type').value,
+          time_off_hours: offHrs,
           supervisor_id:   offSupSel.value,
           supervisor_name: offSupOpt ? (offSupOpt.dataset.name || offSupOpt.textContent) : '',
           notes: document.getElementById('em-notes').value || '',

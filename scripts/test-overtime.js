@@ -419,6 +419,8 @@ console.log('\n[a week with no hours worked still describes itself honestly]');
 {
   const band = new Function(`
     const PAID_LEAVE_HOURS = 8;
+    const MAX_LEAVE_HOURS = 24;
+    ${requireFn(PAGE, 'leaveHoursOf',    'payroll.html')}
     ${requireFn(PAGE, 'escapeHtml',      'payroll.html')}
     ${requireFn(PAGE, 'prettyDateShort', 'payroll.html')}
     ${requireFn(PAGE, 'weekEndOf',       'payroll.html')}

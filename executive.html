@@ -1577,8 +1577,11 @@
       // Mirrors the Payroll page's timeOffCellHtml.
       const timeOffTitle = r => {
         const days = n => `${n} day${n === 1 ? '' : 's'}`;
+        // Not "8.00 h each": half days can be filed, and a total and a count
+        // cannot tell 4 + 12 from 8 + 8. The Payroll page's per-entry
+        // breakdown is where each day's own hours are.
         const bits = [r.approvedOff
-          ? `${days(r.approvedOff)} off, approved — 8.00 h each`
+          ? `${days(r.approvedOff)} off, approved — ${fmtHours(r.offHours || 0)} h in all`
           : 'No approved time off'];
         if (r.pendingOff) {
           bits.push(`${days(r.pendingOff)} still pending approval — ${fmtHours(r.pendingOffHours || 0)} h more once signed off, not counted here`);
@@ -1635,7 +1638,7 @@
                 <th class="col-num" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
                 <th class="col-num">Pending Hrs</th>
                 <th class="col-num">Approved Hrs</th>
-                <th class="col-num" title="Paid leave: every APPROVED day off in the period at 8.00 hours, whatever the reason on it. A day still waiting on a supervisor pays nothing yet. These hours are paid but never worked — they count toward no week's 40 and are never prevailing.">Time Off Hrs</th>
+                <th class="col-num" title="Paid leave: every APPROVED day off in the period, at the hours the entry says — a half day is 4.00, and one that says nothing is a full 8.00. A day still waiting on a supervisor pays nothing yet. These hours are paid but never worked — they count toward no week's 40 and are never prevailing.">Time Off Hrs</th>
                 <th class="col-num" title="Total + Time Off Hrs — the hours the check is cut for. Total is the hours WORKED, which is what the regular/overtime split is measured against; this is that plus the approved leave.">Total Paid</th>
                 <th>Status</th>
               </tr>

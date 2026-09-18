@@ -1576,6 +1576,12 @@ async function buildPayrollSummary(sql, companyCode) {
       haul_type,
       haul_hours::float                  AS haul_hours,
       haul_off_site_hours::float         AS haul_off_site_hours,
+      -- How long an approved day off was. Same trap as the three columns above,
+      -- and the same cost: leave this out and every time-off row arrives with
+      -- it undefined, which every reader takes as "nobody said" and pays as a
+      -- FULL day. A crew of half days would be reported at double the hours
+      -- they are owed, and nothing about the figure would look wrong.
+      time_off_hours::float              AS time_off_hours,
       -- id and created_at are here for the ORDER the overtime walk needs, not
       -- for display. Two entries on one date — a split day — are counted in
       -- sequence, and whichever comes first keeps the regular hours while the

@@ -59,7 +59,8 @@ function assert(label, cond, detail) {
 const RENDER_FNS = ['escapeHtml', 'prettyDate', 'prettyDateShort', 'prettyDiv', 'prettyOff',
   'dayFlagHtml', 'equipUsedPieces', 'equipUsedNames',
   'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours', 'weekStartOf', 'weekEndOf',
-  'stampKey', 'compareIds', 'byEntryOrder', 'timeOffPayHours', 'timeOffCell',
+  'stampKey', 'compareIds', 'byEntryOrder',
+  'timeOffPayHours', 'leaveHoursOf', 'offDayTitle', 'timeOffCell',
   'weeklyOvertime', 'detailColumnsRowHtml', 'weekBandHtml', 'reportDetailHtml',
   'buildReportModel', 'renderReport'];
 
@@ -70,7 +71,7 @@ const DETAIL_COLS_SRC = PAGE.slice(PAGE.indexOf('    const DETAIL_COLUMNS = ['),
 // What an approved day off pays, lifted from the page for the same reason: it
 // is money, and a copy of it here could disagree with the sheet payroll runs.
 const LEAVE_SRC = PAGE.slice(PAGE.indexOf('    const PAID_LEAVE_HOURS = 8;'),
-  PAGE.indexOf(';', PAGE.indexOf('    const PAID_LEAVE_HOURS = 8;')) + 1);
+  PAGE.indexOf(';', PAGE.indexOf('    const MAX_LEAVE_HOURS = ')) + 1);
 
 // The equipment pill's tooltip sentence, lifted rather than restated so the
 // two cannot drift. Same reason as DETAIL_COLS_SRC above.

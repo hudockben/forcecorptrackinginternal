@@ -345,6 +345,18 @@ console.log('\n[every consumer of payrollMetrics is fed haul_type]');
     assert(`  ${rel} passes haul_hours through as well`,
       allStar || explicitHours,
       `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
+    // And time_off_hours, which fails the same way and costs more. Every reader
+    // takes a missing value as "nobody said how long the day off was" and pays
+    // it as a FULL day — that is the rule that keeps entries approved before
+    // the column existed reporting what they always did. So a consumer that
+    // forgets the column does not report zero and does not error: it reports a
+    // crew of half days at DOUBLE the hours they are owed, and the figure looks
+    // perfectly ordinary. Silence is the failure mode, which is why it is
+    // checked here rather than left to a runtime assertion.
+    const explicitOff = cols.some(c => !/\*/.test(c) && /\btime_off_hours\b/.test(c));
+    assert(`  ${rel} passes time_off_hours through as well`,
+      allStar || explicitOff,
+      `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
   }
 }
 assert('hours are work plus travel',

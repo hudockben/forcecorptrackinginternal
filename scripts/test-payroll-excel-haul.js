@@ -48,8 +48,9 @@ const FNS = ['prettyDiv', 'prettyOff', 'isOffSiteHaul', 'offSiteHaulWork', 'haul
   'buildReportModel', 'colLetter', 'excelDateSerial', 'xmlEsc', 'xlsxRow', 'xlsxSheetXml',
   // The detail sheet carries a column of the machines the operator named.
   'equipUsedPieces', 'equipUsedNames',
-  // And what an approved day off pays, which is the only figure on such a row.
-  'timeOffPayHours',
+  // And what an approved day off pays, which is the only figure on such a row —
+  // read off the entry now that half days can be filed, so its reader comes too.
+  'timeOffPayHours', 'leaveHoursOf',
   'reportSummarySheetXml', 'reportDetailSheetXml'];
 // XS and the cell shorthands are consts, not functions — taken as a slice,
 // along with the one constant weeklyOvertime reaches for.
@@ -57,7 +58,8 @@ const CONST_END = "const cNum = (v, s) => ({ t: 'n', v, s });";
 const CONSTS = PAGE.slice(PAGE.indexOf('    const XS = {'),
   PAGE.indexOf(CONST_END) + CONST_END.length)
   + '\n' + PAGE.match(/const OT_WEEKLY_THRESHOLD = \d+;/)[0]
-  + '\n' + PAGE.match(/const PAID_LEAVE_HOURS = \d+;/)[0];
+  + '\n' + PAGE.match(/const PAID_LEAVE_HOURS = \d+;/)[0]
+  + '\n' + PAGE.match(/const MAX_LEAVE_HOURS = \d+;/)[0];
 
 const dom = new JSDOM(`<!doctype html><body>
   <input id="flt-from" value="2026-08-31"><input id="flt-to" value="2026-09-13">
@@ -87,9 +89,12 @@ const ENTRIES = [
   // A haul day with travel on top of it.
   day('2026-09-08', 9, { haul_type: 'off_site', haul_hours: 9, travel_hours: 1.5,
                          travel_to_site_hours: 1, travel_to_shop_hours: 0.5 }),
-  // Time off — no work hours at all, and never a haul.
+  // Time off — no work hours at all, and never a haul. A HALF day: the old flat
+  // rule would have paid it eight, so every figure below that reads 4.00 is
+  // checking the entry's own answer reached the sheet.
   { id: 'off1', username: 'beckerben', entry_type: 'time_off', status: 'approved',
-    work_date: '2026-09-09', time_off_type: 'vacation', created_at: '2026-09-09T12:00:00Z' },
+    work_date: '2026-09-09', time_off_type: 'vacation', time_off_hours: 4,
+    created_at: '2026-09-09T12:00:00Z' },
 ];
 
 const build = new Function('document', 'user', 'filtered', 'loadedScope',
@@ -147,7 +152,9 @@ console.log('\n[the detail sheet splits the day into labour and driving]');
   // Total Hours is the only column on this sheet that can carry it — the day
   // was not worked, so every other figure on the row is rightly empty.
   assert('  an approved day off still carries its pay in Total Hours',
-    total(7) === 8, String(total(7)));
+    total(7) === 4, String(total(7)));
+  assert('  at the length the ENTRY says, not a flat eight',
+    total(7) !== 8, 'a half day reached the sheet as a whole one');
   assert('  and it is tinted, so paid leave is findable in a wide sheet',
     sty(detail, `M${row(7)}`) === XS.numOff, String(sty(detail, `M${row(7)}`)));
 
@@ -164,11 +171,11 @@ console.log('\n[the detail sheet splits the day into labour and driving]');
   assert('the totals row adds both columns up',
     near(val(detail, `H${TOT}`), 12.5) && near(val(detail, `I${TOT}`), 41.5),
     `${val(detail, `H${TOT}`)} / ${val(detail, `I${TOT}`)}`);
-  // 55.50 worked over the fortnight, plus the one approved day off.
+  // 55.50 worked over the fortnight, plus the one approved half day.
   assert('  and its Total is the hours PAID, leave included',
-    near(val(detail, `M${TOT}`), 63.5), String(val(detail, `M${TOT}`)));
-  assert('  and says so, rather than leaving the extra eight unexplained',
-    /incl\. 8\.00 h paid leave/.test(String(val(detail, `A${TOT}`))), String(val(detail, `A${TOT}`)));
+    near(val(detail, `M${TOT}`), 59.5), String(val(detail, `M${TOT}`)));
+  assert('  and says so, rather than leaving the extra four unexplained',
+    /incl\. 4\.00 h paid leave/.test(String(val(detail, `A${TOT}`))), String(val(detail, `A${TOT}`)));
   assert('and the haul figures are tinted, so the column is findable in a wide sheet',
     sty(detail, `I${row(2)}`) === XS.numHaul && sty(detail, `I${TOT}`) === XS.totHaul);
 }
@@ -200,16 +207,17 @@ console.log('\n[the summary sheet splits the same way]');
     near(val(summary, `J${HDR + 1}`), 10.5), val(summary, `J${HDR + 1}`));
 
   // Paid leave: the one figure on this sheet with no timesheet behind it. The
-  // man took one approved day off in the fortnight, so he is owed eight hours
-  // nothing else on the row accounts for.
-  assert('the approved day off is eight paid hours of its own',
-    near(val(summary, `O${HDR + 1}`), 8), val(summary, `O${HDR + 1}`));
+  // man took one approved HALF day in the fortnight, so he is owed four hours
+  // nothing else on the row accounts for — and eight would be the old flat rule
+  // still running.
+  assert('the approved half day is four paid hours of its own',
+    near(val(summary, `O${HDR + 1}`), 4), val(summary, `O${HDR + 1}`));
   assert('  and Total Paid is the hours worked plus that leave',
-    near(val(summary, `P${HDR + 1}`), 63.5), val(summary, `P${HDR + 1}`));
+    near(val(summary, `P${HDR + 1}`), 59.5), val(summary, `P${HDR + 1}`));
   assert('  while Total Hours stays the hours WORKED — the 40 is measured on it',
     near(val(summary, `G${HDR + 1}`), 55.5), val(summary, `G${HDR + 1}`));
   assert('  the totals row carries both',
-    near(val(summary, `O${HDR + 2}`), 8) && near(val(summary, `P${HDR + 2}`), 63.5));
+    near(val(summary, `O${HDR + 2}`), 4) && near(val(summary, `P${HDR + 2}`), 59.5));
   assert('  and the leave is tinted like the haul column beside it',
     sty(summary, `O${HDR + 1}`) === XS.numOff && sty(summary, `O${HDR + 2}`) === XS.totOff);
 }

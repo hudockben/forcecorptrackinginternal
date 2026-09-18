@@ -40,9 +40,11 @@
 //     entered. An entry saved with only the sum contributes nothing to the legs,
 //     so they can add to less than travel_hours; travel_hours stays the
 //     authoritative figure.
-//   • AN APPROVED DAY OFF IS EIGHT PAID HOURS, and they are not hours worked.
-//     They stay out of the forty, out of prevailing and out of standard, and
-//     are added back only in totalPaidHours — see the paid-leave section below.
+//   • AN APPROVED DAY OFF IS PAID FOR THE HOURS THE ENTRY SAYS, and they are not
+//     hours worked. A half day is four; an entry that does not say is a full day
+//     of eight. They stay out of the forty, out of prevailing and out of
+//     standard, and are added back only in totalPaidHours — see the paid-leave
+//     section below.
 
 const num = v => {
   const n = Number(v);
@@ -127,22 +129,32 @@ function haulWorkHours(e, work) {
 
 // ── Paid leave ───────────────────────────────────────────────────────────────
 //
-// AN APPROVED DAY OFF IS EIGHT PAID HOURS. Vacation, holiday, sick, jury duty,
-// bereavement — the reason changes nothing about the pay; a full day is a full
-// day.
+// AN APPROVED DAY OFF IS PAID, AND THE ENTRY SAYS FOR HOW LONG. Vacation,
+// holiday, sick, jury duty, bereavement — the reason changes nothing about the
+// pay. What does change it is the length: HALF DAYS HAPPEN. A man takes the
+// morning for an appointment and works the afternoon, and the four hours he is
+// owed are four, not eight.
 //
-// The hours are not on the row to read. A 'time_off' entry carries a date and a
-// type and nothing else — every hours column on it is null (see
-// timesheet_entries in neon-schema.sql) — so eight hours is not a figure the
-// timesheet reports, it is what APPROVING the day MEANS. Until this existed the
-// payroll report simply did not say it: a fortnight with two approved vacation
-// days read 25.00 hours across every column, and the sixteen hours the man was
-// owed lived in whoever remembered them.
+// So the figure is read off time_off_hours, and PAID_LEAVE_HOURS is what a day
+// off means when nobody narrowed it — a full one. The column is nullable with
+// no DDL default precisely so those two stay distinguishable; see its comment
+// in neon-schema.sql.
+//
+//   n     → n paid hours. A half day is 4, and 0 is a real answer — an UNPAID
+//           day off, which is not the same fact as nobody answering.
+//   null  → nobody said, or an entry approved before the column existed. Reads
+//           as a FULL day, which is exactly what it has always paid. No
+//           fortnight changes its numbers on deploy.
+//
+// Until any of this existed the payroll report said nothing at all: a fortnight
+// with two approved vacation days read 25.00 hours across every column, and the
+// sixteen hours the man was owed lived in whoever remembered them.
 //
 // ONLY AN APPROVED DAY. A submitted request is a day the supervisor has still
-// to answer and is owed nothing yet; a draft was never even asked for. The
-// pending days are carried separately, as pendingOffHours, so payroll can see
-// what the approval queue is worth before it runs the cycle — but the paid
+// to answer and is owed nothing yet, whatever hours it asks for; a draft was
+// never even asked for. The pending days are carried separately, as
+// pendingOffHours — at the hours they ask for, so payroll can see what the
+// approval queue is actually worth before it runs the cycle — but the paid
 // figure counts approved days only, the same way approvedHours does.
 //
 // NEVER TOWARD THE FORTY. Paid leave is hours PAID, not hours WORKED, and hours
@@ -159,15 +171,43 @@ function haulWorkHours(e, work) {
 // those two columns had its answer changed by this.
 const PAID_LEAVE_HOURS = 8;
 
+/** The longest a single day off can pay, so one bad row cannot invent a week. */
+const MAX_LEAVE_HOURS = 24;
+
 /**
  * What a time-off entry pays.
  *
- * Eight hours once approved, nothing before that, and nothing at all for a
- * 'daily' row — which is why callers can hand it any entry.
+ * The entry's own hours once approved, a full day when it does not say, nothing
+ * before approval, and nothing at all for a 'daily' row — which is why callers
+ * can hand it any entry.
+ *
+ * A figure we cannot read is NOT a zero, and this is the same judgement
+ * offSiteHaulWork makes above: num() would turn an unreadable value into 0 and
+ * pay a man nothing for a day the office signed off. Each unreadable value
+ * falls through to the answer the column refines — a full day — which is what
+ * this entry paid before anyone could narrow it.
  */
 function timeOffPayHours(e) {
   if (!e || e.entry_type !== 'time_off') return 0;
-  return e.status === 'approved' ? PAID_LEAVE_HOURS : 0;
+  if (e.status !== 'approved') return 0;
+  return leaveHoursOf(e);
+}
+
+/**
+ * How long a time-off entry SAYS it is, approved or not.
+ *
+ * Split out from timeOffPayHours because the pending queue is measured in the
+ * same hours it will eventually be paid in — a pending half day is four hours
+ * of exposure, not eight — and that figure is wanted before anybody approves
+ * anything. Whether it is OWED is the caller's question, not this one's.
+ */
+function leaveHoursOf(e) {
+  if (!e || e.entry_type !== 'time_off') return 0;
+  if (e.time_off_hours == null) return PAID_LEAVE_HOURS;
+  const h = Number(e.time_off_hours);
+  // Negative is as unreadable as NaN: there is no such day.
+  if (!Number.isFinite(h) || h < 0) return PAID_LEAVE_HOURS;
+  return Math.min(h, MAX_LEAVE_HOURS);
 }
 
 // ── Overtime ─────────────────────────────────────────────────────────────────
@@ -468,8 +508,9 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
       // A day off pays nothing until somebody approves it, so the hours follow
       // the same submitted/approved line the daily hours do. offHours is what
       // payroll owes; pendingOffHours is what the queue is worth if it is signed
-      // off, and is never added into a paid total.
-      if (e.status === 'submitted') { acc.pendingOff++;  acc.pendingOffHours += PAID_LEAVE_HOURS; }
+      // off — at the hours each request actually asks for — and is never added
+      // into a paid total.
+      if (e.status === 'submitted') { acc.pendingOff++;  acc.pendingOffHours += leaveHoursOf(e); }
       if (e.status === 'approved')  { acc.approvedOff++; acc.offHours        += timeOffPayHours(e); }
     }
   }
@@ -520,6 +561,6 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
 module.exports = {
   payrollMetrics, COUNTED_STATUSES, offSiteHaulWork, haulWorkHours,
   weeklyOvertime, weekStartOf, weekEndOf, OT_WEEKLY_THRESHOLD,
-  PAID_LEAVE_HOURS, timeOffPayHours,
+  PAID_LEAVE_HOURS, MAX_LEAVE_HOURS, timeOffPayHours, leaveHoursOf,
   stampKey, compareIds,
 };
