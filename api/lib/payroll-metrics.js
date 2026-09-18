@@ -40,6 +40,9 @@
 //     entered. An entry saved with only the sum contributes nothing to the legs,
 //     so they can add to less than travel_hours; travel_hours stays the
 //     authoritative figure.
+//   • AN APPROVED DAY OFF IS EIGHT PAID HOURS, and they are not hours worked.
+//     They stay out of the forty, out of prevailing and out of standard, and
+//     are added back only in totalPaidHours — see the paid-leave section below.
 
 const num = v => {
   const n = Number(v);
@@ -120,6 +123,51 @@ function haulWorkHours(e, work) {
   const h = Number(e.haul_hours);
   if (!Number.isFinite(h)) return work;
   return Math.min(Math.max(h, 0), work);
+}
+
+// ── Paid leave ───────────────────────────────────────────────────────────────
+//
+// AN APPROVED DAY OFF IS EIGHT PAID HOURS. Vacation, holiday, sick, jury duty,
+// bereavement — the reason changes nothing about the pay; a full day is a full
+// day.
+//
+// The hours are not on the row to read. A 'time_off' entry carries a date and a
+// type and nothing else — every hours column on it is null (see
+// timesheet_entries in neon-schema.sql) — so eight hours is not a figure the
+// timesheet reports, it is what APPROVING the day MEANS. Until this existed the
+// payroll report simply did not say it: a fortnight with two approved vacation
+// days read 25.00 hours across every column, and the sixteen hours the man was
+// owed lived in whoever remembered them.
+//
+// ONLY AN APPROVED DAY. A submitted request is a day the supervisor has still
+// to answer and is owed nothing yet; a draft was never even asked for. The
+// pending days are carried separately, as pendingOffHours, so payroll can see
+// what the approval queue is worth before it runs the cycle — but the paid
+// figure counts approved days only, the same way approvedHours does.
+//
+// NEVER TOWARD THE FORTY. Paid leave is hours PAID, not hours WORKED, and hours
+// not worked cannot push a week into overtime — see the overtime section below,
+// which only ever looks at 'daily' entries. A man with 36 worked hours and a
+// paid holiday is paid 44 hours and no overtime, and that is not an oversight.
+//
+// NEVER PREVAILING, AND NOT STANDARD EITHER. The prevailing premium is for work
+// on a covered site and a man on vacation worked no site at all. But leave does
+// not fall into stdHours either: that pair splits the hours WORKED by the rate
+// they are paid at, and leave is not among them. It is counted on its own —
+// offHours — and added back at the end, in totalPaidHours. So pwHours + stdHours
+// still equals the hours worked, exactly as it did, and nothing that reads
+// those two columns had its answer changed by this.
+const PAID_LEAVE_HOURS = 8;
+
+/**
+ * What a time-off entry pays.
+ *
+ * Eight hours once approved, nothing before that, and nothing at all for a
+ * 'daily' row — which is why callers can hand it any entry.
+ */
+function timeOffPayHours(e) {
+  if (!e || e.entry_type !== 'time_off') return 0;
+  return e.status === 'approved' ? PAID_LEAVE_HOURS : 0;
 }
 
 // ── Overtime ─────────────────────────────────────────────────────────────────
@@ -345,7 +393,11 @@ function emptyEmployee(username) {
     regHours: 0, otHours: 0, otPwHours: 0, otStdHours: 0,
     weeks: [], otClipped: false,
     pendingHours: 0, approvedHours: 0,
+    // Days of time off, and what they pay. The counts are the requests; the
+    // hours are PAID_LEAVE_HOURS apiece, approved days only — see the
+    // paid-leave section above for why the pending ones are held apart.
     pendingOff: 0, approvedOff: 0,
+    offHours: 0, pendingOffHours: 0,
     daysWorked: 0,
     divisions: new Set(),
     _dates: new Set(),
@@ -358,7 +410,7 @@ const TOTAL_KEYS = [
   'pwHours', 'stdHours', 'haulHours', 'truckHours',
   'regHours', 'otHours', 'otPwHours', 'otStdHours',
   'pendingHours', 'approvedHours',
-  'pendingOff', 'approvedOff', 'daysWorked',
+  'pendingOff', 'approvedOff', 'offHours', 'pendingOffHours', 'daysWorked',
 ];
 
 function payrollMetrics({ entries, periodStart, periodEnd }) {
@@ -413,8 +465,12 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
       if (e.status === 'submitted') acc.pendingHours  += h;
       if (e.status === 'approved')  acc.approvedHours += h;
     } else if (e.entry_type === 'time_off') {
-      if (e.status === 'submitted') acc.pendingOff++;
-      if (e.status === 'approved')  acc.approvedOff++;
+      // A day off pays nothing until somebody approves it, so the hours follow
+      // the same submitted/approved line the daily hours do. offHours is what
+      // payroll owes; pendingOffHours is what the queue is worth if it is signed
+      // off, and is never added into a paid total.
+      if (e.status === 'submitted') { acc.pendingOff++;  acc.pendingOffHours += PAID_LEAVE_HOURS; }
+      if (e.status === 'approved')  { acc.approvedOff++; acc.offHours        += timeOffPayHours(e); }
     }
   }
 
@@ -435,6 +491,12 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
       r.otClipped  = ot.clipped;
       // Total is pending + approved, the way the page's Total column reads it.
       r.totalHours = r.pendingHours + r.approvedHours;
+      // And what the man is actually paid for: the hours he worked plus the
+      // days he was signed off for. Kept as a separate figure rather than
+      // folded into totalHours, because totalHours is the hours WORKED and has
+      // to keep equalling regHours + otHours — the overtime split is measured
+      // against it, and paid leave was never in it.
+      r.totalPaidHours = r.totalHours + r.offHours;
       r.divisions  = [...r.divisions].sort();
       r.hasPending = r.pendingHours > 0.001;
       return r;
@@ -446,6 +508,7 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
     totals[k] = employees.reduce((s, r) => s + (Number(r[k]) || 0), 0);
   }
   totals.totalHours = totals.pendingHours + totals.approvedHours;
+  totals.totalPaidHours = totals.totalHours + totals.offHours;
   // Overtime is per person per week, so a crew total is the sum of the people
   // and never a re-measurement of the crew — four men at 30 hours is 120 hours
   // and no overtime at all.
@@ -457,5 +520,6 @@ function payrollMetrics({ entries, periodStart, periodEnd }) {
 module.exports = {
   payrollMetrics, COUNTED_STATUSES, offSiteHaulWork, haulWorkHours,
   weeklyOvertime, weekStartOf, weekEndOf, OT_WEEKLY_THRESHOLD,
+  PAID_LEAVE_HOURS, timeOffPayHours,
   stampKey, compareIds,
 };

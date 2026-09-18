@@ -1074,6 +1074,7 @@ const PAYROLL_LIMITS = [
   'truckHours is a DIFFERENT figure from haulHours and the two are never added together. It is how much of the work was spent driving — BOTH hauls, on site and off — and it is already inside workHours: workHours minus truckHours is labour on the job. It moves no hours between prevailing and standard and says nothing about pay. Use it when asked what a crew actually produced, or how much of someone\'s time was hauling; a man can be all prevailing hours and all truckHours at once, because hauling on the covered site is both.',
   'OVERTIME IS PER WEEK, NEVER PER PAY PERIOD. otHours counts the hours past 40 in each MONDAY-TO-SUNDAY week, the two weeks of the period added together afterwards. Never derive it by subtracting 40 from a period total — 60 hours over a fortnight can be no overtime at all. regHours + otHours is the period total.',
   'Work and travel both count toward the 40. Paid leave does not: a holiday or vacation day is not hours worked and never pushes a week into overtime.',
+  'offHours is PAID LEAVE: every APPROVED day off at 8 hours, whatever the reason on it. It is hours paid, not hours worked, so it is in none of the other figures — not workHours, not travelHours, not prevailing or standard, and not the 40. pendingOffHours is what the unapproved requests would be worth and is owed to nobody yet; never add it to anything. totalHours is the hours WORKED (regHours + otHours); totalPaidHours is that plus offHours, and is the figure to use when asked what someone is paid for the period. Still no rates: these are hours.',
   'otPwHours is the part of otHours worked on a prevailing-wage job, and it is already inside otHours — not a separate bucket. It is called out because it is not the same money: prevailing-wage overtime pays 1.5x the BASE rate plus the FULL fringe, the fringe never multiplied. That is a rate statement, and the rates are not in this data.',
 ];
 
@@ -1159,6 +1160,13 @@ async function payrollDigest(c) {
       regHours:      round2(e.regHours),
       otHours:       round2(e.otHours),
       otPwHours:     round2(e.otPwHours),
+      // Paid leave, per person, for the same reason overtime is: "what is he
+      // paid for this fortnight" is a question about one man, and a crew total
+      // cannot answer it. Held apart from the hours worked above — see the
+      // limits.
+      offHours:       round2(e.offHours),
+      pendingOffHours: round2(e.pendingOffHours),
+      totalPaidHours: round2(e.totalPaidHours),
       daysWorked:    e.daysWorked,
     }))),
     limits: PAYROLL_LIMITS,

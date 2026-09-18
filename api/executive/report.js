@@ -1657,11 +1657,26 @@ async function buildPayrollSummary(sql, companyCode) {
       {
         label: 'Pending Hrs', value: hrs(t.pendingHours),
         tone: t.pendingHours > 0.001 ? 'amber' : 'green',
-        sub: t.pendingOff ? `${t.pendingOff} time-off request${t.pendingOff === 1 ? '' : 's'} too` : 'awaiting approval',
+        sub: t.pendingOff
+          ? `${t.pendingOff} time-off request${t.pendingOff === 1 ? '' : 's'} too — ${hrs(t.pendingOffHours)} h if approved`
+          : 'awaiting approval',
       },
       {
         label: 'Approved Hrs', value: hrs(t.approvedHours), tone: 'green',
-        sub: t.approvedOff ? `${t.approvedOff} time-off entr${t.approvedOff === 1 ? 'y' : 'ies'} too` : 'signed off',
+        sub: t.approvedOff
+          ? `plus ${t.approvedOff} approved day${t.approvedOff === 1 ? '' : 's'} off — ${hrs(t.offHours)} h of paid leave`
+          : 'signed off',
+      },
+      {
+        // The figure the check is cut from, and the reason this strip now has
+        // one: hours worked and hours paid stopped being the same number the
+        // moment paid leave was counted, and the office reads the strip before
+        // it reads the table.
+        label: 'Total Paid Hrs', value: hrs(t.totalPaidHours),
+        tone: t.offHours > 0.001 ? 'teal' : 'mute',
+        sub: t.offHours > 0.001
+          ? `${hrs(t.totalHours)} h worked + ${hrs(t.offHours)} h paid leave`
+          : 'no time off in this period',
       },
     ],
     rows: m.employees.map(e => ({
@@ -1684,6 +1699,13 @@ async function buildPayrollSummary(sql, companyCode) {
       approvedHours: e.approvedHours,
       pendingOff:    e.pendingOff,
       approvedOff:   e.approvedOff,
+      // Days off, and what they pay: an approved one is a full paid day.
+      // totalHours above is the hours WORKED — it has to stay that, because the
+      // regular/overtime split is measured against it — so the leave rejoins
+      // the row here, in the figure the check is cut from.
+      offHours:      e.offHours,
+      pendingOffHours: e.pendingOffHours,
+      totalPaidHours: e.totalPaidHours,
       hasPending:    e.hasPending,
     })),
     total: {
@@ -1705,6 +1727,9 @@ async function buildPayrollSummary(sql, companyCode) {
       approvedHours: t.approvedHours,
       pendingOff:    t.pendingOff,
       approvedOff:   t.approvedOff,
+      offHours:      t.offHours,
+      pendingOffHours: t.pendingOffHours,
+      totalPaidHours: t.totalPaidHours,
       hasPending:    t.pendingHours > 0.001,
       isTotal:       true,
     },

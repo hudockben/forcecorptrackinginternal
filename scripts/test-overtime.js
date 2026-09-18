@@ -418,9 +418,11 @@ console.log('\n[payroll.html says the same thing]');
 console.log('\n[a week with no hours worked still describes itself honestly]');
 {
   const band = new Function(`
+    const PAID_LEAVE_HOURS = 8;
     ${requireFn(PAGE, 'escapeHtml',      'payroll.html')}
     ${requireFn(PAGE, 'prettyDateShort', 'payroll.html')}
     ${requireFn(PAGE, 'weekEndOf',       'payroll.html')}
+    ${requireFn(PAGE, 'timeOffPayHours', 'payroll.html')}
     ${requireFn(PAGE, 'weekBandHtml',    'payroll.html')}
     return weekBandHtml;
   `)();
@@ -431,6 +433,10 @@ console.log('\n[a week with no hours worked still describes itself honestly]');
     !/submitted|approved/i.test(vacationWeek), vacationWeek);
   assert('  it says what it is: time off, and no hours toward the 40',
     /time off only/.test(vacationWeek) && /40/.test(vacationWeek), vacationWeek);
+  // And what the two approved days PAY. A band over a week nobody worked is
+  // exactly where the sixteen hours would otherwise go unsaid.
+  assert('  and it names the paid leave those days are worth',
+    /16\.00 h paid leave/.test(vacationWeek), vacationWeek);
   assert('  and it still names its own week',
     vacationWeek.includes('Week of'), vacationWeek);
 

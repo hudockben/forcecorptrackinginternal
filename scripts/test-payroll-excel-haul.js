@@ -48,13 +48,16 @@ const FNS = ['prettyDiv', 'prettyOff', 'isOffSiteHaul', 'offSiteHaulWork', 'haul
   'buildReportModel', 'colLetter', 'excelDateSerial', 'xmlEsc', 'xlsxRow', 'xlsxSheetXml',
   // The detail sheet carries a column of the machines the operator named.
   'equipUsedPieces', 'equipUsedNames',
+  // And what an approved day off pays, which is the only figure on such a row.
+  'timeOffPayHours',
   'reportSummarySheetXml', 'reportDetailSheetXml'];
 // XS and the cell shorthands are consts, not functions — taken as a slice,
 // along with the one constant weeklyOvertime reaches for.
 const CONST_END = "const cNum = (v, s) => ({ t: 'n', v, s });";
 const CONSTS = PAGE.slice(PAGE.indexOf('    const XS = {'),
   PAGE.indexOf(CONST_END) + CONST_END.length)
-  + '\n' + PAGE.match(/const OT_WEEKLY_THRESHOLD = \d+;/)[0];
+  + '\n' + PAGE.match(/const OT_WEEKLY_THRESHOLD = \d+;/)[0]
+  + '\n' + PAGE.match(/const PAID_LEAVE_HOURS = \d+;/)[0];
 
 const dom = new JSDOM(`<!doctype html><body>
   <input id="flt-from" value="2026-08-31"><input id="flt-to" value="2026-09-13">
@@ -120,7 +123,7 @@ const XS = new Function(`${CONSTS} return XS;`)();
 // ── Sheet 2: one row per submission ─────────────────────────────────────────
 console.log('\n[the detail sheet splits the day into labour and driving]');
 {
-  const HDR = 5;                       // header row; entries start beneath it
+  const HDR = 6;                       // header row; entries start beneath it
   assert('the Work column says it is labour',
     val(detail, `H${HDR}`) === 'Work Hours (labour)', val(detail, `H${HDR}`));
   assert('and the new column beside it says it is driving',
@@ -140,6 +143,13 @@ console.log('\n[the detail sheet splits the day into labour and driving]');
   assert('and travel is not part of either figure',
     work(6) === 0 && haul(6) === 9 && total(6) === 10.5);
   assert('time off posts neither', work(7) == null && haul(7) == null);
+  // But it is NOT a blank row. An approved day off is a full paid day, and
+  // Total Hours is the only column on this sheet that can carry it — the day
+  // was not worked, so every other figure on the row is rightly empty.
+  assert('  an approved day off still carries its pay in Total Hours',
+    total(7) === 8, String(total(7)));
+  assert('  and it is tinted, so paid leave is findable in a wide sheet',
+    sty(detail, `M${row(7)}`) === XS.numOff, String(sty(detail, `M${row(7)}`)));
 
   // The point of the split: it moves hours between two columns and nowhere else.
   let ok = true;
@@ -154,6 +164,11 @@ console.log('\n[the detail sheet splits the day into labour and driving]');
   assert('the totals row adds both columns up',
     near(val(detail, `H${TOT}`), 12.5) && near(val(detail, `I${TOT}`), 41.5),
     `${val(detail, `H${TOT}`)} / ${val(detail, `I${TOT}`)}`);
+  // 55.50 worked over the fortnight, plus the one approved day off.
+  assert('  and its Total is the hours PAID, leave included',
+    near(val(detail, `M${TOT}`), 63.5), String(val(detail, `M${TOT}`)));
+  assert('  and says so, rather than leaving the extra eight unexplained',
+    /incl\. 8\.00 h paid leave/.test(String(val(detail, `A${TOT}`))), String(val(detail, `A${TOT}`)));
   assert('and the haul figures are tinted, so the column is findable in a wide sheet',
     sty(detail, `I${row(2)}`) === XS.numHaul && sty(detail, `I${TOT}`) === XS.totHaul);
 }
@@ -161,7 +176,7 @@ console.log('\n[the detail sheet splits the day into labour and driving]');
 // ── Sheet 1: one row per employee ───────────────────────────────────────────
 console.log('\n[the summary sheet splits the same way]');
 {
-  const HDR = 9;
+  const HDR = 10;
   assert('its headers say the same thing',
     val(summary, `B${HDR}`) === 'Work Hours (labour)'
     && val(summary, `C${HDR}`) === 'Haul Hours (driving)');
@@ -183,6 +198,20 @@ console.log('\n[the summary sheet splits the same way]');
   // it. Sep 3: 8.00 h hauled ON the site — all driving, all prevailing.
   assert('prevailing hours are untouched by the labour/haul split',
     near(val(summary, `J${HDR + 1}`), 10.5), val(summary, `J${HDR + 1}`));
+
+  // Paid leave: the one figure on this sheet with no timesheet behind it. The
+  // man took one approved day off in the fortnight, so he is owed eight hours
+  // nothing else on the row accounts for.
+  assert('the approved day off is eight paid hours of its own',
+    near(val(summary, `O${HDR + 1}`), 8), val(summary, `O${HDR + 1}`));
+  assert('  and Total Paid is the hours worked plus that leave',
+    near(val(summary, `P${HDR + 1}`), 63.5), val(summary, `P${HDR + 1}`));
+  assert('  while Total Hours stays the hours WORKED — the 40 is measured on it',
+    near(val(summary, `G${HDR + 1}`), 55.5), val(summary, `G${HDR + 1}`));
+  assert('  the totals row carries both',
+    near(val(summary, `O${HDR + 2}`), 8) && near(val(summary, `P${HDR + 2}`), 63.5));
+  assert('  and the leave is tinted like the haul column beside it',
+    sty(summary, `O${HDR + 1}`) === XS.numOff && sty(summary, `O${HDR + 2}`) === XS.totOff);
 }
 
 // ── The workbook still describes itself correctly ───────────────────────────
@@ -194,19 +223,21 @@ console.log('\n[the sheets declare the width they now have]');
   // operator named and the hours on each, which is what a production rate is
   // pivoted on.
   assert('the detail sheet filters and sizes 23 columns',
-    /<autoFilter ref="A5:W\d+"\/>/.test(dXml)
+    /<autoFilter ref="A6:W\d+"\/>/.test(dXml)
     && (dXml.match(/<col /g) || []).length === 23
     && /<dimension ref="A1:W\d+"\/>/.test(dXml));
-  assert('the summary sheet filters and sizes 16',
-    /<autoFilter ref="A9:P\d+"\/>/.test(sXml)
-    && (sXml.match(/<col /g) || []).length === 16
-    && /<dimension ref="A1:P\d+"\/>/.test(sXml));
+  // 17 since paid leave was given a column of its own and a Total Paid beside
+  // it — the hours the check is cut for, which Total Hours is not.
+  assert('the summary sheet filters and sizes 17',
+    /<autoFilter ref="A10:Q\d+"\/>/.test(sXml)
+    && (sXml.match(/<col /g) || []).length === 17
+    && /<dimension ref="A1:Q\d+"\/>/.test(sXml));
   // A style index with no xf behind it is a cell Excel refuses to open.
   const styles = PAGE.slice(PAGE.indexOf('const XLSX_STYLES'), PAGE.indexOf('</styleSheet>'));
   const count = Number((styles.match(/<cellXfs count="(\d+)">/) || [])[1]);
   const defined = (styles.match(/<xf numFmtId=/g) || []).length - 1;  // less cellStyleXfs
   assert(`every style index the sheets use exists (${count} declared)`,
-    count === defined && count > Math.max(XS.numHaul, XS.totHaul),
+    count === defined && count > Math.max(XS.numHaul, XS.totHaul, XS.numOff, XS.totOff),
     `declared ${count}, defined ${defined}`);
   for (const [n, c] of [['fonts', 'font'], ['fills', 'fill']]) {
     const declared = Number((styles.match(new RegExp(`<${n} count="(\\d+)">`)) || [])[1]);
