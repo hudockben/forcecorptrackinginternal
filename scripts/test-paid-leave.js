@@ -50,6 +50,15 @@ const {
 // One brace matcher, shared — see scripts/lib/fn-source.js for why.
 const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 
+/** A top-level `const` array/object lifted from a page, marker to marker. */
+function sliceConst(src, start, end) {
+  const a = src.indexOf(start);
+  if (a < 0) throw new Error(`could not find ${start}`);
+  const b = src.indexOf(end, a);
+  if (b < 0) throw new Error(`could not close ${start}`);
+  return src.slice(a, b + end.length);
+}
+
 const ROOT = path.resolve(__dirname, '..');
 const PAGE = fs.readFileSync(path.join(ROOT, 'payroll.html'),    'utf8');
 const EXEC = fs.readFileSync(path.join(ROOT, 'executive.html'),  'utf8');
@@ -453,6 +462,16 @@ console.log('\n[the API stores what the form asked for, and refuses what it cann
   // Deliberately NOT safeHours, which turns anything it cannot use into null.
   // Null here is not "no answer", it is a specific one — a full paid day — so a
   // fat-fingered 88 would be silently paid as eight hours.
+  // Whitespace is nobody saying, not somebody saying zero. Number('  ') is 0,
+  // finite and in range, so an untrimmed guard stored a box full of spaces as
+  // an UNPAID day off — the one conversion the whole branch exists to prevent.
+  assert('a box holding only whitespace is NOT an unpaid day — it is no answer',
+    post({ time_off_hours: '  ' }).data.time_off_hours === null
+    && post({ time_off_hours: '\t' }).data.time_off_hours === null,
+    String(post({ time_off_hours: '  ' }).data.time_off_hours));
+  assert('  and a padded number is still that number',
+    post({ time_off_hours: ' 4 ' }).data.time_off_hours === 4);
+
   for (const bad of [88, -1, 'abc', NaN, Infinity]) {
     assert(`  ${JSON.stringify(bad)} is an ERROR, not a quiet fall back to a full day`,
       !!post({ time_off_hours: bad }).error, JSON.stringify(post({ time_off_hours: bad })));
@@ -514,6 +533,14 @@ console.log('\n[the timesheet form asks how long the day off is]');
   assert('  and the form validates the box before sending it',
     /function offHoursValue\(\)/.test(TS) && /between 0 and 24/.test(TS));
 
+  // The control's default lives in a variable, not in the markup, so something
+  // has to light it. resetForm() is not called at load, so without this the
+  // first time-off request after opening the page showed three muted segments —
+  // the look the page uses for a question NOBODY HAS ANSWERED, over a control
+  // that is answered and will file a full day.
+  assert('the control is painted at page load, not left looking unanswered',
+    /async function init\(\)[\s\S]{0,900}?renderOffLen\(\);/.test(TS));
+
   // Loading a saved draft must agree with the sheet about what it says.
   assert('a saved draft reopens on the length it was saved with',
     /savedOff === OFF_LEN_HOURS\.half/.test(TS) && /setOffLen\('other', false\)/.test(TS));
@@ -526,6 +553,88 @@ console.log('\n[the timesheet form asks how long the day off is]');
     /e\.time_off_hours == null \? '' : String\(Number\(e\.time_off_hours\)\)/.test(PAY));
   assert('the audit trail records the figure, so a changed half day is traceable',
     /'Time Off Paid Hours'/.test(PAY) && /snap\.time_off_hours/.test(PAY));
+}
+
+// ── The audit CSV lines up, column for column ───────────────────────────────
+// A reconciliation export is worth nothing if its header and its rows disagree
+// about how many columns there are: one extra cell in the row array shifts
+// every figure right of it under the wrong heading, and the file still opens
+// cleanly in Excel. This change edited BOTH arrays, and nothing executed either
+// — so it is executed here, against the page's own source.
+console.log('\n[the audit CSV header and row still describe the same columns]');
+{
+  const PAY = fs.readFileSync(path.join(ROOT, 'payroll.html'), 'utf8');
+  const csv = new Function(`
+    ${sliceConst(PAY, '    const CSV_HEADERS = [', '];')}
+    ${requireFn(PAY, 'csvEscape',       'payroll.html')}
+    ${requireFn(PAY, 'yn',              'payroll.html')}
+    ${requireFn(PAY, 'equipUsedPieces', 'payroll.html')}
+    ${requireFn(PAY, 'equipUsedNames',  'payroll.html')}
+    ${requireFn(PAY, 'buildAuditCsv',   'payroll.html')}
+    return { CSV_HEADERS, buildAuditCsv };
+  `)();
+
+  const ev = (snap, over = {}) => Object.assign({
+    id: 1, created_at: '2026-09-18T12:00:00Z', action: 'UPDATE', entry_id: 9,
+    username: 'office', user_id: 42, changes: null, snapshot: snap,
+  }, over);
+
+  // A half day, an entry that says nothing, and a day worked — the three row
+  // shapes the export has to line up identically.
+  const out = csv.buildAuditCsv([
+    ev({ username: 'boringjamey', status: 'approved', work_date: '2026-09-18',
+         entry_type: 'time_off', time_off_type: 'vacation', time_off_hours: 4 }),
+    ev({ username: 'boringjamey', status: 'approved', work_date: '2026-09-17',
+         entry_type: 'time_off', time_off_type: 'vacation' }),
+    ev({ username: 'boringjamey', status: 'approved', work_date: '2026-09-16',
+         entry_type: 'daily', division: 'quarry', job_label: 'Homer City',
+         computed_hours: 8, travel_hours: 0 }),
+  ]);
+
+  // Split on commas OUTSIDE quotes, the way a CSV reader does — walked
+  // character by character rather than matched with a regex, because a regex
+  // that finds fields silently loses a TRAILING EMPTY one (every row here ends
+  // with an empty Changes column), and a parser that miscounts by one is
+  // exactly the bug this block is here to detect.
+  const cells = line => {
+    const out = [];
+    let cur = '', q = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (q) {
+        if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+        else if (c === '"') q = false;
+        else cur += c;
+      } else if (c === '"') q = true;
+      else if (c === ',') { out.push(cur); cur = ''; }
+      else cur += c;
+    }
+    out.push(cur);
+    return out;
+  };
+  const lines = out.replace(/^\uFEFF/, '').split('\r\n').filter(Boolean);
+  const head  = cells(lines[0]);
+
+  assert('the header is the page\'s own CSV_HEADERS', head.length === csv.CSV_HEADERS.length,
+    `${head.length} vs ${csv.CSV_HEADERS.length}`);
+  assert('  and every data row has exactly as many cells as the header',
+    lines.slice(1).every(l => cells(l).length === head.length),
+    lines.slice(1).map(l => cells(l).length).join(', '));
+
+  const col = name => head.indexOf(name);
+  assert('  the paid-hours column exists and is named', col('Time Off Paid Hours') > -1);
+  const rows = lines.slice(1).map(cells);
+  assert('  a half day records 4.00 under it',
+    rows[0][col('Time Off Paid Hours')] === '4.00', rows[0][col('Time Off Paid Hours')]);
+  // Blank, not 8.00. Writing the fallback here would record an answer nobody
+  // gave, in the one file whose job is to say who said what.
+  assert('  an entry that never said records BLANK, not the 8.00 it pays',
+    rows[1][col('Time Off Paid Hours')] === '', JSON.stringify(rows[1][col('Time Off Paid Hours')]));
+  assert('  and a day WORKED records blank too', rows[2][col('Time Off Paid Hours')] === '');
+  // The column right of it must still be Notes, or everything shifted.
+  assert('  the columns after it did not shift',
+    head[col('Time Off Paid Hours') + 1] === 'Notes'
+    && head[head.length - 1] === 'Changes (JSON)', head.slice(-3).join(' | '));
 }
 
 // ── The executive report reads the same numbers ─────────────────────────────

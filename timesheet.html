@@ -1779,6 +1779,13 @@
       const today = todayStr();
       document.getElementById('f-date').value     = today;
       document.getElementById('f-off-date').value = today;
+      // The "how long" control's default lives in a variable, not in the
+      // markup, so nothing has lit it yet. resetForm() would — but it is not
+      // called at load, so on a freshly opened page all three segments painted
+      // muted and unlit: exactly the look .seg-3.needs uses for a question
+      // NOBODY HAS ANSWERED, over a control that is in fact answered and will
+      // file a full day. The state was right and the page said otherwise.
+      renderOffLen();
 
       await Promise.all([loadSupervisors(), loadEntries()]);
     }

@@ -4254,9 +4254,17 @@ function normalizeEntryBody(body) {
     //
     // Zero is allowed, and is not the same as absent: it is an UNPAID day off,
     // which is a real thing the office records.
+    //
+    // Trimmed before the emptiness test, and that is not tidiness: Number('  ')
+    // is 0, which is finite and in range, so a box holding nothing but spaces
+    // would have been stored as an UNPAID day off — the one conversion this
+    // whole branch exists to prevent, turning "nobody said" into "paid
+    // nothing". safeHours has the same hole and it costs nothing there; here it
+    // costs a man a day's pay.
+    const rawOffHours = body.time_off_hours == null ? '' : String(body.time_off_hours).trim();
     let time_off_hours = null;
-    if (body.time_off_hours != null && body.time_off_hours !== '') {
-      const n = Number(body.time_off_hours);
+    if (rawOffHours !== '') {
+      const n = Number(rawOffHours);
       if (!Number.isFinite(n) || n < 0 || n > 24) {
         return { error: 'time_off_hours must be a number between 0 and 24' };
       }
