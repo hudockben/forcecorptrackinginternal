@@ -7503,7 +7503,9 @@
         // side rather than printing 0.00 when only travel exists.
         //
         // A time-off row has neither, and its Total is not nothing: an APPROVED
-        // day off is a full paid day. It is the only figure on such a row, and
+        // day off pays the hours its entry says — a full day only when it does
+        // not say, and zero when it says zero. It is the only figure on such a
+        // row, and
         // the row is where payroll sees it while reviewing — a dash here is how
         // the eight hours went unnoticed until the cycle was already run. A day
         // still pending is owed nothing yet and keeps its dash.

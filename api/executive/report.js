@@ -1711,7 +1711,9 @@ async function buildPayrollSummary(sql, companyCode) {
       approvedHours: e.approvedHours,
       pendingOff:    e.pendingOff,
       approvedOff:   e.approvedOff,
-      // Days off, and what they pay: an approved one is a full paid day.
+      // Days off, and what they pay: an approved one pays the hours its entry
+      // says — four for a half day, zero for an unpaid one, a full day only
+      // when it does not say.
       // totalHours above is the hours WORKED — it has to stay that, because the
       // regular/overtime split is measured against it — so the leave rejoins
       // the row here, in the figure the check is cut from.

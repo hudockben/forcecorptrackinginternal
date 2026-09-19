@@ -277,11 +277,23 @@ console.log('\n[payroll.html says the same thing]');
     ${requireFn(PAGE, 'timeOffPayHours', 'payroll.html')}
     return timeOffPayHours;
   `)();
+  // Every shape a row arrives in — INCLUDING ones that carry the column. Without
+  // those the two copies were only ever compared on entries that say nothing,
+  // which is the one input where a copy that ignored time_off_hours entirely
+  // would still agree.
   const cases = [
     off('2026-09-17'),
     off('2026-09-17', { status: 'submitted' }),
     off('2026-09-17', { status: 'draft' }),
     off('2026-09-17', { time_off_type: 'holiday' }),
+    off('2026-09-17', { time_off_hours: 4 }),
+    off('2026-09-17', { time_off_hours: 0 }),
+    off('2026-09-17', { time_off_hours: 7.5 }),
+    off('2026-09-17', { time_off_hours: '4' }),
+    off('2026-09-17', { time_off_hours: 'abc' }),
+    off('2026-09-17', { time_off_hours: -2 }),
+    off('2026-09-17', { time_off_hours: 900 }),
+    off('2026-09-17', { status: 'submitted', time_off_hours: 4 }),
     day('2026-09-14'),
     null,
   ];
@@ -487,9 +499,26 @@ console.log('\n[the API stores what the form asked for, and refuses what it cann
   // The column has to be in the INSERT and the UPDATE, or the form's answer is
   // validated and then thrown away.
   const API = fs.readFileSync(path.join(ROOT, 'api/timesheet-entries.js'), 'utf8');
-  assert('the INSERT names the column and binds it',
-    /INSERT INTO timesheet_entries[\s\S]*?\btime_off_hours\b[\s\S]*?VALUES/.test(API)
-    && /\$\{data\.time_off_hours\}/.test(API));
+
+  // Sliced to the INSERT, and then to its two halves. Checked against the WHOLE
+  // file, the binding half of this passed on the UPDATE's own
+  // `time_off_hours = ${data.time_off_hours}` further down — so the INSERT's
+  // VALUES entry could be replaced with a literal NULL and nothing failed. Every
+  // new entry would file as "nobody said", every half day would pay eight, and
+  // the guard on the write path would report itself green. Verified by making
+  // that exact edit and watching this fail.
+  const insertStart = API.indexOf('INSERT INTO timesheet_entries');
+  const insert = API.slice(insertStart, API.indexOf('RETURNING *', insertStart));
+  const [cols, vals] = insert.split(/\bVALUES\b/);
+  assert('the INSERT is sliced, and has both halves', !!cols && !!vals);
+  assert('  its column list names time_off_hours', /\btime_off_hours\b/.test(cols));
+  assert('  and its VALUES list binds the value, not a literal',
+    /\$\{data\.time_off_hours\}/.test(vals), vals.slice(0, 200));
+  // The column list and the VALUES list must also still be the same length, or
+  // every column right of the break is bound to its neighbour's value.
+  assert('  and the two lists are still the same length',
+    (cols.match(/,/g) || []).length === (vals.match(/,/g) || []).length,
+    `${(cols.match(/,/g) || []).length} vs ${(vals.match(/,/g) || []).length}`);
   assert('the UPDATE writes it', /time_off_hours\s*=\s*\$\{data\.time_off_hours\}/.test(API));
   assert('and the row mapper sends it to the browser as a number or null, never 0',
     /time_off_hours:\s*r\.time_off_hours != null \? Number\(r\.time_off_hours\) : null/.test(API));
@@ -532,6 +561,16 @@ console.log('\n[the timesheet form asks how long the day off is]');
     /time_off_hours: len\.hours/.test(TS));
   assert('  and the form validates the box before sending it',
     /function offHoursValue\(\)/.test(TS) && /between 0 and 24/.test(TS));
+
+  // "Other" seeds the box from the answer being LEFT, not from a constant. Read
+  // after offLen is reassigned it is always 'other', so the seed could only be a
+  // full day: a man who picked Half day and then tapped Other to adjust it found
+  // 8 in the box, and submitting without typing — the numeric keypad covers the
+  // field on a phone — filed a whole paid day on an entry he had already told
+  // the form was half of one. Four hours of pay, from a default.
+  assert('"Other" seeds from the answer being left, not always a full day',
+    /const prev = offLen;/.test(TS)
+    && /OFF_LEN_HOURS\[prev\] != null \? OFF_LEN_HOURS\[prev\] : OFF_LEN_HOURS\.full/.test(TS));
 
   // The control's default lives in a variable, not in the markup, so something
   // has to light it. resetForm() is not called at load, so without this the
@@ -707,6 +746,16 @@ console.log('\n[the executive report carries it through]');
     /offHours:\s+t\.offHours/.test(API) && /totalPaidHours:\s+t\.totalPaidHours/.test(API));
   assert('  and the strip names the hours the check is cut for',
     /label: 'Total Paid Hrs'/.test(API));
+
+  // The assistant is asked "did he take any time off", which is a question
+  // about DAYS. Answered from offHours alone, an approved unpaid day reads as
+  // none — the crew totals carried the counts all along, the per-person list
+  // did not, and per person is where the question is actually asked.
+  const DIG = fs.readFileSync(path.join(ROOT, 'api/lib/mathis-digests.js'), 'utf8');
+  assert('the digest sends the day COUNTS per employee, not only the hours',
+    /approvedOff:\s+e\.approvedOff/.test(DIG) && /pendingOff:\s+e\.pendingOff/.test(DIG));
+  assert('  and says outright that 0.00 hours is not the same as no leave',
+    /OFFHOURS OF 0\.00 DOES NOT MEAN NO LEAVE/.test(DIG));
   assert('the executive table reads offHours, not a count of requests',
     /r\.offHours/.test(EXEC) && !/\$\{r\.pendingOff\} pending \/ \$\{r\.approvedOff\} approved/.test(EXEC));
   assert('  and shows Total Paid beside it',
