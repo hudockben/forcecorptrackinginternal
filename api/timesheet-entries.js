@@ -497,6 +497,11 @@ function dbToEntry(r) {
     supervisor_name:     r.supervisor_name || '',
     notes:               r.notes || '',
     time_off_type:       r.time_off_type || '',
+    // Null is not zero here: it means nobody said how long the day off was, and
+    // every reader takes that as a FULL day — the eight hours it has always
+    // paid. Zero is a different answer, an unpaid day, and survives as one.
+    // See the column comment in neon-schema.sql.
+    time_off_hours:      r.time_off_hours != null ? Number(r.time_off_hours) : null,
     truck_unit:          r.truck_unit || '',
     truck_description:   r.truck_description || '',
     ees_unit:            r.ees_unit || '',
@@ -1760,7 +1765,32 @@ function validateQuarryInjection(activity, raw) {
     for (const [k, v] of Object.entries(vals)) {
       if (v == null) return { error: quarryRangeError(k, q[k]) };
     }
-    return { fields: { ...vals, comments: safeStr(q.comments, 2000) || '' } };
+    // What the plant was making. Deliberately assembled AFTER the loop above and
+    // not inside `vals`: a product put through quarryNum comes back null on any
+    // real name, and the loop would then reject every crushing approval in the
+    // company with "productName must be between 0 and undefined". Carried as the
+    // id/name PAIR the crushing grid stores (quarry.html normalizeCrushRow), so
+    // tons group by the product itself and survive a later rename; the name
+    // alone is what the grid's Product column prints.
+    const productId   = safeStr(q.productId, 200) || '';
+    const productName = safeStr(q.productName, 255) || '';
+    // REQUIRED, and checked here because here is the only place every path
+    // goes through — the approve modal, bulk approve, and a division override
+    // pointed at a crushing job all land on this function. An untagged row is
+    // tons with no material on them, and the quarry tab renders an injected row
+    // read-only, so it is not a gap anyone downstream can close afterwards.
+    //
+    // Last, after the range loop, so a day with both a bad number and no
+    // product is still told about the number it can see on screen.
+    if (!productName) {
+      return { error: 'Pick the product this day was crushing — the quarry tab shows payroll rows read-only, so it cannot be tagged later' };
+    }
+    return { fields: {
+      ...vals,
+      productId,
+      productName,
+      comments:    safeStr(q.comments, 2000) || '',
+    } };
   }
   return { error: 'Unknown quarry activity' };
 }
@@ -1867,6 +1897,8 @@ async function buildQuarryRow(sql, companyCode, entry, activity, fields, opts = 
     : {
         ...base,
         comments:       fields.comments,
+        productId:      fields.productId,
+        productName:    fields.productName,
         hourlyRate:     fields.hourlyRate,
         hours,
         hoursCrushing:  fields.hoursCrushing,
@@ -4343,6 +4375,36 @@ function normalizeEntryBody(body) {
     const supervisor_id   = safeInt(body.supervisor_id);
     const supervisor_name = safeStr(body.supervisor_name, 200);
     if (!supervisor_name) return { error: 'supervisor_name is required' };
+    // HOW LONG THE DAY OFF WAS. Absent is fine and means a full day — that is
+    // what every entry filed before the question existed means, and it is what
+    // the column's NULL reads as everywhere downstream.
+    //
+    // Present and unusable is NOT fine, and deliberately does not go through
+    // safeHours the way the travel legs do. safeHours turns anything it cannot
+    // use into null, which here is not "no answer" but a specific answer — a
+    // full paid day. A worker who fat-fingers 88 into the box would be told
+    // nothing and paid eight hours for it. This is the figure the day is paid
+    // from, so an answer nobody can read is an error, not a default.
+    //
+    // Zero is allowed, and is not the same as absent: it is an UNPAID day off,
+    // which is a real thing the office records.
+    //
+    // Trimmed before the emptiness test, and that is not tidiness: Number('  ')
+    // is 0, which is finite and in range, so a box holding nothing but spaces
+    // would have been stored as an UNPAID day off — the one conversion this
+    // whole branch exists to prevent, turning "nobody said" into "paid
+    // nothing". safeHours has the same hole and it costs nothing there; here it
+    // costs a man a day's pay.
+    const rawOffHours = body.time_off_hours == null ? '' : String(body.time_off_hours).trim();
+    let time_off_hours = null;
+    if (rawOffHours !== '') {
+      const n = Number(rawOffHours);
+      if (!Number.isFinite(n) || n < 0 || n > 24) {
+        return { error: 'time_off_hours must be a number between 0 and 24' };
+      }
+      // Rounded to match the NUMERIC(6,2) column, as safeHours does.
+      time_off_hours = Math.round(n * 100) / 100;
+    }
     return {
       data: {
         entry_type,
@@ -4364,6 +4426,7 @@ function normalizeEntryBody(body) {
         supervisor_name,
         notes:                safeStr(body.notes, 2000),
         time_off_type,
+        time_off_hours,
         truck_unit:           null,
         truck_description:    null,
         ees_unit:             null,
@@ -4478,6 +4541,9 @@ function normalizeEntryBody(body) {
       supervisor_name,
       notes:              safeStr(body.notes, 2000),
       time_off_type:      null,
+      // A day worked is not a day off. Nulled explicitly, like time_off_type
+      // beside it, so switching an entry from time off to daily clears it.
+      time_off_hours:     null,
       truck_unit,
       truck_description,
       ees_unit,
@@ -4604,7 +4670,7 @@ module.exports = async (req, res) => {
           travel_to_site_hours, travel_to_shop_hours, travel_hours,
           lunch_break, operated_equipment, equipment_used, haul_type,
           supervisor_id, supervisor_name,
-          notes, time_off_type,
+          notes, time_off_type, time_off_hours,
           truck_unit, truck_description,
           ees_unit, ees_customer, ees_location, ees_name, ees_job_number, ees_billing,
           split_group_id, split_index, split_count
@@ -4616,7 +4682,7 @@ module.exports = async (req, res) => {
           ${data.lunch_break}, ${data.operated_equipment},
           ${data.equipment_used ? JSON.stringify(data.equipment_used) : null}, ${data.haul_type},
           ${data.supervisor_id}, ${data.supervisor_name},
-          ${data.notes}, ${data.time_off_type},
+          ${data.notes}, ${data.time_off_type}, ${data.time_off_hours},
           ${data.truck_unit}, ${data.truck_description},
           ${data.ees_unit}, ${data.ees_customer}, ${data.ees_location},
           ${data.ees_name}, ${data.ees_job_number}, ${data.ees_billing},
@@ -4788,6 +4854,11 @@ module.exports = async (req, res) => {
                   AND b.job_id     IS NOT DISTINCT FROM a.job_id
                   AND b.start_time IS NOT DISTINCT FROM a.start_time
                   AND b.end_time   IS NOT DISTINCT FROM a.end_time)
+             -- Matched on the TYPE alone, deliberately not on time_off_hours:
+             -- one day off of one kind per day is the whole rule, and a man who
+             -- meant to change four hours to eight edits the entry he has. Two
+             -- half-day vacation rows on one date is the double submission this
+             -- check exists to stop, not a shape to make room for.
              OR (a.entry_type = 'time_off'
                   AND b.time_off_type IS NOT DISTINCT FROM a.time_off_type)
           )
@@ -5154,7 +5225,13 @@ module.exports = async (req, res) => {
           // the kind of thing whoever finds it there needs to be able to trace.
           splitDests.length ? { split_destinations: splitDests } : null,
           haulAudit)
-          : quarryInject ? { quarry_activity: quarryInject.activity }
+          : quarryInject ? Object.assign({ quarry_activity: quarryInject.activity },
+              // insertQuarryRow deletes and re-pushes the row on every edit, so
+              // the row itself remembers nothing. Which material this day was
+              // credited to is a figure the quarry office reports on — name it
+              // here, where it survives.
+              quarryInject.fields && quarryInject.fields.productName
+                ? { quarry_product: quarryInject.fields.productName } : null)
           : (needsTrucking || needsDust)
             ? {
                 trucking_injected: needsTrucking,
@@ -6204,6 +6281,12 @@ module.exports = async (req, res) => {
           supervisor_name    = ${data.supervisor_name},
           notes              = ${data.notes},
           time_off_type      = ${data.time_off_type},
+          -- Written straight, not kept-if-absent like the haul columns below.
+          -- Those are an approver's split of an answer the worker already gave;
+          -- this IS the answer, it comes off the same form as the type beside
+          -- it, and an edit that says "half day" has to be able to say it.
+          -- Null is a real value here — it reads as a full day.
+          time_off_hours     = ${data.time_off_hours},
           truck_unit         = CASE WHEN ${keepUnit}::boolean
                                     THEN truck_unit ELSE ${data.truck_unit}::text END,
           truck_description  = CASE WHEN ${keepTruckDesc}::boolean
@@ -6371,7 +6454,9 @@ module.exports._test = {
   obSplitForEntry,
   matchDustEmployee,
   OB_BLOB_KEY,
-  // Quarry injection — scripts/test-quarry-fuel-entry.js.
+  // Quarry injection — scripts/test-quarry-fuel-entry.js,
+  // scripts/test-quarry-crush-product.js.
   validateQuarryInjection,
+  buildQuarryRow,
   Q_MAX,
 };

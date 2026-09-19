@@ -816,6 +816,27 @@
           <label for="f-off-date">Date</label>
           <input type="date" id="f-off-date" />
         </div>
+        <!-- How long the day off is. Full day is preselected because it is what
+             nearly every day off is, and because leaving it unanswered would
+             make the common case slower for the sake of the rare one — the
+             opposite trade to the haul question, which has no safe default.
+             "Other" reveals a box rather than offering a third fixed length:
+             the office has seen two, six and seven-and-a-half, and a list long
+             enough to hold them all is worse than a number pad. -->
+        <div class="row">
+          <label>How long</label>
+          <div class="seg seg-3" id="seg-off-len">
+            <button type="button" data-val="full" onclick="setOffLen('full')">Full day</button>
+            <button type="button" data-val="half" onclick="setOffLen('half')">Half day</button>
+            <button type="button" data-val="other" onclick="setOffLen('other')">Other</button>
+          </div>
+          <div class="hint" id="off-len-hint">A full day is paid at 8 hours, a half day at 4.</div>
+        </div>
+        <div class="row" id="row-off-hours" style="display:none">
+          <label for="f-off-hours">Hours</label>
+          <input type="number" inputmode="decimal" min="0" max="24" step="0.25" id="f-off-hours" placeholder="e.g. 6" />
+          <div class="hint">Paid hours for this day. 0 records a day off with no pay.</div>
+        </div>
         <div class="row">
           <label for="f-off-supervisor">Supervisor</label>
           <select id="f-off-supervisor">
@@ -1760,6 +1781,13 @@
       const today = todayStr();
       document.getElementById('f-date').value     = today;
       document.getElementById('f-off-date').value = today;
+      // The "how long" control's default lives in a variable, not in the
+      // markup, so nothing has lit it yet. resetForm() would — but it is not
+      // called at load, so on a freshly opened page all three segments painted
+      // muted and unlit: exactly the look .seg-3.needs uses for a question
+      // NOBODY HAS ANSWERED, over a control that is in fact answered and will
+      // file a full day. The state was right and the page said otherwise.
+      renderOffLen();
 
       await Promise.all([loadSupervisors(), loadEntries()]);
     }
@@ -1896,6 +1924,72 @@
       document.querySelectorAll('#off-pills .pill').forEach(p => {
         p.classList.toggle('active', p.dataset.val === t);
       });
+    }
+
+    // ── How long the day off is ────────────────────────────────────────────
+    // 'full' | 'half' | 'other'. Full day is the default, so a man filing an
+    // ordinary vacation day touches nothing; the other two are there because
+    // half days happen and the office has seen every length in between.
+    //
+    // The two fixed answers carry their own hours — a half day is not "half of
+    // whatever the shift was", it is four — and 'other' hands the question to
+    // the box below the control.
+    let offLen = 'full';
+    const OFF_LEN_HOURS = { full: 8, half: 4 };
+
+    // `focus` is false when the form is being filled in by code — loading a
+    // draft or resetting. Pulling the caret into the hours box because a saved
+    // entry happened to be six hours long would move the page under a man who
+    // only tapped one of his own entries to look at it.
+    function setOffLen(v, focus = true) {
+      // The answer he is LEAVING, captured before it is overwritten. Read after
+      // the assignment below it is always 'other', so the seed could only ever
+      // be a full day — and a man who picked Half day and then tapped Other to
+      // adjust it found 8 in the box, not 4. Submitting without typing (the
+      // numeric keypad covers the field on a phone) filed a whole paid day on
+      // an entry he had already told the form was a half one.
+      const prev = offLen;
+      offLen = (v === 'half' || v === 'other') ? v : 'full';
+      renderOffLen();
+      if (offLen === 'other' && focus) {
+        const box = document.getElementById('f-off-hours');
+        // Seed it from the answer he is leaving, so "Other" opens on a number
+        // he recognises instead of an empty box he has to guess the shape of.
+        if (!box.value) box.value = String(OFF_LEN_HOURS[prev] != null ? OFF_LEN_HOURS[prev] : OFF_LEN_HOURS.full);
+        box.focus();
+        box.select();
+      }
+    }
+
+    function renderOffLen() {
+      const seg = document.getElementById('seg-off-len');
+      if (!seg) return;
+      seg.querySelectorAll('button').forEach(b => {
+        const on = b.dataset.val === offLen;
+        b.classList.toggle('on',  on);
+        b.classList.toggle('off', !on);
+      });
+      const row = document.getElementById('row-off-hours');
+      if (row) row.style.display = offLen === 'other' ? 'flex' : 'none';
+      const hint = document.getElementById('off-len-hint');
+      if (hint) {
+        hint.textContent = offLen === 'other'
+          ? 'Type the paid hours for this day below.'
+          : 'A full day is paid at 8 hours, a half day at 4.';
+      }
+    }
+
+    // The hours this form is asking the API for, or an error to show instead.
+    // Kept in one place so the payload and the validation cannot disagree.
+    function offHoursValue() {
+      if (offLen !== 'other') return { hours: OFF_LEN_HOURS[offLen] };
+      const raw = (document.getElementById('f-off-hours').value || '').trim();
+      if (raw === '') return { error: 'How many hours is the day off?' };
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0 || n > 24) {
+        return { error: 'Hours for a day off must be between 0 and 24.' };
+      }
+      return { hours: Math.round(n * 100) / 100 };
     }
 
     // ── Compute hours live ─────────────────────────────────────────────────
@@ -2469,6 +2563,10 @@
         const hoursParts = [];
         if (e.entry_type === 'daily' && e.computed_hours != null) hoursParts.push(`${Number(e.computed_hours).toFixed(2)} h`);
         if (e.entry_type === 'daily' && e.travel_hours != null && e.travel_hours > 0) hoursParts.push(`+${Number(e.travel_hours).toFixed(2)} h travel`);
+        // A day off says how long it is on the card too. It is the one thing
+        // about a time-off entry that can be wrong in a way that costs money,
+        // and this card is where the man who filed it would notice.
+        if (e.entry_type === 'time_off') hoursParts.push(`${offLenOf(e).toFixed(2)} h`);
         const hours = hoursParts.join(' ');
         // The machines he named, on the card he reads back. A day filed under
         // the wrong piece is worth catching here, while it is still a draft he
@@ -2544,6 +2642,17 @@
       if (d === 'dust')   return 'Dust Control';
       return d.charAt(0).toUpperCase() + d.slice(1);
     }
+    // How long a saved day off is, as every report reads it: the entry's own
+    // hours, or a full day when it does not say — which is what an entry filed
+    // before the question existed means. Mirrors leaveHoursOf in
+    // api/lib/payroll-metrics.js; this page only ever displays the figure, but
+    // it must not display a different one from the sheet payroll runs.
+    function offLenOf(e) {
+      const h = (e && e.time_off_hours != null) ? Number(e.time_off_hours) : null;
+      if (h == null || !Number.isFinite(h) || h < 0) return OFF_LEN_HOURS.full;
+      return Math.min(h, 24);
+    }
+
     function prettyOffType(t) {
       if (!t) return '';
       const map = { vacation: 'Vacation', sick: 'Sick', jury_duty: 'Jury Duty', bereavement: 'Bereavement', holiday: 'Holiday' };
@@ -2709,6 +2818,25 @@
           p.classList.toggle('active', p.dataset.val === offType);
         });
         document.getElementById('f-off-date').value = e.work_date || '';
+        // How long it was. A saved entry with no hours on it is one filed
+        // before the question existed, and it means a full day — the same
+        // reading every report gives it, so the form cannot disagree with the
+        // sheet about a draft the man is looking at. A length that is neither
+        // 8 nor 4 opens the box with the number already in it.
+        {
+          const savedOff = e.time_off_hours == null ? null : Number(e.time_off_hours);
+          const box = document.getElementById('f-off-hours');
+          if (savedOff == null || !Number.isFinite(savedOff) || savedOff === OFF_LEN_HOURS.full) {
+            box.value = '';
+            setOffLen('full');
+          } else if (savedOff === OFF_LEN_HOURS.half) {
+            box.value = '';
+            setOffLen('half');
+          } else {
+            box.value = String(savedOff);
+            setOffLen('other', false);
+          }
+        }
         const offSupSel = document.getElementById('f-off-supervisor');
         if (e.supervisor_id && ![...offSupSel.options].some(o => String(o.value) === String(e.supervisor_id))) {
           // Supervisor no longer in the list — keep it as a synthetic option so
@@ -2777,6 +2905,9 @@
       offType = null;
       document.querySelectorAll('#off-pills .pill').forEach(p => p.classList.remove('active'));
       document.getElementById('f-off-date').value = todayStr();
+      // Back to a full day, which is what a blank form should be asking for.
+      document.getElementById('f-off-hours').value = '';
+      setOffLen('full');
       document.getElementById('f-off-supervisor').value = '';
       document.getElementById('f-off-notes').value = '';
       document.getElementById('formMsg').textContent = '';
@@ -2823,10 +2954,17 @@
         if (!offSupId) return { error: 'Pick a supervisor.' };
         const offSupOpt = offSupSel.options[offSupSel.selectedIndex];
         const offSupName = offSupOpt ? offSupOpt.dataset.name || offSupOpt.textContent : '';
+        const len = offHoursValue();
+        if (len.error) return { error: len.error };
         return { list: [{ block: 0, label: 'Time off', data: {
           entry_type: 'time_off',
           work_date: d,
           time_off_type: offType,
+          // Always sent, never left off. The API reads an absent value as "a
+          // full day" for the sake of entries filed before the question
+          // existed, so a form that asked and then stayed quiet about a half
+          // day would have it paid as a whole one.
+          time_off_hours: len.hours,
           supervisor_id: offSupId,
           supervisor_name: offSupName,
           notes: document.getElementById('f-off-notes').value || '',

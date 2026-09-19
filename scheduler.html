@@ -180,13 +180,32 @@ function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(
 function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
 function weekDateStrs() { return weekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
-// Time-off (from Timesheet): returns {status,type} if this person is off this date, else null.
+// Time-off (from Timesheet): returns {status,type,hours,partial} if this person
+// is off this date, else null. `hours` is how long the day off is and `partial`
+// says some of the day is left — see offShape in api/scheduler/board.js.
 function isOff(name, date) { return (state.board.timeOff && state.board.timeOff[name] && state.board.timeOff[name][date]) || null; }
+// How the board says it: a part day reads as its own hours, a whole day as the
+// word. One phrasing, because it shows in the grid, the modal, the toasts and
+// the week review, and four wordings for one fact is four things to disagree.
+// 8.00 → "8", 7.50 → "7.5", 4.25 → "4.25". Trailing zeros are trimmed only
+// AFTER a decimal point — a bare /0+$/ would turn 10 into 1.
+function offHrsText(o) { return Number(o.hours).toFixed(2).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, ''); }
+function offLabel(o) { return !o ? '' : (o.partial ? offHrsText(o) + ' h off' : 'off'); }
 // APPROVED time-off is a HARD block: an employee cannot be scheduled on a job for
 // a date payroll has approved them off. Pending (submitted) requests are only a
 // soft warning — schedulers can still plan around a request that isn't final yet.
 // Equipment never carries time-off, so it is never blocked.
-function isBlockedOff(name, kind, date) { if (kind === 'equip') return false; const o = isOff(name, date); return !!(o && o.status === 'approved'); }
+//
+// A PARTIAL day is NOT a block, and that is the point of the hours reaching the
+// board at all. A man off four hours of eight is on the job for the other four,
+// and blocking the date took him off the board for a whole day on the strength
+// of a morning — the crew was then planned around an absence that was half
+// imaginary. He is schedulable, and flagged.
+//
+// A ZERO-hour day off still blocks. That is an UNPAID day off: he is gone all
+// day and simply not paid for it, which is payroll's business and not the
+// board's. Only an answer that leaves part of the day standing frees the date.
+function isBlockedOff(name, kind, date) { if (kind === 'equip') return false; const o = isOff(name, date); return !!(o && o.status === 'approved' && !o.partial); }
 const _clientTag = 'c' + Math.random().toString(36).slice(2, 7); // per-client tag so ids never collide across schedulers
 let _uid = 0;
 function uid() { return _clientTag + (++_uid).toString(36); }
@@ -391,8 +410,10 @@ function addAssignment(date, resource, kind, job, sc) {
   dayList(date).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: sc?sc.costCode:'', subCode: sc?sc.subCode:'', half:false }); saveAssignments(); return 1;
 }
 // Add a resource across several dates (bulk); returns how many were added.
-// Dates the employee is APPROVED off are skipped — no path can schedule over
-// approved time-off. Callers compute their own blocked-date messaging.
+// Dates the employee is APPROVED off for the WHOLE day are skipped — no path
+// can schedule over a whole approved day off. A part day is not skipped: he is
+// on the job for the rest of it, which is what the hours on the entry are for.
+// Callers compute their own blocked-date messaging.
 function addAssignmentSpan(resource, kind, job, sc, dates) {
   let added = 0; const cc = sc?sc.costCode:'', sk = sc?sc.subCode:'';
   dates.forEach(d => { if (isBlockedOff(resource, kind, d)) return;
@@ -705,8 +726,12 @@ function renderCrewBoard() {
     const load = loadForResource(resource);
     const left = '<td class="lead-col"><span style="font-weight:600">'+esc(resource)+'</span><div class="res-meta">'+(meta && meta.isSupervisor?'<span class="sup-dot" title="Supervisor">★</span>':'')+(meta && meta.jobClass?'<span>'+esc(meta.jobClass)+'</span>':(kind==='equip'?'<span>equipment</span>':''))+'<span class="res-load">'+load+'/7d</span></div></td>';
     const cells = ds.map(d => { const conf = conflictResourcesOn(d).has(resource); const off = isOff(resource, d); const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr; const items = assignmentsFor(d, resource);
-      const offMark = off ? '<span title="'+esc(off.type)+(off.status==='submitted'?' (requested)':' (approved)')+'" style="font-size:0.6rem;color:'+(items.length?'var(--red)':'var(--amber)')+'">⛱'+(items.length?' off!':'')+'</span>' : '';
-      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(off&&items.length?' conflict':'')+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf)).join('')+'</td>'; }).join('');
+      // A part day scheduled is not a clash — it is the case the hours exist to
+      // allow — so it never reddens the cell and never says "off!". It says how
+      // much of the day is gone and leaves the chips beside it alone.
+      const offClash = !!(off && items.length && !off.partial);
+      const offMark = off ? '<span title="'+esc(off.type)+' · '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':' (approved)')+'" style="font-size:0.6rem;color:'+(offClash?'var(--red)':'var(--amber)')+'">⛱'+(off.partial?esc(offHrsText(off))+'h':'')+(offClash?' off!':'')+'</span>' : '';
+      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf)).join('')+'</td>'; }).join('');
     return '<tr>'+left+cells+'</tr>';
   };
   if (!groupNames.length) body += '<tr><td class="lead-col muted">No crew match.</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
@@ -925,12 +950,17 @@ function updatePickList() {
   if (q) cands = cands.filter(c => c.name.toLowerCase().includes(q) || (c.jobClass||'').toLowerCase().includes(q));
   cands.forEach(c => { const items = assignmentsFor(ctx.date, c.name); c.onThis = items.some(a => a.division===ctx.division && a.jobId===ctx.jobId); c.others = [...new Set(items.filter(a => !(a.division===ctx.division && a.jobId===ctx.jobId)).map(a => a.jobName))]; c.off = isOff(c.name, ctx.date); });
   const histCrew = new Set(sc ? (sc.crew||[]) : []);
-  cands.sort((a,b) => { if (!!a.off !== !!b.off) return a.off ? 1 : -1; const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1; const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
+  // Sunk to the bottom only if he is off for the WHOLE day. A man with a half
+  // day is an ordinary candidate — sorting him down beside the unavailable was
+  // the same mistake as blocking him, made quietly.
+  cands.sort((a,b) => { const ao = !!(a.off && !a.off.partial), bo = !!(b.off && !b.off.partial); if (ao !== bo) return ao ? 1 : -1; const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1; const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
   cands = cands.slice(0, 60);
   if (!cands.length) { box.innerHTML = '<div class="muted" style="font-size:0.78rem;padding:0.5rem">No match.</div>'; return; }
   box.innerHTML = cands.map(c => { let status, cls = '';
-    if (c.off && c.off.status === 'approved' && c.kind !== 'equip') { status = '<span class="warn">⛱ off (approved)</span>'; cls = ' blocked'; }
-    else if (c.off) status = '<span class="warn">⛱ off'+(c.off.status==='submitted'?' (req)':'')+'</span>';
+    // Only a whole approved day is 'blocked' — the class that greys the row out
+    // and makes it unpickable. A part day shows its hours and stays pickable.
+    if (c.off && c.off.status === 'approved' && !c.off.partial && c.kind !== 'equip') { status = '<span class="warn">⛱ off (approved)</span>'; cls = ' blocked'; }
+    else if (c.off) status = '<span class="warn">⛱ '+esc(offLabel(c.off))+(c.off.status==='submitted'?' (req)':'')+'</span>';
     else if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls = ' on-this'; }
     else if (c.others.length) status = '<span class="warn">→ '+esc(c.others.join(', '))+'</span>';
     else status = '<span class="ok">free</span>';
@@ -947,10 +977,10 @@ function pickAdd(name, kind) {
   pushUndo();
   let added = 0; targets.forEach(sc => { added += addAssignmentSpan(name, kind, job, sc, dates); });
   if (!added) { _undo.pop(); updateUndoButtons();
-    if (blocked.length) { const o = isOff(name, blocked[0]); toast(name+' is approved off ('+((o&&o.type)||'time off')+') — not scheduled'); }
+    if (blocked.length) { const o = isOff(name, blocked[0]); toast(name+' is approved off for the whole day ('+((o&&o.type)||'time off')+') — not scheduled'); }
     else toast(name+' already on those'); }
   else { const codes = targets.length;
-    if (codes > 1 || dates.length > 1 || blocked.length) toast('Added '+name+(codes>1?' to '+codes+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')+(blocked.length?' · skipped '+blocked.length+' approved-off day'+(blocked.length>1?'s':''):'')); }
+    if (codes > 1 || dates.length > 1 || blocked.length) toast('Added '+name+(codes>1?' to '+codes+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')+(blocked.length?' · skipped '+blocked.length+' full day'+(blocked.length>1?'s':'')+' off':'')); }
   afterMutate();
 }
 function applyCrewFromPicker() {
@@ -964,7 +994,7 @@ function applyCrewFromPicker() {
   pushUndo();
   let added = 0; crew.members.forEach(m => targets.forEach(sc => { added += addAssignmentSpan(m.name, m.kind||'emp', job, sc, dates); }));
   if (!added) { _undo.pop(); updateUndoButtons(); }
-  toast(added ? ('Added '+crew.name+(targets.length>1?' to '+targets.length+' cost codes':'')+' ('+added+' assignment'+(added>1?'s':'')+')'+(blocked?' · skipped approved-off days':'')) : (blocked ? 'Crew are approved off — nothing scheduled' : 'Crew already scheduled here'));
+  toast(added ? ('Added '+crew.name+(targets.length>1?' to '+targets.length+' cost codes':'')+' ('+added+' assignment'+(added>1?'s':'')+')'+(blocked?' · skipped full days off':'')) : (blocked ? 'Crew are approved off for the whole day — nothing scheduled' : 'Crew already scheduled here'));
   afterMutate();
 }
 function saveCurrentAsCrew() {
@@ -984,7 +1014,7 @@ function modalResourceHtml(ctx) {
   const curHtml = current.length ? current.map(a => { const col = divColor(a.division); return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(a.division)+'</span><span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="muted">· '+esc(a.costCode)+(a.subCode?' · '+esc(a.subCode):'')+'</span>':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('') : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
   const jobs = visibleJobs();
   const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => { const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return ''; return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>'; }).join('');
-  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+(off.status==='submitted'?' (requested off)':' (approved off — cannot schedule)')+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+' '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':(off.partial?' (approved — still schedulable for the rest of the day)':' (approved off — cannot schedule)'))+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
     '<label class="fld">Scheduled (this day)</label>'+curHtml+
     '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select><div id="rScWrap" style="display:none"><label class="fld">Cost codes</label><select class="full" id="rSc" multiple size="5"></select><div class="muted" style="font-size:0.66rem;margin-top:0.25rem">Pick one or more to split across cost codes — or leave all unselected for the whole job.</div></div>'+
@@ -1006,9 +1036,9 @@ function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (
   pushUndo();
   let added = 0; scs.forEach(sc => { added += addAssignmentSpan(ctx.resource, ctx.kind, job, sc, dates); });
   if (!added) { _undo.pop(); updateUndoButtons();
-    if (blocked.length) { const o = isOff(ctx.resource, blocked[0]); toast(ctx.resource+' is approved off ('+((o&&o.type)||'time off')+') — not scheduled'); }
+    if (blocked.length) { const o = isOff(ctx.resource, blocked[0]); toast(ctx.resource+' is approved off for the whole day ('+((o&&o.type)||'time off')+') — not scheduled'); }
     else toast(ctx.resource+' already on those'); }
-  else toast('Added'+(scs.length>1?' to '+scs.length+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')+(blocked.length?' · skipped '+blocked.length+' approved-off day'+(blocked.length>1?'s':''):'')); afterMutate();
+  else toast('Added'+(scs.length>1?' to '+scs.length+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')+(blocked.length?' · skipped '+blocked.length+' full day'+(blocked.length>1?'s':'')+' off':'')); afterMutate();
 }
 
 // ── Crews manager ───────────────────────────────────────────────────────────
@@ -1029,7 +1059,7 @@ function copyWeekForward() {
     items.forEach(a => { if (isBlockedOff(a.resource, a.kind, nd)) { blocked++; return; } // approved off next week — don't carry forward
       if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||'') && (x.subCode||'')===(a.subCode||''))) return;
       dayList(nd).push({ ...a, id: uid() }); added++; }); });
-  if (added) { saveAssignments(); toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'+(blocked?' · skipped '+blocked+' approved-off':'')); state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
+  if (added) { saveAssignments(); toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'+(blocked?' · skipped '+blocked+' full days off':'')); state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
   else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Next week is all approved-off for those crew' : 'Nothing to copy (next week already matches)'); }
 }
 
@@ -1042,7 +1072,7 @@ function importPlanned() {
     if (isBlockedOff(p.resource, kind, p.date)) { blocked++; return; } // approved off — never import over it
     const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'') && (a.subCode||'')===(p.subCode||'')); if (dup) return;
     dayList(p.date).push({ id: uid(), resource:p.resource, kind, division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', subCode:p.subCode||'', half:!!p.half }); added++; });
-  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')+(blocked?' · skipped '+blocked+' approved-off':'')); render(); }
+  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')+(blocked?' · skipped '+blocked+' full days off':'')); render(); }
   else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Matching crew are approved off — nothing imported' : 'Already up to date with division plans'); }
 }
 
@@ -1272,14 +1302,17 @@ function autoFill(division, jobId, costCode, subCode) {
   if (!dates.length) { toast('No working days left this week'); return; }
   const empByName = {}; (state.board.employees||[]).forEach(e => empByName[e.name] = e);
   const prefTrades = new Set((sc.crew||[]).map(n => empByName[n] && empByName[n].jobClass).filter(Boolean));
-  // idle crew with at least one day not on time-off; prefer the sub-code's trade
-  const idle = idleEmployees().filter(e => !dates.every(d => isOff(e.name, d))).slice()
+  // Idle crew with at least one day they are not off for the WHOLE of; prefer
+  // the sub-code's trade. Keyed on the block and not on isOff, so a man with a
+  // half day on every date of the week is still offered — he is there for half
+  // of each of them, which is exactly what auto-fill is looking for.
+  const idle = idleEmployees().filter(e => !dates.every(d => isBlockedOff(e.name, 'emp', d))).slice()
     .sort((a,b) => (prefTrades.has(a.jobClass)?0:1) - (prefTrades.has(b.jobClass)?0:1) || a.name.localeCompare(b.name));
   const pick = idle.slice(0, need);
-  if (!pick.length) { toast('No available idle crew this week (idle crew are off)'); return; }
+  if (!pick.length) { toast('No available idle crew this week (idle crew are off all week)'); return; }
   pushUndo();
   let added = 0; const used = [];
-  pick.forEach(e => { const okDates = dates.filter(d => !isOff(e.name, d)); const n = addAssignmentSpan(e.name, 'emp', job, sc, okDates); if (n) used.push(e.name.split(' ')[0]); added += n; });
+  pick.forEach(e => { const okDates = dates.filter(d => !isBlockedOff(e.name, 'emp', d)); const n = addAssignmentSpan(e.name, 'emp', job, sc, okDates); if (n) used.push(e.name.split(' ')[0]); added += n; });
   if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already scheduled here'); return; }
   toast('Assigned ' + used.join(', ') + ' to ' + sc.costCode);
   render();
@@ -1287,7 +1320,10 @@ function autoFill(division, jobId, costCode, subCode) {
 function renderAttention() {
   const gaps = gapItems(); const idle = idleEmployees(); const wk = weekDateStrs();
   const conflicts = []; wk.forEach(d => conflictResourcesOn(d).forEach(r => conflicts.push({ d, r })));
-  const offSched = []; wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind === 'emp') { const off = isOff(a.resource, d); if (off) offSched.push({ d, id:a.id, name:a.resource, jobName:a.jobName, off }); } }));
+  // Scheduled on a day they are off. A PART day is left out: being on a job for
+  // the afternoon of a morning off is the arrangement, not a thing for a
+  // scheduler to fix, and listing it here would bury the real ones under it.
+  const offSched = []; wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind === 'emp') { const off = isOff(a.resource, d); if (off && !off.partial) offSched.push({ d, id:a.id, name:a.resource, jobName:a.jobName, off }); } }));
   // Approved conflicts (person is locked off but still on the board — e.g. time
   // off approved after they were scheduled) float to the top of the list.
   offSched.sort((x,y) => (y.off.status==='approved') - (x.off.status==='approved') || (x.d<y.d?-1:x.d>y.d?1:0));
@@ -1310,7 +1346,7 @@ function renderAttention() {
   html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🟢 Idle this week (' + idle.length + ')</div>';
   if (!idle.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">Everyone is scheduled this week.</div>';
   else { const byTrade = {}; idle.forEach(e => { const t = e.jobClass || 'Other'; (byTrade[t] = byTrade[t] || []).push(e.name); });
-    html += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.4rem">' + Object.keys(byTrade).sort().map(t => '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.45rem 0.7rem;max-width:280px"><div style="font-size:0.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">'+esc(t)+' ('+byTrade[t].length+')</div><div style="font-size:0.78rem">'+byTrade[t].map(n => esc(n)+(wk.some(d=>isOff(n,d))?' ⛱':'')).join(', ')+'</div></div>').join('') + '</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.4rem">' + Object.keys(byTrade).sort().map(t => '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.45rem 0.7rem;max-width:280px"><div style="font-size:0.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">'+esc(t)+' ('+byTrade[t].length+')</div><div style="font-size:0.78rem">'+byTrade[t].map(n => esc(n)+(wk.some(d=>isBlockedOff(n,'emp',d))?' ⛱':(wk.some(d=>isOff(n,d))?' ⛱½':''))).join(', ')+'</div></div>').join('') + '</div>';
   }
   if (offSched.length) {
     html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⛱ Scheduled but off (' + offSched.length + ')</div>';

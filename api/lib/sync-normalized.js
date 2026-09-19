@@ -897,7 +897,8 @@ async function syncQuarryCrushing(sql, companyCode, value) {
     await sql`
       INSERT INTO quarry_crushing_entries (
         id, company_code, date, location_id, location_name,
-        employee_id, employee_name, hourly_rate, hours, hours_crushing,
+        employee_id, employee_name, product_id, product_name,
+        hourly_rate, hours, hours_crushing,
         fuel_gallons, fuel_cost, loads_to_crusher, tons_per_load, comments,
         total_payroll, total_fuel, estimated_tons, tons_per_hour,
         total_cost, cost_per_ton, updated_at
@@ -905,6 +906,7 @@ async function syncQuarryCrushing(sql, companyCode, value) {
         ${r.id}, ${companyCode}, ${safeDate(r.date)},
         ${r.locationId || null}, ${r.locationName || null},
         ${r.employeeId || null}, ${r.employeeName || null},
+        ${r.productId || null}, ${r.productName || null},
         ${hourlyRate}, ${hours}, ${hoursCrushing},
         ${fuelGallons}, ${fuelCost}, ${loadsToCrusher}, ${tonsPerLoad},
         ${r.comments || null},
@@ -917,6 +919,8 @@ async function syncQuarryCrushing(sql, companyCode, value) {
         location_name    = EXCLUDED.location_name,
         employee_id      = EXCLUDED.employee_id,
         employee_name    = EXCLUDED.employee_name,
+        product_id       = EXCLUDED.product_id,
+        product_name     = EXCLUDED.product_name,
         hourly_rate      = EXCLUDED.hourly_rate,
         hours            = EXCLUDED.hours,
         hours_crushing   = EXCLUDED.hours_crushing,

@@ -27,6 +27,7 @@
 const fs   = require('fs');
 const path = require('path');
 const vm   = require('vm');
+const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -125,8 +126,21 @@ function sandbox({ jobs = {}, costCodes = {}, fail = new Set() } = {}) {
     splitCcCache: {},
     splitEntry: null,
     splitRows: [],
+    // The quarry's product list, which a crushing override is asked for. The
+    // real loader is a fetch, so it is stubbed the way loadCostCodesFor above
+    // is — and it records the call, because loading it is what makes the
+    // picker able to offer anything. The two pure helpers that READ the list
+    // are lifted for real below: the picker and the payload are built on them.
+    quarryProductList: [],
+    loadQuarryListsOnce: () => {
+      fetched.push('quarry-lists');
+      ctx.quarryProductList = [{ id: 'p-2a', name: '2A Modified' }];
+      return Promise.resolve();
+    },
   };
   vm.createContext(ctx);
+  vm.runInContext(requireFn(SRC, 'quarryProductNames', 'payroll.html'), ctx);
+  vm.runInContext(requireFn(SRC, 'quarryProductIdFor', 'payroll.html'), ctx);
   const start = SRC.indexOf('    // ── The division override ─');
   const end   = SRC.indexOf('    // Every travel line this job');
   if (start < 0 || end < 0) throw new Error('could not find the division override block in payroll.html');
@@ -365,6 +379,33 @@ const row = (o = {}) => Object.assign({
     const qCrush = s.call('splitRowPayload',
       row({ labor_hours: 3, dest_division: 'quarry', dest_job: 'crushing:hc', dest_rate: 95 }));
     assert('and a Crushing row as hourlyRate', qCrush.dest.quarry.hourlyRate === 95);
+
+    // A crushing override is the one crushing row with no second chance: it is
+    // born read-only in the quarry tab, so a day that lands with no material on
+    // it sits outside every per-product figure for good. Asked here, or nowhere.
+    assert('picking the quarry loads the product list the picker needs',
+      s.fetched.includes('quarry-lists'), s.fetched.join(','));
+    const qTagged = s.call('splitRowPayload', row({
+      labor_hours: 3, dest_division: 'quarry', dest_job: 'crushing:hc',
+      dest_rate: 95, dest_product: '2A Modified',
+    }));
+    assert('a crushing override sends the material it was making',
+      qTagged.dest.quarry.productName === '2A Modified',
+      JSON.stringify(qTagged.dest.quarry));
+    assert('…and the id behind it, resolved off the list',
+      qTagged.dest.quarry.productId === 'p-2a', JSON.stringify(qTagged.dest.quarry));
+    // Daily is equipment and a task; it is the crusher that makes a product.
+    assert('a quarry Daily override is not asked for one',
+      !('productName' in qDaily.dest.quarry), JSON.stringify(qDaily.dest.quarry));
+
+    const crushCell = s.call('splitDestWindowHtml',
+      row({ dest_division: 'quarry', dest_job: 'crushing:hc', dest_rate: 95 }), 0);
+    assert('the crushing cell offers the picker beside the rate',
+      /dest_product/.test(crushCell) && /2A Modified/.test(crushCell), crushCell);
+    const dailyCell = s.call('splitDestWindowHtml',
+      row({ dest_division: 'quarry', dest_job: 'daily:hc', dest_rate: 74 }), 0);
+    assert('and the Daily cell is left as the rate alone',
+      !/dest_product/.test(dailyCell), dailyCell);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

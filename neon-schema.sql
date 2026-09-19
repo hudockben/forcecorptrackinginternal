@@ -974,7 +974,8 @@ CREATE INDEX IF NOT EXISTS idx_employees_driver ON employees(company_code, is_dr
 -- Field-employee time entries. Two row shapes share one table,
 -- discriminated by entry_type:
 --   'daily'    → day-of-work entry: division, job, start/end time, etc.
---   'time_off' → vacation/sick/etc., with time_off_type + date only.
+--   'time_off' → vacation/sick/etc., with time_off_type, date and how long the
+--                day off was (time_off_hours; NULL reads as a full day).
 --
 -- Field users (divisionRoles.timesheet) own the create/edit path for
 -- their own rows up through 'submitted'. Once submitted, only payroll
@@ -1011,6 +1012,9 @@ CREATE TABLE IF NOT EXISTS timesheet_entries (
 
     -- Time off fields (nullable for daily)
     time_off_type       TEXT          CHECK (time_off_type IN ('vacation','sick','jury_duty','bereavement','holiday')),
+    -- time_off_hours is added below, with the other columns that postdate the
+    -- initial release. How long the day off was; NULL reads as a full day.
+
 
     -- Workflow audit
     submitted_at        TIMESTAMPTZ,
@@ -1164,6 +1168,39 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS haul_hours NUMERIC(6,2);
 -- places, so the two can never describe different splits. Travel is left out of
 -- both, for the same reason.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS haul_off_site_hours NUMERIC(6,2);
+
+-- ─────────────────────────────────────────────────
+-- TIMESHEET ENTRIES — time_off_hours
+-- ─────────────────────────────────────────────────
+-- HOW LONG THE DAY OFF WAS. Half days happen — a man takes the morning for an
+-- appointment and works the afternoon, or leaves at noon — and until this
+-- column existed payroll had nowhere to say so: a time_off row carried a date
+-- and a type and not one hours column, so every approved day off paid a flat
+-- eight. The half day was paid as a whole one, or kept out of the system and
+-- remembered by hand.
+--
+-- Decimal hours, the way the travel legs are collected, because that is how the
+-- office already talks about a part-day ("four hours", "he took two").
+--
+--   NULL → nobody said, or an entry from before this column existed. Reads as a
+--          FULL DAY — the eight hours it has always paid. This is what keeps
+--          every fortnight approved before this deploy reporting the hours it
+--          always did, and it is why the column has no DEFAULT: a default would
+--          write 8 onto new rows and leave the old ones indistinguishable from
+--          them, so nothing could ever tell "nobody said" from "somebody said
+--          eight". Same rule, and the same reason, as haul_off_site_hours above.
+--   0    → an UNPAID day off. Somebody answered, and the answer was none — it
+--          is not the same fact as NULL and must never be folded into it.
+--   n    → n paid hours for the day.
+--
+-- Only ever paid on an APPROVED entry, exactly as approvedHours is: a request
+-- still sitting with a supervisor is owed nothing yet, whatever hours it asks
+-- for. See PAID_LEAVE_HOURS / timeOffPayHours in api/lib/payroll-metrics.js,
+-- which is the one place that rule lives, and its mirror in payroll.html.
+--
+-- Paid, and never worked: these hours reach no week's forty and no prevailing
+-- split. See the paid-leave section in api/lib/payroll-metrics.js.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS time_off_hours NUMERIC(6,2);
 
 -- ─────────────────────────────────────────────────
 -- DAILY TRACKING — is_haul
@@ -2160,3 +2197,29 @@ ALTER TABLE employees ADD COLUMN IF NOT EXISTS supervisor_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_employees_supervisor_name
   ON employees(company_code, supervisor_name)
   WHERE supervisor_name IS NOT NULL;
+
+-- ── QUARRY CRUSHING — what the plant was making ───────────────────────────
+-- Crushing Tracking has always had a Product column and nothing ever filled
+-- it: rows typed into the quarry tab could carry one, but every row injected
+-- from an approved timesheet landed blank, and those are most of them. So the
+-- tons existed and the material they were did not, which put every per-product
+-- figure — tons/hour by material, cost per ton, what is actually on the
+-- ground — out of reach. Payroll now asks the question at the approval, where
+-- the supervisor signing the day is the one person who knows the answer.
+--
+-- The id/name PAIR, matching quarry_sales_entries: sales have always been
+-- product-tagged, and on-hand is production minus sales, so the two sides have
+-- to group the same way. The id survives a rename in Manage Lists; the name is
+-- what the grid prints and what still matches when a product was free-typed
+-- before it was on the list.
+--
+-- Nullable and unbackfilled on purpose. Every crushing row posted before this
+-- has no answer, and inventing one would be a guess written into the books —
+-- they stay untagged, and re-opening the day in payroll is what tags them.
+-- Idempotent so existing deployments pick it up the next time run-schema runs.
+ALTER TABLE quarry_crushing_entries ADD COLUMN IF NOT EXISTS product_id   TEXT;
+ALTER TABLE quarry_crushing_entries ADD COLUMN IF NOT EXISTS product_name TEXT;
+
+-- "Tons and cost by material" — the read this whole change exists to make
+-- possible. Mirrors idx_qs_company_product on the sales side.
+CREATE INDEX IF NOT EXISTS idx_qc_company_product ON quarry_crushing_entries(company_code, product_name);
