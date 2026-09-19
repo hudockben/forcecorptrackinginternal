@@ -2017,6 +2017,24 @@
       white-space: nowrap;
     }
     td.hours-mismatch { color: #fb923c; font-weight: 700; }
+
+    /* ── "lunch −0.50" note under the HOURS figure ──
+       computed_hours arrives already net of the day's unpaid break, so a
+       07:30–09:00 block prints 1.00 against a 1.50 clock span and the approver
+       is left hunting for the missing half hour — the Lunch Break pill says
+       Yes, but only its tooltip ever said what that cost. Same muted sub-line
+       shape as .status-meta and .equip-used: it explains without competing
+       with the number it sits under, and stays clear of amber, which this
+       grid reserves for prevailing wage and the hours-mismatch flag. */
+    .hours-lunch {
+      font-size: 0.56rem;
+      font-weight: 600;
+      color: var(--muted);
+      line-height: 1.4;
+      margin-top: 0.25rem;
+      white-space: nowrap;
+      cursor: help;
+    }
     /* Amber wash + spine so the whole row catches the eye at a glance */
     tbody tr.row-hours-mismatch      { background: rgba(251,146,60,0.10); }
     tbody tr.row-hours-mismatch:hover { background: rgba(251,146,60,0.16); }
@@ -4011,7 +4029,14 @@
               <td class="num">${isOff ? '—' : total.toFixed(2)}</td>
               <td class="num${ot > 0.001 ? ' num-ot' : ''}" title="${escapeHtml(otTitle)}">${ot > 0.001 ? ot.toFixed(2) : '—'}</td>
               <td class="num${pw > 0 ? ' num-pw' : ''}">${isOff ? '—' : pw.toFixed(2)}</td>
-              <td>${dayFlagHtml(e, 'lunch_break', 'Took a lunch break', 'No lunch break taken')}</td>
+              <td>${dayFlagHtml(e, 'lunch_break',
+                    // Wording only — no second line, no wider pill. This table
+                    // fits a landscape page by nothing to spare, and the Labour
+                    // and Total columns beside it are already net of this break.
+                    `Took a lunch break — 30 minutes already deducted from this day's hours`,
+                    Number(e.split_index) > 1
+                      ? `No break inside this job's hours — the day's 30-minute lunch is deducted on job 1 of this split`
+                      : 'No lunch break taken')}</td>
               <!-- Pill only, deliberately. The machines are named on the review
                    grid and in the Excel export; this table is the printed Hours
                    Report, which fits a landscape page by exactly nothing to
@@ -7174,6 +7199,78 @@
         + `Worth a look before approving.`;
     }
 
+    // ── The lunch deduction, said out loud ────────────────────────────────
+    // An entry's computed_hours is stored ALREADY reduced by the day's unpaid
+    // break (api/timesheet-entries.js), and travel_hours is not. That makes a
+    // short block read like an arithmetic error: 07:30–09:00 is an hour and a
+    // half on the clock but the row says 1.00, and nothing on screen owned up
+    // to the missing 0.50 — only the Lunch Break pill's tooltip, which an
+    // approver scanning a column of numbers never hovers.
+    const LUNCH_DEDUCTION_HOURS = 0.5;
+
+    // Gross start→end span in decimal hours: the same overnight-aware,
+    // 24h-capped arithmetic as computeHours() on the server, run here purely
+    // to show the approver the figure the punches imply. Never stored, and
+    // never used to pay anything — the server's number stays the only one
+    // that counts.
+    function clockSpanHours(start, end) {
+      const pat = /^(\d{1,2}):(\d{2})/;
+      const a = pat.exec(String(start || ''));
+      const b = pat.exec(String(end   || ''));
+      if (!a || !b) return null;
+      let mins = (Number(b[1]) * 60 + Number(b[2])) - (Number(a[1]) * 60 + Number(a[2]));
+      if (mins < 0) mins += 24 * 60;          // overnight shift
+      if (mins > 24 * 60) mins = 24 * 60;
+      return Math.round((mins / 60) * 100) / 100;
+    }
+
+    // The sub-line under the HOURS figure on a row that absorbed the break.
+    // Only the row that actually carries the deduction gets it: on a split day
+    // that is job 1, and the siblings' hours match their own punches exactly,
+    // so a note there would explain a discrepancy they don't have.
+    function lunchNoteHtml(e) {
+      if (!e || e.entry_type !== 'daily' || e.lunch_break !== true) return '';
+      const net  = e.computed_hours != null ? Number(e.computed_hours) : null;
+      const span = clockSpanHours(e.start_time, e.end_time);
+      // Spell the whole subtraction out where the punches allow it, so the
+      // tooltip answers the question the number raises instead of restating
+      // the rule. Fall back to the rule alone on an entry missing its clock.
+      let tip = span != null && net != null
+        ? `${e.start_time}–${e.end_time} is ${span.toFixed(2)}h on the clock. `
+          + `The day's 30-minute unpaid lunch comes off here, leaving ${net.toFixed(2)}h. `
+          + `Travel is paid on top and is never lunch-deducted.`
+        : `These hours are already net of the day's 30-minute unpaid lunch. `
+          + `Travel is paid on top and is never lunch-deducted.`;
+      // One lunch per day, taken once. On a split the whole day's deduction
+      // lands on job 1, which is exactly where an approver comparing this row
+      // against its sibling needs to be told so.
+      if (Number(e.split_count) > 1) {
+        tip += ` One lunch per day: the whole day's deduction is taken on job `
+             + `${Number(e.split_index) || 1} of this split, not on each job.`;
+      }
+      // Worded as the trucking modal's haul-1 readout already words it
+      // ("−0.50 lunch"), so the one deduction reads the same wherever the page
+      // owns up to it.
+      return `<div class="hours-lunch" title="${escapeHtml(tip)}">`
+           + `−${LUNCH_DEDUCTION_HOURS.toFixed(2)} lunch</div>`;
+    }
+
+    // TOTAL is two numbers added together, and one of them has already had the
+    // lunch taken out of it. Hovering the figure says so in full — the note
+    // under HOURS explains the subtraction, this explains the sum, and an
+    // approver querying a day's pay should not have to do either in their head.
+    function totalTitleAttr(e, workH, travelH) {
+      if (!e || e.entry_type !== 'daily' || (workH == null && travelH == null)) return '';
+      const w = workH || 0, t = travelH || 0;
+      let tip = `${w.toFixed(2)}h worked + ${t.toFixed(2)}h travel = ${(w + t).toFixed(2)}h.`;
+      if (e.lunch_break === true) {
+        tip += ` The day's 30-minute unpaid lunch is already off the worked hours`
+             + `${Number(e.split_count) > 1 ? ' — one lunch per day, taken on job '
+                 + `${Number(e.split_index) || 1} of this split` : ''}.`;
+      }
+      return ` title="${escapeHtml(tip)}"`;
+    }
+
     function renderRows() {
       const tbody = document.getElementById('rowsBody');
       const status = tabStatus();
@@ -7309,6 +7406,7 @@
         const hoursMarker = hoursFlag
           ? ` <span class="hours-flag" title="${escapeHtml(hoursMismatchTitle(hoursFlag, e.username))}">⚑ Hours vary</span>`
           : '';
+        const lunchNote = lunchNoteHtml(e);
         return `
           <tr class="${sel ? 'selected' : ''}${hoursFlag ? ' row-hours-mismatch' : ''}">
             <td class="td-narrow">${isPending ? `<input type="checkbox" data-id="${e.id}" ${sel ? 'checked' : ''} onchange="toggleRow('${e.id}')" />` : ''}</td>
@@ -7328,9 +7426,9 @@
                     : 'No lunch break taken')}</td>
             <td>${equipFlagHtml(e)}</td>
             <td>${timeCell}</td>
-            <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}</td>
+            <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}${lunchNote}</td>
             <td style="font-variant-numeric:tabular-nums">${travel}</td>
-            <td style="font-variant-numeric:tabular-nums"><strong>${total}</strong></td>
+            <td style="font-variant-numeric:tabular-nums"${totalTitleAttr(e, workH, travelH)}><strong>${total}</strong></td>
             <td>${!e.supervisor_name
               ? escapeHtml(sup)
               : `<button class="sup-chip" title="Filter to this supervisor" onclick="filterBySupervisor('${escapeJsAttr(e.supervisor_name)}')">${escapeHtml(sup)}</button>`}</td>
@@ -11913,6 +12011,16 @@
             : `${num2(-rem)} h more than the day's clock window`;
         }
       }
+      // How the clock window became the figure being billed: what the day
+      // carried on to it, and what the break took off. Written once because the
+      // two branches below had drifted — only the split one ever mentioned the
+      // lunch, so an unsplit day billed a deducted total in silence.
+      const billsGloss = (travel, lunch) => {
+        const parts = [];
+        if (travel) parts.push(`+${num2(travel)} travel`);
+        if (lunch)  parts.push(`−${num2(lunch)} lunch`);
+        return parts.length ? ` (${parts.join(', ')})` : '';
+      };
       // What haul 1's Truck Tracking row will bill, when that is not simply its
       // own window. The lunch break the timesheet deducted and the travel logged
       // outside the clock have to be carried by one of the hauls or the day
@@ -11941,13 +12049,16 @@
             : '';
         } else if (haulLegs.length > 1) {
           const bills = Math.round((Math.max(0, haulHours(first) - lunch) + travel) * 100) / 100;
-          const parts = [];
-          if (travel) parts.push(`+${num2(travel)} travel`);
-          if (lunch)  parts.push(`−${num2(lunch)} lunch`);
-          out.textContent = parts.length
-            ? `· Truck Tracking ${num2(bills)} h (${parts.join(', ')})` : '';
+          const gloss = billsGloss(travel, lunch);
+          // Nothing carried on, nothing to describe — the haul bills its window.
+          out.textContent = gloss ? `· Truck Tracking ${num2(bills)} h${gloss}` : '';
         } else {
-          out.textContent = `· Truck Tracking bills the day: ${num2(Math.round((work + travel) * 100) / 100)} h`;
+          // Unsplit, the row bills the day's own hours — but those hours are
+          // already net of the break, and saying only the total is how an
+          // approver reads a billed 2.50 against a 3.00 clock window as an
+          // error. Same gloss as the split branch above.
+          out.textContent = `· Truck Tracking bills the day: `
+            + `${num2(Math.round((work + travel) * 100) / 100)} h${billsGloss(travel, lunch)}`;
         }
       }
       // The per-leg hours readouts and boxes follow the same numbers.
