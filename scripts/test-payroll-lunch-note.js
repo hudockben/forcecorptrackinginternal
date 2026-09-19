@@ -157,7 +157,7 @@ assert('states the addition behind the figure',
 assert('says the lunch is already off the worked side',
   totB.includes('already off the worked hours'), totB);
 assert('on a split, names the job that carried it',
-  totB.includes('job 1 of this split'), totB);
+  totB.includes('taken on job 1, the job it fell in'), totB);
 
 const totA = totalTitleAttr(daily({ lunch_break: false, split_index: 2, split_count: 2 }), 6.5, 1.5);
 assert('a row with no deduction states the sum and stops there',
@@ -179,8 +179,10 @@ console.log('\nThe printed Hours Report pill names the deduction');
 
 assert('its yes-tooltip says 30 minutes',
   /Took a lunch break — 30 minutes already deducted from this day/.test(SRC));
-assert('its no-tooltip explains a split sibling',
-  /No break inside this job.s hours — the day.s 30-minute lunch is deducted on job 1 of this split/.test(SRC));
+assert('its no-tooltip names whichever job took the break',
+  /lunchNoTitle\(e\)\)\}<\/td>/.test(SRC)
+  && /the day's 30-minute lunch is deducted on /.test(SRC),
+  'the printed report shares the grid\'s holder lookup rather than naming job 1');
 assert('the report row gained no extra line or column',
   (() => {
     const i = SRC.indexOf('<td class="date">${prettyDate(e.work_date)}</td>');

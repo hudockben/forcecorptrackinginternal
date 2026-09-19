@@ -4168,6 +4168,72 @@ async function dustCompanyDirectory(sql, companyCode) {
   return [...byId.values()].filter(c => c.name);
 }
 
+/**
+ * One break, one row.
+ *
+ * A split day's lunch is deducted once, from whichever job the break fell in,
+ * and the form picks that job. Nothing here ever enforced it. While the rule
+ * was "always the first block" that did not matter — the client could only
+ * ever set the flag in one place — but the block is now chosen from the day's
+ * clocks, and a stale form, a retried save or an approver correcting one row
+ * of a group can all put the flag on a second row. Two rows each half an hour
+ * short is an hour off a man's day, with every row looking individually
+ * plausible and nothing on screen saying the day stopped adding up.
+ *
+ * So the last write wins and the rest are put back: whenever a daily entry in
+ * a split group is stored carrying the break, every sibling still claiming it
+ * gives it up and has its hours recomputed from its own punches.
+ *
+ * Recomputed rather than incremented — adding 0.5 back to a stored figure
+ * trusts that the figure was deducted exactly once, which is the very thing
+ * this exists because it cannot assume. The punches are the record.
+ *
+ * Returns the siblings it corrected, for the caller's audit trail.
+ */
+async function releaseSiblingLunch(sql, companyCode, payload, holder) {
+  if (!holder || holder.entry_type !== 'daily') return [];
+  if (!holder.split_group_id || holder.lunch_break !== true) return [];
+
+  const others = await sql`
+    SELECT * FROM timesheet_entries
+     WHERE company_code   = ${companyCode}
+       AND split_group_id = ${holder.split_group_id}
+       AND id <> ${holder.id}
+       AND lunch_break IS TRUE
+  `;
+  if (!others.length) return [];
+
+  const hhmm = v => String(v || '').slice(0, 5);
+  const freed = [];
+  for (const other of others) {
+    // A row whose punches no longer compute keeps the hours it has. Better a
+    // figure that is half an hour light than one invented from nothing, and
+    // the entry is visible in payroll either way.
+    const gross = computeHours(hhmm(other.start_time), hhmm(other.end_time));
+    const [row] = await sql`
+      UPDATE timesheet_entries
+         SET lunch_break    = false,
+             computed_hours = COALESCE(${gross}, computed_hours),
+             updated_at     = NOW()
+       WHERE id = ${other.id} AND company_code = ${companyCode}
+      RETURNING *
+    `;
+    if (!row) continue;
+    await writeAudit(
+      sql, companyCode, payload, row.id, 'UPDATE',
+      {
+        reason: 'lunch_break moved to another job of this split day',
+        lunch_break:    { from: true, to: false },
+        computed_hours: { from: Number(other.computed_hours), to: Number(row.computed_hours) },
+        moved_to:       holder.id,
+      },
+      dbToEntry(row)
+    );
+    freed.push(row);
+  }
+  return freed;
+}
+
 async function writeAudit(sql, companyCode, payload, entryId, action, changes, snapshot) {
   try {
     await sql`
@@ -4519,10 +4585,98 @@ module.exports = async (req, res) => {
       `;
       const row = inserted[0];
       await writeAudit(sql, companyCode, payload, row.id, 'INSERT', null, dbToEntry(row));
+      // A split day's blocks arrive one row at a time, so the group can hold
+      // the break twice between the first write and the last. Settled here,
+      // on every write, rather than trusted to arrive correct.
+      await releaseSiblingLunch(sql, companyCode, payload, row);
       return res.json(await entryJson(sql, companyCode, row));
     }
 
     // ── POST ?action=submit — draft → submitted (field-user, own row) ─────
+    // ── POST ?action=lunch_holder — move the day's break to another job ──
+    // The form picks the job from the day's clocks, which is a reckoning, not
+    // a record: the office often knows where the crew actually stopped. This
+    // moves the one deduction across a split day in a single call, so the day
+    // is never momentarily carrying two or none — which is exactly what two
+    // ordinary PUTs from the browser would leave behind if the second failed.
+    //
+    // Takes any entry of the day and the id that should carry the break, or
+    // null for "no break today". Every row of the group is rewritten from its
+    // own punches, so the hours land right whichever way the flag moves.
+    if (req.method === 'POST' && req.query.action === 'lunch_holder') {
+      const id = safeInt(req.query.id);
+      if (!id) return res.status(400).json({ error: 'id is required' });
+      const holderId = safeInt(req.body && req.body.holder_id);
+
+      const [anchorRow] = await sql`
+        SELECT * FROM timesheet_entries
+        WHERE id = ${id} AND company_code = ${companyCode}
+      `;
+      if (!anchorRow) return res.status(404).json({ error: 'Entry not found' });
+      if (anchorRow.entry_type !== 'daily') {
+        return res.status(400).json({ error: 'Only a daily entry has a lunch break' });
+      }
+      // Same gate as an edit: payroll, or the worker's own unsubmitted draft.
+      const ownDraft = anchorRow.user_id === userId && anchorRow.status === 'draft';
+      if (!ownDraft && !canAdmin) {
+        return res.status(403).json({ error: 'You do not have permission to edit this entry' });
+      }
+
+      const group = anchorRow.split_group_id
+        ? await sql`
+            SELECT * FROM timesheet_entries
+             WHERE company_code = ${companyCode} AND split_group_id = ${anchorRow.split_group_id}
+             ORDER BY split_index ASC NULLS LAST, id ASC
+          `
+        : [anchorRow];
+
+      if (holderId && !group.some(g => Number(g.id) === Number(holderId))) {
+        return res.status(400).json({ error: 'That job is not part of this day' });
+      }
+
+      const hhmm = v => String(v || '').slice(0, 5);
+      const changed = [];
+      for (const row of group) {
+        const holds = holderId != null && Number(row.id) === Number(holderId);
+        const gross = computeHours(hhmm(row.start_time), hhmm(row.end_time));
+        // A row with unusable punches keeps the hours it has rather than being
+        // given an invented figure; its flag still settles, so the day cannot
+        // come out of this holding the break twice.
+        const hours = gross == null
+          ? Number(row.computed_hours)
+          : (holds ? Math.max(0, Math.round((gross - 0.5) * 100) / 100) : gross);
+        if (row.lunch_break === holds && Number(row.computed_hours) === hours) continue;
+        const [saved] = await sql`
+          UPDATE timesheet_entries
+             SET lunch_break    = ${holds},
+                 computed_hours = ${hours},
+                 updated_at     = NOW()
+           WHERE id = ${row.id} AND company_code = ${companyCode}
+          RETURNING *
+        `;
+        if (!saved) continue;
+        await writeAudit(
+          sql, companyCode, payload, saved.id, canAdmin ? 'ADMIN_EDIT' : 'UPDATE',
+          {
+            reason: holds
+              ? "lunch break moved onto this job"
+              : (holderId ? 'lunch break moved to another job of this day'
+                          : "lunch break cleared for this day"),
+            lunch_break:    { from: row.lunch_break, to: holds },
+            computed_hours: { from: Number(row.computed_hours), to: hours },
+          },
+          dbToEntry(saved)
+        );
+        changed.push(saved);
+      }
+
+      return res.json({
+        ok: true,
+        holder_id: holderId || null,
+        changed: changed.map(r => Number(r.id)),
+      });
+    }
+
     if (req.method === 'POST' && req.query.action === 'submit') {
       const id = safeInt(req.query.id);
       if (!id) return res.status(400).json({ error: 'id is required' });
@@ -6040,6 +6194,10 @@ module.exports = async (req, res) => {
         isAdminEditable ? 'ADMIN_EDIT' : 'UPDATE',
         null, dbToEntry(updated)
       );
+      // The approver moving the break onto this job is exactly a PUT that sets
+      // lunch_break true, so this is what makes the move a move rather than a
+      // second deduction.
+      await releaseSiblingLunch(sql, companyCode, payload, updated);
       return res.json(await entryJson(sql, companyCode, updated));
     }
 

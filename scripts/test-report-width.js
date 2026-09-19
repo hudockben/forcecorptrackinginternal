@@ -57,6 +57,9 @@ function assert(label, cond, detail) {
 // a missing name here is a ReferenceError at render time, not a quiet miss.
 const RENDER_FNS = ['escapeHtml', 'prettyDate', 'prettyDateShort', 'prettyDiv', 'prettyOff',
   'dayFlagHtml', 'equipUsedPieces', 'equipUsedNames',
+  // The lunch pill's "No" names whichever job of a split day took the break,
+  // so the report reaches the same holder lookup the review grid uses.
+  'lunchHolders', 'lunchNoTitle',
   'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours', 'weekStartOf', 'weekEndOf',
   'stampKey', 'compareIds', 'byEntryOrder',
   'weeklyOvertime', 'detailColumnsRowHtml', 'weekBandHtml', 'reportDetailHtml',
@@ -105,6 +108,11 @@ const filtered = [
 
 const api = new Function('document', 'filtered', 'user', 'expandedReportUsers', 'loadedScope', `
   const OT_WEEKLY_THRESHOLD = 40;
+  // lunchHolders() reads the page's full result set to find which job of a
+  // split day carries the break. This fixture has no split days, so an empty
+  // one is the honest stub: every row's pill falls to "No lunch break taken",
+  // exactly as it did before the lookup existed.
+  const allEntries = [];
   ${FULL_SRC}
   ${DETAIL_COLS_SRC}
   ${RENDER_FNS.map(n => requireFn(PAGE, n, 'payroll.html')).join('\n')}

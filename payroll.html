@@ -4034,9 +4034,7 @@
                     // fits a landscape page by nothing to spare, and the Labour
                     // and Total columns beside it are already net of this break.
                     `Took a lunch break — 30 minutes already deducted from this day's hours`,
-                    Number(e.split_index) > 1
-                      ? `No break inside this job's hours — the day's 30-minute lunch is deducted on job 1 of this split`
-                      : 'No lunch break taken')}</td>
+                    lunchNoTitle(e))}</td>
               <!-- Pill only, deliberately. The machines are named on the review
                    grid and in the Excel export; this table is the printed Hours
                    Report, which fits a landscape page by exactly nothing to
@@ -7199,6 +7197,42 @@
         + `Worth a look before approving.`;
     }
 
+    // Which job of each split day carries the break. Built from every entry
+    // rather than the filtered set: the job holding it can be filtered off the
+    // screen while the jobs that don't hold it are still on it, and a "No" that
+    // cannot name where the break went is the confusion this all started with.
+    // Memoised on the array itself, so a render costs one pass and a reload
+    // rebuilds it.
+    // The memo hangs off the function rather than a variable beside it, so the
+    // whole lookup can be lifted into a test with only `allEntries` stubbed —
+    // the printed report uses it too, and scripts/test-report-width.js renders
+    // that report from source.
+    function lunchHolders() {
+      const src = typeof allEntries === 'undefined' ? [] : allEntries;
+      if (lunchHolders._src === src) return lunchHolders._map;
+      const map = new Map();
+      for (const e of src) {
+        if (e.entry_type !== 'daily' || !e.split_group_id || e.lunch_break !== true) continue;
+        map.set(e.split_group_id, { index: Number(e.split_index) || null, job: e.job_label || '' });
+      }
+      lunchHolders._src = src;
+      lunchHolders._map = map;
+      return map;
+    }
+
+    // What a "No" means on a row of a split day: not that the crew skipped
+    // lunch, but that the break fell in one of the day's other jobs. It names
+    // that job, because "job 1" stopped being the answer when the deduction
+    // started following the clock instead of the entry order.
+    function lunchNoTitle(e) {
+      const held = e && e.split_group_id ? lunchHolders().get(e.split_group_id) : null;
+      if (!held) return 'No lunch break taken';
+      const where = held.job || (held.index ? `job ${held.index}` : 'another job');
+      return `No break inside this job's hours — the day's 30-minute lunch is deducted on `
+           + `${where}${held.index ? ` (job ${held.index} of this split)` : ''}, `
+           + `the job it fell in`;
+    }
+
     // ── The lunch deduction, said out loud ────────────────────────────────
     // An entry's computed_hours is stored ALREADY reduced by the day's unpaid
     // break (api/timesheet-entries.js), and travel_hours is not. That makes a
@@ -7246,7 +7280,8 @@
       // against its sibling needs to be told so.
       if (Number(e.split_count) > 1) {
         tip += ` One lunch per day: the whole day's deduction is taken on job `
-             + `${Number(e.split_index) || 1} of this split, not on each job.`;
+             + `${Number(e.split_index) || 1} of this split — the job it fell in — `
+             + `not on each job.`;
       }
       // Worded as the trucking modal's haul-1 readout already words it
       // ("−0.50 lunch"), so the one deduction reads the same wherever the page
@@ -7266,7 +7301,7 @@
       if (e.lunch_break === true) {
         tip += ` The day's 30-minute unpaid lunch is already off the worked hours`
              + `${Number(e.split_count) > 1 ? ' — one lunch per day, taken on job '
-                 + `${Number(e.split_index) || 1} of this split` : ''}.`;
+                 + `${Number(e.split_index) || 1}, the job it fell in` : ''}.`;
       }
       return ` title="${escapeHtml(tip)}"`;
     }
@@ -7418,12 +7453,11 @@
             <td>${prevailingWageHtml(e)}</td>
             <td>${dayFlagHtml(e, 'lunch_break',
                   'Took a lunch break (30 min deducted)',
-                  // On a split day the one deduction is taken on the first job,
-                  // so the later rows honestly read No — say why, or it looks
-                  // like the crew ate on some jobs and not others.
-                  Number(e.split_index) > 1
-                    ? `No break inside this job's hours — the day's 30-minute lunch deduction is taken on job 1 of this split`
-                    : 'No lunch break taken')}</td>
+                  // On a split day the one deduction sits on the job the break
+                  // fell in, so every other row honestly reads No — say which
+                  // job took it, or it looks like the crew ate on some jobs and
+                  // not others.
+                  lunchNoTitle(e))}</td>
             <td>${equipFlagHtml(e)}</td>
             <td>${timeCell}</td>
             <td class="${hoursFlag ? 'hours-mismatch' : ''}" style="font-variant-numeric:tabular-nums">${hours}${hoursMarker}${lunchNote}</td>
@@ -8546,6 +8580,51 @@
     }
 
     // ── Edit modal ────────────────────────────────────────────────────────
+    // ── Where the day's break came off ────────────────────────────────────
+    // Every job of a split day, in the order the worker entered them. Read off
+    // allEntries rather than the filtered set: a sibling hidden by a division
+    // or supervisor filter is still part of the day, and a group that looked
+    // like one job would let the approver move the break onto a job that is
+    // not there.
+    function lunchGroupOf(e) {
+      if (!e || e.entry_type !== 'daily' || !e.split_group_id) return [];
+      const group = allEntries.filter(x =>
+        x.entry_type === 'daily' && x.split_group_id === e.split_group_id);
+      return group.length < 2 ? [] : group.sort(
+        (a, b) => (Number(a.split_index) || 0) - (Number(b.split_index) || 0));
+    }
+
+    // Which row of a split day currently carries it, or null.
+    function lunchHolderOf(group) {
+      return group.find(g => g.lunch_break === true) || null;
+    }
+
+    function fillLunchHolder(e) {
+      const sel   = document.getElementById('em-lunch-on');
+      const group = lunchGroupOf(e);
+      if (!group.length) { sel.innerHTML = ''; syncLunchHolderRow(); return; }
+      sel.innerHTML = group.map(g => {
+        const when = `${g.start_time || ''}–${g.end_time || ''}`;
+        const job  = g.job_label || prettyDiv(g.division) || 'this job';
+        return `<option value="${g.id}">Job ${Number(g.split_index) || '?'} · `
+             + `${escapeHtml(job)} · ${escapeHtml(when)}</option>`;
+      }).join('');
+      // Default to where it already sits; failing that, the row being edited,
+      // so a day that somehow lost its holder can be given one from here.
+      const holder = lunchHolderOf(group);
+      sel.value = String(holder ? holder.id : e.id);
+      syncLunchHolderRow();
+    }
+
+    // Nothing to place on a No, and nowhere to place it on a single job.
+    function syncLunchHolderRow() {
+      const row = document.getElementById('em-lunch-on-row');
+      const sel = document.getElementById('em-lunch-on');
+      if (!row || !sel) return;
+      const yes = document.getElementById('em-lunch').value === 'true';
+      row.style.display = (yes && sel.options.length > 1) ? '' : 'none';
+    }
+
     async function openEdit(id) {
       const e = filtered.find(x => x.id === id);
       if (!e) return;
@@ -8678,10 +8757,19 @@
           </div>
           <div>
             <label>Lunch break</label>
-            <select id="em-lunch">
+            <select id="em-lunch" onchange="syncLunchHolderRow()">
               <option value="true">Yes</option>
               <option value="false">No</option>
             </select>
+          </div>
+          <!-- Which job of a split day the one break came off. The form picks
+               it from the day's clocks, which is a reckoning and not a record —
+               the office often knows where the crew actually stopped. Hidden
+               on a single-job day, which has nowhere else to put it, and on a
+               No, which has nothing to place. -->
+          <div id="em-lunch-on-row" style="display:none">
+            <label for="em-lunch-on">Lunch taken on</label>
+            <select id="em-lunch-on"></select>
           </div>
           <div>
             <label>Operated equipment or drove pickup</label>
@@ -8728,7 +8816,16 @@
         document.getElementById('em-travel-to-shop').value = e.travel_to_shop_hours != null ? e.travel_to_shop_hours : '';
         document.getElementById('em-start').value = e.start_time || '';
         document.getElementById('em-end').value   = e.end_time   || '';
-        document.getElementById('em-lunch').value = e.lunch_break === true ? 'true' : 'false';
+        // The day's answer, not this row's: on a split day the break is stored
+        // on the job it fell in, so a row that does not hold it still belongs
+        // to a day that had one. Reading this row alone showed "No" on two
+        // jobs out of three and made the approver think the crew never ate.
+        const lunchGroup = lunchGroupOf(e);
+        const dayHadLunch = lunchGroup.length
+          ? lunchGroup.some(g => g.lunch_break === true)
+          : e.lunch_break === true;
+        document.getElementById('em-lunch').value = dayHadLunch ? 'true' : 'false';
+        fillLunchHolder(e);
         document.getElementById('em-equip').value = e.operated_equipment === true ? 'true' : 'false';
         const emEquipUsed = document.getElementById('em-equip-used');
         const emRan = equipUsedNames(e);
@@ -8817,7 +8914,13 @@
           end_time:   document.getElementById('em-end').value,
           travel_to_site_hours: document.getElementById('em-travel-to-site').value,
           travel_to_shop_hours: document.getElementById('em-travel-to-shop').value,
-          lunch_break:        document.getElementById('em-lunch').value === 'true',
+          // This ROW's flag, which on a split day is only a Yes when this row
+          // is the job the break came off. The day-level answer and the move
+          // are settled by the lunch_holder call after the save, so the two
+          // can never disagree about how many deductions the day has.
+          lunch_break: document.getElementById('em-lunch').value === 'true'
+            && (!lunchGroupOf(editingEntry).length
+                || document.getElementById('em-lunch-on').value === String(editingEntry.id)),
           operated_equipment: document.getElementById('em-equip').value === 'true',
           supervisor_id:   supSel.value,
           supervisor_name: supOpt ? (supOpt.dataset.name || supOpt.textContent) : '',
@@ -8831,6 +8934,12 @@
         });
         const j = await res.json();
         if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
+        // Settle the day's one break across the group in a single call: the
+        // server rewrites every job of the day from its own punches, so the
+        // deduction lands on exactly the job named here and nowhere else.
+        // Done after the save because the save may have moved the very clocks
+        // the hours are recomputed from.
+        await saveLunchHolder();
         msg.classList.add('success'); msg.textContent = 'Saved.';
         setTimeout(() => {
           closeEdit();
@@ -8839,6 +8948,28 @@
       } catch (err) {
         msg.classList.add('error'); msg.textContent = err.message;
       }
+    }
+
+    // Move the day's break to the job the approver named — or clear it off
+    // the day entirely on a No. A single server call rather than one PUT per
+    // job, so a day is never left carrying the deduction twice because the
+    // second request failed.
+    async function saveLunchHolder() {
+      if (!editingEntry || editingEntry.entry_type !== 'daily') return;
+      const group = lunchGroupOf(editingEntry);
+      if (!group.length) return;                 // one job — the PUT said it all
+      const yes = document.getElementById('em-lunch').value === 'true';
+      const sel = document.getElementById('em-lunch-on');
+      const holderId = yes ? safeIdOf(sel.value) : null;
+      const res = await fetch(
+        '/api/timesheet-entries?action=lunch_holder&id=' + encodeURIComponent(editingEntry.id),
+        { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ holder_id: holderId }) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || 'Saved, but the lunch break could not be moved');
+    }
+    function safeIdOf(v) {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : null;
     }
 
     // ── Data loaders ──────────────────────────────────────────────────────
