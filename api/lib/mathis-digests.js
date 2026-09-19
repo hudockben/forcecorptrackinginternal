@@ -1185,6 +1185,7 @@ const SCHEDULER_LIMITS = [
   'Only the divisions that run jobs feed this board. Trucking dispatch is a separate board with its own drivers and trucks, and none of it is here.',
   'addlLaborersNeeded is arithmetic — the extra bodies the pace implies — not a decision about who is available. Never present it as a staffing instruction.',
   'These figures are the plan as it stands today. There is no history here, so nothing about how the schedule has moved over time can be answered.',
+  'timeOff is one row per person per DAY, and two fields on it decide what may be said. status is "approved" or "requested" — a requested day is a form a supervisor has not answered yet, so never report it as time the person is taking. partial is true when the day off leaves part of the day standing (hours says how much): that person IS working that day and IS schedulable, so never describe a partial day as being out. Only an approved, non-partial row means away for the whole day. Zero hours is an unpaid day off — away all day, and a payroll fact, not an extra kind of absence.',
 ];
 
 const SCHED_BAD = ['behind', 'at-risk'];
@@ -1262,7 +1263,33 @@ async function schedulerDigest(c, opts = {}) {
     }
   }
 
-  const off = Object.keys((board.timeOff && typeof board.timeOff === 'object') ? board.timeOff : {});
+  // Time off, one row per person per DAY — not a list of names.
+  //
+  // A bare name carries neither of the two things that decide what to say about
+  // it. WHETHER IT IS APPROVED: readTimeOff selects submitted AND approved, so a
+  // name alone made an unanswered request indistinguishable from a signed-off
+  // one, and the assistant reported a man as out on the strength of a form his
+  // supervisor had not looked at. HOW LONG: a half day is a man who is on the
+  // job, and "Oakes is off Tuesday" is simply false about him.
+  const offBoard = (board.timeOff && typeof board.timeOff === 'object') ? board.timeOff : {};
+  const off = [];
+  for (const name of Object.keys(offBoard)) {
+    const byDate = offBoard[name] || {};
+    for (const date of Object.keys(byDate).sort()) {
+      const o = byDate[date] || {};
+      off.push({
+        name:    safeText(name, 60),
+        date:    safeText(date, 10),
+        status:  o.status === 'approved' ? 'approved' : 'requested',
+        type:    safeText(o.type || 'time off', 20),
+        hours:   round2(o.hours),
+        // The word the board itself uses, so the assistant cannot invent a
+        // third vocabulary for a fact two screens already agree on.
+        partial: !!o.partial,
+      });
+    }
+  }
+  off.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || a.name.localeCompare(b.name));
 
   return {
     division: 'scheduler',
@@ -1279,7 +1306,7 @@ async function schedulerDigest(c, opts = {}) {
     equipmentCount: (board.equipment || []).length,
     problems: capList(problems),
     conflicts: capList(conflicts),
-    timeOff: capList(off.map(n => ({ name: safeText(n, 60) }))),
+    timeOff: capList(off),
     limits: SCHEDULER_LIMITS,
   };
 }
