@@ -852,6 +852,18 @@ const res = {
     if (!oakes || oakes.pendingOff !== 1 || oakes.approvedOff !== 1) {
       fail(`Oakes time off = ${oakes && oakes.pendingOff}/${oakes && oakes.approvedOff} (expected 1/1)`);
     } else pass('payroll: time-off requests are counted, not folded into hours');
+    // And what those requests PAY. The approved day is a full paid day; the one
+    // still waiting on a supervisor is owed nothing until it is signed off, so
+    // it is carried apart rather than added in.
+    if (!oakes || Math.abs(oakes.offHours - 8) > 0.001 || Math.abs(oakes.pendingOffHours - 8) > 0.001) {
+      fail(`Oakes leave hours = ${oakes && oakes.offHours}/${oakes && oakes.pendingOffHours} (expected 8 paid / 8 pending)`);
+    } else pass('payroll: the approved day off is 8.00 h paid, the pending one is not');
+    if (!oakes || Math.abs(oakes.totalPaidHours - 16) > 0.001) {
+      fail(`Oakes total paid = ${oakes && oakes.totalPaidHours} (expected 16 — 8 worked + 8 of leave)`);
+    } else pass('payroll: Oakes is paid for 16.00 h — 8 worked and a day off');
+    if (!strick || Math.abs(strick.totalPaidHours - strick.totalHours) > 0.001) {
+      fail(`Strick total paid = ${strick && strick.totalPaidHours} (expected ${strick && strick.totalHours} — he took no leave)`);
+    } else pass('payroll: a man who took no leave is paid exactly the hours he worked');
     // A dust job has no prevailing-wage concept, so its hours are standard.
     if (!oakes || Math.abs(oakes.pwHours - 4) > 0.001 || Math.abs(oakes.stdHours - 4) > 0.001) {
       fail(`Oakes prevailing/standard = ${oakes && oakes.pwHours}/${oakes && oakes.stdHours} (expected 4/4)`);
@@ -868,7 +880,15 @@ const res = {
     if (!pr.total || Math.abs(pr.total.pwHours - 12) > 0.001) {
       fail(`payroll total prevailing = ${pr.total && pr.total.pwHours} (expected 12)`);
     } else pass(`payroll: totals row carries ${pr.total.pwHours} prevailing hours`);
-    if ((pr.metrics || []).length !== 8) fail(`payroll has ${(pr.metrics || []).length} metrics (expected 8)`);
+    // Hours worked and hours PAID stopped being the same number the moment paid
+    // leave was counted, and the office reads the strip before the table.
+    const paid = pMetric('Total Paid Hrs');
+    if (!paid || paid.value !== '31.50') fail(`payroll Total Paid Hrs = ${paid && paid.value} (expected 31.50 — 23.50 worked + one approved day off)`);
+    else pass(`payroll Total Paid Hrs = ${paid.value} — ${paid.sub}`);
+    if (!pr.total || Math.abs(pr.total.offHours - 8) > 0.001) {
+      fail(`payroll total leave = ${pr.total && pr.total.offHours} (expected 8)`);
+    } else pass(`payroll: totals row carries ${pr.total.offHours} hours of paid leave`);
+    if ((pr.metrics || []).length !== 9) fail(`payroll has ${(pr.metrics || []).length} metrics (expected 9)`);
     else pass('payroll carries the Hours Report\'s totals as its strip');
     // The cycle the payroll page's "Current Biweekly" button selects: Mon → Sun,
     // fourteen days, anchored on Sun May 10 2026.

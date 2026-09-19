@@ -1074,6 +1074,7 @@ const PAYROLL_LIMITS = [
   'truckHours is a DIFFERENT figure from haulHours and the two are never added together. It is how much of the work was spent driving — BOTH hauls, on site and off — and it is already inside workHours: workHours minus truckHours is labour on the job. It moves no hours between prevailing and standard and says nothing about pay. Use it when asked what a crew actually produced, or how much of someone\'s time was hauling; a man can be all prevailing hours and all truckHours at once, because hauling on the covered site is both.',
   'OVERTIME IS PER WEEK, NEVER PER PAY PERIOD. otHours counts the hours past 40 in each MONDAY-TO-SUNDAY week, the two weeks of the period added together afterwards. Never derive it by subtracting 40 from a period total — 60 hours over a fortnight can be no overtime at all. regHours + otHours is the period total.',
   'Work and travel both count toward the 40. Paid leave does not: a holiday or vacation day is not hours worked and never pushes a week into overtime.',
+  'offHours is PAID LEAVE: every APPROVED day off, at the hours its own entry says — half days are real and are 4, and an entry that does not say how long it was reads as a full day of 8. It is hours paid, not hours worked, so it is in none of the other figures — not workHours, not travelHours, not prevailing or standard, and not the 40. pendingOffHours is what the unapproved requests would be worth and is owed to nobody yet; never add it to anything. totalHours is the hours WORKED (regHours + otHours); totalPaidHours is that plus offHours, and is the figure to use when asked what someone is paid for the period. Still no rates: these are hours.',
   'otPwHours is the part of otHours worked on a prevailing-wage job, and it is already inside otHours — not a separate bucket. It is called out because it is not the same money: prevailing-wage overtime pays 1.5x the BASE rate plus the FULL fringe, the fringe never multiplied. That is a rate statement, and the rates are not in this data.',
 ];
 
@@ -1104,6 +1105,10 @@ async function payrollDigest(c) {
              haul_type,
              haul_hours::float           AS haul_hours,
              haul_off_site_hours::float  AS haul_off_site_hours,
+             -- How long an approved day off was. Left out, every time-off row
+             -- reads as "nobody said" and pays a full day, so a fortnight of
+             -- half days is answered at twice the hours actually owed.
+             time_off_hours::float       AS time_off_hours,
              -- For the ORDER the overtime walk needs, not for display: two
              -- entries on one date are counted in sequence, and the first keeps
              -- the regular hours while the second takes the overtime.
@@ -1159,6 +1164,13 @@ async function payrollDigest(c) {
       regHours:      round2(e.regHours),
       otHours:       round2(e.otHours),
       otPwHours:     round2(e.otPwHours),
+      // Paid leave, per person, for the same reason overtime is: "what is he
+      // paid for this fortnight" is a question about one man, and a crew total
+      // cannot answer it. Held apart from the hours worked above — see the
+      // limits.
+      offHours:       round2(e.offHours),
+      pendingOffHours: round2(e.pendingOffHours),
+      totalPaidHours: round2(e.totalPaidHours),
       daysWorked:    e.daysWorked,
     }))),
     limits: PAYROLL_LIMITS,
@@ -1173,6 +1185,7 @@ const SCHEDULER_LIMITS = [
   'Only the divisions that run jobs feed this board. Trucking dispatch is a separate board with its own drivers and trucks, and none of it is here.',
   'addlLaborersNeeded is arithmetic — the extra bodies the pace implies — not a decision about who is available. Never present it as a staffing instruction.',
   'These figures are the plan as it stands today. There is no history here, so nothing about how the schedule has moved over time can be answered.',
+  'timeOff is one row per person per DAY, and two fields on it decide what may be said. status is "approved" or "requested" — a requested day is a form a supervisor has not answered yet, so never report it as time the person is taking. partial is true when the day off leaves part of the day standing (hours says how much): that person IS working that day and IS schedulable, so never describe a partial day as being out. Only an approved, non-partial row means away for the whole day. Zero hours is an unpaid day off — away all day, and a payroll fact, not an extra kind of absence.',
 ];
 
 const SCHED_BAD = ['behind', 'at-risk'];
@@ -1250,7 +1263,33 @@ async function schedulerDigest(c, opts = {}) {
     }
   }
 
-  const off = Object.keys((board.timeOff && typeof board.timeOff === 'object') ? board.timeOff : {});
+  // Time off, one row per person per DAY — not a list of names.
+  //
+  // A bare name carries neither of the two things that decide what to say about
+  // it. WHETHER IT IS APPROVED: readTimeOff selects submitted AND approved, so a
+  // name alone made an unanswered request indistinguishable from a signed-off
+  // one, and the assistant reported a man as out on the strength of a form his
+  // supervisor had not looked at. HOW LONG: a half day is a man who is on the
+  // job, and "Oakes is off Tuesday" is simply false about him.
+  const offBoard = (board.timeOff && typeof board.timeOff === 'object') ? board.timeOff : {};
+  const off = [];
+  for (const name of Object.keys(offBoard)) {
+    const byDate = offBoard[name] || {};
+    for (const date of Object.keys(byDate).sort()) {
+      const o = byDate[date] || {};
+      off.push({
+        name:    safeText(name, 60),
+        date:    safeText(date, 10),
+        status:  o.status === 'approved' ? 'approved' : 'requested',
+        type:    safeText(o.type || 'time off', 20),
+        hours:   round2(o.hours),
+        // The word the board itself uses, so the assistant cannot invent a
+        // third vocabulary for a fact two screens already agree on.
+        partial: !!o.partial,
+      });
+    }
+  }
+  off.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || a.name.localeCompare(b.name));
 
   return {
     division: 'scheduler',
@@ -1267,7 +1306,7 @@ async function schedulerDigest(c, opts = {}) {
     equipmentCount: (board.equipment || []).length,
     problems: capList(problems),
     conflicts: capList(conflicts),
-    timeOff: capList(off.map(n => ({ name: safeText(n, 60) }))),
+    timeOff: capList(off),
     limits: SCHEDULER_LIMITS,
   };
 }

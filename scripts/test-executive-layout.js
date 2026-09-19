@@ -230,7 +230,7 @@ assert('an unpaid invoice past 45 days reads overdue, and paid stays paid',
 // ── Payroll mirrors the Payroll page's Reports tab ──
 console.log('\n[payroll mirrors the Payroll page]');
 
-// The Hours Report's sixteen columns, in the page's own words and order.
+// The Hours Report's seventeen columns, in the page's own words and order.
 //
 // Reg / OT / Prevailing OT sit where they do on purpose. Overtime splits the
 // Total beside it, so it follows Total; and Prevailing OT follows Prevailing
@@ -240,13 +240,20 @@ console.log('\n[payroll mirrors the Payroll page]');
 // Haul follows Work for the same reason: it splits the column beside it. The
 // day's hours are labour plus time in the truck, and the office reads the two
 // together or neither means anything.
+//
+// Time Off Hrs and Total Paid sit at the end, in that order, because that is
+// the order the question is asked: what was he paid for leave, and what does
+// that make the check. Total Paid is deliberately NOT beside Total — Total is
+// the hours WORKED and the overtime split is measured against it, so the two
+// are not the same kind of figure and a reader who reads them as a pair would
+// be adding paid leave into a week's forty.
 const PAYROLL_COLUMNS = [
   'Employee', 'Work Hrs', 'Haul Hrs', 'Travel to Site', 'Travel to Shop', 'Travel', 'Total',
   'Reg Hrs', 'OT Hrs', 'Prevailing Hrs', 'Prevailing OT', 'Standard Hrs',
-  'Pending Hrs', 'Approved Hrs', 'Time Off', 'Status',
+  'Pending Hrs', 'Approved Hrs', 'Time Off Hrs', 'Total Paid', 'Status',
 ];
 const execPayrollCols = headerLabels(exec, '<th>Employee</th>');
-assert('the executive payroll table has the same sixteen columns',
+assert('the executive payroll table has the same seventeen columns',
   PAYROLL_COLUMNS.every((c, i) => execPayrollCols[i] === c)
   && execPayrollCols.length === PAYROLL_COLUMNS.length,
   'got: ' + JSON.stringify(execPayrollCols));
@@ -337,6 +344,18 @@ console.log('\n[every consumer of payrollMetrics is fed haul_type]');
     const explicitHours = cols.some(c => !/\*/.test(c) && /\bhaul_hours\b/.test(c));
     assert(`  ${rel} passes haul_hours through as well`,
       allStar || explicitHours,
+      `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
+    // And time_off_hours, which fails the same way and costs more. Every reader
+    // takes a missing value as "nobody said how long the day off was" and pays
+    // it as a FULL day — that is the rule that keeps entries approved before
+    // the column existed reporting what they always did. So a consumer that
+    // forgets the column does not report zero and does not error: it reports a
+    // crew of half days at DOUBLE the hours they are owed, and the figure looks
+    // perfectly ordinary. Silence is the failure mode, which is why it is
+    // checked here rather than left to a runtime assertion.
+    const explicitOff = cols.some(c => !/\*/.test(c) && /\btime_off_hours\b/.test(c));
+    assert(`  ${rel} passes time_off_hours through as well`,
+      allStar || explicitOff,
       `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
   }
 }

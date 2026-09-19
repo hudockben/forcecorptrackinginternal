@@ -1576,6 +1576,12 @@ async function buildPayrollSummary(sql, companyCode) {
       haul_type,
       haul_hours::float                  AS haul_hours,
       haul_off_site_hours::float         AS haul_off_site_hours,
+      -- How long an approved day off was. Same trap as the three columns above,
+      -- and the same cost: leave this out and every time-off row arrives with
+      -- it undefined, which every reader takes as "nobody said" and pays as a
+      -- FULL day. A crew of half days would be reported at double the hours
+      -- they are owed, and nothing about the figure would look wrong.
+      time_off_hours::float              AS time_off_hours,
       -- id and created_at are here for the ORDER the overtime walk needs, not
       -- for display. Two entries on one date — a split day — are counted in
       -- sequence, and whichever comes first keeps the regular hours while the
@@ -1657,11 +1663,32 @@ async function buildPayrollSummary(sql, companyCode) {
       {
         label: 'Pending Hrs', value: hrs(t.pendingHours),
         tone: t.pendingHours > 0.001 ? 'amber' : 'green',
-        sub: t.pendingOff ? `${t.pendingOff} time-off request${t.pendingOff === 1 ? '' : 's'} too` : 'awaiting approval',
+        sub: t.pendingOff
+          ? `${t.pendingOff} time-off request${t.pendingOff === 1 ? '' : 's'} too — ${hrs(t.pendingOffHours)} h if approved`
+          : 'awaiting approval',
       },
       {
         label: 'Approved Hrs', value: hrs(t.approvedHours), tone: 'green',
-        sub: t.approvedOff ? `${t.approvedOff} time-off entr${t.approvedOff === 1 ? 'y' : 'ies'} too` : 'signed off',
+        sub: t.approvedOff
+          ? `plus ${t.approvedOff} approved day${t.approvedOff === 1 ? '' : 's'} off — ${hrs(t.offHours)} h of paid leave`
+          : 'signed off',
+      },
+      {
+        // The figure the check is cut from, and the reason this strip now has
+        // one: hours worked and hours paid stopped being the same number the
+        // moment paid leave was counted, and the office reads the strip before
+        // it reads the table.
+        label: 'Total Paid Hrs', value: hrs(t.totalPaidHours),
+        // Keyed on the COUNT of approved days, the way the Approved Hrs tile
+        // above already is — not on the hours summing to zero. A period whose
+        // only leave was unpaid has approvedOff set and offHours 0, and the
+        // hours test had this tile read "no time off in this period" directly
+        // under one reading "plus 1 approved day off". Two tiles in one strip
+        // contradicting each other about the same fortnight.
+        tone: t.approvedOff ? 'teal' : 'mute',
+        sub: t.approvedOff
+          ? `${hrs(t.totalHours)} h worked + ${hrs(t.offHours)} h paid leave`
+          : 'no time off in this period',
       },
     ],
     rows: m.employees.map(e => ({
@@ -1684,6 +1711,13 @@ async function buildPayrollSummary(sql, companyCode) {
       approvedHours: e.approvedHours,
       pendingOff:    e.pendingOff,
       approvedOff:   e.approvedOff,
+      // Days off, and what they pay: an approved one is a full paid day.
+      // totalHours above is the hours WORKED — it has to stay that, because the
+      // regular/overtime split is measured against it — so the leave rejoins
+      // the row here, in the figure the check is cut from.
+      offHours:      e.offHours,
+      pendingOffHours: e.pendingOffHours,
+      totalPaidHours: e.totalPaidHours,
       hasPending:    e.hasPending,
     })),
     total: {
@@ -1705,6 +1739,9 @@ async function buildPayrollSummary(sql, companyCode) {
       approvedHours: t.approvedHours,
       pendingOff:    t.pendingOff,
       approvedOff:   t.approvedOff,
+      offHours:      t.offHours,
+      pendingOffHours: t.pendingOffHours,
+      totalPaidHours: t.totalPaidHours,
       hasPending:    t.pendingHours > 0.001,
       isTotal:       true,
     },

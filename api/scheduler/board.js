@@ -289,12 +289,58 @@ async function readEquipment(sql, companyCode) {
     return rows.map(r => (r.name || '').trim()).filter(Boolean);
   } catch (err) { console.warn('[scheduler/board] equipment read failed:', err.message); return []; }
 }
-// Approved/pending time-off from the Timesheet division → name → { dateStr → {status,type} }.
+// A FULL day off, in hours. The board asks a different question from payroll —
+// not "what is he owed" but "is he here" — and the answer turns on this number,
+// so it is named rather than written 8 in three places below.
+//
+// Mirrors PAID_LEAVE_HOURS in api/lib/payroll-metrics.js, which is where the
+// rule lives. The two must agree: the same entry decides what a man is paid and
+// whether a scheduler can put him on a job, and a board that thought a full day
+// was six hours would quietly hand out half days nobody asked for.
+const FULL_DAY_HOURS = 8;
+
+/**
+ * How long a time-off row says it is, and whether that leaves any of the day.
+ *
+ * WHY THE BOARD CARES. Half days happen — a man takes the morning for an
+ * appointment and works the afternoon — and until the hours reached here the
+ * board could only say "off", so it blocked the whole day. A four-hour morning
+ * took a man off the schedule for eight, and the crew was planned around an
+ * absence that was half imaginary.
+ *
+ *   hours → what the entry says, or a FULL day when it does not. Null is
+ *           "nobody said", which is every row filed before payroll could ask;
+ *           reading it as 0 would turn every one of them into a man who is
+ *           somehow off for no time at all. Mirrors leaveHoursOf in
+ *           api/lib/payroll-metrics.js.
+ *   partial → he is here for some of the day. Strictly between nothing and a
+ *           full day, and BOTH ends are deliberate:
+ *             a full day (or longer) is a whole-day absence, plainly;
+ *             ZERO is an UNPAID day off — he is gone all day and simply not
+ *             paid for it, which is a payroll fact and not a scheduling one.
+ *           So zero blocks exactly as eight does. Only an answer that leaves
+ *           part of the day standing makes the man schedulable.
+ */
+function offShape(row) {
+  const raw = row && row.time_off_hours;
+  const n = raw == null ? null : Number(raw);
+  // An unreadable figure is not a zero — the same judgement payroll makes. Fall
+  // through to the answer the column refines: the whole day.
+  const hours = (n == null || !Number.isFinite(n) || n < 0) ? FULL_DAY_HOURS : n;
+  return { hours, partial: hours > 0 && hours < FULL_DAY_HOURS };
+}
+
+// Approved/pending time-off from the Timesheet division →
+// name → { dateStr → { status, type, hours, partial } }.
 // Pending (submitted) and approved both surface so a scheduler sees the risk early.
 async function readTimeOff(sql, companyCode, todayStr) {
   try {
     const rows = await sql`
       SELECT te.work_date, te.status, te.time_off_type,
+             -- How long the day off is. Without it every row reads as a whole
+             -- day and a half-day morning takes the man off the board for the
+             -- afternoon he is actually working.
+             te.time_off_hours,
              COALESCE(NULLIF(TRIM(e.name), ''), te.username) AS name
       FROM   timesheet_entries te
       LEFT JOIN employees e ON e.id = te.employee_id
@@ -306,7 +352,8 @@ async function readTimeOff(sql, companyCode, todayStr) {
     rows.forEach(r => {
       const name = (r.name || '').trim(); if (!name) return;
       const ds = String(r.work_date).slice(0, 10);
-      (map[name] = map[name] || {})[ds] = { status: r.status, type: r.time_off_type || 'time off' };
+      (map[name] = map[name] || {})[ds] = Object.assign(
+        { status: r.status, type: r.time_off_type || 'time off' }, offShape(r));
     });
     return map;
   } catch (err) { console.warn('[scheduler/board] time-off read failed:', err.message); return {}; }
@@ -414,3 +461,7 @@ module.exports = async (req, res) => {
 
 module.exports.buildBoard = buildBoard;
 module.exports.schedStatus = schedStatus;
+// Exported for scripts/test-sched-time-off.js, which checks this copy of the
+// full-day rule against api/lib/payroll-metrics.js's.
+module.exports.offShape = offShape;
+module.exports.FULL_DAY_HOURS = FULL_DAY_HOURS;

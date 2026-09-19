@@ -7,9 +7,10 @@
  *      (skips cleanly when the bundled Chromium is not present)
  *
  * The report grew from twelve columns to fifteen when the overtime split was
- * added, and then to sixteen when the day's hours were split into labour and
- * hauling; the first time, the Status column fell off the right edge of the
- * card — on screen and on paper both. Nothing caught it, because column width is not a property
+ * added, then to sixteen when the day's hours were split into labour and
+ * hauling, and to seventeen when paid leave was given its own column and a
+ * Total Paid beside it; the first time, the Status column fell off the right
+ * edge of the card — on screen and on paper both. Nothing caught it, because column width is not a property
  * of the markup or of any one rule: it is what the browser works out from the
  * headings, the figures, the padding and the space the card allows.
  *
@@ -59,12 +60,18 @@ const RENDER_FNS = ['escapeHtml', 'prettyDate', 'prettyDateShort', 'prettyDiv', 
   'dayFlagHtml', 'equipUsedPieces', 'equipUsedNames',
   'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours', 'weekStartOf', 'weekEndOf',
   'stampKey', 'compareIds', 'byEntryOrder',
+  'timeOffPayHours', 'leaveHoursOf', 'offDayTitle', 'timeOffCell',
   'weeklyOvertime', 'detailColumnsRowHtml', 'weekBandHtml', 'reportDetailHtml',
   'buildReportModel', 'renderReport'];
 
 // The detail's column labels are data now, carried on each week band.
 const DETAIL_COLS_SRC = PAGE.slice(PAGE.indexOf('    const DETAIL_COLUMNS = ['),
   PAGE.indexOf('];', PAGE.indexOf('    const DETAIL_COLUMNS = [')) + 2);
+
+// What an approved day off pays, lifted from the page for the same reason: it
+// is money, and a copy of it here could disagree with the sheet payroll runs.
+const LEAVE_SRC = PAGE.slice(PAGE.indexOf('    const PAID_LEAVE_HOURS = 8;'),
+  PAGE.indexOf(';', PAGE.indexOf('    const MAX_LEAVE_HOURS = ')) + 1);
 
 // The equipment pill's tooltip sentence, lifted rather than restated so the
 // two cannot drift. Same reason as DETAIL_COLS_SRC above.
@@ -99,12 +106,17 @@ const filtered = [
   day('2026-09-05',  1.00, 'Ox Hill'),
   { id: 'off1', username: 'shuffstallmatt', entry_type: 'time_off', status: 'submitted',
     time_off_type: 'bereavement', work_date: '2026-09-07' },
+  // Approved, so the Time Off and Total Paid columns are measured carrying a
+  // figure rather than a dash — the width they need is the width of 8.00.
+  { id: 'off2', username: 'shuffstallmatt', entry_type: 'time_off', status: 'approved',
+    time_off_type: 'vacation', work_date: '2026-09-10' },
   day('2026-09-08', 12.00, 'CNX Fern/Graham · 26011', 'kiewit'),
   day('2026-09-09', 10.50, 'Northeast Natural Energy'),
 ];
 
 const api = new Function('document', 'filtered', 'user', 'expandedReportUsers', 'loadedScope', `
   const OT_WEEKLY_THRESHOLD = 40;
+  ${LEAVE_SRC}
   ${FULL_SRC}
   ${DETAIL_COLS_SRC}
   ${RENDER_FNS.map(n => requireFn(PAGE, n, 'payroll.html')).join('\n')}
@@ -157,9 +169,9 @@ const PRINT_PX = 979;
   console.log('\n[how narrow the table can get]');
   await load(400, 'screen');
   const min = await measure();
-  console.log(`  sixteen columns want ${min.needed}px at their narrowest`);
-  assert('the report is still the sixteen columns this measures',
-    min.columns === 16, `got ${min.columns}`);
+  console.log(`  seventeen columns want ${min.needed}px at their narrowest`);
+  assert('the report is still the seventeen columns this measures',
+    min.columns === 17, `got ${min.columns}`);
   // The old reading column: main's 1280px less its padding and the card's.
   const OLD_CARD = 1280 - (24 * 2) - (24 * 2);
   assert(`and fit even the old ${OLD_CARD}px reading column, so no width is load-bearing`,
@@ -391,7 +403,7 @@ const PRINT_PX = 979;
   // ── The executive report prints the same sixteen columns ──
   // .ptable-wrap prints with overflow VISIBLE, so anything too wide is not
   // scrolled off the PDF — it is cut off it, silently, every month.
-  console.log('\n[the executive PDF carries all sixteen columns too]');
+  console.log('\n[the executive PDF carries all seventeen columns too]');
   const EXEC = fs.readFileSync(path.join(ROOT, 'executive.html'), 'utf8');
   const stripI = t => { let prev; do { prev = t; t = t.replace(/\$\{[^{}]*\}/g, ''); } while (t !== prev); return t.replace(/`/g, ''); };
   const sec  = EXEC.slice(EXEC.indexOf('function renderPayrollSection'));
@@ -400,7 +412,7 @@ const PRINT_PX = 979;
   // The widest content these cells realistically carry.
   const EV = ['shuffstallmatt', '190.50', '118.25', '10.00', '10.00', '20.00', '190.50',
     '185.25', '15.25', '116.50', '14.25', '174.00', '10.00', '190.50',
-    '12 pending / 34 approved', '216.75 h pending'];
+    '272.00', '462.50', '216.75 h pending'];
   let n = 0;
   const eBody = eRow.replace(/(<td[^>]*>)(\s*)(<\/td>)/g, (m, o, _w, c) => o + (EV[n++] ?? '') + c);
   const eCss  = [...EXEC.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
@@ -417,7 +429,7 @@ const PRINT_PX = 979;
              overflow: getComputedStyle(document.querySelector('.ptable-wrap')).overflowX };
   });
   console.log(`  the executive payroll table wants ${ex.need}px at its narrowest`);
-  assert('it is the same sixteen columns as the Payroll page', ex.cols === 16, `got ${ex.cols}`);
+  assert('it is the same seventeen columns as the Payroll page', ex.cols === 17, `got ${ex.cols}`);
   assert('  its headings wrap, so the figures set the column widths',
     ex.wrap !== 'nowrap', ex.wrap);
   assert(`  and it fits the ${PRINT_PX}px page — this table has no scrollbar to fall back on (overflow ${ex.overflow})`,

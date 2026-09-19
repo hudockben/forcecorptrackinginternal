@@ -733,9 +733,14 @@
          is cut off the PDF, not scrolled. Tightening the heading's letter
          spacing here (it is 0.1em on screen, which is most of a heading's
          width at this size) leaves room to spare rather than a few pixels. */
-      .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.3rem; font-size: 0.5rem;
+      /* 0.25rem of side padding, not 0.3: the payroll table is seventeen
+         columns and each one pays for its gutter twice, so on paper — where
+         this wrap has overflow VISIBLE and nothing that overshoots can be
+         scrolled to — the gutter is what pays for Time Off Hrs and Total Paid.
+         scripts/test-report-width.js measures what is left. */
+      .ptable th   { color: #555; border-color: #ccc; padding: 0.35rem 0.25rem; font-size: 0.5rem;
                      letter-spacing: 0.04em; }
-      .ptable td   { border-color: #eee; color: #000; padding: 0.3rem 0.3rem; }
+      .ptable td   { border-color: #eee; color: #000; padding: 0.3rem 0.25rem; }
       .ptable .pname-main { color: #000; font-size: 0.65rem; }
       .ptable .v-actual   { color: #000; }
       .ptable .pname-sub, .ptable .pstatus,
@@ -1554,7 +1559,7 @@
 
     // ── Payroll ──
     // Mirrors the Payroll page's Reports tab: its Hours Report totals across the
-    // strip, then its per-employee table, fifteen columns and a totals row. The
+    // strip, then its per-employee table, seventeen columns and a totals row. The
     // travel split, the prevailing/standard split and the regular/overtime split
     // are the point — a single "total hours" figure cannot tell payroll what
     // rate anything is paid at, and overtime is not the period's hours minus 40.
@@ -1565,9 +1570,25 @@
         ? `${fmtPeriod(d.periodStart, d.periodEnd)} · ${fmtCount(rows.length)} employee${rows.length === 1 ? '' : 's'} · ${fmtHours(total ? total.totalHours : 0)} total hours`
         : `${fmtPeriod(d.periodStart, d.periodEnd)} · no submitted timesheets`;
 
-      const timeOff = r => (r.pendingOff || r.approvedOff)
-        ? `${r.pendingOff} pending / ${r.approvedOff} approved`
-        : '—';
+      // Time off, as HOURS rather than a count of requests — an approved day
+      // off is a full paid day, and "2 approved" left the sixteen hours to be
+      // remembered. Pending days pay nothing until a supervisor signs them off,
+      // so they stay out of the figure and are named in the tooltip instead.
+      // Mirrors the Payroll page's timeOffCellHtml.
+      const timeOffTitle = r => {
+        const days = n => `${n} day${n === 1 ? '' : 's'}`;
+        // Not "8.00 h each": half days can be filed, and a total and a count
+        // cannot tell 4 + 12 from 8 + 8. The Payroll page's per-entry
+        // breakdown is where each day's own hours are.
+        const bits = [r.approvedOff
+          ? `${days(r.approvedOff)} off, approved — ${fmtHours(r.offHours || 0)} h in all`
+          : 'No approved time off'];
+        if (r.pendingOff) {
+          bits.push(`${days(r.pendingOff)} still pending approval — ${fmtHours(r.pendingOffHours || 0)} h more once signed off, not counted here`);
+        }
+        bits.push('Paid leave is not hours worked: none of it counts toward the 40, and none of it is prevailing');
+        return bits.join('. ');
+      };
       const statusCell = r => r.hasPending
         ? `<span class="pstatus tone-amber">${esc(fmtHours(r.pendingHours))} h pending</span>`
         : `<span class="pstatus tone-green">All approved</span>`;
@@ -1593,7 +1614,8 @@
           <td class="col-num v-actual">${esc(fmtHours(r.stdHours))}</td>
           <td class="col-num ${r.pendingHours > 0.001 ? 'tone-amber' : 'v-mute'}">${esc(fmtHours(r.pendingHours))}</td>
           <td class="col-num ${r.approvedHours > 0.001 ? 'v-profit-pos' : 'v-mute'}">${esc(fmtHours(r.approvedHours))}</td>
-          <td class="v-mute">${esc(timeOff(r))}</td>
+          <td class="col-num ${r.offHours > 0.001 ? 'tone-teal' : 'v-mute'}" title="${esc(timeOffTitle(r))}">${esc(fmtHours(r.offHours || 0))}</td>
+          <td class="col-num v-profit-pos">${esc(fmtHours(r.totalPaidHours != null ? r.totalPaidHours : r.totalHours))}</td>
           <td>${statusCell(r)}</td>
         </tr>`;
 
@@ -1616,7 +1638,8 @@
                 <th class="col-num" title="Everything paid at the standard rate: work on non-prevailing jobs plus all travel time.">Standard Hrs</th>
                 <th class="col-num">Pending Hrs</th>
                 <th class="col-num">Approved Hrs</th>
-                <th>Time Off</th>
+                <th class="col-num" title="Paid leave: every APPROVED day off in the period, at the hours the entry says — a half day is 4.00, and one that says nothing is a full 8.00. A day still waiting on a supervisor pays nothing yet. These hours are paid but never worked — they count toward no week's 40 and are never prevailing.">Time Off Hrs</th>
+                <th class="col-num" title="Total + Time Off Hrs — the hours the check is cut for. Total is the hours WORKED, which is what the regular/overtime split is measured against; this is that plus the approved leave.">Total Paid</th>
                 <th>Status</th>
               </tr>
             </thead>
