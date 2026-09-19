@@ -39,9 +39,10 @@ const CRUSH = [
     hourlyRate: 26, hours: 8 },
   // The row that ran the crusher came in from an approved timesheet ("tsq-"),
   // so this day is a mix of typed and payroll-injected rows — the shape the
-  // pit actually reported. It is also the only row with a product on it: the
-  // crew's rows carry none, which is what lets the Product filter cut a day
-  // in half (payroll never sets one either — see api/timesheet-entries.js).
+  // pit actually reported. It is also the only row with a product on it, which
+  // is what lets the Product filter cut a day in half: the crew's labour-only
+  // rows carry none, and neither does any crushing day approved before payroll
+  // began asking which material was being made (see test-quarry-crush-product).
   { id: 'tsq-4412-1756312800000', date: '2026-08-27', locationName: 'Homer City', employeeName: 'boringjamey',
     productName: '2A Modified', hourlyRate: 26, hours: 9, fuelGallons: 184, fuelCost: 0.0245,
     loadsToCrusher: 27, tonsPerLoad: 30, hoursCrushing: 6,

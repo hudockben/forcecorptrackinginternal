@@ -1765,7 +1765,32 @@ function validateQuarryInjection(activity, raw) {
     for (const [k, v] of Object.entries(vals)) {
       if (v == null) return { error: quarryRangeError(k, q[k]) };
     }
-    return { fields: { ...vals, comments: safeStr(q.comments, 2000) || '' } };
+    // What the plant was making. Deliberately assembled AFTER the loop above and
+    // not inside `vals`: a product put through quarryNum comes back null on any
+    // real name, and the loop would then reject every crushing approval in the
+    // company with "productName must be between 0 and undefined". Carried as the
+    // id/name PAIR the crushing grid stores (quarry.html normalizeCrushRow), so
+    // tons group by the product itself and survive a later rename; the name
+    // alone is what the grid's Product column prints.
+    const productId   = safeStr(q.productId, 200) || '';
+    const productName = safeStr(q.productName, 255) || '';
+    // REQUIRED, and checked here because here is the only place every path
+    // goes through — the approve modal, bulk approve, and a division override
+    // pointed at a crushing job all land on this function. An untagged row is
+    // tons with no material on them, and the quarry tab renders an injected row
+    // read-only, so it is not a gap anyone downstream can close afterwards.
+    //
+    // Last, after the range loop, so a day with both a bad number and no
+    // product is still told about the number it can see on screen.
+    if (!productName) {
+      return { error: 'Pick the product this day was crushing — the quarry tab shows payroll rows read-only, so it cannot be tagged later' };
+    }
+    return { fields: {
+      ...vals,
+      productId,
+      productName,
+      comments:    safeStr(q.comments, 2000) || '',
+    } };
   }
   return { error: 'Unknown quarry activity' };
 }
@@ -1872,6 +1897,8 @@ async function buildQuarryRow(sql, companyCode, entry, activity, fields, opts = 
     : {
         ...base,
         comments:       fields.comments,
+        productId:      fields.productId,
+        productName:    fields.productName,
         hourlyRate:     fields.hourlyRate,
         hours,
         hoursCrushing:  fields.hoursCrushing,
@@ -4978,7 +5005,13 @@ module.exports = async (req, res) => {
           // the kind of thing whoever finds it there needs to be able to trace.
           splitDests.length ? { split_destinations: splitDests } : null,
           haulAudit)
-          : quarryInject ? { quarry_activity: quarryInject.activity }
+          : quarryInject ? Object.assign({ quarry_activity: quarryInject.activity },
+              // insertQuarryRow deletes and re-pushes the row on every edit, so
+              // the row itself remembers nothing. Which material this day was
+              // credited to is a figure the quarry office reports on — name it
+              // here, where it survives.
+              quarryInject.fields && quarryInject.fields.productName
+                ? { quarry_product: quarryInject.fields.productName } : null)
           : (needsTrucking || needsDust)
             ? {
                 trucking_injected: needsTrucking,
@@ -6225,7 +6258,9 @@ module.exports._test = {
   obSplitForEntry,
   matchDustEmployee,
   OB_BLOB_KEY,
-  // Quarry injection — scripts/test-quarry-fuel-entry.js.
+  // Quarry injection — scripts/test-quarry-fuel-entry.js,
+  // scripts/test-quarry-crush-product.js.
   validateQuarryInjection,
+  buildQuarryRow,
   Q_MAX,
 };
