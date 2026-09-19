@@ -434,8 +434,10 @@ function emptyEmployee(username) {
     weeks: [], otClipped: false,
     pendingHours: 0, approvedHours: 0,
     // Days of time off, and what they pay. The counts are the requests; the
-    // hours are PAID_LEAVE_HOURS apiece, approved days only — see the
-    // paid-leave section above for why the pending ones are held apart.
+    // hours are what each entry says it is worth — a half day is 4, an unpaid
+    // day 0, and PAID_LEAVE_HOURS only when the entry does not say — approved
+    // days only. See the paid-leave section above for the fallback, and for why
+    // the pending ones are held apart.
     pendingOff: 0, approvedOff: 0,
     offHours: 0, pendingOffHours: 0,
     daysWorked: 0,

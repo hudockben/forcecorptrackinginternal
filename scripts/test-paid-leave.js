@@ -637,6 +637,67 @@ console.log('\n[the audit CSV header and row still describe the same columns]');
     && head[head.length - 1] === 'Changes (JSON)', head.slice(-3).join(' | '));
 }
 
+// ── An unpaid day off is a day off ──────────────────────────────────────────
+// The trap this change opened. While every day off paid eight, "did he take
+// leave" and "do his leave hours sum above zero" were the same question, and a
+// lot of code asked the second one. Zero broke the equivalence: an approved
+// UNPAID day is a day the office signed off, and a surface that reports it as
+// no time off at all is denying a fact its own neighbouring rows assert.
+console.log('\n[an approved day of ZERO hours still happened]');
+{
+  const PAY = fs.readFileSync(path.join(ROOT, 'payroll.html'), 'utf8');
+  const cell = new Function(`
+    const PAID_LEAVE_HOURS = ${PAID_LEAVE_HOURS};
+    ${requireFn(PAY, 'escapeHtml',  'payroll.html')}
+    ${requireFn(PAY, 'timeOffCell', 'payroll.html')}
+    return timeOffCell;
+  `)();
+
+  const none    = cell({ approvedOff: 0, pendingOff: 0, offHours: 0, pendingOffHours: 0 });
+  const unpaid  = cell({ approvedOff: 1, pendingOff: 0, offHours: 0, pendingOffHours: 0 });
+  const pending = cell({ approvedOff: 0, pendingOff: 1, offHours: 0, pendingOffHours: 0 });
+
+  assert('a man who took no leave reads as none', none.text === '&mdash;');
+  assert('an approved UNPAID day does NOT read as none',
+    unpaid.text !== none.text && !/No time off/.test(unpaid.title), JSON.stringify(unpaid));
+  assert('  it reads 0.00, and names the day',
+    unpaid.text === '0.00' && /1 day off, approved/.test(unpaid.title), JSON.stringify(unpaid));
+  assert('  and a pending zero-hour request is named too, not erased',
+    pending.text === '0.00' && /1 day still pending/.test(pending.title), JSON.stringify(pending));
+
+  // The guard must read the COUNTS. Keyed on the hours it is the same bug again
+  // the next time somebody adds a figure that can legitimately be zero.
+  assert('the guard is keyed on the requests, not on their hours',
+    /if \(!r\.approvedOff && !r\.pendingOff\)/.test(PAY));
+
+  // executive.html never had the guard, so the two surfaces disagreed. They are
+  // documented as mirrors; check they now agree on this exact case.
+  assert('and the executive table, which mirrors it, agrees',
+    /r\.offHours > 0\.001 \? 'tone-teal' : 'v-mute'/.test(EXEC)
+    && /\$\{days\(r\.approvedOff\)\} off, approved/.test(EXEC));
+
+  // The strip tile beside it had the same shape of bug, keyed on the sum.
+  assert('the executive strip keys its leave caption on the day count too',
+    /tone: t\.approvedOff \? 'teal' : 'mute'/.test(API)
+    && /sub: t\.approvedOff/.test(API));
+}
+
+// ── The comments are the authority on the rule ──────────────────────────────
+// This repository's convention is that the comment above a rule is where the
+// rule is stated; a stale one sends the next maintainer back to the flat
+// multiple this change exists to remove.
+console.log('\n[no comment still claims every day off is eight hours]');
+{
+  const PAY = fs.readFileSync(path.join(ROOT, 'payroll.html'), 'utf8');
+  const PM  = fs.readFileSync(path.join(ROOT, 'api/lib/payroll-metrics.js'), 'utf8');
+  for (const [name, src] of [['payroll.html', PAY], ['payroll-metrics.js', PM]]) {
+    assert(`  ${name} does not describe offHours as PAID_LEAVE_HOURS per day`,
+      !/hours are PAID_LEAVE_HOURS apiece/.test(src));
+    assert(`  ${name} does not call an approved day off "a full eight hours"`,
+      !/approved day off pays: a full eight hours/.test(src));
+  }
+}
+
 // ── The executive report reads the same numbers ─────────────────────────────
 console.log('\n[the executive report carries it through]');
 {

@@ -3652,8 +3652,9 @@
           pendingHours:  0,
           approvedHours: 0,
           // Days of time off, and what they pay. The counts are the requests;
-          // the hours are PAID_LEAVE_HOURS apiece and count approved days only
-          // — see the paid-leave section for why the pending ones are separate.
+          // the hours are what each entry says it is worth — a half day is 4 —
+          // and count approved days only. See the paid-leave section for the
+          // full-day fallback and for why the pending ones are kept separate.
           pendingOff:    0,
           approvedOff:   0,
           offHours:      0,
@@ -3996,7 +3997,18 @@
       const off  = Number(r.offHours) || 0;
       const pend = Number(r.pendingOffHours) || 0;
       const days = n => `${n} day${n === 1 ? '' : 's'}`;
-      if (!off && !pend) return { cls: '', title: 'No time off in this range', text: '&mdash;' };
+      // Keyed on whether any day off was FILED, never on the hours summing to
+      // zero. While every day off paid eight the two were the same test, and
+      // they stopped being the same the moment 0 became a real answer: a man
+      // whose only leave in range is an approved UNPAID day has approvedOff 1
+      // and offHours 0, and the hours test reported him — on the sheet payroll
+      // runs the cycle off — as having taken no time off at all, while the rows
+      // below said "Approved" and the executive table said "1 day off,
+      // approved — 0.00 h in all". Everything past this line already reads
+      // correctly at zero.
+      if (!r.approvedOff && !r.pendingOff) {
+        return { cls: '', title: 'No time off in this range', text: '&mdash;' };
+      }
       // Never "N days × 8.00 h each". That stopped being true the day half days
       // could be filed, and from a total and a count there is no way to tell
       // 4 + 12 from 8 + 8 — so the cell states what it knows, the hours and the
@@ -4089,10 +4101,12 @@
           // which is the figure a production rate is measured against.
           const haul   = isOff ? 0 : haulWorkHours(e, work);
           const labour = work - haul;
-          // What an approved day off pays: a full eight hours, and nothing at
-          // all until it is approved. It joins the day's Total — the hours this
-          // row is paid for — and no other column, because leave is not work
-          // and belongs in none of the splits beside it.
+          // What an approved day off pays: the hours the ENTRY says — four for a
+          // half day, zero for an unpaid one, and a full eight only when it does
+          // not say — and nothing at all until it is approved. It joins the
+          // day's Total, the hours this row is paid for, and no other column,
+          // because leave is not work and belongs in none of the splits beside
+          // it.
           const leave  = timeOffPayHours(e);
           const paid   = isOff ? leave : total;
           sumWork += labour; sumHaul += haul;

@@ -1679,8 +1679,14 @@ async function buildPayrollSummary(sql, companyCode) {
         // moment paid leave was counted, and the office reads the strip before
         // it reads the table.
         label: 'Total Paid Hrs', value: hrs(t.totalPaidHours),
-        tone: t.offHours > 0.001 ? 'teal' : 'mute',
-        sub: t.offHours > 0.001
+        // Keyed on the COUNT of approved days, the way the Approved Hrs tile
+        // above already is — not on the hours summing to zero. A period whose
+        // only leave was unpaid has approvedOff set and offHours 0, and the
+        // hours test had this tile read "no time off in this period" directly
+        // under one reading "plus 1 approved day off". Two tiles in one strip
+        // contradicting each other about the same fortnight.
+        tone: t.approvedOff ? 'teal' : 'mute',
+        sub: t.approvedOff
           ? `${hrs(t.totalHours)} h worked + ${hrs(t.offHours)} h paid leave`
           : 'no time off in this period',
       },
