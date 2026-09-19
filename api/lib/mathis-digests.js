@@ -1074,7 +1074,7 @@ const PAYROLL_LIMITS = [
   'truckHours is a DIFFERENT figure from haulHours and the two are never added together. It is how much of the work was spent driving — BOTH hauls, on site and off — and it is already inside workHours: workHours minus truckHours is labour on the job. It moves no hours between prevailing and standard and says nothing about pay. Use it when asked what a crew actually produced, or how much of someone\'s time was hauling; a man can be all prevailing hours and all truckHours at once, because hauling on the covered site is both.',
   'OVERTIME IS PER WEEK, NEVER PER PAY PERIOD. otHours counts the hours past 40 in each MONDAY-TO-SUNDAY week, the two weeks of the period added together afterwards. Never derive it by subtracting 40 from a period total — 60 hours over a fortnight can be no overtime at all. regHours + otHours is the period total.',
   'Work and travel both count toward the 40. Paid leave does not: a holiday or vacation day is not hours worked and never pushes a week into overtime.',
-  'offHours is PAID LEAVE: every APPROVED day off, at the hours its own entry says — half days are real and are 4, and an entry that does not say how long it was reads as a full day of 8. It is hours paid, not hours worked, so it is in none of the other figures — not workHours, not travelHours, not prevailing or standard, and not the 40. pendingOffHours is what the unapproved requests would be worth and is owed to nobody yet; never add it to anything. totalHours is the hours WORKED (regHours + otHours); totalPaidHours is that plus offHours, and is the figure to use when asked what someone is paid for the period. Still no rates: these are hours.',
+  'offHours is PAID LEAVE: every APPROVED day off, at the hours its own entry says — half days are real and are 4, and an entry that does not say how long it was reads as a full day of 8. It is hours paid, not hours worked, so it is in none of the other figures — not workHours, not travelHours, not prevailing or standard, and not the 40. pendingOffHours is what the unapproved requests would be worth and is owed to nobody yet; never add it to anything. totalHours is the hours WORKED (regHours + otHours); totalPaidHours is that plus offHours, and is the figure to use when asked what someone is paid for the period. Still no rates: these are hours. AND OFFHOURS OF 0.00 DOES NOT MEAN NO LEAVE: an approved entry of zero hours is a recorded UNPAID day off. approvedOff and pendingOff are the day counts — read those to answer whether someone took time off, and offHours only to answer what it paid.',
   'otPwHours is the part of otHours worked on a prevailing-wage job, and it is already inside otHours — not a separate bucket. It is called out because it is not the same money: prevailing-wage overtime pays 1.5x the BASE rate plus the FULL fringe, the fringe never multiplied. That is a rate statement, and the rates are not in this data.',
 ];
 
@@ -1171,6 +1171,14 @@ async function payrollDigest(c) {
       offHours:       round2(e.offHours),
       pendingOffHours: round2(e.pendingOffHours),
       totalPaidHours: round2(e.totalPaidHours),
+      // The day COUNTS, not only the hours. While every day off paid eight,
+      // offHours of 0 could only mean no approved leave — so the counts were
+      // redundant and were left off. A zero-hour entry is an UNPAID day off,
+      // and without these the assistant answered "no time off" for a man who
+      // has one recorded and signed off. The crew totals carried the counts all
+      // along; per person is where the question is actually asked.
+      approvedOff:    e.approvedOff,
+      pendingOff:     e.pendingOff,
       daysWorked:    e.daysWorked,
     }))),
     limits: PAYROLL_LIMITS,

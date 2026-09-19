@@ -1940,13 +1940,20 @@
     // entry happened to be six hours long would move the page under a man who
     // only tapped one of his own entries to look at it.
     function setOffLen(v, focus = true) {
+      // The answer he is LEAVING, captured before it is overwritten. Read after
+      // the assignment below it is always 'other', so the seed could only ever
+      // be a full day — and a man who picked Half day and then tapped Other to
+      // adjust it found 8 in the box, not 4. Submitting without typing (the
+      // numeric keypad covers the field on a phone) filed a whole paid day on
+      // an entry he had already told the form was a half one.
+      const prev = offLen;
       offLen = (v === 'half' || v === 'other') ? v : 'full';
       renderOffLen();
       if (offLen === 'other' && focus) {
         const box = document.getElementById('f-off-hours');
         // Seed it from the answer he is leaving, so "Other" opens on a number
         // he recognises instead of an empty box he has to guess the shape of.
-        if (!box.value) box.value = String(OFF_LEN_HOURS.full);
+        if (!box.value) box.value = String(OFF_LEN_HOURS[prev] != null ? OFF_LEN_HOURS[prev] : OFF_LEN_HOURS.full);
         box.focus();
         box.select();
       }
