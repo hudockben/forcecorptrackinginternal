@@ -221,18 +221,33 @@ function entry(over = {}) {
     await removeEesOtherRows(sql, 'ACME', { id: 501 });
     assert('un-approving clears the guard', (await eesOtherHasInjectedRow(sql, 'ACME', { id: 501 })) === false);
 
-    // …and the PUT handler must actually consult it, under the same gate.
+    // …and the write paths must actually consult it, under the same gate.
+    // The count itself now lives in injectedRowCount(), shared by the ordinary
+    // edit and by the lunch-break move, which rewrites hours on two rows of a
+    // split day and owes exactly the same debt.
     const SRC = require('fs').readFileSync(path.resolve(__dirname, '../api/timesheet-entries.js'), 'utf8');
-    const guard = SRC.slice(SRC.indexOf('injected cost rows, refuse'), SRC.indexOf('injected_row_count'));
-    assert('the edit guard counts EES rows', /eesOtherHasInjectedRow/.test(guard));
+    const counter = SRC.slice(SRC.indexOf('async function injectedRowCount'),
+                              SRC.indexOf('One break, one row'));
+    assert('the shared injected-row count includes EES rows',
+      /eesOtherHasInjectedRow\(sql, companyCode, entry\)/.test(counter), counter.slice(0, 200));
     // And it asks on EVERY approved entry, behind no gate at all. It used to
     // ask only of a dust entry, which was true until the division override let
     // a turf day post rows here — after that, a gate reading the entry's own
     // division walks straight past them and lets the entry be edited out from
     // under a tab that shows its hours verbatim.
     assert('and asks it of every approved entry, behind no division gate',
-      /Promise\.all\(\[[\s\S]{0,400}?eesOtherHasInjectedRow\(sql, companyCode, existing\)/.test(guard)
-      && !/division === '[a-z]+'[^\n]*\)\s*\{[\s\S]{0,200}?eesOtherHasInjectedRow/.test(guard));
+      /Promise\.all\(\[[\s\S]{0,400}?eesOtherHasInjectedRow\(sql, companyCode, entry\)/.test(counter)
+      && !/division === '[a-z]+'[^\n]*\)\s*\{[\s\S]{0,200}?eesOtherHasInjectedRow/.test(counter));
+    // Both write paths reach it, and neither keeps a copy of its own.
+    // Searched FROM the guard's own comment: 'injected_row_count' also appears
+    // in the lunch-break move's 409, which sits earlier in the file, and an
+    // unanchored indexOf slices backwards to nothing.
+    const guardAt  = SRC.indexOf('injected cost rows, refuse');
+    const editGuard = SRC.slice(guardAt, SRC.indexOf('injected_row_count', guardAt));
+    assert('the edit guard asks through it',
+      /await injectedRowCount\(sql, companyCode, existing\)/.test(editGuard), editGuard.slice(0, 300));
+    assert('and so does the lunch-break move, for every approved job of the day',
+      /approved\.map\(g => injectedRowCount\(sql, companyCode, g\)\)/.test(SRC));
   }
 
   console.log('\n[approving puts back work that Intercompany had removed]');

@@ -4169,6 +4169,38 @@ async function dustCompanyDirectory(sql, companyCode) {
 }
 
 /**
+ * How many cost-tracking rows an approved entry has already posted.
+ *
+ * Approval injects rows derived from the entry's hours — the daily_tracking
+ * split, a Truck Tracking row, a quarry row, a dust EES row — and every one of
+ * them stores an ABSOLUTE figure copied at approval time. Change the entry's
+ * hours underneath them and the tabs keep charging the old number, with nothing
+ * on screen saying the two disagree.
+ *
+ * Asked of every approved entry, not only of the division that normally posts
+ * to each tab: the division override means a turf day's cost can have been sent
+ * anywhere. The cheap count runs first and the five prefixed lookups only when
+ * it finds nothing, which is the common case — awaited unconditionally they
+ * were five needless round-trips on the way to a 409 the first count had
+ * already decided.
+ */
+async function injectedRowCount(sql, companyCode, entry) {
+  const [{ cnt }] = await sql`
+    SELECT COUNT(*)::int AS cnt FROM daily_tracking
+    WHERE timesheet_entry_id = ${entry.id} AND company_code = ${companyCode}
+  `;
+  if (cnt > 0) return cnt;
+  const elsewhere = await Promise.all([
+    quarryHasInjectedRow(sql, companyCode, entry),
+    truckingHasInjectedRow(sql, companyCode, entry),
+    dustHasInjectedRow(sql, companyCode, entry),
+    obHasInjectedRow(sql, companyCode, entry),
+    eesOtherHasInjectedRow(sql, companyCode, entry),
+  ]);
+  return elsewhere.filter(Boolean).length;
+}
+
+/**
  * One break, one row.
  *
  * A split day's lunch is deducted once, from whichever job the break fell in,
@@ -4206,6 +4238,15 @@ async function releaseSiblingLunch(sql, companyCode, payload, holder) {
   const hhmm = v => String(v || '').slice(0, 5);
   const freed = [];
   for (const other of others) {
+    // An approved sibling that has already posted cost rows is left alone. Its
+    // hours are copied into those rows as absolute figures, so releasing the
+    // break here would leave the cost tabs charging a number the entry no
+    // longer carries — the very desync the 409 on the edit paths exists to
+    // prevent. Better a day that visibly holds the break twice, which payroll
+    // can see and correct, than one that silently disagrees with the money.
+    if (other.status === 'approved' && await injectedRowCount(sql, companyCode, other) > 0) {
+      continue;
+    }
     // A row whose punches no longer compute keeps the hours it has. Better a
     // figure that is half an hour light than one invented from nothing, and
     // the entry is visible in payroll either way.
@@ -4629,6 +4670,31 @@ module.exports = async (req, res) => {
              ORDER BY split_index ASC NULLS LAST, id ASC
           `
         : [anchorRow];
+
+      // Moving the break rewrites the hours on two rows of the day, so this
+      // path owes the same debt an ordinary edit does: an approved entry has
+      // already posted cost rows derived from its hours, and every one of them
+      // stores an absolute figure. Rewrite the entry underneath them and the
+      // cost tabs keep charging the old number — and the split's own balance
+      // check then refuses every later correction to that day, because the
+      // allocation no longer sums to the entry.
+      //
+      // Asked of each approved job of the day, not just the one that was
+      // opened: the break moves BETWEEN jobs, so a sibling's rows go stale
+      // just as readily as the anchor's.
+      const approved = group.filter(g => g.status === 'approved');
+      if (approved.length) {
+        const counts = await Promise.all(
+          approved.map(g => injectedRowCount(sql, companyCode, g)));
+        const injected = counts.reduce((a, b) => a + b, 0);
+        if (injected > 0) {
+          return res.status(409).json({
+            error: 'This day has cost tracking rows injected from approval. '
+                 + 'Un-approve it first, move the lunch break, then re-approve with a fresh split.',
+            injected_row_count: injected,
+          });
+        }
+      }
 
       if (holderId && !group.some(g => Number(g.id) === Number(holderId))) {
         return res.status(400).json({ error: 'That job is not part of this day' });
@@ -5986,35 +6052,7 @@ module.exports = async (req, res) => {
       // un-approve first (which removes the split), edit, then re-approve
       // with a fresh split.
       if (canAdmin && existing.status === 'approved') {
-        const [{ cnt }] = await sql`
-          SELECT COUNT(*)::int AS cnt FROM daily_tracking
-          WHERE timesheet_entry_id = ${id} AND company_code = ${companyCode}
-        `;
-        let injected = cnt;
-        // Asked of every approved entry, not only of the division that normally
-        // posts to each tab. A day's cost can have been SENT anywhere by the
-        // division override, so "this is a turf entry, it can only have
-        // daily_tracking rows" is no longer true — and this guard is the only
-        // thing standing between an edited entry and a tab still showing the
-        // hours, times and customer it had before the edit. The dust and Other
-        // Billing rows carry the entry's clock window; the EES row its hours;
-        // Truck Tracking its customer and unit; the quarry its hours.
-        //
-        // Only when daily_tracking has not already settled it, and then all at
-        // once. Each is an independent prefixed lookup that finds nothing when
-        // the entry never posted there, which is the common case for all five —
-        // awaited one after another they were five needless serverless
-        // round-trips on the way to a 409 the first count had already decided.
-        if (injected === 0) {
-          const elsewhere = await Promise.all([
-            quarryHasInjectedRow(sql, companyCode, existing),
-            truckingHasInjectedRow(sql, companyCode, existing),
-            dustHasInjectedRow(sql, companyCode, existing),
-            obHasInjectedRow(sql, companyCode, existing),
-            eesOtherHasInjectedRow(sql, companyCode, existing),
-          ]);
-          injected += elsewhere.filter(Boolean).length;
-        }
+        let injected = await injectedRowCount(sql, companyCode, existing);
         if (injected > 0) {
           return res.status(409).json({
             error: 'This entry has cost tracking rows injected from approval. Un-approve it first, edit, then re-approve with a fresh split.',

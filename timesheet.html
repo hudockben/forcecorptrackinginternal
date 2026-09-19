@@ -1958,16 +1958,28 @@
     // day anyway.
     function lunchHolderPos(windows) {
       let pos = -1, bestOverlap = -1, bestSpan = -1;
+      let longest = -1, longestSpan = -1;
       windows.forEach((w, at) => {
         const span = spanMinutes(w.start, w.end);
         const from = startMinutes(w.start);
         if (span == null || span <= 0 || from == null) return;
+        if (span > longestSpan) { longest = at; longestSpan = span; }
+        // A block shorter than the break cannot carry it. The deduction clamps
+        // at zero, so a 20-minute block straddling noon would absorb 20 minutes
+        // of a 30-minute break and the DAY would quietly come out ten minutes
+        // long. Under the old first-job rule this was nearly unreachable — a
+        // first block is seldom that short — but a block that straddles midday
+        // often is, so the rule has to refuse one it cannot fit.
+        if (span < LUNCH_MINUTES) return;
         const overlap = middayOverlap(from, span);
         if (overlap > bestOverlap || (overlap === bestOverlap && span > bestSpan)) {
           pos = at; bestOverlap = overlap; bestSpan = span;
         }
       });
-      return pos;
+      // Nothing long enough anywhere: the whole day is shorter than the break.
+      // The longest block takes it and the server's clamp does what it can —
+      // there is no allocation that both pays the break and keeps the day whole.
+      return pos >= 0 ? pos : longest;
     }
 
     // The same answer as a DOM block index, read off the form as it stands.

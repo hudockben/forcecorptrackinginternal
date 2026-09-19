@@ -76,6 +76,39 @@ assert('a job that only clips the window still beats one that misses it',
   lunchHolderPos([w('05:00', '11:30'), w('14:00', '19:00')]) === 0,
   '05:00-11:30 overlaps 11:00-11:30; 14:00-19:00 overlaps nothing');
 
+console.log('\nA block too short to hold the break is never given it');
+
+// The deduction clamps at zero, so a 20-minute block straddling noon would
+// absorb 20 minutes of a 30-minute break and the DAY would come out ten
+// minutes long. The old first-job rule almost never hit this — a first block
+// is seldom that short — but a noon-straddling block often is.
+assert('a 20-minute noon block loses to a long morning block',
+  lunchHolderPos([w('07:00', '11:00'), w('11:50', '12:10')]) === 0,
+  'picking the short block pays the worker ten minutes he did not work');
+assert('and the day then comes out exactly right',
+  (() => {
+    const day = [w('07:00', '11:00'), w('11:50', '12:10')];
+    const holder = lunchHolderPos(day);
+    const gross = day.map(x => spanMinutes(x.start, x.end) / 60);
+    const net = gross.map((h, i) => i === holder ? Math.max(0, h - 0.5) : h);
+    const got = net.reduce((a, b) => a + b, 0);
+    return Math.abs(got - (gross.reduce((a, b) => a + b, 0) - 0.5)) < 0.005;
+  })());
+// Eligibility is the threshold, not the winner: a block of exactly the break's
+// length can carry it, and then ordinary midday overlap decides.
+assert('exactly 30 minutes is eligible, and wins on overlap',
+  lunchHolderPos([w('11:15', '11:45'), w('06:00', '09:00')]) === 0,
+  '30 minutes absorbs the whole break, and the morning block touches no midday');
+assert('29 minutes is not eligible, even with the only midday overlap',
+  lunchHolderPos([w('11:15', '11:44'), w('06:00', '09:00')]) === 1,
+  'it would clamp, and the day would come out long');
+assert('a longer block still beats an eligible short one on overlap',
+  lunchHolderPos([w('11:00', '11:30'), w('13:00', '19:00')]) === 1,
+  '13:00-19:00 covers 60 minutes of the window against the short block\'s 30');
+assert('when no block is long enough, the longest still takes it',
+  lunchHolderPos([w('11:00', '11:20'), w('11:30', '11:55')]) === 1,
+  'a day shorter than the break has no allocation that keeps it whole');
+
 console.log('\nNothing near midday — the longest block carries it');
 
 assert('a morning-only day gives it to the longer block',
@@ -235,6 +268,35 @@ assert('the modal reads the day\'s answer, not one row\'s',
   /lunchGroup\.some\(g => g\.lunch_break === true\)/.test(PAY));
 assert('the move is one call, not a PUT per job',
   /action=lunch_holder/.test(PAY));
+
+// ── 7. Approved days are protected from the move ───────────────────────────
+console.log('\nAn approved day cannot be silently re-hour-ed');
+
+assert('the injected-row count is asked through one helper',
+  /async function injectedRowCount\(sql, companyCode, entry\)/.test(API));
+assert('it looks beyond daily_tracking, because the division override sends cost anywhere',
+  /quarryHasInjectedRow[\s\S]{0,200}truckingHasInjectedRow[\s\S]{0,200}dustHasInjectedRow[\s\S]{0,200}obHasInjectedRow[\s\S]{0,200}eesOtherHasInjectedRow/
+    .test(API.slice(API.indexOf('async function injectedRowCount'),
+                    API.indexOf('async function injectedRowCount') + 1400)));
+assert('the ordinary edit path uses it rather than its own copy',
+  /let injected = await injectedRowCount\(sql, companyCode, existing\);/.test(API));
+
+// The move endpoint shipped without this guard — an approver moving the break
+// on an approved day would have left its cost rows charging the old hours.
+assert('moving the break checks EVERY approved job of the day',
+  /const approved = group\.filter\(g => g\.status === 'approved'\);/.test(API)
+  && /approved\.map\(g => injectedRowCount\(sql, companyCode, g\)\)/.test(API),
+  'the break moves BETWEEN jobs, so a sibling goes stale as readily as the anchor');
+assert('and refuses with a 409 telling you to un-approve first',
+  /res\.status\(409\)/.test(API)
+  && /This day has cost tracking rows injected from approval\./.test(API)
+  && /Un-approve it first, move the lunch break, then re-approve with a fresh split\./.test(API));
+assert('the sibling release leaves an approved row with cost rows alone',
+  /if \(other\.status === 'approved' && await injectedRowCount\(sql, companyCode, other\) > 0\) \{\s*continue;/.test(API));
+
+assert('the backfill script never widens its statuses to approved',
+  /STATUSES:\s*\['draft', 'submitted'\]/.test(
+    require('fs').readFileSync(require('path').resolve(__dirname, 'backfill-lunch-holder.js'), 'utf8')));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
