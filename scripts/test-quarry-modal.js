@@ -51,7 +51,7 @@ function assert(label, cond, detail) {
 
 const SRC = fs.readFileSync(path.resolve(__dirname, '../payroll.html'), 'utf8');
 
-const { sliceSource, evalSlice } = require(path.resolve(__dirname, 'lib/fn-source.js'));
+const { sliceSource, evalSlice, requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 // Every marker in this file is hunted in the one page it reads, so the source
 // is bound here rather than repeated at each call.
 const slice = (from, to, label, must) => sliceSource(SRC, from, to, label, must);
@@ -161,7 +161,8 @@ console.log('\n[and when it is known, or there is nothing to know]');
 // ── 3) Which fuel box is typed, and which is derived ────────────────────────
 // quarryFieldsHtml / recalcQuarryFuelCost / collectQuarryFields, run for real
 // against stubbed boxes. Getting this backwards is the bug they exist to stop.
-function fuelCtx(boxes) {
+const PRODUCTS = [{ id: 'p-2a', name: '2A Modified' }, { id: 'p-1', name: 'AASHTO #1' }];
+function fuelCtx(boxes, products) {
   const ctx = {
     escapeHtml: v => String(v == null ? '' : v).replace(/[&<>"']/g, c =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
@@ -171,6 +172,10 @@ function fuelCtx(boxes) {
     quarryEntry: { username: 'boringjamey' },
     quarryEmployeeRate: () => null,
     quarryEquipOptions: [], quarryTaskOptions: [],
+    // The crushing form's Product picker reads this. Declared outside the
+    // lifted region, so without it quarryFieldsHtml('crushing', …) dies with a
+    // bare ReferenceError at call time rather than at eval time.
+    quarryProductList: products === undefined ? PRODUCTS : products,
     _qval: id => (boxes[id] ? boxes[id].value : ''),
     document: { getElementById: id => boxes[id] || null },
     console,
@@ -227,6 +232,45 @@ console.log('\n[what the total does as the boxes are filled]');
     boxes.q_fuelCostAuto.value === '', boxes.q_fuelCostAuto.value);
 }
 
+// ── 4) The product the day was crushing ────────────────────────────────────
+// Crushing Tracking has always had a Product column and injected rows always
+// landed blank in it, so the tons were there and the material they were was
+// not. The answer is asked for here, at the approval, and every figure that
+// groups by material downstream depends on this one box.
+console.log('\n[the material the day was crushing]');
+{
+  const stored = fuelCtx({}).quarryFieldsHtml('crushing', { productName: 'AASHTO #1' });
+  const sel = /<select[^>]*id="q_productName"[\s\S]*?<\/select>/.exec(stored);
+  assert('crushing asks which product, as a picker off the list', !!sel, stored.slice(0, 200));
+  assert('…with the row\'s own product already selected',
+    !!sel && /<option value="AASHTO #1" selected>/.test(sel[0]), sel && sel[0]);
+  assert('…and every product on the list offered',
+    !!sel && /value="2A Modified"/.test(sel[0]), sel && sel[0]);
+  // Blank is a real answer: the quarry has always crushed days nobody recorded
+  // a material for, and refusing the approval only parks the timesheet.
+  const blank = fuelCtx({}).quarryFieldsHtml('crushing', {});
+  assert('a row with no product opens on the empty option',
+    /<option value="" selected>/.test(blank), blank.slice(0, 300));
+
+  // Manage Lists can retire a product after a day was posted against it. The
+  // modal posts every box blank-included, so a picker that quietly dropped the
+  // stored name would rewrite that day as untagged on the next Save.
+  const retired = fuelCtx({}).quarryFieldsHtml('crushing', { productName: 'Screened Sand' });
+  assert('a product no longer on the list is still kept selectable',
+    /<option value="Screened Sand" selected>/.test(retired), retired.slice(0, 300));
+
+  // No list at all — the fetch failed, or nobody has set the products up yet.
+  const noList = fuelCtx({}, []).quarryFieldsHtml('crushing', { productName: '2A Modified' });
+  assert('with no list to offer it degrades to a typed box, not an empty dropdown',
+    /<input[^>]*id="q_productName"/.test(noList) && !/<select[^>]*id="q_productName"/.test(noList),
+    noList.slice(0, 300));
+
+  // Daily is equipment and a task; the crusher is what makes a product.
+  const daily = fuelCtx({}).quarryFieldsHtml('daily', {});
+  assert('Daily is not asked — it is the crusher that makes a product',
+    !/q_productName/.test(daily));
+}
+
 console.log('\n[and what Save sends]');
 {
   const boxes = {
@@ -236,9 +280,13 @@ console.log('\n[and what Save sends]');
     q_fuelCostAuto: { value: '855.00' }, q_comments:   { value: '' },
     q_equipmentName: { value: 'Crusher' }, q_taskName:  { value: 'Crushing' },
     q_rate:         { value: '26' },
+    q_productName:  { value: '2A Modified' },
   };
-  const ctx = { _qval: id => (boxes[id] ? boxes[id].value : ''), console };
+  const ctx = { _qval: id => (boxes[id] ? boxes[id].value : ''), quarryProductList: PRODUCTS, console };
   vm.createContext(ctx);
+  // The real lookup, not a stub — resolving the picked name to the product's
+  // id is the half of this that Inventory matches on first.
+  evalSlice(requireFn(SRC, 'quarryProductIdFor', 'payroll.html'), ctx, 'quarryProductIdFor');
   evalSlice(
     slice('function collectQuarryFields(activity)', '\n    async function quarrySave()', 'collectQuarryFields',
           'function collectQuarryFields('),
@@ -249,6 +297,32 @@ console.log('\n[and what Save sends]');
     Number(crush.fuelCost) === 4.5, JSON.stringify(crush.fuelCost));
   const daily = ctx.collectQuarryFields('daily');
   assert('daily posts it as ppg', Number(daily.ppg) === 4.5, JSON.stringify(daily.ppg));
+
+  // Both halves of the pair. The name is what the Crushing Tracking column
+  // prints; the id is what Inventory matches on before it falls back to the
+  // name, and it survives a rename in Manage Lists.
+  assert('crushing posts the product it was given', crush.productName === '2A Modified',
+    JSON.stringify(crush.productName));
+  assert('…and the id behind it, resolved off the list', crush.productId === 'p-2a',
+    JSON.stringify(crush.productId));
+
+  // The load-bearing one. The form pre-fills from row.productName and Save
+  // posts every box blank-included, so if these two keys ever drift apart the
+  // first approve looks fine and every later Edit Row silently wipes the
+  // product off a row nobody can correct in the quarry tab.
+  const form = fuelCtx({}).quarryFieldsHtml('crushing', { productName: 'AASHTO #1' });
+  assert('the key Save posts is the key the form pre-fills from',
+    /value="AASHTO #1" selected/.test(form) && 'productName' in crush);
+
+  // A free-typed name — the degraded no-list path, or a product since
+  // retired — still posts, just without an id to match on.
+  boxes.q_productName.value = 'Something Off List';
+  const typed = ctx.collectQuarryFields('crushing');
+  assert('a name that is not on the list still goes across',
+    typed.productName === 'Something Off List', JSON.stringify(typed.productName));
+  assert('…with a blank id rather than a wrong one', typed.productId === '',
+    JSON.stringify(typed.productId));
+  boxes.q_productName.value = '2A Modified';
 
   // The grid and the executive report both cost fuel as gallons × the stored
   // per-gallon rate. That product is the total the modal showed — which is the

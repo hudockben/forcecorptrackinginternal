@@ -2304,6 +2304,9 @@
        field, it is the row's classification missing — it decides whether the
        job pays the man his wage or gets his hours inside the truck's rate —
        and the save refuses the split until every labour row has one. */
+    /* The material a crushing override was making — sized like the rate box it
+       shares the cell with. */
+    .split-table select.dest-product { font-size: 0.75rem; padding: 0.35rem 0.3rem; }
     .split-table select.haul-pick { font-size: 0.78rem; }
     .split-table select.haul-pick.needed { border-color: var(--red); }
     .dest-retry {
@@ -8967,6 +8970,7 @@
           dest_end:      (r.dest && r.dest.extras && r.dest.extras.end_time)   || '',
           dest_rate:     (r.dest && r.dest.extras
             && (r.dest.extras.hourlyRate || r.dest.extras.rate)) || '',
+          dest_product:  (r.dest && r.dest.extras && r.dest.extras.productName) || '',
           cost_code:   r.cost_code   || '',
           sub_code:    r.sub_code    || '',
           quantity:    r.quantity    != null ? Number(r.quantity)    : 0,
@@ -9284,6 +9288,10 @@
 
     async function loadDestJobs(division) {
       if (!division) return [];
+      // Ahead of the cache check on purpose: the jobs are cached after the
+      // first call and the product list would never load on the second.
+      // loadQuarryListsOnce is itself a no-op once it has succeeded.
+      if (division === 'quarry') await loadQuarryListsOnce();
       if (splitDestJobsCache[division]) return splitDestJobsCache[division];
       try {
         const res = await fetch('/api/timesheet-jobs?division=' + encodeURIComponent(division),
@@ -9379,9 +9387,15 @@
         // api/timesheet-jobs.js ("<activity>:<locationId>"), which is the same
         // place the server reads it from.
         const rate = Number(r.dest_rate) || 0;
-        out.dest.quarry = String(r.dest_job || '').startsWith('crushing:')
-          ? { hourlyRate: rate }
-          : { rate };
+        if (String(r.dest_job || '').startsWith('crushing:')) {
+          const productName = String(r.dest_product || '');
+          out.dest.quarry = {
+            hourlyRate: rate,
+            productName, productId: quarryProductIdFor(productName),
+          };
+        } else {
+          out.dest.quarry = { rate };
+        }
       }
       return out;
     }
@@ -9461,10 +9475,27 @@
       // asked for here and refused without.
       if (div === 'quarry') {
         const val = r.dest_rate == null || r.dest_rate === '' ? '' : r.dest_rate;
-        return `<input type="number" min="0" step="0.01" class="num dest-time${val === '' ? ' needed' : ''}"
+        const rateBox = `<input type="number" min="0" step="0.01" class="num dest-time${val === '' ? ' needed' : ''}"
           placeholder="$/hr" value="${escapeHtml(String(val))}"
           onchange="splitOnChange(${i},'dest_rate',this.value)"
           title="The hourly rate this row costs the quarry at. The quarry tab shows payroll's rows read-only, so this cannot be filled in over there afterwards.">`;
+        // A crushing override is a crushing row like any other, and it is the
+        // one born where nobody can tag it afterwards — the quarry tab renders
+        // it read-only and this modal is the only form it ever passes through.
+        // Untagged, its tons sit outside every per-product figure for good.
+        if (!String(r.dest_job || '').startsWith('crushing:')) return rateBox;
+        const cur  = String(r.dest_product || '');
+        const opts = quarryProductNames(cur);
+        const picker = !(quarryProductList || []).length
+          ? `<input type="text" class="dest-time" placeholder="Product…" value="${escapeHtml(cur)}"
+              onchange="splitOnChange(${i},'dest_product',this.value)"
+              title="The material this row was crushing.">`
+          : `<select class="dest-product" onchange="splitOnChange(${i},'dest_product',this.value)"
+              title="The material this row was crushing. It tags the Crushing Tracking row so the tons report per product.">` +
+            `<option value=""${cur ? '' : ' selected'}>— product —</option>` +
+            opts.map(o => `<option value="${escapeHtml(o)}"${o === cur ? ' selected' : ''}>${escapeHtml(o)}</option>`).join('') +
+            `</select>`;
+        return `<div class="dest-window">${rateBox}${picker}</div>`;
       }
       if (div !== 'trucking' && div !== 'dust') return '';
       const need = div === 'dust';
@@ -10675,6 +10706,7 @@
     let quarryEquipOptions = [];
     let quarryTaskOptions  = [];
     let quarryEmployeeList = [];   // [{ name, rate }] — for the per-employee rate lookup
+    let quarryProductList  = [];   // [{ id, name }] — the crushing Product picker
     let quarryListsLoaded  = false;
     async function loadQuarryListsOnce() {
       if (quarryListsLoaded) return;
@@ -10689,6 +10721,10 @@
         quarryEquipOptions = names(lists.equipment);
         quarryTaskOptions  = names(lists.tasks);
         quarryEmployeeList = Array.isArray(lists.employees) ? lists.employees : [];
+        // Raw, not names(): a crushing row stores productId alongside the name,
+        // and Inventory matches on the id first. The bucket key is singular —
+        // it is what Manage Lists writes and what sync-normalized reads.
+        quarryProductList  = Array.isArray(lists.product) ? lists.product : [];
         quarryListsLoaded  = true;
       } catch (_) { /* keep free-text fallback */ }
     }
@@ -10749,6 +10785,54 @@
           `placeholder="${escapeHtml(ph || 'Select or type…')}" autocomplete="off" style="${Q_INPUT_STYLE}">` +
         `<datalist id="${listId}">${opts}</datalist></label>`;
     }
+    // The product names on file, sorted, plus `keep` when it is something the
+    // list no longer has — Manage Lists is free to retire a product after a day
+    // was posted against it, and a picker that silently drops the stored name
+    // rewrites that day as untagged on the next save.
+    function quarryProductNames(keep) {
+      const out = (quarryProductList || [])
+        .map(it => (it && it.name) || '')
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+      const cur = String(keep == null ? '' : keep).trim();
+      if (cur && !out.some(o => o === cur)) out.push(cur);
+      return out;
+    }
+    // The id behind a picked product name. '' when the name was free-typed or
+    // the product has since been retired; quarry.html and quarry-metrics both
+    // fall back to a case-insensitive name match, so the row still groups.
+    function quarryProductIdFor(name) {
+      const n = String(name || '').trim().toLowerCase();
+      if (!n) return '';
+      const hit = (quarryProductList || [])
+        .find(it => String((it && it.name) || '').trim().toLowerCase() === n);
+      return (hit && hit.id) || '';
+    }
+    // What the plant was making. A real <select> rather than the free-text
+    // datalist Equipment and Task use, because this one is a REPORTING
+    // dimension: "2A Mod" typed on Tuesday and "2A Modified" on Wednesday are
+    // two different materials to every tons/hour, cost/ton and on-hand figure
+    // downstream — and the row lands read-only in the quarry tab, so nobody
+    // over there can reconcile them afterwards. Picking off the list also
+    // carries the product's id, which is what Inventory matches on first.
+    //
+    // Blank stays a valid answer: the quarry has always crushed days nobody
+    // recorded a material for, and refusing the approval would only park the
+    // timesheet instead. With no list to pick from — the lists fetch failed, or
+    // nobody has set the products up yet — it degrades to the same free-text
+    // box the Daily fields use rather than showing a dropdown with no way out.
+    function _qProductField(id, label, val) {
+      const cur  = String(val == null ? '' : val);
+      if (!(quarryProductList || []).length) return _qListField(id, label, cur, [], 'Product name…');
+      const opts = quarryProductNames(cur);
+      const html = opts
+        .map(o => `<option value="${escapeHtml(o)}"${o === cur ? ' selected' : ''}>${escapeHtml(o)}</option>`)
+        .join('');
+      return `<label style="${Q_LABEL_STYLE};grid-column:1/-1"><span>${label}</span>` +
+        `<select id="${id}" style="${Q_INPUT_STYLE}" title="The material this day was crushing. It tags the Crushing Tracking row so tons, cost/ton and on-hand report per product.">` +
+          `<option value=""${cur ? '' : ' selected'}>— not recorded —</option>${html}` +
+        `</select></label>`;
+    }
     // Live fuel cost = fuel gallons × $/gal; runs as the Daily/Crushing fuel
     // inputs change. Supervisors were reading "Fuel Cost ($)" as the pump price
     // and typing 4.50 into it, which the old form divided by the gallons and
@@ -10790,6 +10874,10 @@
         const cPerGalVal = (r.fuelCost == null || r.fuelCost === '') ? '' : String(r.fuelCost);
         const cGalVal    = (r.fuelGallons == null || r.fuelGallons === '') ? '' : String(r.fuelGallons);
         return [
+          // First, and full width: it is the question the rest of the row is
+          // about, and full width leaves the seven boxes below it laid out
+          // exactly as they were.
+          _qProductField('q_productName', 'Product Crushed', r.productName),
           `<label style="${Q_LABEL_STYLE}"><span>Hourly Rate ($/h)</span>` +
             `<input type="number" step="0.01" min="0" id="q_hourlyRate" value="${escapeHtml(String(cRateVal))}" placeholder="0" title="${escapeHtml(cRateTitle)}" style="${Q_INPUT_STYLE}"></label>`,
           _qNumField('q_hoursCrushing',  'Hours Crushing',    r.hoursCrushing),
@@ -10917,7 +11005,10 @@
     function _qval(id) { const el = document.getElementById(id); return el ? el.value : ''; }
     function collectQuarryFields(activity) {
       if (activity === 'crushing') {
+        const productName = _qval('q_productName');
         return {
+          productName,
+          productId:      quarryProductIdFor(productName),
           hourlyRate:     _qval('q_hourlyRate'),
           hoursCrushing:  _qval('q_hoursCrushing'),
           loadsToCrusher: _qval('q_loadsToCrusher'),
@@ -13173,6 +13264,9 @@
               // 'manual' the supervisor — only 'auto' legs stay the prefill's.
               travel_cost_code: '', travel_sub_code: '', travel_code_source: '',
               equipmentName: '', taskName: '', rate: '', hourlyRate: '',
+              // One material for every crushing day on the card. The grouping
+              // key is activity + job, so a card is one pit crushing one thing.
+              productName: '',
               // haul_fee_source: '' nobody yet, 'rate' the customer's rate off
               // the trucking office's Manage Lists. Cleared the moment the
               // supervisor types, so the card never credits them with a number
@@ -13301,6 +13395,20 @@
       const title = (o && o.title)     ? ` title="${escapeHtml(o.title)}"`     : '';
       return `<input type="number" min="0" step="0.01"${cls}${title} value="${escapeHtml(v)}" ` +
              `placeholder="${escapeHtml(ph || '0')}" oninput="bulkSet(${idx},'${field}',this.value)">`;
+    }
+    // Same reasoning as the single modal's _qProductField — a reporting
+    // dimension gets the list, not a free-text box — and the same fallback when
+    // there is no list to offer. The generic `.modal select` rule styles it to
+    // match the inputs beside it.
+    function _bulkProduct(idx, field, value) {
+      const cur  = String(value == null ? '' : value);
+      if (!(quarryProductList || []).length) return _bulkList(idx, field, cur, [], 'Product name…');
+      const opts = quarryProductNames(cur);
+      const html = opts
+        .map(o => `<option value="${escapeHtml(o)}"${o === cur ? ' selected' : ''}>${escapeHtml(o)}</option>`)
+        .join('');
+      return `<select onchange="bulkSet(${idx},'${field}',this.value)">` +
+        `<option value=""${cur ? '' : ' selected'}>— not recorded —</option>${html}</select>`;
     }
     function _bulkText(idx, field, value, ph) {
       return `<input type="text" maxlength="100" value="${escapeHtml(value == null ? '' : value)}" ` +
@@ -13749,9 +13857,12 @@
         title = quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry'; meta = metaHrs;
         fields = `
           <div class="bulk-fields">
+            <div class="bulk-field"><span>Product Crushed</span>${_bulkProduct(idx, 'productName', g.template.productName)}</div>
             <div class="bulk-field"><span>Hourly Rate ($/h)</span>${_bulkNum(idx, 'hourlyRate', g.template.hourlyRate, 'auto · per employee')}</div>
           </div>
-          <div class="bulk-note">Blank uses each employee's own quarry rate; type a value to apply one rate to
+          <div class="bulk-note">The product tags every day on this card, so the tons report per material — leave it
+            blank only if these days were not all crushing the same thing, then open them one at a time.
+            Blank rate uses each employee's own quarry rate; type a value to apply one rate to
             every day. Hours crushing, loads, tons &amp; fuel are left blank — open a single day to add them.</div>`;
       } else if (g.type === 'quarry') {
         badgeClass = 'quarry'; badgeText = 'Quarry Daily';
@@ -14078,7 +14189,9 @@
         if (g.activity === 'crushing') {
           const hourlyRate = String(g.template.hourlyRate).trim() !== ''
             ? g.template.hourlyRate : bulkQuarryRate(e);
+          const productName = String(g.template.productName || '');
           return { quarry: {
+            productName, productId: quarryProductIdFor(productName),
             hourlyRate, hoursCrushing: 0, fuelGallons: 0,
             fuelCost: 0, loadsToCrusher: 0, tonsPerLoad: 0, comments: '',
           } };

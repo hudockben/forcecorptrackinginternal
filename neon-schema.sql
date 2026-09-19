@@ -2160,3 +2160,29 @@ ALTER TABLE employees ADD COLUMN IF NOT EXISTS supervisor_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_employees_supervisor_name
   ON employees(company_code, supervisor_name)
   WHERE supervisor_name IS NOT NULL;
+
+-- ── QUARRY CRUSHING — what the plant was making ───────────────────────────
+-- Crushing Tracking has always had a Product column and nothing ever filled
+-- it: rows typed into the quarry tab could carry one, but every row injected
+-- from an approved timesheet landed blank, and those are most of them. So the
+-- tons existed and the material they were did not, which put every per-product
+-- figure — tons/hour by material, cost per ton, what is actually on the
+-- ground — out of reach. Payroll now asks the question at the approval, where
+-- the supervisor signing the day is the one person who knows the answer.
+--
+-- The id/name PAIR, matching quarry_sales_entries: sales have always been
+-- product-tagged, and on-hand is production minus sales, so the two sides have
+-- to group the same way. The id survives a rename in Manage Lists; the name is
+-- what the grid prints and what still matches when a product was free-typed
+-- before it was on the list.
+--
+-- Nullable and unbackfilled on purpose. Every crushing row posted before this
+-- has no answer, and inventing one would be a guess written into the books —
+-- they stay untagged, and re-opening the day in payroll is what tags them.
+-- Idempotent so existing deployments pick it up the next time run-schema runs.
+ALTER TABLE quarry_crushing_entries ADD COLUMN IF NOT EXISTS product_id   TEXT;
+ALTER TABLE quarry_crushing_entries ADD COLUMN IF NOT EXISTS product_name TEXT;
+
+-- "Tons and cost by material" — the read this whole change exists to make
+-- possible. Mirrors idx_qs_company_product on the sales side.
+CREATE INDEX IF NOT EXISTS idx_qc_company_product ON quarry_crushing_entries(company_code, product_name);
