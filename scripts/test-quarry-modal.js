@@ -92,7 +92,10 @@ console.log('[the pre-fill cannot be mistaken for an empty row]');
 // ── 2) Behavioural ──────────────────────────────────────────────────────────
 // quarrySave, run for real. Everything it reaches for is stubbed; the only
 // thing under test is whether it posts.
-function runSave(rowLoad, mode) {
+// `over` replaces collaborators on the sandbox — the crushing cases below use
+// it to swap the activity and what the boxes collect, since every existing
+// case here is a Daily day.
+function runSave(rowLoad, mode, over) {
   const boxes = {
     q_equipmentName: { value: 'Loader' }, q_taskName: { value: 'Stripping' },
     q_rate: { value: '42' }, q_fuelGallons: { value: '0' }, q_fuelPerGal: { value: '0' },
@@ -122,6 +125,7 @@ function runSave(rowLoad, mode) {
     document: { getElementById: id => boxes[id] || null },
     console,
   };
+  Object.assign(ctx, over || {});
   vm.createContext(ctx);
   evalSlice(slice('async function quarrySave()', '\n    // ──', 'quarrySave',
                   ['function quarrySave(', 'function unapproveEntry(']) + '\nquarrySave();', ctx, 'quarrySave');
@@ -156,6 +160,38 @@ console.log('\n[and when it is known, or there is nothing to know]');
   const fresh = runSave('none', 'approve');
   assert('a fresh approve is never blocked', fresh.posts.length === 1);
   assert('as an approve', /action=approve/.test(fresh.posts[0].url), fresh.posts[0] && fresh.posts[0].url);
+}
+
+console.log('\n[and a crushing day cannot be approved without its material]');
+{
+  // Crushing rows land read-only in the quarry tab, so a day approved with no
+  // material named can never be tagged by anyone afterwards. The server
+  // refuses it; this is the form refusing first, beside the box.
+  const crushing = productName => ({
+    quarryActivityOf: () => 'crushing',
+    collectQuarryFields: () => ({ productName, hourlyRate: '26' }),
+  });
+
+  const untagged = runSave('none', 'approve', crushing(''));
+  assert('an untagged crushing approve posts nothing', untagged.posts.length === 0);
+  assert('and names the box to fill',
+    /product this day was crushing/i.test(untagged.msg.textContent)
+    && untagged.msg.classList.contains('error'), untagged.msg.textContent);
+
+  assert('a name of nothing but spaces is not an answer',
+    runSave('none', 'approve', crushing('   ')).posts.length === 0);
+
+  const tagged = runSave('none', 'approve', crushing('2A Modified'));
+  assert('and a day with its material named goes through', tagged.posts.length === 1);
+
+  // Re-opening an older untagged day is the one chance those rows get to be
+  // tagged — the quarry tab shows them read-only — so Edit Row asks too.
+  assert('an Edit Row on an older untagged day must tag it before it saves',
+    runSave('loaded', 'resplit', crushing('')).posts.length === 0);
+
+  // Daily has no material and never did; the requirement must not reach it.
+  assert('a Daily approve is untouched by the requirement',
+    runSave('none', 'approve').posts.length === 1);
 }
 
 // ── 3) Which fuel box is typed, and which is derived ────────────────────────

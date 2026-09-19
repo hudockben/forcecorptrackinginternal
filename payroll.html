@@ -2305,8 +2305,10 @@
        job pays the man his wage or gets his hours inside the truck's rate —
        and the save refuses the split until every labour row has one. */
     /* The material a crushing override was making — sized like the rate box it
-       shares the cell with. */
+       shares the cell with, and marked while unanswered on the same reasoning
+       as the rate: the quarry tab cannot supply either one afterwards. */
     .split-table select.dest-product { font-size: 0.75rem; padding: 0.35rem 0.3rem; }
+    .split-table select.dest-product.needed { border-color: var(--red); }
     .split-table select.haul-pick { font-size: 0.78rem; }
     .split-table select.haul-pick.needed { border-color: var(--red); }
     .dest-retry {
@@ -2419,6 +2421,9 @@
       gap: 0.7rem 1rem;
     }
     .bulk-field { display: flex; flex-direction: column; gap: 0.3rem; }
+    /* A required bulk field nobody has answered. One card stands for every day
+       on it, so an unanswered box here is a whole pit's week held up. */
+    .bulk-field .bulk-need { border-color: var(--red); }
     .bulk-field > span {
       font-size: 0.62rem;
       text-transform: uppercase;
@@ -9486,12 +9491,13 @@
         if (!String(r.dest_job || '').startsWith('crushing:')) return rateBox;
         const cur  = String(r.dest_product || '');
         const opts = quarryProductNames(cur);
+        const pNeed = cur ? '' : ' needed';
         const picker = !(quarryProductList || []).length
-          ? `<input type="text" class="dest-time" placeholder="Product…" value="${escapeHtml(cur)}"
+          ? `<input type="text" class="dest-time${pNeed}" placeholder="Product…" value="${escapeHtml(cur)}"
               onchange="splitOnChange(${i},'dest_product',this.value)"
-              title="The material this row was crushing.">`
-          : `<select class="dest-product" onchange="splitOnChange(${i},'dest_product',this.value)"
-              title="The material this row was crushing. It tags the Crushing Tracking row so the tons report per product.">` +
+              title="The material this row was crushing. Required — the product list could not be loaded, so type it.">`
+          : `<select class="dest-product${pNeed}" onchange="splitOnChange(${i},'dest_product',this.value)"
+              title="The material this row was crushing. Required — it tags the Crushing Tracking row so the tons report per product, and the quarry tab cannot add it later.">` +
             `<option value=""${cur ? '' : ' selected'}>— product —</option>` +
             opts.map(o => `<option value="${escapeHtml(o)}"${o === cur ? ' selected' : ''}>${escapeHtml(o)}</option>`).join('') +
             `</select>`;
@@ -10606,6 +10612,14 @@
           fail('the quarry shows payroll rows read-only, so it cannot be priced later — give this row an hourly rate.');
           return;
         }
+        // And on the same reasoning, a crushing row cannot be tagged later
+        // either: its tons would sit outside every per-material figure for good.
+        if (splitRowDivision(r) === 'quarry'
+            && String(r.dest_job || '').startsWith('crushing:')
+            && !String(r.dest_product || '').trim()) {
+          fail('name the product this crushing row was making — the quarry tab cannot tag it afterwards.');
+          return;
+        }
         // Half a window stamps the haul with the whole day. Both or neither.
         if (splitRowDivision(r) === 'trucking' && !!r.dest_start !== !!r.dest_end) {
           fail('give this haul both a start and an end time, or neither.');
@@ -10816,21 +10830,37 @@
     // over there can reconcile them afterwards. Picking off the list also
     // carries the product's id, which is what Inventory matches on first.
     //
-    // Blank stays a valid answer: the quarry has always crushed days nobody
-    // recorded a material for, and refusing the approval would only park the
-    // timesheet instead. With no list to pick from — the lists fetch failed, or
-    // nobody has set the products up yet — it degrades to the same free-text
-    // box the Daily fields use rather than showing a dropdown with no way out.
+    // Required. An unanswered box is marked red the way the split modal marks
+    // the rate and the dust window, and quarrySave refuses to post without it —
+    // the server refuses it too, so the mark is there to say so in the form
+    // rather than in an error after the click.
+    //
+    // It still OPENS blank rather than defaulting to the first product on the
+    // list: a wrong material picked for them is worse than a question they can
+    // see they have not answered, and it is the blank that makes the box red.
+    //
+    // With no list to pick from — the lists fetch failed, or nobody has set the
+    // products up yet — it degrades to a free-text box rather than a dropdown
+    // with no way out. Required means "answer it", not "answer it off the
+    // list": a list that failed to load must not be able to stop the day's
+    // approval, and a typed name still tags the row and still matches by name
+    // downstream, it just carries no product id.
     function _qProductField(id, label, val) {
       const cur  = String(val == null ? '' : val);
-      if (!(quarryProductList || []).length) return _qListField(id, label, cur, [], 'Product name…');
+      const need = cur ? '' : ';border-color:var(--red)';
+      if (!(quarryProductList || []).length) {
+        return `<label style="${Q_LABEL_STYLE};grid-column:1/-1"><span>${label}</span>` +
+          `<input type="text" id="${id}" value="${escapeHtml(cur)}" placeholder="Product name…" autocomplete="off" ` +
+            `title="The material this day was crushing. Required — the product list could not be loaded, so type it." ` +
+            `style="${Q_INPUT_STYLE}${need}"></label>`;
+      }
       const opts = quarryProductNames(cur);
       const html = opts
         .map(o => `<option value="${escapeHtml(o)}"${o === cur ? ' selected' : ''}>${escapeHtml(o)}</option>`)
         .join('');
       return `<label style="${Q_LABEL_STYLE};grid-column:1/-1"><span>${label}</span>` +
-        `<select id="${id}" style="${Q_INPUT_STYLE}" title="The material this day was crushing. It tags the Crushing Tracking row so tons, cost/ton and on-hand report per product.">` +
-          `<option value=""${cur ? '' : ' selected'}>— not recorded —</option>${html}` +
+        `<select id="${id}" style="${Q_INPUT_STYLE}${need}" title="The material this day was crushing. Required — it tags the Crushing Tracking row so tons, cost/ton and on-hand report per product, and the quarry tab cannot add it later.">` +
+          `<option value=""${cur ? '' : ' selected'}>— pick the product —</option>${html}` +
         `</select></label>`;
     }
     // Live fuel cost = fuel gallons × $/gal; runs as the Daily/Crushing fuel
@@ -11052,6 +11082,18 @@
       }
       const btn = document.getElementById('quarrySaveBtn');
       const quarry = collectQuarryFields(activity);
+      // The material is required on a crushing day. The server refuses it as
+      // well — this is so the approver is told in the form, next to the box,
+      // rather than by an error after the click. It applies to an Edit Row on
+      // an older untagged day too: that re-open is the one chance those rows
+      // get to be tagged, since the quarry tab shows them read-only.
+      if (activity === 'crushing' && !String(quarry.productName || '').trim()) {
+        msg.classList.add('error');
+        msg.textContent = 'Pick the product this day was crushing.';
+        const pEl = document.getElementById('q_productName');
+        if (pEl) pEl.focus();
+        return;
+      }
       // Guard: a $/gal with no gallons costs nothing — the row would post fuel at
       // $0.00 while the form says the fuel was priced, so ask for the gallons.
       // Applies to Daily and Crushing (both have these inputs).
@@ -13397,18 +13439,28 @@
              `placeholder="${escapeHtml(ph || '0')}" oninput="bulkSet(${idx},'${field}',this.value)">`;
     }
     // Same reasoning as the single modal's _qProductField — a reporting
-    // dimension gets the list, not a free-text box — and the same fallback when
-    // there is no list to offer. The generic `.modal select` rule styles it to
-    // match the inputs beside it.
+    // dimension gets the list, not a free-text box, it is required, and it is
+    // marked while unanswered. The generic `.modal select` rule styles it to
+    // match the inputs beside it; `.bulk-need` supplies the mark.
     function _bulkProduct(idx, field, value) {
       const cur  = String(value == null ? '' : value);
-      if (!(quarryProductList || []).length) return _bulkList(idx, field, cur, [], 'Product name…');
+      const need = cur ? '' : ' class="bulk-need"';
+      if (!(quarryProductList || []).length) {
+        return `<input type="text"${need} value="${escapeHtml(cur)}" placeholder="Product name…" ` +
+               `autocomplete="off" oninput="bulkSet(${idx},'${field}',this.value)">`;
+      }
       const opts = quarryProductNames(cur);
       const html = opts
         .map(o => `<option value="${escapeHtml(o)}"${o === cur ? ' selected' : ''}>${escapeHtml(o)}</option>`)
         .join('');
-      return `<select onchange="bulkSet(${idx},'${field}',this.value)">` +
-        `<option value=""${cur ? '' : ' selected'}>— not recorded —</option>${html}</select>`;
+      return `<select${need} onchange="bulkSet(${idx},'${field}',this.value)">` +
+        `<option value=""${cur ? '' : ' selected'}>— pick the product —</option>${html}</select>`;
+    }
+    // A crushing card with no material named cannot be approved: the server
+    // refuses every day on it, and one card stands for a whole pit's week.
+    function bulkQuarryNeedsProduct(g) {
+      return !!g && g.type === 'quarry' && g.activity === 'crushing'
+        && !String(g.template.productName || '').trim();
     }
     function _bulkText(idx, field, value, ph) {
       return `<input type="text" maxlength="100" value="${escapeHtml(value == null ? '' : value)}" ` +
@@ -13860,10 +13912,11 @@
             <div class="bulk-field"><span>Product Crushed</span>${_bulkProduct(idx, 'productName', g.template.productName)}</div>
             <div class="bulk-field"><span>Hourly Rate ($/h)</span>${_bulkNum(idx, 'hourlyRate', g.template.hourlyRate, 'auto · per employee')}</div>
           </div>
-          <div class="bulk-note">The product tags every day on this card, so the tons report per material — leave it
-            blank only if these days were not all crushing the same thing, then open them one at a time.
-            Blank rate uses each employee's own quarry rate; type a value to apply one rate to
-            every day. Hours crushing, loads, tons &amp; fuel are left blank — open a single day to add them.</div>`;
+          <div class="bulk-note">The product is required and tags every day on this card, so the tons report per
+            material. If these days were not all crushing the same thing, approve them one at a time instead —
+            one card can only name one material. Blank rate uses each employee's own quarry rate; type a value
+            to apply one rate to every day. Hours crushing, loads, tons &amp; fuel are left blank — open a
+            single day to add them.</div>`;
       } else if (g.type === 'quarry') {
         badgeClass = 'quarry'; badgeText = 'Quarry Daily';
         title = quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry'; meta = metaHrs;
@@ -14065,8 +14118,9 @@
       if (!btn) return;
       const total = bulkGroups.reduce((s, g) => s + g.entries.length, 0);
       const notReady = bulkGroups.some(g =>
-        g.type === 'split' &&
-        !(String(g.template.cost_code || '').trim() || String(g.template.sub_code || '').trim()));
+        (g.type === 'split' &&
+          !(String(g.template.cost_code || '').trim() || String(g.template.sub_code || '').trim()))
+        || bulkQuarryNeedsProduct(g));
       btn.disabled = bulkRunning || total === 0 || notReady;
       btn.textContent = bulkRunning
         ? 'Approving…'
@@ -14234,6 +14288,17 @@
         msg.classList.add('error');
         msg.textContent = 'Pick a cost code or sub code for: ' +
           notReady.map(g => g.job_label || prettyDiv(g.division)).join(', ');
+        return;
+      }
+
+      // Every crushing card must name its material. Caught here rather than in
+      // the run loop, which would otherwise 400 once per day on the card and
+      // report it as a string of failed approvals.
+      const needProduct = bulkGroups.filter(bulkQuarryNeedsProduct);
+      if (needProduct.length) {
+        msg.classList.add('error');
+        msg.textContent = 'Pick the product being crushed for: ' +
+          needProduct.map(g => quarryLocationLabel(g.entries[0]) || g.job_label || 'Quarry').join(', ');
         return;
       }
 

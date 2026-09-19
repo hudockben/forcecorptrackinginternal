@@ -216,9 +216,11 @@ console.log('\n[and the same number posted to the injection endpoint]');
   const goodDaily = validateQuarryInjection('daily', { rate: '26', fuelGallons: '190', ppg: '4.50' });
   assert('a real pump price goes through', goodDaily.fields && goodDaily.fields.ppg === 4.5,
     JSON.stringify(goodDaily));
+  // productName is required on a crushing day (see test-quarry-crush-product);
+  // it is here so this stays a test about the fuel price and not about that.
   const goodCrush = validateQuarryInjection('crushing',
-    { hourlyRate: '26', hoursCrushing: '5', fuelGallons: '190', fuelCost: '4.50',
-      loadsToCrusher: '24', tonsPerLoad: '30' });
+    { productName: '2A Modified', hourlyRate: '26', hoursCrushing: '5',
+      fuelGallons: '190', fuelCost: '4.50', loadsToCrusher: '24', tonsPerLoad: '30' });
   assert('…on crushing too', goodCrush.fields && goodCrush.fields.fuelCost === 4.5,
     JSON.stringify(goodCrush));
 
@@ -230,9 +232,12 @@ console.log('\n[and the same number posted to the injection endpoint]');
     /price per gallon/i.test(billDaily.error || ''), billDaily.error);
   assert('…and what to type instead', /4\.50/.test(billDaily.error || ''), billDaily.error);
 
+  // Tagged for the same reason, and because the fuel cap is checked BEFORE the
+  // product — a day with both problems must still be told about the number the
+  // approver can see on screen.
   const billCrush = validateQuarryInjection('crushing',
-    { hourlyRate: '26', hoursCrushing: '5', fuelGallons: '190', fuelCost: '855',
-      loadsToCrusher: '24', tonsPerLoad: '30' });
+    { productName: '2A Modified', hourlyRate: '26', hoursCrushing: '5',
+      fuelGallons: '190', fuelCost: '855', loadsToCrusher: '24', tonsPerLoad: '30' });
   assert('crushing refuses it the same way',
     /price per gallon/i.test(billCrush.error || ''), billCrush.error);
 

@@ -180,15 +180,28 @@ function destValidationTests() {
   // so unlike a haul — which falls back to the customer's agreed rate and can be
   // re-priced by the office afterwards — a quarry row that lands at rate 0 is a
   // $0 cost row nobody downstream is able to correct.
+  // Given a product so this stays a test about the RATE — a crushing row with
+  // neither is refused for the product first, which the next assertion covers.
   assert('a quarry destination with no rate is refused',
     /give this row an hourly rate/.test(
-      normalizeSplitDest({ division: 'quarry', job_id: 'crushing:hc' }, 0).error || ''));
+      normalizeSplitDest({ division: 'quarry', job_id: 'crushing:hc',
+                           quarry: { productName: '2A Modified' } }, 0).error || ''));
+  // The crushing row's other un-fixable gap. The quarry tab shows payroll's
+  // rows read-only, so a row that lands with no material named sits outside
+  // every per-product figure for good — exactly the argument the rate makes.
+  assert('and a crushing destination with no product is refused too',
+    /product this day was crushing/.test(
+      normalizeSplitDest({ division: 'quarry', job_id: 'crushing:hc',
+                           quarry: { hourlyRate: 95 } }, 0).error || ''));
   assert('and so is one whose rate is zero',
     !!normalizeSplitDest({ division: 'quarry', job_id: 'daily:hc', quarry: { rate: 0 } }, 0).error);
   const q = normalizeSplitDest(
-    { division: 'quarry', job_id: 'crushing:hc', job_label: 'Crushing — Homer City', quarry: { hourlyRate: 95 } }, 0).dest;
+    { division: 'quarry', job_id: 'crushing:hc', job_label: 'Crushing — Homer City',
+      quarry: { hourlyRate: 95, productId: 'p-2a', productName: '2A Modified' } }, 0).dest;
   assert('a quarry destination resolves its activity', q.activity === 'crushing');
   assert('and carries the rate it was given', q.extras.hourlyRate === 95);
+  assert('and the material it was making', q.extras.productName === '2A Modified'
+    && q.extras.productId === 'p-2a', JSON.stringify(q.extras));
   assert('the crushing tab reads its rate from hourlyRate, the daily tab from rate',
     normalizeSplitDest({ division: 'quarry', job_id: 'daily:hc', quarry: { rate: 88 } }, 0).dest.extras.rate === 88);
   assert('the numbers only that office can know still default to zero',

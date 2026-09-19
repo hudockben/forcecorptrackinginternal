@@ -32,12 +32,24 @@
  * the row does not carry wipes the product on every later Edit Row, on a row
  * the quarry tab renders read-only and nobody over there can put back.
  *
- * Two range checks are worth saying out loud, because getting either wrong
- * takes down every crushing approval in the company: the product is a STRING
- * and must stay out of the numeric loop (quarryNum returns null for any real
- * name, and the loop turns a null into a 400), and it must stay OPTIONAL (the
- * quarry has always crushed days nobody recorded a material for, and refusing
- * those approvals would only park the timesheets).
+ * The product is REQUIRED. A crushing day cannot be approved without naming
+ * the material, on any of the three paths — an untagged row is tons with no
+ * material on them, and the quarry tab renders an injected row read-only, so
+ * it is not a gap anyone downstream can close afterwards. The server is the
+ * backstop; each form refuses first so the approver is told beside the box
+ * rather than by an error after the click.
+ *
+ * Two things about that check are worth saying out loud, because getting
+ * either wrong takes down every crushing approval in the company. The product
+ * is a STRING and must stay out of the numeric range loop — quarryNum returns
+ * null for any real name, and the loop turns a null into a 400 reading
+ * "productName must be between 0 and undefined". And the check must come AFTER
+ * that loop, so a day with both a bad number and no product is still told
+ * about the number the approver can actually see on screen.
+ *
+ * Required means "answer it", not "answer it off the list": when the product
+ * list fails to load, every form degrades to a typed box. A list that did not
+ * load must not be able to stop a day being approved.
  *
  * No DB, no browser.
  */
@@ -106,17 +118,34 @@ function approvalTests() {
   assert('a product name is never range-checked as a number',
     !/productName must be between/.test(String(error || '')), error);
 
-  // Blank is a real answer. The quarry crushed for years without recording a
-  // material, and a required field here would park those timesheets rather
-  // than produce the number anyone wanted.
+  // Required, and this is the backstop every path goes through.
   const none = validateQuarryInjection('crushing', {
     hourlyRate: 26, hoursCrushing: 8, loadsToCrusher: 0, tonsPerLoad: 0,
     fuelGallons: 0, fuelCost: 0, comments: '',
   });
-  assert('a day with no product still approves', !none.error, none.error);
-  assert('…carrying a blank rather than an undefined',
-    none.fields && none.fields.productName === '' && none.fields.productId === '',
-    JSON.stringify(none.fields && [none.fields.productId, none.fields.productName]));
+  assert('a day with no product is refused', !!none.error, JSON.stringify(none.fields));
+  assert('…and told what to do about it',
+    /product this day was crushing/.test(String(none.error || '')), none.error);
+  assert('…with no fields handed back to write a row from', !none.fields, JSON.stringify(none.fields));
+
+  // Whitespace is not an answer either — it would tag the row with nothing and
+  // read as answered everywhere downstream.
+  const blank = validateQuarryInjection('crushing', {
+    productName: '   ', hourlyRate: 26, hoursCrushing: 8, loadsToCrusher: 0,
+    tonsPerLoad: 0, fuelGallons: 0, fuelCost: 0,
+  });
+  assert('nor is a name of nothing but spaces', !!blank.error, JSON.stringify(blank.fields));
+
+  // Off the list is still an answer: when the product list fails to load every
+  // form degrades to a typed box, and a list that did not load must not be able
+  // to stop the day being approved.
+  const typed = validateQuarryInjection('crushing', {
+    productName: 'Screened Sand', hourlyRate: 26, hoursCrushing: 8,
+    loadsToCrusher: 0, tonsPerLoad: 0, fuelGallons: 0, fuelCost: 0,
+  });
+  assert('a typed name with no id behind it is accepted',
+    !typed.error && typed.fields.productName === 'Screened Sand' && typed.fields.productId === '',
+    JSON.stringify(typed.error || typed.fields));
 
   // The numbers beside it still are checked — the product did not loosen them.
   const bad = validateQuarryInjection('crushing', {
@@ -125,6 +154,14 @@ function approvalTests() {
   });
   assert('a day\'s fuel bill typed into the per-gallon box is still refused',
     /per gallon/.test(String(bad.error || '')), bad.error);
+
+  // Order matters: a day with BOTH problems is told about the one on screen.
+  const both = validateQuarryInjection('crushing', {
+    hourlyRate: 26, hoursCrushing: 8, loadsToCrusher: 0, tonsPerLoad: 0,
+    fuelGallons: 10, fuelCost: 855,
+  });
+  assert('and a day with both problems names the number, not the product',
+    /per gallon/.test(String(both.error || '')), both.error);
 }
 
 // ── 2) The row it builds ────────────────────────────────────────────────────
@@ -229,7 +266,39 @@ function pathTests() {
     /dest_product:\s+\(r\.dest && r\.dest\.extras && r\.dest\.extras\.productName\)/.test(reopen));
 }
 
-// ── 5) The SQL mirror ───────────────────────────────────────────────────────
+// ── 5) Each form refuses first ─────────────────────────────────────────────
+// The server is the backstop, but a supervisor should be told beside the box,
+// not by an error after the click — and on bulk it matters more than that: one
+// card stands for a whole pit's week, so an unguarded card would 400 once per
+// day and report as a string of failed approvals.
+function guardTests() {
+  console.log('\n[and every form refuses before the server has to]');
+  const save    = inPayroll('async function quarrySave()', '\n    async function unapproveEntry(',
+                            'quarrySave', 'action=');
+  const bulkRun = inPayroll('async function bulkRun()', '\n    function goToDivisions(',
+                            'bulkRun', 'buildBulkBody');
+  const runBtn  = inPayroll('function updateBulkRunBtn()', '\n    function bulkApplyHaulDefaults(',
+                            'updateBulkRunBtn', 'btn.disabled');
+  const splitSv = inPayroll('async function splitSave()', '\n    async function loadQuarryListsOnce(',
+                            'splitSave', 'Add at least one row.');
+
+  assert('the approve modal refuses to post an untagged crushing day',
+    /activity === 'crushing' && !String\(quarry\.productName \|\| ''\)\.trim\(\)/.test(save), save.slice(0, 200));
+  // …and only after the pre-fill guard, or an Edit Row whose row never loaded
+  // would be refused for a product the form has not had a chance to show yet.
+  assert('…after the guard that stops a save wiping a row it never read',
+    save.indexOf("quarryRowLoad === 'pending'") < save.indexOf('productName'));
+
+  assert('bulk refuses to run a crushing card with no material named',
+    /bulkQuarryNeedsProduct/.test(bulkRun), bulkRun.slice(0, 200));
+  assert('…and the Approve button is disabled until it has one',
+    /bulkQuarryNeedsProduct\(g\)/.test(runBtn), runBtn.slice(0, 200));
+
+  assert('and a crushing division override is refused without one',
+    /dest_product/.test(splitSv) && /cannot tag it afterwards/.test(splitSv), splitSv.slice(0, 200));
+}
+
+// ── 6) The SQL mirror ───────────────────────────────────────────────────────
 // Nothing reads these columns today — every quarry report works off the blob —
 // but the mirror is what makes per-material reporting possible in SQL later,
 // and a sync that writes a column the table has not got throws INSIDE the
@@ -255,6 +324,7 @@ function mirrorTests() {
   await rowTests();
   gridTests();
   pathTests();
+  guardTests();
   mirrorTests();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

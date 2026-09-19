@@ -1767,10 +1767,23 @@ function validateQuarryInjection(activity, raw) {
     // id/name PAIR the crushing grid stores (quarry.html normalizeCrushRow), so
     // tons group by the product itself and survive a later rename; the name
     // alone is what the grid's Product column prints.
+    const productId   = safeStr(q.productId, 200) || '';
+    const productName = safeStr(q.productName, 255) || '';
+    // REQUIRED, and checked here because here is the only place every path
+    // goes through — the approve modal, bulk approve, and a division override
+    // pointed at a crushing job all land on this function. An untagged row is
+    // tons with no material on them, and the quarry tab renders an injected row
+    // read-only, so it is not a gap anyone downstream can close afterwards.
+    //
+    // Last, after the range loop, so a day with both a bad number and no
+    // product is still told about the number it can see on screen.
+    if (!productName) {
+      return { error: 'Pick the product this day was crushing — the quarry tab shows payroll rows read-only, so it cannot be tagged later' };
+    }
     return { fields: {
       ...vals,
-      productId:   safeStr(q.productId, 200) || '',
-      productName: safeStr(q.productName, 255) || '',
+      productId,
+      productName,
       comments:    safeStr(q.comments, 2000) || '',
     } };
   }
