@@ -59,7 +59,8 @@
     'fuel-admin.html':       'fuel_admin',
     'driver.html':           'driver',
     'quarry-sales.html':     'quarry_sales',
-    'purchase-orders.html':  'purchase_orders'
+    'purchase-orders.html':  'purchase_orders',
+    'safety.html':           'safety'
   };
 
   /* Divisions Mathis has figures for. Kept here so the panel can say what it
@@ -68,7 +69,8 @@
    * the server's own list. */
   var HAS_FIGURES = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
                      'intercompany', 'payroll', 'scheduler', 'executive', 'fuel_admin',
-                     'timesheet', 'fuel', 'driver', 'quarry_sales', 'purchase_orders'];
+                     'timesheet', 'fuel', 'driver', 'quarry_sales', 'purchase_orders',
+                     'safety'];
 
   function division() {
     try { if (typeof DIVISION !== 'undefined' && DIVISION) return String(DIVISION); } catch (e) {}
@@ -78,7 +80,7 @@
   }
 
   /* Pages where the honest subject is the person, not the division. */
-  var PERSONAL_PAGES = ['timesheet', 'fuel', 'driver', 'quarry_sales'];
+  var PERSONAL_PAGES = ['timesheet', 'fuel', 'driver', 'quarry_sales', 'safety'];
   function isPersonalPage() {
     return PERSONAL_PAGES.indexOf(division()) >= 0;
   }
@@ -356,7 +358,8 @@
       timesheet:    'your own timesheet entries — hours logged, what is still in draft',
       fuel:         'the fill-ups you have submitted',
       driver:       'the hauls assigned to you',
-      quarry_sales: 'the loads you have recorded'
+      quarry_sales: 'the loads you have recorded',
+      safety: 'the safety documents you have been asked to sign'
     };
     if (!d || isPersonalPage()) {
       add('it', 'Ask me about ' + (OWN[d] || OWN.timesheet) + '. I can only see your own records here.');
@@ -573,6 +576,7 @@
       own_fuel:         renderOwnFuel,
       own_driver:       renderOwnDriver,
       own_quarry_sales: renderOwnQuarrySales,
+      own_safety:       renderOwnSafety,
       job_history:      renderJobHistory,
       purchasing:       renderPurchasing
     };
@@ -812,6 +816,21 @@
       return text(r.workDate) + text(r.customer) + text(r.product) + num(r.tons) + money(r.charged);
     }, 'loads');
     post(html, ['Your own loads, ' + (d.window || 'recent') + '. Amount charged is what was recorded at the scale.']);
+  }
+
+  /* What this person still owes the safety supervisor. Their own sign-offs
+   * and nothing else — the server digest carries no other signer, so there is
+   * nothing here that could accidentally render a roll-call. */
+  function renderOwnSafety(d) {
+    var html = kv([
+      ['Documents posted', num(d.documents, 0)],
+      ['You have signed',  num(d.signed, 0)],
+      ['Still to sign',    num(d.outstanding, 0)]
+    ]);
+    html += breakdown(['Document', 'Week of', 'Signed'], d.rows, function (r) {
+      return text(r.title) + text(r.weekOf) + text(r.signed ? 'Yes' : 'Not yet');
+    }, 'documents');
+    post(html, ['Your own sign-offs. Whether anyone else has signed is the supervisor\'s report, not this.']);
   }
 
   function renderPayroll(d) {

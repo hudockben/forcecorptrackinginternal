@@ -90,7 +90,7 @@ const legacyEmpty = {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 console.log('\n[ALL_DIVISIONS]');
-const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
+const EXPECTED_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
 assert('contains exactly the canonical divisions',
   ALL_DIVISIONS.length === EXPECTED_DIVISIONS.length &&
   EXPECTED_DIVISIONS.every(d => ALL_DIVISIONS.includes(d)));
@@ -103,6 +103,7 @@ assert('includes payroll',         ALL_DIVISIONS.includes('payroll'));
 assert('includes fuel',            ALL_DIVISIONS.includes('fuel'));
 assert('includes fuel_admin',      ALL_DIVISIONS.includes('fuel_admin'));
 assert('includes quarry_sales',    ALL_DIVISIONS.includes('quarry_sales'));
+assert('includes safety',          ALL_DIVISIONS.includes('safety'));
 
 console.log('\n[normalizeDivision]');
 assert('normalizes case',           normalizeDivision('PAVING') === 'paving');

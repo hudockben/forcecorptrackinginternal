@@ -19,7 +19,12 @@ const jwt = require('jsonwebtoken');
 // against paving is stored in paving's own PO list, so it shows up in that
 // division's Purchase Orders tab and costs its project exactly as one entered
 // there would. Its own key holds only the general (non-job) orders.
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
+// 'safety' is the Safety Center: the weekly tailgate form the safety
+// supervisor posts and the crew signs. It is ONE key rather than the two-sided
+// shape fuel and timesheet use, because the two sides of it are not two
+// queues — they are two LEVELS of the same screen. level1 opens the document
+// and signs it; level3 and admin post documents and read the sign-off report.
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
 
 // The job divisions central purchasing raises orders against. A PO tied to one
 // of these lives in THAT division's purchase-order list — there is no second
