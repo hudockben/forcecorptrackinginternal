@@ -57,15 +57,17 @@
     table.board th, table.board td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); vertical-align:top; }
     table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.26rem 0.4rem; text-align:center; font-weight:700; white-space:nowrap; }
     table.board thead th.weekend { color:var(--muted); } table.board thead th.today { color:var(--blue); }
-    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:200px; max-width:240px; text-align:left !important; padding:0.26rem 0.5rem !important; }
+    /* Wider than it was: the board is a handful of job rows now, not 78
+       sub-code rows, so the job name fits on one line and the row stays short. */
+    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:250px; max-width:300px; text-align:left !important; padding:0.26rem 0.5rem !important; }
     thead .lead-col { z-index:7; }
-    .cell { position:relative; min-width:104px; height:auto; min-height:34px; padding:0.16rem; cursor:pointer; transition:background .1s; }
+    .cell { position:relative; min-width:120px; height:auto; min-height:34px; padding:0.16rem; cursor:pointer; transition:background .1s; }
     body.compact .cell { min-height:26px; }
     .cell:hover { background:var(--surface2); }
     .cell.weekend { background:rgba(255,255,255,0.015); } .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
     .cnt-cell { text-align:center; font-weight:700; color:var(--muted); } .cnt-cell.has { color:var(--text); }
     .site-time { font-size:0.58rem; font-weight:700; color:var(--blue); margin-top:1px; letter-spacing:-0.02em; }
-    .asn { display:block; font-size:0.64rem; line-height:1.25; padding:0.1rem 0.3rem; border-radius:4px; margin-bottom:0.12rem; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .asn { display:inline-block; vertical-align:top; max-width:100%; font-size:0.64rem; line-height:1.3; padding:0.05rem 0.3rem; border-radius:4px; margin:0 0.14rem 0.14rem 0; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
     .grp-row td { background:var(--surface2); cursor:pointer; } .grp-lead { font-weight:700; } .caret { display:inline-block; width:12px; color:var(--muted); }
     .div-badge { font-size:0.58rem; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; padding:0.1rem 0.4rem; border-radius:5px; border:1px solid; }
@@ -147,6 +149,18 @@
     .fill-h { position:absolute; right:2px; bottom:2px; width:10px; height:10px; border:1px solid var(--blue); background:var(--bg); border-radius:2px; cursor:crosshair; opacity:0; transition:opacity .1s; }
     .cell:hover .fill-h { opacity:1; }
     .done-row td { background:rgba(255,255,255,0.015); }
+    /* A job row is a staffing row now, not just a header: only its lead cell
+       toggles the cost codes, the day cells take men. */
+    .job-row td.cell { background:none; cursor:pointer; }
+    .job-row td.cell.weekend { background:rgba(255,255,255,0.015); }
+    .job-row td.cell:hover { background:var(--surface2); }
+    .job-row .grp-lead { cursor:pointer; }
+    .job-row .grp-lead:hover { background:#20202e; }
+    .code-row td { background:rgba(255,255,255,0.012); }
+    .code-lead { padding-left:1.35rem !important; }
+    /* Crew board: one job per line, full cell width, name ellipsised. */
+    table.board.crew .asn { display:block; margin-right:0; }
+    .code-tag { font-size:0.55rem; font-weight:700; letter-spacing:0.03em; color:var(--blue); border:1px solid rgba(96,165,250,0.45); border-radius:4px; padding:0 0.25rem; white-space:nowrap; }
     .lnk { color:var(--blue); cursor:pointer; text-decoration:underline; }
     /* Assign modal: the people picker is the point of the dialog, so it gets the room. */
     .pick-row.kb { border-color:var(--blue); background:rgba(96,165,250,0.14); }
@@ -198,8 +212,7 @@ const state = {
   divFilter:'all', jobSearch:'', needCrewOnly:false, jobOpen:{},
   crewSearch:'', tradeFilter:'all', showAll:false, grpCol:{},
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
-  alsoCodes:[], alsoOpen:false, siteTimes:{},
-  subFilter:{}, subGrpCol:{}, equipPickFor:null,
+  siteTimes:{}, codeCol:{}, equipPickFor:null,
   // View preferences (persisted per user, below). hideComplete drops finished
   // sub-codes off the board — on a 69-code job they are most of the noise and
   // none of the work. compact trades the KPI strip and padding for grid rows.
@@ -391,12 +404,22 @@ function mergeAssignments(baseStr, ours, theirs) {
 // created with different ids (e.g. an id-keyed merge of two sessions that each
 // added the same person, which the merge can't dedupe). Keeps the first, drops
 // the rest. Mutates `map`; returns true if anything was removed.
+// The board used to staff sub-codes, so saved plans carry a subCode on every
+// entry and can hold the same man three times on one job in one day — once per
+// sub-code he was put on. Drop the field and let dedupeAssignmentMap collapse
+// what is now the same assignment. Nobody loses a day on a job; what is lost is
+// a level of detail the supervisor hands out at the morning huddle anyway.
+function stripSubCodes(map) {
+  let changed = false;
+  for (const d in map) for (const a of (map[d] || [])) if ('subCode' in a) { delete a.subCode; changed = true; }
+  return changed;
+}
 function dedupeAssignmentMap(map) {
-  let removed = false;
+  let removed = stripSubCodes(map);
   for (const d in map) {
     const seen = new Set(); const out = [];
     for (const a of (map[d] || [])) {
-      const k = (a.resource||'')+'¦'+(a.kind||'')+'¦'+(a.op||'')+'¦'+(a.division||'')+'¦'+(a.jobId||'')+'¦'+(a.costCode||'')+'¦'+(a.subCode||'');
+      const k = (a.resource||'')+'¦'+(a.kind||'')+'¦'+(a.op||'')+'¦'+(a.division||'')+'¦'+(a.jobId||'')+'¦'+(a.costCode||'');
       if (seen.has(k)) { removed = true; continue; }
       seen.add(k); out.push(a);
     }
@@ -485,24 +508,59 @@ document.addEventListener('click', e => {
 function dayList(date) { return state.assignments[date] || (state.assignments[date] = []); }
 function assignmentsFor(date, resource) { return (state.assignments[date] || []).filter(a => a.resource === resource); }
 function jobAssignmentsOnDate(date, division, jobId) { return (state.assignments[date] || []).filter(a => a.division === division && a.jobId === jobId); }
-function cellAssignments(date, division, jobId, costCode, subCode) {
-  return (state.assignments[date] || []).filter(a => a.division === division && a.jobId === jobId && (a.costCode||'') === (costCode||'') && (a.subCode||'') === (subCode||''));
+// Exactly the people carrying this cost code on this job ('' = on the job with
+// no code named). The sub-code a man is on is the supervisor's call at the
+// morning huddle, not the scheduler's — the board stops one level above it.
+function cellAssignments(date, division, jobId, costCode) {
+  return (state.assignments[date] || []).filter(a => a.division === division && a.jobId === jobId && (a.costCode||'') === (costCode||''));
 }
-function addAssignment(date, resource, kind, job, sc) {
-  if (isBlockedOff(resource, kind, date)) return 0; // approved off — refuse
-  dayList(date).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: sc?sc.costCode:'', subCode: sc?sc.subCode:'', half:false }); saveAssignments(); return 1;
+// Everyone on the job that day, each person once however many codes they carry.
+// This is what the job row shows, and it is the question the board exists to
+// answer: who is on this job today.
+function jobCrewOn(date, division, jobId) {
+  const seen = new Set(), out = [];
+  (state.assignments[date] || []).forEach(a => {
+    if (a.division !== division || a.jobId !== jobId) return;
+    const k = a.kind + '\u00a6' + a.resource + '\u00a6' + (a.op || '');
+    if (seen.has(k)) return;
+    seen.add(k); out.push(a);
+  });
+  return out;
 }
-// Add a resource across several dates (bulk); returns how many were added.
-// Dates the employee is APPROVED off for the WHOLE day are skipped — no path
-// can schedule over a whole approved day off. A part day is not skipped: he is
+// Put one resource on a job for one date, under a cost code or under none.
+//
+// THE RULE the whole board now rests on: a man is on a job once. Naming a cost
+// code for a man already on that job untagged RENAMES what he is on — it does
+// not book him twice — and putting a man "on the job" who is already on it
+// under a code is a no-op, not a second entry. Without that, the job row would
+// have to decide which of a man's three rows was the real one.
+//
+// Dates the employee is APPROVED off for the WHOLE day are refused — no path
+// can schedule over a whole approved day off. A part day is not refused: he is
 // on the job for the rest of it, which is what the hours on the entry are for.
-// Callers compute their own blocked-date messaging.
-function addAssignmentSpan(resource, kind, job, sc, dates) {
-  let added = 0; const cc = sc?sc.costCode:'', sk = sc?sc.subCode:'';
-  dates.forEach(d => { if (isBlockedOff(resource, kind, d)) return;
-    if (cellAssignments(d, job.division, job.id, cc, sk).some(a => a.resource === resource)) return;
-    dayList(d).push({ id: uid(), resource, kind, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, subCode: sk, half:false }); added++; });
-  if (added) saveAssignments(); return added;
+// Returns 'added' | 'retagged' | 'exists' | 'blocked'; callers do their own
+// messaging.
+function placeOnJob(date, job, costCode, proto) {
+  const cc = costCode || '';
+  if (isBlockedOff(proto.resource, proto.kind, date)) return 'blocked';
+  const mine = (state.assignments[date] || []).filter(a =>
+    a.resource === proto.resource && a.kind === proto.kind && (a.op||'') === (proto.op||'') &&
+    a.division === job.division && a.jobId === job.id);
+  if (mine.some(a => (a.costCode||'') === cc)) return 'exists';
+  if (cc) { const untagged = mine.find(a => !(a.costCode||'')); if (untagged) { untagged.costCode = cc; return 'retagged'; } }
+  else if (mine.length) return 'exists';
+  const o = { id: uid(), resource: proto.resource, kind: proto.kind, division: job.division, jobId: job.id,
+              jobName: job.name, costCode: cc, half: !!proto.half };
+  if (proto.op) o.op = proto.op;
+  dayList(date).push(o);
+  return 'added';
+}
+// Bulk across dates; returns how many dates actually changed.
+function addAssignmentSpan(resource, kind, job, costCode, dates) {
+  let n = 0;
+  dates.forEach(d => { const r = placeOnJob(d, job, costCode, { resource, kind }); if (r === 'added' || r === 'retagged') n++; });
+  if (n) saveAssignments();
+  return n;
 }
 function removeAssignment(date, id) { if ((state.assignments[date]||[]).some(a => a.id === id)) pushUndo(); state.assignments[date] = (state.assignments[date] || []).filter(a => a.id !== id); if (!state.assignments[date].length) delete state.assignments[date]; saveAssignments(); }
 // Removing a person also drops any equipment paired to them in the same cell so
@@ -514,16 +572,16 @@ function removePersonAssignment(date, id) {
   pushUndo();
   state.assignments[date] = list.filter(a => a.id !== id &&
     !(a.kind === 'equip' && a.op === person.resource && a.division === person.division && a.jobId === person.jobId &&
-      (a.costCode||'') === (person.costCode||'') && (a.subCode||'') === (person.subCode||'')));
+      (a.costCode||'') === (person.costCode||'')));
   if (!state.assignments[date].length) delete state.assignments[date];
   saveAssignments();
 }
 // Pair a machine to a person on the cell the person is already on. Returns 0 if
 // that machine is already attached to that operator here.
-function addEquipForOp(date, machine, operator, job, sc) {
-  const cc = sc?sc.costCode:'', sk = sc?sc.subCode:'';
-  if (cellAssignments(date, job.division, job.id, cc, sk).some(a => a.kind === 'equip' && a.resource === machine && (a.op||'') === operator)) return 0;
-  dayList(date).push({ id: uid(), resource: machine, kind: 'equip', op: operator, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, subCode: sk, half:false });
+function addEquipForOp(date, machine, operator, job, costCode) {
+  const cc = costCode || '';
+  if (cellAssignments(date, job.division, job.id, cc).some(a => a.kind === 'equip' && a.resource === machine && (a.op||'') === operator)) return 0;
+  dayList(date).push({ id: uid(), resource: machine, kind: 'equip', op: operator, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, half:false });
   saveAssignments(); return 1;
 }
 function toggleHalf(date, id) { const a = (state.assignments[date]||[]).find(x => x.id === id); if (a) { pushUndo(); a.half = !a.half; saveAssignments(); } }
@@ -557,44 +615,82 @@ function spanDates(anchor) {
   const out = []; for (let i=0;i<n;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(dstr(d)); } return out;
 }
 
-// ── Deadline projection: with the crew planned forward, when does it finish? ──
-function projectSubCode(job, sc) {
-  const prod = sc.prod;
-  if (sc.isComplete) return { kind:'complete' };
-  if (!prod || prod <= 0) return { kind:'no-data' };
-  const unitsLeft = sc.unitsLeft != null ? sc.unitsLeft : Math.max((sc.bidQty||0)-(sc.runningQty||0), 0);
-  if (unitsLeft <= 0) return { kind:'complete' };
-  const tStr = todayStr(); const cc = sc.costCode||'', sk = sc.subCode||'';
-  const perDate = [];
-  Object.keys(state.assignments).forEach(d => { if (d < tStr) return;
-    const items = (state.assignments[d]||[]).filter(a => a.kind==='emp' && a.division===job.division && a.jobId===job.id && (a.costCode||'')===cc && (a.subCode||'')===sk);
-    if (items.length) perDate.push([d, items.reduce((s,a)=>s+(a.half?0.5:1),0)]);
-  });
-  perDate.sort((a,b)=>a[0].localeCompare(b[0]));
-  const deadline = sc.targetDate || job.deadline || null;
-  if (!perDate.length) return { kind:'unstaffed', deadline };
-  let cum = 0, finish = null;
-  for (const [d, ld] of perDate) { cum += ld * prod; if (cum >= unitsLeft) { finish = d; break; } }
-  if (!finish) { const lastCrew = perDate[perDate.length-1][1] || 1; const moreDays = Math.ceil((unitsLeft - cum) / (lastCrew*prod)); return { kind:'short', scheduledThrough: perDate[perDate.length-1][0], moreDays, deadline }; }
-  let onTime = null, daysLate = 0;
-  if (deadline) { onTime = finish <= deadline; if (!onTime) daysLate = daysBetween(deadline, finish); }
-  return { kind:'ok', finish, deadline, onTime, daysLate };
+// ── Cost-code rollups ─────────────────────────────────────────────
+// The division dashboards track every sub-code. The scheduler works one level
+// up: a job, and at most a cost code within it. These fold a job's sub-codes
+// into the cost codes the scheduler actually books against, so the board can
+// still say what is behind and what is short of men without making anyone
+// staff 69 rows to say "Dave is on Juniata".
+function worstStatus(list) {
+  let worst = null;
+  list.forEach(x => { const r = STATUS_RANK[x.status] ?? 9; if (worst === null || r < (STATUS_RANK[worst] ?? 9)) worst = x.status; });
+  return worst || 'no-data';
 }
-function projChip(job, sc) {
-  const p = projectSubCode(job, sc);
-  if (p.kind === 'ok') return p.onTime===false ? '<span class="warn">▸ '+shortDate(p.finish)+' +'+p.daysLate+'d</span>' : '<span class="ok">▸ '+shortDate(p.finish)+(p.onTime?' ✓':'')+'</span>';
-  if (p.kind === 'short') return '<span class="warn">▸ '+p.moreDays+'d short</span>';
-  if (p.kind === 'unstaffed') return (sc.status==='behind'||sc.status==='at-risk') ? '<span class="warn">▸ unstaffed</span>' : '';
-  return '';
+// Bid-dollar weighted, the same way the division dashboards roll a job up: a
+// $67k line at 50% leaves far more on the table than a $1k line at 50%.
+function weightedPct(subs) {
+  const wv = subs.reduce((t, c) => t + (c.bidValue || 0), 0);
+  if (wv > 0) return subs.reduce((t, c) => t + (c.bidValue || 0) * ((c.pctComplete || 0) / 100), 0) / wv * 100;
+  if (subs.length) return subs.reduce((t, c) => t + (c.pctComplete || 0), 0) / subs.length;
+  return null;
 }
-function projLine(job, sc) {
-  if (!sc) return '';
-  const p = projectSubCode(job, sc); const dl = sc.targetDate || job.deadline;
-  if (p.kind === 'no-data') return '<div class="proj muted">No productivity history yet — can’t project a finish date.</div>';
-  if (p.kind === 'complete') return '<div class="proj ok">✓ This sub-code is complete.</div>';
-  if (p.kind === 'unstaffed') return '<div class="proj warn">Nobody scheduled going forward'+(dl?' · deadline '+dl:'')+'. Add crew below.</div>';
-  if (p.kind === 'short') return '<div class="proj warn">Scheduled through '+shortDate(p.scheduledThrough)+' — about '+p.moreDays+' more crew-day(s) needed'+(dl?', deadline '+dl:'')+'.</div>';
-  return '<div class="proj '+(p.onTime===false?'warn':'ok')+'">With this plan: finishes <strong>'+shortDate(p.finish)+'</strong>'+(p.onTime===false?' ⚠ '+p.daysLate+' day(s) late':p.onTime?' ✓ on time':'')+(dl?' (deadline '+dl+')':'')+'.</div>';
+function rollCode(costCode, subs) {
+  const live = subs.filter(sc => !isDone(sc));
+  const crew = new Set(); subs.forEach(sc => (sc.crew || []).forEach(n => crew.add(n)));
+  return {
+    costCode, subs,
+    total: subs.length,
+    done: subs.length - live.length,
+    isComplete: live.length === 0,
+    status: live.length === 0 ? 'complete' : worstStatus(live),
+    behind: subs.filter(sc => sc.status === 'behind').length,
+    needed: live.reduce((n, sc) => n + (sc.addlLaborersNeeded || 0), 0),
+    pct: weightedPct(subs),
+    crew: [...crew],
+  };
+}
+// Cached on the job for the life of one board payload — render() runs this for
+// every visible job on every keystroke, and a 69-sub-code job is not free.
+function jobCodes(job) {
+  if (job._codes) return job._codes;
+  const by = new Map(), order = [];
+  (job.subCodes || []).forEach(sc => { const cc = sc.costCode || ''; if (!by.has(cc)) { by.set(cc, []); order.push(cc); } by.get(cc).push(sc); });
+  job._codes = order.map(cc => rollCode(cc, by.get(cc)));
+  return job._codes;
+}
+function codeOf(job, costCode) { return jobCodes(job).find(c => c.costCode === (costCode || '')) || null; }
+function jobRollup(job) {
+  const subs = job.subCodes || [];
+  const live = subs.filter(sc => !isDone(sc));
+  return {
+    pct: weightedPct(subs),
+    behind: subs.filter(sc => sc.status === 'behind').length,
+    needed: live.reduce((n, sc) => n + (sc.addlLaborersNeeded || 0), 0),
+    codes: jobCodes(job).length,
+    codesDone: jobCodes(job).filter(c => c.isComplete).length,
+  };
+}
+function staffedDaysThisWeek(job, costCode) {
+  return weekDateStrs().filter(d => (costCode == null
+    ? jobCrewOn(d, job.division, job.id).length
+    : cellAssignments(d, job.division, job.id, costCode).length)).length;
+}
+function pctText(v) { return v == null ? '' : Math.round(v) + '% complete'; }
+// The one line at the top of the assign dialog: where this job stands and
+// whether anyone is on it. No finish-date projection any more — that maths ran
+// off crew booked against a single sub-code, and the board no longer books that
+// way. The division dashboards still carry it.
+function summaryLine(job, code) {
+  const r = code || jobRollup(job);
+  const bits = [];
+  if (r.pct != null) bits.push(pctText(r.pct));
+  if (r.behind) bits.push('<span class="warn">' + r.behind + ' sub-code' + (r.behind > 1 ? 's' : '') + ' behind</span>');
+  if (r.needed) bits.push('<span class="warn">needs +' + r.needed + '</span>');
+  const dl = job.deadline; if (dl) bits.push('deadline ' + esc(dl));
+  const days = staffedDaysThisWeek(job, code ? code.costCode : null);
+  const warn = !days;
+  bits.push(warn ? '<span class="warn">nobody on it this week</span>' : days + ' day' + (days > 1 ? 's' : '') + ' staffed this week');
+  return '<div class="proj ' + (warn || r.behind ? 'warn' : 'ok') + '">' + bits.join(' \u00b7 ') + '</div>';
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
@@ -604,6 +700,9 @@ function visibleJobs() {
   if (state.divFilter !== 'all') jobs = jobs.filter(j => j.division === state.divFilter);
   const q = state.jobSearch.trim().toLowerCase();
   if (q) jobs = jobs.filter(j => (j.name + ' ' + (j.jobNumber||'')).toLowerCase().includes(q));
+  // The board is a list of jobs now, so this filter is a job filter: show me
+  // the jobs with work that is behind or at risk.
+  if (state.needCrewOnly) jobs = jobs.filter(jobNeedsCrew);
   _hiddenJobCount = 0;
   if (state.hideComplete) { const before = jobs.length; jobs = jobs.filter(j => !jobAllDone(j)); _hiddenJobCount = before - jobs.length; }
   return jobs.slice().sort((a,b) => {
@@ -613,23 +712,23 @@ function visibleJobs() {
   });
 }
 function jobById(division, id) { return (state.board.jobs || []).find(j => j.division === division && j.id === id); }
-function subCodeOf(job, costCode, subCode) { return (job.subCodes || []).find(s => s.costCode === costCode && (s.subCode||'') === (subCode||'')); }
 function subNeedsCrew(sc) { return sc.status === 'behind' || sc.status === 'at-risk'; }
+function codeNeedsCrew(code) { return code.status === 'behind' || code.status === 'at-risk'; }
+function jobNeedsCrew(job) { return (job.subCodes || []).some(subNeedsCrew); }
 // Finished work. A sub-code the division marked complete, or that reached 100%,
-// is done — nobody is getting scheduled on it again.
+// is done — and a cost code is done when every sub-code under it is.
 function isDone(sc) { return !!sc && (sc.status === 'complete' || !!sc.isComplete); }
-// … but a complete code with people still booked on it this week STAYS on the
-// board. Hiding it would hide their names too, and a crew you cannot see is a
+// … but a complete cost code with people still booked on it this week STAYS on
+// the board. Hiding it would hide their names, and a crew you cannot see is a
 // crew you double-book.
-function scStaffed(job, sc) { return weekDateStrs().some(d => cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode).length); }
-function subHidden(job, sc) { return state.hideComplete && !state.showDoneFor[job.division+'::'+job.id] && isDone(sc) && !scStaffed(job, sc); }
+function codeStaffed(job, code) { return weekDateStrs().some(d => cellAssignments(d, job.division, job.id, code.costCode).length); }
+function codeHidden(job, code) { return state.hideComplete && !state.showDoneFor[job.division+'::'+job.id] && code.isComplete && !codeStaffed(job, code); }
 // A job with nothing left to do and nobody on it this week drops off entirely.
 function jobAllDone(job) {
   const subs = job.subCodes || []; if (!subs.length) return false;
   if (!subs.every(isDone)) return false;
   return !weekDateStrs().some(d => jobAssignmentsOnDate(d, job.division, job.id).length);
 }
-function doneCount(job) { return (job.subCodes||[]).filter(isDone).length; }
 
 // ── Render dispatch ─────────────────────────────────────────────────────────
 function render() {
@@ -745,140 +844,109 @@ function firstWord(s) { return esc(String(s||'').split(' ')[0]); }
 // cost code or another person's row to move that assignment; hold Alt/Ctrl to
 // copy instead. Right-click takes it off.
 const DRAG_TIP = ' — drag to move (Alt = copy) · right-click to remove';
-function chip(a, conf, date) {
+function chip(a, conf, date, showJob) {
   const col = divColor(a.division);
   const dd = ' draggable="true" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'"';
+  const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'');
+  const half = a.half ? ' ½' : '';
+  const open = '<span class="'+cls+'" style="border-left-color:'+col+'"'+dd+' title=';
+  // On the By Crew board the row already names the man, so repeating his name
+  // in every cell said nothing. What a scheduler needs there is the JOB he is
+  // on — and the cost code, if anyone named one.
+  if (showJob) {
+    const label = (a.kind==='equip'?'🚜 ':'')+esc(a.jobName)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'');
+    const title = a.jobName+(a.costCode?' · '+a.costCode:'')+(a.kind==='equip'&&a.op?' — operated by '+a.op:'')+DRAG_TIP;
+    return open+'"'+esc(title)+'">'+label+half+'</span>';
+  }
   if (a.kind === 'equip') {
     const label = '🚜 '+firstWord(a.resource)+(a.op?' ·'+firstWord(a.op):'');
-    const title = a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP;
-    return '<span class="asn equip'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'"'+dd+' title="'+esc(title)+'">'+label+(a.half?' ½':'')+'</span>';
+    return open+'"'+esc(a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP)+'">'+label+half+'</span>';
   }
-  return '<span class="asn'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'"'+dd+' title="'+esc(a.resource+' — '+a.jobName+DRAG_TIP)+'">'+firstWord(a.resource)+(a.half?' ½':'')+'</span>';
+  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+DRAG_TIP)+'">'+firstWord(a.resource)+half+'</span>';
 }
 
-// ── By Job board ────────────────────────────────────────────────────────────
+// ── By Job board ────────────────────────────────────────────────
+// A row per JOB, and the men on it. Expand a job only if you want to name a
+// cost code; you never have to. The old board made you pick one of 69
+// sub-codes before you could put a man anywhere.
 function renderJobBoard() {
   const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
   const jobs = visibleJobs();
   const searching = state.jobSearch.trim() !== '';
-  let html = renderCapacity() + hintHtml('Click a day cell to staff it · drag a name to another day, task or person · drag the blue corner across the week to repeat a crew · right-click a name to remove it.');
+  let html = renderCapacity() + hintHtml('Click a day on a job to put men on it \u00b7 drag a name to another day, job or person \u00b7 drag the blue corner across the week to repeat a crew \u00b7 right-click a name to take it off. Open a job to book against a cost code.');
   if (!jobs.length) {
     const ex0 = (state.board && state.board.excludedJobs) || 0;
     const why = [];
     if (_hiddenJobCount) why.push(_hiddenJobCount+' completed');
     if (ex0) why.push(ex0+' hidden from the Scheduler on '+(ex0>1?'their':'its')+' division dashboard');
-    return html + '<div class="empty">'+(searching ? 'No projects match “'+esc(state.jobSearch.trim())+'”.'
-      : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+'.'+(why.length?'<br><span class="muted">'+why.join(' · ')+'</span>':''))+'</div>';
+    return html + '<div class="empty">'+(searching ? 'No projects match \u201c'+esc(state.jobSearch.trim())+'\u201d.'
+      : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+(state.needCrewOnly?' need crew':'')+'.'+(why.length?'<br><span class="muted">'+why.join(' \u00b7 ')+'</span>':''))+'</div>';
   }
   let body = '';
-  jobs.forEach(job => {
-    const col = divColor(job.division);
-    const collapsed = !state.jobOpen[job.division+'::'+job.id] && !searching;
-    const subs = job.subCodes || [];
-    const behind = subs.filter(c => c.status==='behind').length;
-    const done = doneCount(job);
-    const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; const st = getSiteTime(d, job.division, job.id); return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+(st?'<div class="site-time">⏰'+esc(fmtTimeShort(st))+'</div>':'')+'</td>'; }).join('');
-    body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
-      '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
-      '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+
-      (subs.length?' · <span class="'+(done===subs.length?'ok':'muted')+'">'+done+'/'+subs.length+' complete</span>':'')+'</div></td>'+headCells+'</tr>';
-
-    if (collapsed) return;
-    body += jobSubSection(job, ds, tStr, searching);
-  });
-  // Why a job a PM expects is not on the board: it finished, or somebody set it
-  // to "Hide from Scheduler" on its division dashboard. Saying so here saves the
-  // phone call.
+  jobs.forEach(job => { body += jobRowHtml(job, ds, tStr, searching); });
   const notes = [];
-  if (_hiddenJobCount) notes.push('✓ '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden · <span class="lnk" onclick="toggleHideComplete()">show completed work</span>');
+  if (_hiddenJobCount) notes.push('\u2713 '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden \u00b7 <span class="lnk" onclick="toggleHideComplete()">show completed work</span>');
   const ex = (state.board && state.board.excludedJobs) || 0;
-  if (ex) notes.push('<span title="Set on the project info card in Paving / Turf / Kiewit">🚫 '+ex+' project'+(ex>1?'s':'')+' hidden from the Scheduler on '+(ex>1?'their':'its')+' division dashboard</span>');
-  const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;·&nbsp; ')+'</div>' : '';
-  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job / Sub-code</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>' + note;
+  if (ex) notes.push('<span title="Set on the project info card in Paving / Turf / Kiewit">\ud83d\udeab '+ex+' project'+(ex>1?'s':'')+' hidden from the Scheduler on '+(ex>1?'their':'its')+' division dashboard</span>');
+  const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;\u00b7&nbsp; ')+'</div>' : '';
+  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>' + note;
 }
-// One sub-code row (lead cell + day cells). Shared by the flat and grouped layouts.
-function subLeadHtml(job, sc) {
-  const need = sc.addlLaborersNeeded ? '<span class="need-badge">+'+sc.addlLaborersNeeded+' crew</span>' : '';
-  return '<td class="lead-col" style="padding-left:1.4rem"><strong>'+esc(sc.costCode)+'</strong>'+(sc.subCode?' · '+esc(sc.subCode):'')+
-    '<div class="sub-meta"><span class="pill '+sc.status+'">'+sc.status.replace('-',' ')+'</span>'+(sc.requiredPace!=null?'<span>req '+fmtNum(sc.requiredPace)+'/d</span>':'')+need+' '+projChip(job,sc)+'</div></td>';
+// Drop-target identity for a cell. '' as the cost code means "on the job", which
+// is the ordinary case and what the job row books.
+function jobCellData(job, costCode, d) {
+  return ' data-date="'+esc(d)+'" data-div="'+esc(job.division)+'" data-job="'+esc(job.id)+'" data-cc="'+esc(costCode||'')+'"';
 }
-// Drop-target identity for a job cell. Written as data-* (not inline JS) so one
-// delegated listener on <main> serves every cell on the board.
-function jobCellData(job, sc, d) {
-  return ' data-date="'+esc(d)+'" data-div="'+esc(job.division)+'" data-job="'+esc(job.id)+'" data-cc="'+esc(sc.costCode||'')+'" data-sc="'+esc(sc.subCode||'')+'"';
+function dayCell(job, costCode, d, tStr, items, extra) {
+  const confSet = conflictResourcesOn(d);
+  const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr;
+  const fill = items.length ? '<span class="fill-h" draggable="true" data-fill="1"'+jobCellData(job, costCode, d)+' title="Drag across the week to put this same crew on the other days"></span>' : '';
+  return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" data-drop="job"'+jobCellData(job, costCode, d)+
+    ' onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(costCode||'')+'\',\''+d+'\')">'+
+    (extra||'')+items.map(a => chip(a, confSet.has(a.resource), d)).join('')+fill+'</td>';
 }
-function subRowHtml(job, sc, ds, tStr) {
+function jobRowHtml(job, ds, tStr, searching) {
+  const col = divColor(job.division);
+  const key = job.division+'::'+job.id;
+  const open = !!state.jobOpen[key] || searching;
+  const r = jobRollup(job);
+  const meta = [job.deadline ? 'deadline '+esc(job.deadline) : 'no deadline'];
+  if (r.behind) meta.push('<span class="warn">'+r.behind+' behind</span>');
+  if (r.needed) meta.push('<span class="warn">needs +'+r.needed+'</span>');
+  if (r.pct != null) meta.push('<span class="'+(r.pct>=100?'ok':'muted')+'">'+pctText(r.pct)+'</span>');
   const cells = ds.map(d => {
-    const items = cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode);
-    const confSet = conflictResourcesOn(d);
-    const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr;
-    // Excel's fill handle: grab the corner, drag across the week, same crew on every day you cross.
-    const fill = items.length ? '<span class="fill-h" draggable="true" data-fill="1"'+jobCellData(job, sc, d)+' title="Drag across the week to put this same crew on the other days"></span>' : '';
-    return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" data-drop="job"'+jobCellData(job, sc, d)+' onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(sc.costCode)+'\',\''+escAttr(sc.subCode)+'\',\''+d+'\')">'+items.map(a => chip(a, confSet.has(a.resource), d)).join('')+fill+'</td>';
+    const st = getSiteTime(d, job.division, job.id);
+    return dayCell(job, '', d, tStr, jobCrewOn(d, job.division, job.id),
+      st ? '<div class="site-time">\u23f0'+esc(fmtTimeShort(st))+'</div>' : '');
   }).join('');
-  return '<tr>'+subLeadHtml(job, sc)+cells+'</tr>';
-}
-const BIG_JOB_SUBS = 10; // above this, an expanded job gets a filter box + collapsible cost-code groups
-// Renders the rows under an expanded job. Small jobs stay a flat list (no change);
-// big ones get a sub-code filter and cost-code groups you can collapse so you
-// aren't scrolling a wall of sub-codes to find the one you're staffing.
-function jobSubSection(job, ds, tStr, searching) {
+  const codes = jobCodes(job);
+  let rows = '<tr class="grp-row job-row"><td class="lead-col grp-lead" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')" title="'+(open?'Collapse':'Expand to book against a cost code')+'"><span class="caret">'+(open?'\u25be':'\u25b8')+'</span> '+
+    '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
+    '<div class="sub-meta">'+meta.join(' \u00b7 ')+'</div></td>'+cells+'</tr>';
+  if (!open) return rows;
+
+  let shown = codes;
+  if (state.needCrewOnly) shown = shown.filter(c => codeNeedsCrew(c) || codeStaffed(job, c));
+  const hiddenDone = shown.filter(c => codeHidden(job, c)).length;
+  if (hiddenDone) shown = shown.filter(c => !codeHidden(job, c));
   const blank = ds.map(()=>'<td></td>').join('');
-  const jobKey = job.division+'::'+job.id;
-  let subs = (job.subCodes||[]); if (state.needCrewOnly) subs = subs.filter(subNeedsCrew);
-  // Finished work comes off the board. On a 69-code job it is most of the rows
-  // and none of the decisions. The count stays, with one click back to it.
-  const hiddenDone = subs.filter(sc => subHidden(job, sc)).length;
-  if (hiddenDone) subs = subs.filter(sc => !subHidden(job, sc));
-  const doneRow = hiddenDone
-    ? '<tr class="done-row"><td class="lead-col muted" style="padding-left:1.4rem;font-size:0.64rem">✓ '+hiddenDone+' complete sub-code'+(hiddenDone>1?'s':'')+' hidden · <span class="lnk" onclick="event.stopPropagation();showDone(\''+job.division+'\',\''+escAttr(job.id)+'\')">show</span></td>'+blank+'</tr>'
-    : (state.hideComplete && state.showDoneFor[jobKey] && (job.subCodes||[]).some(isDone)
-      ? '<tr class="done-row"><td class="lead-col muted" style="padding-left:1.4rem;font-size:0.64rem">Showing complete sub-codes · <span class="lnk" onclick="event.stopPropagation();hideDoneAgain(\''+job.division+'\',\''+escAttr(job.id)+'\')">hide them</span></td>'+blank+'</tr>'
-      : '');
-  if (!subs.length) return doneRow + '<tr><td class="lead-col muted" style="padding-left:1.5rem">'+(state.needCrewOnly?'No sub-codes need crew':(hiddenDone?'Every sub-code is complete':'No sub-codes'))+'</td>'+blank+'</tr>';
-  if (subs.length <= BIG_JOB_SUBS) return doneRow + subs.map(sc => subRowHtml(job, sc, ds, tStr)).join('');
-
-  const fq = (state.subFilter[jobKey]||'').trim().toLowerCase();
-  let shown = subs;
-  if (fq) shown = subs.filter(sc => ((sc.costCode||'')+' '+(sc.subCode||'')+' '+(sc.description||'')).toLowerCase().includes(fq));
-
-  const fid = 'subFilter::'+jobKey;
-  const ctrl = '<tr class="subctl-row"><td class="lead-col" style="padding-left:1.4rem">'+
-      '<input type="text" id="'+escAttr(fid)+'" class="subfilter-input" placeholder="🔍 Filter '+subs.length+' sub-codes…" value="'+escAttr(state.subFilter[jobKey]||'')+'" oninput="onSubFilter(\''+job.division+'\',\''+escAttr(job.id)+'\')" autocomplete="off">'+
-      (fq?'<span class="muted" style="font-size:0.6rem;margin-left:0.4rem">'+shown.length+' match'+(shown.length===1?'':'es')+'</span>':'')+
-    '</td><td colspan="7"></td></tr>';
-  if (!shown.length) return ctrl + doneRow + '<tr><td class="lead-col muted" style="padding-left:1.5rem">No sub-codes match “'+esc((state.subFilter[jobKey]||'').trim())+'”.</td>'+blank+'</tr>';
-
-  // Group by cost code, preserving the order cost codes first appear.
-  const groups = {}, order = [];
-  shown.forEach(sc => { const cc = sc.costCode||''; if (!(cc in groups)) { groups[cc] = []; order.push(cc); } groups[cc].push(sc); });
-  let rows = ctrl + doneRow;
-  order.forEach(cc => {
-    const list = groups[cc];
-    const collapsed = !fq && !!state.subGrpCol[jobKey+'¦'+cc]; // a filter forces every matching group open
-    const headCells = ds.map(d => {
-      const set = new Set();
-      list.forEach(sc => cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode).forEach(a => set.add(a.resource)));
-      return '<td class="cnt-cell'+(set.size?' has':'')+'">'+(set.size||'·')+'</td>';
-    }).join('');
-    const behind = list.filter(c => c.status==='behind').length;
-    rows += '<tr class="subgrp-row" onclick="toggleSubGrp(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(cc)+'\')"><td class="lead-col" style="padding-left:1.4rem">'+
-        '<span class="caret">'+(collapsed?'▸':'▾')+'</span> <strong>'+(cc?esc(cc):'<span class="muted">No cost code</span>')+'</strong> <span class="muted">('+list.length+')</span>'+
-        (behind?' <span class="warn" style="font-size:0.6rem">'+behind+' behind</span>':'')+'</td>'+headCells+'</tr>';
-    if (!collapsed) rows += list.map(sc => subRowHtml(job, sc, ds, tStr)).join('');
-  });
+  if (hiddenDone) rows += '<tr class="done-row"><td class="lead-col muted" style="padding-left:1.3rem;font-size:0.64rem">\u2713 '+hiddenDone+' complete cost code'+(hiddenDone>1?'s':'')+' hidden \u00b7 <span class="lnk" onclick="event.stopPropagation();showDone(\''+job.division+'\',\''+escAttr(job.id)+'\')">show</span></td>'+blank+'</tr>';
+  else if (state.hideComplete && state.showDoneFor[key] && codes.some(c => c.isComplete))
+    rows += '<tr class="done-row"><td class="lead-col muted" style="padding-left:1.3rem;font-size:0.64rem">Showing complete cost codes \u00b7 <span class="lnk" onclick="event.stopPropagation();hideDoneAgain(\''+job.division+'\',\''+escAttr(job.id)+'\')">hide them</span></td>'+blank+'</tr>';
+  if (!shown.length) return rows + '<tr><td class="lead-col muted" style="padding-left:1.4rem;font-size:0.7rem">'+(codes.length?'No cost codes to show':'No cost codes on this job \u2014 book the crew on the job row above')+'</td>'+blank+'</tr>';
+  rows += shown.map(c => codeRowHtml(job, c, ds, tStr)).join('');
   return rows;
 }
-function toggleJob(division, id) { const k = division+'::'+id; state.jobOpen[k] = !state.jobOpen[k]; document.getElementById('main').innerHTML = renderJobBoard(); }
-function toggleSubGrp(division, jobId, costCode) { const k = division+'::'+jobId+'¦'+costCode; state.subGrpCol[k] = !state.subGrpCol[k]; document.getElementById('main').innerHTML = renderJobBoard(); }
-function onSubFilter(division, jobId) {
-  const k = division+'::'+jobId, id = 'subFilter::'+k;
-  const el = document.getElementById(id); let caret = null;
-  if (el) { state.subFilter[k] = el.value; caret = el.selectionStart; }
-  document.getElementById('main').innerHTML = renderJobBoard();
-  const el2 = document.getElementById(id);
-  if (el2) { el2.focus(); if (caret != null) { try { el2.setSelectionRange(caret, caret); } catch (e) {} } }
+function codeRowHtml(job, code, ds, tStr) {
+  const bits = ['<span class="pill '+code.status+'">'+code.status.replace('-',' ')+'</span>'];
+  if (code.pct != null) bits.push('<span>'+Math.round(code.pct)+'%</span>');
+  if (code.needed) bits.push('<span class="need-badge">+'+code.needed+' crew</span>');
+  const lead = '<td class="lead-col code-lead"><strong>'+(code.costCode?esc(code.costCode):'<span class="muted">No cost code</span>')+'</strong> '+
+    '<span class="muted" title="sub-codes under this cost code">'+code.done+'/'+code.total+'</span>'+
+    '<div class="sub-meta">'+bits.join('')+'</div></td>';
+  const cells = ds.map(d => dayCell(job, code.costCode, d, tStr, cellAssignments(d, job.division, job.id, code.costCode), '')).join('');
+  return '<tr class="code-row">'+lead+cells+'</tr>';
 }
+function toggleJob(division, id) { const k = division+'::'+id; state.jobOpen[k] = !state.jobOpen[k]; document.getElementById('main').innerHTML = renderJobBoard(); }
 
 // ── By Crew board ───────────────────────────────────────────────────────────
 function tradeList() { const set = new Set(); (state.board.employees||[]).forEach(e => set.add(e.jobClass || 'Other')); return [...set].sort(); }
@@ -902,7 +970,7 @@ function renderCrewBoard() {
       // much of the day is gone and leaves the chips beside it alone.
       const offClash = !!(off && items.length && !off.partial);
       const offMark = off ? '<span title="'+esc(off.type)+' · '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':' (approved)')+'" style="font-size:0.6rem;color:'+(offClash?'var(--red)':'var(--amber)')+'">⛱'+(off.partial?esc(offHrsText(off))+'h':'')+(offClash?' off!':'')+'</span>' : '';
-      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+'" data-drop="res" data-date="'+esc(d)+'" data-res="'+esc(resource)+'" data-rkind="'+esc(kind)+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf, d)).join('')+'</td>'; }).join('');
+      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+'" data-drop="res" data-date="'+esc(d)+'" data-res="'+esc(resource)+'" data-rkind="'+esc(kind)+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf, d, true)).join('')+'</td>'; }).join('');
     return '<tr>'+left+cells+'</tr>';
   };
   if (!groupNames.length) body += '<tr><td class="lead-col muted">No crew match.</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
@@ -919,7 +987,7 @@ function renderCrewBoard() {
     body += '<tr class="grp-row" onclick="toggleGrp(\'equip\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> 🚜 Equipment <span class="muted">('+equips.length+')</span></td>'+headCells+'</tr>';
     if (!collapsed) body += equips.map(n => rowFor(n, 'equip', null)).join('');
   }
-  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
+  return html + '<div class="board-wrap"><table class="board crew"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
 
@@ -937,7 +1005,7 @@ function _clearDragging() { document.querySelectorAll('.asn.dragging').forEach(x
 // A cell's drop identity, read straight off the data-* the renderers wrote.
 function _tgtOf(el) {
   if (!el) return null; const d = el.dataset;
-  if (d.drop === 'job') return { kind:'job', date:d.date, division:d.div, jobId:d.job, costCode:d.cc||'', subCode:d.sc||'' };
+  if (d.drop === 'job') return { kind:'job', date:d.date, division:d.div, jobId:d.job, costCode:d.cc||'' };
   if (d.drop === 'res') return { kind:'res', date:d.date, resource:d.res, rkind:d.rkind||'emp' };
   return null;
 }
@@ -946,16 +1014,16 @@ function _tgtOf(el) {
 function _pairedEquip(list, a) {
   if (!a || a.kind === 'equip') return [];
   return list.filter(x => x.kind === 'equip' && x.op === a.resource && x.division === a.division && x.jobId === a.jobId &&
-    (x.costCode||'') === (a.costCode||'') && (x.subCode||'') === (a.subCode||''));
+    (x.costCode||'') === (a.costCode||''));
 }
 function _hasAt(date, t, resource, op) {
-  return cellAssignments(date, t.division, t.jobId, t.costCode, t.subCode).some(x => x.resource === resource && (x.op||'') === (op||''));
+  return cellAssignments(date, t.division, t.jobId, t.costCode).some(x => x.resource === resource && (x.op||'') === (op||''));
 }
 function onDragStart(e) {
   const t = _el(e.target); if (!t) return;
   if (t.classList.contains('fill-h')) {
     const d = t.dataset;
-    _drag = { type:'fill', src:{ date:d.date, division:d.div, jobId:d.job, costCode:d.cc||'', subCode:d.sc||'' } };
+    _drag = { type:'fill', src:{ date:d.date, division:d.div, jobId:d.job, costCode:d.cc||'' } };
     e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', 'fill');
     return;
   }
@@ -996,18 +1064,13 @@ function dropOnJobCell(srcDate, id, tgt, copy) {
   const list = state.assignments[srcDate] || [];
   const a = list.find(x => x.id === id); if (!a) return;
   if (srcDate === tgt.date && a.division === tgt.division && a.jobId === tgt.jobId &&
-      (a.costCode||'') === (tgt.costCode||'') && (a.subCode||'') === (tgt.subCode||'')) return; // dropped where it started
+      (a.costCode||'') === (tgt.costCode||'')) return; // dropped where it started
   const job = jobById(tgt.division, tgt.jobId) || { division:tgt.division, id:tgt.jobId, name:a.jobName };
   const movers = [a].concat(_pairedEquip(list, a));
   if (movers.every(m => isBlockedOff(m.resource, m.kind, tgt.date))) { toast(a.resource + ' is approved off ' + shortDate(tgt.date) + ' — not moved'); return; }
   pushUndo();
   let added = 0;
-  movers.forEach(m => {
-    if (isBlockedOff(m.resource, m.kind, tgt.date)) return;
-    if (_hasAt(tgt.date, tgt, m.resource, m.op)) return;
-    dayList(tgt.date).push({ ...m, id:uid(), division:job.division, jobId:job.id, jobName:job.name, costCode:tgt.costCode||'', subCode:tgt.subCode||'' });
-    added++;
-  });
+  movers.forEach(m => { const r = placeOnJob(tgt.date, job, tgt.costCode, m); if (r === 'added' || r === 'retagged') added++; });
   if (copy && !added) { _undo.pop(); updateUndoButtons(); toast(a.resource + ' is already there'); return; }
   if (!copy) {
     const ids = new Set(movers.map(m => m.id));
@@ -1025,7 +1088,7 @@ function dropOnResCell(srcDate, id, tgt, copy) {
   if (a.resource === tgt.resource && srcDate === tgt.date) return;
   if ((a.kind || 'emp') !== (tgt.rkind || 'emp')) { toast('A machine goes on an equipment row, a person on a crew row'); return; }
   if (isBlockedOff(tgt.resource, tgt.rkind, tgt.date)) { toast(tgt.resource + ' is approved off ' + shortDate(tgt.date)); return; }
-  const where = { division:a.division, jobId:a.jobId, costCode:a.costCode||'', subCode:a.subCode||'' };
+  const where = { division:a.division, jobId:a.jobId, costCode:a.costCode||'' };
   if (_hasAt(tgt.date, where, tgt.resource, a.kind === 'equip' ? a.op : '')) { toast(tgt.resource + ' is already on that'); return; }
   const movers = [a].concat(_pairedEquip(list, a));
   pushUndo();
@@ -1050,10 +1113,11 @@ function dropOnResCell(srcDate, id, tgt, copy) {
 // repeats on every day you crossed. Drag it to a different row and that crew
 // lands there instead — the whole gang onto another task in one go.
 function fillFromCell(src, tgt) {
-  const crew = cellAssignments(src.date, src.division, src.jobId, src.costCode, src.subCode);
+  // The job row repeats everyone on the job; a cost-code row repeats that code.
+  const crew = src.costCode ? cellAssignments(src.date, src.division, src.jobId, src.costCode)
+                            : jobCrewOn(src.date, src.division, src.jobId);
   if (!crew.length) { toast('Nothing to repeat'); return; }
-  const sameRow = tgt.division === src.division && tgt.jobId === src.jobId &&
-    (tgt.costCode||'') === (src.costCode||'') && (tgt.subCode||'') === (src.subCode||'');
+  const sameRow = tgt.division === src.division && tgt.jobId === src.jobId && (tgt.costCode||'') === (src.costCode||'');
   let dates = [tgt.date];
   if (sameRow) {
     const ws = weekDateStrs(); const i = ws.indexOf(src.date), j = ws.indexOf(tgt.date);
@@ -1064,10 +1128,11 @@ function fillFromCell(src, tgt) {
   pushUndo();
   let added = 0, blocked = 0;
   dates.forEach(d => crew.forEach(a => {
-    if (isBlockedOff(a.resource, a.kind, d)) { blocked++; return; }
-    if (_hasAt(d, tgt, a.resource, a.op)) return;
-    dayList(d).push({ ...a, id:uid(), division:job.division, jobId:job.id, jobName:job.name, costCode:tgt.costCode||'', subCode:tgt.subCode||'' });
-    added++;
+    // Carry each man's own cost code when repeating a whole job row; use the
+    // target's code when dragging onto a cost-code row.
+    const cc = tgt.costCode || (src.costCode ? tgt.costCode : (a.costCode || ''));
+    const r = placeOnJob(d, job, cc, a);
+    if (r === 'blocked') blocked++; else if (r === 'added' || r === 'retagged') added++;
   }));
   if (!added) { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Those crew are approved off — nothing added' : 'Already scheduled on those days'); return; }
   saveAssignments(); render();
@@ -1093,89 +1158,19 @@ function wireBoardDnD() {
 }
 
 // ── Assign modal ────────────────────────────────────────────────────────────
-function openAssignJob(division, jobId, costCode, subCode, date) { state.assignCtx = { mode:'job', division, jobId, costCode, subCode, date }; state.alsoCodes = []; state.alsoOpen = false; state.equipPickFor = null; state.moreOpts = false; renderModal(); }
+// Opened on a job (cost code '') or on one of its cost codes. The cost code is
+// a tag on the booking, never a prerequisite for it: you can staff the job and
+// never name one.
+function openAssignJob(division, jobId, costCode, date) {
+  state.assignCtx = { mode:'job', division, jobId, costCode: costCode || '', date };
+  state.equipPickFor = null; state.moreOpts = false; renderModal();
+}
 function openAssignResource(resource, kind, date) { state.assignCtx = { mode:'resource', resource, kind, date }; state.equipPickFor = null; renderModal(); }
 function closeAssign() { state.assignCtx = null; state.equipPickFor = null; const o = document.getElementById('assignOverlay'); if (o) o.remove(); }
 function afterMutate() { renderModal(); document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard(); }
 function setSpan(s) { state.applySpan = s; renderModal(); }
-// ── "Also assign to other cost codes" multi-select dropdown ─────────────────
-// Indices are into job.subCodes; we update the dropdown's DOM in place (rather
-// than re-render the whole modal) so the filter text and scroll position survive.
-function alsoOtherCodes() {
-  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return [];
-  const job = jobById(ctx.division, ctx.jobId) || { subCodes:[] };
-  const curKey = (ctx.costCode||'') + '¦' + (ctx.subCode||'');
-  return (job.subCodes || []).map((s,i) => ({ s, i })).filter(o => ((o.s.costCode||'')+'¦'+(o.s.subCode||'')) !== curKey && !(state.hideComplete && isDone(o.s)));
-}
-function alsoLabel(s) { return esc(s.costCode) + (s.subCode ? ' · ' + esc(s.subCode) : ''); }
-function alsoSummaryText() { const n = (state.alsoCodes||[]).length; return n ? n + ' cost code' + (n>1?'s':'') + ' selected' : 'Select cost codes…'; }
-function alsoHelpHtml() { const n = (state.alsoCodes||[]).length; return n ? 'This crew is on <strong>'+(n+1)+' cost codes</strong>'+(state.applySpan!=='day'?' across '+spanLabel():'')+'. Ticking a code puts the people assigned here on it; unticking takes them back off.' : 'Pick extra cost codes to put this crew on several at once.'; }
-function alsoChipsHtml() {
-  const sel = state.alsoCodes || []; if (!sel.length) return '';
-  const byIdx = {}; alsoOtherCodes().forEach(o => byIdx[o.i] = o.s);
-  return sel.map(i => byIdx[i] ? '<span class="also-chip">'+alsoLabel(byIdx[i])+'<button title="Remove" onclick="toggleAlsoCode('+i+')">✕</button></span>' : '').join('');
-}
-function alsoListHtml(filter) {
-  const q = (filter||'').trim().toLowerCase();
-  const sel = new Set(state.alsoCodes || []);
-  let opts = alsoOtherCodes();
-  if (q) opts = opts.filter(o => (o.s.costCode+' '+(o.s.subCode||'')).toLowerCase().includes(q));
-  if (!opts.length) return '<div class="muted" style="font-size:0.74rem;padding:0.4rem 0.5rem">No cost codes match.</div>';
-  return opts.map(o => '<div class="also-opt'+(sel.has(o.i)?' on':'')+'" data-i="'+o.i+'" onclick="toggleAlsoCode('+o.i+')"><span class="also-check">'+(sel.has(o.i)?'✓':'')+'</span><span>'+alsoLabel(o.s)+'</span></div>').join('');
-}
-function toggleAlsoOpen() { state.alsoOpen = !state.alsoOpen; renderModal(); if (state.alsoOpen) { const s = document.getElementById('alsoSearch'); if (s) s.focus(); } }
-function updateAlsoList() { const box = document.getElementById('alsoList'); if (!box) return; box.innerHTML = alsoListHtml((document.getElementById('alsoSearch')||{}).value || ''); }
-function toggleAlsoCode(i) {
-  const k = state.alsoCodes || (state.alsoCodes = []); const at = k.indexOf(i); const nowOn = at < 0;
-  if (at >= 0) k.splice(at, 1); else k.push(i);
-  const row = document.querySelector('.also-opt[data-i="'+i+'"]');
-  if (row) { row.classList.toggle('on', nowOn); const chk = row.querySelector('.also-check'); if (chk) chk.textContent = nowOn ? '✓' : ''; }
-  const sum = document.getElementById('alsoSummaryText'); if (sum) sum.textContent = alsoSummaryText();
-  const chips = document.getElementById('alsoChips'); if (chips) chips.innerHTML = alsoChipsHtml();
-  const help = document.getElementById('alsoHelp'); if (help) help.innerHTML = alsoHelpHtml();
-  mirrorAlsoCode(i, nowOn); // apply to people already assigned here, not just to people added next
-}
-// Put the current cell's crew on (or take it off) a just-toggled "also" cost
-// code. Without this, ticking a second sub-code did nothing to people already
-// assigned — so it never saved and never reached the dispatch. Equipment keeps
-// its operator pairing; people added afterward still fan out via pickAdd.
-function mirrorAlsoCode(idx, on) {
-  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
-  const job = jobById(ctx.division, ctx.jobId); if (!job) return;
-  const sc = (job.subCodes || [])[idx]; if (!sc) return;
-  const crew = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
-  if (!crew.length) return; // nothing here yet — forward-add handles people you add next
-  const dates = spanDates(ctx.date);
-  const cc = sc.costCode || '', sk = sc.subCode || '';
-  pushUndo();
-  let changed = 0;
-  if (on) {
-    crew.forEach(a => dates.forEach(d => {
-      if (cellAssignments(d, job.division, job.id, cc, sk).some(x => x.resource === a.resource && (x.op||'') === (a.op||''))) return;
-      const o = { id: uid(), resource:a.resource, kind:a.kind, division:job.division, jobId:job.id, jobName:job.name, costCode:cc, subCode:sk, half:!!a.half };
-      if (a.op) o.op = a.op;
-      dayList(d).push(o); changed++;
-    }));
-  } else {
-    const keyset = new Set(crew.map(a => a.resource + '¦' + (a.op||'')));
-    dates.forEach(d => {
-      const list = state.assignments[d]; if (!list) return;
-      const kept = list.filter(a => !(a.division===job.division && a.jobId===job.id && (a.costCode||'')===cc && (a.subCode||'')===sk && keyset.has(a.resource + '¦' + (a.op||''))));
-      changed += list.length - kept.length;
-      if (kept.length) state.assignments[d] = kept; else delete state.assignments[d];
-    });
-  }
-  if (changed) { saveAssignments(); document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard();
-    toast((on?'Added ':'Removed ')+crew.length+(crew.length===1?' resource ':' resources ')+(on?'to ':'from ')+(sk||cc)); }
-  else { _undo.pop(); updateUndoButtons(); }
-}
-// The current cell's sub-code plus any "also" codes the user tapped.
-function targetSubCodes(job, ctx) {
-  const cur = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
-  const list = cur ? [cur] : [];
-  (state.alsoCodes || []).forEach(i => { const sc = (job.subCodes || [])[i]; if (sc) list.push(sc); });
-  return list.length ? list : [null];
-}
+function setCode(cc) { if (state.assignCtx) { state.assignCtx.costCode = cc || ''; state.equipPickFor = null; renderModal(); } }
+function spanLabel() { return state.applySpan==='day'?'this day':state.applySpan==='week5'?'Mon–Fri':'the full week'; }
 function renderModal() { const ctx = state.assignCtx; if (!ctx) return;
   let o = document.getElementById('assignOverlay');
   if (!o) { o = document.createElement('div'); o.id='assignOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeAssign(); }; }
@@ -1183,14 +1178,19 @@ function renderModal() { const ctx = state.assignCtx; if (!ctx) return;
   if (ctx.mode !== 'job') return;
   updatePickList();
   // Straight into the search box: open a cell, type three letters, hit Enter.
-  // Skipped while a sub-picker is open, or focus would be yanked mid-task.
-  if (state.equipPickFor == null && !state.alsoOpen) { const el = document.getElementById('pickSearch'); if (el) el.focus(); }
+  if (state.equipPickFor == null) { const el = document.getElementById('pickSearch'); if (el) el.focus(); }
 }
 function toggleMoreOptions() { state.moreOpts = !state.moreOpts; renderModal(); }
-// Wipe a cell in one go — faster than removing six people one at a time.
+// What the dialog is looking at: the whole job, or one cost code on it.
+function ctxAssignments(ctx) {
+  return ctx.costCode
+    ? cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode)
+    : jobCrewOn(ctx.date, ctx.division, ctx.jobId);
+}
+// Wipe it in one go — faster than removing six people one at a time.
 function clearCell() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
-  const cur = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
+  const cur = ctxAssignments(ctx);
   if (!cur.length) return;
   pushUndo();
   const ids = new Set(cur.map(a => a.id));
@@ -1199,7 +1199,7 @@ function clearCell() {
   saveAssignments(); afterMutate(); toast('Cleared ' + cur.length + ' · Ctrl+Z to undo');
 }
 // Arrow keys walk the candidate list, Enter puts the highlighted one on the job,
-// Escape closes. No mouse needed to staff a cell.
+// Escape closes. No mouse needed to staff a job.
 function pickKey(e) {
   if (e.key === 'Escape') { e.preventDefault(); closeAssign(); return; }
   const rows = Array.from(document.querySelectorAll('#pickList .pick-row'));
@@ -1218,25 +1218,27 @@ function pickKey(e) {
     if (r && !r.classList.contains('blocked')) r.click();
   }
 }
-function spanLabel() { return state.applySpan==='day'?'this day':state.applySpan==='week5'?'Mon–Fri':'the full week'; }
-// "Assigned here" list: people first, each with the machines paired to them
-// nested underneath and a 🚜+ button to attach more. Equipment with no operator
-// (or whose operator was removed) is listed on its own below.
+// "On this job" list: people first, each with the machines paired to them nested
+// underneath and a 🚜+ button to attach more. Equipment with no operator (or
+// whose operator was removed) is listed on its own below.
 function assignedHereHtml(ctx) {
-  const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
-  if (!current.length) return '<div class="muted" style="font-size:0.78rem">Nobody assigned here (this day) yet.</div>';
+  const current = ctxAssignments(ctx);
+  if (!current.length) return '<div class="muted" style="font-size:0.78rem">Nobody on ' + (ctx.costCode ? 'this cost code' : 'this job') + ' on this day yet.</div>';
   const people = current.filter(a => a.kind !== 'equip');
   const equips = current.filter(a => a.kind === 'equip');
   const present = new Set(people.map(p => p.resource));
-  const halfBtn = a => '<button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button>';
-  const delBtn  = a => '<button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button>';
+  const halfBtn = a => '<button class="btn mini" title="Half day" onclick="toggleHalf(\'' + ctx.date + '\',\'' + a.id + '\');afterMutate()">' + (a.half ? '½ day' : 'full') + '</button>';
+  const delBtn  = a => '<button class="btn mini" onclick="removeAssignment(\'' + ctx.date + '\',\'' + a.id + '\');afterMutate()">✕</button>';
+  // On the whole-job view a man's cost code is worth seeing — it is the only
+  // place the tag shows once you are not looking at that code's row.
+  const codeTag = a => (!ctx.costCode && a.costCode) ? ' <span class="code-tag">' + esc(a.costCode) + '</span>' : '';
   let html = '';
   people.forEach(p => {
-    html += '<div class="cur-asn"><span class="grow">'+esc(p.resource)+'</span>'+halfBtn(p)+
-      '<button class="btn mini" title="Pair equipment to '+escAttr(p.resource)+'" onclick="toggleEquipPick(\''+escAttr(p.resource)+'\')">🚜+</button>'+
-      '<button class="btn mini" onclick="removePersonAssignment(\''+ctx.date+'\',\''+p.id+'\');afterMutate()">✕</button></div>';
+    html += '<div class="cur-asn"><span class="grow">' + esc(p.resource) + codeTag(p) + '</span>' + halfBtn(p) +
+      '<button class="btn mini" title="Pair equipment to ' + escAttr(p.resource) + '" onclick="toggleEquipPick(\'' + escAttr(p.resource) + '\')">🚜+</button>' +
+      '<button class="btn mini" onclick="removePersonAssignment(\'' + ctx.date + '\',\'' + p.id + '\');afterMutate()">✕</button></div>';
     equips.filter(e => e.op === p.resource).forEach(e => {
-      html += '<div class="cur-asn equip-sub"><span class="grow">↳ 🚜 '+esc(e.resource)+'</span>'+halfBtn(e)+delBtn(e)+'</div>';
+      html += '<div class="cur-asn equip-sub"><span class="grow">↳ 🚜 ' + esc(e.resource) + '</span>' + halfBtn(e) + delBtn(e) + '</div>';
     });
     if (state.equipPickFor === p.resource) html += equipPickerHtml(p.resource);
   });
@@ -1244,60 +1246,58 @@ function assignedHereHtml(ctx) {
   if (loose.length) {
     html += '<div class="muted" style="font-size:0.62rem;margin:0.4rem 0 0.2rem;text-transform:uppercase;letter-spacing:0.04em">Equipment · no operator</div>';
     loose.forEach(e => {
-      html += '<div class="cur-asn"><span class="grow">🚜 '+esc(e.resource)+(e.op?' <span class="muted">· was '+esc(e.op)+'</span>':'')+'</span>'+halfBtn(e)+delBtn(e)+'</div>';
+      html += '<div class="cur-asn"><span class="grow">🚜 ' + esc(e.resource) + codeTag(e) + (e.op ? ' <span class="muted">· was ' + esc(e.op) + '</span>' : '') + '</span>' + halfBtn(e) + delBtn(e) + '</div>';
     });
   }
   return html;
 }
 function equipPickerHtml(operator) {
-  return '<div class="equip-pick"><input type="text" id="equipPickSearch" placeholder="🚜 Equipment for '+esc(operator)+'…" oninput="filterEquipPick()" autocomplete="off"><div class="also-list" id="equipPickList">'+equipPickOptions(operator, '')+'</div></div>';
+  return '<div class="equip-pick"><input type="text" id="equipPickSearch" placeholder="🚜 Equipment for ' + esc(operator) + '…" oninput="filterEquipPick()" autocomplete="off"><div class="also-list" id="equipPickList">' + equipPickOptions(operator, '') + '</div></div>';
 }
 function equipPickOptions(operator, q) {
   const ctx = state.assignCtx; if (!ctx) return '';
-  const taken = new Set(cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode).filter(a => a.kind==='equip' && a.op===operator).map(a => a.resource));
+  const taken = new Set(ctxAssignments(ctx).filter(a => a.kind === 'equip' && a.op === operator).map(a => a.resource));
   let opts = (state.board.equipment || []).filter(n => !taken.has(n));
-  q = (q||'').trim().toLowerCase(); if (q) opts = opts.filter(n => n.toLowerCase().includes(q));
-  if (!opts.length) return '<div class="muted" style="font-size:0.72rem;padding:0.3rem 0.4rem">'+(taken.size?'No more equipment':'No equipment')+'.</div>';
-  return opts.map(n => '<div class="also-opt" onclick="attachEquip(\''+escAttr(operator)+'\',\''+escAttr(n)+'\')"><span class="also-check">＋</span><span>🚜 '+esc(n)+'</span></div>').join('');
+  q = (q || '').trim().toLowerCase(); if (q) opts = opts.filter(n => n.toLowerCase().includes(q));
+  if (!opts.length) return '<div class="muted" style="font-size:0.72rem;padding:0.3rem 0.4rem">' + (taken.size ? 'No more equipment' : 'No equipment') + '.</div>';
+  return opts.map(n => '<div class="also-opt" onclick="attachEquip(\'' + escAttr(operator) + '\',\'' + escAttr(n) + '\')"><span class="also-check">＋</span><span>🚜 ' + esc(n) + '</span></div>').join('');
 }
 function filterEquipPick() { const box = document.getElementById('equipPickList'); if (!box || state.equipPickFor == null) return; box.innerHTML = equipPickOptions(state.equipPickFor, (document.getElementById('equipPickSearch')||{}).value || ''); }
 function toggleEquipPick(operator) { state.equipPickFor = (state.equipPickFor === operator) ? null : operator; renderModal(); if (state.equipPickFor) { const s = document.getElementById('equipPickSearch'); if (s) s.focus(); } }
 function attachEquip(operator, machine) {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
-  const sc = subCodeOf(job, ctx.costCode, ctx.subCode) || (ctx.costCode ? { costCode:ctx.costCode, subCode:ctx.subCode } : null);
+  // A machine follows its operator's cost code, so it shows where he does.
+  const opAsn = ctxAssignments(ctx).find(a => a.kind !== 'equip' && a.resource === operator);
+  const cc = opAsn ? (opAsn.costCode || '') : ctx.costCode;
   pushUndo();
-  const n = addEquipForOp(ctx.date, machine, operator, job, sc);
-  if (!n) { _undo.pop(); updateUndoButtons(); toast(machine+' already on '+operator); }
-  else toast('🚜 '+machine+' → '+operator);
-  afterMutate(); // picker stays open (equipPickFor unchanged) so you can add another
+  const n = addEquipForOp(ctx.date, machine, operator, job, cc);
+  if (!n) { _undo.pop(); updateUndoButtons(); toast(machine + ' already on ' + operator); }
+  else toast('🚜 ' + machine + ' → ' + operator);
+  afterMutate(); // picker stays open so you can add another
+}
+function codeSelectHtml(job, ctx) {
+  const codes = jobCodes(job).filter(c => c.costCode && (!codeHidden(job, c) || c.costCode === ctx.costCode));
+  if (!codes.length) return '';
+  return '<label class="fld">Cost code <span style="text-transform:none;letter-spacing:0;font-weight:400">— optional</span></label>' +
+    '<select class="full" id="ccSel" onchange="setCode(this.value)">' +
+      '<option value=""' + (!ctx.costCode ? ' selected' : '') + '>— Whole job —</option>' +
+      codes.map(c => '<option value="' + esc(c.costCode) + '"' + (ctx.costCode === c.costCode ? ' selected' : '') + '>' +
+        esc(c.costCode) + ' · ' + c.status.replace('-',' ') + (c.needed ? ' · needs +' + c.needed : '') + '</option>').join('') +
+    '</select>' +
+    '<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">Leave it on <strong>Whole job</strong> unless you want the code on the dispatch sheet — the supervisor gives the crew the specifics each morning.</div>';
 }
 function modalJobHtml(ctx) {
-  const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
-  const sc = subCodeOf(job, ctx.costCode, ctx.subCode);
+  const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job', subCodes:[] };
+  const code = ctx.costCode ? codeOf(job, ctx.costCode) : null;
   const dfmt = new Date(ctx.date+'T12:00:00').toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
   const col = divColor(ctx.division);
-  const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
+  const current = ctxAssignments(ctx);
   const people = current.filter(a => a.kind !== 'equip').length;
 
-  // Everything below the fold is a setting, not the job: the report time, the
-  // multi-code fan-out, the crew templates. Folded away by default so the
-  // people picker is the first thing on screen on a laptop.
   const crewOpts = state.crews.length
     ? '<div style="display:flex;gap:0.4rem;margin-bottom:0.3rem"><select class="full" id="crewSel"><option value="">Add a saved crew…</option>'+state.crews.map(c => '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+c.members.length+')</option>').join('')+'</select><button class="btn" onclick="applyCrewFromPicker()">Add</button></div>'
-    : '<div class="muted" style="font-size:0.72rem;margin-bottom:0.3rem">No saved crews yet — assign people, then “Save these as a crew”.</div>';
-  const alsoHtml = alsoOtherCodes().length ? (
-    '<label class="fld">Also assign to other cost codes</label>' +
-    '<div class="also-dd">' +
-      '<button type="button" class="also-trigger" onclick="toggleAlsoOpen()"><span id="alsoSummaryText">'+esc(alsoSummaryText())+'</span><span class="also-caret">'+(state.alsoOpen?'▴':'▾')+'</span></button>' +
-      '<div class="also-panel" id="alsoPanel"'+(state.alsoOpen?'':' style="display:none"')+'>' +
-        '<input type="text" id="alsoSearch" placeholder="Filter cost codes…" oninput="updateAlsoList()" autocomplete="off">' +
-        '<div class="also-list" id="alsoList">'+alsoListHtml('')+'</div>' +
-      '</div>' +
-    '</div>' +
-    '<div id="alsoChips" class="also-chips">'+alsoChipsHtml()+'</div>' +
-    '<div class="muted" id="alsoHelp" style="font-size:0.68rem;margin-top:0.25rem">'+alsoHelpHtml()+'</div>'
-  ) : '';
+    : '<div class="muted" style="font-size:0.72rem;margin-bottom:0.3rem">No saved crews yet — put a few men on, then “Save these as a crew”.</div>';
   const siteVal = getSiteTime(ctx.date, ctx.division, ctx.jobId);
   const siteHtml = '<label class="fld">Be on site</label>'+
     '<div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">'+
@@ -1305,25 +1305,24 @@ function modalJobHtml(ctx) {
       (siteVal ? '<span style="font-size:0.76rem;font-weight:700;color:var(--blue)">⏰ '+esc(fmtTime(siteVal))+'</span><button class="btn mini" onclick="clearSiteTime()">clear</button>' : '')+
       '<span class="muted" style="font-size:0.68rem;flex-basis:100%">Report time for the whole crew on <strong>'+esc(job.name)+'</strong> · '+spanLabel()+'.</span>'+
     '</div>';
-  const moreOpen = !!state.moreOpts || !!siteVal || (state.alsoCodes||[]).length > 0;
-  const moreHtml = '<button class="more-tog" onclick="toggleMoreOptions()">'+(moreOpen?'▾':'▸')+' Report time, multi-code &amp; saved crews'+
-      (siteVal?' <span style="color:var(--blue)">· ⏰ '+esc(fmtTime(siteVal))+'</span>':'')+
-      ((state.alsoCodes||[]).length?' <span style="color:var(--blue)">· +'+state.alsoCodes.length+' code'+(state.alsoCodes.length>1?'s':'')+'</span>':'')+'</button>'+
-    (moreOpen ? '<div>'+siteHtml+alsoHtml+'<label class="fld">Saved crews</label>'+crewOpts+
+  const moreOpen = !!state.moreOpts || !!siteVal;
+  const moreHtml = '<button class="more-tog" onclick="toggleMoreOptions()">'+(moreOpen?'▾':'▸')+' Report time &amp; saved crews'+
+      (siteVal?' <span style="color:var(--blue)">· ⏰ '+esc(fmtTime(siteVal))+'</span>':'')+'</button>'+
+    (moreOpen ? '<div>'+siteHtml+'<label class="fld">Saved crews</label>'+crewOpts+
       (current.length?'<button class="btn mini" style="margin-top:0.3rem" onclick="saveCurrentAsCrew()">💾 Save these as a crew</button>':'')+'</div>' : '');
 
-  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(ctx.costCode||'job-level')+(ctx.subCode?' · '+esc(ctx.subCode):'')+' · '+esc(dfmt)+(sc?' · '+sc.status:'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
-    projLine(job, sc) +
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.costCode?esc(ctx.costCode):'whole job')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+    summaryLine(job, code) +
     '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
-    // The picker leads: type a name, Enter, he is on. Arrow keys walk the list.
+    codeSelectHtml(job, ctx) +
     '<label class="fld">Add crew or equipment <span style="text-transform:none;letter-spacing:0;font-weight:400">— type, ↑↓, Enter</span></label>'+
     '<input type="text" class="full" id="pickSearch" placeholder="Search people / equipment…" oninput="updatePickList()" onkeydown="pickKey(event)" autocomplete="off">'+
     '<div class="pick-list" id="pickList"></div>'+
     (state.applySpan!=='day'?'<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">Each pick lands on '+spanLabel()+'.</div>':'')+
-    '<label class="fld" style="display:flex;align-items:center;gap:0.5rem">On this cell ('+people+' crew'+(current.length-people?' · '+(current.length-people)+' equip':'')+')'+
+    '<label class="fld" style="display:flex;align-items:center;gap:0.5rem">'+(ctx.costCode?'On this cost code':'On this job')+' ('+people+' crew'+(current.length-people?' · '+(current.length-people)+' equip':'')+')'+
       (current.length?'<span style="flex:1"></span><button class="btn mini" style="text-transform:none;letter-spacing:0" onclick="clearCell()">Clear</button>':'')+'</label>'+
     assignedHereHtml(ctx)+
-    (people?'<div class="muted" style="font-size:0.66rem;margin-top:0.3rem">Tip: tap <strong>🚜+</strong> next to a person to pair the machine they’ll run.</div>':'')+
+    (people?'<div class="muted" style="font-size:0.66rem;margin-top:0.3rem">Tip: tap <strong>🚜+</strong> next to a man to pair the machine he’ll run.</div>':'')+
     moreHtml +
     '<div style="margin-top:0.8rem"><button class="btn primary" onclick="closeAssign()">Done</button></div></div></div>';
 }
@@ -1333,20 +1332,25 @@ function updatePickList() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const box = document.getElementById('pickList'); if (!box) return;
   const q = ((document.getElementById('pickSearch')||{}).value || '').trim().toLowerCase();
-  const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
-  const sc = subCodeOf(job, ctx.costCode, ctx.subCode);
+  const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job', subCodes:[] };
+  const code = ctx.costCode ? codeOf(job, ctx.costCode) : null;
   const emps = (state.board.employees||[]).map(e => ({ name:e.name, kind:'emp', jobClass:e.jobClass, sup:e.isSupervisor }));
   const equips = (state.board.equipment||[]).map(n => ({ name:n, kind:'equip', jobClass:'', sup:false }));
   let cands = emps.concat(equips);
   if (q) cands = cands.filter(c => c.name.toLowerCase().includes(q) || (c.jobClass||'').toLowerCase().includes(q));
-  cands.forEach(c => { const items = assignmentsFor(ctx.date, c.name); c.onThis = items.some(a => a.division===ctx.division && a.jobId===ctx.jobId); c.others = [...new Set(items.filter(a => !(a.division===ctx.division && a.jobId===ctx.jobId)).map(a => a.jobName))]; c.off = isOff(c.name, ctx.date); });
-  const histCrew = new Set(sc ? (sc.crew||[]) : []);
-  // Sunk to the bottom only if he is off for the WHOLE day. A man with a half
-  // day is an ordinary candidate — sorting him down beside the unavailable was
-  // the same mistake as blocking him, made quietly.
+  cands.forEach(c => { const items = assignmentsFor(ctx.date, c.name);
+    const here = items.filter(a => a.division===ctx.division && a.jobId===ctx.jobId);
+    c.onThis = here.length > 0;
+    c.hereCode = here.length ? (here[0].costCode || '') : '';
+    c.others = [...new Set(items.filter(a => !(a.division===ctx.division && a.jobId===ctx.jobId)).map(a => a.jobName))];
+    c.off = isOff(c.name, ctx.date); });
+  // Men who have worked this cost code before (or anywhere on this job when no
+  // code is named) float up — the scheduler usually wants them back on it.
+  const histCrew = new Set(code ? code.crew : jobCodes(job).flatMap(x => x.crew));
   cands.sort((a,b) => { const ao = !!(a.off && !a.off.partial), bo = !!(b.off && !b.off.partial); if (ao !== bo) return ao ? 1 : -1;
     if (a.kind !== b.kind) return a.kind === 'equip' ? 1 : -1;
-    const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1; const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
+    const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1;
+    const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
   cands = cands.slice(0, 60);
   if (!cands.length) { box.innerHTML = '<div class="muted" style="font-size:0.78rem;padding:0.5rem">No match.</div>'; return; }
   box.innerHTML = cands.map((c, ci) => { let status, cls = ci === 0 ? ' kb' : '';
@@ -1354,26 +1358,31 @@ function updatePickList() {
     // and makes it unpickable. A part day shows its hours and stays pickable.
     if (c.off && c.off.status === 'approved' && !c.off.partial && c.kind !== 'equip') { status = '<span class="warn">⛱ off (approved)</span>'; cls += ' blocked'; }
     else if (c.off) status = '<span class="warn">⛱ '+esc(offLabel(c.off))+(c.off.status==='submitted'?' (req)':'')+'</span>';
-    else if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls += ' on-this'; }
+    else if (c.onThis) { status = '<span class="ok">✓ on this job'+(c.hereCode?' · '+esc(c.hereCode):'')+'</span>'; cls += ' on-this'; }
     else if (c.others.length) status = '<span class="warn">→ '+esc(c.others.join(', '))+'</span>';
     else status = '<span class="ok">free</span>';
-    const sub = [c.kind==='equip'?'equipment':(c.jobClass||''), histCrew.has(c.name)?'★ worked this code':''].filter(Boolean).join(' · ');
+    const sub = [c.kind==='equip'?'equipment':(c.jobClass||''), histCrew.has(c.name)?'★ worked this':''].filter(Boolean).join(' · ');
     return '<div class="pick-row'+cls+'" onclick="pickAdd(\''+escAttr(c.name)+'\',\''+c.kind+'\')"><span class="pick-name">'+(c.sup?'★ ':'')+esc(c.name)+(c.kind==='equip'?' 🚜':'')+'</span>'+(sub?'<span class="pick-sub">'+esc(sub)+'</span>':'')+'<span class="pick-status">'+status+'</span></div>';
   }).join('');
+}
+// Apply one placement decision across the span and say what happened.
+function placeSpan(resource, kind, job, costCode, dates) {
+  const r = { added:0, retagged:0, exists:0, blocked:0 };
+  dates.forEach(d => { r[placeOnJob(d, job, costCode, { resource, kind })]++; });
+  return r;
 }
 function pickAdd(name, kind) {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
-  const targets = targetSubCodes(job, ctx);
   const dates = spanDates(ctx.date);
-  const blocked = dates.filter(d => isBlockedOff(name, kind, d));
   pushUndo();
-  let added = 0; targets.forEach(sc => { added += addAssignmentSpan(name, kind, job, sc, dates); });
-  if (!added) { _undo.pop(); updateUndoButtons();
-    if (blocked.length) { const o = isOff(name, blocked[0]); toast(name+' is approved off for the whole day ('+((o&&o.type)||'time off')+') — not scheduled'); }
-    else toast(name+' already on those'); }
-  else { const codes = targets.length;
-    if (codes > 1 || dates.length > 1 || blocked.length) toast('Added '+name+(codes>1?' to '+codes+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')+(blocked.length?' · skipped '+blocked.length+' full day'+(blocked.length>1?'s':'')+' off':'')); }
+  const r = placeSpan(name, kind, job, ctx.costCode, dates);
+  if (!r.added && !r.retagged) { _undo.pop(); updateUndoButtons();
+    if (r.blocked) { const o = isOff(name, dates.find(d => isBlockedOff(name, kind, d))); toast(name+' is approved off for the whole day ('+((o&&o.type)||'time off')+') — not scheduled'); }
+    else toast(name+' is already on this job'); return; }
+  saveAssignments();
+  const what = r.retagged && !r.added ? 'Put '+name+' on '+ctx.costCode : 'Added '+name;
+  toast(what+(dates.length>1?' · '+(r.added+r.retagged)+' days':'')+(r.blocked?' · skipped '+r.blocked+' full day'+(r.blocked>1?'s':'')+' off':''));
   afterMutate();
 }
 function applyCrewFromPicker() {
@@ -1381,19 +1390,19 @@ function applyCrewFromPicker() {
   const sel = document.getElementById('crewSel'); if (!sel || !sel.value) return;
   const crew = state.crews.find(c => c.id === sel.value); if (!crew) return;
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job' };
-  const targets = targetSubCodes(job, ctx);
   const dates = spanDates(ctx.date);
-  let blocked = 0; crew.members.forEach(m => { const k = m.kind||'emp'; blocked += dates.filter(d => isBlockedOff(m.name, k, d)).length; });
   pushUndo();
-  let added = 0; crew.members.forEach(m => targets.forEach(sc => { added += addAssignmentSpan(m.name, m.kind||'emp', job, sc, dates); }));
-  if (!added) { _undo.pop(); updateUndoButtons(); }
-  toast(added ? ('Added '+crew.name+(targets.length>1?' to '+targets.length+' cost codes':'')+' ('+added+' assignment'+(added>1?'s':'')+')'+(blocked?' · skipped full days off':'')) : (blocked ? 'Crew are approved off for the whole day — nothing scheduled' : 'Crew already scheduled here'));
+  let changed = 0, blocked = 0;
+  crew.members.forEach(m => { const r = placeSpan(m.name, m.kind||'emp', job, ctx.costCode, dates); changed += r.added + r.retagged; blocked += r.blocked; });
+  if (!changed) { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Crew are approved off for the whole day — nothing scheduled' : 'Crew are already on this job'); return; }
+  saveAssignments();
+  toast('Added '+crew.name+' ('+changed+' assignment'+(changed>1?'s':'')+')'+(blocked?' · skipped full days off':''));
   afterMutate();
 }
 function saveCurrentAsCrew() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
-  const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
-  if (!current.length) { toast('Nobody assigned here to save'); return; }
+  const current = ctxAssignments(ctx);
+  if (!current.length) { toast('Nobody here to save'); return; }
   const name = prompt('Name this crew (e.g. "Paving Crew A"):'); if (!name || !name.trim()) return;
   const members = current.map(a => ({ name:a.resource, kind:a.kind }));
   state.crews.push({ id: uid(), name: name.trim(), members }); saveCrews(); renderModal(); toast('Saved crew “'+name.trim()+'”');
@@ -1404,35 +1413,34 @@ function modalResourceHtml(ctx) {
   const current = assignmentsFor(ctx.date, ctx.resource);
   const conf = conflictResourcesOn(ctx.date).has(ctx.resource);
   const off = isOff(ctx.resource, ctx.date);
-  const curHtml = current.length ? current.map(a => { const col = divColor(a.division); return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(a.division)+'</span><span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="muted">· '+esc(a.costCode)+(a.subCode?' · '+esc(a.subCode):'')+'</span>':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('') : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
+  const curHtml = current.length ? current.map(a => { const col = divColor(a.division); return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(a.division)+'</span><span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="code-tag">'+esc(a.costCode)+'</span>':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('') : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
   const jobs = visibleJobs();
   const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => { const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return ''; return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>'; }).join('');
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+' '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':(off.partial?' (approved — still schedulable for the rest of the day)':' (approved off — cannot schedule)'))+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
-    '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
+    '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
     '<label class="fld">Scheduled (this day)</label>'+curHtml+
-    '<label class="fld">Add to a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select><div id="rScWrap" style="display:none"><label class="fld">Cost codes</label><select class="full" id="rSc" multiple size="5"></select><div class="muted" style="font-size:0.66rem;margin-top:0.25rem">Pick one or more to split across cost codes — or leave all unselected for the whole job.</div></div>'+
+    '<label class="fld">Put on a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select>'+
+    '<div id="rCcWrap" style="display:none"><label class="fld">Cost code <span style="text-transform:none;letter-spacing:0;font-weight:400">— optional</span></label><select class="full" id="rCc"></select></div>'+
     '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" id="rAdd" style="flex:1" disabled onclick="rConfirmAdd()">Add to '+spanLabel()+'</button><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
 }
-function onPickRJob() { const sel = document.getElementById('rJob').value, wrap = document.getElementById('rScWrap'), scSel = document.getElementById('rSc'), add = document.getElementById('rAdd');
+function onPickRJob() { const sel = document.getElementById('rJob').value, wrap = document.getElementById('rCcWrap'), ccSel = document.getElementById('rCc'), add = document.getElementById('rAdd');
   if (!sel) { wrap.style.display='none'; add.disabled = true; return; }
   const [division, id] = sel.split('::'); const job = jobById(division, id);
   wrap.style.display = 'block'; add.disabled = false;
-  const codes = (job.subCodes||[]).map((c,i) => ({ c, i })).filter(o => !(state.hideComplete && isDone(o.c)));
-  scSel.innerHTML = codes.map(o => '<option value="'+o.i+'">'+esc(o.c.costCode)+(o.c.subCode?' · '+esc(o.c.subCode):'')+'  ['+o.c.status+(o.c.addlLaborersNeeded?' · +'+o.c.addlLaborersNeeded:'')+']</option>').join('') || '<option value="" disabled>No cost codes — adds to whole job</option>';
+  const codes = job ? jobCodes(job).filter(c => c.costCode && !codeHidden(job, c)) : [];
+  ccSel.innerHTML = '<option value="">— Whole job —</option>' + codes.map(c => '<option value="'+esc(c.costCode)+'">'+esc(c.costCode)+' · '+c.status.replace('-',' ')+(c.needed?' · needs +'+c.needed:'')+'</option>').join('');
 }
 function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (!sel) return;
-  const [division, id] = sel.split('::'); const job = jobById(division, id);
-  const scSel = document.getElementById('rSc');
-  const idxs = Array.from(scSel.selectedOptions || []).map(o => o.value).filter(v => v !== '');
-  const scs = idxs.length ? idxs.map(v => (job.subCodes||[])[parseInt(v,10)]) : [null];
+  const [division, id] = sel.split('::'); const job = jobById(division, id); if (!job) return;
+  const cc = (document.getElementById('rCc')||{}).value || '';
   const ctx = state.assignCtx; const dates = spanDates(ctx.date);
-  const blocked = dates.filter(d => isBlockedOff(ctx.resource, ctx.kind, d));
   pushUndo();
-  let added = 0; scs.forEach(sc => { added += addAssignmentSpan(ctx.resource, ctx.kind, job, sc, dates); });
-  if (!added) { _undo.pop(); updateUndoButtons();
-    if (blocked.length) { const o = isOff(ctx.resource, blocked[0]); toast(ctx.resource+' is approved off for the whole day ('+((o&&o.type)||'time off')+') — not scheduled'); }
-    else toast(ctx.resource+' already on those'); }
-  else toast('Added'+(scs.length>1?' to '+scs.length+' cost codes':'')+(dates.length>1?' · '+dates.length+' days':'')+(blocked.length?' · skipped '+blocked.length+' full day'+(blocked.length>1?'s':'')+' off':'')); afterMutate();
+  const r = placeSpan(ctx.resource, ctx.kind, job, cc, dates);
+  if (!r.added && !r.retagged) { _undo.pop(); updateUndoButtons();
+    toast(r.blocked ? ctx.resource+' is approved off for the whole day — not scheduled' : ctx.resource+' is already on that job'); return; }
+  saveAssignments();
+  toast('Added to '+job.name+(cc?' · '+cc:'')+(dates.length>1?' · '+(r.added+r.retagged)+' days':'')+(r.blocked?' · skipped '+r.blocked+' full day'+(r.blocked>1?'s':'')+' off':''));
+  afterMutate();
 }
 
 // ── Crews manager ───────────────────────────────────────────────────────────
@@ -1451,7 +1459,7 @@ function copyWeekForward() {
   const wk = weekDateStrs(); let added = 0, blocked = 0;
   wk.forEach(d => { const items = state.assignments[d] || []; const nd = addDays(d, 7);
     items.forEach(a => { if (isBlockedOff(a.resource, a.kind, nd)) { blocked++; return; } // approved off next week — don't carry forward
-      if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||'') && (x.subCode||'')===(a.subCode||''))) return;
+      if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||''))) return;
       dayList(nd).push({ ...a, id: uid() }); added++; }); });
   if (added) { saveAssignments(); toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'+(blocked?' · skipped '+blocked+' full days off':'')); state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
   else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Next week is all approved-off for those crew' : 'Nothing to copy (next week already matches)'); }
@@ -1464,8 +1472,10 @@ function importPlanned() {
   let added = 0, blocked = 0;
   planned.forEach(p => { const kind = p.kind||'emp';
     if (isBlockedOff(p.resource, kind, p.date)) { blocked++; return; } // approved off — never import over it
-    const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'') && (a.subCode||'')===(p.subCode||'')); if (dup) return;
-    dayList(p.date).push({ id: uid(), resource:p.resource, kind, division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', subCode:p.subCode||'', half:!!p.half }); added++; });
+    // The planner schedules sub-codes; the board keeps only the cost code, so
+    // one man planned across three sub-codes of a job imports as one booking.
+    const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'')); if (dup) return;
+    dayList(p.date).push({ id: uid(), resource:p.resource, kind, division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', half:!!p.half }); added++; });
   if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')+(blocked?' · skipped '+blocked+' full days off':'')); render(); }
   else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Matching crew are approved off — nothing imported' : 'Already up to date with division plans'); }
 }
@@ -1488,27 +1498,15 @@ function buildDispatchBody(layout, dates) { return layout === 'person' ? dispatc
 // pace needed to finish on time), % complete + units left, deadline vs the
 // projected finish, and any crew shortfall. Returns { html, color } where
 // color tints the code red/amber when it's behind / at-risk.
-function dispatchCodeMeta(job, sc) {
-  if (!job || !sc) return { html:'', color:'' };
-  const unitRaw = (sc.unit||'').trim(); const isLS = unitRaw.toUpperCase()==='LS';
-  const unit = (unitRaw && !isLS) ? ' '+esc(unitRaw) : '';
-  const color = sc.status==='behind' ? '#b91c1c' : sc.status==='at-risk' ? '#b45309' : '';
-  const lines = [];
-  if (sc.description) lines.push('<div style="font-style:italic;color:#777">'+esc(sc.description)+'</div>');
+function dispatchCodeMeta(job, code) {
+  if (!job || !code) return { html:'', color:'' };
+  const color = code.status==='behind' ? '#b91c1c' : code.status==='at-risk' ? '#b45309' : '';
   const stat = [];
-  if (sc.requiredPace != null && sc.requiredPace > 0) stat.push('<strong>Target '+fmtNum(sc.requiredPace)+unit+'/day</strong>');
-  if (sc.pctComplete != null) { let p = Math.round(sc.pctComplete)+'%'; if (!isLS && sc.unitsLeft != null && sc.unitsLeft > 0) p += ' · '+fmtNum(sc.unitsLeft)+unit+' left'; stat.push(p); }
-  if (sc.addlLaborersNeeded) stat.push('<span style="color:#b91c1c">needs +'+sc.addlLaborersNeeded+'</span>');
-  if (stat.length) lines.push('<div>'+stat.join(' · ')+'</div>');
-  const dl = sc.targetDate || job.deadline;
-  if (dl) {
-    const p = projectSubCode(job, sc); let dline = 'due '+shortDate(dl), dcolor = '#555';
-    if (p.kind==='ok') { dline += ' — proj '+shortDate(p.finish)+(p.onTime===false ? ' ⚠ +'+p.daysLate+'d' : ' ✓'); if (p.onTime===false) dcolor = '#b91c1c'; }
-    else if (p.kind==='short') { dline += ' — '+p.moreDays+'d short'; dcolor = '#b45309'; }
-    lines.push('<div style="color:'+dcolor+'">'+dline+'</div>');
-  }
-  if (!lines.length) return { html:'', color };
-  return { html:'<div style="font-size:10px;line-height:1.4;margin-top:2px;color:#555">'+lines.join('')+'</div>', color };
+  if (code.pct != null) stat.push(Math.round(code.pct) + '% complete');
+  if (code.behind) stat.push('<span style="color:#b91c1c">' + code.behind + ' sub-code' + (code.behind>1?'s':'') + ' behind</span>');
+  if (code.needed) stat.push('<span style="color:#b91c1c">needs +' + code.needed + '</span>');
+  if (!stat.length) return { html:'', color };
+  return { html:'<div style="font-size:10px;line-height:1.4;margin-top:2px;color:#555">' + stat.join(' \u00b7 ') + '</div>', color };
 }
 // One-line rollup under a job header on the dispatch sheet: job number, how
 // many crew are on it this range, overall % complete (dollar-weighted across
@@ -1545,7 +1543,7 @@ function dispatchBodyJob(dates) {
       // Split each day's assignments by cost / sub code so crews see exactly
       // which task they're on, not just that they're on the job somewhere.
       const byCode = {};
-      j.days[d].forEach(a => { const ck = (a.costCode||'')+'|'+(a.subCode||''); (byCode[ck] = byCode[ck] || { costCode:a.costCode||'', subCode:a.subCode||'', items:[] }).items.push(a); });
+      j.days[d].forEach(a => { const ck = a.costCode||''; (byCode[ck] = byCode[ck] || { costCode:ck, items:[] }).items.push(a); });
       const codeKeys = Object.keys(byCode).sort((x,y) => x.localeCompare(y));
       return codeKeys.map((ck, i) => { const g = byCode[ck];
         // Dedupe defensively so a duplicate assignment never lists a name twice.
@@ -1557,11 +1555,11 @@ function dispatchBodyJob(dates) {
         const crew = people.map(a => { const mine = byOp[a.resource]||[];
           return esc(a.resource)+(a.half?' (½)':'')+(mine.length?' <span style="color:#555">(🚜 '+mine.map(m=>esc(m.resource)+(m.half?' ½':'')).join(', ')+')</span>':''); });
         const eq = machines.filter(m => !(m.op && pres.has(m.op))).map(m=>esc(m.resource)+(m.op?' <span style="color:#888">('+esc(m.op)+')</span>':''));
-        const sc = job ? subCodeOf(job, g.costCode, g.subCode) : null;
-        const meta = dispatchCodeMeta(job, sc);
+        const rolled = job && g.costCode ? codeOf(job, g.costCode) : null;
+        const meta = dispatchCodeMeta(job, rolled);
         const code = g.costCode
-          ? '<strong'+(meta.color?' style="color:'+meta.color+'"':'')+'>'+esc(g.costCode)+'</strong>'+(g.subCode?' · '+esc(g.subCode):'')+meta.html
-          : '<span style="color:#999">Whole job</span>';
+          ? '<strong'+(meta.color?' style="color:'+meta.color+'"':'')+'>'+esc(g.costCode)+'</strong>'+meta.html
+          : '<span style="color:#999">Whole job — supervisor assigns</span>';
         const st = i===0 ? getSiteTime(d, j.division, j.jobId) : '';
         const dayCell = i===0 ? dayLabel(d)+(st?'<div style="font-weight:800;color:#1d4ed8;font-size:11px;margin-top:2px">⏰ On site '+esc(fmtTime(st))+'</div>':'') : '';
         return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600;vertical-align:top">'+dayCell+'</td><td style="'+_td+'">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
@@ -1573,10 +1571,10 @@ function dispatchBodyPerson(dates) {
   dates.forEach(d => (state.assignments[d]||[]).forEach(a => { (byRes[a.resource] = byRes[a.resource] || { kind:a.kind, days:{} }); (byRes[a.resource].days[d] = byRes[a.resource].days[d] || []).push(a); }));
   const names = Object.keys(byRes).sort((a,b)=>a.localeCompare(b));
   if (!names.length) return '<div style="color:#999">No assignments in this range.</div>';
-  const pairedMachinesFor = (d, a) => { const seen = new Set(); return (state.assignments[d]||[]).filter(m => m.kind==='equip' && m.op===a.resource && m.division===a.division && m.jobId===a.jobId && (m.costCode||'')===(a.costCode||'') && (m.subCode||'')===(a.subCode||'') && !seen.has(m.resource) && seen.add(m.resource)); };
-  const dayKey = a => (a.division||'')+'¦'+(a.jobId||'')+'¦'+(a.costCode||'')+'¦'+(a.subCode||'')+'¦'+(a.op||'');
+  const pairedMachinesFor = (d, a) => { const seen = new Set(); return (state.assignments[d]||[]).filter(m => m.kind==='equip' && m.op===a.resource && m.division===a.division && m.jobId===a.jobId && (m.costCode||'')===(a.costCode||'') && !seen.has(m.resource) && seen.add(m.resource)); };
+  const dayKey = a => (a.division||'')+'¦'+(a.jobId||'')+'¦'+(a.costCode||'')+'¦'+(a.op||'');
   return names.map(n => { const r = byRes[n];
-    const rows = dates.filter(d => r.days[d]).map(d => { const seenItem = new Set(); const items = r.days[d].filter(a => !seenItem.has(dayKey(a)) && seenItem.add(dayKey(a))); const jobs = items.map(a => { let s = esc(a.jobName)+(a.costCode?' ['+esc(a.costCode)+(a.subCode?'·'+esc(a.subCode):'')+']':'')+(a.half?' (½)':'');
+    const rows = dates.filter(d => r.days[d]).map(d => { const seenItem = new Set(); const items = r.days[d].filter(a => !seenItem.has(dayKey(a)) && seenItem.add(dayKey(a))); const jobs = items.map(a => { let s = esc(a.jobName)+(a.costCode?' ['+esc(a.costCode)+']':'')+(a.half?' (½)':'');
         if (a.kind==='emp') { const mm = pairedMachinesFor(d, a); if (mm.length) s += ' <span style="color:#555">+ 🚜 '+mm.map(m=>esc(m.resource)).join(', ')+'</span>'; }
         else if (a.kind==='equip' && a.op) s += ' <span style="color:#888">(op: '+esc(a.op)+')</span>';
         return s; }).join('; ');
@@ -1662,9 +1660,9 @@ async function doEmail() {
 function buildAISnapshot() {
   const wk = weekDateStrs();
   const jobs = (state.board.jobs||[]).map(j => ({ division:j.division, name:j.name, jobNumber:j.jobNumber, deadline:j.deadline, status:j.status,
-    subCodes: (j.subCodes||[]).filter(c => c.status==='behind'||c.status==='at-risk'||c.notStartedYet).map(c => ({ costCode:c.costCode, subCode:c.subCode, status:c.status, pctComplete:c.pctComplete, currentPace:c.currentPace, requiredPace:c.requiredPace, gap:c.gap, effectiveDaysLeft:c.effectiveDaysLeft, usingPPDays:c.usingPPDays, targetDate:c.targetDate, addlLaborersNeeded:c.addlLaborersNeeded, crew:c.crew })) })).filter(j => j.subCodes.length);
-  const conflicts = []; Object.keys(state.assignments).forEach(d => { if (d < todayStr()) return; conflictResourcesOn(d).forEach(r => { conflicts.push({ date:d, resource:r, jobs: assignmentsFor(d,r).map(a => ({ name:a.jobName, costCode:a.costCode, subCode:a.subCode })) }); }); });
-  const unstaffed = []; (state.board.jobs||[]).forEach(j => (j.subCodes||[]).forEach(c => { if (c.status==='behind' && (c.addlLaborersNeeded || !c.crew.length)) unstaffed.push({ jobName:j.name, costCode:c.costCode, subCode:c.subCode, addlLaborersNeeded:c.addlLaborersNeeded }); }));
+    subCodes: jobCodes(j).filter(codeNeedsCrew).map(c => ({ costCode:c.costCode, status:c.status, pctComplete:c.pct, addlLaborersNeeded:c.needed, subCodesBehind:c.behind, crew:c.crew })) })).filter(j => j.subCodes.length);
+  const conflicts = []; Object.keys(state.assignments).forEach(d => { if (d < todayStr()) return; conflictResourcesOn(d).forEach(r => { conflicts.push({ date:d, resource:r, jobs: assignmentsFor(d,r).map(a => ({ name:a.jobName, costCode:a.costCode })) }); }); });
+  const unstaffed = []; (state.board.jobs||[]).forEach(j => jobCodes(j).forEach(c => { if (c.status==='behind' && (c.needed || !c.crew.length)) unstaffed.push({ jobName:j.name, costCode:c.costCode, addlLaborersNeeded:c.needed }); }));
   const total = (state.board.employees||[]).length; const assigned = new Set(); wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind==='emp') assigned.add(a.resource); }));
   return { today: todayStr(), jobs, conflicts: conflicts.slice(0,40), unstaffed: unstaffed.slice(0,30), capacity: { totalEmployees: total, assignedThisWeek: assigned.size, idleThisWeek: Math.max(total-assigned.size,0) } };
 }
@@ -1673,42 +1671,48 @@ async function generateAI() { state.aiLoading = true; render();
   catch (err) { state.ai = { summary:'Could not generate insights: '+err.message, recommendations:[], reassignments:[], outlook:'' }; }
   finally { state.aiLoading = false; render(); } }
 // ── Attention: gaps + one-click auto-fill ──────────────────────────────────
+// A gap is a JOB with work behind or at risk and not enough men on it this
+// week. The cost codes that are behind come along for the label, because that
+// is what a scheduler needs to see to decide who to send.
 function gapItems() {
   if (!state.board) return [];
   const wk = weekDateStrs(); const items = [];
-  (state.board.jobs||[]).forEach(job => (job.subCodes||[]).forEach(sc => {
-    if (sc.status !== 'behind' && sc.status !== 'at-risk') return;
+  (state.board.jobs||[]).forEach(job => {
+    if (state.hideComplete && jobAllDone(job)) return;
+    const codes = jobCodes(job).filter(codeNeedsCrew);
+    if (!codes.length) return;
+    const need = jobRollup(job).needed;
     const staffed = new Set();
-    wk.forEach(d => cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode).forEach(a => { if (a.kind === 'emp') staffed.add(a.resource); }));
-    if (staffed.size === 0) items.push({ type:'unstaffed', job, sc, need: sc.addlLaborersNeeded || 1, staffed: 0 });
-    else if (sc.addlLaborersNeeded && staffed.size < sc.addlLaborersNeeded) items.push({ type:'understaffed', job, sc, need: sc.addlLaborersNeeded, staffed: staffed.size });
-  }));
-  items.sort((a,b) => (a.type==='unstaffed'?0:1) - (b.type==='unstaffed'?0:1) || (STATUS_RANK[a.sc.status]-STATUS_RANK[b.sc.status]));
+    wk.forEach(d => jobCrewOn(d, job.division, job.id).forEach(a => { if (a.kind === 'emp') staffed.add(a.resource); }));
+    const worst = worstStatus(codes);
+    if (staffed.size === 0) items.push({ type:'unstaffed', job, codes, need: Math.max(need, 1), staffed: 0, worst });
+    else if (need && staffed.size < need) items.push({ type:'understaffed', job, codes, need, staffed: staffed.size, worst });
+  });
+  items.sort((a,b) => (a.type==='unstaffed'?0:1) - (b.type==='unstaffed'?0:1) || ((STATUS_RANK[a.worst] ?? 9) - (STATUS_RANK[b.worst] ?? 9)) || a.job.name.localeCompare(b.job.name));
   return items;
 }
 function idleEmployees() { if (!state.board) return []; return (state.board.employees||[]).filter(e => loadForResource(e.name) === 0); }
 function firstWorkdayThisWeek() { const wd = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); }); return wd[0] || todayStr(); }
-function autoFill(division, jobId, costCode, subCode) {
-  const job = jobById(division, jobId); if (!job) return;
-  const sc = subCodeOf(job, costCode, subCode); if (!sc) { toast('Sub-code not found'); return; }
-  const need = Math.max(sc.addlLaborersNeeded || 1, 1);
+// Put idle men on the JOB for the rest of the week. No cost code — the
+// supervisor gives them the task in the morning, which is the whole point.
+function autoFill(division, jobId) {
+  const job = jobById(division, jobId); if (!job) { toast('Job not found'); return; }
+  const need = Math.max(jobRollup(job).needed || 1, 1);
   const dates = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); });
   if (!dates.length) { toast('No working days left this week'); return; }
   const empByName = {}; (state.board.employees||[]).forEach(e => empByName[e.name] = e);
-  const prefTrades = new Set((sc.crew||[]).map(n => empByName[n] && empByName[n].jobClass).filter(Boolean));
+  const prefTrades = new Set(jobCodes(job).flatMap(c => c.crew).map(n => empByName[n] && empByName[n].jobClass).filter(Boolean));
   // Idle crew with at least one day they are not off for the WHOLE of; prefer
-  // the sub-code's trade. Keyed on the block and not on isOff, so a man with a
-  // half day on every date of the week is still offered — he is there for half
-  // of each of them, which is exactly what auto-fill is looking for.
+  // the trades that have worked this job before.
   const idle = idleEmployees().filter(e => !dates.every(d => isBlockedOff(e.name, 'emp', d))).slice()
     .sort((a,b) => (prefTrades.has(a.jobClass)?0:1) - (prefTrades.has(b.jobClass)?0:1) || a.name.localeCompare(b.name));
   const pick = idle.slice(0, need);
   if (!pick.length) { toast('No available idle crew this week (idle crew are off all week)'); return; }
   pushUndo();
   let added = 0; const used = [];
-  pick.forEach(e => { const okDates = dates.filter(d => !isBlockedOff(e.name, 'emp', d)); const n = addAssignmentSpan(e.name, 'emp', job, sc, okDates); if (n) used.push(e.name.split(' ')[0]); added += n; });
-  if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already scheduled here'); return; }
-  toast('Assigned ' + used.join(', ') + ' to ' + sc.costCode);
+  pick.forEach(e => { const n = addAssignmentSpan(e.name, 'emp', job, '', dates); if (n) used.push(e.name.split(' ')[0]); added += n; });
+  if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already on this job'); return; }
+  toast('Put ' + used.join(', ') + ' on ' + job.name);
   render();
 }
 function renderAttention() {
@@ -1718,23 +1722,22 @@ function renderAttention() {
   // the afternoon of a morning off is the arrangement, not a thing for a
   // scheduler to fix, and listing it here would bury the real ones under it.
   const offSched = []; wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind === 'emp') { const off = isOff(a.resource, d); if (off && !off.partial) offSched.push({ d, id:a.id, name:a.resource, jobName:a.jobName, off }); } }));
-  // Approved conflicts (person is locked off but still on the board — e.g. time
-  // off approved after they were scheduled) float to the top of the list.
   offSched.sort((x,y) => (y.off.status==='approved') - (x.off.status==='approved') || (x.d<y.d?-1:x.d>y.d?1:0));
   let html = renderCapacity();
-  html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⚠ Needs crew (' + gaps.length + ')</div>';
-  if (!gaps.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">No behind or at-risk work is short on crew this week. 👍</div>';
+  html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⚠ Jobs needing crew (' + gaps.length + ')</div>';
+  if (!gaps.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">No job with behind or at-risk work is short on crew this week. 👍</div>';
   else html += '<div style="display:flex;flex-direction:column;gap:0.4rem;margin-bottom:1.4rem">' + gaps.map(g => {
     const col = divColor(g.job.division); const fwd = firstWorkdayThisWeek();
+    const codeNames = g.codes.slice(0,3).map(c => esc(c.costCode || 'no code')).join(', ') + (g.codes.length>3 ? ' +'+(g.codes.length-3) : '');
     return '<div style="display:flex;align-items:center;gap:0.6rem;background:var(--surface);border:1px solid var(--border);border-left:3px solid '+col+';border-radius:8px;padding:0.5rem 0.7rem;flex-wrap:wrap">'+
       '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(g.job.division)+'</span>'+
       '<span style="font-weight:600">'+esc(g.job.name)+'</span>'+
-      '<span class="muted" style="font-size:0.74rem">'+esc(g.sc.costCode)+(g.sc.subCode?' · '+esc(g.sc.subCode):'')+'</span>'+
-      '<span class="pill '+g.sc.status+'">'+g.sc.status.replace('-',' ')+'</span>'+
-      '<span class="warn" style="font-size:0.74rem">'+(g.type==='unstaffed'?'no crew scheduled':('needs +'+g.need+', has '+g.staffed)) + projChip(g.job, g.sc) +'</span>'+
+      '<span class="pill '+g.worst+'">'+g.worst.replace('-',' ')+'</span>'+
+      '<span class="muted" style="font-size:0.74rem" title="cost codes behind or at risk">'+codeNames+'</span>'+
+      '<span class="warn" style="font-size:0.74rem">'+(g.type==='unstaffed'?'no crew scheduled this week':('needs +'+g.need+', has '+g.staffed))+'</span>'+
       '<span style="flex:1"></span>'+
-      '<button class="btn primary mini" title="Auto-assign idle crew for the rest of this week" onclick="autoFill(\''+g.job.division+'\',\''+escAttr(g.job.id)+'\',\''+escAttr(g.sc.costCode)+'\',\''+escAttr(g.sc.subCode)+'\')">⚡ Fill</button>'+
-      '<button class="btn mini" onclick="openAssignJob(\''+g.job.division+'\',\''+escAttr(g.job.id)+'\',\''+escAttr(g.sc.costCode)+'\',\''+escAttr(g.sc.subCode)+'\',\''+fwd+'\')">Staff…</button>'+
+      '<button class="btn primary mini" title="Put idle crew on this job for the rest of the week" onclick="autoFill(\''+g.job.division+'\',\''+escAttr(g.job.id)+'\')">⚡ Fill</button>'+
+      '<button class="btn mini" onclick="openAssignJob(\''+g.job.division+'\',\''+escAttr(g.job.id)+'\',\'\',\''+fwd+'\')">Staff…</button>'+
     '</div>';
   }).join('') + '</div>';
   html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🟢 Idle this week (' + idle.length + ')</div>';
@@ -1772,7 +1775,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleJob, toggleGrp, toggleSubGrp, onSubFilter, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, toggleAlsoCode, toggleAlsoOpen, updateAlsoList, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, showDone, hideDoneAgain, dismissHint, setCompact });
+Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, showDone, hideDoneAgain, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();
 </script>
