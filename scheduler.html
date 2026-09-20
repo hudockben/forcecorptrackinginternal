@@ -53,6 +53,28 @@
     body.compact .hint { display:none; }
     body.compact .cap { padding-bottom:0.2rem; }
     .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:8px; flex:1 1 auto; min-height:120px; }
+    /* Board + crew rail sit side by side, so the rail costs width, not the
+       vertical space the laptop is short of. */
+    .board-row { display:flex; gap:0.5rem; flex:1 1 auto; min-height:0; }
+    .board-row .board-wrap { flex:1 1 auto; min-width:0; }
+    .rail { flex:0 0 206px; display:flex; flex-direction:column; border:1px solid var(--border); border-radius:8px; background:var(--surface); overflow:hidden; }
+    .rail.drop-off { box-shadow: inset 0 0 0 2px var(--red); }
+    .rail-head { display:flex; align-items:center; gap:0.3rem; padding:0.3rem 0.35rem; border-bottom:1px solid var(--border); }
+    .rail-head input { flex:1; min-width:0; font-size:0.7rem; padding:0.2rem 0.4rem; }
+    .rail-tools { display:flex; gap:0.25rem; padding:0.3rem 0.35rem 0; }
+    .rail-tools .tgl { font-size:0.62rem; padding:0.12rem 0.45rem; }
+    .rail-tip { font-size:0.58rem; color:var(--muted); padding:0.28rem 0.4rem 0.15rem; line-height:1.3; }
+    .rail-list { flex:1 1 auto; overflow:auto; padding:0 0.3rem 0.35rem; }
+    .rail-grp { font-size:0.55rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); padding:0.35rem 0.1rem 0.15rem; position:sticky; top:0; background:var(--surface); z-index:1; }
+    .rail-row { display:flex; align-items:center; gap:0.3rem; padding:0.2rem 0.35rem; border:1px solid var(--border); border-radius:5px; margin-bottom:0.16rem; cursor:grab; background:var(--surface2); }
+    .rail-row:hover { border-color:#555; }
+    .rail-row.dragging { opacity:0.35; }
+    .rail-row.off { opacity:0.45; }
+    .rail-name { flex:1; min-width:0; font-size:0.69rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .rail-load { font-size:0.54rem; padding:0 0.26rem; border-radius:7px; border:1px solid var(--border); color:var(--muted); white-space:nowrap; }
+    .rail-load.free { color:var(--green); border-color:var(--green-dim); }
+    .rail-load.full { color:var(--red); border-color:var(--red); }
+    .rail-empty { font-size:0.68rem; color:var(--muted); padding:0.6rem 0.3rem; }
     table.board { border-collapse:collapse; width:100%; font-size:0.74rem; }
     table.board th, table.board td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); vertical-align:top; }
     table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.26rem 0.4rem; text-align:center; font-weight:700; white-space:nowrap; }
@@ -214,18 +236,20 @@ const state = {
   // sub-codes off the board — on a 69-code job they are most of the noise and
   // none of the work. compact trades the KPI strip and padding for grid rows.
   hideComplete:true, compact:false, hintSeen:false, moreOpen:false, moreOpts:false,
+  railOpen:true, railSearch:'', railIdleOnly:false, railEquip:false,
 };
 
 // Preferences live in localStorage, not the server: they are how THIS scheduler
 // likes to look at the board, not part of the schedule everyone shares.
 const PREF_KEY = 'fct_sched_prefs:' + ((user && user.companyCode) || '') + ':' + ((user && user.username) || '');
-function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen })); } catch {} }
+function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen, railOpen:state.railOpen })); } catch {} }
 (function loadPrefs() {
   let p = {}; try { p = JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; } catch {}
   if (p.hideComplete != null) state.hideComplete = !!p.hideComplete;
   // Default ON for a laptop-height window — the screens this is actually used on.
   state.compact = p.compact != null ? !!p.compact : (window.innerHeight < 900);
   state.hintSeen = !!p.hintSeen;
+  if (p.railOpen != null) state.railOpen = !!p.railOpen;
   document.body.classList.toggle('compact', state.compact);
 })();
 function setCompact(on) { state.compact = on; document.body.classList.toggle('compact', on); savePrefs(); closeMoreMenu(); render(); }
@@ -246,7 +270,11 @@ function fmtTime(hhmm) { if (!hhmm) return ''; const [h,m] = String(hhmm).split(
 function fmtTimeShort(hhmm) { if (!hhmm) return ''; const [h,m] = String(hhmm).split(':').map(Number); if (isNaN(h)) return ''; const ap = h<12?'a':'p', h12 = (h%12)||12; return h12+(m?':'+pad(m):'')+ap; }
 function addDays(ds, n) { const d = new Date(ds+'T12:00:00'); d.setDate(d.getDate()+n); return dstr(d); }
 function daysBetween(a, b) { return Math.round((new Date(b+'T12:00:00') - new Date(a+'T12:00:00')) / 86400000); }
-function mondayOf(d) { const x = new Date(d); const dow = x.getDay(); x.setDate(x.getDate() + (dow === 0 ? -6 : 1 - dow)); x.setHours(0,0,0,0); return x; }
+// The board is a rolling seven days anchored on the LEFTMOST column, and that
+// column is today unless the scheduler has paged away from it. A fixed Mon–Sun
+// week spent its first columns on days already worked; on a Friday that left
+// one useful column out of seven.
+function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
 function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
 function weekDateStrs() { return weekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
@@ -321,7 +349,7 @@ async function loadAll() {
     if (dedupeAssignmentMap(state.assignments)) { _dirtyAssign = true; _scheduleFlush(); }
     _writeLocal(!(_dirtyAssign || _dirtyCrews));
 
-    if (!state.weekAnchor) state.weekAnchor = mondayOf(new Date());
+    if (!state.weekAnchor) state.weekAnchor = startOfDay(new Date());
     render();
     setSaveStatus(_dirtyAssign || _dirtyCrews ? 'pending' : 'saved');
   } catch (err) {
@@ -609,8 +637,10 @@ function resourcesInPlay() {
 // span the picker applies to
 function spanDates(anchor) {
   if (state.applySpan === 'day') return [anchor];
-  const m = mondayOf(new Date(anchor + 'T12:00:00')); const n = state.applySpan === 'week5' ? 5 : 7;
-  const out = []; for (let i=0;i<n;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(dstr(d)); } return out;
+  const ws = weekDateStrs();
+  if (!ws.includes(anchor)) return [anchor];   // paged away mid-edit; stay honest
+  if (state.applySpan === 'week5') return ws.filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6; });
+  return ws;
 }
 
 // ── Cost-code rollups ─────────────────────────────────────────────
@@ -750,7 +780,12 @@ function render() {
   updateUndoButtons();
 }
 function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
-function wknavHtml() { const wk = weekDays(); const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); return '<div class="wknav"><button class="btn" id="wkPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="wkNext">▶</button><button class="btn ghost" id="wkToday">Today</button></div>'; }
+function wknavHtml() {
+  const wk = weekDays();
+  const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+  const atToday = dstr(wk[0]) === todayStr();
+  return '<div class="wknav"><button class="btn icon" id="wkPrev" title="Back 7 days">◀</button><span class="wklabel"'+(atToday?' title="Starts today"':'')+'>'+esc(label)+'</span><button class="btn icon" id="wkNext" title="Forward 7 days">▶</button><button class="btn ghost'+(atToday?'':' primary')+'" id="wkToday" title="Jump back so today is the first column">Today</button></div>';
+}
 // Undo / redo / refresh stay as icons; everything else a scheduler reaches for
 // a few times a day lives in the More menu, so the toolbar is ONE row at 1280px
 // instead of wrapping to two and eating another 40px of board.
@@ -783,9 +818,10 @@ function renderToolbar() {
       '<input type="text" id="jobSearch" placeholder="\ud83d\udd0d Search projects\u2026" value="'+esc(state.jobSearch)+'" style="width:180px" title="Press / to jump here">' + divFilterHtml() +
       '<button class="tgl'+(state.needCrewOnly?' on':'')+'" id="needOnly" title="Only show sub-codes that are behind or at risk">Needs crew</button>' +
       '<button class="tgl'+(state.hideComplete?' on':'')+'" id="hideDone" title="Hide finished sub-codes and finished jobs. Anything with crew booked on it this week stays visible.">'+(state.hideComplete?'\u2713 ':'')+'Hide complete</button>' +
-      '<div class="spacer"></div>' + toolsHtml() +
+      '<div class="spacer"></div>' +
+      '<button class="btn icon'+(state.railOpen?' primary':'')+'" id="railBtn" title="Crew panel \u2014 drag names onto the board">\ud83d\udc65</button>' + toolsHtml() +
       moreMenuHtml([
-        ['copyWk','\ud83d\udccb Copy week \u2192 next','Copy this week\u2019s assignments into next week'],
+        ['copyWk','\ud83d\udccb Copy week \u2192 next','Copy the 7 days shown into the following week'],
         ['crewsBtn','\ud83d\udc65 Saved crews\u2026','Manage saved crew templates'],
         ['printBtn','\ud83d\udce4 Send / Print\u2026','Print or email the dispatch schedule to crews'],
         ['importPlans','\u2935 Import division plans','Pull crew/equipment already planned in each division\u2019s Projection Planner'],
@@ -808,7 +844,7 @@ function wireToolbar() {
   const on = (id, fn) => { const el = g(id); if (el) el.onclick = fn; };
   if (g('wkPrev'))  g('wkPrev').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()-7); state.weekAnchor = new Date(state.weekAnchor); render(); };
   if (g('wkNext'))  g('wkNext').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); };
-  if (g('wkToday')) g('wkToday').onclick = () => { state.weekAnchor = mondayOf(new Date()); render(); };
+  if (g('wkToday')) g('wkToday').onclick = () => { state.weekAnchor = startOfDay(new Date()); render(); };
   if (g('divFilter')) g('divFilter').onchange = e => { state.divFilter = e.target.value; render(); };
   if (g('jobSearch')) g('jobSearch').oninput = e => { state.jobSearch = e.target.value; document.getElementById('main').innerHTML = renderJobBoard(); };
   on('needOnly', () => { state.needCrewOnly = !state.needCrewOnly; render(); });
@@ -819,6 +855,7 @@ function wireToolbar() {
   on('crewsBtn', () => { closeMoreMenu(); openCrewsModal(); });
   on('printBtn', () => { closeMoreMenu(); openDispatchModal(); });
   on('compactBtn', () => setCompact(!state.compact));
+  on('railBtn', toggleRail);
   if (g('crewSearch')) g('crewSearch').oninput = e => { state.crewSearch = e.target.value; document.getElementById('main').innerHTML = renderCrewBoard(); };
   if (g('tradeFilter')) g('tradeFilter').onchange = e => { state.tradeFilter = e.target.value; render(); };
   on('showAll', () => { state.showAll = !state.showAll; render(); });
@@ -839,7 +876,7 @@ function renderCapacity() {
   const conflicts = wk.reduce((s,d) => s + conflictResourcesOn(d).size, 0);
   const behind = (state.board.jobs||[]).reduce((s,j) => s + (j.subCodes||[]).filter(c => c.status==='behind').length, 0);
   const card = (v,l,c) => '<div class="cap-card"><div class="cap-val" style="color:'+(c||'var(--text)')+'">'+v+'</div><div class="cap-lbl">'+l+'</div></div>';
-  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled this wk','var(--green)')+card(idle,'Idle this wk',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
+  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled · 7d','var(--green)')+card(idle,'Idle · 7d',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
 }
 function firstWord(s) { return esc(String(s||'').split(' ')[0]); }
 // Every name on the board is a drag handle: drag it to another day, another
@@ -891,7 +928,7 @@ function renderJobBoard() {
   const ex = (state.board && state.board.excludedJobs) || 0;
   if (ex) notes.push('<span title="Set on the project info card in Paving / Turf / Kiewit">\ud83d\udeab '+ex+' project'+(ex>1?'s':'')+' hidden from the Scheduler on '+(ex>1?'their':'its')+' division dashboard</span>');
   const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;\u00b7&nbsp; ')+'</div>' : '';
-  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>' + note;
+  return html + '<div class="board-row"><div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>'+railHtml()+'</div>' + note;
 }
 // Drop-target identity for a cell. '' as the cost code means "on the job", which
 // is the ordinary case and what the job row books.
@@ -909,7 +946,9 @@ function dayCell(job, costCode, d, tStr, items, extra) {
 function jobRowHtml(job, ds, tStr) {
   const col = divColor(job.division);
   const r = jobRollup(job);
-  const meta = [job.deadline ? 'deadline '+esc(job.deadline) : 'no deadline'];
+  // "no deadline" is not information, and it pushed the line that is onto a
+  // second row in a 300px lead column.
+  const meta = job.deadline ? ['deadline '+esc(job.deadline)] : [];
   if (r.behind) meta.push('<span class="warn">'+r.behind+' behind</span>');
   if (r.needed) meta.push('<span class="warn">needs +'+r.needed+'</span>');
   if (r.pct != null) meta.push('<span class="'+(r.pct>=100?'ok':'muted')+'">'+pctText(r.pct)+'</span>');
@@ -921,6 +960,69 @@ function jobRowHtml(job, ds, tStr) {
   return '<tr class="job-row"><td class="lead-col job-lead">'+
     '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
     '<div class="sub-meta">'+meta.join(' \u00b7 ')+'</div></td>'+cells+'</tr>';
+}
+
+// ── Crew rail: the roster, on the right, draggable onto any day ─────────────
+// The board answers "who is on this job"; the rail answers "who is spare".
+// Dragging a name out of it and onto a square is the whole interaction — no
+// dialog, no cost code, no decision beyond which job and which day.
+function railLoadPill(name) {
+  const n = loadForResource(name);
+  const cls = n === 0 ? ' free' : n >= 7 ? ' full' : '';
+  return '<span class="rail-load'+cls+'" title="Days booked in the 7 shown">'+n+'/7</span>';
+}
+function railRow(name, kind, sub, offAll) {
+  return '<div class="rail-row'+(offAll?' off':'')+'" draggable="true" data-rail="1" data-res="'+esc(name)+'" data-rkind="'+kind+'"'+
+    ' title="'+esc(name+(sub?' · '+sub:'')+(offAll?' — off every day shown':'')+' — drag onto a day on the board')+'">'+
+    '<span class="rail-name">'+(kind==='equip'?'🚜 ':'')+esc(name)+'</span>'+railLoadPill(name)+'</div>';
+}
+function railListHtml() {
+  if (!state.board) return '';
+  const q = (state.railSearch||'').trim().toLowerCase();
+  const wk = weekDateStrs();
+  let emps = (state.board.employees||[]).slice();
+  if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q) || (e.jobClass||'').toLowerCase().includes(q));
+  if (state.railIdleOnly) emps = emps.filter(e => loadForResource(e.name) === 0);
+  const groups = {}; emps.forEach(e => { const g = e.jobClass || 'Other'; (groups[g] = groups[g] || []).push(e); });
+  let html = '';
+  Object.keys(groups).sort().forEach(g => {
+    const list = groups[g].slice().sort((a,b) => loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
+    html += '<div class="rail-grp">'+esc(g)+' <span style="opacity:0.7">('+list.length+')</span></div>';
+    html += list.map(e => railRow(e.name, 'emp', e.jobClass || '', wk.every(d => isBlockedOff(e.name, 'emp', d)))).join('');
+  });
+  if (state.railEquip) {
+    let eq = (state.board.equipment||[]).slice();
+    if (q) eq = eq.filter(n => n.toLowerCase().includes(q));
+    if (state.railIdleOnly) eq = eq.filter(n => loadForResource(n) === 0);
+    if (eq.length) {
+      html += '<div class="rail-grp">Equipment <span style="opacity:0.7">('+eq.length+')</span></div>';
+      html += eq.map(n => railRow(n, 'equip', 'equipment', false)).join('');
+    }
+  }
+  if (!html) html = '<div class="rail-empty">'+(q ? 'Nobody matches “'+esc(state.railSearch.trim())+'”.' : state.railIdleOnly ? 'Everybody is booked.' : 'No crew.')+'</div>';
+  return html;
+}
+function railHtml() {
+  if (!state.railOpen) return '';
+  return '<aside class="rail" id="crewRail" data-drop="rail">'+
+    '<div class="rail-head"><input type="text" id="railSearch" placeholder="🔍 Crew…" value="'+esc(state.railSearch)+'" oninput="onRailSearch()" autocomplete="off">'+
+      '<button class="x" title="Close the crew panel" onclick="toggleRail()">✕</button></div>'+
+    '<div class="rail-tools">'+
+      '<button class="tgl'+(state.railIdleOnly?' on':'')+'" onclick="toggleRailIdle()" title="Only crew with nothing booked in the 7 days shown">Idle only</button>'+
+      '<button class="tgl'+(state.railEquip?' on':'')+'" onclick="toggleRailEquip()" title="Also list equipment">🚜</button>'+
+    '</div>'+
+    '<div class="rail-tip">Drag a name onto a day. Drag a name off the board onto here to take it off.</div>'+
+    '<div class="rail-list" id="railList">'+railListHtml()+'</div>'+
+  '</aside>';
+}
+function toggleRail() { state.railOpen = !state.railOpen; savePrefs(); render(); }
+function toggleRailIdle() { state.railIdleOnly = !state.railIdleOnly; document.getElementById('main').innerHTML = renderJobBoard(); }
+function toggleRailEquip() { state.railEquip = !state.railEquip; document.getElementById('main').innerHTML = renderJobBoard(); }
+// Update the list in place so the search box keeps focus and the caret.
+function onRailSearch() {
+  const el = document.getElementById('railSearch'); if (!el) return;
+  state.railSearch = el.value;
+  const box = document.getElementById('railList'); if (box) box.innerHTML = railListHtml();
 }
 
 // ── By Crew board ───────────────────────────────────────────────────────────
@@ -975,13 +1077,14 @@ function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementB
 // with each repaint.
 let _drag = null, _dropEl = null;
 const _el = t => (t && t.nodeType === 1) ? t : (t && t.parentElement) || null;
-function _clearDropHi() { if (_dropEl) { _dropEl.classList.remove('drop-move','drop-copy'); _dropEl = null; } }
-function _clearDragging() { document.querySelectorAll('.asn.dragging').forEach(x => x.classList.remove('dragging')); }
+function _clearDropHi() { if (_dropEl) { _dropEl.classList.remove('drop-move','drop-copy','drop-off'); _dropEl = null; } }
+function _clearDragging() { document.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging')); }
 // A cell's drop identity, read straight off the data-* the renderers wrote.
 function _tgtOf(el) {
   if (!el) return null; const d = el.dataset;
   if (d.drop === 'job') return { kind:'job', date:d.date, division:d.div, jobId:d.job, costCode:d.cc||'' };
   if (d.drop === 'res') return { kind:'res', date:d.date, resource:d.res, rkind:d.rkind||'emp' };
+  if (d.drop === 'rail') return { kind:'rail' };
   return null;
 }
 // Machines follow the person who runs them. Moving a man off a cell and
@@ -1002,6 +1105,14 @@ function onDragStart(e) {
     e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', 'fill');
     return;
   }
+  // A name dragged out of the crew rail: no assignment yet, just who.
+  const rr = t.closest('[data-rail]');
+  if (rr) {
+    _drag = { type:'rail', resource:rr.dataset.res, kind:rr.dataset.rkind || 'emp' };
+    rr.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', rr.dataset.res);
+    return;
+  }
   const c = t.closest('.asn[data-aid]'); if (!c) return;
   _drag = { type:'asn', id:c.dataset.aid, date:c.dataset.adate };
   c.classList.add('dragging');
@@ -1012,13 +1123,20 @@ function onDragOver(e) {
   if (!_drag) return;
   const t = _el(e.target); const cell = t && t.closest('[data-drop]');
   if (!cell) { _clearDropHi(); return; }
+  const isRail = cell.dataset.drop === 'rail';
+  // The rail takes men OFF the board; a name dragged out of it has no business
+  // being dropped back in, and a rail name only lands on a job day.
+  if (isRail ? _drag.type !== 'asn' : (_drag.type === 'rail' && cell.dataset.drop !== 'job')) { _clearDropHi(); return; }
   e.preventDefault();
-  const copy = _drag.type === 'fill' || e.altKey || e.ctrlKey || e.metaKey;
-  e.dataTransfer.dropEffect = copy ? 'copy' : 'move';
+  // dropEffect MUST be one the drag's effectAllowed permits or the browser
+  // silently refuses the drop. A rail name and a fill are copies; a chip being
+  // moved is a move.
+  const copy = _drag.type === 'fill' || _drag.type === 'rail' || e.altKey || e.ctrlKey || e.metaKey;
+  e.dataTransfer.dropEffect = isRail ? 'move' : (copy ? 'copy' : 'move');
   if (_dropEl !== cell) _clearDropHi();
   _dropEl = cell;
-  cell.classList.toggle('drop-copy', copy);
-  cell.classList.toggle('drop-move', !copy);
+  if (isRail) cell.classList.add('drop-off');
+  else { cell.classList.toggle('drop-copy', copy); cell.classList.toggle('drop-move', !copy); }
 }
 function onDragLeave(e) { if (_dropEl && _el(e.target) === _dropEl) _clearDropHi(); }
 function onDrop(e) {
@@ -1029,6 +1147,8 @@ function onDrop(e) {
   if (!cell) return;
   e.preventDefault(); e.stopPropagation();
   const tgt = _tgtOf(cell); if (!tgt) return;
+  if (tgt.kind === 'rail') { if (drag.type === 'asn') railRemove(drag); return; }
+  if (drag.type === 'rail') { if (tgt.kind === 'job') railDrop(drag, tgt); else toast('Drop a name on a day of a job'); return; }
   if (drag.type === 'fill') { if (tgt.kind === 'job') fillFromCell(drag.src, tgt); else toast('Drag the corner handle onto a job cell'); return; }
   const copy = e.altKey || e.ctrlKey || e.metaKey;
   if (tgt.kind === 'job') dropOnJobCell(drag.date, drag.id, tgt, copy);
@@ -1117,6 +1237,26 @@ function fillFromCell(src, tgt) {
   saveAssignments(); render();
   toast('Repeated ' + crew.length + (crew.length === 1 ? ' resource' : ' resources') + ' across ' + dates.length + ' day' + (dates.length > 1 ? 's' : '') + (blocked ? ' · skipped ' + blocked + ' approved off' : ''));
 }
+// A name out of the rail onto a square: one job, one day, no dialog and no
+// cost code. The span selector is deliberately NOT applied — you dropped it on
+// a square, so it lands on that square.
+function railDrop(drag, tgt) {
+  const job = jobById(tgt.division, tgt.jobId);
+  if (!job) { toast('Job not found'); return; }
+  pushUndo();
+  const r = placeOnJob(tgt.date, job, tgt.costCode, { resource: drag.resource, kind: drag.kind });
+  if (r === 'added' || r === 'retagged') { saveAssignments(); render(); toast(drag.resource + ' \u2192 ' + job.name + ' \u00b7 ' + shortDate(tgt.date)); return; }
+  _undo.pop(); updateUndoButtons();
+  toast(r === 'blocked' ? drag.resource + ' is approved off ' + shortDate(tgt.date)
+                        : drag.resource + ' is already on ' + job.name + ' that day');
+}
+// Dragging a name off the board and onto the rail takes him off \u2014 the
+// opposite gesture, and the one people try.
+function railRemove(drag) {
+  const a = (state.assignments[drag.date] || []).find(x => x.id === drag.id); if (!a) return;
+  if (a.kind === 'equip') removeAssignment(drag.date, drag.id); else removePersonAssignment(drag.date, drag.id);
+  render(); toast('Took ' + a.resource + ' off ' + a.jobName + ' \u00b7 Ctrl+Z to undo');
+}
 // Right-click a name to take it off. Undo is one Ctrl+Z, so this stays cheap.
 function onChipContext(e) {
   const t = _el(e.target); const c = t && t.closest('.asn[data-aid]'); if (!c) return;
@@ -1181,7 +1321,7 @@ function applyCodeToCrew(ctx) {
   document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard();
   toast(cc ? 'Put ' + n + ' on ' + cc : 'Cleared the cost code on ' + n);
 }
-function spanLabel() { return state.applySpan==='day'?'this day':state.applySpan==='week5'?'Mon–Fri':'the full week'; }
+function spanLabel() { return state.applySpan==='day'?'this day':state.applySpan==='week5'?'the weekdays shown':'all 7 days shown'; }
 function renderModal() { const ctx = state.assignCtx; if (!ctx) return;
   let o = document.getElementById('assignOverlay');
   if (!o) { o = document.createElement('div'); o.id='assignOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeAssign(); }; }
@@ -1321,7 +1461,7 @@ function modalJobHtml(ctx) {
 
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     summaryLine(job, null) +
-    '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
+    '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Weekdays</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">All 7 days</button></div>'+
     '<label class="fld">Add crew or equipment <span style="text-transform:none;letter-spacing:0;font-weight:400">— type, ↑↓, Enter</span></label>'+
     '<input type="text" class="full" id="pickSearch" placeholder="Search people / equipment…" oninput="updatePickList()" onkeydown="pickKey(event)" autocomplete="off">'+
     '<div class="pick-list" id="pickList"></div>'+
@@ -1425,7 +1565,7 @@ function modalResourceHtml(ctx) {
   const jobs = visibleJobs();
   const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => { const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return ''; return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>'; }).join('');
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+' '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':(off.partial?' (approved — still schedulable for the rest of the day)':' (approved off — cannot schedule)'))+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
-    '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
+    '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Weekdays</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">All 7 days</button></div>'+
     '<label class="fld">Scheduled (this day)</label>'+curHtml+
     '<label class="fld">Put on a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select>'+
     '<div id="rCcWrap" style="display:none"><label class="fld">Cost code <span style="text-transform:none;letter-spacing:0;font-weight:400">— optional</span></label><select class="full" id="rCc"></select></div>'+
@@ -1700,7 +1840,7 @@ function gapItems() {
   return items;
 }
 function idleEmployees() { if (!state.board) return []; return (state.board.employees||[]).filter(e => loadForResource(e.name) === 0); }
-function firstWorkdayThisWeek() { const wd = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); }); return wd[0] || todayStr(); }
+function firstWorkdayThisWeek() { const wd = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); }); return wd[0] || weekDateStrs()[0] || todayStr(); }
 // Put idle men on the JOB for the rest of the week. No cost code — the
 // supervisor gives them the task in the morning, which is the whole point.
 function autoFill(division, jobId) {
@@ -1783,7 +1923,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, dismissHint, setCompact });
+Object.assign(window, { toggleGrp, toggleRail, toggleRailIdle, toggleRailEquip, onRailSearch, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();
 </script>
