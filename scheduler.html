@@ -762,7 +762,14 @@ function renderJobBoard() {
   const jobs = visibleJobs();
   const searching = state.jobSearch.trim() !== '';
   let html = renderCapacity() + hintHtml('Click a day cell to staff it · drag a name to another day, task or person · drag the blue corner across the week to repeat a crew · right-click a name to remove it.');
-  if (!jobs.length) return html + '<div class="empty">'+(searching ? 'No projects match “'+esc(state.jobSearch.trim())+'”.' : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+(_hiddenJobCount?' — '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s are':' is')+' hidden.':'.'))+'</div>';
+  if (!jobs.length) {
+    const ex0 = (state.board && state.board.excludedJobs) || 0;
+    const why = [];
+    if (_hiddenJobCount) why.push(_hiddenJobCount+' completed');
+    if (ex0) why.push(ex0+' hidden from the Scheduler on '+(ex0>1?'their':'its')+' division dashboard');
+    return html + '<div class="empty">'+(searching ? 'No projects match “'+esc(state.jobSearch.trim())+'”.'
+      : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+'.'+(why.length?'<br><span class="muted">'+why.join(' · ')+'</span>':''))+'</div>';
+  }
   let body = '';
   jobs.forEach(job => {
     const col = divColor(job.division);
@@ -779,7 +786,14 @@ function renderJobBoard() {
     if (collapsed) return;
     body += jobSubSection(job, ds, tStr, searching);
   });
-  const note = _hiddenJobCount ? '<div class="board-note">✓ '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden · <span class="lnk" onclick="toggleHideComplete()">show completed work</span></div>' : '';
+  // Why a job a PM expects is not on the board: it finished, or somebody set it
+  // to "Hide from Scheduler" on its division dashboard. Saying so here saves the
+  // phone call.
+  const notes = [];
+  if (_hiddenJobCount) notes.push('✓ '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden · <span class="lnk" onclick="toggleHideComplete()">show completed work</span>');
+  const ex = (state.board && state.board.excludedJobs) || 0;
+  if (ex) notes.push('<span title="Set on the project info card in Paving / Turf / Kiewit">🚫 '+ex+' project'+(ex>1?'s':'')+' hidden from the Scheduler on '+(ex>1?'their':'its')+' division dashboard</span>');
+  const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;·&nbsp; ')+'</div>' : '';
   return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job / Sub-code</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>' + note;
 }
 // One sub-code row (lead cell + day cells). Shared by the flat and grouped layouts.

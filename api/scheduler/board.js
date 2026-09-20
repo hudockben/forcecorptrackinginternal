@@ -32,6 +32,20 @@ const { requireAuth, hasDivisionAccess } = require('../lib/auth');
 // status is included so older jobs without a status still surface.
 const ACTIVE_PROJECT_STATUSES = ['Awarded', 'In Progress', 'Substantially Complete'];
 
+// Per-project opt-out set on the division dashboard's project info card
+// ("Scheduler" select in tracker.html / paving.html / kiewit-pinetree.html).
+// The twin of exclude-from-executive, which does the same job for the Executive
+// rollup — a live project the master scheduler never staffs (owner-run work,
+// a job another crew handles) is noise on the board, and this is how a PM
+// takes it off without lying about the project's status.
+//
+// Opt-OUT, like the rollup toggle: a project with the flag unset is shown, so
+// nothing already on the board disappears when this ships. Both key spellings
+// are accepted because the dashboards write the hyphenated one and the
+// normalized-table sync writes snake_case.
+const projExcludedFromScheduler = p =>
+  !!p && (p['exclude-from-scheduler'] === true || p.exclude_from_scheduler === true);
+
 // Construction-project divisions that have schedulable sub-code work. Other
 // divisions (trucking/dust/quarry) model "jobs" as customers/locations with
 // no bid items, so they have nothing to pace at the sub-code level. Adding a
@@ -375,6 +389,7 @@ async function buildBoard(sql, companyCode, todayStr) {
 
   const jobs = [];
   const plannedAssignments = [];
+  let excludedJobs = 0;
   const rosterEmp = new Set(employees.map(e => e.name));
   const rosterEquip = new Set(equipment);
 
@@ -384,6 +399,9 @@ async function buildBoard(sql, companyCode, todayStr) {
       if (!name) return;
       const status = (proj.status || '').trim();
       if (status && !ACTIVE_PROJECT_STATUSES.includes(status)) return;
+      // Hidden on purpose from its division dashboard. Counted, not silent, so
+      // the board can say why a job a PM expects to see is not on it.
+      if (projExcludedFromScheduler(proj)) { excludedJobs++; return; }
 
       const id = String(proj.id || '');
       const deadline = proj['end-date'] || null;
@@ -428,6 +446,7 @@ async function buildBoard(sql, companyCode, todayStr) {
     jobs,
     plannedAssignments,
     timeOff,
+    excludedJobs,
     sourceDivisions: SOURCE_DIVISIONS.map(s => s.division),
   };
 }

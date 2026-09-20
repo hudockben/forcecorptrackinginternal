@@ -10249,6 +10249,16 @@ function projectCardHTML(p) {
             Hidden projects don't appear in the Executive Division snapshot or Projects table.
           </span>
         </div>
+        <div class="info-field"><label>Scheduler</label>
+          <select onchange="updateProjectField('${p.id}','exclude-from-scheduler',this.value==='yes')">
+            <option value="no"  ${!p['exclude-from-scheduler'] ? 'selected' : ''}>Show in Scheduler</option>
+            <option value="yes" ${ p['exclude-from-scheduler'] ? 'selected' : ''}>Hide from Scheduler</option>
+          </select>
+          <span style="font-size:0.72rem;color:var(--muted);margin-top:0.3rem;display:block">
+            Hidden projects don't appear on the master Scheduler board. Only Awarded,
+            In&nbsp;Progress and Substantially&nbsp;Complete projects reach it either way.
+          </span>
+        </div>
       </div>
     </div>
 
