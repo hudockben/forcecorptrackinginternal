@@ -14,43 +14,53 @@
     }
     body { height:100vh; overflow:hidden; background:var(--bg); color:var(--text); font-family:'Segoe UI', system-ui, -apple-system, sans-serif; display:flex; flex-direction:column; }
     a { color:inherit; }
-    header { display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1.5rem; background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:40; }
-    .brand { font-size:0.68rem; letter-spacing:0.3em; text-transform:uppercase; color:var(--blue); font-weight:700; }
-    .brand-sub { font-size:0.55rem; letter-spacing:0.2em; color:var(--muted); margin-left:0.5rem; text-transform:uppercase; }
-    .header-right { display:flex; align-items:center; gap:0.7rem; }
-    .hlink { font-size:0.62rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); background:none; border:1px solid var(--border); border-radius:5px; padding:0.4rem 0.8rem; cursor:pointer; text-decoration:none; transition:.15s; }
+    /* Chrome is two short rows — a 36px bar that carries the brand, the tabs AND
+       the account controls, then one toolbar row. On a 768px-tall laptop every
+       pixel spent above the grid is a row of crew the scheduler cannot see. */
+    header { display:flex; align-items:center; gap:0.5rem; padding:0 0.85rem; height:36px; flex:0 0 36px; background:var(--surface); border-bottom:1px solid var(--border); z-index:40; }
+    .brand { font-size:0.62rem; letter-spacing:0.22em; text-transform:uppercase; color:var(--blue); font-weight:700; white-space:nowrap; }
+    .header-right { display:flex; align-items:center; gap:0.35rem; }
+    .hlink { font-size:0.6rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); background:none; border:1px solid var(--border); border-radius:5px; padding:0.22rem 0.5rem; cursor:pointer; text-decoration:none; transition:.15s; white-space:nowrap; }
     .hlink:hover { color:var(--text); border-color:#555; }
-    .avatar { width:30px; height:30px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:0.7rem; font-weight:700; color:var(--blue); }
-    .tabs { display:flex; gap:0.25rem; padding:0.6rem 1.5rem 0; background:var(--surface); border-bottom:1px solid var(--border); }
-    .tab { font-size:0.78rem; font-weight:600; color:var(--muted); background:none; border:none; cursor:pointer; padding:0.55rem 1rem; border-bottom:2px solid transparent; }
+    .avatar { width:22px; height:22px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:0.58rem; font-weight:700; color:var(--blue); }
+    .tabs { display:flex; gap:0.1rem; margin-left:0.45rem; }
+    .tab { font-size:0.74rem; font-weight:600; color:var(--muted); background:none; border:none; cursor:pointer; padding:0 0.6rem; height:35px; border-bottom:2px solid transparent; white-space:nowrap; }
+    .tab:hover { color:var(--text); }
     .tab.active { color:var(--text); border-bottom-color:var(--blue); }
-    .tab .pip { display:inline-block; min-width:16px; padding:0 4px; margin-left:0.35rem; font-size:0.62rem; background:var(--red); color:#fff; border-radius:9px; font-weight:700; }
-    .toolbar { display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap; padding:0.7rem 1.5rem; border-bottom:1px solid var(--border); }
-    .btn { font-size:0.74rem; font-weight:600; color:var(--text); background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:0.4rem 0.7rem; cursor:pointer; transition:.15s; white-space:nowrap; }
+    .tab .pip { display:inline-block; min-width:15px; padding:0 4px; margin-left:0.3rem; font-size:0.6rem; background:var(--red); color:#fff; border-radius:9px; font-weight:700; }
+    .toolbar { display:flex; align-items:center; gap:0.38rem; flex-wrap:wrap; padding:0.34rem 0.85rem; background:var(--surface); border-bottom:1px solid var(--border); }
+    .btn { font-size:0.74rem; font-weight:600; color:var(--text); background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:0.26rem 0.6rem; cursor:pointer; transition:.15s; white-space:nowrap; }
+    .btn.icon { padding:0.26rem 0.5rem; }
     .btn:hover { border-color:#555; }
     .btn.primary { background:rgba(96,165,250,0.14); border-color:var(--blue); color:var(--blue); }
     .btn.ghost { background:none; }
     .btn:disabled { opacity:0.5; cursor:default; }
     .wknav { display:flex; align-items:center; gap:0.4rem; }
-    .wklabel { font-size:0.82rem; font-weight:700; min-width:185px; text-align:center; }
-    input[type=text], input[type=time], select { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.4rem 0.55rem; font-size:0.78rem; }
+    .wklabel { font-size:0.76rem; font-weight:700; min-width:158px; text-align:center; }
+    input[type=text], input[type=time], select { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.26rem 0.5rem; font-size:0.76rem; }
     input[type=time]::-webkit-calendar-picker-indicator { filter:invert(0.8); cursor:pointer; }
     .spacer { flex:1; }
-    .chip-toggle { display:flex; align-items:center; gap:0.35rem; font-size:0.72rem; color:var(--muted); cursor:pointer; white-space:nowrap; }
-    main { padding:0.7rem 1.5rem 1rem; flex:1; min-height:0; display:flex; flex-direction:column; overflow:auto; }
-    .cap { display:flex; gap:0.45rem; flex-wrap:wrap; margin-bottom:0.5rem; }
-    .cap-card { display:flex; align-items:baseline; gap:0.4rem; background:var(--surface); border:1px solid var(--border); border-radius:7px; padding:0.28rem 0.62rem; }
-    .cap-val { font-size:1.02rem; font-weight:800; line-height:1.15; }
-    .cap-lbl { font-size:0.58rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); white-space:nowrap; }
-    .hint { color:var(--muted); font-size:0.68rem; margin-bottom:0.45rem; }
-    .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:10px; flex:1 1 auto; min-height:160px; }
+    main { padding:0.35rem 0.85rem 0.45rem; flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+    main.scroll { overflow:auto; }
+    /* The KPI strip is one thin line, not a row of cards — same numbers, 44px back. */
+    .cap { display:flex; align-items:center; gap:0.9rem; flex-wrap:wrap; padding:0 0.1rem 0.28rem; flex:0 0 auto; }
+    .cap-card { display:flex; align-items:baseline; gap:0.28rem; }
+    .cap-val { font-size:0.8rem; font-weight:800; line-height:1.1; }
+    .cap-lbl { font-size:0.56rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); white-space:nowrap; }
+    .hint { color:var(--muted); font-size:0.64rem; padding-bottom:0.28rem; display:flex; align-items:center; gap:0.4rem; flex:0 0 auto; }
+    .hint .x { font-size:0.78rem; padding:0 0.2rem; }
+    .board-note { color:var(--muted); font-size:0.64rem; padding-top:0.3rem; flex:0 0 auto; }
+    body.compact .hint { display:none; }
+    body.compact .cap { padding-bottom:0.2rem; }
+    .board-wrap { overflow:auto; border:1px solid var(--border); border-radius:8px; flex:1 1 auto; min-height:120px; }
     table.board { border-collapse:collapse; width:100%; font-size:0.74rem; }
     table.board th, table.board td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); vertical-align:top; }
-    table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.45rem 0.5rem; text-align:center; font-weight:700; }
+    table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.26rem 0.4rem; text-align:center; font-weight:700; white-space:nowrap; }
     table.board thead th.weekend { color:var(--muted); } table.board thead th.today { color:var(--blue); }
-    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:230px; max-width:260px; text-align:left !important; padding:0.45rem 0.6rem !important; }
+    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:200px; max-width:240px; text-align:left !important; padding:0.26rem 0.5rem !important; }
     thead .lead-col { z-index:7; }
-    .cell { min-width:116px; height:50px; padding:0.25rem; cursor:pointer; transition:background .1s; }
+    .cell { position:relative; min-width:104px; height:auto; min-height:34px; padding:0.16rem; cursor:pointer; transition:background .1s; }
+    body.compact .cell { min-height:26px; }
     .cell:hover { background:var(--surface2); }
     .cell.weekend { background:rgba(255,255,255,0.015); } .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
     .cnt-cell { text-align:center; font-weight:700; color:var(--muted); } .cnt-cell.has { color:var(--text); }
@@ -91,11 +101,11 @@
     .seg button.active { background:rgba(96,165,250,0.18); color:var(--blue); font-weight:700; }
     .proj { font-size:0.76rem; margin:0.5rem 0; padding:0.45rem 0.6rem; border:1px solid var(--border); border-radius:6px; background:var(--surface2); }
     .proj.ok { border-color:var(--green-dim); } .proj.warn { border-color:var(--red); }
-    .pick-list { max-height:34vh; overflow:auto; margin-top:0.3rem; }
-    .pick-row { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.55rem; border:1px solid var(--border); border-radius:6px; margin-bottom:0.3rem; cursor:pointer; }
+    .pick-list { max-height:38vh; overflow:auto; margin-top:0.3rem; }
+    .pick-row { display:flex; align-items:center; gap:0.4rem; padding:0.28rem 0.5rem; border:1px solid var(--border); border-radius:6px; margin-bottom:0.2rem; cursor:pointer; }
     .pick-row:hover { border-color:#555; background:var(--surface2); } .pick-row.on-this { border-color:var(--green-dim); }
     .pick-row.blocked { border-color:rgba(239,68,68,0.5); border-left:3px solid var(--red); background:rgba(239,68,68,0.06); opacity:0.7; } .pick-row.blocked .pick-name { text-decoration:line-through; text-decoration-color:var(--red); }
-    .pick-name { font-weight:600; } .pick-sub { font-size:0.64rem; color:var(--muted); } .pick-status { margin-left:auto; font-size:0.66rem; white-space:nowrap; }
+    .pick-name { font-weight:600; white-space:nowrap; } .pick-sub { font-size:0.64rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .pick-status { margin-left:auto; font-size:0.66rem; white-space:nowrap; padding-left:0.4rem; }
     .also-dd { position:relative; }
     .also-trigger { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; width:100%; background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:0.45rem 0.6rem; font-size:0.78rem; cursor:pointer; }
     .also-trigger:hover { border-color:#555; } .also-caret { color:var(--muted); font-size:0.7rem; }
@@ -119,26 +129,55 @@
     .equip-pick input[type=text] { width:100%; margin-bottom:0.35rem; }
     .empty { color:var(--muted); font-size:0.82rem; text-align:center; padding:2.5rem 1rem; }
     .loading { color:var(--muted); font-size:0.85rem; text-align:center; padding:3rem 1rem; }
-    footer { padding:1rem 1.5rem; font-size:0.6rem; color:var(--muted); border-top:1px solid var(--border); }
-    .toast { position:fixed; bottom:1rem; right:1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:0.55rem 0.9rem; font-size:0.76rem; z-index:200; opacity:0; transition:opacity .2s; } .toast.show { opacity:1; }
+    /* Toolbar toggle chips — one tap, state visible without reading a checkbox. */
+    .tgl { display:inline-flex; align-items:center; gap:0.28rem; font-size:0.7rem; font-weight:600; color:var(--muted); background:var(--surface2); border:1px solid var(--border); border-radius:14px; padding:0.22rem 0.62rem; cursor:pointer; white-space:nowrap; user-select:none; }
+    .tgl:hover { border-color:#555; color:var(--text); }
+    .tgl.on { background:rgba(96,165,250,0.14); border-color:var(--blue); color:var(--blue); }
+    /* Secondary actions live behind "More" so the toolbar never wraps to a 2nd row. */
+    .menu-wrap { position:relative; }
+    .menu-pop { position:absolute; right:0; top:calc(100% + 5px); background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:0.25rem; min-width:210px; z-index:70; box-shadow:0 10px 28px rgba(0,0,0,0.55); }
+    .menu-pop button { display:block; width:100%; text-align:left; background:none; border:none; color:var(--text); font-size:0.76rem; padding:0.4rem 0.55rem; border-radius:5px; cursor:pointer; }
+    .menu-pop button:hover { background:var(--surface2); }
+    .menu-pop hr { border:none; border-top:1px solid var(--border); margin:0.25rem 0; }
+    /* Drag to move a name between days / jobs / people; the corner handle repeats a crew. */
+    .asn { cursor:grab; }
+    .asn.dragging { opacity:0.3; }
+    .cell.drop-move { background:rgba(96,165,250,0.2); box-shadow: inset 0 0 0 2px var(--blue); }
+    .cell.drop-copy { background:rgba(34,197,94,0.2); box-shadow: inset 0 0 0 2px var(--green); }
+    .fill-h { position:absolute; right:2px; bottom:2px; width:10px; height:10px; border:1px solid var(--blue); background:var(--bg); border-radius:2px; cursor:crosshair; opacity:0; transition:opacity .1s; }
+    .cell:hover .fill-h { opacity:1; }
+    .done-row td { background:rgba(255,255,255,0.015); }
+    .lnk { color:var(--blue); cursor:pointer; text-decoration:underline; }
+    /* Assign modal: the people picker is the point of the dialog, so it gets the room. */
+    .pick-row.kb { border-color:var(--blue); background:rgba(96,165,250,0.14); }
+    .more-tog { background:none; border:none; color:var(--muted); font-size:0.66rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; cursor:pointer; padding:0.35rem 0; margin-top:0.5rem; border-top:1px solid var(--border); width:100%; text-align:left; }
+    .more-tog:hover { color:var(--text); }
+    /* Bottom-LEFT: the Mathis chat bubble sits bottom-right and was covering
+       the confirmations that drag-and-drop relies on. */
+    .toast { position:fixed; bottom:1rem; left:1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:0.55rem 0.9rem; font-size:0.76rem; z-index:200; opacity:0; transition:opacity .2s; } .toast.show { opacity:1; }
   </style>
 <script src="report-branding.js" defer></script>
 <script src="mathis.js" defer></script>
 </head>
 <body>
   <header>
-    <div><span class="brand">DataWatch</span><span class="brand-sub">Scheduler</span></div>
-    <div class="header-right"><a class="hlink" href="divisions.html">← Divisions</a><span class="avatar" id="avatar">U</span><button class="hlink" id="logoutBtn">Log out</button></div>
+    <span class="brand" title="DataWatch · Force Corp Scheduler · cross-division resource planning">DataWatch</span>
+    <nav class="tabs">
+      <button class="tab active" data-view="job" id="tab-job">By Job</button>
+      <button class="tab" data-view="crew" id="tab-crew">By Crew</button>
+      <button class="tab" data-view="attention" id="tab-attention">Attention</button>
+      <button class="tab" data-view="ai" id="tab-ai">AI Insights</button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="header-right">
+      <span id="saveStatus" title="Schedule save status" style="font-size:0.66rem;font-weight:600;white-space:nowrap"></span>
+      <a class="hlink" href="divisions.html" title="Back to divisions">← Divisions</a>
+      <span class="avatar" id="avatar">U</span>
+      <button class="hlink" id="logoutBtn">Log out</button>
+    </div>
   </header>
-  <div class="tabs">
-    <button class="tab active" data-view="job" id="tab-job">By Job</button>
-    <button class="tab" data-view="crew" id="tab-crew">By Crew</button>
-    <button class="tab" data-view="attention" id="tab-attention">Attention</button>
-    <button class="tab" data-view="ai" id="tab-ai">AI Insights</button>
-  </div>
   <div class="toolbar" id="toolbar"></div>
   <main id="main"><div class="loading">Loading master schedule…</div></main>
-  <footer>© DataWatch · Force Corp · Scheduler · Cross-division resource planning</footer>
   <div class="toast" id="toast"></div>
 
 <script>
@@ -161,7 +200,29 @@ const state = {
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
   alsoCodes:[], alsoOpen:false, siteTimes:{},
   subFilter:{}, subGrpCol:{}, equipPickFor:null,
+  // View preferences (persisted per user, below). hideComplete drops finished
+  // sub-codes off the board — on a 69-code job they are most of the noise and
+  // none of the work. compact trades the KPI strip and padding for grid rows.
+  hideComplete:true, compact:false, hintSeen:false, showDoneFor:{}, moreOpen:false, moreOpts:false,
 };
+
+// Preferences live in localStorage, not the server: they are how THIS scheduler
+// likes to look at the board, not part of the schedule everyone shares.
+const PREF_KEY = 'fct_sched_prefs:' + ((user && user.companyCode) || '') + ':' + ((user && user.username) || '');
+function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen })); } catch {} }
+(function loadPrefs() {
+  let p = {}; try { p = JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; } catch {}
+  if (p.hideComplete != null) state.hideComplete = !!p.hideComplete;
+  // Default ON for a laptop-height window — the screens this is actually used on.
+  state.compact = p.compact != null ? !!p.compact : (window.innerHeight < 900);
+  state.hintSeen = !!p.hintSeen;
+  document.body.classList.toggle('compact', state.compact);
+})();
+function setCompact(on) { state.compact = on; document.body.classList.toggle('compact', on); savePrefs(); closeMoreMenu(); render(); }
+function toggleHideComplete() { state.hideComplete = !state.hideComplete; if (state.hideComplete) state.showDoneFor = {}; savePrefs(); render(); }
+function dismissHint() { state.hintSeen = true; savePrefs(); render(); }
+function showDone(division, jobId) { state.showDoneFor[division+'::'+jobId] = true; document.getElementById('main').innerHTML = renderJobBoard(); }
+function hideDoneAgain(division, jobId) { delete state.showDoneFor[division+'::'+jobId]; document.getElementById('main').innerHTML = renderJobBoard(); }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -396,7 +457,29 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => flushSaves(true));
 window.addEventListener('online', () => { if (_dirtyAssign || _dirtyCrews) flushSaves(false); });
-document.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); e.shiftKey ? redo() : undo(); } });
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if (e.key === 'Escape') {
+    if (state.moreOpen) { closeMoreMenu(); return; }
+    if (document.getElementById('dispatchOverlay')) { closeDispatch(); return; }
+    if (document.getElementById('crewsOverlay')) { closeCrews(); return; }
+    if (state.assignCtx) { closeAssign(); return; }
+    return;
+  }
+  // "/" jumps to the search box — the board is a search-and-staff tool.
+  const t = e.target, tag = (t && t.tagName) || '';
+  if (e.key === '/' && !e.metaKey && !e.ctrlKey && !state.assignCtx && tag !== 'INPUT' && tag !== 'SELECT' && tag !== 'TEXTAREA') {
+    const el = document.getElementById('jobSearch') || document.getElementById('crewSearch');
+    if (el) { e.preventDefault(); el.focus(); el.select(); }
+  }
+});
+// Any click outside the More menu puts it away.
+document.addEventListener('click', e => {
+  if (!state.moreOpen) return;
+  const t = (e.target && e.target.nodeType === 1) ? e.target : null;
+  if (t && t.closest('.menu-wrap')) return;
+  closeMoreMenu();
+});
 
 // ── Assignment model ────────────────────────────────────────────────────────
 function dayList(date) { return state.assignments[date] || (state.assignments[date] = []); }
@@ -515,11 +598,14 @@ function projLine(job, sc) {
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
+let _hiddenJobCount = 0;
 function visibleJobs() {
   let jobs = (state.board.jobs || []);
   if (state.divFilter !== 'all') jobs = jobs.filter(j => j.division === state.divFilter);
   const q = state.jobSearch.trim().toLowerCase();
   if (q) jobs = jobs.filter(j => (j.name + ' ' + (j.jobNumber||'')).toLowerCase().includes(q));
+  _hiddenJobCount = 0;
+  if (state.hideComplete) { const before = jobs.length; jobs = jobs.filter(j => !jobAllDone(j)); _hiddenJobCount = before - jobs.length; }
   return jobs.slice().sort((a,b) => {
     const ra = Math.min(9, ...(a.subCodes||[]).map(c => STATUS_RANK[c.status] ?? 9));
     const rb = Math.min(9, ...(b.subCodes||[]).map(c => STATUS_RANK[c.status] ?? 9));
@@ -529,6 +615,21 @@ function visibleJobs() {
 function jobById(division, id) { return (state.board.jobs || []).find(j => j.division === division && j.id === id); }
 function subCodeOf(job, costCode, subCode) { return (job.subCodes || []).find(s => s.costCode === costCode && (s.subCode||'') === (subCode||'')); }
 function subNeedsCrew(sc) { return sc.status === 'behind' || sc.status === 'at-risk'; }
+// Finished work. A sub-code the division marked complete, or that reached 100%,
+// is done — nobody is getting scheduled on it again.
+function isDone(sc) { return !!sc && (sc.status === 'complete' || !!sc.isComplete); }
+// … but a complete code with people still booked on it this week STAYS on the
+// board. Hiding it would hide their names too, and a crew you cannot see is a
+// crew you double-book.
+function scStaffed(job, sc) { return weekDateStrs().some(d => cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode).length); }
+function subHidden(job, sc) { return state.hideComplete && !state.showDoneFor[job.division+'::'+job.id] && isDone(sc) && !scStaffed(job, sc); }
+// A job with nothing left to do and nobody on it this week drops off entirely.
+function jobAllDone(job) {
+  const subs = job.subCodes || []; if (!subs.length) return false;
+  if (!subs.every(isDone)) return false;
+  return !weekDateStrs().some(d => jobAssignmentsOnDate(d, job.division, job.id).length);
+}
+function doneCount(job) { return (job.subCodes||[]).filter(isDone).length; }
 
 // ── Render dispatch ─────────────────────────────────────────────────────────
 function render() {
@@ -540,6 +641,7 @@ function render() {
   document.getElementById('tab-attention').innerHTML = 'Attention' + (gaps ? ' <span class="pip" title="staffing gaps">'+gaps+'</span>' : '');
   renderToolbar();
   const main = document.getElementById('main');
+  main.className = (state.view === 'job' || state.view === 'crew') ? '' : 'scroll';
   if (state.view === 'job') main.innerHTML = renderJobBoard();
   else if (state.view === 'crew') main.innerHTML = renderCrewBoard();
   else if (state.view === 'attention') main.innerHTML = renderAttention();
@@ -548,58 +650,87 @@ function render() {
 }
 function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
 function wknavHtml() { const wk = weekDays(); const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); return '<div class="wknav"><button class="btn" id="wkPrev">◀</button><span class="wklabel">'+esc(label)+'</span><button class="btn" id="wkNext">▶</button><button class="btn ghost" id="wkToday">Today</button></div>'; }
+// Undo / redo / refresh stay as icons; everything else a scheduler reaches for
+// a few times a day lives in the More menu, so the toolbar is ONE row at 1280px
+// instead of wrapping to two and eating another 40px of board.
 function toolsHtml() {
-  return '<span id="saveStatus" title="Schedule save status" style="font-size:0.72rem;font-weight:600;white-space:nowrap;margin-right:0.2rem"></span>'+
-         '<button class="btn" id="undoBtn" title="Undo (Ctrl+Z)"'+(_undo.length?'':' disabled')+'>↶ Undo</button>'+
-         '<button class="btn" id="redoBtn" title="Redo (Ctrl+Shift+Z)"'+(_redo.length?'':' disabled')+'>↷</button>'+
-         '<button class="btn" id="refreshBtn" title="Refresh — pull other schedulers’ changes">⟳</button>';
+  return '<button class="btn icon" id="undoBtn" title="Undo (Ctrl+Z)"'+(_undo.length?'':' disabled')+'>\u21b6</button>'+
+         '<button class="btn icon" id="redoBtn" title="Redo (Ctrl+Shift+Z)"'+(_redo.length?'':' disabled')+'>\u21b7</button>'+
+         '<button class="btn icon" id="refreshBtn" title="Refresh \u2014 pull other schedulers\u2019 changes">\u27f3</button>';
 }
+// items: [id, label, title] \u2014 '-' for a divider.
+function moreMenuHtml(items) {
+  const rows = items.map(it => it === '-' ? '<hr>' :
+    '<button id="'+it[0]+'"'+(it[2]?' title="'+esc(it[2])+'"':'')+'>'+it[1]+'</button>').join('');
+  return '<div class="menu-wrap"><button class="btn" id="moreBtn" title="More actions">\u22ef More</button>'+
+         '<div class="menu-pop" id="morePop"'+(state.moreOpen?'':' style="display:none"')+'>'+rows+'</div></div>';
+}
+function closeMoreMenu() { state.moreOpen = false; const p = document.getElementById('morePop'); if (p) p.style.display = 'none'; }
+function toggleMoreMenu() { state.moreOpen = !state.moreOpen; const p = document.getElementById('morePop'); if (p) p.style.display = state.moreOpen ? 'block' : 'none'; }
+function compactMenuItem() { return ['compactBtn', (state.compact?'\u2713 ':'')+'\u2921 Compact mode', 'Hide the KPI strip and tighten rows \u2014 more schedule on a laptop screen']; }
 function renderToolbar() {
   const tb = document.getElementById('toolbar');
-  if (state.view === 'ai') { tb.innerHTML = '<button class="btn primary" id="genAi">⚡ '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>'; document.getElementById('genAi').onclick = generateAI; return; }
-  if (state.view === 'attention') { tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for the selected week</span><div class="spacer"></div>' + toolsHtml(); wireToolbar(); return; }
+  state.moreOpen = false;
+  if (state.view === 'ai') { tb.innerHTML = '<button class="btn primary" id="genAi">\u26a1 '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>'; document.getElementById('genAi').onclick = generateAI; return; }
+  if (state.view === 'attention') {
+    tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for the selected week</span><div class="spacer"></div>' + toolsHtml() +
+      moreMenuHtml([['printBtn','\ud83d\udce4 Send / Print\u2026','Print or email the dispatch schedule to crews'], '-', compactMenuItem()]);
+    wireToolbar(); return;
+  }
   if (state.view === 'job') {
     tb.innerHTML = wknavHtml() +
-      '<input type="text" id="jobSearch" placeholder="🔍 Search projects…" value="'+esc(state.jobSearch)+'" style="width:210px">' + divFilterHtml() +
-      '<label class="chip-toggle"><input type="checkbox" id="needOnly" '+(state.needCrewOnly?'checked':'')+'> Needs crew only</label>' +
+      '<input type="text" id="jobSearch" placeholder="\ud83d\udd0d Search projects\u2026" value="'+esc(state.jobSearch)+'" style="width:180px" title="Press / to jump here">' + divFilterHtml() +
+      '<button class="tgl'+(state.needCrewOnly?' on':'')+'" id="needOnly" title="Only show sub-codes that are behind or at risk">Needs crew</button>' +
+      '<button class="tgl'+(state.hideComplete?' on':'')+'" id="hideDone" title="Hide finished sub-codes and finished jobs. Anything with crew booked on it this week stays visible.">'+(state.hideComplete?'\u2713 ':'')+'Hide complete</button>' +
       '<div class="spacer"></div>' + toolsHtml() +
-      '<button class="btn" id="copyWk" title="Copy this week\'s assignments into next week">📋 Copy week →</button>' +
-      '<button class="btn" id="crewsBtn" title="Manage saved crew templates">👥 Crews</button>' +
-      '<button class="btn" id="printBtn" title="Print or email the dispatch schedule to crews">📤 Send / Print</button>' +
-      '<button class="btn" id="importPlans" title="Pull crew/equipment already planned in each division\'s Projection Planner">⤵ Import plans</button>';
+      moreMenuHtml([
+        ['copyWk','\ud83d\udccb Copy week \u2192 next','Copy this week\u2019s assignments into next week'],
+        ['crewsBtn','\ud83d\udc65 Saved crews\u2026','Manage saved crew templates'],
+        ['printBtn','\ud83d\udce4 Send / Print\u2026','Print or email the dispatch schedule to crews'],
+        ['importPlans','\u2935 Import division plans','Pull crew/equipment already planned in each division\u2019s Projection Planner'],
+        '-', compactMenuItem(),
+      ]);
   } else {
     const trades = ['all'].concat(tradeList());
     tb.innerHTML = wknavHtml() +
-      '<input type="text" id="crewSearch" placeholder="Search crew…" value="'+esc(state.crewSearch)+'" style="width:140px">' +
+      '<input type="text" id="crewSearch" placeholder="\ud83d\udd0d Search crew\u2026" value="'+esc(state.crewSearch)+'" style="width:140px">' +
       '<select id="tradeFilter">'+trades.map(t => '<option value="'+esc(t)+'"'+(state.tradeFilter===t?' selected':'')+'>'+(t==='all'?'All trades':esc(t))+'</option>').join('')+'</select>' +
-      '<label class="chip-toggle"><input type="checkbox" id="showAll" '+(state.showAll?'checked':'')+'> Show full roster</label>' +
+      '<button class="tgl'+(state.showAll?' on':'')+'" id="showAll" title="Show everyone on the roster, not just crew in rotation">'+(state.showAll?'\u2713 ':'')+'Full roster</button>' +
+      '<span class="muted" style="font-size:0.7rem">'+(state.board.employees||[]).length+' crew \u00b7 '+(state.board.equipment||[]).length+' equip</span>' +
       '<div class="spacer"></div>' + toolsHtml() +
-      '<button class="btn" id="printBtn" title="Print or email the dispatch schedule to crews">📤 Send / Print</button>' +
-      '<span class="muted" style="font-size:0.72rem">'+(state.board.employees||[]).length+' crew · '+(state.board.equipment||[]).length+' equip</span>';
+      moreMenuHtml([['printBtn','\ud83d\udce4 Send / Print\u2026','Print or email the dispatch schedule to crews'], '-', compactMenuItem()]);
   }
   wireToolbar();
 }
 function wireToolbar() {
   const g = id => document.getElementById(id);
+  const on = (id, fn) => { const el = g(id); if (el) el.onclick = fn; };
   if (g('wkPrev'))  g('wkPrev').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()-7); state.weekAnchor = new Date(state.weekAnchor); render(); };
   if (g('wkNext'))  g('wkNext').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); };
   if (g('wkToday')) g('wkToday').onclick = () => { state.weekAnchor = mondayOf(new Date()); render(); };
   if (g('divFilter')) g('divFilter').onchange = e => { state.divFilter = e.target.value; render(); };
   if (g('jobSearch')) g('jobSearch').oninput = e => { state.jobSearch = e.target.value; document.getElementById('main').innerHTML = renderJobBoard(); };
-  if (g('needOnly')) g('needOnly').onchange = e => { state.needCrewOnly = e.target.checked; render(); };
-  if (g('importPlans')) g('importPlans').onclick = importPlanned;
-  if (g('copyWk')) g('copyWk').onclick = copyWeekForward;
-  if (g('crewsBtn')) g('crewsBtn').onclick = openCrewsModal;
-  if (g('printBtn')) g('printBtn').onclick = openDispatchModal;
+  on('needOnly', () => { state.needCrewOnly = !state.needCrewOnly; render(); });
+  on('hideDone', toggleHideComplete);
+  on('moreBtn', e => { e.stopPropagation(); toggleMoreMenu(); });
+  on('importPlans', () => { closeMoreMenu(); importPlanned(); });
+  on('copyWk', () => { closeMoreMenu(); copyWeekForward(); });
+  on('crewsBtn', () => { closeMoreMenu(); openCrewsModal(); });
+  on('printBtn', () => { closeMoreMenu(); openDispatchModal(); });
+  on('compactBtn', () => setCompact(!state.compact));
   if (g('crewSearch')) g('crewSearch').oninput = e => { state.crewSearch = e.target.value; document.getElementById('main').innerHTML = renderCrewBoard(); };
   if (g('tradeFilter')) g('tradeFilter').onchange = e => { state.tradeFilter = e.target.value; render(); };
-  if (g('showAll')) g('showAll').onchange = e => { state.showAll = e.target.checked; render(); };
-  if (g('undoBtn')) g('undoBtn').onclick = undo;
-  if (g('redoBtn')) g('redoBtn').onclick = redo;
-  if (g('refreshBtn')) g('refreshBtn').onclick = refreshData;
+  on('showAll', () => { state.showAll = !state.showAll; render(); });
+  on('undoBtn', undo);
+  on('redoBtn', redo);
+  on('refreshBtn', refreshData);
   renderSaveStatus();
 }
-function dayHeaders(days, ds, tStr) { return days.map((d,i) => { const w = (d.getDay()===0||d.getDay()===6), isT = ds[i]===tStr; return '<th class="'+(w?'weekend ':'')+(isT?'today':'')+'">'+d.toLocaleDateString(undefined,{weekday:'short'})+'<br><span style="font-size:0.66rem">'+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span></th>'; }).join(''); }
+function dayHeaders(days, ds, tStr) { return days.map((d,i) => { const w = (d.getDay()===0||d.getDay()===6), isT = ds[i]===tStr;
+  const date = (i === 0 || d.getDate() === 1) ? d.toLocaleDateString(undefined,{month:'short',day:'numeric'}) : String(d.getDate());
+  return '<th class="'+(w?'weekend ':'')+(isT?'today':'')+'">'+d.toLocaleDateString(undefined,{weekday:'short'})+' <span style="font-weight:600;opacity:0.7">'+date+'</span></th>'; }).join(''); }
+// One dismissible tip per board instead of a permanent instruction line.
+function hintHtml(txt) { return state.hintSeen ? '' : '<div class="hint"><span>\ud83d\udca1 '+txt+'</span><button class="x" onclick="dismissHint()" title="Hide tip">\u2715</button></div>'; }
 function renderCapacity() {
   const wk = weekDateStrs(); const total = (state.board.employees||[]).length;
   const assigned = new Set(); wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind==='emp') assigned.add(a.resource); }));
@@ -610,14 +741,19 @@ function renderCapacity() {
   return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled this wk','var(--green)')+card(idle,'Idle this wk',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
 }
 function firstWord(s) { return esc(String(s||'').split(' ')[0]); }
-function chip(a, conf) {
+// Every name on the board is a drag handle: drag it to another day, another
+// cost code or another person's row to move that assignment; hold Alt/Ctrl to
+// copy instead. Right-click takes it off.
+const DRAG_TIP = ' — drag to move (Alt = copy) · right-click to remove';
+function chip(a, conf, date) {
   const col = divColor(a.division);
+  const dd = ' draggable="true" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'"';
   if (a.kind === 'equip') {
     const label = '🚜 '+firstWord(a.resource)+(a.op?' ·'+firstWord(a.op):'');
-    const title = a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName;
-    return '<span class="asn equip'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'" title="'+esc(title)+'">'+label+(a.half?' ½':'')+'</span>';
+    const title = a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP;
+    return '<span class="asn equip'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'"'+dd+' title="'+esc(title)+'">'+label+(a.half?' ½':'')+'</span>';
   }
-  return '<span class="asn'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'" title="'+esc(a.resource+' — '+a.jobName)+'">'+firstWord(a.resource)+(a.half?' ½':'')+'</span>';
+  return '<span class="asn'+(conf?' conflict':'')+(a.half?' half':'')+'" style="border-left-color:'+col+'"'+dd+' title="'+esc(a.resource+' — '+a.jobName+DRAG_TIP)+'">'+firstWord(a.resource)+(a.half?' ½':'')+'</span>';
 }
 
 // ── By Job board ────────────────────────────────────────────────────────────
@@ -625,21 +761,26 @@ function renderJobBoard() {
   const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
   const jobs = visibleJobs();
   const searching = state.jobSearch.trim() !== '';
-  let html = renderCapacity() + '<div class="hint">Click a project to expand · click a day cell on a sub-code to staff it.</div>';
-  if (!jobs.length) return html + '<div class="empty">'+(searching ? 'No projects match “'+esc(state.jobSearch.trim())+'”.' : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+'.')+'</div>';
+  let html = renderCapacity() + hintHtml('Click a day cell to staff it · drag a name to another day, task or person · drag the blue corner across the week to repeat a crew · right-click a name to remove it.');
+  if (!jobs.length) return html + '<div class="empty">'+(searching ? 'No projects match “'+esc(state.jobSearch.trim())+'”.' : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+(_hiddenJobCount?' — '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s are':' is')+' hidden.':'.'))+'</div>';
   let body = '';
   jobs.forEach(job => {
     const col = divColor(job.division);
     const collapsed = !state.jobOpen[job.division+'::'+job.id] && !searching;
-    const behind = (job.subCodes||[]).filter(c => c.status==='behind').length;
+    const subs = job.subCodes || [];
+    const behind = subs.filter(c => c.status==='behind').length;
+    const done = doneCount(job);
     const headCells = ds.map(d => { const n = new Set(jobAssignmentsOnDate(d, job.division, job.id).map(a=>a.resource)).size; const st = getSiteTime(d, job.division, job.id); return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+(st?'<div class="site-time">⏰'+esc(fmtTimeShort(st))+'</div>':'')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleJob(\''+job.division+'\',\''+escAttr(job.id)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+
       '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
-      '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+'</div></td>'+headCells+'</tr>';
+      '<div class="sub-meta">'+(job.deadline?'deadline '+esc(job.deadline):'no deadline')+(behind?' · <span class="warn">'+behind+' behind</span>':'')+
+      (subs.length?' · <span class="'+(done===subs.length?'ok':'muted')+'">'+done+'/'+subs.length+' complete</span>':'')+'</div></td>'+headCells+'</tr>';
+
     if (collapsed) return;
     body += jobSubSection(job, ds, tStr, searching);
   });
-  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job / Sub-code</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
+  const note = _hiddenJobCount ? '<div class="board-note">✓ '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden · <span class="lnk" onclick="toggleHideComplete()">show completed work</span></div>' : '';
+  return html + '<div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job / Sub-code</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>' + note;
 }
 // One sub-code row (lead cell + day cells). Shared by the flat and grouped layouts.
 function subLeadHtml(job, sc) {
@@ -647,12 +788,19 @@ function subLeadHtml(job, sc) {
   return '<td class="lead-col" style="padding-left:1.4rem"><strong>'+esc(sc.costCode)+'</strong>'+(sc.subCode?' · '+esc(sc.subCode):'')+
     '<div class="sub-meta"><span class="pill '+sc.status+'">'+sc.status.replace('-',' ')+'</span>'+(sc.requiredPace!=null?'<span>req '+fmtNum(sc.requiredPace)+'/d</span>':'')+need+' '+projChip(job,sc)+'</div></td>';
 }
+// Drop-target identity for a job cell. Written as data-* (not inline JS) so one
+// delegated listener on <main> serves every cell on the board.
+function jobCellData(job, sc, d) {
+  return ' data-date="'+esc(d)+'" data-div="'+esc(job.division)+'" data-job="'+esc(job.id)+'" data-cc="'+esc(sc.costCode||'')+'" data-sc="'+esc(sc.subCode||'')+'"';
+}
 function subRowHtml(job, sc, ds, tStr) {
   const cells = ds.map(d => {
     const items = cellAssignments(d, job.division, job.id, sc.costCode, sc.subCode);
     const confSet = conflictResourcesOn(d);
     const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr;
-    return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(sc.costCode)+'\',\''+escAttr(sc.subCode)+'\',\''+d+'\')">'+items.map(a => chip(a, confSet.has(a.resource))).join('')+'</td>';
+    // Excel's fill handle: grab the corner, drag across the week, same crew on every day you cross.
+    const fill = items.length ? '<span class="fill-h" draggable="true" data-fill="1"'+jobCellData(job, sc, d)+' title="Drag across the week to put this same crew on the other days"></span>' : '';
+    return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" data-drop="job"'+jobCellData(job, sc, d)+' onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(sc.costCode)+'\',\''+escAttr(sc.subCode)+'\',\''+d+'\')">'+items.map(a => chip(a, confSet.has(a.resource), d)).join('')+fill+'</td>';
   }).join('');
   return '<tr>'+subLeadHtml(job, sc)+cells+'</tr>';
 }
@@ -662,11 +810,20 @@ const BIG_JOB_SUBS = 10; // above this, an expanded job gets a filter box + coll
 // aren't scrolling a wall of sub-codes to find the one you're staffing.
 function jobSubSection(job, ds, tStr, searching) {
   const blank = ds.map(()=>'<td></td>').join('');
-  let subs = (job.subCodes||[]); if (state.needCrewOnly) subs = subs.filter(subNeedsCrew);
-  if (!subs.length) return '<tr><td class="lead-col muted" style="padding-left:1.5rem">'+(state.needCrewOnly?'No sub-codes need crew':'No sub-codes')+'</td>'+blank+'</tr>';
-  if (subs.length <= BIG_JOB_SUBS) return subs.map(sc => subRowHtml(job, sc, ds, tStr)).join('');
-
   const jobKey = job.division+'::'+job.id;
+  let subs = (job.subCodes||[]); if (state.needCrewOnly) subs = subs.filter(subNeedsCrew);
+  // Finished work comes off the board. On a 69-code job it is most of the rows
+  // and none of the decisions. The count stays, with one click back to it.
+  const hiddenDone = subs.filter(sc => subHidden(job, sc)).length;
+  if (hiddenDone) subs = subs.filter(sc => !subHidden(job, sc));
+  const doneRow = hiddenDone
+    ? '<tr class="done-row"><td class="lead-col muted" style="padding-left:1.4rem;font-size:0.64rem">✓ '+hiddenDone+' complete sub-code'+(hiddenDone>1?'s':'')+' hidden · <span class="lnk" onclick="event.stopPropagation();showDone(\''+job.division+'\',\''+escAttr(job.id)+'\')">show</span></td>'+blank+'</tr>'
+    : (state.hideComplete && state.showDoneFor[jobKey] && (job.subCodes||[]).some(isDone)
+      ? '<tr class="done-row"><td class="lead-col muted" style="padding-left:1.4rem;font-size:0.64rem">Showing complete sub-codes · <span class="lnk" onclick="event.stopPropagation();hideDoneAgain(\''+job.division+'\',\''+escAttr(job.id)+'\')">hide them</span></td>'+blank+'</tr>'
+      : '');
+  if (!subs.length) return doneRow + '<tr><td class="lead-col muted" style="padding-left:1.5rem">'+(state.needCrewOnly?'No sub-codes need crew':(hiddenDone?'Every sub-code is complete':'No sub-codes'))+'</td>'+blank+'</tr>';
+  if (subs.length <= BIG_JOB_SUBS) return doneRow + subs.map(sc => subRowHtml(job, sc, ds, tStr)).join('');
+
   const fq = (state.subFilter[jobKey]||'').trim().toLowerCase();
   let shown = subs;
   if (fq) shown = subs.filter(sc => ((sc.costCode||'')+' '+(sc.subCode||'')+' '+(sc.description||'')).toLowerCase().includes(fq));
@@ -676,12 +833,12 @@ function jobSubSection(job, ds, tStr, searching) {
       '<input type="text" id="'+escAttr(fid)+'" class="subfilter-input" placeholder="🔍 Filter '+subs.length+' sub-codes…" value="'+escAttr(state.subFilter[jobKey]||'')+'" oninput="onSubFilter(\''+job.division+'\',\''+escAttr(job.id)+'\')" autocomplete="off">'+
       (fq?'<span class="muted" style="font-size:0.6rem;margin-left:0.4rem">'+shown.length+' match'+(shown.length===1?'':'es')+'</span>':'')+
     '</td><td colspan="7"></td></tr>';
-  if (!shown.length) return ctrl + '<tr><td class="lead-col muted" style="padding-left:1.5rem">No sub-codes match “'+esc((state.subFilter[jobKey]||'').trim())+'”.</td>'+blank+'</tr>';
+  if (!shown.length) return ctrl + doneRow + '<tr><td class="lead-col muted" style="padding-left:1.5rem">No sub-codes match “'+esc((state.subFilter[jobKey]||'').trim())+'”.</td>'+blank+'</tr>';
 
   // Group by cost code, preserving the order cost codes first appear.
   const groups = {}, order = [];
   shown.forEach(sc => { const cc = sc.costCode||''; if (!(cc in groups)) { groups[cc] = []; order.push(cc); } groups[cc].push(sc); });
-  let rows = ctrl;
+  let rows = ctrl + doneRow;
   order.forEach(cc => {
     const list = groups[cc];
     const collapsed = !fq && !!state.subGrpCol[jobKey+'¦'+cc]; // a filter forces every matching group open
@@ -720,7 +877,7 @@ function renderCrewBoard() {
   if (!state.showAll && !q) emps = emps.filter(e => inPlay.emps.has(e.name));
   const groups = {}; emps.forEach(e => { const g = e.jobClass || 'Other'; (groups[g] = groups[g] || []).push(e); });
   const groupNames = Object.keys(groups).sort();
-  let html = renderCapacity() + '<div class="hint">'+(state.showAll?'Showing the full roster.':'Showing crew in rotation (assigned this week or on an active job). Tick “Show full roster” for everyone.')+' Click a cell to assign someone to a job. Red = double-booked.</div>';
+  let html = renderCapacity() + hintHtml((state.showAll?'Showing the full roster.':'Showing crew in rotation — tap “Full roster” for everyone.')+' Click a cell to put someone on a job · drag a job from one person’s row onto another to hand it over · right-click to remove. Red = double-booked.');
   let body = '';
   const rowFor = (resource, kind, meta) => {
     const load = loadForResource(resource);
@@ -731,7 +888,7 @@ function renderCrewBoard() {
       // much of the day is gone and leaves the chips beside it alone.
       const offClash = !!(off && items.length && !off.partial);
       const offMark = off ? '<span title="'+esc(off.type)+' · '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':' (approved)')+'" style="font-size:0.6rem;color:'+(offClash?'var(--red)':'var(--amber)')+'">⛱'+(off.partial?esc(offHrsText(off))+'h':'')+(offClash?' off!':'')+'</span>' : '';
-      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf)).join('')+'</td>'; }).join('');
+      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+'" data-drop="res" data-date="'+esc(d)+'" data-res="'+esc(resource)+'" data-rkind="'+esc(kind)+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf, d)).join('')+'</td>'; }).join('');
     return '<tr>'+left+cells+'</tr>';
   };
   if (!groupNames.length) body += '<tr><td class="lead-col muted">No crew match.</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
@@ -752,8 +909,177 @@ function renderCrewBoard() {
 }
 function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
 
+// ── Drag & drop: the fast path for staffing ────────────────────────────────
+// Clicking a cell and working a dialog is fine for building a crew from
+// nothing. Everything after that — he's on the wrong day, swap those two men,
+// run Monday's crew all week — is a drag, and used to be six clicks. One
+// delegated listener set on <main> serves every cell on both boards, because
+// the boards are re-rendered as innerHTML and per-element handlers would die
+// with each repaint.
+let _drag = null, _dropEl = null;
+const _el = t => (t && t.nodeType === 1) ? t : (t && t.parentElement) || null;
+function _clearDropHi() { if (_dropEl) { _dropEl.classList.remove('drop-move','drop-copy'); _dropEl = null; } }
+function _clearDragging() { document.querySelectorAll('.asn.dragging').forEach(x => x.classList.remove('dragging')); }
+// A cell's drop identity, read straight off the data-* the renderers wrote.
+function _tgtOf(el) {
+  if (!el) return null; const d = el.dataset;
+  if (d.drop === 'job') return { kind:'job', date:d.date, division:d.div, jobId:d.job, costCode:d.cc||'', subCode:d.sc||'' };
+  if (d.drop === 'res') return { kind:'res', date:d.date, resource:d.res, rkind:d.rkind||'emp' };
+  return null;
+}
+// Machines follow the person who runs them. Moving a man off a cell and
+// leaving his excavator behind on it is never what was meant.
+function _pairedEquip(list, a) {
+  if (!a || a.kind === 'equip') return [];
+  return list.filter(x => x.kind === 'equip' && x.op === a.resource && x.division === a.division && x.jobId === a.jobId &&
+    (x.costCode||'') === (a.costCode||'') && (x.subCode||'') === (a.subCode||''));
+}
+function _hasAt(date, t, resource, op) {
+  return cellAssignments(date, t.division, t.jobId, t.costCode, t.subCode).some(x => x.resource === resource && (x.op||'') === (op||''));
+}
+function onDragStart(e) {
+  const t = _el(e.target); if (!t) return;
+  if (t.classList.contains('fill-h')) {
+    const d = t.dataset;
+    _drag = { type:'fill', src:{ date:d.date, division:d.div, jobId:d.job, costCode:d.cc||'', subCode:d.sc||'' } };
+    e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', 'fill');
+    return;
+  }
+  const c = t.closest('.asn[data-aid]'); if (!c) return;
+  _drag = { type:'asn', id:c.dataset.aid, date:c.dataset.adate };
+  c.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'copyMove'; e.dataTransfer.setData('text/plain', c.dataset.aid);
+}
+function onDragEnd() { _drag = null; _clearDropHi(); _clearDragging(); }
+function onDragOver(e) {
+  if (!_drag) return;
+  const t = _el(e.target); const cell = t && t.closest('[data-drop]');
+  if (!cell) { _clearDropHi(); return; }
+  e.preventDefault();
+  const copy = _drag.type === 'fill' || e.altKey || e.ctrlKey || e.metaKey;
+  e.dataTransfer.dropEffect = copy ? 'copy' : 'move';
+  if (_dropEl !== cell) _clearDropHi();
+  _dropEl = cell;
+  cell.classList.toggle('drop-copy', copy);
+  cell.classList.toggle('drop-move', !copy);
+}
+function onDragLeave(e) { if (_dropEl && _el(e.target) === _dropEl) _clearDropHi(); }
+function onDrop(e) {
+  if (!_drag) return;
+  const t = _el(e.target); const cell = t && t.closest('[data-drop]');
+  _clearDropHi(); _clearDragging();
+  const drag = _drag; _drag = null;
+  if (!cell) return;
+  e.preventDefault(); e.stopPropagation();
+  const tgt = _tgtOf(cell); if (!tgt) return;
+  if (drag.type === 'fill') { if (tgt.kind === 'job') fillFromCell(drag.src, tgt); else toast('Drag the corner handle onto a job cell'); return; }
+  const copy = e.altKey || e.ctrlKey || e.metaKey;
+  if (tgt.kind === 'job') dropOnJobCell(drag.date, drag.id, tgt, copy);
+  else dropOnResCell(drag.date, drag.id, tgt, copy);
+}
+// Dropped on a day cell of the By Job board: same person, new day / task / job.
+function dropOnJobCell(srcDate, id, tgt, copy) {
+  const list = state.assignments[srcDate] || [];
+  const a = list.find(x => x.id === id); if (!a) return;
+  if (srcDate === tgt.date && a.division === tgt.division && a.jobId === tgt.jobId &&
+      (a.costCode||'') === (tgt.costCode||'') && (a.subCode||'') === (tgt.subCode||'')) return; // dropped where it started
+  const job = jobById(tgt.division, tgt.jobId) || { division:tgt.division, id:tgt.jobId, name:a.jobName };
+  const movers = [a].concat(_pairedEquip(list, a));
+  if (movers.every(m => isBlockedOff(m.resource, m.kind, tgt.date))) { toast(a.resource + ' is approved off ' + shortDate(tgt.date) + ' — not moved'); return; }
+  pushUndo();
+  let added = 0;
+  movers.forEach(m => {
+    if (isBlockedOff(m.resource, m.kind, tgt.date)) return;
+    if (_hasAt(tgt.date, tgt, m.resource, m.op)) return;
+    dayList(tgt.date).push({ ...m, id:uid(), division:job.division, jobId:job.id, jobName:job.name, costCode:tgt.costCode||'', subCode:tgt.subCode||'' });
+    added++;
+  });
+  if (copy && !added) { _undo.pop(); updateUndoButtons(); toast(a.resource + ' is already there'); return; }
+  if (!copy) {
+    const ids = new Set(movers.map(m => m.id));
+    state.assignments[srcDate] = list.filter(x => !ids.has(x.id));
+    if (!state.assignments[srcDate].length) delete state.assignments[srcDate];
+  }
+  saveAssignments(); render();
+  toast((copy ? 'Copied ' : 'Moved ') + a.resource + ' → ' + (tgt.costCode || job.name) + ' · ' + shortDate(tgt.date));
+}
+// Dropped on a row of the By Crew board: same work, different person — the
+// "Dave's out, give it to Mike" move, in one gesture.
+function dropOnResCell(srcDate, id, tgt, copy) {
+  const list = state.assignments[srcDate] || [];
+  const a = list.find(x => x.id === id); if (!a) return;
+  if (a.resource === tgt.resource && srcDate === tgt.date) return;
+  if ((a.kind || 'emp') !== (tgt.rkind || 'emp')) { toast('A machine goes on an equipment row, a person on a crew row'); return; }
+  if (isBlockedOff(tgt.resource, tgt.rkind, tgt.date)) { toast(tgt.resource + ' is approved off ' + shortDate(tgt.date)); return; }
+  const where = { division:a.division, jobId:a.jobId, costCode:a.costCode||'', subCode:a.subCode||'' };
+  if (_hasAt(tgt.date, where, tgt.resource, a.kind === 'equip' ? a.op : '')) { toast(tgt.resource + ' is already on that'); return; }
+  const movers = [a].concat(_pairedEquip(list, a));
+  pushUndo();
+  let added = 0;
+  movers.forEach(m => {
+    const o = { ...m, id:uid() };
+    if (m.id === a.id) o.resource = tgt.resource; else o.op = tgt.resource; // his machines change driver with him
+    if (isBlockedOff(o.resource, o.kind, tgt.date)) return;
+    if (_hasAt(tgt.date, o, o.resource, o.op)) return;
+    dayList(tgt.date).push(o); added++;
+  });
+  if (!added) { _undo.pop(); updateUndoButtons(); toast('Nothing to hand over'); return; }
+  if (!copy) {
+    const ids = new Set(movers.map(m => m.id));
+    state.assignments[srcDate] = list.filter(x => !ids.has(x.id));
+    if (!state.assignments[srcDate].length) delete state.assignments[srcDate];
+  }
+  saveAssignments(); render();
+  toast((copy ? 'Also on ' : 'Handed to ') + tgt.resource + ' · ' + a.jobName + ' · ' + shortDate(tgt.date));
+}
+// The corner handle: drag it across the row and the crew on the day you grabbed
+// repeats on every day you crossed. Drag it to a different row and that crew
+// lands there instead — the whole gang onto another task in one go.
+function fillFromCell(src, tgt) {
+  const crew = cellAssignments(src.date, src.division, src.jobId, src.costCode, src.subCode);
+  if (!crew.length) { toast('Nothing to repeat'); return; }
+  const sameRow = tgt.division === src.division && tgt.jobId === src.jobId &&
+    (tgt.costCode||'') === (src.costCode||'') && (tgt.subCode||'') === (src.subCode||'');
+  let dates = [tgt.date];
+  if (sameRow) {
+    const ws = weekDateStrs(); const i = ws.indexOf(src.date), j = ws.indexOf(tgt.date);
+    if (i >= 0 && j >= 0) dates = ws.slice(Math.min(i,j), Math.max(i,j) + 1).filter(d => d !== src.date);
+  }
+  if (!dates.length) return;
+  const job = jobById(tgt.division, tgt.jobId) || { division:tgt.division, id:tgt.jobId, name:crew[0].jobName };
+  pushUndo();
+  let added = 0, blocked = 0;
+  dates.forEach(d => crew.forEach(a => {
+    if (isBlockedOff(a.resource, a.kind, d)) { blocked++; return; }
+    if (_hasAt(d, tgt, a.resource, a.op)) return;
+    dayList(d).push({ ...a, id:uid(), division:job.division, jobId:job.id, jobName:job.name, costCode:tgt.costCode||'', subCode:tgt.subCode||'' });
+    added++;
+  }));
+  if (!added) { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Those crew are approved off — nothing added' : 'Already scheduled on those days'); return; }
+  saveAssignments(); render();
+  toast('Repeated ' + crew.length + (crew.length === 1 ? ' resource' : ' resources') + ' across ' + dates.length + ' day' + (dates.length > 1 ? 's' : '') + (blocked ? ' · skipped ' + blocked + ' approved off' : ''));
+}
+// Right-click a name to take it off. Undo is one Ctrl+Z, so this stays cheap.
+function onChipContext(e) {
+  const t = _el(e.target); const c = t && t.closest('.asn[data-aid]'); if (!c) return;
+  e.preventDefault();
+  const date = c.dataset.adate, id = c.dataset.aid;
+  const a = (state.assignments[date] || []).find(x => x.id === id); if (!a) return;
+  if (a.kind === 'equip') removeAssignment(date, id); else removePersonAssignment(date, id);
+  render(); toast('Removed ' + a.resource + ' · Ctrl+Z to undo');
+}
+function wireBoardDnD() {
+  const main = document.getElementById('main');
+  main.addEventListener('dragstart', onDragStart);
+  main.addEventListener('dragend', onDragEnd);
+  main.addEventListener('dragover', onDragOver);
+  main.addEventListener('dragleave', onDragLeave);
+  main.addEventListener('drop', onDrop);
+  main.addEventListener('contextmenu', onChipContext);
+}
+
 // ── Assign modal ────────────────────────────────────────────────────────────
-function openAssignJob(division, jobId, costCode, subCode, date) { state.assignCtx = { mode:'job', division, jobId, costCode, subCode, date }; state.alsoCodes = []; state.alsoOpen = false; state.equipPickFor = null; renderModal(); }
+function openAssignJob(division, jobId, costCode, subCode, date) { state.assignCtx = { mode:'job', division, jobId, costCode, subCode, date }; state.alsoCodes = []; state.alsoOpen = false; state.equipPickFor = null; state.moreOpts = false; renderModal(); }
 function openAssignResource(resource, kind, date) { state.assignCtx = { mode:'resource', resource, kind, date }; state.equipPickFor = null; renderModal(); }
 function closeAssign() { state.assignCtx = null; state.equipPickFor = null; const o = document.getElementById('assignOverlay'); if (o) o.remove(); }
 function afterMutate() { renderModal(); document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard(); }
@@ -765,7 +1091,7 @@ function alsoOtherCodes() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return [];
   const job = jobById(ctx.division, ctx.jobId) || { subCodes:[] };
   const curKey = (ctx.costCode||'') + '¦' + (ctx.subCode||'');
-  return (job.subCodes || []).map((s,i) => ({ s, i })).filter(o => ((o.s.costCode||'')+'¦'+(o.s.subCode||'')) !== curKey);
+  return (job.subCodes || []).map((s,i) => ({ s, i })).filter(o => ((o.s.costCode||'')+'¦'+(o.s.subCode||'')) !== curKey && !(state.hideComplete && isDone(o.s)));
 }
 function alsoLabel(s) { return esc(s.costCode) + (s.subCode ? ' · ' + esc(s.subCode) : ''); }
 function alsoSummaryText() { const n = (state.alsoCodes||[]).length; return n ? n + ' cost code' + (n>1?'s':'') + ' selected' : 'Select cost codes…'; }
@@ -840,7 +1166,43 @@ function renderModal() { const ctx = state.assignCtx; if (!ctx) return;
   let o = document.getElementById('assignOverlay');
   if (!o) { o = document.createElement('div'); o.id='assignOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeAssign(); }; }
   o.innerHTML = ctx.mode === 'job' ? modalJobHtml(ctx) : modalResourceHtml(ctx);
-  if (ctx.mode === 'job') updatePickList();
+  if (ctx.mode !== 'job') return;
+  updatePickList();
+  // Straight into the search box: open a cell, type three letters, hit Enter.
+  // Skipped while a sub-picker is open, or focus would be yanked mid-task.
+  if (state.equipPickFor == null && !state.alsoOpen) { const el = document.getElementById('pickSearch'); if (el) el.focus(); }
+}
+function toggleMoreOptions() { state.moreOpts = !state.moreOpts; renderModal(); }
+// Wipe a cell in one go — faster than removing six people one at a time.
+function clearCell() {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
+  const cur = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
+  if (!cur.length) return;
+  pushUndo();
+  const ids = new Set(cur.map(a => a.id));
+  state.assignments[ctx.date] = (state.assignments[ctx.date] || []).filter(a => !ids.has(a.id));
+  if (!state.assignments[ctx.date].length) delete state.assignments[ctx.date];
+  saveAssignments(); afterMutate(); toast('Cleared ' + cur.length + ' · Ctrl+Z to undo');
+}
+// Arrow keys walk the candidate list, Enter puts the highlighted one on the job,
+// Escape closes. No mouse needed to staff a cell.
+function pickKey(e) {
+  if (e.key === 'Escape') { e.preventDefault(); closeAssign(); return; }
+  const rows = Array.from(document.querySelectorAll('#pickList .pick-row'));
+  if (!rows.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    let i = rows.findIndex(r => r.classList.contains('kb'));
+    if (i < 0) i = 0; else i = e.key === 'ArrowDown' ? Math.min(i + 1, rows.length - 1) : Math.max(i - 1, 0);
+    rows.forEach(r => r.classList.remove('kb'));
+    rows[i].classList.add('kb'); rows[i].scrollIntoView({ block:'nearest' });
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const r = rows.find(x => x.classList.contains('kb')) || rows[0];
+    if (r && !r.classList.contains('blocked')) r.click();
+  }
 }
 function spanLabel() { return state.applySpan==='day'?'this day':state.applySpan==='week5'?'Mon–Fri':'the full week'; }
 // "Assigned here" list: people first, each with the machines paired to them
@@ -902,8 +1264,14 @@ function modalJobHtml(ctx) {
   const dfmt = new Date(ctx.date+'T12:00:00').toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
   const col = divColor(ctx.division);
   const current = cellAssignments(ctx.date, ctx.division, ctx.jobId, ctx.costCode, ctx.subCode);
-  const curHtml = assignedHereHtml(ctx);
-  const crewOpts = state.crews.length ? '<div style="display:flex;gap:0.4rem;margin-bottom:0.3rem"><select class="full" id="crewSel"><option value="">Add a saved crew…</option>'+state.crews.map(c => '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+c.members.length+')</option>').join('')+'</select><button class="btn" onclick="applyCrewFromPicker()">Add</button></div>' : '<div class="muted" style="font-size:0.72rem;margin-bottom:0.3rem">No saved crews yet — assign people, then “Save as crew”.</div>';
+  const people = current.filter(a => a.kind !== 'equip').length;
+
+  // Everything below the fold is a setting, not the job: the report time, the
+  // multi-code fan-out, the crew templates. Folded away by default so the
+  // people picker is the first thing on screen on a laptop.
+  const crewOpts = state.crews.length
+    ? '<div style="display:flex;gap:0.4rem;margin-bottom:0.3rem"><select class="full" id="crewSel"><option value="">Add a saved crew…</option>'+state.crews.map(c => '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+c.members.length+')</option>').join('')+'</select><button class="btn" onclick="applyCrewFromPicker()">Add</button></div>'
+    : '<div class="muted" style="font-size:0.72rem;margin-bottom:0.3rem">No saved crews yet — assign people, then “Save these as a crew”.</div>';
   const alsoHtml = alsoOtherCodes().length ? (
     '<label class="fld">Also assign to other cost codes</label>' +
     '<div class="also-dd">' +
@@ -923,18 +1291,27 @@ function modalJobHtml(ctx) {
       (siteVal ? '<span style="font-size:0.76rem;font-weight:700;color:var(--blue)">⏰ '+esc(fmtTime(siteVal))+'</span><button class="btn mini" onclick="clearSiteTime()">clear</button>' : '')+
       '<span class="muted" style="font-size:0.68rem;flex-basis:100%">Report time for the whole crew on <strong>'+esc(job.name)+'</strong> · '+spanLabel()+'.</span>'+
     '</div>';
+  const moreOpen = !!state.moreOpts || !!siteVal || (state.alsoCodes||[]).length > 0;
+  const moreHtml = '<button class="more-tog" onclick="toggleMoreOptions()">'+(moreOpen?'▾':'▸')+' Report time, multi-code &amp; saved crews'+
+      (siteVal?' <span style="color:var(--blue)">· ⏰ '+esc(fmtTime(siteVal))+'</span>':'')+
+      ((state.alsoCodes||[]).length?' <span style="color:var(--blue)">· +'+state.alsoCodes.length+' code'+(state.alsoCodes.length>1?'s':'')+'</span>':'')+'</button>'+
+    (moreOpen ? '<div>'+siteHtml+alsoHtml+'<label class="fld">Saved crews</label>'+crewOpts+
+      (current.length?'<button class="btn mini" style="margin-top:0.3rem" onclick="saveCurrentAsCrew()">💾 Save these as a crew</button>':'')+'</div>' : '');
+
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(ctx.costCode||'job-level')+(ctx.subCode?' · '+esc(ctx.subCode):'')+' · '+esc(dfmt)+(sc?' · '+sc.status:'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     projLine(job, sc) +
-    '<label class="fld">Apply changes to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
-    (state.applySpan!=='day'?'<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">Adds each person to '+spanLabel()+' on this sub-code.</div>':'')+
-    siteHtml +
-    alsoHtml +
-    '<label class="fld">Assigned here (this day)</label>'+curHtml+
-    (current.some(a=>a.kind!=='equip')?'<div class="muted" style="font-size:0.66rem;margin-top:0.3rem">Tip: tap <strong>🚜+</strong> next to a person to pair the machine they’ll run.</div>':'')+
-    (current.length?'<button class="btn mini" style="margin-top:0.3rem" onclick="saveCurrentAsCrew()">💾 Save these as a crew</button>':'')+
-    '<label class="fld">Saved crews</label>'+crewOpts+
-    '<label class="fld">Add crew or equipment</label><input type="text" class="full" id="pickSearch" placeholder="Search people / equipment…" oninput="updatePickList()" autocomplete="off"><div class="pick-list" id="pickList"></div>'+
-    '<div style="margin-top:0.8rem"><button class="btn" onclick="closeAssign()">Done</button></div></div></div>';
+    '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Mon–Fri</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">Full week</button></div>'+
+    // The picker leads: type a name, Enter, he is on. Arrow keys walk the list.
+    '<label class="fld">Add crew or equipment <span style="text-transform:none;letter-spacing:0;font-weight:400">— type, ↑↓, Enter</span></label>'+
+    '<input type="text" class="full" id="pickSearch" placeholder="Search people / equipment…" oninput="updatePickList()" onkeydown="pickKey(event)" autocomplete="off">'+
+    '<div class="pick-list" id="pickList"></div>'+
+    (state.applySpan!=='day'?'<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">Each pick lands on '+spanLabel()+'.</div>':'')+
+    '<label class="fld" style="display:flex;align-items:center;gap:0.5rem">On this cell ('+people+' crew'+(current.length-people?' · '+(current.length-people)+' equip':'')+')'+
+      (current.length?'<span style="flex:1"></span><button class="btn mini" style="text-transform:none;letter-spacing:0" onclick="clearCell()">Clear</button>':'')+'</label>'+
+    assignedHereHtml(ctx)+
+    (people?'<div class="muted" style="font-size:0.66rem;margin-top:0.3rem">Tip: tap <strong>🚜+</strong> next to a person to pair the machine they’ll run.</div>':'')+
+    moreHtml +
+    '<div style="margin-top:0.8rem"><button class="btn primary" onclick="closeAssign()">Done</button></div></div></div>';
 }
 function onSiteTimeInput() { const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return; const el = document.getElementById('siteTime'); if (!el) return; setSiteTime(ctx.division, ctx.jobId, el.value, spanDates(ctx.date)); afterMutate(); if (el.value) toast('On site '+fmtTime(el.value)+(state.applySpan!=='day'?' · '+spanLabel():'')); }
 function clearSiteTime() { const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return; setSiteTime(ctx.division, ctx.jobId, '', spanDates(ctx.date)); afterMutate(); }
@@ -953,19 +1330,21 @@ function updatePickList() {
   // Sunk to the bottom only if he is off for the WHOLE day. A man with a half
   // day is an ordinary candidate — sorting him down beside the unavailable was
   // the same mistake as blocking him, made quietly.
-  cands.sort((a,b) => { const ao = !!(a.off && !a.off.partial), bo = !!(b.off && !b.off.partial); if (ao !== bo) return ao ? 1 : -1; const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1; const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
+  cands.sort((a,b) => { const ao = !!(a.off && !a.off.partial), bo = !!(b.off && !b.off.partial); if (ao !== bo) return ao ? 1 : -1;
+    if (a.kind !== b.kind) return a.kind === 'equip' ? 1 : -1;
+    const af = a.others.length===0 && !a.onThis, bf = b.others.length===0 && !b.onThis; if (af !== bf) return af ? -1 : 1; const ah = histCrew.has(a.name), bh = histCrew.has(b.name); if (ah !== bh) return ah ? -1 : 1; return a.name.localeCompare(b.name); });
   cands = cands.slice(0, 60);
   if (!cands.length) { box.innerHTML = '<div class="muted" style="font-size:0.78rem;padding:0.5rem">No match.</div>'; return; }
-  box.innerHTML = cands.map(c => { let status, cls = '';
+  box.innerHTML = cands.map((c, ci) => { let status, cls = ci === 0 ? ' kb' : '';
     // Only a whole approved day is 'blocked' — the class that greys the row out
     // and makes it unpickable. A part day shows its hours and stays pickable.
-    if (c.off && c.off.status === 'approved' && !c.off.partial && c.kind !== 'equip') { status = '<span class="warn">⛱ off (approved)</span>'; cls = ' blocked'; }
+    if (c.off && c.off.status === 'approved' && !c.off.partial && c.kind !== 'equip') { status = '<span class="warn">⛱ off (approved)</span>'; cls += ' blocked'; }
     else if (c.off) status = '<span class="warn">⛱ '+esc(offLabel(c.off))+(c.off.status==='submitted'?' (req)':'')+'</span>';
-    else if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls = ' on-this'; }
+    else if (c.onThis) { status = '<span class="ok">✓ assigned</span>'; cls += ' on-this'; }
     else if (c.others.length) status = '<span class="warn">→ '+esc(c.others.join(', '))+'</span>';
     else status = '<span class="ok">free</span>';
     const sub = [c.kind==='equip'?'equipment':(c.jobClass||''), histCrew.has(c.name)?'★ worked this code':''].filter(Boolean).join(' · ');
-    return '<div class="pick-row'+cls+'" onclick="pickAdd(\''+escAttr(c.name)+'\',\''+c.kind+'\')"><div><div class="pick-name">'+(c.sup?'★ ':'')+esc(c.name)+(c.kind==='equip'?' 🚜':'')+'</div>'+(sub?'<div class="pick-sub">'+esc(sub)+'</div>':'')+'</div><span class="pick-status">'+status+'</span></div>';
+    return '<div class="pick-row'+cls+'" onclick="pickAdd(\''+escAttr(c.name)+'\',\''+c.kind+'\')"><span class="pick-name">'+(c.sup?'★ ':'')+esc(c.name)+(c.kind==='equip'?' 🚜':'')+'</span>'+(sub?'<span class="pick-sub">'+esc(sub)+'</span>':'')+'<span class="pick-status">'+status+'</span></div>';
   }).join('');
 }
 function pickAdd(name, kind) {
@@ -1024,7 +1403,8 @@ function onPickRJob() { const sel = document.getElementById('rJob').value, wrap 
   if (!sel) { wrap.style.display='none'; add.disabled = true; return; }
   const [division, id] = sel.split('::'); const job = jobById(division, id);
   wrap.style.display = 'block'; add.disabled = false;
-  scSel.innerHTML = (job.subCodes||[]).map((c,i) => '<option value="'+i+'">'+esc(c.costCode)+(c.subCode?' · '+esc(c.subCode):'')+'  ['+c.status+(c.addlLaborersNeeded?' · +'+c.addlLaborersNeeded:'')+']</option>').join('') || '<option value="" disabled>No cost codes — adds to whole job</option>';
+  const codes = (job.subCodes||[]).map((c,i) => ({ c, i })).filter(o => !(state.hideComplete && isDone(o.c)));
+  scSel.innerHTML = codes.map(o => '<option value="'+o.i+'">'+esc(o.c.costCode)+(o.c.subCode?' · '+esc(o.c.subCode):'')+'  ['+o.c.status+(o.c.addlLaborersNeeded?' · +'+o.c.addlLaborersNeeded:'')+']</option>').join('') || '<option value="" disabled>No cost codes — adds to whole job</option>';
 }
 function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (!sel) return;
   const [division, id] = sel.split('::'); const job = jobById(division, id);
@@ -1378,7 +1758,8 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleJob, toggleGrp, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, onPickRJob, rConfirmAdd, removeAssignment, toggleHalf, afterMutate, renderModal, setSpan, toggleAlsoCode, toggleAlsoOpen, updateAlsoList, applyCrewFromPicker, saveCurrentAsCrew, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime });
+Object.assign(window, { toggleJob, toggleGrp, toggleSubGrp, onSubFilter, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, toggleAlsoCode, toggleAlsoOpen, updateAlsoList, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, showDone, hideDoneAgain, dismissHint, setCompact });
+wireBoardDnD();
 loadAll();
 </script>
 </body>
