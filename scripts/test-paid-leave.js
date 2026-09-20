@@ -329,6 +329,9 @@ console.log('\n[the Hours Report puts the figure on the sheet]');
       'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours', 'weekStartOf', 'weekEndOf',
       'stampKey', 'compareIds', 'byEntryOrder',
       'timeOffPayHours', 'leaveHoursOf', 'offDayTitle', 'timeOffCell',
+      // The lunch pill's "No" names whichever job of a split day took the
+      // break, so reportDetailHtml reaches the review grid's holder lookup.
+      'lunchHolders', 'lunchNoTitle',
       'weeklyOvertime', 'detailColumnsRowHtml', 'weekBandHtml', 'reportDetailHtml',
       'buildReportModel', 'renderReport'];
 
@@ -346,6 +349,11 @@ console.log('\n[the Hours Report puts the figure on the sheet]');
       const OT_WEEKLY_THRESHOLD = 40;
       const PAID_LEAVE_HOURS = ${PAID_LEAVE_HOURS};
       const MAX_LEAVE_HOURS = ${MAX_LEAVE_HOURS};
+      // lunchHolders() reads the page's full result set to find which job of a
+      // split day carries the break. These fixtures have no split days, so an
+      // empty one is the honest stub: every row's pill falls to "No lunch
+      // break taken", exactly as it did before the lookup existed.
+      const allEntries = [];
       ${FULL_SRC}
       ${DETAIL_COLS_SRC}
       ${FNS.map(n => requireFn(PAGE, n, 'payroll.html')).join('\n')}

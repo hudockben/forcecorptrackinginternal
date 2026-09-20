@@ -1748,12 +1748,20 @@
       hint.style.display = split ? '' : 'none';
       hint.textContent = split
         ? `Each job is submitted as its own entry (${order.length} in total), so payroll sees them separately. `
-          + 'Date, lunch, supervisor and notes cover the whole day, and any lunch deduction comes off the first '
-          + 'job. Travel is per leg: the drive out, the drive to each later job, and the drive home.'
+          + 'Date, lunch, supervisor and notes cover the whole day. One lunch is deducted once, from the job '
+          + 'it fell in — the one running over the middle of the day — so that job shows half an hour less than '
+          + 'its clock and the others show all of theirs. Travel is per leg: the drive out, the drive to each '
+          + 'later job, and the drive home.'
         : '';
 
       document.getElementById('dayTotalRow').style.display = split ? '' : 'none';
-      updateDayTotal();
+      // Repaint, don't just re-add. Adding or removing a job changes WHICH
+      // block the day's break comes off — remove the one carrying it and the
+      // break moves to whatever now runs over midday — so re-summing the
+      // figures already on screen would leave the day half an hour high and
+      // the wrong job short. updateDayTotal() is the last thing updateHours()
+      // does, so the sum still happens.
+      updateHours();
     }
 
     function updateDayTotal() {
@@ -1817,7 +1825,7 @@
         b.classList.toggle('on',  v === val);
         b.classList.toggle('off', v !== val);
       });
-      if (which === 'lunch') { lunchVal = val; updateHours(0); }
+      if (which === 'lunch') { lunchVal = val; updateHours(); }
       else                   { equipVals[i] = val; applyEquipUsedVisibility(i); }
     }
 
@@ -1825,7 +1833,7 @@
       const seg = which === 'lunch' ? document.getElementById('seg-lunch') : bel(i, 'seg-equip');
       if (!seg) return;
       seg.querySelectorAll('button').forEach(b => b.classList.remove('on', 'off'));
-      if (which === 'lunch') { lunchVal = null; updateHours(0); }
+      if (which === 'lunch') { lunchVal = null; updateHours(); }
       else                   { equipVals[i] = null; applyEquipUsedVisibility(i); }
     }
 
@@ -2003,23 +2011,115 @@
       return mins;
     }
 
-    // Mirrors the server's deduction in api/timesheet-entries.js: if the
-    // worker selected "Yes" for the lunch question, subtract 30 minutes
-    // from the gross start→end span (clamped at 0). On a split day the
-    // deduction lands on the first job only — one lunch, taken once, so
-    // repeating it per block would quietly eat half an hour per extra job.
-    function updateHours(i = 0) {
+    // ── Which job the break comes off ──────────────────────────────────────
+    // One lunch, taken once, so exactly one block carries it. It used to be
+    // whichever job was entered first, which is not where anybody eats: a
+    // 07:30–09:00 first job absorbed the whole day's deduction and showed 1.00
+    // against a clock window of an hour and a half, while the 09:30–16:00 job
+    // the break actually fell in kept every minute of its own. On a prevailing
+    // wage day that is not merely confusing — it takes the half hour off the
+    // covered job and leaves the uncovered one whole, which understates the
+    // certified hours on the job that has to report them.
+    //
+    // So the break goes where it plausibly happened: the block overlapping the
+    // middle of the day the most. A day with no block near midday at all — a
+    // night shift, a morning-only day — has no such block, and then the LONGEST
+    // one carries it, as the only block with room for a break in it. Every tie
+    // is broken (most midday, then longest, then earliest) so the same day
+    // always picks the same block here and on the server.
+    const LUNCH_WINDOW_MIN = [11 * 60, 14 * 60];   // 11:00–14:00
+    const LUNCH_MINUTES    = 30;
+
+    function startMinutes(start) {
+      if (!start) return null;
+      const [h, m] = start.split(':').map(Number);
+      if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+      return h * 60 + m;
+    }
+
+    // How much of a block sits inside the middle of the day. Checked against
+    // midday on both the day it starts and the day it ends, so a shift that
+    // runs through midnight is measured against the midday it actually reaches
+    // rather than scoring zero for crossing a date.
+    function middayOverlap(startMin, spanMin) {
+      let best = 0;
+      for (const off of [0, 24 * 60]) {
+        const lo = LUNCH_WINDOW_MIN[0] + off, hi = LUNCH_WINDOW_MIN[1] + off;
+        const overlap = Math.min(startMin + spanMin, hi) - Math.max(startMin, lo);
+        if (overlap > best) best = overlap;
+      }
+      return best;
+    }
+
+    // Given the day's blocks in order, which one carries the break. Takes plain
+    // {start, end} strings so the same reckoning runs over the form's inputs
+    // and over the payloads about to be sent. -1 when no block has a usable
+    // clock — the caller decides what to do, and buildPayloads refuses such a
+    // day anyway.
+    function lunchHolderPos(windows) {
+      let pos = -1, bestOverlap = -1, bestSpan = -1;
+      let longest = -1, longestSpan = -1;
+      windows.forEach((w, at) => {
+        const span = spanMinutes(w.start, w.end);
+        const from = startMinutes(w.start);
+        if (span == null || span <= 0 || from == null) return;
+        if (span > longestSpan) { longest = at; longestSpan = span; }
+        // A block shorter than the break cannot carry it. The deduction clamps
+        // at zero, so a 20-minute block straddling noon would absorb 20 minutes
+        // of a 30-minute break and the DAY would quietly come out ten minutes
+        // long. Under the old first-job rule this was nearly unreachable — a
+        // first block is seldom that short — but a block that straddles midday
+        // often is, so the rule has to refuse one it cannot fit.
+        if (span < LUNCH_MINUTES) return;
+        const overlap = middayOverlap(from, span);
+        if (overlap > bestOverlap || (overlap === bestOverlap && span > bestSpan)) {
+          pos = at; bestOverlap = overlap; bestSpan = span;
+        }
+      });
+      // Nothing long enough anywhere: the whole day is shorter than the break.
+      // The longest block takes it and the server's clamp does what it can —
+      // there is no allocation that both pays the break and keeps the day whole.
+      return pos >= 0 ? pos : longest;
+    }
+
+    // The same answer as a DOM block index, read off the form as it stands.
+    function lunchHolderIdx() {
+      const order = blockOrder();
+      const pos = lunchHolderPos(order.map(i => {
+        const a = bel(i, 'start'), b = bel(i, 'end');
+        return { start: a ? a.value : '', end: b ? b.value : '' };
+      }));
+      return pos < 0 ? -1 : order[pos];
+    }
+
+    // Paint one block's hours, given the block the day's break comes off.
+    function paintBlockHours(i, holder) {
       const out = bel(i, 'hours');
       if (!out) return;
       let mins = spanMinutes(bel(i, 'start').value, bel(i, 'end').value);
-      if (mins == null) { out.textContent = '0.00'; updateDayTotal(); return; }
-      if (i === 0 && lunchVal === true) mins = Math.max(0, mins - 30);
+      if (mins == null) { out.textContent = '0.00'; return; }
+      if (i === holder && lunchVal === true) mins = Math.max(0, mins - LUNCH_MINUTES);
       out.textContent = (mins / 60).toFixed(2);
       // The first machine's hours are guessed from this figure, so they follow
       // it — otherwise a clock corrected after the machine was picked leaves a
       // guess on screen that no longer matches the day it was guessed from.
       // Only ever a guess: see refreshEquipAutoHours.
       refreshEquipAutoHours(i);
+    }
+
+    // Repaints EVERY block, whichever one was touched. Under the old rule a
+    // block's hours depended only on its own clock, so each input could repaint
+    // itself; now the block that carries the break is a function of all of them,
+    // and dragging one job's start past midday moves the deduction off another.
+    // Repainting only the edited block is how the form would come to disagree
+    // with what it is about to send — and equipment hours are guessed off these
+    // figures, so that disagreement would not stay cosmetic.
+    //
+    // Keeps the `i` parameter every call site already passes, and ignores it:
+    // there is no longer such a thing as updating one block's hours alone.
+    function updateHours(_i = 0) {
+      const holder = lunchHolderIdx();
+      for (const i of blockOrder()) paintBlockHours(i, holder);
       updateDayTotal();
     }
 
@@ -2672,9 +2772,19 @@
         // The drive home is the only shared leg, and it lives on the last job.
         // Each job's own inbound drive is restored by fillBlockFromEntry.
         document.getElementById('f-travel-to-shop').value = last.travel_to_shop_hours != null ? last.travel_to_shop_hours : '';
-        // Lunch rides on the first job, for the same reason.
-        if (first.lunch_break === true || first.lunch_break === false) setSeg('lunch', first.lunch_break);
-        else clearSeg('lunch');
+        // Lunch is the day's answer, but it is STORED on whichever job the
+        // break fell in — so ask the group, not job 1. Reading position 0 was
+        // the same question while the deduction always sat there; under the
+        // rule that replaced it, a day whose break landed on any other job
+        // would come back to the form saying "no lunch", and re-saving it
+        // would quietly hand the worker the half hour back. A Yes anywhere in
+        // the group is a Yes for the day; only an explicit No everywhere is a
+        // No; and a group that was never asked stays unanswered.
+        const lunchAnswer = group.some(g => g.lunch_break === true)  ? true
+                          : group.some(g => g.lunch_break === false) ? false
+                          : null;
+        if (lunchAnswer === null) clearSeg('lunch');
+        else setSeg('lunch', lunchAnswer);
 
         // Block 0 takes the first job; every other job gets its own block.
         editingIds[0] = first.id;
@@ -2960,6 +3070,12 @@
         }
       }
 
+      // Which of the day's blocks the break comes off, reckoned from the
+      // windows about to be sent rather than from the form's painted hours —
+      // the two agree, and this is the copy the server will be held to. A day
+      // whose clocks are unusable falls back to the first block, which is what
+      // it always did; the loop below rejects such a day regardless.
+      const lunchPos = Math.max(0, lunchHolderPos(blocks.map(b => ({ start: b.start, end: b.end }))));
       const list = blocks.map((b, pos) => {
         const isEes  = isEesSelection(b.i);
         const eesVal = key => isEes ? (bel(b.i, key).value || '').trim() : '';
@@ -2991,9 +3107,11 @@
             // never paid more than once however many jobs the day had.
             travel_to_site_hours: bel(b.i, 'travel-in').value,
             travel_to_shop_hours: pos === blocks.length - 1 ? travelToShop : '',
-            // Same reasoning for lunch: one break, deducted once, from the
-            // first job. The others record that no break fell inside them.
-            lunch_break: pos === 0 ? lunchVal : false,
+            // Same reasoning for lunch: one break, deducted once — but from
+            // the job it fell in, not the one that happens to be first. The
+            // others record that no break fell inside them. Exactly one block
+            // can match lunchPos, so a day can never carry two deductions.
+            lunch_break: pos === lunchPos ? lunchVal : false,
             operated_equipment: b.equip,
             // The machines behind that Yes and the hours on each, in the
             // company's own equipment vocabulary — so payroll's split modal

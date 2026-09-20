@@ -426,8 +426,15 @@ function pageTests() {
       [a.data.travel_to_shop_hours, b.data.travel_to_shop_hours], ['', '0.75']);
     eq('and the readout adds up every leg of the day',
       doc.getElementById('f-travel-hours').textContent, '1.50');
-    eq('lunch is deducted once, from the first job',
-      [a.data.lunch_break, b.data.lunch_break], [true, false]);
+    // George's day is 07:00-11:30 on one job and 12:00-16:00 on the next, so
+    // the break falls in the SECOND — it is the block running over the middle
+    // of the day. It used to land on the first simply because that block was
+    // entered first, which showed job A half an hour short of a clock window
+    // it had worked in full.
+    eq('lunch is deducted once, from the job that ran over midday',
+      [a.data.lunch_break, b.data.lunch_break], [false, true]);
+    assert('and never from more than one job',
+      [a, b].filter(x => x.data.lunch_break === true).length === 1);
 
     eq('the date is the same day for both',
       [a.data.work_date, b.data.work_date], ['2026-08-10', '2026-08-10']);
@@ -443,13 +450,16 @@ function pageTests() {
       [a.data.split_index, a.data.split_count, b.data.split_index, b.data.split_count],
       [1, 2, 2, 2]);
 
-    // The displayed hours are what the server will compute: 4.5 gross less the
-    // 30-minute lunch on the first job, 4.0 on the second.
-    eq('the first job shows its hours net of lunch',
-      doc.getElementById('f-hours').textContent, '4.00');
-    eq('the second shows its own, undeducted',
-      api.bel(api.blockOrder()[1], 'hours').textContent, '4.00');
-    eq('and the day total adds them up',
+    // The displayed hours are what the server will compute: the first job's
+    // 4.5 gross in full, and 4.0 less the 30-minute lunch on the second, which
+    // is the block the break fell in. The form has to agree with the payload
+    // above — a preview that deducts somewhere else is how the worker signs
+    // off on hours the server never stored.
+    eq('the job that ran over midday shows its hours net of lunch',
+      api.bel(api.blockOrder()[1], 'hours').textContent, '3.50');
+    eq('the morning job shows all of its own',
+      doc.getElementById('f-hours').textContent, '4.50');
+    eq('and the day total is unchanged by which job carries it',
       doc.getElementById('f-day-hours').textContent, '8.00');
   }
 
