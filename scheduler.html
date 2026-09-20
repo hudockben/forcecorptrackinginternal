@@ -241,7 +241,7 @@ const STATUS_RANK = { behind:0, 'at-risk':1, 'no-data':2, 'not-started':3, 'on-t
 const state = {
   view:'job', board:null, assignments:{}, crews:[], weekAnchor:null,
   divFilter:'all', jobSearch:'', needCrewOnly:false,
-  crewSearch:'', tradeFilter:'all', showAll:false, grpCol:{},
+  crewSearch:'', roleFilter:'all', showAll:false, grpCol:{},
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
   siteTimes:{}, codeCol:{}, equipPickFor:null,
   // View preferences (persisted per user, below). hideComplete drops finished
@@ -870,10 +870,10 @@ function renderToolbar() {
         '-', compactMenuItem(),
       ]);
   } else {
-    const trades = ['all'].concat(tradeList());
+    const roles = ['all'].concat(roleList());
     tb.innerHTML = wknavHtml() +
       '<input type="text" id="crewSearch" placeholder="\ud83d\udd0d Search crew\u2026" value="'+esc(state.crewSearch)+'" style="width:140px">' +
-      '<select id="tradeFilter">'+trades.map(t => '<option value="'+esc(t)+'"'+(state.tradeFilter===t?' selected':'')+'>'+(t==='all'?'All trades':esc(t))+'</option>').join('')+'</select>' +
+      '<select id="roleFilter" title="Group and filter crew by the job they do">'+roles.map(t => '<option value="'+esc(t)+'"'+(state.roleFilter===t?' selected':'')+'>'+(t==='all'?'All roles':esc(t))+'</option>').join('')+'</select>' +
       '<button class="tgl'+(state.showAll?' on':'')+'" id="showAll" title="Show everyone on the roster, not just crew in rotation">'+(state.showAll?'\u2713 ':'')+'Full roster</button>' +
       '<span class="muted" style="font-size:0.7rem">'+(state.board.employees||[]).length+' crew \u00b7 '+(state.board.equipment||[]).length+' equip</span>' +
       '<div class="spacer"></div>' + pdfBtnHtml() + toolsHtml() +
@@ -899,7 +899,7 @@ function wireToolbar() {
   on('compactBtn', () => setCompact(!state.compact));
   on('railBtn', toggleRail);
   if (g('crewSearch')) g('crewSearch').oninput = e => { state.crewSearch = e.target.value; document.getElementById('main').innerHTML = renderCrewBoard(); };
-  if (g('tradeFilter')) g('tradeFilter').onchange = e => { state.tradeFilter = e.target.value; render(); };
+  if (g('roleFilter')) g('roleFilter').onchange = e => { state.roleFilter = e.target.value; render(); };
   on('showAll', () => { state.showAll = !state.showAll; render(); });
   on('undoBtn', undo);
   on('redoBtn', redo);
@@ -1086,13 +1086,13 @@ function railListHtml() {
     return html;
   }
   let emps = (state.board.employees||[]).slice();
-  if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q) || (e.jobClass||'').toLowerCase().includes(q));
+  if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q) || roleOf(e).toLowerCase().includes(q) || (e.jobClass||'').toLowerCase().includes(q));
   if (state.railIdleOnly) emps = emps.filter(e => loadForResource(e.name) === 0);
-  const groups = {}; emps.forEach(e => { const g = e.jobClass || 'Other'; (groups[g] = groups[g] || []).push(e); });
-  Object.keys(groups).sort().forEach(g => {
+  const groups = {}; emps.forEach(e => { const g = roleOf(e); (groups[g] = groups[g] || []).push(e); });
+  Object.keys(groups).sort(sortRoles).forEach(g => {
     const list = groups[g].slice().sort((a,b) => loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
     html += '<div class="rail-grp">'+esc(g)+' <span style="opacity:0.7">('+list.length+')</span></div>';
-    html += list.map(e => railRow(e.name, 'emp', e.jobClass || '', wk.every(d => isBlockedOff(e.name, 'emp', d)))).join('');
+    html += list.map(e => railRow(e.name, 'emp', roleOf(e), wk.every(d => isBlockedOff(e.name, 'emp', d)))).join('');
   });
   if (!html) html = '<div class="rail-empty">'+(q ? 'Nobody matches \u201c'+esc(state.railSearch.trim())+'\u201d.' : state.railIdleOnly ? 'Everybody is booked.' : 'No crew.')+'</div>';
   return html;
@@ -1139,21 +1139,44 @@ function onRailSearch() {
 }
 
 // ── By Crew board ───────────────────────────────────────────────────────────
-function tradeList() { const set = new Set(); (state.board.employees||[]).forEach(e => set.add(e.jobClass || 'Other')); return [...set].sort(); }
+// ── Roles ───────────────────────────────────────────────────────────────────
+// Crew are grouped by the job they DO, not by what they are paid. job_class is
+// a mixed bag: some rows name a real trade ("Foreman", "Operator"), plenty name
+// a wage tier ("Hourly"), and grouping on it put half the company under one
+// heading that told a scheduler nothing. So: the explicit role flags first,
+// then a trade named in job_class, and a wage tier falls through to plain Crew.
+const WAGE_TIER = /^(hourly|hrly|salary|salaried|exempt|non[\s-]?exempt|prevailing([\s-]?wage)?|non[\s-]?prevailing|pw|non[\s-]?pw|union|non[\s-]?union|w2|1099|full[\s-]?time|part[\s-]?time|ft|pt|shop|field)$/i;
+const ROLE_RANK = { Supervisor:0, Foreman:1, Operator:2, Driver:3, Laborer:4 };
+function titleCase(str) { return String(str).trim().replace(/\s+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }
+function roleOf(e) {
+  if (!e) return 'Crew';
+  const jc = String(e.jobClass || '').trim();
+  if (e.isSupervisor) return 'Supervisor';
+  if (/foreman|foreperson|superintendent/i.test(jc)) return 'Foreman';
+  if (/operator|excavator|dozer/i.test(jc)) return 'Operator';
+  if (e.isDriver || /driver|cdl|trucking/i.test(jc)) return 'Driver';
+  if (/labou?r/i.test(jc)) return 'Laborer';
+  if (!jc || WAGE_TIER.test(jc)) return 'Crew';
+  return titleCase(jc);   // a genuine trade of its own — Finisher, Mason, Mechanic
+}
+// Seniority first, then any trade the roster names, then the unclassified.
+function roleRank(r) { return ROLE_RANK[r] != null ? ROLE_RANK[r] : (r === 'Crew' ? 90 : 50); }
+function sortRoles(a, b) { return roleRank(a) - roleRank(b) || a.localeCompare(b); }
+function roleList() { const set = new Set(); (state.board.employees||[]).forEach(e => set.add(roleOf(e))); return [...set].sort(sortRoles); }
 function renderCrewBoard() {
   const days = weekDays(), ds = days.map(dstr), tStr = todayStr();
   const inPlay = resourcesInPlay(); const q = state.crewSearch.trim().toLowerCase();
   let emps = (state.board.employees || []);
-  if (state.tradeFilter !== 'all') emps = emps.filter(e => (e.jobClass||'Other') === state.tradeFilter);
+  if (state.roleFilter !== 'all') emps = emps.filter(e => roleOf(e) === state.roleFilter);
   if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q));
   if (!state.showAll && !q) emps = emps.filter(e => inPlay.emps.has(e.name));
-  const groups = {}; emps.forEach(e => { const g = e.jobClass || 'Other'; (groups[g] = groups[g] || []).push(e); });
-  const groupNames = Object.keys(groups).sort();
+  const groups = {}; emps.forEach(e => { const g = roleOf(e); (groups[g] = groups[g] || []).push(e); });
+  const groupNames = Object.keys(groups).sort(sortRoles);
   let html = renderCapacity() + hintHtml((state.showAll?'Showing the full roster.':'Showing crew in rotation — tap “Full roster” for everyone.')+' Click a cell to put someone on a job · drag a job from one person’s row onto another to hand it over · right-click to remove. Red = double-booked.');
   let body = '';
   const rowFor = (resource, kind, meta) => {
     const load = loadForResource(resource);
-    const left = '<td class="lead-col"><span style="font-weight:600">'+esc(resource)+'</span><div class="res-meta">'+(meta && meta.isSupervisor?'<span class="sup-dot" title="Supervisor">★</span>':'')+(meta && meta.jobClass?'<span>'+esc(meta.jobClass)+'</span>':(kind==='equip'?'<span>equipment</span>':''))+'<span class="res-load">'+load+'/7d</span></div></td>';
+    const left = '<td class="lead-col"><span style="font-weight:600">'+esc(resource)+'</span><div class="res-meta">'+(meta && meta.isSupervisor?'<span class="sup-dot" title="Supervisor">★</span>':'')+(meta && meta.label?'<span>'+esc(meta.label)+'</span>':(kind==='equip'?'<span>equipment</span>':''))+'<span class="res-load">'+load+'/7d</span></div></td>';
     const cells = ds.map(d => { const conf = conflictResourcesOn(d).has(resource); const off = isOff(resource, d); const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr; const items = assignmentsFor(d, resource);
       // A part day scheduled is not a clash — it is the case the hours exist to
       // allow — so it never reddens the cell and never says "off!". It says how
@@ -1168,10 +1191,10 @@ function renderCrewBoard() {
     const collapsed = !!state.grpCol['t::'+g];
     const headCells = ds.map(d => { const n = groups[g].filter(e => assignmentsFor(d, e.name).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleGrp(\'t::'+escAttr(g)+'\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> '+esc(g)+' <span class="muted">('+groups[g].length+')</span></td>'+headCells+'</tr>';
-    if (!collapsed) body += groups[g].map(e => rowFor(e.name, 'emp', e)).join('');
+    if (!collapsed) body += groups[g].map(e => rowFor(e.name, 'emp', { isSupervisor:e.isSupervisor, label:roleOf(e) })).join('');
   });
   let equips = (state.board.equipment || []); if (q) equips = equips.filter(n => n.toLowerCase().includes(q)); if (!state.showAll && !q) equips = equips.filter(n => inPlay.equips.has(n));
-  if (state.tradeFilter === 'all' && equips.length) {
+  if (state.roleFilter === 'all' && equips.length) {
     const collapsed = !!state.grpCol['equip'];
     const headCells = ds.map(d => { const n = equips.filter(n2 => assignmentsFor(d, n2).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleGrp(\'equip\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> 🚜 Equipment <span class="muted">('+equips.length+')</span></td>'+headCells+'</tr>';
@@ -1185,8 +1208,8 @@ function renderCrewBoard() {
     const headCells = ds.map(d => { const n = strayAll.filter(nm => assignmentsFor(d, nm).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleGrp(\'offroster\')"><td class="lead-col grp-lead" title="Booked on the schedule but not on the employee or equipment list in Manage"><span class="caret">'+(collapsed?'▸':'▾')+'</span> <span class="warn">⚠ Not on the roster</span> <span class="muted">('+strayAll.length+')</span></td>'+headCells+'</tr>';
     if (!collapsed) {
-      body += stray.emps.map(n => rowFor(n, 'emp', { jobClass:'not on the employee list' })).join('');
-      body += stray.equips.map(n => rowFor(n, 'equip', { jobClass:'not on the equipment list' })).join('');
+      body += stray.emps.map(n => rowFor(n, 'emp', { label:'not on the employee list' })).join('');
+      body += stray.equips.map(n => rowFor(n, 'equip', { label:'not on the equipment list' })).join('');
     }
   }
   return html + '<div class="board-wrap"><table class="board crew"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
@@ -1676,10 +1699,10 @@ function updatePickList() {
   const q = ((document.getElementById('pickSearch')||{}).value || '').trim().toLowerCase();
   const job = jobById(ctx.division, ctx.jobId) || { division:ctx.division, id:ctx.jobId, name:'Job', subCodes:[] };
   const code = ctx.costCode ? codeOf(job, ctx.costCode) : null;
-  const emps = (state.board.employees||[]).map(e => ({ name:e.name, kind:'emp', jobClass:e.jobClass, sup:e.isSupervisor }));
-  const equips = (state.board.equipment||[]).map(n => ({ name:n, kind:'equip', jobClass:'', sup:false }));
+  const emps = (state.board.employees||[]).map(e => ({ name:e.name, kind:'emp', jobClass:e.jobClass, role:roleOf(e), sup:e.isSupervisor }));
+  const equips = (state.board.equipment||[]).map(n => ({ name:n, kind:'equip', jobClass:'', role:'', sup:false }));
   let cands = emps.concat(equips);
-  if (q) cands = cands.filter(c => c.name.toLowerCase().includes(q) || (c.jobClass||'').toLowerCase().includes(q));
+  if (q) cands = cands.filter(c => c.name.toLowerCase().includes(q) || (c.role||'').toLowerCase().includes(q) || (c.jobClass||'').toLowerCase().includes(q));
   cands.forEach(c => { const items = assignmentsFor(ctx.date, c.name);
     const here = items.filter(a => a.division===ctx.division && a.jobId===ctx.jobId);
     c.onThis = here.length > 0;
@@ -1703,7 +1726,7 @@ function updatePickList() {
     else if (c.onThis) { status = '<span class="ok">✓ on this job'+(c.hereCode?' · '+esc(c.hereCode):'')+'</span>'; cls += ' on-this'; }
     else if (c.others.length) status = '<span class="warn">→ '+esc(c.others.join(', '))+'</span>';
     else status = '<span class="ok">free</span>';
-    const sub = [c.kind==='equip'?'equipment':(c.jobClass||''), histCrew.has(c.name)?'★ worked this':''].filter(Boolean).join(' · ');
+    const sub = [c.kind==='equip'?'equipment':(c.role||''), histCrew.has(c.name)?'★ worked this':''].filter(Boolean).join(' · ');
     return '<div class="pick-row'+cls+'" onclick="pickAdd(\''+escAttr(c.name)+'\',\''+c.kind+'\')"><span class="pick-name">'+(c.sup?'★ ':'')+esc(c.name)+(c.kind==='equip'?' 🚜':'')+'</span>'+(sub?'<span class="pick-sub">'+esc(sub)+'</span>':'')+'<span class="pick-status">'+status+'</span></div>';
   }).join('');
 }
@@ -1838,7 +1861,7 @@ function updateCrewPickList() {
   const box = document.getElementById('crewPickList'); if (!box || !state.crewEdit || !state.board) return;
   const q = ((document.getElementById('crewPickSearch')||{}).value || '').trim().toLowerCase();
   const have = new Set(state.crewEdit.members.map(m => (m.kind||'emp')+'¦'+m.name));
-  const emps = (state.board.employees||[]).map(e => ({ name:e.name, kind:'emp', sub:e.jobClass||'', sup:e.isSupervisor }));
+  const emps = (state.board.employees||[]).map(e => ({ name:e.name, kind:'emp', sub:roleOf(e), sup:e.isSupervisor }));
   const eq = (state.board.equipment||[]).map(n => ({ name:n, kind:'equip', sub:'equipment', sup:false }));
   let cands = emps.concat(eq).filter(c => !have.has(c.kind+'¦'+c.name));
   if (q) cands = cands.filter(c => c.name.toLowerCase().includes(q) || (c.sub||'').toLowerCase().includes(q));
@@ -2122,11 +2145,11 @@ function autoFill(division, jobId) {
   const dates = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); });
   if (!dates.length) { toast('No working days left this week'); return; }
   const empByName = {}; (state.board.employees||[]).forEach(e => empByName[e.name] = e);
-  const prefTrades = new Set(jobCodes(job).flatMap(c => c.crew).map(n => empByName[n] && empByName[n].jobClass).filter(Boolean));
+  const prefRoles = new Set(jobCodes(job).flatMap(c => c.crew).map(n => empByName[n] && roleOf(empByName[n])).filter(Boolean));
   // Idle crew with at least one day they are not off for the WHOLE of; prefer
   // the trades that have worked this job before.
   const idle = idleEmployees().filter(e => !dates.every(d => isBlockedOff(e.name, 'emp', d))).slice()
-    .sort((a,b) => (prefTrades.has(a.jobClass)?0:1) - (prefTrades.has(b.jobClass)?0:1) || a.name.localeCompare(b.name));
+    .sort((a,b) => (prefRoles.has(roleOf(a))?0:1) - (prefRoles.has(roleOf(b))?0:1) || a.name.localeCompare(b.name));
   const pick = idle.slice(0, need);
   if (!pick.length) { toast('No available idle crew this week (idle crew are off all week)'); return; }
   pushUndo();
@@ -2163,8 +2186,8 @@ function renderAttention() {
   }).join('') + '</div>';
   html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🟢 Idle this week (' + idle.length + ')</div>';
   if (!idle.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">Everyone is scheduled this week.</div>';
-  else { const byTrade = {}; idle.forEach(e => { const t = e.jobClass || 'Other'; (byTrade[t] = byTrade[t] || []).push(e.name); });
-    html += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.4rem">' + Object.keys(byTrade).sort().map(t => '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.45rem 0.7rem;max-width:280px"><div style="font-size:0.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">'+esc(t)+' ('+byTrade[t].length+')</div><div style="font-size:0.78rem">'+byTrade[t].map(n => esc(n)+(wk.some(d=>isBlockedOff(n,'emp',d))?' ⛱':(wk.some(d=>isOff(n,d))?' ⛱½':''))).join(', ')+'</div></div>').join('') + '</div>';
+  else { const byRole = {}; idle.forEach(e => { const t = roleOf(e); (byRole[t] = byRole[t] || []).push(e.name); });
+    html += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.4rem">' + Object.keys(byRole).sort(sortRoles).map(t => '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.45rem 0.7rem;max-width:280px"><div style="font-size:0.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">'+esc(t)+' ('+byRole[t].length+')</div><div style="font-size:0.78rem">'+byRole[t].map(n => esc(n)+(wk.some(d=>isBlockedOff(n,'emp',d))?' ⛱':(wk.some(d=>isOff(n,d))?' ⛱½':''))).join(', ')+'</div></div>').join('') + '</div>';
   }
   if (offSched.length) {
     html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">⛱ Scheduled but off (' + offSched.length + ')</div>';

@@ -291,7 +291,10 @@ async function readEmployees(sql, companyCode) {
     return rows.map(r => ({
       name: (r.name || '').trim(),
       jobClass: r.job_class || '',
+      // The explicit role flags. The board groups crew by the job they do, and
+      // job_class alone cannot tell a role from a wage tier.
       isSupervisor: r.is_supervisor === true,
+      isDriver: r.is_driver === true,
       rateStd: parseFloat(r.non_prevailing_rate) || 0,
       ratePw: parseFloat(r.prevailing_rate) || parseFloat(r.non_prevailing_rate) || 0,
     })).filter(r => r.name);
