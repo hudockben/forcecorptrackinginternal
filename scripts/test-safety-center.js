@@ -348,7 +348,55 @@ function helperTests() {
     !caps(OFFICE).canView && !caps(OFFICE).canManage);
   assert('no_access is not access',
     !caps({ division_roles: { safety: 'no_access' } }).canView);
-  assert('a platform admin runs it', caps(PLATFORM).canManage);
+  assert('a platform admin with no safety role set runs it', caps(PLATFORM).canManage);
+
+  // The bug this pins: a platform admin explicitly set to "Read & sign" was
+  // resolved as 'admin' anyway, because levelFor() in api/lib/auth.js answers
+  // for the flag before it looks at the roles. The account had been told it
+  // was crew and was handed the upload form and the whole sign-off report.
+  {
+    const named = { division_roles: { safety: 'level1' }, isPlatformAdmin: true };
+    assert('an EXPLICIT grant beats the platform-admin default',
+      caps(named).canManage === false && caps(named).level === 'level1',
+      JSON.stringify(caps(named)));
+    assert('  and they can still read and sign, which is what they were given',
+      caps(named).canView === true);
+    const sup = { division_roles: { safety: 'level3' }, isPlatformAdmin: true };
+    assert('  an explicit supervisor grant still runs the division',
+      caps(sup).canManage === true && caps(sup).level === 'level3');
+    const silent = { division_roles: { turf: 'admin' }, isPlatformAdmin: true };
+    assert('  and saying nothing about safety still leaves them in charge of it',
+      caps(silent).canManage === true,
+      'nobody should be locked out of a division they administer');
+    // The rule narrows one account rather than widening any, so it cannot hand
+    // somebody access they did not have.
+    assert('  while no ordinary account gains anything from the rule',
+      caps({ division_roles: { safety: 'level1' } }).canManage === false
+      && caps({ division_roles: { safety: 'no_access' } }).canView === false);
+  }
+
+  // The page decides what to DRAW with its own copy of that rule. The two
+  // disagreeing means a screen that offers what the server refuses.
+  {
+    const src = read('safety.html');
+    const m = /const myLevel = \(\(\) => \{([\s\S]*?)\}\)\(\);/.exec(src);
+    assert('the page carries the same rule', !!m);
+    if (m) {
+      const pageLevel = new Function('user', 'DIVISION',
+        `const myLevel = (() => {${m[1]}})(); return myLevel;`);
+      const table = [
+        [{ divisionRoles: { safety: 'level1' }, isPlatformAdmin: true },  'level1'],
+        [{ divisionRoles: { safety: 'level3' }, isPlatformAdmin: true },  'level3'],
+        [{ divisionRoles: { turf: 'admin' },    isPlatformAdmin: true },  'admin'],
+        [{ divisionRoles: { safety: 'level1' }, isPlatformAdmin: false }, 'level1'],
+        [{ divisionRoles: null,                 isPlatformAdmin: true },  'admin'],
+      ];
+      const off = table.filter(([u, want]) => pageLevel(u, 'safety') !== want);
+      assert('  and resolves every account the same way the server does',
+        off.length === 0,
+        off.map(([u, want]) => `${JSON.stringify(u)} page=${pageLevel(u, 'safety')} want=${want}`).join('; '));
+    }
+  }
 
   console.log('\n[a week means one date]');
   const M = safetyLib.mondayOf;
@@ -1002,12 +1050,24 @@ function pageTests() {
     /DELETE', '\/document-upload-url\?division=safety&storageKey=/.test(page));
 
   // ── Driven in jsdom ────────────────────────────────────────────────────
-  function boot(user, docs, report) {
+  function boot(user, docs, report, opts = {}) {
     const calls = [];
     const dom = new JSDOM(page, {
       url: 'http://localhost/safety.html',
       runScripts: 'dangerously',
       beforeParse(win) {
+        // jsdom has no matchMedia, and the page branches on it: a coarse
+        // pointer means the PDF cannot be drawn in the page and has to open in
+        // the phone's own viewer. Stubbed so BOTH sides can be driven.
+        const coarse = Boolean(opts.coarse);
+        win.matchMedia = q => ({
+          matches: /pointer:\s*coarse/.test(q) ? coarse : false,
+          media: q, addListener() {}, removeListener() {},
+          addEventListener() {}, removeEventListener() {},
+        });
+        if (opts.width) {
+          Object.defineProperty(win, 'innerWidth', { value: opts.width, configurable: true });
+        }
         win.localStorage.setItem('fct_token', 'test-token');
         win.localStorage.setItem('fct_user', JSON.stringify(user));
         win.confirm = () => true;
@@ -1172,6 +1232,74 @@ function pageTests() {
         doc.getElementById('vBody').innerHTML.slice(-260));
       assert('  but it is still readable, which is why it was kept',
         /pdf-frame/.test(doc.getElementById('vBody').innerHTML));
+      resolve();
+    }, 30)));
+  }
+
+  // A phone. This is the side of the page that matters most — the crew sign
+  // on phones, outdoors, in gloves — and it is a genuinely different screen:
+  // iOS Safari paints only the first page of a PDF in an iframe and Android
+  // Chrome will not render one at all, so the document opens in the phone's
+  // own viewer and the acknowledgement waits until it has been.
+  {
+    const { win, doc } = boot(
+      { username: 'jhauser', divisionRoles: { safety: 'level1' }, isPlatformAdmin: false },
+      DOCS_CREW, REPORT, { coarse: true, width: 390 });
+    done.push(new Promise(resolve => setTimeout(() => {
+      // openViewer sets state.viewing before it paints; renderViewer alone does
+      // not, and the open-tracking listener is keyed on it.
+      win.eval(`state.viewing = ${JSON.stringify(DOCS_CREW.documents[0])}`);
+      win.renderViewer(DOCS_CREW.documents[0], 'https://store.test/x.pdf?sig');
+      const body = doc.getElementById('vBody');
+
+      assert('on a phone the PDF is not drawn into the page at all',
+        !doc.getElementById('pdfFrame'),
+        'a frame that shows page 1 of 4, or nothing, is worse than no frame');
+      const open = body.querySelector('[data-act="opened"]');
+      assert('  it is opened in the phone\'s own viewer instead',
+        !!open && open.getAttribute('target') === '_blank'
+        && open.getAttribute('href') === 'https://store.test/x.pdf?sig',
+        open && open.outerHTML.slice(0, 120));
+      assert('  as the primary action on the screen, not a hyperlink',
+        !!open && /btn-primary/.test(open.className), open && open.className);
+      assert('  and the link is not leaked to a new browsing context',
+        /rel="noopener"/.test(body.innerHTML));
+
+      // The page cannot know they read it. It can refuse to record that they
+      // did when it never showed them anything.
+      doc.getElementById('sigName').value = 'Jesse Hauser';
+      doc.getElementById('ackBox').checked = true;
+      win.onAckChange();
+      assert('the box and the name are not enough on their own here',
+        doc.getElementById('signBtn').disabled === true,
+        'nothing has been put in front of them yet');
+      assert('  and the page says what is missing',
+        /Open the form above/.test(doc.getElementById('signMsg').textContent),
+        doc.getElementById('signMsg').textContent);
+
+      open.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert('opening the form is what releases the signature',
+        doc.getElementById('signBtn').disabled === false);
+
+      win.closeViewer();
+      resolve();
+    }, 30)));
+  }
+
+  // The same screen on a desktop keeps the inline frame, which renders there.
+  {
+    const { win, doc } = boot(
+      { username: 'jhauser', divisionRoles: { safety: 'level1' }, isPlatformAdmin: false },
+      DOCS_CREW, REPORT, { coarse: false, width: 1280 });
+    done.push(new Promise(resolve => setTimeout(() => {
+      win.renderViewer(DOCS_CREW.documents[0], 'https://store.test/x.pdf?sig');
+      assert('on a desktop the document is still shown in the page',
+        !!doc.getElementById('pdfFrame'));
+      doc.getElementById('sigName').value = 'Jesse Hauser';
+      doc.getElementById('ackBox').checked = true;
+      win.onAckChange();
+      assert('  and nothing extra is asked of them, because they can see it',
+        doc.getElementById('signBtn').disabled === false);
       resolve();
     }, 30)));
   }
