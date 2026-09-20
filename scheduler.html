@@ -64,7 +64,8 @@
     .rail-head + .rail-head { border-bottom:1px solid var(--border); }
     .rail-head .tgl { font-size:0.62rem; padding:0.14rem 0.45rem; }
     .rail-tabs { display:flex; flex:1; min-width:0; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
-    .rail-tab { flex:1; min-width:0; background:var(--surface2); border:none; color:var(--muted); font-size:0.68rem; font-weight:700; padding:0.22rem 0.2rem; cursor:pointer; white-space:nowrap; }
+    .rail-tab { flex:1; min-width:0; background:var(--surface2); border:none; color:var(--muted); font-size:0.66rem; font-weight:700; padding:0.22rem 0.1rem; cursor:pointer; white-space:nowrap; }
+    .rail-tab + .rail-tab { border-left:1px solid var(--border); }
     .rail-tab:hover { color:var(--text); }
     .rail-tab.on { background:rgba(96,165,250,0.18); color:var(--blue); cursor:default; }
     .rail-tip { font-size:0.58rem; color:var(--muted); padding:0.28rem 0.4rem 0.15rem; line-height:1.3; }
@@ -240,7 +241,7 @@ const state = {
   // sub-codes off the board — on a 69-code job they are most of the noise and
   // none of the work. compact trades the KPI strip and padding for grid rows.
   hideComplete:true, compact:false, hintSeen:false, moreOpen:false, moreOpts:false,
-  railOpen:true, railSearch:'', railIdleOnly:false, railTab:'crew',
+  railOpen:true, railSearch:'', railIdleOnly:false, railTab:'crew', crewEdit:null,
 };
 
 // Preferences live in localStorage, not the server: they are how THIS scheduler
@@ -985,13 +986,30 @@ function railRow(name, kind, sub, offAll) {
 // machines onto the bottom of eighty-one names meant scrolling the whole roster
 // to reach a skid steer; now it is one click on the other icon.
 function railCounts() {
-  return { crew: (state.board.employees||[]).length, equip: (state.board.equipment||[]).length };
+  return { crew: (state.board.employees||[]).length, equip: (state.board.equipment||[]).length, saved: state.crews.length };
+}
+// A saved crew is one draggable row: drop it on a square and the whole gang
+// lands on that job for that day.
+function railCrewRow(c) {
+  const names = c.members.map(m => m.name).join(', ');
+  return '<div class="rail-row" draggable="true" data-rail="1" data-rcrew="'+esc(c.id)+'"'+
+    ' title="'+esc(c.name+' — '+names+' — drag onto a day on the board')+'">'+
+    '<span class="rail-name">'+esc(c.name)+'</span><span class="rail-load">'+c.members.length+'</span></div>';
 }
 function railListHtml() {
   if (!state.board) return '';
   const q = (state.railSearch||'').trim().toLowerCase();
   const wk = weekDateStrs();
   let html = '';
+  if (state.railTab === 'saved') {
+    let cs = state.crews.slice();
+    if (q) cs = cs.filter(c => c.name.toLowerCase().includes(q) || c.members.some(m => m.name.toLowerCase().includes(q)));
+    cs.sort((a,b) => a.name.localeCompare(b.name));
+    html = cs.map(railCrewRow).join('');
+    if (!html) html = '<div class="rail-empty">'+(q ? 'No crew matches \u201c'+esc(state.railSearch.trim())+'\u201d.'
+      : 'No saved crews yet.<br><span class="lnk" onclick="openCrewsModal()">Build one</span>, or put men on a job and hit \u201cSave as crew\u201d.')+'</div>';
+    return html;
+  }
   if (state.railTab === 'equip') {
     let eq = (state.board.equipment||[]).slice();
     if (q) eq = eq.filter(n => n.toLowerCase().includes(q));
@@ -1015,21 +1033,24 @@ function railListHtml() {
 }
 function railHtml() {
   if (!state.railOpen) return '';
-  const n = railCounts(), crew = state.railTab !== 'equip';
-  const tab = (id, on, label, title) => '<button class="rail-tab'+(on?' on':'')+'" id="'+id+'" onclick="setRailTab(\''+(on?'':(id==='railTabCrew'?'crew':'equip'))+'\')" title="'+esc(title)+'"'+(on?' aria-current="true"':'')+'>'+label+'</button>';
+  const n = railCounts(), tabNow = state.railTab;
+  const crew = tabNow === 'crew', saved = tabNow === 'saved';
+  const tab = (id, key, label, title) => '<button class="rail-tab'+(tabNow===key?' on':'')+'" id="'+id+'" onclick="setRailTab(\''+key+'\')" title="'+esc(title)+'"'+(tabNow===key?' aria-current="true"':'')+'>'+label+'</button>';
   return '<aside class="rail" id="crewRail" data-drop="rail">'+
     '<div class="rail-head">'+
       '<div class="rail-tabs">'+
-        tab('railTabCrew', crew, '\ud83d\udc65 '+n.crew, 'Crew') +
-        tab('railTabEquip', !crew, '\ud83d\ude9c '+n.equip, 'Equipment') +
+        tab('railTabCrew', 'crew', '\ud83d\udc65 '+n.crew, 'Crew') +
+        tab('railTabEquip', 'equip', '\ud83d\ude9c '+n.equip, 'Equipment') +
+        tab('railTabSaved', 'saved', '\u2605 '+n.saved, 'Saved crews') +
       '</div>'+
       '<button class="x" title="Close the panel" onclick="toggleRail()">\u2715</button>'+
     '</div>'+
     '<div class="rail-head">'+
-      '<input type="text" id="railSearch" placeholder="\ud83d\udd0d '+(crew?'Crew':'Equipment')+'\u2026" value="'+esc(state.railSearch)+'" oninput="onRailSearch()" autocomplete="off">'+
-      '<button class="tgl'+(state.railIdleOnly?' on':'')+'" onclick="toggleRailIdle()" title="Only '+(crew?'crew':'machines')+' with nothing booked in the 7 days shown">Idle</button>'+
+      '<input type="text" id="railSearch" placeholder="\ud83d\udd0d '+(saved?'Saved crews':crew?'Crew':'Equipment')+'\u2026" value="'+esc(state.railSearch)+'" oninput="onRailSearch()" autocomplete="off">'+
+      (saved ? '<button class="tgl" onclick="openCrewsModal()" title="Build, edit or delete saved crews">Manage</button>'
+             : '<button class="tgl'+(state.railIdleOnly?' on':'')+'" onclick="toggleRailIdle()" title="Only '+(crew?'crew':'machines')+' with nothing booked in the 7 days shown">Idle</button>')+
     '</div>'+
-    '<div class="rail-tip">Drag '+(crew?'a name':'a machine')+' onto a day. Drag one off the board onto here to take it off.</div>'+
+    '<div class="rail-tip">Drag '+(saved?'a crew':crew?'a name':'a machine')+' onto a day. Drag one off the board onto here to take it off.</div>'+
     '<div class="rail-list" id="railList">'+railListHtml()+'</div>'+
   '</aside>';
 }
@@ -1038,6 +1059,7 @@ function toggleRail() { state.railOpen = !state.railOpen; savePrefs(); render();
 // landing on "no match" after one click reads as a broken panel.
 function setRailTab(t) {
   if (!t || t === state.railTab) return;
+  if (t === 'saved') state.railIdleOnly = false;   // means nothing for a template
   state.railTab = t; state.railSearch = '';
   savePrefs();
   document.getElementById('main').innerHTML = renderJobBoard();
@@ -1133,7 +1155,9 @@ function onDragStart(e) {
   // A name dragged out of the crew rail: no assignment yet, just who.
   const rr = t.closest('[data-rail]');
   if (rr) {
-    _drag = { type:'rail', resource:rr.dataset.res, kind:rr.dataset.rkind || 'emp' };
+    _drag = rr.dataset.rcrew
+      ? { type:'crew', id:rr.dataset.rcrew }
+      : { type:'rail', resource:rr.dataset.res, kind:rr.dataset.rkind || 'emp' };
     rr.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', rr.dataset.res);
     return;
@@ -1151,12 +1175,13 @@ function onDragOver(e) {
   const isRail = cell.dataset.drop === 'rail';
   // The rail takes men OFF the board; a name dragged out of it has no business
   // being dropped back in, and a rail name only lands on a job day.
-  if (isRail ? _drag.type !== 'asn' : (_drag.type === 'rail' && cell.dataset.drop !== 'job')) { _clearDropHi(); return; }
+  const fromRail = _drag.type === 'rail' || _drag.type === 'crew';
+  if (isRail ? _drag.type !== 'asn' : (fromRail && cell.dataset.drop !== 'job')) { _clearDropHi(); return; }
   e.preventDefault();
   // dropEffect MUST be one the drag's effectAllowed permits or the browser
   // silently refuses the drop. A rail name and a fill are copies; a chip being
   // moved is a move.
-  const copy = _drag.type === 'fill' || _drag.type === 'rail' || e.altKey || e.ctrlKey || e.metaKey;
+  const copy = _drag.type === 'fill' || fromRail || e.altKey || e.ctrlKey || e.metaKey;
   e.dataTransfer.dropEffect = isRail ? 'move' : (copy ? 'copy' : 'move');
   if (_dropEl !== cell) _clearDropHi();
   _dropEl = cell;
@@ -1173,6 +1198,7 @@ function onDrop(e) {
   e.preventDefault(); e.stopPropagation();
   const tgt = _tgtOf(cell); if (!tgt) return;
   if (tgt.kind === 'rail') { if (drag.type === 'asn') railRemove(drag); return; }
+  if (drag.type === 'crew') { if (tgt.kind === 'job') crewDrop(drag, tgt); else toast('Drop a crew on a day of a job'); return; }
   if (drag.type === 'rail') { if (tgt.kind === 'job') railDrop(drag, tgt); else toast('Drop a name on a day of a job'); return; }
   if (drag.type === 'fill') { if (tgt.kind === 'job') fillFromCell(drag.src, tgt); else toast('Drag the corner handle onto a job cell'); return; }
   const copy = e.altKey || e.ctrlKey || e.metaKey;
@@ -1275,6 +1301,22 @@ function railDrop(drag, tgt) {
   toast(r === 'blocked' ? drag.resource + ' is approved off ' + shortDate(tgt.date)
                         : drag.resource + ' is already on ' + job.name + ' that day');
 }
+// A saved crew onto a square: the whole gang on that job that day.
+function crewDrop(drag, tgt) {
+  const crew = state.crews.find(c => c.id === drag.id);
+  const job = jobById(tgt.division, tgt.jobId);
+  if (!crew || !job) return;
+  pushUndo();
+  let n = 0, blocked = 0;
+  crew.members.forEach(m => {
+    const r = placeOnJob(tgt.date, job, tgt.costCode, { resource:m.name, kind:m.kind || 'emp' });
+    if (r === 'added' || r === 'retagged') n++; else if (r === 'blocked') blocked++;
+  });
+  if (!n) { _undo.pop(); updateUndoButtons();
+    toast(blocked ? crew.name + ' are approved off ' + shortDate(tgt.date) : crew.name + ' is already on ' + job.name); return; }
+  saveAssignments(); render();
+  toast(crew.name + ' \u2192 ' + job.name + ' \u00b7 ' + shortDate(tgt.date) + ' (' + n + ')' + (blocked ? ' \u00b7 skipped ' + blocked + ' off' : ''));
+}
 // Dragging a name off the board and onto the rail takes him off \u2014 the
 // opposite gesture, and the one people try.
 function railRemove(drag) {
@@ -1372,9 +1414,11 @@ function clearCell() {
 }
 // Arrow keys walk the candidate list, Enter puts the highlighted one on the job,
 // Escape closes. No mouse needed to staff a job.
-function pickKey(e) {
-  if (e.key === 'Escape') { e.preventDefault(); closeAssign(); return; }
-  const rows = Array.from(document.querySelectorAll('#pickList .pick-row'));
+function pickKey(e) { kbPick(e, '#pickList', closeAssign); }
+function crewPickKey(e) { kbPick(e, '#crewPickList', cancelCrewEdit); }
+function kbPick(e, listSel, onEscape) {
+  if (e.key === 'Escape') { e.preventDefault(); onEscape(); return; }
+  const rows = Array.from(document.querySelectorAll(listSel + ' .pick-row'));
   if (!rows.length) return;
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
@@ -1481,8 +1525,7 @@ function modalJobHtml(ctx) {
   const moreOpen = !!state.moreOpts || !!siteVal;
   const moreHtml = '<button class="more-tog" onclick="toggleMoreOptions()">'+(moreOpen?'▾':'▸')+' Report time &amp; saved crews'+
       (siteVal?' <span style="color:var(--blue)">· ⏰ '+esc(fmtTime(siteVal))+'</span>':'')+'</button>'+
-    (moreOpen ? '<div>'+siteHtml+'<label class="fld">Saved crews</label>'+crewOpts+
-      (current.length?'<button class="btn mini" style="margin-top:0.3rem" onclick="saveCurrentAsCrew()">💾 Save these as a crew</button>':'')+'</div>' : '');
+    (moreOpen ? '<div>'+siteHtml+'<label class="fld">Saved crews</label>'+crewOpts+'</div>' : '');
 
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(ctx.division)+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     summaryLine(job, null) +
@@ -1492,7 +1535,9 @@ function modalJobHtml(ctx) {
     '<div class="pick-list" id="pickList"></div>'+
     (state.applySpan!=='day'?'<div class="muted" style="font-size:0.68rem;margin-top:0.25rem">Each pick lands on '+spanLabel()+'.</div>':'')+
     '<label class="fld" style="display:flex;align-items:center;gap:0.5rem">On this job ('+people+' crew'+(current.length-people?' · '+(current.length-people)+' equip':'')+')'+
-      (current.length?'<span style="flex:1"></span><button class="btn mini" style="text-transform:none;letter-spacing:0" onclick="clearCell()">Clear</button>':'')+'</label>'+
+      (current.length?'<span style="flex:1"></span>'+
+        '<button class="btn mini" style="text-transform:none;letter-spacing:0" title="Save these men (and their machines) as a reusable crew" onclick="saveCurrentAsCrew()">💾 Save as crew</button>'+
+        '<button class="btn mini" style="text-transform:none;letter-spacing:0" onclick="clearCell()">Clear</button>':'')+'</label>'+
     assignedHereHtml(ctx)+
     (people?'<div class="muted" style="font-size:0.66rem;margin-top:0.3rem">Tip: tap <strong>🚜+</strong> next to a man to pair the machine he’ll run.</div>':'')+
     codeSelectHtml(job, ctx) +
@@ -1576,9 +1621,10 @@ function saveCurrentAsCrew() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const current = ctxAssignments(ctx);
   if (!current.length) { toast('Nobody here to save'); return; }
-  const name = prompt('Name this crew (e.g. "Paving Crew A"):'); if (!name || !name.trim()) return;
-  const members = current.map(a => ({ name:a.resource, kind:a.kind }));
-  state.crews.push({ id: uid(), name: name.trim(), members }); saveCrews(); renderModal(); toast('Saved crew “'+name.trim()+'”');
+  const seen = new Set(), members = [];
+  current.forEach(a => { const k = (a.kind||'emp')+'¦'+a.resource; if (seen.has(k)) return; seen.add(k); members.push({ name:a.resource, kind:a.kind||'emp' }); });
+  state.crewEdit = { id:null, name:'', members };
+  openCrewsModal();   // stacks over the assign dialog; closing it returns there
 }
 
 function modalResourceHtml(ctx) {
@@ -1620,11 +1666,89 @@ function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (
 function openCrewsModal() {
   let o = document.getElementById('crewsOverlay');
   if (!o) { o = document.createElement('div'); o.id='crewsOverlay'; o.className='overlay'; document.body.appendChild(o); o.onclick = e => { if (e.target === o) closeCrews(); }; }
-  const rows = state.crews.length ? state.crews.map(c => '<div class="cur-asn"><span class="grow"><strong>'+esc(c.name)+'</strong> <span class="muted">· '+c.members.map(m=>esc(m.name)).join(', ')+'</span></span><button class="btn mini" onclick="deleteCrew(\''+c.id+'\')">Delete</button></div>').join('') : '<div class="muted" style="font-size:0.8rem">No saved crews yet. Open a job cell, assign a few people, then “Save these as a crew”.</div>';
-  o.innerHTML = '<div class="modal"><div class="modal-head"><div style="font-weight:700">👥 Saved Crews</div><button class="x" onclick="closeCrews()">✕</button></div><div class="modal-body"><div class="muted" style="font-size:0.76rem;margin-bottom:0.6rem">Reusable crew templates you can drop onto any job in one click.</div>'+rows+'</div></div>';
+  // Appended after the assign overlay, so saving a crew mid-staffing stacks on
+  // top of it and closing this puts you back where you were.
+  else document.body.appendChild(o);
+  o.innerHTML = state.crewEdit ? crewEditorHtml() : crewListHtml();
+  if (!state.crewEdit) return;
+  updateCrewPickList();
+  const nm = document.getElementById('crewName'), sr = document.getElementById('crewPickSearch');
+  if (nm && !state.crewEdit.name) nm.focus(); else if (sr) sr.focus();
 }
-function closeCrews() { const o = document.getElementById('crewsOverlay'); if (o) o.remove(); }
-function deleteCrew(id) { state.crews = state.crews.filter(c => c.id !== id); saveCrews(); openCrewsModal(); }
+function crewListHtml() {
+  const rows = state.crews.length
+    ? state.crews.map(c => '<div class="cur-asn"><span class="grow"><strong>'+esc(c.name)+'</strong>'+
+        '<div class="muted" style="font-size:0.66rem">'+(c.members.length ? c.members.map(m => (m.kind==='equip'?'🚜 ':'')+esc(m.name)).join(', ') : 'empty')+'</div></span>'+
+        '<button class="btn mini" onclick="editCrew(\''+c.id+'\')">Edit</button>'+
+        '<button class="btn mini" onclick="deleteCrew(\''+c.id+'\')">Delete</button></div>').join('')
+    : '<div class="muted" style="font-size:0.8rem">No saved crews yet.</div>';
+  return '<div class="modal"><div class="modal-head"><div style="font-weight:700">👥 Saved crews</div><button class="x" onclick="closeCrews()">✕</button></div><div class="modal-body">'+
+    '<div class="muted" style="font-size:0.74rem;margin-bottom:0.6rem">Reusable crew templates. Drag one out of the ★ list in the crew panel onto any day, or pick it from the assign dialog.</div>'+
+    '<button class="btn primary" style="margin-bottom:0.7rem" onclick="newCrew()">＋ New crew</button>'+
+    rows + '</div></div>';
+}
+function crewEditorHtml() {
+  const ce = state.crewEdit;
+  const members = ce.members.length
+    ? ce.members.map((m,i) => '<div class="cur-asn"><span class="grow">'+(m.kind==='equip'?'🚜 ':'')+esc(m.name)+'</span><button class="btn mini" onclick="removeCrewMember('+i+')">✕</button></div>').join('')
+    : '<div class="muted" style="font-size:0.78rem">Nobody in this crew yet — add them below.</div>';
+  return '<div class="modal"><div class="modal-head"><div style="font-weight:700">'+(ce.id?'Edit crew':'＋ New crew')+'</div><button class="x" onclick="cancelCrewEdit()">✕</button></div><div class="modal-body">'+
+    '<label class="fld">Crew name</label>'+
+    '<input type="text" class="full" id="crewName" value="'+esc(ce.name)+'" placeholder="e.g. Paving Crew A" oninput="onCrewName()" autocomplete="off">'+
+    '<label class="fld">Members ('+ce.members.length+')</label>'+members+
+    '<label class="fld">Add crew or equipment <span style="text-transform:none;letter-spacing:0;font-weight:400">— type, ↑↓, Enter</span></label>'+
+    '<input type="text" class="full" id="crewPickSearch" placeholder="Search people / equipment…" oninput="updateCrewPickList()" onkeydown="crewPickKey(event)" autocomplete="off">'+
+    '<div class="pick-list" id="crewPickList"></div>'+
+    '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn primary" style="flex:1" onclick="saveCrewEdit()">Save crew</button><button class="btn" onclick="cancelCrewEdit()">Cancel</button></div>'+
+  '</div></div>';
+}
+function newCrew() { state.crewEdit = { id:null, name:'', members:[] }; openCrewsModal(); }
+function editCrew(id) {
+  const c = state.crews.find(x => x.id === id); if (!c) return;
+  state.crewEdit = { id:c.id, name:c.name, members:c.members.map(m => ({ name:m.name, kind:m.kind||'emp' })) };
+  openCrewsModal();
+}
+// Typed straight into state so re-rendering the member list never wipes the name.
+function onCrewName() { const el = document.getElementById('crewName'); if (el && state.crewEdit) state.crewEdit.name = el.value; }
+function updateCrewPickList() {
+  const box = document.getElementById('crewPickList'); if (!box || !state.crewEdit || !state.board) return;
+  const q = ((document.getElementById('crewPickSearch')||{}).value || '').trim().toLowerCase();
+  const have = new Set(state.crewEdit.members.map(m => (m.kind||'emp')+'¦'+m.name));
+  const emps = (state.board.employees||[]).map(e => ({ name:e.name, kind:'emp', sub:e.jobClass||'', sup:e.isSupervisor }));
+  const eq = (state.board.equipment||[]).map(n => ({ name:n, kind:'equip', sub:'equipment', sup:false }));
+  let cands = emps.concat(eq).filter(c => !have.has(c.kind+'¦'+c.name));
+  if (q) cands = cands.filter(c => c.name.toLowerCase().includes(q) || (c.sub||'').toLowerCase().includes(q));
+  cands = cands.slice(0, 60);
+  if (!cands.length) { box.innerHTML = '<div class="muted" style="font-size:0.78rem;padding:0.5rem">'+(q?'No match.':'Everyone is already in this crew.')+'</div>'; return; }
+  box.innerHTML = cands.map((c,i) => '<div class="pick-row'+(i===0?' kb':'')+'" onclick="addCrewMember(\''+escAttr(c.name)+'\',\''+c.kind+'\')">'+
+    '<span class="pick-name">'+(c.sup?'★ ':'')+esc(c.name)+(c.kind==='equip'?' 🚜':'')+'</span>'+
+    (c.sub?'<span class="pick-sub">'+esc(c.sub)+'</span>':'')+'</div>').join('');
+}
+function addCrewMember(name, kind) {
+  if (!state.crewEdit) return;
+  if (state.crewEdit.members.some(m => m.name === name && (m.kind||'emp') === kind)) return;
+  state.crewEdit.members.push({ name, kind });
+  openCrewsModal();   // re-renders and puts the cursor back in the search box
+}
+function removeCrewMember(i) { if (!state.crewEdit) return; state.crewEdit.members.splice(i, 1); openCrewsModal(); }
+function saveCrewEdit() {
+  const ce = state.crewEdit; if (!ce) return;
+  onCrewName();
+  const name = (ce.name || '').trim();
+  if (!name) { toast('Give the crew a name'); const el = document.getElementById('crewName'); if (el) el.focus(); return; }
+  if (!ce.members.length) { toast('Add at least one person'); return; }
+  if (ce.id) { const c = state.crews.find(x => x.id === ce.id); if (c) { c.name = name; c.members = ce.members.slice(); } }
+  else state.crews.push({ id: uid(), name, members: ce.members.slice() });
+  saveCrews(); state.crewEdit = null; openCrewsModal(); render();
+  toast('Saved crew “'+name+'”');
+}
+function cancelCrewEdit() { state.crewEdit = null; openCrewsModal(); }
+function closeCrews() { state.crewEdit = null; const o = document.getElementById('crewsOverlay'); if (o) o.remove(); }
+function deleteCrew(id) {
+  const c = state.crews.find(x => x.id === id); if (!c) return;
+  if (!confirm('Delete the crew “' + c.name + '”?')) return;
+  state.crews = state.crews.filter(x => x.id !== id); saveCrews(); openCrewsModal(); render();
+}
 
 // ── Copy week ───────────────────────────────────────────────────────────────
 function copyWeekForward() {
@@ -1948,7 +2072,8 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, dismissHint, setCompact });
+Object.assign(window, { toggleGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+  newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();
 </script>
