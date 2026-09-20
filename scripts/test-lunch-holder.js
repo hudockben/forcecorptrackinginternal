@@ -298,5 +298,27 @@ assert('the backfill script never widens its statuses to approved',
   /STATUSES:\s*\['draft', 'submitted'\]/.test(
     require('fs').readFileSync(require('path').resolve(__dirname, 'backfill-lunch-holder.js'), 'utf8')));
 
+// ── 8. Adding or removing a job moves the break, so the form repaints ──────
+console.log('\nAdding or removing a job repaints the day');
+
+assert('renderSplitChrome repaints rather than re-summing painted text',
+  /document\.getElementById\('dayTotalRow'\)\.style\.display = split \? '' : 'none';\s*(\/\/[^\n]*\n\s*)*updateHours\(\);/.test(SHEET),
+  'removing the job that carried the break left the day half an hour high on screen');
+assert('and removeSplit goes through it',
+  /splitIdxs = splitIdxs\.filter\(x => x !== i\);[\s\S]{0,600}renderSplitChrome\(\);/.test(SHEET));
+
+// ── 9. The approver cannot hang the break on a job too short ───────────────
+console.log('\nThe move refuses a job that cannot carry the break');
+
+assert('lunch_holder checks the chosen job is at least half an hour',
+  /const span = pick \? computeHours\(hhmm\(pick\.start_time\), hhmm\(pick\.end_time\)\) : null;/.test(API)
+  && /if \(span != null && span < 0\.5\)/.test(API));
+assert('and says why, rather than clamping and paying the difference',
+  /cannot carry a 30-minute break/.test(API)
+  && /the day would come out longer than it was worked/.test(API));
+assert('the check runs before any row is rewritten',
+  API.indexOf('cannot carry a 30-minute break') < API.indexOf('SET lunch_break    = ${holds}'),
+  'refusing after a partial rewrite would leave the day mid-move');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -1755,7 +1755,13 @@
         : '';
 
       document.getElementById('dayTotalRow').style.display = split ? '' : 'none';
-      updateDayTotal();
+      // Repaint, don't just re-add. Adding or removing a job changes WHICH
+      // block the day's break comes off — remove the one carrying it and the
+      // break moves to whatever now runs over midday — so re-summing the
+      // figures already on screen would leave the day half an hour high and
+      // the wrong job short. updateDayTotal() is the last thing updateHours()
+      // does, so the sum still happens.
+      updateHours();
     }
 
     function updateDayTotal() {

@@ -4767,6 +4767,24 @@ module.exports = async (req, res) => {
       }
 
       const hhmm = v => String(v || '').slice(0, 5);
+
+      // The chosen job has to be able to absorb the whole break. The deduction
+      // clamps at zero, so hanging 30 minutes on a 20-minute job takes only 20
+      // and the DAY quietly comes out ten minutes long — the worker paid for
+      // time he did not work. The form's own rule already refuses such a block;
+      // this is the same refusal on the path an approver drives by hand, where
+      // the block is picked rather than reckoned.
+      if (holderId != null) {
+        const pick = group.find(g => Number(g.id) === Number(holderId));
+        const span = pick ? computeHours(hhmm(pick.start_time), hhmm(pick.end_time)) : null;
+        if (span != null && span < 0.5) {
+          return res.status(400).json({
+            error: `That job is only ${span.toFixed(2)} h long and cannot carry a 30-minute break — `
+                 + `the day would come out longer than it was worked. Put it on a job of at least half an hour.`,
+          });
+        }
+      }
+
       const changed = [];
       for (const row of group) {
         const holds = holderId != null && Number(row.id) === Number(holderId);
