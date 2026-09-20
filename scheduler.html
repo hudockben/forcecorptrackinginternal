@@ -175,6 +175,9 @@
     .cell.drop-copy { background:rgba(34,197,94,0.2); box-shadow: inset 0 0 0 2px var(--green); }
     .fill-h { position:absolute; right:2px; bottom:2px; width:10px; height:10px; border:1px solid var(--blue); background:var(--bg); border-radius:2px; cursor:crosshair; opacity:0; transition:opacity .1s; }
     .cell:hover .fill-h { opacity:1; }
+    /* Per-name grip: same idiom as the cell handle, scoped to one man. */
+    .chip-grip { display:inline-block; width:0; height:9px; overflow:hidden; margin-left:0; vertical-align:middle; border-radius:2px; cursor:crosshair; transition:width .08s; }
+    .asn:hover .chip-grip { width:9px; margin-left:0.25rem; border:1px solid var(--blue); background:var(--bg); }
     .done-row td { background:rgba(255,255,255,0.015); }
     /* One row per job: the lead cell names it, every day cell takes men. */
     .job-lead { font-weight:600; }
@@ -888,12 +891,17 @@ function firstWord(s) { return esc(String(s||'').split(' ')[0]); }
 // Every name on the board is a drag handle: drag it to another day, another
 // cost code or another person's row to move that assignment; hold Alt/Ctrl to
 // copy instead. Right-click takes it off.
-const DRAG_TIP = ' — drag to move (Alt = copy) · right-click to remove';
+const DRAG_TIP = ' — drag to move (Alt = copy) · drag the grip across the row for several days · right-click to remove';
 function chip(a, conf, date, showJob) {
   const col = divColor(a.division);
   const dd = ' draggable="true" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'"';
   const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'');
   const half = a.half ? ' ½' : '';
+  // Each name carries its own fill grip. The cell handle repeats the WHOLE
+  // crew; this repeats the one man you grabbed, which is the thing a scheduler
+  // wants far more often — "Dave is on this all week".
+  const grip = '<span class="chip-grip" draggable="true" data-pfill="1" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'"'+
+    ' onclick="event.stopPropagation()" title="'+esc('Drag across the row to put '+a.resource+' on those days')+'"></span>';
   const open = '<span class="'+cls+'" style="border-left-color:'+col+'"'+dd+' title=';
   // On the By Crew board the row already names the man, so repeating his name
   // in every cell said nothing. What a scheduler needs there is the JOB he is
@@ -901,13 +909,13 @@ function chip(a, conf, date, showJob) {
   if (showJob) {
     const label = (a.kind==='equip'?'🚜 ':'')+esc(a.jobName)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'');
     const title = a.jobName+(a.costCode?' · '+a.costCode:'')+(a.kind==='equip'&&a.op?' — operated by '+a.op:'')+DRAG_TIP;
-    return open+'"'+esc(title)+'">'+label+half+'</span>';
+    return open+'"'+esc(title)+'">'+label+half+grip+'</span>';
   }
   if (a.kind === 'equip') {
     const label = '🚜 '+firstWord(a.resource)+(a.op?' ·'+firstWord(a.op):'');
-    return open+'"'+esc(a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP)+'">'+label+half+'</span>';
+    return open+'"'+esc(a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP)+'">'+label+half+grip+'</span>';
   }
-  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+DRAG_TIP)+'">'+firstWord(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+'</span>';
+  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+DRAG_TIP)+'">'+firstWord(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
 }
 
 // ── By Job board ────────────────────────────────────────────────
@@ -944,7 +952,7 @@ function jobCellData(job, costCode, d) {
 function dayCell(job, costCode, d, tStr, items, extra) {
   const confSet = conflictResourcesOn(d);
   const w = (new Date(d+'T12:00:00').getDay())%6===0, isT = d===tStr;
-  const fill = items.length ? '<span class="fill-h" draggable="true" data-fill="1"'+jobCellData(job, costCode, d)+' title="Drag across the week to put this same crew on the other days"></span>' : '';
+  const fill = items.length ? '<span class="fill-h" draggable="true" data-fill="1"'+jobCellData(job, costCode, d)+' title="Drag across the week to put this WHOLE crew on the other days"></span>' : '';
   return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" data-drop="job"'+jobCellData(job, costCode, d)+
     ' onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(costCode||'')+'\',\''+d+'\')">'+
     (extra||'')+items.map(a => chip(a, confSet.has(a.resource), d)).join('')+fill+'</td>';
@@ -1146,6 +1154,12 @@ function _hasAt(date, t, resource, op) {
 }
 function onDragStart(e) {
   const t = _el(e.target); if (!t) return;
+  const pf = t.closest('[data-pfill]');
+  if (pf) {
+    _drag = { type:'pfill', id:pf.dataset.aid, date:pf.dataset.adate };
+    e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', 'pfill');
+    return;
+  }
   if (t.classList.contains('fill-h')) {
     const d = t.dataset;
     _drag = { type:'fill', src:{ date:d.date, division:d.div, jobId:d.job, costCode:d.cc||'' } };
@@ -1181,7 +1195,7 @@ function onDragOver(e) {
   // dropEffect MUST be one the drag's effectAllowed permits or the browser
   // silently refuses the drop. A rail name and a fill are copies; a chip being
   // moved is a move.
-  const copy = _drag.type === 'fill' || fromRail || e.altKey || e.ctrlKey || e.metaKey;
+  const copy = _drag.type === 'fill' || _drag.type === 'pfill' || fromRail || e.altKey || e.ctrlKey || e.metaKey;
   e.dataTransfer.dropEffect = isRail ? 'move' : (copy ? 'copy' : 'move');
   if (_dropEl !== cell) _clearDropHi();
   _dropEl = cell;
@@ -1198,6 +1212,7 @@ function onDrop(e) {
   e.preventDefault(); e.stopPropagation();
   const tgt = _tgtOf(cell); if (!tgt) return;
   if (tgt.kind === 'rail') { if (drag.type === 'asn') railRemove(drag); return; }
+  if (drag.type === 'pfill') { personFill(drag, tgt); return; }
   if (drag.type === 'crew') { if (tgt.kind === 'job') crewDrop(drag, tgt); else toast('Drop a crew on a day of a job'); return; }
   if (drag.type === 'rail') { if (tgt.kind === 'job') railDrop(drag, tgt); else toast('Drop a name on a day of a job'); return; }
   if (drag.type === 'fill') { if (tgt.kind === 'job') fillFromCell(drag.src, tgt); else toast('Drag the corner handle onto a job cell'); return; }
@@ -1300,6 +1315,44 @@ function railDrop(drag, tgt) {
   _undo.pop(); updateUndoButtons();
   toast(r === 'blocked' ? drag.resource + ' is approved off ' + shortDate(tgt.date)
                         : drag.resource + ' is already on ' + job.name + ' that day');
+}
+// The visible days from one to another, the source excluded — the span a fill
+// gesture covers, in either direction.
+function rangeDates(from, to) {
+  const ws = weekDateStrs(); const i = ws.indexOf(from), j = ws.indexOf(to);
+  if (i < 0 || j < 0) return [to];
+  return ws.slice(Math.min(i, j), Math.max(i, j) + 1).filter(d => d !== from);
+}
+// One man across days. His machines come with him, the way they do on every
+// other move, and each booking keeps the cost code it already carried.
+function personFill(src, tgt) {
+  const list = state.assignments[src.date] || [];
+  const a = list.find(x => x.id === src.id); if (!a) return;
+  const movers = [a].concat(_pairedEquip(list, a));
+  let job, dates, forceCode = null;
+  if (tgt.kind === 'job') {
+    job = jobById(tgt.division, tgt.jobId) || { division:tgt.division, id:tgt.jobId, name:a.jobName };
+    const sameRow = a.division === tgt.division && a.jobId === tgt.jobId;
+    // Dragged out of its own row, the grip is just a copy onto that one square.
+    dates = sameRow ? rangeDates(src.date, tgt.date) : [tgt.date];
+    if (!sameRow) forceCode = tgt.costCode || '';
+  } else if (tgt.kind === 'res') {
+    // By Crew board: the row is the man, so the grip runs along his own days.
+    if (tgt.resource !== a.resource) { toast('Drag the grip along ' + a.resource + '\u2019s own row'); return; }
+    job = jobById(a.division, a.jobId) || { division:a.division, id:a.jobId, name:a.jobName };
+    dates = rangeDates(src.date, tgt.date);
+  } else return;
+  if (!dates.length) return;
+  pushUndo();
+  let added = 0, blocked = 0;
+  dates.forEach(d => movers.forEach(m => {
+    const r = placeOnJob(d, job, forceCode === null ? (m.costCode || '') : forceCode, m);
+    if (r === 'blocked') blocked++; else if (r === 'added' || r === 'retagged') added++;
+  }));
+  if (!added) { _undo.pop(); updateUndoButtons();
+    toast(blocked ? a.resource + ' is approved off those days' : a.resource + ' is already on those days'); return; }
+  saveAssignments(); render();
+  toast(a.resource + ' \u2192 ' + job.name + ' \u00b7 ' + dates.length + ' day' + (dates.length > 1 ? 's' : '') + (blocked ? ' \u00b7 skipped ' + blocked + ' off' : ''));
 }
 // A saved crew onto a square: the whole gang on that job that day.
 function crewDrop(drag, tgt) {
