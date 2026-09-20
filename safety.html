@@ -87,7 +87,13 @@
     .row-2 { display:grid; grid-template-columns:1fr 1fr; gap:0.6rem; }
     @media (max-width:560px) { .row-2 { grid-template-columns:1fr; } }
     label { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); font-weight:600; }
-    input, textarea, select {
+    /* Scoped away from checkboxes and radios on purpose. This rule is written
+       for text fields, and appearance:none on a checkbox removes the native box
+       AND its tick, and makes accent-color a no-op — so the control rendered
+       pixel-for-pixel identical checked and unchecked. It toggled correctly and
+       showed nothing, which reads as a broken button: you tap, see no change,
+       tap again, and have now turned it back off. */
+    input:not([type=checkbox]):not([type=radio]), textarea, select {
       width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px;
       color:var(--text); font-size:1rem; padding:0.7rem; font-family:inherit; outline:none;
       min-height:46px; -webkit-appearance:none; appearance:none;
@@ -182,10 +188,29 @@
       font-size:1rem; line-height:1.5; font-weight:400;
       text-transform:none; letter-spacing:normal; color:var(--text);
     }
+    /* Drawn rather than left to the browser: on this dark surface a native
+       checkbox is a pale square that reads as a disabled field, and the tick is
+       the whole point — somebody has to be able to see at a glance that they
+       have agreed to the sentence beside it. The mark is a background image
+       rather than a ::after, because a pseudo-element on a replaced element is
+       not something every browser renders. */
     .ack input[type=checkbox] {
-      flex:none; width:28px; height:28px; min-height:28px; margin-top:1px;
-      accent-color:var(--accent); cursor:pointer;
+      flex:none;
+      width:30px; height:30px; min-width:30px; min-height:30px;
+      margin:0; padding:0;
+      -webkit-appearance:none; appearance:none;
+      background:var(--bg); border:2px solid var(--muted); border-radius:7px;
+      cursor:pointer; transition:background-color .12s, border-color .12s;
     }
+    .ack input[type=checkbox]:checked {
+      border-color:var(--accent);
+      background:var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2304180c' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='4 12 10 18 20 6'/%3E%3C/svg%3E") center / 20px 20px no-repeat;
+    }
+    .ack input[type=checkbox]:active { border-color:var(--accent); }
+    .ack input[type=checkbox]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    /* The whole row answers too, so a tap that lands on the sentence rather
+       than the box still gives feedback. */
+    .ack:has(input:checked) { border-color:rgba(34,197,94,0.55); background:rgba(34,197,94,0.07); }
 
     .sigpad {
       position:relative; background:#fff; border-radius:10px; border:1px solid var(--border); overflow:hidden;
