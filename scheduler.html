@@ -187,6 +187,10 @@
     .job-row td.cell:has(.asn):hover::after { content:none; }
     /* Crew board: one job per line, full cell width, name ellipsised. */
     table.board.crew .asn { display:block; margin-right:0; }
+    .div-row td { background:var(--surface2); }
+    /* The badge already shouts the division; the job count should not. */
+    .div-row .grp-lead { font-size:0.72rem; }
+    .job-lead { padding-left:0.8rem !important; }
     .code-tag { font-size:0.55rem; font-weight:700; letter-spacing:0.03em; color:var(--blue); border:1px solid rgba(96,165,250,0.45); border-radius:4px; padding:0 0.25rem; white-space:nowrap; }
     .lnk { color:var(--blue); cursor:pointer; text-decoration:underline; }
     /* Assign modal: the people picker is the point of the dialog, so it gets the room. */
@@ -249,17 +253,24 @@ const state = {
 
 // Preferences live in localStorage, not the server: they are how THIS scheduler
 // likes to look at the board, not part of the schedule everyone shares.
+const RAIL_PREF_V = 2;   // bump to re-open the crew panel for everyone
+let _railReset = false;
 const PREF_KEY = 'fct_sched_prefs:' + ((user && user.companyCode) || '') + ':' + ((user && user.username) || '');
-function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen, railOpen:state.railOpen, railTab:state.railTab })); } catch {} }
+function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen, railOpen:state.railOpen, railTab:state.railTab, railV:RAIL_PREF_V })); } catch {} }
 (function loadPrefs() {
   let p = {}; try { p = JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; } catch {}
   if (p.hideComplete != null) state.hideComplete = !!p.hideComplete;
   // Default ON for a laptop-height window — the screens this is actually used on.
   state.compact = p.compact != null ? !!p.compact : (window.innerHeight < 900);
   state.hintSeen = !!p.hintSeen;
-  if (p.railOpen != null) state.railOpen = !!p.railOpen;
+  // Open by default. A preference saved before this reset is honoured once and
+  // then forgotten, so the panel comes back for everyone; closing it still
+  // sticks from here on.
+  if (p.railV === RAIL_PREF_V && p.railOpen != null) state.railOpen = !!p.railOpen;
+  else { state.railOpen = true; _railReset = true; }
   if (p.railTab === 'crew' || p.railTab === 'equip') state.railTab = p.railTab;
   document.body.classList.toggle('compact', state.compact);
+  if (_railReset) savePrefs();
 })();
 function setCompact(on) { state.compact = on; document.body.classList.toggle('compact', on); savePrefs(); closeMoreMenu(); render(); }
 function toggleHideComplete() { state.hideComplete = !state.hideComplete; savePrefs(); render(); }
@@ -804,10 +815,13 @@ function toolsHtml() {
          '<button class="btn icon" id="refreshBtn" title="Refresh \u2014 pull other schedulers\u2019 changes">\u27f3</button>';
 }
 // items: [id, label, title] \u2014 '-' for a divider.
+// The dispatch sheet is the thing a scheduler produces at the end of the day,
+// so it sits on the bar rather than two clicks inside a menu.
+function pdfBtnHtml() { return '<button class="btn primary" id="printBtn" title="Print or email the dispatch schedule as a PDF">\ud83d\udcc4 PDF</button>'; }
 function moreMenuHtml(items) {
   const rows = items.map(it => it === '-' ? '<hr>' :
     '<button id="'+it[0]+'"'+(it[2]?' title="'+esc(it[2])+'"':'')+'>'+it[1]+'</button>').join('');
-  return '<div class="menu-wrap"><button class="btn" id="moreBtn" title="More actions">\u22ef More</button>'+
+  return '<div class="menu-wrap"><button class="btn" id="moreBtn" title="More actions">\u22ef</button>'+
          '<div class="menu-pop" id="morePop"'+(state.moreOpen?'':' style="display:none"')+'>'+rows+'</div></div>';
 }
 function closeMoreMenu() { state.moreOpen = false; const p = document.getElementById('morePop'); if (p) p.style.display = 'none'; }
@@ -818,21 +832,20 @@ function renderToolbar() {
   state.moreOpen = false;
   if (state.view === 'ai') { tb.innerHTML = '<button class="btn primary" id="genAi">\u26a1 '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>'; document.getElementById('genAi').onclick = generateAI; return; }
   if (state.view === 'attention') {
-    tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for the selected week</span><div class="spacer"></div>' + toolsHtml() +
-      moreMenuHtml([['printBtn','\ud83d\udce4 Send / Print\u2026','Print or email the dispatch schedule to crews'], '-', compactMenuItem()]);
+    tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for the selected week</span><div class="spacer"></div>' + pdfBtnHtml() + toolsHtml() +
+      moreMenuHtml(['-', compactMenuItem()]);
     wireToolbar(); return;
   }
   if (state.view === 'job') {
     tb.innerHTML = wknavHtml() +
       '<input type="text" id="jobSearch" placeholder="\ud83d\udd0d Search projects\u2026" value="'+esc(state.jobSearch)+'" style="width:180px" title="Press / to jump here">' + divFilterHtml() +
       '<button class="tgl'+(state.needCrewOnly?' on':'')+'" id="needOnly" title="Only show sub-codes that are behind or at risk">Needs crew</button>' +
-      '<button class="tgl'+(state.hideComplete?' on':'')+'" id="hideDone" title="Hide finished sub-codes and finished jobs. Anything with crew booked on it this week stays visible.">'+(state.hideComplete?'\u2713 ':'')+'Hide complete</button>' +
-      '<div class="spacer"></div>' +
+      '<button class="tgl'+(state.hideComplete?' on':'')+'" id="hideDone" title="Hide finished jobs and finished cost codes. Anything with crew booked on it stays visible.">'+(state.hideComplete?'\u2713 ':'')+'Hide done</button>' +
+      '<div class="spacer"></div>' + pdfBtnHtml() +
       '<button class="btn icon'+(state.railOpen?' primary':'')+'" id="railBtn" title="Crew panel \u2014 drag names onto the board">\ud83d\udc65</button>' + toolsHtml() +
       moreMenuHtml([
         ['copyWk','\ud83d\udccb Copy week \u2192 next','Copy the 7 days shown into the following week'],
         ['crewsBtn','\ud83d\udc65 Saved crews\u2026','Manage saved crew templates'],
-        ['printBtn','\ud83d\udce4 Send / Print\u2026','Print or email the dispatch schedule to crews'],
         ['importPlans','\u2935 Import division plans','Pull crew/equipment already planned in each division\u2019s Projection Planner'],
         '-', compactMenuItem(),
       ]);
@@ -843,8 +856,8 @@ function renderToolbar() {
       '<select id="tradeFilter">'+trades.map(t => '<option value="'+esc(t)+'"'+(state.tradeFilter===t?' selected':'')+'>'+(t==='all'?'All trades':esc(t))+'</option>').join('')+'</select>' +
       '<button class="tgl'+(state.showAll?' on':'')+'" id="showAll" title="Show everyone on the roster, not just crew in rotation">'+(state.showAll?'\u2713 ':'')+'Full roster</button>' +
       '<span class="muted" style="font-size:0.7rem">'+(state.board.employees||[]).length+' crew \u00b7 '+(state.board.equipment||[]).length+' equip</span>' +
-      '<div class="spacer"></div>' + toolsHtml() +
-      moreMenuHtml([['printBtn','\ud83d\udce4 Send / Print\u2026','Print or email the dispatch schedule to crews'], '-', compactMenuItem()]);
+      '<div class="spacer"></div>' + pdfBtnHtml() + toolsHtml() +
+      moreMenuHtml(['-', compactMenuItem()]);
   }
   wireToolbar();
 }
@@ -862,7 +875,7 @@ function wireToolbar() {
   on('importPlans', () => { closeMoreMenu(); importPlanned(); });
   on('copyWk', () => { closeMoreMenu(); copyWeekForward(); });
   on('crewsBtn', () => { closeMoreMenu(); openCrewsModal(); });
-  on('printBtn', () => { closeMoreMenu(); openDispatchModal(); });
+  on('printBtn', openDispatchModal);
   on('compactBtn', () => setCompact(!state.compact));
   on('railBtn', toggleRail);
   if (g('crewSearch')) g('crewSearch').oninput = e => { state.crewSearch = e.target.value; document.getElementById('main').innerHTML = renderCrewBoard(); };
@@ -935,8 +948,31 @@ function renderJobBoard() {
     return html + '<div class="empty">'+(searching ? 'No projects match \u201c'+esc(state.jobSearch.trim())+'\u201d.'
       : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+(state.needCrewOnly?' need crew':'')+'.'+(why.length?'<br><span class="muted">'+why.join(' \u00b7 ')+'</span>':''))+'</div>';
   }
+  // Grouped by division. A mixed list sorted by status put a Kiewit job
+  // between two turf ones, and a scheduler works a division at a time.
+  const byDiv = new Map();
+  jobs.forEach(j => { if (!byDiv.has(j.division)) byDiv.set(j.division, []); byDiv.get(j.division).push(j); });
+  const order = (state.board.sourceDivisions || []).filter(d => byDiv.has(d))
+    .concat([...byDiv.keys()].filter(d => !(state.board.sourceDivisions || []).includes(d)).sort());
   let body = '';
-  jobs.forEach(job => { body += jobRowHtml(job, ds, tStr); });
+  order.forEach(div => {
+    const list = byDiv.get(div);
+    const col = divColor(div);
+    const collapsed = !!state.grpCol['d::'+div] && !searching;
+    const behind = list.reduce((n, j) => n + jobRollup(j).behind, 0);
+    const headCells = ds.map(d => {
+      const set = new Set();
+      list.forEach(j => jobCrewOn(d, j.division, j.id).forEach(a => { if (a.kind !== 'equip') set.add(a.resource); }));
+      return '<td class="cnt-cell'+(set.size?' has':'')+'">'+(set.size||'\u00b7')+'</td>';
+    }).join('');
+    body += '<tr class="grp-row div-row" onclick="toggleDivGrp(\''+escAttr(div)+'\')" title="'+(collapsed?'Show':'Hide')+' this division"><td class="lead-col grp-lead">'+
+      '<span class="caret">'+(collapsed?'\u25b8':'\u25be')+'</span> '+
+      '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(div)+'</span> '+
+      '<span class="muted">'+list.length+' job'+(list.length>1?'s':'')+'</span>'+
+      (behind?' <span class="warn" style="font-size:0.62rem">'+behind+' behind</span>':'')+
+      '</td>'+headCells+'</tr>';
+    if (!collapsed) list.forEach(job => { body += jobRowHtml(job, ds, tStr); });
+  });
   const notes = [];
   if (_hiddenJobCount) notes.push('\u2713 '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden \u00b7 <span class="lnk" onclick="toggleHideComplete()">show completed work</span>');
   const ex = (state.board && state.board.excludedJobs) || 0;
@@ -971,8 +1007,8 @@ function jobRowHtml(job, ds, tStr) {
     return dayCell(job, '', d, tStr, jobCrewOn(d, job.division, job.id),
       st ? '<div class="site-time">\u23f0'+esc(fmtTimeShort(st))+'</div>' : '');
   }).join('');
-  return '<tr class="job-row"><td class="lead-col job-lead">'+
-    '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.division)+'</span> '+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
+  return '<tr class="job-row"><td class="lead-col job-lead" style="border-left:3px solid '+col+'">'+
+    esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
     '<div class="sub-meta">'+meta.join(' \u00b7 ')+'</div></td>'+cells+'</tr>';
 }
 
@@ -1122,6 +1158,7 @@ function renderCrewBoard() {
   return html + '<div class="board-wrap"><table class="board crew"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
+function toggleDivGrp(div) { const k = 'd::'+div; state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderJobBoard(); }
 
 // ── Drag & drop: the fast path for staffing ────────────────────────────────
 // Clicking a cell and working a dialog is fine for building a crew from
@@ -2125,7 +2162,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+Object.assign(window, { toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();
