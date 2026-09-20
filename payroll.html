@@ -5059,18 +5059,6 @@
       return b.startsWith(month + ' ') ? `${a}\u2013${b.slice(month.length + 1)}` : `${a}\u2013${b}`;
     }
 
-    // The scale every meter on the board shares. At least 50 h, so the 40 tick
-    // sits inside the track with room past it for the overtime to show; rounded
-    // up past the heaviest week anybody worked, so the longest bar in range
-    // still ends short of the edge instead of pinning flat against it.
-    function ccScaleMax(employees) {
-      let max = 0;
-      for (const e of employees) {
-        for (const w of (e.room ? e.room.weeks : [])) max = Math.max(max, w.totalHours);
-      }
-      return Math.max(50, Math.ceil((max + 2) / 5) * 5);
-    }
-
     // WHERE A MAN STANDS AGAINST THE FORTY — the one place it is decided.
     //
     // The chip on the board, the two groups the board splits into, and the
@@ -5169,6 +5157,15 @@
     // sits inside the track with room past it for the overtime to show; rounded
     // up past the heaviest week anybody worked, so the longest bar in range
     // still ends short of the edge instead of pinning flat against it.
+    //
+    // Takes ccOrdered's ROWS ({ e, win }), not employees — it reads each man's
+    // window, which is these weeks' hours, not his range-wide totals. A second
+    // copy of this taking employees and reading e.room.weeks sat above here
+    // until it was noticed: both hoisted, the later one won, and the earlier
+    // was dead. It never threw on the wrong shape — it guarded, found nothing
+    // and returned the 50 floor — so had the order ever changed, every meter
+    // would have flattened to a 50-hour track and a 62-hour week would have
+    // run off the end of its own bar. Keep this the only one.
     function ccScaleMax(rows) {
       let max = 0;
       for (const r of rows) for (const w of r.win.weeks) max = Math.max(max, w.totalHours);
