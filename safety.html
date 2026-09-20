@@ -87,7 +87,13 @@
     .row-2 { display:grid; grid-template-columns:1fr 1fr; gap:0.6rem; }
     @media (max-width:560px) { .row-2 { grid-template-columns:1fr; } }
     label { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); font-weight:600; }
-    input, textarea, select {
+    /* Scoped away from checkboxes and radios on purpose. This rule is written
+       for text fields, and appearance:none on a checkbox removes the native box
+       AND its tick, and makes accent-color a no-op — so the control rendered
+       pixel-for-pixel identical checked and unchecked. It toggled correctly and
+       showed nothing, which reads as a broken button: you tap, see no change,
+       tap again, and have now turned it back off. */
+    input:not([type=checkbox]):not([type=radio]), textarea, select {
       width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px;
       color:var(--text); font-size:1rem; padding:0.7rem; font-family:inherit; outline:none;
       min-height:46px; -webkit-appearance:none; appearance:none;
@@ -128,6 +134,9 @@
     .overlay {
       position:fixed; inset:0; background:rgba(4,4,8,0.88); z-index:90;
       display:none; align-items:stretch; justify-content:center;
+      /* dvh tracks the phone's collapsing address bar; inset:0 alone leaves
+         the bottom of the sign panel under it on iOS. */
+      height:100dvh;
     }
     .overlay.open { display:flex; }
     .viewer {
@@ -145,16 +154,63 @@
     .viewer-body { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; }
     .pdf-frame { width:100%; height:58vh; min-height:280px; border:none; background:#222; flex:none; }
     .pdf-fallback { padding:1rem; display:flex; flex-direction:column; gap:0.6rem; }
-    .sign-panel { padding:0.9rem; display:flex; flex-direction:column; gap:0.8rem; border-top:1px solid var(--border); }
+    .pdf-fallback .open-link { color:var(--accent); }
+    /* The phone path. This is the primary action on the screen — it is what
+       putting the document in front of somebody looks like when the page
+       cannot draw it — so it is sized like one rather than like a hyperlink. */
+    .pdf-open {
+      padding:1.1rem; display:flex; flex-direction:column; gap:0.7rem; align-items:stretch;
+    }
+    .pdf-open .open-btn {
+      display:flex; align-items:center; justify-content:center; gap:0.5rem;
+      min-height:56px; text-decoration:none; font-size:1rem;
+    }
+    .sign-panel {
+      padding:0.9rem; padding-bottom:calc(0.9rem + env(safe-area-inset-bottom, 0));
+      display:flex; flex-direction:column; gap:0.8rem; border-top:1px solid var(--border);
+    }
 
+    /* Mathis floats at z-index 10070, which put a chat bubble on top of the
+       signature pad. The viewer is a modal carrying a legal acknowledgement;
+       nothing belongs over it. */
+    body.viewer-open #mathis-launch,
+    body.viewer-open #mathis-nudge { display:none !important; }
+
+    /* This is a <label>, so it inherits the global label rule above — which
+       is written for the little uppercase field captions and made the one
+       sentence on this page that carries legal weight render SHOUTED, letter-
+       spaced, undersized and grey. Every one of those is overridden back:
+       somebody is attesting to having read and understood it. */
     .ack {
-      display:flex; gap:0.7rem; align-items:flex-start; padding:0.8rem;
+      display:flex; gap:0.75rem; align-items:flex-start; padding:0.9rem;
       background:var(--surface2); border:1px solid var(--border); border-radius:10px;
-      cursor:pointer; font-size:0.86rem; line-height:1.45;
+      cursor:pointer;
+      font-size:1rem; line-height:1.5; font-weight:400;
+      text-transform:none; letter-spacing:normal; color:var(--text);
     }
+    /* Drawn rather than left to the browser: on this dark surface a native
+       checkbox is a pale square that reads as a disabled field, and the tick is
+       the whole point — somebody has to be able to see at a glance that they
+       have agreed to the sentence beside it. The mark is a background image
+       rather than a ::after, because a pseudo-element on a replaced element is
+       not something every browser renders. */
     .ack input[type=checkbox] {
-      flex:none; width:24px; height:24px; min-height:24px; margin-top:1px; accent-color:var(--accent); cursor:pointer;
+      flex:none;
+      width:30px; height:30px; min-width:30px; min-height:30px;
+      margin:0; padding:0;
+      -webkit-appearance:none; appearance:none;
+      background:var(--bg); border:2px solid var(--muted); border-radius:7px;
+      cursor:pointer; transition:background-color .12s, border-color .12s;
     }
+    .ack input[type=checkbox]:checked {
+      border-color:var(--accent);
+      background:var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2304180c' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='4 12 10 18 20 6'/%3E%3C/svg%3E") center / 20px 20px no-repeat;
+    }
+    .ack input[type=checkbox]:active { border-color:var(--accent); }
+    .ack input[type=checkbox]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    /* The whole row answers too, so a tap that lands on the sentence rather
+       than the box still gives feedback. */
+    .ack:has(input:checked) { border-color:rgba(34,197,94,0.55); background:rgba(34,197,94,0.07); }
 
     .sigpad {
       position:relative; background:#fff; border-radius:10px; border:1px solid var(--border); overflow:hidden;
@@ -213,6 +269,46 @@
     }
     .sig-pending { display:block; margin-top:3px; font-size:0.68rem; color:var(--muted); }
     .rep-none { font-size:0.8rem; color:var(--muted); padding:0.45rem 0.6rem; }
+
+    /* ── Phone ───────────────────────────────────────────────────────────
+       The crew are on phones, in gloves, outdoors. Apple and Google both put
+       the minimum comfortable target at 44px; the compact desktop controls
+       above are well under it, so they grow wherever the pointer is coarse
+       rather than at a width breakpoint — a touchscreen laptop needs the same
+       thing a phone does. */
+    @media (pointer: coarse) {
+      .icon-btn   { min-height:44px; padding:0.6rem 0.85rem; }
+      .tab        { min-height:48px; padding-left:1rem; padding-right:1rem; }
+      .btn-ghost  { min-height:44px; }
+      .ack input[type=checkbox] { width:30px; height:30px; min-height:30px; }
+      /* A file picker under 16px makes iOS zoom the whole page on focus and
+         leaves it zoomed. Every other control here is already 16px. */
+      input[type=file] { font-size:1rem; }
+    }
+
+    @media (max-width: 640px) {
+      main  { padding:0.75rem; }
+      .tabs { padding-left:0.75rem; padding-right:0.75rem; }
+      /* A long title used up a third of the screen restating what they just
+         tapped. Two lines, then the document. */
+      .viewer-head .t div:first-child {
+        font-size:0.88rem; line-height:1.25;
+        display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+      }
+      .viewer-head .t div:last-child {
+        font-size:0.68rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      }
+      /* Badges stop squeezing the title into a column two words wide. */
+      .card-head { flex-direction:column; gap:0.5rem; }
+      .card-side { flex-direction:row; align-items:center; flex-wrap:wrap; gap:0.35rem; }
+      .toolbar   { flex-direction:column; align-items:stretch; }
+      .toolbar .btn { width:100%; }
+    }
+
+    /* A filename or a pasted title with no spaces in it must not push the
+       layout sideways on a 320px screen. */
+    .card-title, .card-meta, .card-desc,
+    .rep-head .t .n, .rep-head .t .s, .rep-list li .who { overflow-wrap:anywhere; }
 
     .toast {
       position:fixed; left:50%; bottom:calc(1.2rem + env(safe-area-inset-bottom,0));
@@ -273,11 +369,16 @@
        this only decides what is worth drawing. A platform admin with no
        explicit role map falls through to the supervisor side, which is the
        same rule divisions.html uses to show them the card at all. */
+    /* The same rule safetyLevelFor() applies on the server: an EXPLICIT safety
+       grant beats the platform-admin default, which only fills in where nobody
+       has said anything. The two have to agree or the page draws one thing and
+       the server allows another. This only decides what is worth drawing —
+       every request is checked again server-side, and loadDocs() replaces this
+       with the server's own answer the moment it lands. */
     const myLevel = (() => {
-      const roles = (user && user.divisionRoles) || null;
-      if (roles && typeof roles === 'object' && roles[DIVISION] && roles[DIVISION] !== 'no_access') {
-        return roles[DIVISION];
-      }
+      const roles    = (user && user.divisionRoles) || null;
+      const explicit = roles && typeof roles === 'object' ? roles[DIVISION] : null;
+      if (explicit && explicit !== 'no_access') return explicit;
       return (user && user.isPlatformAdmin) ? 'admin' : 'level1';
     })();
     let canManage = myLevel === 'admin' || myLevel === 'level3';
@@ -292,6 +393,7 @@
       statement: '',
       storageConfigured: true,
       viewing: null,      // the document open in the overlay
+      opened: new Set(),  // documents whose PDF this person has actually opened
       ackChecked: false,
       signing: false,
     };
@@ -616,6 +718,24 @@
     }
 
     /* ═══════ Viewer & signing ═══════ */
+    /* Can the PDF be trusted to render INSIDE the page?
+     *
+     * On a phone, no. iOS Safari paints only the FIRST PAGE of a PDF in an
+     * iframe and gives no way to reach page two; Chrome on Android generally
+     * declines to render one at all and offers a download instead. A crew
+     * member ticking "I have read this document in full" against a frame that
+     * showed them page 1 of 4 — or a blank rectangle — is the single outcome
+     * this screen must not produce.
+     *
+     * So on a touch screen the form opens in the phone's own PDF viewer, where
+     * it scrolls, pinches and zooms properly, and the acknowledgement waits
+     * until it has actually been opened. Keyed on the pointer rather than a
+     * width, because a touchscreen laptop has the same problem, and paired
+     * with a width so a desktop browser narrowed to a phone's width keeps the
+     * inline frame it renders perfectly well. */
+    const COARSE_POINTER = Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    const INLINE_PDF     = !COARSE_POINTER && window.innerWidth >= 820;
+
     /* Every open takes a ticket. The signed URL is fetched over the network,
        and on a jobsite connection the answer for the document somebody tapped
        first can land after they have closed it and opened another — repainting
@@ -636,6 +756,7 @@
       document.getElementById('vMeta').textContent  = weekLabel(doc.weekOf) + ' · ' + doc.filename;
       document.getElementById('vBody').innerHTML    = '<div class="pdf-fallback"><span class="fld-note">Opening the document…</span></div>';
       document.getElementById('viewer').classList.add('open');
+      document.body.classList.add('viewer-open');
 
       let link;
       try {
@@ -691,14 +812,24 @@
              <button class="btn btn-primary" id="signBtn" onclick="submitSignature()" disabled>Sign &amp; submit</button>
            </div>`;
 
-      document.getElementById('vBody').innerHTML = `
-        <iframe class="pdf-frame" id="pdfFrame" src="${esc(url)}" title="${esc(doc.title)}"></iframe>
-        <div class="pdf-fallback">
-          <span class="fld-note">Trouble reading it here?
-            <a href="${esc(url)}" target="_blank" rel="noopener" style="color:var(--accent)">Open the PDF in a new tab</a>.
-            The link is good for 15 minutes.</span>
-        </div>
-        ${sign}`;
+      // On a phone the frame is not drawn at all — loading a PDF that will not
+      // render just spends a crew member's data to show them a blank rectangle.
+      const body = INLINE_PDF
+        ? `<iframe class="pdf-frame" id="pdfFrame" src="${esc(url)}" title="${esc(doc.title)}"></iframe>
+           <div class="pdf-fallback">
+             <span class="fld-note">Trouble reading it here?
+               <a class="open-link" href="${esc(url)}" target="_blank" rel="noopener" data-act="opened">Open the PDF in a new tab</a>.
+               The link is good for 15 minutes.</span>
+           </div>`
+        : `<div class="pdf-open">
+             <a class="btn btn-primary open-btn" href="${esc(url)}" target="_blank" rel="noopener" data-act="opened">
+               Open the form
+             </a>
+             <span class="fld-note">It opens in your phone's PDF viewer, where you can
+               scroll and zoom. Come back to this screen to sign. The link is good for 15 minutes.</span>
+           </div>`;
+
+      document.getElementById('vBody').innerHTML = body + sign;
 
       if (!already) initSignaturePad();
     }
@@ -709,6 +840,7 @@
       // clearing vBody exists to stop.
       openSeq++;
       document.getElementById('viewer').classList.remove('open');
+      document.body.classList.remove('viewer-open');
       document.getElementById('vBody').innerHTML = '';   // stops the PDF loading in the background
       state.viewing = null;
     }
@@ -723,8 +855,19 @@
       const btn  = document.getElementById('signBtn');
       const name = document.getElementById('sigName');
       if (!btn) return;
-      const named = Boolean(name && name.value.trim().length >= 2);
-      btn.disabled = state.signing || !state.ackChecked || !named;
+      const named  = Boolean(name && name.value.trim().length >= 2);
+      // Where the document is NOT on screen, it has to have been opened. The
+      // page cannot know they read it, but it can refuse to record that they
+      // did when it never showed them anything.
+      const seen   = INLINE_PDF || (state.viewing && state.opened.has(state.viewing.id));
+      btn.disabled = state.signing || !state.ackChecked || !named || !seen;
+
+      const msg = document.getElementById('signMsg');
+      if (msg && !msg.classList.contains('err')) {
+        msg.textContent = seen
+          ? 'Your name, the time and this acknowledgement are recorded together.'
+          : 'Open the form above and read it through, then sign here.';
+      }
     }
 
     /* ── Signature pad ────────────────────────────────────────────────────
@@ -776,6 +919,17 @@
       if (name) name.addEventListener('input', updateSignButton);
       updateSignButton();
     }
+
+    /* A rotation changes the pad's width, and a canvas sized for the old one
+       maps a finger to the wrong place. Re-initialising clears it, so a mark
+       already drawn is left alone rather than thrown away — a slightly stretched
+       signature is a far better outcome than one that vanishes on a rotate. */
+    let sigResizeTimer = null;
+    window.addEventListener('resize', function () {
+      if (!document.getElementById('sigCanvas') || sigDrawn) return;
+      clearTimeout(sigResizeTimer);
+      sigResizeTimer = setTimeout(initSignaturePad, 150);
+    });
 
     function clearSignature() {
       const canvas = document.getElementById('sigCanvas');
@@ -1063,8 +1217,15 @@
       toggleGroup(hit.getAttribute('data-doc-id'));
     });
 
+    // The one signal available that the document was actually put in front of
+    // them. Delegated on the overlay so it survives the body being re-rendered.
     document.getElementById('viewer').addEventListener('click', function (e) {
-      if (e.target === this) closeViewer();
+      if (e.target === this) { closeViewer(); return; }
+      const opened = e.target.closest('[data-act="opened"]');
+      if (opened && state.viewing) {
+        state.opened.add(state.viewing.id);
+        updateSignButton();
+      }
     });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && document.getElementById('viewer').classList.contains('open')) closeViewer();
