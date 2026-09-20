@@ -119,6 +119,31 @@ async function safetyKeyClaimed(sql, key) {
 }
 
 /**
+ * A DATE column as YYYY-MM-DD, whatever the driver hands back.
+ *
+ * @neondatabase/serverless applies the standard pg type parsers, so a DATE
+ * comes back as a JS Date at LOCAL midnight. toISOString() on one converts to
+ * UTC and moves the day BACK anywhere east of Greenwich: the Monday a document
+ * is filed under reads as the Sunday before it, which is a date the whole
+ * week-of rule says can never occur. Worse, feeding that value back through
+ * mondayOf() on an edit refiles the document a week earlier.
+ *
+ * Read the local components instead, exactly as safeDate() in
+ * api/quarry-sales-submissions.js does — this repo has been bitten by this
+ * twice already, and both fixes carry a comment saying so.
+ */
+function dateOnly(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return null;
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${value.getFullYear()}-${m}-${d}`;
+  }
+  return String(value).slice(0, 10);
+}
+
+/**
  * The Monday of the week `value` falls in, as YYYY-MM-DD, or null.
  *
  * Documents are filed by week, and a week has to mean one date or the report
@@ -128,8 +153,9 @@ async function safetyKeyClaimed(sql, key) {
  * belongs to that week, not to the weekend after it.
  */
 function mondayOf(value) {
-  if (!value) return null;
-  const s = String(value).trim().slice(0, 10);
+  // Via dateOnly so a Date from the driver is read by its LOCAL components,
+  // never through UTC — see the comment there.
+  const s = String(dateOnly(value) || '').trim().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
   // Parsed at noon UTC so a timezone offset cannot roll the date back a day,
   // the same guard api/quarry-sales-submissions.js applies to work_date.
@@ -149,4 +175,5 @@ module.exports = {
   requiredSigners,
   safetyKeyClaimed,
   mondayOf,
+  dateOnly,
 };

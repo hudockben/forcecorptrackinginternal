@@ -79,6 +79,35 @@ function assert(label, cond, detail) {
 // An in-memory stand-in shaped like the three tables these endpoints touch.
 // Faithful enough that the assertions are about the endpoints rather than
 // about the mock: every filter the real SQL applies is applied here too.
+//
+// It must also answer in the TYPES the real driver answers in, which is not a
+// detail. @neondatabase/serverless applies the standard pg parsers, so a DATE
+// column comes back as a JS Date at LOCAL midnight — never the string that was
+// inserted. A mock that hands back the string leaves the only branch
+// production ever takes unexecuted by every assertion in this file, which is
+// exactly how a week that reads a day early shipped once already.
+function pgDate(ymd) {
+  const [y, m, d] = String(ymd).slice(0, 10).split('-').map(Number);
+  return new Date(y, m - 1, d);            // local midnight, as the parser gives
+}
+// What Postgres actually STORES when a value is bound to a DATE column. A JS
+// Date is serialised as a UTC instant, so its UTC date part is what lands —
+// which is NOT the calendar day the driver read out of that same column. A
+// mock that quietly round-tripped the Date could not see an edit path that
+// rewinds the week a day every time it is saved.
+function bindDate(v) {
+  return pgDate(v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10));
+}
+
+// And back again the way Postgres compares them: by the calendar day, not
+// through UTC.
+function ymd(v) {
+  if (v instanceof Date) {
+    return v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0')
+         + '-' + String(v.getDate()).padStart(2, '0');
+  }
+  return String(v).slice(0, 10);
+}
 const DB = { docs: [], sigs: [], users: [], nextSigId: 1, calls: [] };
 
 function resetDb() {
@@ -121,8 +150,8 @@ function sql(strings, ...values) {
     return Promise.resolve(DB.docs
       .filter(d => d.company_code === companyCode)
       .filter(d => withArchived || !d.archived_at)
-      .filter(d => d.week_of >= from && d.week_of <= to)
-      .sort((a, b) => (b.week_of.localeCompare(a.week_of)) || (b.uploaded_at - a.uploaded_at)));
+      .filter(d => ymd(d.week_of) >= from && ymd(d.week_of) <= to)
+      .sort((a, b) => (ymd(b.week_of).localeCompare(ymd(a.week_of))) || (b.uploaded_at - a.uploaded_at)));
   }
   if (/^INSERT INTO safety_documents/.test(flat)) {
     const [id, company_code, title, description, week_of, filename,
@@ -131,7 +160,7 @@ function sql(strings, ...values) {
       return Promise.reject(new Error('duplicate key value violates unique constraint'));
     }
     const row = {
-      id, company_code, title, description, week_of, filename, content_type,
+      id, company_code, title, description, week_of: bindDate(week_of), filename, content_type,
       size_bytes, storage_key, uploaded_by,
       uploaded_at: new Date(), updated_at: new Date(), archived_at: null, archived_by: null,
     };
@@ -142,7 +171,7 @@ function sql(strings, ...values) {
     const [title, description, week_of, id, company_code] = v;
     const row = DB.docs.find(d => d.id === id && d.company_code === company_code);
     if (!row) return Promise.resolve([]);
-    Object.assign(row, { title, description, week_of, updated_at: new Date() });
+    Object.assign(row, { title, description, week_of: bindDate(week_of), updated_at: new Date() });
     return Promise.resolve([row]);
   }
   if (/^UPDATE safety_documents SET archived_at = NOW\(\)/.test(flat)) {
@@ -167,19 +196,35 @@ function sql(strings, ...values) {
       .map(s => ({ document_id: s.document_id, full_name: s.full_name, signed_at: s.signed_at })));
   }
   if (/^SELECT document_id, COUNT\(\*\)/.test(flat)) {
+    const [companyCode, rosterIds] = v;
     const tally = {};
-    DB.sigs.filter(s => s.company_code === v[0])
+    DB.sigs
+      .filter(s => s.company_code === companyCode)
+      .filter(s => !rosterIds || rosterIds.includes(s.user_id))
       .forEach(s => { tally[s.document_id] = (tally[s.document_id] || 0) + 1; });
     return Promise.resolve(Object.entries(tally).map(([document_id, signed]) => ({ document_id, signed })));
   }
   if (/^SELECT \* FROM safety_signatures WHERE document_id/.test(flat)) {
     return Promise.resolve(DB.sigs.filter(s => s.document_id === v[0] && s.user_id === v[1]));
   }
-  if (/^SELECT \* FROM safety_signatures WHERE company_code .* ANY/.test(flat)) {
+  if (/FROM safety_signatures WHERE company_code .* ANY/.test(flat)) {
     const [companyCode, ids] = v;
+    const withImage = /signature_image,/.test(flat);
     return Promise.resolve(DB.sigs
       .filter(s => s.company_code === companyCode && ids.includes(s.document_id))
-      .sort((a, b) => a.signed_at - b.signed_at));
+      .sort((a, b) => a.signed_at - b.signed_at)
+      .map(s => {
+        // Mirror the column list the endpoint actually asks for. A mock that
+        // always returned every column could not tell a report that carries
+        // 2,000 base64 PNGs from one that does not.
+        const row = {
+          id: s.id, document_id: s.document_id, user_id: s.user_id, username: s.username,
+          full_name: s.full_name, statement: s.statement, signed_at: s.signed_at,
+          has_drawn: s.signature_image != null,
+        };
+        if (withImage) row.signature_image = s.signature_image;
+        return row;
+      }));
   }
   if (/^SELECT s\.\*, d\.title, d\.week_of/.test(flat)) {
     const [companyCode, userId] = v;
@@ -231,6 +276,14 @@ storage.deleteObject = async key => { DELETED_KEYS.push(key); return true; };
 
 // ── Callers ────────────────────────────────────────────────────────────────
 const COMPANY = 'FCT';
+
+// The document ids are real uuids because registration now insists on one —
+// the id is caller-supplied, echoed back, and rendered, and the storage-key
+// comparison is not a check on it (buildKey sanitises both sides, so any
+// string at all produces a matching key). Fixed rather than generated so the
+// assertions stay deterministic.
+const DOC1 = '11111111-1111-4111-8111-111111111111';
+const DOC2 = '22222222-2222-4222-8222-222222222222';
 function tokenFor(user) {
   return jwt.sign({
     userId: user.id, username: user.username, companyCode: COMPANY,
@@ -348,20 +401,20 @@ async function uploadTests() {
   HEAD_ANSWER = { exists: true, size: 120 * 1024, contentType: 'application/pdf' };
 
   {
-    const r = await call(docsHandler, LAB_A, { method: 'POST', body: postBody('d1') });
+    const r = await call(docsHandler, LAB_A, { method: 'POST', body: postBody(DOC1) });
     assert('a laborer cannot post a document', r.statusCode === 403, String(r.statusCode));
     assert('  and nothing was written', DB.docs.length === 0);
   }
   {
-    const r = await call(docsHandler, OFFICE, { method: 'POST', body: postBody('d1') });
+    const r = await call(docsHandler, OFFICE, { method: 'POST', body: postBody(DOC1) });
     assert('somebody outside the division cannot even look', r.statusCode === 403, String(r.statusCode));
   }
   {
-    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody('d1', { title: '   ' }) });
+    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody(DOC1, { title: '   ' }) });
     assert('an untitled document is refused', r.statusCode === 400, String(r.statusCode));
   }
   {
-    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody('d1', { weekOf: 'whenever' }) });
+    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody(DOC1, { weekOf: 'whenever' }) });
     assert('a document with no week is refused', r.statusCode === 400, String(r.statusCode));
   }
   {
@@ -370,7 +423,7 @@ async function uploadTests() {
     // in a download prompt is not a document anyone read on their phone.
     const r = await call(docsHandler, SUPER, {
       method: 'POST',
-      body: postBody('d1', { filename: 'tailgate.docx', storageKey: keyFor('d1', 'tailgate.docx') }),
+      body: postBody(DOC1, { filename: 'tailgate.docx', storageKey: keyFor(DOC1, 'tailgate.docx') }),
     });
     assert('a Word file is refused even though storage would take it',
       r.statusCode === 400 && /PDF/.test(r.body.error), JSON.stringify(r.body));
@@ -380,14 +433,14 @@ async function uploadTests() {
     // hand-crafted one cannot aim the registration at another company's prefix.
     const r = await call(docsHandler, SUPER, {
       method: 'POST',
-      body: postBody('d1', { storageKey: `${COMPANY}/safety/../../OTH/safety/d1/${GOOD_FILE}` }),
+      body: postBody(DOC1, { storageKey: `${COMPANY}/safety/../../OTH/safety/d1/${GOOD_FILE}` }),
     });
     assert('a hand-crafted storage key is refused',
       r.statusCode === 400 && /storageKey/.test(r.body.error), JSON.stringify(r.body));
   }
   {
     HEAD_ANSWER = { exists: false, size: 0, contentType: null };
-    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody('d1') });
+    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody(DOC1) });
     assert('a registration with no file behind it is refused',
       r.statusCode === 409, String(r.statusCode));
     HEAD_ANSWER = { exists: true, size: 120 * 1024, contentType: 'application/pdf' };
@@ -398,15 +451,34 @@ async function uploadTests() {
     // what the store says it holds.
     HEAD_ANSWER = { exists: true, size: 600 * 1024 * 1024, contentType: 'application/pdf' };
     DELETED_KEYS.length = 0;
-    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody('d1') });
+    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody(DOC1) });
     assert('a file over the ceiling is refused whatever the caller declared',
       r.statusCode === 413, String(r.statusCode));
     assert('  and the oversized bytes are dropped rather than left unreferenced',
-      DELETED_KEYS.includes(keyFor('d1')), DELETED_KEYS.join(','));
+      DELETED_KEYS.includes(keyFor(DOC1)), DELETED_KEYS.join(','));
     HEAD_ANSWER = { exists: true, size: 120 * 1024, contentType: 'application/pdf' };
   }
   {
-    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody('d1') });
+    // The id is caller-supplied, stored, and rendered back into every crew
+    // member's page. The storage-key comparison below is NOT a check on it:
+    // buildKey() sanitises the id on both sides, so any string at all produces
+    // a matching key. It is only ever the uuid the upload ticket minted.
+    const evil = `x');alert(1);//`;
+    const r = await call(docsHandler, SUPER, {
+      method: 'POST',
+      body: postBody(evil, { documentId: evil, storageKey: keyFor(evil) }),
+    });
+    assert('a documentId that is not the uuid the ticket minted is refused',
+      r.statusCode === 400 && /upload id/.test(r.body.error), JSON.stringify(r.body));
+    assert('  even though its storage key matches, because the key is sanitised',
+      keyFor(evil) === storage.buildKey({
+        companyCode: COMPANY, division: 'safety', projectId: null,
+        documentId: evil, filename: GOOD_FILE,
+      }));
+    assert('  and nothing was written', DB.docs.length === 0, String(DB.docs.length));
+  }
+  {
+    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody(DOC1) });
     assert('a supervisor posts the week\'s form', r.statusCode === 201, JSON.stringify(r.body));
     const doc = r.body.document;
     assert('  filed to the Monday of the week they picked',
@@ -417,7 +489,7 @@ async function uploadTests() {
       doc.uploadedBy === 'dsimmons', String(doc.uploadedBy));
   }
   {
-    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody('d1') });
+    const r = await call(docsHandler, SUPER, { method: 'POST', body: postBody(DOC1) });
     assert('the same document cannot be registered twice', r.statusCode === 409, String(r.statusCode));
   }
 }
@@ -430,10 +502,10 @@ const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
 async function seedTwoDocs() {
   resetDb(); seedUsers();
   HEAD_ANSWER = { exists: true, size: 120 * 1024, contentType: 'application/pdf' };
-  await call(docsHandler, SUPER, { method: 'POST', body: postBody('d1') });
+  await call(docsHandler, SUPER, { method: 'POST', body: postBody(DOC1) });
   await call(docsHandler, SUPER, {
     method: 'POST',
-    body: postBody('d2', { title: 'Tailgate — Heat Illness', weekOf: '2026-09-21' }),
+    body: postBody(DOC2, { title: 'Tailgate — Heat Illness', weekOf: '2026-09-21' }),
   });
 }
 
@@ -443,14 +515,14 @@ async function signTests() {
 
   {
     const r = await call(sigHandler, LAB_A, {
-      method: 'POST', body: { documentId: 'd1', fullName: 'Jesse Hauser', acknowledged: false },
+      method: 'POST', body: { documentId: DOC1, fullName: 'Jesse Hauser', acknowledged: false },
     });
     assert('an unticked box does not sign anything', r.statusCode === 400, String(r.statusCode));
     assert('  and no row was written', DB.sigs.length === 0);
   }
   {
     const r = await call(sigHandler, LAB_A, {
-      method: 'POST', body: { documentId: 'd1', fullName: 'J', acknowledged: true },
+      method: 'POST', body: { documentId: DOC1, fullName: 'J', acknowledged: true },
     });
     assert('a name too short to be one is refused', r.statusCode === 400, String(r.statusCode));
   }
@@ -466,7 +538,7 @@ async function signTests() {
     ]) {
       const r = await call(sigHandler, LAB_A, {
         method: 'POST',
-        body: { documentId: 'd1', fullName: 'Jesse Hauser', acknowledged: true, signatureImage: bad },
+        body: { documentId: DOC1, fullName: 'Jesse Hauser', acknowledged: true, signatureImage: bad },
       });
       assert(`a signature image that is not a PNG data URL is refused (${bad.slice(0, 24)}…)`,
         r.statusCode === 400, String(r.statusCode));
@@ -475,7 +547,7 @@ async function signTests() {
   {
     const r = await call(sigHandler, LAB_A, {
       method: 'POST',
-      body: { documentId: 'd1', fullName: '  Jesse   Hauser ', acknowledged: true, signatureImage: PNG },
+      body: { documentId: DOC1, fullName: '  Jesse   Hauser ', acknowledged: true, signatureImage: PNG },
     });
     assert('a laborer signs', r.statusCode === 201, JSON.stringify(r.body));
     assert('  with their name tidied rather than rejected',
@@ -493,7 +565,7 @@ async function signTests() {
   {
     const before = DB.sigs[0].signed_at;
     const r = await call(sigHandler, LAB_A, {
-      method: 'POST', body: { documentId: 'd1', fullName: 'Jesse Hauser', acknowledged: true },
+      method: 'POST', body: { documentId: DOC1, fullName: 'Jesse Hauser', acknowledged: true },
     });
     assert('signing twice is not an error', r.statusCode === 200, String(r.statusCode));
     assert('  it answers with the signature already on file',
@@ -504,7 +576,7 @@ async function signTests() {
   }
   {
     const r = await call(sigHandler, OFFICE, {
-      method: 'POST', body: { documentId: 'd1', fullName: 'Book Keeper', acknowledged: true },
+      method: 'POST', body: { documentId: DOC1, fullName: 'Book Keeper', acknowledged: true },
     });
     assert('somebody without the division cannot sign', r.statusCode === 403, String(r.statusCode));
   }
@@ -515,12 +587,12 @@ async function signTests() {
     assert('a document that does not exist cannot be signed', r.statusCode === 404, String(r.statusCode));
   }
   {
-    await call(docsHandler, SUPER, { method: 'DELETE', query: { id: 'd2' } });
+    await call(docsHandler, SUPER, { method: 'DELETE', query: { id: DOC2 } });
     const r = await call(sigHandler, LAB_B, {
-      method: 'POST', body: { documentId: 'd2', fullName: 'Marco Reyes', acknowledged: true },
+      method: 'POST', body: { documentId: DOC2, fullName: 'Marco Reyes', acknowledged: true },
     });
     assert('an archived document cannot be signed', r.statusCode === 404, String(r.statusCode));
-    await call(docsHandler, SUPER, { method: 'DELETE', query: { id: 'd2', restore: '1' } });
+    await call(docsHandler, SUPER, { method: 'DELETE', query: { id: DOC2, restore: '1' } });
   }
 }
 
@@ -530,27 +602,27 @@ async function signTests() {
 async function listAndReportTests() {
   console.log('\n[the crew see what they owe; the supervisor sees who owes it]');
   await seedTwoDocs();
-  await call(sigHandler, LAB_A, { method: 'POST', body: { documentId: 'd1', fullName: 'Jesse Hauser', acknowledged: true } });
-  await call(sigHandler, LAB_B, { method: 'POST', body: { documentId: 'd1', fullName: 'Marco Reyes', acknowledged: true } });
+  await call(sigHandler, LAB_A, { method: 'POST', body: { documentId: DOC1, fullName: 'Jesse Hauser', acknowledged: true } });
+  await call(sigHandler, LAB_B, { method: 'POST', body: { documentId: DOC1, fullName: 'Marco Reyes', acknowledged: true } });
 
   {
     const r = await call(docsHandler, LAB_A, {});
     const byId = Object.fromEntries(r.body.documents.map(d => [d.id, d]));
     assert('a laborer sees every live document', r.body.documents.length === 2, String(r.body.documents.length));
-    assert('  the one they signed is marked signed', byId.d1.signedByMe === true);
+    assert('  the one they signed is marked signed', byId[DOC1].signedByMe === true);
     assert('  with the name and time they signed under',
-      byId.d1.mySignature && byId.d1.mySignature.fullName === 'Jesse Hauser');
-    assert('  and the one they have not is not', byId.d2.signedByMe === false);
+      byId[DOC1].mySignature && byId[DOC1].mySignature.fullName === 'Jesse Hauser');
+    assert('  and the one they have not is not', byId[DOC2].signedByMe === false);
     // Being told "2 of 4 have signed" is the report through the back door.
     assert('  no count of anyone else reaches them',
-      byId.d1.signedCount === undefined && byId.d1.expectedCount === undefined,
-      JSON.stringify(byId.d1));
+      byId[DOC1].signedCount === undefined && byId[DOC1].expectedCount === undefined,
+      JSON.stringify(byId[DOC1]));
     assert('  and they are told plainly they may not manage',
       r.body.permissions.canManage === false && r.body.permissions.canSign === true);
   }
   {
     const r = await call(docsHandler, SUPER, {});
-    const d1 = r.body.documents.find(d => d.id === 'd1');
+    const d1 = r.body.documents.find(d => d.id === DOC1);
     assert('a supervisor gets the counts on the card',
       d1.signedCount === 2 && d1.expectedCount === 4 && d1.outstandingCount === 2,
       JSON.stringify(d1));
@@ -560,7 +632,7 @@ async function listAndReportTests() {
     assert('a laborer cannot read the sign-off report', r.statusCode === 403, String(r.statusCode));
   }
   {
-    const r = await call(sigHandler, LAB_A, { query: { documentId: 'd1' } });
+    const r = await call(sigHandler, LAB_A, { query: { documentId: DOC1 } });
     assert('  nor one document\'s worth of it', r.statusCode === 403, String(r.statusCode));
   }
   {
@@ -574,7 +646,7 @@ async function listAndReportTests() {
   {
     const r = await call(sigHandler, SUPER, { query: { scope: 'report' } });
     assert('the report comes back grouped by document', r.statusCode === 200 && r.body.documents.length === 2);
-    const g = r.body.documents.find(x => x.document.id === 'd1');
+    const g = r.body.documents.find(x => x.document.id === DOC1);
     assert('  each group carrying the document\'s own title',
       g.document.title === 'Tailgate — Trenching & Excavation', g.document.title);
     const signed = g.signed.map(s => s.username).sort().join(',');
@@ -585,11 +657,11 @@ async function listAndReportTests() {
     assert('  the two adding up to the roster',
       g.signedCount + g.outstandingCount === g.expectedCount,
       `${g.signedCount}+${g.outstandingCount} vs ${g.expectedCount}`);
-    const g2 = r.body.documents.find(x => x.document.id === 'd2');
+    const g2 = r.body.documents.find(x => x.document.id === DOC2);
     assert('  a document nobody has signed shows the whole roster outstanding',
       g2.signedCount === 0 && g2.outstandingCount === 4, JSON.stringify(g2));
     assert('  newest week first, which is where a supervisor looks',
-      r.body.documents[0].document.id === 'd2', r.body.documents[0].document.id);
+      r.body.documents[0].document.id === DOC2, r.body.documents[0].document.id);
   }
   {
     // The direction this is computed in is the whole point. Somebody who signed
@@ -598,7 +670,7 @@ async function listAndReportTests() {
     // the list every week forever.
     DB.users = DB.users.filter(u => u.username !== 'mreyes');
     const r = await call(sigHandler, SUPER, { query: { scope: 'report' } });
-    const g = r.body.documents.find(x => x.document.id === 'd1');
+    const g = r.body.documents.find(x => x.document.id === DOC1);
     assert('somebody who signed and then left the division is not outstanding',
       !g.outstanding.some(o => o.username === 'mreyes'),
       g.outstanding.map(o => o.username).join(','));
@@ -611,11 +683,11 @@ async function listAndReportTests() {
   {
     const r = await call(sigHandler, SUPER, { query: { scope: 'report', from: '2026-09-21', to: '2026-09-25' } });
     assert('the report can be narrowed to a week',
-      r.body.documents.length === 1 && r.body.documents[0].document.id === 'd2',
+      r.body.documents.length === 1 && r.body.documents[0].document.id === DOC2,
       String(r.body.documents.length));
   }
   {
-    await call(docsHandler, SUPER, { method: 'DELETE', query: { id: 'd2' } });
+    await call(docsHandler, SUPER, { method: 'DELETE', query: { id: DOC2 } });
     const crew = await call(docsHandler, LAB_C, {});
     assert('an archived document comes off the crew\'s list',
       crew.body.documents.length === 1, String(crew.body.documents.length));
@@ -632,6 +704,134 @@ async function listAndReportTests() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 4b. The badge and the report are the same claim, so they must be the same
+//     number — and the record has to survive the people in it
+// ═══════════════════════════════════════════════════════════════════════════
+async function agreementTests() {
+  console.log('\n[the card badge and the report cannot disagree]');
+  await seedTwoDocs();
+
+  // Everyone on the roster signs d1 EXCEPT twhite, and a platform admin — who
+  // is never on the roster — signs it too.
+  for (const u of [SUPER, LAB_A, LAB_B]) {
+    await call(sigHandler, u, { method: 'POST', body: { documentId: DOC1, fullName: u.username + ' name', acknowledged: true } });
+  }
+  await call(sigHandler, PLATFORM, { method: 'POST', body: { documentId: DOC1, fullName: 'Root Admin', acknowledged: true } });
+
+  {
+    const card = (await call(docsHandler, SUPER, {})).body.documents.find(d => d.id === DOC1);
+    const rep  = (await call(sigHandler, SUPER, { query: { scope: 'report' } }))
+      .body.documents.find(g => g.document.id === DOC1);
+
+    // A bare COUNT(*) here is 4 against a roster of 4, so the badge went green
+    // and said the tailgate was signed off while the report still named twhite.
+    assert('a signature from somebody off the roster does not inflate the badge',
+      card.signedCount === 3, `signedCount=${card.signedCount}`);
+    assert('  so the badge still shows the one person outstanding',
+      card.outstandingCount === 1, `outstanding=${card.outstandingCount}`);
+    assert('  and the badge agrees with the report, number for number',
+      card.signedCount === rep.signedCount
+      && card.outstandingCount === rep.outstandingCount
+      && card.expectedCount === rep.expectedCount,
+      `card=${card.signedCount}/${card.outstandingCount}/${card.expectedCount} `
+      + `report=${rep.signedCount}/${rep.outstandingCount}/${rep.expectedCount}`);
+    assert('  and the report\'s own three numbers add up',
+      rep.signedCount + rep.outstandingCount === rep.expectedCount,
+      `${rep.signedCount}+${rep.outstandingCount} vs ${rep.expectedCount}`);
+  }
+  {
+    // The other way the two used to diverge: somebody signs, then loses the
+    // division. They are not outstanding, and they no longer count as covered.
+    DB.users = DB.users.filter(u => u.username !== 'mreyes');
+    const card = (await call(docsHandler, SUPER, {})).body.documents.find(d => d.id === DOC1);
+    const rep  = (await call(sigHandler, SUPER, { query: { scope: 'report' } }))
+      .body.documents.find(g => g.document.id === DOC1);
+    assert('a signer who has left the division drops out of both counts together',
+      card.signedCount === rep.signedCount && card.outstandingCount === rep.outstandingCount,
+      `card=${card.signedCount}/${card.outstandingCount} report=${rep.signedCount}/${rep.outstandingCount}`);
+    assert('  and their signature is still on the record',
+      rep.signed.some(x => x.username === 'mreyes'));
+    seedUsers();
+  }
+
+  console.log('\n[the drawn mark is retrievable, but not on every read]');
+  await seedTwoDocs();
+  await call(sigHandler, LAB_A, {
+    method: 'POST',
+    body: { documentId: DOC1, fullName: 'Jesse Hauser', acknowledged: true, signatureImage: PNG },
+  });
+
+  {
+    // The all-documents report reads every signature the company has ever
+    // recorded. Carrying a 128 KB base64 PNG on each one eventually stops the
+    // report loading at all, to compute a boolean.
+    const all = await call(sigHandler, SUPER, { query: { scope: 'report' } });
+    const sig = all.body.documents.find(g => g.document.id === DOC1).signed[0];
+    assert('the all-documents report does not carry the images',
+      sig.signatureImage === undefined, JSON.stringify(sig).slice(0, 120));
+    assert('  but still says which signatures have one', sig.hasDrawnSignature === true);
+    const asked = DB.calls.filter(c => /FROM safety_signatures WHERE company_code .* ANY/.test(c.q));
+    assert('  because the query does not ask for the column',
+      asked.length > 0 && asked.every(c => !/signature_image,/.test(c.q)),
+      asked.map(c => c.q.slice(0, 60)).join(' | '));
+  }
+  {
+    // ...and it has to be reachable somewhere, or asking the crew to draw it
+    // was asking for something nobody can ever produce.
+    const one = await call(sigHandler, SUPER, { query: { documentId: DOC1 } });
+    const sig = one.body.documents[0].signed[0];
+    assert('reading ONE document does return the mark', sig.signatureImage === PNG, String(sig.signatureImage));
+  }
+  {
+    const mine = await call(sigHandler, LAB_A, {});
+    assert('and a laborer can see the mark they drew',
+      mine.body.signatures[0].signatureImage === PNG);
+  }
+  {
+    const echoed = await call(sigHandler, LAB_B, {
+      method: 'POST',
+      body: { documentId: DOC1, fullName: 'Marco Reyes', acknowledged: true, signatureImage: PNG },
+    });
+    assert('signing does not echo the image straight back',
+      echoed.body.signature.signatureImage === undefined);
+    assert('  though it confirms one was recorded',
+      echoed.body.signature.hasDrawnSignature === true);
+  }
+
+  console.log('\n[a signature image has to actually be an image]');
+  await seedTwoDocs();
+  {
+    // The data-URL regex proves only the SHAPE. Without a look at the bytes
+    // this is 128 KB of padding stored against a name, once per document per
+    // person, and it used to be accepted.
+    const padding = 'data:image/png;base64,' + 'A'.repeat(4096);
+    const r = await call(sigHandler, LAB_A, {
+      method: 'POST',
+      body: { documentId: DOC1, fullName: 'Jesse Hauser', acknowledged: true, signatureImage: padding },
+    });
+    assert('base64 padding shaped like a PNG data URL is refused',
+      r.statusCode === 400, String(r.statusCode));
+    assert('  and nothing was written', DB.sigs.length === 0, String(DB.sigs.length));
+  }
+  {
+    const r = await call(sigHandler, LAB_A, {
+      method: 'POST',
+      body: { documentId: DOC1, fullName: 'Jesse Hauser', acknowledged: true, signatureImage: PNG },
+    });
+    assert('a real PNG header is accepted', r.statusCode === 201, JSON.stringify(r.body).slice(0, 120));
+  }
+  {
+    const huge = 'data:image/png;base64,' + 'A'.repeat(200 * 1024);
+    const r = await call(sigHandler, LAB_B, {
+      method: 'POST',
+      body: { documentId: DOC1, fullName: 'Marco Reyes', acknowledged: true, signatureImage: huge },
+    });
+    assert('and an oversized one is refused on size before anything else',
+      r.statusCode === 413, String(r.statusCode));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 5. Opening the file, and the file staying put underneath a signature
 // ═══════════════════════════════════════════════════════════════════════════
 async function fileTests() {
@@ -639,7 +839,7 @@ async function fileTests() {
   await seedTwoDocs();
 
   {
-    const r = await call(docsHandler, LAB_A, { query: { action: 'open', id: 'd1' } });
+    const r = await call(docsHandler, LAB_A, { query: { action: 'open', id: DOC1 } });
     assert('a laborer gets a signed URL to read it', r.statusCode === 200 && /X-Amz-Signature=/.test(r.body.url));
     assert('  which expires in minutes', r.body.expiresIn <= 900 && r.body.expiresIn > 0, String(r.body.expiresIn));
     assert('  is served inline so it opens rather than downloads',
@@ -653,14 +853,14 @@ async function fileTests() {
       !r.body.url.includes(process.env.S3_SECRET_ACCESS_KEY));
   }
   {
-    const r = await call(docsHandler, OFFICE, { query: { action: 'open', id: 'd1' } });
+    const r = await call(docsHandler, OFFICE, { query: { action: 'open', id: DOC1 } });
     assert('somebody outside the division cannot open it', r.statusCode === 403, String(r.statusCode));
   }
   {
-    await call(docsHandler, SUPER, { method: 'DELETE', query: { id: 'd2' } });
-    const crew = await call(docsHandler, LAB_A, { query: { action: 'open', id: 'd2' } });
+    await call(docsHandler, SUPER, { method: 'DELETE', query: { id: DOC2 } });
+    const crew = await call(docsHandler, LAB_A, { query: { action: 'open', id: DOC2 } });
     assert('an archived document is not found for the crew', crew.statusCode === 404, String(crew.statusCode));
-    const sup = await call(docsHandler, SUPER, { query: { action: 'open', id: 'd2' } });
+    const sup = await call(docsHandler, SUPER, { query: { action: 'open', id: DOC2 } });
     assert('  but the supervisor can still produce it', sup.statusCode === 200, String(sup.statusCode));
   }
   {
@@ -668,7 +868,7 @@ async function fileTests() {
     // documents live in their own table, so without the second read a key it
     // owns looks unclaimed — and the file under a signed document could be
     // deleted or written over.
-    const claimed = await safetyLib.safetyKeyClaimed(sql, keyFor('d1'));
+    const claimed = await safetyLib.safetyKeyClaimed(sql, keyFor(DOC1));
     const free    = await safetyLib.safetyKeyClaimed(sql, keyFor('never-registered'));
     assert('a registered safety key reads as claimed', claimed === true);
     assert('  and an unregistered one does not', free === false);
@@ -683,18 +883,29 @@ async function fileTests() {
     // A revised form is a new document. Editing one may fix its title, its
     // week or its note — never the bytes people already signed for.
     const r = await call(docsHandler, SUPER, {
-      method: 'PUT', query: { id: 'd1' },
+      method: 'PUT', query: { id: DOC1 },
       body: { title: 'Tailgate — Trenching (rev B)', storageKey: keyFor('other'), filename: 'other.pdf' },
     });
     assert('an edit may retitle a document', r.statusCode === 200 && r.body.document.title === 'Tailgate — Trenching (rev B)');
+    // The week is read out of the row as a Date and, on a title-only edit, put
+    // straight back. Bound to a DATE column a Date serialises as a UTC instant,
+    // so east of Greenwich each save stored the day before the last one and the
+    // week walked backwards until the document fell out of its own filter.
+    assert('  and does not move the week it is filed under',
+      r.body.document.weekOf === '2026-09-14', r.body.document.weekOf);
+    const again = await call(docsHandler, SUPER, {
+      method: 'PUT', query: { id: DOC1 }, body: { description: 'and a note' },
+    });
+    assert('  however many times it is saved',
+      again.body.document.weekOf === '2026-09-14', again.body.document.weekOf);
     assert('  and cannot repoint it at other bytes',
-      DB.docs.find(d => d.id === 'd1').storage_key === keyFor('d1'),
-      DB.docs.find(d => d.id === 'd1').storage_key);
-    const lab = await call(docsHandler, LAB_A, { method: 'PUT', query: { id: 'd1' }, body: { title: 'nope' } });
+      DB.docs.find(d => d.id === DOC1).storage_key === keyFor(DOC1),
+      DB.docs.find(d => d.id === DOC1).storage_key);
+    const lab = await call(docsHandler, LAB_A, { method: 'PUT', query: { id: DOC1 }, body: { title: 'nope' } });
     assert('  and a laborer cannot edit at all', lab.statusCode === 403, String(lab.statusCode));
   }
   {
-    const lab = await call(docsHandler, LAB_A, { method: 'DELETE', query: { id: 'd1' } });
+    const lab = await call(docsHandler, LAB_A, { method: 'DELETE', query: { id: DOC1 } });
     assert('a laborer cannot archive a document', lab.statusCode === 403, String(lab.statusCode));
   }
   {
@@ -755,6 +966,25 @@ function pageTests() {
   assert('the documents list hands that wording out',
     /statement: SIGNATURE_STATEMENT/.test(read('api/safety-documents.js')));
 
+  // An inline onclick's body is JAVASCRIPT, and the HTML parser decodes
+  // entities in an attribute value BEFORE that source is compiled — so esc()'s
+  // &#39; becomes a real quote and closes the string literal the value sits in.
+  // A value that reaches a page must never be interpolated into handler source.
+  {
+    // Scanned with the comments stripped. An assertion about what the code does
+    // must not be satisfied — or, as here, broken — by a comment explaining it:
+    // the page carries a note naming the exact pattern it no longer uses.
+    const code = page.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const handlers = [...code.matchAll(/on[a-z]+="([^"]*)"/g)].map(m => m[1]);
+    const interpolated = handlers.filter(h => /\$\{/.test(h));
+    assert('nothing is interpolated into an inline event handler',
+      interpolated.length === 0, interpolated.join(' | ').slice(0, 300));
+    assert('  the ids ride on data attributes instead',
+      /data-doc-id="\$\{esc\(d\.id\)\}"/.test(code));
+    assert('  read back through a delegated listener, not a compiler',
+      /addEventListener\('click'/.test(code) && /getAttribute\('data-doc-id'\)/.test(code));
+  }
+
   assert('the page names its division so Mathis resolves it',
     /const DIVISION = 'safety'/.test(page));
   assert('  and loads the widget like every other division page',
@@ -805,10 +1035,10 @@ function pageTests() {
     storageConfigured: true,
     permissions: { level: 'level1', canManage: false, canSign: true },
     documents: [
-      { id: 'd1', title: 'Tailgate — Trenching', weekOf: '2026-09-14', filename: 'a.pdf',
+      { id: DOC1, title: 'Tailgate — Trenching', weekOf: '2026-09-14', filename: 'a.pdf',
         sizeBytes: 12345, uploadedBy: 'dsimmons', uploadedAt: '2026-09-14T12:00:00Z',
         archivedAt: null, signedByMe: false, mySignature: null },
-      { id: 'd2', title: 'Tailgate — Heat Illness', weekOf: '2026-09-07', filename: 'b.pdf',
+      { id: DOC2, title: 'Tailgate — Heat Illness', weekOf: '2026-09-07', filename: 'b.pdf',
         sizeBytes: 999, uploadedBy: 'dsimmons', uploadedAt: '2026-09-07T12:00:00Z',
         archivedAt: null, signedByMe: true,
         mySignature: { fullName: 'Jesse Hauser', signedAt: '2026-09-08T13:05:00Z' } },
@@ -822,7 +1052,7 @@ function pageTests() {
   const REPORT = {
     statement: 'I have read this document in full…',
     documents: [{
-      document: { id: 'd1', title: 'Tailgate — Trenching', weekOf: '2026-09-14',
+      document: { id: DOC1, title: 'Tailgate — Trenching', weekOf: '2026-09-14',
                   uploadedBy: 'dsimmons', uploadedAt: '2026-09-14T12:00:00Z', archivedAt: null },
       expectedCount: 4, signedCount: 2, outstandingCount: 2, percentSigned: 50,
       signed: [
@@ -843,7 +1073,7 @@ function pageTests() {
     const { win, doc } = boot(
       { username: 'jhauser', divisionRoles: { safety: 'level1' }, isPlatformAdmin: false },
       DOCS_CREW, REPORT);
-    done.push(new Promise(resolve => setTimeout(() => {
+    done.push(new Promise(resolve => setTimeout(async () => {
       const panel = doc.getElementById('panelDocs').innerHTML;
       assert('a laborer is not offered the report tab',
         doc.getElementById('tabReport').style.display === 'none');
@@ -854,6 +1084,20 @@ function pageTests() {
         /Signed/.test(panel) && /Sep 8, 2026/.test(panel));
       assert('  and the badge says what they are here as',
         doc.getElementById('levelBadge').textContent === 'Crew');
+
+      // The cards are wired by delegation now rather than by an inline onclick,
+      // so prove a tap still reaches the viewer — a silent no-op here would be
+      // a page where nothing opens at all.
+      {
+        const card = doc.querySelector('[data-act="open"]');
+        assert('a card carries its id as data, not as handler source',
+          !!card && card.getAttribute('data-doc-id') === DOCS_CREW.documents[0].id,
+          card && card.getAttribute('data-doc-id'));
+        card.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        assert('  and tapping it opens the viewer',
+          doc.getElementById('viewer').classList.contains('open'));
+        win.closeViewer();
+      }
 
       // The viewer is where signing happens, and the button stays dead until
       // both the box and the name are filled in — the page refusing before the
@@ -874,22 +1118,99 @@ function pageTests() {
       win.renderViewer(DOCS_CREW.documents[1], 'https://store.test/y.pdf?sig');
       assert('a document already signed shows the record instead of the form',
         !doc.getElementById('signBtn') && /You signed this on/.test(doc.getElementById('vBody').innerHTML));
+
+      // A slow open must not repaint a viewer the reader has moved on from.
+      // The answer for document A landing after they closed it and opened B
+      // painted A's PDF and A's sign panel under B's header — and
+      // submitSignature posts state.viewing, so they would read one form and
+      // sign another. For a legal acknowledgement that is the worst outcome
+      // this page has.
+      {
+        const A = DOCS_CREW.documents[0];
+        const B = { ...DOCS_CREW.documents[1], id: 'other', signedByMe: false, mySignature: null };
+        // `state` is a top-level const, so it lives in the script's lexical
+        // scope rather than on window. win.eval runs global code in the same
+        // realm, which can see it; the page's functions are reachable directly
+        // because function declarations DO land on the global object.
+        win.eval(`state.docs = ${JSON.stringify([A, B])}`);
+
+        let resolveA;
+        const realFetch = win.fetch;
+        win.fetch = (url, opts) => String(url).includes('action=open')
+          ? new Promise(res => { resolveA = () => res({
+              ok: true, status: 200, json: () => Promise.resolve({ url: 'https://store.test/A.pdf' }),
+            }); })
+          : realFetch(url, opts);
+
+        const opening = win.openViewer(A.id);       // never answers yet
+        win.closeViewer();                          // the reader backs out
+        win.fetch = realFetch;
+        await win.openViewer(B.id);                 // and opens another
+        resolveA();                                 // A's answer finally lands
+        await opening;
+        await new Promise(r => setTimeout(r, 5));
+
+        assert('a late answer does not repaint a viewer the reader moved on from',
+          win.eval('state.viewing && state.viewing.id') === B.id,
+          String(win.eval('state.viewing && state.viewing.id')));
+        const frame = doc.getElementById('pdfFrame');
+        assert('  so the PDF on screen is the one whose header is above it',
+          !frame || !/A\.pdf/.test(frame.getAttribute('src') || ''),
+          frame && frame.getAttribute('src'));
+        win.eval(`state.docs = ${JSON.stringify(DOCS_CREW.documents)}`);
+      }
+
+      // An archived one the server will never accept used to render the whole
+      // form — box, name, pad, enabled button — and answer the submit with
+      // "Document not found" under the thing they had just read.
+      win.renderViewer(
+        { ...DOCS_CREW.documents[0], archivedAt: '2026-09-19T10:00:00Z' },
+        'https://store.test/z.pdf?sig');
+      assert('an archived document offers no signature it could not record',
+        !doc.getElementById('signBtn') && !doc.getElementById('ackBox')
+        && /has been archived/.test(doc.getElementById('vBody').innerHTML),
+        doc.getElementById('vBody').innerHTML.slice(-260));
+      assert('  but it is still readable, which is why it was kept',
+        /pdf-frame/.test(doc.getElementById('vBody').innerHTML));
       resolve();
     }, 30)));
   }
 
   // A supervisor's screen.
   {
-    const { win, doc } = boot(
+    const { win, doc, calls } = boot(
       { username: 'dsimmons', divisionRoles: { safety: 'level3' }, isPlatformAdmin: false },
       DOCS_SUPER, REPORT);
     done.push(new Promise(resolve => setTimeout(async () => {
       assert('a supervisor gets the report tab', doc.getElementById('tabReport').style.display !== 'none');
       const panel = doc.getElementById('panelDocs').innerHTML;
       assert('  and the upload form', /Post this week's form/.test(panel) && /id="upFile"/.test(panel));
-      assert('  with the week pre-filled to a Monday',
-        /id="upWeek" type="date" value="\d{4}-\d{2}-\d{2}"/.test(panel));
+      {
+        // Matching \d{4}-\d{2}-\d{2} accepted every calendar date, so it proved
+        // a date was prefilled and not the one property its label names — the
+        // property this whole division files on.
+        const m = /id="upWeek" type="date" value="(\d{4}-\d{2}-\d{2})"/.exec(panel);
+        assert('  with the week pre-filled to a Monday',
+          !!m && safetyLib.mondayOf(m[1]) === m[1], m ? m[1] : 'no date prefilled');
+      }
       assert('  and the counts on each card', /2 \/ 4 signed/.test(panel), panel.slice(0, 300));
+
+      // Archive sits INSIDE the card. Under delegation it has to win over the
+      // card's own open handler, which the old inline version did with
+      // stopPropagation — otherwise archiving also opens the PDF.
+      {
+        const before = calls.length;
+        const btn = doc.querySelector('[data-act="archive"]');
+        assert('the archive button carries its own action', !!btn);
+        btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 10));
+        const fired = calls.slice(before).map(c => c.url);
+        assert('  clicking it archives rather than opening the document',
+          fired.some(u => /safety-documents\?id=/.test(u)) && !fired.some(u => /action=open/.test(u)),
+          fired.join(' | '));
+        assert('  and the viewer stays shut',
+          !doc.getElementById('viewer').classList.contains('open'));
+      }
 
       win.switchTab('report');
       await new Promise(r => setTimeout(r, 20));
@@ -903,7 +1224,7 @@ function pageTests() {
       // Collapsed until asked: a supervisor scanning the weeks wants the
       // headline, and the names when they pick one.
       assert('a group starts collapsed', !/rep-group open/.test(rep));
-      win.toggleGroup('d1');
+      win.toggleGroup(DOC1);
       const open = doc.getElementById('panelReport').innerHTML;
       assert('  and expanding it names who signed, with the time',
         /Jesse Hauser/.test(open) && /jhauser/.test(open) && /Sep 15, 2026/.test(open));
@@ -977,6 +1298,21 @@ function wiringTests() {
     assert('  including this one', /title="Safety Center[^"]*">Safety</.test(divs));
   }
 
+  {
+    // level2 is not offered by the user form but the API accepts it, and in
+    // this division it means a signer. Under the generic canUpload scale it
+    // was minted a writable presigned PUT into the company's safety prefix
+    // that no registration could ever claim — and nothing sweeps those bytes
+    // up, because the purge sweep only walks project_documents.
+    const upload = read('api/document-upload-url.js');
+    assert('an upload ticket for this division follows ITS levels, not the generic scale',
+      /division === SAFETY_DIVISION[\s\S]{0,120}canUpload = safetyCapabilities\(payload\)\.canManage/.test(upload));
+    const level2 = safetyLib.safetyCapabilities({ divisionRoles: { safety: 'level2' } });
+    assert('  so a level2 signer cannot mint one', level2.canManage === false);
+    assert('  while a supervisor still can',
+      safetyLib.safetyCapabilities({ divisionRoles: { safety: 'level3' } }).canManage === true);
+  }
+
   const dev = read('scripts/dev-server.js');
   assert('both endpoints are routed for local development',
     /api\/safety-documents/.test(dev) && /api\/safety-signatures/.test(dev));
@@ -1000,6 +1336,24 @@ function wiringTests() {
   assert('  a signature outlives the document being archived, not deleted',
     /document_id .* REFERENCES safety_documents\(id\) ON DELETE CASCADE/.test(schema) &&
     /archived_at   TIMESTAMPTZ/.test(schema));
+  // Removing a user through Manage Users is a plain DELETE FROM users. Under a
+  // cascade that silently destroyed every acknowledgement that person had ever
+  // made — at offboarding, which is exactly when producing one is most likely
+  // to be asked for.
+  {
+    // Scoped to this table's own CREATE block: other tables in this schema do
+    // cascade from users, and asking the whole file would pass on theirs.
+    const block = (/CREATE TABLE IF NOT EXISTS safety_signatures \(([\s\S]*?)\n\);/.exec(schema) || [])[1] || '';
+    assert('  and outlives the SIGNER: deleting a user must not cascade',
+      /user_id\s+INTEGER\s+REFERENCES users\(id\) ON DELETE SET NULL/.test(block)
+      && !/ON DELETE CASCADE/.test(block.split('\n').filter(l => /user_id/.test(l)).join('\n')),
+      block.split('\n').filter(l => /user_id/.test(l)).join(' / '));
+  }
+  assert('  with a migration, since the table shipped with the cascade',
+    /ALTER TABLE safety_signatures ALTER COLUMN user_id DROP NOT NULL/.test(schema)
+    && /safety_signatures_user_id_fkey[\s\S]{0,160}ON DELETE SET NULL/.test(schema));
+  assert('  and the name is denormalised, so the row still reads without the login',
+    /full_name       TEXT        NOT NULL/.test(schema) && /username        TEXT        NOT NULL/.test(schema));
   assert('  and what was agreed to is stored per row',
     /statement       TEXT/.test(schema));
 }
@@ -1010,6 +1364,7 @@ function wiringTests() {
   await uploadTests();
   await signTests();
   await listAndReportTests();
+  await agreementTests();
   await fileTests();
   await pageTests();
   wiringTests();

@@ -22,7 +22,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
 const {
-  safetyCapabilities, requiredSigners, mondayOf, SIGNATURE_STATEMENT: STATEMENT,
+  safetyCapabilities, requiredSigners, mondayOf, dateOnly, SIGNATURE_STATEMENT: STATEMENT,
 } = require('./lib/safety');
 
 const MAX_NAME = 120;
@@ -31,8 +31,24 @@ const MAX_NAME = 120;
 // is generous enough for a tablet at 2x and small enough that nobody can post
 // a photograph through this field — and it is checked on the base64 text,
 // which is what actually arrives.
-const MAX_SIGNATURE_IMAGE_CHARS = 256 * 1024;
+const MAX_SIGNATURE_IMAGE_CHARS = 128 * 1024;
 const PNG_DATA_URL = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
+
+// The regex above proves only the SHAPE of a data URL. Without a look at the
+// bytes, 'data:image/png;base64,' + 'A'.repeat(130000) is a valid signature as
+// far as it is concerned — not an image at all, just 128 KB of padding stored
+// against a name forever, and repeatable once per document per person.
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function looksLikePng(dataUrl) {
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) return false;
+  // 12 base64 characters decode to 9 bytes, one more than the signature needs.
+  let head;
+  try { head = Buffer.from(dataUrl.slice(comma + 1, comma + 13), 'base64'); }
+  catch { return false; }
+  return head.length >= 8 && head.subarray(0, 8).equals(PNG_MAGIC);
+}
 
 function cleanName(value) {
   return String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
@@ -47,24 +63,39 @@ function clientIp(req) {
   return fwd ? fwd.slice(0, 64) : null;
 }
 
-function signatureOut(row) {
-  return {
+/**
+ * One signature, as the API hands it out.
+ *
+ * `includeImage` is opt-in and off by default because the stored mark is a
+ * base64 PNG of up to 128 KB. The all-documents report reads every signature
+ * the company has ever recorded, so carrying the image there would pull tens
+ * of megabytes into one serverless invocation to compute a boolean nobody
+ * renders — and would grow without bound. It comes back only on the read of a
+ * SINGLE document, which is where a supervisor actually looks at one.
+ *
+ * has_drawn is the column list's own answer when the image was not selected;
+ * the fallback covers RETURNING * on the insert path, which has the real one.
+ */
+function signatureOut(row, includeImage = false) {
+  const out = {
     userId:    row.user_id,
     username:  row.username,
     fullName:  row.full_name,
     signedAt:  row.signed_at,
     statement: row.statement || null,
-    hasDrawnSignature: Boolean(row.signature_image),
+    hasDrawnSignature: row.has_drawn === undefined
+      ? Boolean(row.signature_image)
+      : Boolean(row.has_drawn),
   };
+  if (includeImage && row.signature_image) out.signatureImage = row.signature_image;
+  return out;
 }
 
 function docOut(row) {
   return {
     id:     row.id,
     title:  row.title,
-    weekOf: row.week_of instanceof Date
-      ? row.week_of.toISOString().slice(0, 10)
-      : String(row.week_of || '').slice(0, 10),
+    weekOf: dateOnly(row.week_of),
     filename:   row.filename,
     uploadedBy: row.uploaded_by || null,
     uploadedAt: row.uploaded_at || null,
@@ -119,7 +150,7 @@ module.exports = async (req, res) => {
         // on the report, so anything else — an SVG, an http: URL, a
         // javascript: scheme — is refused here rather than at the point it is
         // displayed, where one missed template would be an injection.
-        if (!PNG_DATA_URL.test(img)) {
+        if (!PNG_DATA_URL.test(img) || !looksLikePng(img)) {
           return res.status(400).json({ error: 'The drawn signature was not readable.' });
         }
         signatureImage = img;
@@ -204,12 +235,28 @@ module.exports = async (req, res) => {
       if (docId && !docs.length) return res.status(404).json({ error: 'Document not found' });
 
       const ids = docs.map(d => d.id);
-      const sigs = ids.length
-        ? await sql`
-            SELECT * FROM safety_signatures
-            WHERE  company_code = ${companyCode} AND document_id = ANY(${ids})
-            ORDER  BY signed_at ASC`
-        : [];
+      // The drawn mark is fetched only when ONE document was asked for. An
+      // all-documents report covers every signature the company has ever
+      // recorded — a 40-person crew signing weekly is ~2,000 rows a year — and
+      // SELECT * pulled each one's base64 PNG into a single serverless
+      // invocation to compute one boolean that is not even rendered. Left
+      // alone it eventually stops the report loading at all, and the only
+      // recovery would be guessing a narrow date range.
+      const withImages = Boolean(docId);
+      const sigs = !ids.length ? []
+        : withImages
+          ? await sql`
+              SELECT id, document_id, user_id, username, full_name, statement, signed_at,
+                     signature_image, (signature_image IS NOT NULL) AS has_drawn
+              FROM   safety_signatures
+              WHERE  company_code = ${companyCode} AND document_id = ANY(${ids})
+              ORDER  BY signed_at ASC`
+          : await sql`
+              SELECT id, document_id, user_id, username, full_name, statement, signed_at,
+                     (signature_image IS NOT NULL) AS has_drawn
+              FROM   safety_signatures
+              WHERE  company_code = ${companyCode} AND document_id = ANY(${ids})
+              ORDER  BY signed_at ASC`;
 
       const byDoc = new Map(ids.map(id => [id, []]));
       for (const s of sigs) {
@@ -217,6 +264,8 @@ module.exports = async (req, res) => {
       }
 
       const roster = await requiredSigners(sql, companyCode);
+
+      const rosterIds = new Set(roster.map(r => r.userId));
 
       const documents = docs.map(d => {
         const signed   = byDoc.get(d.id) || [];
@@ -227,18 +276,32 @@ module.exports = async (req, res) => {
         const outstanding = roster
           .filter(r => !signedBy.has(r.userId))
           .map(r => ({ userId: r.userId, username: r.username, level: r.level }));
+
+        // The headline count is ROSTER members who signed, not every signature
+        // row. Not everyone who can sign is somebody the report is waiting on:
+        // a platform admin can sign, and so can somebody whose grant was
+        // removed afterwards, and neither is ever in `outstanding`. Counting
+        // them in `signedCount` made the report's own three numbers fail to
+        // add up — 4 signed and 1 outstanding against 4 expected — and pushed
+        // the ratio past the roster.
+        const covered = signed.filter(s => rosterIds.has(s.user_id)).length;
+
         return {
           document: docOut(d),
           expectedCount:    roster.length,
-          signedCount:      signed.length,
+          signedCount:      covered,
           outstandingCount: outstanding.length,
           // A supervisor can be looking at a form posted before somebody
           // joined, so this is a percentage of the roster as it stands today,
           // not of who was on it that week.
-          percentSigned: roster.length
-            ? Math.round((signed.filter(s => roster.some(r => r.userId === s.user_id)).length / roster.length) * 100)
-            : 0,
-          signed: signed.map(signatureOut),
+          percentSigned: roster.length ? Math.round((covered / roster.length) * 100) : 0,
+          // The full record, including anyone who signed without being on
+          // today's roster — they are flagged rather than dropped, because the
+          // signature happened and the report is the place it is produced.
+          signed: signed.map(s => Object.assign(
+            signatureOut(s, withImages),
+            { onRoster: rosterIds.has(s.user_id) },
+          )),
           outstanding,
         };
       });
@@ -251,6 +314,8 @@ module.exports = async (req, res) => {
     }
 
     // ── GET — my own signatures ───────────────────────────────────────────
+    // One person's own rows, so the image is affordable here — and this is the
+    // only place a laborer can see the mark they drew.
     const mine = await sql`
       SELECT s.*, d.title, d.week_of
       FROM   safety_signatures s
@@ -260,12 +325,10 @@ module.exports = async (req, res) => {
     `;
     return res.json({
       signatures: mine.map(r => ({
-        ...signatureOut(r),
+        ...signatureOut(r, true),
         documentId: r.document_id,
         title:      r.title,
-        weekOf:     r.week_of instanceof Date
-          ? r.week_of.toISOString().slice(0, 10)
-          : String(r.week_of || '').slice(0, 10),
+        weekOf:     dateOnly(r.week_of),
       })),
       statement: STATEMENT,
     });

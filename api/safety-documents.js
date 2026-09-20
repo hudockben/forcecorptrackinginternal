@@ -26,7 +26,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
 const {
-  SAFETY_DIVISION, safetyCapabilities, requiredSigners, mondayOf, SIGNATURE_STATEMENT,
+  SAFETY_DIVISION, safetyCapabilities, requiredSigners, mondayOf, dateOnly, SIGNATURE_STATEMENT,
 } = require('./lib/safety');
 const storage = require('./lib/storage');
 
@@ -60,9 +60,7 @@ function toDocument(row, extra = {}) {
     id:          row.id,
     title:       row.title,
     description: row.description || null,
-    weekOf:      row.week_of instanceof Date
-      ? row.week_of.toISOString().slice(0, 10)
-      : String(row.week_of || '').slice(0, 10),
+    weekOf:      dateOnly(row.week_of),
     filename:    row.filename,
     contentType: row.content_type || null,
     sizeBytes:   Number(row.size_bytes) || 0,
@@ -162,17 +160,31 @@ module.exports = async (req, res) => {
       // Counts, for the supervisor's badge. Only fetched for the side that
       // can see them: a laborer being told 3 of 11 have signed is being shown
       // the report through the back door.
+      //
+      // Counted AGAINST THE ROSTER, not as a bare COUNT(*) of signature rows.
+      // The two stop being the same number the moment anyone signs who is not
+      // on the roster — a platform admin, or somebody whose grant was removed
+      // after they signed — and a bare count then reads HIGHER than the people
+      // actually covered. That is the dangerous direction: the card showed a
+      // green "11 / 11 signed" on a tailgate the report still listed people as
+      // owing, so the badge said signed off when it was not. It is also the
+      // definition the report uses, which is what makes the two agree.
       let counts = new Map();
       let expected = 0;
       if (caps.canManage && rows.length) {
-        const tally = await sql`
-          SELECT document_id, COUNT(*)::int AS signed
-          FROM   safety_signatures
-          WHERE  company_code = ${companyCode}
-          GROUP  BY document_id
-        `;
+        const roster    = await requiredSigners(sql, companyCode);
+        const rosterIds = roster.map(r => r.userId);
+        expected = roster.length;
+        const tally = rosterIds.length
+          ? await sql`
+              SELECT document_id, COUNT(*)::int AS signed
+              FROM   safety_signatures
+              WHERE  company_code = ${companyCode}
+                AND  user_id = ANY(${rosterIds})
+              GROUP  BY document_id
+            `
+          : [];
         counts = new Map(tally.map(r => [r.document_id, r.signed]));
-        expected = (await requiredSigners(sql, companyCode)).length;
       }
 
       const documents = rows.map(r => {
@@ -187,8 +199,9 @@ module.exports = async (req, res) => {
           const signed = counts.get(r.id) || 0;
           extra.signedCount = signed;
           extra.expectedCount = expected;
-          // Never below zero: somebody can sign and later lose the division,
-          // which leaves more signatures on file than people expected to sign.
+          // Cannot go negative now that `signed` counts only roster members,
+          // but clamped anyway: a badge reading "-1 outstanding" would be a
+          // worse way to learn that invariant had broken than a silent zero.
           extra.outstandingCount = Math.max(0, expected - signed);
         }
         return toDocument(r, extra);
@@ -219,6 +232,14 @@ module.exports = async (req, res) => {
 
       if (!id || !filename || !storageKey) {
         return res.status(400).json({ error: 'documentId, filename and storageKey are required' });
+      }
+      // Always the uuid api/document-upload-url.js minted — nothing else is a
+      // legitimate value. Checked because it is echoed back by the caller and
+      // then rendered: the storage-key comparison below is NOT a check on the
+      // id, since buildKey() sanitises the id on both sides, so a caller could
+      // send any string at all and still produce a matching key.
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        return res.status(400).json({ error: 'documentId is not a valid upload id' });
       }
       if (!title)  return res.status(400).json({ error: 'Give the document a title.' });
       if (!weekOf) return res.status(400).json({ error: 'Pick the week this document covers.' });
@@ -303,8 +324,14 @@ module.exports = async (req, res) => {
       // document its signer never saw. A revised form is a new document.
       const title  = body.title       === undefined ? existing.title       : cleanText(body.title, MAX_TITLE);
       const desc   = body.description === undefined ? existing.description : cleanText(body.description, MAX_DESC);
+      // Through dateOnly, never the raw Date the driver handed back. Binding a
+      // Date to a DATE column serialises it as a UTC instant, and the value
+      // read back is LOCAL midnight — so east of Greenwich a title-only edit
+      // stored the day before, and the next edit the day before that. The week
+      // walked backwards one edit at a time until the document fell out of its
+      // own report filter.
       const weekOf = body.weekOf      === undefined
-        ? existing.week_of
+        ? dateOnly(existing.week_of)
         : mondayOf(body.weekOf);
 
       if (!title)  return res.status(400).json({ error: 'Give the document a title.' });

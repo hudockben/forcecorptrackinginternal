@@ -30,7 +30,7 @@ const {
   poCapabilities,
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
-const { safetyKeyClaimed }  = require('./lib/safety');
+const { safetyKeyClaimed, safetyCapabilities, SAFETY_DIVISION } = require('./lib/safety');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -87,6 +87,20 @@ module.exports = async (req, res) => {
       req.query.projectId = scope.projectId || undefined;
       if (req.body && typeof req.body === 'object') req.body.projectId = scope.projectId || undefined;
     }
+  }
+
+  // The Safety Center's levels do not map onto the generic scale this function
+  // uses. There level2 is a SIGNER, not an uploader, and only a supervisor may
+  // register what a ticket uploads — so the generic rule handed a signer a
+  // writable presigned URL into the company's safety prefix that no
+  // registration could ever claim. Nothing sweeps those bytes up: the purge
+  // sweep walks project_documents, which a safety upload never reaches.
+  //
+  // Placed after the purchase-order carve-out rather than before it so it has
+  // the last word, though the two cannot meet today — canAccessPODivision is
+  // false for 'safety', which is neither a job division nor purchasing.
+  if (division === SAFETY_DIVISION) {
+    canUpload = safetyCapabilities(payload).canManage;
   }
 
   // Minting an upload ticket a view-only user could never redeem just wastes a

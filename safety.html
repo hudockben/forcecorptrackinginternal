@@ -205,6 +205,13 @@
     .rep-list li .when { flex:none; font-size:0.72rem; color:var(--muted); font-variant-numeric:tabular-nums; }
     .rep-list li.out { background:rgba(250,204,21,0.08); }
     .rep-list li.out .who { color:var(--amber); }
+    /* The drawn mark, shown where the supervisor is already reading the
+       signers. White plate because the pad draws in near-black. */
+    .sig-mark {
+      display:block; margin-top:4px; max-width:190px; height:auto;
+      background:#fff; border-radius:5px; padding:2px;
+    }
+    .sig-pending { display:block; margin-top:3px; font-size:0.68rem; color:var(--muted); }
     .rep-none { font-size:0.8rem; color:var(--muted); padding:0.45rem 0.6rem; }
 
     .toast {
@@ -280,6 +287,7 @@
       tab: 'docs',
       docs: null, docsError: null, docsLoading: true,
       report: null, reportError: null, reportLoading: false, reportOpen: new Set(),
+      detail: {},        // documentId -> the signatures WITH their drawn marks
       showArchived: false,
       statement: '',
       storageConfigured: true,
@@ -399,14 +407,14 @@
       const archived = d.archivedAt ? `<span class="badge flat">Archived</span>` : '';
       const manage = canManage ? `
         <div style="display:flex;gap:0.4rem;padding:0 0.9rem 0.85rem">
-          <button class="btn btn-ghost" onclick="event.stopPropagation();archiveDoc('${esc(d.id)}',${d.archivedAt ? 'true' : 'false'})">
+          <button class="btn btn-ghost" data-act="archive" data-doc-id="${esc(d.id)}" data-archived="${d.archivedAt ? '1' : '0'}">
             ${d.archivedAt ? 'Restore' : 'Archive'}
           </button>
         </div>` : '';
 
       return `
         <div class="card ${cls}">
-          <div class="card-head" onclick="openViewer('${esc(d.id)}')">
+          <div class="card-head" data-act="open" data-doc-id="${esc(d.id)}">
             <div class="card-main">
               <div class="card-title">${esc(d.title)}</div>
               <div class="card-meta">${esc(weekLabel(d.weekOf))} &middot; ${esc(d.filename)} &middot; ${esc(fileSize(d.sizeBytes))}</div>
@@ -608,9 +616,19 @@
     }
 
     /* ═══════ Viewer & signing ═══════ */
+    /* Every open takes a ticket. The signed URL is fetched over the network,
+       and on a jobsite connection the answer for the document somebody tapped
+       first can land after they have closed it and opened another — repainting
+       the body, including a freshly initialised signature pad, underneath the
+       header of a DIFFERENT document. submitSignature() posts state.viewing,
+       so what they read and what they signed would be two different forms.
+       A stale ticket is simply dropped. */
+    let openSeq = 0;
+
     async function openViewer(id) {
       const doc = (state.docs || []).find(d => d.id === id);
       if (!doc) return;
+      const seq = ++openSeq;
       state.viewing = doc;
       state.ackChecked = false;
 
@@ -623,16 +641,29 @@
       try {
         link = await api('GET', '/safety-documents?action=open&id=' + encodeURIComponent(id));
       } catch (err) {
+        if (seq !== openSeq || state.viewing !== doc) return;
         document.getElementById('vBody').innerHTML =
           `<div class="pdf-fallback"><span class="fld-note err">${esc(err.message)}</span></div>`;
         return;
       }
+      // Both arms check: an error for a document already closed would otherwise
+      // paint its message over whatever is on screen now.
+      if (seq !== openSeq || state.viewing !== doc) return;
       renderViewer(doc, link.url);
     }
 
     function renderViewer(doc, url) {
       const already = doc.signedByMe;
-      const sign = already
+      const archived = Boolean(doc.archivedAt);
+      const sign = archived && !already
+        ? `<div class="sign-panel">
+             <div class="notice">
+               <strong>This document has been archived.</strong>
+               It is kept so the record stays readable, but it is no longer open for
+               signing. If it still needs signatures, restore it on the Documents tab.
+             </div>
+           </div>`
+        : already
         ? `<div class="sign-panel">
              <div class="signed-box">
                <strong>You signed this on ${esc(stamp(doc.mySignature && doc.mySignature.signedAt))}.</strong>
@@ -673,6 +704,10 @@
     }
 
     function closeViewer() {
+      // Bumped so an answer still in flight for the document being closed is
+      // discarded rather than repainting — and restarting the PDF download that
+      // clearing vBody exists to stop.
+      openSeq++;
       document.getElementById('viewer').classList.remove('open');
       document.getElementById('vBody').innerHTML = '';   // stops the PDF loading in the background
       state.viewing = null;
@@ -806,6 +841,7 @@
         if (state.showArchived) parts.push('include=archived');
         const data = await api('GET', '/safety-signatures?' + parts.join('&'));
         state.report    = data.documents || [];
+        state.detail    = {};
         state.statement = data.statement || state.statement;
       } catch (err) {
         state.reportError = err.message;
@@ -814,9 +850,35 @@
       }
     }
 
-    function toggleGroup(id) {
-      if (state.reportOpen.has(id)) state.reportOpen.delete(id); else state.reportOpen.add(id);
+    async function toggleGroup(id) {
+      if (state.reportOpen.has(id)) { state.reportOpen.delete(id); renderReport(); return; }
+      state.reportOpen.add(id);
       renderReport();
+      // The drawn marks come back only on the read of ONE document — the
+      // all-documents report deliberately leaves them out, because carrying
+      // every signature's PNG would eventually stop it loading at all. Fetch
+      // them for the group the supervisor actually opened, once.
+      loadGroupDetail(id);
+    }
+
+    /* Fetch one document's signatures, which is the only read that carries the
+       drawn marks. Idempotent, so it is safe to call from both the toggle and
+       the render — a group left expanded across a report reload has its cache
+       cleared underneath it, and without the render-side call it would sit on
+       "signature loading…" forever. */
+    async function loadGroupDetail(id) {
+      if (state.detail[id] === undefined) {
+        state.detail[id] = null;   // in flight — stops a second tap re-fetching
+        try {
+          const d = await api('GET', '/safety-signatures?documentId=' + encodeURIComponent(id));
+          const g = (d.documents || [])[0];
+          state.detail[id] = (g && g.signed) || [];
+        } catch (err) {
+          state.detail[id] = [];
+          toast(err.message, true);
+        }
+        if (state.reportOpen.has(id)) renderReport();
+      }
     }
 
     function groupHTML(g) {
@@ -825,9 +887,20 @@
       const pct  = g.expectedCount ? Math.round((g.signedCount / g.expectedCount) * 100) : 0;
       const full = g.outstandingCount === 0 && g.expectedCount > 0;
 
+      // Marks arrive with the per-document fetch toggleGroup kicks off, so this
+      // renders without them first and again with them a moment later.
+      const marks = {};
+      (state.detail[d.id] || []).forEach(s => { if (s.signatureImage) marks[s.username] = s.signatureImage; });
+
       const signed = g.signed.length
         ? `<ul class="rep-list">` + g.signed.map(s => `<li>
-             <span class="who">${esc(s.fullName)} <span style="color:var(--muted);font-weight:400">(${esc(s.username)})</span></span>
+             <span class="who">${esc(s.fullName)} <span style="color:var(--muted);font-weight:400">(${esc(s.username)})</span>${
+               s.onRoster === false ? ' <span class="badge flat">not on roster</span>' : ''
+             }${
+               marks[s.username]
+                 ? `<img class="sig-mark" src="${esc(marks[s.username])}" alt="Signature of ${esc(s.fullName)}" />`
+                 : (s.hasDrawnSignature ? `<span class="sig-pending">signature loading…</span>` : '')
+             }</span>
              <span class="when">${esc(stamp(s.signedAt))}</span>
            </li>`).join('') + `</ul>`
         : `<div class="rep-none">Nobody has signed this one yet.</div>`;
@@ -839,7 +912,7 @@
 
       return `
         <div class="rep-group ${open ? 'open' : ''}">
-          <div class="rep-head" onclick="toggleGroup('${esc(d.id)}')">
+          <div class="rep-head" data-act="toggle" data-doc-id="${esc(d.id)}">
             <span class="chev">&#9656;</span>
             <div class="t">
               <div class="n">${esc(d.title)}${d.archivedAt ? ' <span class="badge flat">Archived</span>' : ''}</div>
@@ -851,7 +924,7 @@
           <div class="rep-body">
             <div class="rep-cols">
               <div class="rep-col">
-                <h3>Signed (${g.signedCount})</h3>
+                <h3>Signed (${g.signed.length})</h3>
                 ${signed}
               </div>
               <div class="rep-col">
@@ -909,6 +982,14 @@
       }
 
       el.innerHTML = html;
+
+      // A group the supervisor left expanded across a report reload has had its
+      // cached marks cleared underneath it. Without this it would sit on
+      // "signature loading…" forever, because the only other fetch happens on
+      // the tap that opens a group.
+      state.reportOpen.forEach(id => {
+        if (state.detail[id] === undefined) loadGroupDetail(id);
+      });
     }
 
     /* One row per person per document — signed and unsigned alike, so the file
@@ -921,13 +1002,14 @@
         const s = String(v == null ? '' : v);
         return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
       };
-      const lines = [['Document', 'Week of', 'Username', 'Signed name', 'Status', 'Signed at'].join(',')];
+      const lines = [['Document', 'Week of', 'Username', 'Signed name', 'Status', 'Signed at', 'Drew signature'].join(',')];
       groups.forEach(g => {
         g.signed.forEach(s => lines.push([
           g.document.title, g.document.weekOf, s.username, s.fullName, 'Signed', stamp(s.signedAt),
+          s.hasDrawnSignature ? 'Yes' : 'No',
         ].map(cell).join(',')));
         g.outstanding.forEach(o => lines.push([
-          g.document.title, g.document.weekOf, o.username, '', 'Not signed', '',
+          g.document.title, g.document.weekOf, o.username, '', 'Not signed', '', '',
         ].map(cell).join(',')));
       });
 
@@ -949,6 +1031,37 @@
       localStorage.removeItem('fct_division');
       window.location.replace('index.html');
     }
+
+    /* Why these are delegated rather than inline onclick="fn('${id}')":
+       an inline handler's body is JAVASCRIPT, and the HTML parser decodes
+       entities in an attribute value BEFORE that source is compiled. esc()
+       turns a quote into &#39;, the parser turns it back into a quote, and the
+       string literal the id sits in is closed — so a document whose id carried
+       a quote ran its own code in every crew member's and platform admin's
+       session. esc() IS sufficient for a quoted attribute value, which is what
+       data-doc-id is, and dataset never reaches a compiler at all. */
+    function delegate(panelId, handler) {
+      const el = document.getElementById(panelId);
+      if (el) el.addEventListener('click', handler);
+    }
+
+    delegate('panelDocs', function (e) {
+      const hit = e.target.closest('[data-act]');
+      if (!hit || !this.contains(hit)) return;
+      const id = hit.getAttribute('data-doc-id');
+      if (hit.getAttribute('data-act') === 'archive') {
+        e.stopPropagation();
+        archiveDoc(id, hit.getAttribute('data-archived') === '1');
+      } else if (hit.getAttribute('data-act') === 'open') {
+        openViewer(id);
+      }
+    });
+
+    delegate('panelReport', function (e) {
+      const hit = e.target.closest('[data-act="toggle"]');
+      if (!hit || !this.contains(hit)) return;
+      toggleGroup(hit.getAttribute('data-doc-id'));
+    });
 
     document.getElementById('viewer').addEventListener('click', function (e) {
       if (e.target === this) closeViewer();

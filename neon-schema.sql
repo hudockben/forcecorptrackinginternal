@@ -2279,7 +2279,15 @@ CREATE TABLE IF NOT EXISTS safety_signatures (
     id              BIGSERIAL   PRIMARY KEY,
     company_code    TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
     document_id     TEXT        NOT NULL REFERENCES safety_documents(id) ON DELETE CASCADE,
-    user_id         INTEGER     NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- NOT a cascade, and nullable for that reason. The point of this table is
+    -- to be able to produce, later, the fact that a named person read a named
+    -- document on a named date — and the moment that is most likely to be
+    -- asked for is after they have left. ON DELETE CASCADE meant that clicking
+    -- Remove in Manage Users silently destroyed every acknowledgement that
+    -- person had ever made, which is the exact opposite of the guarantee.
+    -- full_name, username and the statement are denormalised onto the row, so
+    -- the record still reads correctly once the login behind it is gone.
+    user_id         INTEGER     REFERENCES users(id) ON DELETE SET NULL,
     username        TEXT        NOT NULL,
     -- Typed in full by the signer. Not derived from the username: the username
     -- is a login, and what a signature is worth is that a person wrote their
@@ -2299,6 +2307,18 @@ CREATE TABLE IF NOT EXISTS safety_signatures (
     user_agent      TEXT
 );
 
+-- Applied after the table shipped with ON DELETE CASCADE, so they have to
+-- reach a database that already has it — CREATE TABLE IF NOT EXISTS above
+-- would skip them there. Both are no-ops on a database already in this shape.
+ALTER TABLE safety_signatures ALTER COLUMN user_id DROP NOT NULL;
+ALTER TABLE safety_signatures DROP CONSTRAINT IF EXISTS safety_signatures_user_id_fkey;
+ALTER TABLE safety_signatures ADD  CONSTRAINT safety_signatures_user_id_fkey
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+
+-- One signature per person per document. Rows whose signer has since been
+-- deleted carry a NULL user_id, and Postgres treats NULLs as distinct in a
+-- unique index — which is right: there is no longer a person for them to
+-- collide with, and nobody can sign again through a login that is gone.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_sig_once
     ON safety_signatures(document_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_safety_sig_company_doc
