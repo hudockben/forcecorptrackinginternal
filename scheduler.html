@@ -61,8 +61,12 @@
     .rail.drop-off { box-shadow: inset 0 0 0 2px var(--red); }
     .rail-head { display:flex; align-items:center; gap:0.3rem; padding:0.3rem 0.35rem; border-bottom:1px solid var(--border); }
     .rail-head input { flex:1; min-width:0; font-size:0.7rem; padding:0.2rem 0.4rem; }
-    .rail-tools { display:flex; gap:0.25rem; padding:0.3rem 0.35rem 0; }
-    .rail-tools .tgl { font-size:0.62rem; padding:0.12rem 0.45rem; }
+    .rail-head + .rail-head { border-bottom:1px solid var(--border); }
+    .rail-head .tgl { font-size:0.62rem; padding:0.14rem 0.45rem; }
+    .rail-tabs { display:flex; flex:1; min-width:0; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+    .rail-tab { flex:1; min-width:0; background:var(--surface2); border:none; color:var(--muted); font-size:0.68rem; font-weight:700; padding:0.22rem 0.2rem; cursor:pointer; white-space:nowrap; }
+    .rail-tab:hover { color:var(--text); }
+    .rail-tab.on { background:rgba(96,165,250,0.18); color:var(--blue); cursor:default; }
     .rail-tip { font-size:0.58rem; color:var(--muted); padding:0.28rem 0.4rem 0.15rem; line-height:1.3; }
     .rail-list { flex:1 1 auto; overflow:auto; padding:0 0.3rem 0.35rem; }
     .rail-grp { font-size:0.55rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); padding:0.35rem 0.1rem 0.15rem; position:sticky; top:0; background:var(--surface); z-index:1; }
@@ -236,13 +240,13 @@ const state = {
   // sub-codes off the board — on a 69-code job they are most of the noise and
   // none of the work. compact trades the KPI strip and padding for grid rows.
   hideComplete:true, compact:false, hintSeen:false, moreOpen:false, moreOpts:false,
-  railOpen:true, railSearch:'', railIdleOnly:false, railEquip:false,
+  railOpen:true, railSearch:'', railIdleOnly:false, railTab:'crew',
 };
 
 // Preferences live in localStorage, not the server: they are how THIS scheduler
 // likes to look at the board, not part of the schedule everyone shares.
 const PREF_KEY = 'fct_sched_prefs:' + ((user && user.companyCode) || '') + ':' + ((user && user.username) || '');
-function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen, railOpen:state.railOpen })); } catch {} }
+function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen, railOpen:state.railOpen, railTab:state.railTab })); } catch {} }
 (function loadPrefs() {
   let p = {}; try { p = JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; } catch {}
   if (p.hideComplete != null) state.hideComplete = !!p.hideComplete;
@@ -250,6 +254,7 @@ function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hid
   state.compact = p.compact != null ? !!p.compact : (window.innerHeight < 900);
   state.hintSeen = !!p.hintSeen;
   if (p.railOpen != null) state.railOpen = !!p.railOpen;
+  if (p.railTab === 'crew' || p.railTab === 'equip') state.railTab = p.railTab;
   document.body.classList.toggle('compact', state.compact);
 })();
 function setCompact(on) { state.compact = on; document.body.classList.toggle('compact', on); savePrefs(); closeMoreMenu(); render(); }
@@ -976,48 +981,68 @@ function railRow(name, kind, sub, offAll) {
     ' title="'+esc(name+(sub?' · '+sub:'')+(offAll?' — off every day shown':'')+' — drag onto a day on the board')+'">'+
     '<span class="rail-name">'+(kind==='equip'?'🚜 ':'')+esc(name)+'</span>'+railLoadPill(name)+'</div>';
 }
+// Crew and equipment are two separate lists, one shown at a time. Folding the
+// machines onto the bottom of eighty-one names meant scrolling the whole roster
+// to reach a skid steer; now it is one click on the other icon.
+function railCounts() {
+  return { crew: (state.board.employees||[]).length, equip: (state.board.equipment||[]).length };
+}
 function railListHtml() {
   if (!state.board) return '';
   const q = (state.railSearch||'').trim().toLowerCase();
   const wk = weekDateStrs();
+  let html = '';
+  if (state.railTab === 'equip') {
+    let eq = (state.board.equipment||[]).slice();
+    if (q) eq = eq.filter(n => n.toLowerCase().includes(q));
+    if (state.railIdleOnly) eq = eq.filter(n => loadForResource(n) === 0);
+    eq.sort((a,b) => loadForResource(a) - loadForResource(b) || a.localeCompare(b));
+    html = eq.map(n => railRow(n, 'equip', 'equipment', false)).join('');
+    if (!html) html = '<div class="rail-empty">'+(q ? 'No machine matches \u201c'+esc(state.railSearch.trim())+'\u201d.' : state.railIdleOnly ? 'Every machine is out.' : 'No equipment.')+'</div>';
+    return html;
+  }
   let emps = (state.board.employees||[]).slice();
   if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q) || (e.jobClass||'').toLowerCase().includes(q));
   if (state.railIdleOnly) emps = emps.filter(e => loadForResource(e.name) === 0);
   const groups = {}; emps.forEach(e => { const g = e.jobClass || 'Other'; (groups[g] = groups[g] || []).push(e); });
-  let html = '';
   Object.keys(groups).sort().forEach(g => {
     const list = groups[g].slice().sort((a,b) => loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
     html += '<div class="rail-grp">'+esc(g)+' <span style="opacity:0.7">('+list.length+')</span></div>';
     html += list.map(e => railRow(e.name, 'emp', e.jobClass || '', wk.every(d => isBlockedOff(e.name, 'emp', d)))).join('');
   });
-  if (state.railEquip) {
-    let eq = (state.board.equipment||[]).slice();
-    if (q) eq = eq.filter(n => n.toLowerCase().includes(q));
-    if (state.railIdleOnly) eq = eq.filter(n => loadForResource(n) === 0);
-    if (eq.length) {
-      html += '<div class="rail-grp">Equipment <span style="opacity:0.7">('+eq.length+')</span></div>';
-      html += eq.map(n => railRow(n, 'equip', 'equipment', false)).join('');
-    }
-  }
-  if (!html) html = '<div class="rail-empty">'+(q ? 'Nobody matches “'+esc(state.railSearch.trim())+'”.' : state.railIdleOnly ? 'Everybody is booked.' : 'No crew.')+'</div>';
+  if (!html) html = '<div class="rail-empty">'+(q ? 'Nobody matches \u201c'+esc(state.railSearch.trim())+'\u201d.' : state.railIdleOnly ? 'Everybody is booked.' : 'No crew.')+'</div>';
   return html;
 }
 function railHtml() {
   if (!state.railOpen) return '';
+  const n = railCounts(), crew = state.railTab !== 'equip';
+  const tab = (id, on, label, title) => '<button class="rail-tab'+(on?' on':'')+'" id="'+id+'" onclick="setRailTab(\''+(on?'':(id==='railTabCrew'?'crew':'equip'))+'\')" title="'+esc(title)+'"'+(on?' aria-current="true"':'')+'>'+label+'</button>';
   return '<aside class="rail" id="crewRail" data-drop="rail">'+
-    '<div class="rail-head"><input type="text" id="railSearch" placeholder="🔍 Crew…" value="'+esc(state.railSearch)+'" oninput="onRailSearch()" autocomplete="off">'+
-      '<button class="x" title="Close the crew panel" onclick="toggleRail()">✕</button></div>'+
-    '<div class="rail-tools">'+
-      '<button class="tgl'+(state.railIdleOnly?' on':'')+'" onclick="toggleRailIdle()" title="Only crew with nothing booked in the 7 days shown">Idle only</button>'+
-      '<button class="tgl'+(state.railEquip?' on':'')+'" onclick="toggleRailEquip()" title="Also list equipment">🚜</button>'+
+    '<div class="rail-head">'+
+      '<div class="rail-tabs">'+
+        tab('railTabCrew', crew, '\ud83d\udc65 '+n.crew, 'Crew') +
+        tab('railTabEquip', !crew, '\ud83d\ude9c '+n.equip, 'Equipment') +
+      '</div>'+
+      '<button class="x" title="Close the panel" onclick="toggleRail()">\u2715</button>'+
     '</div>'+
-    '<div class="rail-tip">Drag a name onto a day. Drag a name off the board onto here to take it off.</div>'+
+    '<div class="rail-head">'+
+      '<input type="text" id="railSearch" placeholder="\ud83d\udd0d '+(crew?'Crew':'Equipment')+'\u2026" value="'+esc(state.railSearch)+'" oninput="onRailSearch()" autocomplete="off">'+
+      '<button class="tgl'+(state.railIdleOnly?' on':'')+'" onclick="toggleRailIdle()" title="Only '+(crew?'crew':'machines')+' with nothing booked in the 7 days shown">Idle</button>'+
+    '</div>'+
+    '<div class="rail-tip">Drag '+(crew?'a name':'a machine')+' onto a day. Drag one off the board onto here to take it off.</div>'+
     '<div class="rail-list" id="railList">'+railListHtml()+'</div>'+
   '</aside>';
 }
 function toggleRail() { state.railOpen = !state.railOpen; savePrefs(); render(); }
+// Switching list clears the search — a crew name never matches a machine, and
+// landing on "no match" after one click reads as a broken panel.
+function setRailTab(t) {
+  if (!t || t === state.railTab) return;
+  state.railTab = t; state.railSearch = '';
+  savePrefs();
+  document.getElementById('main').innerHTML = renderJobBoard();
+}
 function toggleRailIdle() { state.railIdleOnly = !state.railIdleOnly; document.getElementById('main').innerHTML = renderJobBoard(); }
-function toggleRailEquip() { state.railEquip = !state.railEquip; document.getElementById('main').innerHTML = renderJobBoard(); }
 // Update the list in place so the search box keeps focus and the caret.
 function onRailSearch() {
   const el = document.getElementById('railSearch'); if (!el) return;
@@ -1923,7 +1948,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleGrp, toggleRail, toggleRailIdle, toggleRailEquip, onRailSearch, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, dismissHint, setCompact });
+Object.assign(window, { toggleGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();
 </script>
