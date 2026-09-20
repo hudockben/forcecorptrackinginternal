@@ -423,7 +423,7 @@
        c-act onto the last division and collapses Actions — with the Edit and
        Remove buttons — to nothing. */
     .user-table col.c-user   { width: 12%;     }
-    .user-table col.c-div    { width: 4.875%;  }  /* × 16 = 78% */
+    .user-table col.c-div    { width: 4.5882%; }  /* × 17 = 78% */
     .user-table col.c-act    { width: 10%;     }
 
     .mu-sort-btn {
@@ -1198,7 +1198,7 @@
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-div" /><col class="c-div" /><col class="c-div" />
-            <col class="c-div" />
+            <col class="c-div" /><col class="c-div" />
             <col class="c-act" />
           </colgroup>
           <thead>
@@ -1224,11 +1224,12 @@
               <th scope="col" title="Driver (field entry)">Driver</th>
               <th scope="col" title="Quarry Sales (field entry)">Qry Sales</th>
               <th scope="col" title="Purchase Orders (central purchasing)">POs</th>
+              <th scope="col" title="Safety Center (tailgate sign-off)">Safety</th>
               <th scope="col"><span class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Actions</span></th>
             </tr>
           </thead>
           <tbody id="userListBody">
-            <tr><td colspan="18" class="mu-empty-cell">Loading…</td></tr>
+            <tr><td colspan="19" class="mu-empty-cell">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1410,6 +1411,14 @@
               <select id="mu-role-driver">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — See own hauls &amp; report back</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Safety Center <span style="text-transform:none;color:var(--muted)">(tailgate sign-off)</span></span>
+              <select id="mu-role-safety">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 &mdash; Read &amp; sign documents</option>
+                <option value="level3">Level 3 &mdash; Upload &amp; see the report</option>
               </select>
             </div>
             <div class="div-role-row">
@@ -1800,6 +1809,20 @@
                   <path d="M18.3 7.1a1.3 1.3 0 0 0-2.6.2c0 1.4 2.6.7 2.6 2a1.3 1.3 0 0 1-2.6.1"/>
                 </svg>`,
       },
+      // The Safety Center is one division with two jobs in it, split by level
+      // rather than by key: the supervisor posts the week's tailgate form,
+      // the crew opens it and signs that they have read and understood it.
+      safety: {
+        name:  'Safety Center',
+        desc:  'The weekly tailgate form \u2014 the supervisor posts the PDF, the crew signs it off with a timestamp, and the report shows who still has not.',
+        color: '#22c55e',
+        href:  'safety.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3l7 3v5.5c0 4.2-2.9 7.6-7 9.5-4.1-1.9-7-5.3-7-9.5V6z"/>
+                  <polyline points="9 12 11 14 15 10"/>
+                </svg>`,
+      },
       fuel_admin: {
         name:  'Fuel Admin',
         desc:  'Review, edit, and approve field fuel submissions, and report on fuel use across the divisions.',
@@ -1815,7 +1838,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -2015,16 +2038,16 @@
       level1:    'View only',
       no_access: 'No access',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
 
     // The five-level selects. The rest (timesheet, payroll, fuel, fuel_admin,
-    // driver, quarry_sales) only offer one grant level each, so "set all"
-    // skips them.
+    // driver, quarry_sales, safety) only offer one or two grant levels each,
+    // so "set all" skips them.
     const DIV_KEYS_FULL_SCALE = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'purchase_orders'];
 
     // Column labels for the user table and the "saved" summary line. Only the
     // keys whose prettified form isn't just Capitalised need an entry.
-    const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver', quarry_sales: 'Qry Sales', purchase_orders: 'POs' };
+    const DIV_LABELS = { safety: 'Safety', kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver', quarry_sales: 'Qry Sales', purchase_orders: 'POs' };
     function divLabel(k) { return DIV_LABELS[k] || (k.charAt(0).toUpperCase() + k.slice(1)); }
 
     // Longer names for the division filter and the spreadsheet header, where
@@ -2038,6 +2061,7 @@
       fuel_admin: 'Fuel Admin (review & approve)', driver: 'Driver (field entry)',
       quarry_sales: 'Quarry Sales (field entry)',
       purchase_orders: 'Purchase Orders (central purchasing)',
+      safety: 'Safety Center (tailgate sign-off)',
     };
     function divLongLabel(k) { return DIV_LONG[k] || divLabel(k); }
 

@@ -1275,7 +1275,7 @@ console.log('\n══════════ wiring ═════════
     // a gap, and a division nobody can ask about never earns its turn in the
     // queue. The panel says so before a question is spent.
     'executive.html', 'fuel-admin.html', 'fuel.html',
-    'driver.html', 'quarry-sales.html',
+    'driver.html', 'quarry-sales.html', 'safety.html',
   ];
   const missing = PAGES.filter(f => !fs.readFileSync(root(f), 'utf8').includes('mathis.js'));
   assert('every page Mathis is meant to be on loads it', missing.length === 0, missing.join(', '));

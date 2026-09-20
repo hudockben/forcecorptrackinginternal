@@ -45,7 +45,7 @@ const NUM_FNS = ['normalizeNumeric', 'num', 'num0'];
 console.log('\n[the division is registered everywhere it has to be]');
 {
   const auth = read('api/lib/auth.js');
-  assert('in the canonical division list',   /'quarry_sales', 'purchase_orders'\]/.test(auth));
+  assert('in the canonical division list',   /const ALL_DIVISIONS = \[[^\]]*'purchase_orders'/.test(auth));
   assert('with the job divisions it buys for',
     /const PO_SOURCE_DIVISIONS = \['turf', 'paving', 'kiewit'\]/.test(auth));
 
@@ -81,7 +81,7 @@ console.log('\n[the division is registered everywhere it has to be]');
 
   // Over 100% is scaled down silently, so it does not break outright — it just
   // squeezes every column and stops meaning what the stylesheet says.
-  const pct = { 'c-user': 12, 'c-div': 4.875, 'c-act': 10 };
+  const pct = { 'c-user': 12, 'c-div': 4.5882, 'c-act': 10 };
   Object.entries(pct).forEach(([cls, want]) => {
     const re = new RegExp('col\\.' + cls + '\\s*\\{\\s*width:\\s*([\\d.]+)%');
     const got = (divs.match(re) || [])[1];

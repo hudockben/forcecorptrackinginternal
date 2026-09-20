@@ -2223,3 +2223,105 @@ ALTER TABLE quarry_crushing_entries ADD COLUMN IF NOT EXISTS product_name TEXT;
 -- "Tons and cost by material" — the read this whole change exists to make
 -- possible. Mirrors idx_qs_company_product on the sales side.
 CREATE INDEX IF NOT EXISTS idx_qc_company_product ON quarry_crushing_entries(company_code, product_name);
+
+-- ── SAFETY CENTER — the weekly tailgate and who has signed it ─────────────
+-- One row per document the safety supervisor posts. The FILE itself lives in
+-- object storage exactly like a job document does — the browser PUTs it to a
+-- presigned URL minted by api/document-upload-url.js and only the metadata
+-- lands here — so `storage_key` is the same shape of key api/lib/storage.js
+-- builds everywhere else, under the 'safety' division.
+--
+-- Deliberately NOT a row in project_documents. That table is the job vault:
+-- every read of it is scoped by project and filed through project_folders, and
+-- a tailgate form belongs to a WEEK and a workforce rather than to a job. The
+-- two would have had to be told apart on every query in both directions.
+CREATE TABLE IF NOT EXISTS safety_documents (
+    id            TEXT        PRIMARY KEY,
+    company_code  TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    title         TEXT        NOT NULL,
+    description   TEXT,
+    -- The Monday of the week this covers. The report groups and filters on it,
+    -- and it is what makes "last week's tailgate" a question with an answer.
+    week_of       DATE        NOT NULL,
+    filename      TEXT        NOT NULL,
+    content_type  TEXT,
+    size_bytes    BIGINT      NOT NULL DEFAULT 0,
+    storage_key   TEXT        NOT NULL,
+    uploaded_by   TEXT,
+    uploaded_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Archiving hides a document from the crew's list and stops it counting
+    -- against anyone. The signatures already collected stay exactly as they
+    -- are: a signed acknowledgement is a record, not a display preference.
+    archived_at   TIMESTAMPTZ,
+    archived_by   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_safety_docs_company_week
+    ON safety_documents(company_code, week_of DESC, uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_safety_docs_live
+    ON safety_documents(company_code, archived_at);
+-- The registration guard reads this before it trusts a key the browser echoed
+-- back, and the upload-relay endpoint reads it to refuse a write over a file
+-- that is already somebody's signed document.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_docs_key ON safety_documents(storage_key);
+
+-- One row per person per document. The UNIQUE index is the whole point: a
+-- signature is an assertion about one reader and one document, so a second
+-- tap of the button cannot produce a second one, and the report can count
+-- rows without deduplicating them.
+--
+-- What is kept is what makes the record stand up later: who, when, the name
+-- they typed, the mark they drew, and the acknowledgement itself — held as a
+-- column rather than implied by the row's existence, so the sentence the
+-- laborer agreed to is recorded next to the fact that they agreed to it.
+CREATE TABLE IF NOT EXISTS safety_signatures (
+    id              BIGSERIAL   PRIMARY KEY,
+    company_code    TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    document_id     TEXT        NOT NULL REFERENCES safety_documents(id) ON DELETE CASCADE,
+    -- NOT a cascade, and nullable for that reason. The point of this table is
+    -- to be able to produce, later, the fact that a named person read a named
+    -- document on a named date — and the moment that is most likely to be
+    -- asked for is after they have left. ON DELETE CASCADE meant that clicking
+    -- Remove in Manage Users silently destroyed every acknowledgement that
+    -- person had ever made, which is the exact opposite of the guarantee.
+    -- full_name, username and the statement are denormalised onto the row, so
+    -- the record still reads correctly once the login behind it is gone.
+    user_id         INTEGER     REFERENCES users(id) ON DELETE SET NULL,
+    username        TEXT        NOT NULL,
+    -- Typed in full by the signer. Not derived from the username: the username
+    -- is a login, and what a signature is worth is that a person wrote their
+    -- own name under a sentence they read.
+    full_name       TEXT        NOT NULL,
+    -- The drawn mark, as a PNG data URL, when they drew one. Optional — a
+    -- typed name and the acknowledgement are the record; the drawing is what
+    -- makes it look and feel like the paper form it replaces.
+    signature_image TEXT,
+    acknowledged    BOOLEAN     NOT NULL DEFAULT TRUE,
+    -- The exact sentence agreed to, stored per signature. The wording on the
+    -- page may be edited one day, and a record that then described itself with
+    -- the NEW wording would be a record of something that never happened.
+    statement       TEXT,
+    signed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ip_address      TEXT,
+    user_agent      TEXT
+);
+
+-- Applied after the table shipped with ON DELETE CASCADE, so they have to
+-- reach a database that already has it — CREATE TABLE IF NOT EXISTS above
+-- would skip them there. Both are no-ops on a database already in this shape.
+ALTER TABLE safety_signatures ALTER COLUMN user_id DROP NOT NULL;
+ALTER TABLE safety_signatures DROP CONSTRAINT IF EXISTS safety_signatures_user_id_fkey;
+ALTER TABLE safety_signatures ADD  CONSTRAINT safety_signatures_user_id_fkey
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+
+-- One signature per person per document. Rows whose signer has since been
+-- deleted carry a NULL user_id, and Postgres treats NULLs as distinct in a
+-- unique index — which is right: there is no longer a person for them to
+-- collide with, and nobody can sign again through a login that is gone.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_sig_once
+    ON safety_signatures(document_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_safety_sig_company_doc
+    ON safety_signatures(company_code, document_id, signed_at);
+CREATE INDEX IF NOT EXISTS idx_safety_sig_company_user
+    ON safety_signatures(company_code, user_id, signed_at DESC);
