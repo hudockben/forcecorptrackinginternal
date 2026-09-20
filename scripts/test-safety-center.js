@@ -1033,6 +1033,36 @@ function pageTests() {
       /addEventListener\('click'/.test(code) && /getAttribute\('data-doc-id'\)/.test(code));
   }
 
+  // The acknowledgement checkbox rendered pixel-for-pixel identical checked and
+  // unchecked, because the shared `input, textarea, select` reset applies
+  // appearance:none — which on a checkbox removes the native box AND its tick,
+  // and makes accent-color a no-op. It toggled correctly and showed nothing, so
+  // it read as a dead control: tap, no change, tap again, now it is off again.
+  //
+  // jsdom has no layout, so this cannot compare pixels. It pins the two things
+  // that caused it instead: the reset must not reach a checkbox, and the
+  // checked state must declare something visible of its own.
+  {
+    const reset = /\n\s*(input[^{]*?),\s*textarea,\s*select\s*\{/.exec(page);
+    assert('the shared input reset does not reach checkboxes',
+      !!reset && /:not\(\[type=checkbox\]\)/.test(reset[1]),
+      reset ? reset[1].trim() : 'reset rule not found');
+    assert('  nor radios, which would break the same way',
+      !!reset && /:not\(\[type=radio\]\)/.test(reset[1]));
+
+    const checked = /\.ack input\[type=checkbox\]:checked\s*\{([^}]*)\}/.exec(page);
+    assert('the checked state paints something of its own', !!checked);
+    if (checked) {
+      assert('  a tick, not just a colour swap',
+        /background[^;]*svg/i.test(checked[1]),
+        'a filled box with no mark is a state, not a confirmation');
+      assert('  and a border that changes with it',
+        /border-color/.test(checked[1]));
+    }
+    assert('the box is big enough for a gloved finger',
+      /\.ack input\[type=checkbox\]\s*\{[^}]*width:\s*30px/.test(page));
+  }
+
   assert('the page names its division so Mathis resolves it',
     /const DIVISION = 'safety'/.test(page));
   assert('  and loads the widget like every other division page',
