@@ -3893,7 +3893,7 @@
             <td>${status}</td>
           </tr>
           <tr class="report-detail" data-user="${userAttr}"${expanded ? '' : ' hidden'}>
-            <td colspan="18">${reportDetailHtml(r)}</td>
+            <td colspan="17">${reportDetailHtml(r)}</td>
           </tr>
         `;
       }).join('');
@@ -7457,9 +7457,10 @@
     }
 
     // The sub-line under the HOURS figure on a row that absorbed the break.
-    // Only the row that actually carries the deduction gets it: on a split day
-    // that is job 1, and the siblings' hours match their own punches exactly,
-    // so a note there would explain a discrepancy they don't have.
+    // Only the row that actually carries the deduction gets it — whichever job
+    // the break fell in, not job 1 — and the siblings' hours match their own
+    // punches exactly, so a note there would explain a discrepancy they do not
+    // have.
     function lunchNoteHtml(e) {
       if (!e || e.entry_type !== 'daily' || e.lunch_break !== true) return '';
       const net  = e.computed_hours != null ? Number(e.computed_hours) : null;
@@ -7474,8 +7475,8 @@
         : `These hours are already net of the day's 30-minute unpaid lunch. `
           + `Travel is paid on top and is never lunch-deducted.`;
       // One lunch per day, taken once. On a split the whole day's deduction
-      // lands on job 1, which is exactly where an approver comparing this row
-      // against its sibling needs to be told so.
+      // lands on the job it fell in, which is exactly where an approver
+      // comparing this row against its sibling needs to be told so.
       if (Number(e.split_count) > 1) {
         tip += ` One lunch per day: the whole day's deduction is taken on job `
              + `${Number(e.split_index) || 1} of this split — the job it fell in — `

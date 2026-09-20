@@ -4262,6 +4262,7 @@ async function releaseSiblingLunch(sql, companyCode, payload, holder) {
     SELECT * FROM timesheet_entries
      WHERE company_code   = ${companyCode}
        AND split_group_id = ${holder.split_group_id}
+       AND entry_type     = 'daily'
        AND id <> ${holder.id}
        AND lunch_break IS TRUE
   `;
@@ -4732,10 +4733,24 @@ module.exports = async (req, res) => {
       const group = anchorRow.split_group_id
         ? await sql`
             SELECT * FROM timesheet_entries
-             WHERE company_code = ${companyCode} AND split_group_id = ${anchorRow.split_group_id}
+             WHERE company_code   = ${companyCode}
+               AND split_group_id = ${anchorRow.split_group_id}
+               AND entry_type     = 'daily'
              ORDER BY split_index ASC NULLS LAST, id ASC
           `
         : [anchorRow];
+
+      // The gate above asks about the row that was opened; the rewrite below
+      // touches EVERY row of the day. A worker who submitted job 1 and left
+      // job 2 a draft would have passed on the draft and then had the break —
+      // and the hours — moved on the submitted one, which he may not edit.
+      // So for anyone but payroll, the whole day has to be his own and still
+      // a draft.
+      if (!canAdmin && !group.every(g => g.user_id === userId && g.status === 'draft')) {
+        return res.status(403).json({
+          error: 'This day has jobs you cannot edit — the whole day must still be your own draft.',
+        });
+      }
 
       // Moving the break rewrites the hours on two rows of the day, so this
       // path owes the same debt an ordinary edit does: an approved entry has

@@ -320,5 +320,29 @@ assert('the check runs before any row is rewritten',
   API.indexOf('cannot carry a 30-minute break') < API.indexOf('SET lunch_break    = ${holds}'),
   'refusing after a partial rewrite would leave the day mid-move');
 
+// ── 10. The move is gated on the whole day, not the row that was opened ────
+console.log('\nMoving the break checks every job of the day');
+
+assert('payroll aside, the whole day must be the worker\'s own draft',
+  /if \(!canAdmin && !group\.every\(g => g\.user_id === userId && g\.status === 'draft'\)\)/.test(API),
+  'the anchor gate alone let a submitted sibling be rewritten from a draft');
+assert('and it says so rather than failing silently',
+  /the whole day must still be your own draft/.test(API));
+assert('the group is fetched before that check, so it can see the siblings',
+  API.indexOf('ORDER BY split_index ASC NULLS LAST') < API.indexOf('the whole day must still be your own draft'));
+assert('both group queries only ever pick up daily rows',
+  (API.match(/AND entry_type     = 'daily'/g) || []).length === 2);
+
+console.log('\nThe printed report spans the columns it actually has');
+assert('the expanded detail row matches the summary row it sits under',
+  (() => {
+    const PAY = require('fs').readFileSync(require('path').resolve(__dirname, '../payroll.html'), 'utf8');
+    const m = /colspan="(\d+)">\$\{reportDetailHtml\(r\)\}/.exec(PAY);
+    const i = PAY.indexOf('class="report-detail"');
+    const body = PAY.slice(PAY.lastIndexOf('<tr', i - 40), i);
+    return m && Number(m[1]) === (body.match(/<td[\s>]/g) || []).length;
+  })(),
+  'a colspan wider than the table leaves a phantom column on the printed page');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
