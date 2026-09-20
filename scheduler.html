@@ -648,6 +648,26 @@ function conflictResourcesOn(date) {
 }
 function totalConflicts() { let n = 0; Object.keys(state.assignments).forEach(d => { n += conflictResourcesOn(d).size; }); return n; }
 function loadForResource(resource) { let days = 0; weekDateStrs().forEach(d => { if (assignmentsFor(d, resource).length) days++; }); return days; }
+// Names booked on the board that are no longer on the company roster: someone
+// removed in Manage, or a name that only ever existed on an old daily row.
+// The board used to quietly treat these as crew, which is why the Scheduler
+// listed men nobody could find in Manage. They are no longer offered anywhere
+// you can book from — only shown, flagged, where they are already booked, so a
+// live plan never loses a name without saying so.
+function offRoster() {
+  const out = { emps: [], equips: [] };
+  if (!state.board) return out;
+  const knownE = new Set((state.board.employees || []).map(e => e.name));
+  const knownQ = new Set(state.board.equipment || []);
+  const seenE = new Set(), seenQ = new Set();
+  weekDateStrs().forEach(d => (state.assignments[d] || []).forEach(a => {
+    if (a.kind === 'equip') { if (!knownQ.has(a.resource) && !seenQ.has(a.resource)) { seenQ.add(a.resource); out.equips.push(a.resource); } }
+    else if (!knownE.has(a.resource) && !seenE.has(a.resource)) { seenE.add(a.resource); out.emps.push(a.resource); }
+  }));
+  out.emps.sort((a, b) => a.localeCompare(b));
+  out.equips.sort((a, b) => a.localeCompare(b));
+  return out;
+}
 function resourcesInPlay() {
   const emps = new Set(), equips = new Set();
   weekDateStrs().forEach(d => (state.assignments[d] || []).forEach(a => { (a.kind === 'equip' ? equips : emps).add(a.resource); }));
@@ -977,6 +997,8 @@ function renderJobBoard() {
   if (_hiddenJobCount) notes.push('\u2713 '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden \u00b7 <span class="lnk" onclick="toggleHideComplete()">show completed work</span>');
   const ex = (state.board && state.board.excludedJobs) || 0;
   if (ex) notes.push('<span title="Set on the project info card in Paving / Turf / Kiewit">\ud83d\udeab '+ex+' project'+(ex>1?'s':'')+' hidden from the Scheduler on '+(ex>1?'their':'its')+' division dashboard</span>');
+  const stray = offRoster(), nStray = stray.emps.length + stray.equips.length;
+  if (nStray) notes.push('<span class="warn" title="'+esc(stray.emps.concat(stray.equips).join(', '))+'">\u26a0 '+nStray+' name'+(nStray>1?'s':'')+' booked this week '+(nStray>1?'are':'is')+' not on the roster \u00b7 <span class="lnk" onclick="state.view=\'crew\';render()">see By Crew</span></span>');
   const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;\u00b7&nbsp; ')+'</div>' : '';
   return html + '<div class="board-row"><div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>'+railHtml()+'</div>' + note;
 }
@@ -1154,6 +1176,18 @@ function renderCrewBoard() {
     const headCells = ds.map(d => { const n = equips.filter(n2 => assignmentsFor(d, n2).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
     body += '<tr class="grp-row" onclick="toggleGrp(\'equip\')"><td class="lead-col grp-lead"><span class="caret">'+(collapsed?'▸':'▾')+'</span> 🚜 Equipment <span class="muted">('+equips.length+')</span></td>'+headCells+'</tr>';
     if (!collapsed) body += equips.map(n => rowFor(n, 'equip', null)).join('');
+  }
+  // Anyone booked who is not on the roster, listed last and flagged. This is
+  // the only place they appear — you can see their days and take them off.
+  const stray = offRoster(), strayAll = stray.emps.concat(stray.equips);
+  if (strayAll.length) {
+    const collapsed = !!state.grpCol['offroster'];
+    const headCells = ds.map(d => { const n = strayAll.filter(nm => assignmentsFor(d, nm).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
+    body += '<tr class="grp-row" onclick="toggleGrp(\'offroster\')"><td class="lead-col grp-lead" title="Booked on the schedule but not on the employee or equipment list in Manage"><span class="caret">'+(collapsed?'▸':'▾')+'</span> <span class="warn">⚠ Not on the roster</span> <span class="muted">('+strayAll.length+')</span></td>'+headCells+'</tr>';
+    if (!collapsed) {
+      body += stray.emps.map(n => rowFor(n, 'emp', { jobClass:'not on the employee list' })).join('');
+      body += stray.equips.map(n => rowFor(n, 'equip', { jobClass:'not on the equipment list' })).join('');
+    }
   }
   return html + '<div class="board-wrap"><table class="board crew"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
