@@ -48,12 +48,41 @@ function safetyCapabilities(payload) {
   if (!hasDivisionAccess(payload, SAFETY_DIVISION)) {
     return { level: 'no_access', canView: false, canManage: false };
   }
-  const level = levelFor(payload, SAFETY_DIVISION);
+  const level = safetyLevelFor(payload);
   return {
     level,
     canView: true,
     canManage: SUPERVISOR_LEVELS.includes(level),
   };
+}
+
+/**
+ * This caller's level in the Safety Center.
+ *
+ * Deliberately NOT levelFor() from api/lib/auth.js, which answers 'admin' for
+ * any platform admin before it looks at their roles at all. Here an EXPLICIT
+ * safety grant wins over that default, which is the same rule divisions.html
+ * already applies to deciding which tiles a platform admin sees: a role map
+ * somebody has actually been edited into is the source of truth, and the
+ * platform-admin default only fills in where nobody has said anything.
+ *
+ * It matters more here than elsewhere. The two levels of this division are the
+ * whole design — somebody set to "Read & sign" is being told they are crew —
+ * and a platform admin silently resolving to 'admin' handed them the upload
+ * form and the sign-off report anyway, which is exactly what it looked like:
+ * an account set to view-and-sign seeing everything.
+ *
+ * A platform admin with NO explicit safety role still gets the supervisor
+ * side, so nobody is locked out of a division they administer; and this
+ * narrows what one person can do rather than widening it, so it cannot hand
+ * anybody access they did not already have.
+ */
+function safetyLevelFor(payload) {
+  const dr = payload && payload.divisionRoles;
+  const explicit = dr && typeof dr === 'object' ? dr[SAFETY_DIVISION] : null;
+  if (explicit && explicit !== 'no_access') return explicit;
+  if (payload && payload.isPlatformAdmin) return 'admin';
+  return levelFor(payload, SAFETY_DIVISION);
 }
 
 /**
@@ -172,6 +201,7 @@ module.exports = {
   SIGNATURE_STATEMENT,
   SUPERVISOR_LEVELS,
   safetyCapabilities,
+  safetyLevelFor,
   requiredSigners,
   safetyKeyClaimed,
   mondayOf,
