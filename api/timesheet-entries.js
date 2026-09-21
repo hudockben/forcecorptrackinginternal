@@ -4294,7 +4294,7 @@ async function injectedRowCount(sql, companyCode, entry) {
  *
  * Returns the siblings it corrected, for the caller's audit trail.
  */
-async function releaseSiblingLunch(sql, companyCode, payload, holder) {
+async function releaseSiblingLunch(sql, companyCode, payload, holder, canApprove) {
   if (!holder || holder.entry_type !== 'daily') return [];
   if (!holder.split_group_id || holder.lunch_break !== true) return [];
 
@@ -4313,6 +4313,16 @@ async function releaseSiblingLunch(sql, companyCode, payload, holder) {
        AND user_id        = ${holder.user_id}
        AND id <> ${holder.id}
        AND lunch_break IS TRUE
+       -- A worker may only move the break between his own DRAFTS. Once a day
+       -- is filed it is payroll's, and every other path says so: the PUT
+       -- refuses a submitted row that is not payroll's, and lunch_holder
+       -- demands the whole day still be his own draft. This sweep did not,
+       -- and it is reachable from an ordinary create — so a throwaway draft
+       -- carrying his own filed day's group id, ticked for lunch, released
+       -- the break on that filed day and handed back the half hour on a row
+       -- he is otherwise forbidden to touch. An approver still sweeps
+       -- everything, which is the behaviour payroll has always had.
+       AND (${!!canApprove}::boolean OR status = 'draft')
   `;
   if (!others.length) return [];
 
@@ -4835,7 +4845,7 @@ module.exports = async (req, res) => {
       // A split day's blocks arrive one row at a time, so the group can hold
       // the break twice between the first write and the last. Settled here,
       // on every write, rather than trusted to arrive correct.
-      await releaseSiblingLunch(sql, companyCode, payload, row);
+      await releaseSiblingLunch(sql, companyCode, payload, row, canApprove);
       return res.json(await entryJson(sql, companyCode, row));
     }
 
@@ -5546,23 +5556,29 @@ module.exports = async (req, res) => {
         validateSplit((req.body && req.body.split) || [], existing);
       if (preErr) return res.status(400).json({ error: preErr });
 
-      // A coder proposes CLASSIFICATION, and the API — not merely his screen —
-      // is what holds him to it. normalizeSplitRow keeps whatever the body
-      // carried, and three of those fields are money rather than phase:
+      // A PROPOSAL carries CLASSIFICATION, and the API — not merely the
+      // screen — is what holds it to that. normalizeSplitRow keeps whatever
+      // the body carried, and four of those fields belong to the approval
+      // rather than to the question "what phase was this work?":
       //
-      //   dest      routes this row's cost into another division's ledger
-      //   is_haul   says the truck bought this labour, pricing it at $0
-      //   haul_type decides whether the hours keep the prevailing premium
+      //   dest        routes this row's cost into another division's ledger
+      //   is_haul     says the truck bought this labour, pricing it at $0
+      //   haul_type   decides whether the hours keep the prevailing premium
+      //   equipment   puts a machine on the row at that machine's hourly rate
       //
-      // Each is the approver's to answer. Leaving them off the coder's screen
-      // would be a UI assumption, and anyone holding the token can post a body
-      // the screen would never send — so they are stripped here instead.
-      if (isCoder) {
-        for (const r of proposed) {
-          r.dest = null;
-          delete r.is_haul;
-          delete r.haul_type;
-        }
+      // Stripped for EVERY proposer, not only a coder. An approver may precode
+      // a day too, and a proposal of his carrying these would flow through the
+      // bulk panel — which posts a proposal's rows verbatim and then applies
+      // the day's haul answer over them — with no modal open and no review
+      // warning, because the warning is derived from the card's template and
+      // not from the rows a proposal actually posts. The approve modal is
+      // where those four are answered, by whoever is approving, with the
+      // labour rate in front of them.
+      for (const r of proposed) {
+        r.dest = null;
+        r.equipment = '';
+        delete r.is_haul;
+        delete r.haul_type;
       }
 
       // status = 'submitted' in the WHERE is a compare-and-swap, not
@@ -5595,6 +5611,18 @@ module.exports = async (req, res) => {
         {
           proposed_row_count: proposed.length,
           coded_for_hours:    splitExpectedHours(existing),
+          // WHICH day, and whose. A coder's scope is derived from a day he
+          // filed himself, and that is a record he writes — he cannot reach a
+          // crew without naming their job on his own timesheet, which is a
+          // permanent entry in his name claiming he was there, but it is still
+          // his assertion. Naming the day here is what makes a coder working a
+          // job he was never on visible to anyone reading the log.
+          employee:      existing.username,
+          division:      existing.division,
+          job_id:        existing.job_id,
+          job_label:     existing.job_label,
+          work_date:     safeDate(existing.work_date),
+          by_coder:      isCoder,
           // Both names, on every proposal. The point of separating coding from
           // approving is that the record can say who answered what — today the
           // same fact is a phone call nobody wrote down.
@@ -5964,6 +5992,9 @@ module.exports = async (req, res) => {
       existing.coded_by_name       = username;
       existing.coded_for_hours     = rsHours;
       existing.coded_source        = 'approve';
+      // The UPDATE above sets this to NOW(); without it here the audit record
+      // of the very action that stamped coded_at reports the value it replaced.
+      existing.coded_at            = new Date();
 
       await writeAudit(
         sql, companyCode, payload, id, 'ADMIN_EDIT',
@@ -6716,7 +6747,7 @@ module.exports = async (req, res) => {
       // The approver moving the break onto this job is exactly a PUT that sets
       // lunch_break true, so this is what makes the move a move rather than a
       // second deduction.
-      await releaseSiblingLunch(sql, companyCode, payload, updated);
+      await releaseSiblingLunch(sql, companyCode, payload, updated, canApprove);
       return res.json(await entryJson(sql, companyCode, updated));
     }
 

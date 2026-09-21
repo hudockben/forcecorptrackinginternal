@@ -70,6 +70,9 @@
     .card:active { background:var(--surface2); }
     .card.coded { border-left-color:var(--green); }
     .card.stale { border-left-color:var(--red); }
+    /* Already approved once and sent back: the codes on it are the
+       supervisor's, not a foreman's. */
+    .card.sentback { border-left-color:var(--amber); }
     .card .who { flex:1; min-width:0; }
     .card .who .n { font-size:0.95rem; font-weight:700; }
     .card .who .m { font-size:0.74rem; color:var(--muted); margin-top:2px; }
@@ -82,6 +85,7 @@
     }
     .pill.ok   { color:#86efac; background:rgba(34,197,94,0.14); }
     .pill.warn { color:#fca5a5; background:rgba(239,68,68,0.14); }
+    .pill.sup  { color:#fbbf24; background:rgba(245,158,11,0.14); }
 
     .empty { text-align:center; color:var(--muted); font-size:0.85rem; padding:2.5rem 1rem; line-height:1.6; }
 
@@ -386,12 +390,22 @@
     function cardHtml(e) {
       const coded = Array.isArray(e.proposed_split) && e.proposed_split.length;
       const stale = proposalStale(e);
-      const cls = stale ? 'stale' : (coded ? 'coded' : '');
+      // WHO put those codes there. The approver's own accepted split is stored
+      // in the same place as a proposal — it has to be, so that un-approving a
+      // day cannot resurrect the first draft over his correction — and an
+      // un-approved day is 'submitted' again, so it lands back here. Showing
+      // it as "coded · Allen Strick" reads as though a foreman had entered it
+      // and invites somebody to type over a decision his supervisor already
+      // made, without ever saying that is what is happening.
+      const bySup = coded && e.coded_source === 'approve';
+      const cls = stale ? 'stale' : (bySup ? 'sentback' : (coded ? 'coded' : ''));
       const pill = stale
         ? `<span class="pill warn">codes no longer add up — redo</span>`
-        : coded
-          ? `<span class="pill ok">coded${e.coded_by_name ? ' · ' + esc(e.coded_by_name) : ''}</span>`
-          : '';
+        : bySup
+          ? `<span class="pill sup">sent back — ${esc(e.coded_by_name || 'your supervisor')} had coded it</span>`
+          : coded
+            ? `<span class="pill ok">coded${e.coded_by_name ? ' · ' + esc(e.coded_by_name) : ''}</span>`
+            : '';
       const travel = Number(e.travel_hours) || 0;
       return `
         <div class="card ${cls}" onclick="openSheet('${esc(e.id)}')">
@@ -492,13 +506,23 @@
       // lookup can fail, and a day can legitimately want a code the job's items
       // do not carry. A select would turn any of those into a screen where the
       // coder simply cannot proceed and is told nothing.
+      // The same warning again where the typing happens. The card can be
+      // scrolled past; this sits above the first field.
+      const supNote = sheet.entry.coded_source === 'approve'
+        ? `<div class="msg err show" style="color:#fbbf24;background:rgba(245,158,11,0.12)">
+             This day was already approved and then sent back.
+             ${esc(sheet.entry.coded_by_name || 'Your supervisor')} entered the codes below —
+             change them only if you know what went wrong with the day.
+           </div>`
+        : '';
+
       const ccNote = sheet.codesState === 'failed'
         ? `<div class="msg err show">Could not load this job's cost codes. You can still type them in.</div>`
         : sheet.codesState === 'empty'
           ? `<div class="msg err show">This job has no bid items set up, so there are no codes to pick from. Type them in, or ask the office to add them.</div>`
           : '';
 
-      body.innerHTML = ccNote + sheet.rows.map((r, i) => {
+      body.innerHTML = supNote + ccNote + sheet.rows.map((r, i) => {
         const subs = subsFor(r.cost_code);
         return `
         <div class="srow ${r.is_travel ? 'travel' : ''}">

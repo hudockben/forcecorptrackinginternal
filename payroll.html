@@ -7975,20 +7975,13 @@
 
     // Apply it to every row — used when the haul answer itself changes, since
     // that is the moment rows already carrying hours become haul rows.
-    function splitMirrorHaulEquipHoursAll(fillOnly) {
+    function splitMirrorHaulEquipHoursAll() {
       let changed = false;
       for (const r of splitRows) {
         changed = splitClearNamedOnHaul(r)     || changed;
         changed = splitClearHaulAuto(r)        || changed;
         changed = splitDefaultHaulEquipment(r) || changed;
-        // The three above FILL; this one OVERWRITES equip_hours to match the
-        // labour hours. On a split somebody proposed the fills are still
-        // wanted — a coder never answers the haul questions, so the driver's
-        // truck still has to be put on the row, and without it a pre-coded
-        // haul day posts $0 labour AND no truck: the whole day free to the
-        // job. The overwrite is not wanted: it would level a foreman's "the
-        // roller ran four of the nine hours" back up to nine, silently.
-        if (!fillOnly) changed = splitMirrorHaulEquipHours(r) || changed;
+        changed = splitMirrorHaulEquipHours(r) || changed;
       }
       return changed;
     }
@@ -9863,20 +9856,37 @@
       // changed. The mapping above marks proposal rows touched for exactly
       // this; the guard here is the second half of the same answer.
       const defaultsWanted = mode !== 'resplit' && !splitFromProposal;
+
+      // A CODER's rows still want the haul and equipment defaults. He is shown
+      // neither question — the server strips both from anything he sends — so
+      // his rows carry no truck and no machine, and without these a pre-coded
+      // haul day posts $0 labour against no unit: the whole day free to the
+      // job, while the identical day approved in bulk or with no proposal gets
+      // the truck and its hours.
+      //
+      // An APPROVER's written-back split does NOT want them. Every cell in it
+      // is already his own answer, and a blank equipment cell is a machine he
+      // deliberately took off the row rather than a gap — re-filling it when
+      // he un-approves and re-approves would bill the job for iron he had
+      // already said was not there.
+      const proposalFills = splitFromProposal && fromCoder;
+
       // The travel hours, which the entry states outright.
       if (defaultsWanted) splitRows.filter(r => r.is_travel).forEach(splitFillTravelHours);
-      // The haul defaults, now that the job's assigned equipment has landed.
-      // A proposal gets the FILL half of them: the driver's truck belongs on a
-      // haul row whoever typed the cost codes, and the same day approved in
-      // bulk or with no proposal gets it.
-      if (defaultsWanted) splitMirrorHaulEquipHoursAll();
-      else if (splitFromProposal) splitMirrorHaulEquipHoursAll(true);
+      // The haul defaults, now that the job's assigned equipment has landed —
+      // the WHOLE pass, mirror included. _equipHoursTouched is what protects a
+      // deliberate figure from the mirror, and it is already false for exactly
+      // a coder's untouched zeros, which is what it was relaxed for. Calling a
+      // fills-only variant here instead cancelled that out: the truck's name
+      // reached the row and its hours stayed at zero, so the job was billed
+      // nothing and the "no truck on any row" banner fired beside a row that
+      // visibly had one.
+      if (defaultsWanted || proposalFills) splitMirrorHaulEquipHoursAll();
       // And the machines the operator named, onto whatever rows are still
       // blank. Last, deliberately: the haul rules above own the truck on a
       // haul row, and this must fill the gaps they leave rather than get in
-      // front of them. Safe on a proposal for the same reason — it fills, it
-      // never overwrites.
-      if (defaultsWanted || splitFromProposal) splitFillNamedEquipment();
+      // front of them.
+      if (defaultsWanted || proposalFills) splitFillNamedEquipment();
       // The day's answer is the rows' now, so it cannot be settled until they
       // are. The note above was written from the driver's answer while the
       // lookups were in flight; this is what puts the approved one back.
