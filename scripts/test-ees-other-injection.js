@@ -575,10 +575,13 @@ function entry(over = {}) {
     assert('washing is offered', /id: 'ees:washing',\s+label: 'EES - Washing'/.test(JOBS));
     const dustFn = JOBS.slice(JOBS.indexOf('async function dustJobs'), JOBS.indexOf('async function quarryJobs'));
     assert('dustJobs returns them alongside the customers', /return \[\.\.\.EES_JOBS/.test(dustFn));
-    // No other division may hand them out — the list is referenced exactly
-    // twice: where it's declared, and where dustJobs spreads it.
-    const uses = (JOBS.match(/EES_JOBS/g) || []).length;
-    assert('no other division offers them', uses === 2, `${uses} references`);
+    // No other division may hand them out. Counting every mention used to do
+    // that, but the Scheduler board now imports the list to tell the two
+    // activities apart from the dust customers (api/scheduler/board.js) — which
+    // is READING it, not offering it. So the check is what it was always about:
+    // exactly one job-picker function spreads EES_JOBS, and it is dustJobs.
+    const spreads = (JOBS.match(/\.\.\.EES_JOBS/g) || []).length;
+    assert('no other division offers them', spreads === 1, `${spreads} spreads`);
   }
 
   console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'} — ${passed} passed, ${failed} failed`);

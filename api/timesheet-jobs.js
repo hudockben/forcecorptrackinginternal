@@ -243,3 +243,12 @@ module.exports = async (req, res) => {
 
 // Internal helper exposed for unit testing only (scripts/test-trucking-injection.js).
 module.exports._test = { truckingJobs };
+
+// The Scheduler board asks the same question this endpoint answers — "what work
+// does this division have?" — and it has to get the SAME answer, or a man is
+// scheduled on a customer he cannot then book his hours against. So it calls
+// these rather than keeping a second reading of the same lists, which is a copy
+// that drifts the first time somebody adds a customer. (api/scheduler/board.js.)
+module.exports.dustJobs     = dustJobs;
+module.exports.truckingJobs = truckingJobs;
+module.exports.EES_JOBS     = EES_JOBS;
