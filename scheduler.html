@@ -95,8 +95,13 @@
     .cnt-cell { text-align:center; font-weight:700; color:var(--muted); } .cnt-cell.has { color:var(--text); }
     /* Report times ride in the cell's top-right corner. float, not absolute:
        absolute would lie on top of a cell holding nine names. */
-    .cell-times { float:right; margin:0 0 1px 4px; display:flex; flex-direction:column; align-items:flex-end; gap:1px; }
+    .cell-times { float:right; margin:0 0 1px 4px; display:flex; flex-direction:column; align-items:flex-end; gap:1px; cursor:pointer; }
     .ct-line { font-size:0.58rem; font-weight:700; color:var(--blue); letter-spacing:-0.02em; white-space:nowrap; }
+    .cell-times:hover .ct-line { text-decoration:underline; }
+    /* No time set: stay out of the way until the cursor is on the cell. */
+    .ct-add { font-size:0.58rem; opacity:0; transition:opacity .1s; filter:grayscale(1); white-space:nowrap; }
+    .cell:hover .ct-add { opacity:0.65; }
+    .cell-times:hover .ct-add { opacity:1; filter:none; }
     .asn { display:inline-block; vertical-align:top; max-width:100%; font-size:0.64rem; line-height:1.3; padding:0.05rem 0.3rem; border-radius:4px; margin:0 0.14rem 0.14rem 0; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
     .grp-row td { background:var(--surface2); cursor:pointer; } .grp-lead { font-weight:700; } .caret { display:inline-block; width:12px; color:var(--muted); }
@@ -1230,12 +1235,32 @@ function addOtherWork() {
 function cellTimesHtml(date, division, jobId) {
   const shop = getShopTime(date, division, jobId);
   const site = getSiteTime(date, division, jobId);
-  if (!shop && !site) return '';
-  const line = (icon, t, what) => '<span class="ct-line" title="'+esc(what + ' ' + fmtTime(t) + ' — the whole crew on this job')+'">'+icon+esc(fmtTimeShort(t))+'</span>';
-  return '<div class="cell-times">'+
+  const open = ' onclick="event.stopPropagation();openJobTimes(\''+division+'\',\''+escAttr(jobId)+'\',\''+date+'\')"';
+  // Nothing set yet: a faint "+ time" that shows when the cursor is over the
+  // cell, the same bargain the "+ crew" hint and the fill corner already make.
+  // It was not here at first and the feature may as well not have shipped —
+  // a time you cannot see anywhere is a time nobody knows they can set.
+  if (!shop && !site) {
+    return '<div class="cell-times"'+open+' title="Set the shop and site times for the whole crew on this job">'+
+      '<span class="ct-add">🏠⏰</span></div>';
+  }
+  const line = (icon, t, what) => '<span class="ct-line" title="'+esc(what + ' ' + fmtTime(t) + ' — the whole crew on this job. Click to change.')+'">'+icon+esc(fmtTimeShort(t))+'</span>';
+  return '<div class="cell-times"'+open+'>'+
     (shop ? line('🏠', shop, 'At the shop') : '')+
     (site ? line('⏰', site, 'On site') : '')+
     '</div>';
+}
+// The times live in the assign dialog, in a section that is collapsed unless
+// one is already set. Reached from the cell, open it: somebody who clicked the
+// clock wants the clock, not to go hunting for it behind a disclosure.
+function openJobTimes(division, jobId, date) {
+  // openAssignJob clears moreOpts on the way in — it is opening a fresh
+  // dialog, and a disclosure left open from the last one would be a surprise.
+  // So the flag goes on AFTER it, and the dialog is drawn once more with the
+  // section showing.
+  openAssignJob(division, jobId, '', date);
+  state.moreOpts = true;
+  renderModal();
 }
 function jobCellData(job, costCode, d) {
   return ' data-date="'+esc(d)+'" data-div="'+esc(job.division)+'" data-job="'+esc(job.id)+'" data-cc="'+esc(costCode||'')+'"';
@@ -2479,7 +2504,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { addOtherWork, onJobTimeInput, clearJobTime, setBoardSpan, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+Object.assign(window, { addOtherWork, onJobTimeInput, clearJobTime, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();
