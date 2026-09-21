@@ -1030,6 +1030,33 @@
       border: 1px solid rgba(100,116,139,0.18);
     }
 
+    /* What the signed-in user still owes a division, shown on its tile.
+       Amber rather than red: an unsigned tailgate form is this week's job,
+       not a fault. Sits above the CTA and sizes to its own text so a card
+       with one is the same height as a card without one. */
+    .card-alert {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.42rem;
+      align-self: flex-start;
+      font-size: 0.68rem;
+      font-weight: 700;
+      color: #fbbf24;
+      background: rgba(251,191,36,0.1);
+      border: 1px solid rgba(251,191,36,0.28);
+      border-radius: 4px;
+      padding: 0.3rem 0.6rem;
+    }
+
+    .card-alert::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #fbbf24;
+      flex: none;
+    }
+
     .card-icon {
       width: 46px;
       height: 46px;
@@ -1974,6 +2001,10 @@
     const cardDivisions = visibleDivisions.filter(k => DIVISION_CATALOG[k]);
     grid.classList.add(`count-${Math.min(cardDivisions.length, 5)}`);
 
+    // Division key → its rendered card, so a tile can be annotated after the
+    // grid is up without going back to the DOM to find it by its label.
+    const cardsByDivision = {};
+
     cardDivisions.forEach(key => {
       const def = DIVISION_CATALOG[key];
       if (!def) return;
@@ -2005,7 +2036,48 @@
       }
 
       grid.appendChild(card);
+      cardsByDivision[key] = card;
     });
+
+    // ── Safety Center — how many documents this user still has to sign ─────
+    // The Safety Center already says this, but only once you are inside it,
+    // which is no use to the man who has not thought to go in. The count
+    // belongs on the tile he passes on his way to whatever he did open the
+    // app for.
+    //
+    // Rendered after the grid rather than with it so the cards are on screen
+    // immediately: this is one more request on a page that already makes one,
+    // and a slow answer must not hold up the picker. If it fails, the tile is
+    // simply the tile it was before — a badge that did not load is not worth
+    // an error on the division picker, and the notice inside the Safety
+    // Center is still there.
+    (async () => {
+      const card = cardsByDivision.safety;
+      if (!card) return;
+      try {
+        const res = await fetch('/api/safety-documents?action=count', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data  = await res.json();
+        const count = Number(data && data.unsignedByMe) || 0;
+        if (count < 1) return;
+
+        // Not named `alert`: that shadows window.alert for the rest of this
+        // block, which is a trap waiting for whoever edits it next.
+        const badge = document.createElement('div');
+        badge.className = 'card-alert';
+        badge.textContent = count === 1
+          ? '1 document to sign'
+          : `${count} documents to sign`;
+        // Above the CTA, so the last thing read before "Enter System" is the
+        // reason to. querySelector returns null on a card with no CTA, and
+        // insertBefore(node, null) appends — which is the right place there.
+        card.insertBefore(badge, card.querySelector('.card-cta'));
+      } catch {
+        // Network or server error — leave the tile as it is.
+      }
+    })();
 
     // ── Division routing ────────────────────────────────────────────────────
     function enterDivision(division) {
