@@ -7975,13 +7975,20 @@
 
     // Apply it to every row — used when the haul answer itself changes, since
     // that is the moment rows already carrying hours become haul rows.
-    function splitMirrorHaulEquipHoursAll() {
+    function splitMirrorHaulEquipHoursAll(fillOnly) {
       let changed = false;
       for (const r of splitRows) {
         changed = splitClearNamedOnHaul(r)     || changed;
         changed = splitClearHaulAuto(r)        || changed;
         changed = splitDefaultHaulEquipment(r) || changed;
-        changed = splitMirrorHaulEquipHours(r) || changed;
+        // The three above FILL; this one OVERWRITES equip_hours to match the
+        // labour hours. On a split somebody proposed the fills are still
+        // wanted — a coder never answers the haul questions, so the driver's
+        // truck still has to be put on the row, and without it a pre-coded
+        // haul day posts $0 labour AND no truck: the whole day free to the
+        // job. The overwrite is not wanted: it would level a foreman's "the
+        // roller ran four of the nine hours" back up to nine, silently.
+        if (!fillOnly) changed = splitMirrorHaulEquipHours(r) || changed;
       }
       return changed;
     }
@@ -8162,6 +8169,10 @@
     function splitCodedNoteHtml(entry, stale, codedFor, required) {
       const who = entry && entry.coded_by_name ? String(entry.coded_by_name) : '';
       if (!who || !entry || entry.status !== 'submitted') return '';
+      // Only a CODER's proposal. An un-approved entry is 'submitted' again and
+      // still carries the approver's own written-back split, so keying off
+      // status alone announced him to himself as the man who was on the job.
+      if (entry.coded_source !== 'precode') return '';
       if (stale) {
         return `<div class="split-coded-note stale">
           <strong>${escapeHtml(who)}</strong> coded this day against
@@ -8817,6 +8828,9 @@
     function codedChipHtml(e) {
       if (!e || e.status !== 'submitted' || !e.coded_by_name) return '';
       if (!Array.isArray(e.proposed_split) || !e.proposed_split.length) return '';
+      // A coder's proposal only — see splitCodedNoteHtml. An un-approved day
+      // carries the approver's replay in the same columns.
+      if (e.coded_source !== 'precode') return '';
       const required = (Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0);
       const forH  = e.coded_for_hours != null ? Number(e.coded_for_hours) : null;
       const stale = forH != null && Math.abs(forH - required) > 0.001;
@@ -9609,6 +9623,15 @@
       const proposedArr = (mode === 'approve' && Array.isArray(entry.proposed_split))
         ? entry.proposed_split : null;
       const proposedFor = entry.coded_for_hours != null ? Number(entry.coded_for_hours) : null;
+      // WHO wrote the column. Both a coder's proposal and the approver's own
+      // accepted split live in proposed_split — the second so that un-approve,
+      // which deletes the injected rows, cannot let a re-approve resurrect the
+      // foreman's first draft over a correction. They pre-fill the same way and
+      // must be PRESENTED differently: an un-approved entry is genuinely
+      // 'submitted' again, so status cannot tell them apart and announcing the
+      // approver to himself as "somebody who was on the job" is what happens
+      // when nothing does.
+      const fromCoder = entry.coded_source === 'precode';
       const proposalStale = Boolean(
         proposedArr && proposedArr.length && proposedFor != null
         && Math.abs(proposedFor - required) > 0.001);
@@ -9741,13 +9764,24 @@
           // job proposed. 'proposed' marks the cells so the approver can see
           // which codes came from somebody else and which he typed; it is
           // never 'auto', which means a machine guess and is safe to skim.
-          code_source: splitFromProposal ? 'proposed' : '',
+          // Only a CODER's rows are marked: replaying the approver's own split
+          // back to him under another man's name would be a lie.
+          code_source: (splitFromProposal && fromCoder) ? 'proposed' : '',
           // These hours were approved, so they are somebody's deliberate answer
           // — a driver out of the truck for part of the day is a real thing.
           // Without this the haul mirror read them as untouched and rewrote
           // them to the labour hours the next time anything on the row changed,
           // over-charging the job for truck time nobody logged.
-          _equipHoursTouched: true,
+          //
+          // A CODER's zero is not such an answer. He is never shown an
+          // equipment column, so every row he proposes carries equip_hours 0
+          // that nobody typed — claiming it as deliberate froze the mirror for
+          // the rest of the modal, and a truck added to the row afterwards
+          // stayed at zero hours. His zeros are left open; everyone else's,
+          // and any row that actually carries hours, stay claimed.
+          _equipHoursTouched: mode === 'resplit'
+            || !(splitFromProposal && fromCoder)
+            || (Number(r.equip_hours) || 0) > 0,
         }));
         // A PROPOSAL carries no haul answer of its own — a coder is not
         // allowed to give one, and the server strips the field rather than
@@ -9832,12 +9866,17 @@
       // The travel hours, which the entry states outright.
       if (defaultsWanted) splitRows.filter(r => r.is_travel).forEach(splitFillTravelHours);
       // The haul defaults, now that the job's assigned equipment has landed.
+      // A proposal gets the FILL half of them: the driver's truck belongs on a
+      // haul row whoever typed the cost codes, and the same day approved in
+      // bulk or with no proposal gets it.
       if (defaultsWanted) splitMirrorHaulEquipHoursAll();
+      else if (splitFromProposal) splitMirrorHaulEquipHoursAll(true);
       // And the machines the operator named, onto whatever rows are still
       // blank. Last, deliberately: the haul rules above own the truck on a
       // haul row, and this must fill the gaps they leave rather than get in
-      // front of them.
-      if (defaultsWanted) splitFillNamedEquipment();
+      // front of them. Safe on a proposal for the same reason — it fills, it
+      // never overwrites.
+      if (defaultsWanted || splitFromProposal) splitFillNamedEquipment();
       // The day's answer is the rows' now, so it cannot be settled until they
       // are. The note above was written from the driver's answer while the
       // lookups were in flight; this is what puts the approved one back.
@@ -14963,6 +15002,11 @@
       for (const r of rows) {
         if (r.is_travel) continue;            // the commute is not the truck's time
         if (!(Number(r.labor_hours) > 0)) continue;
+        // An explicit "he was out of the truck and working" is somebody's
+        // deliberate answer about this row, and it outranks the day's. Only an
+        // UNANSWERED row takes the day's answer — which is every row this
+        // function saw before any stored split could reach it.
+        if (r.is_haul === false) continue;
         if (said && !String(r.equipment || '').trim()) r.equipment = said;
         if (String(r.equipment || '').trim() && !(Number(r.equip_hours) > 0)) {
           r.equip_hours = Number(r.labor_hours) || 0;
@@ -14984,6 +15028,10 @@
         if (t !== 'on_site' && t !== 'off_site') return false;
         const said = String((e && e.truck_unit) || '').trim();
         if (!said) return false;              // nothing to compare against
+        // A coded day does not post this card's machines, so the card's
+        // machines are not what to warn about — its own rows carry no
+        // equipment at all and take the driver's truck from the haul default.
+        if (bulkCodedRows(e)) return false;
         return (bulkRowEffective(g, e) || []).some(m =>
           m.leg !== 'travel'
           && String(m.equipment || '').trim()
@@ -15009,6 +15057,13 @@
      */
     function bulkCodedRows(e) {
       if (!e || !Array.isArray(e.proposed_split) || !e.proposed_split.length) return null;
+      // A CODER's proposal, never the approver's own replayed split. Approve
+      // writes what it accepted back into the same column so that un-approving
+      // cannot resurrect the foreman's first draft — but an un-approved entry
+      // is 'submitted' again, and honouring that replay here would post the
+      // supervisor's OLD codes over the cost code he has just typed on this
+      // card. On the bulk panel an explicit answer outranks a replay.
+      if (e.coded_source !== 'precode') return null;
       const required = bulkR2((Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0));
       const forH = e.coded_for_hours != null ? Number(e.coded_for_hours) : null;
       if (forH != null && Math.abs(forH - required) > 0.001) return null;
@@ -15020,6 +15075,12 @@
         labor_hours: Number(r.labor_hours) || 0,
         equip_hours: Number(r.equip_hours) || 0,
         is_travel:   !!r.is_travel,
+        // Carried rather than dropped. A coder cannot set either (the server
+        // strips them), so these are absent on his rows today — but dropping
+        // them here would silently reverse an explicit answer the moment
+        // anything else is ever allowed to write this column.
+        ...(r.is_haul === true || r.is_haul === false ? { is_haul: r.is_haul } : null),
+        ...(r.haul_type ? { haul_type: r.haul_type } : null),
       }));
     }
 

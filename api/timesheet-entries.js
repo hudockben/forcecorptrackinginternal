@@ -5953,9 +5953,17 @@ module.exports = async (req, res) => {
         WHERE id = ${id} AND company_code = ${companyCode}
       `;
       // The response and the audit both render from this object, so it has to
-      // carry what was just written — exactly as haul_type does above.
+      // carry what was just written — exactly as haul_type does above. The
+      // coding columns are part of that write now, and leaving them off meant
+      // the ADMIN_EDIT snapshot recorded the split this resplit replaced while
+      // claiming to describe the one it wrote.
       existing.haul_hours          = rsHaulHours;
       existing.haul_off_site_hours = rsOffHours;
+      existing.proposed_split      = splitRows;
+      existing.coded_by_user_id    = userId;
+      existing.coded_by_name       = username;
+      existing.coded_for_hours     = rsHours;
+      existing.coded_source        = 'approve';
 
       await writeAudit(
         sql, companyCode, payload, id, 'ADMIN_EDIT',

@@ -413,20 +413,32 @@
         rows[0].labor_hours = String(Math.round((requiredHours(e) - (Number(e.travel_hours) || 0)) * 100) / 100);
       }
 
-      sheet = { entry: e, rows, codes: [], saving: false };
+      sheet = { entry: e, rows, codes: [], codesState: 'loading', saving: false };
+      const mySheet = sheet;
       document.getElementById('sheetTitle').textContent = e.username;
       document.getElementById('sheetSub').textContent =
         `${DIV_LABEL[e.division] || e.division} · ${e.job_label || e.job_id} · ${n2(requiredHours(e))} hours to allocate`;
       document.getElementById('backdrop').classList.add('open');
       renderSheet();
 
+      // Bound to THIS sheet, not to whatever is open when it lands. Without
+      // the guard a slow response for one man's day could drop its job's bid
+      // items into the picker of a day already opened for another job — and
+      // nothing, here or on the server, checks a cost code against its job.
       try {
         const qs = new URLSearchParams({ division: e.division, jobId: e.job_id });
         const r = await fetch(`${API}/timesheet-job-costcodes?${qs}`, { headers: authHeaders() });
         const j = await r.json();
-        if (r.ok && Array.isArray(j.cost_codes)) sheet.codes = j.cost_codes;
-      } catch { /* the pickers fall back to free text */ }
-      if (sheet) renderSheet();
+        if (r.ok && Array.isArray(j.cost_codes)) {
+          mySheet.codes = j.cost_codes;
+          mySheet.codesState = j.cost_codes.length ? 'loaded' : 'empty';
+        } else {
+          mySheet.codesState = 'failed';
+        }
+      } catch {
+        mySheet.codesState = 'failed';
+      }
+      if (sheet === mySheet) renderSheet();
     }
 
     function closeSheet() {
@@ -444,7 +456,18 @@
       const body = document.getElementById('sheetBody');
       const ccOpts = sheet.codes.map(c => c.cost_code);
 
-      body.innerHTML = sheet.rows.map((r, i) => {
+      // Free text with suggestions, never a hard <select>. The job's bid items
+      // are a help, not the whole world: the list can come back empty, the
+      // lookup can fail, and a day can legitimately want a code the job's items
+      // do not carry. A select would turn any of those into a screen where the
+      // coder simply cannot proceed and is told nothing.
+      const ccNote = sheet.codesState === 'failed'
+        ? `<div class="msg err show">Could not load this job's cost codes. You can still type them in.</div>`
+        : sheet.codesState === 'empty'
+          ? `<div class="msg err show">This job has no bid items set up, so there are no codes to pick from. Type them in, or ask the office to add them.</div>`
+          : '';
+
+      body.innerHTML = ccNote + sheet.rows.map((r, i) => {
         const subs = subsFor(r.cost_code);
         return `
         <div class="srow ${r.is_travel ? 'travel' : ''}">
@@ -454,19 +477,17 @@
           </div>
           <div class="fld">
             <label>Cost code</label>
-            <select onchange="setField(${i},'cost_code',this.value)">
-              <option value="">— pick —</option>
-              ${ccOpts.map(c => `<option value="${esc(c)}"${String(r.cost_code) === String(c) ? ' selected' : ''}>${esc(c)}</option>`).join('')}
-              ${r.cost_code && !ccOpts.some(c => String(c) === String(r.cost_code))
-                ? `<option value="${esc(r.cost_code)}" selected>${esc(r.cost_code)}</option>` : ''}
-            </select>
+            <input list="ccList" value="${esc(r.cost_code)}" placeholder="type or pick"
+                   autocapitalize="off" autocorrect="off" spellcheck="false"
+                   onchange="setField(${i},'cost_code',this.value)">
           </div>
           <div class="fld">
             <label>Sub code</label>
-            <select onchange="setField(${i},'sub_code',this.value)"${subs.length ? '' : ' disabled'}>
-              <option value="">${subs.length ? '—' : 'pick a cost code first'}</option>
-              ${subs.map(s => `<option value="${esc(s)}"${String(r.sub_code) === String(s) ? ' selected' : ''}>${esc(s || '—')}</option>`).join('')}
-            </select>
+            <input list="scList${i}" value="${esc(r.sub_code)}"
+                   placeholder="${subs.length ? 'type or pick' : 'optional'}"
+                   autocapitalize="off" autocorrect="off" spellcheck="false"
+                   onchange="setField(${i},'sub_code',this.value)">
+            <datalist id="scList${i}">${subs.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist>
           </div>
           <div class="grid2">
             <div class="fld">
@@ -484,8 +505,10 @@
           </div>
         </div>`;
       }).join('')
-      + `<button class="btn add" onclick="addRow()">+ Another phase</button>
-         <div class="msg err" id="sheetMsg"></div>`;
+      + `<datalist id="ccList">${ccOpts.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+         <button class="btn add" onclick="addRow()">+ Another phase</button>
+         <div class="msg err" id="sheetMsg">${esc(sheet.err || '')}</div>`;
+      if (sheet.err) document.getElementById('sheetMsg').classList.add('show');
 
       renderTally();
     }
@@ -503,11 +526,17 @@
 
     function setField(i, field, value) {
       if (!sheet || !sheet.rows[i]) return;
+      const prev = sheet.rows[i][field];
       sheet.rows[i][field] = value;
       // Changing the cost code invalidates whatever sub code was under the old
       // one, so it is cleared rather than left pointing somewhere it no longer
-      // belongs.
-      if (field === 'cost_code') { sheet.rows[i].sub_code = ''; renderSheet(); return; }
+      // belongs. Re-rendering here is safe because this fires on COMMIT, not
+      // on every keystroke — a re-render mid-word would take the focus with it.
+      if (field === 'cost_code') {
+        if (String(prev || '') !== String(value || '')) sheet.rows[i].sub_code = '';
+        renderSheet();
+        return;
+      }
       if (field === 'labor_hours') { renderTally(); return; }
     }
 
@@ -534,6 +563,16 @@
         }
       }
       msg.classList.remove('show');
+      sheet.err = '';
+
+      // Everything the continuation needs, taken BEFORE the await. Cancel and
+      // Close stay live while the POST is in flight and both set sheet = null,
+      // and the coder can open another man's day in the meantime — so nothing
+      // after the await may assume `sheet` is still this sheet, or is anything
+      // at all.
+      const mySheet = sheet;
+      const myId    = String(sheet.entry.id);
+      const who     = sheet.entry.username;
 
       sheet.saving = true;
       document.getElementById('saveBtn').disabled = true;
@@ -549,24 +588,35 @@
           equip_hours: 0,
           is_travel:   !!r.is_travel,
         }));
-        const r = await fetch(`${API}/timesheet-entries?action=precode&id=${encodeURIComponent(sheet.entry.id)}`, {
+        const r = await fetch(`${API}/timesheet-entries?action=precode&id=${encodeURIComponent(myId)}`, {
           method: 'POST', headers: authHeaders(true), body: JSON.stringify({ split }),
         });
         const j = await r.json();
         if (!r.ok) throw new Error((j && j.error) || `Could not save (${r.status})`);
+        // The save landed, so the list is updated whether or not this sheet is
+        // still the one on screen.
         if (j.entry) {
           const idx = state.entries.findIndex(x => String(x.id) === String(j.entry.id));
           if (idx >= 0) state.entries[idx] = j.entry;
         }
-        const who = sheet.entry.username;
-        closeSheet();
+        if (sheet === mySheet) closeSheet();
         render();
         toast(`${who}'s day is coded — waiting on your supervisor.`);
       } catch (err) {
-        sheet.saving = false;
-        document.getElementById('saveBtn').disabled = false;
-        msg.textContent = err.message;
-        msg.classList.add('show');
+        mySheet.saving = false;
+        // Only touch the form if it is still this one, and re-resolve the
+        // message node rather than reusing the reference taken before the
+        // await — any interaction during the save re-renders the body and
+        // detaches it, and the error would land on an orphan nobody can see.
+        if (sheet === mySheet) {
+          sheet.err = err.message;
+          const btn = document.getElementById('saveBtn');
+          if (btn) btn.disabled = false;
+          const el = document.getElementById('sheetMsg');
+          if (el) { el.textContent = err.message; el.classList.add('show'); }
+        } else {
+          toast(`${who}'s day did not save: ${err.message}`);
+        }
       }
     }
 
