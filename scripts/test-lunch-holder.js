@@ -229,7 +229,7 @@ assert('a day never asked stays unanswered, not a silent No',
 console.log('\nThe server keeps one break per day');
 
 assert('releaseSiblingLunch exists',
-  /async function releaseSiblingLunch\(sql, companyCode, payload, holder\)/.test(API));
+  /async function releaseSiblingLunch\(sql, companyCode, payload, holder, canApprove\)/.test(API));
 assert('it only acts on a split daily row that carries the break',
   /if \(!holder\.split_group_id \|\| holder\.lunch_break !== true\) return \[\];/.test(API));
 assert('it finds siblings still claiming it',
@@ -238,8 +238,19 @@ assert('it recomputes from the punches rather than adding 0.5 back',
   /const gross = computeHours\(hhmm\(other\.start_time\), hhmm\(other\.end_time\)\);/.test(API));
 assert('it audits every row it corrects',
   /reason: 'lunch_break moved to another job of this split day'/.test(API));
-assert('it runs on insert', /await releaseSiblingLunch\(sql, companyCode, payload, row\);/.test(API));
-assert('it runs on update', /await releaseSiblingLunch\(sql, companyCode, payload, updated\);/.test(API));
+assert('it runs on insert', /await releaseSiblingLunch\(sql, companyCode, payload, row, canApprove\);/.test(API));
+assert('it runs on update', /await releaseSiblingLunch\(sql, companyCode, payload, updated, canApprove\);/.test(API));
+
+// The sweep reaches rows the caller may not otherwise touch, so it carries the
+// same two limits every other path on a filed entry does: never across users,
+// and — for anyone who cannot approve — never onto a day already filed.
+// Without the second, a throwaway draft carrying the worker's OWN filed day's
+// group id, ticked for lunch, released the break on that filed day and handed
+// back the half hour on a row he may not edit.
+assert('the sweep never crosses users',
+  /AND user_id\s+= \$\{holder\.user_id\}/.test(API));
+assert('and a non-approver only ever sweeps drafts',
+  /AND \(\$\{!!canApprove\}::boolean OR status = 'draft'\)/.test(API));
 
 assert('there is a single call that moves the break across a day',
   /req\.query\.action === 'lunch_holder'/.test(API));

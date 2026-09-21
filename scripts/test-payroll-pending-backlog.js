@@ -560,6 +560,17 @@ Module._load = function (request) {
   if (request === '@neondatabase/serverless') return { neon: () => CURRENT_SQL };
   if (request === './lib/auth') {
     return {
+      // Payroll's grant is two answers — see payrollAccess in api/lib/auth.js.
+      // Mirrored here rather than stubbed to a constant: canApprove is what
+      // every money path gates on, and a stub that always said yes would let
+      // the coder tests pass without any of it being enforced.
+      //   payrollAdmin  → holds payroll
+      //   payrollCoder  → holds it as a CODER: may propose, may not approve
+      payrollAccess: (p) => {
+        const canCode = !!(p && p.payrollAdmin);
+        const isCoder = canCode && !!p.payrollCoder;
+        return { canCode, canApprove: canCode && !isCoder, isCoder };
+      },
       requireAuth: () => NEXT_AUTH,
       requireDivision: () => null,
       hasDivisionAccess: (p, area) => (area === 'payroll' ? !!(p && p.payrollAdmin) : true),

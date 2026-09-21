@@ -1130,8 +1130,13 @@ assert('  the take-back runs on both UI paths, which both funnel through onSplit
 assert('  and the prefill refuses a haul row outright',
   /!isTravelSplitRow\(r\) && !splitRowTakesTruck\(r\)/.test(PAY));
 
+// Edit Split is exempt through defaultsWanted. A coder's PROPOSAL is not: he
+// is shown no equipment column at all — the server strips it — so his rows
+// still need the machines the operator named, exactly as a blank form does.
 assert('  and it only ever runs on a fresh approve, never on Edit Split',
-  /if \(mode !== 'resplit'\) splitFillNamedEquipment\(\);/.test(PAY));
+  /const defaultsWanted = mode !== 'resplit' && !splitFromProposal;/.test(PAY)
+  && /const proposalFills = splitFromProposal && fromCoder;/.test(PAY)
+  && /if \(defaultsWanted \|\| proposalFills\) splitFillNamedEquipment\(\);/.test(PAY));
 assert('  after the haul rules, so the truck on a haul row still wins',
   PAY.indexOf("splitMirrorHaulEquipHoursAll();") < PAY.indexOf("splitFillNamedEquipment();"));
 

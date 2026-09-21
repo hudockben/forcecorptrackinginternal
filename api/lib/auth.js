@@ -350,11 +350,65 @@ function capabilities(payload, division) {
   };
 }
 
+// ─────────────────────────────────────────────────
+// PAYROLL — the one division whose grant is split in two
+// ─────────────────────────────────────────────────
+// Payroll does two different things, and until now one grant carried both:
+//
+//   CODING    — "what phase was this work?" A classification. The man who ran
+//               the site knows it; a supervisor who was not there does not.
+//   APPROVING — "these hours are correct, pay them." An authority act, and the
+//               ONLY bridge out of timesheet_entries into job cost.
+//
+// A foreman running a site his supervisor cannot reach every day may do the
+// first and must never do the second. payroll:'level2' is that grant.
+//
+// level2 is deliberately not a new value: DIV_ROLE_VALUES in
+// api/company/users.js has always accepted it for every division, while
+// Manage Users offers payroll only 'no_access' and 'level3' (payroll is left
+// out of DIV_KEYS_FULL_SCALE in divisions.html). So no account anywhere
+// carries payroll:'level2' today, and nobody's existing grant changes meaning
+// on deploy — the discriminating value is simply unused until someone is
+// deliberately made a coder.
+const PAYROLL_CODER_LEVEL = 'level2';
+
+/**
+ * What a caller may do in PAYROLL, as two separate answers.
+ *
+ *   canCode    — may write cost codes onto a submitted entry (propose a split)
+ *   canApprove — may approve, resplit, un-approve, edit hours, delete, and
+ *                read the reports and the audit log. Everything that moves
+ *                money or state.
+ *   isCoder    — canCode without canApprove. The narrow grant.
+ *
+ * Fails OPEN to today's behaviour in every ambiguous case, on purpose:
+ * only an EXPLICIT payroll grant of the coder level restricts anyone.
+ * A legacy token carrying no division_roles resolves its level through
+ * levelFor's fallback to the account-wide role, which says nothing about
+ * payroll — reading that as "coder" would silently strip approve from
+ * accounts that hold it today.
+ */
+function payrollAccess(payload) {
+  if (!hasDivisionAccess(payload, 'payroll')) {
+    return { canCode: false, canApprove: false, isCoder: false };
+  }
+  // A platform admin is never narrowed, whatever their division map says.
+  if (payload.isPlatformAdmin) {
+    return { canCode: true, canApprove: true, isCoder: false };
+  }
+  const dr = payload.divisionRoles;
+  const isCoder = Boolean(dr) && typeof dr === 'object'
+    && dr.payroll === PAYROLL_CODER_LEVEL;
+  return { canCode: true, canApprove: !isCoder, isCoder };
+}
+
 module.exports = {
   ALL_DIVISIONS,
   PO_SOURCE_DIVISIONS,
   PO_GENERAL_DIVISION,
+  PAYROLL_CODER_LEVEL,
   canAccessPODivision,
+  payrollAccess,
   poCapabilities,
   poDivisionsFor,
   requirePODivision,

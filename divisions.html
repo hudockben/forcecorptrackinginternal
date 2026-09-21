@@ -1417,6 +1417,11 @@
               <select id="mu-role-payroll">
                 <option value="no_access" selected>No Access</option>
                 <option value="level3">Level 3 — Review &amp; approve</option>
+                <!-- Coding without approving. For a foreman running a site his
+                     supervisor cannot reach every day: he fills in the cost
+                     codes, the supervisor still approves the time. See
+                     payrollAccess in api/lib/auth.js. -->
+                <option value="level2">Level 2 — Code only (no approving)</option>
               </select>
             </div>
             <div class="div-role-row">
@@ -1914,6 +1919,24 @@
     })();
 
     const isPlatformAdmin = Boolean(user && user.isPlatformAdmin);
+
+    // A payroll CODER (payroll:'level2') holds payroll access so he can reach
+    // the timesheet endpoint and the cost-code list, but the review console is
+    // not his — payroll.html sends him to coding.html, and the server refuses
+    // him everything else there. The tile is retitled rather than left saying
+    // "Payroll", because asking a foreman to open Payroll to reach a screen
+    // that never mentions payroll is a small lie the page does not need to
+    // tell. See payrollAccess in api/lib/auth.js.
+    (() => {
+      if (isPlatformAdmin) return;
+      const lvl = (user && user.divisionRoles && user.divisionRoles.payroll) || '';
+      if (lvl !== 'level2') return;
+      DIVISION_CATALOG.payroll.name = 'Code Time';
+      DIVISION_CATALOG.payroll.desc =
+        'Enter cost codes for the crew on the job you worked. Your supervisor still approves the time.';
+      DIVISION_CATALOG.payroll.href = 'coding.html';
+    })();
+
     // Rule: an explicit division_roles object is the source of truth for tile
     // visibility — even for platform admins. The platform-admin "see all"
     // default only kicks in when division_roles is null/empty (legacy users

@@ -17,9 +17,9 @@
  */
 
 const { neon } = require('@neondatabase/serverless');
-const { requireAuth, hasDivisionAccess } = require('./lib/auth');
+const { requireAuth, payrollAccess } = require('./lib/auth');
 
-const VALID_ACTIONS = ['INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE'];
+const VALID_ACTIONS = ['INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE','PRECODE'];
 
 function safeDate(v) {
   if (!v) return null;
@@ -43,8 +43,15 @@ module.exports = async (req, res) => {
   const payload = requireAuth(req, res);
   if (!payload) return;
 
-  const canRead = hasDivisionAccess(payload, 'payroll') || payload.isPlatformAdmin;
-  if (!canRead) {
+  // APPROVER-only, not merely payroll-holding. This endpoint returns `changes`
+  // AND `snapshot` — whole before/after copies of an entry — for every
+  // employee in the company, with no scoping by crew, job or supervisor.
+  // A coder is granted payroll access so he can reach the timesheet endpoint
+  // and the cost-code list, and hasDivisionAccess cannot tell the two grants
+  // apart; reading it here would hand a foreman the entire company's timesheet
+  // history as a side effect of being allowed to type a cost code.
+  const { canApprove } = payrollAccess(payload);
+  if (!canApprove) {
     return res.status(403).json({ error: 'Payroll access required' });
   }
 

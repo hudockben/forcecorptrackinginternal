@@ -2674,6 +2674,54 @@
        stay below both of them to win. */
     input.auto-code { border-style: dashed; border-color: rgba(37,99,235,0.6); }
     input.auto-code:focus { border-style: solid; }
+    /* Entered by a person who was on the job — not a guess off the bid items.
+       SOLID and amber, deliberately unlike .auto-code above: a dashed blue box
+       has come to mean "the system filled this in, it is probably fine", and
+       the whole point of a proposal is that it is the thing the approver is
+       here to look at. Different provenance, different mark. */
+    .cb-input.proposed-code,
+    input.proposed-code {
+      border-style: solid;
+      border-color: rgba(180,83,9,0.75);
+      background: rgba(245,158,11,0.07);
+    }
+    .cb-input.proposed-code:focus,
+    input.proposed-code:focus { background: transparent; }
+    /* "coded" beside a pending day in the review grid. Same amber as the
+       proposal marking in the modal, so the queue and the form agree about
+       what the colour means. */
+    .coded-chip {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(180,83,9,0.5);
+      background: rgba(245,158,11,0.12);
+      color: #92400e;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: help;
+    }
+    .coded-chip.stale {
+      border-color: rgba(185,28,28,0.55);
+      background: rgba(185,28,28,0.10);
+      color: #991b1b;
+    }
+    /* Who coded this day, above the split table. */
+    .split-coded-note {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-left: 3px solid rgba(180,83,9,0.75);
+      background: rgba(245,158,11,0.09);
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .split-coded-note.stale {
+      border-left-color: #b91c1c;
+      background: rgba(185,28,28,0.09);
+    }
     .cb-input::placeholder { color: var(--muted, #6b7280); }
     .cb-menu {
       position: fixed;
@@ -3100,7 +3148,24 @@
     const allowedDivisions = Array.isArray(user && user.allowedDivisions) ? user.allowedDivisions : [];
     const hasPayroll = isPlatformAdmin || allowedDivisions.includes('payroll');
 
-    if (!hasPayroll) {
+    // Payroll's grant is TWO answers — see payrollAccess in api/lib/auth.js.
+    // A CODER (payroll:'level2') holds payroll access so he can reach the
+    // timesheet endpoint and the cost-code list, and allowedDivisions cannot
+    // tell the two grants apart.
+    //
+    // This console is not his, and it is not made his by hiding a button.
+    // Everything below the page gate here renders unconditionally — Approve,
+    // Approve All, Un-approve, Edit Entry, Refresh Rates, Reports, Audit Log,
+    // Analytics — so "hide what he may not use" would be a promise spread over
+    // thousands of lines and broken by the first control anyone adds later.
+    // He gets coding.html instead, a page that can do exactly one thing. The
+    // server refuses him either way; this is so he never sees a door to try.
+    const payrollLevel   = (user && user.divisionRoles && user.divisionRoles.payroll) || '';
+    const isPayrollCoder = !isPlatformAdmin && payrollLevel === 'level2';
+
+    if (isPayrollCoder) {
+      window.location.replace('coding.html');
+    } else if (!hasPayroll) {
       document.getElementById('mainContent').classList.add('hidden');
       document.getElementById('noAccess').classList.remove('hidden');
     } else {
@@ -8047,7 +8112,7 @@
             <td>${!e.supervisor_name
               ? escapeHtml(sup)
               : `<button class="sup-chip" title="Filter to this supervisor" onclick="filterBySupervisor('${escapeJsAttr(e.supervisor_name)}')">${escapeHtml(sup)}</button>`}</td>
-            <td><span class="badge badge-${e.status}">${e.status}</span>${statusMetaHtml(e)}</td>
+            <td><span class="badge badge-${e.status}">${e.status}</span>${statusMetaHtml(e)}${codedChipHtml(e)}</td>
             <td class="td-actions">
               <button class="row-btn edit"    onclick="openEdit('${e.id}')">Edit</button>
               ${isPending ? `<button class="row-btn approve" onclick="approveOne('${e.id}')">Approve</button>` : ''}
@@ -8450,6 +8515,51 @@
     // modal. Without it a supervisor approves a day and then finds every labour
     // row priced at zero in the cost tab with nothing anywhere explaining it —
     // which reads as the rate lookup having failed, and gets "fixed" by hand.
+    /**
+     * Who filled these codes in, when somebody did it before this modal opened.
+     *
+     * Only on a still-pending entry. After approval the same columns name the
+     * APPROVER — approve writes the accepted split back over the proposal, so
+     * that un-approving and re-approving replays what the supervisor decided
+     * rather than what was first suggested — and announcing him to himself
+     * would be noise on every Edit Split.
+     *
+     * Deliberately NOT the dashed "auto-code" treatment the travel prefill
+     * uses. That marking means "a guess off the bid items, safe to leave", and
+     * an approver learns to skim it. This means the opposite: a person who was
+     * on the job says this is what happened, and checking it is the one job
+     * this screen has.
+     */
+    function splitCodedNoteHtml(entry, stale, codedFor, required) {
+      const who = entry && entry.coded_by_name ? String(entry.coded_by_name) : '';
+      if (!who || !entry || entry.status !== 'submitted') return '';
+      // STALENESS warns whoever wrote it. The split stored on a day can be a
+      // coder's proposal or the approver's own accepted one written back, and
+      // either can be left behind by an edit to the hours — so this branch
+      // comes FIRST and is worded without claiming who was on the job.
+      // Gating it behind 'precode' meant an approver un-approving a day,
+      // correcting its hours and re-approving got no warning at all that the
+      // codes he was about to see were not the ones he had accepted.
+      if (stale) {
+        return `<div class="split-coded-note stale">
+          The cost codes stored on this day were written against
+          <strong>${num2(codedFor)}</strong> hours${entry.coded_source === 'precode' ? ' by <strong>' + escapeHtml(who) + '</strong>' : ''},
+          and it now has <strong>${num2(required)}</strong>. They no longer add up, so the
+          form below has opened on its usual defaults — enter the breakdown from
+          scratch.
+        </div>`;
+      }
+      // Below here is an AUTHORSHIP line, and only a coder's proposal has one
+      // worth showing. An un-approved entry is 'submitted' again and still
+      // carries the approver's own written-back split, so keying off status
+      // alone announced him to himself as the man who was on the job.
+      if (entry.coded_source !== 'precode') return '';
+      return `<div class="split-coded-note">
+        Cost codes below were entered by <strong>${escapeHtml(who)}</strong>, who was
+        on the job. Check them, change anything that is wrong, then approve.
+      </div>`;
+    }
+
     function splitHaulNoteHtml(entry) {
       const t = splitHaulIs();
       if (!t) return '<div id="splitHaulNote" hidden></div>';
@@ -9075,11 +9185,44 @@
       return e && e.entry_type === 'daily' && SPLIT_DIVISIONS.includes(e.division);
     }
 
+    /**
+     * "coded" beside a pending day somebody has already filled the codes in on.
+     *
+     * The point of the chip is the queue, not the row: a supervisor covering
+     * several jobs wants to see at a glance which of today's days are ready to
+     * wave through and which he still has to work out himself. Without it the
+     * only way to find out is to open each one.
+     *
+     * Pending only. After approval these columns name the approver — approve
+     * writes the accepted split back over the proposal — and a chip saying he
+     * coded it would be true and useless.
+     */
+    function codedChipHtml(e) {
+      if (!e || e.status !== 'submitted' || !e.coded_by_name) return '';
+      if (!Array.isArray(e.proposed_split) || !e.proposed_split.length) return '';
+      const required = (Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0);
+      const forH  = e.coded_for_hours != null ? Number(e.coded_for_hours) : null;
+      const stale = forH != null && Math.abs(forH - required) > 0.001;
+      // A STALE split is worth flagging whoever wrote it — the day's hours have
+      // moved since, and approving it will open on blank defaults. Only the
+      // authorship claim below is restricted to a coder's proposal; see
+      // splitCodedNoteHtml.
+      if (!stale && e.coded_source !== 'precode') return '';
+      const title = stale
+        ? `The codes stored on this day were written against ${num2(forH)} hours and it now has ${num2(required)}, so they no longer add up — approving opens on blank defaults.`
+        : `Cost codes already entered by ${e.coded_by_name}, who was on the job. Approving opens with them filled in.`;
+      return `<span class="coded-chip${stale ? ' stale' : ''}" title="${escAttr(title)}">`
+        + `${stale ? '⚠ coded (stale)' : 'coded'}</span>`;
+    }
+
     async function approveOne(id) {
       const e = filtered.find(x => x.id === id) || allEntries.find(x => x.id === id);
       if (!e) return;
       if (entryNeedsSplit(e)) {
-        openSplitModal(e, 'approve');
+        // Via ById, not straight to the modal: that is where the entry is
+        // refetched, and a split day is exactly the kind that may have been
+        // coded by somebody on the job since this grid last loaded.
+        await openSplitModalById(id, 'approve');
         return;
       }
       if (entryNeedsQuarry(e)) {
@@ -9804,9 +9947,50 @@
       return splitCcCache[key];
     }
 
-    function openSplitModalById(id, mode) {
-      const e = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
-      if (!e) return alert('Entry not found.');
+    async function openSplitModalById(id, mode) {
+      const cached = (filtered.find(x => x.id === id) || allEntries.find(x => x.id === id));
+      if (!cached) return alert('Entry not found.');
+
+      // This grid is a snapshot of whenever it last loaded, and a proposal can
+      // land after that. A supervisor who opens payroll at seven and reaches
+      // Friday's entry at nine would otherwise be handed the row as it looked
+      // at seven — no codes, no note, nothing to say a foreman had filled it
+      // in meanwhile — and would code it again from memory, which is the exact
+      // failure this whole feature exists to remove.
+      //
+      // Edit Split already refetches for its own version of this problem (see
+      // splitRowLoad); Approve & Inject never had to, because until now there
+      // was nothing about an entry that could change between the two.
+      //
+      // Best effort: a failed refetch opens the cached row, which is no worse
+      // than the behaviour this replaces.
+      let e = cached;
+      if (mode === 'approve' && cached.user_id && cached.work_date) {
+        try {
+          const qs = new URLSearchParams({
+            user_id: String(cached.user_id),
+            from:    cached.work_date,
+            to:      cached.work_date,
+          });
+          const r = await fetch('/api/timesheet-entries?' + qs.toString(), { headers: authHeaders() });
+          const j = await r.json();
+          const fresh = (r.ok && Array.isArray(j.entries))
+            ? j.entries.find(x => String(x.id) === String(id)) : null;
+          if (fresh) {
+            // Somebody else got there first. Opening Approve & Inject on a day
+            // that is already approved would inject a second set of cost rows.
+            if (fresh.status !== 'submitted') {
+              applyEntryUpdate(fresh);
+              return alert(
+                `This entry is no longer pending — it is now ${fresh.status}`
+                + `${fresh.approved_by_name ? ' (' + fresh.approved_by_name + ')' : ''}.`
+                + '\n\nRefresh the list to see where it stands.');
+            }
+            applyEntryUpdate(fresh);
+            e = fresh;
+          }
+        } catch { /* keep the cached row */ }
+      }
       openSplitModal(e, mode);
     }
 
@@ -9819,6 +10003,15 @@
     let splitRowLoad = 'none';
     let splitFetchSeq = 0;
 
+    // Is this Approve & Inject opening on a split somebody PROPOSED, rather
+    // than on the modal's own defaults? It matters twice over. The prefill
+    // passes below exist to fill a blank form and must not run over an answer
+    // a person gave — the same reason Edit Split skips them — and the codes
+    // have to be marked as a proposal on screen rather than as a machine
+    // guess, because those two want opposite things from the approver: one is
+    // safe to leave alone, the other is the thing he is there to check.
+    let splitFromProposal = false;
+
     async function openSplitModal(entry, mode) {
       splitMode  = mode;            // 'approve' | 'resplit'
       splitEntry = entry;
@@ -9829,6 +10022,33 @@
       const work   = Number(entry.computed_hours) || 0;
       const travel = Number(entry.travel_hours)   || 0;
       const required = work + travel;
+
+      // A proposal is only usable if it still describes THIS day. Payroll can
+      // edit a submitted entry's hours and can move its lunch break onto
+      // another job, and a split written against the old figure no longer adds
+      // up — validateSplit would refuse it at the last step, under the
+      // approver's hand, after he had already accepted it on screen. When the
+      // figures disagree the form opens on its ordinary defaults and says so,
+      // which is slower for one entry and never wrong.
+      //
+      // Only ever on an approve. Edit Split reads the rows that were actually
+      // injected; a proposal has no business overriding what was approved.
+      const proposedArr = (mode === 'approve' && Array.isArray(entry.proposed_split))
+        ? entry.proposed_split : null;
+      const proposedFor = entry.coded_for_hours != null ? Number(entry.coded_for_hours) : null;
+      // WHO wrote the column. Both a coder's proposal and the approver's own
+      // accepted split live in proposed_split — the second so that un-approve,
+      // which deletes the injected rows, cannot let a re-approve resurrect the
+      // foreman's first draft over a correction. They pre-fill the same way and
+      // must be PRESENTED differently: an un-approved entry is genuinely
+      // 'submitted' again, so status cannot tell them apart and announcing the
+      // approver to himself as "somebody who was on the job" is what happens
+      // when nothing does.
+      const fromCoder = entry.coded_source === 'precode';
+      const proposalStale = Boolean(
+        proposedArr && proposedArr.length && proposedFor != null
+        && Math.abs(proposedFor - required) > 0.001);
+      splitFromProposal = Boolean(proposedArr && proposedArr.length && !proposalStale);
 
       document.getElementById('splitTitle').textContent =
         (mode === 'approve' ? 'Approve & Inject — ' : 'Edit Split — ')
@@ -9853,6 +10073,7 @@
         <div>Total to allocate: <strong>${num2(required)}</strong></div>
         <div>Supervisor on entry: <strong>${escapeHtml(entry.supervisor_name || '—')}</strong></div>
         ${splitHaulNoteHtml(entry)}
+        ${splitCodedNoteHtml(entry, proposalStale, proposedFor, required)}
       `;
 
       document.getElementById('splitSaveBtn').textContent =
@@ -9892,19 +10113,33 @@
       // this form's business.
       if (seq !== splitFetchSeq) return;
 
-      if (mode === 'resplit' && existing && existing.length) {
+      // The rows this form opens ON, rather than the ones it invents. Two
+      // sources, one shape: Edit Split reads back what was injected, and
+      // Approve & Inject reads what somebody proposed before it opened.
+      //
+      // They travel the same path on purpose. The mapping below carries rules
+      // that were expensive to learn — is_haul passed through untouched rather
+      // than coerced, _equipHoursTouched set so the haul mirror cannot level
+      // somebody's deliberate equipment hours back up to the labour hours — and
+      // a second, parallel copy of it written for proposals would be a copy
+      // that drifts out of step the first time either is fixed.
+      const storedSplit = mode === 'resplit'
+        ? existing
+        : (splitFromProposal ? proposedArr : null);
+
+      if (storedSplit && storedSplit.length) {
         // Whatever this split was sent to last time has to come back on screen,
         // or the next save quietly re-posts those hours against the timesheet's
         // own job — the modal saves what it shows.
-        const destDivs = [...new Set(existing
+        const destDivs = [...new Set(storedSplit
           .map(r => (r.dest && r.dest.division) || '')
           .filter(Boolean))];
         await Promise.all(destDivs.map(loadDestJobs));
-        await Promise.all(existing
+        await Promise.all(storedSplit
           .filter(r => r.dest && r.dest.job_id && SPLIT_DEST_DAILY.includes(r.dest.division))
           .map(r => loadCostCodesFor(r.dest.division, r.dest.job_id)));
         if (seq !== splitFetchSeq) return;
-        splitRows = existing.map(r => ({
+        splitRows = storedSplit.map(r => ({
           _uid:        _splitRowUid(),
           dest_division: (r.dest && r.dest.division) || '',
           dest_job:      (r.dest && r.dest.job_id)   || '',
@@ -9938,16 +10173,48 @@
           // holding both legs reopened with both of them reading as the day's
           // one answer.
           haul_type:   r.haul_type,
-          // Nobody's guess — this is what was approved. Spelled out so every
-          // row in this array has the same shape.
-          code_source: '',
+          // Nobody's guess — this is what was approved, or what the man on the
+          // job proposed. 'proposed' marks the cells so the approver can see
+          // which codes came from somebody else and which he typed; it is
+          // never 'auto', which means a machine guess and is safe to skim.
+          // Only a CODER's rows are marked: replaying the approver's own split
+          // back to him under another man's name would be a lie.
+          code_source: (splitFromProposal && fromCoder) ? 'proposed' : '',
           // These hours were approved, so they are somebody's deliberate answer
           // — a driver out of the truck for part of the day is a real thing.
           // Without this the haul mirror read them as untouched and rewrote
           // them to the labour hours the next time anything on the row changed,
           // over-charging the job for truck time nobody logged.
-          _equipHoursTouched: true,
+          //
+          // A CODER's zero is not such an answer. He is never shown an
+          // equipment column, so every row he proposes carries equip_hours 0
+          // that nobody typed — claiming it as deliberate froze the mirror for
+          // the rest of the modal, and a truck added to the row afterwards
+          // stayed at zero hours. His zeros are left open; everyone else's,
+          // and any row that actually carries hours, stay claimed.
+          _equipHoursTouched: mode === 'resplit'
+            || !(splitFromProposal && fromCoder)
+            || (Number(r.equip_hours) || 0) > 0,
         }));
+        // A PROPOSAL carries no haul answer of its own — a coder is not
+        // allowed to give one, and the server strips the field rather than
+        // trusting his screen not to send it. So the driver's own day-level
+        // answer seeds these rows exactly as it seeds a fresh form's. Without
+        // this, a driver who answered "hauled to & from site" on his timesheet
+        // would have that answer quietly dropped for the one crew whose days
+        // happen to arrive pre-coded, and his hours would keep a prevailing
+        // premium they are not owed.
+        //
+        // Only where the row is silent, so a written-back approval — which
+        // does carry the approver's answers — is never overwritten by the
+        // day's.
+        if (splitFromProposal) {
+          const said = (entry && (entry.haul_type || '')) || '';
+          if (said === 'on_site' || said === 'off_site') {
+            splitRows.filter(r => !r.is_travel && !r.haul_type)
+                     .forEach(r => { r.haul_type = said; });
+          }
+        }
         // And the question this modal now asks per row, answered from what was
         // approved rather than left blank. A reopened split must not make the
         // approver re-answer a day nobody is changing — see splitSeedRowHaul.
@@ -9998,20 +10265,48 @@
       // this form, and on most jobs the answer is not in doubt. Fill what the
       // job's own bid items settle; leave the rest.
       splitApplyTravelPrefill();
-      // And the hours, which the entry states outright. Only on a fresh
-      // approve: a split read back by Edit Split already carries the hours it
-      // was approved with, and those are not this modal's to restate.
-      if (mode !== 'resplit') splitRows.filter(r => r.is_travel).forEach(splitFillTravelHours);
-      // The haul defaults, now that the job's assigned equipment has landed.
-      // Only on a fresh approve: a split read back by Edit Split already carries
-      // the equipment and hours it was approved with, and those are the
-      // supervisor's, not this modal's to restate.
-      if (mode !== 'resplit') splitMirrorHaulEquipHoursAll();
+      // Everything below FILLS A BLANK FORM, and none of it may run over a
+      // split that came from a person. Edit Split has always been exempt; a
+      // proposal needs the same exemption for the same reason, and for one
+      // more that is easy to miss: the haul mirror does not fill, it
+      // OVERWRITES. splitMirrorHaulEquipHours levels equip_hours back up to
+      // the labour hours unless the row is marked touched, so a foreman's
+      // "the roller ran four of the nine hours" would reopen as nine — with no
+      // dashed cell, no note, and nothing on screen to say it had been
+      // changed. The mapping above marks proposal rows touched for exactly
+      // this; the guard here is the second half of the same answer.
+      const defaultsWanted = mode !== 'resplit' && !splitFromProposal;
+
+      // A CODER's rows still want the haul and equipment defaults. He is shown
+      // neither question — the server strips both from anything he sends — so
+      // his rows carry no truck and no machine, and without these a pre-coded
+      // haul day posts $0 labour against no unit: the whole day free to the
+      // job, while the identical day approved in bulk or with no proposal gets
+      // the truck and its hours.
+      //
+      // An APPROVER's written-back split does NOT want them. Every cell in it
+      // is already his own answer, and a blank equipment cell is a machine he
+      // deliberately took off the row rather than a gap — re-filling it when
+      // he un-approves and re-approves would bill the job for iron he had
+      // already said was not there.
+      const proposalFills = splitFromProposal && fromCoder;
+
+      // The travel hours, which the entry states outright.
+      if (defaultsWanted) splitRows.filter(r => r.is_travel).forEach(splitFillTravelHours);
+      // The haul defaults, now that the job's assigned equipment has landed —
+      // the WHOLE pass, mirror included. _equipHoursTouched is what protects a
+      // deliberate figure from the mirror, and it is already false for exactly
+      // a coder's untouched zeros, which is what it was relaxed for. Calling a
+      // fills-only variant here instead cancelled that out: the truck's name
+      // reached the row and its hours stayed at zero, so the job was billed
+      // nothing and the "no truck on any row" banner fired beside a row that
+      // visibly had one.
+      if (defaultsWanted || proposalFills) splitMirrorHaulEquipHoursAll();
       // And the machines the operator named, onto whatever rows are still
       // blank. Last, deliberately: the haul rules above own the truck on a
       // haul row, and this must fill the gaps they leave rather than get in
       // front of them.
-      if (mode !== 'resplit') splitFillNamedEquipment();
+      if (defaultsWanted || proposalFills) splitFillNamedEquipment();
       // The day's answer is the rows' now, so it cannot be settled until they
       // are. The note above was written from the driver's answer while the
       // lookups were in flight; this is what puts the approved one back.
@@ -11070,10 +11365,25 @@
         // leaves the sub code open, and a dashed empty box claiming to have
         // been filled in is the exact kind of thing this marking exists to
         // stop.
-        const auto = f => (r.code_source === 'auto' && String(r[f] || '').trim())
-          ? { className: 'auto-code',
-              title: "Filled in from this job's travel code — change it if the drive books somewhere else." }
-          : null;
+        // Two different provenances, and they must not look alike. 'auto' is a
+        // guess off the job's bid items and reads as "probably fine"; a
+        // proposal is a person's answer about a day he worked and is the one
+        // thing on this screen the approver is here to check. Marking both the
+        // same dashed blue would teach him to skim the second the way he
+        // already skims the first.
+        const codedBy = (splitEntry && splitEntry.coded_by_name) || 'the foreman';
+        const auto = f => {
+          if (!String(r[f] || '').trim()) return null;
+          if (r.code_source === 'auto') {
+            return { className: 'auto-code',
+                     title: "Filled in from this job's travel code — change it if the drive books somewhere else." };
+          }
+          if (r.code_source === 'proposed') {
+            return { className: 'proposed-code',
+                     title: `Entered by ${codedBy}, who was on the job. Change it if it is wrong.` };
+          }
+          return null;
+        };
         return `
         <tr class="${r.is_travel ? 'travel-row' : ''}${r.dest_division ? ' dest-row' : ''}">
           <td style="color:var(--muted);font-variant-numeric:tabular-nums">${i + 1}</td>
@@ -14984,6 +15294,22 @@
           <strong>Edit Split</strong> instead and untick Haul on the row.
         </div>` : '';
 
+      // Days somebody already coded. They post their own codes, not this
+      // card's, so the card has to say so — a panel claiming to apply one cost
+      // code to six days while posting something else for three of them is
+      // worse than either behaviour on its own.
+      const codedDays = bulkCodedDays(g);
+      const codedNote = codedDays.length ? `<div class="bulk-note" style="border-color:#b45309">
+          <strong>${codedDays.length} ${codedDays.length === 1 ? 'day was' : 'days were'}
+          already coded by whoever was on the job.</strong>
+          ${escapeHtml([...new Set(codedDays.map(e => e.username || '—'))].join(', '))} —
+          ${codedDays.length === 1 ? 'it keeps its own cost codes' : 'they keep their own cost codes'},
+          not the ones above — the equipment above still applies to
+          ${codedDays.length === 1 ? 'it' : 'them'}. Open ${codedDays.length === 1 ? 'it' : 'one'} with
+          <strong>Approve</strong> to see what was entered before waving
+          ${codedDays.length === 1 ? 'it' : 'them'} through.
+        </div>` : '';
+
       return `<div class="bulk-group">
         <div class="bulk-group-head">
           <span class="bulk-badge ${badgeClass}">${escapeHtml(badgeText)}</span>
@@ -14991,6 +15317,7 @@
           <span class="bulk-group-meta">${escapeHtml(meta)}</span>
         </div>
         ${fields}
+        ${codedNote}
         ${reviewNote}
         ${bulkDaysTable(g, idx)}
       </div>`;
@@ -15106,6 +15433,11 @@
       for (const r of rows) {
         if (r.is_travel) continue;            // the commute is not the truck's time
         if (!(Number(r.labor_hours) > 0)) continue;
+        // An explicit "he was out of the truck and working" is somebody's
+        // deliberate answer about this row, and it outranks the day's. Only an
+        // UNANSWERED row takes the day's answer — which is every row this
+        // function saw before any stored split could reach it.
+        if (r.is_haul === false) continue;
         if (said && !String(r.equipment || '').trim()) r.equipment = said;
         if (String(r.equipment || '').trim() && !(Number(r.equip_hours) > 0)) {
           r.equip_hours = Number(r.labor_hours) || 0;
@@ -15127,11 +15459,69 @@
         if (t !== 'on_site' && t !== 'off_site') return false;
         const said = String((e && e.truck_unit) || '').trim();
         if (!said) return false;              // nothing to compare against
+        // A coded day does not post this card's machines, so the card's
+        // machines are not what to warn about — its own rows carry no
+        // equipment at all and take the driver's truck from the haul default.
+        if (bulkCodedRows(e)) return false;
         return (bulkRowEffective(g, e) || []).some(m =>
           m.leg !== 'travel'
           && String(m.equipment || '').trim()
           && String(m.equipment).trim().toLowerCase() !== said.toLowerCase());
       });
+    }
+
+    /**
+     * A usable proposal on this entry, as split rows — or null when there is
+     * none to use.
+     *
+     * Bulk approve prices a block of near-identical days off ONE template, and
+     * for days nobody has looked at that is exactly right. A proposal is not
+     * that: it is a person's answer about one specific day, entered by somebody
+     * who was on the job. Posting the template over it would throw away the
+     * only thing that makes coding-before-approval worth doing — and it would
+     * do it on the FAST path, the one a supervisor reaches for precisely when
+     * he trusts the codes and does not want to open six modals.
+     *
+     * Stale proposals fall back to the template: the day's hours moved after it
+     * was coded, so these rows can no longer satisfy the server's balance check
+     * and posting them would only earn a 400.
+     */
+    function bulkCodedRows(e) {
+      if (!e || !Array.isArray(e.proposed_split) || !e.proposed_split.length) return null;
+      // A CODER's proposal, never the approver's own replayed split. Approve
+      // writes what it accepted back into the same column so that un-approving
+      // cannot resurrect the foreman's first draft — but an un-approved entry
+      // is 'submitted' again, and honouring that replay here would post the
+      // supervisor's OLD codes over the cost code he has just typed on this
+      // card. On the bulk panel an explicit answer outranks a replay.
+      if (e.coded_source !== 'precode') return null;
+      const required = bulkR2((Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0));
+      const forH = e.coded_for_hours != null ? Number(e.coded_for_hours) : null;
+      if (forH != null && Math.abs(forH - required) > 0.001) return null;
+      return e.proposed_split.map(r => ({
+        cost_code:   r.cost_code || '',
+        sub_code:    r.sub_code  || '',
+        quantity:    Number(r.quantity)    || 0,
+        equipment:   r.equipment || '',
+        labor_hours: Number(r.labor_hours) || 0,
+        equip_hours: Number(r.equip_hours) || 0,
+        is_travel:   !!r.is_travel,
+        // Carried rather than dropped. A coder cannot set either (the server
+        // strips them), so these are absent on his rows today — but dropping
+        // them here would silently reverse an explicit answer the moment
+        // anything else is ever allowed to write this column.
+        ...(r.is_haul === true || r.is_haul === false ? { is_haul: r.is_haul } : null),
+        ...(r.haul_type ? { haul_type: r.haul_type } : null),
+      }));
+    }
+
+    /** The days on this card that will post their own codes rather than the
+     *  card's. Named on the card, because a panel that says it is applying one
+     *  cost code to six days while posting something else for three of them is
+     *  worse than either behaviour on its own. */
+    function bulkCodedDays(g) {
+      if (!g || g.type !== 'split') return [];
+      return (g.entries || []).filter(e => bulkCodedRows(e));
     }
 
     // Materialize one entry's approve body from its group's template. Each day's
@@ -15140,6 +15530,57 @@
     function buildBulkBody(g, e) {
       if (g.type === 'plain') return null;
       if (g.type === 'split') {
+        // A day already coded posts ITS OWN codes. The haul defaults still run
+        // over them: a coder is not allowed to answer the haul questions (the
+        // server strips them), so that answer is still the entry's and this
+        // card's to give, exactly as it is for an uncoded day.
+        const coded = bulkCodedRows(e);
+        if (coded) {
+          // A proposal carries NO equipment — the server strips it, because a
+          // machine on a row is priced at that machine's hourly rate and that
+          // is the approver's answer, not the coder's. So the card's machines
+          // are not in competition with the proposal, and are merged onto it
+          // exactly as they are onto an uncoded day. Without this, ticking a
+          // coded day in bulk silently dropped the equipment the supervisor
+          // had just typed for it, while leaving both controls on screen.
+          //
+          // Each leg's first machine rides ONE row of that leg, not every row
+          // of it: a proposal may split the work into several phases, and
+          // putting the roller on all of them bills the job for it several
+          // times over.
+          const machines = bulkRowEffective(g, e);
+          const workM    = machines.filter(m => m.leg !== 'travel');
+          const travelM  = machines.filter(m => m.leg === 'travel');
+          const firstWork   = coded.find(r => !r.is_travel);
+          const firstTravel = coded.find(r => r.is_travel);
+          const seat = (row, m) => {
+            if (!row || !m || !m.equipment) return false;
+            row.equipment   = m.equipment;
+            row.equip_hours = m.equip_hours;
+            return true;
+          };
+          const seatedWork   = seat(firstWork,   workM[0]);
+          const seatedTravel = seat(firstTravel, travelM[0]);
+          // Anything past the seated machine gets a row of its own, coded the
+          // same as the leg it belongs to. Zero labour is fine — the balance
+          // check counts labour alone, so these never disturb work + travel.
+          const extras = [
+            ...(seatedWork   ? workM.slice(1)   : workM),
+            ...(seatedTravel ? travelM.slice(1) : travelM),
+          ];
+          for (const m of extras) {
+            if (!m.equipment || !(m.equip_hours > 0)) continue;
+            const onTravel = m.leg === 'travel';
+            const src = (onTravel ? firstTravel : firstWork) || coded[0];
+            coded.push({
+              cost_code: src ? src.cost_code : '', sub_code: src ? src.sub_code : '',
+              quantity: 0, equipment: m.equipment, labor_hours: 0,
+              equip_hours: m.equip_hours, is_travel: onTravel,
+            });
+          }
+          bulkApplyHaulDefaults(e, coded);
+          return { split: coded };
+        }
         const work   = bulkR2(e.computed_hours);
         const travel = bulkR2(e.travel_hours);
         const cc = String(g.template.cost_code || '').trim();

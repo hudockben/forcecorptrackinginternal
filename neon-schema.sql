@@ -1300,6 +1300,28 @@ CREATE TABLE IF NOT EXISTS timesheet_audit_log (
 CREATE INDEX IF NOT EXISTS idx_ts_audit_company    ON timesheet_audit_log(company_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ts_audit_entry      ON timesheet_audit_log(entry_id, created_at DESC);
 
+-- ── PRECODE — a split PROPOSED, not approved ──────────────────────────────
+-- A coder writing cost codes onto a submitted entry is a state-changing action
+-- and belongs in this log like every other one. It gets its OWN verb rather
+-- than riding on 'UPDATE' because that distinction is the entire point of
+-- splitting coding from approving: the record has to say which of the two
+-- happened and who did it. Folded into 'UPDATE' a proposal would be
+-- indistinguishable from payroll editing somebody's day.
+--
+-- The CHECK must be widened BEFORE any precode can be written: writeAudit in
+-- api/timesheet-entries.js swallows its own failures on purpose (an audit must
+-- never fail the action it records), so a constraint violation here would not
+-- surface as an error — it would surface as a proposal with no trail at all,
+-- which is the one thing this feature cannot afford.
+--
+-- Drop-then-add rather than a DO block, for the reason the haul_type CHECK
+-- below gives: scripts/run-schema.js splits this file on semicolons and would
+-- shred a DO $$ ... $$ body into fragments that do not parse. Two plain
+-- statements are idempotent in sequence and survive that splitter.
+ALTER TABLE timesheet_audit_log DROP CONSTRAINT IF EXISTS timesheet_audit_log_action_check;
+ALTER TABLE timesheet_audit_log ADD CONSTRAINT timesheet_audit_log_action_check
+  CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE','PRECODE'));
+
 -- ─────────────────────────────────────────────────
 -- FUEL SUBMISSIONS
 -- One row per fill-up, reported from the field on fuel.html and reviewed
@@ -2130,6 +2152,80 @@ CREATE INDEX IF NOT EXISTS idx_mathis_job_facts_window
 -- Cleared whenever the rows are (un-approve, delete), so it can never outlive
 -- the cost it describes.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS split_destinations JSONB;
+
+-- ─────────────────────────────────────────────────
+-- TIMESHEET ENTRIES — proposed_split, and who proposed it
+-- ─────────────────────────────────────────────────
+-- A COST CODE BEFORE THE ENTRY IS APPROVED, which had nowhere to live.
+--
+-- timesheet_entries carries no cost_code column and never has: the code first
+-- exists as a daily_tracking row, and those rows are created only by approval
+-- (insertSplitRows in api/timesheet-entries.js). GET ?action=split does not
+-- read a stored split — it RECONSTRUCTS one from the injected rows. So coding
+-- and approving were not merely done together, they were the same act, and the
+-- only way to separate them is to give a proposed split somewhere to sit.
+--
+-- Most crews need none of this: the supervisor is on site daily, knows what
+-- each man did, and codes as he approves. One does not — a supervisor covering
+-- several jobs is not on each of them every day, so an hourly foreman runs the
+-- site, phones the codes in, and the supervisor types what he is told about a
+-- job he was not on. This column is that phone call, written down.
+--
+--   NULL → nobody pre-coded. Every entry ever submitted before this existed,
+--          and every crew that never turns coding on. The approve modal opens
+--          blank and behaves exactly as it always has. This is why the column
+--          has no DEFAULT: "nobody said" must stay distinguishable from an
+--          answer, the same rule as haul_off_site_hours and time_off_hours.
+--   [...] → a split proposed by a coder, in the shape validateSplit accepts
+--          and the approve modal pre-fills from. It is a SUGGESTION and
+--          nothing else: no daily_tracking row, no status change, no money.
+--
+-- THE APPROVER OVERWRITES IT. On approve the split actually accepted is
+-- written back here, replacing whatever was proposed. That is not bookkeeping
+-- tidiness — un-approve deletes the injected rows (removeSplitRows) and the
+-- approver's answer survives nowhere else, so without the write-back a
+-- re-approve would silently restore the FOREMAN's original codes over the
+-- supervisor's correction, on precisely the entries someone already found
+-- wrong. coded_by_* keeps naming whoever last wrote the column, so the audit
+-- reads truthfully after a write-back too.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS proposed_split      JSONB;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS coded_by_user_id    INTEGER;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS coded_by_name       TEXT;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS coded_at            TIMESTAMPTZ;
+
+-- The hours the proposal was written against. A coder balances his split to
+-- the entry's hours, and payroll may edit those hours afterwards — a proposal
+-- that no longer adds up is stale, and the approve modal has to say so rather
+-- than pre-fill a breakdown that will fail validateSplit at the last step.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS coded_for_hours     NUMERIC(6,2);
+
+-- WHICH OF THE TWO WRITERS put the split there. The column above holds both,
+-- and they are not the same fact:
+--
+--   'precode' → a coder PROPOSED this. Somebody who was on the job says this
+--               is what happened, and the approver has not looked yet. Worth
+--               announcing on screen, and worth honouring on the bulk panel.
+--   'approve' → the approver ACCEPTED this. It is a replay of a decision
+--               already made, kept only so that un-approving and re-approving
+--               does not resurrect the foreman's first draft over it.
+--   NULL      → neither; nothing was ever written here.
+--
+-- Without the distinction an un-approved entry is indistinguishable from a
+-- proposal: status returns to 'submitted' and the coded_* columns still hold
+-- the approver's own answer, so the queue chip announces him to himself as
+-- "somebody who was on the job", and the bulk panel posts his old split over
+-- the cost code he has just typed on the card. Status cannot answer this —
+-- an un-approved entry is genuinely 'submitted' — so the writer has to say.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS coded_source        TEXT;
+ALTER TABLE timesheet_entries DROP CONSTRAINT IF EXISTS timesheet_entries_coded_source_check;
+ALTER TABLE timesheet_entries ADD CONSTRAINT timesheet_entries_coded_source_check
+  CHECK (coded_source IS NULL OR coded_source IN ('precode','approve'));
+
+-- The coder's queue: submitted entries on a job+date, which is how a site lead
+-- is scoped (he may code the day he himself worked, on the job he worked it).
+CREATE INDEX IF NOT EXISTS idx_ts_job_day
+  ON timesheet_entries(company_code, division, job_id, work_date)
+  WHERE status = 'submitted';
 
 -- ── WHICH equipment was run, not merely whether ───────────────────────────
 -- operated_equipment is a boolean, and a boolean is half an answer: a cost row
