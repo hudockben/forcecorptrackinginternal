@@ -4831,31 +4831,6 @@ module.exports = async (req, res) => {
         });
       }
 
-      // Moving the break rewrites the hours on two rows of the day, so this
-      // path owes the same debt an ordinary edit does: an approved entry has
-      // already posted cost rows derived from its hours, and every one of them
-      // stores an absolute figure. Rewrite the entry underneath them and the
-      // cost tabs keep charging the old number — and the split's own balance
-      // check then refuses every later correction to that day, because the
-      // allocation no longer sums to the entry.
-      //
-      // Asked of each approved job of the day, not just the one that was
-      // opened: the break moves BETWEEN jobs, so a sibling's rows go stale
-      // just as readily as the anchor's.
-      const approved = group.filter(g => g.status === 'approved');
-      if (approved.length) {
-        const counts = await Promise.all(
-          approved.map(g => injectedRowCount(sql, companyCode, g)));
-        const injected = counts.reduce((a, b) => a + b, 0);
-        if (injected > 0) {
-          return res.status(409).json({
-            error: 'This day has cost tracking rows injected from approval. '
-                 + 'Un-approve it first, move the lunch break, then re-approve with a fresh split.',
-            injected_row_count: injected,
-          });
-        }
-      }
-
       if (holderId && !group.some(g => Number(g.id) === Number(holderId))) {
         return res.status(400).json({ error: 'That job is not part of this day' });
       }
@@ -4879,7 +4854,9 @@ module.exports = async (req, res) => {
         }
       }
 
-      const changed = [];
+      // What this call would actually rewrite, worked out before anything is
+      // written and before anything is refused.
+      const plan = [];
       for (const row of group) {
         const holds = holderId != null && Number(row.id) === Number(holderId);
         const gross = computeHours(hhmm(row.start_time), hhmm(row.end_time));
@@ -4890,6 +4867,45 @@ module.exports = async (req, res) => {
           ? Number(row.computed_hours)
           : (holds ? Math.max(0, Math.round((gross - 0.5) * 100) / 100) : gross);
         if (row.lunch_break === holds && Number(row.computed_hours) === hours) continue;
+        plan.push({ row, holds, hours });
+      }
+
+      // Moving the break rewrites the hours on two rows of the day, so this
+      // path owes the same debt an ordinary edit does: an approved entry has
+      // already posted cost rows derived from its hours, and every one of them
+      // stores an absolute figure. Rewrite the entry underneath them and the
+      // cost tabs keep charging the old number — and the split's own balance
+      // check then refuses every later correction to that day, because the
+      // allocation no longer sums to the entry.
+      //
+      // Asked of each approved job the PLAN would rewrite, not of every
+      // approved job of the day. Asked of the day, this refused calls that
+      // change nothing — and payroll.html sends one after every edit to a
+      // split day, so an approver correcting the TRAVEL HOURS on a day whose
+      // other half was already approved got a 409 about a lunch break they
+      // had not touched and which was not moving. The entry had saved by
+      // then; only this second call failed, so the error arrived over a
+      // change that had gone through, and the modal stayed open on it.
+      //
+      // There is nothing to protect when nothing is being rewritten. What the
+      // guard is for — an approved row's hours changing underneath the cost
+      // rows derived from them — is exactly what being in the plan means.
+      const approved = plan.filter(p => p.row.status === 'approved').map(p => p.row);
+      if (approved.length) {
+        const counts = await Promise.all(
+          approved.map(g => injectedRowCount(sql, companyCode, g)));
+        const injected = counts.reduce((a, b) => a + b, 0);
+        if (injected > 0) {
+          return res.status(409).json({
+            error: 'This day has cost tracking rows injected from approval. '
+                 + 'Un-approve it first, move the lunch break, then re-approve with a fresh split.',
+            injected_row_count: injected,
+          });
+        }
+      }
+
+      const changed = [];
+      for (const { row, holds, hours } of plan) {
         const [saved] = await sql`
           UPDATE timesheet_entries
              SET lunch_break    = ${holds},
