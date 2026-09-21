@@ -56,7 +56,10 @@ assert('it sits between the filters and the tabs',
 assert('.backlog CSS block exists',           /\n\s*\.backlog \{[\s\S]*?\}/.test(HTML));
 assert('.backlog.open flips to flex',         /\.backlog\.open \{ display: flex; \}/.test(HTML));
 assert('.backlog.info variant exists',        /\.backlog\.info \{/.test(HTML));
-assert('print CSS hides the notice',          /\.stats, \.bulk, \.backlog,/.test(HTML));
+// Match the member, not the selectors it happens to share a line with today —
+// the same shape test-payroll-approved-pagination.js uses, for the same reason.
+assert('print CSS hides the notice',
+  /@media print \{[\s\S]*?[\s,]\.backlog,[\s\S]*?display: none !important;/.test(HTML));
 assert('the auto-widen has a cap',            /const MAX_AUTO_WIDEN_DAYS = 84;/.test(HTML));
 assert('init widens before the first fetch',
   /widenPendingOnLoad\(\)\.then\(\(\) => applyFilters\(\)\)/.test(HTML));
@@ -71,7 +74,13 @@ assert('pending_span branch exists',
   /req\.method === 'GET' && req\.query\.action === 'pending_span'/.test(API));
 assert('it counts only submitted time',       /status\s+= 'submitted'/.test(API));
 assert('company-wide is an explicit opt-in',
-  /const companyWide = canAdmin && q\.scope === 'all';/.test(API));
+  /const companyWide = canAdmin && askedUser == null && q\.scope === 'all';/.test(API));
+assert('it can be asked for the oldest WITHIN a floor, not just the oldest',
+  /MIN\(work_date\) FILTER \(WHERE work_date >= \$\{sinceF\}::date\) AS oldest_since/.test(API));
+assert('the widen aims at that, so a straggler past the cap cannot move it',
+  /weekStartOf\(span\.oldestSince\)/.test(HTML) && !/weekStartOf\(span\.oldest\)/.test(HTML));
+assert('the span is only asked for on the tabs that draw it',
+  /if \(currentTab === 'pending' \|\| currentTab === 'approved'\) \{\s*\n\s*const spanSeq/.test(HTML));
 assert('the list branch still ignores it',    /req\.method === 'GET' && !req\.query\.action/.test(API));
 
 // ─────────────────────────────────────────────────────────────────────
@@ -117,6 +126,11 @@ const storage = new Map([
 // URLs it was asked for — the sequencing assertions read that log.
 let spanReply   = { total: 0, before: 0, after: 0, oldest: null, newest: null };
 let spanUrls    = [];
+let entryUrls   = [];
+// What the page asked the admin before loading something enormous, and what
+// they said back.
+const confirmed = [];
+let confirmAnswer = true;
 let mockEntries = [];
 const pageLogs  = [];
 
@@ -146,9 +160,10 @@ const sandbox = {
       spanUrls.push(u);
       return { ok: true, status: 200, json: async () => spanReply };
     }
+    entryUrls.push(u);
     return { ok: true, status: 200, json: async () => ({ entries: mockEntries }) };
   },
-  alert() {}, confirm: () => true,
+  alert() {}, confirm: (m) => { confirmed.push(m); return confirmAnswer; },
   Date, Math, JSON, Number, String, Array, Object, Set, Map, Boolean, Error,
   isNaN, parseInt, parseFloat, URLSearchParams,
 };
@@ -167,7 +182,6 @@ const run = (src) => vm.runInContext(src, ctx);
 
 const noteHtml = () => el('backlogNote').innerHTML.replace(/\s+/g, ' ').trim();
 const noteOpen = () => el('backlogNote').classList.contains('open');
-const dashify  = (d) => d.toISOString().slice(0, 10);
 
 // The page's own idea of this week, so the assertions move with the calendar
 // instead of being pinned to the day they were written.
@@ -189,7 +203,8 @@ console.log('\n[behavioural — the first load reaches back]');
   const lastFriday = run(`ymd(addDays(thisWeekMonday(), -3))`);
   setRangeBoxes(MONDAY, SUNDAY);
   run('autoWidened = null;');
-  spanReply = { total: 21, before: 21, after: 0, oldest: lastFriday, newest: lastFriday };
+  spanReply = { total: 21, before: 21, after: 0, oldest: lastFriday, newest: lastFriday,
+                oldest_since: lastFriday };
   await run('widenPendingOnLoad()');
 
   assert('From moves back over the older pending time',
@@ -206,7 +221,8 @@ console.log('\n[behavioural — the first load reaches back]');
   // Nothing older than the range: the default stands.
   setRangeBoxes(MONDAY, SUNDAY);
   run('autoWidened = null;');
-  spanReply = { total: 4, before: 0, after: 0, oldest: MONDAY, newest: SUNDAY };
+  spanReply = { total: 4, before: 0, after: 0, oldest: MONDAY, newest: SUNDAY,
+                oldest_since: MONDAY };
   await run('widenPendingOnLoad()');
   assert('an empty backlog leaves the default range where it was',
     el('flt-from').value === MONDAY && el('flt-to').value === SUNDAY);
@@ -214,19 +230,34 @@ console.log('\n[behavioural — the first load reaches back]');
 }
 
 {
-  // A straggler from last spring. The same fetch carries every APPROVED row
-  // in the range, so the reach stops at the cap and the notice takes the rest.
+  // A straggler from 2020 that nobody will ever approve — a departed
+  // employee's row, a bad day filed and abandoned. The reach is aimed at the
+  // oldest day it is WILLING to show, so a row past the cap moves nothing:
+  // widening to the cap for it would pay twelve weeks of approved rows on
+  // every single load and still leave the row off-screen.
   setRangeBoxes(MONDAY, SUNDAY);
   run('autoWidened = null;');
   const ancient = '2020-03-02';
-  spanReply = { total: 1, before: 1, after: 0, oldest: ancient, newest: ancient };
+  spanReply = { total: 1, before: 1, after: 0, oldest: ancient, newest: ancient,
+                oldest_since: null };
   await run('widenPendingOnLoad()');
-  const cap = run('ymd(addDays(new Date(), -MAX_AUTO_WIDEN_DAYS))');
-  assert('a year-old straggler does not pull a year of payroll onto the screen',
-    el('flt-from').value > ancient, `From is ${el('flt-from').value}`);
-  assert('the reach stops within a week of the cap',
-    el('flt-from').value <= cap && el('flt-from').value > run(`ymd(addDays(new Date(), -${91}))`),
-    `From is ${el('flt-from').value}, cap is ${cap}`);
+  assert('a straggler past the cap does not widen the range at all',
+    el('flt-from').value === MONDAY && run('autoWidened') === null,
+    `From is ${el('flt-from').value}`);
+  assert('  and the request said how far back the page would go',
+    spanUrls[spanUrls.length - 1].includes('since='), spanUrls[spanUrls.length - 1]);
+
+  // Same straggler, but there IS reachable time too: the range opens to the
+  // reachable one and stops there, and the notice carries the rest.
+  setRangeBoxes(MONDAY, SUNDAY);
+  run('autoWidened = null;');
+  const reachable = run(`ymd(addDays(thisWeekMonday(), -20))`);
+  spanReply = { total: 9, before: 9, after: 0, oldest: ancient, newest: reachable,
+                oldest_since: reachable };
+  await run('widenPendingOnLoad()');
+  assert('it opens to the oldest REACHABLE week, not to the cap',
+    el('flt-from').value === run(`weekStartOf('${reachable}')`),
+    `From is ${el('flt-from').value}`);
   assert('and the capped From is still a Monday',
     run(`weekStartOf('${el('flt-from').value}')`) === el('flt-from').value);
 }
@@ -379,17 +410,136 @@ console.log('\n[behavioural — the span rides alongside the entry fetch]');
 }
 {
   // A slow answer for an old range must not draw a notice over a new one —
-  // the same rule the entry list follows, on its own counter.
-  run('pendingSpan = null;');
-  run('pendingSpanSeq++;');           // as if a newer request had been issued
-  const stale = run('pendingSpanSeq') - 1;
-  run(`(function () {
-         const seq = ${stale};
-         if (seq !== pendingSpanSeq) return;
-         pendingSpan = { total: 9, before: 9, after: 0, oldest: '2020-01-06',
-                         newest: '2020-01-06', from: 'x', to: 'y' };
-       })()`);
-  assert('a stale span answer is dropped',            run('pendingSpan') === null);
+  // the same rule the entry list follows, on its own counter. Driven through
+  // applyFilters with a delayed first reply, so the guard under test is the
+  // page's and not a restatement of it here.
+  run('pendingSpan = null; pendingSpanPrefetch = null;');
+  const answers = [
+    { delayMs: 40, span: { total: 9, before: 9, after: 0,
+                           oldest: '2020-01-06', newest: '2020-01-06', oldest_since: null } },
+    { delayMs: 0,  span: { total: 0, before: 0, after: 0,
+                           oldest: null, newest: null, oldest_since: null } },
+  ];
+  const saved = sandbox.fetch;
+  sandbox.fetch = async (url) => {
+    const u = String(url || '');
+    if (!u.includes('action=pending_span')) {
+      return { ok: true, status: 200, json: async () => ({ entries: [] }) };
+    }
+    const a = answers.shift() || answers[0];
+    if (a.delayMs) await new Promise(r => setTimeout(r, a.delayMs));
+    return { ok: true, status: 200, json: async () => a.span };
+  };
+
+  setRangeBoxes('2026-01-05', '2026-01-11');   // the range whose answer is slow
+  const slow = run('applyFilters()');
+  setRangeBoxes(MONDAY, SUNDAY);               // …superseded before it lands
+  await run('applyFilters()');
+  await slow;
+  await new Promise(r => setTimeout(r, 80));
+  sandbox.fetch = saved;
+
+  assert('the newest span answer wins',
+    run('pendingSpan && pendingSpan.total') === 0, JSON.stringify(run('pendingSpan')));
+  assert('and the stale one never draws its notice', !noteOpen(), noteHtml());
+}
+
+console.log('\n[behavioural — what the load costs]');
+{
+  // The first load asks about the range it is ON, so when nothing moves that
+  // answer is still true for the fetch that follows and is handed forward.
+  // Otherwise the page asks the same question twice before drawing anything.
+  spanUrls = []; entryUrls = [];
+  setRangeBoxes(MONDAY, SUNDAY);
+  run(`currentTab = 'pending'; autoWidened = null; pendingSpanPrefetch = null;`);
+  spanReply = { total: 0, before: 0, after: 0, oldest: null, newest: null, oldest_since: null };
+  await run('widenPendingOnLoad()');
+  await run('applyFilters()');
+  await new Promise(r => setImmediate(r));
+  assert('a load that does not widen asks the span question once',
+    spanUrls.length === 1, `${spanUrls.length} calls`);
+  assert('  and still loads the entries',        entryUrls.length === 1);
+  assert('  and the handed-forward answer is consumed, not left to go stale',
+    run('pendingSpanPrefetch') === null);
+}
+{
+  // A widen invalidates it — those counts were measured against a range the
+  // page is no longer on — so the second question is asked and must be.
+  spanUrls = [];
+  const lastMon = run(`ymd(addDays(thisWeekMonday(), -7))`);
+  setRangeBoxes(MONDAY, SUNDAY);
+  run(`autoWidened = null; pendingSpanPrefetch = null;`);
+  spanReply = { total: 3, before: 3, after: 0, oldest: lastMon, newest: lastMon,
+                oldest_since: lastMon };
+  await run('widenPendingOnLoad()');
+  await run('applyFilters()');
+  await new Promise(r => setImmediate(r));
+  assert('a load that widens re-asks against the range it actually opened',
+    spanUrls.length === 2 && spanUrls[1].includes(`from=${lastMon}`),
+    spanUrls.join(' | '));
+}
+{
+  // Reports, Analytics and the Audit Log all route through applyFilters and
+  // none of them draws the notice.
+  for (const tab of ['reports', 'analytics', 'auditlog']) {
+    spanUrls = [];
+    run(`currentTab = '${tab}'; pendingSpanPrefetch = null;`);
+    await run('applyFilters()');
+    await new Promise(r => setImmediate(r));
+    assert(`the ${tab} tab costs no span query`, spanUrls.length === 0, spanUrls.join(' | '));
+  }
+  run(`currentTab = 'pending';`);
+}
+
+console.log('\n[behavioural — the capped case explains itself]');
+{
+  // Both notices are reached at once here: the range WAS opened up, and
+  // something is still outside it. One bar is drawn, so it has to carry both
+  // — or the admin is left looking at a From date nobody set.
+  const reach = run(`ymd(addDays(thisWeekMonday(), -21))`);
+  setRangeBoxes(reach, SUNDAY);
+  run(`currentTab = 'pending'; entriesLoadError = null; autoWidened = '${reach}';`);
+  run(`pendingSpan = { total: 5, before: 2, after: 0, oldest: '2020-03-02',
+                       newest: '2020-03-02', from: '${reach}', to: '${SUNDAY}' };`);
+  run('renderBacklogNote()');
+  assert('the warning names what is still outside',   /2 pending entries outside/.test(noteHtml()));
+  assert('  and still says the page moved the From',
+    /range was already opened back to/.test(noteHtml()), noteHtml());
+
+  // With no widen behind it, there is nothing to explain and it says nothing.
+  run(`autoWidened = null;`);
+  run('renderBacklogNote()');
+  assert('  but says so only when there was a widen',
+    !/range was already opened back to/.test(noteHtml()), noteHtml());
+}
+
+console.log('\n[behavioural — Show Them asks before an enormous load]');
+{
+  confirmed.length = 0; confirmAnswer = false;
+  setRangeBoxes(MONDAY, SUNDAY);
+  run(`pendingSpan = { total: 1, before: 1, after: 0, oldest: '2020-03-02',
+                       newest: '2020-03-02', from: '${MONDAY}', to: '${SUNDAY}' };`);
+  run('showHiddenPending()');
+  assert('six years back is put to the admin first',  confirmed.length === 1, confirmed.join(''));
+  assert('  naming where it reaches',                 /2020/.test(confirmed[0] || ''));
+  assert('  and declining changes nothing',
+    el('flt-from').value === MONDAY, `From is ${el('flt-from').value}`);
+
+  confirmed.length = 0; confirmAnswer = true;
+  run('showHiddenPending()');
+  assert('  accepting widens it, onto that entry\'s own Monday',
+    el('flt-from').value === '2020-03-02', `From is ${el('flt-from').value}`);
+
+  // A few weeks back is ordinary work and must not nag.
+  confirmed.length = 0;
+  setRangeBoxes(MONDAY, SUNDAY);
+  const recent = run(`ymd(addDays(thisWeekMonday(), -21))`);
+  run(`pendingSpan = { total: 3, before: 3, after: 0, oldest: '${recent}',
+                       newest: '${recent}', from: '${MONDAY}', to: '${SUNDAY}' };`);
+  run('showHiddenPending()');
+  assert('three weeks back is just work, and is not put to anyone',
+    confirmed.length === 0 && el('flt-from').value === run(`weekStartOf('${recent}')`),
+    `${confirmed.length} prompts, From is ${el('flt-from').value}`);
 }
 
 const stray = missingGlobals(pageLogs);
@@ -469,6 +619,29 @@ async function span(query, auth = ADMIN, row = {}) {
   const { stmt } = await span({}, ADMIN);
   assert('an admin who omits scope gets their own backlog, not the company\'s',
     stmt.userFilter === 42);
+}
+{
+  // ?user_id beats ?scope=all, exactly as the list branch has it. Counts over
+  // a wider set than the grid they annotate is the one way this endpoint can
+  // mislead: a notice claiming hidden pending time belonging to other people,
+  // over a grid scoped to one. No caller sends both today — which is why the
+  // two must be held together here rather than by whoever adds the first one.
+  const { stmt } = await span({ scope: 'all', user_id: '7' }, ADMIN);
+  assert('?user_id beats ?scope=all, so the counts match the grid',
+    stmt.userFilter === 7, `bound ${JSON.stringify(stmt.userFilter)}`);
+}
+{
+  const { stmt } = await span({ user_id: '11' }, FIELD);
+  assert('and a field user cannot count another user\'s backlog', stmt.userFilter === 7);
+}
+{
+  const { res, stmt } = await span(
+    { scope: 'all', from: '2026-09-21', to: '2026-09-27', since: '2026-06-29' }, ADMIN,
+    { total: 4, oldest: '2020-03-02', newest: '2026-09-20',
+      oldest_since: '2026-09-18', before_range: 4, after_range: 0 });
+  assert('?since asks where the oldest REACHABLE day is', stmt.values.includes('2026-06-29'));
+  assert('  and it comes back beside the oldest that exists',
+    res.body.oldest === '2020-03-02' && res.body.oldest_since === '2026-09-18');
 }
 {
   const { stmt } = await span({ scope: 'all', division: 'turf' }, ADMIN);

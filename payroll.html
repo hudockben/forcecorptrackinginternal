@@ -3175,6 +3175,10 @@
     // "there is none", and a notice must never be drawn from the difference.
     let pendingSpan    = null;
     let pendingSpanSeq = 0;
+    // The first load's answer, kept when the range it was measured against is
+    // the one that then loads, so the page does not ask the same question
+    // twice before it has drawn anything. Keyed by that range; cleared on use.
+    let pendingSpanPrefetch = null;
     // How far back the first load is allowed to reach on its own. The default
     // range is the week in progress; if older time is still awaiting review
     // the range opens wide enough to include it, because a queue nobody can
@@ -3400,31 +3404,40 @@
      *   · start mid-week. The From lands on the Monday of the oldest pending
      *     entry's week, because a range cut at the head of a week makes that
      *     week's overtime read as a floor everywhere downstream.
-     *   · reach back forever. Past MAX_AUTO_WIDEN_DAYS it stops and leaves the
-     *     rest to the notice — the same fetch carries every approved row in
-     *     the range, and one forgotten entry from last spring should not pull
-     *     a spring of payroll onto the screen at load.
+     *   · reach back forever. It reaches to the oldest pending day WITHIN
+     *     MAX_AUTO_WIDEN_DAYS and no further, and the notice takes anything
+     *     older. The same fetch carries every approved row in the range, so
+     *     a forgotten entry from last spring would pull a spring of payroll
+     *     onto the screen at load.
+     *
+     * That last one is why the reach is aimed at `oldestSince` and not at
+     * `oldest`. Aimed at `oldest` and clamped afterwards, one stale row that
+     * nobody will ever approve — a departed employee's, a bad day filed and
+     * abandoned — would widen EVERY load to the full twelve weeks and still
+     * not bring the row on screen: the whole cost of the reach, none of the
+     * point of it. Asking where the oldest reachable day is means the range
+     * opens exactly as far as there is something to show.
      */
     async function widenPendingOnLoad() {
       const fromEl = document.getElementById('flt-from');
       const toEl   = document.getElementById('flt-to');
       if (!fromEl || !toEl) return;
 
-      // Deliberately not written into pendingSpan: this answer is about the
-      // range we are ABOUT TO LEAVE. applyFilters() asks again for the range
-      // that actually loads, and that is the one the notice is drawn from.
-      const span = await fetchPendingSpan(fromEl.value, toEl.value, '');
-      if (!span || !span.before || !span.oldest) return;
-
-      const wantFrom  = weekStartOf(span.oldest) || span.oldest;
-      if (wantFrom >= fromEl.value) return;          // nothing older to reach
       const floorDate = ymd(addDays(new Date(), -MAX_AUTO_WIDEN_DAYS));
-      const newFrom   = wantFrom < floorDate
-        ? (weekStartOf(floorDate) || floorDate)
-        : wantFrom;
-      if (newFrom >= fromEl.value) return;
+      const from = fromEl.value, to = toEl.value;
+      const span = await fetchPendingSpan(from, to, '', floorDate);
+      if (!span) return;
+      // Asked about the range the page is on, so if nothing moves this answer
+      // is still true when applyFilters runs — it is handed forward rather
+      // than asked for again. A widen invalidates it, and it is dropped.
+      pendingSpanPrefetch = { key: [from, to, ''].join('|'), span };
+      if (!span.before || !span.oldestSince) return;
+
+      const newFrom = weekStartOf(span.oldestSince) || span.oldestSince;
+      if (newFrom >= from) return;                   // nothing reachable is older
       fromEl.value = newFrom;
       autoWidened  = newFrom;
+      pendingSpanPrefetch = null;
     }
 
     function switchTab(tab) {
@@ -3634,7 +3647,7 @@
      * never be able to break the load it rides on, and "we could not ask"
      * has to stay distinguishable from "there is none".
      */
-    async function fetchPendingSpan(from, to, division) {
+    async function fetchPendingSpan(from, to, division, since) {
       const params = new URLSearchParams();
       params.set('action', 'pending_span');
       // Review grid = everyone's time, same opt-in the entry list makes.
@@ -3642,6 +3655,7 @@
       if (from)     params.set('from',     from);
       if (to)       params.set('to',       to);
       if (division) params.set('division', division);
+      if (since)    params.set('since',    since);
       try {
         const res  = await fetch('/api/timesheet-entries?' + params.toString(), { headers: authHeaders() });
         const data = await res.json();
@@ -3652,6 +3666,9 @@
           after:  Number(data.after)  || 0,
           oldest: data.oldest || null,
           newest: data.newest || null,
+          // The oldest one at or after `since` — the oldest this caller is
+          // willing to widen to, as against the oldest that exists.
+          oldestSince: data.oldest_since || null,
           // The range this answer is ABOUT. The notice quotes these rather
           // than the filter boxes or loadedScope: the span reply and the
           // entry reply land independently, and a notice naming a date the
@@ -3692,10 +3709,12 @@
       const entries = hidden === 1 ? 'entry' : 'entries';
       // Which way the hidden time lies decides which end of the range has to
       // move — and older time is the case that matters, so it leads.
+      const fromTxt = escapeHtml(prettyDateShort(pendingSpan.from));
+      const toTxt   = escapeHtml(prettyDateShort(pendingSpan.to));
       let where;
-      if (before && after)  where = `before ${prettyDateShort(pendingSpan.from)} and after ${prettyDateShort(pendingSpan.to)}`;
-      else if (before)      where = `before ${prettyDateShort(pendingSpan.from)}`;
-      else                  where = `after ${prettyDateShort(pendingSpan.to)}`;
+      if (before && after)  where = `before ${fromTxt} and after ${toTxt}`;
+      else if (before)      where = `before ${fromTxt}`;
+      else                  where = `after ${toTxt}`;
 
       // Name the end that is actually off-screen, with the year on it: a
       // backlog is exactly the case where "Sep 15" could be this year or last.
@@ -3705,9 +3724,19 @@
       if (before && pendingSpan.oldest)     edge = `Oldest submitted: ${prettyDate(pendingSpan.oldest)}.`;
       else if (after && pendingSpan.newest) edge = `Latest submitted: ${prettyDate(pendingSpan.newest)}.`;
 
+      // The capped case reaches both notices at once: the range was opened up
+      // AND something is still outside it. Only one bar is drawn, so the
+      // explanation for the non-default From rides along here rather than
+      // being lost — without it the admin is looking at a date nobody set,
+      // which is what sends the next person to narrow it back.
+      const fromEl  = document.getElementById('flt-from');
+      const widened = autoWidened && fromEl && fromEl.value === autoWidened
+        ? ` The range was already opened back to ${escapeHtml(prettyDate(autoWidened))}; this is older still.`
+        : '';
+
       el.innerHTML = `
         <div class="backlog-text">${hidden} pending ${entries} outside this date range — ${where}.
-          <span class="backlog-sub">Not counted in Awaiting Review or the Pending Review tab. ${escapeHtml(edge)}</span>
+          <span class="backlog-sub">Not counted in Awaiting Review or the Pending Review tab. ${escapeHtml(edge)}${widened}</span>
         </div>
         <button class="backlog-btn" onclick="showHiddenPending()">Show Them</button>`;
       el.classList.remove('info');
@@ -3733,7 +3762,7 @@
       if (!older) return hide();
       const entries = older === 1 ? 'entry' : 'entries';
       el.innerHTML = `
-        <div class="backlog-text">Date range opened back to ${prettyDate(autoWidened)}
+        <div class="backlog-text">Date range opened back to ${escapeHtml(prettyDate(autoWidened))}
           &mdash; ${older} ${entries} from before this week are still awaiting review.
           <span class="backlog-sub">The default range is the week in progress. It was widened so nothing
             waiting on approval is off-screen.</span>
@@ -3752,13 +3781,28 @@
       if (!pendingSpan) return;
       const fromEl = document.getElementById('flt-from');
       const toEl   = document.getElementById('flt-to');
+      let from = fromEl.value, to = toEl.value;
       if (pendingSpan.before && pendingSpan.oldest) {
-        fromEl.value = weekStartOf(pendingSpan.oldest) || pendingSpan.oldest;
+        from = weekStartOf(pendingSpan.oldest) || pendingSpan.oldest;
       }
       if (pendingSpan.after && pendingSpan.newest) {
         const start = weekStartOf(pendingSpan.newest);
-        toEl.value  = start ? weekEndOf(start) : pendingSpan.newest;
+        to = start ? weekEndOf(start) : pendingSpan.newest;
       }
+      // The load this asks for is bounded by where the entry is, not by how
+      // much time that spans, and it carries every APPROVED row in between —
+      // which is why the first load caps itself. A button cannot cap itself:
+      // the whole point of it is to reach the thing the cap left behind. So
+      // it says what it is about to pull instead. Pending is not paginated,
+      // and at ~70 entries a day a year is well past twenty thousand rows.
+      const days = Math.round((new Date(`${to}T00:00:00Z`) - new Date(`${from}T00:00:00Z`)) / DAY_MS);
+      if (days > 400 && !confirm(
+            `That reaches back to ${prettyDate(from)} — about ${Math.round(days / 30)} months `
+          + `of time entries, approved ones included. It may take a while to load.\n\nGo ahead?`)) {
+        return;
+      }
+      fromEl.value = from;
+      toEl.value   = to;
       applyFilters();
     }
 
@@ -3799,12 +3843,27 @@
       // question (what is OUTSIDE this range) and the grid must not wait on
       // it. Sequenced on its own counter for the same reason the list is —
       // a slow answer for an old range must not draw a notice over a new one.
-      const spanSeq = ++pendingSpanSeq;
-      fetchPendingSpan(from, to, division).then(span => {
-        if (spanSeq !== pendingSpanSeq) return;
-        pendingSpan = span;
-        renderBacklogNote();
-      });
+      //
+      // Only on the two tabs that draw the notice. Reports, Analytics and the
+      // Audit Log all route through here, and a count nothing will render is
+      // a database round trip per tab click.
+      if (currentTab === 'pending' || currentTab === 'approved') {
+        const spanSeq = ++pendingSpanSeq;
+        const key     = [from, to, division].join('|');
+        const ready   = pendingSpanPrefetch && pendingSpanPrefetch.key === key
+          ? pendingSpanPrefetch.span : null;
+        pendingSpanPrefetch = null;
+        if (ready) {
+          pendingSpan = ready;
+          renderBacklogNote();
+        } else {
+          fetchPendingSpan(from, to, division).then(span => {
+            if (spanSeq !== pendingSpanSeq) return;
+            pendingSpan = span;
+            renderBacklogNote();
+          });
+        }
+      }
 
       const tbody = document.getElementById('rowsBody');
       tbody.innerHTML = '<tr class="empty-row"><td colspan="16">Loading…</td></tr>';
@@ -3903,8 +3962,13 @@
       // was none".
       // Redrawn on every render, not only when the span answer arrives: a
       // failed load must take the notice with it, and a tab switch changes
-      // whether the question applies at all.
-      renderBacklogNote();
+      // whether the question applies at all. Only on the paths that do not
+      // reach renderStats(), which draws it for Pending and Approved — drawn
+      // from both, every keystroke in the Employee box would rebuild it and
+      // re-scan allEntries twice. All these paths want from it is the hide.
+      if (entriesLoadError || (currentTab !== 'pending' && currentTab !== 'approved')) {
+        renderBacklogNote();
+      }
       if (entriesLoadError) { renderLoadError(); return; }
       if (currentTab === 'reports') {
         if (reportSubTab === 'projects') renderProjectsReport();

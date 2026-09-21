@@ -4590,17 +4590,28 @@ module.exports = async (req, res) => {
     // no rows — so the page can widen its default range on first load and
     // flag anything still hidden without paying for a second entry list.
     if (req.method === 'GET' && req.query.action === 'pending_span') {
-      // Scoped exactly like the list branch: the caller's own submitted time
-      // by default, the whole company only on an explicit ?scope=all from a
-      // payroll admin. A non-admin asking for scope=all is quietly scoped to
-      // themselves rather than 403'd — there is nothing to reveal, so there
-      // is nothing to refuse.
+      // Scoped exactly like the list branch, down to ?user_id beating
+      // ?scope=all: the caller's own submitted time by default, one named
+      // user or the whole company only on an explicit admin opt-in. A
+      // non-admin asking for either is quietly scoped to themselves rather
+      // than 403'd — there is nothing to reveal, so there is nothing to
+      // refuse. Counts over a wider set than the grid they annotate is the
+      // one way this endpoint can mislead, so the two must not drift.
       const q     = req.query || {};
       const fromF = safeDate(q.from) || '1900-01-01';
       const toF   = safeDate(q.to)   || '9999-12-31';
       const divF  = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
-      const companyWide = canAdmin && q.scope === 'all';
-      const userF = companyWide ? null : safeInt(userId);
+      // The floor the caller is willing to reach back to. `oldest` is the
+      // oldest submitted day there IS; `oldest_since` is the oldest one at or
+      // after this date. A caller that will only widen its range so far needs
+      // the second: widening to a straggler it has already decided not to
+      // display costs the whole fetch and shows nothing.
+      const sinceF = safeDate(q.since) || '1900-01-01';
+      const askedUser   = safeInt(q.user_id);
+      const companyWide = canAdmin && askedUser == null && q.scope === 'all';
+      const userF = companyWide
+        ? null
+        : (canAdmin && askedUser != null ? askedUser : safeInt(userId));
       if (!companyWide && userF == null) {
         return res.status(401).json({ error: 'Unauthorized — please log in' });
       }
@@ -4613,6 +4624,7 @@ module.exports = async (req, res) => {
             SELECT COUNT(*)::int AS total,
                    MIN(work_date) AS oldest,
                    MAX(work_date) AS newest,
+                   MIN(work_date) FILTER (WHERE work_date >= ${sinceF}::date) AS oldest_since,
                    COUNT(*) FILTER (WHERE work_date < ${fromF}::date)::int AS before_range,
                    COUNT(*) FILTER (WHERE work_date > ${toF}::date)::int   AS after_range
             FROM timesheet_entries
@@ -4625,6 +4637,7 @@ module.exports = async (req, res) => {
             SELECT COUNT(*)::int AS total,
                    MIN(work_date) AS oldest,
                    MAX(work_date) AS newest,
+                   MIN(work_date) FILTER (WHERE work_date >= ${sinceF}::date) AS oldest_since,
                    COUNT(*) FILTER (WHERE work_date < ${fromF}::date)::int AS before_range,
                    COUNT(*) FILTER (WHERE work_date > ${toF}::date)::int   AS after_range
             FROM timesheet_entries
@@ -4639,6 +4652,7 @@ module.exports = async (req, res) => {
         after:  Number(r.after_range)  || 0,
         oldest: safeDate(r.oldest),
         newest: safeDate(r.newest),
+        oldest_since: safeDate(r.oldest_since),
       });
     }
 
