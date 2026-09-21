@@ -212,7 +212,7 @@
     const hasPayroll = isPlatformAdmin || allowedDivisions.includes('payroll');
 
     /* ═══════ State ═══════ */
-    let state = { date: todayStr(), entries: [], loading: true, error: null };
+    let state = { date: todayStr(), entries: [], loading: true, error: null, ownFiled: null };
     let sheet = null;   // { entry, rows, codes, saving }
 
     const DIV_LABEL = { turf:'Turf', paving:'Paving', kiewit:'Kiewit' };
@@ -280,6 +280,27 @@
         state.error = err.message;
         state.entries = [];
       }
+
+      // An empty queue has several causes and only one of them is the coder's
+      // to act on. Scope comes from HIS OWN submitted day — a draft confers
+      // nothing, because a draft costs nothing to create against any job — so
+      // opening this page before sending his own time in shows him an empty
+      // list, and that is the order people naturally try first. Worth one
+      // extra read on the empty path to tell him which of the reasons it is
+      // rather than leaving him with a blank screen and three maybes.
+      //
+      // This request carries no scope, so the server returns his own rows.
+      state.ownFiled = null;
+      if (!state.error && !state.entries.length) {
+        try {
+          const qs2 = new URLSearchParams({ from: state.date, to: state.date });
+          const r2 = await fetch(`${API}/timesheet-entries?${qs2}`, { headers: authHeaders() });
+          const j2 = await r2.json();
+          const mine = (r2.ok && Array.isArray(j2.entries)) ? j2.entries : [];
+          state.ownFiled = mine.some(x => x.entry_type === 'daily' && x.job_id
+            && (x.status === 'submitted' || x.status === 'approved'));
+        } catch { state.ownFiled = null; }
+      }
       state.loading = false;
       render();
     }
@@ -304,12 +325,22 @@
       } else if (state.error) {
         body = `<div class="empty" style="color:#fca5a5">${esc(state.error)}</div>`;
       } else if (!state.entries.length) {
-        body = `<div class="empty">
-          Nothing to code for this day.<br><br>
-          You see the crew of a job <strong>you worked yourself</strong> that day, once
-          they have submitted their time. If your men have not sent theirs in yet,
-          or you were not on a job, there is nothing here.
-        </div>`;
+        // The reason matters more than the fact. When we know he simply has
+        // not filed his own day yet, say that and point at the fix — "no
+        // entries" on its own reads like the feature is broken.
+        body = state.ownFiled === false
+          ? `<div class="empty">
+              You have not submitted your own time for this day yet.<br><br>
+              You code the crew of a job <strong>you worked yourself</strong>, so send your
+              own day in first and your crew's days will appear here.<br><br>
+              <a class="btn primary" style="display:inline-block;text-decoration:none"
+                 href="timesheet.html">Go to my timesheet</a>
+            </div>`
+          : `<div class="empty">
+              Nothing to code for this day.<br><br>
+              You have filed your own day, so this will fill in once your men submit
+              theirs. Only turf, paving and kiewit jobs are coded here.
+            </div>`;
       } else {
         body = renderGroups();
       }
