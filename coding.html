@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f59e0b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 11l3 3L22 4'/><path d='M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11'/></svg>" />
+  <title>Code Time</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    :root {
+      --bg:#0a0a0f; --surface:#14141d; --surface2:#1c1c28; --border:#2a2a3a;
+      --accent:#f59e0b; --accent-d:#b45309; --text:#e8e8ee; --muted:#888;
+      --green:#22c55e; --amber:#facc15; --blue:#60a5fa; --red:#ef4444;
+    }
+    html, body { height:100%; overscroll-behavior-y:none; }
+    body {
+      background:var(--bg); color:var(--text); font-size:16px; line-height:1.4;
+      font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+      padding-bottom:env(safe-area-inset-bottom, 0);
+    }
+    header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0.9rem 1rem; padding-top:calc(0.9rem + env(safe-area-inset-top, 0));
+      background:var(--surface); border-bottom:1px solid var(--border);
+      position:sticky; top:0; z-index:50;
+    }
+    .brand { font-size:0.65rem; letter-spacing:0.28em; text-transform:uppercase; color:var(--accent); font-weight:700; }
+    .brand small { display:block; letter-spacing:0.12em; color:var(--muted); font-size:0.58rem; margin-top:2px; }
+    .header-right { display:flex; align-items:center; gap:0.6rem; }
+    .icon-btn {
+      background:none; border:1px solid var(--border); color:var(--muted);
+      padding:0.5rem 0.7rem; border-radius:6px; font-size:0.65rem; font-weight:600;
+      letter-spacing:0.08em; text-transform:uppercase; cursor:pointer; font-family:inherit;
+    }
+    .icon-btn:active { color:var(--text); border-color:#555; }
+
+    main { max-width:680px; margin:0 auto; padding:1rem; display:flex; flex-direction:column; gap:0.85rem; }
+
+    .daybar { display:flex; align-items:center; gap:0.5rem; }
+    .daybar .nav {
+      flex:none; min-width:46px; min-height:46px; border-radius:10px;
+      background:var(--surface); border:1px solid var(--border); color:var(--text);
+      font-size:1.15rem; cursor:pointer; font-family:inherit;
+    }
+    .daybar .nav:active { background:var(--surface2); }
+    .daybar .lbl { flex:1; text-align:center; }
+    .daybar .lbl .d { font-size:0.95rem; font-weight:700; }
+    .daybar .lbl .s { font-size:0.7rem; color:var(--muted); }
+    .daybar .lbl .s.today { color:var(--amber); font-weight:700; }
+
+    .note {
+      background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--accent);
+      border-radius:8px; padding:0.7rem 0.8rem; font-size:0.78rem; color:var(--muted); line-height:1.5;
+    }
+    .note strong { color:var(--text); }
+
+    .jobgroup { display:flex; flex-direction:column; gap:0.5rem; }
+    .jobhead {
+      font-size:0.68rem; letter-spacing:0.14em; text-transform:uppercase;
+      color:var(--accent); font-weight:700; padding:0.2rem 0.1rem;
+    }
+    .card {
+      background:var(--surface); border:1px solid var(--border);
+      border-left:3px solid var(--border); border-radius:10px;
+      padding:0.8rem 0.9rem; display:flex; gap:0.7rem; align-items:center;
+      cursor:pointer;
+    }
+    .card:active { background:var(--surface2); }
+    .card.coded { border-left-color:var(--green); }
+    .card.stale { border-left-color:var(--red); }
+    .card .who { flex:1; min-width:0; }
+    .card .who .n { font-size:0.95rem; font-weight:700; }
+    .card .who .m { font-size:0.74rem; color:var(--muted); margin-top:2px; }
+    .card .hrs { flex:none; text-align:right; }
+    .card .hrs .h { font-size:1.05rem; font-weight:800; font-variant-numeric:tabular-nums; }
+    .card .hrs .s { font-size:0.66rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em; }
+    .pill {
+      display:inline-block; margin-top:4px; padding:0.1rem 0.45rem; border-radius:999px;
+      font-size:0.66rem; font-weight:700;
+    }
+    .pill.ok   { color:#86efac; background:rgba(34,197,94,0.14); }
+    .pill.warn { color:#fca5a5; background:rgba(239,68,68,0.14); }
+
+    .empty { text-align:center; color:var(--muted); font-size:0.85rem; padding:2.5rem 1rem; line-height:1.6; }
+
+    /* ── Coding sheet ── */
+    .backdrop {
+      position:fixed; inset:0; background:rgba(0,0,0,0.72); z-index:100;
+      display:none; align-items:flex-end; justify-content:center;
+    }
+    .backdrop.open { display:flex; }
+    .sheet {
+      background:var(--bg); border-top:1px solid var(--border);
+      border-radius:14px 14px 0 0; width:100%; max-width:680px;
+      max-height:92vh; display:flex; flex-direction:column;
+    }
+    .sheet-head {
+      padding:0.9rem 1rem; border-bottom:1px solid var(--border);
+      display:flex; align-items:flex-start; justify-content:space-between; gap:0.8rem;
+    }
+    .sheet-head .t { font-size:0.95rem; font-weight:700; }
+    .sheet-head .s { font-size:0.74rem; color:var(--muted); margin-top:2px; }
+    .sheet-body { padding:0.9rem 1rem; overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:0.7rem; }
+    .sheet-foot {
+      padding:0.8rem 1rem; padding-bottom:calc(0.8rem + env(safe-area-inset-bottom, 0));
+      border-top:1px solid var(--border); display:flex; gap:0.6rem; align-items:center;
+    }
+    .tally { flex:1; font-size:0.78rem; font-variant-numeric:tabular-nums; }
+    .tally.bad { color:#fca5a5; }
+    .tally.good { color:#86efac; }
+
+    .srow {
+      border:1px solid var(--border); border-radius:10px; padding:0.7rem;
+      display:flex; flex-direction:column; gap:0.5rem; background:var(--surface);
+    }
+    .srow.travel { border-left:3px solid var(--blue); }
+    .srow-top { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; }
+    .srow-tag { font-size:0.64rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); font-weight:700; }
+    .srow-del {
+      background:none; border:1px solid var(--border); color:var(--muted);
+      border-radius:6px; padding:0.25rem 0.5rem; font-size:0.66rem; cursor:pointer; font-family:inherit;
+    }
+    .fld { display:flex; flex-direction:column; gap:0.2rem; }
+    .fld label { font-size:0.64rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); font-weight:700; }
+    .fld select, .fld input {
+      background:var(--surface2); border:1px solid var(--border); color:var(--text);
+      border-radius:8px; padding:0.6rem 0.55rem; font-size:0.9rem; font-family:inherit; width:100%;
+      min-height:44px;
+    }
+    .fld select:focus, .fld input:focus { outline:none; border-color:var(--accent); }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; }
+
+    .btn {
+      border:none; border-radius:9px; padding:0.75rem 1.1rem; font-size:0.82rem;
+      font-weight:700; letter-spacing:0.06em; text-transform:uppercase;
+      cursor:pointer; font-family:inherit; min-height:46px;
+    }
+    .btn.primary { background:var(--accent); color:#1a1205; }
+    .btn.primary:disabled { opacity:0.45; cursor:not-allowed; }
+    .btn.ghost { background:none; border:1px solid var(--border); color:var(--muted); }
+    .btn.add { background:none; border:1px dashed var(--border); color:var(--muted); width:100%; }
+
+    .msg { font-size:0.78rem; padding:0.55rem 0.7rem; border-radius:8px; display:none; }
+    .msg.show { display:block; }
+    .msg.err { color:#fca5a5; background:rgba(239,68,68,0.12); }
+    .msg.ok  { color:#86efac; background:rgba(34,197,94,0.12); }
+
+    .toast {
+      position:fixed; left:50%; bottom:1.5rem; transform:translateX(-50%) translateY(200%);
+      background:var(--surface2); border:1px solid var(--border); color:var(--text);
+      padding:0.7rem 1.1rem; border-radius:9px; font-size:0.82rem; z-index:200;
+      transition:transform 0.22s ease; max-width:90vw;
+    }
+    .toast.show { transform:translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Code Time<small id="brandSub">—</small></div>
+    <div class="header-right">
+      <button class="icon-btn" onclick="goToDivisions()">Menu</button>
+      <button class="icon-btn" onclick="logout()">Out</button>
+    </div>
+  </header>
+
+  <main id="main"></main>
+
+  <div class="backdrop" id="backdrop">
+    <div class="sheet">
+      <div class="sheet-head">
+        <div>
+          <div class="t" id="sheetTitle">—</div>
+          <div class="s" id="sheetSub">—</div>
+        </div>
+        <button class="icon-btn" onclick="closeSheet()">Close</button>
+      </div>
+      <div class="sheet-body" id="sheetBody"></div>
+      <div class="sheet-foot">
+        <div class="tally" id="tally">—</div>
+        <button class="btn ghost" onclick="closeSheet()">Cancel</button>
+        <button class="btn primary" id="saveBtn" onclick="saveCoding()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    /* ═══════ Auth ═══════
+     *
+     * This page is the CODER's half of payroll. A foreman running a site his
+     * supervisor cannot reach every day fills in the cost codes here; the
+     * supervisor still approves the time in payroll.html, and nothing entered
+     * on this page reaches job cost until he does.
+     *
+     * It is a separate page rather than a mode of payroll.html on purpose.
+     * Every control on that console renders unconditionally below its one page
+     * gate, so "hide what a coder may not use" would be a promise spread over
+     * thousands of lines and broken by the first button anyone adds later.
+     * This page can do exactly one thing, and the server refuses him the rest
+     * regardless — see payrollAccess in api/lib/auth.js.
+     */
+    const API   = '/api';
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) window.location.replace('index.html');
+
+    const isPlatformAdmin  = Boolean(user && user.isPlatformAdmin);
+    const allowedDivisions = Array.isArray(user && user.allowedDivisions) ? user.allowedDivisions : [];
+    const hasPayroll = isPlatformAdmin || allowedDivisions.includes('payroll');
+
+    /* ═══════ State ═══════ */
+    let state = { date: todayStr(), entries: [], loading: true, error: null };
+    let sheet = null;   // { entry, rows, codes, saving }
+
+    const DIV_LABEL = { turf:'Turf', paving:'Paving', kiewit:'Kiewit' };
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function dstr(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function todayStr() { return dstr(new Date()); }
+    function parseD(ds) { return new Date(ds + 'T12:00:00'); }
+    function addDays(ds, n) { const d = parseD(ds); d.setDate(d.getDate() + n); return dstr(d); }
+    const esc = s => String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const n2 = n => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
+
+    function authHeaders(json) {
+      const h = { Authorization: 'Bearer ' + token };
+      if (json) h['Content-Type'] = 'application/json';
+      return h;
+    }
+
+    function goToDivisions() { localStorage.removeItem('fct_division'); window.location.replace('divisions.html'); }
+    function logout() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+
+    let toastT = null;
+    function toast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(toastT);
+      toastT = setTimeout(() => el.classList.remove('show'), 2600);
+    }
+
+    /** The figure a split has to add up to — the same one the server balances
+     *  against (splitExpectedHours in api/timesheet-entries.js). Work plus
+     *  travel, because a travel row is part of the day's allocation. */
+    function requiredHours(e) {
+      return Math.round(((Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0)) * 100) / 100;
+    }
+
+    /** Is the proposal already on this entry still describing this day? Payroll
+     *  can edit hours on a submitted entry, and a split written against the old
+     *  figure will not save. Mirrors the same check in payroll.html. */
+    function proposalStale(e) {
+      if (!Array.isArray(e.proposed_split) || !e.proposed_split.length) return false;
+      if (e.coded_for_hours == null) return false;
+      return Math.abs(Number(e.coded_for_hours) - requiredHours(e)) > 0.001;
+    }
+
+    /* ═══════ Load ═══════ */
+    async function load() {
+      state.loading = true; state.error = null; render();
+      try {
+        const qs = new URLSearchParams({
+          scope: 'crew', status: 'submitted', from: state.date, to: state.date,
+        });
+        const r = await fetch(`${API}/timesheet-entries?${qs}`, { headers: authHeaders() });
+        const j = await r.json();
+        if (!r.ok) throw new Error((j && j.error) || `Could not load (${r.status})`);
+        state.entries = Array.isArray(j.entries) ? j.entries : [];
+      } catch (err) {
+        state.error = err.message;
+        state.entries = [];
+      }
+      state.loading = false;
+      render();
+    }
+
+    /* ═══════ Render ═══════ */
+    function render() {
+      document.getElementById('brandSub').textContent = (user && user.username) || '';
+      const main = document.getElementById('main');
+
+      if (!hasPayroll) {
+        main.innerHTML = `<div class="empty">This page is for entering cost codes on your crew's time.<br>Your account does not have access to it.</div>`;
+        return;
+      }
+
+      const d = parseD(state.date);
+      const isToday = state.date === todayStr();
+      const dayLbl = d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric' });
+
+      let body;
+      if (state.loading) {
+        body = `<div class="empty">Loading…</div>`;
+      } else if (state.error) {
+        body = `<div class="empty" style="color:#fca5a5">${esc(state.error)}</div>`;
+      } else if (!state.entries.length) {
+        body = `<div class="empty">
+          Nothing to code for this day.<br><br>
+          You see the crew of a job <strong>you worked yourself</strong> that day, once
+          they have submitted their time. If your men have not sent theirs in yet,
+          or you were not on a job, there is nothing here.
+        </div>`;
+      } else {
+        body = renderGroups();
+      }
+
+      main.innerHTML = `
+        <div class="daybar">
+          <button class="nav" onclick="shiftDay(-1)" aria-label="Previous day">‹</button>
+          <div class="lbl">
+            <div class="d">${esc(dayLbl)}</div>
+            <div class="s ${isToday ? 'today' : ''}">${isToday ? 'Today' : esc(state.date)}</div>
+          </div>
+          <button class="nav" onclick="shiftDay(1)" aria-label="Next day">›</button>
+        </div>
+        <div class="note">
+          Enter the cost codes for what your crew actually did. Your supervisor
+          still approves the time — <strong>nothing here pays anybody or posts to the
+          job</strong> until he does, and he can change anything you enter.
+        </div>
+        ${body}
+      `;
+    }
+
+    function renderGroups() {
+      const byJob = new Map();
+      for (const e of state.entries) {
+        const key = e.division + '||' + e.job_id;
+        if (!byJob.has(key)) byJob.set(key, { label: e.job_label || e.job_id, division: e.division, rows: [] });
+        byJob.get(key).rows.push(e);
+      }
+      const out = [];
+      for (const g of byJob.values()) {
+        g.rows.sort((a, b) => String(a.username).localeCompare(String(b.username)));
+        out.push(`
+          <div class="jobgroup">
+            <div class="jobhead">${esc(DIV_LABEL[g.division] || g.division)} · ${esc(g.label)}</div>
+            ${g.rows.map(cardHtml).join('')}
+          </div>
+        `);
+      }
+      return out.join('');
+    }
+
+    function cardHtml(e) {
+      const coded = Array.isArray(e.proposed_split) && e.proposed_split.length;
+      const stale = proposalStale(e);
+      const cls = stale ? 'stale' : (coded ? 'coded' : '');
+      const pill = stale
+        ? `<span class="pill warn">codes no longer add up — redo</span>`
+        : coded
+          ? `<span class="pill ok">coded${e.coded_by_name ? ' · ' + esc(e.coded_by_name) : ''}</span>`
+          : '';
+      const travel = Number(e.travel_hours) || 0;
+      return `
+        <div class="card ${cls}" onclick="openSheet('${esc(e.id)}')">
+          <div class="who">
+            <div class="n">${esc(e.username)}</div>
+            <div class="m">${esc(e.start_time || '')}–${esc(e.end_time || '')}${travel > 0 ? ` · ${n2(travel)}h travel` : ''}${e.lunch_break ? ' · lunch' : ''}</div>
+            ${pill}
+          </div>
+          <div class="hrs">
+            <div class="h">${n2(requiredHours(e))}</div>
+            <div class="s">hours</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function shiftDay(n) { state.date = addDays(state.date, n); load(); }
+
+    /* ═══════ Coding sheet ═══════ */
+    function blankRow(isTravel) {
+      return { cost_code:'', sub_code:'', quantity:'', labor_hours:'', is_travel: !!isTravel };
+    }
+
+    async function openSheet(id) {
+      const e = state.entries.find(x => String(x.id) === String(id));
+      if (!e) return;
+
+      // Reopen whatever was proposed before, unless the day's hours have moved
+      // underneath it — a stale split cannot be saved, so offering it to edit
+      // would only waste the trip.
+      let rows;
+      if (Array.isArray(e.proposed_split) && e.proposed_split.length && !proposalStale(e)) {
+        rows = e.proposed_split.map(r => ({
+          cost_code:   r.cost_code   || '',
+          sub_code:    r.sub_code    || '',
+          quantity:    r.quantity    ? String(r.quantity) : '',
+          labor_hours: r.labor_hours != null ? String(r.labor_hours) : '',
+          is_travel:   !!r.is_travel,
+        }));
+      } else {
+        rows = [blankRow(false)];
+        const travel = Number(e.travel_hours) || 0;
+        if (travel > 0) {
+          const t = blankRow(true);
+          t.labor_hours = String(travel);
+          rows.push(t);
+        }
+        // The work hours are known outright, so the common case — one phase all
+        // day — needs no arithmetic from anybody.
+        rows[0].labor_hours = String(Math.round((requiredHours(e) - (Number(e.travel_hours) || 0)) * 100) / 100);
+      }
+
+      sheet = { entry: e, rows, codes: [], saving: false };
+      document.getElementById('sheetTitle').textContent = e.username;
+      document.getElementById('sheetSub').textContent =
+        `${DIV_LABEL[e.division] || e.division} · ${e.job_label || e.job_id} · ${n2(requiredHours(e))} hours to allocate`;
+      document.getElementById('backdrop').classList.add('open');
+      renderSheet();
+
+      try {
+        const qs = new URLSearchParams({ division: e.division, jobId: e.job_id });
+        const r = await fetch(`${API}/timesheet-job-costcodes?${qs}`, { headers: authHeaders() });
+        const j = await r.json();
+        if (r.ok && Array.isArray(j.cost_codes)) sheet.codes = j.cost_codes;
+      } catch { /* the pickers fall back to free text */ }
+      if (sheet) renderSheet();
+    }
+
+    function closeSheet() {
+      sheet = null;
+      document.getElementById('backdrop').classList.remove('open');
+    }
+
+    function subsFor(cc) {
+      const hit = sheet.codes.find(c => String(c.cost_code) === String(cc));
+      return (hit && Array.isArray(hit.sub_codes)) ? hit.sub_codes : [];
+    }
+
+    function renderSheet() {
+      if (!sheet) return;
+      const body = document.getElementById('sheetBody');
+      const ccOpts = sheet.codes.map(c => c.cost_code);
+
+      body.innerHTML = sheet.rows.map((r, i) => {
+        const subs = subsFor(r.cost_code);
+        return `
+        <div class="srow ${r.is_travel ? 'travel' : ''}">
+          <div class="srow-top">
+            <span class="srow-tag">${r.is_travel ? 'Travel' : 'Work'} · row ${i + 1}</span>
+            ${sheet.rows.length > 1 ? `<button class="srow-del" onclick="delRow(${i})">Remove</button>` : ''}
+          </div>
+          <div class="fld">
+            <label>Cost code</label>
+            <select onchange="setField(${i},'cost_code',this.value)">
+              <option value="">— pick —</option>
+              ${ccOpts.map(c => `<option value="${esc(c)}"${String(r.cost_code) === String(c) ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+              ${r.cost_code && !ccOpts.some(c => String(c) === String(r.cost_code))
+                ? `<option value="${esc(r.cost_code)}" selected>${esc(r.cost_code)}</option>` : ''}
+            </select>
+          </div>
+          <div class="fld">
+            <label>Sub code</label>
+            <select onchange="setField(${i},'sub_code',this.value)"${subs.length ? '' : ' disabled'}>
+              <option value="">${subs.length ? '—' : 'pick a cost code first'}</option>
+              ${subs.map(s => `<option value="${esc(s)}"${String(r.sub_code) === String(s) ? ' selected' : ''}>${esc(s || '—')}</option>`).join('')}
+            </select>
+          </div>
+          <div class="grid2">
+            <div class="fld">
+              <label>Hours</label>
+              <input type="number" inputmode="decimal" min="0" max="24" step="0.25"
+                     value="${esc(r.labor_hours)}" placeholder="0.00"
+                     oninput="setField(${i},'labor_hours',this.value)">
+            </div>
+            <div class="fld">
+              <label>Quantity</label>
+              <input type="number" inputmode="decimal" min="0" step="0.01"
+                     value="${esc(r.quantity)}" placeholder="optional"
+                     oninput="setField(${i},'quantity',this.value)">
+            </div>
+          </div>
+        </div>`;
+      }).join('')
+      + `<button class="btn add" onclick="addRow()">+ Another phase</button>
+         <div class="msg err" id="sheetMsg"></div>`;
+
+      renderTally();
+    }
+
+    function renderTally() {
+      if (!sheet) return;
+      const need = requiredHours(sheet.entry);
+      const got  = Math.round(sheet.rows.reduce((s, r) => s + (Number(r.labor_hours) || 0), 0) * 100) / 100;
+      const ok   = Math.abs(got - need) <= 0.001;
+      const el = document.getElementById('tally');
+      el.className = 'tally ' + (ok ? 'good' : 'bad');
+      el.textContent = ok ? `${n2(got)} / ${n2(need)} h` : `${n2(got)} / ${n2(need)} h · ${n2(need - got)} left`;
+      document.getElementById('saveBtn').disabled = !ok || sheet.saving;
+    }
+
+    function setField(i, field, value) {
+      if (!sheet || !sheet.rows[i]) return;
+      sheet.rows[i][field] = value;
+      // Changing the cost code invalidates whatever sub code was under the old
+      // one, so it is cleared rather than left pointing somewhere it no longer
+      // belongs.
+      if (field === 'cost_code') { sheet.rows[i].sub_code = ''; renderSheet(); return; }
+      if (field === 'labor_hours') { renderTally(); return; }
+    }
+
+    function addRow() { if (sheet) { sheet.rows.push(blankRow(false)); renderSheet(); } }
+    function delRow(i) { if (sheet) { sheet.rows.splice(i, 1); renderSheet(); } }
+
+    async function saveCoding() {
+      if (!sheet || sheet.saving) return;
+      const msg = document.getElementById('sheetMsg');
+      msg.className = 'msg err';
+
+      // Mirrors the server's own rules so an obvious mistake is caught here
+      // rather than after a round trip. The server checks all of it again.
+      for (let i = 0; i < sheet.rows.length; i++) {
+        const r = sheet.rows[i];
+        const h = Number(r.labor_hours) || 0;
+        if (h <= 0) {
+          msg.textContent = `Row ${i + 1} has no hours on it. Give it hours or remove it.`;
+          msg.classList.add('show'); return;
+        }
+        if (!String(r.cost_code || '').trim() && !String(r.sub_code || '').trim()) {
+          msg.textContent = `Row ${i + 1} needs a cost code.`;
+          msg.classList.add('show'); return;
+        }
+      }
+      msg.classList.remove('show');
+
+      sheet.saving = true;
+      document.getElementById('saveBtn').disabled = true;
+      try {
+        // Classification only. The haul questions, the routing to another
+        // division and the rates are the approver's, and the server strips
+        // them from a coder's proposal regardless of what is sent.
+        const split = sheet.rows.map(r => ({
+          cost_code:   String(r.cost_code || '').trim(),
+          sub_code:    String(r.sub_code  || '').trim(),
+          quantity:    Number(r.quantity) || 0,
+          labor_hours: Number(r.labor_hours) || 0,
+          equip_hours: 0,
+          is_travel:   !!r.is_travel,
+        }));
+        const r = await fetch(`${API}/timesheet-entries?action=precode&id=${encodeURIComponent(sheet.entry.id)}`, {
+          method: 'POST', headers: authHeaders(true), body: JSON.stringify({ split }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error((j && j.error) || `Could not save (${r.status})`);
+        if (j.entry) {
+          const idx = state.entries.findIndex(x => String(x.id) === String(j.entry.id));
+          if (idx >= 0) state.entries[idx] = j.entry;
+        }
+        const who = sheet.entry.username;
+        closeSheet();
+        render();
+        toast(`${who}'s day is coded — waiting on your supervisor.`);
+      } catch (err) {
+        sheet.saving = false;
+        document.getElementById('saveBtn').disabled = false;
+        msg.textContent = err.message;
+        msg.classList.add('show');
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

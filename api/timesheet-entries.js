@@ -4685,7 +4685,13 @@ module.exports = async (req, res) => {
       // Note this is scope=crew, NOT scope=all: a coder asking for scope=all
       // fails the canAdmin test above and is quietly scoped to his own rows,
       // exactly as any other non-admin is.
-      const crewDay = isCoder && askedUser == null && q.scope === 'crew';
+      // canCode, not isCoder: an approver may use the same screen to code
+      // ahead of himself, and for him this only ever NARROWS — he can already
+      // read the whole company through ?scope=all. Keeping the two grants on
+      // one code path also means the coding page behaves identically for
+      // whoever opens it, rather than quietly showing a supervisor his own
+      // timesheet and nobody else's.
+      const crewDay = canCode && askedUser == null && q.scope === 'crew';
       if (crewDay && safeInt(userId) == null) {
         // Same fail-closed rule as below: a token owning no rows must not be
         // allowed to fall through into an unfiltered read.
@@ -5513,6 +5519,25 @@ module.exports = async (req, res) => {
       const { rows: proposed, error: preErr } =
         validateSplit((req.body && req.body.split) || [], existing);
       if (preErr) return res.status(400).json({ error: preErr });
+
+      // A coder proposes CLASSIFICATION, and the API — not merely his screen —
+      // is what holds him to it. normalizeSplitRow keeps whatever the body
+      // carried, and three of those fields are money rather than phase:
+      //
+      //   dest      routes this row's cost into another division's ledger
+      //   is_haul   says the truck bought this labour, pricing it at $0
+      //   haul_type decides whether the hours keep the prevailing premium
+      //
+      // Each is the approver's to answer. Leaving them off the coder's screen
+      // would be a UI assumption, and anyone holding the token can post a body
+      // the screen would never send — so they are stripped here instead.
+      if (isCoder) {
+        for (const r of proposed) {
+          r.dest = null;
+          delete r.is_haul;
+          delete r.haul_type;
+        }
+      }
 
       // status = 'submitted' in the WHERE is a compare-and-swap, not
       // decoration: the supervisor may approve this very entry between the
