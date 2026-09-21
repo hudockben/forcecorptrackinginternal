@@ -55,6 +55,9 @@ function board({ week, assignments, drafts, jobs, employees }) {
       board: { jobs: jobs || [], employees: employees || [] },
     },
     weekDateStrs: () => days,
+    // The visible range and a calendar week are different functions now;
+    // these fixtures use a full week for both.
+    fullWeekDateStrs: () => days,
     // Nobody is off in these cases; the time-off rule has its own suite.
     isBlockedOff: () => false,
     saveAssignments: () => {},
@@ -190,6 +193,22 @@ const TURF = { division:'turf', id:'26049', name:'Franklin Regional Softball', s
       .filter(([, l]) => /div-badge/.test(l) && /esc\((?:ctx|a|g\.job|j)\.division\)/.test(l));
     assert('  no badge or sheet prints the raw division key', raw.length === 0,
       raw.map(([n]) => 'line ' + n).join(', '));
+  }
+
+  // These three are wiring, asserted against the page source because they are
+  // one-liners inside render functions with no seam to call. They are here
+  // because all three were written once, silently rolled back by a patch that
+  // failed after them, and shipped missing: the board looked right in every
+  // case that had a project on it, which is every case anyone would try.
+  console.log('\n[the ways in stay wired up]');
+  {
+    assert('the empty board still draws the off-project group',
+      /if \(!jobs\.length && !otherJobsInWeek\(\)\.length\)/.test(SCHED),
+      (SCHED.match(/if \(!jobs\.length[^)]*\)/) || ['(not found)'])[0]);
+    assert('the division filter offers off-project',
+      /concat\(\[OTHER_DIV\]\)/.test(SCHED) && /'Off project'/.test(SCHED));
+    assert('and the + Work button has a function to call',
+      /Object\.assign\(window, \{ addOtherWork,/.test(SCHED));
   }
 
   console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} passed, ${failed} failed`);

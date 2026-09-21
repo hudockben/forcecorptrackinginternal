@@ -93,7 +93,10 @@
     .cell:hover { background:var(--surface2); }
     .cell.weekend { background:rgba(255,255,255,0.015); } .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
     .cnt-cell { text-align:center; font-weight:700; color:var(--muted); } .cnt-cell.has { color:var(--text); }
-    .site-time { font-size:0.58rem; font-weight:700; color:var(--blue); margin-top:1px; letter-spacing:-0.02em; }
+    /* Report times ride in the cell's top-right corner. float, not absolute:
+       absolute would lie on top of a cell holding nine names. */
+    .cell-times { float:right; margin:0 0 1px 4px; display:flex; flex-direction:column; align-items:flex-end; gap:1px; }
+    .ct-line { font-size:0.58rem; font-weight:700; color:var(--blue); letter-spacing:-0.02em; white-space:nowrap; }
     .asn { display:inline-block; vertical-align:top; max-width:100%; font-size:0.64rem; line-height:1.3; padding:0.05rem 0.3rem; border-radius:4px; margin:0 0.14rem 0.14rem 0; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
     .grp-row td { background:var(--surface2); cursor:pointer; } .grp-lead { font-weight:700; } .caret { display:inline-block; width:12px; color:var(--muted); }
@@ -245,7 +248,7 @@ const state = {
   divFilter:'all', jobSearch:'', needCrewOnly:false,
   crewSearch:'', roleFilter:'all', showAll:false, grpCol:{},
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
-  siteTimes:{}, codeCol:{}, equipPickFor:null, otherDrafts:[],
+  siteTimes:{}, codeCol:{}, equipPickFor:null, otherDrafts:[], span:'day',
   // View preferences (persisted per user, below). hideComplete drops finished
   // sub-codes off the board — on a 69-code job they are most of the noise and
   // none of the work. compact trades the KPI strip and padding for grid rows.
@@ -258,7 +261,7 @@ const state = {
 const RAIL_PREF_V = 2;   // bump to re-open the crew panel for everyone
 let _railReset = false;
 const PREF_KEY = 'fct_sched_prefs:' + ((user && user.companyCode) || '') + ':' + ((user && user.username) || '');
-function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen, railOpen:state.railOpen, railTab:state.railTab, railV:RAIL_PREF_V })); } catch {} }
+function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hideComplete:state.hideComplete, compact:state.compact, hintSeen:state.hintSeen, railOpen:state.railOpen, railTab:state.railTab, railV:RAIL_PREF_V, span:state.span })); } catch {} }
 (function loadPrefs() {
   let p = {}; try { p = JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; } catch {}
   if (p.hideComplete != null) state.hideComplete = !!p.hideComplete;
@@ -271,6 +274,9 @@ function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify({ hid
   if (p.railV === RAIL_PREF_V && p.railOpen != null) state.railOpen = !!p.railOpen;
   else { state.railOpen = true; _railReset = true; }
   if (p.railTab === 'crew' || p.railTab === 'equip') state.railTab = p.railTab;
+  // Day unless this scheduler has said otherwise. A stored preference is
+  // honoured; an absent one is not a vote for the old seven-column default.
+  if (p.span === 'day' || p.span === 'week') state.span = p.span;
   document.body.classList.toggle('compact', state.compact);
   if (_railReset) savePrefs();
 })();
@@ -297,8 +303,30 @@ function daysBetween(a, b) { return Math.round((new Date(b+'T12:00:00') - new Da
 // week spent its first columns on days already worked; on a Friday that left
 // one useful column out of seven.
 function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
-function weekDays() { const out = []; const m = new Date(state.weekAnchor); for (let i=0;i<7;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
+// THE BOARD SHOWS A DAY by default, and a week on request. A dispatcher works
+// one day at a time — who is on what tomorrow — and a seven-column board made
+// him read six columns he was not acting on to find the one he was.
+//
+// Two ranges, and the difference is the thing to get right. weekDays() is
+// WHAT IS ON SCREEN: the KPI strip, the boards, the Attention tab and the
+// off-project rows all follow it, so the numbers describe what you are looking
+// at. fullWeekDays() is A CALENDAR WEEK whatever the view, and everything that
+// genuinely means seven days reads that instead — Copy week → next, the
+// Apply-to spans in the assign dialog, the weekly dispatch sheet, how loaded a
+// man is, and auto-fill's "rest of the week". Run those off the visible range
+// and a day view quietly turns "Copy week → next" into copying one day.
+const BOARD_SPANS = { day: 1, week: 7 };
+function spanDaysCount() { return BOARD_SPANS[state.span] || 7; }
+function viewingOneDay() { return spanDaysCount() === 1; }
+// What the range on screen is called, so a count and its label never
+// disagree with the number of columns under them.
+function rangeTag() { return viewingOneDay() ? 'this day' : '7d'; }
+function rangeWords() { return viewingOneDay() ? 'this day' : 'this week'; }
+function _daysFrom(anchor, n) { const out = []; const m = new Date(anchor); for (let i=0;i<n;i++){ const d = new Date(m); d.setDate(m.getDate()+i); out.push(d);} return out; }
+function weekDays() { return _daysFrom(state.weekAnchor, spanDaysCount()); }
 function weekDateStrs() { return weekDays().map(dstr); }
+function fullWeekDays() { return _daysFrom(state.weekAnchor, 7); }
+function fullWeekDateStrs() { return fullWeekDays().map(dstr); }
 function divColor(div) { return DIV_COLORS[div] || '#888'; }
 // Time-off (from Timesheet): returns {status,type,hours,partial} if this person
 // is off this date, else null. `hours` is how long the day off is and `partial`
@@ -634,22 +662,44 @@ function addEquipForOp(date, machine, operator, job, costCode) {
 }
 function toggleHalf(date, id) { const a = (state.assignments[date]||[]).find(x => x.id === id); if (a) { pushUndo(); a.half = !a.half; saveAssignments(); } }
 // ── "Be on site" report time (per job, per day) ─────────────────────────────
+// Two times a crew has to be told, and they answer different questions: when
+// to be at the SHOP — which is when you pick up the truck and the gear — and
+// when to be ON SITE. A job twenty minutes the far side of the county has the
+// same site time and a very different shop time, and a board that could only
+// say one of them left the other to a phone call at six in the morning.
+//
+// Both live in the one siteTimes map under two keys, rather than in one value
+// object holding both. That is deliberate: mergeSiteTimes and _recoverTimes
+// compare values with !==, which is right for a string and silently wrong for
+// an object — every merge would read as a change and two schedulers editing
+// the same week would fight over times neither had touched. A second KEY needs
+// no merge changes at all, and the site key keeps its old spelling, so every
+// time already saved is still found.
 function siteKey(division, jobId) { return division + '::' + jobId; }
-function getSiteTime(date, division, jobId) { return (state.siteTimes[date] || {})[siteKey(division, jobId)] || ''; }
-function setSiteTime(division, jobId, val, dates) {
-  const key = siteKey(division, jobId);
+// Prefixed, never suffixed: a suffix could collide with the site key of a job
+// whose id happened to end the same way, and an off-project job id carries a
+// label somebody typed.
+function shopKey(division, jobId) { return 'shop¦' + division + '::' + jobId; }
+function timeKeyFor(kind, division, jobId) { return kind === 'shop' ? shopKey(division, jobId) : siteKey(division, jobId); }
+function getJobTime(kind, date, division, jobId) { return (state.siteTimes[date] || {})[timeKeyFor(kind, division, jobId)] || ''; }
+function setJobTime(kind, division, jobId, val, dates) {
+  const key = timeKeyFor(kind, division, jobId);
   dates.forEach(d => {
     const day = state.siteTimes[d] || (state.siteTimes[d] = {});
     if (val) day[key] = val; else { delete day[key]; if (!Object.keys(day).length) delete state.siteTimes[d]; }
   });
   saveAssignments();
 }
+function getSiteTime(date, division, jobId) { return getJobTime('site', date, division, jobId); }
+function getShopTime(date, division, jobId) { return getJobTime('shop', date, division, jobId); }
 function conflictResourcesOn(date) {
   const byRes = {}; (state.assignments[date] || []).forEach(a => { (byRes[a.resource] = byRes[a.resource] || new Set()).add(a.division + '::' + a.jobId); });
   const out = new Set(); Object.entries(byRes).forEach(([r,set]) => { if (set.size > 1) out.add(r); }); return out;
 }
 function totalConflicts() { let n = 0; Object.keys(state.assignments).forEach(d => { n += conflictResourcesOn(d).size; }); return n; }
-function loadForResource(resource) { let days = 0; weekDateStrs().forEach(d => { if (assignmentsFor(d, resource).length) days++; }); return days; }
+// How loaded a man is, always over the week — the pill says "/7d", and in a
+// day view knowing he is already on four other days is the useful part.
+function loadForResource(resource) { let days = 0; fullWeekDateStrs().forEach(d => { if (assignmentsFor(d, resource).length) days++; }); return days; }
 // Names booked on the board that are no longer on the company roster: someone
 // removed in Manage, or a name that only ever existed on an old daily row.
 // The board used to quietly treat these as crew, which is why the Scheduler
@@ -679,7 +729,7 @@ function resourcesInPlay() {
 // span the picker applies to
 function spanDates(anchor) {
   if (state.applySpan === 'day') return [anchor];
-  const ws = weekDateStrs();
+  const ws = fullWeekDateStrs();
   if (!ws.includes(anchor)) return [anchor];   // paged away mid-edit; stay honest
   if (state.applySpan === 'week5') return ws.filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6; });
   return ws;
@@ -745,7 +795,7 @@ function jobRollup(job) {
   };
 }
 function staffedDaysThisWeek(job, costCode) {
-  return weekDateStrs().filter(d => (costCode == null
+  return fullWeekDateStrs().filter(d => (costCode == null
     ? jobCrewOn(d, job.division, job.id).length
     : cellAssignments(d, job.division, job.id, costCode).length)).length;
 }
@@ -860,13 +910,13 @@ function isDone(sc) { return !!sc && (sc.status === 'complete' || !!sc.isComplet
 // … but a complete cost code with people still booked on it this week STAYS on
 // the board. Hiding it would hide their names, and a crew you cannot see is a
 // crew you double-book.
-function codeStaffed(job, code) { return weekDateStrs().some(d => cellAssignments(d, job.division, job.id, code.costCode).length); }
+function codeStaffed(job, code) { return fullWeekDateStrs().some(d => cellAssignments(d, job.division, job.id, code.costCode).length); }
 function codeHidden(job, code) { return state.hideComplete && code.isComplete && !codeStaffed(job, code); }
 // A job with nothing left to do and nobody on it this week drops off entirely.
 function jobAllDone(job) {
   const subs = job.subCodes || []; if (!subs.length) return false;
   if (!subs.every(isDone)) return false;
-  return !weekDateStrs().some(d => jobAssignmentsOnDate(d, job.division, job.id).length);
+  return !fullWeekDateStrs().some(d => jobAssignmentsOnDate(d, job.division, job.id).length);
 }
 
 // ── Render dispatch ─────────────────────────────────────────────────────────
@@ -886,13 +936,30 @@ function render() {
   else main.innerHTML = renderAI();
   updateUndoButtons();
 }
-function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
+function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []).concat([OTHER_DIV]); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d===OTHER_DIV?'Off project':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
 function wknavHtml() {
   const wk = weekDays();
-  const label = wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+  const one = viewingOneDay();
+  // One day names its weekday, because "Tue 22" alone is the thing a scheduler
+  // mis-reads at seven in the morning.
+  const label = one
+    ? wk[0].toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'})
+    : wk[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' + wk[wk.length-1].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
   const atToday = dstr(wk[0]) === todayStr();
-  return '<div class="wknav"><button class="btn icon" id="wkPrev" title="Back 7 days">◀</button><span class="wklabel"'+(atToday?' title="Starts today"':'')+'>'+esc(label)+'</span><button class="btn icon" id="wkNext" title="Forward 7 days">▶</button><button class="btn ghost'+(atToday?'':' primary')+'" id="wkToday" title="Jump back so today is the first column">Today</button></div>';
+  const step = one ? 'a day' : '7 days';
+  return '<div class="wknav">'+
+    '<button class="btn icon" id="wkPrev" title="Back '+step+'">◀</button>'+
+    '<span class="wklabel"'+(atToday?' title="'+(one?'Today':'Starts today')+'"':'')+'>'+esc(label)+'</span>'+
+    '<button class="btn icon" id="wkNext" title="Forward '+step+'">▶</button>'+
+    '<button class="btn ghost'+(atToday?'':' primary')+'" id="wkToday" title="'+(one?'Jump back to today':'Jump back so today is the first column')+'">Today</button>'+
+    '<div class="seg" style="margin-left:0.35rem">'+
+      '<button class="'+(one?'active':'')+'" id="spanDay" title="One day at a time — the board a dispatcher works from">Day</button>'+
+      '<button class="'+(one?'':'active')+'" id="spanWeek" title="Seven days, starting from the day shown">Week</button>'+
+    '</div></div>';
 }
+// Switching span keeps the anchor, so Week opens on the week that starts with
+// the day you were looking at and Day lands back on that same day.
+function setBoardSpan(v) { if (state.span === v) return; state.span = v; savePrefs(); render(); }
 // Undo / redo / refresh stay as icons; everything else a scheduler reaches for
 // a few times a day lives in the More menu, so the toolbar is ONE row at 1280px
 // instead of wrapping to two and eating another 40px of board.
@@ -919,7 +986,7 @@ function renderToolbar() {
   state.moreOpen = false;
   if (state.view === 'ai') { tb.innerHTML = '<button class="btn primary" id="genAi">\u26a1 '+(state.ai?'Regenerate insights':'Generate insights')+'</button><span class="muted" style="font-size:0.72rem">Reviews conflicts, behind work &amp; capacity across all jobs</span>'; document.getElementById('genAi').onclick = generateAI; return; }
   if (state.view === 'attention') {
-    tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for the selected week</span><div class="spacer"></div>' + pdfBtnHtml() + toolsHtml() +
+    tb.innerHTML = wknavHtml() + '<span class="muted" style="font-size:0.72rem">Gaps &amp; idle crew for '+(viewingOneDay()?'the day':'the week')+' shown</span><div class="spacer"></div>' + pdfBtnHtml() + toolsHtml() +
       moreMenuHtml(['-', compactMenuItem()]);
     wireToolbar(); return;
   }
@@ -951,8 +1018,11 @@ function renderToolbar() {
 function wireToolbar() {
   const g = id => document.getElementById(id);
   const on = (id, fn) => { const el = g(id); if (el) el.onclick = fn; };
-  if (g('wkPrev'))  g('wkPrev').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()-7); state.weekAnchor = new Date(state.weekAnchor); render(); };
-  if (g('wkNext'))  g('wkNext').onclick  = () => { state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); };
+  const stepDays = n => { state.weekAnchor.setDate(state.weekAnchor.getDate()+n); state.weekAnchor = new Date(state.weekAnchor); render(); };
+  if (g('wkPrev'))  g('wkPrev').onclick  = () => stepDays(-spanDaysCount());
+  if (g('wkNext'))  g('wkNext').onclick  = () => stepDays(spanDaysCount());
+  on('spanDay',  () => setBoardSpan('day'));
+  on('spanWeek', () => setBoardSpan('week'));
   if (g('wkToday')) g('wkToday').onclick = () => { state.weekAnchor = startOfDay(new Date()); render(); };
   if (g('divFilter')) g('divFilter').onchange = e => { state.divFilter = e.target.value; render(); };
   if (g('jobSearch')) g('jobSearch').oninput = e => { state.jobSearch = e.target.value; document.getElementById('main').innerHTML = renderJobBoard(); };
@@ -993,8 +1063,8 @@ function renderCapacity() {
   const conflicts = wk.reduce((s,d) => s + conflictResourcesOn(d).size, 0);
   const behind = (state.board.jobs||[]).reduce((s,j) => s + (j.subCodes||[]).filter(c => c.status==='behind').length, 0);
   const card = (v,l,c,t) => '<div class="cap-card"'+(t?' title="'+esc(t)+'"':'')+'><div class="cap-val" style="color:'+(c||'var(--text)')+'">'+v+'</div><div class="cap-lbl">'+l+'</div></div>';
-  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled · 7d','var(--green)')+card(idle,'Idle · 7d',idle?'var(--amber)':'var(--muted)')+
-    (onOther.size ? card(onOther.size,'Off-project · 7d','var(--purple)','Booked on work with no project behind it · site visits, shop, yard. Counted as scheduled, never as project work.') : '')+
+  return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled · '+rangeTag(),'var(--green)')+card(idle,'Idle · '+rangeTag(),idle?'var(--amber)':'var(--muted)')+
+    (onOther.size ? card(onOther.size,'Off-project · '+rangeTag(),'var(--purple)','Booked on work with no project behind it · site visits, shop, yard. Counted as scheduled, never as project work.') : '')+
     card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
 }
 // A name is only a name whole. The board used to print the first word of one
@@ -1052,7 +1122,9 @@ function renderJobBoard() {
   const jobs = visibleJobs();
   const searching = state.jobSearch.trim() !== '';
   let html = renderCapacity() + hintHtml('Click any day on a job to put men on it \u00b7 drag a name to another day, job or person \u00b7 drag the blue corner across the week to repeat a crew \u00b7 right-click a name to take it off.');
-  if (!jobs.length) {
+  // With no projects to show there may still be off-project work — and the
+  // control that makes some. Only an empty BOARD takes the empty state.
+  if (!jobs.length && !otherJobsInWeek().length) {
     const ex0 = (state.board && state.board.excludedJobs) || 0;
     const why = [];
     if (_hiddenJobCount) why.push(_hiddenJobCount+' completed');
@@ -1087,11 +1159,12 @@ function renderJobBoard() {
   });
   body += otherGroupHtml(ds, tStr, searching);
   const notes = [];
+  if (!jobs.length) notes.push('<span class="muted">No active jobs'+(state.divFilter!=='all'&&state.divFilter!==OTHER_DIV?' in '+esc(state.divFilter):'')+(state.needCrewOnly?' need crew':'')+'.</span>');
   if (_hiddenJobCount) notes.push('\u2713 '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden \u00b7 <span class="lnk" onclick="toggleHideComplete()">show completed work</span>');
   const ex = (state.board && state.board.excludedJobs) || 0;
   if (ex) notes.push('<span title="Set on the project info card in Paving / Turf / Kiewit">\ud83d\udeab '+ex+' project'+(ex>1?'s':'')+' hidden from the Scheduler on '+(ex>1?'their':'its')+' division dashboard</span>');
   const stray = offRoster(), nStray = stray.emps.length + stray.equips.length;
-  if (nStray) notes.push('<span class="warn" title="'+esc(stray.emps.concat(stray.equips).join(', '))+'">\u26a0 '+nStray+' name'+(nStray>1?'s':'')+' booked this week '+(nStray>1?'are':'is')+' not on the roster \u00b7 <span class="lnk" onclick="state.view=\'crew\';render()">see By Crew</span></span>');
+  if (nStray) notes.push('<span class="warn" title="'+esc(stray.emps.concat(stray.equips).join(', '))+'">\u26a0 '+nStray+' name'+(nStray>1?'s':'')+' booked '+rangeWords()+' '+(nStray>1?'are':'is')+' not on the roster \u00b7 <span class="lnk" onclick="state.view=\'crew\';render()">see By Crew</span></span>');
   const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;\u00b7&nbsp; ')+'</div>' : '';
   return html + '<div class="board-row"><div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>'+railHtml()+'</div>' + note;
 }
@@ -1125,7 +1198,7 @@ function otherGroupHtml(ds, tStr, searching) {
   if (collapsed) return out;
   if (!list.length) {
     out += '<tr class="job-row"><td class="lead-col job-lead muted" style="border-left:3px solid ' + col + ';font-weight:400">' +
-      'No off-project work this week' + '</td>' + ds.map(() => '<td class="cell"></td>').join('') + '</tr>';
+      'No off-project work '+rangeWords() + '</td>' + ds.map(() => '<td class="cell"></td>').join('') + '</tr>';
     return out;
   }
   list.forEach(job => { out += jobRowHtml(job, ds, tStr); });
@@ -1149,6 +1222,21 @@ function addOtherWork() {
 
 // Drop-target identity for a cell. '' as the cost code means "on the job", which
 // is the ordinary case and what the job row books.
+// Shop and site times sit in the day cell's top-right corner. Floated, so the
+// crew chips wrap AROUND them instead of being pushed down a line — a job with
+// one man on it stays one line tall, which is what the row heights are tuned
+// for. Floated rather than absolutely positioned, because absolute would lie
+// on top of a cell holding nine names.
+function cellTimesHtml(date, division, jobId) {
+  const shop = getShopTime(date, division, jobId);
+  const site = getSiteTime(date, division, jobId);
+  if (!shop && !site) return '';
+  const line = (icon, t, what) => '<span class="ct-line" title="'+esc(what + ' ' + fmtTime(t) + ' — the whole crew on this job')+'">'+icon+esc(fmtTimeShort(t))+'</span>';
+  return '<div class="cell-times">'+
+    (shop ? line('🏠', shop, 'At the shop') : '')+
+    (site ? line('⏰', site, 'On site') : '')+
+    '</div>';
+}
 function jobCellData(job, costCode, d) {
   return ' data-date="'+esc(d)+'" data-div="'+esc(job.division)+'" data-job="'+esc(job.id)+'" data-cc="'+esc(costCode||'')+'"';
 }
@@ -1169,11 +1257,8 @@ function jobRowHtml(job, ds, tStr) {
   if (r.behind) meta.push('<span class="warn">'+r.behind+' behind</span>');
   if (r.needed) meta.push('<span class="warn">needs +'+r.needed+'</span>');
   if (r.pct != null) meta.push('<span class="'+(r.pct>=100?'ok':'muted')+'">'+pctText(r.pct)+'</span>');
-  const cells = ds.map(d => {
-    const st = getSiteTime(d, job.division, job.id);
-    return dayCell(job, '', d, tStr, jobCrewOn(d, job.division, job.id),
-      st ? '<div class="site-time">\u23f0'+esc(fmtTimeShort(st))+'</div>' : '');
-  }).join('');
+  const cells = ds.map(d => dayCell(job, '', d, tStr, jobCrewOn(d, job.division, job.id),
+    cellTimesHtml(d, job.division, job.id))).join('');
   return '<tr class="job-row"><td class="lead-col job-lead" style="border-left:3px solid '+col+'">'+
     esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
     '<div class="sub-meta">'+meta.join(' \u00b7 ')+'</div></td>'+cells+'</tr>';
@@ -1817,17 +1902,26 @@ function modalJobHtml(ctx) {
   const crewOpts = state.crews.length
     ? '<div style="display:flex;gap:0.4rem;margin-bottom:0.3rem"><select class="full" id="crewSel"><option value="">Add a saved crew…</option>'+state.crews.map(c => '<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+c.members.length+')</option>').join('')+'</select><button class="btn" onclick="applyCrewFromPicker()">Add</button></div>'
     : '<div class="muted" style="font-size:0.72rem;margin-bottom:0.3rem">No saved crews yet — put a few men on, then “Save these as a crew”.</div>';
+  const shopVal = getShopTime(ctx.date, ctx.division, ctx.jobId);
   const siteVal = getSiteTime(ctx.date, ctx.division, ctx.jobId);
-  const siteHtml = '<label class="fld">Be on site</label>'+
+  // One shape for both, so the shop time can never drift into looking like a
+  // lesser field than the site time. Neither is optional-by-design; a crew is
+  // told both or told one.
+  const timeRow = (kind, lbl, icon, val) =>
+    '<label class="fld">'+lbl+'</label>'+
     '<div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">'+
-      '<input type="time" id="siteTime" value="'+esc(siteVal)+'" onchange="onSiteTimeInput()" style="width:130px">'+
-      (siteVal ? '<span style="font-size:0.76rem;font-weight:700;color:var(--blue)">⏰ '+esc(fmtTime(siteVal))+'</span><button class="btn mini" onclick="clearSiteTime()">clear</button>' : '')+
-      '<span class="muted" style="font-size:0.68rem;flex-basis:100%">Report time for the whole crew on <strong>'+esc(job.name)+'</strong> · '+spanLabel()+'.</span>'+
+      '<input type="time" id="'+kind+'Time" value="'+esc(val)+'" onchange="onJobTimeInput(\''+kind+'\')" style="width:130px">'+
+      (val ? '<span style="font-size:0.76rem;font-weight:700;color:var(--blue)">'+icon+' '+esc(fmtTime(val))+'</span><button class="btn mini" onclick="clearJobTime(\''+kind+'\')">clear</button>' : '')+
     '</div>';
-  const moreOpen = !!state.moreOpts || !!siteVal;
-  const moreHtml = '<button class="more-tog" onclick="toggleMoreOptions()">'+(moreOpen?'▾':'▸')+' Report time &amp; saved crews'+
-      (siteVal?' <span style="color:var(--blue)">· ⏰ '+esc(fmtTime(siteVal))+'</span>':'')+'</button>'+
-    (moreOpen ? '<div>'+siteHtml+'<label class="fld">Saved crews</label>'+crewOpts+'</div>' : '');
+  const timesHtml = timeRow('shop', 'Be at the shop', '🏠', shopVal) +
+    timeRow('site', 'Be on site', '⏰', siteVal) +
+    '<div class="muted" style="font-size:0.68rem;margin-top:0.35rem">Both are for the WHOLE crew on <strong>'+esc(job.name)+'</strong> · '+spanLabel()+'.</div>';
+  const anyTime = shopVal || siteVal;
+  const timeSummary = [shopVal?'🏠 '+fmtTime(shopVal):'', siteVal?'⏰ '+fmtTime(siteVal):''].filter(Boolean).join(' · ');
+  const moreOpen = !!state.moreOpts || !!anyTime;
+  const moreHtml = '<button class="more-tog" onclick="toggleMoreOptions()">'+(moreOpen?'▾':'▸')+' Report times &amp; saved crews'+
+      (anyTime?' <span style="color:var(--blue)">· '+esc(timeSummary)+'</span>':'')+'</button>'+
+    (moreOpen ? '<div>'+timesHtml+'<label class="fld">Saved crews</label>'+crewOpts+'</div>' : '');
 
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(divLabel(ctx.division))+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     summaryLine(job, null) +
@@ -1846,8 +1940,14 @@ function modalJobHtml(ctx) {
     moreHtml +
     '<div style="margin-top:0.8rem"><button class="btn primary" onclick="closeAssign()">Done</button></div></div></div>';
 }
-function onSiteTimeInput() { const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return; const el = document.getElementById('siteTime'); if (!el) return; setSiteTime(ctx.division, ctx.jobId, el.value, spanDates(ctx.date)); afterMutate(); if (el.value) toast('On site '+fmtTime(el.value)+(state.applySpan!=='day'?' · '+spanLabel():'')); }
-function clearSiteTime() { const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return; setSiteTime(ctx.division, ctx.jobId, '', spanDates(ctx.date)); afterMutate(); }
+function onJobTimeInput(kind) {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
+  const el = document.getElementById(kind + 'Time'); if (!el) return;
+  setJobTime(kind, ctx.division, ctx.jobId, el.value, spanDates(ctx.date));
+  afterMutate();
+  if (el.value) toast((kind === 'shop' ? 'At the shop ' : 'On site ') + fmtTime(el.value) + (state.applySpan !== 'day' ? ' · ' + spanLabel() : ''));
+}
+function clearJobTime(kind) { const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return; setJobTime(kind, ctx.division, ctx.jobId, '', spanDates(ctx.date)); afterMutate(); }
 function updatePickList() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const box = document.getElementById('pickList'); if (!box) return;
@@ -2055,7 +2155,7 @@ function deleteCrew(id) {
 // ── Copy week ───────────────────────────────────────────────────────────────
 function copyWeekForward() {
   pushUndo();
-  const wk = weekDateStrs(); let added = 0, blocked = 0;
+  const wk = fullWeekDateStrs(); let added = 0, blocked = 0;
   wk.forEach(d => { const items = state.assignments[d] || []; const nd = addDays(d, 7);
     items.forEach(a => { if (isBlockedOff(a.resource, a.kind, nd)) { blocked++; return; } // approved off next week — don't carry forward
       if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||''))) return;
@@ -2085,10 +2185,10 @@ function importPlanned() {
 const _td = 'border:1px solid #ccc;padding:5px 7px;text-align:left;vertical-align:top;font-size:12px';
 const _th = 'border:1px solid #ccc;padding:5px 7px;text-align:left;background:#f2f2f2;font-size:11px';
 const _h2 = 'font-size:15px;font-weight:800;border-bottom:2px solid #333;padding-bottom:3px;margin:18px 0 6px;color:#111';
-function dispatchDates(scope) { return scope === 'today' ? [todayStr()] : weekDateStrs(); }
+function dispatchDates(scope) { return scope === 'today' ? [todayStr()] : fullWeekDateStrs(); }
 function dispatchTitle(scope) {
   if (scope === 'today') return 'Crew Dispatch — ' + new Date(todayStr()+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
-  return 'Crew Dispatch — week of ' + weekDays()[0].toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  return 'Crew Dispatch — week of ' + fullWeekDays()[0].toLocaleDateString(undefined,{month:'short',day:'numeric'});
 }
 function dayLabel(d) { return new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
 function buildDispatchBody(layout, dates) { return layout === 'person' ? dispatchBodyPerson(dates) : dispatchBodyJob(dates); }
@@ -2159,8 +2259,10 @@ function dispatchBodyJob(dates) {
         const code = g.costCode
           ? '<strong'+(meta.color?' style="color:'+meta.color+'"':'')+'>'+esc(g.costCode)+'</strong>'+meta.html
           : '<span style="color:#999">Whole job — supervisor assigns</span>';
+        const sh = i===0 ? getShopTime(d, j.division, j.jobId) : '';
         const st = i===0 ? getSiteTime(d, j.division, j.jobId) : '';
-        const dayCell = i===0 ? dayLabel(d)+(st?'<div style="font-weight:800;color:#1d4ed8;font-size:11px;margin-top:2px">⏰ On site '+esc(fmtTime(st))+'</div>':'') : '';
+        const tline = t => '<div style="font-weight:800;color:#1d4ed8;font-size:11px;margin-top:2px">'+t+'</div>';
+        const dayCell = i===0 ? dayLabel(d)+(sh?tline('🏠 Shop '+esc(fmtTime(sh))):'')+(st?tline('⏰ On site '+esc(fmtTime(st))):'') : '';
         return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600;vertical-align:top">'+dayCell+'</td><td style="'+_td+'">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
     }).join('');
     return '<div style="'+_h2+'">'+esc(divLabel(j.division).toUpperCase())+' · '+esc(j.name)+'</div>'+dispatchJobSummary(job, j.days, dates)+'<table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
@@ -2177,8 +2279,11 @@ function dispatchBodyPerson(dates) {
         if (a.kind==='emp') { const mm = pairedMachinesFor(d, a); if (mm.length) s += ' <span style="color:#555">+ 🚜 '+mm.map(m=>esc(m.resource)).join(', ')+'</span>'; }
         else if (a.kind==='equip' && a.op) s += ' <span style="color:#888">(op: '+esc(a.op)+')</span>';
         return s; }).join('; ');
+      const shops = [...new Set(items.map(a => getShopTime(d, a.division, a.jobId)).filter(Boolean))];
       const times = [...new Set(items.map(a => getSiteTime(d, a.division, a.jobId)).filter(Boolean))];
-      const onSite = times.length ? '<strong style="color:#1d4ed8">On site '+times.map(t=>esc(fmtTime(t))).join(' / ')+'</strong> — ' : '';
+      const onSite = (shops.length || times.length) ? '<strong style="color:#1d4ed8">'+
+        [shops.length ? 'Shop '+shops.map(t=>esc(fmtTime(t))).join(' / ') : '',
+         times.length ? 'On site '+times.map(t=>esc(fmtTime(t))).join(' / ') : ''].filter(Boolean).join(' · ')+'</strong> — ' : '';
       return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+onSite+jobs+'</td></tr>'; }).join('');
     return '<div style="'+_h2+'">'+esc(n)+(r.kind==='equip'?' (equipment)':'')+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:150px">Day</th><th style="'+_th+'">Assignment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
@@ -2291,13 +2396,13 @@ function gapItems() {
   return items;
 }
 function idleEmployees() { if (!state.board) return []; return (state.board.employees||[]).filter(e => loadForResource(e.name) === 0); }
-function firstWorkdayThisWeek() { const wd = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); }); return wd[0] || weekDateStrs()[0] || todayStr(); }
+function firstWorkdayThisWeek() { const wd = fullWeekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); }); return wd[0] || fullWeekDateStrs()[0] || todayStr(); }
 // Put idle men on the JOB for the rest of the week. No cost code — the
 // supervisor gives them the task in the morning, which is the whole point.
 function autoFill(division, jobId) {
   const job = jobById(division, jobId); if (!job) { toast('Job not found'); return; }
   const need = Math.max(jobRollup(job).needed || 1, 1);
-  const dates = weekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); });
+  const dates = fullWeekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); });
   if (!dates.length) { toast('No working days left this week'); return; }
   const empByName = {}; (state.board.employees||[]).forEach(e => empByName[e.name] = e);
   const prefRoles = new Set(jobCodes(job).flatMap(c => c.crew).map(n => empByName[n] && roleOf(empByName[n])).filter(Boolean));
@@ -2374,7 +2479,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+Object.assign(window, { addOtherWork, onJobTimeInput, clearJobTime, setBoardSpan, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, onSiteTimeInput, clearSiteTime, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();
