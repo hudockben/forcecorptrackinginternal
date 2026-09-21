@@ -86,7 +86,7 @@
     table.board thead th.weekend { color:var(--muted); } table.board thead th.today { color:var(--blue); }
     /* Wider than it was: the board is a handful of job rows now, not 78
        sub-code rows, so the job name fits on one line and the row stays short. */
-    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:322px; max-width:372px; text-align:left !important; padding:0.26rem 0.5rem !important; }
+    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:368px; max-width:418px; text-align:left !important; padding:0.26rem 0.5rem !important; }
     thead .lead-col { z-index:7; }
     .cell { position:relative; min-width:120px; height:auto; min-height:34px; padding:0.16rem; cursor:pointer; transition:background .1s; }
     body.compact .cell { min-height:26px; }
@@ -103,15 +103,28 @@
        max-width on a <td> is not honoured in auto layout, so the cap lives
        on this wrapper instead. Without it the times drift to the far right
        of a 1000px cell, a foot away from the job they belong to. */
-    .jl-wrap { display:flex; align-items:flex-start; gap:0.5rem; max-width:352px; }
+    .jl-wrap { display:flex; align-items:flex-start; gap:0.5rem; max-width:398px; }
     .jl-main { flex:1 1 auto; min-width:0; }
     .job-times { flex:0 0 auto; display:flex; flex-direction:column; gap:1px; cursor:pointer; padding:1px 0 0 0.3rem; border-left:1px solid var(--border); }
-    .jt { display:flex; align-items:baseline; gap:0.28rem; font-size:0.62rem; line-height:1.25; white-space:nowrap; justify-content:space-between; }
-    .jt-k { font-size:0.52rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); }
-    .jt-v { font-weight:700; color:var(--blue); font-variant-numeric:tabular-nums; }
-    .jt.unset .jt-v { color:var(--muted); font-weight:400; }
-    .job-times:hover .jt-v { text-decoration:underline; }
-    .job-times:hover .jt.unset .jt-v { color:var(--blue); }
+    .jt { display:flex; align-items:center; gap:0.3rem; line-height:1.2; white-space:nowrap; }
+    .jt-k { font-size:0.52rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); width:2.1rem; }
+    /* Typed in place. Borderless until it is wanted, so two of these in every
+       job row read as part of the row rather than as a form.
+       The selector carries [type=time] on purpose: the global input rule up at
+       the top of this sheet is an element+attribute selector, which outranks a
+       bare class, and without matching it here the field keeps the dialog's
+       padding and stands a job row up to twice its height. */
+    input[type=time].jt-in {
+      font-size:0.62rem; font-weight:700; font-variant-numeric:tabular-nums;
+      background:transparent; border:1px solid transparent; border-radius:4px;
+      color:var(--blue); padding:0 0.1rem; width:auto; min-width:0; font-family:inherit;
+      line-height:1.15; height:1.15rem; }
+    input[type=time].jt-in:hover { border-color:var(--border); background:var(--surface2); }
+    input[type=time].jt-in:focus { outline:none; border-color:var(--blue); background:var(--surface2); }
+    .jt.unset input[type=time].jt-in { color:var(--muted); font-weight:400; }
+    input[type=time].jt-in::-webkit-calendar-picker-indicator { filter:invert(0.75); cursor:pointer; opacity:0; padding:0; margin:0; width:0.6rem; }
+    .jt:hover input[type=time].jt-in::-webkit-calendar-picker-indicator,
+    input[type=time].jt-in:focus::-webkit-calendar-picker-indicator { opacity:0.8; }
     /* Week board: the times stay in the day cells, one set per day. */
     .cell-times { float:right; margin:0 0 1px 4px; display:flex; flex-direction:column; align-items:flex-end; gap:1px; cursor:pointer; }
     .ct-line { font-size:0.58rem; font-weight:700; color:var(--blue); letter-spacing:-0.02em; white-space:nowrap; display:flex; gap:0.22rem; align-items:baseline; }
@@ -1261,12 +1274,33 @@ function addOtherWork() {
 function jobTimesHtml(date, division, jobId) {
   const shop = getShopTime(date, division, jobId);
   const site = getSiteTime(date, division, jobId);
-  const one = (k, t, what) =>
-    '<span class="jt'+(t ? '' : ' unset')+'" title="'+esc(t ? what + ' ' + fmtTime(t) + ' — the whole crew on this job. Click to change.'
-                                                            : 'No ' + k.toLowerCase() + ' time set — click to add one for the whole crew on this job')+'">'+
-      '<span class="jt-k">'+k+'</span><span class="jt-v">'+(t ? esc(fmtTimeShort(t)) : '—')+'</span></span>';
-  return '<div class="job-times" onclick="event.stopPropagation();openJobTimes(\''+division+'\',\''+escAttr(jobId)+'\',\''+date+'\')">'+
-    one('Shop', shop, 'At the shop') + one('Site', site, 'On site') + '</div>';
+  const one = (kind, k, t, what) =>
+    '<span class="jt'+(t ? '' : ' unset')+'">'+
+      '<span class="jt-k">'+k+'</span>'+
+      '<input type="time" class="jt-in" value="'+esc(t)+'"'+
+        ' onclick="event.stopPropagation()" onkeydown="event.stopPropagation()"'+
+        ' onchange="onJobTimeCell(\''+kind+'\',\''+division+'\',\''+escAttr(jobId)+'\',\''+date+'\',this)"'+
+        ' title="'+esc(what + ' — the whole crew on this job, this day')+'">'+
+    '</span>';
+  return '<div class="job-times">'+
+    one('shop', 'Shop', shop, 'At the shop') + one('site', 'Site', site, 'On site') + '</div>';
+}
+// Typed straight into the row, so the common case — this job, this day, this
+// time — never opens a dialog. It saves the ONE day it is on: the dialog still
+// carries the Apply-to spans for a whole week at once, and a field sitting in
+// a day's row quietly writing seven days would be a nasty surprise.
+//
+// No re-render. The board does not need redrawing for a time change, and
+// redrawing it would tear the input out from under the cursor — tab from Shop
+// to Site and the second field would vanish mid-keystroke. Only the one class
+// that styles an empty value is touched.
+function onJobTimeCell(kind, division, jobId, date, el) {
+  setJobTime(kind, division, jobId, el.value, [date]);
+  const wrap = el.closest('.jt');
+  if (wrap) wrap.classList.toggle('unset', !el.value);
+  toast(el.value
+    ? (kind === 'shop' ? 'At the shop ' : 'On site ') + fmtTime(el.value) + ' · ' + shortDate(date)
+    : (kind === 'shop' ? 'Shop' : 'Site') + ' time cleared · ' + shortDate(date));
 }
 // The week board keeps its times in the day cells: seven days on one row are
 // seven different answers and the job-name cell can only hold one of them.
@@ -2545,7 +2579,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { addOtherWork, onJobTimeInput, clearJobTime, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+Object.assign(window, { addOtherWork, onJobTimeInput, clearJobTime, onJobTimeCell, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();

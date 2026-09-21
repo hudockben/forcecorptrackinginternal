@@ -171,16 +171,43 @@ const D = '2026-09-21', DIV = 'turf', JOB = '26049';
     p.setJobTime('shop', DIV, JOB, '06:00', [D]);
     p.setJobTime('site', DIV, JOB, '07:00', [D]);
     const set = p.jobTimesHtml(D, DIV, JOB);
-    assert('  with both set, both times show', /6a/.test(set) && /7a/.test(set), set);
+    assert('  with both set, both carry their value', /value="06:00"/.test(set) && /value="07:00"/.test(set), set);
     assert('  neither is still marked unset', !/jt unset/.test(set), set);
-    assert('  and it opens the times on click',
-      /openJobTimes\(/.test(set) && /event\.stopPropagation\(\)/.test(set), set);
 
     const half = page();
     half.setJobTime('site', DIV, JOB, '07:00', [D]);
     const h = half.jobTimesHtml(D, DIV, JOB);
     assert('  one set and one not still draws both lines',
-      (h.match(/class="jt[ "]/g) || []).length === 2 && /jt unset/.test(h) && /7a/.test(h), h);
+      (h.match(/class="jt[ "]/g) || []).length === 2 && /jt unset/.test(h) && /value="07:00"/.test(h), h);
+  }
+
+  console.log('\n[the time is typed in the row, not in a dialog]');
+  {
+    const p = page();
+    const html = p.jobTimesHtml(D, DIV, JOB);
+    // The whole point of this pass: no dialog for the common case.
+    assert('  each line is a real time field', (html.match(/<input type="time"/g) || []).length === 2, html);
+    assert('  and nothing here opens the dialog', !/openJobTimes\(/.test(html), html);
+    assert('  a click on the field does not fall through to the cell',
+      (html.match(/onclick="event\.stopPropagation\(\)"/g) || []).length === 2, html);
+    // Typing a date into a day cell must not be caught by the board's own
+    // keyboard shortcuts (the "/" that jumps to search, for one).
+    assert('  nor do its keystrokes reach the board',
+      (html.match(/onkeydown="event\.stopPropagation\(\)"/g) || []).length === 2, html);
+    assert('  changing it saves that kind, that job, that day',
+      /onJobTimeCell\('shop','turf','26049','2026-09-21',this\)/.test(html) &&
+      /onJobTimeCell\('site','turf','26049','2026-09-21',this\)/.test(html), html);
+
+    // It writes the one day it sits on. The dialog still carries the Apply-to
+    // spans; a field in a day's row quietly writing seven would be a surprise.
+    const src = requireFn(SCHED, 'onJobTimeCell', 'scheduler.html');
+    assert('  and only that day', /\[date\]/.test(src) && !/spanDates\(/.test(src), src);
+    // A re-render would tear the field out from under the cursor mid-edit.
+    assert('  without redrawing the board under the cursor',
+      !/\brender\(\)/.test(src) && !/afterMutate\(/.test(src), src);
+    assert('  it just restyles the one line it changed', /classList\.toggle\('unset'/.test(src), src);
+    assert('  onJobTimeCell is reachable from the markup',
+      /Object\.assign\(window, \{[^}]*onJobTimeCell/.test(SCHED.replace(/\n/g, ' ')));
   }
 
   console.log('\n[words, not pictures]');
