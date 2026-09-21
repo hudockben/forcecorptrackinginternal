@@ -2200,7 +2200,15 @@
       background: var(--surface2); flex-shrink: 0;
     }
     .pp-cal-grid {
-      display: grid; grid-template-columns: repeat(7, 1fr);
+      /* minmax(0,…) rather than a bare 1fr. A plain fr floors at the column's
+         MIN-CONTENT, which a full crew name now sets, and the grid answered by
+         growing past .pp-cal-section — whose parent .pp-main clips rather than
+         scrolls, so Saturday simply went missing: 170px of it at 1280px, 10px
+         at 1440px, with no scrollbar to go and get it. Letting a column shrink
+         below its content puts the whole week back on screen and hands the
+         overflow down to the chip, which is where the ellipsis and the title=
+         that survives it already live. */
+      display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 5px; margin-top: 0.75rem;
     }
     .pp-col-hdr {
@@ -2222,10 +2230,21 @@
     .pp-day.conflict-day { border-color: var(--red); }
     .pp-day-num { font-size: 0.8rem; font-weight: 700; color: var(--muted); }
     .pp-day.today .pp-day-num { color: var(--blue); }
+    /* A name is only a name whole. 72px held about twelve characters, so these
+       chips were cut mid-surname — "Blake Host…", and "Colton Reed" with it —
+       which on a roster carrying two Blakes says less than the first name did.
+       The cap was doing it to chips the code had ALREADY handed a full name:
+       the crew-history list and the day panel's tick-list both render esc(e),
+       and every one of a five-man sample clipped in the 300px side panel — the
+       one list where you pick which of the two Blakes works Tuesday.
+       Bounding a chip by whatever holds it instead lets the calendar cell and
+       the panel each give a name the room they already have; measured in
+       Chromium from 1280 to 1920px, nothing clips and no cell grew by a pixel.
+       The ellipsis stays behind it as the net for a narrower window than that. */
     .pp-chip {
       display: inline-block; font-size: 0.62rem; padding: 0.08rem 0.3rem;
       border-radius: 10px; background: rgba(253,185,19,0.15); color: var(--blue);
-      margin: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 72px;
+      margin: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
     }
     .pp-chip.equip { background: rgba(167,139,250,0.15); color: #a78bfa; }
     .pp-day-out {
@@ -25205,15 +25224,15 @@ function _ppRender() {
         plan.employees.forEach(e => { const eq = crew[e] || '?'; byEquip[eq] = (byEquip[eq]||0) + 1; });
         const entries = Object.entries(byEquip);
         empChips = entries.slice(0,3).map(([eq, n]) =>
-          `<span class="pp-chip" title="${esc(eq)}" style="font-size:0.65rem">${esc(eq.split(' ')[0])}:${n}</span>`
+          `<span class="pp-chip" title="${esc(eq)}" style="font-size:0.65rem">${esc(eq)}:${n}</span>`
         ).join('') + (entries.length > 3 ? `<span class="pp-chip" style="font-size:0.65rem">+${entries.length-3}</span>` : '');
       } else {
-        empChips = plan.employees.slice(0,3).map(e => `<span class="pp-chip">${esc(e.split(' ')[0])}</span>`).join('')
+        empChips = plan.employees.slice(0,3).map(e => `<span class="pp-chip" title="${esc(e)}">${esc(e)}</span>`).join('')
           + (plan.employees.length > 3 ? `<span class="pp-chip">+${plan.employees.length-3}</span>` : '');
       }
     }
     const eqChips = !plan.noWork && plan.equipment && plan.equipment.length
-      ? plan.equipment.slice(0,2).map(e => `<span class="pp-chip equip">${esc(e.split(' ')[0])}</span>`).join('')
+      ? plan.equipment.slice(0,2).map(e => `<span class="pp-chip equip" title="${esc(e)}">${esc(e)}</span>`).join('')
         + (plan.equipment.length > 2 ? `<span class="pp-chip equip">+${plan.equipment.length-2}</span>` : '') : '';
 
     // Copy-week button on Saturdays
