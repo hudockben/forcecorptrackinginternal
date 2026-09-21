@@ -4577,6 +4577,71 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
+    // ── GET ?action=pending_span — where the unapproved time actually is ──
+    // The review grid loads one date range, and its default is the week in
+    // progress. Time submitted for an earlier week is then off-screen with
+    // nothing on the page to say so: "Awaiting Review 0" is true of the range
+    // and false of the company, and a week that nobody approved can sit there
+    // until someone thinks to go looking for it.
+    //
+    // This answers the question the range cannot: across ALL dates, how much
+    // submitted time is there, when is the oldest of it, and how much of it
+    // falls outside the range the screen is showing? Counts and two dates —
+    // no rows — so the page can widen its default range on first load and
+    // flag anything still hidden without paying for a second entry list.
+    if (req.method === 'GET' && req.query.action === 'pending_span') {
+      // Scoped exactly like the list branch: the caller's own submitted time
+      // by default, the whole company only on an explicit ?scope=all from a
+      // payroll admin. A non-admin asking for scope=all is quietly scoped to
+      // themselves rather than 403'd — there is nothing to reveal, so there
+      // is nothing to refuse.
+      const q     = req.query || {};
+      const fromF = safeDate(q.from) || '1900-01-01';
+      const toF   = safeDate(q.to)   || '9999-12-31';
+      const divF  = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
+      const companyWide = canAdmin && q.scope === 'all';
+      const userF = companyWide ? null : safeInt(userId);
+      if (!companyWide && userF == null) {
+        return res.status(401).json({ error: 'Unauthorized — please log in' });
+      }
+
+      // Two spellings rather than one with a nullable user filter, matching
+      // the list branch above: a JS null bound into a comparison is the kind
+      // of thing that silently widens a scope.
+      const rows = userF != null
+        ? await sql`
+            SELECT COUNT(*)::int AS total,
+                   MIN(work_date) AS oldest,
+                   MAX(work_date) AS newest,
+                   COUNT(*) FILTER (WHERE work_date < ${fromF}::date)::int AS before_range,
+                   COUNT(*) FILTER (WHERE work_date > ${toF}::date)::int   AS after_range
+            FROM timesheet_entries
+            WHERE company_code = ${companyCode}
+              AND user_id      = ${userF}
+              AND status       = 'submitted'
+              AND (${divF} = '' OR division = ${divF})
+          `
+        : await sql`
+            SELECT COUNT(*)::int AS total,
+                   MIN(work_date) AS oldest,
+                   MAX(work_date) AS newest,
+                   COUNT(*) FILTER (WHERE work_date < ${fromF}::date)::int AS before_range,
+                   COUNT(*) FILTER (WHERE work_date > ${toF}::date)::int   AS after_range
+            FROM timesheet_entries
+            WHERE company_code = ${companyCode}
+              AND status       = 'submitted'
+              AND (${divF} = '' OR division = ${divF})
+          `;
+      const r = rows[0] || {};
+      return res.json({
+        total:  Number(r.total)        || 0,
+        before: Number(r.before_range) || 0,
+        after:  Number(r.after_range)  || 0,
+        oldest: safeDate(r.oldest),
+        newest: safeDate(r.newest),
+      });
+    }
+
     // ── GET (list) ─────────────────────────────────────────────────────────
     // Guarded on `!action` so the action-specific GETs further down (?action=
     // split) are reachable — this branch would otherwise swallow them and hand

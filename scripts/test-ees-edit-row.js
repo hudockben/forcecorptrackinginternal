@@ -110,7 +110,12 @@ const sandbox = {
     body: makeElement('body'),
   },
   window: { location: { replace() {}, href: '' }, addEventListener() {} },
-  setTimeout: (fn) => { if (typeof fn === 'function') fn(); return 0; },
+  // Delayed callbacks run at once — the modal's 600ms auto-close is one of
+  // the things under test. A ZERO delay is swallowed: the only one is init()'s
+  // deferred first load, and letting it run means the page's own startup fetch
+  // lands in the middle of a case, overwriting the entries the test seeded and
+  // adding a request to the ones it is counting.
+  setTimeout: (fn, ms) => { if (ms && typeof fn === 'function') fn(); return 0; },
   clearTimeout: () => {},
   fetch: async (url, opts) => {
     posts.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });
