@@ -4651,6 +4651,85 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
+    // ── GET ?action=pending_span — where the unapproved time actually is ──
+    // The review grid loads one date range, and its default is the week in
+    // progress. Time submitted for an earlier week is then off-screen with
+    // nothing on the page to say so: "Awaiting Review 0" is true of the range
+    // and false of the company, and a week that nobody approved can sit there
+    // until someone thinks to go looking for it.
+    //
+    // This answers the question the range cannot: across ALL dates, how much
+    // submitted time is there, when is the oldest of it, and how much of it
+    // falls outside the range the screen is showing? Counts and two dates —
+    // no rows — so the page can widen its default range on first load and
+    // flag anything still hidden without paying for a second entry list.
+    if (req.method === 'GET' && req.query.action === 'pending_span') {
+      // Scoped exactly like the list branch, down to ?user_id beating
+      // ?scope=all: the caller's own submitted time by default, one named
+      // user or the whole company only on an explicit admin opt-in. A
+      // non-admin asking for either is quietly scoped to themselves rather
+      // than 403'd — there is nothing to reveal, so there is nothing to
+      // refuse. Counts over a wider set than the grid they annotate is the
+      // one way this endpoint can mislead, so the two must not drift.
+      const q     = req.query || {};
+      const fromF = safeDate(q.from) || '1900-01-01';
+      const toF   = safeDate(q.to)   || '9999-12-31';
+      const divF  = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
+      // The floor the caller is willing to reach back to. `oldest` is the
+      // oldest submitted day there IS; `oldest_since` is the oldest one at or
+      // after this date. A caller that will only widen its range so far needs
+      // the second: widening to a straggler it has already decided not to
+      // display costs the whole fetch and shows nothing.
+      const sinceF = safeDate(q.since) || '1900-01-01';
+      const askedUser   = safeInt(q.user_id);
+      const companyWide = canAdmin && askedUser == null && q.scope === 'all';
+      const userF = companyWide
+        ? null
+        : (canAdmin && askedUser != null ? askedUser : safeInt(userId));
+      if (!companyWide && userF == null) {
+        return res.status(401).json({ error: 'Unauthorized — please log in' });
+      }
+
+      // Two spellings rather than one with a nullable user filter, matching
+      // the list branch above: a JS null bound into a comparison is the kind
+      // of thing that silently widens a scope.
+      const rows = userF != null
+        ? await sql`
+            SELECT COUNT(*)::int AS total,
+                   MIN(work_date) AS oldest,
+                   MAX(work_date) AS newest,
+                   MIN(work_date) FILTER (WHERE work_date >= ${sinceF}::date) AS oldest_since,
+                   COUNT(*) FILTER (WHERE work_date < ${fromF}::date)::int AS before_range,
+                   COUNT(*) FILTER (WHERE work_date > ${toF}::date)::int   AS after_range
+            FROM timesheet_entries
+            WHERE company_code = ${companyCode}
+              AND user_id      = ${userF}
+              AND status       = 'submitted'
+              AND (${divF} = '' OR division = ${divF})
+          `
+        : await sql`
+            SELECT COUNT(*)::int AS total,
+                   MIN(work_date) AS oldest,
+                   MAX(work_date) AS newest,
+                   MIN(work_date) FILTER (WHERE work_date >= ${sinceF}::date) AS oldest_since,
+                   COUNT(*) FILTER (WHERE work_date < ${fromF}::date)::int AS before_range,
+                   COUNT(*) FILTER (WHERE work_date > ${toF}::date)::int   AS after_range
+            FROM timesheet_entries
+            WHERE company_code = ${companyCode}
+              AND status       = 'submitted'
+              AND (${divF} = '' OR division = ${divF})
+          `;
+      const r = rows[0] || {};
+      return res.json({
+        total:  Number(r.total)        || 0,
+        before: Number(r.before_range) || 0,
+        after:  Number(r.after_range)  || 0,
+        oldest: safeDate(r.oldest),
+        newest: safeDate(r.newest),
+        oldest_since: safeDate(r.oldest_since),
+      });
+    }
+
     // ── GET (list) ─────────────────────────────────────────────────────────
     // Guarded on `!action` so the action-specific GETs further down (?action=
     // split) are reachable — this branch would otherwise swallow them and hand
@@ -4901,31 +4980,6 @@ module.exports = async (req, res) => {
         });
       }
 
-      // Moving the break rewrites the hours on two rows of the day, so this
-      // path owes the same debt an ordinary edit does: an approved entry has
-      // already posted cost rows derived from its hours, and every one of them
-      // stores an absolute figure. Rewrite the entry underneath them and the
-      // cost tabs keep charging the old number — and the split's own balance
-      // check then refuses every later correction to that day, because the
-      // allocation no longer sums to the entry.
-      //
-      // Asked of each approved job of the day, not just the one that was
-      // opened: the break moves BETWEEN jobs, so a sibling's rows go stale
-      // just as readily as the anchor's.
-      const approved = group.filter(g => g.status === 'approved');
-      if (approved.length) {
-        const counts = await Promise.all(
-          approved.map(g => injectedRowCount(sql, companyCode, g)));
-        const injected = counts.reduce((a, b) => a + b, 0);
-        if (injected > 0) {
-          return res.status(409).json({
-            error: 'This day has cost tracking rows injected from approval. '
-                 + 'Un-approve it first, move the lunch break, then re-approve with a fresh split.',
-            injected_row_count: injected,
-          });
-        }
-      }
-
       if (holderId && !group.some(g => Number(g.id) === Number(holderId))) {
         return res.status(400).json({ error: 'That job is not part of this day' });
       }
@@ -4949,7 +5003,9 @@ module.exports = async (req, res) => {
         }
       }
 
-      const changed = [];
+      // What this call would actually rewrite, worked out before anything is
+      // written and before anything is refused.
+      const plan = [];
       for (const row of group) {
         const holds = holderId != null && Number(row.id) === Number(holderId);
         const gross = computeHours(hhmm(row.start_time), hhmm(row.end_time));
@@ -4960,6 +5016,45 @@ module.exports = async (req, res) => {
           ? Number(row.computed_hours)
           : (holds ? Math.max(0, Math.round((gross - 0.5) * 100) / 100) : gross);
         if (row.lunch_break === holds && Number(row.computed_hours) === hours) continue;
+        plan.push({ row, holds, hours });
+      }
+
+      // Moving the break rewrites the hours on two rows of the day, so this
+      // path owes the same debt an ordinary edit does: an approved entry has
+      // already posted cost rows derived from its hours, and every one of them
+      // stores an absolute figure. Rewrite the entry underneath them and the
+      // cost tabs keep charging the old number — and the split's own balance
+      // check then refuses every later correction to that day, because the
+      // allocation no longer sums to the entry.
+      //
+      // Asked of each approved job the PLAN would rewrite, not of every
+      // approved job of the day. Asked of the day, this refused calls that
+      // change nothing — and payroll.html sends one after every edit to a
+      // split day, so an approver correcting the TRAVEL HOURS on a day whose
+      // other half was already approved got a 409 about a lunch break they
+      // had not touched and which was not moving. The entry had saved by
+      // then; only this second call failed, so the error arrived over a
+      // change that had gone through, and the modal stayed open on it.
+      //
+      // There is nothing to protect when nothing is being rewritten. What the
+      // guard is for — an approved row's hours changing underneath the cost
+      // rows derived from them — is exactly what being in the plan means.
+      const approved = plan.filter(p => p.row.status === 'approved').map(p => p.row);
+      if (approved.length) {
+        const counts = await Promise.all(
+          approved.map(g => injectedRowCount(sql, companyCode, g)));
+        const injected = counts.reduce((a, b) => a + b, 0);
+        if (injected > 0) {
+          return res.status(409).json({
+            error: 'This day has cost tracking rows injected from approval. '
+                 + 'Un-approve it first, move the lunch break, then re-approve with a fresh split.',
+            injected_row_count: injected,
+          });
+        }
+      }
+
+      const changed = [];
+      for (const { row, holds, hours } of plan) {
         const [saved] = await sql`
           UPDATE timesheet_entries
              SET lunch_break    = ${holds},

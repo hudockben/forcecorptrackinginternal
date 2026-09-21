@@ -3,11 +3,13 @@
 const jwt        = require('jsonwebtoken');
 const { neon }   = require('@neondatabase/serverless');
 
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
-// timesheet/payroll/fuel/fuel_admin/driver/quarry_sales require an explicit
-// positive grant in division_roles — they're never granted implicitly through
-// user.divisions or company.allowed_divisions.
-const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales']);
+const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
+// timesheet/payroll/fuel/fuel_admin/driver/quarry_sales/safety require an
+// explicit positive grant in division_roles — they're never granted implicitly
+// through user.divisions or company.allowed_divisions. For safety that rule is
+// load-bearing rather than cautious: the grant IS the sign-off roster, so an
+// implicit one would put every login in the company on the outstanding list.
+const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'safety']);
 
 /**
  * Verify the bearer token AND return the user's current division roles

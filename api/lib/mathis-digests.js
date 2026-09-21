@@ -90,6 +90,7 @@ const COVERS = {
   own_fuel: ['the asking user\'s own fuel fill-ups'],
   own_driver: ['the hauls assigned to the asking user'],
   own_quarry_sales: ['the asking user\'s own scale-house loads'],
+  own_safety: ['the safety documents the asking user has been asked to sign, and which of them they have signed'],
   purchasing: ['purchase orders across every division the user can reach and the general non-job list — order value, status, vendor and where each is filed'],
 };
 
@@ -1634,6 +1635,57 @@ async function quarrySalesOwnDigest(c) {
   };
 }
 
+/**
+ * The asking user's own safety sign-offs.
+ *
+ * Every live document, with the one fact about each that belongs to this
+ * caller: whether THEY signed it. Who else has, or has not, is the
+ * supervisor's report and is deliberately not readable through here — a
+ * laborer asking Mathis what they still owe must not get a roll-call of
+ * everyone who is behind.
+ */
+async function safetyOwnDigest(c) {
+  let rows = [];
+  try {
+    rows = await c.sql`
+      SELECT d.id, d.title, d.week_of::text AS week_of, d.uploaded_by,
+             s.signed_at, s.full_name
+        FROM safety_documents d
+        LEFT JOIN safety_signatures s
+               ON s.document_id = d.id AND s.user_id = ${c.authz.userId}
+       WHERE d.company_code = ${c.companyCode}
+         AND d.archived_at IS NULL
+       ORDER BY d.week_of DESC
+       LIMIT 100
+    `;
+  } catch (err) {
+    console.error('[mathis] own safety digest failed:', err.message);
+    return { division: 'safety', kind: 'own_safety', covers: COVERS.own_safety, error: true, limits: OWN_LIMITS };
+  }
+
+  const out = rows.map(r => ({
+    title:    safeText(r.title, 120),
+    weekOf:   r.week_of,
+    postedBy: safeText(r.uploaded_by, 60),
+    signed:   Boolean(r.signed_at),
+    signedAt: r.signed_at || null,
+  }));
+  const outstanding = out.filter(r => !r.signed);
+
+  return {
+    division: 'safety', kind: 'own_safety',
+    covers: COVERS.own_safety,
+    window: 'every document currently posted',
+    documents: out.length, signed: out.length - outstanding.length,
+    outstanding: outstanding.length,
+    rows: capList(out),
+    limits: OWN_LIMITS.concat([
+      'Whether anyone ELSE has signed a document is not in this data. That is the supervisor\'s sign-off report, and it is not readable here.',
+      'A document that has been archived is not listed, even if it was signed.',
+    ]),
+  };
+}
+
 // ── Personal mode ──────────────────────────────────────────────────────────
 
 const PERSONAL_LIMITS = ctx.PERSONAL_LIMITS;
@@ -1823,6 +1875,7 @@ async function buildDigest(c, division, opts = {}) {
   if (division === 'fuel')         return await fuelOwnDigest(c);
   if (division === 'driver')       return await driverOwnDigest(c);
   if (division === 'quarry_sales') return await quarrySalesOwnDigest(c);
+  if (division === 'safety')       return await safetyOwnDigest(c);
   if (jobFin.jobDivision(division)) return await jobDigest(c, division, opts);
 
   const builder = BUILDERS[division];

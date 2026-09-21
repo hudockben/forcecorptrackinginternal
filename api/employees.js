@@ -22,6 +22,7 @@
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
+const { readEmployeeRoster } = require('./lib/roster');
 
 // ── Contact card normalisation ──────────────────────────────────────────────
 // The three fields the Team Directory writes. Each one is stored as typed
@@ -100,129 +101,10 @@ module.exports = async (req, res) => {
     // paving/quarry-only people come back unflagged with an empty card, and a
     // PATCH will create their row the first time either is filled in.
     if (req.method === 'GET') {
-      const tableRows = await sql`
-        SELECT id, name, job_class,
-               pw_rate       AS prevailing_rate,
-               non_pw_rate   AS non_prevailing_rate,
-               is_supervisor,
-               is_driver,
-               phone,
-               email,
-               supervisor_name,
-               sort_order
-        FROM   employees
-        WHERE  company_code = ${companyCode} AND active = TRUE
-        ORDER  BY sort_order ASC, name ASC
-      `;
-
-      const byName = new Map(); // lowercased name → row
-      for (const r of tableRows) {
-        byName.set(r.name.toLowerCase(), {
-          id:                 r.id,
-          name:               r.name,
-          job_class:          r.job_class || null,
-          prevailing_rate:    r.prevailing_rate,
-          non_prevailing_rate:r.non_prevailing_rate,
-          is_supervisor:      r.is_supervisor === true,
-          is_driver:          r.is_driver === true,
-          phone:              r.phone || null,
-          email:              r.email || null,
-          supervisor_name:    r.supervisor_name || null,
-          source:             'employees',
-        });
-      }
-
-      // Paving — blob lives at "<company>:fct_paving_lists"
-      try {
-        const pBlob = await sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_paving_lists'}`;
-        const pList = pBlob.length && pBlob[0].value && Array.isArray(pBlob[0].value.employees)
-          ? pBlob[0].value.employees
-          : [];
-        for (const e of pList) {
-          const name = (typeof e === 'string' ? e : (e && e.name)) || '';
-          const trimmed = name.trim();
-          if (!trimmed) continue;
-          const key = trimmed.toLowerCase();
-          if (byName.has(key)) continue;
-          byName.set(key, {
-            id:                 null,
-            name:               trimmed,
-            job_class:          (typeof e === 'object' && e.job_class) || null,
-            prevailing_rate:    null,
-            non_prevailing_rate:null,
-            is_supervisor:      false,
-            is_driver:          false,
-            phone:              null,
-            email:              null,
-            supervisor_name:    null,
-            source:             'paving',
-          });
-        }
-      } catch (err) {
-        console.error('[employees GET] paving blob read failed (non-fatal):', err.message);
-      }
-
-      // Kiewit Pinetree — blob lives at "<company>:fct_kiewit_lists"
-      try {
-        const kBlob = await sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_kiewit_lists'}`;
-        const kList = kBlob.length && kBlob[0].value && Array.isArray(kBlob[0].value.employees)
-          ? kBlob[0].value.employees
-          : [];
-        for (const e of kList) {
-          const name = (typeof e === 'string' ? e : (e && e.name)) || '';
-          const trimmed = name.trim();
-          if (!trimmed) continue;
-          const key = trimmed.toLowerCase();
-          if (byName.has(key)) continue;
-          byName.set(key, {
-            id:                 null,
-            name:               trimmed,
-            job_class:          (typeof e === 'object' && e.job_class) || null,
-            prevailing_rate:    null,
-            non_prevailing_rate:null,
-            is_supervisor:      false,
-            is_driver:          false,
-            phone:              null,
-            email:              null,
-            supervisor_name:    null,
-            source:             'kiewit',
-          });
-        }
-      } catch (err) {
-        console.error('[employees GET] kiewit blob read failed (non-fatal):', err.message);
-      }
-
-      // Quarry — quarry_employees table
-      try {
-        const qRows = await sql`
-          SELECT name FROM quarry_employees
-          WHERE company_code = ${companyCode}
-        `;
-        for (const r of qRows) {
-          const trimmed = (r.name || '').trim();
-          if (!trimmed) continue;
-          const key = trimmed.toLowerCase();
-          if (byName.has(key)) continue;
-          byName.set(key, {
-            id:                 null,
-            name:               trimmed,
-            job_class:          null,
-            prevailing_rate:    null,
-            non_prevailing_rate:null,
-            is_supervisor:      false,
-            is_driver:          false,
-            phone:              null,
-            email:              null,
-            supervisor_name:    null,
-            source:             'quarry',
-          });
-        }
-      } catch (err) {
-        console.error('[employees GET] quarry read failed (non-fatal):', err.message);
-      }
-
-      const merged = Array.from(byName.values())
-        .sort((a, b) => a.name.localeCompare(b.name));
+      // The union of every roster in the company, deduplicated by name — see
+      // api/lib/roster.js. The Scheduler reads the same function, so the two
+      // lists cannot drift apart again.
+      const merged = await readEmployeeRoster(sql, companyCode);
       return res.json({ employees: merged });
     }
 
