@@ -62,6 +62,10 @@ function chip(a, opts) {
     console,
     // The division stripe down the left of a chip. Not what any of this is about.
     divColor: () => '#22c55e',
+    // Whether a booking is a trucking haul read through from Trucking. Only the
+    // dashed edge and the truck glyph turn on it; the names do not.
+    isForeign: a => !!(a && a.src),
+    fmtTime: s => s || '',
   };
   vm.createContext(sandbox);
   evalSlice(ESC + '\n' + CHIP, sandbox, 'the board chip', { filename: 'scheduler.html' });

@@ -43,7 +43,10 @@ const SCHED = read('scheduler.html');
 
 const WEEK = ['2026-09-21','2026-09-22','2026-09-23','2026-09-24','2026-09-25','2026-09-26','2026-09-27'];
 const FNS = ['assignmentsFor','loadForResource','bookedInView','jobsOnDate','idleEmployees',
-             'railLoadPill','viewingOneDay','spanDaysCount','conflictResourcesOn'];
+             'railLoadPill','viewingOneDay','spanDaysCount','conflictResourcesOn',
+             // Several hauls in a day are one commitment; a haul and a turf job
+             // are two. Both counts go through this.
+             'commitKey','isForeign'];
 
 const A = (r, div, id, cc) => ({ id: r+div+id+(cc||''), resource:r, kind:'emp', division:div,
                                  jobId:id, jobName:id, costCode:cc||'', half:false });

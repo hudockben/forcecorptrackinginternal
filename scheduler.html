@@ -150,6 +150,9 @@
     .cell-times input[type=time].jt-in { font-size:0.56rem; }
     .asn { display:inline-block; vertical-align:top; max-width:100%; font-size:0.64rem; line-height:1.3; padding:0.05rem 0.3rem; border-radius:4px; margin:0 0.14rem 0.14rem 0; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
+    /* A haul is read through from Trucking and saves back there. The dashed
+       edge is the one visual cue that this booking has another owner. */
+    .asn.haul { border-left-style:dashed; }
     .grp-row td { background:var(--surface2); cursor:pointer; } .grp-lead { font-weight:700; } .caret { display:inline-block; width:12px; color:var(--muted); }
     .div-badge { font-size:0.58rem; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; padding:0.1rem 0.4rem; border-radius:5px; border:1px solid; }
     .pill { font-size:0.58rem; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; padding:0.08rem 0.4rem; border-radius:9px; }
@@ -427,11 +430,16 @@ async function loadAll() {
     ]);
     state.board = board;
     const v = asn && asn.value;
-    state.assignments = (v && typeof v === 'object' && v.assignments) ? v.assignments : {};
+    // The hauls trucking already has on, straight off the board payload, and
+    // the board's own rows out of its own blob — kept apart as baselines
+    // because they save to different places, and joined for everything else.
+    const freshHauls = (board && board.truckingAssignments) || {};
+    _foreignBase = JSON.stringify(freshHauls);
+    state.assignments = withForeign((v && typeof v === 'object' && v.assignments) ? v.assignments : {}, freshHauls);
     state.siteTimes = (v && typeof v === 'object' && v.siteTimes && typeof v.siteTimes === 'object') ? v.siteTimes : {};
     const c = crews && crews.value;
     state.crews = (c && Array.isArray(c.crews)) ? c.crews : [];
-    _baseline = JSON.stringify(state.assignments);
+    _baseline = _snap();
     _baselineTimes = JSON.stringify(state.siteTimes);
 
     // Recover edits that were cached locally but never confirmed saved to the
@@ -439,8 +447,8 @@ async function loadAll() {
     const local = _readLocal();
     if (local && local.synced === false) {
       const serverStr = _snap();
-      const recovered = _recoverAdds(state.assignments, local.assignments || {});
-      if (JSON.stringify(recovered) !== serverStr) { state.assignments = recovered; _dirtyAssign = true; }
+      const recovered = _recoverAdds(ownRows(state.assignments), local.assignments || {});
+      if (JSON.stringify(recovered) !== serverStr) { state.assignments = withForeign(recovered); _dirtyAssign = true; }
       const recoveredTimes = _recoverTimes(state.siteTimes, local.siteTimes || {});
       if (JSON.stringify(recoveredTimes) !== JSON.stringify(state.siteTimes)) { state.siteTimes = recoveredTimes; _dirtyAssign = true; }
       if (Array.isArray(local.crews) && local.crews.length && !state.crews.length) { state.crews = local.crews; _dirtyCrews = true; }
@@ -471,7 +479,7 @@ let _saveTimer = null, _dirtyAssign = false, _dirtyCrews = false, _flushing = fa
 const LOCAL_KEY = 'fct_sched_cache:' + ((user && user.companyCode) || '') + ':' + ((user && user.username) || '');
 let _saveState = 'saved';                 // 'saved' | 'pending' | 'saving' | 'error'
 let _retryTimer = null, _retryDelay = 0;
-function _writeLocal(synced) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify({ v:1, synced: !!synced, assignments: state.assignments, crews: state.crews, siteTimes: state.siteTimes })); } catch {} }
+function _writeLocal(synced) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify({ v:1, synced: !!synced, assignments: ownRows(state.assignments), crews: state.crews, siteTimes: state.siteTimes })); } catch {} }
 function _readLocal() { try { return JSON.parse(localStorage.getItem(LOCAL_KEY) || 'null'); } catch { return null; } }
 // Recover locally-cached additions the server never confirmed. Additions only
 // (never deletes) so a stale cache can't wipe another device's work.
@@ -490,11 +498,162 @@ function _scheduleRetry(err) {
   toast('Save failed — retrying' + (err && err.message ? ' (' + err.message + ')' : ''));
   _retryTimer = setTimeout(() => flushSaves(false), _retryDelay);
 }
-function _snap() { return JSON.stringify(state.assignments); }
-function pushUndo() { _undo.push(_snap()); if (_undo.length > 50) _undo.shift(); _redo = []; updateUndoButtons(); }
+// ── Trucking hauls: read through, never copied ────────────────────────
+// A haul lives in trucking.html's dispatch blob and is READ THROUGH into
+// state.assignments beside this board's own rows, because that is what makes it
+// count: the double-booking flag, the idle figure, the By Crew rows and the
+// dispatch sheet all read that one map, and a driver on a haul is exactly as
+// unavailable as a man on a turf job. Every read-through row carries `src` —
+// which blob it came from, its id there, the job it sat on when we read it, and
+// the original row, whole.
+//
+// Two rules follow, and everything below is one or the other.
+//
+//  1. A `src` row is NEVER written into the scheduler's own blob. Trucking
+//     would then exist twice, once owned by each screen, and the two would
+//     drift the first time a dispatcher touched a haul. So everything that
+//     persists or compares goes through ownRows().
+//  2. A `src` row IS written back to the blob it came from — by DIFFING what
+//     is on the board now against what we read. Nothing has to remember to
+//     flag a haul as edited: a drag, a hand-over, a removal, an undo and a redo
+//     all just move rows around the map, and the diff sees the result. A dirty
+//     flag would have to be set correctly in every one of those places, and
+//     would be wrong the first time somebody added a seventh.
+function isForeign(a) { return !!(a && a.src); }
+function ownRows(map) { return _splitRows(map, false); }
+function foreignRows(map) { return _splitRows(map, true); }
+function _splitRows(map, want) {
+  const out = {};
+  for (const d in (map || {})) {
+    const keep = (map[d] || []).filter(a => isForeign(a) === want);
+    if (keep.length) out[d] = keep;
+  }
+  return out;
+}
+// Own rows and hauls back in one map. Every merge and every wholesale
+// replacement of state.assignments below goes through this, because none of
+// them know hauls exist — mergeAssignments reconciles the scheduler's blob, and
+// a haul is not in it.
+function withForeign(ownMap, foreignMap) {
+  const f = foreignMap || foreignRows(state.assignments);
+  const out = {};
+  for (const d in (ownMap || {})) { const l = ownMap[d] || []; if (l.length) out[d] = l.slice(); }
+  for (const d in (f || {}))      { const l = f[d] || [];      if (l.length) (out[d] = out[d] || []).push(...l); }
+  return out;
+}
+// The hauls as trucking last handed them to us. The difference between this and
+// the hauls on the board now IS the write-back.
+let _foreignBase = '{}';
+function truckDirty() { return JSON.stringify(foreignRows(state.assignments)) !== _foreignBase; }
+// A haul trucking filed with no id. Its own merge keys by id, so it is already
+// invisible there; here it is SHOWN — the driver is genuinely busy and the
+// board's job is to say so — and refused for edits, because a write-back would
+// have nothing to aim at.
+function foreignLocked(a) { return isForeign(a) && !a.src.id; }
+// A booking made HERE on a trucking job is a new haul in trucking's blob, not a
+// scheduler row. It is stamped the moment it is created, so the write-back has
+// a blob and an id to aim at and the scheduler's own save never sees it.
+// Equipment is not: a truck pinned to a haul on this board is this board's
+// note, and trucking's rows are drivers.
+function stampHaul(o, job, from) {
+  const s = job && job.src;
+  if (!s || !s.key || o.kind === 'equip') return false;
+  const rid = 'sch' + uid();
+  // Copied FROM a haul — alt-dragged to Thursday, or repeated across the row —
+  // it is the same load run again: the truck, the hours, the material and the
+  // notes all come with it. Only the id is new, because two rows sharing one id
+  // is the one thing trucking's merge cannot survive.
+  const was = (from && from.src && from.src.row) || {};
+  o.id    = 'tk\u00a6' + s.key + '\u00a6' + rid;
+  o.unit  = was.unit  || '';
+  o.start = was.start || '';
+  o.end   = was.end   || '';
+  o.src = { key: s.key, id: rid, jobId: job.id,
+            row: { ...was, id: rid, driver: o.resource, project: s.project || job.name,
+                   project_id: s.projectId || '', customer: s.customer || '' } };
+  return true;
+}
+// The trucking row a booking stands for: the original, whole, with the fields
+// this board can actually change laid over it. Rebuilt from src.row rather than
+// from the booking, so unit, material, notes, hours and anything trucking adds
+// later survive a move made here untouched — and the job fields are only
+// rewritten when the row actually changed job, so that re-saving a row nobody
+// moved cannot quietly normalise a customer somebody spelled by hand.
+function haulRowOf(a) {
+  const o = { ...(a.src.row || {}), id: a.src.id, driver: a.resource };
+  if (a.jobId !== a.src.jobId) {
+    const s = (jobById('trucking', a.jobId) || {}).src || {};
+    o.project = s.project || a.jobName;
+    if (s.projectId) o.project_id = s.projectId; else delete o.project_id;
+    o.customer = s.customer || '';
+  }
+  return o;
+}
+// One board's rows, in trucking's shape. Rows with no id are left out: they are
+// shown, never written.
+function haulMapFor(map, key) {
+  const out = {};
+  Object.keys(map || {}).sort().forEach(d => {
+    (map[d] || []).forEach(a => {
+      if (!a.src || a.src.key !== key || !a.src.id) return;
+      (out[d] = out[d] || []).push(haulRowOf(a));
+    });
+  });
+  return out;
+}
+// What has to go to trucking, one request per board: the rows as we READ them
+// and as they stand now. The server re-reads the blob and replays the
+// difference — our adds, edits and removals, by id — over whatever a dispatcher
+// has done in the meantime, so the two screens merge rather than overwrite.
+// `base` carries only the forward dates this board was given, so a haul
+// trucking holds in the past is in neither side of the diff and cannot be
+// touched by anything done here.
+function truckPayloads() {
+  const nowMap = foreignRows(state.assignments);
+  let baseMap = {}; try { baseMap = JSON.parse(_foreignBase) || {}; } catch {}
+  const keys = new Set();
+  [nowMap, baseMap].forEach(m => { for (const d in m) (m[d] || []).forEach(a => { if (a && a.src && a.src.key && a.src.id) keys.add(a.src.key); }); });
+  const out = [];
+  keys.forEach(key => {
+    const rows = haulMapFor(nowMap, key), base = haulMapFor(baseMap, key);
+    if (JSON.stringify(rows) !== JSON.stringify(base)) out.push({ key, base, rows });
+  });
+  return out;
+}
+async function flushTrucking() {
+  if (!truckDirty()) return;
+  // Snapshotted before the first request, so an edit made while they are in
+  // flight is still dirty afterwards and goes out on the next flush.
+  const sent = JSON.stringify(foreignRows(state.assignments));
+  for (const body of truckPayloads()) {
+    await api('/api/scheduler/trucking', { method: 'POST', body: JSON.stringify(body) });
+  }
+  // Only once every board is through. A throw above leaves the base where it
+  // was, so the retry sends the same difference again rather than losing it.
+  _foreignBase = sent;
+}
+// The tab is closing. The board's own save cannot merge on the way out — it is
+// a read-modify-write in the client and there is no time for the read — but
+// this one CAN: the endpoint does its reading on the server, so one keepalive
+// request still reconciles properly. The base is deliberately NOT advanced: if
+// the request was dropped, the next load sends the same difference again, and
+// if it landed it is a no-op replayed.
+function flushTruckingKeepalive() {
+  truckPayloads().forEach(body => {
+    fetch('/api/scheduler/trucking', { method: 'POST', keepalive: true,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify(body) }).catch(() => {});
+  });
+}
+function _snap() { return JSON.stringify(ownRows(state.assignments)); }
+// Undo carries the WHOLE map, hauls included. It never leaves the tab, so there
+// is no blob to keep them out of — and a haul dragged somewhere by accident is
+// exactly the thing a scheduler reaches for Ctrl+Z over.
+function _undoSnap() { return JSON.stringify(state.assignments); }
+function pushUndo() { _undo.push(_undoSnap()); if (_undo.length > 50) _undo.shift(); _redo = []; updateUndoButtons(); }
 function updateUndoButtons() { const u=document.getElementById('undoBtn'), r=document.getElementById('redoBtn'); if (u) u.disabled = !_undo.length; if (r) r.disabled = !_redo.length; }
-function undo() { if (!_undo.length) return; _redo.push(_snap()); state.assignments = JSON.parse(_undo.pop()); if (state.assignCtx) closeAssign(); _dirtyAssign = true; _scheduleFlush(); render(); }
-function redo() { if (!_redo.length) return; _undo.push(_snap()); state.assignments = JSON.parse(_redo.pop()); if (state.assignCtx) closeAssign(); _dirtyAssign = true; _scheduleFlush(); render(); }
+function undo() { if (!_undo.length) return; _redo.push(_undoSnap()); state.assignments = JSON.parse(_undo.pop()); if (state.assignCtx) closeAssign(); _dirtyAssign = true; _scheduleFlush(); render(); }
+function redo() { if (!_redo.length) return; _undo.push(_undoSnap()); state.assignments = JSON.parse(_redo.pop()); if (state.assignCtx) closeAssign(); _dirtyAssign = true; _scheduleFlush(); render(); }
 function _scheduleFlush() { _writeLocal(false); if (_saveState !== 'saving') setSaveStatus('pending'); clearTimeout(_saveTimer); _saveTimer = setTimeout(() => flushSaves(false), 500); }
 function saveAssignments() { _dirtyAssign = true; _scheduleFlush(); }
 function saveCrews() { _dirtyCrews = true; _scheduleFlush(); }
@@ -544,6 +703,10 @@ function dedupeAssignmentMap(map) {
   for (const d in map) {
     const seen = new Set(); const out = [];
     for (const a of (map[d] || [])) {
+      // Hauls are exempt. Two loads for one driver on one customer in a day is
+      // an ordinary trucking day, not a duplicate — and dropping one here
+      // would file a tombstone in trucking for work that is going to run.
+      if (isForeign(a)) { out.push(a); continue; }
       const k = (a.resource||'')+'¦'+(a.kind||'')+'¦'+(a.op||'')+'¦'+(a.division||'')+'¦'+(a.jobId||'')+'¦'+(a.costCode||'');
       if (seen.has(k)) { removed = true; continue; }
       seen.add(k); out.push(a);
@@ -557,12 +720,13 @@ async function flushSaves(keepalive) {
   if (keepalive) { // tab hiding/closing — best-effort PUT. Keep dirty flags set
     // so if the tab comes back (or the keepalive was dropped) we still flush;
     // the local cache stays unsynced until a real success confirms the write.
-    if (_dirtyAssign) _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments, siteTimes: state.siteTimes }, true).catch(()=>{});
+    if (_dirtyAssign) _putKey(ASSIGN_KEY, { version:1, assignments: ownRows(state.assignments), siteTimes: state.siteTimes }, true).catch(()=>{});
     if (_dirtyCrews)  _putKey(CREWS_KEY,  { version:1, crews: state.crews }, true).catch(()=>{});
+    if (truckDirty()) flushTruckingKeepalive();
     return;
   }
   if (_flushing) { _scheduleFlush(); return; }
-  if (!_dirtyAssign && !_dirtyCrews) return;
+  if (!_dirtyAssign && !_dirtyCrews && !truckDirty()) return;
   _flushing = true; setSaveStatus('saving');
   try {
     if (_dirtyAssign) {
@@ -570,14 +734,17 @@ async function flushSaves(keepalive) {
       const theirs = (sv && sv.assignments) || {};
       const theirsTimes = (sv && sv.siteTimes) || {};
       let merged = false;
-      if (JSON.stringify(theirs) !== _baseline) { state.assignments = mergeAssignments(_baseline, state.assignments, theirs); merged = true; }
+      if (JSON.stringify(theirs) !== _baseline) { state.assignments = withForeign(mergeAssignments(_baseline, ownRows(state.assignments), theirs)); merged = true; }
       if (JSON.stringify(theirsTimes) !== _baselineTimes) { state.siteTimes = mergeSiteTimes(_baselineTimes, state.siteTimes, theirsTimes); merged = true; }
       if (merged) { toast('Merged another scheduler’s changes'); render(); }
       if (dedupeAssignmentMap(state.assignments)) render(); // never persist duplicate assignments
-      await _putKey(ASSIGN_KEY, { version:1, assignments: state.assignments, siteTimes: state.siteTimes }, false);
+      await _putKey(ASSIGN_KEY, { version:1, assignments: ownRows(state.assignments), siteTimes: state.siteTimes }, false);
       _baseline = _snap(); _baselineTimes = JSON.stringify(state.siteTimes); _dirtyAssign = false;
     }
     if (_dirtyCrews) { await _putKey(CREWS_KEY, { version:1, crews: state.crews }, false); _dirtyCrews = false; }
+    // Last, and inside the same try: a haul that fails to reach trucking leaves
+    // _foreignBase alone and drops into the same retry the board's own saves use.
+    await flushTrucking();
     _writeLocal(true); _retryDelay = 0; clearTimeout(_retryTimer); setSaveStatus('saved');
   } catch (err) {
     _writeLocal(false); setSaveStatus('error'); _scheduleRetry(err);
@@ -589,22 +756,29 @@ async function refreshData() {
     state.board = board;
     const theirs = (sv && sv.assignments) || {};
     const theirsTimes = (sv && sv.siteTimes) || {};
-    state.assignments = (_dirtyAssign || _snap() !== _baseline) ? mergeAssignments(_baseline, state.assignments, theirs) : theirs;
+    // Hauls reconcile the same way the board's own rows do, against their own
+    // baseline: start from what trucking has now, then replay whatever this tab
+    // has done since and not yet sent. Computed BEFORE _foreignBase moves on.
+    const freshHauls = (board && board.truckingAssignments) || {};
+    const nextHauls = truckDirty() ? mergeAssignments(_foreignBase, foreignRows(state.assignments), freshHauls) : freshHauls;
+    const ownNext = (_dirtyAssign || _snap() !== _baseline) ? mergeAssignments(_baseline, ownRows(state.assignments), theirs) : theirs;
+    _foreignBase = JSON.stringify(freshHauls);
+    state.assignments = withForeign(ownNext, nextHauls);
     if (dedupeAssignmentMap(state.assignments)) _dirtyAssign = true;
     state.siteTimes = (_dirtyAssign || JSON.stringify(state.siteTimes) !== _baselineTimes) ? mergeSiteTimes(_baselineTimes, state.siteTimes, theirsTimes) : theirsTimes;
     _baseline = JSON.stringify(theirs);
     _baselineTimes = JSON.stringify(theirsTimes);
     _writeLocal(!(_dirtyAssign || _dirtyCrews));
     render(); toast('Refreshed');
-    if (_dirtyAssign || _dirtyCrews) { setSaveStatus('pending'); _scheduleFlush(); } else setSaveStatus('saved');
+    if (_dirtyAssign || _dirtyCrews || truckDirty()) { setSaveStatus('pending'); _scheduleFlush(); } else setSaveStatus('saved');
   } catch (err) { toast('Refresh failed: ' + err.message); }
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') flushSaves(true);
-  else if (_dirtyAssign || _dirtyCrews) flushSaves(false); // tab returned with unsaved edits — retry now
+  else if (_dirtyAssign || _dirtyCrews || truckDirty()) flushSaves(false); // tab returned with unsaved edits — retry now
 });
 window.addEventListener('pagehide', () => flushSaves(true));
-window.addEventListener('online', () => { if (_dirtyAssign || _dirtyCrews) flushSaves(false); });
+window.addEventListener('online', () => { if (_dirtyAssign || _dirtyCrews || truckDirty()) flushSaves(false); });
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (e.key === 'Escape') {
@@ -679,6 +853,10 @@ function placeOnJob(date, job, costCode, proto) {
   const o = { id: uid(), resource: proto.resource, kind: proto.kind, division: job.division, jobId: job.id,
               jobName: job.name, costCode: cc, half: !!proto.half };
   if (proto.op) o.op = proto.op;
+  // A driver put on a trucking job here becomes a haul in TRUCKING's blob, not
+  // a row of this board's own. Where the booking was copied from a haul, that
+  // haul's load comes with it.
+  stampHaul(o, job, proto);
   dayList(date).push(o);
   return 'added';
 }
@@ -711,7 +889,14 @@ function addEquipForOp(date, machine, operator, job, costCode) {
   dayList(date).push({ id: uid(), resource: machine, kind: 'equip', op: operator, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, half:false });
   saveAssignments(); return 1;
 }
-function toggleHalf(date, id) { const a = (state.assignments[date]||[]).find(x => x.id === id); if (a) { pushUndo(); a.half = !a.half; saveAssignments(); } }
+function toggleHalf(date, id) {
+  const a = (state.assignments[date]||[]).find(x => x.id === id); if (!a) return;
+  // A haul's day is its start and end times, which are Trucking's to set. A
+  // half flag here has nowhere to be written back to, so it would vanish on the
+  // next refresh — which is worse than not offering it.
+  if (isForeign(a)) { toast('Set a haul\u2019s hours in Trucking'); return; }
+  pushUndo(); a.half = !a.half; saveAssignments();
+}
 // ── "Be on site" report time (per job, per day) ─────────────────────────────
 // Two times a crew has to be told, and they answer different questions: when
 // to be at the SHOP — which is when you pick up the truck and the gear — and
@@ -743,8 +928,16 @@ function setJobTime(kind, division, jobId, val, dates) {
 }
 function getSiteTime(date, division, jobId) { return getJobTime('site', date, division, jobId); }
 function getShopTime(date, division, jobId) { return getJobTime('shop', date, division, jobId); }
+// What counts as ONE commitment for the double-booking flag. Every haul a man
+// has collapses to a single one, because running three loads in a day is an
+// ordinary trucking day and reddening it would spend the flag on the one case
+// that is fine — and whether two hauls' HOURS overlap is a question Trucking's
+// own board already asks, with the start and end times this one does not carry.
+// A haul AND a turf job is still a conflict, and that is the case this board
+// exists to catch: until trucking was on it, nothing anywhere could see it.
+function commitKey(a) { return isForeign(a) ? 'trucking\u00a6haul' : a.division + '::' + a.jobId; }
 function conflictResourcesOn(date) {
-  const byRes = {}; (state.assignments[date] || []).forEach(a => { (byRes[a.resource] = byRes[a.resource] || new Set()).add(a.division + '::' + a.jobId); });
+  const byRes = {}; (state.assignments[date] || []).forEach(a => { (byRes[a.resource] = byRes[a.resource] || new Set()).add(commitKey(a)); });
   const out = new Set(); Object.entries(byRes).forEach(([r,set]) => { if (set.size > 1) out.add(r); }); return out;
 }
 function totalConflicts() { let n = 0; Object.keys(state.assignments).forEach(d => { n += conflictResourcesOn(d).size; }); return n; }
@@ -761,7 +954,7 @@ function bookedInView(resource) { return weekDateStrs().some(d => assignmentsFor
 // turn out to be the same question asked of the same number.
 function jobsOnDate(resource, date) {
   const s = new Set();
-  (state.assignments[date] || []).forEach(a => { if (a.resource === resource) s.add(a.division + '::' + a.jobId); });
+  (state.assignments[date] || []).forEach(a => { if (a.resource === resource) s.add(commitKey(a)); });
   return s.size;
 }
 // Names booked on the board that are no longer on the company roster: someone
@@ -1151,12 +1344,20 @@ function renderCapacity() {
 // cost code or another person's row to move that assignment; hold Alt/Ctrl to
 // copy instead. Right-click takes it off.
 const DRAG_TIP = ' — drag to move (Alt = copy) · drag the grip across the row for several days · right-click to remove';
+// What a haul adds to its own tooltip. The truck and the hours are what a
+// dispatcher checks before he puts a second thing on a driver's day, and
+// "from Trucking" is how he knows why editing it behaves differently.
+function haulNote(a) {
+  if (!isForeign(a)) return '';
+  const hrs = [a.start, a.end].filter(Boolean).map(fmtTime).join('\u2013');
+  return (a.unit ? ' · ' + a.unit : '') + (hrs ? ' · ' + hrs : '') + ' · from Trucking';
+}
 function chip(a, conf, date, showJob) {
   const col = divColor(a.division);
   // data-res is what the trace below reads: a chip knew its assignment id but
   // never said whose it was, so the board could not answer "where else is he".
   const dd = ' draggable="true" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'" data-res="'+esc(a.resource)+'"';
-  const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'');
+  const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'')+(isForeign(a)?' haul':'');
   const half = a.half ? ' ½' : '';
   // Each name carries its own fill grip. The cell handle repeats the WHOLE
   // crew; this repeats the one man you grabbed, which is the thing a scheduler
@@ -1168,15 +1369,15 @@ function chip(a, conf, date, showJob) {
   // in every cell said nothing. What a scheduler needs there is the JOB he is
   // on — and the cost code, if anyone named one.
   if (showJob) {
-    const label = (a.kind==='equip'?'🚜 ':'')+esc(a.jobName)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'');
-    const title = a.jobName+(a.costCode?' · '+a.costCode:'')+(a.kind==='equip'&&a.op?' — operated by '+a.op:'')+DRAG_TIP;
+    const label = (a.kind==='equip'?'🚜 ':isForeign(a)?'🚚 ':'')+esc(a.jobName)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'');
+    const title = a.jobName+(a.costCode?' · '+a.costCode:'')+(a.kind==='equip'&&a.op?' — operated by '+a.op:'')+haulNote(a)+DRAG_TIP;
     return open+'"'+esc(title)+'">'+label+half+grip+'</span>';
   }
   if (a.kind === 'equip') {
     const label = '🚜 '+esc(a.resource)+(a.op?' · '+esc(a.op):'');
     return open+'"'+esc(a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP)+'">'+label+half+grip+'</span>';
   }
-  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+DRAG_TIP)+'">'+esc(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
+  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+haulNote(a)+DRAG_TIP)+'">'+(isForeign(a)?'🚚 ':'')+esc(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
 }
 
 // ── By Job board ────────────────────────────────────────────────
@@ -1694,10 +1895,36 @@ function dropOnJobCell(srcDate, id, tgt, copy) {
   const a = list.find(x => x.id === id); if (!a) return;
   if (srcDate === tgt.date && a.division === tgt.division && a.jobId === tgt.jobId &&
       (a.costCode||'') === (tgt.costCode||'')) return; // dropped where it started
+  // A haul can move day and it can move to another haul. It cannot become a
+  // turf job: the unit, the hours, the material and the customer have nowhere
+  // to go on one, and a drag that silently threw them away would be a drag you
+  // could not undo in Trucking. Taking a driver OFF a haul is a removal, and
+  // says so.
+  if (isForeign(a) && tgt.division !== 'trucking') {
+    toast(a.resource + ' is on a haul — take him off it first (right-click), then put him here'); return;
+  }
+  if (foreignLocked(a)) { toast('This haul has no id in Trucking — open Trucking and re-save it'); return; }
   const job = jobFor(tgt.division, tgt.jobId, a.jobName);
   const movers = [a].concat(_pairedEquip(list, a));
   if (movers.every(m => isBlockedOff(m.resource, m.kind, tgt.date))) { toast(a.resource + ' is approved off ' + shortDate(tgt.date) + ' — not moved'); return; }
   pushUndo();
+  // Moving a haul is the SAME haul on another day or another customer — not a
+  // new one. Trucking's id for it, the truck, the hours, the material and the
+  // notes all travel with the row. Re-cutting it (which is what placing a fresh
+  // booking below would do) would file the load twice in Trucking's records and
+  // leave a tombstone for work that is still going to run. An Alt-drag COPY is
+  // a second haul and does go through the path below.
+  if (isForeign(a) && !copy) {
+    const pairs = _pairedEquip(list, a), ids = new Set(pairs.map(m => m.id));
+    state.assignments[srcDate] = list.filter(x => x.id !== a.id && !ids.has(x.id));
+    if (!state.assignments[srcDate].length) delete state.assignments[srcDate];
+    a.jobId = job.id; a.jobName = job.name; a.costCode = '';
+    dayList(tgt.date).push(a);
+    pairs.forEach(m => placeOnJob(tgt.date, job, '', m));   // his machines follow him
+    saveAssignments(); render();
+    toast('Moved ' + a.resource + ' → ' + job.name + ' · ' + shortDate(tgt.date));
+    return;
+  }
   let added = 0;
   movers.forEach(m => {
     const cc = tgt.costCode || (m.division === tgt.division && m.jobId === tgt.jobId ? (m.costCode || '') : '');
@@ -1721,6 +1948,21 @@ function dropOnResCell(srcDate, id, tgt, copy) {
   if (a.resource === tgt.resource && srcDate === tgt.date) return;
   if ((a.kind || 'emp') !== (tgt.rkind || 'emp')) { toast('A machine goes on an equipment row, a person on a crew row'); return; }
   if (isBlockedOff(tgt.resource, tgt.rkind, tgt.date)) { toast(tgt.resource + ' is approved off ' + shortDate(tgt.date)); return; }
+  // Handing a haul to another driver is a change of driver on the SAME haul.
+  // Deleting it and cutting a new one would file the load twice in Trucking's
+  // records and leave a tombstone for work that is still going to run.
+  if (isForeign(a) && !copy) {
+    if (foreignLocked(a)) { toast('This haul has no id in Trucking — open Trucking and re-save it'); return; }
+    if ((tgt.rkind || 'emp') !== 'emp') { toast('A haul goes to a driver, not a machine'); return; }
+    pushUndo();
+    state.assignments[srcDate] = list.filter(x => x.id !== a.id);
+    if (!state.assignments[srcDate].length) delete state.assignments[srcDate];
+    a.resource = tgt.resource;
+    dayList(tgt.date).push(a);
+    saveAssignments(); render();
+    toast('Handed to ' + tgt.resource + ' · ' + a.jobName + ' · ' + shortDate(tgt.date));
+    return;
+  }
   const where = { division:a.division, jobId:a.jobId, costCode:a.costCode||'' };
   if (_hasAt(tgt.date, where, tgt.resource, a.kind === 'equip' ? a.op : '')) { toast(tgt.resource + ' is already on that'); return; }
   const movers = [a].concat(_pairedEquip(list, a));
@@ -1729,6 +1971,10 @@ function dropOnResCell(srcDate, id, tgt, copy) {
   movers.forEach(m => {
     const o = { ...m, id:uid() };
     if (m.id === a.id) o.resource = tgt.resource; else o.op = tgt.resource; // his machines change driver with him
+    // Copying a haul is a SECOND haul. It must never carry the original's
+    // src.id, or the write-back would file two rows under one id and trucking
+    // would keep whichever it merged last.
+    if (isForeign(m)) { delete o.src; if (!stampHaul(o, jobById('trucking', m.jobId), m)) return; }
     if (isBlockedOff(o.resource, o.kind, tgt.date)) return;
     if (_hasAt(tgt.date, o, o.resource, o.op)) return;
     dayList(tgt.date).push(o); added++;
@@ -2328,12 +2574,22 @@ function deleteCrew(id) {
 // ── Copy week ───────────────────────────────────────────────────────────────
 function copyWeekForward() {
   pushUndo();
-  const wk = fullWeekDateStrs(); let added = 0, blocked = 0;
+  const wk = fullWeekDateStrs(); let added = 0, blocked = 0, hauls = 0;
   wk.forEach(d => { const items = state.assignments[d] || []; const nd = addDays(d, 7);
     items.forEach(a => { if (isBlockedOff(a.resource, a.kind, nd)) { blocked++; return; } // approved off next week — don't carry forward
       if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||''))) return;
-      dayList(nd).push({ ...a, id: uid() }); added++; }); });
-  if (added) { saveAssignments(); toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'+(blocked?' · skipped '+blocked+' full days off':'')); state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
+      const o = { ...a, id: uid() };
+      // A haul repeated next week is a NEW haul in Trucking, and it needs its
+      // own id there: carrying the original's would file one row under two
+      // dates and leave trucking keeping whichever it merged last. The load
+      // travels with it, which is what repeating a week means.
+      if (isForeign(a)) { delete o.src; if (!stampHaul(o, jobById('trucking', a.jobId), a)) return; hauls++; }
+      dayList(nd).push(o); added++; }); });
+  if (added) { saveAssignments();
+    // Hauls are said out loud: this button writes them into Trucking's own
+    // schedule, and a bulk write into another division should never be silent.
+    toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'+(hauls?' · '+hauls+' booked in Trucking':'')+(blocked?' · skipped '+blocked+' full days off':''));
+    state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
   else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Next week is all approved-off for those crew' : 'Nothing to copy (next week already matches)'); }
 }
 

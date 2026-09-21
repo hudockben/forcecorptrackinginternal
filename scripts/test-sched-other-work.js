@@ -43,7 +43,18 @@ const SCHED = read('scheduler.html');
 const FNS = ['otherKey','otherJobOf','otherLabel','otherJobsInWeek','jobFor','jobById','divLabel',
              'placeOnJob','addAssignmentSpan','conflictResourcesOn','dropJob','loadForResource',
              // idleEmployees reads the range ON SCREEN now, through bookedInView.
-             'bookedInView','assignmentsFor','dayList','idleEmployees'];
+             // placeOnJob stamps a booking made on a trucking job so it saves
+             // back to Trucking. Off-project rows are never trucking, so it is
+             // lifted only to keep placeOnJob resolvable.
+             // placeOnJob stamps a booking made on a trucking job so it saves
+             // back to Trucking. Off-project rows are never trucking, so this is
+             // lifted only to keep placeOnJob resolvable.
+             // placeOnJob stamps a booking made on a trucking job so it saves
+             // back to Trucking, and the double-booking count folds a man's
+             // hauls into one commitment. Neither touches off-project rows;
+             // both are lifted so the functions under test resolve.
+             'bookedInView','assignmentsFor','dayList','idleEmployees','stampHaul',
+             'commitKey','isForeign'];
 
 /** A board in a vm, running scheduler.html's own functions over it. */
 function board({ week, assignments, drafts, jobs, employees }) {

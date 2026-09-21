@@ -300,6 +300,145 @@ async function readEmployees(sql, companyCode) {
     })).filter(r => r.name);
   } catch (err) { console.warn('[scheduler/board] employees read failed:', err.message); return []; }
 }
+// ── Divisions whose work is a CUSTOMER, not a bid item ─────────────────────
+// Turf, paving and kiewit are projects: they carry bid items, a quantity to
+// chase and a pace to keep, and SOURCE_DIVISIONS reads them that way. Dust
+// Control and Trucking are not shaped like that and never will be. Their work
+// is a customer and a haul or a pad, and there is nothing underneath it to pace.
+//
+// They still belong on this board. A man sent to a dust pad on Tuesday is as
+// unavailable as one on a turf job, and until both were here the board could
+// answer "who is free" for only part of the company — which is the same as not
+// answering it.
+//
+// So they arrive as jobs with NO sub-codes. The board already draws a job whose
+// subCodes are empty without inventing a percentage for it (weightedPct returns
+// null on an empty list) — the same shape the off-project rows use, and for the
+// same reason: reporting 0% complete on work nobody measures that way would be
+// worse than reporting nothing.
+
+/** The customers of one division, off the shared Intercompany list. That list
+ *  is the only place a company is named once for the whole business, and every
+ *  company on it is tagged with the divisions it belongs to. */
+async function readIcCustomers(sql, companyCode, division) {
+  try {
+    const rows = await sql`SELECT value FROM app_data WHERE key = ${companyCode + ':fct_intercompany_companies'}`;
+    const list = rows.length && Array.isArray(rows[0].value) ? rows[0].value : [];
+    return list
+      .filter(c => c && Array.isArray(c.divisions) && c.divisions.includes(division) && String(c.name || '').trim())
+      .map(c => String(c.name).trim());
+  } catch (err) {
+    console.warn('[scheduler/board] intercompany customers read failed:', err.message);
+    return [];
+  }
+}
+
+/** One board row per dust customer. Dust keeps no schedule of its own, so these
+ *  are ordinary scheduler rows — staffed here, saved here, and nowhere else. */
+async function readDustJobs(sql, companyCode) {
+  const names = await readIcCustomers(sql, companyCode, 'dust');
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b)).map(name => ({
+    division: 'dust', id: 'dust¦' + normKey(name), name, jobNumber: '',
+    status: 'Active', deadline: null, subCodes: [], bidValue: 0,
+  }));
+}
+
+// ── Trucking, read through from the dispatch board ─────────────────────────
+// Trucking already has a schedule, and it is the one dispatchers work in. This
+// board does not copy it: it reads it, shows the hauls as bookings like any
+// other, and writes changes straight back to the blob they came from. There is
+// one schedule, and two windows onto it.
+//
+// Each board's blob is { version, assignments: { 'YYYY-MM-DD': [ {id,driver,
+// project,project_id,customer,unit,start,end,material,notes} ] }, hidden: [],
+// deleted: {} }. All of it matters: anything written back has to preserve the
+// parts this board does not model, so every row travels with the original under
+// `src.row` and a write-back rebuilds from that rather than from what fits here.
+const TRUCKING_BOARDS = [
+  { key: 'fct_trucking_schedule',       label: 'Trucking', suffix: '' },
+  { key: 'fct_trucking_labor_schedule', label: 'Trucking labor', suffix: ' (labor)' },
+];
+/** Identity by NAME, lowercased and space-collapsed. A haul's project_id is the
+ *  better key on paper, but rows filed before project ids existed carry only a
+ *  customer, and a board that split "Acme" into two rows because half its hauls
+ *  predate a schema change is worse than one that occasionally joins two jobs
+ *  that share a name. The name is also what a scheduler reads. */
+function normKey(s) { return String(s || '').trim().replace(/\s+/g, ' ').toLowerCase(); }
+// What a haul is called here. project first, because that is what the trucking
+// editor writes now; customer is the older spelling and is all a row filed
+// before divisions existed has.
+function haulJobName(a) { return String((a && (a.project || a.customer)) || '').trim() || 'Trucking'; }
+
+/** The hauls already dispatched, as jobs and as bookings, plus a row for every
+ *  trucking customer with nothing on yet — otherwise the only jobs you could
+ *  staff here are the ones somebody had already staffed in Trucking. */
+async function readTruckingBoards(sql, companyCode, todayStr) {
+  const jobs = new Map(), assignments = {};
+  const jobKeyOf = (boardKey, name) => boardKey + '¦' + normKey(name);
+  const addJob = (b, name, row) => {
+    const id = jobKeyOf(b.key, name);
+    if (!jobs.has(id)) jobs.set(id, {
+      division: 'trucking', id, name: String(name).trim() + b.suffix, jobNumber: '',
+      status: 'Active', deadline: null, subCodes: [], bidValue: 0,
+      // What a new haul booked here has to say about itself to be a haul in
+      // Trucking's own blob, taken from the hauls already on this job.
+      src: {
+        key: b.key, label: b.label,
+        project:   String((row && row.project) || name).trim(),
+        projectId: String((row && row.project_id) || ''),
+        customer:  String((row && row.customer) || '').trim(),
+      },
+    });
+    return id;
+  };
+
+  for (const b of TRUCKING_BOARDS) {
+    try {
+      const rows = await sql`SELECT value FROM app_data WHERE key = ${companyCode + ':' + b.key}`;
+      const v = rows.length ? rows[0].value : null;
+      const byDate = (v && typeof v === 'object' && v.assignments && typeof v.assignments === 'object' && !Array.isArray(v.assignments))
+        ? v.assignments : {};
+      for (const [ds, list] of Object.entries(byDate)) {
+        if (!Array.isArray(list) || !/^\d{4}-\d{2}-\d{2}$/.test(ds)) continue;
+        // Forward work only. A dispatcher's archive is not this board's
+        // business, and a base that stops at today is also what keeps a
+        // write-back from ever reaching back and deleting history.
+        if (ds < todayStr) continue;
+        list.forEach((a, i) => {
+          const driver = String((a && a.driver) || '').trim();
+          if (!driver) return;
+          const name = haulJobName(a);
+          const jobId = addJob(b, name, a);
+          // Trucking keys its own rows by id, so a row without one is already
+          // invisible to its merge. It still tells us the driver is busy, so it
+          // is shown — with an empty src.id, which is how the scheduler knows
+          // not to try writing it back.
+          const rid = String((a && a.id) || '');
+          (assignments[ds] = assignments[ds] || []).push({
+            id: 'tk¦' + b.key + '¦' + (rid || ds + '#' + i),
+            resource: driver, kind: 'emp', division: 'trucking',
+            jobId, jobName: jobs.get(jobId).name, costCode: '', half: false,
+            unit:  String((a && a.unit)  || ''),
+            start: String((a && a.start) || ''),
+            end:   String((a && a.end)   || ''),
+            // Where it came from: which blob, which row there, the job it sat
+            // on when we read it (so a write-back can tell a move from a row
+            // that never left), and the row itself, whole.
+            src: { key: b.key, id: rid, jobId, row: a },
+          });
+        });
+      }
+    } catch (err) { console.warn('[scheduler/board] ' + b.key + ' read failed:', err.message); }
+  }
+
+  // Customers with no haul booked. Only on the haul board — a labor call is
+  // raised against work, not against a name on a list.
+  const haulBoard = TRUCKING_BOARDS[0];
+  (await readIcCustomers(sql, companyCode, 'trucking')).forEach(name => addJob(haulBoard, name, null));
+
+  return { jobs: [...jobs.values()].sort((a, b) => a.name.localeCompare(b.name)), assignments };
+}
+
 async function readEquipment(sql, companyCode) {
   try {
     const rows = await sql`
@@ -386,10 +525,12 @@ async function readTimeOff(sql, companyCode, todayStr) {
  * to run the same function rather than a second reading of the same blobs.
  */
 async function buildBoard(sql, companyCode, todayStr) {
-  const [employees, equipment, timeOff, ...divisionProjects] = await Promise.all([
+  const [employees, equipment, timeOff, dustJobs, trucking, ...divisionProjects] = await Promise.all([
     readEmployees(sql, companyCode),
     readEquipment(sql, companyCode),
     readTimeOff(sql, companyCode, todayStr),
+    readDustJobs(sql, companyCode),
+    readTruckingBoards(sql, companyCode, todayStr),
     ...SOURCE_DIVISIONS.map(s => readProjects(sql, companyCode, s.prefix, s.index)),
   ]);
 
@@ -435,6 +576,10 @@ async function buildBoard(sql, companyCode, todayStr) {
     });
   });
 
+  // Dust and trucking rows join the project jobs. They carry no sub-codes, so
+  // nothing downstream tries to pace them.
+  jobs.push(...dustJobs, ...trucking.jobs);
+
   const equipOut = equipment.filter(Boolean).slice().sort((a, b) => a.localeCompare(b));
   employees.sort((a, b) => a.name.localeCompare(b.name));
   jobs.sort((a, b) => a.name.localeCompare(b.name));
@@ -447,7 +592,13 @@ async function buildBoard(sql, companyCode, todayStr) {
     plannedAssignments,
     timeOff,
     excludedJobs,
-    sourceDivisions: SOURCE_DIVISIONS.map(s => s.division),
+    // What trucking.html has already dispatched. Held apart from the
+    // scheduler's own assignments so the board can draw it without it being
+    // mistaken for something this board owns.
+    truckingAssignments: trucking.assignments,
+    // Dust and trucking are schedulable here but are not project divisions, so
+    // they are named separately from the ones carrying bid items.
+    sourceDivisions: SOURCE_DIVISIONS.map(s => s.division).concat(['dust', 'trucking']),
   };
 }
 
