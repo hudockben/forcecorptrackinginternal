@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2322c55e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 3l7 3v5.5c0 4.2-2.9 7.6-7 9.5-4.1-1.9-7-5.3-7-9.5V6z'/><polyline points='9 12 11 14 15 10'/></svg>" />
+  <title>Safety Center</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    :root {
+      --bg:#0a0a0f; --surface:#14141d; --surface2:#1c1c28; --border:#2a2a3a;
+      --accent:#22c55e; --accent-d:#15803d; --text:#e8e8ee; --muted:#888;
+      --green:#22c55e; --amber:#facc15; --blue:#60a5fa; --red:#ef4444;
+    }
+    html, body { height:100%; }
+    body {
+      background:var(--bg); color:var(--text); font-size:16px; line-height:1.4;
+      font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+      padding-bottom:env(safe-area-inset-bottom, 0);
+    }
+
+    header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0.9rem 1rem; padding-top:calc(0.9rem + env(safe-area-inset-top, 0));
+      background:var(--surface); border-bottom:1px solid var(--border);
+      position:sticky; top:0; z-index:50;
+    }
+    .brand { font-size:0.65rem; letter-spacing:0.28em; text-transform:uppercase; color:var(--accent); font-weight:700; }
+    .brand small { display:block; letter-spacing:0.12em; color:var(--muted); font-size:0.58rem; margin-top:2px; }
+    .header-right { display:flex; align-items:center; gap:0.6rem; }
+    .icon-btn {
+      background:none; border:1px solid var(--border); color:var(--muted);
+      padding:0.5rem 0.7rem; border-radius:6px; font-size:0.65rem; font-weight:600;
+      letter-spacing:0.08em; text-transform:uppercase; cursor:pointer; font-family:inherit;
+    }
+    .icon-btn:hover, .icon-btn:active { color:var(--text); border-color:#555; }
+
+    /* ── Tabs ── */
+    .tabs {
+      display:flex; gap:0.4rem; padding:0.7rem 1rem 0; max-width:1100px; margin:0 auto;
+      border-bottom:1px solid var(--border);
+    }
+    .tab {
+      background:none; border:none; border-bottom:2px solid transparent; color:var(--muted);
+      padding:0.55rem 0.9rem; font-size:0.72rem; font-weight:700; letter-spacing:0.1em;
+      text-transform:uppercase; cursor:pointer; font-family:inherit;
+    }
+    .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+    main { max-width:1100px; margin:0 auto; padding:1rem; display:flex; flex-direction:column; gap:0.85rem; }
+    .panel { display:none; flex-direction:column; gap:0.85rem; }
+    .panel.active { display:flex; }
+
+    /* ── Cards ── */
+    .card {
+      background:var(--surface); border:1px solid var(--border);
+      border-left:3px solid var(--border); border-radius:10px; overflow:hidden;
+    }
+    .card.needs { border-left-color:var(--amber); }
+    .card.done  { border-left-color:var(--green); }
+    .card.archived { opacity:0.6; border-left-color:var(--muted); }
+    .card-head { padding:0.85rem 0.9rem; display:flex; gap:0.7rem; align-items:flex-start; cursor:pointer; }
+    .card-main { flex:1; min-width:0; }
+    .card-title { font-size:0.98rem; font-weight:700; }
+    .card-meta { font-size:0.75rem; color:var(--muted); margin-top:3px; }
+    .card-desc { font-size:0.8rem; color:var(--text); opacity:0.85; margin-top:5px; }
+    .card-side { flex:none; display:flex; flex-direction:column; align-items:flex-end; gap:0.35rem; }
+
+    .badge {
+      display:inline-block; font-size:0.6rem; font-weight:700; letter-spacing:0.07em;
+      text-transform:uppercase; padding:0.2rem 0.45rem; border-radius:4px; white-space:nowrap;
+    }
+    .badge.done { background:rgba(34,197,94,0.15); color:var(--green); }
+    .badge.todo { background:rgba(250,204,21,0.14); color:var(--amber); }
+    .badge.info { background:rgba(96,165,250,0.13); color:var(--blue); }
+    .badge.flat { background:var(--surface2); color:var(--muted); }
+
+    /* ── Forms ── */
+    .form-card {
+      background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:0.9rem;
+      display:flex; flex-direction:column; gap:0.75rem;
+    }
+    .form-card h2 { font-size:0.7rem; letter-spacing:0.14em; text-transform:uppercase; color:var(--accent); font-weight:700; }
+    .row { display:flex; flex-direction:column; gap:0.3rem; }
+    .row-2 { display:grid; grid-template-columns:1fr 1fr; gap:0.6rem; }
+    @media (max-width:560px) { .row-2 { grid-template-columns:1fr; } }
+    label { font-size:0.62rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); font-weight:600; }
+    /* Scoped away from checkboxes and radios on purpose. This rule is written
+       for text fields, and appearance:none on a checkbox removes the native box
+       AND its tick, and makes accent-color a no-op — so the control rendered
+       pixel-for-pixel identical checked and unchecked. It toggled correctly and
+       showed nothing, which reads as a broken button: you tap, see no change,
+       tap again, and have now turned it back off. */
+    input:not([type=checkbox]):not([type=radio]), textarea, select {
+      width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+      color:var(--text); font-size:1rem; padding:0.7rem; font-family:inherit; outline:none;
+      min-height:46px; -webkit-appearance:none; appearance:none;
+    }
+    input:focus, textarea:focus, select:focus { border-color:var(--accent); }
+    textarea { min-height:70px; resize:vertical; line-height:1.35; }
+    input[type=file] { padding:0.55rem; font-size:0.85rem; }
+    input[type=date]::-webkit-calendar-picker-indicator { filter:invert(0.7); }
+
+    .btn {
+      min-height:48px; border:none; border-radius:10px; padding:0 1.1rem;
+      font-size:0.9rem; font-weight:700; cursor:pointer; font-family:inherit;
+      background:var(--surface2); color:var(--text);
+    }
+    .btn-primary { background:var(--accent); color:#04180c; }
+    .btn-primary:hover { background:var(--accent-d); color:#fff; }
+    .btn-ghost { background:none; border:1px solid var(--border); color:var(--muted); min-height:38px; font-size:0.72rem;
+                 letter-spacing:0.08em; text-transform:uppercase; }
+    .btn-ghost:hover { color:var(--text); border-color:#555; }
+    .btn:disabled { opacity:0.45; cursor:default; }
+    .fld-note { font-size:0.75rem; color:var(--muted); }
+    .fld-note.ok  { color:var(--green); }
+    .fld-note.err { color:var(--red); }
+
+    /* ── States ── */
+    .empty {
+      background:var(--surface); border:1px solid var(--border); border-radius:10px;
+      padding:2.2rem 1rem; text-align:center; color:var(--muted); font-size:0.88rem;
+    }
+    .empty strong { display:block; color:var(--text); font-size:0.95rem; margin-bottom:0.35rem; }
+    .notice {
+      background:rgba(250,204,21,0.08); border:1px solid rgba(250,204,21,0.3);
+      border-radius:10px; padding:1rem; color:var(--text); font-size:0.85rem; line-height:1.5;
+    }
+    .notice strong { color:var(--amber); display:block; margin-bottom:0.3rem; }
+
+    /* ── Viewer overlay ── */
+    .overlay {
+      position:fixed; inset:0; background:rgba(4,4,8,0.88); z-index:90;
+      display:none; align-items:stretch; justify-content:center;
+      /* dvh tracks the phone's collapsing address bar; inset:0 alone leaves
+         the bottom of the sign panel under it on iOS. */
+      height:100dvh;
+    }
+    .overlay.open { display:flex; }
+    .viewer {
+      background:var(--surface); width:100%; max-width:900px; display:flex; flex-direction:column;
+      border-left:1px solid var(--border); border-right:1px solid var(--border);
+    }
+    .viewer-head {
+      display:flex; align-items:center; gap:0.6rem; padding:0.8rem 0.9rem;
+      padding-top:calc(0.8rem + env(safe-area-inset-top, 0));
+      border-bottom:1px solid var(--border); flex:none;
+    }
+    .viewer-head .t { flex:1; min-width:0; }
+    .viewer-head .t div:first-child { font-size:0.92rem; font-weight:700; }
+    .viewer-head .t div:last-child { font-size:0.7rem; color:var(--muted); }
+    .viewer-body { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; }
+    .pdf-frame { width:100%; height:58vh; min-height:280px; border:none; background:#222; flex:none; }
+    .pdf-fallback { padding:1rem; display:flex; flex-direction:column; gap:0.6rem; }
+    .pdf-fallback .open-link { color:var(--accent); }
+    /* The phone path. This is the primary action on the screen — it is what
+       putting the document in front of somebody looks like when the page
+       cannot draw it — so it is sized like one rather than like a hyperlink. */
+    .pdf-open {
+      padding:1.1rem; display:flex; flex-direction:column; gap:0.7rem; align-items:stretch;
+    }
+    .pdf-open .open-btn {
+      display:flex; align-items:center; justify-content:center; gap:0.5rem;
+      min-height:56px; text-decoration:none; font-size:1rem;
+    }
+    .sign-panel {
+      padding:0.9rem; padding-bottom:calc(0.9rem + env(safe-area-inset-bottom, 0));
+      display:flex; flex-direction:column; gap:0.8rem; border-top:1px solid var(--border);
+    }
+
+    /* Mathis floats at z-index 10070, which put a chat bubble on top of the
+       signature pad. The viewer is a modal carrying a legal acknowledgement;
+       nothing belongs over it. */
+    body.viewer-open #mathis-launch,
+    body.viewer-open #mathis-nudge { display:none !important; }
+
+    /* This is a <label>, so it inherits the global label rule above — which
+       is written for the little uppercase field captions and made the one
+       sentence on this page that carries legal weight render SHOUTED, letter-
+       spaced, undersized and grey. Every one of those is overridden back:
+       somebody is attesting to having read and understood it. */
+    .ack {
+      display:flex; gap:0.75rem; align-items:flex-start; padding:0.9rem;
+      background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+      cursor:pointer;
+      font-size:1rem; line-height:1.5; font-weight:400;
+      text-transform:none; letter-spacing:normal; color:var(--text);
+    }
+    /* Drawn rather than left to the browser: on this dark surface a native
+       checkbox is a pale square that reads as a disabled field, and the tick is
+       the whole point — somebody has to be able to see at a glance that they
+       have agreed to the sentence beside it. The mark is a background image
+       rather than a ::after, because a pseudo-element on a replaced element is
+       not something every browser renders. */
+    .ack input[type=checkbox] {
+      flex:none;
+      width:30px; height:30px; min-width:30px; min-height:30px;
+      margin:0; padding:0;
+      -webkit-appearance:none; appearance:none;
+      background:var(--bg); border:2px solid var(--muted); border-radius:7px;
+      cursor:pointer; transition:background-color .12s, border-color .12s;
+    }
+    .ack input[type=checkbox]:checked {
+      border-color:var(--accent);
+      background:var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2304180c' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='4 12 10 18 20 6'/%3E%3C/svg%3E") center / 20px 20px no-repeat;
+    }
+    .ack input[type=checkbox]:active { border-color:var(--accent); }
+    .ack input[type=checkbox]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    /* The whole row answers too, so a tap that lands on the sentence rather
+       than the box still gives feedback. */
+    .ack:has(input:checked) { border-color:rgba(34,197,94,0.55); background:rgba(34,197,94,0.07); }
+
+    .sigpad {
+      position:relative; background:#fff; border-radius:10px; border:1px solid var(--border); overflow:hidden;
+    }
+    .sigpad canvas { display:block; width:100%; height:150px; touch-action:none; cursor:crosshair; }
+    .sigpad .hint {
+      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      color:#9aa; font-size:0.85rem; pointer-events:none;
+    }
+    .sigpad.drawn .hint { display:none; }
+    .sig-actions { display:flex; justify-content:space-between; align-items:center; gap:0.6rem; }
+
+    .signed-box {
+      background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.3);
+      border-radius:10px; padding:1rem; font-size:0.86rem; line-height:1.5;
+    }
+    .signed-box strong { color:var(--green); display:block; margin-bottom:0.25rem; }
+
+    /* ── Report ── */
+    .toolbar { display:flex; flex-wrap:wrap; gap:0.6rem; align-items:flex-end; }
+    .toolbar .row { flex:1; min-width:140px; }
+    .rep-group { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+    .rep-head { padding:0.85rem 0.9rem; display:flex; gap:0.8rem; align-items:center; cursor:pointer; }
+    .rep-head .t { flex:1; min-width:0; }
+    .rep-head .t .n { font-size:0.95rem; font-weight:700; }
+    .rep-head .t .s { font-size:0.73rem; color:var(--muted); margin-top:2px; }
+    .rep-count { flex:none; font-size:0.8rem; font-weight:700; font-variant-numeric:tabular-nums; }
+    .rep-count.full { color:var(--green); }
+    .rep-count.part { color:var(--amber); }
+    .chev { flex:none; color:var(--muted); font-size:0.85rem; transition:transform .15s; }
+    .rep-group.open .chev { transform:rotate(90deg); }
+    .bar { height:5px; background:var(--surface2); }
+    .bar > span { display:block; height:100%; background:var(--accent); }
+    .rep-body { display:none; padding:0.2rem 0.9rem 0.9rem; }
+    .rep-group.open .rep-body { display:block; }
+    .rep-cols { display:grid; grid-template-columns:1fr 1fr; gap:0.9rem; }
+    @media (max-width:640px) { .rep-cols { grid-template-columns:1fr; } }
+    .rep-col h3 {
+      font-size:0.62rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted);
+      font-weight:700; margin:0.6rem 0 0.4rem;
+    }
+    .rep-list { list-style:none; display:flex; flex-direction:column; gap:0.3rem; }
+    .rep-list li {
+      display:flex; gap:0.6rem; align-items:baseline; font-size:0.82rem;
+      padding:0.45rem 0.6rem; background:var(--surface2); border-radius:7px;
+    }
+    .rep-list li .who { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis; }
+    .rep-list li .when { flex:none; font-size:0.72rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .rep-list li.out { background:rgba(250,204,21,0.08); }
+    .rep-list li.out .who { color:var(--amber); }
+    /* The drawn mark, shown where the supervisor is already reading the
+       signers. White plate because the pad draws in near-black. */
+    .sig-mark {
+      display:block; margin-top:4px; max-width:190px; height:auto;
+      background:#fff; border-radius:5px; padding:2px;
+    }
+    .sig-pending { display:block; margin-top:3px; font-size:0.68rem; color:var(--muted); }
+    .rep-none { font-size:0.8rem; color:var(--muted); padding:0.45rem 0.6rem; }
+
+    /* ── Phone ───────────────────────────────────────────────────────────
+       The crew are on phones, in gloves, outdoors. Apple and Google both put
+       the minimum comfortable target at 44px; the compact desktop controls
+       above are well under it, so they grow wherever the pointer is coarse
+       rather than at a width breakpoint — a touchscreen laptop needs the same
+       thing a phone does. */
+    @media (pointer: coarse) {
+      .icon-btn   { min-height:44px; padding:0.6rem 0.85rem; }
+      .tab        { min-height:48px; padding-left:1rem; padding-right:1rem; }
+      .btn-ghost  { min-height:44px; }
+      .ack input[type=checkbox] { width:30px; height:30px; min-height:30px; }
+      /* A file picker under 16px makes iOS zoom the whole page on focus and
+         leaves it zoomed. Every other control here is already 16px. */
+      input[type=file] { font-size:1rem; }
+    }
+
+    @media (max-width: 640px) {
+      main  { padding:0.75rem; }
+      .tabs { padding-left:0.75rem; padding-right:0.75rem; }
+      /* A long title used up a third of the screen restating what they just
+         tapped. Two lines, then the document. */
+      .viewer-head .t div:first-child {
+        font-size:0.88rem; line-height:1.25;
+        display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+      }
+      .viewer-head .t div:last-child {
+        font-size:0.68rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      }
+      /* Badges stop squeezing the title into a column two words wide. */
+      .card-head { flex-direction:column; gap:0.5rem; }
+      .card-side { flex-direction:row; align-items:center; flex-wrap:wrap; gap:0.35rem; }
+      .toolbar   { flex-direction:column; align-items:stretch; }
+      .toolbar .btn { width:100%; }
+    }
+
+    /* A filename or a pasted title with no spaces in it must not push the
+       layout sideways on a 320px screen. */
+    .card-title, .card-meta, .card-desc,
+    .rep-head .t .n, .rep-head .t .s, .rep-list li .who { overflow-wrap:anywhere; }
+
+    .toast {
+      position:fixed; left:50%; bottom:calc(1.2rem + env(safe-area-inset-bottom,0));
+      transform:translateX(-50%) translateY(140%); transition:transform .25s;
+      background:var(--surface2); border:1px solid var(--border); color:var(--text);
+      padding:0.7rem 1.1rem; border-radius:999px; font-size:0.82rem; z-index:120;
+      box-shadow:0 6px 24px rgba(0,0,0,0.5); max-width:90vw;
+    }
+    .toast.show { transform:translateX(-50%) translateY(0); }
+    .toast.err { border-color:var(--red); color:var(--red); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">DataWatch<small>Safety Center</small></div>
+    <div class="header-right">
+      <span class="badge flat" id="levelBadge"></span>
+      <button class="icon-btn" id="switchBtn" style="display:none" onclick="goToDivisions()">Switch</button>
+      <button class="icon-btn" onclick="signOut()">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" id="tabDocs" onclick="switchTab('docs')">Documents</button>
+    <button class="tab" id="tabReport" style="display:none" onclick="switchTab('report')">Sign-Off Report</button>
+  </div>
+
+  <main>
+    <div class="panel active" id="panelDocs"></div>
+    <div class="panel" id="panelReport"></div>
+  </main>
+
+  <div class="overlay" id="viewer">
+    <div class="viewer">
+      <div class="viewer-head">
+        <div class="t">
+          <div id="vTitle">Document</div>
+          <div id="vMeta"></div>
+        </div>
+        <button class="icon-btn" onclick="closeViewer()">Close</button>
+      </div>
+      <div class="viewer-body" id="vBody"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    /* ═══════ Auth ═══════ */
+    const API      = '/api';
+    const DIVISION = 'safety';
+    const token = localStorage.getItem('fct_token');
+    const user  = (() => { try { return JSON.parse(localStorage.getItem('fct_user')); } catch { return null; } })();
+    if (!token || !user) window.location.replace('index.html');
+
+    /* What this login may do here. The server decides for real on every call —
+       this only decides what is worth drawing. A platform admin with no
+       explicit role map falls through to the supervisor side, which is the
+       same rule divisions.html uses to show them the card at all. */
+    /* The same rule safetyLevelFor() applies on the server: an EXPLICIT safety
+       grant beats the platform-admin default, which only fills in where nobody
+       has said anything. The two have to agree or the page draws one thing and
+       the server allows another. This only decides what is worth drawing —
+       every request is checked again server-side, and loadDocs() replaces this
+       with the server's own answer the moment it lands. */
+    const myLevel = (() => {
+      const roles    = (user && user.divisionRoles) || null;
+      const explicit = roles && typeof roles === 'object' ? roles[DIVISION] : null;
+      if (explicit && explicit !== 'no_access') return explicit;
+      return (user && user.isPlatformAdmin) ? 'admin' : 'level1';
+    })();
+    let canManage = myLevel === 'admin' || myLevel === 'level3';
+
+    /* ═══════ State ═══════ */
+    const state = {
+      tab: 'docs',
+      docs: null, docsError: null, docsLoading: true,
+      report: null, reportError: null, reportLoading: false, reportOpen: new Set(),
+      detail: {},        // documentId -> the signatures WITH their drawn marks
+      showArchived: false,
+      statement: '',
+      storageConfigured: true,
+      viewing: null,      // the document open in the overlay
+      opened: new Set(),  // documents whose PDF this person has actually opened
+      ackChecked: false,
+      signing: false,
+    };
+
+    /* ═══════ Small helpers ═══════ */
+    const esc = s => String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+    const pad = n => String(n).padStart(2, '0');
+    const dstr = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+
+    /* The Monday of the week a date falls in. The same rule mondayOf() applies
+       in api/lib/safety.js — the server normalises whatever is posted, and
+       this is here so the form shows the week it is actually going to file. */
+    function mondayOf(ds) {
+      const d = new Date(String(ds || dstr(new Date())) + 'T12:00:00');
+      if (isNaN(d.getTime())) return dstr(new Date());
+      const dow = d.getDay();
+      d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
+      return dstr(d);
+    }
+
+    function weekLabel(ds) {
+      const d = new Date(String(ds) + 'T12:00:00');
+      if (isNaN(d.getTime())) return String(ds || '');
+      return 'Week of ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    function stamp(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso);
+      return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+      });
+    }
+
+    function fileSize(bytes) {
+      const n = Number(bytes) || 0;
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+      return (n / 1048576).toFixed(1) + ' MB';
+    }
+
+    function toast(msg, bad) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.toggle('err', !!bad);
+      t.classList.add('show');
+      clearTimeout(t._t);
+      t._t = setTimeout(() => t.classList.remove('show'), 3200);
+    }
+
+    async function api(method, path, body) {
+      const res = await fetch(API + path, {
+        method,
+        headers: Object.assign(
+          { 'Authorization': 'Bearer ' + token },
+          body ? { 'Content-Type': 'application/json' } : {}
+        ),
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (res.status === 401) { signOut(); throw new Error('Signed out'); }
+      let json = {};
+      try { json = await res.json(); } catch { /* empty body */ }
+      if (!res.ok) throw new Error(json.error || ('HTTP ' + res.status));
+      return json;
+    }
+
+    /* ═══════ Tabs ═══════ */
+    function switchTab(tab) {
+      state.tab = tab;
+      document.getElementById('tabDocs').classList.toggle('active', tab === 'docs');
+      document.getElementById('tabReport').classList.toggle('active', tab === 'report');
+      document.getElementById('panelDocs').classList.toggle('active', tab === 'docs');
+      document.getElementById('panelReport').classList.toggle('active', tab === 'report');
+      if (tab === 'report' && !state.report && !state.reportLoading) loadReport();
+    }
+
+    /* ═══════ Documents ═══════ */
+    async function loadDocs() {
+      state.docsLoading = true; state.docsError = null; renderDocs();
+      try {
+        const qs = state.showArchived ? '?include=archived' : '';
+        const data = await api('GET', '/safety-documents' + qs);
+        state.docs = data.documents || [];
+        if (data.statement) state.statement = data.statement;
+        state.storageConfigured = data.storageConfigured !== false;
+        if (data.permissions) {
+          // The server's answer wins over the cached token: a role changed
+          // after this login would otherwise draw an upload form whose every
+          // submission 403s.
+          canManage = Boolean(data.permissions.canManage);
+          document.getElementById('tabReport').style.display = canManage ? '' : 'none';
+          document.getElementById('levelBadge').textContent = canManage ? 'Supervisor' : 'Crew';
+        }
+      } catch (err) {
+        state.docsError = err.message;
+      } finally {
+        state.docsLoading = false; renderDocs();
+      }
+    }
+
+    function docCardHTML(d) {
+      const cls = d.archivedAt ? 'archived' : (d.signedByMe ? 'done' : 'needs');
+      const mine = d.signedByMe
+        ? `<span class="badge done">Signed ${esc(stamp(d.mySignature && d.mySignature.signedAt))}</span>`
+        : `<span class="badge todo">Signature needed</span>`;
+      const count = (canManage && d.expectedCount !== undefined)
+        ? `<span class="badge ${d.outstandingCount ? 'info' : 'done'}">${d.signedCount} / ${d.expectedCount} signed</span>`
+        : '';
+      const archived = d.archivedAt ? `<span class="badge flat">Archived</span>` : '';
+      const manage = canManage ? `
+        <div style="display:flex;gap:0.4rem;padding:0 0.9rem 0.85rem">
+          <button class="btn btn-ghost" data-act="archive" data-doc-id="${esc(d.id)}" data-archived="${d.archivedAt ? '1' : '0'}">
+            ${d.archivedAt ? 'Restore' : 'Archive'}
+          </button>
+        </div>` : '';
+
+      return `
+        <div class="card ${cls}">
+          <div class="card-head" data-act="open" data-doc-id="${esc(d.id)}">
+            <div class="card-main">
+              <div class="card-title">${esc(d.title)}</div>
+              <div class="card-meta">${esc(weekLabel(d.weekOf))} &middot; ${esc(d.filename)} &middot; ${esc(fileSize(d.sizeBytes))}</div>
+              ${d.description ? `<div class="card-desc">${esc(d.description)}</div>` : ''}
+              <div class="card-meta">Posted by ${esc(d.uploadedBy || 'the office')} on ${esc(stamp(d.uploadedAt))}</div>
+            </div>
+            <div class="card-side">${archived}${mine}${count}</div>
+          </div>
+          ${manage}
+        </div>`;
+    }
+
+    function uploadFormHTML() {
+      return `
+        <div class="form-card">
+          <h2>Post this week's form</h2>
+          <div class="row">
+            <label for="upTitle">Document title</label>
+            <input id="upTitle" type="text" maxlength="160" placeholder="e.g. Tailgate — Trenching &amp; Excavation" />
+          </div>
+          <div class="row-2">
+            <div class="row">
+              <label for="upWeek">Week covered</label>
+              <input id="upWeek" type="date" value="${esc(mondayOf(dstr(new Date())))}" onchange="snapWeek()" />
+            </div>
+            <div class="row">
+              <label for="upFile">PDF form</label>
+              <input id="upFile" type="file" accept="application/pdf,.pdf" />
+            </div>
+          </div>
+          <div class="row">
+            <label for="upNote">Notes for the crew <span style="text-transform:none">(optional)</span></label>
+            <textarea id="upNote" maxlength="2000" placeholder="Anything to call out when they open it."></textarea>
+          </div>
+          <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary" id="upBtn" onclick="uploadDocument()">Post document</button>
+            <span class="fld-note" id="upNoteMsg">Filed to the Monday of the week you pick.</span>
+          </div>
+        </div>`;
+    }
+
+    function renderDocs() {
+      const el = document.getElementById('panelDocs');
+      let html = '';
+
+      if (canManage) {
+        if (!state.storageConfigured) {
+          html += `<div class="notice"><strong>File storage is not configured on this deployment.</strong>
+            Documents cannot be posted until S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and
+            S3_SECRET_ACCESS_KEY are set — see api/.env.example.</div>`;
+        } else {
+          html += uploadFormHTML();
+        }
+        html += `<div style="display:flex;justify-content:flex-end">
+          <button class="btn btn-ghost" onclick="toggleArchived()">
+            ${state.showArchived ? 'Hide archived' : 'Show archived'}
+          </button></div>`;
+      }
+
+      if (state.docsLoading && !state.docs) {
+        html += `<div class="empty">Loading documents…</div>`;
+      } else if (state.docsError) {
+        html += `<div class="empty"><strong>Could not load the documents.</strong>${esc(state.docsError)}<br><br>
+          <button class="btn btn-primary" onclick="loadDocs()">Try again</button></div>`;
+      } else if (!state.docs || !state.docs.length) {
+        html += `<div class="empty"><strong>Nothing to sign.</strong>
+          ${canManage ? 'Post the week\'s tailgate form above and the crew will see it here.'
+                      : 'When the safety supervisor posts this week\'s form it will appear here.'}</div>`;
+      } else {
+        const outstanding = state.docs.filter(d => !d.signedByMe && !d.archivedAt).length;
+        if (outstanding) {
+          html += `<div class="notice"><strong>${outstanding} document${outstanding === 1 ? '' : 's'} waiting for your signature.</strong>
+            Open each one, read it through, and sign at the bottom.</div>`;
+        }
+        html += state.docs.map(docCardHTML).join('');
+      }
+
+      el.innerHTML = html;
+    }
+
+    function toggleArchived() { state.showArchived = !state.showArchived; loadDocs(); }
+
+    /* The server files everything to a Monday; showing the picker snap to one
+       means nobody posts "Wednesday's form" and then hunts for it under a date
+       that does not exist in the report. */
+    function snapWeek() {
+      const el = document.getElementById('upWeek');
+      if (el && el.value) el.value = mondayOf(el.value);
+    }
+
+    /* ═══════ Upload ═══════ */
+    // Matches RELAY_MAX_BYTES in api/document-upload-url.js: the platform caps
+    // a serverless body at 4.5 MB and base64 costs a third on top.
+    const RELAY_MAX_BYTES = 3 * 1024 * 1024;
+
+    async function blobToBase64(blob) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+      }
+      return btoa(binary);
+    }
+
+    async function uploadDocument() {
+      const title = (document.getElementById('upTitle').value || '').trim();
+      const week  = (document.getElementById('upWeek').value || '').trim();
+      const note  = (document.getElementById('upNote').value || '').trim();
+      const file  = (document.getElementById('upFile').files || [])[0];
+      const btn   = document.getElementById('upBtn');
+      const msg   = document.getElementById('upNoteMsg');
+
+      const fail = t => { msg.className = 'fld-note err'; msg.textContent = t; };
+
+      if (!title)  return fail('Give the document a title.');
+      if (!week)   return fail('Pick the week this document covers.');
+      if (!file)   return fail('Choose the PDF to post.');
+      if (!/\.pdf$/i.test(file.name)) return fail('The Safety Center takes PDF documents only.');
+
+      btn.disabled = true;
+      msg.className = 'fld-note';
+      msg.textContent = 'Uploading…';
+
+      let ticket = null;
+      try {
+        // 1. A ticket. Nothing is written until step 3, so an abandoned one
+        //    costs only an unreferenced object.
+        ticket = await api('POST', '/document-upload-url?division=safety', {
+          filename: file.name,
+          sizeBytes: file.size,
+        });
+
+        // 2. The bytes, straight to storage — never through the API.
+        let put;
+        try {
+          put = await fetch(ticket.uploadUrl, {
+            method: 'PUT', body: file, headers: { 'Content-Type': ticket.contentType },
+          });
+        } catch (err) {
+          // A cross-origin PUT always needs a preflight, and a bucket with no
+          // CORS rule refuses it — which surfaces as a bare "Failed to fetch"
+          // that never reached any server log. Relay a small file through the
+          // API, which is same-origin, rather than losing the upload over it.
+          if (file.size > RELAY_MAX_BYTES) {
+            throw new Error('Could not reach file storage. The bucket most likely needs a CORS '
+              + 'rule allowing PUT from this site — see api/.env.example. (' + err.message + ')');
+          }
+          msg.textContent = 'Storage refused a direct upload — relaying through the server…';
+          const relayed = await api('PUT', '/document-upload-url?division=safety', {
+            storageKey: ticket.storageKey,
+            contentBase64: await blobToBase64(file),
+          });
+          put = { ok: Boolean(relayed && relayed.ok), status: 200 };
+        }
+        if (!put.ok) throw new Error('Upload to storage failed (' + put.status + ')');
+
+        // 3. Register it. If this fails the bytes are in the bucket with
+        //    nothing pointing at them, so clean up before surfacing the error.
+        msg.textContent = 'Registering…';
+        await api('POST', '/safety-documents', {
+          documentId: ticket.documentId,
+          filename:   file.name,
+          storageKey: ticket.storageKey,
+          title,
+          weekOf:     week,
+          description: note || undefined,
+        });
+
+        document.getElementById('upTitle').value = '';
+        document.getElementById('upNote').value  = '';
+        document.getElementById('upFile').value  = '';
+        toast('Posted. The crew can sign it now.');
+        state.report = null;   // the report is stale the moment a form lands
+        await loadDocs();
+      } catch (err) {
+        if (ticket && ticket.storageKey) {
+          try { await api('DELETE', '/document-upload-url?division=safety&storageKey=' + encodeURIComponent(ticket.storageKey)); }
+          catch (cleanupErr) { console.warn('[safety] could not remove the orphaned upload:', cleanupErr.message); }
+        }
+        fail(err.message);
+        toast(err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function archiveDoc(id, isArchived) {
+      const restoring = isArchived === true || isArchived === 'true';
+      if (!restoring && !confirm('Archive this document? It comes off the crew\'s list. Signatures already collected are kept.')) return;
+      try {
+        await api('DELETE', '/safety-documents?id=' + encodeURIComponent(id) + (restoring ? '&restore=1' : ''));
+        toast(restoring ? 'Restored.' : 'Archived.');
+        state.report = null;
+        await loadDocs();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    }
+
+    /* ═══════ Viewer & signing ═══════ */
+    /* Can the PDF be trusted to render INSIDE the page?
+     *
+     * On a phone, no. iOS Safari paints only the FIRST PAGE of a PDF in an
+     * iframe and gives no way to reach page two; Chrome on Android generally
+     * declines to render one at all and offers a download instead. A crew
+     * member ticking "I have read this document in full" against a frame that
+     * showed them page 1 of 4 — or a blank rectangle — is the single outcome
+     * this screen must not produce.
+     *
+     * So on a touch screen the form opens in the phone's own PDF viewer, where
+     * it scrolls, pinches and zooms properly, and the acknowledgement waits
+     * until it has actually been opened. Keyed on the pointer rather than a
+     * width, because a touchscreen laptop has the same problem, and paired
+     * with a width so a desktop browser narrowed to a phone's width keeps the
+     * inline frame it renders perfectly well. */
+    const COARSE_POINTER = Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    const INLINE_PDF     = !COARSE_POINTER && window.innerWidth >= 820;
+
+    /* Every open takes a ticket. The signed URL is fetched over the network,
+       and on a jobsite connection the answer for the document somebody tapped
+       first can land after they have closed it and opened another — repainting
+       the body, including a freshly initialised signature pad, underneath the
+       header of a DIFFERENT document. submitSignature() posts state.viewing,
+       so what they read and what they signed would be two different forms.
+       A stale ticket is simply dropped. */
+    let openSeq = 0;
+
+    async function openViewer(id) {
+      const doc = (state.docs || []).find(d => d.id === id);
+      if (!doc) return;
+      const seq = ++openSeq;
+      state.viewing = doc;
+      state.ackChecked = false;
+
+      document.getElementById('vTitle').textContent = doc.title;
+      document.getElementById('vMeta').textContent  = weekLabel(doc.weekOf) + ' · ' + doc.filename;
+      document.getElementById('vBody').innerHTML    = '<div class="pdf-fallback"><span class="fld-note">Opening the document…</span></div>';
+      document.getElementById('viewer').classList.add('open');
+      document.body.classList.add('viewer-open');
+
+      let link;
+      try {
+        link = await api('GET', '/safety-documents?action=open&id=' + encodeURIComponent(id));
+      } catch (err) {
+        if (seq !== openSeq || state.viewing !== doc) return;
+        document.getElementById('vBody').innerHTML =
+          `<div class="pdf-fallback"><span class="fld-note err">${esc(err.message)}</span></div>`;
+        return;
+      }
+      // Both arms check: an error for a document already closed would otherwise
+      // paint its message over whatever is on screen now.
+      if (seq !== openSeq || state.viewing !== doc) return;
+      renderViewer(doc, link.url);
+    }
+
+    function renderViewer(doc, url) {
+      const already = doc.signedByMe;
+      const archived = Boolean(doc.archivedAt);
+      const sign = archived && !already
+        ? `<div class="sign-panel">
+             <div class="notice">
+               <strong>This document has been archived.</strong>
+               It is kept so the record stays readable, but it is no longer open for
+               signing. If it still needs signatures, restore it on the Documents tab.
+             </div>
+           </div>`
+        : already
+        ? `<div class="sign-panel">
+             <div class="signed-box">
+               <strong>You signed this on ${esc(stamp(doc.mySignature && doc.mySignature.signedAt))}.</strong>
+               Signed as ${esc((doc.mySignature && doc.mySignature.fullName) || '')}. Your acknowledgement is on file — there is nothing more to do here.
+             </div>
+           </div>`
+        : `<div class="sign-panel">
+             <label class="ack" for="ackBox">
+               <input type="checkbox" id="ackBox" onchange="onAckChange()" />
+               <span id="ackText">${esc(state.statement || 'I have read this document in full, I understand its contents, and I agree to follow the safety requirements it describes.')}</span>
+             </label>
+             <div class="row">
+               <label for="sigName">Your full name</label>
+               <input id="sigName" type="text" maxlength="120" autocomplete="name"
+                      placeholder="Type your full name" />
+             </div>
+             <div class="row">
+               <label>Signature <span style="text-transform:none">(optional — sign with your finger)</span></label>
+               <div class="sigpad" id="sigPad"><canvas id="sigCanvas"></canvas><div class="hint">Sign here</div></div>
+               <div class="sig-actions">
+                 <span class="fld-note" id="signMsg">Your name, the time and this acknowledgement are recorded together.</span>
+                 <button class="btn btn-ghost" onclick="clearSignature()">Clear</button>
+               </div>
+             </div>
+             <button class="btn btn-primary" id="signBtn" onclick="submitSignature()" disabled>Sign &amp; submit</button>
+           </div>`;
+
+      // On a phone the frame is not drawn at all — loading a PDF that will not
+      // render just spends a crew member's data to show them a blank rectangle.
+      const body = INLINE_PDF
+        ? `<iframe class="pdf-frame" id="pdfFrame" src="${esc(url)}" title="${esc(doc.title)}"></iframe>
+           <div class="pdf-fallback">
+             <span class="fld-note">Trouble reading it here?
+               <a class="open-link" href="${esc(url)}" target="_blank" rel="noopener" data-act="opened">Open the PDF in a new tab</a>.
+               The link is good for 15 minutes.</span>
+           </div>`
+        : `<div class="pdf-open">
+             <a class="btn btn-primary open-btn" href="${esc(url)}" target="_blank" rel="noopener" data-act="opened">
+               Open the form
+             </a>
+             <span class="fld-note">It opens in your phone's PDF viewer, where you can
+               scroll and zoom. Come back to this screen to sign. The link is good for 15 minutes.</span>
+           </div>`;
+
+      document.getElementById('vBody').innerHTML = body + sign;
+
+      if (!already) initSignaturePad();
+    }
+
+    function closeViewer() {
+      // Bumped so an answer still in flight for the document being closed is
+      // discarded rather than repainting — and restarting the PDF download that
+      // clearing vBody exists to stop.
+      openSeq++;
+      document.getElementById('viewer').classList.remove('open');
+      document.body.classList.remove('viewer-open');
+      document.getElementById('vBody').innerHTML = '';   // stops the PDF loading in the background
+      state.viewing = null;
+    }
+
+    function onAckChange() {
+      const box = document.getElementById('ackBox');
+      state.ackChecked = Boolean(box && box.checked);
+      updateSignButton();
+    }
+
+    function updateSignButton() {
+      const btn  = document.getElementById('signBtn');
+      const name = document.getElementById('sigName');
+      if (!btn) return;
+      const named  = Boolean(name && name.value.trim().length >= 2);
+      // Where the document is NOT on screen, it has to have been opened. The
+      // page cannot know they read it, but it can refuse to record that they
+      // did when it never showed them anything.
+      const seen   = INLINE_PDF || (state.viewing && state.opened.has(state.viewing.id));
+      btn.disabled = state.signing || !state.ackChecked || !named || !seen;
+
+      const msg = document.getElementById('signMsg');
+      if (msg && !msg.classList.contains('err')) {
+        msg.textContent = seen
+          ? 'Your name, the time and this acknowledgement are recorded together.'
+          : 'Open the form above and read it through, then sign here.';
+      }
+    }
+
+    /* ── Signature pad ────────────────────────────────────────────────────
+       A drawn mark is optional: the typed name and the acknowledgement are
+       what the record rests on. It is here because this replaces a sheet of
+       paper that was signed, and a crew that recognises the thing they are
+       being asked to do signs it without being walked through it. */
+    let sigCtx = null, sigDrawn = false, sigDrawing = false;
+
+    function initSignaturePad() {
+      const canvas = document.getElementById('sigCanvas');
+      if (!canvas) return;
+      const dpr  = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width  = Math.max(1, Math.round(rect.width  * dpr));
+      canvas.height = Math.max(1, Math.round(rect.height * dpr));
+      sigCtx = canvas.getContext('2d');
+      sigCtx.scale(dpr, dpr);
+      sigCtx.lineWidth = 2.2;
+      sigCtx.lineCap = 'round';
+      sigCtx.lineJoin = 'round';
+      sigCtx.strokeStyle = '#111';
+      sigDrawn = false; sigDrawing = false;
+
+      const at = e => {
+        const r = canvas.getBoundingClientRect();
+        return { x: e.clientX - r.left, y: e.clientY - r.top };
+      };
+      canvas.addEventListener('pointerdown', e => {
+        sigDrawing = true;
+        canvas.setPointerCapture(e.pointerId);
+        const p = at(e);
+        sigCtx.beginPath(); sigCtx.moveTo(p.x, p.y);
+        e.preventDefault();
+      });
+      canvas.addEventListener('pointermove', e => {
+        if (!sigDrawing) return;
+        const p = at(e);
+        sigCtx.lineTo(p.x, p.y); sigCtx.stroke();
+        if (!sigDrawn) { sigDrawn = true; document.getElementById('sigPad').classList.add('drawn'); }
+        e.preventDefault();
+      });
+      const stop = () => { sigDrawing = false; };
+      canvas.addEventListener('pointerup', stop);
+      canvas.addEventListener('pointercancel', stop);
+      canvas.addEventListener('pointerleave', stop);
+
+      const name = document.getElementById('sigName');
+      if (name) name.addEventListener('input', updateSignButton);
+      updateSignButton();
+    }
+
+    /* A rotation changes the pad's width, and a canvas sized for the old one
+       maps a finger to the wrong place. Re-initialising clears it, so a mark
+       already drawn is left alone rather than thrown away — a slightly stretched
+       signature is a far better outcome than one that vanishes on a rotate. */
+    let sigResizeTimer = null;
+    window.addEventListener('resize', function () {
+      if (!document.getElementById('sigCanvas') || sigDrawn) return;
+      clearTimeout(sigResizeTimer);
+      sigResizeTimer = setTimeout(initSignaturePad, 150);
+    });
+
+    function clearSignature() {
+      const canvas = document.getElementById('sigCanvas');
+      if (!canvas || !sigCtx) return;
+      sigCtx.clearRect(0, 0, canvas.width, canvas.height);
+      sigDrawn = false;
+      document.getElementById('sigPad').classList.remove('drawn');
+    }
+
+    async function submitSignature() {
+      const doc = state.viewing;
+      if (!doc) return;
+      const name = (document.getElementById('sigName').value || '').trim();
+      const msg  = document.getElementById('signMsg');
+      const btn  = document.getElementById('signBtn');
+
+      state.signing = true;
+      btn.disabled = true;
+      msg.className = 'fld-note';
+      msg.textContent = 'Recording your signature…';
+
+      // Only sent when something was actually drawn — a blank canvas would
+      // store a picture of nothing and claim it was a signature.
+      let image;
+      if (sigDrawn) {
+        try { image = document.getElementById('sigCanvas').toDataURL('image/png'); }
+        catch { image = undefined; }
+      }
+
+      try {
+        const out = await api('POST', '/safety-signatures', {
+          documentId:   doc.id,
+          fullName:     name,
+          acknowledged: true,
+          signatureImage: image,
+        });
+        doc.signedByMe  = true;
+        doc.mySignature = { fullName: out.signature.fullName, signedAt: out.signature.signedAt };
+        toast(out.alreadySigned ? 'You had already signed this one.' : 'Signed. Thank you.');
+        state.report = null;
+        closeViewer();
+        renderDocs();
+        loadDocs();
+      } catch (err) {
+        msg.className = 'fld-note err';
+        msg.textContent = err.message;
+        toast(err.message, true);
+      } finally {
+        state.signing = false;
+        updateSignButton();
+      }
+    }
+
+    /* ═══════ Report ═══════ */
+    async function loadReport() {
+      state.reportLoading = true; state.reportError = null; renderReport();
+      try {
+        const from = (document.getElementById('repFrom') || {}).value || '';
+        const to   = (document.getElementById('repTo')   || {}).value || '';
+        const parts = ['scope=report'];
+        if (from) parts.push('from=' + encodeURIComponent(from));
+        if (to)   parts.push('to=' + encodeURIComponent(to));
+        if (state.showArchived) parts.push('include=archived');
+        const data = await api('GET', '/safety-signatures?' + parts.join('&'));
+        state.report    = data.documents || [];
+        state.detail    = {};
+        state.statement = data.statement || state.statement;
+      } catch (err) {
+        state.reportError = err.message;
+      } finally {
+        state.reportLoading = false; renderReport();
+      }
+    }
+
+    async function toggleGroup(id) {
+      if (state.reportOpen.has(id)) { state.reportOpen.delete(id); renderReport(); return; }
+      state.reportOpen.add(id);
+      renderReport();
+      // The drawn marks come back only on the read of ONE document — the
+      // all-documents report deliberately leaves them out, because carrying
+      // every signature's PNG would eventually stop it loading at all. Fetch
+      // them for the group the supervisor actually opened, once.
+      loadGroupDetail(id);
+    }
+
+    /* Fetch one document's signatures, which is the only read that carries the
+       drawn marks. Idempotent, so it is safe to call from both the toggle and
+       the render — a group left expanded across a report reload has its cache
+       cleared underneath it, and without the render-side call it would sit on
+       "signature loading…" forever. */
+    async function loadGroupDetail(id) {
+      if (state.detail[id] === undefined) {
+        state.detail[id] = null;   // in flight — stops a second tap re-fetching
+        try {
+          const d = await api('GET', '/safety-signatures?documentId=' + encodeURIComponent(id));
+          const g = (d.documents || [])[0];
+          state.detail[id] = (g && g.signed) || [];
+        } catch (err) {
+          state.detail[id] = [];
+          toast(err.message, true);
+        }
+        if (state.reportOpen.has(id)) renderReport();
+      }
+    }
+
+    function groupHTML(g) {
+      const d    = g.document;
+      const open = state.reportOpen.has(d.id);
+      const pct  = g.expectedCount ? Math.round((g.signedCount / g.expectedCount) * 100) : 0;
+      const full = g.outstandingCount === 0 && g.expectedCount > 0;
+
+      // Marks arrive with the per-document fetch toggleGroup kicks off, so this
+      // renders without them first and again with them a moment later.
+      const marks = {};
+      (state.detail[d.id] || []).forEach(s => { if (s.signatureImage) marks[s.username] = s.signatureImage; });
+
+      const signed = g.signed.length
+        ? `<ul class="rep-list">` + g.signed.map(s => `<li>
+             <span class="who">${esc(s.fullName)} <span style="color:var(--muted);font-weight:400">(${esc(s.username)})</span>${
+               s.onRoster === false ? ' <span class="badge flat">not on roster</span>' : ''
+             }${
+               marks[s.username]
+                 ? `<img class="sig-mark" src="${esc(marks[s.username])}" alt="Signature of ${esc(s.fullName)}" />`
+                 : (s.hasDrawnSignature ? `<span class="sig-pending">signature loading…</span>` : '')
+             }</span>
+             <span class="when">${esc(stamp(s.signedAt))}</span>
+           </li>`).join('') + `</ul>`
+        : `<div class="rep-none">Nobody has signed this one yet.</div>`;
+
+      const out = g.outstanding.length
+        ? `<ul class="rep-list">` + g.outstanding.map(o =>
+            `<li class="out"><span class="who">${esc(o.username)}</span></li>`).join('') + `</ul>`
+        : `<div class="rep-none">Everyone has signed.</div>`;
+
+      return `
+        <div class="rep-group ${open ? 'open' : ''}">
+          <div class="rep-head" data-act="toggle" data-doc-id="${esc(d.id)}">
+            <span class="chev">&#9656;</span>
+            <div class="t">
+              <div class="n">${esc(d.title)}${d.archivedAt ? ' <span class="badge flat">Archived</span>' : ''}</div>
+              <div class="s">${esc(weekLabel(d.weekOf))} &middot; posted by ${esc(d.uploadedBy || 'the office')} on ${esc(stamp(d.uploadedAt))}</div>
+            </div>
+            <div class="rep-count ${full ? 'full' : 'part'}">${g.signedCount} / ${g.expectedCount}</div>
+          </div>
+          <div class="bar"><span style="width:${pct}%"></span></div>
+          <div class="rep-body">
+            <div class="rep-cols">
+              <div class="rep-col">
+                <h3>Signed (${g.signed.length})</h3>
+                ${signed}
+              </div>
+              <div class="rep-col">
+                <h3>Still to sign (${g.outstandingCount})</h3>
+                ${out}
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function renderReport() {
+      const el = document.getElementById('panelReport');
+      if (!canManage) {
+        el.innerHTML = `<div class="empty">The sign-off report is for safety supervisors.</div>`;
+        return;
+      }
+
+      let html = `
+        <div class="form-card">
+          <h2>Sign-off report</h2>
+          <div class="toolbar">
+            <div class="row">
+              <label for="repFrom">From week</label>
+              <input id="repFrom" type="date" value="${esc((document.getElementById('repFrom') || {}).value || '')}" />
+            </div>
+            <div class="row">
+              <label for="repTo">To week</label>
+              <input id="repTo" type="date" value="${esc((document.getElementById('repTo') || {}).value || '')}" />
+            </div>
+            <button class="btn btn-primary" onclick="loadReport()">Apply</button>
+            <button class="btn btn-ghost" onclick="exportReportCsv()">Export CSV</button>
+          </div>
+          <span class="fld-note">Everyone granted the Safety Center is expected to sign. Grant or remove the
+            division in Manage Users to change who appears here.</span>
+        </div>`;
+
+      if (state.reportLoading && !state.report) {
+        html += `<div class="empty">Loading the report…</div>`;
+      } else if (state.reportError) {
+        html += `<div class="empty"><strong>Could not load the report.</strong>${esc(state.reportError)}<br><br>
+          <button class="btn btn-primary" onclick="loadReport()">Try again</button></div>`;
+      } else if (!state.report || !state.report.length) {
+        html += `<div class="empty"><strong>No documents in that range.</strong>
+          Post a form on the Documents tab and it will show up here.</div>`;
+      } else {
+        const short = state.report.filter(g => g.outstandingCount > 0).length;
+        html += short
+          ? `<div class="notice"><strong>${short} document${short === 1 ? '' : 's'} still short of signatures.</strong>
+               Open one to see exactly who is outstanding.</div>`
+          : `<div class="notice" style="background:rgba(34,197,94,0.08);border-color:rgba(34,197,94,0.3)">
+               <strong style="color:var(--green)">Everything in this range is fully signed.</strong>
+               Nothing is outstanding.</div>`;
+        html += state.report.map(groupHTML).join('');
+      }
+
+      el.innerHTML = html;
+
+      // A group the supervisor left expanded across a report reload has had its
+      // cached marks cleared underneath it. Without this it would sit on
+      // "signature loading…" forever, because the only other fetch happens on
+      // the tap that opens a group.
+      state.reportOpen.forEach(id => {
+        if (state.detail[id] === undefined) loadGroupDetail(id);
+      });
+    }
+
+    /* One row per person per document — signed and unsigned alike, so the file
+       is the whole picture rather than a list of who is in trouble. */
+    function exportReportCsv() {
+      const groups = state.report || [];
+      if (!groups.length) return toast('Nothing to export yet.', true);
+
+      const cell = v => {
+        const s = String(v == null ? '' : v);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      const lines = [['Document', 'Week of', 'Username', 'Signed name', 'Status', 'Signed at', 'Drew signature'].join(',')];
+      groups.forEach(g => {
+        g.signed.forEach(s => lines.push([
+          g.document.title, g.document.weekOf, s.username, s.fullName, 'Signed', stamp(s.signedAt),
+          s.hasDrawnSignature ? 'Yes' : 'No',
+        ].map(cell).join(',')));
+        g.outstanding.forEach(o => lines.push([
+          g.document.title, g.document.weekOf, o.username, '', 'Not signed', '', '',
+        ].map(cell).join(',')));
+      });
+
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'safety-signoff-' + dstr(new Date()) + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+
+    /* ═══════ Nav ═══════ */
+    function goToDivisions() { localStorage.removeItem('fct_division'); window.location.replace('divisions.html'); }
+    function signOut() {
+      localStorage.removeItem('fct_token');
+      localStorage.removeItem('fct_user');
+      localStorage.removeItem('fct_division');
+      window.location.replace('index.html');
+    }
+
+    /* Why these are delegated rather than inline onclick="fn('${id}')":
+       an inline handler's body is JAVASCRIPT, and the HTML parser decodes
+       entities in an attribute value BEFORE that source is compiled. esc()
+       turns a quote into &#39;, the parser turns it back into a quote, and the
+       string literal the id sits in is closed — so a document whose id carried
+       a quote ran its own code in every crew member's and platform admin's
+       session. esc() IS sufficient for a quoted attribute value, which is what
+       data-doc-id is, and dataset never reaches a compiler at all. */
+    function delegate(panelId, handler) {
+      const el = document.getElementById(panelId);
+      if (el) el.addEventListener('click', handler);
+    }
+
+    delegate('panelDocs', function (e) {
+      const hit = e.target.closest('[data-act]');
+      if (!hit || !this.contains(hit)) return;
+      const id = hit.getAttribute('data-doc-id');
+      if (hit.getAttribute('data-act') === 'archive') {
+        e.stopPropagation();
+        archiveDoc(id, hit.getAttribute('data-archived') === '1');
+      } else if (hit.getAttribute('data-act') === 'open') {
+        openViewer(id);
+      }
+    });
+
+    delegate('panelReport', function (e) {
+      const hit = e.target.closest('[data-act="toggle"]');
+      if (!hit || !this.contains(hit)) return;
+      toggleGroup(hit.getAttribute('data-doc-id'));
+    });
+
+    // The one signal available that the document was actually put in front of
+    // them. Delegated on the overlay so it survives the body being re-rendered.
+    document.getElementById('viewer').addEventListener('click', function (e) {
+      if (e.target === this) { closeViewer(); return; }
+      const opened = e.target.closest('[data-act="opened"]');
+      if (opened && state.viewing) {
+        state.opened.add(state.viewing.id);
+        updateSignButton();
+      }
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && document.getElementById('viewer').classList.contains('open')) closeViewer();
+    });
+
+    /* A laborer usually has this division and nothing else and is routed
+       straight here, so Switch would be a dead end. Shown only when they
+       actually have somewhere else to go. */
+    (function () {
+      const roles = (user && user.divisionRoles) || {};
+      const n = Object.keys(roles).filter(k => roles[k] && roles[k] !== 'no_access').length;
+      if (n > 1 || (user && user.isPlatformAdmin)) {
+        document.getElementById('switchBtn').style.display = '';
+      }
+      document.getElementById('levelBadge').textContent = canManage ? 'Supervisor' : 'Crew';
+      document.getElementById('tabReport').style.display = canManage ? '' : 'none';
+    })();
+
+    loadDocs();
+  </script>
+  <script src="mathis.js" defer></script>
+</body>
+</html>

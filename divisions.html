@@ -423,7 +423,7 @@
        c-act onto the last division and collapses Actions — with the Edit and
        Remove buttons — to nothing. */
     .user-table col.c-user   { width: 12%;     }
-    .user-table col.c-div    { width: 4.875%;  }  /* × 16 = 78% */
+    .user-table col.c-div    { width: 4.5882%; }  /* × 17 = 78% */
     .user-table col.c-act    { width: 10%;     }
 
     .mu-sort-btn {
@@ -1030,6 +1030,33 @@
       border: 1px solid rgba(100,116,139,0.18);
     }
 
+    /* What the signed-in user still owes a division, shown on its tile.
+       Amber rather than red: an unsigned tailgate form is this week's job,
+       not a fault. Sits above the CTA and sizes to its own text so a card
+       with one is the same height as a card without one. */
+    .card-alert {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.42rem;
+      align-self: flex-start;
+      font-size: 0.68rem;
+      font-weight: 700;
+      color: #fbbf24;
+      background: rgba(251,191,36,0.1);
+      border: 1px solid rgba(251,191,36,0.28);
+      border-radius: 4px;
+      padding: 0.3rem 0.6rem;
+    }
+
+    .card-alert::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #fbbf24;
+      flex: none;
+    }
+
     .card-icon {
       width: 46px;
       height: 46px;
@@ -1198,7 +1225,7 @@
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-div" /><col class="c-div" /><col class="c-div" /><col class="c-div" />
             <col class="c-div" /><col class="c-div" /><col class="c-div" />
-            <col class="c-div" />
+            <col class="c-div" /><col class="c-div" />
             <col class="c-act" />
           </colgroup>
           <thead>
@@ -1224,11 +1251,12 @@
               <th scope="col" title="Driver (field entry)">Driver</th>
               <th scope="col" title="Quarry Sales (field entry)">Qry Sales</th>
               <th scope="col" title="Purchase Orders (central purchasing)">POs</th>
+              <th scope="col" title="Safety Center (tailgate sign-off)">Safety</th>
               <th scope="col"><span class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Actions</span></th>
             </tr>
           </thead>
           <tbody id="userListBody">
-            <tr><td colspan="18" class="mu-empty-cell">Loading…</td></tr>
+            <tr><td colspan="19" class="mu-empty-cell">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1415,6 +1443,14 @@
               <select id="mu-role-driver">
                 <option value="no_access" selected>No Access</option>
                 <option value="level1">Level 1 — See own hauls &amp; report back</option>
+              </select>
+            </div>
+            <div class="div-role-row">
+              <span class="div-role-label">Safety Center <span style="text-transform:none;color:var(--muted)">(tailgate sign-off)</span></span>
+              <select id="mu-role-safety">
+                <option value="no_access" selected>No Access</option>
+                <option value="level1">Level 1 &mdash; Read &amp; sign documents</option>
+                <option value="level3">Level 3 &mdash; Upload &amp; see the report</option>
               </select>
             </div>
             <div class="div-role-row">
@@ -1805,6 +1841,20 @@
                   <path d="M18.3 7.1a1.3 1.3 0 0 0-2.6.2c0 1.4 2.6.7 2.6 2a1.3 1.3 0 0 1-2.6.1"/>
                 </svg>`,
       },
+      // The Safety Center is one division with two jobs in it, split by level
+      // rather than by key: the supervisor posts the week's tailgate form,
+      // the crew opens it and signs that they have read and understood it.
+      safety: {
+        name:  'Safety Center',
+        desc:  'The weekly tailgate form \u2014 the supervisor posts the PDF, the crew signs it off with a timestamp, and the report shows who still has not.',
+        color: '#22c55e',
+        href:  'safety.html',
+        built: true,
+        icon:  `<svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3l7 3v5.5c0 4.2-2.9 7.6-7 9.5-4.1-1.9-7-5.3-7-9.5V6z"/>
+                  <polyline points="9 12 11 14 15 10"/>
+                </svg>`,
+      },
       fuel_admin: {
         name:  'Fuel Admin',
         desc:  'Review, edit, and approve field fuel submissions, and report on fuel use across the divisions.',
@@ -1820,7 +1870,7 @@
       },
     };
 
-    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
+    const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
 
     // ── Auth guard ──────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -1974,6 +2024,10 @@
     const cardDivisions = visibleDivisions.filter(k => DIVISION_CATALOG[k]);
     grid.classList.add(`count-${Math.min(cardDivisions.length, 5)}`);
 
+    // Division key → its rendered card, so a tile can be annotated after the
+    // grid is up without going back to the DOM to find it by its label.
+    const cardsByDivision = {};
+
     cardDivisions.forEach(key => {
       const def = DIVISION_CATALOG[key];
       if (!def) return;
@@ -2005,7 +2059,48 @@
       }
 
       grid.appendChild(card);
+      cardsByDivision[key] = card;
     });
+
+    // ── Safety Center — how many documents this user still has to sign ─────
+    // The Safety Center already says this, but only once you are inside it,
+    // which is no use to the man who has not thought to go in. The count
+    // belongs on the tile he passes on his way to whatever he did open the
+    // app for.
+    //
+    // Rendered after the grid rather than with it so the cards are on screen
+    // immediately: this is one more request on a page that already makes one,
+    // and a slow answer must not hold up the picker. If it fails, the tile is
+    // simply the tile it was before — a badge that did not load is not worth
+    // an error on the division picker, and the notice inside the Safety
+    // Center is still there.
+    (async () => {
+      const card = cardsByDivision.safety;
+      if (!card) return;
+      try {
+        const res = await fetch('/api/safety-documents?action=count', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data  = await res.json();
+        const count = Number(data && data.unsignedByMe) || 0;
+        if (count < 1) return;
+
+        // Not named `alert`: that shadows window.alert for the rest of this
+        // block, which is a trap waiting for whoever edits it next.
+        const badge = document.createElement('div');
+        badge.className = 'card-alert';
+        badge.textContent = count === 1
+          ? '1 document to sign'
+          : `${count} documents to sign`;
+        // Above the CTA, so the last thing read before "Enter System" is the
+        // reason to. querySelector returns null on a card with no CTA, and
+        // insertBefore(node, null) appends — which is the right place there.
+        card.insertBefore(badge, card.querySelector('.card-cta'));
+      } catch {
+        // Network or server error — leave the tile as it is.
+      }
+    })();
 
     // ── Division routing ────────────────────────────────────────────────────
     function enterDivision(division) {
@@ -2038,16 +2133,16 @@
       level1:    'View only',
       no_access: 'No access',
     };
-    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders'];
+    const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
 
     // The five-level selects. The rest (timesheet, payroll, fuel, fuel_admin,
-    // driver, quarry_sales) only offer one grant level each, so "set all"
-    // skips them.
+    // driver, quarry_sales, safety) only offer one or two grant levels each,
+    // so "set all" skips them.
     const DIV_KEYS_FULL_SCALE = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'purchase_orders'];
 
     // Column labels for the user table and the "saved" summary line. Only the
     // keys whose prettified form isn't just Capitalised need an entry.
-    const DIV_LABELS = { kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver', quarry_sales: 'Qry Sales', purchase_orders: 'POs' };
+    const DIV_LABELS = { safety: 'Safety', kiewit: 'Kiewit', intercompany: 'Billing', fuel: 'Fuel', fuel_admin: 'Fuel Admin', driver: 'Driver', quarry_sales: 'Qry Sales', purchase_orders: 'POs' };
     function divLabel(k) { return DIV_LABELS[k] || (k.charAt(0).toUpperCase() + k.slice(1)); }
 
     // Longer names for the division filter and the spreadsheet header, where
@@ -2061,6 +2156,7 @@
       fuel_admin: 'Fuel Admin (review & approve)', driver: 'Driver (field entry)',
       quarry_sales: 'Quarry Sales (field entry)',
       purchase_orders: 'Purchase Orders (central purchasing)',
+      safety: 'Safety Center (tailgate sign-off)',
     };
     function divLongLabel(k) { return DIV_LONG[k] || divLabel(k); }
 

@@ -30,6 +30,7 @@ const {
   poCapabilities,
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
+const { safetyKeyClaimed, safetyCapabilities, SAFETY_DIVISION } = require('./lib/safety');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -88,6 +89,20 @@ module.exports = async (req, res) => {
     }
   }
 
+  // The Safety Center's levels do not map onto the generic scale this function
+  // uses. There level2 is a SIGNER, not an uploader, and only a supervisor may
+  // register what a ticket uploads — so the generic rule handed a signer a
+  // writable presigned URL into the company's safety prefix that no
+  // registration could ever claim. Nothing sweeps those bytes up: the purge
+  // sweep walks project_documents, which a safety upload never reaches.
+  //
+  // Placed after the purchase-order carve-out rather than before it so it has
+  // the last word, though the two cannot meet today — canAccessPODivision is
+  // false for 'safety', which is neither a job division nor purchasing.
+  if (division === SAFETY_DIVISION) {
+    canUpload = safetyCapabilities(payload).canManage;
+  }
+
   // Minting an upload ticket a view-only user could never redeem just wastes a
   // round trip and hands them a writable URL.
   if (!canUpload) {
@@ -118,7 +133,12 @@ module.exports = async (req, res) => {
     const { neon } = require('@neondatabase/serverless');
     const sql = neon(process.env.DATABASE_URL);
     const claimed = await sql`SELECT id FROM project_documents WHERE storage_key = ${key} LIMIT 1`;
-    if (claimed.length) {
+    // The Safety Center mints its keys here too but registers them in its own
+    // table, so a key it owns looks unclaimed to the check above. Without this
+    // second read a supervisor could delete the file out from under a document
+    // the crew has already signed, leaving every one of those signatures
+    // pointing at nothing.
+    if (claimed.length || await safetyKeyClaimed(sql, key)) {
       return res.status(409).json({ error: 'That file is registered to a document and was not removed' });
     }
 
@@ -190,7 +210,10 @@ module.exports = async (req, res) => {
       const { neon } = require('@neondatabase/serverless');
       const sql = neon(process.env.DATABASE_URL);
       const claimed = await sql`SELECT id FROM project_documents WHERE storage_key = ${key} LIMIT 1`;
-      if (claimed.length) {
+      // And the Safety Center's own table, for the same reason as the DELETE
+      // arm above — here it is an overwrite rather than a deletion, which is
+      // worse: the signatures survive and quietly describe different bytes.
+      if (claimed.length || await safetyKeyClaimed(sql, key)) {
         return res.status(409).json({ error: 'That storage key already belongs to a document' });
       }
     }

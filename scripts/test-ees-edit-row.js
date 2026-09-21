@@ -86,6 +86,9 @@ const storage = new Map([
 ]);
 
 const posts = [];
+// See the setTimeout stub below: the page's FIRST zero-delay timer is init()'s
+// deferred first load, and only that one is dropped.
+let initLoadSwallowed = false;
 let reply = { ok: true, status: 200, json: async () => ({ ok: true, entry: null }) };
 // What the page said while these cases ran — swept at the end of the file.
 const pageLogs = [];
@@ -110,7 +113,26 @@ const sandbox = {
     body: makeElement('body'),
   },
   window: { location: { replace() {}, href: '' }, addEventListener() {} },
-  setTimeout: (fn) => { if (typeof fn === 'function') fn(); return 0; },
+  // Callbacks run at once — the modal's 600ms auto-close is one of the things
+  // under test. The ONE exception is the very first zero-delay timer, which is
+  // init()'s deferred first load.
+  //
+  // Nothing needs that today: its awaits happen to settle before the first
+  // case seeds a row. That is the problem. Add one await anywhere in the
+  // page's startup and it lands mid-case instead, overwriting the entries a
+  // test seeded and adding a request to the ones it is counting — which is
+  // exactly what happened when widenPendingOnLoad() went in, and the failure
+  // read as a duplicate save. Dropped here so the suite stops depending on
+  // the page's startup being shorter than its own setup.
+  //
+  // A one-shot rather than "drop every zero-delay timer", because the page
+  // has others: renderBulkGroupsSoon() schedules its repaint that way, and a
+  // case that touched it would fail with nothing pointing back here.
+  setTimeout: (fn, ms) => {
+    if (!ms && !initLoadSwallowed) { initLoadSwallowed = true; return 0; }
+    if (typeof fn === 'function') fn();
+    return 0;
+  },
   clearTimeout: () => {},
   fetch: async (url, opts) => {
     posts.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });

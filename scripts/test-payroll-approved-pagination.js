@@ -50,7 +50,12 @@ assert('pagerTop container exists',        /<div class="pager" id="pagerTop">/.t
 assert('pagerBottom container exists',     /<div class="pager" id="pagerBottom">/.test(HTML));
 assert('.pager CSS block exists',          /\n\s*\.pager \{[\s\S]*?\}/.test(HTML));
 assert('.pager.open flips to flex',        /\.pager\.open \{ display: flex; \}/.test(HTML));
-assert('print CSS hides the pager',        /\.pager, \.modal-backdrop, \.btn-print \{ display: none !important; \}/.test(HTML));
+// The print rule is one selector list across three lines and it gains entries
+// as the page does, so match the member rather than the line it happens to
+// share today — this assertion had been silently red since .proj-part-tools
+// and .print-picker joined it.
+assert('print CSS hides the pager',
+  /@media print \{[\s\S]*?[\s,]\.pager,[\s\S]*?display: none !important;/.test(HTML));
 assert('page sizes include an All option', /const APPROVED_PAGE_SIZES\s*=\s*\[25, 50, 100, 250, 0\]/.test(HTML));
 assert('page size persists per browser',   /APPROVED_PAGE_SIZE_KEY\s*=\s*'payroll\.approvedPageSize'/.test(HTML));
 assert('switchTab hides the pagers',       /function switchTab[\s\S]{0,2600}?hidePagers\(\)/.test(HTML));
@@ -143,7 +148,15 @@ const sandbox = {
   clearTimeout: () => {},
   // Whatever the current test has loaded — lets applyFilters() (the refetch
   // that a row edit and "Refresh Rates" both trigger) round-trip realistically.
-  fetch: async () => {
+  fetch: async (url) => {
+    // The backlog notice rides alongside every entry fetch on the same
+    // endpoint. It is a different question with a different shape of answer,
+    // and it must not eat a reply the fetchQueue below scripted for the entry
+    // list — so it is answered here, off the queue, as the server would.
+    if (String(url || '').includes('action=pending_span')) {
+      return { ok: true, status: 200,
+               json: async () => ({ total: 0, before: 0, after: 0, oldest: null, newest: null }) };
+    }
     // fetchQueue, when set, scripts one reply per request in call order — with
     // a real delay, so an earlier request can be made to answer LAST.
     if (fetchQueue && fetchQueue.length) {

@@ -27,10 +27,25 @@
 
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
+const { readEmployeeRoster } = require('../lib/roster');
 
 // Same "live job" definition the Timesheet job picker uses; empty/missing
 // status is included so older jobs without a status still surface.
 const ACTIVE_PROJECT_STATUSES = ['Awarded', 'In Progress', 'Substantially Complete'];
+
+// Per-project opt-out set on the division dashboard's project info card
+// ("Scheduler" select in tracker.html / paving.html / kiewit-pinetree.html).
+// The twin of exclude-from-executive, which does the same job for the Executive
+// rollup — a live project the master scheduler never staffs (owner-run work,
+// a job another crew handles) is noise on the board, and this is how a PM
+// takes it off without lying about the project's status.
+//
+// Opt-OUT, like the rollup toggle: a project with the flag unset is shown, so
+// nothing already on the board disappears when this ships. Both key spellings
+// are accepted because the dashboards write the hyphenated one and the
+// normalized-table sync writes snake_case.
+const projExcludedFromScheduler = p =>
+  !!p && (p['exclude-from-scheduler'] === true || p.exclude_from_scheduler === true);
 
 // Construction-project divisions that have schedulable sub-code work. Other
 // divisions (trucking/dust/quarry) model "jobs" as customers/locations with
@@ -268,16 +283,21 @@ function plannedAssignmentsFromSchedule(ppSchedule, todayStr, job) {
   return out;
 }
 
+// The same roster the "Manage employees" list shows — the canonical table plus
+// the paving, kiewit and quarry lists. One definition, in api/lib/roster.js.
 async function readEmployees(sql, companyCode) {
   try {
-    const rows = await sql`
-      SELECT name, job_class, is_supervisor, pw_rate, non_pw_rate
-      FROM   employees
-      WHERE  company_code = ${companyCode} AND active = TRUE
-      ORDER  BY sort_order ASC, name ASC`;
-    return rows.map(r => ({ name: (r.name || '').trim(), jobClass: r.job_class || '', isSupervisor: !!r.is_supervisor,
-        rateStd: parseFloat(r.non_pw_rate) || 0, ratePw: parseFloat(r.pw_rate) || parseFloat(r.non_pw_rate) || 0 }))
-      .filter(r => r.name);
+    const rows = await readEmployeeRoster(sql, companyCode);
+    return rows.map(r => ({
+      name: (r.name || '').trim(),
+      jobClass: r.job_class || '',
+      // The explicit role flags. The board groups crew by the job they do, and
+      // job_class alone cannot tell a role from a wage tier.
+      isSupervisor: r.is_supervisor === true,
+      isDriver: r.is_driver === true,
+      rateStd: parseFloat(r.non_prevailing_rate) || 0,
+      ratePw: parseFloat(r.prevailing_rate) || parseFloat(r.non_prevailing_rate) || 0,
+    })).filter(r => r.name);
   } catch (err) { console.warn('[scheduler/board] employees read failed:', err.message); return []; }
 }
 async function readEquipment(sql, companyCode) {
@@ -375,8 +395,7 @@ async function buildBoard(sql, companyCode, todayStr) {
 
   const jobs = [];
   const plannedAssignments = [];
-  const rosterEmp = new Set(employees.map(e => e.name));
-  const rosterEquip = new Set(equipment);
+  let excludedJobs = 0;
 
   SOURCE_DIVISIONS.forEach((src, i) => {
     (divisionProjects[i] || []).forEach(proj => {
@@ -384,6 +403,9 @@ async function buildBoard(sql, companyCode, todayStr) {
       if (!name) return;
       const status = (proj.status || '').trim();
       if (status && !ACTIVE_PROJECT_STATUSES.includes(status)) return;
+      // Hidden on purpose from its division dashboard. Counted, not silent, so
+      // the board can say why a job a PM expects to see is not on it.
+      if (projExcludedFromScheduler(proj)) { excludedJobs++; return; }
 
       const id = String(proj.id || '');
       const deadline = proj['end-date'] || null;
@@ -398,12 +420,11 @@ async function buildBoard(sql, companyCode, todayStr) {
       const jobMeta = { division: src.division, id, name };
       plannedAssignments.push(...plannedAssignmentsFromSchedule(ppSchedule, todayStr, jobMeta));
 
-      // Fold any crew/equipment seen on this job into the roster so the
-      // scheduler always shows everyone actually working, even if a name
-      // never made it into the canonical roster tables.
-      (proj.assigned_employees || []).forEach(n => n && rosterEmp.add(String(n).trim()));
-      (proj.assigned_equipment || []).forEach(n => n && rosterEquip.add(String(n).trim()));
-      subCodes.forEach(sc => { sc.crew.forEach(n => rosterEmp.add(n)); sc.equipment.forEach(n => rosterEquip.add(n)); });
+      // Names seen on this job's daily rows are NOT folded into the roster.
+      // Doing that put people in the Scheduler that nobody could find in
+      // Manage — a name off an old daily row, a typo, somebody long gone —
+      // and there was no way to tell them from the real roster. The roster is
+      // the roster; the board flags anyone booked who has fallen off it.
 
       jobs.push({
         division: src.division, id, name,
@@ -414,10 +435,7 @@ async function buildBoard(sql, companyCode, todayStr) {
     });
   });
 
-  // Merge project-derived names that aren't in the roster tables.
-  const knownEmp = new Set(employees.map(e => e.name));
-  rosterEmp.forEach(n => { if (n && !knownEmp.has(n)) employees.push({ name: n, jobClass: '', isSupervisor: false, rateStd: 0, ratePw: 0 }); });
-  const equipOut = [...rosterEquip].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const equipOut = equipment.filter(Boolean).slice().sort((a, b) => a.localeCompare(b));
   employees.sort((a, b) => a.name.localeCompare(b.name));
   jobs.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -428,6 +446,7 @@ async function buildBoard(sql, companyCode, todayStr) {
     jobs,
     plannedAssignments,
     timeOff,
+    excludedJobs,
     sourceDivisions: SOURCE_DIVISIONS.map(s => s.division),
   };
 }

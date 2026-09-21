@@ -44,7 +44,7 @@ const SUPPORTED = ['turf', 'paving', 'kiewit', 'quarry', 'dust', 'trucking',
 // The field-side keys. These are not divisions you get FIGURES for — they are
 // queues you have your OWN rows in, so they belong to a different tool with a
 // different promise: nobody else's records, ever.
-const PERSONAL_AREAS = ['timesheet', 'fuel', 'driver', 'quarry_sales'];
+const PERSONAL_AREAS = ['timesheet', 'fuel', 'driver', 'quarry_sales', 'safety'];
 
 const HUMAN = {
   turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree',
@@ -78,6 +78,7 @@ const AREA_LABEL = {
   fuel:         'fuel fill-ups they submitted',
   driver:       'hauls the dispatcher has assigned to them',
   quarry_sales: 'scale-house loads they recorded',
+  safety:       'safety documents they have been asked to read, and which of them they have signed',
 };
 
 /**
@@ -222,6 +223,7 @@ function toolsFor(scope, division) {
 const AREA_STEP = {
   timesheet: 'Reading your timesheet', fuel: 'Reading your fill-ups',
   driver: 'Reading your hauls', quarry_sales: 'Reading your loads',
+  safety: 'Reading your safety sign-offs',
 };
 function stepLabel(name, input) {
   if (name === 'get_help') return 'Checking how this page works';
