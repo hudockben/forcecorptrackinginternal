@@ -14825,6 +14825,21 @@
           <strong>Edit Split</strong> instead and untick Haul on the row.
         </div>` : '';
 
+      // Days somebody already coded. They post their own codes, not this
+      // card's, so the card has to say so — a panel claiming to apply one cost
+      // code to six days while posting something else for three of them is
+      // worse than either behaviour on its own.
+      const codedDays = bulkCodedDays(g);
+      const codedNote = codedDays.length ? `<div class="bulk-note" style="border-color:#b45309">
+          <strong>${codedDays.length} ${codedDays.length === 1 ? 'day was' : 'days were'}
+          already coded by whoever was on the job.</strong>
+          ${escapeHtml([...new Set(codedDays.map(e => e.username || '—'))].join(', '))} —
+          ${codedDays.length === 1 ? 'it keeps its own cost codes' : 'they keep their own cost codes'},
+          not the ones above. Open ${codedDays.length === 1 ? 'it' : 'one'} with
+          <strong>Approve</strong> to see what was entered before waving
+          ${codedDays.length === 1 ? 'it' : 'them'} through.
+        </div>` : '';
+
       return `<div class="bulk-group">
         <div class="bulk-group-head">
           <span class="bulk-badge ${badgeClass}">${escapeHtml(badgeText)}</span>
@@ -14832,6 +14847,7 @@
           <span class="bulk-group-meta">${escapeHtml(meta)}</span>
         </div>
         ${fields}
+        ${codedNote}
         ${reviewNote}
         ${bulkDaysTable(g, idx)}
       </div>`;
@@ -14975,12 +14991,62 @@
       });
     }
 
+    /**
+     * A usable proposal on this entry, as split rows — or null when there is
+     * none to use.
+     *
+     * Bulk approve prices a block of near-identical days off ONE template, and
+     * for days nobody has looked at that is exactly right. A proposal is not
+     * that: it is a person's answer about one specific day, entered by somebody
+     * who was on the job. Posting the template over it would throw away the
+     * only thing that makes coding-before-approval worth doing — and it would
+     * do it on the FAST path, the one a supervisor reaches for precisely when
+     * he trusts the codes and does not want to open six modals.
+     *
+     * Stale proposals fall back to the template: the day's hours moved after it
+     * was coded, so these rows can no longer satisfy the server's balance check
+     * and posting them would only earn a 400.
+     */
+    function bulkCodedRows(e) {
+      if (!e || !Array.isArray(e.proposed_split) || !e.proposed_split.length) return null;
+      const required = bulkR2((Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0));
+      const forH = e.coded_for_hours != null ? Number(e.coded_for_hours) : null;
+      if (forH != null && Math.abs(forH - required) > 0.001) return null;
+      return e.proposed_split.map(r => ({
+        cost_code:   r.cost_code || '',
+        sub_code:    r.sub_code  || '',
+        quantity:    Number(r.quantity)    || 0,
+        equipment:   r.equipment || '',
+        labor_hours: Number(r.labor_hours) || 0,
+        equip_hours: Number(r.equip_hours) || 0,
+        is_travel:   !!r.is_travel,
+      }));
+    }
+
+    /** The days on this card that will post their own codes rather than the
+     *  card's. Named on the card, because a panel that says it is applying one
+     *  cost code to six days while posting something else for three of them is
+     *  worse than either behaviour on its own. */
+    function bulkCodedDays(g) {
+      if (!g || g.type !== 'split') return [];
+      return (g.entries || []).filter(e => bulkCodedRows(e));
+    }
+
     // Materialize one entry's approve body from its group's template. Each day's
     // OWN hours are used so the server's "labor total must equal work + travel"
     // check passes per entry. Returns null for plain (status-only) approvals.
     function buildBulkBody(g, e) {
       if (g.type === 'plain') return null;
       if (g.type === 'split') {
+        // A day already coded posts ITS OWN codes. The haul defaults still run
+        // over them: a coder is not allowed to answer the haul questions (the
+        // server strips them), so that answer is still the entry's and this
+        // card's to give, exactly as it is for an uncoded day.
+        const coded = bulkCodedRows(e);
+        if (coded) {
+          bulkApplyHaulDefaults(e, coded);
+          return { split: coded };
+        }
         const work   = bulkR2(e.computed_hours);
         const travel = bulkR2(e.travel_hours);
         const cc = String(g.template.cost_code || '').trim();
