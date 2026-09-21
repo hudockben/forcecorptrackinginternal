@@ -4641,14 +4641,55 @@ module.exports = async (req, res) => {
   // its neighbours. Aliasing makes the narrow grant default-deny: a gate has
   // to be moved to canCode deliberately, and anything overlooked stays shut.
   // Only two places below open to a coder — this guard, and the list scope.
-  const { canCode, canApprove, isCoder } = payrollAccess(payload);
-  const canAdmin = canApprove;
+  let { canCode, canApprove, isCoder } = payrollAccess(payload);
+  let canAdmin = canApprove;
 
   if (!canSubmit && !canCode) {
     return res.status(403).json({ error: 'You do not have access to Timesheet or Payroll' });
   }
 
   const sql = neon(process.env.DATABASE_URL);
+
+  // The JWT lasts thirty days and cannot be revoked, so the grant inside it is
+  // a snapshot of whenever the holder last signed in. That is tolerable for
+  // "may look at this division" and not for "may approve payroll": taking
+  // approve away from somebody has to take effect now rather than within a
+  // month, and giving a foreman the coder grant has to work without making him
+  // sign out and back in first. mathis-context.refreshAuthz re-reads roles
+  // every turn for exactly this reason.
+  //
+  // Run for every non-platform-admin caller, not only one the token already
+  // says holds payroll: the grant has to work in BOTH directions. Gated on the
+  // token's own answer, taking approve away would work and handing a foreman
+  // the coder grant would not — his token says no payroll, so he would have to
+  // sign out and back in before the page he was just given would load anything.
+  //
+  // It costs one primary-key lookup on a handler that already runs several
+  // queries. A failed read keeps the token's answer, which is exactly the
+  // behaviour this replaces.
+  if (!payload.isPlatformAdmin) {
+    try {
+      const [fresh] = await sql`
+        SELECT division_roles FROM users
+         WHERE id = ${safeInt(userId)} AND company_code = ${companyCode}
+      `;
+      if (fresh) {
+        const live = payrollAccess({
+          divisionRoles:   fresh.division_roles,
+          isPlatformAdmin: false,
+          // Kept so a legacy account with no division_roles still resolves the
+          // way payrollAccess resolves it from a token — fail open to today.
+          allowedDivisions: payload.allowedDivisions,
+          role:             payload.role,
+        });
+        canCode = live.canCode; canApprove = live.canApprove; isCoder = live.isCoder;
+        canAdmin = canApprove;
+        if (!canSubmit && !canCode) {
+          return res.status(403).json({ error: 'You do not have access to Timesheet or Payroll' });
+        }
+      }
+    } catch { /* keep the token's answer */ }
+  }
 
   try {
     // ── GET (list) ─────────────────────────────────────────────────────────
@@ -5548,38 +5589,41 @@ module.exports = async (req, res) => {
         }
       }
 
-      // The same validation the approver's own split gets, including the
-      // balance against computed_hours + travel_hours. A proposal that does
-      // not add up is refused here rather than waiting to fail under the
-      // approver's hand at the last step.
-      const { rows: proposed, error: preErr } =
-        validateSplit((req.body && req.body.split) || [], existing);
-      if (preErr) return res.status(400).json({ error: preErr });
-
-      // A PROPOSAL carries CLASSIFICATION, and the API — not merely the
-      // screen — is what holds it to that. normalizeSplitRow keeps whatever
-      // the body carried, and four of those fields belong to the approval
-      // rather than to the question "what phase was this work?":
+      // ── What a proposal may carry ────────────────────────────────────
+      // CLASSIFICATION, and the API — not merely the screen — is what holds it
+      // to that. Four fields belong to the approval rather than to the
+      // question "what phase was this work?":
       //
       //   dest        routes this row's cost into another division's ledger
       //   is_haul     says the truck bought this labour, pricing it at $0
       //   haul_type   decides whether the hours keep the prevailing premium
       //   equipment   puts a machine on the row at that machine's hourly rate
       //
-      // Stripped for EVERY proposer, not only a coder. An approver may precode
+      // Stripped for EVERY proposer, not only a coder: an approver may precode
       // a day too, and a proposal of his carrying these would flow through the
-      // bulk panel — which posts a proposal's rows verbatim and then applies
-      // the day's haul answer over them — with no modal open and no review
-      // warning, because the warning is derived from the card's template and
-      // not from the rows a proposal actually posts. The approve modal is
-      // where those four are answered, by whoever is approving, with the
-      // labour rate in front of them.
-      for (const r of proposed) {
-        r.dest = null;
-        r.equipment = '';
-        delete r.is_haul;
-        delete r.haul_type;
-      }
+      // bulk panel verbatim with no modal open and no review warning.
+      //
+      // Stripped off the RAW BODY, before validateSplit, so the row is checked
+      // in the shape it will actually be stored in. Doing it afterwards let a
+      // row through in one shape and kept it in another: normalizeSplitRow
+      // waives the cost-code requirement for a row bound for trucking, dust or
+      // quarry, so a body naming one of those as its dest passed validation
+      // with no code at all — and then had its dest removed, leaving a stored
+      // proposal that no approval could ever accept.
+      const rawSplit = Array.isArray(req.body && req.body.split) ? req.body.split : [];
+      const cleanSplit = rawSplit.map(r => {
+        if (!r || typeof r !== 'object') return r;
+        const out = Object.assign({}, r);
+        delete out.dest; delete out.is_haul; delete out.haul_type; delete out.equipment;
+        return out;
+      });
+
+      // The same validation the approver's own split gets, including the
+      // balance against computed_hours + travel_hours. A proposal that does
+      // not add up is refused here rather than waiting to fail under the
+      // approver's hand at the last step.
+      const { rows: proposed, error: preErr } = validateSplit(cleanSplit, existing);
+      if (preErr) return res.status(400).json({ error: preErr });
 
       // status = 'submitted' in the WHERE is a compare-and-swap, not
       // decoration: the supervisor may approve this very entry between the
@@ -5597,12 +5641,23 @@ module.exports = async (req, res) => {
             coded_source     = 'precode',
             updated_at       = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
-          AND status = 'submitted'
+          AND status     = 'submitted'
+          -- The four columns that say WHICH day this is. Status alone is not
+          -- enough: payroll may move a submitted entry to another job, date or
+          -- division while this proposal is being written, and the PUT that
+          -- moves it clears the coding columns precisely because a proposal
+          -- describes one day. A write landing just after that move would put
+          -- the old job's codes back on the new one, past the guard meant to
+          -- stop exactly that.
+          AND entry_type = ${existing.entry_type}
+          AND division   = ${existing.division}
+          AND job_id     = ${existing.job_id}
+          AND work_date  = ${safeDate(existing.work_date)}::date
         RETURNING *
       `;
       if (!preUpdated) {
         return res.status(409).json({
-          error: 'This entry was approved while you were coding it — your codes were not saved.',
+          error: 'This day changed while you were coding it — it was approved, or payroll moved it to another job or date. Your codes were not saved.',
         });
       }
 

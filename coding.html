@@ -332,7 +332,13 @@
         // The reason matters more than the fact. When we know he simply has
         // not filed his own day yet, say that and point at the fix — "no
         // entries" on its own reads like the feature is broken.
-        body = state.ownFiled === false
+        body = state.ownFiled == null
+          ? `<div class="empty">
+              Nothing to code for this day.<br><br>
+              You code the crew of a job <strong>you worked yourself</strong>, and only
+              turf, paving and kiewit jobs are coded here.
+            </div>`
+          : state.ownFiled === false
           ? `<div class="empty">
               You have not submitted your own time for this day yet.<br><br>
               You code the crew of a job <strong>you worked yourself</strong>, so send your
@@ -483,7 +489,7 @@
       } catch {
         mySheet.codesState = 'failed';
       }
-      if (sheet === mySheet) renderSheet();
+      if (sheet === mySheet) { harvestSheetDom(); renderSheet(); }
     }
 
     function closeSheet() {
@@ -494,6 +500,41 @@
     function subsFor(cc) {
       const hit = sheet.codes.find(c => String(c.cost_code) === String(cc));
       return (hit && Array.isArray(hit.sub_codes)) ? hit.sub_codes : [];
+    }
+
+    /**
+     * Pull whatever is currently in the form back into sheet.rows.
+     *
+     * The text fields commit on `change`, which is blur — so anything typed
+     * and not yet blurred lives only in the DOM. renderSheet rebuilds the body
+     * from sheet.rows, so a repaint that did not harvest first silently threw
+     * away what the coder was in the middle of typing. The cost-code lookup
+     * landing is the common case: he opens a day on a slow connection, starts
+     * typing, and the response repaints under him.
+     */
+    function harvestSheetDom() {
+      if (!sheet) return;
+      document.querySelectorAll('#sheetBody .srow').forEach((el, i) => {
+        const r = sheet.rows[i];
+        if (!r) return;
+        el.querySelectorAll('input[data-f]').forEach(inp => {
+          r[inp.getAttribute('data-f')] = inp.value;
+        });
+      });
+    }
+
+    /**
+     * Repaint on the NEXT tick, keeping what is typed.
+     *
+     * A commit fires on blur, and the browser is mid-way through moving focus
+     * to whatever was tapped or tabbed into. Replacing #sheetBody right then
+     * destroys the element the focus is landing on, so the next field never
+     * receives it — which was safe while these were <select>s (change fires
+     * with focus still on the control) and is not now they are inputs.
+     */
+    function renderSheetSoon() {
+      harvestSheetDom();
+      setTimeout(() => { if (sheet) renderSheet(); }, 0);
     }
 
     function renderSheet() {
@@ -532,13 +573,13 @@
           </div>
           <div class="fld">
             <label>Cost code</label>
-            <input list="ccList" value="${esc(r.cost_code)}" placeholder="type or pick"
+            <input list="ccList" data-f="cost_code" value="${esc(r.cost_code)}" placeholder="type or pick"
                    autocapitalize="off" autocorrect="off" spellcheck="false"
                    onchange="setField(${i},'cost_code',this.value)">
           </div>
           <div class="fld">
             <label>Sub code</label>
-            <input list="scList${i}" value="${esc(r.sub_code)}"
+            <input list="scList${i}" data-f="sub_code" value="${esc(r.sub_code)}"
                    placeholder="${subs.length ? 'type or pick' : 'optional'}"
                    autocapitalize="off" autocorrect="off" spellcheck="false"
                    onchange="setField(${i},'sub_code',this.value)">
@@ -547,13 +588,13 @@
           <div class="grid2">
             <div class="fld">
               <label>Hours</label>
-              <input type="number" inputmode="decimal" min="0" max="24" step="0.25"
+              <input type="number" data-f="labor_hours" inputmode="decimal" min="0" max="24" step="0.25"
                      value="${esc(r.labor_hours)}" placeholder="0.00"
                      oninput="setField(${i},'labor_hours',this.value)">
             </div>
             <div class="fld">
               <label>Quantity</label>
-              <input type="number" inputmode="decimal" min="0" step="0.01"
+              <input type="number" data-f="quantity" inputmode="decimal" min="0" step="0.01"
                      value="${esc(r.quantity)}" placeholder="optional"
                      oninput="setField(${i},'quantity',this.value)">
             </div>
@@ -589,7 +630,9 @@
       // on every keystroke — a re-render mid-word would take the focus with it.
       if (field === 'cost_code') {
         if (String(prev || '') !== String(value || '')) sheet.rows[i].sub_code = '';
-        renderSheet();
+        // Deferred: this fires on blur, and repainting synchronously would
+        // take the element the focus is moving to with it.
+        renderSheetSoon();
         return;
       }
       if (field === 'labor_hours') { renderTally(); return; }
@@ -600,8 +643,16 @@
 
     async function saveCoding() {
       if (!sheet || sheet.saving) return;
+      // Tapping Save straight from a text field fires the click before that
+      // field's change event on some mobile browsers, so read the form rather
+      // than trusting the last commit to have landed.
+      harvestSheetDom();
       const msg = document.getElementById('sheetMsg');
       msg.className = 'msg err';
+      // Cleared up front, not after the loop. sheet.err is what survives a
+      // repaint, so a stale server error left set here reappeared over the
+      // validation message the coder was actually acting on.
+      sheet.err = '';
 
       // Mirrors the server's own rules so an obvious mistake is caught here
       // rather than after a round trip. The server checks all of it again.
@@ -609,16 +660,15 @@
         const r = sheet.rows[i];
         const h = Number(r.labor_hours) || 0;
         if (h <= 0) {
-          msg.textContent = `Row ${i + 1} has no hours on it. Give it hours or remove it.`;
-          msg.classList.add('show'); return;
+          sheet.err = `Row ${i + 1} has no hours on it. Give it hours or remove it.`;
+          msg.textContent = sheet.err; msg.classList.add('show'); return;
         }
         if (!String(r.cost_code || '').trim() && !String(r.sub_code || '').trim()) {
-          msg.textContent = `Row ${i + 1} needs a cost code.`;
-          msg.classList.add('show'); return;
+          sheet.err = `Row ${i + 1} needs a cost code.`;
+          msg.textContent = sheet.err; msg.classList.add('show'); return;
         }
       }
       msg.classList.remove('show');
-      sheet.err = '';
 
       // Everything the continuation needs, taken BEFORE the await. Cancel and
       // Close stay live while the POST is in flight and both set sheet = null,

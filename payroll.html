@@ -8162,19 +8162,27 @@
     function splitCodedNoteHtml(entry, stale, codedFor, required) {
       const who = entry && entry.coded_by_name ? String(entry.coded_by_name) : '';
       if (!who || !entry || entry.status !== 'submitted') return '';
-      // Only a CODER's proposal. An un-approved entry is 'submitted' again and
-      // still carries the approver's own written-back split, so keying off
-      // status alone announced him to himself as the man who was on the job.
-      if (entry.coded_source !== 'precode') return '';
+      // STALENESS warns whoever wrote it. The split stored on a day can be a
+      // coder's proposal or the approver's own accepted one written back, and
+      // either can be left behind by an edit to the hours — so this branch
+      // comes FIRST and is worded without claiming who was on the job.
+      // Gating it behind 'precode' meant an approver un-approving a day,
+      // correcting its hours and re-approving got no warning at all that the
+      // codes he was about to see were not the ones he had accepted.
       if (stale) {
         return `<div class="split-coded-note stale">
-          <strong>${escapeHtml(who)}</strong> coded this day against
-          <strong>${num2(codedFor)}</strong> hours, and it now has
-          <strong>${num2(required)}</strong>. Those codes no longer add up, so the
+          The cost codes stored on this day were written against
+          <strong>${num2(codedFor)}</strong> hours${entry.coded_source === 'precode' ? ' by <strong>' + escapeHtml(who) + '</strong>' : ''},
+          and it now has <strong>${num2(required)}</strong>. They no longer add up, so the
           form below has opened on its usual defaults — enter the breakdown from
           scratch.
         </div>`;
       }
+      // Below here is an AUTHORSHIP line, and only a coder's proposal has one
+      // worth showing. An un-approved entry is 'submitted' again and still
+      // carries the approver's own written-back split, so keying off status
+      // alone announced him to himself as the man who was on the job.
+      if (entry.coded_source !== 'precode') return '';
       return `<div class="split-coded-note">
         Cost codes below were entered by <strong>${escapeHtml(who)}</strong>, who was
         on the job. Check them, change anything that is wrong, then approve.
@@ -8821,14 +8829,16 @@
     function codedChipHtml(e) {
       if (!e || e.status !== 'submitted' || !e.coded_by_name) return '';
       if (!Array.isArray(e.proposed_split) || !e.proposed_split.length) return '';
-      // A coder's proposal only — see splitCodedNoteHtml. An un-approved day
-      // carries the approver's replay in the same columns.
-      if (e.coded_source !== 'precode') return '';
       const required = (Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0);
       const forH  = e.coded_for_hours != null ? Number(e.coded_for_hours) : null;
       const stale = forH != null && Math.abs(forH - required) > 0.001;
+      // A STALE split is worth flagging whoever wrote it — the day's hours have
+      // moved since, and approving it will open on blank defaults. Only the
+      // authorship claim below is restricted to a coder's proposal; see
+      // splitCodedNoteHtml.
+      if (!stale && e.coded_source !== 'precode') return '';
       const title = stale
-        ? `${e.coded_by_name} coded this against ${num2(forH)} hours and the day now has ${num2(required)}, so the codes no longer add up — approving opens on blank defaults.`
+        ? `The codes stored on this day were written against ${num2(forH)} hours and it now has ${num2(required)}, so they no longer add up — approving opens on blank defaults.`
         : `Cost codes already entered by ${e.coded_by_name}, who was on the job. Approving opens with them filled in.`;
       return `<span class="coded-chip${stale ? ' stale' : ''}" title="${escAttr(title)}">`
         + `${stale ? '⚠ coded (stale)' : 'coded'}</span>`;
@@ -14884,7 +14894,8 @@
           already coded by whoever was on the job.</strong>
           ${escapeHtml([...new Set(codedDays.map(e => e.username || '—'))].join(', '))} —
           ${codedDays.length === 1 ? 'it keeps its own cost codes' : 'they keep their own cost codes'},
-          not the ones above. Open ${codedDays.length === 1 ? 'it' : 'one'} with
+          not the ones above — the equipment above still applies to
+          ${codedDays.length === 1 ? 'it' : 'them'}. Open ${codedDays.length === 1 ? 'it' : 'one'} with
           <strong>Approve</strong> to see what was entered before waving
           ${codedDays.length === 1 ? 'it' : 'them'} through.
         </div>` : '';
@@ -15115,6 +15126,48 @@
         // card's to give, exactly as it is for an uncoded day.
         const coded = bulkCodedRows(e);
         if (coded) {
+          // A proposal carries NO equipment — the server strips it, because a
+          // machine on a row is priced at that machine's hourly rate and that
+          // is the approver's answer, not the coder's. So the card's machines
+          // are not in competition with the proposal, and are merged onto it
+          // exactly as they are onto an uncoded day. Without this, ticking a
+          // coded day in bulk silently dropped the equipment the supervisor
+          // had just typed for it, while leaving both controls on screen.
+          //
+          // Each leg's first machine rides ONE row of that leg, not every row
+          // of it: a proposal may split the work into several phases, and
+          // putting the roller on all of them bills the job for it several
+          // times over.
+          const machines = bulkRowEffective(g, e);
+          const workM    = machines.filter(m => m.leg !== 'travel');
+          const travelM  = machines.filter(m => m.leg === 'travel');
+          const firstWork   = coded.find(r => !r.is_travel);
+          const firstTravel = coded.find(r => r.is_travel);
+          const seat = (row, m) => {
+            if (!row || !m || !m.equipment) return false;
+            row.equipment   = m.equipment;
+            row.equip_hours = m.equip_hours;
+            return true;
+          };
+          const seatedWork   = seat(firstWork,   workM[0]);
+          const seatedTravel = seat(firstTravel, travelM[0]);
+          // Anything past the seated machine gets a row of its own, coded the
+          // same as the leg it belongs to. Zero labour is fine — the balance
+          // check counts labour alone, so these never disturb work + travel.
+          const extras = [
+            ...(seatedWork   ? workM.slice(1)   : workM),
+            ...(seatedTravel ? travelM.slice(1) : travelM),
+          ];
+          for (const m of extras) {
+            if (!m.equipment || !(m.equip_hours > 0)) continue;
+            const onTravel = m.leg === 'travel';
+            const src = (onTravel ? firstTravel : firstWork) || coded[0];
+            coded.push({
+              cost_code: src ? src.cost_code : '', sub_code: src ? src.sub_code : '',
+              quantity: 0, equipment: m.equipment, labor_hours: 0,
+              equip_hours: m.equip_hours, is_travel: onTravel,
+            });
+          }
           bulkApplyHaulDefaults(e, coded);
           return { split: coded };
         }
