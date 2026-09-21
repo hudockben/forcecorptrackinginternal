@@ -78,6 +78,17 @@
     .rail-name { flex:1; min-width:0; font-size:0.69rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .rail-load { font-size:0.54rem; padding:0 0.26rem; border-radius:7px; border:1px solid var(--border); color:var(--muted); white-space:nowrap; }
     .rail-load.free { color:var(--green); border-color:var(--green-dim); }
+    /* Two jobs on one day, said in the panel you drag from, so you can see it
+       before you add a third. */
+    .rail-load.clash { color:var(--red); border-color:var(--red); font-weight:700; }
+    /* Tracing one man: everything that is not him steps back so the places he
+       IS stand out. Dimming rather than hiding — the shape of the board is the
+       context that makes the answer mean anything. */
+    body.tracing .asn:not(.trace) { opacity:0.2; }
+    body.tracing .rail-row:not(.trace) { opacity:0.35; }
+    .asn.trace { box-shadow:0 0 0 2px var(--blue); opacity:1; }
+    .asn.trace.conflict { box-shadow:0 0 0 2px var(--red); }
+    .rail-row.trace { border-color:var(--blue); background:rgba(96,165,250,0.12); }
     .rail-load.full { color:var(--red); border-color:var(--red); }
     .rail-empty { font-size:0.68rem; color:var(--muted); padding:0.6rem 0.3rem; }
     table.board { border-collapse:collapse; width:100%; font-size:0.74rem; }
@@ -737,9 +748,22 @@ function conflictResourcesOn(date) {
   const out = new Set(); Object.entries(byRes).forEach(([r,set]) => { if (set.size > 1) out.add(r); }); return out;
 }
 function totalConflicts() { let n = 0; Object.keys(state.assignments).forEach(d => { n += conflictResourcesOn(d).size; }); return n; }
-// How loaded a man is, always over the week — the pill says "/7d", and in a
-// day view knowing he is already on four other days is the useful part.
+// How loaded a man is, always over the week — the By Crew row says "/7d", and
+// knowing he is on four other days is the useful part of that number.
 function loadForResource(resource) { let days = 0; fullWeekDateStrs().forEach(d => { if (assignmentsFor(d, resource).length) days++; }); return days; }
+// Booked at all in the range ON SCREEN. This is what "idle" has to mean, or a
+// day board reads "67 idle" at the top while the panel beside it offers four:
+// a man booked on Tuesday is available on Monday, and on Monday that is the
+// only thing being asked about him.
+function bookedInView(resource) { return weekDateStrs().some(d => assignmentsFor(d, resource).length > 0); }
+// How many DISTINCT jobs he is on that day. One is fine; two is the
+// double-booking the board reddens — "who is free" and "who is doubled up"
+// turn out to be the same question asked of the same number.
+function jobsOnDate(resource, date) {
+  const s = new Set();
+  (state.assignments[date] || []).forEach(a => { if (a.resource === resource) s.add(a.division + '::' + a.jobId); });
+  return s.size;
+}
 // Names booked on the board that are no longer on the company roster: someone
 // removed in Manage, or a name that only ever existed on an old daily row.
 // The board used to quietly treat these as crew, which is why the Scheduler
@@ -1129,7 +1153,9 @@ function renderCapacity() {
 const DRAG_TIP = ' — drag to move (Alt = copy) · drag the grip across the row for several days · right-click to remove';
 function chip(a, conf, date, showJob) {
   const col = divColor(a.division);
-  const dd = ' draggable="true" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'"';
+  // data-res is what the trace below reads: a chip knew its assignment id but
+  // never said whose it was, so the board could not answer "where else is he".
+  const dd = ' draggable="true" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'" data-res="'+esc(a.resource)+'"';
   const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'');
   const half = a.half ? ' ½' : '';
   // Each name carries its own fill grip. The cell handle repeats the WHOLE
@@ -1374,7 +1400,16 @@ function jobRowHtml(job, ds, tStr) {
 // The board answers "who is on this job"; the rail answers "who is spare".
 // Dragging a name out of it and onto a square is the whole interaction — no
 // dialog, no cost code, no decision beyond which job and which day.
+// On a WEEK board the pill counts days booked, which is what "/7" means. On a
+// DAY board that number is about six days you are not looking at, so it says
+// the thing you came for instead: free, on one job, or on two — and two is red,
+// because on a single day that is a man in two places at once.
 function railLoadPill(name) {
+  if (viewingOneDay()) {
+    const j = jobsOnDate(name, weekDateStrs()[0]);
+    if (!j) return '<span class="rail-load free" title="Nothing booked this day">free</span>';
+    return '<span class="rail-load'+(j > 1 ? ' clash' : '')+'" title="'+(j > 1 ? 'On '+j+' jobs this day — double-booked' : 'On one job this day')+'">'+(j > 1 ? j+' jobs' : 'on')+'</span>';
+  }
   const n = loadForResource(name);
   const cls = n === 0 ? ' free' : n >= 7 ? ' full' : '';
   return '<span class="rail-load'+cls+'" title="Days booked in the 7 shown">'+n+'/7</span>';
@@ -1415,18 +1450,20 @@ function railListHtml() {
   if (state.railTab === 'equip') {
     let eq = (state.board.equipment||[]).slice();
     if (q) eq = eq.filter(n => n.toLowerCase().includes(q));
-    if (state.railIdleOnly) eq = eq.filter(n => loadForResource(n) === 0);
-    eq.sort((a,b) => loadForResource(a) - loadForResource(b) || a.localeCompare(b));
+    if (state.railIdleOnly) eq = eq.filter(n => !bookedInView(n));
+    eq.sort((a,b) => (bookedInView(a)?1:0) - (bookedInView(b)?1:0) || loadForResource(a) - loadForResource(b) || a.localeCompare(b));
     html = eq.map(n => railRow(n, 'equip', 'equipment', false)).join('');
     if (!html) html = '<div class="rail-empty">'+(q ? 'No machine matches \u201c'+esc(state.railSearch.trim())+'\u201d.' : state.railIdleOnly ? 'Every machine is out.' : 'No equipment.')+'</div>';
     return html;
   }
   let emps = (state.board.employees||[]).slice();
   if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q) || roleOf(e).toLowerCase().includes(q) || (e.jobClass||'').toLowerCase().includes(q));
-  if (state.railIdleOnly) emps = emps.filter(e => loadForResource(e.name) === 0);
+  if (state.railIdleOnly) emps = emps.filter(e => !bookedInView(e.name));
   const groups = {}; emps.forEach(e => { const g = roleOf(e); (groups[g] = groups[g] || []).push(e); });
   Object.keys(groups).sort(sortRoles).forEach(g => {
-    const list = groups[g].slice().sort((a,b) => loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
+    // Free first: on a day board that puts everyone you can still send at
+    // the top of the trade you are looking at.
+    const list = groups[g].slice().sort((a,b) => (bookedInView(a.name)?1:0) - (bookedInView(b.name)?1:0) || loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
     html += '<div class="rail-grp">'+esc(g)+' <span style="opacity:0.7">('+list.length+')</span></div>';
     html += list.map(e => railRow(e.name, 'emp', roleOf(e), wk.every(d => isBlockedOff(e.name, 'emp', d)))).join('');
   });
@@ -1583,6 +1620,7 @@ function _hasAt(date, t, resource, op) {
   return cellAssignments(date, t.division, t.jobId, t.costCode).some(x => x.resource === resource && (x.op||'') === (op||''));
 }
 function onDragStart(e) {
+  traceResource(null);
   const t = _el(e.target); if (!t) return;
   const pf = t.closest('[data-pfill]');
   if (pf) {
@@ -1826,6 +1864,33 @@ function onChipContext(e) {
   if (a.kind === 'equip') removeAssignment(date, id); else removePersonAssignment(date, id);
   render(); toast('Removed ' + a.resource + ' · Ctrl+Z to undo');
 }
+// Hover a name — on a chip or in the crew panel — and every other place that
+// man is booked lights up while the rest of the board dims. It answers the
+// question the red conflict chip only half answers: red says he is in two
+// places, this says WHERE, including a job inside a division group you have
+// collapsed or scrolled past.
+//
+// Matching is done by walking the chips and comparing dataset.res rather than
+// by building an attribute selector, because a name is free text — an
+// apostrophe or a quote in it would break the selector, and "O'Brien" is a
+// name.
+let _traceRes = null;
+function traceResource(name) {
+  if (_traceRes === name) return;
+  _traceRes = name;
+  document.body.classList.toggle('tracing', !!name);
+  document.querySelectorAll('.asn[data-res], .rail-row[data-res]').forEach(el => {
+    el.classList.toggle('trace', !!name && el.dataset.res === name);
+  });
+}
+function onTraceOver(e) {
+  // Never while dragging: the board is already showing a drop target and a
+  // second highlight on top of it is noise.
+  if (_drag) return;
+  const t = _el(e.target);
+  const src = t && t.closest('.asn[data-res], .rail-row[data-res]');
+  traceResource(src ? src.dataset.res : null);
+}
 function wireBoardDnD() {
   const main = document.getElementById('main');
   main.addEventListener('dragstart', onDragStart);
@@ -1834,6 +1899,8 @@ function wireBoardDnD() {
   main.addEventListener('dragleave', onDragLeave);
   main.addEventListener('drop', onDrop);
   main.addEventListener('contextmenu', onChipContext);
+  main.addEventListener('mouseover', onTraceOver);
+  main.addEventListener('mouseleave', () => traceResource(null));
 }
 
 // ── Assign modal ────────────────────────────────────────────────────────────
@@ -2501,7 +2568,7 @@ function gapItems() {
   items.sort((a,b) => (a.type==='unstaffed'?0:1) - (b.type==='unstaffed'?0:1) || ((STATUS_RANK[a.worst] ?? 9) - (STATUS_RANK[b.worst] ?? 9)) || a.job.name.localeCompare(b.job.name));
   return items;
 }
-function idleEmployees() { if (!state.board) return []; return (state.board.employees||[]).filter(e => loadForResource(e.name) === 0); }
+function idleEmployees() { if (!state.board) return []; return (state.board.employees||[]).filter(e => !bookedInView(e.name)); }
 function firstWorkdayThisWeek() { const wd = fullWeekDateStrs().filter(d => { const dow = new Date(d+'T12:00:00').getDay(); return dow !== 0 && dow !== 6 && d >= todayStr(); }); return wd[0] || fullWeekDateStrs()[0] || todayStr(); }
 // Put idle men on the JOB for the rest of the week. No cost code — the
 // supervisor gives them the task in the morning, which is the whole point.
@@ -2519,10 +2586,19 @@ function autoFill(division, jobId) {
   const pick = idle.slice(0, need);
   if (!pick.length) { toast('No available idle crew this week (idle crew are off all week)'); return; }
   pushUndo();
-  let added = 0; const used = [];
-  pick.forEach(e => { const n = addAssignmentSpan(e.name, 'emp', job, '', dates); if (n) used.push(e.name); added += n; });
-  if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already on this job'); return; }
-  toast('Put ' + used.join(', ') + ' on ' + job.name);
+  let added = 0, skipped = 0; const used = [];
+  pick.forEach(e => {
+    // Never fill a man onto a day he is already working somewhere else. Idle
+    // now means free on the day you are LOOKING at, so a man offered here may
+    // well be on another job on Thursday — and the point of Fill is to use up
+    // idle time, not to manufacture the double-booking the board then reddens.
+    const free = dates.filter(d => !assignmentsFor(d, e.name).length);
+    skipped += dates.length - free.length;
+    const n = addAssignmentSpan(e.name, 'emp', job, '', free);
+    if (n) used.push(e.name); added += n;
+  });
+  if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already booked every day left this week'); return; }
+  toast('Put ' + used.join(', ') + ' on ' + job.name + (skipped ? ' \u00b7 left ' + skipped + ' day' + (skipped>1?'s':'') + ' alone, already booked' : ''));
   render();
 }
 function renderAttention() {
@@ -2550,8 +2626,10 @@ function renderAttention() {
       '<button class="btn mini" onclick="openAssignJob(\''+g.job.division+'\',\''+escAttr(g.job.id)+'\',\'\',\''+fwd+'\')">Staff…</button>'+
     '</div>';
   }).join('') + '</div>';
-  html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🟢 Idle this week (' + idle.length + ')</div>';
-  if (!idle.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">Everyone is scheduled this week.</div>';
+  // Reads the range on screen, like the strip above it. Saying "this week"
+  // over a day board's figures was two numbers disagreeing in the same view.
+  html += '<div style="font-weight:700;margin:0.4rem 0 0.5rem">🟢 Idle ' + rangeWords() + ' (' + idle.length + ')</div>';
+  if (!idle.length) html += '<div class="muted" style="font-size:0.82rem;margin-bottom:1.2rem">Everyone is scheduled ' + rangeWords() + '.</div>';
   else { const byRole = {}; idle.forEach(e => { const t = roleOf(e); (byRole[t] = byRole[t] || []).push(e.name); });
     html += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.4rem">' + Object.keys(byRole).sort(sortRoles).map(t => '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:0.45rem 0.7rem;max-width:280px"><div style="font-size:0.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">'+esc(t)+' ('+byRole[t].length+')</div><div style="font-size:0.78rem">'+byRole[t].map(n => esc(n)+(wk.some(d=>isBlockedOff(n,'emp',d))?' ⛱':(wk.some(d=>isOff(n,d))?' ⛱½':''))).join(', ')+'</div></div>').join('') + '</div>';
   }

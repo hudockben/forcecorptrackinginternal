@@ -42,7 +42,8 @@ const SCHED = read('scheduler.html');
 
 const FNS = ['otherKey','otherJobOf','otherLabel','otherJobsInWeek','jobFor','jobById','divLabel',
              'placeOnJob','addAssignmentSpan','conflictResourcesOn','dropJob','loadForResource',
-             'assignmentsFor','dayList','idleEmployees'];
+             // idleEmployees reads the range ON SCREEN now, through bookedInView.
+             'bookedInView','assignmentsFor','dayList','idleEmployees'];
 
 /** A board in a vm, running scheduler.html's own functions over it. */
 function board({ week, assignments, drafts, jobs, employees }) {
