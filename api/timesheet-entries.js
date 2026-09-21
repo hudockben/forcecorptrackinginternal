@@ -7,6 +7,8 @@
  *     admins. Reading past your own time is an explicit opt-in, so a page that
  *     forgets to scope shows too little rather than the whole company.
  *     Query: ?status=draft|submitted|approved
+ *            ?scope=crew  — a CODER's queue: submitted daily entries on a job
+ *                           he himself worked that day (see the list handler)
  *            ?from=YYYY-MM-DD&to=YYYY-MM-DD
  *            ?user_id=N      (admin only — one named user)
  *            ?scope=all      (admin only — every user in the company)
@@ -72,6 +74,16 @@
  *     Intercompany removal recorded against the row, so re-approving puts
  *     previously-deleted work back rather than being overruled by it.
  *
+ *   POST   /api/timesheet-entries?action=precode&id=N   — PROPOSE a split
+ *     Writes `split: [...]` (same body and same validation as approve) onto
+ *     timesheet_entries.proposed_split and stamps coded_by_* / coded_at /
+ *     coded_for_hours. Row must be 'submitted', daily, on a job, and in one of
+ *     AUTO_INJECT_DIVISIONS. Injects NOTHING and does not touch status — the
+ *     entry stays pending and the approve modal pre-fills from the column.
+ *     Open to payroll:'level2' (a coder — see payrollAccess in lib/auth.js) as
+ *     well as to payroll admins. A coder is additionally scoped to days on a
+ *     job HE worked, the same derivation ?scope=crew lists from.
+ *
  *   POST   /api/timesheet-entries?action=resplit&id=N   — replace injected rows
  *     Payroll-admin only, row must already be 'approved'. Same body shape as
  *     approve. For turf/paving: deletes the prior injected daily_tracking rows
@@ -123,7 +135,7 @@
  */
 
 const { neon } = require('@neondatabase/serverless');
-const { requireAuth, hasDivisionAccess } = require('./lib/auth');
+const { requireAuth, hasDivisionAccess, payrollAccess } = require('./lib/auth');
 const { syncForKey } = require('./lib/sync-normalized');
 // Identity + lifecycle rules for the Truck Tracking rows this file injects.
 // Shared with api/truck-division.js, which sweeps rows that outlived their
@@ -519,6 +531,17 @@ function dbToEntry(r) {
     approved_at:         r.approved_at,
     approved_by_user_id: r.approved_by_user_id,
     approved_by_name:    r.approved_by_name || '',
+    // The proposed split and who left it. NULL on every entry nobody
+    // pre-coded, which is all of them before this existed and all of them on a
+    // crew whose supervisor is on site — the approve modal opens blank and
+    // behaves as it always has. After an approval these name the split that
+    // was ACCEPTED and whoever accepted it; see the column comment in
+    // neon-schema.sql for why the approver writes back over the proposal.
+    proposed_split:      r.proposed_split || null,
+    coded_by_user_id:    r.coded_by_user_id,
+    coded_by_name:       r.coded_by_name || '',
+    coded_at:            r.coded_at,
+    coded_for_hours:     r.coded_for_hours != null ? Number(r.coded_for_hours) : null,
     created_at:          r.created_at,
     updated_at:          r.updated_at,
   };
@@ -861,6 +884,20 @@ function normalizeSplitRow(raw, idx) {
  * sum(labor_hours across all split rows) must equal computed_hours + travel_hours
  * exactly (to the cent). Returns { rows, error }.
  */
+/**
+ * The figure a split has to add up to: the day's work hours plus its travel.
+ *
+ * validateSplit balances against exactly this, and a PROPOSED split stores it
+ * (timesheet_entries.coded_for_hours) so that a later edit to the entry's
+ * hours can be recognised. A proposal written against 9.00 hours and read back
+ * after payroll moved a lunch break is not merely inaccurate — it would fail
+ * validateSplit at the last step, after the approver had already accepted it.
+ * One definition, so the two can never drift apart.
+ */
+function splitExpectedHours(entry) {
+  return _r2((Number(entry.computed_hours) || 0) + (Number(entry.travel_hours) || 0));
+}
+
 function validateSplit(rawSplit, entry) {
   if (!Array.isArray(rawSplit) || rawSplit.length === 0) {
     return { error: 'split must be a non-empty array of rows' };
@@ -874,9 +911,7 @@ function validateSplit(rawSplit, entry) {
     if (error) return { error };
     rows.push(row);
   }
-  const work   = Number(entry.computed_hours) || 0;
-  const travel = Number(entry.travel_hours)   || 0;
-  const expected = _r2(work + travel);
+  const expected = splitExpectedHours(entry);
   const actual   = _r2(rows.reduce((s, r) => s + r.labor_hours, 0));
   if (Math.abs(actual - expected) > 0.001) {
     return {
@@ -4568,9 +4603,25 @@ module.exports = async (req, res) => {
 
   const { companyCode, userId, username } = payload;
   const canSubmit  = hasDivisionAccess(payload, 'timesheet');
-  const canAdmin   = hasDivisionAccess(payload, 'payroll') || payload.isPlatformAdmin;
 
-  if (!canSubmit && !canAdmin) {
+  // Payroll's grant is TWO answers, not one — see payrollAccess in lib/auth.js.
+  //
+  //   canCode    — may propose cost codes on a submitted entry (?action=precode)
+  //   canApprove — may approve, resplit, un-approve, move a lunch break, edit,
+  //                delete, refresh rates, read an injected split. Everything
+  //                that moves money or state.
+  //
+  // canAdmin is deliberately kept as an ALIAS of canApprove rather than being
+  // deleted. Sixteen gates below read it, and every one of them guards an act
+  // a coder must not reach — including ?action=lunch_holder, which rewrites
+  // computed_hours on a whole day and is far less obviously an approval than
+  // its neighbours. Aliasing makes the narrow grant default-deny: a gate has
+  // to be moved to canCode deliberately, and anything overlooked stays shut.
+  // Only two places below open to a coder — this guard, and the list scope.
+  const { canCode, canApprove, isCoder } = payrollAccess(payload);
+  const canAdmin = canApprove;
+
+  if (!canSubmit && !canCode) {
     return res.status(403).json({ error: 'You do not have access to Timesheet or Payroll' });
   }
 
@@ -4609,8 +4660,40 @@ module.exports = async (req, res) => {
       const askedUser   = safeInt(q.user_id);
       const companyWide = canAdmin && askedUser == null && q.scope === 'all';
 
+      // ?scope=crew — a CODER's queue: the submitted days of the job HE worked.
+      //
+      // Scope is DERIVED, never assigned. A site lead's own timesheet already
+      // says which job he was on and when, so his queue is every submitted day
+      // sharing that job and that date. There is no crew roster to maintain as
+      // men move around — and a man loaned to his site for a single day, who
+      // today is coded by whoever guesses hardest, falls into scope
+      // automatically because he worked the job the lead was standing on.
+      //
+      // Narrowed three further ways, each of which costs nothing:
+      //   • status 'submitted' only. He codes pending work; he has no reason
+      //     to browse approved history or anyone's running totals.
+      //   • daily entries only. Vacation, sick, jury duty and bereavement
+      //     carry no cost code, so a coder never needs them — and they are the
+      //     most personal rows in the table.
+      //   • AUTO_INJECT_DIVISIONS only. Those are the divisions where coding
+      //     means choosing a cost code for work already done. Quarry, trucking
+      //     and dust ask for rates, haul fees and billing destinations at
+      //     approval instead — pricing decisions, which stay with the
+      //     approver. A coder pointed at one of them gets an empty queue by
+      //     construction rather than by convention.
+      //
+      // Note this is scope=crew, NOT scope=all: a coder asking for scope=all
+      // fails the canAdmin test above and is quietly scoped to his own rows,
+      // exactly as any other non-admin is.
+      const crewDay = isCoder && askedUser == null && q.scope === 'crew';
+      if (crewDay && safeInt(userId) == null) {
+        // Same fail-closed rule as below: a token owning no rows must not be
+        // allowed to fall through into an unfiltered read.
+        return res.status(401).json({ error: 'Unauthorized — please log in' });
+      }
+
       let userF = null;
-      if (!companyWide) {
+      if (!companyWide && !crewDay) {
         userF = canAdmin && askedUser != null ? askedUser : safeInt(userId);
         // A token carrying no user id owns no rows, and letting a null filter
         // fall through here would hand back the company — the exact shape of
@@ -4618,10 +4701,34 @@ module.exports = async (req, res) => {
         if (userF == null) return res.status(401).json({ error: 'Unauthorized — please log in' });
       }
 
-      const divF  = canAdmin && VALID_DIVISIONS.includes(q.division) ? q.division : '';
+      // Only ever narrows, so a coder may use it too.
+      const divF  = (canAdmin || isCoder) && VALID_DIVISIONS.includes(q.division) ? q.division : '';
 
       let rows;
-      if (userF != null) {
+      if (crewDay) {
+        rows = await sql`
+          SELECT e.* FROM timesheet_entries e
+          WHERE e.company_code = ${companyCode}
+            AND e.status       = 'submitted'
+            AND e.entry_type   = 'daily'
+            AND e.division     = ANY(${AUTO_INJECT_DIVISIONS})
+            AND e.job_id IS NOT NULL
+            AND e.job_id <> ''
+            AND e.work_date >= ${fromF}::date
+            AND e.work_date <= ${toF}::date
+            AND (${divF} = '' OR e.division = ${divF})
+            AND EXISTS (
+              SELECT 1 FROM timesheet_entries mine
+               WHERE mine.company_code = e.company_code
+                 AND mine.user_id      = ${safeInt(userId)}
+                 AND mine.entry_type   = 'daily'
+                 AND mine.work_date    = e.work_date
+                 AND mine.division     = e.division
+                 AND mine.job_id       = e.job_id
+            )
+          ORDER BY e.work_date DESC, e.created_at DESC
+        `;
+      } else if (userF != null) {
         rows = await sql`
           SELECT * FROM timesheet_entries
           WHERE company_code = ${companyCode}
@@ -4645,6 +4752,12 @@ module.exports = async (req, res) => {
       }
 
       const entries = await attachPrevailingWage(sql, companyCode, rows.map(dbToEntry));
+      // Nobody who cannot code is handed a cost code. timesheet.html renders
+      // none, and the payload behind it should not carry one either — a field
+      // user reading his own day back gets exactly what he always got.
+      if (!canCode) {
+        for (const e of entries) e.proposed_split = null;
+      }
       return res.json({ entries });
     }
 
@@ -5079,6 +5192,23 @@ module.exports = async (req, res) => {
       // and from the same rows, so the two can never describe different splits.
       const haulOffHours = splitRows ? offSiteHaulHoursOf(existing, splitRows) : null;
 
+      // ── The approver's answer, written back OVER the proposal ────────────
+      // What was accepted, not what was suggested.
+      //
+      // Without this the approver's answer would survive only as
+      // daily_tracking rows — and un-approve deletes exactly those
+      // (removeSplitRows) while leaving proposed_split untouched. Re-approving
+      // would then pre-fill the FOREMAN's original codes again, silently
+      // undoing a correction the supervisor had already made, on precisely the
+      // entries somebody un-approved because something about them was wrong.
+      // A regression that cannot happen today, so it must not be introduced.
+      //
+      // NULL on an approval carrying no split — time off, and the divisions
+      // that price rather than code. Those never hold a proposal either, so
+      // clearing is a no-op on them rather than a loss.
+      const acceptedSplit = splitRows ? JSON.stringify(splitRows) : null;
+      const acceptedHours = splitRows ? splitExpectedHours(existing) : null;
+
       const [updated] = await sql`
         UPDATE timesheet_entries
         SET status              = 'approved',
@@ -5087,6 +5217,12 @@ module.exports = async (req, res) => {
             approved_by_name    = ${username},
             haul_hours          = ${haulHours},
             haul_off_site_hours = ${haulOffHours},
+            proposed_split      = ${acceptedSplit}::jsonb,
+            coded_by_user_id    = ${splitRows ? userId : null},
+            coded_by_name       = ${splitRows ? username : null},
+            coded_at            = CASE WHEN ${acceptedSplit}::jsonb IS NULL
+                                       THEN NULL ELSE NOW() END,
+            coded_for_hours     = ${acceptedHours},
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -5291,6 +5427,133 @@ module.exports = async (req, res) => {
         dbToEntry(approvedRow),
       );
       return res.json(await entryJson(sql, companyCode, approvedRow));
+    }
+
+    // ── POST ?action=precode — PROPOSE a split, approving nothing ─────────
+    // The coder's only write, and the mirror image of resplit below: resplit
+    // re-authors a breakdown after approval, this one authors it before.
+    // Neither touches status.
+    //
+    // What it deliberately does NOT do is the whole of its safety. It never
+    // calls insertSplitRows or injectSplitDestinations, so no daily_tracking
+    // row, no blob row and no cost of any kind can come out of it. It never
+    // writes status, so it cannot move a day out of pending. It writes one
+    // JSONB column and four stamps, and the only thing that ever reads them is
+    // the approve modal's pre-fill. A coder holding this endpoint and nothing
+    // else can suggest an answer and can do nothing whatever with it.
+    //
+    // Approval therefore remains the single bridge into job cost by
+    // construction — not by a check someone could later delete.
+    if (req.method === 'POST' && req.query.action === 'precode') {
+      if (!canCode) {
+        return res.status(403).json({ error: 'Payroll access is required' });
+      }
+      const id = safeInt(req.query.id);
+      if (!id) return res.status(400).json({ error: 'id is required' });
+
+      const [existing] = await sql`
+        SELECT * FROM timesheet_entries
+        WHERE id = ${id} AND company_code = ${companyCode}
+      `;
+      if (!existing) return res.status(404).json({ error: 'Entry not found' });
+
+      // Only a day still waiting on its supervisor can be pre-coded. An
+      // approved entry's breakdown is resplit's business and payroll's alone;
+      // a draft has not been filed yet and its hours can still move underneath
+      // the proposal.
+      if (existing.status !== 'submitted') {
+        return res.status(409).json({
+          error: existing.status === 'approved'
+            ? 'This entry is already approved — its breakdown is edited from payroll.'
+            : 'This entry has not been submitted yet.',
+        });
+      }
+      if (existing.entry_type !== 'daily') {
+        return res.status(400).json({ error: 'Only a daily entry carries cost codes' });
+      }
+      // Quarry, trucking and dust ask for rates, haul fees and billing
+      // destinations at approval rather than cost codes. Those are pricing
+      // decisions and they stay with the approver, so there is nothing here
+      // for a coder to propose.
+      if (!AUTO_INJECT_DIVISIONS.includes(existing.division)) {
+        return res.status(400).json({
+          error: `Cost codes are only entered for ${AUTO_INJECT_DIVISIONS.join(', ')} days`,
+        });
+      }
+      if (!existing.job_id) {
+        return res.status(400).json({ error: 'This entry has no job to code against' });
+      }
+
+      // SCOPE. A coder may only touch a day on a job he himself worked — the
+      // same derivation ?scope=crew lists from, enforced again on the write so
+      // that neither half can be the only guard. Somebody who can approve is
+      // not narrowed: payroll coding a day early is just payroll working ahead.
+      if (isCoder) {
+        const [mine] = await sql`
+          SELECT 1 AS ok FROM timesheet_entries
+           WHERE company_code = ${companyCode}
+             AND user_id      = ${safeInt(userId)}
+             AND entry_type   = 'daily'
+             AND work_date    = ${safeDate(existing.work_date)}::date
+             AND division     = ${existing.division}
+             AND job_id       = ${existing.job_id}
+           LIMIT 1
+        `;
+        if (!mine) {
+          return res.status(403).json({
+            error: 'You can only code a day on a job you worked yourself that day.',
+          });
+        }
+      }
+
+      // The same validation the approver's own split gets, including the
+      // balance against computed_hours + travel_hours. A proposal that does
+      // not add up is refused here rather than waiting to fail under the
+      // approver's hand at the last step.
+      const { rows: proposed, error: preErr } =
+        validateSplit((req.body && req.body.split) || [], existing);
+      if (preErr) return res.status(400).json({ error: preErr });
+
+      // status = 'submitted' in the WHERE is a compare-and-swap, not
+      // decoration: the supervisor may approve this very entry between the
+      // read above and this write, and without it a late proposal would
+      // overwrite the split he just accepted — and the cost rows already
+      // injected from it would no longer match the column that claims to
+      // describe them.
+      const [preUpdated] = await sql`
+        UPDATE timesheet_entries
+        SET proposed_split   = ${JSON.stringify(proposed)}::jsonb,
+            coded_by_user_id = ${userId},
+            coded_by_name    = ${username},
+            coded_at         = NOW(),
+            coded_for_hours  = ${splitExpectedHours(existing)},
+            updated_at       = NOW()
+        WHERE id = ${id} AND company_code = ${companyCode}
+          AND status = 'submitted'
+        RETURNING *
+      `;
+      if (!preUpdated) {
+        return res.status(409).json({
+          error: 'This entry was approved while you were coding it — your codes were not saved.',
+        });
+      }
+
+      await writeAudit(
+        sql, companyCode, payload, id, 'PRECODE',
+        {
+          proposed_row_count: proposed.length,
+          coded_for_hours:    splitExpectedHours(existing),
+          // Both names, on every proposal. The point of separating coding from
+          // approving is that the record can say who answered what — today the
+          // same fact is a phone call nobody wrote down.
+          cost_codes: proposed.map(r => ({
+            cost_code: r.cost_code, sub_code: r.sub_code, labor_hours: r.labor_hours,
+          })),
+        },
+        dbToEntry(preUpdated),
+      );
+
+      return res.json(await entryJson(sql, companyCode, preUpdated));
     }
 
     // ── POST ?action=resplit — re-author the split on an approved entry ──
@@ -5617,10 +5880,22 @@ module.exports = async (req, res) => {
       // written is the one way this column could lie about money.
       const rsHaulHours = haulWorkHoursOf(existing, splitRows);
       const rsOffHours  = offSiteHaulHoursOf(existing, splitRows);
+      // The re-authored split is the accepted one now, for the same reason
+      // approve writes its own back: un-approve deletes the injected rows, and
+      // this column is the only place the approver's answer survives them. A
+      // resplit that did not write back would leave the entry pre-filling an
+      // older breakdown than the one its cost rows were just built from.
+      const rsSplit = JSON.stringify(splitRows);
+      const rsHours = splitExpectedHours(existing);
       await sql`
         UPDATE timesheet_entries
         SET haul_hours          = ${rsHaulHours},
             haul_off_site_hours = ${rsOffHours},
+            proposed_split      = ${rsSplit}::jsonb,
+            coded_by_user_id    = ${userId},
+            coded_by_name       = ${username},
+            coded_at            = NOW(),
+            coded_for_hours     = ${rsHours},
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
       `;

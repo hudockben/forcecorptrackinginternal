@@ -1389,6 +1389,11 @@
               <select id="mu-role-payroll">
                 <option value="no_access" selected>No Access</option>
                 <option value="level3">Level 3 — Review &amp; approve</option>
+                <!-- Coding without approving. For a foreman running a site his
+                     supervisor cannot reach every day: he fills in the cost
+                     codes, the supervisor still approves the time. See
+                     payrollAccess in api/lib/auth.js. -->
+                <option value="level2">Level 2 — Code only (no approving)</option>
               </select>
             </div>
             <div class="div-role-row">
