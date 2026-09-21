@@ -6,6 +6,7 @@
  *          ?include=archived                      supervisors: archived ones too
  *          ?from=YYYY-MM-DD&to=YYYY-MM-DD         a window of weeks
  *   GET    /api/safety-documents?action=open&id=X the signed URL to read one
+ *   GET    /api/safety-documents?action=count     how many this caller owes
  *   POST   /api/safety-documents                  register an uploaded file
  *   PUT    /api/safety-documents?id=X             retitle / re-date one
  *   DELETE /api/safety-documents?id=X             archive one
@@ -128,6 +129,32 @@ module.exports = async (req, res) => {
         expiresIn:   OPEN_WINDOW_SECONDS,
       });
       return res.json({ url, filename: doc.filename, contentType: doc.content_type, expiresIn: OPEN_WINDOW_SECONDS });
+    }
+
+    // ── GET ?action=count — what this caller still owes ───────────────────
+    // A count, and nothing else, for the badge on the Safety tile: the
+    // division picker asks on every page load and wants one number, so it
+    // should not be paying for the document rows, this caller's signature
+    // rows and the supervisor's roster tally to get there.
+    //
+    // Counted the same way the crew's own list counts it — live documents
+    // this caller has not signed — so the tile and the notice inside the
+    // Safety Center cannot disagree with each other.
+    if (req.method === 'GET' && q.action === 'count') {
+      const [row] = await sql`
+        SELECT COUNT(*)::int AS unsigned_by_me
+        FROM   safety_documents d
+        WHERE  d.company_code = ${companyCode}
+          AND  d.archived_at IS NULL
+          AND  NOT EXISTS (
+                 SELECT 1
+                 FROM   safety_signatures s
+                 WHERE  s.document_id  = d.id
+                   AND  s.company_code = ${companyCode}
+                   AND  s.user_id      = ${userId}
+               )
+      `;
+      return res.json({ unsignedByMe: Number(row && row.unsigned_by_me) || 0 });
     }
 
     // ── GET — the list ────────────────────────────────────────────────────

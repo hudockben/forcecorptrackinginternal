@@ -132,6 +132,16 @@ function sql(strings, ...values) {
   }
 
   // ── safety_documents ──
+  if (/^SELECT COUNT\(\*\)::int AS unsigned_by_me/.test(flat)) {
+    const [companyCode, sigCompany, userId] = v;
+    const n = DB.docs
+      .filter(d => d.company_code === companyCode && !d.archived_at)
+      .filter(d => !DB.sigs.some(sg => sg.document_id === d.id
+                                    && sg.company_code === sigCompany
+                                    && sg.user_id === userId))
+      .length;
+    return Promise.resolve([{ unsigned_by_me: n }]);
+  }
   if (/^SELECT id FROM safety_documents WHERE storage_key/.test(flat)) {
     return Promise.resolve(DB.docs.filter(d => d.storage_key === v[0]).map(d => ({ id: d.id })));
   }
@@ -1517,6 +1527,182 @@ function wiringTests() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 7. The count behind the tile badge
+// ═══════════════════════════════════════════════════════════════════════════
+async function tileCountTests() {
+  console.log('\n[the tile says what the Safety Center would say]');
+  await seedTwoDocs();
+
+  const countFor = async user =>
+    (await call(docsHandler, user, { query: { action: 'count' } })).body.unsignedByMe;
+
+  // The property that matters: the number on the tile and the number the crew's
+  // own list works out have to be the same number, or a man is told he owes two
+  // and finds one waiting. They are separate queries, so nothing but a test
+  // holds them together.
+  const listCount = async user => {
+    const docs = (await call(docsHandler, user, {})).body.documents;
+    return docs.filter(d => !d.signedByMe && !d.archivedAt).length;
+  };
+
+  assert('a laborer who has signed nothing owes both documents',
+    await countFor(LAB_A) === 2, String(await countFor(LAB_A)));
+
+  await call(sigHandler, LAB_A, {
+    method: 'POST', body: { documentId: DOC1, fullName: 'J Hauser', acknowledged: true },
+  });
+  assert('  signing one takes it off the count', await countFor(LAB_A) === 1);
+  assert('  and the count matches the Safety Center\'s own notice',
+    await countFor(LAB_A) === await listCount(LAB_A));
+
+  await call(sigHandler, LAB_A, {
+    method: 'POST', body: { documentId: DOC2, fullName: 'J Hauser', acknowledged: true },
+  });
+  assert('  signing the rest clears it, so no badge is drawn', await countFor(LAB_A) === 0);
+
+  // One man's count is his own. The bug this guards is the obvious one — a
+  // WHERE that lost the user and started counting everybody's unsigned work.
+  assert('another laborer still owes both', await countFor(LAB_B) === 2);
+
+  // Archiving is how a supervisor takes a form off the crew's list. A tile that
+  // kept counting it would send a man in to sign something that is not there.
+  await call(docsHandler, SUPER, { method: 'DELETE', query: { id: DOC1 } });
+  assert('an archived document stops being owed', await countFor(LAB_B) === 1);
+  assert('  and the two still agree', await countFor(LAB_B) === await listCount(LAB_B));
+
+  // Supervisors sign the tailgate they ran, so they are counted like anyone
+  // else rather than being handed the report's numbers here.
+  assert('a supervisor is counted as a signer, not shown the roster',
+    await countFor(SUPER) === 1,
+    JSON.stringify((await call(docsHandler, SUPER, { query: { action: 'count' } })).body));
+
+  {
+    const r = await call(docsHandler, SUPER, { query: { action: 'count' } });
+    assert('  and the answer carries nothing but the number',
+      Object.keys(r.body).join(',') === 'unsignedByMe', Object.keys(r.body).join(','));
+  }
+
+  // Asked on every division-picker load, so it must not quietly become the list
+  // read: no document rows, no signature rows, no roster tally.
+  {
+    DB.calls.length = 0;
+    await call(docsHandler, SUPER, { query: { action: 'count' } });
+    assert('  in one query, since every sign-in pays for it',
+      DB.calls.length === 1, `${DB.calls.length} queries`);
+  }
+
+  {
+    const r = await call(docsHandler, OFFICE, { query: { action: 'count' } });
+    assert('somebody with no Safety Center gets no count either', r.statusCode === 403);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. The division picker
+// ═══════════════════════════════════════════════════════════════════════════
+function pickerTests() {
+  console.log('\n[the tile carries the count out to where people look]');
+  const page = read('divisions.html');
+
+  // Two divisions, because a single-division account is sent straight into it
+  // and never sees the picker at all.
+  function openPicker({ unsignedByMe = 0, countOk = true } = {}) {
+    const user = {
+      username: 'jhauser', companyCode: COMPANY, companyName: 'Force Corp',
+      divisionRoles: { safety: 'level1', timesheet: 'level1' }, isPlatformAdmin: false,
+    };
+    const calls = [];
+    const dom = new JSDOM(page, {
+      url: 'http://localhost/divisions.html',
+      runScripts: 'dangerously',
+      beforeParse(win) {
+        win.localStorage.setItem('fct_token', 'test-token');
+        win.localStorage.setItem('fct_user', JSON.stringify(user));
+        win.fetch = url => {
+          const u = String(url);
+          calls.push(u);
+          if (u.includes('action=count')) {
+            return Promise.resolve({
+              ok: countOk, status: countOk ? 200 : 500,
+              json: () => Promise.resolve({ unsignedByMe }),
+            });
+          }
+          // Answer verify with exactly the permissions already stored, so the
+          // page does not decide they changed and reload out from under us.
+          return Promise.resolve({
+            ok: true, status: 200,
+            json: () => Promise.resolve({ ok: true, user }),
+          });
+        };
+      },
+    });
+    return { win: dom.window, doc: dom.window.document, calls };
+  }
+
+  // The badge is painted a couple of promise hops after the page is parsed —
+  // the fetch, then reading the body. Drained as MICROTASKS rather than with a
+  // setTimeout: a macrotask tick would also run the timers still pending in the
+  // safety.html documents above, and one of those navigates, which puts a jsdom
+  // warning on the console of a suite that is otherwise silent.
+  const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+  const safetyCard = doc => [...doc.querySelectorAll('.card')]
+    .find(c => (c.querySelector('.card-name') || {}).textContent === 'Safety Center');
+
+  return (async () => {
+    {
+      const { doc, calls } = openPicker({ unsignedByMe: 3 });
+      await settle();
+      assert('the picker asks how many documents are waiting',
+        calls.some(u => u.includes('/api/safety-documents?action=count')), calls.join(' | '));
+      const card = safetyCard(doc);
+      assert('  and the Safety tile is the one that gets the badge', !!card);
+      const alert = card && card.querySelector('.card-alert');
+      assert('  which says how many are waiting',
+        !!alert && alert.textContent === '3 documents to sign',
+        alert ? alert.textContent : 'no badge');
+      // Above the CTA rather than after it: the last thing read before "Enter
+      // System" should be the reason to.
+      assert('  and sits above the way in',
+        !!alert && alert.nextElementSibling
+        && alert.nextElementSibling.classList.contains('card-cta'));
+      const others = [...doc.querySelectorAll('.card')]
+        .filter(c => c !== card && c.querySelector('.card-alert'));
+      assert('  and no other division is badged', others.length === 0);
+    }
+
+    {
+      const { doc } = openPicker({ unsignedByMe: 1 });
+      await settle();
+      const alert = safetyCard(doc).querySelector('.card-alert');
+      assert('one document is a document, not 1 documents',
+        !!alert && alert.textContent === '1 document to sign',
+        alert ? alert.textContent : 'no badge');
+    }
+
+    {
+      // Nothing owed is the normal state, and a tile that said "0 documents to
+      // sign" would train people to ignore the one that matters.
+      const { doc } = openPicker({ unsignedByMe: 0 });
+      await settle();
+      assert('a man who is up to date sees no badge at all',
+        !safetyCard(doc).querySelector('.card-alert'));
+    }
+
+    {
+      // The picker is how people get into every other division. A Safety
+      // Center that is down must not take the whole page with it.
+      const { doc } = openPicker({ unsignedByMe: 3, countOk: false });
+      await settle();
+      const card = safetyCard(doc);
+      assert('a failed count leaves the tile working and unbadged',
+        !!card && !card.querySelector('.card-alert')
+        && !!card.querySelector('.card-cta'));
+    }
+  })();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 (async () => {
   await helperTests();
   await uploadTests();
@@ -1525,6 +1711,8 @@ function wiringTests() {
   await agreementTests();
   await fileTests();
   await pageTests();
+  await tileCountTests();
+  await pickerTests();
   wiringTests();
 
   Module._load = origLoad;
