@@ -533,8 +533,12 @@ console.log('\n[the travel row opens with its hours in]');
   // Edit Split reopens a posted split, whose hours are what was approved.
   const openSrc2 = src.slice(src.indexOf('async function openSplitModal'),
                              src.indexOf('function closeSplit()'));
+  // Edit Split is exempt through defaultsWanted, which also exempts an approve
+  // opened on a split somebody already proposed — those hours are that person's
+  // answer, not this modal's to restate.
   assert('and a reopened split is never restated',
-    /mode !== 'resplit'[\s\S]{0,120}splitFillTravelHours/.test(openSrc2));
+    /const defaultsWanted = mode !== 'resplit' && !splitFromProposal;/.test(openSrc2)
+    && /if \(defaultsWanted\) splitRows\.filter\(r => r\.is_travel\)\.forEach\(splitFillTravelHours\);/.test(openSrc2));
 }
 
 // ── Blurring a cost code must not wipe the sub code ──────────────────────
@@ -1143,8 +1147,10 @@ console.log('\n[a repaint keeps the cursor where it was]');
   assert('the modal opens on exactly its defaults, not on top of what is there',
     openSrc.length > 0 && /splitRows = fresh;/.test(openSrc) &&
     !/splitRows\.push\(_blankSplitRow/.test(openSrc));
+  // Every row in that array carries the key, whatever its value: '' for a
+  // split read back from the server, 'proposed' for a coder's.
   assert('and a split read back from the server carries the same row shape',
-    /code_source: ''/.test(openSrc));
+    /code_source: \(splitFromProposal && fromCoder\) \? 'proposed' : '',/.test(openSrc));
 
   // The flush only helps if the save runs it. Read off the source rather than
   // driven, because splitSave is async and this file is not — what has to hold
@@ -1274,6 +1280,10 @@ console.log('\n[the form and the server agree on what is saveable]');
     // safeHaulType reads this set — the hauling answer normalizer, which
     // normalizeSplitRow now runs over each row's own answer.
     (api.match(/^const HAUL_TYPES = [^\n]+/m) || [])[0],
+    // validateSplit balances through this rather than inlining the sum, so a
+    // proposal can store the figure it was written against and be recognised
+    // as stale when the day's hours move under it.
+    grabApi('splitExpectedHours'),
     grabApi('normalizeSplitRow'), grabApi('validateSplit'),
   ].join('\n\n'), srv);
 

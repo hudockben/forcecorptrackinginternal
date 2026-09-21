@@ -586,8 +586,12 @@ console.log('\n[trying an answer does not change the page behind the modal]');
   // touched, or the mirror rewrites a deliberate 5 h to the labour hours the
   // next time anything on the row changes — a silent over-charge for truck time
   // nobody logged.
+  // Still unconditional for Edit Split — mode === 'resplit' is the first arm.
+  // The later arms exempt only a CODER's rows, which carry an equip_hours of 0
+  // he was never asked for: claiming that as deliberate froze the mirror for
+  // the rest of the modal and left a truck added afterwards at zero hours.
   assert('rows read back by Edit Split are marked as hand-set',
-    /is_travel:\s*!!r\.is_travel,[\s\S]{0,2600}?_equipHoursTouched:\s*true,/.test(src));
+    /is_travel:\s*!!r\.is_travel,[\s\S]{0,3000}?_equipHoursTouched:\s*mode === 'resplit'/.test(src));
   // And carry the answer they were APPROVED with, not one re-derived from the
   // truck now on the row. A day signed off before the answer was per-row comes
   // back with every work row ticked — which is what it was approved as — so

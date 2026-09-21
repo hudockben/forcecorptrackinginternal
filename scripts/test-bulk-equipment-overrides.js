@@ -104,6 +104,10 @@ vm.runInContext([
   // stubbing it would hide a bulk-approved haul posting a row that costs the
   // job nothing at all, which is what it exists to prevent.
   'bulkApplyHaulDefaults(e, rows) {',
+  // A day somebody pre-coded posts its OWN cost codes rather than the card's,
+  // and buildBulkBody asks this which days those are. Stubbed to null it would
+  // take the uncoded branch every time and the coded path would go untested.
+  'bulkCodedRows(e) {',
   'buildBulkBody(g, e) {',
   // The days this panel cannot answer for, named on the card rather than
   // guessed at. See the haul block at the end of this file.

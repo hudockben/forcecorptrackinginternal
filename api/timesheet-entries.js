@@ -4658,21 +4658,27 @@ module.exports = async (req, res) => {
   // sign out and back in first. mathis-context.refreshAuthz re-reads roles
   // every turn for exactly this reason.
   //
-  // Run for every non-platform-admin caller, not only one the token already
-  // says holds payroll: the grant has to work in BOTH directions. Gated on the
-  // token's own answer, taking approve away would work and handing a foreman
-  // the coder grant would not — his token says no payroll, so he would have to
-  // sign out and back in before the page he was just given would load anything.
+  // Runs when the request has anything to do with payroll — the token already
+  // says the caller holds it, or the request is one only a coder makes. That
+  // covers both directions the grant has to work in: taking approve away from
+  // somebody (the token says payroll, so it refreshes and he loses it) and
+  // handing a foreman the coder grant (his token says no payroll, but asking
+  // for the crew queue or posting a proposal refreshes and he gains it,
+  // without having to sign out and back in first).
   //
-  // It costs one primary-key lookup on a handler that already runs several
-  // queries. A failed read keeps the token's answer, which is exactly the
-  // behaviour this replaces.
-  if (!payload.isPlatformAdmin) {
+  // Ordinary field traffic — a worker saving his own day — never reaches it
+  // and pays nothing. A failed read keeps the token's answer, which is exactly
+  // the behaviour this replaces.
+  const asksForPayroll = canCode
+    || String(req.query.scope  || '') === 'crew'
+    || String(req.query.action || '') === 'precode';
+  if (!payload.isPlatformAdmin && asksForPayroll) {
     try {
-      const [fresh] = await sql`
+      const freshRows = await sql`
         SELECT division_roles FROM users
          WHERE id = ${safeInt(userId)} AND company_code = ${companyCode}
       `;
+      const fresh = Array.isArray(freshRows) ? freshRows[0] : null;
       if (fresh) {
         const live = payrollAccess({
           divisionRoles:   fresh.division_roles,
