@@ -542,6 +542,11 @@ function dbToEntry(r) {
     coded_by_name:       r.coded_by_name || '',
     coded_at:            r.coded_at,
     coded_for_hours:     r.coded_for_hours != null ? Number(r.coded_for_hours) : null,
+    // 'precode' = a coder proposed it and nobody has approved yet; 'approve' =
+    // the approver's own accepted split, replayed so an un-approve cannot
+    // resurrect the foreman's first draft over it. The two must never be shown
+    // or acted on as the same thing — see the column comment in neon-schema.sql.
+    coded_source:        r.coded_source || '',
     created_at:          r.created_at,
     updated_at:          r.updated_at,
   };
@@ -4298,6 +4303,14 @@ async function releaseSiblingLunch(sql, companyCode, payload, holder) {
      WHERE company_code   = ${companyCode}
        AND split_group_id = ${holder.split_group_id}
        AND entry_type     = 'daily'
+       -- A split group is ONE worker's day broken across jobs, so this costs
+       -- nothing to require — and without it the group id is an unguarded
+       -- key to somebody else's hours. The id is minted client-side and is
+       -- now handed out by ?scope=crew, so a caller who can create a draft
+       -- could carry another employee's group id on it and have this sweep
+       -- rewrite lunch_break and computed_hours on that person's submitted
+       -- day. Half an hour, on a row nobody is looking at.
+       AND user_id        = ${holder.user_id}
        AND id <> ${holder.id}
        AND lunch_break IS TRUE
   `;
@@ -4728,6 +4741,13 @@ module.exports = async (req, res) => {
                WHERE mine.company_code = e.company_code
                  AND mine.user_id      = ${safeInt(userId)}
                  AND mine.entry_type   = 'daily'
+                 -- A DRAFT confers nothing. A draft is self-asserted, costs
+                 -- nothing to create, is never seen by anybody, and can name
+                 -- any job and any date — so without this a coder could hand
+                 -- himself the crew of any job in the company by filing a
+                 -- draft against it and deleting it afterwards. Scope has to
+                 -- rest on a day he actually filed and put his name to.
+                 AND mine.status IN ('submitted','approved')
                  AND mine.work_date    = e.work_date
                  AND mine.division     = e.division
                  AND mine.job_id       = e.job_id
@@ -5229,6 +5249,8 @@ module.exports = async (req, res) => {
             coded_at            = CASE WHEN ${acceptedSplit}::jsonb IS NULL
                                        THEN NULL ELSE NOW() END,
             coded_for_hours     = ${acceptedHours},
+            coded_source        = CASE WHEN ${acceptedSplit}::jsonb IS NULL
+                                       THEN NULL ELSE 'approve' END,
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
         RETURNING *
@@ -5500,6 +5522,10 @@ module.exports = async (req, res) => {
            WHERE company_code = ${companyCode}
              AND user_id      = ${safeInt(userId)}
              AND entry_type   = 'daily'
+             -- Submitted or approved only, exactly as ?scope=crew requires:
+             -- a draft is a record the caller can mint on demand against any
+             -- job, so honouring one here would make the scope self-assigned.
+             AND status IN ('submitted','approved')
              AND work_date    = ${safeDate(existing.work_date)}::date
              AND division     = ${existing.division}
              AND job_id       = ${existing.job_id}
@@ -5552,6 +5578,7 @@ module.exports = async (req, res) => {
             coded_by_name    = ${username},
             coded_at         = NOW(),
             coded_for_hours  = ${splitExpectedHours(existing)},
+            coded_source     = 'precode',
             updated_at       = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
           AND status = 'submitted'
@@ -5921,6 +5948,7 @@ module.exports = async (req, res) => {
             coded_by_name       = ${username},
             coded_at            = NOW(),
             coded_for_hours     = ${rsHours},
+            coded_source        = 'approve',
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
       `;
@@ -6556,6 +6584,27 @@ module.exports = async (req, res) => {
       const keepHaul = data.entry_type === 'daily'
         && !Object.prototype.hasOwnProperty.call(body, 'haul_type');
 
+      // A PROPOSAL describes one job on one day. coded_for_hours catches an
+      // edit to the hours, because that is what stops a split balancing — but
+      // it says nothing about an edit that moves the day somewhere else, and
+      // this handler rewrites job_id, division, work_date and entry_type
+      // freely on a submitted entry.
+      //
+      // Nothing downstream would notice. normalizeSplitRow asks only that a
+      // row carry SOME cost code, never that the code belongs to the job, and
+      // the approve modal's picker is a free-text combobox. So an entry moved
+      // from the Route 9 job to Pine Street would keep a proposal whose hours
+      // still balance to the cent, pre-fill Route 9's codes under a heading
+      // that says Pine Street, and inject them into Pine Street's ledger.
+      //
+      // The proposal is dropped rather than flagged: it was an answer about a
+      // day that no longer exists, and there is nothing to salvage from it.
+      const movedDay = data.entry_type !== existing.entry_type
+        || String(data.division || '') !== String(existing.division || '')
+        || String(data.job_id   || '') !== String(existing.job_id   || '')
+        || safeDate(data.work_date)    !== safeDate(existing.work_date);
+      const keepCoding = !movedDay;
+
       // Same hazard again for the machines named on the day. Payroll's Edit
       // Entry modal edits the DAY and sends no equipment_used key, so writing
       // data.equipment_used unconditionally would blank the list on every
@@ -6593,6 +6642,14 @@ module.exports = async (req, res) => {
                                     ELSE ${data.equipment_used ? JSON.stringify(data.equipment_used) : null}::jsonb END,
           haul_type          = CASE WHEN ${keepHaul}::boolean
                                     THEN haul_type ELSE ${data.haul_type}::text END,
+          -- The proposed split, dropped when this edit moves the day to another
+          -- job, division, date or type. See movedDay above.
+          proposed_split     = CASE WHEN ${keepCoding}::boolean THEN proposed_split   ELSE NULL END,
+          coded_by_user_id   = CASE WHEN ${keepCoding}::boolean THEN coded_by_user_id ELSE NULL END,
+          coded_by_name      = CASE WHEN ${keepCoding}::boolean THEN coded_by_name    ELSE NULL END,
+          coded_at           = CASE WHEN ${keepCoding}::boolean THEN coded_at         ELSE NULL END,
+          coded_for_hours    = CASE WHEN ${keepCoding}::boolean THEN coded_for_hours  ELSE NULL END,
+          coded_source       = CASE WHEN ${keepCoding}::boolean THEN coded_source     ELSE NULL END,
           -- How much of the day the truck bought, kept or dropped with the
           -- answer it describes. Cleared unconditionally, this had the same
           -- backwards sign the refresh-rates sweep did: null does not mean

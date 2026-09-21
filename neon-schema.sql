@@ -2199,6 +2199,28 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS coded_at            TIMES
 -- than pre-fill a breakdown that will fail validateSplit at the last step.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS coded_for_hours     NUMERIC(6,2);
 
+-- WHICH OF THE TWO WRITERS put the split there. The column above holds both,
+-- and they are not the same fact:
+--
+--   'precode' → a coder PROPOSED this. Somebody who was on the job says this
+--               is what happened, and the approver has not looked yet. Worth
+--               announcing on screen, and worth honouring on the bulk panel.
+--   'approve' → the approver ACCEPTED this. It is a replay of a decision
+--               already made, kept only so that un-approving and re-approving
+--               does not resurrect the foreman's first draft over it.
+--   NULL      → neither; nothing was ever written here.
+--
+-- Without the distinction an un-approved entry is indistinguishable from a
+-- proposal: status returns to 'submitted' and the coded_* columns still hold
+-- the approver's own answer, so the queue chip announces him to himself as
+-- "somebody who was on the job", and the bulk panel posts his old split over
+-- the cost code he has just typed on the card. Status cannot answer this —
+-- an un-approved entry is genuinely 'submitted' — so the writer has to say.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS coded_source        TEXT;
+ALTER TABLE timesheet_entries DROP CONSTRAINT IF EXISTS timesheet_entries_coded_source_check;
+ALTER TABLE timesheet_entries ADD CONSTRAINT timesheet_entries_coded_source_check
+  CHECK (coded_source IS NULL OR coded_source IN ('precode','approve'));
+
 -- The coder's queue: submitted entries on a job+date, which is how a site lead
 -- is scoped (he may code the day he himself worked, on the job he worked it).
 CREATE INDEX IF NOT EXISTS idx_ts_job_day

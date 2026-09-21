@@ -36,7 +36,7 @@
 // Deliberately the only require: this file decides who may read what, and
 // depending on nothing that reads keeps ./mathis-digests.js free to require it
 // without a cycle.
-const { ALL_DIVISIONS, hasDivisionAccess, normalizeDivision, divisionForKey, levelFor } = require('./auth');
+const { ALL_DIVISIONS, hasDivisionAccess, normalizeDivision, divisionForKey, levelFor, payrollAccess } = require('./auth');
 
 // Divisions with no data of their own — a submit side whose review side is
 // another division's tab. A user holding only these is a field employee, and
@@ -143,10 +143,36 @@ async function refreshAuthz(sql, payload) {
   };
 }
 
+/**
+ * May this caller ask Mathis about a division?
+ *
+ * hasDivisionAccess for every division but one. PAYROLL now has two grants and
+ * hasDivisionAccess cannot tell them apart — payrollAccess in ./auth is the
+ * only thing that can. A CODER (payroll:'level2') holds payroll access purely
+ * so a foreman can type cost codes onto his own crew's day; the payroll digest
+ * is the opposite of that scope, returning per-employee worked, travel,
+ * overtime and paid-leave hours for every employee in the company, in every
+ * division, for the pay period.
+ *
+ * It carries no rate and no dollar figure — see PAYROLL_LIMITS in
+ * mathis-digests.js — but it is exactly the "other crews' time" the grant
+ * split exists to deny, and the digest reaches the caller whatever the model
+ * decides to say, because the rows are streamed alongside the prose.
+ *
+ * This is also why the check lives HERE rather than on the payroll builder:
+ * divisionScope feeds the tool enum, resolveDivision feeds the per-call
+ * re-authorisation, and both have to give the same answer.
+ */
+function mayAskAbout(authz, division) {
+  if (!hasDivisionAccess(authz, division)) return false;
+  if (division === 'payroll' && payrollAccess(authz).isCoder) return false;
+  return true;
+}
+
 /** Every division this user may look at, freshly computed. */
 function divisionScope(authz) {
   if (!authz) return [];
-  return ALL_DIVISIONS.filter(d => hasDivisionAccess(authz, d));
+  return ALL_DIVISIONS.filter(d => mayAskAbout(authz, d));
 }
 
 /**
@@ -158,7 +184,7 @@ function divisionScope(authz) {
 function resolveDivision(requested, authz) {
   const division = normalizeDivision(requested);
   if (!division) return null;
-  return hasDivisionAccess(authz, division) ? division : null;
+  return mayAskAbout(authz, division) ? division : null;
 }
 
 /**
