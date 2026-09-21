@@ -920,7 +920,22 @@ function renderCapacity() {
   const card = (v,l,c) => '<div class="cap-card"><div class="cap-val" style="color:'+(c||'var(--text)')+'">'+v+'</div><div class="cap-lbl">'+l+'</div></div>';
   return '<div class="cap">'+card(total,'Field crew')+card(assigned.size,'Scheduled · 7d','var(--green)')+card(idle,'Idle · 7d',idle?'var(--amber)':'var(--muted)')+card(conflicts,'Conflicts',conflicts?'var(--red)':'var(--muted)')+card(behind,'Behind sub-codes',behind?'var(--red)':'var(--muted)')+'</div>';
 }
-function firstWord(s) { return esc(String(s||'').split(' ')[0]); }
+// A name is only a name whole. The board used to print the first word of one
+// — "Blake", "Tyler" — which on a roster carrying two Blakes and three Tylers
+// is not a name but a guess, and the only way to settle it was to hover the
+// chip. Nowhere else in the app made that trade: the crew rail, the By Crew
+// rows, the assign dialog, the dispatch sheet and every toast have always said
+// the whole name, and the board now says it too. Equipment reads the same way
+// — the first word of "John Deere 644" is a man's name, and of four CAT
+// machines it is "CAT" four times over.
+//
+// What it costs is width, not legibility. A day column is already at least as
+// wide as its widest chip, so a longer name widens the column rather than being
+// clipped by the ellipsis on .asn — measured in Chromium against this stylesheet
+// from 1280 to 1920px, rail open and shut, nothing clipped and the rows came out
+// the height they already were. The board does get WIDER: with the crew panel
+// open it now wants about 1600px to show the week without scrolling sideways,
+// where first names fitted from about 1366px. Closing the panel buys that back.
 // Every name on the board is a drag handle: drag it to another day, another
 // cost code or another person's row to move that assignment; hold Alt/Ctrl to
 // copy instead. Right-click takes it off.
@@ -945,10 +960,10 @@ function chip(a, conf, date, showJob) {
     return open+'"'+esc(title)+'">'+label+half+grip+'</span>';
   }
   if (a.kind === 'equip') {
-    const label = '🚜 '+firstWord(a.resource)+(a.op?' ·'+firstWord(a.op):'');
+    const label = '🚜 '+esc(a.resource)+(a.op?' · '+esc(a.op):'');
     return open+'"'+esc(a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP)+'">'+label+half+grip+'</span>';
   }
-  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+DRAG_TIP)+'">'+firstWord(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
+  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+DRAG_TIP)+'">'+esc(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
 }
 
 // ── By Job board ────────────────────────────────────────────────
@@ -2154,7 +2169,7 @@ function autoFill(division, jobId) {
   if (!pick.length) { toast('No available idle crew this week (idle crew are off all week)'); return; }
   pushUndo();
   let added = 0; const used = [];
-  pick.forEach(e => { const n = addAssignmentSpan(e.name, 'emp', job, '', dates); if (n) used.push(e.name.split(' ')[0]); added += n; });
+  pick.forEach(e => { const n = addAssignmentSpan(e.name, 'emp', job, '', dates); if (n) used.push(e.name); added += n; });
   if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already on this job'); return; }
   toast('Put ' + used.join(', ') + ' on ' + job.name);
   render();
