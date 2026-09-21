@@ -44,7 +44,7 @@ const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 const SCHED = read('scheduler.html');
 
 const FNS = ['siteKey','shopKey','timeKeyFor','getJobTime','setJobTime','getSiteTime','getShopTime',
-             'cellTimesHtml','jobTimesHtml','fmtTime','fmtTimeShort'];
+             'cellTimesHtml','jobTimesHtml','timeFieldsHtml','fmtTime','fmtTimeShort'];
 
 function page(siteTimes) {
   const sandbox = { console, state: { siteTimes: siteTimes || {} }, saveAssignments: () => {} };
@@ -109,27 +109,34 @@ const D = '2026-09-21', DIV = 'turf', JOB = '26049';
       'mergeSiteTimes no longer compares by value — strings may no longer be safe');
   }
 
-  console.log('\n[the cell always offers a way in]');
+  console.log('\n[the week board gets the same fields]');
   {
-    const none = page().cellTimesHtml(D, DIV, JOB);
-    assert('  with nothing set, the cell still draws the control', /class="cell-times"/.test(none), none);
-    assert('  as a faint "add" rather than a time', /class="ct-add"/.test(none) && !/ct-line/.test(none), none);
-    assert('  and it opens the times', /openJobTimes\(/.test(none), none);
-
+    // Both boards render the same pair, so a time is changed the same way on
+    // either and neither sends you to a dialog to move 6:00 to 6:30.
     const p = page();
     p.setJobTime('shop', DIV, JOB, '06:00', [D]);
-    p.setJobTime('site', DIV, JOB, '07:00', [D]);
-    const set = p.cellTimesHtml(D, DIV, JOB);
-    assert('  with both set, both are shown', (set.match(/ct-line/g) || []).length === 2, set);
-    assert('  the shop time reads 6a', /6a/.test(set), set);
-    assert('  the site time reads 7a', /7a/.test(set), set);
-    assert('  and clicking them opens the times too', /openJobTimes\(/.test(set), set);
-    assert('  without also opening the cell’s own dialog',
-      /event\.stopPropagation\(\)/.test(set), set);
+    const cell = p.cellTimesHtml(D, DIV, JOB);
+    const lead = p.jobTimesHtml(D, DIV, JOB);
+    assert('  a week day cell draws two time fields',
+      (cell.match(/<input type="time"/g) || []).length === 2, cell);
+    assert('  the same ones the day board draws',
+      p.timeFieldsHtml(D, DIV, JOB) === p.timeFieldsHtml(D, DIV, JOB) &&
+      cell.includes(p.timeFieldsHtml(D, DIV, JOB)) && lead.includes(p.timeFieldsHtml(D, DIV, JOB)), cell);
+    assert('  carrying the value that is set', /value="06:00"/.test(cell), cell);
+    assert('  and nothing in it opens the dialog', !/openJobTimes\(/.test(cell), cell);
+  }
 
-    const half = page();
-    half.setJobTime('site', DIV, JOB, '07:00', [D]);
-    assert('  one set, one not, still shows the one', (half.cellTimesHtml(D, DIV, JOB).match(/ct-line/g) || []).length === 1);
+  console.log('\n[but only where there is work to time]');
+  {
+    // Fourteen empty fields in every row bury the crew the board is for, so a
+    // week cell earns them by having somebody on it, or a time already set.
+    const row = requireFn(SCHED, 'jobRowHtml', 'scheduler.html');
+    assert('  a week cell draws them once somebody is on it',
+      /crew\.length/.test(row), row);
+    assert('  or once a time is already set there',
+      /getShopTime\(d,/.test(row) && /getSiteTime\(d,/.test(row), row);
+    assert('  and an empty day on a week board gets none',
+      /wantTimes \? cellTimesHtml\(/.test(row), row);
   }
 
   console.log('\n[the way in actually lands on the times]');
@@ -230,7 +237,7 @@ const D = '2026-09-21', DIV = 'turf', JOB = '26049';
     assert('  the row asks which board it is on', /viewingOneDay\(\)/.test(row), row.slice(0, 200));
     assert('  a day board puts them beside the name', /jobTimesHtml\(ds\[0\]/.test(row));
     assert('  a week board leaves them in the day cells',
-      /oneDay \? '' : cellTimesHtml\(/.test(row));
+      /!oneDay && \(crew\.length/.test(row) && /cellTimesHtml\(d,/.test(row), row.slice(0, 400));
   }
 
 

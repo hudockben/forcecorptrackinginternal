@@ -125,14 +125,18 @@
     input[type=time].jt-in::-webkit-calendar-picker-indicator { filter:invert(0.75); cursor:pointer; opacity:0; padding:0; margin:0; width:0.6rem; }
     .jt:hover input[type=time].jt-in::-webkit-calendar-picker-indicator,
     input[type=time].jt-in:focus::-webkit-calendar-picker-indicator { opacity:0.8; }
-    /* Week board: the times stay in the day cells, one set per day. */
-    .cell-times { float:right; margin:0 0 1px 4px; display:flex; flex-direction:column; align-items:flex-end; gap:1px; cursor:pointer; }
-    .ct-line { font-size:0.58rem; font-weight:700; color:var(--blue); letter-spacing:-0.02em; white-space:nowrap; display:flex; gap:0.22rem; align-items:baseline; }
-    .cell-times:hover .ct-line { text-decoration:underline; }
-    /* No time set: stay out of the way until the cursor is on the cell. */
-    .ct-add { font-size:0.55rem; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); opacity:0; transition:opacity .1s; white-space:nowrap; }
-    .cell:hover .ct-add { opacity:0.7; }
-    .cell-times:hover .ct-add { opacity:1; color:var(--blue); }
+    /* Week board: one pair of fields per day cell, ABOVE the crew rather than
+       floated beside it — a 90px float inside a 120px cell leaves nowhere for a
+       name to go. Held back until the row is under the cursor or a field has
+       focus, because seven columns of them at full strength shout over the
+       crew, and the crew is what the board is for. A time that is SET stays
+       readable either way; it is the empty ones that recede. */
+    .cell-times { display:flex; flex-direction:column; margin-bottom:2px; }
+    .cell-times .jt { opacity:0.4; transition:opacity .1s; }
+    .cell-times .jt:not(.unset) { opacity:1; }
+    .job-row:hover .cell-times .jt, .cell-times:focus-within .jt { opacity:1; }
+    .cell-times .jt-k { width:1.7rem; font-size:0.46rem; }
+    .cell-times input[type=time].jt-in { font-size:0.56rem; }
     .asn { display:inline-block; vertical-align:top; max-width:100%; font-size:0.64rem; line-height:1.3; padding:0.05rem 0.3rem; border-radius:4px; margin:0 0.14rem 0.14rem 0; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
     .grp-row td { background:var(--surface2); cursor:pointer; } .grp-lead { font-weight:700; } .caret { display:inline-block; width:12px; color:var(--muted); }
@@ -1271,9 +1275,9 @@ function addOtherWork() {
 // Words, not icons. A clock face and a little house read as decoration at this
 // size, and the two things they stand for are what a crew is rung up about at
 // six in the morning; they are worth four letters each.
-function jobTimesHtml(date, division, jobId) {
-  const shop = getShopTime(date, division, jobId);
-  const site = getSiteTime(date, division, jobId);
+// The two fields, wherever they are drawn. Both boards share them, so a time
+// is set the same way on either.
+function timeFieldsHtml(date, division, jobId) {
   const one = (kind, k, t, what) =>
     '<span class="jt'+(t ? '' : ' unset')+'">'+
       '<span class="jt-k">'+k+'</span>'+
@@ -1282,8 +1286,11 @@ function jobTimesHtml(date, division, jobId) {
         ' onchange="onJobTimeCell(\''+kind+'\',\''+division+'\',\''+escAttr(jobId)+'\',\''+date+'\',this)"'+
         ' title="'+esc(what + ' — the whole crew on this job, this day')+'">'+
     '</span>';
-  return '<div class="job-times">'+
-    one('shop', 'Shop', shop, 'At the shop') + one('site', 'Site', site, 'On site') + '</div>';
+  return one('shop', 'Shop', getShopTime(date, division, jobId), 'At the shop') +
+         one('site', 'Site', getSiteTime(date, division, jobId), 'On site');
+}
+function jobTimesHtml(date, division, jobId) {
+  return '<div class="job-times">' + timeFieldsHtml(date, division, jobId) + '</div>';
 }
 // Typed straight into the row, so the common case — this job, this day, this
 // time — never opens a dialog. It saves the ONE day it is on: the dialog still
@@ -1304,20 +1311,10 @@ function onJobTimeCell(kind, division, jobId, date, el) {
 }
 // The week board keeps its times in the day cells: seven days on one row are
 // seven different answers and the job-name cell can only hold one of them.
+// The same fields and the same handler as the day board, so a time is changed
+// the same way on either and neither sends you to a dialog to move 6:00 to 6:30.
 function cellTimesHtml(date, division, jobId) {
-  const shop = getShopTime(date, division, jobId);
-  const site = getSiteTime(date, division, jobId);
-  const open = ' onclick="event.stopPropagation();openJobTimes(\''+division+'\',\''+escAttr(jobId)+'\',\''+date+'\')"';
-  if (!shop && !site) {
-    return '<div class="cell-times"'+open+' title="Set the shop and site times for the whole crew on this job">'+
-      '<span class="ct-add">+ time</span></div>';
-  }
-  const line = (k, t, what) => '<span class="ct-line" title="'+esc(what + ' ' + fmtTime(t) + ' — the whole crew on this job. Click to change.')+'">'+
-    '<span class="jt-k">'+k+'</span>'+esc(fmtTimeShort(t))+'</span>';
-  return '<div class="cell-times"'+open+'>'+
-    (shop ? line('Shop', shop, 'At the shop') : '')+
-    (site ? line('Site', site, 'On site') : '')+
-    '</div>';
+  return '<div class="cell-times">' + timeFieldsHtml(date, division, jobId) + '</div>';
 }
 // The times live in the assign dialog, in a section that is collapsed unless
 // one is already set. Reached from the cell, open it: somebody who clicked the
@@ -1355,8 +1352,17 @@ function jobRowHtml(job, ds, tStr) {
   // beside the job's name where they are always in view. Seven days mean
   // seven, and only the day cells can tell those apart.
   const oneDay = viewingOneDay();
-  const cells = ds.map(d => dayCell(job, '', d, tStr, jobCrewOn(d, job.division, job.id),
-    oneDay ? '' : cellTimesHtml(d, job.division, job.id))).join('');
+  const cells = ds.map(d => {
+    const crew = jobCrewOn(d, job.division, job.id);
+    // On a WEEK board the fields follow the work. Drawn in all seven cells they
+    // are fourteen empty boxes per row, and they bury the crew the board exists
+    // to show — so a day gets them once somebody is on it, or once a time is
+    // already set. A day with nobody on it does not need a report time, and if
+    // one is wanted before the crew, the cell opens the dialog as it always has.
+    const wantTimes = !oneDay && (crew.length ||
+      getShopTime(d, job.division, job.id) || getSiteTime(d, job.division, job.id));
+    return dayCell(job, '', d, tStr, crew, wantTimes ? cellTimesHtml(d, job.division, job.id) : '');
+  }).join('');
   return '<tr class="job-row"><td class="lead-col job-lead" style="border-left:3px solid '+col+'">'+
     '<div class="jl-wrap"><div class="jl-main">'+
       esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
