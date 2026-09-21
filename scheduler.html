@@ -293,8 +293,16 @@ if (!token || !user) location.replace('index.html'); else if (!hasAccess) locati
 const ASSIGN_KEY = 'fct_scheduler_assignments';
 const CREWS_KEY  = 'fct_scheduler_crews';
 const DIV_COLORS = { turf:'#22c55e', paving:'#60a5fa', dust:'#fbbf24', trucking:'#ef4444', quarry:'#f97316',
+                     // Pre Loading and Washing. Dust's hours, its own line of work.
+                     ees:'#2dd4bf',
                      // Not a division. See OTHER_DIV — work with no project behind it.
                      other:'#a78bfa' };
+// What a division is CALLED, wherever its key would read wrong — an initialism
+// the title-caser would mangle into "Ees", or a name the business uses in full.
+// The div-badge uppercases, so badges were always right; this is for the places
+// that print the name as words.
+const DIV_LABELS = { ees:'EES', dust:'Dust Control' };
+function divTitle(div) { return DIV_LABELS[div] || (div ? div[0].toUpperCase() + div.slice(1) : ''); }
 const STATUS_RANK = { behind:0, 'at-risk':1, 'no-data':2, 'not-started':3, 'on-track':4, complete:5 };
 
 const state = {
@@ -1157,7 +1165,7 @@ function jobFor(division, jobId, fallbackName) {
 }
 // "OTHER" is what the pseudo-division is called in the data; it is not what it
 // should be called on a printed dispatch sheet a crew reads.
-function divLabel(div) { return div === OTHER_DIV ? 'Other work' : div; }
+function divLabel(div) { return div === OTHER_DIV ? 'Other work' : divTitle(div); }
 function subNeedsCrew(sc) { return sc.status === 'behind' || sc.status === 'at-risk'; }
 function codeNeedsCrew(code) { return code.status === 'behind' || code.status === 'at-risk'; }
 function jobNeedsCrew(job) { return (job.subCodes || []).some(subNeedsCrew); }
@@ -1193,7 +1201,7 @@ function render() {
   else main.innerHTML = renderAI();
   updateUndoButtons();
 }
-function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []).concat([OTHER_DIV]); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+(d==='all'?'All divisions':d===OTHER_DIV?'Off project':d[0].toUpperCase()+d.slice(1))+'</option>').join('') + '</select>'; }
+function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []).concat([OTHER_DIV]); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+esc(d==='all'?'All divisions':d===OTHER_DIV?'Off project':divTitle(d))+'</option>').join('') + '</select>'; }
 function wknavHtml() {
   const wk = weekDays();
   const one = viewingOneDay();
@@ -1418,7 +1426,7 @@ function renderJobBoard() {
     }).join('');
     body += '<tr class="grp-row div-row" onclick="toggleDivGrp(\''+escAttr(div)+'\')" title="'+(collapsed?'Show':'Hide')+' this division"><td class="lead-col grp-lead">'+
       '<span class="caret">'+(collapsed?'\u25b8':'\u25be')+'</span> '+
-      '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(div)+'</span> '+
+      '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(divLabel(div))+'</span> '+
       '<span class="muted">'+list.length+' job'+(list.length>1?'s':'')+'</span>'+
       (behind?' <span class="warn" style="font-size:0.62rem">'+behind+' behind</span>':'')+
       '</td>'+headCells+'</tr>';

@@ -1083,8 +1083,13 @@ console.log('\n══════════ scheduler ════════
   assert('a scheduler user gets an answer', res.statusCode === 200, String(res.statusCode));
   const d = res.body.digest;
   assert('  from the scheduler digest', d && d.kind === 'scheduler', JSON.stringify(d && d.kind));
+  // Projects only. The two standing EES activities are on the board too, and
+  // they are counted apart — they have no bid items and nothing to pace, so
+  // folding them in here would report a customer list as a project count.
   assert('  over a board that actually has jobs on it',
     d && d.activeJobs === 2, `${d && d.activeJobs} active jobs`);
+  assert('  with the non-project rows counted apart',
+    d && d.otherWorkRows === 2, `${d && d.otherWorkRows} other rows`);
   const total = d && Object.values(d.subCodes).reduce((a, b) => a + b, 0);
   assert('  counting every sub-code by status', total === 2, `${total} sub-codes`);
   assert('  and a job behind its pace is reported as behind',
@@ -1113,8 +1118,13 @@ console.log('\n══════════ scheduler ════════
   assert('the model is told a conflict is per day, not per hour',
     /SAME DAY/.test(prompt) && /not per hour/.test(prompt));
   assert('  that unmeasured is not on track', /it is unmeasured/.test(prompt));
-  assert('  and that trucking dispatch is a different board entirely',
-    /Trucking dispatch is a separate board/.test(prompt));
+  // The board carries the whole company now, so the old rule ("trucking is a
+  // separate board, none of it is here") became false. What replaces it is the
+  // distinction that actually matters: projects have a pace, the rest do not.
+  assert('  that a customer row is not a project',
+    /Never add the two together and call the result jobs/.test(prompt));
+  assert('  and that a haul on this board is Trucking\u2019s',
+    /read through from the Trucking dispatch board/.test(prompt));
   assert('  and that the laborer figure is arithmetic, not a staffing decision',
     /not a decision about who is available/.test(prompt));
 }

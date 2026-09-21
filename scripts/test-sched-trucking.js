@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Trucking and Dust Control on the master schedule.
+ * Trucking, Dust Control and EES on the master schedule.
  *
  * Run: node scripts/test-sched-trucking.js
  *
- * The board now carries the whole company. Dust Control arrives as ordinary
- * rows — a job per customer, staffed here and saved here. Trucking does not:
- * its hauls already exist, in trucking.html's own dispatch blob, and they are
- * READ THROUGH rather than copied. One schedule, two windows onto it.
+ * The board now carries the whole company. Dust Control and EES arrive as
+ * ordinary rows — a job per dust customer, and the two standing EES activities
+ * (Pre Loading, Washing) — staffed here and saved here, off the very functions
+ * the Timesheet's job picker reads, so the two screens cannot disagree about
+ * what work exists. Trucking is different: its hauls already exist, in
+ * trucking.html's own dispatch blob, and they are READ THROUGH rather than
+ * copied. One schedule, two windows onto it.
  *
  * That read-through is the whole risk, and it is what this suite is about:
  *
@@ -93,7 +96,7 @@ function page(assignments, opts) {
   return sandbox;
 }
 
-console.log('\nTrucking and Dust Control on the master schedule\n');
+console.log('\nTrucking, Dust Control and EES on the master schedule\n');
 
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('[a haul is told apart from the board’s own work]');
@@ -355,16 +358,75 @@ console.log('\n[the server replays our difference over theirs]');
 
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n[the board offers the rest of the company]');
+// A fake `sql` so the readers below can actually RUN. Everything they touch is
+// one of three things: the dust customer table, the trucking roster blob, or a
+// trucking schedule blob.
+function fakeSql(data) {
+  return (strings, ...vals) => {
+    const q = strings.join(' ? ');
+    if (/FROM dust_companies/.test(q))   return Promise.resolve(data.dustCompanies || []);
+    if (/FROM dropdown_lists/.test(q))   return Promise.resolve([]);
+    if (/FROM app_data/.test(q)) {
+      // The scoped key is interpolated; the legacy unscoped one is a literal.
+      const key = vals.length ? String(vals[0]) : (q.match(/'([^']+)'/) || [])[1];
+      const v = (data.appData || {})[key];
+      return Promise.resolve(v === undefined ? [] : [{ value: v }]);
+    }
+    return Promise.resolve([]);
+  };
+}
 {
-  assert('dust and trucking are divisions the filter offers',
-         /sourceDivisions: SOURCE_DIVISIONS\.map\(s => s\.division\)\.concat\(\['dust', 'trucking'\]\)/.test(read('api/scheduler/board.js')));
-  const src = read('api/scheduler/board.js');
-  assert('dust jobs come off the shared customer list', /readIcCustomers\(sql, companyCode, 'dust'\)/.test(src));
-  assert('and carry no sub-codes, so nothing paces them', /division: 'dust'[\s\S]{0,200}subCodes: \[\]/.test(src));
-  assert('trucking customers with nothing on are still offered', /readIcCustomers\(sql, companyCode, 'trucking'\)/.test(src));
-  assert('hauls before today are left in the archive', /if \(ds < todayStr\) continue;/.test(src));
-  assert('and the payload names them apart from our own rows', /truckingAssignments: trucking\.assignments/.test(src));
+  // Dust and EES come off the very function the Timesheet's job picker uses,
+  // so the two screens cannot disagree about what work exists — a man
+  // scheduled on a customer the picker has never heard of could not then book
+  // his hours against it.
+  const sql = fakeSql({ dustCompanies: [{ id: 'c1', name: 'Acme Pit' }, { id: 'c2', name: 'Borden Yard' }] });
+  return BOARD.readDustAndEes(sql, 'FCT').then(out => {
+    deep('every dust customer is a row', out.dust.map(j => j.name), ['Acme Pit', 'Borden Yard']);
+    eq  ('under the dust division',       out.dust[0].division, 'dust');
+    eq  ('  keeping the timesheet\u2019s own job id', out.dust[0].id, 'c1');
+    assert('and carrying no sub-codes, so nothing paces it', out.dust.every(j => !j.subCodes.length));
+
+    // EES is not a dust customer: Pre Loading and Washing are two standing
+    // activities, and on a schedule they are their own line of work.
+    deep('EES is lifted out into its own division', out.ees.map(j => j.name),
+         ['EES - Pre Loading', 'EES - Washing']);
+    assert('  all of it',                  out.ees.every(j => j.division === 'ees'));
+    assert('  and none of it left in dust', !out.dust.some(j => /^EES/.test(j.name)));
+    // The shared id is the point: a man scheduled on ees:washing and a man who
+    // books to ees:washing are on the same string, in both screens.
+    deep('the ids are the timesheet\u2019s',  out.ees.map(j => j.id), ['ees:preloading', 'ees:washing']);
+    assert('and EES paces nothing either',  out.ees.every(j => !j.subCodes.length));
+    return runTruckingJobsCase();
+  }).then(finish);
 }
 
-console.log(`\n${failed ? '✗' : '✓'} ${passed} passed, ${failed} failed\n`);
-process.exit(failed ? 1 : 0);
+function runTruckingJobsCase() {
+  // A trucking customer with nothing booked is still somewhere to send a
+  // driver — off the same roster the Timesheet reads, not a second list.
+  const sql = fakeSql({ appData: {
+    'FCT:fct_truck_division_lists': { customers: ['Ox Hill', 'Kinkead HC'] },
+    'FCT:fct_trucking_schedule': { version: 1, assignments: {
+      '2999-01-01': [{ id: 'h1', driver: 'Dave', project: 'Ox Hill', unit: 'T-1' }],
+      '1999-01-01': [{ id: 'old', driver: 'Ray', project: 'Gone Co' }],
+    } },
+  } });
+  return BOARD.readTruckingBoards(sql, 'FCT', '2026-09-21').then(out => {
+    const names = out.jobs.map(j => j.name);
+    assert('a customer with nothing on is offered', names.includes('Kinkead HC'), names.join(', '));
+    assert('and one with a haul on it is too',      names.includes('Ox Hill'), names.join(', '));
+    eq  ('  once, not twice',                       names.filter(n => n === 'Ox Hill').length, 1);
+    assert('the haul itself comes through',         !!(out.assignments['2999-01-01'] || []).length);
+    // Forward work only. The base a write-back sends is built from what was
+    // read, so a haul left out here is one nothing done on this board can reach.
+    assert('a haul before today is left in the archive', !out.assignments['1999-01-01']);
+    assert('and its customer is not raised as a job',    !names.includes('Gone Co'), names.join(', '));
+    const j = out.jobs.find(x => x.name === 'Ox Hill');
+    eq('a new haul booked here knows which blob to go in', j && j.src.key, 'fct_trucking_schedule');
+  });
+}
+
+function finish() {
+  console.log(`\n${failed ? '✗' : '✓'} ${passed} passed, ${failed} failed\n`);
+  process.exit(failed ? 1 : 0);
+}

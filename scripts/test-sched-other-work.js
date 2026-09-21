@@ -43,18 +43,13 @@ const SCHED = read('scheduler.html');
 const FNS = ['otherKey','otherJobOf','otherLabel','otherJobsInWeek','jobFor','jobById','divLabel',
              'placeOnJob','addAssignmentSpan','conflictResourcesOn','dropJob','loadForResource',
              // idleEmployees reads the range ON SCREEN now, through bookedInView.
-             // placeOnJob stamps a booking made on a trucking job so it saves
-             // back to Trucking. Off-project rows are never trucking, so it is
-             // lifted only to keep placeOnJob resolvable.
-             // placeOnJob stamps a booking made on a trucking job so it saves
-             // back to Trucking. Off-project rows are never trucking, so this is
-             // lifted only to keep placeOnJob resolvable.
-             // placeOnJob stamps a booking made on a trucking job so it saves
-             // back to Trucking, and the double-booking count folds a man's
-             // hauls into one commitment. Neither touches off-project rows;
-             // both are lifted so the functions under test resolve.
-             'bookedInView','assignmentsFor','dayList','idleEmployees','stampHaul',
-             'commitKey','isForeign'];
+             'bookedInView','assignmentsFor','dayList','idleEmployees',
+             // Three things off-project work never touches, lifted only so the
+             // functions under test resolve: placeOnJob stamps a booking made on
+             // a TRUCKING job so it saves back to Trucking; the double-booking
+             // count folds a man's hauls into one commitment; and divLabel
+             // prints a division's name rather than its key.
+             'stampHaul','commitKey','isForeign','divTitle'];
 
 /** A board in a vm, running scheduler.html's own functions over it. */
 function board({ week, assignments, drafts, jobs, employees }) {
@@ -82,6 +77,11 @@ function board({ week, assignments, drafts, jobs, employees }) {
   const decl = SCHED.match(/^const OTHER_DIV = '[^']+';$/m);
   if (!decl) throw new Error('OTHER_DIV declaration not found in scheduler.html');
   vm.runInContext(decl[0], sandbox, { filename: 'scheduler.html' });
+  // Likewise the division names divTitle prints, so a label added there is the
+  // one under test here.
+  const labels = SCHED.match(/^const DIV_LABELS = \{[^}]*\};$/m);
+  if (!labels) throw new Error('DIV_LABELS declaration not found in scheduler.html');
+  vm.runInContext(labels[0], sandbox, { filename: 'scheduler.html' });
   FNS.forEach(n => vm.runInContext(requireFn(SCHED, n, 'scheduler.html'), sandbox, { filename: 'scheduler.html' }));
   // A `const` inside a vm script lands in the context's lexical scope, which
   // the lifted functions can see but a property read cannot. Hand the value
@@ -197,7 +197,11 @@ const TURF = { division:'turf', id:'26049', name:'Franklin Regional Softball', s
   {
     const p = board({});
     eq('  a crew does not read the word "other"', p.divLabel('other'), 'Other work');
-    eq('  and a real division is left alone', p.divLabel('turf'), 'turf');
+    // A real division reads as its name. Not its key: "ees" would print as
+    // "Ees", and the business calls dust work Dust Control.
+    eq('  a real division reads as a name', p.divLabel('turf'), 'Turf');
+    eq('  an initialism is not title-cased', p.divLabel('ees'), 'EES');
+    eq('  and a division with a longer name gets it', p.divLabel('dust'), 'Dust Control');
     // Every badge that prints a division goes through it, or one of them says
     // "OTHER" while the rest say "OFF PROJECT" and the row looks like a bug.
     const raw = SCHED.split('\n')

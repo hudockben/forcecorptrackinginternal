@@ -1191,7 +1191,8 @@ async function payrollDigest(c) {
 const SCHEDULER_LIMITS = [
   'A sub-code\'s status comes from its pace against its remaining working days. "no-data" means there is no bid quantity to measure against — it is not on track, it is unmeasured. Say so rather than counting it as either.',
   'A conflict is one person or machine booked on two different jobs on the SAME DAY. It is decided per day, not per hour, so a genuine morning-on-one-job, afternoon-on-another split appears here as a conflict. Say what it means before calling it a problem.',
-  'Only the divisions that run jobs feed this board. Trucking dispatch is a separate board with its own drivers and trucks, and none of it is here.',
+  'This board carries the whole company, and its rows are not all the same kind of thing. activeJobs counts PROJECTS — turf, paving and kiewit work, which carries bid items and a pace to keep, and is the only work the sub-code figures describe. otherWorkRows counts the rest: dust customers, the two EES activities (Pre Loading and Washing) and trucking hauls, which have no bid items and nothing to pace. Never add the two together and call the result jobs, and never report a pace, a percentage or a status for anything in the second group — there is nothing to measure it against.',
+  'Trucking hauls on this board are read through from the Trucking dispatch board; that board owns them and this one shows them so a driver is not scheduled twice. Their hours, trucks and loads are not here — only who is on what, and on which day.',
   'addlLaborersNeeded is arithmetic — the extra bodies the pace implies — not a decision about who is available. Never present it as a staffing instruction.',
   'These figures are the plan as it stands today. There is no history here, so nothing about how the schedule has moved over time can be answered.',
   'timeOff is one row per person per DAY, and two fields on it decide what may be said. status is "approved" or "requested" — a requested day is a form a supervisor has not answered yet, so never report it as time the person is taking. partial is true when the day off leaves part of the day standing (hours says how much): that person IS working that day and IS schedulable, so never describe a partial day as being out. Only an approved, non-partial row means away for the whole day. Zero hours is an unpaid day off — away all day, and a payroll fact, not an extra kind of absence.',
@@ -1211,6 +1212,14 @@ async function schedulerDigest(c, opts = {}) {
     console.error('[mathis] scheduler board failed:', err.message);
     return { division: 'scheduler', kind: 'scheduler', covers: COVERS.scheduler, error: true, limits: SCHEDULER_LIMITS };
   }
+
+  // The rows that are PROJECTS. The board also carries dust customers, the two
+  // EES activities and trucking hauls; those are somewhere to send a man, not
+  // work with a pace to keep, and every figure below that speaks of pace,
+  // percentage or status is about the first group only. The board itself says
+  // which divisions those are, so this cannot drift from what it draws.
+  const paced = new Set(board.projectDivisions || []);
+  const jobsPaced = (board.jobs || []).filter(j => paced.has(j.division));
 
   const counts = { behind: 0, atRisk: 0, onTrack: 0, complete: 0, noData: 0 };
   let addlLaborersNeeded = 0, unstaffed = 0;
@@ -1307,7 +1316,12 @@ async function schedulerDigest(c, opts = {}) {
     covers: COVERS.scheduler,
     today: board.today,
     sourceDivisions: board.sourceDivisions || [],
-    activeJobs: (board.jobs || []).length,
+    // Projects only. The board also carries dust customers, the two EES
+    // activities and trucking hauls, which carry no bid items — counting them
+    // here would report a customer list as a project count, and they are
+    // counted apart instead.
+    activeJobs: jobsPaced.length,
+    otherWorkRows: (board.jobs || []).length - jobsPaced.length,
     subCodes: counts,
     addlLaborersNeeded,
     unstaffedAtRisk: unstaffed,

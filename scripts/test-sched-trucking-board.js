@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * The Scheduler with Trucking on it, running.
+ * The Scheduler with the whole company on it, running.
  *
  * Run: node scripts/test-sched-trucking-board.js
  *
  * test-sched-trucking.js lifts the pieces out of the page and checks each on
  * its own. This boots the whole page instead — a real DOM, a stubbed board
- * endpoint carrying a turf job, a dust customer and one haul — drags things
- * around it, and reads what the page tried to SAVE. It is the only check that
+ * endpoint carrying a turf job, a dust customer, the two EES activities and
+ * one haul — drags things around it, and reads what the page tried to SAVE. It is the only check that
  * can catch the failures that live in the wiring rather than in any one
  * function, and the first run of it caught exactly that: dropOnJobCell moved a
  * haul by cutting a fresh booking and deleting the old one, which read as
@@ -55,7 +55,7 @@ const HAUL_KEY = 'fct_trucking_schedule';
 const JOB_ID   = HAUL_KEY + '¦borden haul';
 const AID      = 'tk¦' + HAUL_KEY + '¦h1';
 
-/** One turf job, one dust customer, one haul already dispatched. */
+/** One turf job, one dust customer, both EES activities, one dispatched haul. */
 const board = () => ({
   generatedAt: new Date().toISOString(),
   employees: [{ name: 'Dave Wilson' }, { name: 'Mike Ortiz' }],
@@ -63,7 +63,10 @@ const board = () => ({
   jobs: [
     { division: 'turf', id: 'j1', name: 'Riverbend', jobNumber: '', status: 'Active', bidValue: 1,
       subCodes: [{ costCode: '3100', subCode: '3100.1', name: 'Fine grade', status: 'on-track' }] },
-    { division: 'dust', id: 'dust¦acme', name: 'Acme Pit', status: 'Active', subCodes: [], bidValue: 0 },
+    { division: 'dust', id: 'c1', name: 'Acme Pit', status: 'Active', subCodes: [], bidValue: 0 },
+    // The two standing EES activities, carrying the Timesheet's own job ids.
+    { division: 'ees', id: 'ees:preloading', name: 'EES - Pre Loading', status: 'Active', subCodes: [], bidValue: 0 },
+    { division: 'ees', id: 'ees:washing',    name: 'EES - Washing',     status: 'Active', subCodes: [], bidValue: 0 },
     { division: 'trucking', id: JOB_ID, name: 'Borden Haul', status: 'Active', subCodes: [], bidValue: 0,
       src: { key: HAUL_KEY, label: 'Trucking', project: 'Borden Haul', projectId: 'p2', customer: 'Borden LLC' } },
   ],
@@ -75,7 +78,7 @@ const board = () => ({
            row: { id: 'h1', driver: 'Dave Wilson', project: 'Borden Haul', project_id: 'p2',
                   customer: 'Borden LLC', unit: 'T-14', start: '06:00', end: '15:00',
                   material: 'Base', notes: 'gate 4' } } }] },
-  sourceDivisions: ['turf', 'paving', 'kiewit', 'dust', 'trucking'],
+  sourceDivisions: ['turf', 'paving', 'kiewit', 'dust', 'ees', 'trucking'],
 });
 
 const SESSION = { fct_token: 'harness', fct_division: 'turf',
@@ -114,7 +117,7 @@ const settle = () => new Promise(r => setTimeout(r, 900));
 const liveRows = b => Object.values((b && b.rows) || {}).flat();
 
 (async () => {
-  console.log('\nThe Scheduler with Trucking on it, running\n');
+  console.log('\nThe Scheduler with the whole company on it, running\n');
 
   // ═════════════════════════════════════════════════════════════════════════
   console.log('[it comes up with the whole company on it]');
@@ -125,13 +128,17 @@ const liveRows = b => Object.values((b && b.rows) || {}).flat();
     assert('it gets past the loading placeholder', !(p.w.document.body.textContent || '').includes('Loading master schedule'));
     assert('the turf job is drawn',     main.includes('Riverbend'));
     assert('the dust customer is too',  main.includes('Acme Pit'));
+    assert('both EES activities are',   main.includes('EES - Pre Loading') && main.includes('EES - Washing'));
     assert('and the haul',              main.includes('Borden Haul'));
     assert('the haul chip names the driver', main.includes('Dave Wilson'));
     assert('  and is marked as one',    /class="asn[^"]* haul"/.test(main), main.match(/class="asn[^"]*"/g));
     assert('  and says which truck and what hours', main.includes('T-14') && main.includes('from Trucking'));
     const filter = (p.w.document.getElementById('divFilter') || {}).innerHTML || '';
-    assert('the division filter offers Dust',     filter.includes('>Dust<'));
-    assert('and Trucking',                        filter.includes('>Trucking<'));
+    // Named, not title-cased off the key: "ees" would read as "Ees", and the
+    // business calls dust work Dust Control.
+    assert('the division filter offers Dust Control', filter.includes('>Dust Control<'), filter);
+    assert('and EES, spelled as an initialism',       filter.includes('>EES<'), filter);
+    assert('and Trucking',                            filter.includes('>Trucking<'), filter);
     // Reading a board must not write one.
     eq('and simply opening the board saves nothing', p.writes.length, 0);
     p.w.close();
@@ -216,18 +223,25 @@ const liveRows = b => Object.values((b && b.rows) || {}).flat();
   }
 
   // ═════════════════════════════════════════════════════════════════════════
-  console.log('\n[dust is ours; the two blobs never cross]');
+  console.log('\n[dust and EES are ours; the two blobs never cross]');
   {
     const p = boot(); await settle();
-    p.w.placeOnJob(D1, p.w.jobById('dust', 'dust¦acme'), '', { resource: 'Mike Ortiz', kind: 'emp' });
+    p.w.placeOnJob(D1, p.w.jobById('dust', 'c1'), '', { resource: 'Mike Ortiz', kind: 'emp' });
+    p.w.placeOnJob(D1, p.w.jobById('ees', 'ees:washing'), '', { resource: 'Dave Wilson', kind: 'emp' });
     p.w.saveAssignments();
     await settle();
     const saved = p.toBoard().pop() || {};
     const rows  = Object.values(saved.assignments || {}).flat();
     assert('the dust booking is in the board’s own blob',
            rows.some(r => r.division === 'dust' && r.resource === 'Mike Ortiz'), JSON.stringify(rows));
-    assert('with no haul alongside it', !rows.some(r => r.src), JSON.stringify(rows));
-    eq('and nothing went to trucking',  p.toTrucking().length, 0);
+    // Neither keeps a schedule of its own, so neither is a read-through: both
+    // are the board's rows, saved in the board's blob and nowhere else.
+    const ees = rows.find(r => r.division === 'ees');
+    assert('the EES booking is too',        !!ees, JSON.stringify(rows));
+    eq('  on the timesheet’s own job id',  ees && ees.jobId, 'ees:washing');
+    assert('  and it is not a haul',        ees && !ees.src);
+    assert('with no haul alongside either', !rows.some(r => r.src), JSON.stringify(rows));
+    eq('and nothing went to trucking',      p.toTrucking().length, 0);
     p.w.close();
   }
 
