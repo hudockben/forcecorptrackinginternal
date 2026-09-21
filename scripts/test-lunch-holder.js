@@ -283,10 +283,22 @@ assert('the ordinary edit path uses it rather than its own copy',
 
 // The move endpoint shipped without this guard — an approver moving the break
 // on an approved day would have left its cost rows charging the old hours.
-assert('moving the break checks EVERY approved job of the day',
-  /const approved = group\.filter\(g => g\.status === 'approved'\);/.test(API)
+//
+// Over the PLAN — the rows this call is about to rewrite — and not over the
+// whole day. Over the day it also refused calls that rewrite nothing, and
+// payroll.html sends one after every edit to a split day, so changing the
+// travel hours on a day whose other half was approved was refused over a
+// lunch break that was not moving. A sibling is still covered: it is in the
+// plan exactly when its hours are the ones changing, which is the only thing
+// the cost rows care about. scripts/test-payroll-edit-lunch-noop.js drives
+// both halves of that through the handler.
+assert('moving the break checks every approved job it is about to rewrite',
+  /const approved = plan\.filter\(p => p\.row\.status === 'approved'\)\.map\(p => p\.row\);/.test(API)
   && /approved\.map\(g => injectedRowCount\(sql, companyCode, g\)\)/.test(API),
   'the break moves BETWEEN jobs, so a sibling goes stale as readily as the anchor');
+assert('  and works out what changes BEFORE it refuses anything',
+  API.indexOf('const plan = [];') < API.indexOf("const approved = plan.filter"),
+  'a call that rewrites nothing is not something to refuse');
 assert('and refuses with a 409 telling you to un-approve first',
   /res\.status\(409\)/.test(API)
   && /This day has cost tracking rows injected from approval\./.test(API)

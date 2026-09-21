@@ -3733,10 +3733,17 @@
       const widened = autoWidened && fromEl && fromEl.value === autoWidened
         ? ` The range was already opened back to ${escapeHtml(prettyDate(autoWidened))}; this is older still.`
         : '';
+      // This count is the server's, over everyone. The Employee and
+      // Supervisor boxes are applied here in the page, to rows that were
+      // loaded — and by definition none of these were. Say whose time it is
+      // counting rather than let it read as the filtered figure.
+      const named = (document.getElementById('flt-user').value || '').trim()
+                 || (document.getElementById('flt-supervisor').value || '').trim();
+      const scope = named ? ' Counted across all employees, not just the ones filtered here.' : '';
 
       el.innerHTML = `
         <div class="backlog-text">${hidden} pending ${entries} outside this date range — ${where}.
-          <span class="backlog-sub">Not counted in Awaiting Review or the Pending Review tab. ${escapeHtml(edge)}${widened}</span>
+          <span class="backlog-sub">Not counted in Awaiting Review or the Pending Review tab. ${escapeHtml(edge)}${widened}${scope}</span>
         </div>
         <button class="backlog-btn" onclick="showHiddenPending()">Show Them</button>`;
       el.classList.remove('info');
@@ -3757,8 +3764,13 @@
       // so approving one takes it down by one. At zero the reach has done its
       // job and the bar goes — a wide range with nothing waiting in it needs
       // no explaining.
+      //
+      // `filtered`, not `allEntries`: the stat strip and the tab badge both
+      // count the Employee and Supervisor boxes, and a bar reading 11 over a
+      // tab reading 1 is the same contradiction this whole feature exists to
+      // remove. Three numbers on one screen have to be about the same rows.
       const monday = ymd(thisWeekMonday());
-      const older  = allEntries.filter(e => e.status === 'submitted' && e.work_date < monday).length;
+      const older  = filtered.filter(e => e.status === 'submitted' && e.work_date < monday).length;
       if (!older) return hide();
       const entries = older === 1 ? 'entry' : 'entries';
       el.innerHTML = `
@@ -9599,12 +9611,34 @@
         });
         const j = await res.json();
         if (!res.ok || !j.ok) throw new Error(j.error || 'Save failed');
-        // Settle the day's one break across the group in a single call: the
-        // server rewrites every job of the day from its own punches, so the
-        // deduction lands on exactly the job named here and nowhere else.
-        // Done after the save because the save may have moved the very clocks
-        // the hours are recomputed from.
-        await saveLunchHolder();
+
+        // THE ENTRY IS SAVED FROM HERE ON. Settling the day's break is a
+        // second call, and it used to share the catch below — so when it
+        // failed, an edit that HAD gone through reported itself as a failure
+        // and the modal sat open over it. An approver who had just changed
+        // the travel hours on a split day got a refusal about a lunch break
+        // they never touched, with no way to tell what had actually landed.
+        //
+        // So the two outcomes are kept apart: a failure here leads with the
+        // save, and the grid is refreshed either way, because what is behind
+        // the modal is now out of date whichever branch this takes.
+        let followUpError = null;
+        try {
+          // The server rewrites every job of the day from its own punches, so
+          // the deduction lands on exactly the job named here and nowhere
+          // else. Done after the save because the save may have moved the
+          // very clocks the hours are recomputed from.
+          await saveLunchHolder();
+        } catch (err) {
+          followUpError = err.message || 'the lunch break could not be moved';
+        }
+
+        if (followUpError) {
+          msg.classList.add('error');
+          msg.textContent = `Your changes were saved. The lunch break was not moved: ${followUpError}`;
+          applyFilters();
+          return;
+        }
         msg.classList.add('success'); msg.textContent = 'Saved.';
         setTimeout(() => {
           closeEdit();
@@ -9626,6 +9660,23 @@
       const yes = document.getElementById('em-lunch').value === 'true';
       const sel = document.getElementById('em-lunch-on');
       const holderId = yes ? safeIdOf(sel.value) : null;
+
+      // Only when the break is actually moving. This fires after EVERY edit
+      // to a split day — a job change, a supervisor, the travel hours — and
+      // asking to put the break back exactly where it already is is not a
+      // no-op on the way in: the day may hold an approved job whose cost rows
+      // were posted from its hours, and that is refused outright. An approver
+      // fixing the travel hours on such a day was told to un-approve and
+      // re-split it over a lunch break nobody had touched.
+      //
+      // Compared against where the break SITS rather than against the form as
+      // it opened, so a box someone clicked back and forth also settles as
+      // unchanged, and a day the form could not place a holder on is left to
+      // the server rather than being rewritten from a default.
+      const holder   = lunchHolderOf(group);
+      const holdsNow = holder ? safeIdOf(String(holder.id)) : null;
+      if (holderId === holdsNow) return;
+
       const res = await fetch(
         '/api/timesheet-entries?action=lunch_holder&id=' + encodeURIComponent(editingEntry.id),
         { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ holder_id: holderId }) });
