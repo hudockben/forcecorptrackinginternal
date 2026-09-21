@@ -44,7 +44,7 @@ const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 const SCHED = read('scheduler.html');
 
 const FNS = ['siteKey','shopKey','timeKeyFor','getJobTime','setJobTime','getSiteTime','getShopTime',
-             'cellTimesHtml','fmtTime','fmtTimeShort'];
+             'cellTimesHtml','jobTimesHtml','fmtTime','fmtTimeShort'];
 
 function page(siteTimes) {
   const sandbox = { console, state: { siteTimes: siteTimes || {} }, saveAssignments: () => {} };
@@ -155,6 +155,57 @@ const D = '2026-09-21', DIV = 'turf', JOB = '26049';
     assert('  the per-person sheet reads both',
       /getShopTime\(/.test(person) && /getSiteTime\(/.test(person));
   }
+
+  console.log('\n[on a day board the times sit beside the job name]');
+  {
+    const p = page();
+    const none = p.jobTimesHtml(D, DIV, JOB);
+    // Permanent fixture: both lines are drawn whether or not anything is set,
+    // because a blank is something a scheduler has to remember to look for.
+    assert('  both lines are drawn with nothing set',
+      (none.match(/class="jt[ "]/g) || []).length === 2, none);
+    assert('  and each says so with an em dash', (none.match(/—/g) || []).length >= 2, none);
+    assert('  marked unset, so it reads as muted rather than as a time',
+      (none.match(/jt unset/g) || []).length === 2, none);
+
+    p.setJobTime('shop', DIV, JOB, '06:00', [D]);
+    p.setJobTime('site', DIV, JOB, '07:00', [D]);
+    const set = p.jobTimesHtml(D, DIV, JOB);
+    assert('  with both set, both times show', /6a/.test(set) && /7a/.test(set), set);
+    assert('  neither is still marked unset', !/jt unset/.test(set), set);
+    assert('  and it opens the times on click',
+      /openJobTimes\(/.test(set) && /event\.stopPropagation\(\)/.test(set), set);
+
+    const half = page();
+    half.setJobTime('site', DIV, JOB, '07:00', [D]);
+    const h = half.jobTimesHtml(D, DIV, JOB);
+    assert('  one set and one not still draws both lines',
+      (h.match(/class="jt[ "]/g) || []).length === 2 && /jt unset/.test(h) && /7a/.test(h), h);
+  }
+
+  console.log('\n[words, not pictures]');
+  {
+    const p = page();
+    p.setJobTime('shop', DIV, JOB, '06:00', [D]);
+    p.setJobTime('site', DIV, JOB, '07:00', [D]);
+    const both = p.jobTimesHtml(D, DIV, JOB) + p.cellTimesHtml(D, DIV, JOB) + page().cellTimesHtml(D, DIV, JOB);
+    assert('  the times are labelled Shop and Site', /Shop/.test(both) && /Site/.test(both), both);
+    // The house and the clock read as decoration at this size; they are gone.
+    const pictures = both.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || [];
+    assert('  and no emoji is left in either renderer', pictures.length === 0, pictures.join(' '));
+  }
+
+  console.log('\n[which board puts them where]');
+  {
+    // Seven days on one row are seven different answers, and the job-name cell
+    // can only hold one — so the week board keeps its times in the day cells.
+    const row = requireFn(SCHED, 'jobRowHtml', 'scheduler.html');
+    assert('  the row asks which board it is on', /viewingOneDay\(\)/.test(row), row.slice(0, 200));
+    assert('  a day board puts them beside the name', /jobTimesHtml\(ds\[0\]/.test(row));
+    assert('  a week board leaves them in the day cells',
+      /oneDay \? '' : cellTimesHtml\(/.test(row));
+  }
+
 
   console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
