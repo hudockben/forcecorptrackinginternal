@@ -1416,7 +1416,7 @@
       .report .report-detail-table th, .report .report-detail-table td {
         border-right-color: #bbb !important;
       }
-      header, .filters, .tabs, .stats, .bulk, .quick-ranges, .table-wrap,
+      header, .filters, .tabs, .stats, .bulk, .backlog, .quick-ranges, .table-wrap,
       .pager, .modal-backdrop, .btn-print, .proj-part-tools,
       .print-picker { display: none !important; }
 
@@ -1811,6 +1811,64 @@
       color: var(--muted);
     }
     .load-error-actions { margin-top: 0.85rem; }
+
+    /* ── Backlog notice: pending time outside the date range ──────────────
+       The grid loads one range and opens on the week in progress, so time
+       submitted for an earlier week is off-screen with "Awaiting Review 0"
+       sitting above it — true of the range, false of the company. This bar
+       says what the range is hiding and offers to pull it in. Amber, not
+       red: nothing has failed, there is just work the screen is not
+       showing. */
+    .backlog {
+      display: none;
+      align-items: center;
+      gap: 0.85rem;
+      flex-wrap: wrap;
+      background: var(--surface2);
+      border: 1px solid rgba(245,158,11,0.45);
+      border-left: 3px solid var(--orange, #f59e0b);
+      border-radius: 8px;
+      padding: 0.65rem 1rem;
+    }
+    .backlog.open { display: flex; }
+    /* Same bar, blue, for the case where the range was already widened and
+       the time IS on screen: that is information, not something to act on. */
+    .backlog.info {
+      border-color: rgba(59,130,246,0.45);
+      border-left-color: var(--blue, #3b82f6);
+    }
+    .backlog.info .backlog-btn {
+      border-color: var(--blue, #3b82f6);
+      color: var(--blue, #3b82f6);
+    }
+    .backlog.info .backlog-btn:hover { background: rgba(59,130,246,0.12); }
+    .backlog-text {
+      font-size: 0.85rem;
+      color: var(--text);
+      font-weight: 600;
+      flex: 1 1 22rem;
+    }
+    .backlog-text .backlog-sub {
+      display: block;
+      margin-top: 0.15rem;
+      font-size: 0.74rem;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .backlog-btn {
+      padding: 0.45rem 1rem;
+      background: transparent;
+      border: 1px solid var(--orange, #f59e0b);
+      color: var(--orange, #f59e0b);
+      font-weight: 700;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .backlog-btn:hover { background: rgba(245,158,11,0.12); }
 
     /* ── Pager (Approved tab) ──────────────────────────────────────────────
        Pending is a queue that gets worked to zero; Approved only ever grows —
@@ -2714,6 +2772,9 @@
       </div>
     </div>
 
+    <!-- ── Pending time the date range is hiding ── -->
+    <div class="backlog" id="backlogNote"></div>
+
     <!-- ── Pending / Approved / Reports / Audit Log / Analytics tabs ── -->
     <div class="tabs">
       <button class="tab active" data-tab="pending" onclick="switchTab('pending')">
@@ -3105,6 +3166,30 @@
     // what someone has typed into a box.
     let loadedScope = { from: '', to: '', division: '' };
 
+    // ── Pending time outside the loaded range ─────────────────────────────
+    // Counts and two dates from ?action=pending_span: how much submitted time
+    // exists company-wide at ANY date, and how much of it the current range
+    // leaves off-screen. Everything else on this page is a fact about the
+    // range; this is the one fact about what the range is not showing.
+    // Null until the first answer lands — "we have not asked yet" is not
+    // "there is none", and a notice must never be drawn from the difference.
+    let pendingSpan    = null;
+    let pendingSpanSeq = 0;
+    // How far back the first load is allowed to reach on its own. The default
+    // range is the week in progress; if older time is still awaiting review
+    // the range opens wide enough to include it, because a queue nobody can
+    // see is a queue nobody works. The cap is there because the same fetch
+    // brings back every APPROVED row in the range too — a year-old straggler
+    // would otherwise pull a year of payroll onto the screen at load. Beyond
+    // it the notice takes over and widening is one click.
+    const MAX_AUTO_WIDEN_DAYS = 84;   // 12 weeks
+    // The From date the first load set, if it moved one. Kept so the notice
+    // can explain a From that is not this Monday, and compared against the box
+    // so it stops explaining once anyone moves it. Just the date: the count
+    // beside it is read off the rows on screen, so approving one takes it
+    // down by one instead of leaving a number nobody can reconcile.
+    let autoWidened = null;
+
     // ── Approved-tab paging ───────────────────────────────────────────────
     // Pending is a queue payroll works to zero, so it stays whole. Approved is
     // cumulative — around 70 entries a day once every crew is submitting, so a
@@ -3277,6 +3362,14 @@
       // here — Pending Review included — opens on one week rather than a
       // fortnight, and anything older waits behind Last Week, Last + This or a
       // cycle button rather than being on screen at load.
+      //
+      // EXCEPT where that would hide work. This screen exists to approve
+      // submitted time, and on a Monday the week in progress is nearly empty
+      // while last week's crew days are the ones sitting unapproved. Opening
+      // on a range that excludes them puts "Awaiting Review 0" over a full
+      // queue, which reads as done. So the range starts at this week and
+      // widenPendingOnLoad() below reaches back over it if there is older
+      // time still awaiting review.
       const [from, to] = rangeFor('current_week');
       document.getElementById('flt-from').value = ymd(from);
       document.getElementById('flt-to').value   = ymd(to);
@@ -3286,12 +3379,52 @@
       // filterAndRender once the fetch resolves as a safety net in case the
       // first render didn't paint into rowsBody for any reason.
       setTimeout(() => {
-        applyFilters().then(() => {
+        widenPendingOnLoad().then(() => applyFilters()).then(() => {
           if (currentTab === 'pending' || currentTab === 'approved') {
             filterAndRender();
           }
         }).catch(() => {});
       }, 0);
+    }
+
+    /**
+     * First load only: pulls the From date back so that time already awaiting
+     * review is on screen rather than behind a date filter nobody set.
+     *
+     * Runs BEFORE the first entry fetch, so the page loads once with the right
+     * range instead of drawing an empty queue and then replacing it.
+     *
+     * Three things it deliberately does not do:
+     *   · move the To date. Pending time dated in the future is a typo, not a
+     *     backlog, and chasing it would open the range on a mistake.
+     *   · start mid-week. The From lands on the Monday of the oldest pending
+     *     entry's week, because a range cut at the head of a week makes that
+     *     week's overtime read as a floor everywhere downstream.
+     *   · reach back forever. Past MAX_AUTO_WIDEN_DAYS it stops and leaves the
+     *     rest to the notice — the same fetch carries every approved row in
+     *     the range, and one forgotten entry from last spring should not pull
+     *     a spring of payroll onto the screen at load.
+     */
+    async function widenPendingOnLoad() {
+      const fromEl = document.getElementById('flt-from');
+      const toEl   = document.getElementById('flt-to');
+      if (!fromEl || !toEl) return;
+
+      // Deliberately not written into pendingSpan: this answer is about the
+      // range we are ABOUT TO LEAVE. applyFilters() asks again for the range
+      // that actually loads, and that is the one the notice is drawn from.
+      const span = await fetchPendingSpan(fromEl.value, toEl.value, '');
+      if (!span || !span.before || !span.oldest) return;
+
+      const wantFrom  = weekStartOf(span.oldest) || span.oldest;
+      if (wantFrom >= fromEl.value) return;          // nothing older to reach
+      const floorDate = ymd(addDays(new Date(), -MAX_AUTO_WIDEN_DAYS));
+      const newFrom   = wantFrom < floorDate
+        ? (weekStartOf(floorDate) || floorDate)
+        : wantFrom;
+      if (newFrom >= fromEl.value) return;
+      fromEl.value = newFrom;
+      autoWidened  = newFrom;
     }
 
     function switchTab(tab) {
@@ -3326,6 +3459,10 @@
       // renderRows() re-opens these for the Approved tab; every other tab
       // leaves them hidden.
       hidePagers();
+      // Reports, Analytics and the Audit Log are not asking "what is waiting
+      // to be approved", so the notice goes with them — now, not after the
+      // refetch below lands.
+      renderBacklogNote();
 
       // The Hours Report is the one surface too wide for the reading column.
       // Every other tab keeps 1280px, which is what makes the filter bar and
@@ -3486,6 +3623,145 @@
       applyFilters();
     }
 
+    // ── Pending time the range is hiding ──────────────────────────────────
+    /**
+     * Asks the server where the unapproved time actually is: how much
+     * submitted time exists company-wide at any date, and how much of it
+     * falls outside `from`..`to`. Counts and two dates only — no rows — so
+     * it can ride alongside the entry fetch without costing a second list.
+     *
+     * Returns null on any failure. A backlog notice is an extra; it must
+     * never be able to break the load it rides on, and "we could not ask"
+     * has to stay distinguishable from "there is none".
+     */
+    async function fetchPendingSpan(from, to, division) {
+      const params = new URLSearchParams();
+      params.set('action', 'pending_span');
+      // Review grid = everyone's time, same opt-in the entry list makes.
+      params.set('scope', 'all');
+      if (from)     params.set('from',     from);
+      if (to)       params.set('to',       to);
+      if (division) params.set('division', division);
+      try {
+        const res  = await fetch('/api/timesheet-entries?' + params.toString(), { headers: authHeaders() });
+        const data = await res.json();
+        if (!res.ok) return null;
+        return {
+          total:  Number(data.total)  || 0,
+          before: Number(data.before) || 0,
+          after:  Number(data.after)  || 0,
+          oldest: data.oldest || null,
+          newest: data.newest || null,
+          // The range this answer is ABOUT. The notice quotes these rather
+          // than the filter boxes or loadedScope: the span reply and the
+          // entry reply land independently, and a notice naming a date the
+          // counts were not measured against is worse than no notice.
+          from, to,
+        };
+      } catch (_) {
+        return null;
+      }
+    }
+
+    /**
+     * Draws the notice when submitted time sits outside the dates on screen.
+     * The stat strip and the Pending tab badge both count the range, so with
+     * nothing here a week nobody approved reads as "Awaiting Review 0".
+     *
+     * Silent when there is nothing hidden, when the span request failed, and
+     * on the tabs where the question does not arise (Audit Log has its own
+     * fetch; Reports and Analytics are about approved hours).
+     */
+    function renderBacklogNote() {
+      const el = document.getElementById('backlogNote');
+      if (!el) return;
+      const hide = () => { el.classList.remove('open', 'info'); el.innerHTML = ''; };
+      if (entriesLoadError) return hide();
+      if (currentTab !== 'pending' && currentTab !== 'approved') return hide();
+
+      const before = pendingSpan ? (pendingSpan.before || 0) : 0;
+      const after  = pendingSpan ? (pendingSpan.after  || 0) : 0;
+      const hidden = before + after;
+
+      // Nothing is hidden — but if the range on screen is not the default
+      // because THIS PAGE moved it at load, say so. A From date that is not
+      // this Monday, with no explanation, looks like a filter someone left
+      // behind, and the next person narrows it back and loses the queue again.
+      if (!hidden) return renderWidenedNote(el, hide);
+
+      const entries = hidden === 1 ? 'entry' : 'entries';
+      // Which way the hidden time lies decides which end of the range has to
+      // move — and older time is the case that matters, so it leads.
+      let where;
+      if (before && after)  where = `before ${prettyDateShort(pendingSpan.from)} and after ${prettyDateShort(pendingSpan.to)}`;
+      else if (before)      where = `before ${prettyDateShort(pendingSpan.from)}`;
+      else                  where = `after ${prettyDateShort(pendingSpan.to)}`;
+
+      // Name the end that is actually off-screen, with the year on it: a
+      // backlog is exactly the case where "Sep 15" could be this year or last.
+      // Older time leads when both ends are hidden — that is the one that
+      // holds up a pay run.
+      let edge = '';
+      if (before && pendingSpan.oldest)     edge = `Oldest submitted: ${prettyDate(pendingSpan.oldest)}.`;
+      else if (after && pendingSpan.newest) edge = `Latest submitted: ${prettyDate(pendingSpan.newest)}.`;
+
+      el.innerHTML = `
+        <div class="backlog-text">${hidden} pending ${entries} outside this date range — ${where}.
+          <span class="backlog-sub">Not counted in Awaiting Review or the Pending Review tab. ${escapeHtml(edge)}</span>
+        </div>
+        <button class="backlog-btn" onclick="showHiddenPending()">Show Them</button>`;
+      el.classList.remove('info');
+      el.classList.add('open');
+    }
+
+    /**
+     * The other half of the notice: the range WAS opened up at load to take in
+     * older unapproved time, and that time is now on screen. Explains the
+     * non-default From date, and goes away by itself the moment anyone changes
+     * it — the check is against the value this page set, so any hand-typed
+     * date, quick range or Reset drops it without needing to be told.
+     */
+    function renderWidenedNote(el, hide) {
+      const fromEl = document.getElementById('flt-from');
+      if (!autoWidened || !fromEl || fromEl.value !== autoWidened) return hide();
+      // Counted off the rows in memory rather than remembered from the load,
+      // so approving one takes it down by one. At zero the reach has done its
+      // job and the bar goes — a wide range with nothing waiting in it needs
+      // no explaining.
+      const monday = ymd(thisWeekMonday());
+      const older  = allEntries.filter(e => e.status === 'submitted' && e.work_date < monday).length;
+      if (!older) return hide();
+      const entries = older === 1 ? 'entry' : 'entries';
+      el.innerHTML = `
+        <div class="backlog-text">Date range opened back to ${prettyDate(autoWidened)}
+          &mdash; ${older} ${entries} from before this week are still awaiting review.
+          <span class="backlog-sub">The default range is the week in progress. It was widened so nothing
+            waiting on approval is off-screen.</span>
+        </div>
+        <button class="backlog-btn" onclick="setRange('current_week')">This Week Only</button>`;
+      el.classList.add('open', 'info');
+    }
+
+    /**
+     * Widens the date range to whichever end the hidden pending time is on and
+     * reloads. Week boundaries are kept — the range starts on a Monday and
+     * ends on a Sunday — because a range cut mid-week makes that week's
+     * overtime read as a floor everywhere downstream.
+     */
+    function showHiddenPending() {
+      if (!pendingSpan) return;
+      const fromEl = document.getElementById('flt-from');
+      const toEl   = document.getElementById('flt-to');
+      if (pendingSpan.before && pendingSpan.oldest) {
+        fromEl.value = weekStartOf(pendingSpan.oldest) || pendingSpan.oldest;
+      }
+      if (pendingSpan.after && pendingSpan.newest) {
+        const start = weekStartOf(pendingSpan.newest);
+        toEl.value  = start ? weekEndOf(start) : pendingSpan.newest;
+      }
+      applyFilters();
+    }
+
     async function applyFilters() {
       // Claim the display before anything else, including for the Audit Log
       // branch below: moving to that tab means an entries request still in
@@ -3518,6 +3794,17 @@
       if (from)     params.set('from',     from);
       if (to)       params.set('to',       to);
       if (division) params.set('division', division);
+
+      // Fired alongside the entry list, not after it: it answers a different
+      // question (what is OUTSIDE this range) and the grid must not wait on
+      // it. Sequenced on its own counter for the same reason the list is —
+      // a slow answer for an old range must not draw a notice over a new one.
+      const spanSeq = ++pendingSpanSeq;
+      fetchPendingSpan(from, to, division).then(span => {
+        if (spanSeq !== pendingSpanSeq) return;
+        pendingSpan = span;
+        renderBacklogNote();
+      });
 
       const tbody = document.getElementById('rowsBody');
       tbody.innerHTML = '<tr class="empty-row"><td colspan="16">Loading…</td></tr>';
@@ -3614,6 +3901,10 @@
       // on whichever tab is open rather than rendering an empty grid or a
       // zeroed report, which both read as "the server answered, and the answer
       // was none".
+      // Redrawn on every render, not only when the span answer arrives: a
+      // failed load must take the notice with it, and a tab switch changes
+      // whether the question applies at all.
+      renderBacklogNote();
       if (entriesLoadError) { renderLoadError(); return; }
       if (currentTab === 'reports') {
         if (reportSubTab === 'projects') renderProjectsReport();
@@ -7299,6 +7590,10 @@
       document.getElementById('stat-submitted').textContent = s;
       document.getElementById('stat-approved').textContent  = a;
       document.getElementById('stat-hours').textContent     = hours.toFixed(2);
+      // The backlog notice counts the same rows from the other side. Approving
+      // one row re-renders through here without going near filterAndRender,
+      // so this is where the two are kept in step.
+      renderBacklogNote();
     }
 
     // Hours-mismatch detector — flags on-site hours that diverge on the SAME job
