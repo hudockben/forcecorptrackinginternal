@@ -51,10 +51,9 @@ const REGIONS = [
 
 const REGION_LABELS = REGIONS.map(r => r.label);
 
-// How far back a pull looks. Ten days covers a missed week of crons and still
-// reads as "recent" in an email; beyond that an opener sounds stale, and a
-// wider window is more scoreboard for the model to sift inside a fixed budget.
-const LOOKBACK_DAYS = 10;
+// How far back a pull looks. A fortnight covers a missed week of crons and
+// still reads as "recent" in an email; beyond that an opener sounds stale.
+const LOOKBACK_DAYS = 14;
 
 // Items kept in the hub. Past this, the tab is a scroll rather than a list.
 const MAX_ITEMS   = 150;
@@ -63,31 +62,35 @@ const RETAIN_DAYS = 45;
 /**
  * Searches per region, and results asked for.
  *
- * These are a latency budget, not a taste preference. The function this runs
- * in is killed at 60 seconds, and every search plus every line of JSON spends
- * some of that — five searches and twenty results did not fit, and a request
- * that does not fit returns a gateway error with nothing written, which is
- * strictly worse than eight good games. Three searches and ten results land
- * inside the budget with room to spare; the cron running daily and the merge
- * being additive is what makes a smaller pull add up to a full hub.
+ * These were cut to three and ten while the functions ran under a 60-second
+ * ceiling, which a fuller pull could not fit inside — and a request that does
+ * not fit returns a gateway error having written nothing. vercel.json now
+ * gives these three functions 300 seconds, so the budget is no longer what
+ * decides the size of a pull: five searches and twenty results is a weekend's
+ * scoreboard rather than a sample of one, and it fits several times over.
+ *
+ * Keep them in step with the deadlines if they grow again. The deadlines
+ * (DEADLINE_MS here, TIME_BUDGET_MS in the cron) are what keep an overrun a
+ * sentence on screen instead of a bodiless 504.
  */
-const MAX_SEARCHES = 3;
-const MAX_RESULTS   = 10;
+const MAX_SEARCHES = 5;
+const MAX_RESULTS   = 20;
 
 const MODEL = 'claude-opus-5';
 
 /**
- * Low effort, deliberately.
+ * Medium effort.
  *
- * This is an extraction job — read a scoreboard, write the line — not a
- * reasoning one, and on Claude Opus 5 effort is the lever that decides how
- * long a turn takes. At the default the model deliberates over which games to
- * include and runs past the function's ceiling; at low it searches, formats,
- * and returns. The accuracy that matters here is enforced by the prompt's
- * "drop anything you cannot source" rule and by cleanItems, not by thinking
- * harder about a box score.
+ * Effort is the lever that decides how long a turn takes on Claude Opus 5,
+ * and this sat at low only because the old 60-second ceiling left no room for
+ * anything else. With 300 seconds the choice can be made on merit: medium
+ * buys real judgement about which of twenty games is worth a line and which
+ * source to believe, without the full deliberation the default spends on what
+ * is still, underneath, reading a scoreboard. The rule that keeps it honest
+ * is unchanged — drop anything you cannot source, enforced again in
+ * cleanItems — and that is not a thing more thinking would improve.
  */
-const EFFORT = 'low';
+const EFFORT = 'medium';
 
 /**
  * Anthropic's current web search tool. The dated `_20260209` variant does its
@@ -133,7 +136,7 @@ function buildPrompt(region, today, lookbackDays) {
 
 Find games played between ${isoDay(since)} and ${isoDay(today)}. Cover football, soccer, baseball, softball, field hockey, lacrosse and track — the sports played on a field. Prefer schools big enough to have their own athletic field.
 
-Work quickly: at most ${MAX_SEARCHES} searches, then write the answer from what you found. Return up to ${MAX_RESULTS} games — the best-sourced ones. Do not keep searching for more. For each one, write ONE plain sentence a salesperson could open an email with, modelled exactly on this: "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25." — and also break the result out into its parts, so it can be shown as a scoreboard.
+Use at most ${MAX_SEARCHES} searches, then write the answer from what you found. Return up to ${MAX_RESULTS} games — the best-sourced ones, and prefer breadth across schools over several games from the same one. For each one, write ONE plain sentence a salesperson could open an email with, modelled exactly on this: "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25." — and also break the result out into its parts, so it can be shown as a scoreboard.
 
 Rules that matter more than coverage:
 - Only include a game you actually found a source for. If you cannot source the score, leave the game out. A wrong score in an outreach email is worse than no email.
@@ -288,7 +291,7 @@ async function pullNews(client, opts = {}) {
     try {
       message = await client.messages.create({
         model:      MODEL,
-        max_tokens: 4000,
+        max_tokens: 8000,
         ...(effort ? { output_config: { effort } } : {}),
         tools,
         messages,

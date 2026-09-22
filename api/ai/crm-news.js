@@ -26,10 +26,19 @@ const NEWS_KEY = 'fct_crm_news';
 // recently returns the stored hub untouched.
 const MIN_REFRESH_MS = 3 * 60 * 1000;
 
-// Vercel kills this function at maxDuration (60s, set in vercel.json) and the
-// caller gets a bodiless 504. Stopping first leaves the handler alive to say
-// so — and to leave the stored hub exactly where it was.
-const DEADLINE_MS = 45000;
+/**
+ * Stop before the platform does.
+ *
+ * vercel.json gives this function 300 seconds; overrunning that means the
+ * invocation is killed mid-flight and the caller gets a bodiless 504, with no
+ * chance to say what happened. But the ceiling is not the right deadline
+ * either: a person is watching a spinner, and three regions at five minutes
+ * each is not a refresh, it is an outage with a progress bar. Two and a half
+ * minutes is several times what a region needs and still bounded by patience
+ * rather than by the platform. The cron, which nobody is waiting on, gets the
+ * longer budget.
+ */
+const DEADLINE_MS = 150000;
 
 async function readHub(sql, scopedKey) {
   try {

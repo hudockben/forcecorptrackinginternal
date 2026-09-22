@@ -252,10 +252,8 @@ console.log('\nPer-region pulls');
   assert('the prompt names its own region',   prompt.includes('Western Pennsylvania'));
   assert('the prompt names no other region',  !prompt.includes('Eastern Ohio') && !prompt.includes('Western New York'));
   assert('the prompt asks for the score parts', prompt.includes('winner_score') && prompt.includes('loser_score'));
-  // These two are a latency budget, not a preference — see the note in
-  // api/lib/crm-news.js. Raising either is what put the pull over 60 seconds.
-  assert('three searches per region', news.MAX_SEARCHES === 3);
-  assert('ten results per region',    news.MAX_RESULTS === 10);
+  assert('five searches per region', news.MAX_SEARCHES === 5);
+  assert('twenty results per region', news.MAX_RESULTS === 20);
 
   // The region tag comes from which call this was, not from the model: it is
   // the one field already known for certain, and the tab filters on it.
@@ -286,7 +284,28 @@ console.log('\nPer-region pulls');
   const starts = new Set([0, 1, 2].map(n =>
     cron.dayIndex(new Date(Date.UTC(2026, 8, 22 + n))) % news.REGIONS.length));
   assert('three consecutive days start on three different regions', starts.size === 3);
-  assert('the cron stops before the platform does', cron.TIME_BUDGET_MS < 60000);
+  // The budget has to leave room for the region in flight to finish and be
+  // written to every company, so it is well under the ceiling, not just under.
+  const vercel = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));
+  const cap    = f => (vercel.functions[f] || {}).maxDuration;
+  assert('the cron has the raised ceiling', cap('api/cron/crm-news.js') === 300);
+  assert('the pull endpoint has it too',    cap('api/ai/crm-news.js') === 300);
+  assert('so does AI Search',               cap('api/ai/crm-search.js') === 300);
+  assert('the cron stops well before the platform does',
+    cron.TIME_BUDGET_MS < cap('api/cron/crm-news.js') * 1000 * 0.9,
+    `${cron.TIME_BUDGET_MS}ms vs ${cap('api/cron/crm-news.js')}s`);
+
+  // The same invariant one layer up: a deadline above the ceiling would never
+  // fire, and the bodiless 504 it exists to prevent would come back.
+  const endpoint = fs.readFileSync(path.join(ROOT, 'api', 'ai', 'crm-news.js'), 'utf8');
+  const deadline = Number((endpoint.match(/const DEADLINE_MS\s*=\s*(\d+)/) || [])[1]);
+  assert('the endpoint deadline is under its ceiling',
+    deadline > 0 && deadline < cap('api/ai/crm-news.js') * 1000, `${deadline}ms`);
+
+  // And the browser's backstop must sit above the server's deadline, or it
+  // would cut off answers that were on their way.
+  const backstop = Number((SRC.match(/ctl\.abort\(\), (\d+)\)/) || [])[1]);
+  assert('the tab waits longer than the server takes', backstop > deadline, `${backstop}ms vs ${deadline}ms`);
 }
 
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
@@ -366,11 +385,12 @@ async function latencyBudget() {
     const c = fake(() => reply(body));
     const out = await news.pullNews(c, { region: 'wpa', today });
     const req = c.calls[0];
-    assert('the pull asks for at most three searches', req.tools[0].max_uses === 3, String(req.tools[0].max_uses));
-    assert('the pull runs at low effort', req.output_config && req.output_config.effort === 'low',
+    assert('the pull asks for five searches', req.tools[0].max_uses === 5, String(req.tools[0].max_uses));
+    assert('the pull runs at medium effort', req.output_config && req.output_config.effort === 'medium',
       JSON.stringify(req.output_config));
     assert('the pull uses the current search tool', req.tools[0].type === 'web_search_20260209');
-    assert('the prompt caps the result count', /at most 3 searches/.test(req.messages[0].content));
+    assert('the prompt caps the searches',     /at most 5 searches/.test(req.messages[0].content));
+    assert('the prompt caps the result count',  /up to 20 games/.test(req.messages[0].content));
     assert('the reply is parsed into items', out.items.length === 1 && out.items[0].winner === 'Indiana');
     assert('the item is tagged with the region asked for', out.items[0].region === 'Western PA');
   }

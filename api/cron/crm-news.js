@@ -9,12 +9,12 @@
  * separate search per tenant.
  *
  * It works through the regions until the clock runs out, and starts at a
- * different one each day. A region's search is slow enough that three of them
- * do not reliably fit in the 60 seconds the platform allows, and a function
- * killed at its ceiling writes nothing at all — so this stops early on
- * purpose, and the rotation means the region that got cut yesterday is the
- * one that goes first today. Items live for weeks and every write merges, so
- * a hub filled over two mornings is the same hub.
+ * different one each day. All three now fit comfortably in the budget, so the
+ * rotation is insurance rather than the plan: a function killed at its
+ * ceiling writes nothing at all, so this stops early on purpose, and if a
+ * slow night ever does cut a region short, the one that got cut is the one
+ * that goes first tomorrow. Items live for weeks and every write merges, so a
+ * hub filled over two mornings is the same hub.
  *
  * Idempotent by construction. Items carry an id derived from their date and
  * headline, and the write merges on that id, so a cron that fires twice, a
@@ -31,10 +31,14 @@ const news = require('../lib/crm-news');
 
 const NEWS_KEY = 'fct_crm_news';
 
-// Vercel kills the function at maxDuration (60s, set in vercel.json). Stop
-// well before that: the region being searched must be able to finish and be
-// written, and a region that starts at 45s will not.
-const TIME_BUDGET_MS = 40000;
+// Vercel kills the function at maxDuration (300s, set in vercel.json). Stop
+// well before that: the region being searched must be able to finish AND be
+// written to every company, and a region that starts at 290s will not. Four
+// minutes fits all three regions several times over.
+const TIME_BUDGET_MS = 240000;
+
+// Below this there is no point starting another region — see the loop.
+const MIN_REGION_MS = 45000;
 
 /** Day of the year — rotates which region the run starts with. */
 function dayIndex(today) {
@@ -95,11 +99,14 @@ async function runNewsPull(sql, client, opts = {}) {
   for (const region of ordered) {
     // Checked between regions, never inside one: a region half-searched is a
     // region that wrote nothing, and the time it spent is gone either way.
-    if (Date.now() - started > budget) { result.skipped.push(region.key); continue; }
+    // A region needs a real window to be worth starting — handing it the
+    // eight seconds left on the clock only buys a deadline error where the
+    // truthful answer is that it was skipped.
+    const left = budget - (Date.now() - started);
+    if (left < MIN_REGION_MS) { result.skipped.push(region.key); continue; }
     try {
       // Each region gets what is left of the budget, so one slow search
       // cannot take the whole night's run down with it.
-      const left = Math.max(5000, budget - (Date.now() - started));
       const { items, searchError } = await news.withDeadline(
         news.pullNews(client, { region: region.key, today }), left);
       result.regions.push({ region: region.key, found: items.length, ...(searchError ? { searchError } : {}) });
@@ -151,3 +158,4 @@ module.exports.runNewsPull    = runNewsPull;
 module.exports.dayIndex       = dayIndex;
 module.exports.NEWS_KEY       = NEWS_KEY;
 module.exports.TIME_BUDGET_MS = TIME_BUDGET_MS;
+module.exports.MIN_REGION_MS  = MIN_REGION_MS;
