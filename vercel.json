@@ -23,6 +23,21 @@
       "memory": 1024,
       "maxDuration": 60
     },
+    "api/ai/crm-news.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 60
+    },
+    "api/ai/crm-search.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 60
+    },
+    "api/cron/crm-news.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 60
+    },
     "api/**/*.js": {
       "includeFiles": "api/**"
     }
@@ -31,6 +46,10 @@
     {
       "path": "/api/cron/job-snapshot",
       "schedule": "20 7 * * *"
+    },
+    {
+      "path": "/api/cron/crm-news",
+      "schedule": "0 10 * * *"
     }
   ],
   "headers": [

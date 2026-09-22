@@ -124,6 +124,10 @@
     .crm-sub-bar {
       display: flex;
       align-items: stretch;
+      /* Seven tabs plus Lucius overflow a narrow window; scrolling the bar
+         keeps every tab reachable without wrapping the sticky header. */
+      overflow-x: auto;
+      scrollbar-width: thin;
       padding: 0 1.25rem;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
@@ -2915,15 +2919,21 @@
 
   <!-- CRM sub-tab nav -->
   <div class="crm-sub-bar">
-    <button class="crm-sub-btn active" data-crm-tab="dashboard">CRM Dashboard</button>
+    <button class="crm-sub-btn active" data-crm-tab="news">News Center</button>
+    <button class="crm-sub-btn"        data-crm-tab="dashboard">CRM Dashboard</button>
     <button class="crm-sub-btn"        data-crm-tab="people">People</button>
     <button class="crm-sub-btn"        data-crm-tab="companies">Companies</button>
     <button class="crm-sub-btn"        data-crm-tab="opportunities">Opportunities</button>
+    <button class="crm-sub-btn"        data-crm-tab="search">AI Search</button>
+    <button class="crm-sub-btn"        data-crm-tab="reports">Reports</button>
     <button class="crm-sub-btn"        data-crm-tab="lucius">Lucius</button>
   </div>
 
   <!-- CRM sub-panels -->
-  <div class="crm-sub-panel active" id="crm-panel-dashboard">
+  <div class="crm-sub-panel active" id="crm-panel-news">
+    <div id="crm-news-root" style="padding:1.25rem 1rem"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-dashboard">
     <div id="crm-dashboard-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
   </div>
   <div class="crm-sub-panel" id="crm-panel-people">
@@ -2934,6 +2944,12 @@
   </div>
   <div class="crm-sub-panel" id="crm-panel-opportunities">
     <div id="crm-opportunities-root" style="padding:1.25rem 1rem"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-search">
+    <div id="crm-search-root" style="padding:1.25rem 1rem"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-reports">
+    <div id="crm-reports-root" style="padding:1.25rem 1rem"></div>
   </div>
 
   <div class="crm-sub-panel" id="crm-panel-lucius">
@@ -4740,10 +4756,13 @@ function crmSwitchTab(tab) {
     b.classList.toggle('active', b.dataset.crmTab === tab));
   document.querySelectorAll('.crm-sub-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'crm-panel-' + tab));
+  if (tab === 'news')          renderCrmNewsTab();
   if (tab === 'dashboard')     renderCrmDashboard();
   if (tab === 'people')        renderCrmPeopleTab();
   if (tab === 'companies')     renderCrmCompaniesTab();
   if (tab === 'opportunities') renderCrmOpportunitiesTab();
+  if (tab === 'search')        renderCrmSearchTab();
+  if (tab === 'reports')       renderCrmReportsTab();
   if (tab === 'lucius')        initLuciusTab();
 }
 
@@ -6685,11 +6704,11 @@ function saveCrmPeople() { apiPut('fct_crm_people', crmPeople); }
 
 function addCrmPerson() {
   crmPeople.push({
-    id: uid(), tag: '', name: '', company: '',
+    id: uid(), tag: '', lead_contact: '', name: '', company: '',
     work_email: '', title: '', contact_type: '',
     work_phone: '', work_website: '',
     address: '', city: '', state: '', zip: '',
-    linkedin: '', description: ''
+    linkedin: '', personal_interest: '', turf_product: '', description: ''
   });
   saveCrmPeople();
   renderCrmPeopleTab();
@@ -6770,89 +6789,69 @@ function _crmLinkInp(p, field, ph = '', isEmail = false) {
   </div>`;
 }
 
+/* Columns are declared, not written out — the header, the filter box, the
+   editable cell, the CSV column and the sort all come from this one list, so a
+   new field is one entry here rather than five edits that must agree. */
+const _CRM_PEOPLE_COLS = [
+  { f: 'tag',               label: 'Tag',               w: 5,   cell: p => _crmTagSel(p) },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: p => _crmInp(p, 'lead_contact',      'Who knows them') },
+  { f: 'name',              label: 'Name',              w: 6.5, cell: p => _crmInp(p, 'name',              'Name') },
+  { f: 'company',           label: 'Company',           w: 7,   cell: p => _crmInp(p, 'company',           'Company') },
+  { f: 'work_email',        label: 'Work Email',        w: 7,   cell: p => _crmLinkInp(p, 'work_email',    'email@…', true) },
+  { f: 'title',             label: 'Title',             w: 5.5, cell: p => _crmInp(p, 'title',             'Title') },
+  { f: 'contact_type',      label: 'Contact Type',      w: 5.5, cell: p => _crmInp(p, 'contact_type',      'Type') },
+  { f: 'work_phone',        label: 'Work Phone',        w: 6,   cell: p => _crmInp(p, 'work_phone',        'Phone') },
+  { f: 'work_website',      label: 'Work Website',      w: 6,   cell: p => _crmLinkInp(p, 'work_website',  'https://') },
+  { f: 'address',           label: 'Address',           w: 6,   cell: p => _crmInp(p, 'address',           'Address') },
+  { f: 'city',              label: 'City',              w: 5,   cell: p => _crmInp(p, 'city',              'City') },
+  { f: 'state',             label: 'State',             w: 3.5, cell: p => _crmStateSel(p) },
+  { f: 'zip',               label: 'Zip',               w: 3.5, cell: p => _crmInp(p, 'zip',               'Zip') },
+  { f: 'linkedin',          label: 'LinkedIn',          w: 5,   cell: p => _crmLinkInp(p, 'linkedin',      'LinkedIn URL') },
+  { f: 'personal_interest', label: 'Personal Interest', w: 6,   cell: p => _crmInp(p, 'personal_interest', 'Golf, Steelers…') },
+  { f: 'turf_product',      label: 'Turf Product',      w: 6,   cell: p => _crmInp(p, 'turf_product',      'Product') },
+  { f: 'description',       label: 'Description',       w: 6,   cell: p => _crmInp(p, 'description',       'Description') },
+];
+
 function renderCrmPeopleTab() {
   const root = document.getElementById('crm-people-root');
   if (!root) return;
-
-  const thS = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem;color:var(--muted);
-               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               overflow:hidden;text-overflow:ellipsis;
-               border-bottom:1px solid var(--border);background:var(--surface2)`;
-  const th = label => `<th style="${thS}">${label}</th>`;
-  const fi = f => {
-    const v = _crmPeopleFilter[f] || '';
-    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
-      <input type="text" value="${esc(v)}" data-crm-pf="${f}" placeholder="…"
-        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
-               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
-               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
-    </th>`;
-  };
-  const td = content =>
-    `<td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);
-               vertical-align:middle;overflow:hidden">${content}</td>`;
 
   const visible    = _crmApplyFilter(crmPeople, _crmPeopleFilter);
   const isFiltered = visible.length !== crmPeople.length;
   const anyFilter  = Object.values(_crmPeopleFilter).some(v => v);
 
-  const rows = visible.length
-    ? visible.map(p => `<tr>
-        ${td(_crmTagSel(p))}
-        ${td(_crmInp(p, 'name',         'Name'))}
-        ${td(_crmInp(p, 'company',      'Company'))}
-        ${td(_crmLinkInp(p, 'work_email',   'email@…', true))}
-        ${td(_crmInp(p, 'title',        'Title'))}
-        ${td(_crmInp(p, 'contact_type', 'Type'))}
-        ${td(_crmInp(p, 'work_phone',   'Phone'))}
-        ${td(_crmLinkInp(p, 'work_website', 'https://'))}
-        ${td(_crmInp(p, 'address',      'Address'))}
-        ${td(_crmInp(p, 'city',         'City'))}
-        ${td(_crmStateSel(p))}
-        ${td(_crmInp(p, 'zip',          'Zip'))}
-        ${td(_crmLinkInp(p, 'linkedin',     'LinkedIn URL'))}
-        ${td(_crmInp(p, 'description',  'Description'))}
-        <td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
-          <button class="del-btn" data-crm-person-id="${p.id}">✕</button>
-        </td>
-      </tr>`).join('')
-    : `<tr><td colspan="15" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         ${isFiltered ? 'No contacts match the current filters.' : 'No contacts yet — click <strong style="color:var(--text)">+ Add Person</strong> to start.'}
-       </td></tr>`;
+  const actions = p => `
+    <td style="padding:0.25rem 0.15rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <button onclick="crmPersonToOpportunity('${p.id}')" title="Create an opportunity from this contact"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--blue);
+               border-radius:3px;font-size:0.72rem;padding:0.1rem 0.3rem;cursor:pointer">→</button>
+    </td>
+    <td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <button class="del-btn" data-crm-person-id="${p.id}">✕</button>
+    </td>`;
 
   root.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;gap:0.75rem;flex-wrap:wrap">
       <span style="font-size:0.82rem;color:var(--muted)">
         ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmPeople.length} contact${crmPeople.length !== 1 ? 's' : ''}
         ${anyFilter ? `<button onclick="_crmClearFilter('people')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
+        ${_crmToolButtons(
+          `_crmExportCsv('crm-people', _CRM_PEOPLE_COLS, _crmApplyFilter(crmPeople, _crmPeopleFilter), 'people')`,
+          `_crmPrintReport('People','CRM contacts', _CRM_PEOPLE_COLS, _crmApplyFilter(crmPeople, _crmPeopleFilter), 'people')`)}
         <button class="btn" onclick="_crmTriggerUpload('people')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
         <button class="btn btn-green" onclick="addCrmPerson()">+ Add Person</button>
       </div>
     </div>
-    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
-      <table style="width:100%;min-width:1300px;table-layout:fixed;border-collapse:collapse;font-size:0.82rem">
-        <colgroup><col style="width:6.5%"><col style="width:8%"><col style="width:8.5%"><col style="width:9%"><col style="width:7.5%"><col style="width:7%"><col style="width:8%"><col style="width:8%"><col style="width:9%"><col style="width:6%"><col style="width:4.5%"><col style="width:4.5%"><col style="width:6%"><col style="width:5%"><col style="width:2.5%"></colgroup>
-        <thead>
-          <tr>
-            ${th('Tag')}${th('Name')}${th('Company')}${th('Work Email')}
-            ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
-            ${th('Address')}${th('City')}${th('State')}${th('Zip')}
-            ${th('LinkedIn')}${th('Description')}
-            <th style="${thS}"></th>
-          </tr>
-          <tr>
-            ${fi('tag')}${fi('name')}${fi('company')}${fi('work_email')}
-            ${fi('title')}${fi('contact_type')}${fi('work_phone')}${fi('work_website')}
-            ${fi('address')}${fi('city')}${fi('state')}${fi('zip')}
-            ${fi('linkedin')}${fi('description')}
-            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    ${_crmTable({
+      table: 'people', cols: _CRM_PEOPLE_COLS, rows: visible,
+      filter: _crmPeopleFilter, filterAttr: 'crm-pf',
+      actions, actionCols: [2.5, 2], minWidth: 1700,
+      empty: isFiltered
+        ? 'No contacts match the current filters.'
+        : 'No contacts yet — click <strong style="color:var(--text)">+ Add Person</strong> to start.',
+    })}`;
 }
 
 /* ═══════════════════════════════════════════
@@ -6871,12 +6870,14 @@ function saveCrmCompanies() { apiPut('fct_crm_companies', crmCompanies); }
 
 function addCrmCompany() {
   crmCompanies.push({
-    id: uid(), tag: '', company_name: '', contact_type: '',
+    id: uid(), tag: '', lead_contact: '', company_name: '', contact_type: '',
     work_phone: '', email_domain: '', work_website: '',
     address: '', city: '', state: '', zip: '',
-    field_type: '', field_size: ''
+    field_type: '', field_size: '',
+    personal_interest: '', turf_product: ''
   });
   saveCrmCompanies();
+  _crmCompaniesView = 'companies';   // show the row that was just added
   renderCrmCompaniesTab();
 }
 
@@ -6887,85 +6888,102 @@ function deleteCrmCompany(id) {
   renderCrmCompaniesTab();
 }
 
+const _CRM_COMPANY_COLS = [
+  { f: 'tag',               label: 'Tag',               w: 5,   cell: c => _crmTagSel(c) },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: c => _crmInp(c, 'lead_contact',      'Who knows them') },
+  { f: 'company_name',      label: 'Company Name',      w: 10,  cell: c => _crmInp(c, 'company_name',      'Company Name') },
+  { f: 'contact_type',      label: 'Contact Type',      w: 5.5, cell: c => _crmInp(c, 'contact_type',      'Type') },
+  { f: 'work_phone',        label: 'Work Phone',        w: 6,   cell: c => _crmInp(c, 'work_phone',        'Phone') },
+  { f: 'email_domain',      label: 'Email Domain',      w: 7,   cell: c => _crmInp(c, 'email_domain',      'company.com') },
+  { f: 'work_website',      label: 'Work Website',      w: 6.5, cell: c => _crmLinkInp(c, 'work_website',  'https://') },
+  { f: 'address',           label: 'Address',           w: 7.5, cell: c => _crmInp(c, 'address',           'Address') },
+  { f: 'city',              label: 'City',              w: 5,   cell: c => _crmInp(c, 'city',              'City') },
+  { f: 'state',             label: 'State',             w: 3.5, cell: c => _crmStateSel(c) },
+  { f: 'zip',               label: 'Zip',               w: 3.5, cell: c => _crmInp(c, 'zip',               'Zip') },
+  { f: 'field_type',        label: 'Field Type',        w: 5.5, cell: c => _crmInp(c, 'field_type',        'Field Type') },
+  { f: 'field_size',        label: 'Field Size',        w: 5,   cell: c => _crmInp(c, 'field_size',        'Field Size') },
+  { f: 'personal_interest', label: 'Personal Interest', w: 6.5, cell: c => _crmInp(c, 'personal_interest', 'Golf, Steelers…') },
+  { f: 'turf_product',      label: 'Turf Product',      w: 6,   cell: c => _crmInp(c, 'turf_product',      'Product') },
+  // Not editable here: it counts the Fields list, and clicking it goes there.
+  { f: '_fields',           label: 'Fields',            w: 6,   filter: false,
+    text: c => String(_crmFieldsFor(c).length),
+    cell: c => {
+      const n = _crmFieldsFor(c).length;
+      const oldest = _crmFieldsFor(c).reduce((w, f) => {
+        const a = _crmFieldAge(f);
+        return a != null && (w == null || a > w.age) ? { age: a, f } : w;
+      }, null);
+      const b = oldest ? _crmBucketForAge(oldest.age) : null;
+      return `<button onclick="_crmShowFieldsFor('${c.id}')" title="${n ? 'Show this company\'s fields' : 'Add a field for this company'}"
+        style="background:${b ? b.color : 'var(--surface2)'};color:${b ? '#fff' : 'var(--muted)'};
+               border:1px solid ${b ? b.color : 'var(--border)'};border-radius:10px;
+               padding:0.1rem 0.45rem;font-size:0.68rem;font-weight:600;cursor:pointer;white-space:nowrap">
+        ${n ? `${n} field${n === 1 ? '' : 's'}` : '+ field'}</button>`;
+    } },
+];
+
+/** The fields belonging to a company — matched by id, or by name for imports. */
+function _crmFieldsFor(c) {
+  if (!c) return [];
+  const name = String(c.company_name || '').trim().toLowerCase();
+  return crmFields.filter(f =>
+    f.company_id === c.id || (name && String(f.company_name || '').trim().toLowerCase() === name));
+}
+
+/** Jump from a company row to that company's fields. */
+function _crmShowFieldsFor(companyId) {
+  const c = crmCompanies.find(x => x.id === companyId);
+  if (!c) return;
+  if (!_crmFieldsFor(c).length) { addCrmField(companyId); return; }
+  _crmFieldFilter = { company_name: c.company_name || '' };
+  _crmCompaniesView = 'fields';
+  renderCrmCompaniesTab();
+}
+
 function renderCrmCompaniesTab() {
   const root = document.getElementById('crm-companies-root');
   if (!root) return;
 
-  const thS = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem;color:var(--muted);
-               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               overflow:hidden;text-overflow:ellipsis;
-               border-bottom:1px solid var(--border);background:var(--surface2)`;
-  const th = label => `<th style="${thS}">${label}</th>`;
-  const fi = f => {
-    const v = _crmCompanyFilter[f] || '';
-    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
-      <input type="text" value="${esc(v)}" data-crm-cf="${f}" placeholder="…"
-        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
-               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
-               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
-    </th>`;
-  };
-  const td = content =>
-    `<td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);
-               vertical-align:middle;overflow:hidden">${content}</td>`;
+  // The Fields view lives in this tab, behind the toggle bar.
+  if (_crmCompaniesView === 'fields') { renderCrmFieldsView(root); return; }
 
   const visible    = _crmApplyFilter(crmCompanies, _crmCompanyFilter);
   const isFiltered = visible.length !== crmCompanies.length;
   const anyFilter  = Object.values(_crmCompanyFilter).some(v => v);
 
-  const rows = visible.length
-    ? visible.map(c => `<tr>
-        ${td(_crmTagSel(c))}
-        ${td(_crmInp(c, 'company_name',  'Company Name'))}
-        ${td(_crmInp(c, 'contact_type',  'Type'))}
-        ${td(_crmInp(c, 'work_phone',    'Phone'))}
-        ${td(_crmInp(c, 'email_domain',  'company.com'))}
-        ${td(_crmLinkInp(c, 'work_website', 'https://'))}
-        ${td(_crmInp(c, 'address',       'Address'))}
-        ${td(_crmInp(c, 'city',          'City'))}
-        ${td(_crmStateSel(c))}
-        ${td(_crmInp(c, 'zip',           'Zip'))}
-        ${td(_crmInp(c, 'field_type',    'Field Type'))}
-        ${td(_crmInp(c, 'field_size',    'Field Size'))}
-        <td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
-          <button class="del-btn" data-crm-company-id="${c.id}">✕</button>
-        </td>
-      </tr>`).join('')
-    : `<tr><td colspan="13" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         ${isFiltered ? 'No companies match the current filters.' : 'No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.'}
-       </td></tr>`;
+  const actions = c => `
+    <td style="padding:0.25rem 0.15rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <button onclick="crmCompanyToOpportunity('${c.id}')" title="Create an opportunity from this company"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--blue);
+               border-radius:3px;font-size:0.72rem;padding:0.1rem 0.3rem;cursor:pointer">→</button>
+    </td>
+    <td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <button class="del-btn" data-crm-company-id="${c.id}">✕</button>
+    </td>`;
 
   root.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+    ${_crmCompaniesViewBar()}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;gap:0.75rem;flex-wrap:wrap">
       <span style="font-size:0.82rem;color:var(--muted)">
         ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmCompanies.length} compan${crmCompanies.length !== 1 ? 'ies' : 'y'}
         ${anyFilter ? `<button onclick="_crmClearFilter('companies')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
+        ${_crmToolButtons(
+          `_crmExportCsv('crm-companies', _CRM_COMPANY_COLS, _crmApplyFilter(crmCompanies, _crmCompanyFilter), 'companies')`,
+          `_crmPrintReport('Companies','CRM companies', _CRM_COMPANY_COLS, _crmApplyFilter(crmCompanies, _crmCompanyFilter), 'companies')`)}
         <button class="btn" onclick="_crmTriggerUpload('companies')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
         <button class="btn btn-green" onclick="addCrmCompany()">+ Add Company</button>
       </div>
     </div>
-    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
-      <table style="width:100%;min-width:1080px;table-layout:fixed;border-collapse:collapse;font-size:0.82rem">
-        <colgroup><col style="width:7%"><col style="width:13%"><col style="width:8%"><col style="width:8.5%"><col style="width:9%"><col style="width:9%"><col style="width:11.5%"><col style="width:7%"><col style="width:5%"><col style="width:5%"><col style="width:7.5%"><col style="width:7%"><col style="width:2.5%"></colgroup>
-        <thead>
-          <tr>
-            ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
-            ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
-            ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
-            <th style="${thS}"></th>
-          </tr>
-          <tr>
-            ${fi('tag')}${fi('company_name')}${fi('contact_type')}${fi('work_phone')}
-            ${fi('email_domain')}${fi('work_website')}${fi('address')}${fi('city')}
-            ${fi('state')}${fi('zip')}${fi('field_type')}${fi('field_size')}
-            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    ${_crmTable({
+      table: 'companies', cols: _CRM_COMPANY_COLS, rows: visible,
+      filter: _crmCompanyFilter, filterAttr: 'crm-cf',
+      actions, actionCols: [3, 2.5], minWidth: 1600,
+      empty: isFiltered
+        ? 'No companies match the current filters.'
+        : 'No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.',
+    })}`;
 }
 
 /* ═══════════════════════════════════════════
@@ -6984,10 +7002,11 @@ function saveCrmOpportunities() { apiPut('fct_crm_opportunities', crmOpportuniti
 
 function addCrmOpportunity() {
   crmOpportunities.push({
-    id: uid(), tag: '', name: '', company: '',
+    id: uid(), tag: '', lead_contact: '', name: '', company: '',
     stage: '', value: '', close_date: '',
     win_pct: '', status: '', loss_reason: '',
-    priority: '', source: '', description: ''
+    priority: '', source: '',
+    personal_interest: '', turf_product: '', description: ''
   });
   saveCrmOpportunities();
   renderCrmOpportunitiesTab();
@@ -7041,107 +7060,76 @@ function _crmPillSel(o, field, opts, colorMap) {
            cursor:pointer;outline:none;width:100%;min-width:0">${optHTML}</select>`;
 }
 
+function _crmNumInp(o, field, ph = '') {
+  return `<input type="number" value="${esc(o[field] || '')}"
+    data-crm-id="${o.id}" data-crm-field="${field}" placeholder="${ph}" step="any" min="0"
+    style="width:100%;background:transparent;border:none;color:var(--text);
+           font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">`;
+}
+
+function _crmDateInp(o, field) {
+  return `<input type="date" value="${esc(o[field] || '')}"
+    data-crm-id="${o.id}" data-crm-field="${field}"
+    style="width:100%;min-width:0;background:transparent;border:none;color:var(--text);
+           font-size:0.78rem;outline:none;padding:0.15rem 0;cursor:pointer">`;
+}
+
+const _CRM_OPP_COLS = [
+  { f: 'tag',               label: 'Tag',               w: 6,   cell: o => _crmTagSel(o) },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6.5, cell: o => _crmInp(o, 'lead_contact',      'Who knows them') },
+  { f: 'name',              label: 'Name',              w: 8,   cell: o => _crmInp(o, 'name',              'Opportunity name') },
+  { f: 'company',           label: 'Company',           w: 8.5, cell: o => _crmInp(o, 'company',           'Company') },
+  { f: 'stage',             label: 'Stage',             w: 8,   cell: o => _crmPillSel(o, 'stage',    _CRM_STAGES,     _CRM_STAGE_COLORS) },
+  { f: 'value',             label: 'Value',             w: 5.5, cell: o =>
+      `<div style="display:flex;align-items:center;gap:2px;min-width:0">
+         <span style="color:var(--muted);font-size:0.8rem;flex-shrink:0">$</span>${_crmNumInp(o, 'value', '0.00')}</div>` },
+  { f: 'close_date',        label: 'Close Date',        w: 7,   cell: o => _crmDateInp(o, 'close_date') },
+  { f: 'win_pct',           label: 'Win %',             w: 4.5, cell: o =>
+      `<div style="display:flex;align-items:center;gap:2px;min-width:0">
+         ${_crmNumInp(o, 'win_pct', '0')}<span style="color:var(--muted);font-size:0.8rem;flex-shrink:0">%</span></div>` },
+  { f: 'status',            label: 'Status',            w: 6,   cell: o => _crmPillSel(o, 'status',   _CRM_STATUSES,   _CRM_STATUS_COLORS) },
+  { f: 'loss_reason',       label: 'Loss Reason',       w: 6,   cell: o => _crmInp(o, 'loss_reason',       'Reason…') },
+  { f: 'priority',          label: 'Priority',          w: 6.5, cell: o => _crmPillSel(o, 'priority', _CRM_PRIORITIES, _CRM_PRIORITY_COLORS) },
+  { f: 'source',            label: 'Source',            w: 6,   cell: o => _crmInp(o, 'source',            'Source') },
+  { f: 'personal_interest', label: 'Personal Interest', w: 7,   cell: o => _crmInp(o, 'personal_interest', 'Golf, Steelers…') },
+  { f: 'turf_product',      label: 'Turf Product',      w: 6,   cell: o => _crmInp(o, 'turf_product',      'Product') },
+  { f: 'description',       label: 'Description',       w: 6,   cell: o => _crmInp(o, 'description',       'Description') },
+];
+
 function renderCrmOpportunitiesTab() {
   const root = document.getElementById('crm-opportunities-root');
   if (!root) return;
-
-  const thS = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem;color:var(--muted);
-               text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
-               overflow:hidden;text-overflow:ellipsis;
-               border-bottom:1px solid var(--border);background:var(--surface2)`;
-  const th = label => `<th style="${thS}">${label}</th>`;
-  const fi = f => {
-    const v = _crmOppFilter[f] || '';
-    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
-      <input type="text" value="${esc(v)}" data-crm-of="${f}" placeholder="…"
-        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
-               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
-               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
-    </th>`;
-  };
-  const td = content =>
-    `<td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);
-               vertical-align:middle;overflow:hidden">${content}</td>`;
-
-  const numInp = (o, field, ph = '') =>
-    `<input type="number" value="${esc(o[field] || '')}"
-      data-crm-id="${o.id}" data-crm-field="${field}" placeholder="${ph}" step="any" min="0"
-      style="width:100%;background:transparent;border:none;color:var(--text);
-             font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">`;
-
-  const dateInp = (o, field) =>
-    `<input type="date" value="${esc(o[field] || '')}"
-      data-crm-id="${o.id}" data-crm-field="${field}"
-      style="width:100%;min-width:0;background:transparent;border:none;color:var(--text);
-             font-size:0.78rem;outline:none;padding:0.15rem 0;cursor:pointer">`;
 
   const visible    = _crmApplyFilter(crmOpportunities, _crmOppFilter);
   const isFiltered = visible.length !== crmOpportunities.length;
   const anyFilter  = Object.values(_crmOppFilter).some(v => v);
 
-  const rows = visible.length
-    ? visible.map(o => `<tr>
-        ${td(_crmTagSel(o))}
-        ${td(_crmInp(o, 'name',         'Opportunity name'))}
-        ${td(_crmInp(o, 'company',      'Company'))}
-        ${td(_crmPillSel(o, 'stage',    _CRM_STAGES,    _CRM_STAGE_COLORS))}
-        <td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;overflow:hidden">
-          <div style="display:flex;align-items:center;gap:2px;min-width:0">
-            <span style="color:var(--muted);font-size:0.8rem;flex-shrink:0">$</span>
-            ${numInp(o, 'value', '0.00')}
-          </div>
-        </td>
-        ${td(dateInp(o, 'close_date'))}
-        <td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;overflow:hidden">
-          <div style="display:flex;align-items:center;gap:2px;min-width:0">
-            ${numInp(o, 'win_pct', '0')}
-            <span style="color:var(--muted);font-size:0.8rem;flex-shrink:0">%</span>
-          </div>
-        </td>
-        ${td(_crmPillSel(o, 'status',   _CRM_STATUSES,  _CRM_STATUS_COLORS))}
-        ${td(_crmInp(o, 'loss_reason',  'Reason…'))}
-        ${td(_crmPillSel(o, 'priority', _CRM_PRIORITIES, _CRM_PRIORITY_COLORS))}
-        ${td(_crmInp(o, 'source',       'Source'))}
-        ${td(_crmInp(o, 'description',  'Description'))}
-        <td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
-          <button class="del-btn" data-crm-opp-id="${o.id}">✕</button>
-        </td>
-      </tr>`).join('')
-    : `<tr><td colspan="13" style="padding:2.5rem;text-align:center;color:var(--muted)">
-         ${isFiltered ? 'No opportunities match the current filters.' : 'No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.'}
-       </td></tr>`;
+  const actions = o => `<td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <button class="del-btn" data-crm-opp-id="${o.id}">✕</button>
+    </td>`;
 
   root.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;gap:0.75rem;flex-wrap:wrap">
       <span style="font-size:0.82rem;color:var(--muted)">
         ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmOpportunities.length} opportunit${crmOpportunities.length !== 1 ? 'ies' : 'y'}
         ${anyFilter ? `<button onclick="_crmClearFilter('opportunities')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
+        ${_crmToolButtons(
+          `_crmExportCsv('crm-opportunities', _CRM_OPP_COLS, _crmApplyFilter(crmOpportunities, _crmOppFilter), 'opportunities')`,
+          `_crmPrintReport('Opportunities','CRM pipeline', _CRM_OPP_COLS, _crmApplyFilter(crmOpportunities, _crmOppFilter), 'opportunities')`)}
         <button class="btn" onclick="_crmTriggerUpload('opportunities')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
         <button class="btn btn-green" onclick="addCrmOpportunity()">+ Add Opportunity</button>
       </div>
     </div>
-    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
-      <table style="width:100%;min-width:1080px;table-layout:fixed;border-collapse:collapse;font-size:0.82rem">
-        <colgroup><col style="width:7.5%"><col style="width:10.5%"><col style="width:11%"><col style="width:9.5%"><col style="width:5.5%"><col style="width:9%"><col style="width:5%"><col style="width:6.5%"><col style="width:6%"><col style="width:7.5%"><col style="width:9.5%"><col style="width:10%"><col style="width:2.5%"></colgroup>
-        <thead>
-          <tr>
-            ${th('Tag')}${th('Name')}${th('Company')}${th('Stage')}${th('Value')}
-            ${th('Close Date')}${th('Win %')}${th('Status')}${th('Loss Reason')}
-            ${th('Priority')}${th('Source')}${th('Description')}
-            <th style="${thS}"></th>
-          </tr>
-          <tr>
-            ${fi('tag')}${fi('name')}${fi('company')}${fi('stage')}${fi('value')}
-            ${fi('close_date')}${fi('win_pct')}${fi('status')}${fi('loss_reason')}
-            ${fi('priority')}${fi('source')}${fi('description')}
-            <th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    ${_crmTable({
+      table: 'opportunities', cols: _CRM_OPP_COLS, rows: visible,
+      filter: _crmOppFilter, filterAttr: 'crm-of',
+      actions, actionCols: [2.5], minWidth: 1600,
+      empty: isFiltered
+        ? 'No opportunities match the current filters.'
+        : 'No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.',
+    })}`;
 }
 
 /* ═══════════════════════════════════════════
@@ -7377,9 +7365,45 @@ function renderCrmDashboard() {
         </div>`).join('')
     : `<p style="color:var(--muted);font-size:0.8rem;margin:0">No source data yet.</p>`;
 
+  /* ── field age buckets ──
+     What we are selling each customer, by how old their turf is. Each card is
+     a click through to exactly those fields, because "who is due for
+     replacement" is the question this dashboard gets asked most. */
+  const dated   = crmFields.filter(f => _crmFieldAge(f) != null);
+  const undated = crmFields.length - dated.length;
+
+  const bucketCard = b => {
+    const rows      = dated.filter(f => { const x = _crmBucketForAge(_crmFieldAge(f)); return x && x.key === b.key; });
+    const companies = new Set(rows.map(f => f.company_id || f.company_name).filter(Boolean)).size;
+    return `<button onclick="_crmDashboardBucket('${b.key}')"
+      title="Show the ${rows.length} field${rows.length === 1 ? '' : 's'} in ${b.label}"
+      style="text-align:left;background:var(--surface2);border:1px solid var(--border);border-left:4px solid ${b.color};
+             border-radius:8px;padding:1rem 1.2rem;cursor:pointer;font-family:inherit;width:100%">
+      <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:0.4rem">
+        ${b.label} <span style="opacity:0.7">· ${b.range}</span>
+      </div>
+      <div style="font-size:1.55rem;font-weight:700;color:${b.color === '#166534' ? '#4ade80' : b.color === '#b45309' ? '#fbbf24' : '#f87171'};line-height:1.1">${rows.length}</div>
+      <div style="font-size:0.72rem;color:var(--muted);margin-top:0.3rem">
+        ${rows.length === 1 ? 'field' : 'fields'}${companies ? ` · ${companies} compan${companies === 1 ? 'y' : 'ies'}` : ''}
+      </div>
+    </button>`;
+  };
+
+  const bucketHTML = `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0.45rem">
+      <span style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted)">Fields by age — what they are due for</span>
+      <span style="font-size:0.72rem;color:var(--muted)">
+        ${dated.length} of ${crmFields.length} field${crmFields.length === 1 ? '' : 's'} dated${undated ? ` · ${undated} with no install year` : ''}
+      </span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.7rem;margin-bottom:0.85rem">
+      ${_CRM_AGE_BUCKETS.map(bucketCard).join('')}
+    </div>`;
+
   /* ── assemble ── */
   root.innerHTML = `
     ${kpiHTML}
+    ${bucketHTML}
     <div style="display:grid;grid-template-columns:1fr 220px;gap:0.7rem;margin-bottom:0.7rem">
       ${panel('Pipeline by Stage', stageBody)}
       <div style="display:grid;gap:0.7rem;align-content:start">
@@ -7398,14 +7422,1251 @@ function renderCrmDashboard() {
 }
 
 /* ═══════════════════════════════════════════
+   CRM — shared table plumbing
+
+   Every CRM tab is the same object: a wide table someone sorts, filters,
+   exports and occasionally prints. Before the revamp each tab spelled that
+   out for itself, which is why sorting existed on none of them — adding it
+   meant adding it five times.
+
+   So the tables are described rather than written. A tab declares its columns
+   (what the header says, how wide it is, how the cell edits, and how the value
+   reads as plain text) and _crmTable turns that into the markup, _crmSortRows
+   orders it, _crmExportCsv writes it out, and _crmPrintReport prints it. The
+   text accessor is what makes the last two honest: a cell is an <input>, and
+   exporting the HTML of one is how you end up with a CSV full of markup.
+═══════════════════════════════════════════ */
+
+/* Which column each table is sorted by, and which way. Kept out of the row
+   data so a re-render from a poll cannot reset the user's sort under them. */
+const _crmSort = {};
+
+/* Table key → the function that redraws it. */
+const _CRM_RERENDER = {};
+
+function _crmToggleSort(table, field) {
+  const cur = _crmSort[table];
+  if (cur && cur.field === field) cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';
+  else _crmSort[table] = { field, dir: 'asc' };
+  const fn = _CRM_RERENDER[table];
+  if (fn) fn();
+}
+
+function _crmClearSort(table) {
+  delete _crmSort[table];
+  const fn = _CRM_RERENDER[table];
+  if (fn) fn();
+}
+
+/** Plain-text value of one cell — what sorts, exports and prints. */
+function _crmCellText(col, row) {
+  const v = col.text ? col.text(row) : row[col.f];
+  return v == null ? '' : String(v);
+}
+
+/**
+ * Sorts a copy of the rows.
+ *
+ * Numeric when every value present parses as a number, so "Value" and "Win %"
+ * order as money rather than as strings where 9 beats 10. Blanks sort last in
+ * both directions: a row with no close date is not the earliest close date.
+ */
+function _crmSortRows(rows, table, cols) {
+  const st = _crmSort[table];
+  if (!st || !st.field) return rows;
+  const col = (cols || []).find(c => c.f === st.field);
+  if (!col) return rows;
+
+  const vals    = rows.map(r => _crmCellText(col, r).trim());
+  const present = vals.filter(v => v !== '');
+
+  // Strict, because parseFloat is not: it reads "2026-03-01" as 2026, which
+  // would sort every close date in a year as a tie. A value counts as a number
+  // only if the whole of it is one once the money and percent marks come off.
+  const bare    = v => v.replace(/[$%\s,]/g, '');
+  const numeric = present.length > 0 && present.every(v => /^-?\d+(?:\.\d+)?$/.test(bare(v)));
+  const dir     = st.dir === 'desc' ? -1 : 1;
+
+  return rows.map((r, i) => ({ r, v: vals[i] }))
+    .sort((a, b) => {
+      if (a.v === '' && b.v === '') return 0;
+      if (a.v === '') return 1;          // blanks last, whichever way we sort
+      if (b.v === '') return -1;
+      if (numeric) return dir * (parseFloat(bare(a.v)) - parseFloat(bare(b.v)));
+      return dir * a.v.localeCompare(b.v, undefined, { sensitivity: 'base', numeric: true });
+    })
+    .map(x => x.r);
+}
+
+const _CRM_TH_STYLE = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem;color:var(--muted);
+   text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+   overflow:hidden;text-overflow:ellipsis;
+   border-bottom:1px solid var(--border);background:var(--surface2)`;
+
+/**
+ * Builds a whole CRM table.
+ *
+ *   table      key for sort state and re-render
+ *   cols       [{ f, label, w, cell(row), text(row), sortable, filter }]
+ *   rows       already filtered
+ *   filter     the filter object for this table (omit for no filter row)
+ *   filterAttr the data-attribute the input handler watches (e.g. 'crm-pf')
+ *   actions    row => extra <td>s, with actionCols giving their widths
+ *   empty      message shown when rows is []
+ */
+function _crmTable(opts) {
+  const { table, cols, rows, filter, filterAttr, actions, actionCols = [], empty, minWidth } = opts;
+  const st = _crmSort[table];
+
+  const th = col => {
+    if (col.sortable === false) return `<th style="${_CRM_TH_STYLE}">${col.label}</th>`;
+    const on    = st && st.field === col.f;
+    const arrow = on ? (st.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th style="${_CRM_TH_STYLE};cursor:pointer;user-select:none;${on ? 'color:var(--text)' : ''}"
+      onclick="_crmToggleSort('${table}','${col.f}')" title="Sort by ${esc(col.label)}">${col.label}${arrow}</th>`;
+  };
+
+  const fi = col => {
+    if (!filter || col.filter === false) {
+      return `<th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>`;
+    }
+    const v = filter[col.f] || '';
+    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
+      <input type="text" value="${esc(v)}" data-${filterAttr}="${col.f}" placeholder="…"
+        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
+               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
+               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
+    </th>`;
+  };
+
+  const td = content =>
+    `<td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;overflow:hidden">${content}</td>`;
+
+  const sorted = _crmSortRows(rows, table, cols);
+  const span   = cols.length + actionCols.length;
+
+  const body = sorted.length
+    ? sorted.map(r => `<tr>${cols.map(c => td(c.cell ? c.cell(r) : esc(_crmCellText(c, r)))).join('')}${actions ? actions(r) : ''}</tr>`).join('')
+    : `<tr><td colspan="${span}" style="padding:2.5rem;text-align:center;color:var(--muted)">${empty || 'Nothing here yet.'}</td></tr>`;
+
+  const colgroup = [...cols.map(c => c.w), ...actionCols]
+    .map(w => `<col style="width:${w}%">`).join('');
+
+  return `<div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;${minWidth ? `min-width:${minWidth}px;` : ''}table-layout:fixed;border-collapse:collapse;font-size:0.82rem">
+        <colgroup>${colgroup}</colgroup>
+        <thead>
+          <tr>${cols.map(th).join('')}${actionCols.map(() => `<th style="${_CRM_TH_STYLE}"></th>`).join('')}</tr>
+          ${filter ? `<tr>${cols.map(fi).join('')}${actionCols.map(() => `<th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>`).join('')}</tr>` : ''}
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+}
+
+/* ── Export ─────────────────────────────────────────────────────────────── */
+
+function _crmCsvCell(v) {
+  const s = v == null ? '' : String(v);
+  // A leading =, +, - or @ makes Excel treat the cell as a formula. Prefixing
+  // an apostrophe keeps a phone number typed as "+1 412…" a phone number.
+  const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;
+  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+}
+
+/** Writes the rows as they are currently sorted and filtered — what's on screen. */
+function _crmExportCsv(filename, cols, rows, table) {
+  const ordered = table ? _crmSortRows(rows, table, cols) : rows;
+  const lines   = [cols.map(c => _crmCsvCell(c.label)).join(',')];
+  for (const r of ordered) lines.push(cols.map(c => _crmCsvCell(_crmCellText(c, r))).join(','));
+
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = `${filename}-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * Print view. Opens the rows as a plain light-on-white table and calls print,
+ * which is also how they become a PDF — the browser's own "Save as PDF".
+ * Matches how the rest of the page prints (see printFinancials).
+ */
+function _crmPrintReport(title, subtitle, cols, rows, table) {
+  const ordered = table ? _crmSortRows(rows, table, cols) : rows;
+  const head = cols.map(c => `<th>${esc(c.label)}</th>`).join('');
+  const body = ordered.length
+    ? ordered.map(r => `<tr>${cols.map(c => `<td>${esc(_crmCellText(c, r))}</td>`).join('')}</tr>`).join('')
+    : `<tr><td colspan="${cols.length}" style="text-align:center;padding:2rem;color:#666">Nothing to report.</td></tr>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { alert('Allow pop-ups for this site to print.'); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
+    <style>
+      @page { size: landscape; margin: 0.4in; }
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; color:#111; margin:0; padding:0.5rem; }
+      h1 { font-size:15pt; margin:0 0 0.15rem; }
+      .sub { font-size:9pt; color:#555; margin:0 0 0.75rem; }
+      table { width:100%; border-collapse:collapse; font-size:8pt; }
+      th { text-align:left; background:#eee; border:1px solid #bbb; padding:3px 5px; font-size:7.5pt;
+           text-transform:uppercase; letter-spacing:0.04em; }
+      td { border:1px solid #ddd; padding:3px 5px; vertical-align:top; }
+      tr { page-break-inside: avoid; }
+      thead { display: table-header-group; }
+    </style></head><body>
+    <h1>${esc(title)}</h1>
+    <p class="sub">${esc(subtitle)} · ${ordered.length} row${ordered.length === 1 ? '' : 's'} · printed ${new Date().toLocaleString()}</p>
+    <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
+    <script>window.onload=()=>{window.print();}<\/script>
+    </body></html>`);
+  w.document.close();
+}
+
+/** The Export CSV / Print pair that sits in a tab's toolbar. */
+function _crmToolButtons(onCsv, onPrint) {
+  return `<button class="btn" onclick="${onCsv}"
+      style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8595; Export CSV</button>
+    ${onPrint ? `<button class="btn" onclick="${onPrint}"
+      style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#128424; Print / PDF</button>` : ''}`;
+}
+
+/* ═══════════════════════════════════════════
+   CRM — field age and what it means we are selling
+
+   The whole point of tracking an install year is that it tells a rep what the
+   conversation is. A field put down two years ago needs grooming and infill; a
+   field from 2014 needs replacing and is worth a real quote. The three buckets
+   below are that judgement, and the dashboard makes each one clickable so
+   "who is due for replacement" is one click rather than a filter expression.
+═══════════════════════════════════════════ */
+const _CRM_AGE_BUCKETS = [
+  { key: 'maintenance', label: 'Maintenance',               range: '1–3 yrs', min: 0, max: 3,        color: '#166534' },
+  { key: 'both',        label: 'Maintenance / Replacement', range: '4–7 yrs', min: 4, max: 7,        color: '#b45309' },
+  { key: 'replacement', label: 'Replacement',               range: '8+ yrs',  min: 8, max: Infinity, color: '#991b1b' },
+];
+
+/** Age in years, or null when the field has no usable install year. */
+function _crmFieldAge(f, today) {
+  const y = parseInt(String(f && f.installed_year || '').slice(0, 4), 10);
+  if (!Number.isFinite(y) || y < 1950 || y > 2200) return null;
+  return (today || new Date()).getFullYear() - y;
+}
+
+function _crmBucketForAge(age) {
+  if (age == null || age < 0) return null;
+  return _CRM_AGE_BUCKETS.find(b => age >= b.min && age <= b.max) || null;
+}
+
+function _crmBucketLabel(f) {
+  const b = _crmBucketForAge(_crmFieldAge(f));
+  return b ? b.label : '';
+}
+
+/* ═══════════════════════════════════════════
+   CRM — Fields
+
+   A field, not a company, is the thing we sell to. Fort Cherry has a football
+   field from 2017 that needs replacing and a baseball infield from 2022 that
+   needs grooming, and a single "field installed" column on the company row
+   cannot say both — it would age the school by whichever field someone typed
+   in last.
+
+   So fields are their own list, each pointing at a company. The Companies tab
+   shows them behind a toggle rather than as an eighth CRM tab, because they
+   are read as part of a company rather than instead of one.
+═══════════════════════════════════════════ */
+let crmFields        = [];
+let _crmFieldFilter  = {};
+let _crmCompaniesView = 'companies';   // 'companies' | 'fields'
+
+const _CRM_FIELD_TYPES = ['', 'Football', 'Soccer', 'Baseball', 'Softball', 'Lacrosse', 'Field Hockey', 'Multi-Sport', 'Practice', 'Track Infield', 'Other'];
+
+async function loadCrmFields() {
+  const saved = await apiGet('fct_crm_fields');
+  crmFields = Array.isArray(saved) ? saved : [];
+  if (document.getElementById('crm-panel-companies')?.classList.contains('active')) renderCrmCompaniesTab();
+  if (document.getElementById('crm-panel-dashboard')?.classList.contains('active')) renderCrmDashboard();
+}
+
+function saveCrmFields() { apiPut('fct_crm_fields', crmFields); }
+
+function addCrmField(companyId) {
+  const co = companyId ? crmCompanies.find(c => c.id === companyId) : null;
+  crmFields.push({
+    id: uid(),
+    company_id:   co ? co.id : '',
+    company_name: co ? (co.company_name || '') : '',
+    field_name: '', field_type: '', field_size: '',
+    installed_year: '', turf_product: '', notes: '',
+  });
+  saveCrmFields();
+  _crmCompaniesView = 'fields';
+  renderCrmCompaniesTab();
+}
+
+function deleteCrmField(id) {
+  if (!confirm('Delete this field?')) return;
+  crmFields = crmFields.filter(f => f.id !== id);
+  saveCrmFields();
+  renderCrmCompaniesTab();
+}
+
+/**
+ * A dashboard bucket click: show the Companies tab's Fields view, narrowed to
+ * that bucket. Replaces the filter rather than adding to it, so a click always
+ * shows the whole bucket and never the intersection of it with whatever was
+ * typed into the filter row earlier.
+ */
+function _crmDashboardBucket(key) {
+  _crmFieldFilter   = { _bucket: key };
+  _crmCompaniesView = 'fields';
+  crmSwitchTab('companies');
+}
+
+function _crmCompaniesSetView(v) {
+  _crmCompaniesView = v;
+  renderCrmCompaniesTab();
+}
+
+/** Company picker on a field row — keeps company_name in step with the id. */
+function _crmFieldCompanySel(f) {
+  const names = crmCompanies.map(c => c.company_name || '').filter(Boolean);
+  const opts  = ['<option value="">— company —</option>']
+    .concat(crmCompanies.map(c =>
+      `<option value="${esc(c.id)}" ${f.company_id === c.id ? 'selected' : ''}>${esc(c.company_name || '(unnamed)')}</option>`));
+  // A field imported before its company existed — or left behind when its
+  // company row was deleted — keeps the name it was typed under visible.
+  const resolved = f.company_id && crmCompanies.some(c => c.id === f.company_id);
+  if (!resolved && f.company_name && !names.includes(f.company_name)) {
+    opts.push(`<option value="" selected>${esc(f.company_name)} (no company row)</option>`);
+  }
+  return `<select data-crm-field-id="${f.id}" data-crm-field-col="company_id"
+    style="width:100%;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:3px;
+           color:var(--text);font-size:0.78rem;outline:none;padding:0.1rem 0.2rem">${opts.join('')}</select>`;
+}
+
+function _crmFieldInp(f, col, ph = '', type = 'text') {
+  return `<input type="${type}" value="${esc(f[col] || '')}"
+    data-crm-field-id="${f.id}" data-crm-field-col="${col}" placeholder="${ph}"
+    title="${esc(f[col] || '')}" oninput="this.title=this.value"
+    ${type === 'number' ? 'min="1950" max="2100" step="1"' : ''}
+    style="width:100%;background:transparent;border:none;color:var(--text);
+           font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0;text-overflow:ellipsis">`;
+}
+
+function _crmFieldTypeSel(f) {
+  const list = (f.field_type && !_CRM_FIELD_TYPES.includes(f.field_type))
+    ? [..._CRM_FIELD_TYPES, f.field_type] : _CRM_FIELD_TYPES;
+  const opts = list.map(t =>
+    `<option value="${esc(t)}" ${f.field_type === t ? 'selected' : ''}>${t || '— type —'}</option>`).join('');
+  return `<select data-crm-field-id="${f.id}" data-crm-field-col="field_type"
+    style="width:100%;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:3px;
+           color:var(--text);font-size:0.78rem;outline:none;padding:0.1rem 0.2rem">${opts}</select>`;
+}
+
+/** Age and bucket read as one coloured cell — the sales signal, not a number. */
+function _crmBucketCell(f) {
+  const age = _crmFieldAge(f);
+  const b   = _crmBucketForAge(age);
+  if (!b) return `<span style="color:var(--muted);font-size:0.75rem">—</span>`;
+  return `<span style="background:${b.color};color:#fff;border-radius:10px;padding:0.1rem 0.45rem;
+    font-size:0.68rem;font-weight:600;white-space:nowrap">${age} yr${age === 1 ? '' : 's'} · ${b.label}</span>`;
+}
+
+const _CRM_FIELD_COLS = [
+  { f: 'company_name',   label: 'Company',    w: 15,  cell: _crmFieldCompanySel,
+    text: f => f.company_name || '' },
+  { f: 'field_name',     label: 'Field Name', w: 13,  cell: f => _crmFieldInp(f, 'field_name', 'Varsity Football') },
+  { f: 'field_type',     label: 'Field Type', w: 11,  cell: _crmFieldTypeSel },
+  { f: 'field_size',     label: 'Field Size', w: 9,   cell: f => _crmFieldInp(f, 'field_size', 'sq ft') },
+  { f: 'installed_year', label: 'Installed',  w: 7.5, cell: f => _crmFieldInp(f, 'installed_year', 'YYYY', 'number') },
+  { f: '_age',           label: 'Age / Bucket', w: 13, cell: _crmBucketCell, filter: false,
+    text: f => { const a = _crmFieldAge(f); return a == null ? '' : `${a} yrs · ${_crmBucketLabel(f)}`; } },
+  { f: 'turf_product',   label: 'Turf Product', w: 11, cell: f => _crmFieldInp(f, 'turf_product', 'Product') },
+  { f: 'notes',          label: 'Notes',      w: 18,  cell: f => _crmFieldInp(f, 'notes', 'Notes') },
+];
+
+/** The fields list, optionally narrowed to one age bucket by the dashboard. */
+function _crmVisibleFields() {
+  // _bucket is a bucket key, not a column value — passing it through the text
+  // filter would match it against a field named "_bucket" and hide every row.
+  const textFilter = {};
+  for (const [k, v] of Object.entries(_crmFieldFilter)) if (!k.startsWith('_')) textFilter[k] = v;
+
+  let rows = _crmApplyFilter(crmFields, textFilter);
+  if (_crmFieldFilter._bucket) {
+    rows = rows.filter(f => {
+      const b = _crmBucketForAge(_crmFieldAge(f));
+      return b && b.key === _crmFieldFilter._bucket;
+    });
+  }
+  return rows;
+}
+
+function renderCrmFieldsView(root) {
+  const visible = _crmVisibleFields();
+  const bucket  = _CRM_AGE_BUCKETS.find(b => b.key === _crmFieldFilter._bucket);
+  const anyFilter = Object.values(_crmFieldFilter).some(v => v);
+
+  const actions = f => `<td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <button class="del-btn" data-crm-fieldrow-id="${f.id}">✕</button>
+    </td>`;
+
+  root.innerHTML = `
+    ${_crmCompaniesViewBar()}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;gap:0.75rem;flex-wrap:wrap">
+      <span style="font-size:0.82rem;color:var(--muted)">
+        ${visible.length !== crmFields.length ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmFields.length} field${crmFields.length !== 1 ? 's' : ''}
+        ${bucket ? `<span style="background:${bucket.color};color:#fff;border-radius:10px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600;margin-left:0.4rem">${bucket.label} · ${bucket.range}</span>` : ''}
+        ${anyFilter ? `<button onclick="_crmClearFilter('fields')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
+      </span>
+      <div style="display:flex;gap:0.5rem;align-items:center">
+        ${_crmToolButtons(`_crmExportCsv('crm-fields', _CRM_FIELD_COLS, _crmVisibleFields(), 'fields')`, '')}
+        <button class="btn btn-green" onclick="addCrmField('')">+ Add Field</button>
+      </div>
+    </div>
+    ${_crmTable({
+      table: 'fields', cols: _CRM_FIELD_COLS, rows: visible,
+      filter: _crmFieldFilter, filterAttr: 'crm-ff',
+      actions, actionCols: [2.5], minWidth: 1100,
+      empty: crmFields.length
+        ? 'No fields match the current filters.'
+        : 'No fields yet — add one to start tracking install years, and the dashboard buckets will fill in.',
+    })}`;
+}
+
+/** The Companies / Fields switch that heads the Companies tab. */
+function _crmCompaniesViewBar() {
+  const btn = (v, label, count) => `<button onclick="_crmCompaniesSetView('${v}')"
+    style="background:${_crmCompaniesView === v ? 'var(--blue)' : 'var(--surface2)'};
+           color:${_crmCompaniesView === v ? '#fff' : 'var(--muted)'};
+           border:1px solid ${_crmCompaniesView === v ? 'var(--blue)' : 'var(--border)'};
+           border-radius:4px;padding:0.25rem 0.7rem;font-size:0.78rem;font-weight:600;cursor:pointer">
+    ${label} <span style="opacity:0.75;font-weight:400">${count}</span></button>`;
+  return `<div style="display:flex;gap:0.4rem;margin-bottom:0.85rem">
+    ${btn('companies', 'Companies', crmCompanies.length)}
+    ${btn('fields',    'Fields',    crmFields.length)}
+  </div>`;
+}
+
+/* Field rows edit through their own delegated handlers, because their data
+   attributes have to stay distinct from the company rows sharing this root. */
+document.getElementById('crm-companies-root').addEventListener('input', e => {
+  const el = e.target;
+  if (el.dataset.crmFf != null) {
+    _crmFieldFilter[el.dataset.crmFf] = el.value;
+    const at = el.selectionStart;
+    renderCrmCompaniesTab();
+    const again = document.querySelector(`#crm-companies-root [data-crm-ff="${el.dataset.crmFf}"]`);
+    if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch {} }
+    return;
+  }
+  const id = el.dataset.crmFieldId, col = el.dataset.crmFieldCol;
+  if (!id || !col) return;
+  const f = crmFields.find(x => x.id === id);
+  if (!f) return;
+  f[col] = el.value;
+  saveCrmFields();
+});
+
+document.getElementById('crm-companies-root').addEventListener('change', e => {
+  const el = e.target;
+  const id = el.dataset.crmFieldId, col = el.dataset.crmFieldCol;
+  if (!id || !col) return;
+  const f = crmFields.find(x => x.id === id);
+  if (!f) return;
+  f[col] = el.value;
+  if (col === 'company_id') {
+    const co = crmCompanies.find(c => c.id === el.value);
+    f.company_name = co ? (co.company_name || '') : '';
+  }
+  saveCrmFields();
+  // Install year moving changes the bucket, so the row has to redraw.
+  if (col === 'installed_year' || col === 'company_id') renderCrmCompaniesTab();
+});
+
+document.getElementById('crm-companies-root').addEventListener('click', e => {
+  const del = e.target.closest('[data-crm-fieldrow-id]');
+  if (del) deleteCrmField(del.dataset.crmFieldrowId);
+});
+
+/* ═══════════════════════════════════════════
+   CRM — News Center
+
+   The first tab, because it is the first thing a rep needs: a true, local,
+   recent sentence to open an outreach email with. The daily cron
+   (api/cron/crm-news.js) fills it overnight; Refresh pulls on demand for the
+   Monday-morning case where the weekend's games matter now.
+
+   Every row carries its source link. An opener is only worth using if the rep
+   can check it in one click before they send it.
+═══════════════════════════════════════════ */
+let crmNews        = { pulled_at: null, items: [] };
+let _crmNewsFilter = {};
+let _crmNewsBusy   = false;
+let _crmNewsNote   = '';
+
+async function loadCrmNews() {
+  const saved = await apiGet('fct_crm_news');
+  if (saved && Array.isArray(saved.items)) crmNews = saved;
+  if (document.getElementById('crm-panel-news')?.classList.contains('active')) renderCrmNewsTab();
+}
+
+async function refreshCrmNews(force) {
+  if (_crmNewsBusy) return;
+  _crmNewsBusy = true;
+  _crmNewsNote = '';
+  renderCrmNewsTab();
+  try {
+    const r = await fetch(`${API_BASE}/ai/crm-news`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+      body:    JSON.stringify({ force: !!force }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    if (Array.isArray(data.items)) crmNews = { pulled_at: data.pulled_at, items: data.items };
+    _crmNewsNote = data.warning || data.skipped
+      || (data.found ? `Pulled ${data.found} result${data.found === 1 ? '' : 's'}.` : '');
+  } catch (err) {
+    _crmNewsNote = `Refresh failed — ${err.message}`;
+  } finally {
+    _crmNewsBusy = false;
+    renderCrmNewsTab();
+  }
+}
+
+/** The opener, on the clipboard, ready to paste at the top of an email. */
+function crmCopyOpener(id) {
+  const item = (crmNews.items || []).find(i => i.id === id);
+  if (!item) return;
+  const done = () => {
+    const btn = document.querySelector(`[data-crm-news-copy="${id}"]`);
+    if (!btn) return;
+    const was = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = was; }, 1200);
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(item.headline).then(done).catch(() => {});
+  else {
+    const ta = document.createElement('textarea');
+    ta.value = item.headline;
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch {}
+    document.body.removeChild(ta);
+  }
+}
+
+const _CRM_NEWS_COLS = [
+  { f: 'date',     label: 'Date',   w: 7,
+    cell: i => `<span style="font-size:0.78rem;white-space:nowrap">${esc(i.date || '')}</span>` },
+  { f: 'region',   label: 'Region', w: 8,
+    cell: i => `<span style="font-size:0.75rem;color:var(--muted);white-space:nowrap">${esc(i.region || '')}</span>` },
+  { f: 'level',    label: 'Level',  w: 7,
+    cell: i => `<span style="font-size:0.75rem;color:var(--muted);white-space:nowrap">${esc(i.level || '')}</span>` },
+  { f: 'sport',    label: 'Sport',  w: 7,
+    cell: i => `<span style="font-size:0.78rem">${esc(i.sport || '')}</span>` },
+  { f: 'school',   label: 'School', w: 12,
+    cell: i => `<span style="font-size:0.78rem">${esc(i.school || '')}</span>` },
+  { f: 'headline', label: 'Opener', w: 46,
+    cell: i => `<span style="font-size:0.8rem;color:var(--text)">${esc(i.headline || '')}</span>` },
+  { f: 'source_url', label: 'Source', w: 6, sortable: false, filter: false,
+    cell: i => i.source_url
+      ? `<a href="${esc(i.source_url)}" target="_blank" rel="noopener" style="color:var(--blue);font-size:0.78rem">source ↗</a>`
+      : '' },
+];
+
+function renderCrmNewsTab() {
+  const root = document.getElementById('crm-news-root');
+  if (!root) return;
+
+  const visible   = _crmApplyFilter(crmNews.items || [], _crmNewsFilter);
+  const anyFilter = Object.values(_crmNewsFilter).some(v => v);
+  const pulled    = crmNews.pulled_at ? new Date(crmNews.pulled_at) : null;
+
+  const actions = i => `<td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <button data-crm-news-copy="${i.id}" onclick="crmCopyOpener('${i.id}')" title="Copy this opener"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);
+               border-radius:3px;font-size:0.7rem;padding:0.1rem 0.35rem;cursor:pointer">⧉</button>
+    </td>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:0.75rem;gap:1rem;flex-wrap:wrap">
+      <div style="min-width:0">
+        <div style="font-size:0.95rem;font-weight:600;color:var(--text);margin-bottom:0.15rem">News Center</div>
+        <div style="font-size:0.78rem;color:var(--muted);max-width:60ch">
+          Local high school and college results from Western PA, Eastern OH and Western NY — one line each, for opening an outreach email. Pulled every morning.
+        </div>
+        <div style="font-size:0.75rem;color:var(--muted);margin-top:0.35rem">
+          ${visible.length !== (crmNews.items || []).length ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${(crmNews.items || []).length} item${(crmNews.items || []).length !== 1 ? 's' : ''}
+          ${pulled ? ` · last pulled ${pulled.toLocaleString()}` : ' · never pulled'}
+          ${anyFilter ? `<button onclick="_crmClearFilter('news')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
+        </div>
+        ${_crmNewsNote ? `<div style="font-size:0.75rem;color:${/failed/i.test(_crmNewsNote) ? '#f87171' : 'var(--muted)'};margin-top:0.3rem">${esc(_crmNewsNote)}</div>` : ''}
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:center;flex-shrink:0">
+        ${_crmToolButtons(
+          `_crmExportCsv('crm-news', _CRM_NEWS_COLS, _crmApplyFilter(crmNews.items||[], _crmNewsFilter), 'news')`,
+          `_crmPrintReport('News Center','Outreach openers', _CRM_NEWS_COLS, _crmApplyFilter(crmNews.items||[], _crmNewsFilter), 'news')`)}
+        <button class="btn btn-green" onclick="refreshCrmNews(true)" ${_crmNewsBusy ? 'disabled' : ''}
+          style="${_crmNewsBusy ? 'opacity:0.6;cursor:wait' : ''}">${_crmNewsBusy ? 'Pulling…' : '↻ Refresh'}</button>
+      </div>
+    </div>
+    ${_crmTable({
+      table: 'news', cols: _CRM_NEWS_COLS, rows: visible,
+      filter: _crmNewsFilter, filterAttr: 'crm-nf',
+      actions, actionCols: [3], minWidth: 1000,
+      empty: _crmNewsBusy
+        ? 'Searching for this week’s results…'
+        : 'Nothing pulled yet — press Refresh, or wait for tomorrow morning’s run.',
+    })}`;
+}
+
+document.getElementById('crm-news-root').addEventListener('input', e => {
+  const el = e.target;
+  if (el.dataset.crmNf == null) return;
+  _crmNewsFilter[el.dataset.crmNf] = el.value;
+  const at = el.selectionStart;
+  renderCrmNewsTab();
+  const again = document.querySelector(`#crm-news-root [data-crm-nf="${el.dataset.crmNf}"]`);
+  if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch {} }
+});
+
+/* ═══════════════════════════════════════════
+   CRM — push into Opportunities
+
+   People, Companies and AI Search all end the same way: this row should be a
+   deal. One function does it for all three so an opportunity raised from a
+   search result carries the same fields as one raised from a company row, and
+   so the lead contact and the personal interest travel with it — those are
+   the two things that make the follow-up call land.
+═══════════════════════════════════════════ */
+function _crmMakeOpportunity(seed) {
+  const opp = {
+    id: uid(), tag: seed.tag || '',
+    lead_contact: seed.lead_contact || '',
+    name:    seed.name || (seed.company ? `${seed.company} — turf` : 'New opportunity'),
+    company: seed.company || '',
+    stage: 'Prospecting', value: '', close_date: '',
+    win_pct: '', status: 'Open', loss_reason: '',
+    priority: seed.priority || 'Medium',
+    source:   seed.source || 'CRM',
+    personal_interest: seed.personal_interest || '',
+    turf_product:      seed.turf_product || '',
+    description:       seed.description || '',
+  };
+  crmOpportunities.push(opp);
+  return opp;
+}
+
+/** From a person row: the person is the contact, their company is the deal. */
+function crmPersonToOpportunity(id) {
+  const p = crmPeople.find(x => x.id === id);
+  if (!p) return;
+  const co = crmCompanies.find(c => (c.company_name || '') === (p.company || ''));
+  _crmMakeOpportunity({
+    name:    `${p.company || p.name || 'New'} — turf`,
+    company: p.company || '',
+    lead_contact: p.lead_contact || '',
+    personal_interest: p.personal_interest || '',
+    turf_product: p.turf_product || (co ? co.turf_product : '') || '',
+    tag: p.tag || '',
+    source: 'People',
+    description: [p.name, p.title, p.work_email, p.work_phone].filter(Boolean).join(' · '),
+  });
+  saveCrmOpportunities();
+  crmSwitchTab('opportunities');
+}
+
+/** From a company row: the fields it owns tell you what the deal is. */
+function crmCompanyToOpportunity(id) {
+  const c = crmCompanies.find(x => x.id === id);
+  if (!c) return;
+  const fields = crmFields.filter(f => f.company_id === c.id || (f.company_name && f.company_name === c.company_name));
+  const oldest = fields.reduce((worst, f) => {
+    const a = _crmFieldAge(f);
+    return a != null && (worst == null || a > worst.age) ? { age: a, f } : worst;
+  }, null);
+  const bucket = oldest ? _crmBucketForAge(oldest.age) : null;
+
+  _crmMakeOpportunity({
+    name:    `${c.company_name || 'New'} — ${bucket ? bucket.label : 'turf'}`,
+    company: c.company_name || '',
+    lead_contact: c.lead_contact || '',
+    personal_interest: c.personal_interest || '',
+    turf_product: c.turf_product || (oldest ? oldest.f.turf_product : '') || '',
+    tag: c.tag || '',
+    priority: bucket && bucket.key === 'replacement' ? 'High' : 'Medium',
+    source: 'Companies',
+    description: oldest
+      ? `${oldest.f.field_name || oldest.f.field_type || 'Field'} installed ${oldest.f.installed_year} · ${oldest.age} yrs · ${bucket ? bucket.label : ''}`
+      : [c.field_type, c.field_size].filter(Boolean).join(' · '),
+  });
+  saveCrmOpportunities();
+  crmSwitchTab('opportunities');
+}
+
+/* ═══════════════════════════════════════════
+   CRM — AI Search
+
+   The question the filter row cannot take: "all the potential sports fields
+   in this area, with contact info and when the turf was last installed".
+
+   The server reads the CRM under the caller's own company scope and may also
+   web search for schools we have no row for yet. Those come back marked as
+   prospects and carry a source link, because a row a model found and a row a
+   rep typed must stay distinguishable right up until someone checks it and
+   pushes it into Opportunities.
+═══════════════════════════════════════════ */
+let _crmSearch = {
+  query: '', includeWeb: true, running: false,
+  error: '', answer: '', matches: [], note: '',
+  selected: new Set(),
+};
+
+const _CRM_SEARCH_EXAMPLES = [
+  'All potential sports fields in Washington County with contact info and when the turf was last installed',
+  'Schools whose turf is 8+ years old that we have no open opportunity for',
+  'Every contact who likes golf, with their company and lead contact',
+  'High schools in Eastern Ohio we have never contacted',
+];
+
+async function runCrmSearch() {
+  const box = document.getElementById('crm-search-input');
+  const q   = (box ? box.value : _crmSearch.query).trim();
+  if (!q || _crmSearch.running) return;
+
+  _crmSearch = { ..._crmSearch, query: q, running: true, error: '', answer: '', matches: [], note: '', selected: new Set() };
+  renderCrmSearchTab();
+
+  try {
+    const r = await fetch(`${API_BASE}/ai/crm-search`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+      body:    JSON.stringify({ query: q, includeWeb: _crmSearch.includeWeb }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+
+    const matches = (Array.isArray(data.matches) ? data.matches : []).map((m, i) => ({ ...m, _row: `m${i}` }));
+    const s = data.searched || {};
+    _crmSearch.answer  = data.answer || '';
+    _crmSearch.matches = matches;
+    _crmSearch.note    = `Searched ${s.companies || 0} companies, ${s.people || 0} people, ${s.fields || 0} fields, ${s.opportunities || 0} opportunities${s.web ? ' and the web' : ''}.`
+      + ((data.truncated || []).length ? ` (${data.truncated.join('; ')})` : '');
+  } catch (err) {
+    _crmSearch.error = err.message;
+  } finally {
+    _crmSearch.running = false;
+    renderCrmSearchTab();
+  }
+}
+
+/**
+ * Ticking a row redraws the tab, which rebuilds the query box from state — so
+ * whatever is typed in it has to be read back first, or refining a question
+ * and then ticking a result silently throws the refinement away.
+ */
+function _crmSearchSyncQuery() {
+  const box = document.getElementById('crm-search-input');
+  if (box) _crmSearch.query = box.value;
+}
+
+function _crmSearchToggleRow(rowId) {
+  _crmSearchSyncQuery();
+  if (_crmSearch.selected.has(rowId)) _crmSearch.selected.delete(rowId);
+  else _crmSearch.selected.add(rowId);
+  renderCrmSearchTab();
+}
+
+function _crmSearchToggleAll() {
+  _crmSearchSyncQuery();
+  if (_crmSearch.selected.size === _crmSearch.matches.length) _crmSearch.selected.clear();
+  else _crmSearch.matches.forEach(m => _crmSearch.selected.add(m._row));
+  renderCrmSearchTab();
+}
+
+function _crmSearchSetWeb(on) { _crmSearch.includeWeb = !!on; }
+
+/** Selected results become opportunities, tagged with where they came from. */
+function crmSearchPushSelected() {
+  const picked = _crmSearch.matches.filter(m => _crmSearch.selected.has(m._row));
+  if (!picked.length) return;
+  if (!confirm(`Create ${picked.length} opportunit${picked.length === 1 ? 'y' : 'ies'} from the selected row${picked.length === 1 ? '' : 's'}?`)) return;
+
+  for (const m of picked) {
+    const company = m.company || m.name || '';
+    _crmMakeOpportunity({
+      name:    company ? `${company} — ${m.age_bucket || 'turf'}` : (m.name || 'New opportunity'),
+      company,
+      lead_contact: m.lead_contact || '',
+      turf_product: m.turf_product || '',
+      priority: m.age_bucket === 'Replacement' ? 'High' : 'Medium',
+      source:   m.kind === 'prospect' ? 'AI Search — prospect' : 'AI Search',
+      description: [
+        m.contact, m.phone, m.email,
+        [m.city, m.state].filter(Boolean).join(', '),
+        m.field_type, m.field_size,
+        m.installed_year ? `installed ${m.installed_year}` : '',
+        m.why, m.source_url,
+      ].filter(Boolean).join(' · '),
+    });
+  }
+  saveCrmOpportunities();
+  _crmSearch.selected.clear();
+  alert(`${picked.length} opportunit${picked.length === 1 ? 'y' : 'ies'} created.`);
+  crmSwitchTab('opportunities');
+}
+
+const _CRM_SEARCH_COLS = [
+  { f: 'kind', label: 'Kind', w: 7, cell: m => {
+      const prospect = m.kind === 'prospect';
+      return `<span style="background:${prospect ? '#7c2d12' : 'var(--surface2)'};color:${prospect ? '#fff' : 'var(--muted)'};
+        border-radius:10px;padding:0.1rem 0.45rem;font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(m.kind || '')}</span>`; } },
+  { f: 'name',           label: 'Name',        w: 12 },
+  { f: 'company',        label: 'Company',     w: 11 },
+  { f: 'contact',        label: 'Contact',     w: 8 },
+  { f: 'phone',          label: 'Phone',       w: 7 },
+  { f: 'email',          label: 'Email',       w: 9 },
+  { f: 'city',           label: 'City',        w: 6 },
+  { f: 'state',          label: 'St',          w: 3 },
+  { f: 'field_type',     label: 'Field Type',  w: 7 },
+  { f: 'installed_year', label: 'Installed',   w: 5 },
+  { f: 'age_bucket',     label: 'Bucket',      w: 9, cell: m => {
+      const b = _CRM_AGE_BUCKETS.find(x => x.label === m.age_bucket);
+      return b ? `<span style="background:${b.color};color:#fff;border-radius:10px;padding:0.1rem 0.45rem;
+        font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(b.label)}</span>` : esc(m.age_bucket || ''); } },
+  { f: 'why',            label: 'Why',         w: 12 },
+  { f: 'source_url',     label: 'Source',      w: 4, sortable: false, cell: m => m.source_url
+      ? `<a href="${esc(m.source_url)}" target="_blank" rel="noopener" style="color:var(--blue);font-size:0.78rem">↗</a>` : '' },
+];
+
+function renderCrmSearchTab() {
+  const root = document.getElementById('crm-search-root');
+  if (!root) return;
+
+  const s     = _crmSearch;
+  const all   = s.matches.length > 0 && s.selected.size === s.matches.length;
+
+  const check = m => `<td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <input type="checkbox" ${s.selected.has(m._row) ? 'checked' : ''}
+        onchange="_crmSearchToggleRow('${m._row}')" style="cursor:pointer">
+    </td>`;
+
+  root.innerHTML = `
+    <div style="margin-bottom:0.9rem">
+      <div style="font-size:0.95rem;font-weight:600;color:var(--text);margin-bottom:0.15rem">AI Search</div>
+      <div style="font-size:0.78rem;color:var(--muted);max-width:70ch;margin-bottom:0.6rem">
+        Ask in plain English. It reads the CRM — people, companies, fields and opportunities — and can look up schools you have no row for yet. Tick the rows worth chasing and push them into Opportunities.
+      </div>
+
+      <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap">
+        <textarea id="crm-search-input" rows="2" placeholder="e.g. all potential sports fields in Washington County with contact info and when the turf was last installed"
+          onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey))runCrmSearch()"
+          style="flex:1;min-width:320px;background:var(--bg);border:1px solid var(--border);border-radius:5px;
+                 color:var(--text);font-size:0.85rem;padding:0.5rem 0.6rem;outline:none;resize:vertical;
+                 font-family:inherit">${esc(s.query)}</textarea>
+        <button class="btn btn-green" onclick="runCrmSearch()" ${s.running ? 'disabled' : ''}
+          style="${s.running ? 'opacity:0.6;cursor:wait' : ''};white-space:nowrap">${s.running ? 'Searching…' : '⌕ Search'}</button>
+      </div>
+
+      <div style="display:flex;gap:0.9rem;align-items:center;margin-top:0.5rem;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.76rem;color:var(--muted);cursor:pointer">
+          <input type="checkbox" ${s.includeWeb ? 'checked' : ''} onchange="_crmSearchSetWeb(this.checked)" style="cursor:pointer">
+          Also look up prospects on the web
+        </label>
+        <span style="font-size:0.72rem;color:var(--muted)">⌘/Ctrl + Enter to search</span>
+      </div>
+
+      <div style="display:flex;gap:0.35rem;margin-top:0.6rem;flex-wrap:wrap">
+        ${_CRM_SEARCH_EXAMPLES.map(q => `<button onclick="document.getElementById('crm-search-input').value=${JSON.stringify(q).replace(/"/g, '&quot;')};runCrmSearch()"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:12px;
+                 padding:0.18rem 0.6rem;font-size:0.71rem;cursor:pointer;text-align:left">${esc(q)}</button>`).join('')}
+      </div>
+    </div>
+
+    ${s.error ? `<div style="background:rgba(248,113,113,0.1);border:1px solid #f87171;border-radius:5px;
+      padding:0.6rem 0.75rem;font-size:0.8rem;color:#f87171;margin-bottom:0.9rem">Search failed — ${esc(s.error)}</div>` : ''}
+
+    ${s.answer ? `<div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--blue);
+      border-radius:5px;padding:0.7rem 0.85rem;font-size:0.84rem;color:var(--text);margin-bottom:0.85rem;line-height:1.5">
+      ${esc(s.answer)}
+      ${s.note ? `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.45rem">${esc(s.note)}</div>` : ''}
+    </div>` : ''}
+
+    ${s.matches.length ? `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;gap:0.75rem;flex-wrap:wrap">
+        <span style="font-size:0.82rem;color:var(--muted)">
+          <strong style="color:var(--text)">${s.matches.length}</strong> result${s.matches.length !== 1 ? 's' : ''}
+          ${s.selected.size ? ` · ${s.selected.size} selected` : ''}
+          <button onclick="_crmSearchToggleAll()" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);
+            font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">${all ? 'Clear selection' : 'Select all'}</button>
+        </span>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+          ${_crmToolButtons(
+            `_crmExportCsv('crm-ai-search', _CRM_SEARCH_COLS, _crmSearch.matches, 'search')`,
+            `_crmPrintReport('AI Search', ${JSON.stringify(s.query).replace(/"/g, '&quot;')}, _CRM_SEARCH_COLS, _crmSearch.matches, 'search')`)}
+          <button class="btn btn-green" onclick="crmSearchPushSelected()" ${s.selected.size ? '' : 'disabled'}
+            style="${s.selected.size ? '' : 'opacity:0.5;cursor:not-allowed'}">→ Push ${s.selected.size || ''} to Opportunities</button>
+        </div>
+      </div>
+      ${_crmTable({
+        table: 'search', cols: _CRM_SEARCH_COLS, rows: s.matches,
+        actions: check, actionCols: [3], minWidth: 1250,
+        empty: 'No matches.',
+      })}
+    ` : (s.running
+        ? `<div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Reading the CRM${s.includeWeb ? ' and searching the web' : ''}…</div>`
+        : (s.answer ? '' : `<div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Ask a question to begin.</div>`))}
+  `;
+}
+
+/* ═══════════════════════════════════════════
+   CRM — Reports
+
+   Two reports, because two questions get asked every week: who am I calling,
+   and what moved.
+
+   The outreach report is a call list, not a dashboard. Every row carries the
+   things that decide whether the call happens and whether it lands — who here
+   already knows them, their number, what their field is due for, what they
+   care about outside work, and a true sentence about their team's last game
+   from the News Center. A rep should be able to print it and work down it.
+
+   The status report answers "what changed" from a log written as it happens,
+   because an opportunity that moved Proposal → Closed Lost on Tuesday leaves
+   no trace in its own row by Friday — the row only knows where it ended up.
+═══════════════════════════════════════════ */
+let crmStatusLog   = [];
+let _crmReport     = 'outreach';       // 'outreach' | 'status'
+let _crmOutreachThisWeekOnly = true;
+let _crmStatusDays = 30;
+
+// Enough history to answer "what happened last quarter" without the blob
+// becoming the biggest thing the page loads.
+const _CRM_LOG_MAX  = 3000;
+const _CRM_LOG_DAYS = 400;
+
+async function loadCrmStatusLog() {
+  const saved = await apiGet('fct_crm_status_log');
+  crmStatusLog = Array.isArray(saved) ? saved : [];
+  if (document.getElementById('crm-panel-reports')?.classList.contains('active')) renderCrmReportsTab();
+}
+
+function saveCrmStatusLog() { apiPut('fct_crm_status_log', crmStatusLog); }
+
+/**
+ * Records one status or stage move.
+ *
+ * Called from the opportunity edit handler with the value read before the
+ * assignment — a log written after the row has changed has nothing to say.
+ * A no-op move is not logged, so re-picking the same option does not pad the
+ * report.
+ */
+function logCrmStatusChange(opp, field, from, to) {
+  if (!opp || String(from || '') === String(to || '')) return;
+  crmStatusLog.push({
+    id:       uid(),
+    at:       new Date().toISOString(),
+    opp_id:   opp.id,
+    opp_name: opp.name || '',
+    company:  opp.company || '',
+    field:    field === 'stage' ? 'Stage' : 'Status',
+    from:     from || '(blank)',
+    to:       to   || '(blank)',
+    by:       fctUser ? (fctUser.name || fctUser.username || '') : '',
+  });
+
+  const cutoff = Date.now() - _CRM_LOG_DAYS * 86400000;
+  crmStatusLog = crmStatusLog
+    .filter(e => Date.parse(e.at) >= cutoff)
+    .slice(-_CRM_LOG_MAX);
+
+  saveCrmStatusLog();
+  if (document.getElementById('crm-panel-reports')?.classList.contains('active')) renderCrmReportsTab();
+}
+
+/* ── Outreach this week ─────────────────────────────────────────────────── */
+
+const _CRM_PRIORITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3, '': 4 };
+
+/** State → the News Center region that covers it. */
+const _CRM_STATE_REGION = { PA: 'Western PA', OH: 'Eastern OH', NY: 'Western NY' };
+
+function _crmCompanyFor(name) {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return null;
+  return crmCompanies.find(c => String(c.company_name || '').trim().toLowerCase() === n) || null;
+}
+
+function _crmPersonFor(companyName, leadContact) {
+  const n = String(companyName || '').trim().toLowerCase();
+  const people = crmPeople.filter(p => String(p.company || '').trim().toLowerCase() === n);
+  if (!people.length) return null;
+  // Prefer the person the lead contact actually knows.
+  const lead = String(leadContact || '').trim().toLowerCase();
+  if (lead) {
+    const match = people.find(p => String(p.lead_contact || '').trim().toLowerCase() === lead);
+    if (match) return match;
+  }
+  return people.find(p => p.tag === 'Hot') || people[0];
+}
+
+/** The oldest field a company owns — the one that decides the conversation. */
+function _crmOldestFieldFor(company) {
+  if (!company) return null;
+  const fields = crmFields.filter(f =>
+    f.company_id === company.id ||
+    (f.company_name && String(f.company_name).trim().toLowerCase() === String(company.company_name || '').trim().toLowerCase()));
+  return fields.reduce((worst, f) => {
+    const a = _crmFieldAge(f);
+    return a != null && (worst == null || a > worst.age) ? { age: a, f } : worst;
+  }, null);
+}
+
+/**
+ * The best News Center line to open with.
+ *
+ * A result naming this school beats a result from merely the right region,
+ * because "saw your game Friday" only works if it was their game.
+ */
+function _crmOpenerFor(companyName, company) {
+  const items = crmNews.items || [];
+  if (!items.length) return '';
+  const n = String(companyName || '').trim().toLowerCase();
+
+  if (n.length > 3) {
+    const named = items.find(i => {
+      const school = String(i.school || '').trim().toLowerCase();
+      if (!school) return false;
+      return school.includes(n) || n.includes(school);
+    });
+    if (named) return named.headline;
+  }
+  const region = company ? _CRM_STATE_REGION[String(company.state || '').toUpperCase()] : '';
+  if (!region) return '';
+  const local = items.find(i => i.region === region);
+  return local ? local.headline : '';
+}
+
+function _crmOutreachRows() {
+  const today = new Date();
+  const weekOut = new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10);
+  const todayS  = today.toISOString().slice(0, 10);
+
+  const open = crmOpportunities.filter(o => {
+    const st = String(o.status || '').trim();
+    return st !== 'Won' && st !== 'Lost';
+  });
+
+  const rows = open.map(o => {
+    const company = _crmCompanyFor(o.company);
+    const person  = _crmPersonFor(o.company, o.lead_contact);
+    const oldest  = _crmOldestFieldFor(company);
+    const bucket  = oldest ? _crmBucketForAge(oldest.age) : null;
+    const due     = String(o.close_date || '');
+
+    return {
+      id:       o.id,
+      priority: o.priority || '',
+      name:     o.name || '',
+      company:  o.company || '',
+      lead_contact: o.lead_contact || (company ? company.lead_contact : '') || '',
+      contact:  person ? (person.name || '') : '',
+      phone:    person ? (person.work_phone || '') : (company ? company.work_phone || '' : ''),
+      email:    person ? (person.work_email || '') : '',
+      stage:    o.stage || '',
+      due,
+      value:    o.value || '',
+      field_age: oldest ? `${oldest.age} yrs` : '',
+      bucket:   bucket ? bucket.label : '',
+      personal_interest: o.personal_interest || (person ? person.personal_interest : '') || (company ? company.personal_interest : '') || '',
+      turf_product: o.turf_product || (company ? company.turf_product : '') || '',
+      opener:   _crmOpenerFor(o.company, company),
+      _urgent:  (due && due >= todayS && due <= weekOut)
+                || ['Critical', 'High'].includes(o.priority)
+                || ['Hot', 'Followup', 'Soon'].includes(o.tag),
+    };
+  });
+
+  const scoped = _crmOutreachThisWeekOnly ? rows.filter(r => r._urgent) : rows;
+
+  // Priority first — that is the whole brief. Then soonest close date, so the
+  // top of a priority band is the part of it that runs out first.
+  return scoped.sort((a, b) => {
+    const pa = _CRM_PRIORITY_RANK[a.priority] ?? 4;
+    const pb = _CRM_PRIORITY_RANK[b.priority] ?? 4;
+    if (pa !== pb) return pa - pb;
+    if (!a.due && !b.due) return 0;
+    if (!a.due) return 1;
+    if (!b.due) return -1;
+    return a.due.localeCompare(b.due);
+  });
+}
+
+const _CRM_OUTREACH_COLS = [
+  { f: 'priority', label: 'Priority', w: 6.5, cell: r => {
+      const c = _CRM_PRIORITY_COLORS[r.priority];
+      return r.priority
+        ? `<span style="background:${c ? c.bg : 'var(--surface2)'};color:${c ? c.color : 'var(--muted)'};
+            border-radius:10px;padding:0.1rem 0.45rem;font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(r.priority)}</span>`
+        : '<span style="color:var(--muted)">—</span>'; } },
+  { f: 'name',              label: 'Opportunity',  w: 10 },
+  { f: 'company',           label: 'Company',      w: 9.5 },
+  { f: 'lead_contact',      label: 'Lead Contact', w: 7 },
+  { f: 'contact',           label: 'Contact',      w: 7 },
+  { f: 'phone',             label: 'Phone',        w: 6.5 },
+  { f: 'email',             label: 'Email',        w: 8.5 },
+  { f: 'stage',             label: 'Stage',        w: 7 },
+  { f: 'due',               label: 'Close Date',   w: 6 },
+  { f: 'bucket',            label: 'Field Due',    w: 9, cell: r => {
+      const b = _CRM_AGE_BUCKETS.find(x => x.label === r.bucket);
+      return b ? `<span style="background:${b.color};color:#fff;border-radius:10px;padding:0.1rem 0.45rem;
+        font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(r.field_age)} · ${esc(b.label)}</span>` : ''; },
+    text: r => r.bucket ? `${r.field_age} · ${r.bucket}` : '' },
+  { f: 'personal_interest', label: 'Personal Interest', w: 8 },
+  { f: 'turf_product',      label: 'Turf Product', w: 7 },
+  { f: 'opener',            label: 'Opener (News Center)', w: 8, cell: r =>
+      `<span style="font-size:0.76rem;color:${r.opener ? 'var(--text)' : 'var(--muted)'}">${esc(r.opener || '—')}</span>` },
+];
+
+/* ── Status changes ─────────────────────────────────────────────────────── */
+
+function _crmStatusRows() {
+  const cutoff = Date.now() - _crmStatusDays * 86400000;
+  return crmStatusLog
+    .filter(e => Date.parse(e.at) >= cutoff)
+    .map(e => ({ ...e, when: new Date(e.at).toLocaleString() }))
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+
+const _CRM_STATUS_COLS = [
+  { f: 'when',     label: 'When',        w: 13, text: e => e.when },
+  { f: 'opp_name', label: 'Opportunity', w: 18 },
+  { f: 'company',  label: 'Company',     w: 16 },
+  { f: 'field',    label: 'What',        w: 8 },
+  { f: 'from',     label: 'From',        w: 13, cell: e =>
+      `<span style="color:var(--muted);font-size:0.78rem">${esc(e.from)}</span>` },
+  { f: 'to',       label: 'To',          w: 13, cell: e =>
+      `<span style="color:var(--text);font-size:0.78rem;font-weight:600">→ ${esc(e.to)}</span>`,
+    text: e => e.to },
+  { f: 'by',       label: 'Changed By',  w: 12 },
+];
+
+/* ── The tab ────────────────────────────────────────────────────────────── */
+
+function _crmSetReport(which) { _crmReport = which; renderCrmReportsTab(); }
+function _crmSetOutreachScope(weekOnly) { _crmOutreachThisWeekOnly = !!weekOnly; renderCrmReportsTab(); }
+function _crmSetStatusDays(days) { _crmStatusDays = parseInt(days, 10) || 30; renderCrmReportsTab(); }
+
+function renderCrmReportsTab() {
+  const root = document.getElementById('crm-reports-root');
+  if (!root) return;
+
+  const tab = (key, label) => `<button onclick="_crmSetReport('${key}')"
+    style="background:${_crmReport === key ? 'var(--blue)' : 'var(--surface2)'};
+           color:${_crmReport === key ? '#fff' : 'var(--muted)'};
+           border:1px solid ${_crmReport === key ? 'var(--blue)' : 'var(--border)'};
+           border-radius:4px;padding:0.25rem 0.7rem;font-size:0.78rem;font-weight:600;cursor:pointer">${label}</button>`;
+
+  const head = `<div style="display:flex;gap:0.4rem;margin-bottom:0.9rem">
+      ${tab('outreach', 'Outreach This Week')}
+      ${tab('status',   'Status Changes')}
+    </div>`;
+
+  if (_crmReport === 'outreach') {
+    const rows = _crmOutreachRows();
+    root.innerHTML = `${head}
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:0.7rem;gap:1rem;flex-wrap:wrap">
+        <div style="min-width:0">
+          <div style="font-size:0.9rem;font-weight:600;color:var(--text)">Outreach This Week</div>
+          <div style="font-size:0.76rem;color:var(--muted);max-width:66ch;margin-top:0.15rem">
+            Open opportunities in priority order, with who already knows them, what their field is due for, and a line from the News Center to open on.
+          </div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-top:0.35rem">
+            <strong style="color:var(--text)">${rows.length}</strong> to reach out to
+            <label style="margin-left:0.75rem;cursor:pointer">
+              <input type="checkbox" ${_crmOutreachThisWeekOnly ? 'checked' : ''}
+                onchange="_crmSetOutreachScope(this.checked)" style="cursor:pointer;vertical-align:middle">
+              this week only
+            </label>
+          </div>
+        </div>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-shrink:0">
+          ${_crmToolButtons(
+            `_crmExportCsv('outreach-this-week', _CRM_OUTREACH_COLS, _crmOutreachRows(), 'outreach')`,
+            `_crmPrintReport('Outreach This Week','${_crmOutreachThisWeekOnly ? 'Due this week, by priority' : 'All open, by priority'}', _CRM_OUTREACH_COLS, _crmOutreachRows(), 'outreach')`)}
+        </div>
+      </div>
+      ${_crmTable({
+        table: 'outreach', cols: _CRM_OUTREACH_COLS, rows,
+        minWidth: 1500,
+        empty: _crmOutreachThisWeekOnly
+          ? 'Nothing due this week — untick “this week only” to see every open opportunity.'
+          : 'No open opportunities.',
+      })}`;
+    return;
+  }
+
+  const rows = _crmStatusRows();
+  root.innerHTML = `${head}
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:0.7rem;gap:1rem;flex-wrap:wrap">
+      <div style="min-width:0">
+        <div style="font-size:0.9rem;font-weight:600;color:var(--text)">Status Changes</div>
+        <div style="font-size:0.76rem;color:var(--muted);max-width:66ch;margin-top:0.15rem">
+          Every stage and status move, as it happened — what it was, what it became, and who moved it.
+        </div>
+        <div style="font-size:0.75rem;color:var(--muted);margin-top:0.35rem">
+          <strong style="color:var(--text)">${rows.length}</strong> change${rows.length !== 1 ? 's' : ''} in the last
+          <select onchange="_crmSetStatusDays(this.value)"
+            style="background:var(--surface2);border:1px solid var(--border);color:var(--text);
+                   border-radius:3px;font-size:0.73rem;padding:0.1rem 0.25rem;outline:none;cursor:pointer">
+            ${[7, 14, 30, 90, 180, 365].map(d =>
+              `<option value="${d}" ${_crmStatusDays === d ? 'selected' : ''}>${d} days</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:center;flex-shrink:0">
+        ${_crmToolButtons(
+          `_crmExportCsv('status-changes', _CRM_STATUS_COLS, _crmStatusRows(), 'statuslog')`,
+          `_crmPrintReport('Status Changes','Last ${_crmStatusDays} days', _CRM_STATUS_COLS, _crmStatusRows(), 'statuslog')`)}
+      </div>
+    </div>
+    ${_crmTable({
+      table: 'statuslog', cols: _CRM_STATUS_COLS, rows,
+      minWidth: 1000,
+      empty: 'No stage or status changes recorded in this window. Moves are logged from the moment an opportunity’s Stage or Status is changed.',
+    })}`;
+}
+
+/* Each table key maps to the function that redraws it, so a header click on
+   any CRM table finds its way back to the right render without the sort
+   helper needing to know what a tab is. */
+Object.assign(_CRM_RERENDER, {
+  people:        () => renderCrmPeopleTab(),
+  companies:     () => renderCrmCompaniesTab(),
+  fields:        () => renderCrmCompaniesTab(),
+  opportunities: () => renderCrmOpportunitiesTab(),
+  news:          () => renderCrmNewsTab(),
+  search:        () => renderCrmSearchTab(),
+  outreach:      () => renderCrmReportsTab(),
+  statuslog:     () => renderCrmReportsTab(),
+});
+
+/* ═══════════════════════════════════════════
    CRM — CSV Bulk Upload
 ═══════════════════════════════════════════ */
 let _crmUploadPending = null;
 
 const _CRM_UPLOAD_FIELDS = {
-  people:        ['tag','name','company','work_email','title','contact_type','work_phone','work_website','address','city','state','zip','linkedin','description'],
-  companies:     ['tag','company_name','contact_type','work_phone','email_domain','work_website','address','city','state','zip','field_type','field_size'],
-  opportunities: ['tag','name','company','stage','value','close_date','win_pct','status','loss_reason','priority','source','description'],
+  people:        ['tag','lead_contact','name','company','work_email','title','contact_type','work_phone','work_website','address','city','state','zip','linkedin','personal_interest','turf_product','description'],
+  companies:     ['tag','lead_contact','company_name','contact_type','work_phone','email_domain','work_website','address','city','state','zip','field_type','field_size','personal_interest','turf_product'],
+  opportunities: ['tag','lead_contact','name','company','stage','value','close_date','win_pct','status','loss_reason','priority','source','personal_interest','turf_product','description'],
 };
 
 function _crmParseCSV(text) {
@@ -13069,6 +14330,8 @@ document.getElementById('inventory-root').addEventListener('change', e => {
 function _crmClearFilter(type) {
   if (type === 'people')        { _crmPeopleFilter  = {}; renderCrmPeopleTab(); }
   else if (type === 'companies'){ _crmCompanyFilter = {}; renderCrmCompaniesTab(); }
+  else if (type === 'fields')   { _crmFieldFilter   = {}; renderCrmCompaniesTab(); }
+  else if (type === 'news')     { _crmNewsFilter    = {}; renderCrmNewsTab(); }
   else                          { _crmOppFilter     = {}; renderCrmOpportunitiesTab(); }
 }
 
@@ -13193,7 +14456,14 @@ document.getElementById('crm-opportunities-root').addEventListener('change', e =
   if (!id || !field) return;
   const opp = crmOpportunities.find(o => o.id === id);
   if (!opp) return;
+
+  // Read the old value before the assignment — this is the only moment the
+  // move is visible, and the Status Changes report is built from it.
+  const wasLogged = field === 'status' || field === 'stage';
+  const before    = wasLogged ? opp[field] : null;
+
   opp[field] = el.value;
+  if (wasLogged) logCrmStatusChange(opp, field, before, el.value);
 
   const colorMap = _CRM_COLOR_MAPS[field];
   if (colorMap) {
@@ -23688,7 +24958,10 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     loadInventoryEntries(),
     loadCrmPeople(),
     loadCrmCompanies(),
+    loadCrmFields(),
     loadCrmOpportunities(),
+    loadCrmNews(),
+    loadCrmStatusLog(),
     loadScaleManualEntries(),
     loadSoeUnitOverrides(),
   ]);
@@ -23871,21 +25144,30 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollCrm() {
-    const [pRes, cRes, oRes] = await Promise.allSettled([
+    const [pRes, cRes, oRes, fRes, nRes] = await Promise.allSettled([
       apiGet('fct_crm_people'),
       apiGet('fct_crm_companies'),
       apiGet('fct_crm_opportunities'),
+      apiGet('fct_crm_fields'),
+      apiGet('fct_crm_news'),
     ]);
     const inPeople = pRes.status === 'fulfilled' && Array.isArray(pRes.value) ? pRes.value : null;
     const inCos    = cRes.status === 'fulfilled' && Array.isArray(cRes.value) ? cRes.value : null;
     const inOpps   = oRes.status === 'fulfilled' && Array.isArray(oRes.value) ? oRes.value : null;
+    const inFields = fRes.status === 'fulfilled' && Array.isArray(fRes.value) ? fRes.value : null;
+    const inNews   = nRes.status === 'fulfilled' && nRes.value && Array.isArray(nRes.value.items) ? nRes.value : null;
     // Skip the cycle if the user is editing — otherwise the next save
     // would echo this snapshot back, losing CRM edits in progress.
     if (_isEditing()) return;
-    let peopleChanged = false, cosChanged = false, oppsChanged = false;
+    let peopleChanged = false, cosChanged = false, oppsChanged = false,
+        fieldsChanged = false, newsChanged = false;
     if (inPeople && JSON.stringify(inPeople) !== JSON.stringify(crmPeople))         { crmPeople        = inPeople;  peopleChanged = true; }
     if (inCos    && JSON.stringify(inCos)    !== JSON.stringify(crmCompanies))      { crmCompanies     = inCos;     cosChanged    = true; }
     if (inOpps   && JSON.stringify(inOpps)   !== JSON.stringify(crmOpportunities))  { crmOpportunities = inOpps;    oppsChanged   = true; }
+    if (inFields && JSON.stringify(inFields) !== JSON.stringify(crmFields))         { crmFields        = inFields; fieldsChanged = true; }
+    // The news hub is written by the overnight cron, so it arrives this way
+    // rather than from anything the user did.
+    if (inNews   && JSON.stringify(inNews)   !== JSON.stringify(crmNews))           { crmNews          = inNews;   newsChanged   = true; }
     if (activeTab !== 'crm') return;
     const activePanel = document.querySelector('.crm-sub-panel.active')?.id;
     if (peopleChanged) {
@@ -23899,7 +25181,13 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (oppsChanged) {
       if (activePanel === 'crm-panel-opportunities') renderCrmOpportunitiesTab();
       if (activePanel === 'crm-panel-dashboard')     renderCrmDashboard();
+      if (activePanel === 'crm-panel-reports')       renderCrmReportsTab();
     }
+    if (fieldsChanged) {
+      if (activePanel === 'crm-panel-companies') renderCrmCompaniesTab();
+      if (activePanel === 'crm-panel-dashboard') renderCrmDashboard();
+    }
+    if (newsChanged && activePanel === 'crm-panel-news') renderCrmNewsTab();
   }
 
   async function _pollSoe() {
