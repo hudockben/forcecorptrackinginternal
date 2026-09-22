@@ -25,6 +25,12 @@
  * case-insensitive, and the first source to claim it wins — which keeps the
  * table's id and sort_order ahead of a bare blob entry.
  *
+ * Each row carries `divisions`: every list it was found in, not just the first.
+ * A pickup kept by both turf and paving is ONE machine on two lists, and the
+ * Timesheet narrows each job block's picker to the list belonging to that
+ * block's division — so the division has to survive the dedup rather than be
+ * decided by whichever source happened to be read first.
+ *
  * `unit_cost` is the one field a later source may still fill in. A real price
  * beats a missing one and beats a zero, because a machine priced properly in
  * one list and at 0 in another is a gap in that list, not a machine that runs
@@ -62,8 +68,9 @@ function blobCost(e) {
  * Every machine on the company's books, deduplicated by name.
  *
  * Rows carry the shape GET /api/equipment has always returned
- * ({ id, name, unit_cost, sort_order }); a blob-only machine has no row in the
- * table, so its `id` is null and `sort_order` continues past the table's.
+ * ({ id, name, unit_cost, sort_order }) plus `divisions`; a blob-only machine
+ * has no row in the table, so its `id` is null and `sort_order` continues past
+ * the table's.
  */
 async function readEquipmentRoster(sql, companyCode) {
   const byName = new Map(); // lowercased name → row
@@ -77,12 +84,14 @@ async function readEquipmentRoster(sql, companyCode) {
   for (const r of tableRows) {
     const name = String(r.name || '').trim();
     if (!name) continue;
+    // 'turf': the table is turf's list, whatever its company-wide name
+    // suggests — syncLists is fed by `fct_lists` and by nothing else.
     byName.set(eqKey(name), {
       id:         r.id,
       name,
       unit_cost:  r.unit_cost,
       sort_order: r.sort_order,
-      source:     'equipment_list',
+      divisions:  ['turf'],
     });
   }
 
@@ -106,9 +115,12 @@ async function readEquipmentRoster(sql, companyCode) {
         const cost = blobCost(e);
         const seen = byName.get(k);
         if (seen) {
-          // Known already — the only thing still worth taking is a price the
-          // winning source didn't have.
+          // Known already. Two things are still worth taking: a price the
+          // winning source didn't have, and the fact that THIS division keeps
+          // it too — without which a pickup on both lists would be offered to
+          // one division's crew and hidden from the other's.
           if (cost > 0 && !(Number(seen.unit_cost) > 0)) seen.unit_cost = cost;
+          if (!seen.divisions.includes(division)) seen.divisions.push(division);
           continue;
         }
         byName.set(k, {
@@ -116,7 +128,7 @@ async function readEquipmentRoster(sql, companyCode) {
           name,
           unit_cost:  cost,
           sort_order: next++,
-          source:     division,
+          divisions:  [division],
         });
       }
     }

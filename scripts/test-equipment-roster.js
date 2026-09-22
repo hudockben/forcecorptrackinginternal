@@ -58,8 +58,9 @@ function assert(label, cond, detail) {
 }
 
 const names = rows => rows.map(r => r.name);
-const costOf = (rows, name) =>
-  Number((rows.find(r => r.name.toLowerCase() === name.toLowerCase()) || {}).unit_cost);
+const rowFor = (rows, name) => rows.find(r => r.name.toLowerCase() === name.toLowerCase()) || {};
+const costOf = (rows, name) => Number(rowFor(rows, name).unit_cost);
+const divsOf = (rows, name) => rowFor(rows, name).divisions || [];
 
 // Mock sql: the equipment_list table and the three division list blobs, each
 // independently able to fail so the non-fatal paths can be proved rather than
@@ -155,8 +156,17 @@ async function libTests() {
     assert('a blob-only machine carries no table id',
       rows.find(r => r.name === 'Paver').id === null);
     assert('  and says which list it came from',
-      rows.find(r => r.name === 'Paver').source === 'paving' &&
-      rows.find(r => r.name === 'Excavator').source === 'kiewit');
+      divsOf(rows, 'Paver').join() === 'paving' &&
+      divsOf(rows, 'Excavator').join() === 'kiewit');
+    // The Timesheet narrows each job block's picker to its own division's list,
+    // so the dedup must not decide a machine's division by whichever source was
+    // read first: a pickup both divisions keep would then reach one crew and be
+    // hidden from the other.
+    assert('a machine on two lists belongs to BOTH, not to whichever was read first',
+      divsOf(rows, 'Pickup Truck').join() === 'turf,paving',
+      divsOf(rows, 'Pickup Truck').join());
+    assert('  and the table is turf\u2019s list, since nothing else feeds it',
+      divsOf(rows, 'Turf Machine').join() === 'turf');
   }
 
   console.log('\n[the price: a real one beats a missing one and beats a zero]');
@@ -274,6 +284,9 @@ async function endpointTests() {
     assert('  and still answers in the { equipment: [...] } shape both pages read',
       Array.isArray(r.body.equipment) &&
       ['id', 'name', 'unit_cost', 'sort_order'].every(k => k in r.body.equipment[0]));
+    assert('  plus the divisions each machine is kept by, which is what the Timesheet narrows on',
+      r.body.equipment.every(e => Array.isArray(e.divisions) && e.divisions.length),
+      JSON.stringify(r.body.equipment.map(e => [e.name, e.divisions])));
   }
 
   // The PUT decides what to DELETE from the table. A paving machine has no row
@@ -390,8 +403,12 @@ function consumerTests() {
   const ts = read('timesheet.html');
   assert('the Timesheet picker still reads GET /api/equipment',
     /fetch\('\/api\/equipment'/.test(ts));
-  assert('  and still sorts what it is given, so the union arrives in order',
-    /\.sort\(\(a, b\) => a\.localeCompare\(b\)\)/.test(ts));
+  assert('  and sorts the union once, before splitting it by division',
+    /\.sort\(\(a, b\) => String\(a\.name\)\.localeCompare\(String\(b\.name\)\)\)/.test(ts) &&
+    ts.indexOf('.sort((a, b) => String(a.name).localeCompare(String(b.name)))') <
+    ts.indexOf('equipmentByDivision = byDiv;'));
+  assert('  and buckets each machine under every division that keeps it',
+    /for \(const d of \(Array\.isArray\(e\.divisions\) \? e\.divisions : \[\]\)\)/.test(ts));
 
   const pay = read('payroll.html');
   assert('the payroll split modal reads the same endpoint',

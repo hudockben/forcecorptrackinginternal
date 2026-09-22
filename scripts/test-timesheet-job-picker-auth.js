@@ -153,6 +153,10 @@ function harness(responses) {
     // here — this suite is about the job picker's auth behaviour, and the
     // picker's own rules are covered in test-haul-timesheet-state.js.
     applyHaulUnitVisibility: () => {},
+    // And it re-offers the block's machines, because each division keeps its
+    // own equipment list. Stubbed for the same reason as the line above — the
+    // narrowing's own rules are covered in test-timesheet-equipment.js.
+    applyEquipDivision: () => {},
     truckUnitRosterLoad: () => Promise.resolve(null),
     truckUnitOptionsFill: () => {},
     truckUnitHintsRefresh: () => {},
