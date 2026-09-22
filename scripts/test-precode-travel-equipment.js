@@ -763,6 +763,25 @@ console.log('\nThe pickup follows the drive as the foreman corrects it');
   typeTravelHours(rows, ti, '1');
   eq('and stops the moment he types his own figure', rows[ti].equip_hours, '3');
 
+  // CLEARING the drive on a day whose pickup the page seated is not an error
+  // and does not take the machine with it. The truck ran; nobody is being paid
+  // for a drive. That is the same shape as a day whose timesheet filed no
+  // travel at all, which this feature already treats as correct — and a
+  // "fall back to his stated hours" rule here would resurrect a figure he had
+  // just cleared. To take the pickup off he clears the machine box, which
+  // clears its hours with it.
+  const seated = defaultRows({ computed_hours: 9, travel_hours: 2,
+                               equipment_used: [{ name: 'Pickup Truck', hours: 2 }] });
+  const si = seated.findIndex(cod.isTravelRow);
+  seated[si].cost_code = 'Mobilization'; seated[si].sub_code = 'Travel';
+  seated[0].cost_code = '101'; seated[0].sub_code = 'Mowing';
+  typeTravelHours(seated, si, '');
+  eq('clearing the drive leaves the machine and its hours alone', seated[si].equip_hours, '2');
+  assert('and the day is still saveable',
+    !save({ computed_hours: 9, travel_hours: 2 }, harvest(seated)).err,
+    save({ computed_hours: 9, travel_hours: 2 }, harvest(seated)).err);
+  eq('billing the truck with no drive under it', save({ computed_hours: 9, travel_hours: 2 }, seated).travel_hours, 0);
+
   // A drive that does not exist is not a zero-hour drive: the link waits for
   // one rather than levelling his stated figure to nothing, and relights by
   // itself when he types it.
