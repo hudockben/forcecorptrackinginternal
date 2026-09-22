@@ -37,6 +37,9 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const SRC  = fs.readFileSync(path.join(ROOT, 'tracker.html'), 'utf8');
 
+// Top-level await so the async checks (the deadline, the fake client) read in
+// line with the rest rather than nesting the whole file in a callback.
+
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
   if (cond) { passed++; console.log(`  ✓ ${label}`); }
@@ -249,7 +252,10 @@ console.log('\nPer-region pulls');
   assert('the prompt names its own region',   prompt.includes('Western Pennsylvania'));
   assert('the prompt names no other region',  !prompt.includes('Eastern Ohio') && !prompt.includes('Western New York'));
   assert('the prompt asks for the score parts', prompt.includes('winner_score') && prompt.includes('loser_score'));
-  assert('five searches per region', news.MAX_SEARCHES === 5);
+  // These two are a latency budget, not a preference — see the note in
+  // api/lib/crm-news.js. Raising either is what put the pull over 60 seconds.
+  assert('three searches per region', news.MAX_SEARCHES === 3);
+  assert('ten results per region',    news.MAX_RESULTS === 10);
 
   // The region tag comes from which call this was, not from the model: it is
   // the one field already known for certain, and the tab filters on it.
@@ -334,5 +340,97 @@ console.log('\nTab wiring and columns');
     !fs.readFileSync(path.join(ROOT, 'paving.html'), 'utf8').includes('data-crm-tab="news"'));
 }
 
-console.log(`\n${failed ? '✗' : '✓'} ${passed} passed, ${failed} failed\n`);
-process.exit(failed ? 1 : 0);
+/* ── 4c. The request that has to fit in 60 seconds ───────────────────────── */
+async function latencyBudget() {
+  console.log('\nLatency budget');
+  const news = require(path.join(ROOT, 'api', 'lib', 'crm-news.js'));
+  const today = new Date('2026-09-22T12:00:00Z');
+
+  const reply = text => ({ stop_reason: 'end_turn', content: [{ type: 'text', text }] });
+  const body  = JSON.stringify({ items: [{
+    date: '2026-09-19', sport: 'Football', winner: 'Indiana', winner_score: '30',
+    loser: 'Fort Cherry', loser_score: '25',
+    headline: 'Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25.',
+    source_url: 'https://example.com/g',
+  }] });
+
+  /** A stand-in for the Anthropic client that records what it was asked. */
+  function fake(handler) {
+    const calls = [];
+    return { calls, messages: { create: async req => { calls.push(req); return handler(req, calls.length); } } };
+  }
+
+  // Three searches, ten results, low effort. Each of these is why the request
+  // fits inside the function's ceiling instead of dying at the gateway.
+  {
+    const c = fake(() => reply(body));
+    const out = await news.pullNews(c, { region: 'wpa', today });
+    const req = c.calls[0];
+    assert('the pull asks for at most three searches', req.tools[0].max_uses === 3, String(req.tools[0].max_uses));
+    assert('the pull runs at low effort', req.output_config && req.output_config.effort === 'low',
+      JSON.stringify(req.output_config));
+    assert('the pull uses the current search tool', req.tools[0].type === 'web_search_20260209');
+    assert('the prompt caps the result count', /at most 3 searches/.test(req.messages[0].content));
+    assert('the reply is parsed into items', out.items.length === 1 && out.items[0].winner === 'Indiana');
+    assert('the item is tagged with the region asked for', out.items[0].region === 'Western PA');
+  }
+
+  // An API surface that does not know `effort` rejects the whole request. It
+  // must cost the speed, not the answer.
+  {
+    let first = true;
+    const c = fake(() => {
+      if (first) { first = false; throw Object.assign(new Error('bad request'), { status: 400 }); }
+      return reply(body);
+    });
+    const out = await news.pullNews(c, { region: 'wpa', today });
+    assert('a rejected effort is dropped, not fatal', out.items.length === 1);
+    assert('the retry carries no effort', !c.calls[1].output_config);
+    assert('the retry keeps the search tool', c.calls[1].tools[0].type === 'web_search_20260209');
+  }
+
+  // Same for the dated search tool, which is the one that must not be lost
+  // quietly — without a search there is nothing to report.
+  {
+    let n = 0;
+    const c = fake(() => {
+      if (++n <= 2) throw Object.assign(new Error('bad request'), { status: 400 });
+      return reply(body);
+    });
+    const out = await news.pullNews(c, { region: 'eoh', today });
+    assert('the basic search tool is the last resort', c.calls[2].tools[0].type === 'web_search_20250305');
+    assert('and it still returns results', out.items.length === 1);
+  }
+
+  // A non-400 is a real failure and must surface, not be swallowed as empty.
+  {
+    const c = fake(() => { throw Object.assign(new Error('boom'), { status: 500 }); });
+    let threw = false;
+    try { await news.pullNews(c, { region: 'wny', today }); } catch { threw = true; }
+    assert('a server error is raised, not reported as no news', threw);
+  }
+
+  // The deadline is what turns a gateway 504 into a sentence.
+  {
+    const slow = new Promise(r => setTimeout(r, 400));
+    let caught = null;
+    try { await news.withDeadline(slow, 40); } catch (e) { caught = e; }
+    assert('a slow pull loses the race', !!caught);
+    assert('and says it was a deadline, not a crash', caught && caught.deadline === true);
+
+    const quick = await news.withDeadline(Promise.resolve('done'), 500);
+    assert('a quick pull is untouched', quick === 'done');
+
+    let real = null;
+    try { await news.withDeadline(Promise.reject(new Error('nope')), 500); } catch (e) { real = e; }
+    assert('a real failure is not relabelled a deadline', real && real.message === 'nope' && !real.deadline);
+  }
+}
+
+latencyBudget().then(() => {
+  console.log(`\n${failed ? '✗' : '✓'} ${passed} passed, ${failed} failed\n`);
+  process.exit(failed ? 1 : 0);
+}).catch(err => {
+  console.error('\n✗ the latency-budget checks threw:', err.message);
+  process.exit(1);
+});

@@ -8051,8 +8051,11 @@ async function loadCrmNews() {
  * that asked for it.
  */
 async function _crmNewsPullRegion(region, force) {
+  // A backstop only. The server now stops itself at 45s and answers in words,
+  // so this should never fire — it exists for the case the response itself
+  // never arrives, which would otherwise leave the button spinning forever.
   const ctl   = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 90000);
+  const timer = setTimeout(() => ctl.abort(), 70000);
   try {
     const r = await fetch(`${API_BASE}/ai/crm-news`, {
       method:  'POST',

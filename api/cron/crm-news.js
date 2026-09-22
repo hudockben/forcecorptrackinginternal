@@ -97,7 +97,11 @@ async function runNewsPull(sql, client, opts = {}) {
     // region that wrote nothing, and the time it spent is gone either way.
     if (Date.now() - started > budget) { result.skipped.push(region.key); continue; }
     try {
-      const { items, searchError } = await news.pullNews(client, { region: region.key, today });
+      // Each region gets what is left of the budget, so one slow search
+      // cannot take the whole night's run down with it.
+      const left = Math.max(5000, budget - (Date.now() - started));
+      const { items, searchError } = await news.withDeadline(
+        news.pullNews(client, { region: region.key, today }), left);
       result.regions.push({ region: region.key, found: items.length, ...(searchError ? { searchError } : {}) });
       if (items.length) {
         gathered.rows.push(...items);

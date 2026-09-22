@@ -22,9 +22,14 @@ const news = require('../lib/crm-news');
 
 const NEWS_KEY = 'fct_crm_news';
 
-// One pull is five web searches. A refresh button that can be leaned on is a
-// bill, so a region pulled this recently returns the stored hub untouched.
+// A refresh button that can be leaned on is a bill, so a region pulled this
+// recently returns the stored hub untouched.
 const MIN_REFRESH_MS = 3 * 60 * 1000;
+
+// Vercel kills this function at maxDuration (60s, set in vercel.json) and the
+// caller gets a bodiless 504. Stopping first leaves the handler alive to say
+// so — and to leave the stored hub exactly where it was.
+const DEADLINE_MS = 45000;
 
 async function readHub(sql, scopedKey) {
   try {
@@ -74,7 +79,8 @@ module.exports = async (req, res) => {
 
   try {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const { items, searchError } = await news.pullNews(client, { region: region.key, today: new Date() });
+    const { items, searchError } = await news.withDeadline(
+      news.pullNews(client, { region: region.key, today: new Date() }), DEADLINE_MS);
 
     // A pull that found nothing keeps the stored hub and says so, rather than
     // writing an empty list over a week of usable openers.
@@ -106,6 +112,17 @@ module.exports = async (req, res) => {
     return res.json({ ...value, region: region.label, found: items.length });
 
   } catch (err) {
+    // Running long is not a crash. Say it plainly, keep the stored hub, and
+    // answer 200 — a 504 from the gateway would say none of that.
+    if (err && err.deadline) {
+      console.warn('[ai/crm-news] deadline:', region.key);
+      return res.json({
+        ...stored,
+        region: region.label,
+        found:  0,
+        warning: `${region.label} took longer than the server allows — try again, or leave it to the morning run.`,
+      });
+    }
     console.error('[ai/crm-news] pull failed:', region.key, err.message);
     return res.status(500).json({ error: `${region.label} pull failed`, detail: err.message });
   }

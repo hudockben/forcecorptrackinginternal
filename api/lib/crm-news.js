@@ -51,19 +51,43 @@ const REGIONS = [
 
 const REGION_LABELS = REGIONS.map(r => r.label);
 
-// How far back a pull looks. A fortnight covers a missed week of crons and
-// still reads as "recent" in an email; beyond that an opener sounds stale.
-const LOOKBACK_DAYS = 14;
+// How far back a pull looks. Ten days covers a missed week of crons and still
+// reads as "recent" in an email; beyond that an opener sounds stale, and a
+// wider window is more scoreboard for the model to sift inside a fixed budget.
+const LOOKBACK_DAYS = 10;
 
 // Items kept in the hub. Past this, the tab is a scroll rather than a list.
 const MAX_ITEMS   = 150;
 const RETAIN_DAYS = 45;
 
-// Searches per region. Five covers a weekend scoreboard; the marginal result
-// after that is another way of phrasing the same Friday night.
-const MAX_SEARCHES = 5;
+/**
+ * Searches per region, and results asked for.
+ *
+ * These are a latency budget, not a taste preference. The function this runs
+ * in is killed at 60 seconds, and every search plus every line of JSON spends
+ * some of that — five searches and twenty results did not fit, and a request
+ * that does not fit returns a gateway error with nothing written, which is
+ * strictly worse than eight good games. Three searches and ten results land
+ * inside the budget with room to spare; the cron running daily and the merge
+ * being additive is what makes a smaller pull add up to a full hub.
+ */
+const MAX_SEARCHES = 3;
+const MAX_RESULTS   = 10;
 
 const MODEL = 'claude-opus-5';
+
+/**
+ * Low effort, deliberately.
+ *
+ * This is an extraction job — read a scoreboard, write the line — not a
+ * reasoning one, and on Claude Opus 5 effort is the lever that decides how
+ * long a turn takes. At the default the model deliberates over which games to
+ * include and runs past the function's ceiling; at low it searches, formats,
+ * and returns. The accuracy that matters here is enforced by the prompt's
+ * "drop anything you cannot source" rule and by cleanItems, not by thinking
+ * harder about a box score.
+ */
+const EFFORT = 'low';
 
 /**
  * Anthropic's current web search tool. The dated `_20260209` variant does its
@@ -74,6 +98,28 @@ const SEARCH_TOOL       = { type: 'web_search_20260209', name: 'web_search', max
 const SEARCH_TOOL_BASIC = { type: 'web_search_20250305', name: 'web_search', max_uses: MAX_SEARCHES };
 
 function isoDay(d) { return new Date(d).toISOString().slice(0, 10); }
+
+/**
+ * Gives a pull a deadline of our own, shorter than the platform's.
+ *
+ * Without this the only limit is the 60 seconds the function gets, and
+ * overrunning it means the gateway kills the invocation mid-flight: the caller
+ * receives a 504 with no body, the code after the call never runs, and there
+ * is nowhere to say what happened. Losing the race on our own terms leaves the
+ * handler alive to answer honestly and keep the stored hub on screen.
+ *
+ * The rejection carries `deadline: true` so a caller can tell "this took too
+ * long" apart from "this failed", which are different things to tell a user.
+ */
+function withDeadline(promise, ms) {
+  let timer;
+  const bell = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(Object.assign(new Error('the search did not finish in the time the server allows'), { deadline: true })),
+      ms);
+  });
+  return Promise.race([promise, bell]).finally(() => clearTimeout(timer));
+}
 
 function regionFor(key) {
   return REGIONS.find(r => r.key === key || r.label === key) || null;
@@ -87,7 +133,7 @@ function buildPrompt(region, today, lookbackDays) {
 
 Find games played between ${isoDay(since)} and ${isoDay(today)}. Cover football, soccer, baseball, softball, field hockey, lacrosse and track — the sports played on a field. Prefer schools big enough to have their own athletic field.
 
-Return up to 20 games. For each one, write ONE plain sentence a salesperson could open an email with, modelled exactly on this: "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25." — and also break the result out into its parts, so it can be shown as a scoreboard.
+Work quickly: at most ${MAX_SEARCHES} searches, then write the answer from what you found. Return up to ${MAX_RESULTS} games — the best-sourced ones. Do not keep searching for more. For each one, write ONE plain sentence a salesperson could open an email with, modelled exactly on this: "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25." — and also break the result out into its parts, so it can be shown as a scoreboard.
 
 Rules that matter more than coverage:
 - Only include a game you actually found a source for. If you cannot source the score, leave the game out. A wrong score in an outreach email is worse than no email.
@@ -228,25 +274,28 @@ async function pullNews(client, opts = {}) {
   const lookbackDays = opts.lookbackDays || LOOKBACK_DAYS;
 
   const messages = [{ role: 'user', content: buildPrompt(region, today, lookbackDays) }];
-  let tools = [SEARCH_TOOL];
+
+  // Two things this request uses may be unknown to an older API surface: the
+  // dated search tool and the effort setting. Either is rejected as a flat
+  // 400, so each gets dropped in turn rather than the whole pull failing over
+  // a parameter. Order matters — effort only changes how long the answer
+  // takes, the search tool decides whether there is an answer at all.
+  let tools  = [SEARCH_TOOL];
+  let effort = EFFORT;
   let message;
 
   for (let turn = 0; turn < 6; turn++) {
     try {
       message = await client.messages.create({
         model:      MODEL,
-        max_tokens: 8000,
+        max_tokens: 4000,
+        ...(effort ? { output_config: { effort } } : {}),
         tools,
         messages,
       });
     } catch (err) {
-      // An API surface that does not know the dated search tool rejects the
-      // request outright. Retry once on the basic variant rather than
-      // returning an empty hub.
-      if (err && err.status === 400 && tools[0] === SEARCH_TOOL) {
-        tools = [SEARCH_TOOL_BASIC];
-        continue;
-      }
+      if (err && err.status === 400 && effort) { effort = null; continue; }
+      if (err && err.status === 400 && tools[0] === SEARCH_TOOL) { tools = [SEARCH_TOOL_BASIC]; continue; }
       throw err;
     }
 
@@ -290,7 +339,8 @@ function mergeNews(existing, fresh, opts = {}) {
 }
 
 module.exports = {
-  REGIONS, REGION_LABELS, LOOKBACK_DAYS, MAX_ITEMS, RETAIN_DAYS, MAX_SEARCHES, MODEL,
-  regionFor, buildPrompt, parseItems, cleanItems, mergeNews, pullNews,
+  REGIONS, REGION_LABELS, LOOKBACK_DAYS, MAX_ITEMS, RETAIN_DAYS,
+  MAX_SEARCHES, MAX_RESULTS, EFFORT, MODEL,
+  regionFor, buildPrompt, parseItems, cleanItems, mergeNews, pullNews, withDeadline,
   searchFailure, textOf, stableId,
 };
