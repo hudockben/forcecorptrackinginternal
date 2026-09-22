@@ -2927,13 +2927,13 @@
     <div id="crm-dashboard-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
   </div>
   <div class="crm-sub-panel" id="crm-panel-people">
-    <div id="crm-people-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+    <div id="crm-people-root" style="padding:1.25rem 1rem"></div>
   </div>
   <div class="crm-sub-panel" id="crm-panel-companies">
-    <div id="crm-companies-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+    <div id="crm-companies-root" style="padding:1.25rem 1rem"></div>
   </div>
   <div class="crm-sub-panel" id="crm-panel-opportunities">
-    <div id="crm-opportunities-root" style="padding:1.25rem;max-width:1400px;margin:0 auto"></div>
+    <div id="crm-opportunities-root" style="padding:1.25rem 1rem"></div>
   </div>
 
   <div class="crm-sub-panel" id="crm-panel-lucius">
@@ -6727,8 +6727,9 @@ function _crmTagSel(p) {
   const opts = tagOpts.map(t =>
     `<option value="${t}" ${p.tag === t ? 'selected' : ''}>${t || '— tag —'}</option>`).join('');
   return `<select data-crm-id="${p.id}" data-crm-field="tag"
-    style="background:${bg};color:${fg};border:none;border-radius:12px;padding:0.2rem 0.55rem;
-           font-size:0.72rem;font-weight:600;cursor:pointer;outline:none;min-width:90px">${opts}</select>`;
+    style="background:${bg};color:${fg};border:none;border-radius:12px;padding:0.2rem 0.3rem 0.2rem 0.5rem;
+           font-size:0.72rem;font-weight:600;cursor:pointer;outline:none;
+           width:100%;min-width:0">${opts}</select>`;
 }
 
 function _crmStateSel(p) {
@@ -6736,14 +6737,17 @@ function _crmStateSel(p) {
     `<option value="${s}" ${p.state === s ? 'selected' : ''}>${s || '—'}</option>`).join('');
   return `<select data-crm-id="${p.id}" data-crm-field="state"
     style="background:var(--surface2);border:1px solid var(--border);border-radius:3px;
-           color:var(--text);font-size:0.8rem;outline:none;padding:0.1rem 0.2rem;width:74px">${opts}</select>`;
+           color:var(--text);font-size:0.8rem;outline:none;padding:0.1rem 0.2rem;
+           width:100%;min-width:0">${opts}</select>`;
 }
 
 function _crmInp(p, field, ph = '') {
   return `<input type="text" value="${esc(p[field] || '')}"
     data-crm-id="${p.id}" data-crm-field="${field}" placeholder="${ph}"
+    title="${esc(p[field] || '')}" oninput="this.title=this.value"
     style="width:100%;background:transparent;border:none;color:var(--text);
-           font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">`;
+           font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0;
+           text-overflow:ellipsis">`;
 }
 
 function _crmLinkInp(p, field, ph = '', isEmail = false) {
@@ -6754,10 +6758,12 @@ function _crmLinkInp(p, field, ph = '', isEmail = false) {
   return `<div style="display:flex;align-items:center;gap:3px;min-width:0">
     <input type="text" value="${esc(val)}"
       data-crm-id="${p.id}" data-crm-field="${field}" placeholder="${ph}"
+      title="${esc(val)}" oninput="this.title=this.value"
       style="flex:1;background:transparent;border:none;
              color:${val ? 'var(--blue)' : 'var(--muted)'};
              text-decoration:${val ? 'underline' : 'none'};
-             font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0">
+             font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0;
+             text-overflow:ellipsis">
     <a id="crm-lnk-${p.id}-${field}" href="${esc(href)}" target="_blank" rel="noopener"
       style="color:var(--blue);font-size:0.8rem;flex-shrink:0;${val ? '' : 'display:none'}"
       title="${esc(val)}">↗</a>
@@ -6768,8 +6774,9 @@ function renderCrmPeopleTab() {
   const root = document.getElementById('crm-people-root');
   if (!root) return;
 
-  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               overflow:hidden;text-overflow:ellipsis;
                border-bottom:1px solid var(--border);background:var(--surface2)`;
   const th = label => `<th style="${thS}">${label}</th>`;
   const fi = f => {
@@ -6781,9 +6788,9 @@ function renderCrmPeopleTab() {
                font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
     </th>`;
   };
-  const td = (content, minW = '') =>
-    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
-               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+  const td = content =>
+    `<td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;overflow:hidden">${content}</td>`;
 
   const visible    = _crmApplyFilter(crmPeople, _crmPeopleFilter);
   const isFiltered = visible.length !== crmPeople.length;
@@ -6792,20 +6799,20 @@ function renderCrmPeopleTab() {
   const rows = visible.length
     ? visible.map(p => `<tr>
         ${td(_crmTagSel(p))}
-        ${td(_crmInp(p, 'name',         'Name'),        '130px')}
-        ${td(_crmInp(p, 'company',      'Company'),     '120px')}
-        ${td(_crmLinkInp(p, 'work_email',   'email@…', true), '155px')}
-        ${td(_crmInp(p, 'title',        'Title'),       '100px')}
-        ${td(_crmInp(p, 'contact_type', 'Type'),        '100px')}
-        ${td(_crmInp(p, 'work_phone',   'Phone'),       '110px')}
-        ${td(_crmLinkInp(p, 'work_website', 'https://'),       '140px')}
-        ${td(_crmInp(p, 'address',      'Address'),     '150px')}
-        ${td(_crmInp(p, 'city',         'City'),        '100px')}
+        ${td(_crmInp(p, 'name',         'Name'))}
+        ${td(_crmInp(p, 'company',      'Company'))}
+        ${td(_crmLinkInp(p, 'work_email',   'email@…', true))}
+        ${td(_crmInp(p, 'title',        'Title'))}
+        ${td(_crmInp(p, 'contact_type', 'Type'))}
+        ${td(_crmInp(p, 'work_phone',   'Phone'))}
+        ${td(_crmLinkInp(p, 'work_website', 'https://'))}
+        ${td(_crmInp(p, 'address',      'Address'))}
+        ${td(_crmInp(p, 'city',         'City'))}
         ${td(_crmStateSel(p))}
-        ${td(_crmInp(p, 'zip',          'Zip'),          '62px')}
-        ${td(_crmLinkInp(p, 'linkedin',     'LinkedIn URL'),    '140px')}
-        ${td(_crmInp(p, 'description',  'Description'), '200px')}
-        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+        ${td(_crmInp(p, 'zip',          'Zip'))}
+        ${td(_crmLinkInp(p, 'linkedin',     'LinkedIn URL'))}
+        ${td(_crmInp(p, 'description',  'Description'))}
+        <td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
           <button class="del-btn" data-crm-person-id="${p.id}">✕</button>
         </td>
       </tr>`).join('')
@@ -6825,14 +6832,15 @@ function renderCrmPeopleTab() {
       </div>
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
-      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+      <table style="width:100%;min-width:1200px;table-layout:fixed;border-collapse:collapse;font-size:0.82rem">
+        <colgroup><col style="width:5.5%"><col style="width:8.5%"><col style="width:9%"><col style="width:10%"><col style="width:6.5%"><col style="width:6%"><col style="width:7%"><col style="width:8.5%"><col style="width:9.5%"><col style="width:6%"><col style="width:4%"><col style="width:3.5%"><col style="width:7%"><col style="width:6.5%"><col style="width:2.5%"></colgroup>
         <thead>
           <tr>
             ${th('Tag')}${th('Name')}${th('Company')}${th('Work Email')}
             ${th('Title')}${th('Contact Type')}${th('Work Phone')}${th('Work Website')}
             ${th('Address')}${th('City')}${th('State')}${th('Zip')}
             ${th('LinkedIn')}${th('Description')}
-            <th style="${thS};width:30px"></th>
+            <th style="${thS}"></th>
           </tr>
           <tr>
             ${fi('tag')}${fi('name')}${fi('company')}${fi('work_email')}
@@ -6883,8 +6891,9 @@ function renderCrmCompaniesTab() {
   const root = document.getElementById('crm-companies-root');
   if (!root) return;
 
-  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               overflow:hidden;text-overflow:ellipsis;
                border-bottom:1px solid var(--border);background:var(--surface2)`;
   const th = label => `<th style="${thS}">${label}</th>`;
   const fi = f => {
@@ -6896,9 +6905,9 @@ function renderCrmCompaniesTab() {
                font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
     </th>`;
   };
-  const td = (content, minW = '') =>
-    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
-               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+  const td = content =>
+    `<td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;overflow:hidden">${content}</td>`;
 
   const visible    = _crmApplyFilter(crmCompanies, _crmCompanyFilter);
   const isFiltered = visible.length !== crmCompanies.length;
@@ -6907,18 +6916,18 @@ function renderCrmCompaniesTab() {
   const rows = visible.length
     ? visible.map(c => `<tr>
         ${td(_crmTagSel(c))}
-        ${td(_crmInp(c, 'company_name',  'Company Name'),  '150px')}
-        ${td(_crmInp(c, 'contact_type',  'Type'),          '110px')}
-        ${td(_crmInp(c, 'work_phone',    'Phone'),         '115px')}
-        ${td(_crmInp(c, 'email_domain',  'company.com'),   '130px')}
-        ${td(_crmLinkInp(c, 'work_website', 'https://'),   '145px')}
-        ${td(_crmInp(c, 'address',       'Address'),       '150px')}
-        ${td(_crmInp(c, 'city',          'City'),          '100px')}
+        ${td(_crmInp(c, 'company_name',  'Company Name'))}
+        ${td(_crmInp(c, 'contact_type',  'Type'))}
+        ${td(_crmInp(c, 'work_phone',    'Phone'))}
+        ${td(_crmInp(c, 'email_domain',  'company.com'))}
+        ${td(_crmLinkInp(c, 'work_website', 'https://'))}
+        ${td(_crmInp(c, 'address',       'Address'))}
+        ${td(_crmInp(c, 'city',          'City'))}
         ${td(_crmStateSel(c))}
-        ${td(_crmInp(c, 'zip',           'Zip'),            '62px')}
-        ${td(_crmInp(c, 'field_type',    'Field Type'),    '110px')}
-        ${td(_crmInp(c, 'field_size',    'Field Size'),    '100px')}
-        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+        ${td(_crmInp(c, 'zip',           'Zip'))}
+        ${td(_crmInp(c, 'field_type',    'Field Type'))}
+        ${td(_crmInp(c, 'field_size',    'Field Size'))}
+        <td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
           <button class="del-btn" data-crm-company-id="${c.id}">✕</button>
         </td>
       </tr>`).join('')
@@ -6938,13 +6947,14 @@ function renderCrmCompaniesTab() {
       </div>
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
-      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+      <table style="width:100%;min-width:1080px;table-layout:fixed;border-collapse:collapse;font-size:0.82rem">
+        <colgroup><col style="width:6%"><col style="width:13%"><col style="width:8%"><col style="width:8.5%"><col style="width:10%"><col style="width:10%"><col style="width:12%"><col style="width:7%"><col style="width:4.5%"><col style="width:4%"><col style="width:7.5%"><col style="width:7%"><col style="width:2.5%"></colgroup>
         <thead>
           <tr>
             ${th('Tag')}${th('Company Name')}${th('Contact Type')}${th('Work Phone')}
             ${th('Email Domain')}${th('Work Website')}${th('Address')}${th('City')}
             ${th('State')}${th('Zip')}${th('Field Type')}${th('Field Size')}
-            <th style="${thS};width:30px"></th>
+            <th style="${thS}"></th>
           </tr>
           <tr>
             ${fi('tag')}${fi('company_name')}${fi('contact_type')}${fi('work_phone')}
@@ -7017,7 +7027,7 @@ const _CRM_PRIORITY_COLORS = {
   'Critical': { bg: '#7f1d1d', color: '#fff' },
 };
 
-function _crmPillSel(o, field, opts, colorMap, minW = '110px') {
+function _crmPillSel(o, field, opts, colorMap) {
   const c = colorMap[o[field]];
   const bg = c ? c.bg : 'var(--surface2)', fg = c ? c.color : 'var(--muted)';
   // Include any imported value not in the standard list so it renders instead of blank
@@ -7027,16 +7037,17 @@ function _crmPillSel(o, field, opts, colorMap, minW = '110px') {
   return `<select data-crm-id="${o.id}" data-crm-field="${field}"
     data-crm-colormap="${field}"
     style="background:${bg};color:${fg};border:none;border-radius:12px;
-           padding:0.2rem 0.55rem;font-size:0.72rem;font-weight:600;
-           cursor:pointer;outline:none;min-width:${minW}">${optHTML}</select>`;
+           padding:0.2rem 0.3rem 0.2rem 0.5rem;font-size:0.72rem;font-weight:600;
+           cursor:pointer;outline:none;width:100%;min-width:0">${optHTML}</select>`;
 }
 
 function renderCrmOpportunitiesTab() {
   const root = document.getElementById('crm-opportunities-root');
   if (!root) return;
 
-  const thS = `padding:0.45rem 0.6rem;text-align:left;font-size:0.63rem;color:var(--muted);
+  const thS = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem;color:var(--muted);
                text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;
+               overflow:hidden;text-overflow:ellipsis;
                border-bottom:1px solid var(--border);background:var(--surface2)`;
   const th = label => `<th style="${thS}">${label}</th>`;
   const fi = f => {
@@ -7048,9 +7059,9 @@ function renderCrmOpportunitiesTab() {
                font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
     </th>`;
   };
-  const td = (content, minW = '') =>
-    `<td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);
-               vertical-align:middle;${minW ? 'min-width:' + minW + ';' : ''}">${content}</td>`;
+  const td = content =>
+    `<td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);
+               vertical-align:middle;overflow:hidden">${content}</td>`;
 
   const numInp = (o, field, ph = '') =>
     `<input type="number" value="${esc(o[field] || '')}"
@@ -7061,8 +7072,8 @@ function renderCrmOpportunitiesTab() {
   const dateInp = (o, field) =>
     `<input type="date" value="${esc(o[field] || '')}"
       data-crm-id="${o.id}" data-crm-field="${field}"
-      style="background:transparent;border:none;color:var(--text);
-             font-size:0.8rem;outline:none;padding:0.15rem 0;cursor:pointer">`;
+      style="width:100%;min-width:0;background:transparent;border:none;color:var(--text);
+             font-size:0.78rem;outline:none;padding:0.15rem 0;cursor:pointer">`;
 
   const visible    = _crmApplyFilter(crmOpportunities, _crmOppFilter);
   const isFiltered = visible.length !== crmOpportunities.length;
@@ -7071,32 +7082,32 @@ function renderCrmOpportunitiesTab() {
   const rows = visible.length
     ? visible.map(o => `<tr>
         ${td(_crmTagSel(o))}
-        ${td(_crmInp(o, 'name',         'Opportunity name'),  '150px')}
-        ${td(_crmInp(o, 'company',      'Company'),           '120px')}
-        ${td(_crmPillSel(o, 'stage',    _CRM_STAGES,    _CRM_STAGE_COLORS,    '120px'))}
-        <td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;min-width:100px">
-          <div style="display:flex;align-items:center;gap:2px">
-            <span style="color:var(--muted);font-size:0.8rem">$</span>
+        ${td(_crmInp(o, 'name',         'Opportunity name'))}
+        ${td(_crmInp(o, 'company',      'Company'))}
+        ${td(_crmPillSel(o, 'stage',    _CRM_STAGES,    _CRM_STAGE_COLORS))}
+        <td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:2px;min-width:0">
+            <span style="color:var(--muted);font-size:0.8rem;flex-shrink:0">$</span>
             ${numInp(o, 'value', '0.00')}
           </div>
         </td>
-        ${td(dateInp(o, 'close_date'),  '120px')}
-        <td style="padding:0.3rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;min-width:75px">
-          <div style="display:flex;align-items:center;gap:2px">
+        ${td(dateInp(o, 'close_date'))}
+        <td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:2px;min-width:0">
             ${numInp(o, 'win_pct', '0')}
-            <span style="color:var(--muted);font-size:0.8rem">%</span>
+            <span style="color:var(--muted);font-size:0.8rem;flex-shrink:0">%</span>
           </div>
         </td>
-        ${td(_crmPillSel(o, 'status',   _CRM_STATUSES,  _CRM_STATUS_COLORS,   '90px'))}
-        ${td(_crmInp(o, 'loss_reason',  'Reason…'),           '130px')}
-        ${td(_crmPillSel(o, 'priority', _CRM_PRIORITIES, _CRM_PRIORITY_COLORS, '95px'))}
-        ${td(_crmInp(o, 'source',       'Source'),            '110px')}
-        ${td(_crmInp(o, 'description',  'Description'),       '200px')}
-        <td style="padding:0.25rem 0.4rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
+        ${td(_crmPillSel(o, 'status',   _CRM_STATUSES,  _CRM_STATUS_COLORS))}
+        ${td(_crmInp(o, 'loss_reason',  'Reason…'))}
+        ${td(_crmPillSel(o, 'priority', _CRM_PRIORITIES, _CRM_PRIORITY_COLORS))}
+        ${td(_crmInp(o, 'source',       'Source'))}
+        ${td(_crmInp(o, 'description',  'Description'))}
+        <td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
           <button class="del-btn" data-crm-opp-id="${o.id}">✕</button>
         </td>
       </tr>`).join('')
-    : `<tr><td colspan="14" style="padding:2.5rem;text-align:center;color:var(--muted)">
+    : `<tr><td colspan="13" style="padding:2.5rem;text-align:center;color:var(--muted)">
          ${isFiltered ? 'No opportunities match the current filters.' : 'No opportunities yet — click <strong style="color:var(--text)">+ Add Opportunity</strong> to start.'}
        </td></tr>`;
 
@@ -7112,13 +7123,14 @@ function renderCrmOpportunitiesTab() {
       </div>
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
-      <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+      <table style="width:100%;min-width:1080px;table-layout:fixed;border-collapse:collapse;font-size:0.82rem">
+        <colgroup><col style="width:7.5%"><col style="width:10.5%"><col style="width:11%"><col style="width:9.5%"><col style="width:5.5%"><col style="width:9%"><col style="width:5%"><col style="width:6.5%"><col style="width:6%"><col style="width:7.5%"><col style="width:9.5%"><col style="width:10%"><col style="width:2.5%"></colgroup>
         <thead>
           <tr>
             ${th('Tag')}${th('Name')}${th('Company')}${th('Stage')}${th('Value')}
             ${th('Close Date')}${th('Win %')}${th('Status')}${th('Loss Reason')}
             ${th('Priority')}${th('Source')}${th('Description')}
-            <th style="${thS};width:30px"></th>
+            <th style="${thS}"></th>
           </tr>
           <tr>
             ${fi('tag')}${fi('name')}${fi('company')}${fi('stage')}${fi('value')}
