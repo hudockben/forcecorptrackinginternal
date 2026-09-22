@@ -91,13 +91,21 @@ function precode(entry, body) {
     delete o.dest; delete o.is_haul; delete o.haul_type;
     return o;
   });
-  let proposedTravel = Number(entry.travel_hours) || 0;
+  // NAMED vs RESOLVED, and the endpoint keeps them apart on purpose: null
+  // means the body said nothing about the drive, and validateSplit's
+  // travel-rows rule is gated on that. Handing it the resolved figure instead
+  // — which this mirror used to do — made the suite enforce a rule on bodies
+  // the endpoint exempts, so it could not have caught the endpoint losing the
+  // exemption. The source pin below is what actually holds it.
+  let namedTravel = null;
   if (body.travel_hours != null && body.travel_hours !== '') {
     const t = Number(body.travel_hours);
     if (!Number.isFinite(t) || t < 0 || t > 24) return { err: 'travel_hours must be between 0 and 24' };
-    proposedTravel = Math.round(t * 100) / 100;
+    namedTravel = Math.round(t * 100) / 100;
   }
-  const { rows, error } = srv.validateSplit(clean, entry, proposedTravel);
+  const proposedTravel = namedTravel == null
+    ? Math.round((Number(entry.travel_hours) || 0) * 100) / 100 : namedTravel;
+  const { rows, error } = srv.validateSplit(clean, entry, namedTravel);
   if (error) return { err: error };
   for (let i = 0; i < rows.length; i++) {
     if (!String(rows[i].cost_code || '').trim()) return { err: `split[${i}] needs a cost code` };
@@ -105,7 +113,7 @@ function precode(entry, body) {
   }
   return {
     rows,
-    coded_for_hours:       srv.splitExpectedHours(entry, proposedTravel),
+    coded_for_hours:       srv.splitExpectedHours(entry, namedTravel),
     proposed_travel_hours: proposedTravel,
   };
 }
@@ -977,6 +985,122 @@ console.log('\nPayroll keeps the pickup level with the drive it approves');
     reopened[0].equip_hours, '1.5');
   typeTravelHours(reopened, 1, '1.5');
   eq('and leaves his own figure alone', reopened[1].equip_hours, '3');
+}
+
+console.log('\nOne spelling of "is this proposal stale"');
+{
+  // The branch redefined what a proposal ALLOCATES as work + the drive it
+  // names, and converted every reader but one. openSplitModal kept its own
+  // inline `work + entry.travel_hours`, and the two agreed only while the two
+  // drives did — so a payroll correction that moved the work hours by the same
+  // amount the proposed drive differs from the filed one (un-ticking a lunch
+  // break does exactly that) made that reader alone call a stale proposal
+  // fresh. It then pre-filled, and its travel row booked real on-site hours
+  // under the travel code at the standard rate on a prevailing job.
+  assert('openSplitModal measures staleness with the shared helper',
+    /&& !travelPending\s*\n\s*&& codedProposalStale\(entry\)\);/.test(payrSrc),
+    'openSplitModal has its own spelling of the rule again');
+
+  const e = { status: 'submitted', coded_source: 'precode',
+              computed_hours: 8.5, travel_hours: 0,
+              proposed_travel_hours: 0.5, coded_for_hours: 8.5, proposed_split: [{}] };
+  eq('the day the lunch break moved reads stale', pay.codedProposalStale(e), true);
+  eq('and is not mistaken for a drive waiting on a decision', pay.codedTravelPending(e), false);
+  eq('so Code Time agrees with payroll about it', cod.proposalStale(e), true);
+}
+
+console.log('\nA machine\'s own cost line is never a haul');
+{
+  // Code Time gives a machine past the first its own row: labour 0, machine and
+  // machine hours. Stamped with the day's haul answer it took the driver's
+  // truck in place of the machine it exists to bill — the job charged for a
+  // second truck and never for the iron that ran.
+  assert('the day\'s haul answer only lands on rows that carry a wage',
+    /!r\.is_travel && !r\.haul_type\s*\n\s*&& \(Number\(r\.labor_hours\) \|\| 0\) > 0\)/.test(payrSrc),
+    'a labour-0 machine row can be stamped as a haul again');
+  assert('and a labour-0 row is answered outright rather than left to the truck test',
+    /\(Number\(r\.labor_hours\) \|\| 0\) <= 0\)\s*\n\s*\.forEach\(r => \{ r\.haul_type = 'none'; r\.is_haul = false; \}\);/.test(payrSrc));
+  assert('the take-back flag asks the same question',
+    /_namedAutoEquip: splitFromProposal && fromCoder\s*\n\s*&& !r\.is_travel && \(Number\(r\.labor_hours\) \|\| 0\) > 0/.test(payrSrc));
+}
+
+console.log('\nA machine the foreman took off stays off');
+{
+  assert('the named-equipment prefill no longer runs over a coder\'s proposal',
+    /if \(defaultsWanted\) splitFillNamedEquipment\(\);/.test(payrSrc),
+    'a machine he deliberately cleared is put back by payroll');
+}
+
+console.log('\nThe drive\'s codes when the task changes under them');
+{
+  // TWO travel lines, so the pick genuinely has nothing to fall back on when
+  // the work names a task that pairs with neither. With only one the pick
+  // returns it whatever the task is, which is right and is a different case.
+  const CC = [
+    { cost_code: '101', sub_codes: ['Mowing',   '101 Travel'] },
+    { cost_code: '202', sub_codes: ['Seeding',  '202 Travel'] },
+    { cost_code: '303', sub_codes: ['Mulching'] },
+  ];
+  const rows = [
+    { kind: 'work',   cost_code: '', sub_code: '', code_source: '', labor_hours: '8' },
+    { kind: 'travel', is_travel: true, cost_code: '', sub_code: '', code_source: '', labor_hours: '1' },
+  ];
+  const run = (workCode) => {
+    rows[0].cost_code = workCode; rows[0].code_source = 'manual';
+    cod.setSheet({ rows, codes: CC }); cod.applyTravelCodes();
+  };
+  run('101');
+  eq('a task with a travel line fills the drive', rows[1].sub_code, '101 Travel');
+  run('303');
+  // Returning early on a null pick left the abandoned task's pair sitting on
+  // the drive, and it shipped as though the foreman had chosen it.
+  eq('a task with none CLEARS what the pick wrote rather than leaving it', rows[1].cost_code, '');
+  eq('sub code too', rows[1].sub_code, '');
+
+  // ...but only ever what the pick wrote.
+  rows[1].cost_code = 'Mobilization'; rows[1].sub_code = 'Travel'; rows[1].code_source = 'manual';
+  run('303');
+  eq('a pair he typed is not cleared out from under him', rows[1].cost_code, 'Mobilization');
+
+  // Text typed and not yet blurred reaches the row through harvestSheetDom with
+  // code_source still '' — the flag cannot see it, so the blank test must.
+  rows[1].cost_code = 'Mob'; rows[1].sub_code = ''; rows[1].code_source = '';
+  run('101');
+  eq('and neither is half-typed text the flag cannot see yet', rows[1].cost_code, 'Mob');
+}
+
+console.log('\nWhat a coder\'s own timesheet gives back');
+{
+  assert('a drive proposed on his day is scrubbed for anyone without the grant',
+    /e\.proposed_travel_hours = null;/.test(apiSrc));
+  assert('and so is the figure it can be subtracted out of',
+    /e\.coded_for_hours = null;/.test(apiSrc),
+    'coded_for_hours - computed_hours hands back the proposed drive');
+}
+
+console.log('\nA drive an approver moved somewhere else is answered');
+{
+  // The column means "nobody has acted on this yet". An approver who writes a
+  // DIFFERENT drive has acted — leaving the claim standing had payroll go on
+  // offering to apply it, a button whose whole effect is to undo the
+  // correction the same approver had just made.
+  assert('the entry edit drops a proposed drive it overrides',
+    /WHEN proposed_travel_hours IS NOT NULL\s*\n\s*AND \$\{data\.travel_hours\}::numeric IS DISTINCT FROM proposed_travel_hours\s*\n\s*THEN NULL/.test(apiSrc),
+    'an approver correcting the drive is still offered the old proposal');
+  assert('  and keeps it when the edit IS the proposal being applied',
+    /ELSE proposed_travel_hours END,/.test(apiSrc));
+}
+
+console.log('\nThe endpoint tells validateSplit what the body NAMED');
+{
+  // null means "the body said nothing about the drive", and the travel-rows
+  // rule is gated on it. Handing over the resolved figure instead enforces the
+  // rule on callers the endpoint exempts.
+  assert('precode passes namedTravel, not the resolved figure',
+    /validateSplit\(cleanSplit, existing, namedTravel\)/.test(apiSrc),
+    'the travel-rows rule now binds bodies that named no drive');
+  assert('while what is STORED is always a figure',
+    /const proposedTravel = namedTravel == null \? _r2\(existing\.travel_hours\) : namedTravel;/.test(apiSrc));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

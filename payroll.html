@@ -10360,10 +10360,21 @@
       // opens on defaults (those rows cannot balance until the entry changes),
       // but the note says what is being asked and offers to apply it.
       const travelPending = mode === 'approve' && codedTravelPending(entry);
+      // THE SHARED HELPER, not a second spelling. `required` above is work plus
+      // the FILED drive; what a proposal allocates is work plus the drive IT
+      // names, and codedProposalStale is the one place that rule lives. Left
+      // inline, the two agreed only while the two drives agreed — so a payroll
+      // correction that moved the work hours by the same amount the proposed
+      // drive differs from the filed one (un-ticking a lunch break does exactly
+      // that) made this reader alone call a stale proposal fresh. It then
+      // pre-filled, and its travel row booked real on-site hours under the
+      // travel code at the standard rate on a prevailing job, while the grid
+      // chip beside it said the codes no longer added up and bulk approve
+      // posted the card's template for the same day.
       const proposalStale = Boolean(
         proposedArr && proposedArr.length && proposedFor != null
         && !travelPending
-        && Math.abs(proposedFor - required) > 0.001);
+        && codedProposalStale(entry));
       splitFromProposal = Boolean(proposedArr && proposedArr.length && !proposalStale && !travelPending);
 
       document.getElementById('splitTitle').textContent =
@@ -10548,8 +10559,12 @@
           // anything that is not a pickup, and a machine he deliberately put on
           // the drive is his answer — the haul hazard is not there, because a
           // travel row is never a haul row.
+          // Work rows only, and only rows that carry a WAGE — a machine's own
+          // cost line has no labour for a truck to buy and is never a haul, so
+          // there is nothing on it for the take-back to take.
           _namedAutoEquip: splitFromProposal && fromCoder
-            && !r.is_travel && !!String(r.equipment || '').trim(),
+            && !r.is_travel && (Number(r.labor_hours) || 0) > 0
+            && !!String(r.equipment || '').trim(),
         }));
         // A PROPOSAL carries no haul answer of its own — a coder is not
         // allowed to give one, and the server strips the field rather than
@@ -10566,9 +10581,25 @@
         if (splitFromProposal) {
           const said = (entry && (entry.haul_type || '')) || '';
           if (said === 'on_site' || said === 'off_site') {
-            splitRows.filter(r => !r.is_travel && !r.haul_type)
+            // ROWS THAT CARRY A WAGE. The day's haul answer says the truck
+            // bought this man's labour, so it can only land where there is
+            // labour to buy — and a proposal now contains rows where there is
+            // none: Code Time gives a machine past the first its own cost line,
+            // labour 0, machine and machine hours. Stamped as a haul, that line
+            // took the driver's truck in place of the machine it exists to
+            // bill (splitDefaultHaulEquipment fills any haul row whose
+            // equipment is blank, and splitClearNamedOnHaul cleared the
+            // excavator first), so the job was billed for a second truck and
+            // never for the iron that ran.
+            splitRows.filter(r => !r.is_travel && !r.haul_type
+                                && (Number(r.labor_hours) || 0) > 0)
                      .forEach(r => { r.haul_type = said; });
           }
+          // And said outright for the rest, rather than left to
+          // splitSeedRowHaul — which falls through to "is there a machine on
+          // it?" on a haul day and would put every one of them straight back.
+          splitRows.filter(r => !r.is_travel && (Number(r.labor_hours) || 0) <= 0)
+                   .forEach(r => { r.haul_type = 'none'; r.is_haul = false; });
         }
         // And the question this modal now asks per row, answered from what was
         // approved rather than left blank. A reopened split must not make the
@@ -10666,7 +10697,15 @@
       // blank. Last, deliberately: the haul rules above own the truck on a
       // haul row, and this must fill the gaps they leave rather than get in
       // front of them.
-      if (defaultsWanted || proposalFills) splitFillNamedEquipment();
+      // NOT on a coder's proposal any more. The pass exists to fill blanks from
+      // what the operator named, and it was safe on a proposal while the server
+      // stripped equipment and every proposed row was blank by force. Code Time
+      // now seats those machines itself and lets the foreman take one off —
+      // so a blank on his rows is an answer, and re-filling it put back the
+      // machine he had just removed, on the one screen that is supposed to show
+      // what he said. The approver's own blanks were already exempt for exactly
+      // this reason; his are now too.
+      if (defaultsWanted) splitFillNamedEquipment();
       // The day's answer is the rows' now, so it cannot be settled until they
       // are. The note above was written from the driver's answer while the
       // lookups were in flight; this is what puts the approved one back.

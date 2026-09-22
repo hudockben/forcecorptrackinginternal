@@ -705,7 +705,6 @@
       const workRow = sheet.rows.find(r =>
         !isTravelRow(r) && !isEquipRow(r) && String(r.cost_code || '').trim());
       const pick = pickTravelCodes(sheet.codes, workRow ? workRow.cost_code : '');
-      if (!pick) return false;
       let changed = false;
       for (const r of sheet.rows) {
         if (!isTravelRow(r)) continue;
@@ -716,6 +715,27 @@
         // a foreman who cleared the cost code to type his own had it snap back
         // under his thumb before he could.
         if (r.code_source === 'manual') continue;
+        // AND NOT OVER TEXT HE HAS TYPED BUT NOT YET BLURRED. A cost code
+        // commits on blur, so what is in the box reaches the row through
+        // harvestSheetDom with code_source still '' — untouched as far as the
+        // flag is concerned, and this runs immediately after that harvest when
+        // the job's codes land. Anything already on a row this pass does not
+        // own is his; only a blank one is free. Same pair payroll guards with.
+        const blank = !String(r.cost_code || '').trim() && !String(r.sub_code || '').trim();
+        if (r.code_source !== 'auto' && !blank) continue;
+        // WHEN THE PICK GOES AWAY, so does what it wrote. Returning early left
+        // the abandoned task's pair sitting on the drive — a foreman who
+        // corrected the work row to a task with no travel line of its own
+        // shipped the previous task's travel code as though he had chosen it.
+        // An empty required cell costs a box to fill; a wrong task costs a
+        // re-code after approval.
+        if (!pick) {
+          if (r.code_source === 'auto') {
+            r.cost_code = ''; r.sub_code = ''; r.code_source = '';
+            changed = true;
+          }
+          continue;
+        }
         if (r.cost_code === pick.cost_code && r.sub_code === pick.sub_code) continue;
         r.cost_code   = pick.cost_code;
         r.sub_code    = pick.sub_code;

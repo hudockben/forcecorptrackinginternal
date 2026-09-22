@@ -4979,6 +4979,10 @@ module.exports = async (req, res) => {
           // about his paid hours that nobody has accepted yet, and reading it
           // back off his own timesheet would show him hours he is not owed.
           e.proposed_travel_hours = null;
+          // Nor the figure it can be subtracted out of. coded_for_hours is
+          // computed_hours + the proposed drive by construction, so leaving it
+          // hands back the same claim one subtraction later.
+          e.coded_for_hours = null;
         }
       }
       return res.json({ entries });
@@ -6999,8 +7003,21 @@ module.exports = async (req, res) => {
           -- Part of the same proposal, kept and dropped with it. An edit that
           -- moves the day to another job takes the drive somebody proposed for
           -- the old one with it — those were hours to a different site.
-          proposed_travel_hours = CASE WHEN ${keepCoding}::boolean
-                                       THEN proposed_travel_hours ELSE NULL END,
+          --
+          -- AND DROPPED WHEN THIS EDIT SETS THE DRIVE TO SOMETHING ELSE. The
+          -- column means "a figure nobody has acted on yet"; the moment an
+          -- approver writes a different one he HAS acted, and leaving the old
+          -- claim standing had payroll go on offering to apply it — an "apply
+          -- 2.00 h travel" button whose whole effect is to undo the correction
+          -- the same approver had just made. Applying the proposal writes the
+          -- proposed figure itself, so that path matches here and is kept,
+          -- which is what lets the proposal balance and pre-fill afterwards.
+          proposed_travel_hours = CASE
+            WHEN NOT ${keepCoding}::boolean THEN NULL
+            WHEN proposed_travel_hours IS NOT NULL
+             AND ${data.travel_hours}::numeric IS DISTINCT FROM proposed_travel_hours
+              THEN NULL
+            ELSE proposed_travel_hours END,
           coded_source       = CASE WHEN ${keepCoding}::boolean THEN coded_source     ELSE NULL END,
           -- How much of the day the truck bought, kept or dropped with the
           -- answer it describes. Cleared unconditionally, this had the same
