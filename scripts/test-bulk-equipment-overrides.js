@@ -73,6 +73,20 @@ vm.createContext(sandbox);
 const travelReSrc = (src.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0];
 if (!travelReSrc) throw new Error('payroll.html no longer defines TRAVEL_CODE_RE');
 vm.runInContext(travelReSrc, sandbox);
+// A coder may now propose a DRIVE the entry does not have, and both the
+// grouping and the coded-rows lookup below ask about it: such a day is set
+// aside rather than bulk-approved, because posting the card's template over it
+// would discard his codes and his travel figure at once. `codeR2` is an arrow
+// const, so it comes across by its own source line rather than through grab().
+const codeR2Src = (src.match(/const codeR2 = [^\n]+/) || [])[0];
+if (!codeR2Src) throw new Error('payroll.html no longer defines codeR2');
+vm.runInContext(codeR2Src, sandbox);
+vm.runInContext([
+  'codedProposedTravel(e) {',
+  'codedRequiredHours(e) {',
+  'codedTravelPending(e) {',
+  'codedProposalStale(e) {',
+].map(grab).join('\n\n'), sandbox);
 vm.runInContext([
   'buildBulkGroups(entries) {',
   // Picking a cost code now also offers the travel leg its code, so the

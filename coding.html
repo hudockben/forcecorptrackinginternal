@@ -120,6 +120,9 @@
       display:flex; flex-direction:column; gap:0.5rem; background:var(--surface);
     }
     .srow.travel { border-left:3px solid var(--blue); }
+    /* A machine's own line. Green because it is not somebody's time: its hours
+       bill the job for iron, and the tally below counts none of them. */
+    .srow.equip { border-left:3px solid var(--green); }
     .srow-top { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; }
     .srow-tag { font-size:0.64rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); font-weight:700; }
     .srow-del {
@@ -135,6 +138,18 @@
     }
     .fld select:focus, .fld input:focus { outline:none; border-color:var(--accent); }
     .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; }
+    .fld .hint { font-size:0.68rem; color:var(--muted); font-weight:400; text-transform:none; letter-spacing:0; }
+    .fld label .req { color:var(--accent); }
+    /* The machine block, set apart from the codes above it so a row reads as
+       two questions — what phase, and what iron — rather than six boxes. */
+    .eqbox {
+      border-top:1px dashed var(--border); padding-top:0.5rem;
+      display:flex; flex-direction:column; gap:0.5rem;
+    }
+    .eqbox .eqhead { font-size:0.64rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); font-weight:700; }
+    .addrow { display:flex; gap:0.5rem; }
+    .addrow .btn.add { flex:1; }
+    .tally .sub { display:block; font-size:0.66rem; color:var(--muted); font-weight:400; }
 
     .btn {
       border:none; border-radius:9px; padding:0.75rem 1.1rem; font-size:0.82rem;
@@ -253,20 +268,65 @@
       toastT = setTimeout(() => el.classList.remove('show'), 2600);
     }
 
+    const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
+    /** The day's WORK hours — the punch clock, less the break. Fixed: nothing
+     *  on this page can move it, and every work row on the sheet has to add up
+     *  to exactly this. */
+    function workHours(e) { return r2(e.computed_hours); }
+
+    /** The drive AS FILED, which is the employee's own answer and the figure
+     *  the day currently pays. The coder may propose a different one — see
+     *  sheetTravel — and until a supervisor applies it, this is still the
+     *  number that counts. */
+    function filedTravel(e) { return r2(e.travel_hours); }
+
     /** The figure a split has to add up to — the same one the server balances
      *  against (splitExpectedHours in api/timesheet-entries.js). Work plus
-     *  travel, because a travel row is part of the day's allocation. */
-    function requiredHours(e) {
-      return Math.round(((Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0)) * 100) / 100;
+     *  travel, because a travel row is part of the day's allocation.
+     *
+     *  `travel` overrides the filed drive, which is what a sheet proposing its
+     *  own passes. Left out, this is the day exactly as filed. */
+    function requiredHours(e, travel) {
+      // `== null` and nothing cleverer — see splitExpectedHours in
+      // api/timesheet-entries.js. Number.isFinite(Number(travel)) reads NULL as
+      // a deliberate zero, because Number(null) is 0 and 0 is finite; that made
+      // proposalStale below measure every proposal carrying no drive of its own
+      // against the WORK hours alone, so a day with travel on it — a proposal
+      // written before that column existed, or an approver's split written back
+      // over one — came back "codes no longer add up, redo" with nothing wrong
+      // with it, and opening it threw his codes away.
+      return r2(workHours(e) + (travel == null ? filedTravel(e) : (Number(travel) || 0)));
+    }
+
+    /** The drive a stored proposal was written with — his figure, not the
+     *  entry's, and null where the proposal predates the question. */
+    function proposedTravel(e) {
+      return (e && e.proposed_travel_hours != null) ? r2(e.proposed_travel_hours) : null;
     }
 
     /** Is the proposal already on this entry still describing this day? Payroll
      *  can edit hours on a submitted entry, and a split written against the old
-     *  figure will not save. Mirrors the same check in payroll.html. */
+     *  figure will not save. Mirrors the same check in payroll.html.
+     *
+     *  A proposal carrying its OWN drive is measured against that, not against
+     *  the entry: coded_for_hours is work + HIS travel by construction, so
+     *  comparing it to the filed day would mark every travel proposal stale and
+     *  throw away codes nobody has looked at yet. What makes one stale is the
+     *  same thing it always was — the WORK hours moving underneath it. */
     function proposalStale(e) {
       if (!Array.isArray(e.proposed_split) || !e.proposed_split.length) return false;
       if (e.coded_for_hours == null) return false;
-      return Math.abs(Number(e.coded_for_hours) - requiredHours(e)) > 0.001;
+      const pt = proposedTravel(e);
+      return Math.abs(Number(e.coded_for_hours) - requiredHours(e, pt)) > 0.001;
+    }
+
+    /** Does this entry carry a drive somebody has proposed and nobody has
+     *  applied? Worth saying on the card: the hours on it are not the hours
+     *  the day will pay until a supervisor acts. */
+    function travelPending(e) {
+      const pt = proposedTravel(e);
+      return pt != null && Math.abs(pt - filedTravel(e)) > 0.001 && !proposalStale(e);
     }
 
     /* ═══════ Load ═══════ */
@@ -365,7 +425,9 @@
           <button class="nav" onclick="shiftDay(1)" aria-label="Next day">›</button>
         </div>
         <div class="note">
-          Enter the cost codes for what your crew actually did. Your supervisor
+          Enter the cost codes for what your crew actually did — a
+          <strong>cost code and a sub code on every line</strong>, the travel each man
+          really had, and any machine he ran with its hours. Your supervisor
           still approves the time — <strong>nothing here pays anybody or posts to the
           job</strong> until he does, and he can change anything you enter.
         </div>
@@ -412,13 +474,21 @@
           : coded
             ? `<span class="pill ok">coded${e.coded_by_name ? ' · ' + esc(e.coded_by_name) : ''}</span>`
             : '';
-      const travel = Number(e.travel_hours) || 0;
+      // A drive somebody asked for and nobody has granted. Said as its own
+      // pill rather than folded into the hours: the big figure on the right is
+      // what the day PAYS today, and a card that quietly showed the proposed
+      // total would read as though the change had already gone through.
+      const pending = travelPending(e);
+      const tPill = pending
+        ? `<span class="pill sup">travel ${n2(proposedTravel(e))}h proposed — waiting on your supervisor</span>`
+        : '';
+      const travel = filedTravel(e);
       return `
         <div class="card ${cls}" onclick="openSheet('${esc(e.id)}')">
           <div class="who">
             <div class="n">${esc(e.username)}</div>
             <div class="m">${esc(e.start_time || '')}–${esc(e.end_time || '')}${travel > 0 ? ` · ${n2(travel)}h travel` : ''}${e.lunch_break ? ' · lunch' : ''}</div>
-            ${pill}
+            ${pill}${tPill}
           </div>
           <div class="hrs">
             <div class="h">${n2(requiredHours(e))}</div>
@@ -430,9 +500,288 @@
 
     function shiftDay(n) { state.date = addDays(state.date, n); load(); }
 
+    /* ═══════ The company's machines ═══════
+     *
+     * Fetched once and shared by every sheet, exactly as timesheet.html and
+     * payroll's split modal do it — the same list, so a name a foreman picks
+     * here is one the cost row already understands and nothing has to be
+     * translated at approval.
+     *
+     * Narrowed to the day's OWN division when the server says which lists hold
+     * each machine. A paving foreman scrolling turf's mowers to find his paver
+     * is how the wrong machine gets billed; an older server sends no
+     * `divisions` key at all, nothing lands in a bucket, and every sheet falls
+     * back to the flat list, which is no worse than having no picker.
+     *
+     * A non-2xx is never cached. Falling through to `[]` — which is truthy —
+     * left one expired-token 401 holding an empty picker for the rest of the
+     * session, and an empty picker reads as "there is nothing to answer here".
+     */
+    let equipNames        = null;
+    let equipByDivision   = null;
+    let equipPromise      = null;
+    // 'ok' | 'failed'. A picker holding nothing reads as "there is nothing to
+    // answer here", and the coder types a machine name from memory instead —
+    // which is the one spelling the equipment list does not know, and a name it
+    // does not know prices at nothing when the job is billed. The cost codes
+    // already say when their lookup failed; this says it the same way.
+    let equipState = 'ok';
+    function equipLoad() {
+      if (equipNames) return Promise.resolve(equipNames);
+      if (!equipPromise) {
+        equipPromise = fetch(`${API}/equipment`, { headers: authHeaders() })
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then(j => {
+            const rows = (j && Array.isArray(j.equipment) ? j.equipment : [])
+              .filter(x => x && x.name)
+              .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            const byDiv = {};
+            for (const x of rows) {
+              for (const d of (Array.isArray(x.divisions) ? x.divisions : [])) {
+                (byDiv[d] || (byDiv[d] = [])).push(String(x.name));
+              }
+            }
+            equipByDivision = byDiv;
+            equipNames = rows.map(x => String(x.name));
+            equipState = 'ok';
+            return equipNames;
+          })
+          .catch(err => {
+            console.error('[coding] equipment list failed to load:', err.message);
+            equipPromise = null;
+            equipState = 'failed';
+            return null;
+          });
+      }
+      return equipPromise;
+    }
+
+    /** The machines THIS sheet may name — its division's list, falling back to
+     *  the whole company where that division keeps none. */
+    function equipNamesFor(div) {
+      const own = (div && equipByDivision) ? equipByDivision[div] : null;
+      return (own && own.length) ? own : (equipNames || []);
+    }
+
+    /** What the man himself said he ran, in one shape: [{ name, hours }]. A
+     *  bare string in an older row reads as a machine with no hours. Mirrors
+     *  equipUsedPieces in payroll.html. */
+    function equipUsedPieces(e) {
+      if (!Array.isArray(e && e.equipment_used)) return [];
+      return e.equipment_used
+        .map(x => (x && typeof x === 'object') ? x : { name: x })
+        .map(x => ({
+          name:  String((x && x.name) || '').trim(),
+          hours: (x && x.hours != null && Number.isFinite(Number(x.hours))) ? Number(x.hours) : null,
+        }))
+        .filter(x => x.name);
+    }
+
+    /* ═══════ The pickup, and where the drive books ═══════ */
+
+    /**
+     * The crew's pickup is not a machine that worked the job — it is how they
+     * got there. Its cost belongs on the TRAVEL line, under the travel sub
+     * code, which is where the drive is already booked.
+     *
+     * Copied verbatim from splitEquipIsPickup in payroll.html (and
+     * timesheet.html has a third identical copy): matched on the WORD, because
+     * the equipment list spells it differently from company to company —
+     * "Pickup", "Pickup Truck", "F-250 Pickup", "Pick-up" — and deliberately
+     * NOT on "truck", because a Triaxle Dump Truck is a haul unit and has
+     * nothing to do with the drive.
+     */
+    function isPickup(name) {
+      return /\bpick\s*-?\s*ups?\b/i.test(String(name == null ? '' : name));
+    }
+
+    /* ═══════ Which line the drive books to ═══════
+     *
+     * THE JOB'S OWN BID ITEMS DECIDE, not a constant. On a turf job the rule
+     * below returns Mobilization / Travel by itself, because that is what turf's
+     * bid items say — so hardcoding the pair would buy nothing there and would
+     * be wrong everywhere else. Paving files the drive under the TASK ("5in
+     * Mill & Fill Travel" beside "5in Mill & Fill"), so the answer is not
+     * knowable until the work row names a cost code, and a job that carries no
+     * travel line at all has no right answer to guess at.
+     *
+     * Same rules payroll.html applies in the approve modal — see
+     * splitTravelCandidates / splitPickTravelCodes there. A wrong code books a
+     * day's cost to the wrong task and reads as filled-in while it does it, so
+     * every one of them refuses rather than guesses.
+     */
+    const TRAVEL_CODE_RE = /\btravel\b/i;
+
+    /** Every (cost code, sub code) pair on this job that IS the drive. */
+    function travelCandidates(codes) {
+      const out = [];
+      for (const c of (Array.isArray(codes) ? codes : [])) {
+        if (!c) continue;
+        const cc   = String(c.cost_code || '').trim();
+        const subs = (Array.isArray(c.sub_codes) ? c.sub_codes : [])
+                       .map(x => String(x == null ? '' : x).trim());
+        const travelSubs = subs.filter(x => TRAVEL_CODE_RE.test(x));
+        if (travelSubs.length) {
+          for (const x of travelSubs) out.push({ cost_code: cc, sub_code: x });
+        } else if (TRAVEL_CODE_RE.test(cc)) {
+          // The cost code itself is the drive. A lone sub code under it comes
+          // along; several are a real choice, so only the cost code is offered.
+          out.push({ cost_code: cc, sub_code: subs.length === 1 ? subs[0] : '' });
+        }
+      }
+      return out;
+    }
+
+    /** The travel sub codes this job files under one cost code — what the
+     *  travel row's picker offers instead of the whole list. */
+    function travelSubsFor(codes, costCode) {
+      const cc = String(costCode || '').trim();
+      if (!cc) return [];
+      return travelCandidates(codes)
+        .filter(c => c.cost_code === cc && c.sub_code)
+        .map(c => c.sub_code);
+    }
+
+    /**
+     * Which travel line belongs on the row, given what the work is booked to.
+     * Returns null when the job leaves it genuinely open — a blank pair is what
+     * the foreman gets today, and a wrong guess costs more to notice and undo
+     * than an empty box costs to fill.
+     */
+    function pickTravelCodes(codes, workCostCode) {
+      const cands = travelCandidates(codes);
+      if (!cands.length) return null;
+      // Paving pairs the drive with the task — hours worked on 5" Mill & Fill
+      // drive under 5" Mill & Fill Travel — so once the work row names a cost
+      // code, that code decides it.
+      const work = String(workCostCode || '').trim();
+      if (work) {
+        const paired = cands.filter(c => c.cost_code === work);
+        if (paired.length === 1) return paired[0];
+        // Several travel lines under the one task: fill the cost code and leave
+        // the sub code, whose picker is now filtered down to just those.
+        if (paired.length > 1) return { cost_code: work, sub_code: '' };
+        // Some jobs file the drive as a cost code of its own, named after the
+        // task it belongs to: "5in Mill & Fill Travel" sitting beside "5in Mill
+        // & Fill". Take the travel word out and what is left is the task, which
+        // is what pairs them. Punctuation and spacing go too — the two lines are
+        // typed by hand and rarely agree on either.
+        const key = t => String(t || '').toLowerCase()
+                           .replace(/\btravel\b/g, ' ').replace(/[^a-z0-9]+/g, '');
+        const wk = key(work);
+        if (wk) {
+          const named = cands.filter(c => key(c.cost_code) === wk);
+          if (named.length === 1) return named[0];
+        }
+      }
+      if (cands.length === 1) return cands[0];
+      const codesOnly = [...new Set(cands.map(c => c.cost_code))];
+      if (codesOnly.length === 1) return { cost_code: codesOnly[0], sub_code: '' };
+      return null;
+    }
+
+    /**
+     * Fill the travel row's codes in from the job's own bid items.
+     *
+     * ONLY A ROW WITH BOTH CELLS STILL BLANK. That one test is the whole guard:
+     * it cannot overwrite the foreman, it cannot fight the harvest, and it needs
+     * no authorship flag to survive a repaint — which is what payroll's
+     * code_source exists for, and payroll needs it because its prefill re-runs
+     * over rows a supervisor has already worked in.
+     *
+     * Runs twice: when the job's cost codes land, and again when the work row's
+     * cost code is committed. The second is what carries paving, where the
+     * drive's code is not answerable until the task is — and it is safe to
+     * repeat precisely because it only ever writes into blanks.
+     *
+     * Returns true when it changed something.
+     */
+    function applyTravelCodes() {
+      if (!sheet || !Array.isArray(sheet.codes) || !sheet.codes.length) return false;
+      // The WORK row, which on this sheet is neither the drive nor a machine's
+      // own line — an equipment row carries a cost code too, and reading one as
+      // the work would pair the drive with a machine's phase. Same pair
+      // renderTally uses to decide which hours are the day's work.
+      const workRow = sheet.rows.find(r =>
+        !isTravelRow(r) && !isEquipRow(r) && String(r.cost_code || '').trim());
+      const pick = pickTravelCodes(sheet.codes, workRow ? workRow.cost_code : '');
+      let changed = false;
+      for (const r of sheet.rows) {
+        if (!isTravelRow(r)) continue;
+        // HIS ANSWER OUTRANKS THE PICK, and so does his deliberate absence of
+        // one. Anything he has committed on this row — typed or cleared — marks
+        // it 'manual' and the prefill never touches it again. Guarding on
+        // "both cells blank" instead was not enough once this began re-running:
+        // a foreman who cleared the cost code to type his own had it snap back
+        // under his thumb before he could.
+        if (r.code_source === 'manual') continue;
+        // AND NOT OVER TEXT HE HAS TYPED BUT NOT YET BLURRED. A cost code
+        // commits on blur, so what is in the box reaches the row through
+        // harvestSheetDom with code_source still '' — untouched as far as the
+        // flag is concerned, and this runs immediately after that harvest when
+        // the job's codes land. Anything already on a row this pass does not
+        // own is his; only a blank one is free. Same pair payroll guards with.
+        const blank = !String(r.cost_code || '').trim() && !String(r.sub_code || '').trim();
+        if (r.code_source !== 'auto' && !blank) continue;
+        // WHEN THE PICK GOES AWAY, so does what it wrote. Returning early left
+        // the abandoned task's pair sitting on the drive — a foreman who
+        // corrected the work row to a task with no travel line of its own
+        // shipped the previous task's travel code as though he had chosen it.
+        // An empty required cell costs a box to fill; a wrong task costs a
+        // re-code after approval.
+        if (!pick) {
+          if (r.code_source === 'auto') {
+            r.cost_code = ''; r.sub_code = ''; r.code_source = '';
+            changed = true;
+          }
+          continue;
+        }
+        if (r.cost_code === pick.cost_code && r.sub_code === pick.sub_code) continue;
+        r.cost_code   = pick.cost_code;
+        r.sub_code    = pick.sub_code;
+        r.code_source = 'auto';
+        changed = true;
+      }
+      return changed;
+    }
+
     /* ═══════ Coding sheet ═══════ */
-    function blankRow(isTravel) {
-      return { cost_code:'', sub_code:'', quantity:'', labor_hours:'', is_travel: !!isTravel };
+    /**
+     * One line of the breakdown. Three kinds, and the kind decides what the
+     * hours on it MEAN:
+     *
+     *   work    labour against a phase of the job
+     *   travel  labour spent driving — the same hours, under the drive's code
+     *   equip   NO labour at all: a machine's own line, carrying equip_hours
+     *           and nothing else. The server needs labour or equipment hours on
+     *           a row, and the total it balances counts labour alone, so these
+     *           never disturb work + travel.
+     */
+    function blankRow(kind) {
+      return {
+        kind: kind || 'work',
+        // WHO PUT THE CODES THERE. '' nobody yet, 'auto' the travel prefill,
+        // 'manual' the foreman. Only an 'auto' pair is the prefill's to revise,
+        // which is what lets it re-derive the drive when the work row changes
+        // task without ever fighting somebody who typed.
+        code_source: '',
+        cost_code:'', sub_code:'', quantity:'',
+        labor_hours: kind === 'equip' ? '0' : '',
+        equipment:'', equip_hours:'',
+        is_travel: kind === 'travel',
+      };
+    }
+
+    const isEquipRow  = r => r && r.kind === 'equip';
+    const isTravelRow = r => r && (r.kind === 'travel' || (!r.kind && r.is_travel));
+
+    /** The drive THIS sheet is proposing — the travel rows' own hours. It is
+     *  what the tally balances against and what the save sends, and it may
+     *  differ from the figure the employee filed. */
+    function sheetTravel() {
+      if (!sheet) return 0;
+      return r2(sheet.rows.reduce((sum, r) =>
+        sum + (isTravelRow(r) ? (Number(r.labor_hours) || 0) : 0), 0));
     }
 
     async function openSheet(id) {
@@ -444,31 +793,142 @@
       // would only waste the trip.
       let rows;
       if (Array.isArray(e.proposed_split) && e.proposed_split.length && !proposalStale(e)) {
-        rows = e.proposed_split.map(r => ({
-          cost_code:   r.cost_code   || '',
-          sub_code:    r.sub_code    || '',
-          quantity:    r.quantity    ? String(r.quantity) : '',
-          labor_hours: r.labor_hours != null ? String(r.labor_hours) : '',
-          is_travel:   !!r.is_travel,
-        }));
+        rows = e.proposed_split.map(r => {
+          // A row carrying a machine and no labour is a machine's own line,
+          // and it has to come back as one — read as ordinary work it would
+          // demand hours the day does not have and could never be saved.
+          const labor = Number(r.labor_hours) || 0;
+          const kind  = r.is_travel ? 'travel' : (labor > 0 ? 'work' : 'equip');
+          return {
+            kind,
+            cost_code:   r.cost_code   || '',
+            sub_code:    r.sub_code    || '',
+            quantity:    r.quantity    ? String(r.quantity) : '',
+            labor_hours: r.labor_hours != null ? String(r.labor_hours) : '',
+            equipment:   r.equipment   || '',
+            equip_hours: r.equip_hours ? String(r.equip_hours) : '',
+            is_travel:   !!r.is_travel,
+            // Codes he shipped once are his, so the prefill leaves them alone.
+            code_source: 'manual',
+            // Hours that were SAVED are a figure somebody shipped, so the
+            // pickup link does not relight over them — the same rule payroll
+            // applies when it reads a stored split back.
+            //
+            // EXCEPT where they ARE the drive's hours. A pickup on a travel row
+            // whose machine hours equal its labour hours was mirrored, not
+            // typed: freezing it meant re-opening a day and correcting the
+            // drive left the pickup billing the old figure. Where the two
+            // differ he said something — "the truck ran longer" is what the
+            // hint under that box invites — and his answer stands.
+            _equipHoursTouched: (Number(r.equip_hours) || 0) > 0
+              && !(r.is_travel && isPickup(r.equipment)
+                   && Math.abs((Number(r.equip_hours) || 0) - (Number(r.labor_hours) || 0)) < 0.001),
+          };
+        });
       } else {
-        rows = [blankRow(false)];
-        const travel = Number(e.travel_hours) || 0;
-        if (travel > 0) {
-          const t = blankRow(true);
-          t.labor_hours = String(travel);
-          rows.push(t);
-        }
+        rows = [blankRow('work')];
         // The work hours are known outright, so the common case — one phase all
         // day — needs no arithmetic from anybody.
-        rows[0].labor_hours = String(Math.round((requiredHours(e) - (Number(e.travel_hours) || 0)) * 100) / 100);
+        rows[0].labor_hours = String(workHours(e));
+        // The drive as the employee filed it. A travel row is offered even at
+        // zero, because the filed figure is routinely zero and wrong: the
+        // travel boxes on the timesheet are optional, the man who drove the
+        // crew out knows what it took, and there was no way to say so. The row
+        // starts empty in that case and the foreman either fills it in or
+        // removes it.
+        const t = blankRow('travel');
+        t.labor_hours = filedTravel(e) > 0 ? String(filedTravel(e)) : '';
+        rows.push(t);
+
+        /* ── The iron he named on his own timesheet, onto the rows it belongs
+         *    on rather than a row apiece ──
+         *
+         * He answered "which machine, and for how long" when he filed the day;
+         * retyping it here from a schedule nobody was standing next to is how a
+         * pickup gets billed as an excavator. WHERE each machine lands is the
+         * rest of the answer, and it is not the same question for all of them:
+         *
+         *   THE PICKUP is how the crew got to the job, not something that
+         *   worked it. It rides the TRAVEL row — under the drive's own cost
+         *   code, for the drive's own hours — and gets no row of its own. That
+         *   third row was pure friction: two more mandatory code cells on a
+         *   line that only ever says "we drove out in the truck".
+         *
+         *   EVERY OTHER MACHINE worked the site, and what was worked there is
+         *   exactly what this page cannot know — so the first one rides the
+         *   WORK row, which is the row the foreman is coding anyway, and only a
+         *   second machine needs a line of its own.
+         *
+         * The ordinary day is therefore two rows: the drive, and the work.
+         * Same placement splitFillNamedEquipment performs in payroll.html, so a
+         * day coded here and a day coded by the approver come out alike.
+         */
+        const seen = new Set();
+        let pickupSeated = false;
+        for (const piece of equipUsedPieces(e)) {
+          // One machine is one machine. A list naming it twice would otherwise
+          // bill the job for two of them.
+          const k = piece.name.toLowerCase();
+          if (seen.has(k)) continue;
+          seen.add(k);
+
+          const hours = piece.hours != null && piece.hours > 0 ? r2(piece.hours) : 0;
+
+          if (isPickup(piece.name) && !pickupSeated) {
+            // Only where something will land on it. A pickup with no hours from
+            // either source bills the job nothing, and seating it would open the
+            // sheet already failing its own check — the travel row is kept the
+            // moment it carries a machine, and a machine with no hours is
+            // refused. Same guard payroll's pickup branch applies before it
+            // makes a travel row at all.
+            const drive = filedTravel(e);
+            if (drive <= 0 && hours <= 0) continue;
+            t.equipment = piece.name;
+            // THE DRIVE'S HOURS, because the pickup was running for exactly as
+            // long as the man was in it — that is the whole of the rule. His own
+            // stated figure is the fallback where the timesheet filed no drive,
+            // so the row is not left empty and unsaveable.
+            t.equip_hours = drive > 0 ? String(drive) : String(hours);
+            pickupSeated = true;
+            continue;
+          }
+
+          // A machine nobody gave hours to cannot be priced, and a row carrying
+          // one opens the sheet already failing validation with the error
+          // pointing at a row the foreman did not write. He still has the
+          // machine boxes and "+ Equipment" if he wants to add it; the approver
+          // still sees what was named on the entry either way.
+          if (hours <= 0) continue;
+
+          // The first one rides the work row. HIS figure, not the page's, and
+          // marked as his so nothing levels it to the labour hours later.
+          //
+          // A SECOND PICKUP never takes that seat. The work row's machine is
+          // the iron that worked the site, and handing the slot to another
+          // truck demotes the excavator behind it to a row of its own while
+          // claiming a pickup ran the job. It gets its own line instead — still
+          // billed, just not mistaken for site equipment. (Payroll would open a
+          // second TRAVEL row for it; this page cannot, because every travel
+          // row is summed into the drive being proposed and the server then
+          // holds them to that total.)
+          if (!isPickup(piece.name) && !String(rows[0].equipment || '').trim()) {
+            rows[0].equipment   = piece.name;
+            rows[0].equip_hours = String(hours);
+            rows[0]._equipHoursTouched = true;
+            continue;
+          }
+
+          const r = blankRow('equip');
+          r.equipment   = piece.name;
+          r.equip_hours = String(hours);
+          r._equipHoursTouched = true;
+          rows.push(r);
+        }
       }
 
       sheet = { entry: e, rows, codes: [], codesState: 'loading', saving: false };
       const mySheet = sheet;
       document.getElementById('sheetTitle').textContent = e.username;
-      document.getElementById('sheetSub').textContent =
-        `${DIV_LABEL[e.division] || e.division} · ${e.job_label || e.job_id} · ${n2(requiredHours(e))} hours to allocate`;
       document.getElementById('backdrop').classList.add('open');
       renderSheet();
 
@@ -476,9 +936,15 @@
       // the guard a slow response for one man's day could drop its job's bid
       // items into the picker of a day already opened for another job — and
       // nothing, here or on the server, checks a cost code against its job.
+      //
+      // Both lookups together: the equipment list is company-wide and cached
+      // after the first sheet, so on every day but the first it costs nothing.
       try {
         const qs = new URLSearchParams({ division: e.division, jobId: e.job_id });
-        const r = await fetch(`${API}/timesheet-job-costcodes?${qs}`, { headers: authHeaders() });
+        const [r] = await Promise.all([
+          fetch(`${API}/timesheet-job-costcodes?${qs}`, { headers: authHeaders() }),
+          equipLoad(),
+        ]);
         const j = await r.json();
         if (r.ok && Array.isArray(j.cost_codes)) {
           mySheet.codes = j.cost_codes;
@@ -489,7 +955,12 @@
       } catch {
         mySheet.codesState = 'failed';
       }
-      if (sheet === mySheet) { harvestSheetDom(); renderSheet(); }
+      // AFTER the harvest, before the paint. The harvest copies the DOM back
+      // over sheet.rows, so a prefill run before it is thrown away — and it has
+      // to see what the foreman has already typed, because it only writes into
+      // cells still blank. This is also the earliest it can run at all: the
+      // job's bid items are what it reads, and they land on the line above.
+      if (sheet === mySheet) { harvestSheetDom(); applyTravelCodes(); renderSheet(); }
     }
 
     function closeSheet() {
@@ -521,6 +992,15 @@
           r[inp.getAttribute('data-f')] = inp.value;
         });
       });
+      // AND THEN RE-DERIVE THE PICKUP'S HOURS, because the loop above has just
+      // copied whatever the machine-hours box happened to show back over them.
+      // mirrorPickupHours writes that box in place rather than repainting, and
+      // the one path where that write is skipped — the box itself has focus —
+      // is exactly the path where the stale value would be harvested. This is
+      // what makes the link survive the harvest that saveCoding runs a line
+      // before it posts. A row the foreman has typed into is untouched: the
+      // mirror refuses a row marked _equipHoursTouched.
+      sheet.rows.forEach((r, i) => mirrorPickupHours(i));
     }
 
     /**
@@ -531,14 +1011,121 @@
      * destroys the element the focus is landing on, so the next field never
      * receives it — which was safe while these were <select>s (change fires
      * with focus still on the control) and is not now they are inputs.
+     *
+     * IT NO LONGER HARVESTS, and its callers do it themselves before they
+     * mutate. Harvesting here meant the order was forced to be mutate-then-
+     * harvest, and the harvest copies the DOM back over sheet.rows — so a
+     * commit that CLEARED a field (the sub code under a changed cost code, the
+     * machine hours under a removed machine) had the stale box put straight
+     * back over it, and the row shipped a value the foreman had just undone.
+     * Both clears looked like they worked, because the deferred repaint then
+     * redrew the box from the row it had just been restored into.
      */
     function renderSheetSoon() {
-      harvestSheetDom();
       setTimeout(() => { if (sheet) renderSheet(); }, 0);
+    }
+
+    /**
+     * What the day was FILED with, said the moment the figure on screen stops
+     * matching it.
+     *
+     * A foreman is entitled to a different answer about the drive — he was in
+     * the truck — but he is not entitled to make the change quietly, and
+     * neither is this page. The note names both numbers and says plainly that
+     * his is a request: nothing on this screen moves anybody's paid hours.
+     *
+     * Always rendered, hidden when the two agree, so it can be swapped in place
+     * while somebody is typing in the travel box — see renderTravelNote.
+     */
+    function travelNoteHtml() {
+      if (!sheet) return '<div id="travelNote" hidden></div>';
+      const filed  = filedTravel(sheet.entry);
+      const asked  = sheetTravel();
+      if (Math.abs(asked - filed) <= 0.001) return '<div id="travelNote" hidden></div>';
+      return `<div id="travelNote" class="msg show" style="color:#fbbf24;background:rgba(245,158,11,0.12)">
+        ${esc(sheet.entry.username)} filed <strong>${esc(n2(filed))} h</strong> of travel and you are
+        coding <strong>${esc(n2(asked))} h</strong>. His hours do not change on this screen —
+        your supervisor sees the figure and decides.
+      </div>`;
+    }
+
+    /**
+     * Put that note back on screen WITHOUT repainting the body.
+     *
+     * The travel box commits on every keystroke, and a full repaint on each one
+     * would destroy the input being typed into and take the focus with it.
+     * Only this one element is replaced, so the caret never moves.
+     */
+    function renderTravelNote() {
+      const el = document.getElementById('travelNote');
+      if (el) el.outerHTML = travelNoteHtml();
+      // The header carries the same figure, and it is a text node outside the
+      // form — safe to rewrite while he types.
+      renderSheetHead();
+    }
+
+    /** The line under the name: where this day was worked, and how much time
+     *  is being allocated. The total follows the drive on screen, so it is
+     *  rebuilt on every repaint rather than written once when the sheet opens. */
+    function renderSheetHead() {
+      if (!sheet) return;
+      const e = sheet.entry;
+      document.getElementById('sheetSub').textContent =
+        `${DIV_LABEL[e.division] || e.division} · ${e.job_label || e.job_id} · `
+        + `${n2(requiredHours(e, sheetTravel()))} hours to allocate`;
+    }
+
+    /**
+     * Keep the pickup's hours level with the drive it is on.
+     *
+     * "The pickup equipment hours are the same as the travel hours" — the whole
+     * of the user's rule, and it has to hold while the sheet is OPEN, not only
+     * at the moment it opens: the foreman correcting the drive is the normal
+     * path on this page, not the corner.
+     *
+     * WRITES THE INPUT AS WELL AS THE ROW, and that is not belt-and-braces.
+     * harvestSheetDom copies every input back over sheet.rows, and saveCoding
+     * harvests immediately before the POST — so a mirror that touched only the
+     * model would be reverted to whatever the stale box still showed, and the
+     * stale figure is what would be stored. One element is written in place
+     * rather than repainting, the same technique renderTravelNote uses, because
+     * this runs on every keystroke in the travel hours box and rebuilding the
+     * body would take the caret with it.
+     *
+     * Stops the moment the foreman types his own machine hours: a pickup that
+     * sat running while the crew worked is a real thing, and his answer stands.
+     */
+    function mirrorPickupHours(i) {
+      const r = sheet && sheet.rows[i];
+      if (!r || r._equipHoursTouched) return false;
+      if (!isTravelRow(r) || !isPickup(r.equipment)) return false;
+      // ONLY WHERE THERE IS A DRIVE TO MIRROR. A travel row with no hours on it
+      // is not a zero-hour drive — it is a day whose timesheet filed none, and
+      // the pickup sitting on it carries the employee's OWN stated figure,
+      // seated by openSheet's fallback precisely because there was no drive to
+      // take. Levelling that to zero wipes the only figure the row has and
+      // leaves a machine with no hours, which the save refuses: the sheet opened
+      // already unsaveable, on the commonest shape this feature has, because the
+      // harvest re-derives the mirror on every row. The link relights by itself
+      // the moment he types a drive.
+      const drive = r2(r.labor_hours);
+      if (!(drive > 0)) return false;
+      const want = String(drive);
+      if (String(r.equip_hours || '') === want) return false;
+      r.equip_hours = want;
+      const el = document.getElementById('eqh' + i);
+      // Never over a box somebody is typing in. On the path this actually runs
+      // from — a keystroke in the TRAVEL HOURS box — the caret is in a
+      // different element on the same row, so the guard is near-dead; it earns
+      // its place when the machine name is committed by blurring out of the
+      // hours box itself. harvestSheetDom re-derives afterwards either way.
+      if (el && el !== document.activeElement) el.value = want;
+      return true;
     }
 
     function renderSheet() {
       if (!sheet) return;
+      renderSheetHead();
       const body = document.getElementById('sheetBody');
       const ccOpts = sheet.codes.map(c => c.cost_code);
 
@@ -563,34 +1150,80 @@
           ? `<div class="msg err show">This job has no bid items set up, so there are no codes to pick from. Type them in, or ask the office to add them.</div>`
           : '';
 
-      body.innerHTML = supNote + ccNote + sheet.rows.map((r, i) => {
-        const subs = subsFor(r.cost_code);
+      // Said only where it matters: the machine boxes are optional, so a
+      // failed lookup is worth one line rather than an alarm — but it has to be
+      // a line, because an empty picker looks exactly like a company with no
+      // equipment on its books.
+      const eqNote = equipState === 'failed'
+        ? `<div class="msg err show">Could not load the equipment list. You can still type a machine in — spell it as it is on the equipment list, or the job gets billed nothing for it.</div>`
+        : '';
+
+      // MACHINES HE NAMED AND GAVE NO HOURS. They are left off the rows on
+      // purpose — a machine with no hours bills the job nothing and would open
+      // the sheet already failing its own check — but "left off" and "never
+      // mentioned" must not look the same. He is the one who can say how long
+      // it ran, and this is where he finds out he is being asked.
+      const unpriced = equipUsedPieces(sheet.entry)
+        .filter(x => !(x.hours != null && x.hours > 0))
+        .map(x => x.name)
+        .filter(n => !sheet.rows.some(r =>
+          String(r.equipment || '').trim().toLowerCase() === n.toLowerCase()));
+      const unpricedNote = unpriced.length
+        ? `<div class="msg show" style="color:#93c5fd;background:rgba(96,165,250,0.12)">
+             ${esc(sheet.entry.username)} named ${esc(unpriced.join(', '))} on his timesheet without saying how long
+             ${unpriced.length === 1 ? 'it ran' : 'they ran'}, so ${unpriced.length === 1 ? 'it is' : 'they are'} not on any row.
+             Add ${unpriced.length === 1 ? 'it' : 'them'} with <strong>+ Equipment</strong> if the job should be billed for
+             ${unpriced.length === 1 ? 'it' : 'them'}.
+           </div>`
+        : '';
+
+      // The filed drive, for the hint under the travel box; the note that fires
+      // when the figure on screen disagrees with it is travelNoteHtml's.
+      const filed = filedTravel(sheet.entry);
+      const tNote = travelNoteHtml();
+
+      const eqOpts = equipNamesFor(sheet.entry.division);
+
+      body.innerHTML = supNote + ccNote + eqNote + unpricedNote + tNote + sheet.rows.map((r, i) => {
+        // On the DRIVE, the sub codes this job files the drive under — not the
+        // whole list under that cost code. Where the job spells the drive as a
+        // cost code of its own there are no travel subs to offer and the
+        // ordinary list is right, so this falls back rather than emptying the
+        // picker.
+        const travelSubs = isTravelRow(r) ? travelSubsFor(sheet.codes, r.cost_code) : [];
+        const subs = travelSubs.length ? travelSubs : subsFor(r.cost_code);
+        const equip = isEquipRow(r);
+        const tag = equip ? 'Equipment' : (isTravelRow(r) ? 'Travel' : 'Work');
+        const cls = equip ? 'equip' : (isTravelRow(r) ? 'travel' : '');
         return `
-        <div class="srow ${r.is_travel ? 'travel' : ''}">
+        <div class="srow ${cls}">
           <div class="srow-top">
-            <span class="srow-tag">${r.is_travel ? 'Travel' : 'Work'} · row ${i + 1}</span>
+            <span class="srow-tag">${tag} · row ${i + 1}</span>
             ${sheet.rows.length > 1 ? `<button class="srow-del" onclick="delRow(${i})">Remove</button>` : ''}
           </div>
           <div class="fld">
-            <label>Cost code</label>
+            <label>Cost code <span class="req">*</span></label>
             <input list="ccList" data-f="cost_code" value="${esc(r.cost_code)}" placeholder="type or pick"
                    autocapitalize="off" autocorrect="off" spellcheck="false"
                    onchange="setField(${i},'cost_code',this.value)">
           </div>
           <div class="fld">
-            <label>Sub code</label>
+            <label>Sub code <span class="req">*</span></label>
             <input list="scList${i}" data-f="sub_code" value="${esc(r.sub_code)}"
-                   placeholder="${subs.length ? 'type or pick' : 'optional'}"
+                   placeholder="${subs.length ? 'type or pick' : 'type it in'}"
                    autocapitalize="off" autocorrect="off" spellcheck="false"
                    onchange="setField(${i},'sub_code',this.value)">
             <datalist id="scList${i}">${subs.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist>
+            ${subs.length ? '' : `<span class="hint">This cost code has no sub codes on the job — type what the work was.</span>`}
           </div>
+          ${equip ? '' : `
           <div class="grid2">
             <div class="fld">
               <label>Hours</label>
               <input type="number" data-f="labor_hours" inputmode="decimal" min="0" max="24" step="0.25"
                      value="${esc(r.labor_hours)}" placeholder="0.00"
                      oninput="setField(${i},'labor_hours',this.value)">
+              ${isTravelRow(r) ? `<span class="hint">Timesheet says ${n2(filed)} h${filed > 0 ? '' : ' — nothing filed'}</span>` : ''}
             </div>
             <div class="fld">
               <label>Quantity</label>
@@ -598,25 +1231,71 @@
                      value="${esc(r.quantity)}" placeholder="optional"
                      oninput="setField(${i},'quantity',this.value)">
             </div>
+          </div>`}
+          <div class="eqbox">
+            <div class="eqhead">${equip ? 'Machine' : (isTravelRow(r) ? 'What they drove out in (optional)' : 'Equipment on this row (optional)')}</div>
+            <div class="grid2">
+              <div class="fld">
+                <label>Machine</label>
+                <input list="eqList" data-f="equipment" value="${esc(r.equipment)}"
+                       placeholder="${equip ? 'type or pick' : 'none'}"
+                       autocapitalize="off" autocorrect="off" spellcheck="false"
+                       onchange="setField(${i},'equipment',this.value)">
+              </div>
+              <div class="fld">
+                <label>Machine hours</label>
+                <input type="number" id="eqh${i}" data-f="equip_hours" inputmode="decimal" min="0" max="24" step="0.25"
+                       value="${esc(r.equip_hours)}" placeholder="0.00"
+                       oninput="setField(${i},'equip_hours',this.value)">
+                ${isTravelRow(r) && isPickup(r.equipment) && !r._equipHoursTouched
+                  ? `<span class="hint">Follows the drive above — type here if the truck ran longer.</span>`
+                  : ''}
+              </div>
+            </div>
+            ${equip ? `<span class="hint">A machine's own line. These hours bill the job for the iron and are not anybody's time, so they do not count toward the ${n2(workHours(sheet.entry))} h below.</span>` : ''}
           </div>
         </div>`;
       }).join('')
       + `<datalist id="ccList">${ccOpts.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>
-         <button class="btn add" onclick="addRow()">+ Another phase</button>
+         <datalist id="eqList">${eqOpts.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+         <div class="addrow">
+           <button class="btn add" onclick="addRow('work')">+ Phase</button>
+           <button class="btn add" onclick="addRow('equip')">+ Equipment</button>
+         </div>
+         ${sheet.rows.some(isTravelRow) ? '' : `<button class="btn add" onclick="addRow('travel')">+ Travel</button>`}
          <div class="msg err" id="sheetMsg">${esc(sheet.err || '')}</div>`;
       if (sheet.err) document.getElementById('sheetMsg').classList.add('show');
 
       renderTally();
     }
 
+    /**
+     * The running total, and what the drive is doing to it.
+     *
+     * The WORK hours are fixed — the punch clock, less the break — and the work
+     * rows have to land on them exactly. The travel rows are the figure being
+     * proposed, so they move the target rather than eating into it: a foreman
+     * adding an hour of drive is not taking an hour off the man's work, and a
+     * tally that made him re-balance the whole day to say so would teach him to
+     * leave the drive alone.
+     *
+     * Equipment rows carry no labour and are counted in neither.
+     */
     function renderTally() {
       if (!sheet) return;
-      const need = requiredHours(sheet.entry);
-      const got  = Math.round(sheet.rows.reduce((s, r) => s + (Number(r.labor_hours) || 0), 0) * 100) / 100;
-      const ok   = Math.abs(got - need) <= 0.001;
+      const work    = workHours(sheet.entry);
+      const travel  = sheetTravel();
+      const need    = requiredHours(sheet.entry, travel);
+      const gotWork = r2(sheet.rows.reduce((sum, r) =>
+        sum + ((!isTravelRow(r) && !isEquipRow(r)) ? (Number(r.labor_hours) || 0) : 0), 0));
+      const got     = r2(gotWork + travel);
+      const ok      = Math.abs(gotWork - work) <= 0.001;
       const el = document.getElementById('tally');
       el.className = 'tally ' + (ok ? 'good' : 'bad');
-      el.textContent = ok ? `${n2(got)} / ${n2(need)} h` : `${n2(got)} / ${n2(need)} h · ${n2(need - got)} left`;
+      const left = r2(work - gotWork);
+      el.innerHTML = `${esc(n2(got))} / ${esc(n2(need))} h`
+        + `<span class="sub">${esc(n2(work))} h work${ok ? '' : ` · ${esc(n2(left))} left`}`
+        + `${travel > 0 ? ` · ${esc(n2(travel))} h travel` : ''}</span>`;
       document.getElementById('saveBtn').disabled = !ok || sheet.saving;
     }
 
@@ -624,22 +1303,84 @@
       if (!sheet || !sheet.rows[i]) return;
       const prev = sheet.rows[i][field];
       sheet.rows[i][field] = value;
+
+      // A sub code he committed is his, for the same reason the cost code is.
+      if (field === 'sub_code') { sheet.rows[i].code_source = 'manual'; return; }
+
+      // HIS OWN FIGURE for a machine, which ends the pickup link for good. A
+      // pickup left running while the crew worked is a real thing and his
+      // answer stands; the same flag payroll reads back off a stored proposal.
+      if (field === 'equip_hours') { sheet.rows[i]._equipHoursTouched = true; return; }
+
       // Changing the cost code invalidates whatever sub code was under the old
       // one, so it is cleared rather than left pointing somewhere it no longer
-      // belongs. Re-rendering here is safe because this fires on COMMIT, not
-      // on every keystroke — a re-render mid-word would take the focus with it.
+      // belongs.
       if (field === 'cost_code') {
+        // HARVEST FIRST, then clear, then paint. renderSheetSoon harvests the
+        // DOM back over sheet.rows, and the sub-code input still shows the code
+        // that belonged to the OLD cost code — so clearing and harvesting in
+        // the other order put it straight back, and the row shipped a sub code
+        // from a cost code it no longer named. That is the one shape the
+        // mandatory sub code exists to prevent, and it looked filled in.
+        harvestSheetDom();
+        sheet.rows[i][field] = value;
+        // BEFORE the prefill runs, not after. He has just answered this row, so
+        // it is his from here on — and on the travel row that is what stops the
+        // pick putting its own pair straight back over what he committed.
+        sheet.rows[i].code_source = 'manual';
         if (String(prev || '') !== String(value || '')) sheet.rows[i].sub_code = '';
-        // Deferred: this fires on blur, and repainting synchronously would
-        // take the element the focus is moving to with it.
+        // And now the work row may have named its task, which on a paving job
+        // is the moment the drive's own code becomes answerable. Only ever
+        // writes into a travel row with both cells blank, so repeating it can
+        // never disturb anything the foreman has touched.
+        applyTravelCodes();
+        // Deferred: this fires on blur, and repainting synchronously would take
+        // the element the focus is moving to with it.
         renderSheetSoon();
         return;
       }
-      if (field === 'labor_hours') { renderTally(); return; }
+
+      // A machine typed onto the drive by hand — or cleared off it.
+      if (field === 'equipment' && isTravelRow(sheet.rows[i])) {
+        // Harvest first, exactly as the cost-code branch above does and for the
+        // same reason: the repaint is deferred, so the machine-HOURS box still
+        // shows the figure that belonged to the machine just removed, and a
+        // harvest running after the clear copies it straight back.
+        harvestSheetDom();
+        sheet.rows[i].equipment = value;
+        if (!String(value || '').trim() && !sheet.rows[i]._equipHoursTouched) {
+          // The machine the page put there is gone, so the hours it put there
+          // go with it. Left behind, they are hours with no machine, which the
+          // save refuses — and they were never anybody's answer.
+          sheet.rows[i].equip_hours = '';
+        } else {
+          mirrorPickupHours(i);
+        }
+        renderSheetSoon();
+        return;
+      }
+
+      if (field === 'labor_hours') {
+        renderTally();
+        // A travel figure that has moved changes the note above the fields, the
+        // total below them, and the pickup riding the row — its hours ARE the
+        // drive's hours. All three are swapped in place rather than repainted:
+        // this fires on every keystroke, and rebuilding the body would take the
+        // focus out of the box he is typing the number into.
+        if (isTravelRow(sheet.rows[i])) { renderTravelNote(); mirrorPickupHours(i); }
+        return;
+      }
     }
 
-    function addRow() { if (sheet) { sheet.rows.push(blankRow(false)); renderSheet(); } }
-    function delRow(i) { if (sheet) { sheet.rows.splice(i, 1); renderSheet(); } }
+    // Both harvest first. renderSheet rebuilds the body from sheet.rows, and the
+    // text fields commit on blur — so a sub code typed and not yet blurred lives
+    // only in the DOM, and tapping a button straight from that field repaints
+    // over it. saveCoding has guarded this from the start ("tapping Save
+    // straight from a text field fires the click before that field's change
+    // event on some mobile browsers"); these two never did, and the sheet now
+    // has two more buttons on that path and two more text fields per row.
+    function addRow(kind) { if (sheet) { harvestSheetDom(); sheet.rows.push(blankRow(kind)); renderSheet(); } }
+    function delRow(i)    { if (sheet) { harvestSheetDom(); sheet.rows.splice(i, 1);        renderSheet(); } }
 
     async function saveCoding() {
       if (!sheet || sheet.saving) return;
@@ -654,19 +1395,74 @@
       // validation message the coder was actually acting on.
       sheet.err = '';
 
+      const fail = m => {
+        sheet.err = m; msg.textContent = m; msg.classList.add('show');
+      };
+
+      // An UNTOUCHED travel row is not an error, it is the answer "there was no
+      // drive". Every sheet opens with one — the filed figure is routinely zero
+      // and wrong, and a foreman who cannot see the box will not think to add
+      // it — so on the ordinary day it is simply left empty and dropped here.
+      // Kept once anything is on it: hours, or the pickup that did the driving.
+      //
+      // Numbered by where it sits ON SCREEN, not by where it lands in the body:
+      // dropping a row renumbers everything after it, and "row 3 needs a sub
+      // code" pointing at row 4 is worse than no message at all.
+      const kept = sheet.rows
+        .map((r, i) => ({ r, n: i + 1 }))
+        .filter(({ r }) =>
+          !isTravelRow(r)
+          || (Number(r.labor_hours) || 0) > 0
+          || String(r.equipment || '').trim()
+          || (Number(r.equip_hours) || 0) > 0);
+      const rows = kept.map(x => x.r);
+
+      if (!rows.length) {
+        fail('There is nothing on this day to code.');
+        return;
+      }
+
       // Mirrors the server's own rules so an obvious mistake is caught here
       // rather than after a round trip. The server checks all of it again.
-      for (let i = 0; i < sheet.rows.length; i++) {
-        const r = sheet.rows[i];
-        const h = Number(r.labor_hours) || 0;
-        if (h <= 0) {
-          sheet.err = `Row ${i + 1} has no hours on it. Give it hours or remove it.`;
-          msg.textContent = sheet.err; msg.classList.add('show'); return;
+      for (const { r, n } of kept) {
+        const h  = Number(r.labor_hours) || 0;
+        const eh = Number(r.equip_hours) || 0;
+        const eq = String(r.equipment || '').trim();
+        // A machine and its hours, or neither. Either one alone is a row the
+        // job is billed nothing for, or billed for iron nobody can name.
+        if (eq && !(eh > 0))  { fail(`Row ${n} names ${eq} but gives it no hours.`); return; }
+        if (!eq && eh > 0)    { fail(`Row ${n} has machine hours but no machine. Pick one, or clear the hours.`); return; }
+        if (isEquipRow(r)) {
+          if (!eq) { fail(`Row ${n} is an equipment row with no machine on it. Pick one, or remove the row.`); return; }
+        } else if (h <= 0 && !eq) {
+          // Labour OR a machine, the same rule the server applies. A row
+          // carrying neither is empty, and an empty row is a mistake whichever
+          // of the two the coder meant to fill in.
+          fail(`Row ${n} has no hours on it. Give it hours or remove it.`); return;
         }
-        if (!String(r.cost_code || '').trim() && !String(r.sub_code || '').trim()) {
-          sheet.err = `Row ${i + 1} needs a cost code.`;
-          msg.textContent = sheet.err; msg.classList.add('show'); return;
+        if (!String(r.cost_code || '').trim()) {
+          fail(`Row ${n} needs a cost code.`); return;
         }
+        // MANDATORY, not "one of the two". The sub code is where the phase of
+        // the work actually lives, and a cost row without one cannot be
+        // measured against the bid it came from — which is the whole reason
+        // the man who was on the job is the one filling this in.
+        if (!String(r.sub_code || '').trim()) {
+          fail(`Row ${n} needs a sub code — say which part of ${String(r.cost_code).trim()} it was.`); return;
+        }
+      }
+
+      // The work rows are the day's clocked time and have to land on it
+      // exactly. Checked here as well as by the disabled Save button, because
+      // Save is re-enabled from several places and a body that does not balance
+      // earns a 400 the coder has no way to read.
+      const wantWork = workHours(sheet.entry);
+      const gotWork  = r2(rows.reduce((sum, r) =>
+        sum + ((!isTravelRow(r) && !isEquipRow(r)) ? (Number(r.labor_hours) || 0) : 0), 0));
+      if (Math.abs(gotWork - wantWork) > 0.001) {
+        fail(`The work rows add up to ${n2(gotWork)} h and this day was worked ${n2(wantWork)} h.`
+             + ` Travel and equipment rows are counted separately.`);
+        return;
       }
       msg.classList.remove('show');
 
@@ -678,6 +1474,12 @@
       const mySheet = sheet;
       const myId    = String(sheet.entry.id);
       const who     = sheet.entry.username;
+      const filedT  = filedTravel(sheet.entry);
+      // The drive as the rows actually being SENT state it — an empty travel
+      // row dropped above is zero travel, and the figure has to agree with the
+      // rows or the server refuses the pair.
+      const askedT  = r2(rows.reduce((sum, r) =>
+        sum + (isTravelRow(r) ? (Number(r.labor_hours) || 0) : 0), 0));
 
       sheet.saving = true;
       document.getElementById('saveBtn').disabled = true;
@@ -685,16 +1487,26 @@
         // Classification only. The haul questions, the routing to another
         // division and the rates are the approver's, and the server strips
         // them from a coder's proposal regardless of what is sent.
-        const split = sheet.rows.map(r => ({
+        //
+        // The MACHINE is not one of those. Naming it settles which iron was on
+        // the job — the man coding the day watched it run — and its rate still
+        // comes from the equipment list at approval, exactly as it does for a
+        // machine the approver types himself.
+        const split = rows.map(r => ({
           cost_code:   String(r.cost_code || '').trim(),
           sub_code:    String(r.sub_code  || '').trim(),
           quantity:    Number(r.quantity) || 0,
           labor_hours: Number(r.labor_hours) || 0,
-          equip_hours: 0,
-          is_travel:   !!r.is_travel,
+          equipment:   String(r.equipment || '').trim(),
+          equip_hours: Number(r.equip_hours) || 0,
+          is_travel:   isTravelRow(r),
         }));
         const r = await fetch(`${API}/timesheet-entries?action=precode&id=${encodeURIComponent(myId)}`, {
-          method: 'POST', headers: authHeaders(true), body: JSON.stringify({ split }),
+          method: 'POST', headers: authHeaders(true),
+          // The drive this breakdown is balanced against. The server stores it
+          // beside the codes and changes nothing about the entry — his filed
+          // hours stand until a supervisor applies the figure.
+          body: JSON.stringify({ split, travel_hours: askedT }),
         });
         const j = await r.json();
         if (!r.ok) throw new Error((j && j.error) || `Could not save (${r.status})`);
@@ -706,7 +1518,9 @@
         }
         if (sheet === mySheet) closeSheet();
         render();
-        toast(`${who}'s day is coded — waiting on your supervisor.`);
+        toast(Math.abs(askedT - filedT) > 0.001
+          ? `${who}'s day is coded. Your ${n2(askedT)} h of travel is a request — your supervisor decides.`
+          : `${who}'s day is coded — waiting on your supervisor.`);
       } catch (err) {
         mySheet.saving = false;
         // Only touch the form if it is still this one, and re-resolve the

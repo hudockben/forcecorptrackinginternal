@@ -1140,13 +1140,23 @@ assert('  the take-back runs on both UI paths, which both funnel through onSplit
 assert('  and the prefill refuses a haul row outright',
   /!isTravelSplitRow\(r\) && !splitRowTakesTruck\(r\)/.test(PAY));
 
-// Edit Split is exempt through defaultsWanted. A coder's PROPOSAL is not: he
-// is shown no equipment column at all — the server strips it — so his rows
-// still need the machines the operator named, exactly as a blank form does.
-assert('  and it only ever runs on a fresh approve, never on Edit Split',
+// Edit Split is exempt through defaultsWanted, and a coder's PROPOSAL is too.
+//
+// It was NOT, and the reason it was not has since been removed: a coder was
+// shown no equipment column at all and the server stripped the field, so every
+// row he proposed was blank by force and filling it from what the operator
+// named was free. Code Time now shows him the machines, seats the operator's
+// own onto the rows, and lets him take one off — so a blank on his rows is an
+// answer, and re-filling it put back the machine he had just removed. His
+// blanks are his, exactly as the approver's already were.
+//
+// proposalFills still exists and still drives splitMirrorHaulEquipHoursAll:
+// the haul-truck reasoning belongs to that pass, not to this one.
+assert('  and it only ever runs on a fresh approve — never Edit Split, never a proposal',
   /const defaultsWanted = mode !== 'resplit' && !splitFromProposal;/.test(PAY)
   && /const proposalFills = splitFromProposal && fromCoder;/.test(PAY)
-  && /if \(defaultsWanted \|\| proposalFills\) splitFillNamedEquipment\(\);/.test(PAY));
+  && /if \(defaultsWanted\) splitFillNamedEquipment\(\);/.test(PAY)
+  && /if \(defaultsWanted \|\| proposalFills\) splitMirrorHaulEquipHoursAll\(\);/.test(PAY));
 assert('  after the haul rules, so the truck on a haul row still wins',
   PAY.indexOf("splitMirrorHaulEquipHoursAll();") < PAY.indexOf("splitFillNamedEquipment();"));
 

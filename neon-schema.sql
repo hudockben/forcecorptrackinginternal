@@ -2221,6 +2221,38 @@ ALTER TABLE timesheet_entries DROP CONSTRAINT IF EXISTS timesheet_entries_coded_
 ALTER TABLE timesheet_entries ADD CONSTRAINT timesheet_entries_coded_source_check
   CHECK (coded_source IS NULL OR coded_source IN ('precode','approve'));
 
+-- THE DRIVE, AS THE MAN ON THE JOB COUNTS IT — which is not always what the
+-- employee filed. A foreman coding his crew knows who rode out with him and
+-- how long it took; the employee's own entry may say nothing at all, because
+-- the travel boxes on the timesheet are optional and routinely left blank.
+--
+-- It is a SUGGESTION and nothing else, exactly like proposed_split beside it.
+-- The entry's own travel_to_site_hours / travel_to_shop_hours / travel_hours
+-- are untouched by pre-coding, so nobody's paid hours move until the approver
+-- decides: payroll.html shows the figure, and applying it is an ordinary edit
+-- to the entry through PUT /api/timesheet-entries.
+--
+-- coded_for_hours is stored as computed_hours + THIS figure, not the entry's,
+-- because that is the total the proposal actually allocates. The two read
+-- together is what lets payroll tell the three cases apart:
+--
+--   proposed_travel_hours IS NULL      → nothing proposed about the drive.
+--                                        Every entry coded before this existed.
+--   = travel_hours                     → the coder agreed with the timesheet.
+--                                        coded_for_hours matches the day as it
+--                                        stands and the proposal pre-fills.
+--   ≠ travel_hours                     → the coder is asking for a different
+--                                        drive. coded_for_hours will NOT match
+--                                        the day until somebody applies it, and
+--                                        that mismatch must read as "waiting on
+--                                        a decision", not as the stale proposal
+--                                        an edit to the hours leaves behind.
+--
+-- Cleared with the rest of the coding columns whenever they are: an edit that
+-- moves the day drops it, and an approval writes back over it, because by then
+-- the question has been answered one way or the other.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS proposed_travel_hours NUMERIC(6,2);
+
 -- The coder's queue: submitted entries on a job+date, which is how a site lead
 -- is scoped (he may code the day he himself worked, on the job he worked it).
 CREATE INDEX IF NOT EXISTS idx_ts_job_day

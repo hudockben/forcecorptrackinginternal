@@ -548,6 +548,12 @@ function dbToEntry(r) {
     // resurrect the foreman's first draft over it. The two must never be shown
     // or acted on as the same thing — see the column comment in neon-schema.sql.
     coded_source:        r.coded_source || '',
+    // What the CODER says the drive was. Null only where nobody pre-coded:
+    // a proposal that agreed with the timesheet still stores the figure, so
+    // payroll can tell "he agreed" from "nobody was asked". The entry's own
+    // travel_hours above is untouched by pre-coding — see the column comment
+    // in neon-schema.sql for how the two read together.
+    proposed_travel_hours: r.proposed_travel_hours != null ? Number(r.proposed_travel_hours) : null,
     created_at:          r.created_at,
     updated_at:          r.updated_at,
   };
@@ -900,11 +906,34 @@ function normalizeSplitRow(raw, idx) {
  * validateSplit at the last step, after the approver had already accepted it.
  * One definition, so the two can never drift apart.
  */
-function splitExpectedHours(entry) {
-  return _r2((Number(entry.computed_hours) || 0) + (Number(entry.travel_hours) || 0));
+function splitExpectedHours(entry, travelOverride) {
+  // `== null` and nothing cleverer. Number.isFinite(Number(x)) reads NULL as a
+  // deliberate ZERO — Number(null) is 0, and 0 is finite — so a proposal that
+  // named no drive would balance against the work hours alone and every day
+  // with travel on it would come back as though its hours had moved. The same
+  // test, spelled the same way, in requiredHours (coding.html) and
+  // codedRequiredHours (payroll.html): three readers of one column, and the
+  // one thing they must agree on is what "nobody said" means.
+  const travel = travelOverride == null
+    ? (Number(entry.travel_hours) || 0)
+    : (Number(travelOverride) || 0);
+  return _r2((Number(entry.computed_hours) || 0) + travel);
 }
 
-function validateSplit(rawSplit, entry) {
+/**
+ * `travelOverride` is the PRE-CODING path and nothing else.
+ *
+ * A foreman coding his crew knows the drive; the man's own entry often does
+ * not, because the travel boxes on the timesheet are optional. So a proposal
+ * may allocate against a different drive than the one on file — and it has to
+ * balance against the figure IT names, or the arithmetic on his screen and the
+ * arithmetic here disagree and the save is refused for reasons he cannot see.
+ *
+ * Nothing about the entry moves: the override is a number carried alongside
+ * the proposal (see proposed_travel_hours). Every other caller passes nothing
+ * and balances against the day exactly as filed.
+ */
+function validateSplit(rawSplit, entry, travelOverride) {
   if (!Array.isArray(rawSplit) || rawSplit.length === 0) {
     return { error: 'split must be a non-empty array of rows' };
   }
@@ -917,12 +946,32 @@ function validateSplit(rawSplit, entry) {
     if (error) return { error };
     rows.push(row);
   }
-  const expected = splitExpectedHours(entry);
+  const expected = splitExpectedHours(entry, travelOverride);
   const actual   = _r2(rows.reduce((s, r) => s + r.labor_hours, 0));
   if (Math.abs(actual - expected) > 0.001) {
     return {
       error: `split labor_hours total (${actual.toFixed(2)}) must equal computed_hours + travel_hours (${expected.toFixed(2)})`,
     };
+  }
+  // With a travel figure of its own, the split has to put those hours on the
+  // TRAVEL rows. The total alone cannot tell the two apart: a proposal naming
+  // two hours of drive and then booking all ten to a work code balances
+  // perfectly and injects two hours of driving under the job's production
+  // code — which is precisely the misallocation the travel row exists to stop.
+  //
+  // Only ever a body that NAMED a drive. The precode branch resolves its
+  // override to the entry's own figure when the key is absent, so testing the
+  // resolved number here would impose this rule on a caller that never opted
+  // into it — and a split putting a filed drive on a work row, legal since this
+  // endpoint existed, would start earning a 400 about a figure nobody sent.
+  if (travelOverride != null) {
+    const wantTravel = _r2(travelOverride);
+    const gotTravel  = _r2(rows.reduce((s, r) => s + (r.is_travel ? r.labor_hours : 0), 0));
+    if (Math.abs(gotTravel - wantTravel) > 0.001) {
+      return {
+        error: `the travel rows total ${gotTravel.toFixed(2)} hours but this day is being coded with ${wantTravel.toFixed(2)} hours of travel`,
+      };
+    }
   }
   // The blob tabs cap a day at MAX_INJECTED_LEGS rows, and validateTruckingInjection
   // and validateDustInjection enforce it on the paths those tabs own. A split
@@ -4924,7 +4973,17 @@ module.exports = async (req, res) => {
       // none, and the payload behind it should not carry one either — a field
       // user reading his own day back gets exactly what he always got.
       if (!canCode) {
-        for (const e of entries) e.proposed_split = null;
+        for (const e of entries) {
+          e.proposed_split = null;
+          // And no drive somebody else proposed for his day. It is a claim
+          // about his paid hours that nobody has accepted yet, and reading it
+          // back off his own timesheet would show him hours he is not owed.
+          e.proposed_travel_hours = null;
+          // Nor the figure it can be subtracted out of. coded_for_hours is
+          // computed_hours + the proposed drive by construction, so leaving it
+          // hands back the same claim one subtraction later.
+          e.coded_for_hours = null;
+        }
       }
       return res.json({ entries });
     }
@@ -5407,6 +5466,13 @@ module.exports = async (req, res) => {
             coded_at            = CASE WHEN ${acceptedSplit}::jsonb IS NULL
                                        THEN NULL ELSE NOW() END,
             coded_for_hours     = ${acceptedHours},
+            -- The coder's drive figure, answered. Whatever he asked for, the
+            -- approver has now settled the day one way or the other — applying
+            -- it first, or approving the hours as filed — so the question is
+            -- closed and leaving it set would have payroll go on flagging a
+            -- decision nobody still owes. Cleared unconditionally, because the
+            -- write-back beside it replaces the proposal it belonged to.
+            proposed_travel_hours = NULL,
             coded_source        = CASE WHEN ${acceptedSplit}::jsonb IS NULL
                                        THEN NULL ELSE 'approve' END,
             updated_at          = NOW()
@@ -5698,17 +5764,30 @@ module.exports = async (req, res) => {
 
       // ── What a proposal may carry ────────────────────────────────────
       // CLASSIFICATION, and the API — not merely the screen — is what holds it
-      // to that. Four fields belong to the approval rather than to the
+      // to that. Three fields belong to the approval rather than to the
       // question "what phase was this work?":
       //
       //   dest        routes this row's cost into another division's ledger
       //   is_haul     says the truck bought this labour, pricing it at $0
       //   haul_type   decides whether the hours keep the prevailing premium
-      //   equipment   puts a machine on the row at that machine's hourly rate
       //
       // Stripped for EVERY proposer, not only a coder: an approver may precode
       // a day too, and a proposal of his carrying these would flow through the
       // bulk panel verbatim with no modal open and no review warning.
+      //
+      // `equipment` is NOT among them, and that is a deliberate reversal. It
+      // was stripped on the reasoning that a machine on a row prices at that
+      // machine's hourly rate, so naming it is a money decision — but the
+      // decision it actually settles is WHICH IRON WAS ON THE JOB, and the man
+      // coding the day is the one who watched it run. The rate is not his to
+      // give: it comes from the equipment list at approval, exactly as it does
+      // for a machine the approver types himself. What was really being
+      // protected was the approver's chance to look, and he still has it —
+      // nothing here injects a cost row, and his modal opens on these names
+      // with the same "check them, change anything wrong" banner the codes get.
+      // Stripping it only meant the machine was reconstructed days later from a
+      // schedule by somebody who was not there, which is the failure the
+      // equipment question exists to remove.
       //
       // Stripped off the RAW BODY, before validateSplit, so the row is checked
       // in the shape it will actually be stored in. Doing it afterwards let a
@@ -5721,16 +5800,65 @@ module.exports = async (req, res) => {
       const cleanSplit = rawSplit.map(r => {
         if (!r || typeof r !== 'object') return r;
         const out = Object.assign({}, r);
-        delete out.dest; delete out.is_haul; delete out.haul_type; delete out.equipment;
+        delete out.dest; delete out.is_haul; delete out.haul_type;
         return out;
       });
 
+      // ── The drive, as the man on the job counts it ───────────────────
+      // Optional, and absent means "the timesheet's figure stands", which is
+      // every proposal written before this existed. Present, it is what the
+      // split below is balanced against — and it changes NOTHING about the
+      // entry: travel_to_site_hours, travel_to_shop_hours and travel_hours are
+      // not written here and are not writable by a coder anywhere. It is a
+      // number sitting beside the proposal for the approver to accept or
+      // ignore, and until he does, the day still pays exactly what was filed.
+      // null until the body names one, so validateSplit can tell "he said the
+      // drive was two hours" from "he said nothing and the entry's figure
+      // stands" — the second must not be held to the travel-row rule below.
+      let namedTravel = null;
+      if (req.body && req.body.travel_hours != null && req.body.travel_hours !== '') {
+        const t = Number(req.body.travel_hours);
+        if (!Number.isFinite(t) || t < 0 || t > 24) {
+          return res.status(400).json({ error: 'travel_hours must be between 0 and 24' });
+        }
+        namedTravel = _r2(t);
+      }
+      // What gets STORED is always a figure, agreed or not, so payroll can tell
+      // "he agreed with the timesheet" from "nobody was asked".
+      const proposedTravel = namedTravel == null ? _r2(existing.travel_hours) : namedTravel;
+
       // The same validation the approver's own split gets, including the
-      // balance against computed_hours + travel_hours. A proposal that does
-      // not add up is refused here rather than waiting to fail under the
-      // approver's hand at the last step.
-      const { rows: proposed, error: preErr } = validateSplit(cleanSplit, existing);
+      // balance — against computed_hours plus the drive THIS proposal names,
+      // rather than the one on the entry. A proposal that does not add up is
+      // refused here rather than waiting to fail under the approver's hand at
+      // the last step.
+      const { rows: proposed, error: preErr } = validateSplit(cleanSplit, existing, namedTravel);
       if (preErr) return res.status(400).json({ error: preErr });
+
+      // ── A SUB CODE ON EVERY ROW ──────────────────────────────────────
+      // normalizeSplitRow asks for a cost code OR a sub code, because that is
+      // all an approver's own split has ever needed: he is looking at the row
+      // as he writes it, and a job whose bid items carry no sub codes is his to
+      // judge. A proposal is read days later by somebody who was not on the
+      // job, and "101" with the sub code left blank is the one shape he cannot
+      // check — it looks complete and says nothing about which part of 101 the
+      // hours belong to. The sub code is where the production rate lives, so a
+      // blank one is a cost row that can never be measured against a bid.
+      //
+      // Free text with suggestions on the screen, so no job's missing bid items
+      // can strand a coder: where the list offers nothing he types what the
+      // work was. This applies to every precode, an approver's included — a
+      // proposal is read the same way whoever wrote it.
+      for (let i = 0; i < proposed.length; i++) {
+        if (!String(proposed[i].cost_code || '').trim()) {
+          return res.status(400).json({ error: `split[${i}] needs a cost code` });
+        }
+        if (!String(proposed[i].sub_code || '').trim()) {
+          return res.status(400).json({
+            error: `split[${i}] needs a sub code — every row coded here has to say which part of the cost code it belongs to`,
+          });
+        }
+      }
 
       // status = 'submitted' in the WHERE is a compare-and-swap, not
       // decoration: the supervisor may approve this very entry between the
@@ -5744,7 +5872,14 @@ module.exports = async (req, res) => {
             coded_by_user_id = ${userId},
             coded_by_name    = ${username},
             coded_at         = NOW(),
-            coded_for_hours  = ${splitExpectedHours(existing)},
+            -- The total this proposal ALLOCATES, which is the day's work hours
+            -- plus the drive it names — not the drive on the entry. Where the
+            -- two agree this is the same figure it has always been. Where they
+            -- do not, the mismatch against the entry is the signal payroll
+            -- reads as "somebody is asking for a different drive"; see
+            -- proposed_travel_hours in neon-schema.sql.
+            coded_for_hours  = ${splitExpectedHours(existing, proposedTravel)},
+            proposed_travel_hours = ${proposedTravel},
             coded_source     = 'precode',
             updated_at       = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
@@ -5772,7 +5907,13 @@ module.exports = async (req, res) => {
         sql, companyCode, payload, id, 'PRECODE',
         {
           proposed_row_count: proposed.length,
-          coded_for_hours:    splitExpectedHours(existing),
+          coded_for_hours:    splitExpectedHours(existing, proposedTravel),
+          // Both figures, always — the one he gave and the one the day was
+          // filed with. A drive that was changed and a drive that was agreed
+          // with read identically from the proposal alone, and only one of
+          // them is a claim about somebody else's paid hours.
+          proposed_travel_hours: proposedTravel,
+          filed_travel_hours:    Number(existing.travel_hours) || 0,
           // WHICH day, and whose. A coder's scope is derived from a day he
           // filed himself, and that is a record he writes — he cannot reach a
           // crew without naming their job on his own timesheet, which is a
@@ -5790,6 +5931,11 @@ module.exports = async (req, res) => {
           // same fact is a phone call nobody wrote down.
           cost_codes: proposed.map(r => ({
             cost_code: r.cost_code, sub_code: r.sub_code, labor_hours: r.labor_hours,
+            // The machine and its hours, logged with the codes rather than
+            // beside them. A proposal may now name iron, and a machine on a
+            // row is what the job is billed an hourly rate for — so the log
+            // has to say which one somebody put there and for how long.
+            equipment: r.equipment, equip_hours: r.equip_hours,
           })),
         },
         dbToEntry(preUpdated),
@@ -6138,6 +6284,9 @@ module.exports = async (req, res) => {
             coded_by_name       = ${username},
             coded_at            = NOW(),
             coded_for_hours     = ${rsHours},
+            -- Same as approve: this split is the accepted one, so whatever
+            -- drive a coder once asked for has been answered by it.
+            proposed_travel_hours = NULL,
             coded_source        = 'approve',
             updated_at          = NOW()
         WHERE id = ${id} AND company_code = ${companyCode}
@@ -6153,6 +6302,7 @@ module.exports = async (req, res) => {
       existing.coded_by_user_id    = userId;
       existing.coded_by_name       = username;
       existing.coded_for_hours     = rsHours;
+      existing.proposed_travel_hours = null;
       existing.coded_source        = 'approve';
       // The UPDATE above sets this to NOW(); without it here the audit record
       // of the very action that stamped coded_at reports the value it replaced.
@@ -6850,6 +7000,24 @@ module.exports = async (req, res) => {
           coded_by_name      = CASE WHEN ${keepCoding}::boolean THEN coded_by_name    ELSE NULL END,
           coded_at           = CASE WHEN ${keepCoding}::boolean THEN coded_at         ELSE NULL END,
           coded_for_hours    = CASE WHEN ${keepCoding}::boolean THEN coded_for_hours  ELSE NULL END,
+          -- Part of the same proposal, kept and dropped with it. An edit that
+          -- moves the day to another job takes the drive somebody proposed for
+          -- the old one with it — those were hours to a different site.
+          --
+          -- AND DROPPED WHEN THIS EDIT SETS THE DRIVE TO SOMETHING ELSE. The
+          -- column means "a figure nobody has acted on yet"; the moment an
+          -- approver writes a different one he HAS acted, and leaving the old
+          -- claim standing had payroll go on offering to apply it — an "apply
+          -- 2.00 h travel" button whose whole effect is to undo the correction
+          -- the same approver had just made. Applying the proposal writes the
+          -- proposed figure itself, so that path matches here and is kept,
+          -- which is what lets the proposal balance and pre-fill afterwards.
+          proposed_travel_hours = CASE
+            WHEN NOT ${keepCoding}::boolean THEN NULL
+            WHEN proposed_travel_hours IS NOT NULL
+             AND ${data.travel_hours}::numeric IS DISTINCT FROM proposed_travel_hours
+              THEN NULL
+            ELSE proposed_travel_hours END,
           coded_source       = CASE WHEN ${keepCoding}::boolean THEN coded_source     ELSE NULL END,
           -- How much of the day the truck bought, kept or dropped with the
           -- answer it describes. Cleared unconditionally, this had the same
