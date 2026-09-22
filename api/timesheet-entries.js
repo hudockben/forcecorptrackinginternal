@@ -907,9 +907,16 @@ function normalizeSplitRow(raw, idx) {
  * One definition, so the two can never drift apart.
  */
 function splitExpectedHours(entry, travelOverride) {
-  const travel = Number.isFinite(Number(travelOverride))
-    ? Number(travelOverride)
-    : (Number(entry.travel_hours) || 0);
+  // `== null` and nothing cleverer. Number.isFinite(Number(x)) reads NULL as a
+  // deliberate ZERO — Number(null) is 0, and 0 is finite — so a proposal that
+  // named no drive would balance against the work hours alone and every day
+  // with travel on it would come back as though its hours had moved. The same
+  // test, spelled the same way, in requiredHours (coding.html) and
+  // codedRequiredHours (payroll.html): three readers of one column, and the
+  // one thing they must agree on is what "nobody said" means.
+  const travel = travelOverride == null
+    ? (Number(entry.travel_hours) || 0)
+    : (Number(travelOverride) || 0);
   return _r2((Number(entry.computed_hours) || 0) + travel);
 }
 
@@ -951,7 +958,13 @@ function validateSplit(rawSplit, entry, travelOverride) {
   // two hours of drive and then booking all ten to a work code balances
   // perfectly and injects two hours of driving under the job's production
   // code — which is precisely the misallocation the travel row exists to stop.
-  if (Number.isFinite(Number(travelOverride))) {
+  //
+  // Only ever a body that NAMED a drive. The precode branch resolves its
+  // override to the entry's own figure when the key is absent, so testing the
+  // resolved number here would impose this rule on a caller that never opted
+  // into it — and a split putting a filed drive on a work row, legal since this
+  // endpoint existed, would start earning a 400 about a figure nobody sent.
+  if (travelOverride != null) {
     const wantTravel = _r2(travelOverride);
     const gotTravel  = _r2(rows.reduce((s, r) => s + (r.is_travel ? r.labor_hours : 0), 0));
     if (Math.abs(gotTravel - wantTravel) > 0.001) {
@@ -5795,21 +5808,27 @@ module.exports = async (req, res) => {
       // not written here and are not writable by a coder anywhere. It is a
       // number sitting beside the proposal for the approver to accept or
       // ignore, and until he does, the day still pays exactly what was filed.
-      let proposedTravel = Number(existing.travel_hours) || 0;
+      // null until the body names one, so validateSplit can tell "he said the
+      // drive was two hours" from "he said nothing and the entry's figure
+      // stands" — the second must not be held to the travel-row rule below.
+      let namedTravel = null;
       if (req.body && req.body.travel_hours != null && req.body.travel_hours !== '') {
         const t = Number(req.body.travel_hours);
         if (!Number.isFinite(t) || t < 0 || t > 24) {
           return res.status(400).json({ error: 'travel_hours must be between 0 and 24' });
         }
-        proposedTravel = _r2(t);
+        namedTravel = _r2(t);
       }
+      // What gets STORED is always a figure, agreed or not, so payroll can tell
+      // "he agreed with the timesheet" from "nobody was asked".
+      const proposedTravel = namedTravel == null ? _r2(existing.travel_hours) : namedTravel;
 
       // The same validation the approver's own split gets, including the
       // balance — against computed_hours plus the drive THIS proposal names,
       // rather than the one on the entry. A proposal that does not add up is
       // refused here rather than waiting to fail under the approver's hand at
       // the last step.
-      const { rows: proposed, error: preErr } = validateSplit(cleanSplit, existing, proposedTravel);
+      const { rows: proposed, error: preErr } = validateSplit(cleanSplit, existing, namedTravel);
       if (preErr) return res.status(400).json({ error: preErr });
 
       // ── A SUB CODE ON EVERY ROW ──────────────────────────────────────

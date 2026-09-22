@@ -8704,8 +8704,17 @@
           end_time:   e.end_time || '',
           travel_to_site_hours: newSite,
           travel_to_shop_hours: newShop,
-          lunch_break: e.lunch_break === true,
-          operated_equipment: e.operated_equipment === true,
+          // VERBATIM, not coerced to a boolean. `=== true` turns a NULL — an
+          // entry filed before the question existed, or one nobody answered —
+          // into an explicit false, and for operated_equipment that is not
+          // cosmetic: normalizeEntryBody nulls equipment_used on any answer but
+          // Yes, and keepEquipUsed only holds the list while the flag is
+          // exactly true. A write meant to move two travel figures would have
+          // taken the machines the operator named off the entry with it, and
+          // the modal reopened below would then prefill from an empty list.
+          // safeBool passes true, false and null through unchanged.
+          lunch_break: e.lunch_break,
+          operated_equipment: e.operated_equipment,
           supervisor_id:   e.supervisor_id || '',
           supervisor_name: e.supervisor_name || '',
           notes: e.notes || '',
@@ -9434,8 +9443,15 @@
       // splitCodedNoteHtml.
       if (!stale && e.coded_source !== 'precode') return '';
       if (stale) {
+        // The day as it STANDS — work plus the drive on the entry — not
+        // codedRequiredHours, which counts the drive the coder asked for and
+        // nobody granted. That figure is the one this proposal was measured
+        // against, so printing it as "it now has" names a number the day has
+        // not got and contradicts the approve modal beside it, which prints
+        // work + filed travel under "Total to allocate".
+        const has = (Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0);
         const title = `The codes stored on this day were written against ${num2(forH)} hours`
-          + ` and it now has ${num2(codedRequiredHours(e))}, so they no longer add up`
+          + ` and it now has ${num2(has)}, so they no longer add up`
           + ` — approving opens on blank defaults.`;
         return `<span class="coded-chip stale" title="${escAttr(title)}">⚠ coded (stale)</span>`;
       }
@@ -10496,6 +10512,25 @@
           _equipHoursTouched: mode === 'resplit'
             || !(splitFromProposal && fromCoder)
             || (Number(r.equip_hours) || 0) > 0,
+          // A CODER'S MACHINE IS A NAMED ONE, and has to be taken back on a
+          // haul row exactly as the operator's own is.
+          //
+          // On a haul day the day-level answer marks every work row a haul
+          // before any of this is read, and splitDefaultHaulEquipment only
+          // fills a row whose equipment is BLANK — so his roller sat where the
+          // driver's truck belonged, and the job was billed for a roller as the
+          // haul unit while the truck the driver actually named never reached
+          // the row. splitClearNamedOnHaul is the take-back that already exists
+          // for precisely this, and it keys off this flag: it keeps the machine
+          // where it IS the truck, and clears it where it is not so the truck
+          // can land.
+          //
+          // Work rows only. On a travel row the same helper would clear
+          // anything that is not a pickup, and a machine he deliberately put on
+          // the drive is his answer — the haul hazard is not there, because a
+          // travel row is never a haul row.
+          _namedAutoEquip: splitFromProposal && fromCoder
+            && !r.is_travel && !!String(r.equipment || '').trim(),
         }));
         // A PROPOSAL carries no haul answer of its own — a coder is not
         // allowed to give one, and the server strips the field rather than
@@ -15846,10 +15881,13 @@
       // travel, which is a decision this panel does not make — buildBulkGroups
       // sets such a day aside before it ever reaches here, and this is the
       // second guard on the same fact.
+      // Once past codedTravelPending, proposed_travel_hours is either null or
+      // equal to the entry's, so codedRequiredHours IS work + filed travel and
+      // codedProposalStale has already caught everything a second inline
+      // comparison here would. Two spellings of one rule side by side is how
+      // the coding.html / payroll.html mismatch got in; one spelling, one
+      // helper.
       if (codedProposalStale(e) || codedTravelPending(e)) return null;
-      const required = bulkR2((Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0));
-      const forH = e.coded_for_hours != null ? Number(e.coded_for_hours) : null;
-      if (forH != null && Math.abs(forH - required) > 0.001) return null;
       return e.proposed_split.map(r => ({
         cost_code:   r.cost_code || '',
         sub_code:    r.sub_code  || '',

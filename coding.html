@@ -288,7 +288,15 @@
      *  `travel` overrides the filed drive, which is what a sheet proposing its
      *  own passes. Left out, this is the day exactly as filed. */
     function requiredHours(e, travel) {
-      return r2(workHours(e) + (Number.isFinite(Number(travel)) ? Number(travel) : filedTravel(e)));
+      // `== null` and nothing cleverer — see splitExpectedHours in
+      // api/timesheet-entries.js. Number.isFinite(Number(travel)) reads NULL as
+      // a deliberate zero, because Number(null) is 0 and 0 is finite; that made
+      // proposalStale below measure every proposal carrying no drive of its own
+      // against the WORK hours alone, so a day with travel on it — a proposal
+      // written before that column existed, or an approver's split written back
+      // over one — came back "codes no longer add up, redo" with nothing wrong
+      // with it, and opening it threw his codes away.
+      return r2(workHours(e) + (travel == null ? filedTravel(e) : (Number(travel) || 0)));
     }
 
     /** The drive a stored proposal was written with — his figure, not the
@@ -512,6 +520,12 @@
     let equipNames        = null;
     let equipByDivision   = null;
     let equipPromise      = null;
+    // 'ok' | 'failed'. A picker holding nothing reads as "there is nothing to
+    // answer here", and the coder types a machine name from memory instead —
+    // which is the one spelling the equipment list does not know, and a name it
+    // does not know prices at nothing when the job is billed. The cost codes
+    // already say when their lookup failed; this says it the same way.
+    let equipState = 'ok';
     function equipLoad() {
       if (equipNames) return Promise.resolve(equipNames);
       if (!equipPromise) {
@@ -529,11 +543,13 @@
             }
             equipByDivision = byDiv;
             equipNames = rows.map(x => String(x.name));
+            equipState = 'ok';
             return equipNames;
           })
           .catch(err => {
             console.error('[coding] equipment list failed to load:', err.message);
             equipPromise = null;
+            equipState = 'failed';
             return null;
           });
       }
@@ -801,6 +817,14 @@
           ? `<div class="msg err show">This job has no bid items set up, so there are no codes to pick from. Type them in, or ask the office to add them.</div>`
           : '';
 
+      // Said only where it matters: the machine boxes are optional, so a
+      // failed lookup is worth one line rather than an alarm — but it has to be
+      // a line, because an empty picker looks exactly like a company with no
+      // equipment on its books.
+      const eqNote = equipState === 'failed'
+        ? `<div class="msg err show">Could not load the equipment list. You can still type a machine in — spell it as it is on the equipment list, or the job gets billed nothing for it.</div>`
+        : '';
+
       // The filed drive, for the hint under the travel box; the note that fires
       // when the figure on screen disagrees with it is travelNoteHtml's.
       const filed = filedTravel(sheet.entry);
@@ -808,7 +832,7 @@
 
       const eqOpts = equipNamesFor(sheet.entry.division);
 
-      body.innerHTML = supNote + ccNote + tNote + sheet.rows.map((r, i) => {
+      body.innerHTML = supNote + ccNote + eqNote + tNote + sheet.rows.map((r, i) => {
         const subs = subsFor(r.cost_code);
         const equip = isEquipRow(r);
         const tag = equip ? 'Equipment' : (isTravelRow(r) ? 'Travel' : 'Work');
@@ -940,8 +964,15 @@
       }
     }
 
-    function addRow(kind) { if (sheet) { sheet.rows.push(blankRow(kind)); renderSheet(); } }
-    function delRow(i) { if (sheet) { sheet.rows.splice(i, 1); renderSheet(); } }
+    // Both harvest first. renderSheet rebuilds the body from sheet.rows, and the
+    // text fields commit on blur — so a sub code typed and not yet blurred lives
+    // only in the DOM, and tapping a button straight from that field repaints
+    // over it. saveCoding has guarded this from the start ("tapping Save
+    // straight from a text field fires the click before that field's change
+    // event on some mobile browsers"); these two never did, and the sheet now
+    // has two more buttons on that path and two more text fields per row.
+    function addRow(kind) { if (sheet) { harvestSheetDom(); sheet.rows.push(blankRow(kind)); renderSheet(); } }
+    function delRow(i)    { if (sheet) { harvestSheetDom(); sheet.rows.splice(i, 1);        renderSheet(); } }
 
     async function saveCoding() {
       if (!sheet || sheet.saving) return;

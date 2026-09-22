@@ -110,6 +110,18 @@ function precode(entry, body) {
   };
 }
 
+/** The same, for a body that names no drive at all — an older client, or any
+ *  caller that never opted into the travel question. */
+function precodeNoTravelKey(entry, split) {
+  const { rows, error } = srv.validateSplit(split, entry, null);
+  if (error) return { err: error };
+  return {
+    rows,
+    coded_for_hours:       srv.splitExpectedHours(entry, null),
+    proposed_travel_hours: Math.round((Number(entry.travel_hours) || 0) * 100) / 100,
+  };
+}
+
 /* ═══════ Code Time's sheet ═══════
  *
  * The page's own hours helpers and row predicates. saveCoding is one method
@@ -215,6 +227,57 @@ vm.runInContext(`
   ${requireFn(payrSrc, 'codedProposalStale', 'payroll.html')}
   globalThis.codeR2 = codeR2;
 `, pay);
+
+/* ═══════ The haul rules a coder's machine now meets ═══════
+ *
+ * On a haul day the day-level answer marks every work row a haul before any of
+ * this is read, so the $0 labour rate is the driver's own answer and not
+ * something a proposal causes. What a proposal CAN cause is the machine on the
+ * row: splitDefaultHaulEquipment only fills a blank one, so a machine the coder
+ * named sat where the driver's truck belonged. These are the real rules, run
+ * in the order openSplitModal runs them.
+ */
+const haul = vm.createContext({ console });
+vm.runInContext(`
+  ${(payrSrc.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0]}
+  let splitEntry = null, splitRows = [], splitProjEquipment = [];
+  ${requireFn(payrSrc, 'isTravelSplitRow', 'payroll.html')}
+  ${requireFn(payrSrc, 'splitTruckOnRow', 'payroll.html')}
+  ${requireFn(payrSrc, 'splitRowHaulAnswer', 'payroll.html')}
+  ${requireFn(payrSrc, 'splitRowTakesTruck', 'payroll.html')}
+  ${requireFn(payrSrc, 'splitHaulTruckName', 'payroll.html')}
+  ${requireFn(payrSrc, 'splitDefaultHaulEquipment', 'payroll.html')}
+  ${requireFn(payrSrc, 'splitSeedRowHaul', 'payroll.html')}
+  ${requireFn(payrSrc, 'splitClearNamedOnHaul', 'payroll.html')}
+  ${requireFn(payrSrc, 'splitEquipIsPickup', 'payroll.html')}
+  // openSplitModal's seeding of a stored proposal, then the take-back and the
+  // truck default that splitMirrorHaulEquipHoursAll drives.
+  globalThis.openOn = (entry, row) => {
+    splitEntry = entry; splitRows = [row];
+    const said = entry.haul_type || '';
+    if (said === 'on_site' || said === 'off_site') {
+      splitRows.filter(r => !r.is_travel && !r.haul_type).forEach(r => { r.haul_type = said; });
+    }
+    splitRows.forEach(r => {
+      r.haul_type = splitSeedRowHaul(r);
+      if (r.haul_type === 'none' && r.is_haul === undefined) r.is_haul = false;
+    });
+    splitRows.forEach(r => { splitClearNamedOnHaul(r); splitDefaultHaulEquipment(r); });
+    return splitRows[0];
+  };
+`, haul);
+
+/** A coder's proposed row, mapped as openSplitModal maps it. */
+function codedRow(equipment, isTravel) {
+  return {
+    cost_code: '101', sub_code: 'A', labor_hours: isTravel ? 1 : 8,
+    equip_hours: equipment ? 6 : 0, equipment: equipment || '',
+    is_travel: !!isTravel, is_haul: undefined, haul_type: undefined,
+    // The flag the mapping sets: a coder's machine on a work row is a NAMED
+    // one, to be taken back where the row turns out to be a haul.
+    _namedAutoEquip: !isTravel && !!equipment,
+  };
+}
 
 /** buildBulkBody's merge of the card's machines onto a coded day. */
 function bulkMerge(coded, cardMachines) {
@@ -480,6 +543,101 @@ console.log('\nA proposal still cannot price anything');
   eq('no haul type survives', out.rows[0].haul_type, undefined);
   eq('and no routing to another division', out.rows[0].dest, null);
   eq('while the machine he named does', out.rows[0].equipment, 'CAT 336');
+}
+
+console.log('\nA proposal carrying no drive of its own is not stale');
+{
+  // Number(null) is 0 and 0 is finite, so `Number.isFinite(Number(override))`
+  // read a NULL proposed_travel_hours as a deliberate zero — and every day with
+  // travel on it came back "codes no longer add up, redo" with nothing wrong.
+  // Two populations hit it: proposals written before the column existed, and
+  // every approver write-back, which sets proposed_travel_hours = NULL while
+  // writing coded_for_hours = work + travel.
+  const e = { computed_hours: 8, travel_hours: 2, coded_for_hours: 10,
+              proposed_travel_hours: null, proposed_split: [{}], coded_source: 'approve' };
+  eq('the sheet counts the day\'s own drive when none was proposed', cod.requiredHours(e, null), 10);
+  eq('so a pre-column proposal is not stale on Code Time', cod.proposalStale(e), false);
+  eq('nor on payroll', pay.codedProposalStale(e), false);
+  eq('and the two screens agree, which is the whole point',
+    cod.proposalStale(e), pay.codedProposalStale(e));
+  eq('an approver\'s written-back split survives being sent back',
+    cod.proposalStale({ ...e, coded_source: 'approve' }), false);
+  eq('a real zero is still a real zero',
+    cod.requiredHours({ computed_hours: 8, travel_hours: 2 }, 0), 8);
+  eq('and the server agrees with both',
+    srv.splitExpectedHours({ computed_hours: 8, travel_hours: 2 }, null), 10);
+  eq('while an explicit figure still overrides',
+    srv.splitExpectedHours({ computed_hours: 8, travel_hours: 2 }, 3), 11);
+}
+
+console.log('\nA body that named no drive is not held to the travel-row rule');
+{
+  // precode resolves its override to the entry's own figure when the key is
+  // absent. Testing the RESOLVED number would impose the rule on a caller that
+  // never opted in — a split putting a filed drive on a work row, legal since
+  // this endpoint existed, would start earning a 400 about a figure nobody sent.
+  const e = { computed_hours: 8, travel_hours: 2 };
+  const out = precodeNoTravelKey(e, [{ cost_code: '101', sub_code: 'A', labor_hours: 10, is_travel: false }]);
+  assert('an older client that sends no travel_hours still saves', !out.err, out.err);
+  eq('and its proposal still records the day\'s own drive', out.proposed_travel_hours, 2);
+  const named = precode(e, { travel_hours: 2, split: [{ cost_code: '101', sub_code: 'A', labor_hours: 10, is_travel: false }] });
+  assert('while a body that DID name one is held to it',
+    /travel rows total/.test(named.err || ''), JSON.stringify(named));
+}
+
+console.log('\nA coder\'s machine never displaces the driver\'s truck');
+{
+  const withTruck = { haul_type: 'off_site', truck_unit: 'Triaxle Dump 12' };
+  const r1 = haul.openOn(withTruck, codedRow('Roller'));
+  eq('on a haul day the truck the driver named wins', r1.equipment, 'Triaxle Dump 12');
+
+  const r2 = haul.openOn(withTruck, codedRow('Triaxle Dump 12'));
+  eq('unless the machine he named IS the truck', r2.equipment, 'Triaxle Dump 12');
+
+  const r3 = haul.openOn({ haul_type: 'on_site', truck_unit: '' }, codedRow('Roller'));
+  eq('with no truck named the row stays blank — a refusal, not a gap', r3.equipment, '');
+
+  const r4 = haul.openOn({ haul_type: '', truck_unit: '' }, codedRow('Roller'));
+  eq('and on an ordinary day his machine simply stands', r4.equipment, 'Roller');
+  eq('on a row nothing calls a haul', r4.haul_type, 'none');
+  eq('so his labour is still paid', r4.is_haul, false);
+
+  const r5 = haul.openOn({ haul_type: 'off_site', truck_unit: 'Triaxle Dump 12' }, codedRow('Pickup', true));
+  eq('a machine on the DRIVE is his answer and is left alone', r5.equipment, 'Pickup');
+
+  assert('and the mapping sets the flag the take-back keys off',
+    /_namedAutoEquip: splitFromProposal && fromCoder/.test(payrSrc),
+    'a coder\'s machine is no longer marked as a named one');
+}
+
+console.log('\nApplying the drive edits the drive and nothing else');
+{
+  // `=== true` turns a NULL into an explicit false, and normalizeEntryBody nulls
+  // equipment_used on any answer but Yes — so a write meant to move two travel
+  // figures would have taken the operator's machines off the entry with it.
+  const body = (payrSrc.match(/lunch_break: e\.lunch_break,[\s\S]{0,80}operated_equipment: e\.operated_equipment,/) || [])[0];
+  assert('the flags are passed through verbatim, not coerced', !!body,
+    'applyProposedTravel is coercing operated_equipment/lunch_break again');
+  assert('and no equipment_used key is sent, so the server keeps the list',
+    !/applyProposedTravel[\s\S]{0,2000}equipment_used:/.test(payrSrc));
+}
+
+console.log('\nThe stale chip names the hours the day actually has');
+{
+  assert('not the drive the coder asked for and nobody granted',
+    /const has = \(Number\(e\.computed_hours\) \|\| 0\) \+ \(Number\(e\.travel_hours\) \|\| 0\);/.test(payrSrc),
+    'codedChipHtml is reporting codedRequiredHours as what the day "now has" again');
+}
+
+console.log('\nThe sheet says when a lookup failed, and keeps what is typed');
+{
+  assert('a failed equipment lookup is on screen, not only in the console',
+    /Could not load the equipment list/.test(codeSrc),
+    'an empty machine picker is indistinguishable from a company with no equipment');
+  assert('adding a row harvests the form first',
+    /function addRow\(kind\) \{ if \(sheet\) \{ harvestSheetDom\(\);/.test(codeSrc));
+  assert('and so does removing one',
+    /function delRow\(i\)\s+\{ if \(sheet\) \{ harvestSheetDom\(\);/.test(codeSrc));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
