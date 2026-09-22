@@ -9870,7 +9870,12 @@
     const splitCcCache = {};
     // Equipment list: global list loaded once, per-job list built on each modal open
     let splitEquipmentGlobal = null;
-    let splitEquipmentList   = null;
+    // The same names split by the list each is kept on. Turf, paving and kiewit
+    // each maintain one, and a row is coded against ONE of them — so offering
+    // all three is offering two divisions' iron to an approver coding the
+    // third. The timesheet narrows the operator's picker the same way; this is
+    // the same list arriving at the desk that codes it.
+    let splitEquipmentByDivision = null;
     // Just the equipment the office assigned to THIS job, kept apart from the
     // merged picker list so a haul row can default to it. The company list is
     // every machine the company owns and says nothing about this job.
@@ -9893,17 +9898,61 @@
       return Number.isFinite(v) && v !== 0 ? num2(v) : '';
     }
 
+    // The machines one division may be coded against, which is its own list.
+    //
+    // Falls back to every machine in the company rather than to nothing, in the
+    // two cases where narrowing would leave an approver with an empty picker:
+    // no division to narrow by, and a division that keeps no list of its own
+    // (dust, trucking and quarry) or has never filled its in. Mirrors
+    // equipNamesFor in timesheet.html — the operator and the approver must be
+    // offered the same iron, or the desk that checks his answer is working off
+    // a different list from the one he answered with.
+    //
+    // Narrowing only ever trims the SUGGESTIONS: these cells are free text with
+    // a menu (see _cbHtml), so a machine off this list is still shown, still
+    // typeable, and still committed exactly as entered.
+    function splitEquipNamesFor(division) {
+      const own = (division && splitEquipmentByDivision) ? splitEquipmentByDivision[division] : null;
+      return (own && own.length) ? own : (splitEquipmentGlobal || []);
+    }
+
+    // The options for ONE row, off the division that row's cost lands on —
+    // which is its destination's when it has one, exactly as splitRowCcList
+    // reads the codes. A row sent to paving is coded against paving's job, so
+    // it is paving's machines it should be offered.
+    //
+    // The job's own assigned equipment rides along only for a row staying on
+    // the entry's job, since that is the job it was assigned to.
+    function splitEquipOptsFor(r) {
+      const names = splitEquipNamesFor(splitRowDivision(r)).slice();
+      if (!(r && r.dest_division)) {
+        const known = new Set(names);
+        for (const n of (splitProjEquipment || [])) if (n && !known.has(n)) names.push(n);
+      }
+      return names.sort((a, b) => a.localeCompare(b));
+    }
+
     async function loadEquipmentForSplit(division, jobId) {
       if (!splitEquipmentGlobal) {
         try {
           const res = await fetch('/api/equipment', { headers: authHeaders() });
           const j = await res.json();
-          splitEquipmentGlobal = Array.isArray(j.equipment)
-            ? j.equipment.map(e => e.name).filter(Boolean)
-            : [];
-        } catch { splitEquipmentGlobal = []; }
+          const rows = Array.isArray(j.equipment) ? j.equipment.filter(e => e && e.name) : [];
+          // An older server sends no `divisions` key: nothing lands in a
+          // bucket, every row falls back to the flat list, and the picker
+          // behaves exactly as it did before it was narrowed.
+          const byDiv = {};
+          for (const e of rows) {
+            for (const d of (Array.isArray(e.divisions) ? e.divisions : [])) {
+              (byDiv[d] || (byDiv[d] = [])).push(String(e.name));
+            }
+          }
+          splitEquipmentByDivision = byDiv;
+          splitEquipmentGlobal = rows.map(e => String(e.name));
+        } catch { splitEquipmentGlobal = []; splitEquipmentByDivision = {}; }
       }
-      const globalSet = new Set(splitEquipmentGlobal);
+      const base      = splitEquipNamesFor(division);
+      const globalSet = new Set(base);
       let projEquip = [];
       if (jobId && (division === 'turf' || division === 'paving' || division === 'kiewit')) {
         const cacheKey = `${division}::${jobId}`;
@@ -9927,12 +9976,14 @@
         }
       }
       splitProjEquipment = projEquip.slice();
-      const merged = [...splitEquipmentGlobal];
+      const merged = [...base];
       for (const name of projEquip) {
         if (!globalSet.has(name)) merged.push(name);
       }
-      splitEquipmentList = merged.sort((a, b) => a.localeCompare(b));
-      return splitEquipmentList;
+      // Returned rather than parked in module state: the bulk screen loads
+      // several groups AT ONCE and each keeps its own list (g.eqList), so a
+      // shared one would only ever hold whichever group finished last.
+      return merged.sort((a, b) => a.localeCompare(b));
     }
 
     async function loadCostCodesFor(division, jobId) {
@@ -11345,10 +11396,20 @@
         tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:1.2rem">No rows yet — add a labor or travel row above.</td></tr>';
         return;
       }
-      const eqOpts = (splitEquipmentList || []).slice();
+      // The machines, like the codes below, are per row rather than per modal —
+      // memoised for the one repaint, since a table of rows staying put would
+      // otherwise rebuild and re-sort the same list for each of them.
+      const _eqByDiv = new Map();
+      const eqOptsFor = (r) => {
+        const key = `${splitRowDivision(r)}::${(r && r.dest_division) ? 'dest' : 'own'}`;
+        if (!_eqByDiv.has(key)) _eqByDiv.set(key, splitEquipOptsFor(r));
+        return _eqByDiv.get(key);
+      };
       tbody.innerHTML = splitRows.map((r, i) => {
         // Per row, not per modal: a row sent to another division is coded
-        // against THAT division's job. See splitRowCcList.
+        // against THAT division's job, and offered THAT division's machines.
+        // See splitRowCcList and splitEquipOptsFor.
+        const eqOpts = eqOptsFor(r);
         const ccList = splitRowCcList(r);
         const ccCodes = ccList.map(c => c.cost_code);
         const found = findCostCode(ccList, r.cost_code);

@@ -1318,7 +1318,88 @@ async function divisionChecks() {
     /The list is this job's division\./.test(HTML));
 }
 
-lateCompanyListChecks().then(divisionChecks).then(() => {
+// ── And the desk that codes his answer sees the same list ──────────────────
+// The approver's split modal offers a machine picker too, and an approver
+// coding a paving day against turf's mowers is the same wrong pick one step
+// later. Its cells are free text with a suggestion menu, so narrowing trims
+// what is OFFERED and can never drop what is already there — which is why the
+// modal can narrow per ROW, off the division that row's cost actually lands on.
+function payrollSplitChecks() {
+  console.log('\n[the approver is offered the same division\u2019s machines]');
+
+  const ctx = {
+    console,
+    splitEquipmentGlobal: ALL.slice(),
+    splitEquipmentByDivision: BY_DIV,
+    splitProjEquipment: [],
+    splitEntry: { division: 'paving', job_id: 'J1' },
+  };
+  vm.createContext(ctx);
+  for (const f of ['splitRowDivision', 'splitEquipNamesFor', 'splitEquipOptsFor']) {
+    vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
+  }
+
+  {
+    const opts = ctx.splitEquipOptsFor({});
+    eq('a row on a paving entry is offered paving\u2019s machines', opts, BY_DIV.paving);
+  }
+  {
+    // A row sent to another division is coded against THAT division's job, so
+    // it is that division's machines it should be offered — the rule
+    // splitRowCcList already follows for the cost codes beside them.
+    const opts = ctx.splitEquipOptsFor({ dest_division: 'kiewit', dest_job: 'K9' });
+    eq('a row sent to kiewit is offered kiewit\u2019s', opts, BY_DIV.kiewit);
+  }
+  {
+    ctx.splitProjEquipment = ['Site Van'];
+    const own  = ctx.splitEquipOptsFor({});
+    const sent = ctx.splitEquipOptsFor({ dest_division: 'kiewit', dest_job: 'K9' });
+    assert('the job\u2019s own assigned equipment still rides along',
+      own.includes('Site Van'), own.join(', '));
+    assert('  but not onto a row that is going somewhere else',
+      !sent.includes('Site Van'), sent.join(', '));
+    ctx.splitProjEquipment = [];
+  }
+  {
+    ctx.splitEntry = { division: 'dust', job_id: 'D1' };
+    const opts = ctx.splitEquipOptsFor({});
+    eq('a division that keeps no list falls back to the whole company', opts, ALL);
+    ctx.splitEntry = { division: 'paving', job_id: 'J1' };
+  }
+  {
+    ctx.splitEquipmentByDivision = {};
+    const opts = ctx.splitEquipOptsFor({});
+    eq('and a server that sends no divisions narrows nothing', opts, ALL);
+    ctx.splitEquipmentByDivision = BY_DIV;
+  }
+  {
+    ctx.splitEquipmentByDivision = { turf: BY_DIV.turf, paving: [] };
+    const opts = ctx.splitEquipOptsFor({});
+    eq('nor does an empty list, which would offer the approver nothing', opts, ALL);
+    ctx.splitEquipmentByDivision = BY_DIV;
+  }
+
+  console.log('\n[wired into the modal, and not at the cost of what is already coded]');
+  assert('the table reads the options per row, not once per modal',
+    /const eqOpts = eqOptsFor\(r\);/.test(PAY) && !/splitEquipmentList/.test(PAY));
+  assert('  and the loader hands its list back rather than parking it in module state',
+    /return merged\.sort\(\(a, b\) => a\.localeCompare\(b\)\);/.test(PAY));
+  assert('  and memoises them, so a table of rows does not re-sort the same list per row',
+    /if \(!_eqByDiv\.has\(key\)\) _eqByDiv\.set\(key, splitEquipOptsFor\(r\)\);/.test(PAY));
+  assert('the bulk card narrows on its own group\u2019s division too',
+    /const base      = splitEquipNamesFor\(division\);/.test(PAY) &&
+    /const merged = \[\.\.\.base\];/.test(PAY));
+  // The whole reason the modal may narrow per row where the timesheet could
+  // not: _cbHtml renders an <input>, not a <select>, and cbCommit writes what
+  // was typed. A machine off the list is shown, typeable and committed.
+  assert('the cells stay free text, so a machine off the list is never dropped',
+    /<input type="text" class="cb-input/.test(PAY) &&
+    /const value = String\(input\.value == null \? '' : input\.value\)\.trim\(\);/.test(PAY));
+  assert('the fetch buckets each machine under every division that keeps it',
+    /for \(const d of \(Array\.isArray\(e\.divisions\) \? e\.divisions : \[\]\)\)/.test(PAY));
+}
+
+lateCompanyListChecks().then(divisionChecks).then(payrollSplitChecks).then(() => {
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }).catch(err => { console.error(err); process.exit(1); });
