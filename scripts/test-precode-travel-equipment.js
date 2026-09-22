@@ -128,7 +128,11 @@ function precodeNoTravelKey(entry, split) {
  * with a DOM in the middle of it, so its validation walk is mirrored below the
  * lifted helpers — every figure it works from comes off the real ones.
  */
-const cod = vm.createContext({ console });
+// The mirror writes its row's live input as well as the row. There is no DOM
+// here, so the lookup simply misses — which is the same path a real browser
+// takes before the first paint, and harvestSheetDom's re-derive is what covers
+// it either way.
+const cod = vm.createContext({ console, document: { getElementById: () => null } });
 vm.runInContext(`
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
   ${requireFn(codeSrc, 'workHours', 'coding.html')}
@@ -142,6 +146,12 @@ vm.runInContext(`
   ${requireFn(codeSrc, 'travelCandidates', 'coding.html')}
   ${requireFn(codeSrc, 'travelSubsFor', 'coding.html')}
   ${requireFn(codeSrc, 'pickTravelCodes', 'coding.html')}
+  let sheet = null;
+  ${requireFn(codeSrc, 'mirrorPickupHours', 'coding.html')}
+  ${requireFn(codeSrc, 'applyTravelCodes', 'coding.html')}
+  globalThis.setSheet = s => { sheet = s; };
+  globalThis.mirrorPickupHours = mirrorPickupHours;
+  globalThis.applyTravelCodes = applyTravelCodes;
   ${(codeSrc.match(/const isEquipRow\s+= [^\n]+/) || [])[0]}
   ${(codeSrc.match(/const isTravelRow = [^\n]+/) || [])[0]}
   ${(codeSrc.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0]}
@@ -193,14 +203,33 @@ function defaultRows(e) {
   return rows;
 }
 
-/** setField's labor_hours branch on a travel row, model side only — the DOM
- *  write is the other half and is asserted against the page source. */
+/**
+ * The page's OWN mirror, run against a sheet of these rows.
+ *
+ * Restating it here instead cost a blocker: the restatement had no notion of
+ * "no drive to mirror", the real one levelled a pickup's fallback hours to
+ * zero on the first harvest, and every assertion still passed because the
+ * harness only ever built rows and never harvested them. So the real function
+ * is lifted, and `harvest()` below runs what harvestSheetDom runs.
+ */
+function mirror(rows, i) {
+  cod.setSheet({ rows });
+  return cod.mirrorPickupHours(i);
+}
+
+/** setField's labor_hours branch on a travel row, model side. The DOM write is
+ *  the other half and is asserted against the page source. */
 function typeTravelHours(rows, i, value) {
   rows[i].labor_hours = value;
-  const r = rows[i];
-  if (!r._equipHoursTouched && cod.isTravelRow(r) && cod.isPickup(r.equipment)) {
-    r.equip_hours = String(cod.r2(r.labor_hours));
-  }
+  mirror(rows, i);
+  return rows;
+}
+
+/** What harvestSheetDom does after its DOM-to-row loop: re-derive every row's
+ *  mirror. This is the pass that runs on open, on every deferred repaint, and
+ *  once more inside saveCoding a line before the POST. */
+function harvest(rows) {
+  rows.forEach((r, i) => mirror(rows, i));
   return rows;
 }
 
@@ -216,6 +245,10 @@ function reopen(stored) {
       equipment: r.equipment || '',
       equip_hours: r.equip_hours ? String(r.equip_hours) : '',
       is_travel: !!r.is_travel,
+      code_source: 'manual',
+      _equipHoursTouched: (Number(r.equip_hours) || 0) > 0
+        && !(r.is_travel && cod.isPickup(r.equipment)
+             && Math.abs((Number(r.equip_hours) || 0) - (Number(r.labor_hours) || 0)) < 0.001),
     };
   });
 }
@@ -441,6 +474,10 @@ console.log('\nEquipment, with its hours');
   eq('a machine named with no hours opens no row at all', nh.length, 2);
   eq('and none of them carries it', nh.filter(r => r.equipment).length, 0);
   assert('so the sheet does not open already failing validation', !save(noHours, code(nh)).err);
+  // ...but "left off" and "never mentioned" must not look the same on screen.
+  assert('and the sheet says which machine it left off, and why',
+    /named \$\{esc\(unpriced\.join\(', '\)\)\} on his timesheet without saying how long/.test(codeSrc),
+    'a machine the employee named vanishes with nothing on screen saying so');
 
   const stray = code(defaultRows({ computed_hours: 8, travel_hours: 0, equipment_used: [] }));
   stray[0].equip_hours = '4';
@@ -726,6 +763,17 @@ console.log('\nThe pickup follows the drive as the foreman corrects it');
   typeTravelHours(rows, ti, '1');
   eq('and stops the moment he types his own figure', rows[ti].equip_hours, '3');
 
+  // A drive that does not exist is not a zero-hour drive: the link waits for
+  // one rather than levelling his stated figure to nothing, and relights by
+  // itself when he types it.
+  const none = defaultRows({ computed_hours: 8, travel_hours: 0,
+                             equipment_used: [{ name: 'Pickup', hours: 2 }] });
+  const ni = none.findIndex(cod.isTravelRow);
+  harvest(none);
+  eq('with no drive on the row his own figure stands', none[ni].equip_hours, '2');
+  typeTravelHours(none, ni, '1.25');
+  eq('and the link relights the moment he names one', none[ni].equip_hours, '1.25');
+
   assert('the mirror writes the input as well as the row, or the harvest reverts it',
     /const el = document\.getElementById\('eqh' \+ i\);/.test(codeSrc),
     'mirrorPickupHours no longer writes the DOM — saveCoding harvests just before it posts');
@@ -748,6 +796,14 @@ console.log('\nA pickup with nothing to bill opens no row');
   const t = r2rows.find(cod.isTravelRow);
   eq('the pickup rides the drive on his own figure', t.equipment, 'Pickup');
   eq('at the hours he gave it', t.equip_hours, '1.5');
+  // THE ONE THAT GOT THROUGH. harvestSheetDom re-derives the mirror on every
+  // row, and a mirror with no "is there a drive" guard levelled this to zero
+  // before the foreman had touched anything — leaving a machine with no hours,
+  // which the save refuses. It runs on open, on every repaint, and once more
+  // inside saveCoding.
+  harvest(r2rows);
+  eq('and the figure survives the harvest', t.equip_hours, '1.5');
+  assert('so the day is still saveable after it', !save(stated, code(harvest(r2rows))).err);
   eq('and the drive itself is still zero — his machine hours are not a claim on his pay',
     t.labor_hours, '');
   const out = precode(stated, save(stated, code(r2rows)));
@@ -815,11 +871,45 @@ console.log('\nThe drive books to the job\'s own travel line, not a constant');
   eq('the travel picker offers the job\'s travel subs, not every sub under the code',
     cod.travelSubsFor(TURF, 'Mobilization'), ['Travel']);
 
-  assert('the prefill only ever writes into a row with BOTH cells blank',
-    /if \(String\(r\.cost_code \|\| ''\)\.trim\(\) \|\| String\(r\.sub_code \|\| ''\)\.trim\(\)\) continue;/.test(codeSrc),
-    'applyTravelCodes can now overwrite what the foreman typed');
+  assert('the prefill never touches a row the foreman has committed',
+    /if \(r\.code_source === 'manual'\) continue;/.test(codeSrc),
+    'applyTravelCodes can overwrite what the foreman typed');
   assert('and runs after the harvest, never before it',
     /harvestSheetDom\(\); applyTravelCodes\(\); renderSheet\(\);/.test(codeSrc));
+
+  /* The prefill re-runs on a work-row commit, which is what carries paving —
+   * and re-running is exactly what makes authorship load-bearing. `commit`
+   * below is setField's cost_code branch: mark the row his, then re-derive. */
+  const commit = (rows, i, value) => {
+    rows[i].cost_code = value;
+    rows[i].code_source = 'manual';
+    cod.setSheet({ rows, codes: PAVING });
+    cod.applyTravelCodes();
+    return rows;
+  };
+  const sheetRows = () => ([
+    { kind: 'work',   cost_code: '', sub_code: '', code_source: '', labor_hours: '8' },
+    { kind: 'travel', is_travel: true, cost_code: '', sub_code: '', code_source: '', labor_hours: '1' },
+  ]);
+
+  let rs = sheetRows();
+  commit(rs, 0, '5in Mill & Fill');
+  eq('naming the task fills the drive that belongs to it', rs[1].cost_code, '5in Mill & Fill');
+  commit(rs, 0, 'Excavation Prep');
+  eq('and CHANGING the task re-derives it rather than leaving the drive on the old one',
+    rs[1].cost_code, 'Excavation Prep');
+  eq('with its sub code too', rs[1].sub_code, 'Travel');
+
+  rs = sheetRows();
+  commit(rs, 0, '5in Mill & Fill');
+  // He clears the drive's own cost code to type something else. A blank-only
+  // guard put the pick straight back under his thumb before he could.
+  rs[1].cost_code = ''; rs[1].sub_code = ''; rs[1].code_source = 'manual';
+  cod.setSheet({ rows: rs, codes: PAVING }); cod.applyTravelCodes();
+  eq('a drive code the foreman cleared stays cleared', rs[1].cost_code, '');
+  rs[1].cost_code = 'Mobilization'; rs[1].sub_code = 'Travel';
+  commit(rs, 0, 'Excavation Prep');
+  eq('and one he typed is never re-derived out from under him', rs[1].cost_code, 'Mobilization');
 }
 
 console.log('\nChanging a cost code really does clear its sub code');
@@ -844,9 +934,30 @@ console.log('\nChanging a cost code really does clear its sub code');
 
 console.log('\nPayroll keeps the pickup level with the drive it approves');
 {
-  assert('a travel-row pickup is exempt from the touched-on-reopen rule',
-    /!\(r\.is_travel && splitEquipIsPickup\(r\.equipment\)\)/.test(payrSrc),
+  // Exempt, but only where the stored hours ARE the drive's. The coder's
+  // touched-flag does not survive the POST, so equality is the only evidence of
+  // authorship that reaches payroll: equal means the mirror wrote it, different
+  // means he typed it and his answer stands.
+  assert('a MIRRORED travel-row pickup is exempt from the touched-on-reopen rule',
+    /r\.is_travel && splitEquipIsPickup\(r\.equipment\)[\s\S]{0,160}Math\.abs\(\(Number\(r\.equip_hours\)[\s\S]{0,80}Number\(r\.labor_hours\)/.test(payrSrc),
     'an approver correcting the drive would bill the old pickup hours against the new drive');
+  assert('  and a figure he typed himself is NOT exempted away',
+    /splitEquipIsPickup\(r\.equipment\)[\s\S]{0,200}?< 0\.001\)/.test(payrSrc),
+    'the exemption is unconditional again — "the truck ran longer" would be overwritten');
+
+  // Code Time applies the same comparison when it reopens a saved proposal.
+  const reopened = reopen([
+    { cost_code: 'Mob', sub_code: 'Travel', labor_hours: 2, equip_hours: 2, equipment: 'Pickup', is_travel: true, quantity: 0 },
+    { cost_code: 'Mob', sub_code: 'Travel', labor_hours: 2, equip_hours: 3, equipment: 'Pickup', is_travel: true, quantity: 0 },
+  ]);
+  eq('a reopened pickup whose hours are the drive stays open to the link',
+    reopened[0]._equipHoursTouched, false);
+  eq('and one he had typed over stays his', reopened[1]._equipHoursTouched, true);
+  typeTravelHours(reopened, 0, '1.5');
+  eq('so correcting the drive on a reopened sheet moves the mirrored one',
+    reopened[0].equip_hours, '1.5');
+  typeTravelHours(reopened, 1, '1.5');
+  eq('and leaves his own figure alone', reopened[1].equip_hours, '3');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

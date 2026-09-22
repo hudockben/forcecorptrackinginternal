@@ -10510,19 +10510,27 @@
           // stayed at zero hours. His zeros are left open; everyone else's, and
           // any row that actually carries hours, stay claimed.
           //
-          // ONE EXEMPTION: a PICKUP on a TRAVEL row. Its hours are the drive's
-          // hours by construction — Code Time keeps the two level as the
-          // foreman types, and the crew's pickup was running for exactly as
-          // long as the man was in it — so they are not an independent answer
-          // the way a truck's or an excavator's are. Claimed as deliberate,
-          // they froze splitMirrorPickupEquipHours, and an approver who then
-          // corrected the drive from 2.00 to 1.50 billed the job 2.00 hours of
-          // pickup against a 1.50 hour drive. His own escape is unchanged:
-          // typing in the box sets the flag.
+          // ONE EXEMPTION: a PICKUP on a TRAVEL row WHOSE HOURS ARE THE
+          // DRIVE'S. Code Time keeps those two level as the foreman types —
+          // the crew's pickup was running for exactly as long as the man was
+          // in it — so a figure equal to the labour hours was mirrored, not
+          // given. Claimed as deliberate it froze splitMirrorPickupEquipHours,
+          // and an approver who then corrected the drive from 2.00 to 1.50
+          // billed the job 2.00 hours of pickup against a 1.50 hour drive.
+          //
+          // The EQUALITY is what makes this safe to narrow to. The coder's
+          // touched-flag does not survive the POST, so the two figures are the
+          // only evidence of authorship that reaches here: equal means the
+          // mirror wrote it, different means he typed it — which is exactly
+          // what the hint under that box on Code Time invites him to do ("type
+          // here if the truck ran longer"), and his answer then stands. Without
+          // the comparison this exemption threw that answer away. The
+          // approver's own escape is unchanged: typing in the box sets the flag.
           _equipHoursTouched: mode === 'resplit'
             || !(splitFromProposal && fromCoder)
             || ((Number(r.equip_hours) || 0) > 0
-                && !(r.is_travel && splitEquipIsPickup(r.equipment))),
+                && !(r.is_travel && splitEquipIsPickup(r.equipment)
+                     && Math.abs((Number(r.equip_hours) || 0) - (Number(r.labor_hours) || 0)) < 0.001)),
           // A CODER'S MACHINE IS A NAMED ONE, and has to be taken back on a
           // haul row exactly as the operator's own is.
           //

@@ -709,9 +709,17 @@
       let changed = false;
       for (const r of sheet.rows) {
         if (!isTravelRow(r)) continue;
-        if (String(r.cost_code || '').trim() || String(r.sub_code || '').trim()) continue;
-        r.cost_code = pick.cost_code;
-        r.sub_code  = pick.sub_code;
+        // HIS ANSWER OUTRANKS THE PICK, and so does his deliberate absence of
+        // one. Anything he has committed on this row — typed or cleared — marks
+        // it 'manual' and the prefill never touches it again. Guarding on
+        // "both cells blank" instead was not enough once this began re-running:
+        // a foreman who cleared the cost code to type his own had it snap back
+        // under his thumb before he could.
+        if (r.code_source === 'manual') continue;
+        if (r.cost_code === pick.cost_code && r.sub_code === pick.sub_code) continue;
+        r.cost_code   = pick.cost_code;
+        r.sub_code    = pick.sub_code;
+        r.code_source = 'auto';
         changed = true;
       }
       return changed;
@@ -732,6 +740,11 @@
     function blankRow(kind) {
       return {
         kind: kind || 'work',
+        // WHO PUT THE CODES THERE. '' nobody yet, 'auto' the travel prefill,
+        // 'manual' the foreman. Only an 'auto' pair is the prefill's to revise,
+        // which is what lets it re-derive the drive when the work row changes
+        // task without ever fighting somebody who typed.
+        code_source: '',
         cost_code:'', sub_code:'', quantity:'',
         labor_hours: kind === 'equip' ? '0' : '',
         equipment:'', equip_hours:'',
@@ -775,12 +788,21 @@
             equipment:   r.equipment   || '',
             equip_hours: r.equip_hours ? String(r.equip_hours) : '',
             is_travel:   !!r.is_travel,
+            // Codes he shipped once are his, so the prefill leaves them alone.
+            code_source: 'manual',
             // Hours that were SAVED are a figure somebody shipped, so the
             // pickup link does not relight over them — the same rule payroll
-            // applies when it reads a stored split back. A row that came back
-            // with none is still open to it, which is what lets a pickup typed
-            // on but never given hours start following the drive.
-            _equipHoursTouched: (Number(r.equip_hours) || 0) > 0,
+            // applies when it reads a stored split back.
+            //
+            // EXCEPT where they ARE the drive's hours. A pickup on a travel row
+            // whose machine hours equal its labour hours was mirrored, not
+            // typed: freezing it meant re-opening a day and correcting the
+            // drive left the pickup billing the old figure. Where the two
+            // differ he said something — "the truck ran longer" is what the
+            // hint under that box invites — and his answer stands.
+            _equipHoursTouched: (Number(r.equip_hours) || 0) > 0
+              && !(r.is_travel && isPickup(r.equipment)
+                   && Math.abs((Number(r.equip_hours) || 0) - (Number(r.labor_hours) || 0)) < 0.001),
           };
         });
       } else {
@@ -1057,7 +1079,18 @@
       const r = sheet && sheet.rows[i];
       if (!r || r._equipHoursTouched) return false;
       if (!isTravelRow(r) || !isPickup(r.equipment)) return false;
-      const want = String(r2(r.labor_hours));
+      // ONLY WHERE THERE IS A DRIVE TO MIRROR. A travel row with no hours on it
+      // is not a zero-hour drive — it is a day whose timesheet filed none, and
+      // the pickup sitting on it carries the employee's OWN stated figure,
+      // seated by openSheet's fallback precisely because there was no drive to
+      // take. Levelling that to zero wipes the only figure the row has and
+      // leaves a machine with no hours, which the save refuses: the sheet opened
+      // already unsaveable, on the commonest shape this feature has, because the
+      // harvest re-derives the mirror on every row. The link relights by itself
+      // the moment he types a drive.
+      const drive = r2(r.labor_hours);
+      if (!(drive > 0)) return false;
+      const want = String(drive);
       if (String(r.equip_hours || '') === want) return false;
       r.equip_hours = want;
       const el = document.getElementById('eqh' + i);
@@ -1105,6 +1138,25 @@
         ? `<div class="msg err show">Could not load the equipment list. You can still type a machine in — spell it as it is on the equipment list, or the job gets billed nothing for it.</div>`
         : '';
 
+      // MACHINES HE NAMED AND GAVE NO HOURS. They are left off the rows on
+      // purpose — a machine with no hours bills the job nothing and would open
+      // the sheet already failing its own check — but "left off" and "never
+      // mentioned" must not look the same. He is the one who can say how long
+      // it ran, and this is where he finds out he is being asked.
+      const unpriced = equipUsedPieces(sheet.entry)
+        .filter(x => !(x.hours != null && x.hours > 0))
+        .map(x => x.name)
+        .filter(n => !sheet.rows.some(r =>
+          String(r.equipment || '').trim().toLowerCase() === n.toLowerCase()));
+      const unpricedNote = unpriced.length
+        ? `<div class="msg show" style="color:#93c5fd;background:rgba(96,165,250,0.12)">
+             ${esc(sheet.entry.username)} named ${esc(unpriced.join(', '))} on his timesheet without saying how long
+             ${unpriced.length === 1 ? 'it ran' : 'they ran'}, so ${unpriced.length === 1 ? 'it is' : 'they are'} not on any row.
+             Add ${unpriced.length === 1 ? 'it' : 'them'} with <strong>+ Equipment</strong> if the job should be billed for
+             ${unpriced.length === 1 ? 'it' : 'them'}.
+           </div>`
+        : '';
+
       // The filed drive, for the hint under the travel box; the note that fires
       // when the figure on screen disagrees with it is travelNoteHtml's.
       const filed = filedTravel(sheet.entry);
@@ -1112,7 +1164,7 @@
 
       const eqOpts = equipNamesFor(sheet.entry.division);
 
-      body.innerHTML = supNote + ccNote + eqNote + tNote + sheet.rows.map((r, i) => {
+      body.innerHTML = supNote + ccNote + eqNote + unpricedNote + tNote + sheet.rows.map((r, i) => {
         // On the DRIVE, the sub codes this job files the drive under — not the
         // whole list under that cost code. Where the job spells the drive as a
         // cost code of its own there are no travel subs to offer and the
@@ -1232,6 +1284,9 @@
       const prev = sheet.rows[i][field];
       sheet.rows[i][field] = value;
 
+      // A sub code he committed is his, for the same reason the cost code is.
+      if (field === 'sub_code') { sheet.rows[i].code_source = 'manual'; return; }
+
       // HIS OWN FIGURE for a machine, which ends the pickup link for good. A
       // pickup left running while the crew worked is a real thing and his
       // answer stands; the same flag payroll reads back off a stored proposal.
@@ -1249,6 +1304,10 @@
         // mandatory sub code exists to prevent, and it looked filled in.
         harvestSheetDom();
         sheet.rows[i][field] = value;
+        // BEFORE the prefill runs, not after. He has just answered this row, so
+        // it is his from here on — and on the travel row that is what stops the
+        // pick putting its own pair straight back over what he committed.
+        sheet.rows[i].code_source = 'manual';
         if (String(prev || '') !== String(value || '')) sheet.rows[i].sub_code = '';
         // And now the work row may have named its task, which on a paving job
         // is the moment the drive's own code becomes answerable. Only ever
