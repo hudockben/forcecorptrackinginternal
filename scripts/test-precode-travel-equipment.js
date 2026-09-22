@@ -138,8 +138,13 @@ vm.runInContext(`
   ${requireFn(codeSrc, 'proposalStale', 'coding.html')}
   ${requireFn(codeSrc, 'travelPending', 'coding.html')}
   ${requireFn(codeSrc, 'blankRow', 'coding.html')}
+  ${requireFn(codeSrc, 'isPickup', 'coding.html')}
+  ${requireFn(codeSrc, 'travelCandidates', 'coding.html')}
+  ${requireFn(codeSrc, 'travelSubsFor', 'coding.html')}
+  ${requireFn(codeSrc, 'pickTravelCodes', 'coding.html')}
   ${(codeSrc.match(/const isEquipRow\s+= [^\n]+/) || [])[0]}
   ${(codeSrc.match(/const isTravelRow = [^\n]+/) || [])[0]}
+  ${(codeSrc.match(/const TRAVEL_CODE_RE = [^\n]+/) || [])[0]}
   // \`const\` is a lexical binding, not a property of the context — a function
   // declaration lands on the sandbox by itself and an arrow const does not. The
   // arrows are the page's, lifted above; these lines only publish them.
@@ -148,18 +153,53 @@ vm.runInContext(`
   globalThis.isTravelRow = isTravelRow;
 `, cod);
 
-/** openSheet's default rows, for a day nobody has coded yet. */
+/** openSheet's default rows, for a day nobody has coded yet. The pickup rides
+ *  the drive, the first other machine rides the work row, and only a second one
+ *  needs a line of its own — so the ordinary day is two rows. */
 function defaultRows(e) {
   const rows = [cod.blankRow('work')];
   rows[0].labor_hours = String(cod.workHours(e));
   const t = cod.blankRow('travel');
   t.labor_hours = cod.filedTravel(e) > 0 ? String(cod.filedTravel(e)) : '';
   rows.push(t);
+  const seen = new Set();
+  let pickupSeated = false;
   for (const p of (e.equipment_used || [])) {
+    const k = p.name.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const hours = p.hours != null && p.hours > 0 ? cod.r2(p.hours) : 0;
+    if (cod.isPickup(p.name) && !pickupSeated) {
+      const drive = cod.filedTravel(e);
+      if (drive <= 0 && hours <= 0) continue;
+      t.equipment   = p.name;
+      t.equip_hours = drive > 0 ? String(drive) : String(hours);
+      pickupSeated = true;
+      continue;
+    }
+    if (hours <= 0) continue;
+    if (!cod.isPickup(p.name) && !String(rows[0].equipment || '').trim()) {
+      rows[0].equipment   = p.name;
+      rows[0].equip_hours = String(hours);
+      rows[0]._equipHoursTouched = true;
+      continue;
+    }
     const r = cod.blankRow('equip');
     r.equipment   = p.name;
-    r.equip_hours = p.hours != null && p.hours > 0 ? String(cod.r2(p.hours)) : '';
+    r.equip_hours = String(hours);
+    r._equipHoursTouched = true;
     rows.push(r);
+  }
+  return rows;
+}
+
+/** setField's labor_hours branch on a travel row, model side only — the DOM
+ *  write is the other half and is asserted against the page source. */
+function typeTravelHours(rows, i, value) {
+  rows[i].labor_hours = value;
+  const r = rows[i];
+  if (!r._equipHoursTouched && cod.isTravelRow(r) && cod.isPickup(r.equipment)) {
+    r.equip_hours = String(cod.r2(r.labor_hours));
   }
   return rows;
 }
@@ -384,16 +424,23 @@ console.log('\nEquipment, with its hours');
   const e = { computed_hours: 8, travel_hours: 0,
               equipment_used: [{ name: 'CAT 336', hours: 6 }, { name: 'Roller', hours: 3 }] };
   const rows = code(defaultRows(e));
-  eq('what the operator named opens as its own rows', rows.filter(cod.isEquipRow).length, 2);
+  eq('the first machine rides the work row, not a line of its own', rows[0].equipment, 'CAT 336');
+  eq('at the hours HE gave it', rows[0].equip_hours, '6');
+  eq('so only the second machine needs its own row', rows.filter(cod.isEquipRow).length, 1);
   const out = precode(e, save(e, rows));
   assert('and survives the endpoint, which used to strip it', !out.err, out.err);
-  eq('with the machines intact', out.rows.map(r => r.equipment), ['', 'CAT 336', 'Roller']);
-  eq('and their hours', out.rows.map(r => r.equip_hours), [0, 6, 3]);
+  eq('with the machines intact', out.rows.map(r => r.equipment), ['CAT 336', 'Roller']);
+  eq('and their hours', out.rows.map(r => r.equip_hours), [6, 3]);
   eq('machine hours never disturb the labour balance', out.coded_for_hours, 8);
 
+  // A machine nobody gave hours to cannot be priced, and a row carrying one
+  // opens the sheet already failing its own check with the error pointing at a
+  // row the foreman never wrote. It is left off; he still has "+ Equipment".
   const noHours = { computed_hours: 8, travel_hours: 0, equipment_used: [{ name: 'CAT 336', hours: null }] };
-  assert('a machine named with no hours is refused — the job would be billed nothing for it',
-    /no hours/.test(save(noHours, code(defaultRows(noHours))).err || ''));
+  const nh = defaultRows(noHours);
+  eq('a machine named with no hours opens no row at all', nh.length, 2);
+  eq('and none of them carries it', nh.filter(r => r.equipment).length, 0);
+  assert('so the sheet does not open already failing validation', !save(noHours, code(nh)).err);
 
   const stray = code(defaultRows({ computed_hours: 8, travel_hours: 0, equipment_used: [] }));
   stray[0].equip_hours = '4';
@@ -638,6 +685,168 @@ console.log('\nThe sheet says when a lookup failed, and keeps what is typed');
     /function addRow\(kind\) \{ if \(sheet\) \{ harvestSheetDom\(\);/.test(codeSrc));
   assert('and so does removing one',
     /function delRow\(i\)\s+\{ if \(sheet\) \{ harvestSheetDom\(\);/.test(codeSrc));
+}
+
+console.log('\nThe pickup rides the drive, and gets no row of its own');
+{
+  // The user's complaint: the crew's pickup was opening a THIRD row, with two
+  // mandatory code cells on a line that only ever says "we drove out in the
+  // truck". It belongs on the travel row, under the drive's own codes, for the
+  // drive's own hours.
+  const e = { computed_hours: 9, travel_hours: 2, equipment_used: [{ name: 'Pickup Truck', hours: 2 }] };
+  const rows = defaultRows(e);
+  eq('the ordinary day opens as two rows', rows.length, 2);
+  eq('with no equipment row at all', rows.filter(cod.isEquipRow).length, 0);
+  const t = rows.find(cod.isTravelRow);
+  eq('the pickup is on the drive', t.equipment, 'Pickup Truck');
+  eq('at the drive\'s hours', t.equip_hours, '2');
+  eq('and the drive still carries the filed travel as LABOUR', t.labor_hours, '2');
+  eq('the work row is untouched by it', rows[0].equipment, '');
+
+  const out = precode(e, save(e, code(rows)));
+  assert('and it saves', !out.err, out.err);
+  eq('as two rows', out.rows.length, 2);
+  eq('allocating work + travel', out.coded_for_hours, 11);
+  eq('the day still pays what was filed — no drive is being proposed', out.proposed_travel_hours, 2);
+}
+
+console.log('\nThe pickup follows the drive as the foreman corrects it');
+{
+  const e = { computed_hours: 9, travel_hours: 2, equipment_used: [{ name: 'Pickup Truck', hours: 2 }] };
+  const rows = defaultRows(e);
+  const ti = rows.findIndex(cod.isTravelRow);
+  typeTravelHours(rows, ti, '1.5');
+  eq('the machine hours move with it', rows[ti].equip_hours, '1.5');
+  typeTravelHours(rows, ti, '3');
+  eq('in both directions', rows[ti].equip_hours, '3');
+
+  // ...until he says otherwise. A pickup left running while the crew worked is
+  // a real thing and his answer stands.
+  rows[ti]._equipHoursTouched = true;
+  typeTravelHours(rows, ti, '1');
+  eq('and stops the moment he types his own figure', rows[ti].equip_hours, '3');
+
+  assert('the mirror writes the input as well as the row, or the harvest reverts it',
+    /const el = document\.getElementById\('eqh' \+ i\);/.test(codeSrc),
+    'mirrorPickupHours no longer writes the DOM — saveCoding harvests just before it posts');
+  assert('and the harvest re-derives it afterwards',
+    /sheet\.rows\.forEach\(\(r, i\) => mirrorPickupHours\(i\)\);/.test(codeSrc));
+}
+
+console.log('\nA pickup with nothing to bill opens no row');
+{
+  // No filed drive and no hours of his own: seating it would open the sheet
+  // already failing its own check, on a row that bills the job nothing.
+  const bare = { computed_hours: 8, travel_hours: 0, equipment_used: [{ name: 'Pickup', hours: null }] };
+  const rows = defaultRows(bare);
+  eq('nothing carries it', rows.filter(r => r.equipment).length, 0);
+  assert('and the sheet saves clean', !save(bare, code(rows)).err);
+
+  // But his own stated hours are enough, where the timesheet filed no drive.
+  const stated = { computed_hours: 8, travel_hours: 0, equipment_used: [{ name: 'Pickup', hours: 1.5 }] };
+  const r2rows = defaultRows(stated);
+  const t = r2rows.find(cod.isTravelRow);
+  eq('the pickup rides the drive on his own figure', t.equipment, 'Pickup');
+  eq('at the hours he gave it', t.equip_hours, '1.5');
+  eq('and the drive itself is still zero — his machine hours are not a claim on his pay',
+    t.labor_hours, '');
+  const out = precode(stated, save(stated, code(r2rows)));
+  assert('it saves', !out.err, out.err);
+  eq('proposing no drive, so the day stays on payroll\'s fast path', out.proposed_travel_hours, 0);
+}
+
+console.log('\nPickup and machine together — still two rows');
+{
+  const e = { computed_hours: 8, travel_hours: 1,
+              equipment_used: [{ name: 'F-250 Pickup', hours: 1 }, { name: 'CAT 336', hours: 7 }] };
+  const rows = defaultRows(e);
+  eq('two rows', rows.length, 2);
+  eq('the excavator on the work row', rows[0].equipment, 'CAT 336');
+  eq('the pickup on the drive', rows.find(cod.isTravelRow).equipment, 'F-250 Pickup');
+  assert('and it saves', !precode(e, save(e, code(rows))).err);
+}
+
+console.log('\nWhat counts as a pickup');
+{
+  eq('Pickup', cod.isPickup('Pickup'), true);
+  eq('Pickup Truck', cod.isPickup('Pickup Truck'), true);
+  eq('F-250 Pickup', cod.isPickup('F-250 Pickup'), true);
+  eq('Pick-up', cod.isPickup('Pick-up'), true);
+  eq('pickups', cod.isPickup('Shop Pickups'), true);
+  // The line that matters: a haul unit is not the drive.
+  eq('Triaxle Dump Truck is NOT a pickup', cod.isPickup('Triaxle Dump Truck'), false);
+  eq('nor is a Roller', cod.isPickup('Roller'), false);
+  eq('nor a Truck Crane', cod.isPickup('Truck Crane'), false);
+
+  const second = { computed_hours: 8, travel_hours: 2,
+                   equipment_used: [{ name: 'Pickup', hours: 2 }, { name: 'F-250 Pickup', hours: 2 }] };
+  const rows = defaultRows(second);
+  eq('only the FIRST pickup rides the drive', rows.find(cod.isTravelRow).equipment, 'Pickup');
+  eq('a second one takes a row of its own rather than a second travel row',
+    rows.filter(cod.isTravelRow).length, 1);
+  // A second travel row would be summed into the drive being proposed
+  // (sheetTravel) and the server then holds the travel rows to that total.
+  eq('and it is an equipment row', rows.filter(cod.isEquipRow).length, 1);
+}
+
+console.log('\nThe drive books to the job\'s own travel line, not a constant');
+{
+  const TURF = [
+    { cost_code: 'Mobilization', sub_codes: ['Travel', 'Load'] },
+    { cost_code: '101', sub_codes: ['Mowing'] },
+  ];
+  eq('a turf job returns the pair the user expects, off its own bid items',
+    cod.pickTravelCodes(TURF, ''), { cost_code: 'Mobilization', sub_code: 'Travel' });
+
+  const PAVING = [
+    { cost_code: '5in Mill & Fill', sub_codes: ['Paving', 'Travel'] },
+    { cost_code: 'Excavation Prep', sub_codes: ['Digging', 'Travel'] },
+  ];
+  eq('a paving job with two tasks will not guess before the work names one',
+    cod.pickTravelCodes(PAVING, ''), null);
+  eq('and pairs the drive with the task once it does',
+    cod.pickTravelCodes(PAVING, '5in Mill & Fill'),
+    { cost_code: '5in Mill & Fill', sub_code: 'Travel' });
+
+  eq('a job whose bid items name no drive gets nothing invented for it',
+    cod.pickTravelCodes([{ cost_code: '101', sub_codes: ['Mowing'] }], ''), null);
+  eq('nor does one whose codes never loaded', cod.pickTravelCodes([], ''), null);
+
+  eq('the travel picker offers the job\'s travel subs, not every sub under the code',
+    cod.travelSubsFor(TURF, 'Mobilization'), ['Travel']);
+
+  assert('the prefill only ever writes into a row with BOTH cells blank',
+    /if \(String\(r\.cost_code \|\| ''\)\.trim\(\) \|\| String\(r\.sub_code \|\| ''\)\.trim\(\)\) continue;/.test(codeSrc),
+    'applyTravelCodes can now overwrite what the foreman typed');
+  assert('and runs after the harvest, never before it',
+    /harvestSheetDom\(\); applyTravelCodes\(\); renderSheet\(\);/.test(codeSrc));
+}
+
+console.log('\nChanging a cost code really does clear its sub code');
+{
+  // The clear was written at HEAD and then undone one line later:
+  // renderSheetSoon harvests the DOM back over sheet.rows, and the sub-code box
+  // still showed the code that belonged to the OLD cost code. The row shipped a
+  // sub code from a cost code it no longer named, and it looked filled in.
+  const branch = (codeSrc.match(/if \(field === 'cost_code'\) \{[\s\S]{0,1400}?\n      \}/) || [''])[0];
+  const iHarvest = branch.indexOf('harvestSheetDom()');
+  const iClear   = branch.indexOf("sub_code = ''");
+  assert('the harvest runs BEFORE the clear', iHarvest >= 0 && iClear > iHarvest,
+    'setField clears the sub code before harvesting again — the DOM puts it straight back');
+  assert('and the repaint is still deferred past the focus move',
+    /renderSheetSoon\(\);/.test(branch));
+  // The helper must no longer harvest, or the order is forced back to
+  // mutate-then-harvest and every clear on this path is undone again.
+  assert('the deferred repaint does not harvest behind its callers',
+    !/function renderSheetSoon\(\) \{\s*harvestSheetDom\(\);/.test(codeSrc),
+    'renderSheetSoon harvests again — a cleared sub code or machine-hours box comes back');
+}
+
+console.log('\nPayroll keeps the pickup level with the drive it approves');
+{
+  assert('a travel-row pickup is exempt from the touched-on-reopen rule',
+    /!\(r\.is_travel && splitEquipIsPickup\(r\.equipment\)\)/.test(payrSrc),
+    'an approver correcting the drive would bill the old pickup hours against the new drive');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

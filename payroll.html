@@ -10509,9 +10509,20 @@
           // for the rest of the modal, so a truck added to the row afterwards
           // stayed at zero hours. His zeros are left open; everyone else's, and
           // any row that actually carries hours, stay claimed.
+          //
+          // ONE EXEMPTION: a PICKUP on a TRAVEL row. Its hours are the drive's
+          // hours by construction — Code Time keeps the two level as the
+          // foreman types, and the crew's pickup was running for exactly as
+          // long as the man was in it — so they are not an independent answer
+          // the way a truck's or an excavator's are. Claimed as deliberate,
+          // they froze splitMirrorPickupEquipHours, and an approver who then
+          // corrected the drive from 2.00 to 1.50 billed the job 2.00 hours of
+          // pickup against a 1.50 hour drive. His own escape is unchanged:
+          // typing in the box sets the flag.
           _equipHoursTouched: mode === 'resplit'
             || !(splitFromProposal && fromCoder)
-            || (Number(r.equip_hours) || 0) > 0,
+            || ((Number(r.equip_hours) || 0) > 0
+                && !(r.is_travel && splitEquipIsPickup(r.equipment))),
           // A CODER'S MACHINE IS A NAMED ONE, and has to be taken back on a
           // haul row exactly as the operator's own is.
           //

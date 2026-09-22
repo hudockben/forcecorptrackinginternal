@@ -590,8 +590,15 @@ console.log('\n[trying an answer does not change the page behind the modal]');
   // The later arms exempt only a CODER's rows, which carry an equip_hours of 0
   // he was never asked for: claiming that as deliberate froze the mirror for
   // the rest of the modal and left a truck added afterwards at zero hours.
+  // The span between the two anchors is a LOCATOR — it says "the
+  // _equipHoursTouched in the stored-split mapping", not "within N characters".
+  // The mapping has since grown two more exemptions and the comments that
+  // explain them, so the window is sized for the block rather than for what it
+  // happened to be the day it was written. What is pinned is that
+  // `mode === 'resplit'` is the FIRST arm, which is what makes Edit Split's
+  // rows unconditionally hand-set however many arms follow it.
   assert('rows read back by Edit Split are marked as hand-set',
-    /is_travel:\s*!!r\.is_travel,[\s\S]{0,3000}?_equipHoursTouched:\s*mode === 'resplit'/.test(src));
+    /is_travel:\s*!!r\.is_travel,[\s\S]{0,8000}?_equipHoursTouched:\s*mode === 'resplit'/.test(src));
   // And carry the answer they were APPROVED with, not one re-derived from the
   // truck now on the row. A day signed off before the answer was per-row comes
   // back with every work row ticked — which is what it was approved as — so
