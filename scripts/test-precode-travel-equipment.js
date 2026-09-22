@@ -1,0 +1,486 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * Code Time: a mandatory sub code, the drive, and the iron.
+ *
+ * Run: node scripts/test-precode-travel-equipment.js
+ *
+ * Three things the foreman coding his crew could not say, and what each one
+ * costs when he cannot:
+ *
+ *   THE SUB CODE was optional, so "101" with a blank beside it looked complete
+ *   and said nothing about which part of 101 the hours were. That is the field
+ *   a production rate is measured on — a cost row without one can never be set
+ *   against the bid it came from.
+ *
+ *   THE DRIVE was whatever the employee had filed, and the travel boxes on the
+ *   timesheet are optional and routinely blank. The man who drove the crew out
+ *   knew the figure and had nowhere to put it. So he may now name one — and it
+ *   is a REQUEST, not a change: proposed_travel_hours sits beside the proposal
+ *   and the day pays exactly what was filed until an approver applies it.
+ *
+ *   THE MACHINE was stripped off his proposal outright, on the reasoning that a
+ *   machine on a row prices at that machine's hourly rate. What that actually
+ *   bought was the iron being reconstructed days later from a schedule by
+ *   somebody who was not on the job.
+ *
+ * The hazard the middle one creates is what most of this file is about. A
+ * proposal naming its own drive balances to work + HIS travel, which is
+ * deliberately not work + the entry's — so read by payroll's old rule, that
+ * mismatch means "the hours moved after this was coded" and every travel
+ * proposal ever written is thrown away as stale, silently, on the one screen
+ * that exists to show it.
+ *
+ * Runs the real functions out of coding.html, payroll.html and
+ * api/timesheet-entries.js — no server or browser needed.
+ */
+
+const fs   = require('fs');
+const path = require('path');
+const vm   = require('vm');
+const { requireFn } = require('./lib/fn-source');
+
+let passed = 0, failed = 0;
+function assert(label, cond, detail) {
+  if (cond) { passed++; console.log(`  ✓ ${label}`); }
+  else      { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
+}
+function eq(label, got, want) {
+  assert(label, Object.is(got, want) || JSON.stringify(got) === JSON.stringify(want),
+    `got ${JSON.stringify(got)}, wanted ${JSON.stringify(want)}`);
+}
+
+const root    = path.resolve(__dirname, '..');
+const apiSrc  = fs.readFileSync(path.join(root, 'api/timesheet-entries.js'), 'utf8');
+const codeSrc = fs.readFileSync(path.join(root, 'coding.html'), 'utf8');
+const payrSrc = fs.readFileSync(path.join(root, 'payroll.html'), 'utf8');
+
+/* ═══════ The server's validators ═══════
+ *
+ * normalizeSplitRow reaches for a handful of module-level helpers and for the
+ * destination validator, which has nothing to do with a proposal — the precode
+ * branch deletes `dest` off the body before validateSplit ever sees it. Stubbed
+ * to "no destination", which is the shape every row in this file has.
+ */
+const srv = vm.createContext({ console });
+vm.runInContext(`
+  const _r2 = n => Math.round(Number(n) * 100) / 100;
+  const AUTO_INJECT_DIVISIONS = ['turf','paving','kiewit'];
+  const MAX_INJECTED_LEGS = 6;
+  const safeStr = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+  const safeHaulType = v => (v === 'on_site' || v === 'off_site') ? v : '';
+  function normalizeSplitDest() { return { dest: null }; }
+  ${requireFn(apiSrc, 'normalizeSplitRow', 'api/timesheet-entries.js')}
+  ${requireFn(apiSrc, 'splitExpectedHours', 'api/timesheet-entries.js')}
+  ${requireFn(apiSrc, 'validateSplit', 'api/timesheet-entries.js')}
+`, srv);
+
+/**
+ * The precode branch's own rules, in the order the endpoint applies them.
+ *
+ * Read off the page rather than restated where it is possible to — the two
+ * validators above are the real ones — but the branch itself is 200 lines
+ * inside a request handler, so its three checks are mirrored here. Each is
+ * pinned to the source below (see "the endpoint still says so"), which is what
+ * keeps this from drifting into a test of its own invention.
+ */
+function precode(entry, body) {
+  const clean = (body.split || []).map(r => {
+    if (!r || typeof r !== 'object') return r;
+    const o = Object.assign({}, r);
+    delete o.dest; delete o.is_haul; delete o.haul_type;
+    return o;
+  });
+  let proposedTravel = Number(entry.travel_hours) || 0;
+  if (body.travel_hours != null && body.travel_hours !== '') {
+    const t = Number(body.travel_hours);
+    if (!Number.isFinite(t) || t < 0 || t > 24) return { err: 'travel_hours must be between 0 and 24' };
+    proposedTravel = Math.round(t * 100) / 100;
+  }
+  const { rows, error } = srv.validateSplit(clean, entry, proposedTravel);
+  if (error) return { err: error };
+  for (let i = 0; i < rows.length; i++) {
+    if (!String(rows[i].cost_code || '').trim()) return { err: `split[${i}] needs a cost code` };
+    if (!String(rows[i].sub_code || '').trim())  return { err: `split[${i}] needs a sub code` };
+  }
+  return {
+    rows,
+    coded_for_hours:       srv.splitExpectedHours(entry, proposedTravel),
+    proposed_travel_hours: proposedTravel,
+  };
+}
+
+/* ═══════ Code Time's sheet ═══════
+ *
+ * The page's own hours helpers and row predicates. saveCoding is one method
+ * with a DOM in the middle of it, so its validation walk is mirrored below the
+ * lifted helpers — every figure it works from comes off the real ones.
+ */
+const cod = vm.createContext({ console });
+vm.runInContext(`
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  ${requireFn(codeSrc, 'workHours', 'coding.html')}
+  ${requireFn(codeSrc, 'filedTravel', 'coding.html')}
+  ${requireFn(codeSrc, 'requiredHours', 'coding.html')}
+  ${requireFn(codeSrc, 'proposedTravel', 'coding.html')}
+  ${requireFn(codeSrc, 'proposalStale', 'coding.html')}
+  ${requireFn(codeSrc, 'travelPending', 'coding.html')}
+  ${requireFn(codeSrc, 'blankRow', 'coding.html')}
+  ${(codeSrc.match(/const isEquipRow\s+= [^\n]+/) || [])[0]}
+  ${(codeSrc.match(/const isTravelRow = [^\n]+/) || [])[0]}
+  // \`const\` is a lexical binding, not a property of the context — a function
+  // declaration lands on the sandbox by itself and an arrow const does not. The
+  // arrows are the page's, lifted above; these lines only publish them.
+  globalThis.r2 = r2;
+  globalThis.isEquipRow = isEquipRow;
+  globalThis.isTravelRow = isTravelRow;
+`, cod);
+
+/** openSheet's default rows, for a day nobody has coded yet. */
+function defaultRows(e) {
+  const rows = [cod.blankRow('work')];
+  rows[0].labor_hours = String(cod.workHours(e));
+  const t = cod.blankRow('travel');
+  t.labor_hours = cod.filedTravel(e) > 0 ? String(cod.filedTravel(e)) : '';
+  rows.push(t);
+  for (const p of (e.equipment_used || [])) {
+    const r = cod.blankRow('equip');
+    r.equipment   = p.name;
+    r.equip_hours = p.hours != null && p.hours > 0 ? String(cod.r2(p.hours)) : '';
+    rows.push(r);
+  }
+  return rows;
+}
+
+/** openSheet reopening a stored proposal. */
+function reopen(stored) {
+  return stored.map(r => {
+    const labor = Number(r.labor_hours) || 0;
+    return {
+      kind: r.is_travel ? 'travel' : (labor > 0 ? 'work' : 'equip'),
+      cost_code: r.cost_code || '', sub_code: r.sub_code || '',
+      quantity: r.quantity ? String(r.quantity) : '',
+      labor_hours: r.labor_hours != null ? String(r.labor_hours) : '',
+      equipment: r.equipment || '',
+      equip_hours: r.equip_hours ? String(r.equip_hours) : '',
+      is_travel: !!r.is_travel,
+    };
+  });
+}
+
+/** saveCoding: what it refuses, and the body it posts when it does not. */
+function save(entry, sheetRows) {
+  const kept = sheetRows.map((r, i) => ({ r, n: i + 1 })).filter(({ r }) =>
+    !cod.isTravelRow(r) || (Number(r.labor_hours) || 0) > 0
+    || String(r.equipment || '').trim() || (Number(r.equip_hours) || 0) > 0);
+  const rows = kept.map(x => x.r);
+  if (!rows.length) return { err: 'There is nothing on this day to code.' };
+  for (const { r, n } of kept) {
+    const h = Number(r.labor_hours) || 0, eh = Number(r.equip_hours) || 0;
+    const eq = String(r.equipment || '').trim();
+    if (eq && !(eh > 0))  return { err: `Row ${n} names ${eq} but gives it no hours.` };
+    if (!eq && eh > 0)    return { err: `Row ${n} has machine hours but no machine.` };
+    if (cod.isEquipRow(r)) { if (!eq) return { err: `Row ${n} is an equipment row with no machine on it.` }; }
+    else if (h <= 0 && !eq) return { err: `Row ${n} has no hours on it.` };
+    if (!String(r.cost_code || '').trim()) return { err: `Row ${n} needs a cost code.` };
+    if (!String(r.sub_code  || '').trim()) return { err: `Row ${n} needs a sub code.` };
+  }
+  const wantWork = cod.workHours(entry);
+  const gotWork  = cod.r2(rows.reduce((s, r) =>
+    s + ((!cod.isTravelRow(r) && !cod.isEquipRow(r)) ? (Number(r.labor_hours) || 0) : 0), 0));
+  if (Math.abs(gotWork - wantWork) > 0.001) {
+    return { err: `The work rows add up to ${gotWork} h and this day was worked ${wantWork} h.` };
+  }
+  return {
+    travel_hours: cod.r2(rows.reduce((s, r) =>
+      s + (cod.isTravelRow(r) ? (Number(r.labor_hours) || 0) : 0), 0)),
+    split: rows.map(r => ({
+      cost_code: String(r.cost_code || '').trim(), sub_code: String(r.sub_code || '').trim(),
+      quantity: Number(r.quantity) || 0, labor_hours: Number(r.labor_hours) || 0,
+      equipment: String(r.equipment || '').trim(), equip_hours: Number(r.equip_hours) || 0,
+      is_travel: cod.isTravelRow(r),
+    })),
+  };
+}
+
+const code = (rows, cc = '101', sc = 'A') => { rows.forEach(r => { r.cost_code = cc; r.sub_code = sc; }); return rows; };
+
+/* ═══════ Payroll's reading of it ═══════ */
+const pay = vm.createContext({ console });
+vm.runInContext(`
+  ${(payrSrc.match(/const codeR2 = [^\n]+/) || [])[0]}
+  ${requireFn(payrSrc, 'codedProposedTravel', 'payroll.html')}
+  ${requireFn(payrSrc, 'codedRequiredHours', 'payroll.html')}
+  ${requireFn(payrSrc, 'codedTravelPending', 'payroll.html')}
+  ${requireFn(payrSrc, 'codedProposalStale', 'payroll.html')}
+  globalThis.codeR2 = codeR2;
+`, pay);
+
+/** buildBulkBody's merge of the card's machines onto a coded day. */
+function bulkMerge(coded, cardMachines) {
+  const named = new Set(coded.map(r => String(r.equipment || '').trim().toLowerCase()).filter(Boolean));
+  const machines = cardMachines.filter(m => m.equipment && !named.has(String(m.equipment).trim().toLowerCase()));
+  const workM   = machines.filter(m => m.leg !== 'travel');
+  const travelM = machines.filter(m => m.leg === 'travel');
+  const firstWork   = coded.find(r => !r.is_travel && !String(r.equipment || '').trim());
+  const firstTravel = coded.find(r =>  r.is_travel && !String(r.equipment || '').trim());
+  const seat = (row, m) => {
+    if (!row || !m || !m.equipment) return false;
+    row.equipment = m.equipment; row.equip_hours = m.equip_hours; return true;
+  };
+  const sw = seat(firstWork, workM[0]);
+  const st = seat(firstTravel, travelM[0]);
+  for (const m of [...(sw ? workM.slice(1) : workM), ...(st ? travelM.slice(1) : travelM)]) {
+    if (!m.equipment || !(m.equip_hours > 0)) continue;
+    const onTravel = m.leg === 'travel';
+    const src = coded.find(r => !!r.is_travel === onTravel) || coded[0];
+    coded.push({ cost_code: src ? src.cost_code : '', sub_code: src ? src.sub_code : '',
+                 quantity: 0, equipment: m.equipment, labor_hours: 0,
+                 equip_hours: m.equip_hours, is_travel: onTravel });
+  }
+  return coded;
+}
+
+/** applyProposedTravel's leg split. */
+function applyLegs(e, asked) {
+  const toSite = pay.codeR2(e.travel_to_site_hours);
+  const toShop = pay.codeR2(e.travel_to_shop_hours);
+  const legs   = pay.codeR2(toSite + toShop);
+  if (legs > 0) {
+    const newSite = pay.codeR2(asked * (toSite / legs));
+    return { newSite, newShop: pay.codeR2(asked - newSite) };
+  }
+  return { newSite: asked, newShop: 0 };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+console.log('\nA sub code on every row');
+{
+  const e = { computed_hours: 8, travel_hours: 0, equipment_used: [] };
+  const rows = defaultRows(e); rows.forEach(r => { r.cost_code = '101'; });
+  const out = save(e, rows);
+  assert('the sheet refuses a blank sub code', /sub code/.test(out.err || ''), JSON.stringify(out));
+
+  const srvOut = precode(e, { travel_hours: 0, split: [{ cost_code: '101', sub_code: '', labor_hours: 8 }] });
+  assert('and so does the endpoint, for a screen that skipped it',
+    /sub code/.test(srvOut.err || ''), JSON.stringify(srvOut));
+
+  const ok = precode(e, { travel_hours: 0, split: [{ cost_code: '101', sub_code: 'A', labor_hours: 8 }] });
+  assert('a row carrying both is accepted', !ok.err, ok.err);
+
+  assert('a sub code with no cost code is still refused',
+    /cost code/.test((precode(e, { travel_hours: 0, split: [{ cost_code: '', sub_code: 'A', labor_hours: 8 }] }).err) || ''));
+
+  assert('the endpoint still says so',
+    /needs a sub code — every row coded here/.test(apiSrc),
+    'the precode sub-code rule this suite mirrors is gone from api/timesheet-entries.js');
+}
+
+console.log('\nThe drive: prefilled, editable, and only ever a request');
+{
+  const filedTwo = { computed_hours: 8, travel_hours: 2, equipment_used: [] };
+  const body = save(filedTwo, code(defaultRows(filedTwo)));
+  eq('a filed drive comes back prefilled', body.travel_hours, 2);
+  const out = precode(filedTwo, body);
+  eq('and the day still allocates work + travel', out.coded_for_hours, 10);
+  eq('the figure is stored even when he agreed with it', out.proposed_travel_hours, 2);
+
+  const none = { computed_hours: 8, travel_hours: 0, equipment_used: [] };
+  const untouched = save(none, code(defaultRows(none)));
+  eq('a travel row left empty is dropped, not an error', untouched.split.length, 1);
+  eq('and reads as no drive at all', untouched.travel_hours, 0);
+  eq('allocating the work hours alone', precode(none, untouched).coded_for_hours, 8);
+
+  const rows = code(defaultRows(none));
+  rows[1].labor_hours = '2';
+  const added = save(none, rows);
+  assert('he can add a drive nobody filed', !added.err, added.err);
+  eq('the split then allocates work + HIS drive', precode(none, added).coded_for_hours, 10);
+  eq('and the figure rides along for the approver', precode(none, added).proposed_travel_hours, 2);
+
+  const misallocated = precode(none, {
+    travel_hours: 2,
+    split: [{ cost_code: '101', sub_code: 'A', labor_hours: 10, is_travel: false }],
+  });
+  assert('a drive the rows do not carry is refused — it would book the commute to a production code',
+    /travel rows total/.test(misallocated.err || ''), JSON.stringify(misallocated));
+
+  assert('out-of-range travel is refused',
+    /between 0 and 24/.test(precode(none, { travel_hours: 25, split: [] }).err || ''));
+
+  assert('the sheet still names the entry\'s own figure beside his',
+    /Timesheet says \$\{n2\(filed\)\} h/.test(codeSrc),
+    'the filed-travel hint is gone from coding.html');
+  assert('and says plainly that his does not move anybody\'s hours',
+    /His hours do not change on this screen/.test(codeSrc));
+}
+
+console.log('\nEquipment, with its hours');
+{
+  const e = { computed_hours: 8, travel_hours: 0,
+              equipment_used: [{ name: 'CAT 336', hours: 6 }, { name: 'Roller', hours: 3 }] };
+  const rows = code(defaultRows(e));
+  eq('what the operator named opens as its own rows', rows.filter(cod.isEquipRow).length, 2);
+  const out = precode(e, save(e, rows));
+  assert('and survives the endpoint, which used to strip it', !out.err, out.err);
+  eq('with the machines intact', out.rows.map(r => r.equipment), ['', 'CAT 336', 'Roller']);
+  eq('and their hours', out.rows.map(r => r.equip_hours), [0, 6, 3]);
+  eq('machine hours never disturb the labour balance', out.coded_for_hours, 8);
+
+  const noHours = { computed_hours: 8, travel_hours: 0, equipment_used: [{ name: 'CAT 336', hours: null }] };
+  assert('a machine named with no hours is refused — the job would be billed nothing for it',
+    /no hours/.test(save(noHours, code(defaultRows(noHours))).err || ''));
+
+  const stray = code(defaultRows({ computed_hours: 8, travel_hours: 0, equipment_used: [] }));
+  stray[0].equip_hours = '4';
+  assert('machine hours with no machine are refused — the job would be billed for iron nobody can name',
+    /no machine/.test(save({ computed_hours: 8, travel_hours: 0 }, stray).err || ''));
+
+  const onWork = code(defaultRows({ computed_hours: 8, travel_hours: 0, equipment_used: [] }));
+  onWork[0].equipment = 'Paver'; onWork[0].equip_hours = '5';
+  const rode = precode({ computed_hours: 8, travel_hours: 0 }, save({ computed_hours: 8, travel_hours: 0 }, onWork));
+  eq('a machine may also ride the row that carries the labour', rode.rows[0].equipment, 'Paver');
+  eq('at its own hours', rode.rows[0].equip_hours, 5);
+
+  const back = reopen([
+    { cost_code: '101', sub_code: 'A',   labor_hours: 8, equip_hours: 0, equipment: '',        is_travel: false, quantity: 0 },
+    { cost_code: '900', sub_code: 'TRV', labor_hours: 2, equip_hours: 2, equipment: 'Pickup',  is_travel: true,  quantity: 0 },
+    { cost_code: '101', sub_code: 'A',   labor_hours: 0, equip_hours: 6, equipment: 'CAT 336', is_travel: false, quantity: 0 },
+  ]);
+  eq('reopening a saved proposal keeps each row the kind it was', back.map(r => r.kind), ['work', 'travel', 'equip']);
+  assert('a machine line does not come back as work owing hours the day has not got',
+    save({ computed_hours: 8, travel_hours: 2 }, back).err === undefined,
+    JSON.stringify(save({ computed_hours: 8, travel_hours: 2 }, back).err));
+
+  assert('the endpoint no longer strips the machine',
+    !/delete out\.dest; delete out\.is_haul; delete out\.haul_type; delete out\.equipment;/.test(apiSrc),
+    'equipment is being stripped off a proposal again');
+}
+
+console.log('\nPayroll tells a proposed drive from a stale proposal');
+{
+  const agreed = { status: 'submitted', coded_source: 'precode', computed_hours: 8, travel_hours: 2,
+                   proposed_travel_hours: 2, coded_for_hours: 10, proposed_split: [{}] };
+  eq('a drive he agreed with is nothing to decide', pay.codedTravelPending(agreed), false);
+  eq('and the proposal is not stale', pay.codedProposalStale(agreed), false);
+
+  const asking = { ...agreed, travel_hours: 0 };
+  eq('a drive he is asking for IS pending', pay.codedTravelPending(asking), true);
+  eq('and must never read as stale — that would throw his codes away', pay.codedProposalStale(asking), false);
+
+  const applied = { ...asking, travel_hours: 2 };
+  eq('applying it closes the question', pay.codedTravelPending(applied), false);
+  eq('and the proposal pre-fills, because coded_for_hours was written as work + his drive',
+    pay.codedRequiredHours(applied), Number(applied.coded_for_hours));
+
+  const moved = { ...asking, computed_hours: 7 };
+  eq('work hours moving underneath it is still staleness', pay.codedProposalStale(moved), true);
+  eq('and staleness is not a decision anybody is waiting on', pay.codedTravelPending(moved), false);
+
+  const old = { ...agreed, proposed_travel_hours: null };
+  eq('a proposal from before the column existed reads as it always did', pay.codedProposalStale(old), false);
+  eq('including when the day moves under it', pay.codedProposalStale({ ...old, computed_hours: 7 }), true);
+
+  const approver = { ...asking, coded_source: 'approve' };
+  eq('an approver\'s own written-back split is never "pending" on somebody', pay.codedTravelPending(approver), false);
+
+  assert('and the bulk panel sets such a day aside rather than posting its template over it',
+    /if \(isSplit && codedTravelPending\(e\)\)/.test(payrSrc),
+    'buildBulkGroups no longer skips a day with a pending drive');
+}
+
+console.log('\nCode Time\'s own reading matches payroll\'s');
+{
+  const asking = { computed_hours: 8, travel_hours: 0, proposed_travel_hours: 2,
+                   coded_for_hours: 10, proposed_split: [{}] };
+  eq('the coder\'s own queue does not call his proposal stale', cod.proposalStale(asking), false);
+  eq('it says the drive is waiting on his supervisor', cod.travelPending(asking), true);
+  eq('and reopening it gives him his own rows back', cod.proposalStale(asking), false);
+  eq('a day whose work hours moved is stale on both screens',
+    cod.proposalStale({ ...asking, computed_hours: 7 }), true);
+  eq('the card still shows the hours the day PAYS, not the ones proposed',
+    cod.requiredHours(asking), 8);
+}
+
+console.log('\nApplying the drive: which leg gets the hours');
+{
+  eq('no legs filed — all of it on the drive out',
+    applyLegs({ travel_to_site_hours: null, travel_to_shop_hours: null }, 2), { newSite: 2, newShop: 0 });
+  eq('even legs stay even',
+    applyLegs({ travel_to_site_hours: 1, travel_to_shop_hours: 1 }, 3), { newSite: 1.5, newShop: 1.5 });
+  eq('one-sided legs stay one-sided',
+    applyLegs({ travel_to_site_hours: 2, travel_to_shop_hours: 0 }, 3), { newSite: 3, newShop: 0 });
+  eq('a total with no legs behind it does not land entirely on the leg home',
+    applyLegs({ travel_hours: 2, travel_to_site_hours: null, travel_to_shop_hours: null }, 3),
+    { newSite: 3, newShop: 0 });
+
+  let drift = null;
+  for (const [a, b] of [[1, 2], [0.25, 0.5], [3, 7], [0.75, 0.25], [1, 1], [5, 2]]) {
+    for (const asked of [0.25, 1, 1.75, 2.5, 3.33, 7, 12.5]) {
+      const { newSite, newShop } = applyLegs({ travel_to_site_hours: a, travel_to_shop_hours: b }, asked);
+      if (pay.codeR2(newSite + newShop) !== pay.codeR2(asked) || newSite < 0 || newShop < 0) {
+        drift = `legs(${a},${b}) asked ${asked} → ${newSite} + ${newShop}`;
+      }
+    }
+  }
+  // A cent of drift here leaves coded_for_hours unmatched and the whole trip
+  // wasted: the server recomputes travel_hours as the two legs' sum.
+  assert('the two legs always add to exactly what was asked for', drift === null, drift);
+}
+
+console.log('\nBulk approve does not overwrite what the foreman named');
+{
+  const his = [{ cost_code: '101', sub_code: 'A', labor_hours: 8, equipment: 'CAT 336', equip_hours: 6, is_travel: false }];
+  const merged = bulkMerge(his, [{ equipment: 'Roller', equip_hours: 8, leg: 'work' }]);
+  eq('his machine stands', merged[0].equipment, 'CAT 336');
+  eq('and his hours with it', merged[0].equip_hours, 6);
+  eq('the card\'s machine takes a row of its own', merged.length, 2);
+  eq('coded off a row of the same leg', merged[1].cost_code, '101');
+  eq('and carrying no labour, so the balance is undisturbed', merged[1].labor_hours, 0);
+
+  const blank = bulkMerge(
+    [{ cost_code: '101', sub_code: 'A', labor_hours: 8, equipment: '', equip_hours: 0, is_travel: false }],
+    [{ equipment: 'Roller', equip_hours: 8, leg: 'work' }]);
+  eq('a row he left blank is still filled from the card', blank[0].equipment, 'Roller');
+  eq('without inventing a second row', blank.length, 1);
+
+  const both = bulkMerge(
+    [{ cost_code: '101', sub_code: 'A', labor_hours: 8, equipment: 'Roller', equip_hours: 5, is_travel: false }],
+    [{ equipment: 'Roller', equip_hours: 8, leg: 'work' }]);
+  eq('one machine named on both sides is not billed twice', both.length, 1);
+  eq('and his figure is the one kept', both[0].equip_hours, 5);
+
+  const travel = bulkMerge([
+    { cost_code: '101', sub_code: 'A',   labor_hours: 8, equipment: 'CAT 336', equip_hours: 6, is_travel: false },
+    { cost_code: '900', sub_code: 'TRV', labor_hours: 1, equipment: 'Pickup',  equip_hours: 1, is_travel: true },
+  ], [{ equipment: 'F-250 Pickup', equip_hours: 1, leg: 'travel' }]);
+  eq('his pickup stands on the travel leg too', travel[1].equipment, 'Pickup');
+  eq('and the card\'s takes the travel codes', travel[2].cost_code, '900');
+  eq('on the travel leg', travel[2].is_travel, true);
+
+  assert('and a haul day carrying a machine he named is flagged for review, not skipped',
+    /WHAT WILL ACTUALLY END UP ON THE WORK ROWS/.test(payrSrc),
+    'bulkHaulNeedsReview no longer reads a coded day\'s own machines');
+}
+
+console.log('\nA proposal still cannot price anything');
+{
+  const e = { computed_hours: 8, travel_hours: 0 };
+  const out = precode(e, {
+    travel_hours: 0,
+    split: [{
+      cost_code: '101', sub_code: 'A', labor_hours: 8, equipment: 'CAT 336', equip_hours: 8,
+      is_haul: true, haul_type: 'off_site',
+      dest: { division: 'trucking', job_id: 'X' },
+    }],
+  });
+  assert('the haul answers and the destination are still stripped', !out.err, out.err);
+  eq('no haul claim survives', out.rows[0].is_haul, undefined);
+  eq('no haul type survives', out.rows[0].haul_type, undefined);
+  eq('and no routing to another division', out.rows[0].dest, null);
+  eq('while the machine he named does', out.rows[0].equipment, 'CAT 336');
+}
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

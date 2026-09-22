@@ -120,6 +120,9 @@
       display:flex; flex-direction:column; gap:0.5rem; background:var(--surface);
     }
     .srow.travel { border-left:3px solid var(--blue); }
+    /* A machine's own line. Green because it is not somebody's time: its hours
+       bill the job for iron, and the tally below counts none of them. */
+    .srow.equip { border-left:3px solid var(--green); }
     .srow-top { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; }
     .srow-tag { font-size:0.64rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); font-weight:700; }
     .srow-del {
@@ -135,6 +138,18 @@
     }
     .fld select:focus, .fld input:focus { outline:none; border-color:var(--accent); }
     .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0.5rem; }
+    .fld .hint { font-size:0.68rem; color:var(--muted); font-weight:400; text-transform:none; letter-spacing:0; }
+    .fld label .req { color:var(--accent); }
+    /* The machine block, set apart from the codes above it so a row reads as
+       two questions — what phase, and what iron — rather than six boxes. */
+    .eqbox {
+      border-top:1px dashed var(--border); padding-top:0.5rem;
+      display:flex; flex-direction:column; gap:0.5rem;
+    }
+    .eqbox .eqhead { font-size:0.64rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); font-weight:700; }
+    .addrow { display:flex; gap:0.5rem; }
+    .addrow .btn.add { flex:1; }
+    .tally .sub { display:block; font-size:0.66rem; color:var(--muted); font-weight:400; }
 
     .btn {
       border:none; border-radius:9px; padding:0.75rem 1.1rem; font-size:0.82rem;
@@ -253,20 +268,57 @@
       toastT = setTimeout(() => el.classList.remove('show'), 2600);
     }
 
+    const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
+    /** The day's WORK hours — the punch clock, less the break. Fixed: nothing
+     *  on this page can move it, and every work row on the sheet has to add up
+     *  to exactly this. */
+    function workHours(e) { return r2(e.computed_hours); }
+
+    /** The drive AS FILED, which is the employee's own answer and the figure
+     *  the day currently pays. The coder may propose a different one — see
+     *  sheetTravel — and until a supervisor applies it, this is still the
+     *  number that counts. */
+    function filedTravel(e) { return r2(e.travel_hours); }
+
     /** The figure a split has to add up to — the same one the server balances
      *  against (splitExpectedHours in api/timesheet-entries.js). Work plus
-     *  travel, because a travel row is part of the day's allocation. */
-    function requiredHours(e) {
-      return Math.round(((Number(e.computed_hours) || 0) + (Number(e.travel_hours) || 0)) * 100) / 100;
+     *  travel, because a travel row is part of the day's allocation.
+     *
+     *  `travel` overrides the filed drive, which is what a sheet proposing its
+     *  own passes. Left out, this is the day exactly as filed. */
+    function requiredHours(e, travel) {
+      return r2(workHours(e) + (Number.isFinite(Number(travel)) ? Number(travel) : filedTravel(e)));
+    }
+
+    /** The drive a stored proposal was written with — his figure, not the
+     *  entry's, and null where the proposal predates the question. */
+    function proposedTravel(e) {
+      return (e && e.proposed_travel_hours != null) ? r2(e.proposed_travel_hours) : null;
     }
 
     /** Is the proposal already on this entry still describing this day? Payroll
      *  can edit hours on a submitted entry, and a split written against the old
-     *  figure will not save. Mirrors the same check in payroll.html. */
+     *  figure will not save. Mirrors the same check in payroll.html.
+     *
+     *  A proposal carrying its OWN drive is measured against that, not against
+     *  the entry: coded_for_hours is work + HIS travel by construction, so
+     *  comparing it to the filed day would mark every travel proposal stale and
+     *  throw away codes nobody has looked at yet. What makes one stale is the
+     *  same thing it always was — the WORK hours moving underneath it. */
     function proposalStale(e) {
       if (!Array.isArray(e.proposed_split) || !e.proposed_split.length) return false;
       if (e.coded_for_hours == null) return false;
-      return Math.abs(Number(e.coded_for_hours) - requiredHours(e)) > 0.001;
+      const pt = proposedTravel(e);
+      return Math.abs(Number(e.coded_for_hours) - requiredHours(e, pt)) > 0.001;
+    }
+
+    /** Does this entry carry a drive somebody has proposed and nobody has
+     *  applied? Worth saying on the card: the hours on it are not the hours
+     *  the day will pay until a supervisor acts. */
+    function travelPending(e) {
+      const pt = proposedTravel(e);
+      return pt != null && Math.abs(pt - filedTravel(e)) > 0.001 && !proposalStale(e);
     }
 
     /* ═══════ Load ═══════ */
@@ -365,7 +417,9 @@
           <button class="nav" onclick="shiftDay(1)" aria-label="Next day">›</button>
         </div>
         <div class="note">
-          Enter the cost codes for what your crew actually did. Your supervisor
+          Enter the cost codes for what your crew actually did — a
+          <strong>cost code and a sub code on every line</strong>, the travel each man
+          really had, and any machine he ran with its hours. Your supervisor
           still approves the time — <strong>nothing here pays anybody or posts to the
           job</strong> until he does, and he can change anything you enter.
         </div>
@@ -412,13 +466,21 @@
           : coded
             ? `<span class="pill ok">coded${e.coded_by_name ? ' · ' + esc(e.coded_by_name) : ''}</span>`
             : '';
-      const travel = Number(e.travel_hours) || 0;
+      // A drive somebody asked for and nobody has granted. Said as its own
+      // pill rather than folded into the hours: the big figure on the right is
+      // what the day PAYS today, and a card that quietly showed the proposed
+      // total would read as though the change had already gone through.
+      const pending = travelPending(e);
+      const tPill = pending
+        ? `<span class="pill sup">travel ${n2(proposedTravel(e))}h proposed — waiting on your supervisor</span>`
+        : '';
+      const travel = filedTravel(e);
       return `
         <div class="card ${cls}" onclick="openSheet('${esc(e.id)}')">
           <div class="who">
             <div class="n">${esc(e.username)}</div>
             <div class="m">${esc(e.start_time || '')}–${esc(e.end_time || '')}${travel > 0 ? ` · ${n2(travel)}h travel` : ''}${e.lunch_break ? ' · lunch' : ''}</div>
-            ${pill}
+            ${pill}${tPill}
           </div>
           <div class="hrs">
             <div class="h">${n2(requiredHours(e))}</div>
@@ -430,9 +492,107 @@
 
     function shiftDay(n) { state.date = addDays(state.date, n); load(); }
 
+    /* ═══════ The company's machines ═══════
+     *
+     * Fetched once and shared by every sheet, exactly as timesheet.html and
+     * payroll's split modal do it — the same list, so a name a foreman picks
+     * here is one the cost row already understands and nothing has to be
+     * translated at approval.
+     *
+     * Narrowed to the day's OWN division when the server says which lists hold
+     * each machine. A paving foreman scrolling turf's mowers to find his paver
+     * is how the wrong machine gets billed; an older server sends no
+     * `divisions` key at all, nothing lands in a bucket, and every sheet falls
+     * back to the flat list, which is no worse than having no picker.
+     *
+     * A non-2xx is never cached. Falling through to `[]` — which is truthy —
+     * left one expired-token 401 holding an empty picker for the rest of the
+     * session, and an empty picker reads as "there is nothing to answer here".
+     */
+    let equipNames        = null;
+    let equipByDivision   = null;
+    let equipPromise      = null;
+    function equipLoad() {
+      if (equipNames) return Promise.resolve(equipNames);
+      if (!equipPromise) {
+        equipPromise = fetch(`${API}/equipment`, { headers: authHeaders() })
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then(j => {
+            const rows = (j && Array.isArray(j.equipment) ? j.equipment : [])
+              .filter(x => x && x.name)
+              .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            const byDiv = {};
+            for (const x of rows) {
+              for (const d of (Array.isArray(x.divisions) ? x.divisions : [])) {
+                (byDiv[d] || (byDiv[d] = [])).push(String(x.name));
+              }
+            }
+            equipByDivision = byDiv;
+            equipNames = rows.map(x => String(x.name));
+            return equipNames;
+          })
+          .catch(err => {
+            console.error('[coding] equipment list failed to load:', err.message);
+            equipPromise = null;
+            return null;
+          });
+      }
+      return equipPromise;
+    }
+
+    /** The machines THIS sheet may name — its division's list, falling back to
+     *  the whole company where that division keeps none. */
+    function equipNamesFor(div) {
+      const own = (div && equipByDivision) ? equipByDivision[div] : null;
+      return (own && own.length) ? own : (equipNames || []);
+    }
+
+    /** What the man himself said he ran, in one shape: [{ name, hours }]. A
+     *  bare string in an older row reads as a machine with no hours. Mirrors
+     *  equipUsedPieces in payroll.html. */
+    function equipUsedPieces(e) {
+      if (!Array.isArray(e && e.equipment_used)) return [];
+      return e.equipment_used
+        .map(x => (x && typeof x === 'object') ? x : { name: x })
+        .map(x => ({
+          name:  String((x && x.name) || '').trim(),
+          hours: (x && x.hours != null && Number.isFinite(Number(x.hours))) ? Number(x.hours) : null,
+        }))
+        .filter(x => x.name);
+    }
+
     /* ═══════ Coding sheet ═══════ */
-    function blankRow(isTravel) {
-      return { cost_code:'', sub_code:'', quantity:'', labor_hours:'', is_travel: !!isTravel };
+    /**
+     * One line of the breakdown. Three kinds, and the kind decides what the
+     * hours on it MEAN:
+     *
+     *   work    labour against a phase of the job
+     *   travel  labour spent driving — the same hours, under the drive's code
+     *   equip   NO labour at all: a machine's own line, carrying equip_hours
+     *           and nothing else. The server needs labour or equipment hours on
+     *           a row, and the total it balances counts labour alone, so these
+     *           never disturb work + travel.
+     */
+    function blankRow(kind) {
+      return {
+        kind: kind || 'work',
+        cost_code:'', sub_code:'', quantity:'',
+        labor_hours: kind === 'equip' ? '0' : '',
+        equipment:'', equip_hours:'',
+        is_travel: kind === 'travel',
+      };
+    }
+
+    const isEquipRow  = r => r && r.kind === 'equip';
+    const isTravelRow = r => r && (r.kind === 'travel' || (!r.kind && r.is_travel));
+
+    /** The drive THIS sheet is proposing — the travel rows' own hours. It is
+     *  what the tally balances against and what the save sends, and it may
+     *  differ from the figure the employee filed. */
+    function sheetTravel() {
+      if (!sheet) return 0;
+      return r2(sheet.rows.reduce((sum, r) =>
+        sum + (isTravelRow(r) ? (Number(r.labor_hours) || 0) : 0), 0));
     }
 
     async function openSheet(id) {
@@ -444,31 +604,52 @@
       // would only waste the trip.
       let rows;
       if (Array.isArray(e.proposed_split) && e.proposed_split.length && !proposalStale(e)) {
-        rows = e.proposed_split.map(r => ({
-          cost_code:   r.cost_code   || '',
-          sub_code:    r.sub_code    || '',
-          quantity:    r.quantity    ? String(r.quantity) : '',
-          labor_hours: r.labor_hours != null ? String(r.labor_hours) : '',
-          is_travel:   !!r.is_travel,
-        }));
+        rows = e.proposed_split.map(r => {
+          // A row carrying a machine and no labour is a machine's own line,
+          // and it has to come back as one — read as ordinary work it would
+          // demand hours the day does not have and could never be saved.
+          const labor = Number(r.labor_hours) || 0;
+          const kind  = r.is_travel ? 'travel' : (labor > 0 ? 'work' : 'equip');
+          return {
+            kind,
+            cost_code:   r.cost_code   || '',
+            sub_code:    r.sub_code    || '',
+            quantity:    r.quantity    ? String(r.quantity) : '',
+            labor_hours: r.labor_hours != null ? String(r.labor_hours) : '',
+            equipment:   r.equipment   || '',
+            equip_hours: r.equip_hours ? String(r.equip_hours) : '',
+            is_travel:   !!r.is_travel,
+          };
+        });
       } else {
-        rows = [blankRow(false)];
-        const travel = Number(e.travel_hours) || 0;
-        if (travel > 0) {
-          const t = blankRow(true);
-          t.labor_hours = String(travel);
-          rows.push(t);
-        }
+        rows = [blankRow('work')];
         // The work hours are known outright, so the common case — one phase all
         // day — needs no arithmetic from anybody.
-        rows[0].labor_hours = String(Math.round((requiredHours(e) - (Number(e.travel_hours) || 0)) * 100) / 100);
+        rows[0].labor_hours = String(workHours(e));
+        // The drive as the employee filed it. A travel row is offered even at
+        // zero, because the filed figure is routinely zero and wrong: the
+        // travel boxes on the timesheet are optional, the man who drove the
+        // crew out knows what it took, and there was no way to say so. The row
+        // starts empty in that case and the foreman either fills it in or
+        // removes it.
+        const t = blankRow('travel');
+        t.labor_hours = filedTravel(e) > 0 ? String(filedTravel(e)) : '';
+        rows.push(t);
+        // And the iron he named on his own timesheet, onto rows of its own.
+        // He answered "which machine, and for how long" when he filed the day;
+        // retyping it here from a schedule nobody was standing next to is how
+        // a pickup gets billed as an excavator.
+        for (const piece of equipUsedPieces(e)) {
+          const r = blankRow('equip');
+          r.equipment   = piece.name;
+          r.equip_hours = piece.hours != null && piece.hours > 0 ? String(r2(piece.hours)) : '';
+          rows.push(r);
+        }
       }
 
       sheet = { entry: e, rows, codes: [], codesState: 'loading', saving: false };
       const mySheet = sheet;
       document.getElementById('sheetTitle').textContent = e.username;
-      document.getElementById('sheetSub').textContent =
-        `${DIV_LABEL[e.division] || e.division} · ${e.job_label || e.job_id} · ${n2(requiredHours(e))} hours to allocate`;
       document.getElementById('backdrop').classList.add('open');
       renderSheet();
 
@@ -476,9 +657,15 @@
       // the guard a slow response for one man's day could drop its job's bid
       // items into the picker of a day already opened for another job — and
       // nothing, here or on the server, checks a cost code against its job.
+      //
+      // Both lookups together: the equipment list is company-wide and cached
+      // after the first sheet, so on every day but the first it costs nothing.
       try {
         const qs = new URLSearchParams({ division: e.division, jobId: e.job_id });
-        const r = await fetch(`${API}/timesheet-job-costcodes?${qs}`, { headers: authHeaders() });
+        const [r] = await Promise.all([
+          fetch(`${API}/timesheet-job-costcodes?${qs}`, { headers: authHeaders() }),
+          equipLoad(),
+        ]);
         const j = await r.json();
         if (r.ok && Array.isArray(j.cost_codes)) {
           mySheet.codes = j.cost_codes;
@@ -537,8 +724,59 @@
       setTimeout(() => { if (sheet) renderSheet(); }, 0);
     }
 
+    /**
+     * What the day was FILED with, said the moment the figure on screen stops
+     * matching it.
+     *
+     * A foreman is entitled to a different answer about the drive — he was in
+     * the truck — but he is not entitled to make the change quietly, and
+     * neither is this page. The note names both numbers and says plainly that
+     * his is a request: nothing on this screen moves anybody's paid hours.
+     *
+     * Always rendered, hidden when the two agree, so it can be swapped in place
+     * while somebody is typing in the travel box — see renderTravelNote.
+     */
+    function travelNoteHtml() {
+      if (!sheet) return '<div id="travelNote" hidden></div>';
+      const filed  = filedTravel(sheet.entry);
+      const asked  = sheetTravel();
+      if (Math.abs(asked - filed) <= 0.001) return '<div id="travelNote" hidden></div>';
+      return `<div id="travelNote" class="msg show" style="color:#fbbf24;background:rgba(245,158,11,0.12)">
+        ${esc(sheet.entry.username)} filed <strong>${esc(n2(filed))} h</strong> of travel and you are
+        coding <strong>${esc(n2(asked))} h</strong>. His hours do not change on this screen —
+        your supervisor sees the figure and decides.
+      </div>`;
+    }
+
+    /**
+     * Put that note back on screen WITHOUT repainting the body.
+     *
+     * The travel box commits on every keystroke, and a full repaint on each one
+     * would destroy the input being typed into and take the focus with it.
+     * Only this one element is replaced, so the caret never moves.
+     */
+    function renderTravelNote() {
+      const el = document.getElementById('travelNote');
+      if (el) el.outerHTML = travelNoteHtml();
+      // The header carries the same figure, and it is a text node outside the
+      // form — safe to rewrite while he types.
+      renderSheetHead();
+    }
+
+    /** The line under the name: where this day was worked, and how much time
+     *  is being allocated. The total follows the drive on screen, so it is
+     *  rebuilt on every repaint rather than written once when the sheet opens. */
+    function renderSheetHead() {
+      if (!sheet) return;
+      const e = sheet.entry;
+      document.getElementById('sheetSub').textContent =
+        `${DIV_LABEL[e.division] || e.division} · ${e.job_label || e.job_id} · `
+        + `${n2(requiredHours(e, sheetTravel()))} hours to allocate`;
+    }
+
     function renderSheet() {
       if (!sheet) return;
+      renderSheetHead();
       const body = document.getElementById('sheetBody');
       const ccOpts = sheet.codes.map(c => c.cost_code);
 
@@ -563,34 +801,47 @@
           ? `<div class="msg err show">This job has no bid items set up, so there are no codes to pick from. Type them in, or ask the office to add them.</div>`
           : '';
 
-      body.innerHTML = supNote + ccNote + sheet.rows.map((r, i) => {
+      // The filed drive, for the hint under the travel box; the note that fires
+      // when the figure on screen disagrees with it is travelNoteHtml's.
+      const filed = filedTravel(sheet.entry);
+      const tNote = travelNoteHtml();
+
+      const eqOpts = equipNamesFor(sheet.entry.division);
+
+      body.innerHTML = supNote + ccNote + tNote + sheet.rows.map((r, i) => {
         const subs = subsFor(r.cost_code);
+        const equip = isEquipRow(r);
+        const tag = equip ? 'Equipment' : (isTravelRow(r) ? 'Travel' : 'Work');
+        const cls = equip ? 'equip' : (isTravelRow(r) ? 'travel' : '');
         return `
-        <div class="srow ${r.is_travel ? 'travel' : ''}">
+        <div class="srow ${cls}">
           <div class="srow-top">
-            <span class="srow-tag">${r.is_travel ? 'Travel' : 'Work'} · row ${i + 1}</span>
+            <span class="srow-tag">${tag} · row ${i + 1}</span>
             ${sheet.rows.length > 1 ? `<button class="srow-del" onclick="delRow(${i})">Remove</button>` : ''}
           </div>
           <div class="fld">
-            <label>Cost code</label>
+            <label>Cost code <span class="req">*</span></label>
             <input list="ccList" data-f="cost_code" value="${esc(r.cost_code)}" placeholder="type or pick"
                    autocapitalize="off" autocorrect="off" spellcheck="false"
                    onchange="setField(${i},'cost_code',this.value)">
           </div>
           <div class="fld">
-            <label>Sub code</label>
+            <label>Sub code <span class="req">*</span></label>
             <input list="scList${i}" data-f="sub_code" value="${esc(r.sub_code)}"
-                   placeholder="${subs.length ? 'type or pick' : 'optional'}"
+                   placeholder="${subs.length ? 'type or pick' : 'type it in'}"
                    autocapitalize="off" autocorrect="off" spellcheck="false"
                    onchange="setField(${i},'sub_code',this.value)">
             <datalist id="scList${i}">${subs.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist>
+            ${subs.length ? '' : `<span class="hint">This cost code has no sub codes on the job — type what the work was.</span>`}
           </div>
+          ${equip ? '' : `
           <div class="grid2">
             <div class="fld">
               <label>Hours</label>
               <input type="number" data-f="labor_hours" inputmode="decimal" min="0" max="24" step="0.25"
                      value="${esc(r.labor_hours)}" placeholder="0.00"
                      oninput="setField(${i},'labor_hours',this.value)">
+              ${isTravelRow(r) ? `<span class="hint">Timesheet says ${n2(filed)} h${filed > 0 ? '' : ' — nothing filed'}</span>` : ''}
             </div>
             <div class="fld">
               <label>Quantity</label>
@@ -598,25 +849,68 @@
                      value="${esc(r.quantity)}" placeholder="optional"
                      oninput="setField(${i},'quantity',this.value)">
             </div>
+          </div>`}
+          <div class="eqbox">
+            <div class="eqhead">${equip ? 'Machine' : 'Equipment on this row (optional)'}</div>
+            <div class="grid2">
+              <div class="fld">
+                <label>Machine</label>
+                <input list="eqList" data-f="equipment" value="${esc(r.equipment)}"
+                       placeholder="${equip ? 'type or pick' : 'none'}"
+                       autocapitalize="off" autocorrect="off" spellcheck="false"
+                       onchange="setField(${i},'equipment',this.value)">
+              </div>
+              <div class="fld">
+                <label>Machine hours</label>
+                <input type="number" data-f="equip_hours" inputmode="decimal" min="0" max="24" step="0.25"
+                       value="${esc(r.equip_hours)}" placeholder="0.00"
+                       oninput="setField(${i},'equip_hours',this.value)">
+              </div>
+            </div>
+            ${equip ? `<span class="hint">A machine's own line. These hours bill the job for the iron and are not anybody's time, so they do not count toward the ${n2(workHours(sheet.entry))} h below.</span>` : ''}
           </div>
         </div>`;
       }).join('')
       + `<datalist id="ccList">${ccOpts.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>
-         <button class="btn add" onclick="addRow()">+ Another phase</button>
+         <datalist id="eqList">${eqOpts.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+         <div class="addrow">
+           <button class="btn add" onclick="addRow('work')">+ Phase</button>
+           <button class="btn add" onclick="addRow('equip')">+ Equipment</button>
+         </div>
+         ${sheet.rows.some(isTravelRow) ? '' : `<button class="btn add" onclick="addRow('travel')">+ Travel</button>`}
          <div class="msg err" id="sheetMsg">${esc(sheet.err || '')}</div>`;
       if (sheet.err) document.getElementById('sheetMsg').classList.add('show');
 
       renderTally();
     }
 
+    /**
+     * The running total, and what the drive is doing to it.
+     *
+     * The WORK hours are fixed — the punch clock, less the break — and the work
+     * rows have to land on them exactly. The travel rows are the figure being
+     * proposed, so they move the target rather than eating into it: a foreman
+     * adding an hour of drive is not taking an hour off the man's work, and a
+     * tally that made him re-balance the whole day to say so would teach him to
+     * leave the drive alone.
+     *
+     * Equipment rows carry no labour and are counted in neither.
+     */
     function renderTally() {
       if (!sheet) return;
-      const need = requiredHours(sheet.entry);
-      const got  = Math.round(sheet.rows.reduce((s, r) => s + (Number(r.labor_hours) || 0), 0) * 100) / 100;
-      const ok   = Math.abs(got - need) <= 0.001;
+      const work    = workHours(sheet.entry);
+      const travel  = sheetTravel();
+      const need    = requiredHours(sheet.entry, travel);
+      const gotWork = r2(sheet.rows.reduce((sum, r) =>
+        sum + ((!isTravelRow(r) && !isEquipRow(r)) ? (Number(r.labor_hours) || 0) : 0), 0));
+      const got     = r2(gotWork + travel);
+      const ok      = Math.abs(gotWork - work) <= 0.001;
       const el = document.getElementById('tally');
       el.className = 'tally ' + (ok ? 'good' : 'bad');
-      el.textContent = ok ? `${n2(got)} / ${n2(need)} h` : `${n2(got)} / ${n2(need)} h · ${n2(need - got)} left`;
+      const left = r2(work - gotWork);
+      el.innerHTML = `${esc(n2(got))} / ${esc(n2(need))} h`
+        + `<span class="sub">${esc(n2(work))} h work${ok ? '' : ` · ${esc(n2(left))} left`}`
+        + `${travel > 0 ? ` · ${esc(n2(travel))} h travel` : ''}</span>`;
       document.getElementById('saveBtn').disabled = !ok || sheet.saving;
     }
 
@@ -635,10 +929,18 @@
         renderSheetSoon();
         return;
       }
-      if (field === 'labor_hours') { renderTally(); return; }
+      if (field === 'labor_hours') {
+        renderTally();
+        // A travel figure that has moved changes the note above the fields as
+        // well as the total below them. Swapped in place rather than repainted:
+        // this fires on every keystroke, and rebuilding the body would take the
+        // focus out of the box he is typing the number into.
+        if (isTravelRow(sheet.rows[i])) renderTravelNote();
+        return;
+      }
     }
 
-    function addRow() { if (sheet) { sheet.rows.push(blankRow(false)); renderSheet(); } }
+    function addRow(kind) { if (sheet) { sheet.rows.push(blankRow(kind)); renderSheet(); } }
     function delRow(i) { if (sheet) { sheet.rows.splice(i, 1); renderSheet(); } }
 
     async function saveCoding() {
@@ -654,19 +956,74 @@
       // validation message the coder was actually acting on.
       sheet.err = '';
 
+      const fail = m => {
+        sheet.err = m; msg.textContent = m; msg.classList.add('show');
+      };
+
+      // An UNTOUCHED travel row is not an error, it is the answer "there was no
+      // drive". Every sheet opens with one — the filed figure is routinely zero
+      // and wrong, and a foreman who cannot see the box will not think to add
+      // it — so on the ordinary day it is simply left empty and dropped here.
+      // Kept once anything is on it: hours, or the pickup that did the driving.
+      //
+      // Numbered by where it sits ON SCREEN, not by where it lands in the body:
+      // dropping a row renumbers everything after it, and "row 3 needs a sub
+      // code" pointing at row 4 is worse than no message at all.
+      const kept = sheet.rows
+        .map((r, i) => ({ r, n: i + 1 }))
+        .filter(({ r }) =>
+          !isTravelRow(r)
+          || (Number(r.labor_hours) || 0) > 0
+          || String(r.equipment || '').trim()
+          || (Number(r.equip_hours) || 0) > 0);
+      const rows = kept.map(x => x.r);
+
+      if (!rows.length) {
+        fail('There is nothing on this day to code.');
+        return;
+      }
+
       // Mirrors the server's own rules so an obvious mistake is caught here
       // rather than after a round trip. The server checks all of it again.
-      for (let i = 0; i < sheet.rows.length; i++) {
-        const r = sheet.rows[i];
-        const h = Number(r.labor_hours) || 0;
-        if (h <= 0) {
-          sheet.err = `Row ${i + 1} has no hours on it. Give it hours or remove it.`;
-          msg.textContent = sheet.err; msg.classList.add('show'); return;
+      for (const { r, n } of kept) {
+        const h  = Number(r.labor_hours) || 0;
+        const eh = Number(r.equip_hours) || 0;
+        const eq = String(r.equipment || '').trim();
+        // A machine and its hours, or neither. Either one alone is a row the
+        // job is billed nothing for, or billed for iron nobody can name.
+        if (eq && !(eh > 0))  { fail(`Row ${n} names ${eq} but gives it no hours.`); return; }
+        if (!eq && eh > 0)    { fail(`Row ${n} has machine hours but no machine. Pick one, or clear the hours.`); return; }
+        if (isEquipRow(r)) {
+          if (!eq) { fail(`Row ${n} is an equipment row with no machine on it. Pick one, or remove the row.`); return; }
+        } else if (h <= 0 && !eq) {
+          // Labour OR a machine, the same rule the server applies. A row
+          // carrying neither is empty, and an empty row is a mistake whichever
+          // of the two the coder meant to fill in.
+          fail(`Row ${n} has no hours on it. Give it hours or remove it.`); return;
         }
-        if (!String(r.cost_code || '').trim() && !String(r.sub_code || '').trim()) {
-          sheet.err = `Row ${i + 1} needs a cost code.`;
-          msg.textContent = sheet.err; msg.classList.add('show'); return;
+        if (!String(r.cost_code || '').trim()) {
+          fail(`Row ${n} needs a cost code.`); return;
         }
+        // MANDATORY, not "one of the two". The sub code is where the phase of
+        // the work actually lives, and a cost row without one cannot be
+        // measured against the bid it came from — which is the whole reason
+        // the man who was on the job is the one filling this in.
+        if (!String(r.sub_code || '').trim()) {
+          fail(`Row ${n} needs a sub code — say which part of ${String(r.cost_code).trim()} it was.`); return;
+        }
+      }
+
+      // The work rows are the day's clocked time and have to land on it
+      // exactly. Checked here as well as by the disabled Save button, because
+      // Save is re-enabled from several places and a body that does not balance
+      // earns a 400 the coder has no way to read.
+      const wantWork = workHours(sheet.entry);
+      const gotWork  = r2(rows.reduce((sum, r) =>
+        sum + ((!isTravelRow(r) && !isEquipRow(r)) ? (Number(r.labor_hours) || 0) : 0), 0));
+      if (Math.abs(gotWork - wantWork) > 0.001) {
+        fail(`The work rows add up to ${n2(gotWork)} h and this day was worked ${n2(wantWork)} h.`
+             + ` Travel and equipment rows are counted separately.`);
+        return;
       }
       msg.classList.remove('show');
 
@@ -678,6 +1035,12 @@
       const mySheet = sheet;
       const myId    = String(sheet.entry.id);
       const who     = sheet.entry.username;
+      const filedT  = filedTravel(sheet.entry);
+      // The drive as the rows actually being SENT state it — an empty travel
+      // row dropped above is zero travel, and the figure has to agree with the
+      // rows or the server refuses the pair.
+      const askedT  = r2(rows.reduce((sum, r) =>
+        sum + (isTravelRow(r) ? (Number(r.labor_hours) || 0) : 0), 0));
 
       sheet.saving = true;
       document.getElementById('saveBtn').disabled = true;
@@ -685,16 +1048,26 @@
         // Classification only. The haul questions, the routing to another
         // division and the rates are the approver's, and the server strips
         // them from a coder's proposal regardless of what is sent.
-        const split = sheet.rows.map(r => ({
+        //
+        // The MACHINE is not one of those. Naming it settles which iron was on
+        // the job — the man coding the day watched it run — and its rate still
+        // comes from the equipment list at approval, exactly as it does for a
+        // machine the approver types himself.
+        const split = rows.map(r => ({
           cost_code:   String(r.cost_code || '').trim(),
           sub_code:    String(r.sub_code  || '').trim(),
           quantity:    Number(r.quantity) || 0,
           labor_hours: Number(r.labor_hours) || 0,
-          equip_hours: 0,
-          is_travel:   !!r.is_travel,
+          equipment:   String(r.equipment || '').trim(),
+          equip_hours: Number(r.equip_hours) || 0,
+          is_travel:   isTravelRow(r),
         }));
         const r = await fetch(`${API}/timesheet-entries?action=precode&id=${encodeURIComponent(myId)}`, {
-          method: 'POST', headers: authHeaders(true), body: JSON.stringify({ split }),
+          method: 'POST', headers: authHeaders(true),
+          // The drive this breakdown is balanced against. The server stores it
+          // beside the codes and changes nothing about the entry — his filed
+          // hours stand until a supervisor applies the figure.
+          body: JSON.stringify({ split, travel_hours: askedT }),
         });
         const j = await r.json();
         if (!r.ok) throw new Error((j && j.error) || `Could not save (${r.status})`);
@@ -706,7 +1079,9 @@
         }
         if (sheet === mySheet) closeSheet();
         render();
-        toast(`${who}'s day is coded — waiting on your supervisor.`);
+        toast(Math.abs(askedT - filedT) > 0.001
+          ? `${who}'s day is coded. Your ${n2(askedT)} h of travel is a request — your supervisor decides.`
+          : `${who}'s day is coded — waiting on your supervisor.`);
       } catch (err) {
         mySheet.saving = false;
         // Only touch the form if it is still this one, and re-resolve the
