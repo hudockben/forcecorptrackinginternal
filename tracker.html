@@ -152,6 +152,115 @@
     .crm-sub-btn:hover { color: var(--text); }
     .crm-sub-btn.active { color: var(--green); border-bottom-color: var(--green); }
     .crm-sub-panel { display: none; }
+
+    /* ── News Center: the scoreboard feed ──
+       The hub is read the way a scoreboard is read — glance, find your
+       school, take the line. So it is cards and a ticker rather than a grid
+       of cells, and the score is the biggest thing on each card. */
+    .nc-ticker {
+      display: flex; align-items: center; gap: 0;
+      background: #0b0b0d; border: 1px solid var(--border); border-radius: 6px;
+      overflow: hidden; margin-bottom: 0.9rem; height: 34px;
+    }
+    .nc-ticker-label {
+      flex-shrink: 0; align-self: stretch; display: flex; align-items: center;
+      background: #cc0000; color: #fff; font-size: 0.62rem; font-weight: 800;
+      letter-spacing: 0.14em; padding: 0 0.7rem; text-transform: uppercase;
+    }
+    .nc-ticker-view { flex: 1; overflow: hidden; }
+    .nc-ticker-track {
+      display: inline-flex; align-items: center; white-space: nowrap;
+      animation: nc-scroll 70s linear infinite; will-change: transform;
+    }
+    .nc-ticker:hover .nc-ticker-track { animation-play-state: paused; }
+    @keyframes nc-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+    @media (prefers-reduced-motion: reduce) {
+      .nc-ticker-track { animation: none; }
+      .nc-ticker-view  { overflow-x: auto; }
+    }
+    .nc-tick {
+      display: inline-flex; align-items: baseline; gap: 0.4rem;
+      padding: 0 0.85rem; font-size: 0.74rem; color: var(--muted);
+      border-right: 1px solid rgba(255,255,255,0.07);
+    }
+    .nc-tick b { color: var(--text); font-weight: 700; }
+    .nc-tick .nc-tick-sport { color: #cc0000; font-weight: 800; font-size: 0.62rem; letter-spacing: 0.08em; }
+
+    .nc-filters { display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.9rem; }
+    .nc-filter {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+      border-radius: 13px; padding: 0.2rem 0.7rem; font-size: 0.72rem; font-weight: 600;
+      cursor: pointer; white-space: nowrap; transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+    .nc-filter:hover { color: var(--text); }
+    .nc-filter.on { background: #cc0000; border-color: #cc0000; color: #fff; }
+    .nc-filter-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 0.35rem; }
+
+    .nc-daybar {
+      display: flex; align-items: center; gap: 0.6rem;
+      margin: 1.1rem 0 0.6rem; font-size: 0.68rem; font-weight: 800;
+      letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+    }
+    .nc-daybar::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .nc-daybar:first-child { margin-top: 0; }
+
+    .nc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 0.7rem; }
+    .nc-card {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-left: 3px solid #cc0000; border-radius: 7px;
+      padding: 0.7rem 0.85rem 0.6rem; display: flex; flex-direction: column;
+      transition: border-color 0.12s, transform 0.12s;
+    }
+    .nc-card:hover { border-color: #cc0000; transform: translateY(-1px); }
+    .nc-card-top {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.5rem; margin-bottom: 0.55rem;
+    }
+    .nc-sport {
+      font-size: 0.63rem; font-weight: 800; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text);
+    }
+    .nc-level {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); background: var(--bg); border: 1px solid var(--border);
+      border-radius: 9px; padding: 0.05rem 0.4rem; margin-left: 0.4rem; white-space: nowrap;
+    }
+    .nc-region { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; }
+
+    .nc-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.12rem 0; }
+    .nc-team { font-size: 0.88rem; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nc-score { font-size: 1.05rem; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .nc-row.nc-won .nc-team  { color: var(--text); font-weight: 700; }
+    .nc-row.nc-won .nc-score { color: var(--text); }
+    .nc-row.nc-won::before {
+      content: '▸'; color: #cc0000; font-size: 0.7rem; margin-right: -0.35rem; flex-shrink: 0;
+    }
+
+    .nc-final {
+      font-size: 0.62rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+      color: var(--muted); margin-top: 0.4rem;
+    }
+    .nc-opener {
+      margin-top: 0.55rem; padding-top: 0.55rem; border-top: 1px solid var(--border);
+      font-size: 0.76rem; line-height: 1.45; color: var(--muted); flex: 1;
+    }
+    .nc-actions { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.55rem; }
+    .nc-copy {
+      flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.7rem; font-weight: 600;
+      cursor: pointer; font-family: inherit; transition: background 0.12s, border-color 0.12s;
+    }
+    .nc-copy:hover { background: #cc0000; border-color: #cc0000; color: #fff; }
+    .nc-src { font-size: 0.68rem; color: var(--muted); text-decoration: none; white-space: nowrap; }
+    .nc-src:hover { color: var(--blue); }
+
+    .nc-progress { display: flex; align-items: center; gap: 0.4rem; font-size: 0.72rem; color: var(--muted); }
+    .nc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+    .nc-dot.nc-run  { background: #f59e0b; animation: nc-pulse 1.1s ease-in-out infinite; }
+    .nc-dot.nc-ok   { background: #22c55e; }
+    .nc-dot.nc-bad  { background: #ef4444; }
+    @keyframes nc-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
     .crm-sub-panel.active { display: block; }
 
     /* ── Lucius map panel ── */
@@ -7906,39 +8015,142 @@ document.getElementById('crm-companies-root').addEventListener('click', e => {
    Every row carries its source link. An opener is only worth using if the rep
    can check it in one click before they send it.
 ═══════════════════════════════════════════ */
-let crmNews        = { pulled_at: null, items: [] };
-let _crmNewsFilter = {};
-let _crmNewsBusy   = false;
-let _crmNewsNote   = '';
+let crmNews          = { pulled_at: null, regions: {}, items: [] };
+let _crmNewsFilter   = { region: '', level: '', sport: '', q: '' };
+let _crmNewsView     = 'feed';    // 'feed' | 'table'
+let _crmNewsBusy     = false;
+let _crmNewsNote     = '';
+let _crmNewsProgress = [];
+
+/* Mirrors api/lib/crm-news.js REGIONS. The key goes to the server, the label
+   is what a row is tagged with and what the chips filter on. */
+const _NC_REGIONS = [
+  { key: 'wpa', label: 'Western PA' },
+  { key: 'eoh', label: 'Eastern OH' },
+  { key: 'wny', label: 'Western NY' },
+];
+
+const _NC_SPORT_ICON = {
+  Football: '🏈', Soccer: '⚽', Baseball: '⚾', Softball: '🥎',
+  Lacrosse: '🥍', 'Field Hockey': '🏑', Track: '🏃', 'Track and Field': '🏃',
+};
 
 async function loadCrmNews() {
   const saved = await apiGet('fct_crm_news');
-  if (saved && Array.isArray(saved.items)) crmNews = saved;
+  if (saved && Array.isArray(saved.items)) crmNews = { regions: {}, ...saved };
   if (document.getElementById('crm-panel-news')?.classList.contains('active')) renderCrmNewsTab();
 }
 
-async function refreshCrmNews(force) {
-  if (_crmNewsBusy) return;
-  _crmNewsBusy = true;
-  _crmNewsNote = '';
-  renderCrmNewsTab();
+/**
+ * Pulls one region.
+ *
+ * Searching all three in one request is what produced the 504: it ran past
+ * the 60 seconds the function gets and the gateway killed it with nothing
+ * written. One region finishes inside that, and the client's own timeout is
+ * longer than the server's so a real answer is never thrown away by the tab
+ * that asked for it.
+ */
+async function _crmNewsPullRegion(region, force) {
+  const ctl   = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 90000);
   try {
     const r = await fetch(`${API_BASE}/ai/crm-news`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-      body:    JSON.stringify({ force: !!force }),
+      body:    JSON.stringify({ region, force: !!force }),
+      signal:  ctl.signal,
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-    if (Array.isArray(data.items)) crmNews = { pulled_at: data.pulled_at, items: data.items };
-    _crmNewsNote = data.warning || data.skipped
-      || (data.found ? `Pulled ${data.found} result${data.found === 1 ? '' : 's'}.` : '');
+    if (!r.ok) throw new Error(_crmNewsErrorText(r.status, data));
+    return data;
   } catch (err) {
-    _crmNewsNote = `Refresh failed — ${err.message}`;
+    if (err.name === 'AbortError') throw new Error('the search ran long and was given up on');
+    throw err;
   } finally {
-    _crmNewsBusy = false;
+    clearTimeout(timer);
+  }
+}
+
+/** A gateway number tells the user nothing. Say what actually went wrong. */
+function _crmNewsErrorText(status, data) {
+  if (data && data.error && status !== 504) return data.error;
+  if (status === 504 || status === 502) return 'the search ran past the time limit';
+  if (status === 503) return 'the news service is not set up yet';
+  if (status === 403) return 'no access to the turf division';
+  if (status === 401) return 'your session expired — reload the page';
+  return `the server answered ${status}`;
+}
+
+/**
+ * Refreshes region by region, showing each as it lands.
+ *
+ * Sequential rather than parallel: three concurrent searches is three times
+ * the spend in the same second and gives the user nothing to watch. This way
+ * the first region's games are on screen while the third is still searching,
+ * and a region that fails fails alone.
+ */
+async function refreshCrmNews(force) {
+  if (_crmNewsBusy) return;
+  _crmNewsBusy     = true;
+  _crmNewsNote     = '';
+  _crmNewsProgress = _NC_REGIONS.map(r => ({ ...r, state: 'idle', found: 0, msg: '' }));
+  renderCrmNewsTab();
+
+  let found = 0;
+  const failures = [];
+
+  for (const p of _crmNewsProgress) {
+    p.state = 'run';
+    renderCrmNewsTab();
+    try {
+      const data = await _crmNewsPullRegion(p.key, force);
+      if (Array.isArray(data.items)) {
+        crmNews = {
+          pulled_at: data.pulled_at || crmNews.pulled_at,
+          regions:   data.regions   || crmNews.regions,
+          items:     data.items,
+        };
+      }
+      p.found = data.found || 0;
+      found  += p.found;
+      if (data.warning) { p.state = 'bad'; p.msg = data.warning; failures.push({ label: p.label, reason: data.warning }); }
+      else              { p.state = 'ok';  p.msg = data.skipped || ''; }
+    } catch (err) {
+      p.state = 'bad';
+      p.msg   = err.message;
+      failures.push({ label: p.label, reason: err.message });
+    }
     renderCrmNewsTab();
   }
+
+  _crmNewsBusy = false;
+  _crmNewsNote = _crmNewsSummary(found, failures);
+  renderCrmNewsTab();
+}
+
+/**
+ * What the tab says after a refresh.
+ *
+ * Three regions failing the same way is one fact, not three — repeating the
+ * sentence once per region is how a clear message turns into noise. Whatever
+ * went wrong, the hub still holds the last good pull, and saying so is the
+ * part that stops someone thinking they have lost their openers.
+ */
+function _crmNewsSummary(found, failures) {
+  const got = found ? `Pulled ${found} new result${found === 1 ? '' : 's'}.` : '';
+  if (!failures.length) return got || 'No new results — the hub is already current.';
+
+  // Group on the reason, so "all three timed out" reads as one line.
+  const byReason = new Map();
+  for (const { label, reason } of failures) {
+    if (!byReason.has(reason)) byReason.set(reason, []);
+    byReason.get(reason).push(label);
+  }
+  const parts = [...byReason.entries()].map(([reason, labels]) =>
+    `${labels.length === _NC_REGIONS.length ? 'All three regions' : labels.join(' and ')} — ${reason}`);
+
+  const tail = found ? '' : ' The hub still shows the last good pull.';
+  return `${got} ${parts.join('; ')}.${tail}`.trim();
 }
 
 /** The opener, on the clipboard, ready to paste at the top of an email. */
@@ -7949,8 +8161,8 @@ function crmCopyOpener(id) {
     const btn = document.querySelector(`[data-crm-news-copy="${id}"]`);
     if (!btn) return;
     const was = btn.textContent;
-    btn.textContent = '✓';
-    setTimeout(() => { btn.textContent = was; }, 1200);
+    btn.textContent = '✓ Copied';
+    setTimeout(() => { btn.textContent = was; }, 1400);
   };
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(item.headline).then(done).catch(() => {});
   else {
@@ -7962,80 +8174,209 @@ function crmCopyOpener(id) {
   }
 }
 
+/* ── Filtering ──
+   Chips rather than a row of text boxes: the questions actually asked of this
+   tab are "just my region", "just high school", "just football", and each of
+   those is one click. The free-text box stays for looking up a school. */
+function _crmNewsVisible() {
+  const f = _crmNewsFilter;
+  const q = String(f.q || '').trim().toLowerCase();
+  return (crmNews.items || []).filter(i => {
+    if (f.region && i.region !== f.region) return false;
+    if (f.level  && i.level  !== f.level)  return false;
+    if (f.sport  && i.sport  !== f.sport)  return false;
+    if (!q) return true;
+    return `${i.school} ${i.opponent} ${i.winner} ${i.loser} ${i.sport} ${i.level} ${i.region} ${i.headline}`
+      .toLowerCase().includes(q);
+  });
+}
+
+/** Clicking the chip that is already on turns it off — no "All" needed. */
+function _crmNewsSetFilter(key, value) {
+  _crmNewsFilter[key] = _crmNewsFilter[key] === value ? '' : value;
+  renderCrmNewsTab();
+}
+
+function _crmNewsSetView(v) { _crmNewsView = v; renderCrmNewsTab(); }
+
+function _crmNewsSetSearch(v) {
+  _crmNewsFilter.q = v;
+  const at = document.getElementById('nc-search')?.selectionStart;
+  renderCrmNewsTab();
+  const again = document.getElementById('nc-search');
+  if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch {} }
+}
+
+function _ncDayLabel(iso) {
+  const d = new Date(`${iso}T12:00:00`);
+  if (isNaN(d)) return iso;
+  const today = new Date(`${new Date().toISOString().slice(0, 10)}T12:00:00`);
+  const diff  = Math.round((today - d) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  if (diff > 1 && diff < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+/* ── The ticker ──
+   The one thing that makes a scoreboard feel live. Two copies of the same
+   strip scroll past as one loop; hovering stops it so a line can be read. */
+function _ncTicker(items) {
+  const runs = items.slice(0, 30).map(i => {
+    const icon = _NC_SPORT_ICON[i.sport] || '';
+    const line = (i.winner_score !== '' && i.loser_score !== '')
+      ? `<b>${esc(i.winner)} ${esc(i.winner_score)}</b>, ${esc(i.loser)} ${esc(i.loser_score)}`
+      : `<b>${esc(i.winner || i.school)}</b> v ${esc(i.loser || i.opponent)}`;
+    return `<span class="nc-tick"><span class="nc-tick-sport">${icon} ${esc((i.sport || '').toUpperCase())}</span>${line}</span>`;
+  }).join('');
+  if (!runs) return '';
+  return `<div class="nc-ticker">
+      <span class="nc-ticker-label">Scores</span>
+      <div class="nc-ticker-view"><div class="nc-ticker-track">${runs}${runs}</div></div>
+    </div>`;
+}
+
+function _ncCard(i) {
+  const icon     = _NC_SPORT_ICON[i.sport] || '';
+  const hasScore = i.winner_score !== '' && i.winner_score != null
+                && i.loser_score  !== '' && i.loser_score  != null;
+  const winner   = i.winner || i.school   || '';
+  const loser    = i.loser  || i.opponent || '';
+
+  const board = hasScore
+    ? `<div class="nc-row ${i.tie ? '' : 'nc-won'}">
+         <span class="nc-team">${esc(winner)}</span><span class="nc-score">${esc(i.winner_score)}</span>
+       </div>
+       <div class="nc-row">
+         <span class="nc-team">${esc(loser)}</span><span class="nc-score">${esc(i.loser_score)}</span>
+       </div>`
+    : `<div class="nc-row nc-won"><span class="nc-team">${esc(winner)}</span></div>
+       ${loser ? `<div class="nc-row"><span class="nc-team">${esc(loser)}</span></div>` : ''}`;
+
+  return `<div class="nc-card">
+      <div class="nc-card-top">
+        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <span class="nc-sport">${icon} ${esc(i.sport || 'Game')}</span><span class="nc-level">${esc(i.level || '')}</span>
+        </span>
+        <span class="nc-region">${esc(i.region || '')}</span>
+      </div>
+      ${board}
+      <div class="nc-final">${i.tie ? 'Final · Tie' : 'Final'} · ${esc(_ncDayLabel(i.date))}</div>
+      <div class="nc-opener">${esc(i.headline || '')}</div>
+      <div class="nc-actions">
+        <button class="nc-copy" data-crm-news-copy="${i.id}" onclick="crmCopyOpener('${i.id}')"
+          title="Copy this opener for an email">⧉ Copy opener</button>
+        ${i.source_url ? `<a class="nc-src" href="${esc(i.source_url)}" target="_blank" rel="noopener">source ↗</a>` : ''}
+      </div>
+    </div>`;
+}
+
 const _CRM_NEWS_COLS = [
-  { f: 'date',     label: 'Date',   w: 7,
-    cell: i => `<span style="font-size:0.78rem;white-space:nowrap">${esc(i.date || '')}</span>` },
-  { f: 'region',   label: 'Region', w: 8,
-    cell: i => `<span style="font-size:0.75rem;color:var(--muted);white-space:nowrap">${esc(i.region || '')}</span>` },
-  { f: 'level',    label: 'Level',  w: 7,
-    cell: i => `<span style="font-size:0.75rem;color:var(--muted);white-space:nowrap">${esc(i.level || '')}</span>` },
-  { f: 'sport',    label: 'Sport',  w: 7,
-    cell: i => `<span style="font-size:0.78rem">${esc(i.sport || '')}</span>` },
-  { f: 'school',   label: 'School', w: 12,
-    cell: i => `<span style="font-size:0.78rem">${esc(i.school || '')}</span>` },
-  { f: 'headline', label: 'Opener', w: 46,
-    cell: i => `<span style="font-size:0.8rem;color:var(--text)">${esc(i.headline || '')}</span>` },
-  { f: 'source_url', label: 'Source', w: 6, sortable: false, filter: false,
-    cell: i => i.source_url
-      ? `<a href="${esc(i.source_url)}" target="_blank" rel="noopener" style="color:var(--blue);font-size:0.78rem">source ↗</a>`
-      : '' },
+  { f: 'date',       label: 'Date',   w: 8 },
+  { f: 'region',     label: 'Region', w: 8 },
+  { f: 'level',      label: 'Level',  w: 8 },
+  { f: 'sport',      label: 'Sport',  w: 8 },
+  { f: 'winner',     label: 'Winner', w: 12, text: i => i.winner || i.school || '' },
+  { f: 'winner_score', label: 'W',    w: 4 },
+  { f: 'loser',      label: 'Loser',  w: 12, text: i => i.loser || i.opponent || '' },
+  { f: 'loser_score', label: 'L',     w: 4 },
+  { f: 'headline',   label: 'Opener', w: 31 },
+  { f: 'source_url', label: 'Source', w: 5, sortable: false, cell: i => i.source_url
+      ? `<a href="${esc(i.source_url)}" target="_blank" rel="noopener" style="color:var(--blue);font-size:0.78rem">↗</a>` : '' },
 ];
 
 function renderCrmNewsTab() {
   const root = document.getElementById('crm-news-root');
   if (!root) return;
 
-  const visible   = _crmApplyFilter(crmNews.items || [], _crmNewsFilter);
-  const anyFilter = Object.values(_crmNewsFilter).some(v => v);
-  const pulled    = crmNews.pulled_at ? new Date(crmNews.pulled_at) : null;
+  const all     = crmNews.items || [];
+  const visible = _crmNewsVisible();
+  const pulled  = crmNews.pulled_at ? new Date(crmNews.pulled_at) : null;
+  const f       = _crmNewsFilter;
 
-  const actions = i => `<td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
-      <button data-crm-news-copy="${i.id}" onclick="crmCopyOpener('${i.id}')" title="Copy this opener"
-        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);
-               border-radius:3px;font-size:0.7rem;padding:0.1rem 0.35rem;cursor:pointer">⧉</button>
-    </td>`;
+  const sports = [...new Set(all.map(i => i.sport).filter(Boolean))].sort();
+  const chip   = (key, value, label) =>
+    `<button class="nc-filter ${f[key] === value ? 'on' : ''}" onclick="_crmNewsSetFilter('${key}','${esc(value)}')">${esc(label)}</button>`;
+
+  const progress = _crmNewsProgress.length
+    ? `<div class="nc-progress">${_crmNewsProgress.map(p =>
+        `<span class="nc-dot ${p.state === 'run' ? 'nc-run' : p.state === 'ok' ? 'nc-ok' : p.state === 'bad' ? 'nc-bad' : ''}"></span>
+         <span style="${p.state === 'run' ? 'color:var(--text)' : ''}">${esc(p.label)}${p.state === 'ok' && p.found ? ` +${p.found}` : ''}</span>`).join('')}</div>`
+    : '';
+
+  const viewBtn = (v, label) => `<button class="nc-filter ${_crmNewsView === v ? 'on' : ''}"
+    onclick="_crmNewsSetView('${v}')">${label}</button>`;
+
+  /* ── grouped by day, newest first ── */
+  const byDay = new Map();
+  for (const i of visible) {
+    const d = i.date || '';
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d).push(i);
+  }
+  const days = [...byDay.keys()].sort((a, b) => b.localeCompare(a));
+
+  const feed = days.map(d =>
+    `<div class="nc-daybar">${esc(_ncDayLabel(d))}<span style="color:var(--border);font-weight:400">${byDay.get(d).length}</span></div>
+     <div class="nc-grid">${byDay.get(d).map(_ncCard).join('')}</div>`).join('');
+
+  const emptyMsg = _crmNewsBusy
+    ? 'Searching…'
+    : all.length
+      ? 'Nothing matches those filters.'
+      : 'Nothing pulled yet — press Refresh, or wait for tomorrow morning’s run.';
 
   root.innerHTML = `
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:0.75rem;gap:1rem;flex-wrap:wrap">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:0.85rem">
       <div style="min-width:0">
-        <div style="font-size:0.95rem;font-weight:600;color:var(--text);margin-bottom:0.15rem">News Center</div>
-        <div style="font-size:0.78rem;color:var(--muted);max-width:60ch">
-          Local high school and college results from Western PA, Eastern OH and Western NY — one line each, for opening an outreach email. Pulled every morning.
+        <div style="display:flex;align-items:center;gap:0.55rem">
+          <span style="width:4px;height:19px;background:#cc0000;border-radius:2px;display:inline-block"></span>
+          <span style="font-size:1.05rem;font-weight:800;letter-spacing:0.02em;color:var(--text)">NEWS CENTER</span>
         </div>
-        <div style="font-size:0.75rem;color:var(--muted);margin-top:0.35rem">
-          ${visible.length !== (crmNews.items || []).length ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${(crmNews.items || []).length} item${(crmNews.items || []).length !== 1 ? 's' : ''}
-          ${pulled ? ` · last pulled ${pulled.toLocaleString()}` : ' · never pulled'}
-          ${anyFilter ? `<button onclick="_crmClearFilter('news')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
+        <div style="font-size:0.76rem;color:var(--muted);margin-top:0.3rem;max-width:64ch">
+          High school and college results from Western PA, Eastern OH and Western NY — pulled every morning, one line each for opening an outreach email.
         </div>
-        ${_crmNewsNote ? `<div style="font-size:0.75rem;color:${/failed/i.test(_crmNewsNote) ? '#f87171' : 'var(--muted)'};margin-top:0.3rem">${esc(_crmNewsNote)}</div>` : ''}
+        <div style="font-size:0.73rem;color:var(--muted);margin-top:0.3rem">
+          <strong style="color:var(--text)">${visible.length}</strong>${visible.length !== all.length ? ` of ${all.length}` : ''} result${all.length !== 1 ? 's' : ''}
+          ${pulled ? ` · updated ${pulled.toLocaleString()}` : ' · never pulled'}
+        </div>
+        ${_crmNewsNote ? `<div style="font-size:0.74rem;color:${/fail|expired|limit|access|long/i.test(_crmNewsNote) ? '#f87171' : 'var(--muted)'};margin-top:0.3rem;max-width:70ch">${esc(_crmNewsNote)}</div>` : ''}
       </div>
       <div style="display:flex;gap:0.5rem;align-items:center;flex-shrink:0">
+        ${progress}
         ${_crmToolButtons(
-          `_crmExportCsv('crm-news', _CRM_NEWS_COLS, _crmApplyFilter(crmNews.items||[], _crmNewsFilter), 'news')`,
-          `_crmPrintReport('News Center','Outreach openers', _CRM_NEWS_COLS, _crmApplyFilter(crmNews.items||[], _crmNewsFilter), 'news')`)}
+          `_crmExportCsv('crm-news', _CRM_NEWS_COLS, _crmNewsVisible(), 'news')`,
+          `_crmPrintReport('News Center','Outreach openers', _CRM_NEWS_COLS, _crmNewsVisible(), 'news')`)}
         <button class="btn btn-green" onclick="refreshCrmNews(true)" ${_crmNewsBusy ? 'disabled' : ''}
           style="${_crmNewsBusy ? 'opacity:0.6;cursor:wait' : ''}">${_crmNewsBusy ? 'Pulling…' : '↻ Refresh'}</button>
       </div>
     </div>
-    ${_crmTable({
-      table: 'news', cols: _CRM_NEWS_COLS, rows: visible,
-      filter: _crmNewsFilter, filterAttr: 'crm-nf',
-      actions, actionCols: [3], minWidth: 1000,
-      empty: _crmNewsBusy
-        ? 'Searching for this week’s results…'
-        : 'Nothing pulled yet — press Refresh, or wait for tomorrow morning’s run.',
-    })}`;
-}
 
-document.getElementById('crm-news-root').addEventListener('input', e => {
-  const el = e.target;
-  if (el.dataset.crmNf == null) return;
-  _crmNewsFilter[el.dataset.crmNf] = el.value;
-  const at = el.selectionStart;
-  renderCrmNewsTab();
-  const again = document.querySelector(`#crm-news-root [data-crm-nf="${el.dataset.crmNf}"]`);
-  if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch {} }
-});
+    ${_ncTicker(all)}
+
+    <div class="nc-filters">
+      ${_NC_REGIONS.map(r => chip('region', r.label, r.label)).join('')}
+      <span class="nc-filter-sep"></span>
+      ${chip('level', 'High School', 'High School')}${chip('level', 'College', 'College')}
+      ${sports.length ? `<span class="nc-filter-sep"></span>${sports.map(sp =>
+        chip('sport', sp, `${_NC_SPORT_ICON[sp] || ''} ${sp}`.trim())).join('')}` : ''}
+      <span style="flex:1"></span>
+      <input id="nc-search" type="text" value="${esc(f.q || '')}" placeholder="Find a school…"
+        oninput="_crmNewsSetSearch(this.value)"
+        style="background:var(--bg);border:1px solid ${f.q ? '#cc0000' : 'var(--border)'};color:var(--text);
+               border-radius:13px;padding:0.2rem 0.7rem;font-size:0.73rem;outline:none;width:170px">
+      <span class="nc-filter-sep"></span>
+      ${viewBtn('feed', 'Feed')}${viewBtn('table', 'Table')}
+    </div>
+
+    ${visible.length
+      ? (_crmNewsView === 'feed'
+          ? feed
+          : _crmTable({ table: 'news', cols: _CRM_NEWS_COLS, rows: visible, minWidth: 1100, empty: emptyMsg }))
+      : `<div style="padding:3rem;text-align:center;color:var(--muted);font-size:0.85rem;
+                     border:1px dashed var(--border);border-radius:7px">${esc(emptyMsg)}</div>`}
+  `;
+}
 
 /* ═══════════════════════════════════════════
    CRM — push into Opportunities
@@ -14331,7 +14672,7 @@ function _crmClearFilter(type) {
   if (type === 'people')        { _crmPeopleFilter  = {}; renderCrmPeopleTab(); }
   else if (type === 'companies'){ _crmCompanyFilter = {}; renderCrmCompaniesTab(); }
   else if (type === 'fields')   { _crmFieldFilter   = {}; renderCrmCompaniesTab(); }
-  else if (type === 'news')     { _crmNewsFilter    = {}; renderCrmNewsTab(); }
+  else if (type === 'news')     { _crmNewsFilter    = { region: '', level: '', sport: '', q: '' }; renderCrmNewsTab(); }
   else                          { _crmOppFilter     = {}; renderCrmOpportunitiesTab(); }
 }
 

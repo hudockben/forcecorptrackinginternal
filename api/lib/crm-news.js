@@ -6,10 +6,11 @@
  * The premise is narrow and worth stating, because it decides every choice
  * below. A rep emailing a school's athletic director does better opening with
  * "saw the Fort Cherry game Friday" than with "checking in about your field".
- * So what this produces is not a news feed. It is a list of one-line, factual,
- * recent, LOCAL results a person can paste into a first sentence.
+ * So what this produces is not a news feed. It is a list of recent, LOCAL,
+ * checkable results a person can paste into a first sentence — and, since the
+ * hub reads as a scoreboard, the score broken out well enough to draw one.
  *
- * Three things follow from that.
+ * Four things follow from that.
  *
  * It is scoped to the sales territory, not to sport. Western PA, Eastern OH
  * and Western NY are where the fields we sell are. A national headline is
@@ -20,6 +21,13 @@
  * opener with the wrong score is worse than no opener, because it tells the
  * reader you were not actually watching.
  *
+ * It pulls ONE REGION per call. A web search wide enough to cover three
+ * states takes longer than the 60 seconds a serverless function gets, and
+ * the whole request dies at the gateway with nothing to show — which is
+ * exactly what it did. One region finishes comfortably inside the budget, so
+ * the caller makes three small calls that each either land or fail on their
+ * own instead of one big one that fails as a whole.
+ *
  * It accumulates. Each run merges into what is already stored rather than
  * replacing it, keyed on the headline, so a Friday game found on Saturday is
  * still there on Tuesday when someone gets round to the email. Old items age
@@ -27,26 +35,33 @@
  * silently empty the hub.
  */
 
-// The sales territory. Sent to the model verbatim — it is the whole scope of
-// the search, and a fourth region added here is the only change needed to
-// widen it.
+/**
+ * The sales territory, one entry per call. `detail` is what the model
+ * searches; `label` is what a row is tagged with and what the tab filters on,
+ * so the two must not drift — hence one list rather than two.
+ */
 const REGIONS = [
-  'Western Pennsylvania (Pittsburgh metro, Washington, Westmoreland, Beaver, Butler, Indiana, Fayette, Greene, Armstrong, Somerset, Cambria, Lawrence and Mercer counties)',
-  'Eastern Ohio (Youngstown, Warren, Steubenville, East Liverpool, Canton and the Mahoning Valley)',
-  'Western New York (Buffalo, Jamestown, Olean, Niagara Falls and the Southern Tier)',
+  { key: 'wpa', label: 'Western PA',
+    detail: 'Western Pennsylvania — the Pittsburgh metro plus Washington, Westmoreland, Beaver, Butler, Indiana, Fayette, Greene, Armstrong, Somerset, Cambria, Lawrence and Mercer counties (WPIAL and PIAA District 6/7/10 schools)' },
+  { key: 'eoh', label: 'Eastern OH',
+    detail: 'Eastern Ohio — Youngstown, Warren, Steubenville, East Liverpool, Canton and the Mahoning Valley (OHSAA District 5/7 schools)' },
+  { key: 'wny', label: 'Western NY',
+    detail: 'Western New York — Buffalo, Jamestown, Olean, Niagara Falls and the Southern Tier (Section VI schools)' },
 ];
+
+const REGION_LABELS = REGIONS.map(r => r.label);
 
 // How far back a pull looks. A fortnight covers a missed week of crons and
 // still reads as "recent" in an email; beyond that an opener sounds stale.
 const LOOKBACK_DAYS = 14;
 
 // Items kept in the hub. Past this, the tab is a scroll rather than a list.
-const MAX_ITEMS   = 120;
+const MAX_ITEMS   = 150;
 const RETAIN_DAYS = 45;
 
-// Searches per pull. Each one costs money and the marginal result after a
-// dozen is another way of phrasing the same Friday scoreboard.
-const MAX_SEARCHES = 12;
+// Searches per region. Five covers a weekend scoreboard; the marginal result
+// after that is another way of phrasing the same Friday night.
+const MAX_SEARCHES = 5;
 
 const MODEL = 'claude-opus-5';
 
@@ -55,42 +70,51 @@ const MODEL = 'claude-opus-5';
  * own result filtering; the older `_20250305` basic variant is the fallback
  * for API surfaces that do not know this one yet (see pullNews).
  */
-const SEARCH_TOOL      = { type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES };
+const SEARCH_TOOL       = { type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES };
 const SEARCH_TOOL_BASIC = { type: 'web_search_20250305', name: 'web_search', max_uses: MAX_SEARCHES };
 
 function isoDay(d) { return new Date(d).toISOString().slice(0, 10); }
 
-function buildPrompt(today, lookbackDays) {
+function regionFor(key) {
+  return REGIONS.find(r => r.key === key || r.label === key) || null;
+}
+
+function buildPrompt(region, today, lookbackDays) {
   const since = new Date(new Date(today).getTime() - lookbackDays * 86400000);
-  return `Search the web for recent HIGH SCHOOL and COLLEGE sports results from these regions only:
+  return `Search the web for recent HIGH SCHOOL and COLLEGE sports results from this region only:
 
-${REGIONS.map(r => `  - ${r}`).join('\n')}
+  ${region.detail}
 
-Find games played between ${isoDay(since)} and ${isoDay(today)}. Cover football, soccer, baseball, softball, field hockey, lacrosse and track — the sports played on a field. Prefer games at schools big enough to have their own athletic field.
+Find games played between ${isoDay(since)} and ${isoDay(today)}. Cover football, soccer, baseball, softball, field hockey, lacrosse and track — the sports played on a field. Prefer schools big enough to have their own athletic field.
 
-For each game, write ONE plain sentence a salesperson could open an email with. Model it exactly on this: "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25."
+Return up to 20 games. For each one, write ONE plain sentence a salesperson could open an email with, modelled exactly on this: "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25." — and also break the result out into its parts, so it can be shown as a scoreboard.
 
 Rules that matter more than coverage:
 - Only include a game you actually found a source for. If you cannot source the score, leave the game out. A wrong score in an outreach email is worse than no email.
-- Use the school's real name as local people write it.
+- Use each school's real name as local people write it.
 - No editorialising, no adjectives, no "thrilling" or "dominant". Just what happened.
-- Do not invent a game to round out the list. Twelve real results beat thirty guesses.
+- Do not invent a game to round out the list. Ten real results beat thirty guesses.
 
 Return ONLY a JSON object, no prose before or after, in exactly this shape:
 {
   "items": [
     {
       "date": "YYYY-MM-DD",
-      "region": "Western PA" | "Eastern OH" | "Western NY",
       "level": "High School" | "College",
       "sport": "Football",
+      "winner": "Indiana",
+      "winner_score": "30",
+      "loser": "Fort Cherry",
+      "loser_score": "25",
       "school": "Indiana High School",
       "opponent": "Fort Cherry",
       "headline": "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25.",
       "source_url": "https://..."
     }
   ]
-}`;
+}
+
+If a game was a draw, put either side in "winner" and set "tie" to true.`;
 }
 
 /**
@@ -146,8 +170,13 @@ function stableId(item) {
   return 'news_' + (h >>> 0).toString(36);
 }
 
+const scoreOf = v => {
+  const n = parseInt(String(v == null ? '' : v).replace(/[^\d-]/g, ''), 10);
+  return Number.isFinite(n) ? String(n) : '';
+};
+
 /** Drops anything unusable and normalises the rest. Unsourced items go. */
-function cleanItems(raw, today) {
+function cleanItems(raw, today, regionLabel) {
   const out  = [];
   const seen = new Set();
   for (const r of Array.isArray(raw) ? raw : []) {
@@ -157,15 +186,24 @@ function cleanItems(raw, today) {
     // The two things an opener cannot be written without.
     if (!headline || !/^https?:\/\//i.test(source)) continue;
 
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(r.date || '')) ? r.date : isoDay(today);
+    const date   = /^\d{4}-\d{2}-\d{2}$/.test(String(r.date || '')) ? r.date : isoDay(today);
+    // The region comes from which call this was, not from the model — it is
+    // the one field we already know for certain, and a typo in it would break
+    // the tab's filters.
+    const region = regionLabel || String(r.region || '').trim() || REGION_LABELS[0];
+
     const item = {
-      id:       '',
-      date,
-      region:   String(r.region   || '').trim() || 'Western PA',
-      level:    String(r.level    || '').trim() || 'High School',
-      sport:    String(r.sport    || '').trim(),
-      school:   String(r.school   || '').trim(),
-      opponent: String(r.opponent || '').trim(),
+      id:     '',
+      date, region,
+      level:  String(r.level || '').trim() || 'High School',
+      sport:  String(r.sport || '').trim(),
+      winner: String(r.winner || r.school   || '').trim(),
+      loser:  String(r.loser  || r.opponent || '').trim(),
+      winner_score: scoreOf(r.winner_score),
+      loser_score:  scoreOf(r.loser_score),
+      tie:    !!r.tie,
+      school:   String(r.school   || r.winner || '').trim(),
+      opponent: String(r.opponent || r.loser  || '').trim(),
       headline,
       source_url: source,
     };
@@ -178,17 +216,18 @@ function cleanItems(raw, today) {
 }
 
 /**
- * Runs one pull. Returns { items, searchError }.
+ * Runs one pull, for ONE region. Returns { items, searchError }.
  *
  * Server tools can pause a turn mid-search (stop_reason 'pause_turn'); the
  * turn is resumed by handing the assistant content straight back, which is why
  * this loops rather than making one call.
  */
 async function pullNews(client, opts = {}) {
-  const today        = opts.today || new Date();
+  const region = regionFor(opts.region) || REGIONS[0];
+  const today  = opts.today || new Date();
   const lookbackDays = opts.lookbackDays || LOOKBACK_DAYS;
 
-  const messages = [{ role: 'user', content: buildPrompt(today, lookbackDays) }];
+  const messages = [{ role: 'user', content: buildPrompt(region, today, lookbackDays) }];
   let tools = [SEARCH_TOOL];
   let message;
 
@@ -196,7 +235,7 @@ async function pullNews(client, opts = {}) {
     try {
       message = await client.messages.create({
         model:      MODEL,
-        max_tokens: 16000,
+        max_tokens: 8000,
         tools,
         messages,
       });
@@ -218,9 +257,9 @@ async function pullNews(client, opts = {}) {
   const failure = searchFailure(message);
   const text    = textOf(message);
   if (!text.trim()) {
-    return { items: [], searchError: failure || 'The model returned no results.' };
+    return { region: region.label, items: [], searchError: failure || 'The model returned no results.' };
   }
-  return { items: cleanItems(parseItems(text), today), searchError: failure };
+  return { region: region.label, items: cleanItems(parseItems(text), today, region.label), searchError: failure };
 }
 
 /**
@@ -251,7 +290,7 @@ function mergeNews(existing, fresh, opts = {}) {
 }
 
 module.exports = {
-  REGIONS, LOOKBACK_DAYS, MAX_ITEMS, RETAIN_DAYS, MAX_SEARCHES, MODEL,
-  buildPrompt, parseItems, cleanItems, mergeNews, pullNews,
+  REGIONS, REGION_LABELS, LOOKBACK_DAYS, MAX_ITEMS, RETAIN_DAYS, MAX_SEARCHES, MODEL,
+  regionFor, buildPrompt, parseItems, cleanItems, mergeNews, pullNews,
   searchFailure, textOf, stableId,
 };

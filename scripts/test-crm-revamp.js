@@ -229,6 +229,60 @@ console.log('\nNews Center merge');
     news.searchFailure({ content: [{ type: 'web_search_tool_result', content: [{ title: 'x' }] }] }) === null);
 }
 
+/* ── 4b. One region per call ─────────────────────────────────────────────── */
+console.log('\nPer-region pulls');
+{
+  const news = require(path.join(ROOT, 'api', 'lib', 'crm-news.js'));
+  const cron = require(path.join(ROOT, 'api', 'cron', 'crm-news.js'));
+  const today = new Date('2026-09-22T12:00:00Z');
+
+  assert('three regions, keyed', news.REGIONS.map(r => r.key).join(',') === 'wpa,eoh,wny');
+  assert('every region has a label and a detail',
+    news.REGIONS.every(r => r.label && r.detail && r.detail.length > 20));
+  assert('a region resolves by key',   news.regionFor('eoh').label === 'Eastern OH');
+  assert('a region resolves by label', news.regionFor('Western NY').key === 'wny');
+  assert('an unknown region resolves to nothing', news.regionFor('texas') === null);
+
+  // One region per prompt is the whole point — a prompt naming all three is
+  // the request that timed out.
+  const prompt = news.buildPrompt(news.regionFor('wpa'), today, 14);
+  assert('the prompt names its own region',   prompt.includes('Western Pennsylvania'));
+  assert('the prompt names no other region',  !prompt.includes('Eastern Ohio') && !prompt.includes('Western New York'));
+  assert('the prompt asks for the score parts', prompt.includes('winner_score') && prompt.includes('loser_score'));
+  assert('five searches per region', news.MAX_SEARCHES === 5);
+
+  // The region tag comes from which call this was, not from the model: it is
+  // the one field already known for certain, and the tab filters on it.
+  const tagged = news.cleanItems([{
+    date: '2026-09-19', region: 'Nowhere', sport: 'Football',
+    winner: 'Indiana', winner_score: '30', loser: 'Fort Cherry', loser_score: '25',
+    headline: 'Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25.',
+    source_url: 'https://example.com/g',
+  }], today, 'Eastern OH');
+  assert('the caller\'s region wins over the model\'s', tagged[0].region === 'Eastern OH');
+  assert('the winner is kept',       tagged[0].winner === 'Indiana');
+  assert('the score is kept',        tagged[0].winner_score === '30' && tagged[0].loser_score === '25');
+  assert('school falls back to winner', tagged[0].school === 'Indiana');
+
+  // Scores arrive as whatever the model wrote them as.
+  const messy = news.cleanItems([{
+    date: '2026-09-19', winner: 'A', winner_score: ' 14 ', loser: 'B', loser_score: 'seven',
+    headline: 'A beat B.', source_url: 'https://example.com/m',
+  }], today, 'Western PA');
+  assert('a padded score is cleaned',   messy[0].winner_score === '14');
+  assert('an unparseable score is dropped, not guessed', messy[0].loser_score === '');
+
+  // The cron starts on a different region each day, so the one cut off by the
+  // clock yesterday goes first today.
+  const d1 = cron.dayIndex(new Date('2026-09-22T06:00:00Z'));
+  const d2 = cron.dayIndex(new Date('2026-09-23T06:00:00Z'));
+  assert('the day index advances by one a day', d2 === d1 + 1);
+  const starts = new Set([0, 1, 2].map(n =>
+    cron.dayIndex(new Date(Date.UTC(2026, 8, 22 + n))) % news.REGIONS.length));
+  assert('three consecutive days start on three different regions', starts.size === 3);
+  assert('the cron stops before the platform does', cron.TIME_BUDGET_MS < 60000);
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {
@@ -258,6 +312,19 @@ console.log('\nTab wiring and columns');
   for (const f of ['lead_contact', 'personal_interest', 'turf_product']) {
     assert(`CSV upload map carries ${f}`, (uploads.match(new RegExp(`'${f}'`, 'g')) || []).length === 3);
   }
+
+  // The News Center asks for one region at a time; asking for all three in
+  // one request is what returned a 504.
+  assert('the tab sends a region', SRC.includes("JSON.stringify({ region, force: !!force })"));
+  assert('the tab walks all three regions', /_NC_REGIONS\s*=\s*\[[\s\S]{0,200}wpa[\s\S]{0,200}eoh[\s\S]{0,200}wny/.test(SRC));
+  assert('the tab gives up before hanging forever', SRC.includes('new AbortController()'));
+  assert('a gateway timeout is said in words', SRC.includes("'the search ran past the time limit'"));
+  assert('the feed has a scoreboard card', SRC.includes('function _ncCard('));
+  assert('the feed has a ticker',          SRC.includes('function _ncTicker('));
+  assert('the ticker respects reduced motion', SRC.includes('prefers-reduced-motion'));
+  assert('the table view is still reachable',
+    SRC.includes("viewBtn('table'") && SRC.includes("_crmNewsView === 'feed'"));
+  assert('the old filter-row handler is gone', !SRC.includes('data-crm-nf'));
 
   for (const key of ['fct_crm_fields', 'fct_crm_news', 'fct_crm_status_log']) {
     assert(`${key} is loaded on boot`, SRC.includes(`apiGet('${key}')`));

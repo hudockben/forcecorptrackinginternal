@@ -1,17 +1,19 @@
 'use strict';
 /**
- * POST /api/ai/crm-news — pull the News Center hub on demand.
+ * POST /api/ai/crm-news — pull one region of the News Center hub on demand.
  *
  * The cron (api/cron/crm-news.js) is what keeps the hub current. This exists
  * for the case the cron cannot serve: someone is writing outreach on Monday
  * morning about Friday's games and does not want to wait for tomorrow's run.
  *
+ * One call, one region. Searching three states in a single request took
+ * longer than the 60 seconds a serverless function gets and died at the
+ * gateway as a 504 with nothing written — so the tab asks for Western PA,
+ * then Eastern OH, then Western NY, and shows each one as it lands. A region
+ * that fails now fails alone.
+ *
  * Both paths share api/lib/crm-news.js and both merge rather than replace, so
  * pressing Refresh can only add to or correct the hub — never empty it.
- *
- * Auth mirrors the other api/ai endpoints: a valid token, plus the turf
- * division access the blob itself requires, re-read from the request rather
- * than trusted from the token's age.
  */
 const Anthropic = require('@anthropic-ai/sdk');
 const { neon }  = require('@neondatabase/serverless');
@@ -20,9 +22,21 @@ const news = require('../lib/crm-news');
 
 const NEWS_KEY = 'fct_crm_news';
 
-// One pull is a dozen web searches. A refresh button that can be leaned on is
-// a bill, so a pull already this recent returns the stored hub untouched.
-const MIN_REFRESH_MS = 5 * 60 * 1000;
+// One pull is five web searches. A refresh button that can be leaned on is a
+// bill, so a region pulled this recently returns the stored hub untouched.
+const MIN_REFRESH_MS = 3 * 60 * 1000;
+
+async function readHub(sql, scopedKey) {
+  try {
+    const rows = await sql`SELECT value FROM app_data WHERE key = ${scopedKey}`;
+    if (!rows.length) return null;
+    const v = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
+    if (v && Array.isArray(v.items)) return v;
+  } catch (err) {
+    console.error('[ai/crm-news] read failed:', err.message);
+  }
+  return null;
+}
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -43,43 +57,44 @@ module.exports = async (req, res) => {
     return res.status(503).json({ error: 'News Center is not configured — DATABASE_URL is missing.' });
   }
 
-  const sql       = neon(process.env.DATABASE_URL);
-  const scopedKey = `${payload.companyCode}:${NEWS_KEY}`;
-
-  let stored = { pulled_at: null, items: [] };
-  try {
-    const rows = await sql`SELECT value FROM app_data WHERE key = ${scopedKey}`;
-    if (rows.length) {
-      const v = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
-      if (v && Array.isArray(v.items)) stored = v;
-    }
-  } catch (err) {
-    console.error('[ai/crm-news] read failed:', err.message);
+  const body   = req.body || {};
+  const region = news.regionFor(body.region);
+  if (!region) {
+    return res.status(400).json({ error: `region must be one of: ${news.REGIONS.map(r => r.key).join(', ')}` });
   }
 
-  const force = !!(req.body && req.body.force);
-  if (!force && stored.pulled_at && Date.now() - Date.parse(stored.pulled_at) < MIN_REFRESH_MS) {
-    return res.json({ ...stored, skipped: 'A pull ran in the last few minutes — showing that one.' });
+  const sql       = neon(process.env.DATABASE_URL);
+  const scopedKey = `${payload.companyCode}:${NEWS_KEY}`;
+  const stored    = (await readHub(sql, scopedKey)) || { pulled_at: null, regions: {}, items: [] };
+
+  const lastForRegion = (stored.regions || {})[region.key];
+  if (!body.force && lastForRegion && Date.now() - Date.parse(lastForRegion) < MIN_REFRESH_MS) {
+    return res.json({ ...stored, region: region.label, found: 0, skipped: `${region.label} was pulled a moment ago.` });
   }
 
   try {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const { items, searchError } = await news.pullNews(client, { today: new Date() });
+    const { items, searchError } = await news.pullNews(client, { region: region.key, today: new Date() });
 
     // A pull that found nothing keeps the stored hub and says so, rather than
     // writing an empty list over a week of usable openers.
     if (!items.length) {
       return res.json({
         ...stored,
-        found: 0,
+        region: region.label,
+        found:  0,
         warning: searchError
-          ? `Search did not complete (${searchError}) — showing the stored hub.`
-          : 'No new results found — showing the stored hub.',
+          ? `${region.label}: search did not complete (${searchError}).`
+          : `${region.label}: no new results found.`,
       });
     }
 
-    const merged = news.mergeNews(stored.items, items, { today: new Date() });
-    const value  = { pulled_at: new Date().toISOString(), items: merged };
+    const now   = new Date().toISOString();
+    const value = {
+      pulled_at: now,
+      regions:   { ...(stored.regions || {}), [region.key]: now },
+      items:     news.mergeNews(stored.items, items, { today: new Date() }),
+    };
 
     await sql`
       INSERT INTO app_data (key, value, updated_at)
@@ -88,10 +103,10 @@ module.exports = async (req, res) => {
       DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
     `;
 
-    return res.json({ ...value, found: items.length });
+    return res.json({ ...value, region: region.label, found: items.length });
 
   } catch (err) {
-    console.error('[ai/crm-news] pull failed:', err.message);
-    return res.status(500).json({ error: 'News pull failed', detail: err.message });
+    console.error('[ai/crm-news] pull failed:', region.key, err.message);
+    return res.status(500).json({ error: `${region.label} pull failed`, detail: err.message });
   }
 };
