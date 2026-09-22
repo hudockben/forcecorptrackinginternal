@@ -3423,6 +3423,23 @@
 </div>
 
 <!-- ══════════════ MANAGE LISTS MODAL ══════════════ -->
+<!-- CRM pick lists, opened from the ⚙ Lists button on any CRM tab -->
+<div class="modal-overlay" id="crm-lists-overlay" onclick="if(event.target===this)closeCrmLists()">
+  <div class="modal" style="width:620px">
+    <div class="modal-header">
+      <h2>CRM Lists</h2>
+      <button class="modal-close" onclick="closeCrmLists()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-tabs" id="crm-lists-tabs"></div>
+      <div id="crm-lists-body"></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;padding:0.85rem 1.25rem;border-top:1px solid var(--border)">
+      <button class="btn btn-green" onclick="closeCrmLists()">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- Log-a-contact modal, opened from a People or Opportunities row -->
 <div class="modal-overlay" id="crm-touch-overlay" onclick="if(event.target===this)closeCrmTouch()">
   <div class="modal" style="width:560px">
@@ -6926,7 +6943,7 @@ function _crmLinkInp(p, field, ph = '', isEmail = false) {
    new field is one entry here rather than five edits that must agree. */
 const _CRM_PEOPLE_COLS = [
   { f: 'tag',               label: 'Tag',               w: 5,   cell: p => _crmTagSel(p) },
-  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: p => _crmInp(p, 'lead_contact',      'Who knows them') },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: p => _crmListSel(p, 'lead_contact', _CRM_EMPLOYEE_LIST, 'who') },
   { f: 'name',              label: 'Name',              w: 6,   cell: p => _crmInp(p, 'name',              'Name') },
   { f: 'company',           label: 'Company',           w: 6.5, cell: p => _crmInp(p, 'company',           'Company') },
   // Not editable — it is the log talking. Sorts and exports as a day count so
@@ -6936,7 +6953,7 @@ const _CRM_PEOPLE_COLS = [
     text: p => _crmTouchText(_crmTouchForPerson(p)) },
   { f: 'work_email',        label: 'Work Email',        w: 6.5, cell: p => _crmLinkInp(p, 'work_email',    'email@…', true) },
   { f: 'title',             label: 'Title',             w: 5,   cell: p => _crmInp(p, 'title',             'Title') },
-  { f: 'contact_type',      label: 'Contact Type',      w: 5,   cell: p => _crmInp(p, 'contact_type',      'Type') },
+  { f: 'contact_type',      label: 'Contact Type',      w: 5,   cell: p => _crmListSel(p, 'contact_type', 'crm_contact_types', 'type') },
   { f: 'work_phone',        label: 'Work Phone',        w: 6,   cell: p => _crmInp(p, 'work_phone',        'Phone') },
   { f: 'work_website',      label: 'Work Website',      w: 5,   cell: p => _crmLinkInp(p, 'work_website',  'https://') },
   { f: 'address',           label: 'Address',           w: 5,   cell: p => _crmInp(p, 'address',           'Address') },
@@ -6945,7 +6962,7 @@ const _CRM_PEOPLE_COLS = [
   { f: 'zip',               label: 'Zip',               w: 3.5, cell: p => _crmInp(p, 'zip',               'Zip') },
   { f: 'linkedin',          label: 'LinkedIn',          w: 4,   cell: p => _crmLinkInp(p, 'linkedin',      'LinkedIn URL') },
   { f: 'personal_interest', label: 'Personal Interest', w: 5.5, cell: p => _crmInp(p, 'personal_interest', 'Golf, Steelers…') },
-  { f: 'turf_product',      label: 'Turf Product',      w: 5.5, cell: p => _crmInp(p, 'turf_product',      'Product') },
+  { f: 'turf_product',      label: 'Turf Product',      w: 5.5, cell: p => _crmListSel(p, 'turf_product', 'crm_turf_products', 'product') },
   { f: 'description',       label: 'Description',       w: 5,   cell: p => _crmInp(p, 'description',       'Description') },
 ];
 
@@ -6978,6 +6995,7 @@ function renderCrmPeopleTab() {
         ${_crmToolButtons(
           `_crmExportCsv('crm-people', _CRM_PEOPLE_COLS, _crmApplyFilter(crmPeople, _crmPeopleFilter), 'people')`,
           `_crmPrintReport('People','CRM contacts', _CRM_PEOPLE_COLS, _crmApplyFilter(crmPeople, _crmPeopleFilter), 'people')`)}
+        ${_crmListsBtn('crm_contact_types')}
         <button class="btn" onclick="_crmTriggerUpload('people')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
         <button class="btn btn-green" onclick="addCrmPerson()">+ Add Person</button>
       </div>
@@ -7028,9 +7046,9 @@ function deleteCrmCompany(id) {
 
 const _CRM_COMPANY_COLS = [
   { f: 'tag',               label: 'Tag',               w: 5,   cell: c => _crmTagSel(c) },
-  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: c => _crmInp(c, 'lead_contact',      'Who knows them') },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: c => _crmListSel(c, 'lead_contact', _CRM_EMPLOYEE_LIST, 'who') },
   { f: 'company_name',      label: 'Company Name',      w: 10,  cell: c => _crmInp(c, 'company_name',      'Company Name') },
-  { f: 'contact_type',      label: 'Contact Type',      w: 5.5, cell: c => _crmInp(c, 'contact_type',      'Type') },
+  { f: 'contact_type',      label: 'Contact Type',      w: 5.5, cell: c => _crmListSel(c, 'contact_type', 'crm_org_types', 'type') },
   { f: 'work_phone',        label: 'Work Phone',        w: 6,   cell: c => _crmInp(c, 'work_phone',        'Phone') },
   { f: 'email_domain',      label: 'Email Domain',      w: 7,   cell: c => _crmInp(c, 'email_domain',      'company.com') },
   { f: 'work_website',      label: 'Work Website',      w: 6.5, cell: c => _crmLinkInp(c, 'work_website',  'https://') },
@@ -7038,10 +7056,10 @@ const _CRM_COMPANY_COLS = [
   { f: 'city',              label: 'City',              w: 5,   cell: c => _crmInp(c, 'city',              'City') },
   { f: 'state',             label: 'State',             w: 3.5, cell: c => _crmStateSel(c) },
   { f: 'zip',               label: 'Zip',               w: 3.5, cell: c => _crmInp(c, 'zip',               'Zip') },
-  { f: 'field_type',        label: 'Field Type',        w: 5.5, cell: c => _crmInp(c, 'field_type',        'Field Type') },
+  { f: 'field_type',        label: 'Field Type',        w: 5.5, cell: c => _crmListSel(c, 'field_type', 'crm_field_types', 'field') },
   { f: 'field_size',        label: 'Field Size',        w: 5,   cell: c => _crmInp(c, 'field_size',        'Field Size') },
   { f: 'personal_interest', label: 'Personal Interest', w: 6.5, cell: c => _crmInp(c, 'personal_interest', 'Golf, Steelers…') },
-  { f: 'turf_product',      label: 'Turf Product',      w: 6,   cell: c => _crmInp(c, 'turf_product',      'Product') },
+  { f: 'turf_product',      label: 'Turf Product',      w: 6,   cell: c => _crmListSel(c, 'turf_product', 'crm_turf_products', 'product') },
   // Not editable here: it counts the Fields list, and clicking it goes there.
   { f: '_fields',           label: 'Fields',            w: 3.5, filter: false,
     text: c => String(_crmFieldsFor(c).length),
@@ -7117,6 +7135,7 @@ function renderCrmCompaniesTab() {
         ${_crmToolButtons(
           `_crmExportCsv('crm-companies', _CRM_COMPANY_COLS, _crmApplyFilter(crmCompanies, _crmCompanyFilter), 'companies')`,
           `_crmPrintReport('Companies','CRM companies', _CRM_COMPANY_COLS, _crmApplyFilter(crmCompanies, _crmCompanyFilter), 'companies')`)}
+        ${_crmListsBtn('crm_org_types')}
         <button class="btn" onclick="_crmTriggerUpload('companies')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
         <button class="btn btn-green" onclick="addCrmCompany()">+ Add Company</button>
       </div>
@@ -7221,7 +7240,7 @@ function _crmDateInp(o, field) {
 
 const _CRM_OPP_COLS = [
   { f: 'tag',               label: 'Tag',               w: 5.5, cell: o => _crmTagSel(o) },
-  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: o => _crmInp(o, 'lead_contact',      'Who knows them') },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: o => _crmListSel(o, 'lead_contact', _CRM_EMPLOYEE_LIST, 'who') },
   { f: 'name',              label: 'Name',              w: 7,   cell: o => _crmInp(o, 'name',              'Opportunity name') },
   { f: 'company',           label: 'Company',           w: 7.5, cell: o => _crmInp(o, 'company',           'Company') },
   { f: '_last_touch',       label: 'Last Touch',        w: 5,   filter: false,
@@ -7236,11 +7255,11 @@ const _CRM_OPP_COLS = [
       `<div style="display:flex;align-items:center;gap:2px;min-width:0">
          ${_crmNumInp(o, 'win_pct', '0')}<span style="color:var(--muted);font-size:0.8rem;flex-shrink:0">%</span></div>` },
   { f: 'status',            label: 'Status',            w: 6,   cell: o => _crmPillSel(o, 'status',   _CRM_STATUSES,   _CRM_STATUS_COLORS) },
-  { f: 'loss_reason',       label: 'Loss Reason',       w: 5.5, cell: o => _crmInp(o, 'loss_reason',       'Reason…') },
+  { f: 'loss_reason',       label: 'Loss Reason',       w: 5.5, cell: o => _crmListSel(o, 'loss_reason', 'crm_loss_reasons', 'reason') },
   { f: 'priority',          label: 'Priority',          w: 6.5, cell: o => _crmPillSel(o, 'priority', _CRM_PRIORITIES, _CRM_PRIORITY_COLORS) },
-  { f: 'source',            label: 'Source',            w: 5.5, cell: o => _crmInp(o, 'source',            'Source') },
+  { f: 'source',            label: 'Source',            w: 5.5, cell: o => _crmListSel(o, 'source', 'crm_sources', 'source') },
   { f: 'personal_interest', label: 'Personal Interest', w: 6,   cell: o => _crmInp(o, 'personal_interest', 'Golf, Steelers…') },
-  { f: 'turf_product',      label: 'Turf Product',      w: 6,   cell: o => _crmInp(o, 'turf_product',      'Product') },
+  { f: 'turf_product',      label: 'Turf Product',      w: 6,   cell: o => _crmListSel(o, 'turf_product', 'crm_turf_products', 'product') },
   { f: 'description',       label: 'Description',       w: 5,   cell: o => _crmInp(o, 'description',       'Description') },
 ];
 
@@ -7268,6 +7287,7 @@ function renderCrmOpportunitiesTab() {
         ${_crmToolButtons(
           `_crmExportCsv('crm-opportunities', _CRM_OPP_COLS, _crmApplyFilter(crmOpportunities, _crmOppFilter), 'opportunities')`,
           `_crmPrintReport('Opportunities','CRM pipeline', _CRM_OPP_COLS, _crmApplyFilter(crmOpportunities, _crmOppFilter), 'opportunities')`)}
+        ${_crmListsBtn('crm_sources')}
         <button class="btn" onclick="_crmTriggerUpload('opportunities')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
         <button class="btn btn-green" onclick="addCrmOpportunity()">+ Add Opportunity</button>
       </div>
@@ -7834,7 +7854,6 @@ let crmFields        = [];
 let _crmFieldFilter  = {};
 let _crmCompaniesView = 'companies';   // 'companies' | 'fields'
 
-const _CRM_FIELD_TYPES = ['', 'Football', 'Soccer', 'Baseball', 'Softball', 'Lacrosse', 'Field Hockey', 'Multi-Sport', 'Practice', 'Track Infield', 'Other'];
 
 async function loadCrmFields() {
   const saved = await apiGet('fct_crm_fields');
@@ -7910,16 +7929,6 @@ function _crmFieldInp(f, col, ph = '', type = 'text') {
            font-size:0.8rem;outline:none;padding:0.15rem 0;min-width:0;text-overflow:ellipsis">`;
 }
 
-function _crmFieldTypeSel(f) {
-  const list = (f.field_type && !_CRM_FIELD_TYPES.includes(f.field_type))
-    ? [..._CRM_FIELD_TYPES, f.field_type] : _CRM_FIELD_TYPES;
-  const opts = list.map(t =>
-    `<option value="${esc(t)}" ${f.field_type === t ? 'selected' : ''}>${t || '— type —'}</option>`).join('');
-  return `<select data-crm-field-id="${f.id}" data-crm-field-col="field_type"
-    style="width:100%;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:3px;
-           color:var(--text);font-size:0.78rem;outline:none;padding:0.1rem 0.2rem">${opts}</select>`;
-}
-
 /** Age and bucket read as one coloured cell — the sales signal, not a number. */
 function _crmBucketCell(f) {
   const age = _crmFieldAge(f);
@@ -7942,12 +7951,12 @@ const _CRM_FIELD_COLS = [
              title="Found by Lucius — see it on the map"
              style="color:var(--blue);font-size:0.75rem;flex-shrink:0;text-decoration:none">◎</a>` : ''}
     </div>` },
-  { f: 'field_type',     label: 'Field Type', w: 11,  cell: _crmFieldTypeSel },
+  { f: 'field_type',     label: 'Field Type', w: 11,  cell: f => _crmFieldListSel(f, 'field_type', 'crm_field_types', 'field') },
   { f: 'field_size',     label: 'Field Size', w: 9,   cell: f => _crmFieldInp(f, 'field_size', 'sq ft') },
   { f: 'installed_year', label: 'Installed',  w: 7.5, cell: f => _crmFieldInp(f, 'installed_year', 'YYYY', 'number') },
   { f: '_age',           label: 'Age / Bucket', w: 13, cell: _crmBucketCell, filter: false,
     text: f => { const a = _crmFieldAge(f); return a == null ? '' : `${a} yrs · ${_crmBucketLabel(f)}`; } },
-  { f: 'turf_product',   label: 'Turf Product', w: 11, cell: f => _crmFieldInp(f, 'turf_product', 'Product') },
+  { f: 'turf_product',   label: 'Turf Product', w: 11, cell: f => _crmFieldListSel(f, 'turf_product', 'crm_turf_products', 'product') },
   { f: 'notes',          label: 'Notes',      w: 18,  cell: f => _crmFieldInp(f, 'notes', 'Notes') },
 ];
 
@@ -7987,6 +7996,7 @@ function renderCrmFieldsView(root) {
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
         ${_crmToolButtons(`_crmExportCsv('crm-fields', _CRM_FIELD_COLS, _crmVisibleFields(), 'fields')`, '')}
+        ${_crmListsBtn('crm_field_types')}
         <button class="btn btn-green" onclick="addCrmField('')">+ Add Field</button>
       </div>
     </div>
@@ -8041,6 +8051,14 @@ document.getElementById('crm-companies-root').addEventListener('change', e => {
   if (!id || !col) return;
   const f = crmFields.find(x => x.id === id);
   if (!f) return;
+  const picked = _crmListPick(el, f[col]);
+  if (picked) {
+    if (picked.cancelled) return;
+    f[col] = picked.value;
+    saveCrmFields();
+    renderCrmCompaniesTab();
+    return;
+  }
   f[col] = el.value;
   if (col === 'company_id') {
     const co = crmCompanies.find(c => c.id === el.value);
@@ -9668,6 +9686,363 @@ function renderCrmFindView(root) {
   `;
 }
 
+
+/* ═══════════════════════════════════════════
+   CRM — the pick lists
+
+   Contact Type, Field Type, Source and the rest were free text, which reads
+   as flexible and behaves as a slow leak. One rep types "Athletic Director",
+   the next "AD", a CSV import brings in "Athletic Dir." — and now the filter
+   for athletic directors finds a third of them, the dashboard counts three
+   categories where there is one, and nobody notices because every individual
+   row looks fine.
+
+   So these are dropdowns, and the lists behind them are the company's to
+   edit rather than mine to hard-code — a turf company's product names are
+   not something this file can know.
+
+   Two rules make that safe on data that already exists.
+
+   A stored value never disappears because it is not on the list. Whatever is
+   in the row is offered as a selected option, marked as off-list, so an
+   import from before the list existed still reads correctly and can be
+   corrected rather than silently blanked.
+
+   Adding a value does not require leaving the row. Every dropdown ends in
+   "＋ Add…", which puts the new value on the list and into the cell in one
+   step — because a picker you cannot extend mid-thought is one people work
+   around by putting the real answer in the notes.
+
+   They live in fct_lists beside the existing Employees and Cost Codes, so
+   there is one list store and one save path, not two that disagree.
+═══════════════════════════════════════════ */
+
+const _CRM_LISTS = [
+  { key: 'crm_contact_types', label: 'Contact Type', for: 'People',
+    hint: 'The job a person does — what you would ask for on the phone.',
+    defaults: ['Athletic Director', 'Assistant AD', 'Facilities Director', 'Buildings & Grounds',
+               'Superintendent', 'Principal', 'Business Manager', 'Head Coach',
+               'Groundskeeper', 'Board Member', 'Architect', 'General Contractor', 'Other'] },
+
+  { key: 'crm_org_types', label: 'Organisation Type', for: 'Companies',
+    hint: 'What kind of outfit it is — this is what territory reports group by.',
+    defaults: ['School District', 'High School', 'Middle School', 'College / University',
+               'Municipality', 'Parks & Recreation', 'Private Club', 'Sports Complex',
+               'Church / Private School', 'Contractor', 'Other'] },
+
+  { key: 'crm_field_types', label: 'Field Type', for: 'Fields and Companies',
+    hint: 'The sport a field is laid out for.',
+    defaults: ['Football', 'Soccer', 'Baseball', 'Softball', 'Lacrosse', 'Field Hockey',
+               'Multi-Sport', 'Practice', 'Track Infield', 'Other'] },
+
+  // Seeded empty on purpose: these are product names, and a guess at them
+  // would be wrong in a way that looks authoritative. The first rep to need
+  // one adds it from the dropdown.
+  { key: 'crm_turf_products', label: 'Turf Product', for: 'People, Companies, Fields, Opportunities',
+    hint: 'Your product names. Empty until you add them — use ＋ Add from any Turf Product cell.',
+    defaults: [] },
+
+  { key: 'crm_sources', label: 'Opportunity Source', for: 'Opportunities',
+    hint: 'Where the opportunity came from.',
+    defaults: ['Referral', 'Trade Show', 'Website', 'Cold Call', 'Repeat Customer',
+               'Lucius', 'AI Search', 'People', 'Companies', 'Other'] },
+
+  { key: 'crm_loss_reasons', label: 'Loss Reason', for: 'Opportunities',
+    hint: 'Why a deal was lost — the report only means something if these are consistent.',
+    defaults: ['Price', 'Timing', 'No Budget', 'Competitor', 'No Response',
+               'Scope Changed', 'Lost Bid', 'Other'] },
+];
+
+/** The employee list doubles as the Lead Contact picker — it is our own people. */
+const _CRM_EMPLOYEE_LIST = 'employees';
+
+function _crmListDef(key) { return _CRM_LISTS.find(l => l.key === key) || null; }
+function _crmListLabel(key) {
+  if (key === _CRM_EMPLOYEE_LIST) return 'Lead Contact';
+  const d = _crmListDef(key);
+  return d ? d.label : key;
+}
+
+/**
+ * Seeds the starting values, once.
+ *
+ * Keyed on a marker rather than on emptiness, so a list someone deliberately
+ * cleared stays cleared instead of refilling itself on the next page load.
+ */
+function _crmSeedLists() {
+  if (!lists || typeof lists !== 'object') return false;
+  let changed = false;
+  if (!lists._crm_lists_seeded) {
+    // Empty counts as unseeded on this one pass only. defaultLists already
+    // hands every key an empty array, so checking for a missing key would
+    // never fire — and after this the marker is saved, which is what makes a
+    // list someone deliberately clears stay cleared.
+    for (const def of _CRM_LISTS) {
+      if (!Array.isArray(lists[def.key]) || lists[def.key].length === 0) {
+        lists[def.key] = def.defaults.slice();
+      }
+    }
+    lists._crm_lists_seeded = true;
+    changed = true;
+  }
+  for (const def of _CRM_LISTS) if (!Array.isArray(lists[def.key])) { lists[def.key] = []; changed = true; }
+  return changed;
+}
+
+/** The values behind one dropdown. Employees come back as plain names. */
+function _crmListValues(key) {
+  if (!lists) return [];
+  if (key === _CRM_EMPLOYEE_LIST) {
+    return (lists.employees || [])
+      .map(e => (typeof e === 'string' ? e : e && e.name) || '')
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+  }
+  return Array.isArray(lists[key]) ? lists[key] : [];
+}
+
+function _crmListAdd(key, value) {
+  const val = String(value || '').trim();
+  if (!val) return false;
+  if (key === _CRM_EMPLOYEE_LIST) {
+    lists.employees = lists.employees || [];
+    if (!lists.employees.some(e => ((typeof e === 'string' ? e : e && e.name) || '') === val)) {
+      // Same shape the Employees list itself writes, so payroll reads it too.
+      lists.employees.push({ name: val, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' });
+    }
+  } else {
+    if (!Array.isArray(lists[key])) lists[key] = [];
+    if (!lists[key].includes(val)) lists[key].push(val);
+  }
+  saveLists();
+  return true;
+}
+
+const _CRM_SEL_STYLE = `width:100%;min-width:0;background:var(--surface2);border:1px solid var(--border);
+  border-radius:3px;color:var(--text);font-size:0.78rem;outline:none;padding:0.1rem 0.2rem;cursor:pointer`;
+
+/**
+ * Builds the option list shared by both cell flavours.
+ *
+ * An off-list value is kept and marked rather than dropped — the row is the
+ * record, the list is only the suggestion.
+ */
+function _crmListOptions(current, key, placeholder) {
+  const vals = _crmListValues(key);
+  const cur  = String(current || '');
+  const out  = [`<option value="">— ${esc(placeholder || _crmListLabel(key))} —</option>`];
+  for (const v of vals) out.push(`<option value="${esc(v)}"${cur === v ? ' selected' : ''}>${esc(v)}</option>`);
+  if (cur && !vals.includes(cur)) out.push(`<option value="${esc(cur)}" selected>${esc(cur)} (not on list)</option>`);
+  out.push(`<option value="__crm_add__">＋ Add…</option>`);
+  return out.join('');
+}
+
+/** A pick list on a People / Companies / Opportunities row. */
+function _crmListSel(row, field, key, placeholder) {
+  return `<select data-crm-id="${row.id}" data-crm-field="${field}" data-crm-list="${key}"
+    style="${_CRM_SEL_STYLE}">${_crmListOptions(row[field], key, placeholder)}</select>`;
+}
+
+/** The same, on a Fields row, which carries its own data attributes. */
+function _crmFieldListSel(f, col, key, placeholder) {
+  return `<select data-crm-field-id="${f.id}" data-crm-field-col="${col}" data-crm-list="${key}"
+    style="${_CRM_SEL_STYLE}">${_crmListOptions(f[col], key, placeholder)}</select>`;
+}
+
+/**
+ * Handles the "＋ Add…" option.
+ *
+ * Returns the value the cell should take, or null when the change was an
+ * ordinary pick the caller should handle itself. Cancelling puts the select
+ * back where it was rather than blanking the cell — a stray Escape must not
+ * clear a field someone already filled in.
+ */
+function _crmListPick(el, previous) {
+  const key = el.dataset.crmList;
+  if (!key || el.value !== '__crm_add__') return null;
+  const typed = (prompt(`Add to ${_crmListLabel(key)}:`, '') || '').trim();
+  if (!typed) { el.value = previous || ''; return { cancelled: true }; }
+  _crmListAdd(key, typed);
+  return { value: typed };
+}
+
+/* ── The manager ────────────────────────────────────────────────────────── */
+
+let _crmListsTab = _CRM_LISTS[0].key;
+
+function openCrmLists(tab) {
+  _crmListsTab = tab || _crmListsTab;
+  renderCrmListsModal();
+  document.getElementById('crm-lists-overlay').classList.add('open');
+}
+
+function closeCrmLists() {
+  document.getElementById('crm-lists-overlay').classList.remove('open');
+  // Any dropdown on screen is now stale, so redraw whatever is open.
+  const panel = document.querySelector('.crm-sub-panel.active')?.id;
+  if (panel === 'crm-panel-people')        renderCrmPeopleTab();
+  if (panel === 'crm-panel-companies')     renderCrmCompaniesTab();
+  if (panel === 'crm-panel-opportunities') renderCrmOpportunitiesTab();
+}
+
+function _crmListsSetTab(key) { _crmListsTab = key; renderCrmListsModal(); }
+
+function crmListAddItem() {
+  const input = document.getElementById('crm-list-new');
+  if (!input) return;
+  if (_crmListAdd(_crmListsTab, input.value)) { input.value = ''; renderCrmListsModal(); }
+}
+
+/**
+ * Renaming a value rewrites every row that used it.
+ *
+ * Editing the list alone would orphan the rows: "Athletic Director" becomes
+ * "AD" on the list, and every person still says "Athletic Director", which is
+ * exactly the drift the lists exist to prevent.
+ */
+function crmListRenameItem(idx) {
+  const vals = _crmListValues(_crmListsTab);
+  const from = vals[idx];
+  if (from == null) return;
+  const to = (prompt(`Rename "${from}" to:`, from) || '').trim();
+  if (!to || to === from) return;
+
+  if (_crmListsTab === _CRM_EMPLOYEE_LIST) {
+    const emp = (lists.employees || []).find(e => ((typeof e === 'string' ? e : e && e.name) || '') === from);
+    if (emp && typeof emp === 'object') emp.name = to;
+  } else {
+    const arr = lists[_crmListsTab] || [];
+    const at  = arr.indexOf(from);
+    if (at >= 0) arr[at] = to;
+  }
+
+  const moved = _crmRewriteListValue(_crmListsTab, from, to);
+  saveLists();
+  renderCrmListsModal();
+  if (moved) alert(`Renamed, and updated ${moved} row${moved === 1 ? '' : 's'} that used it.`);
+}
+
+/**
+ * Removing a value leaves the rows alone.
+ *
+ * Deleting "Trade Show" should stop it being offered, not quietly erase which
+ * deals came from one. Those rows keep the value and show it as off-list.
+ */
+function crmListRemoveItem(idx) {
+  const vals = _crmListValues(_crmListsTab);
+  const val  = vals[idx];
+  if (val == null) return;
+  const used = _crmCountListValue(_crmListsTab, val);
+  const msg  = used
+    ? `Remove "${val}" from the list? ${used} row${used === 1 ? '' : 's'} still use it — they keep the value and show it as off-list.`
+    : `Remove "${val}" from the list?`;
+  if (!confirm(msg)) return;
+
+  if (_crmListsTab === _CRM_EMPLOYEE_LIST) {
+    lists.employees = (lists.employees || [])
+      .filter(e => ((typeof e === 'string' ? e : e && e.name) || '') !== val);
+  } else {
+    lists[_crmListsTab] = (lists[_crmListsTab] || []).filter(v => v !== val);
+  }
+  saveLists();
+  renderCrmListsModal();
+}
+
+/** Which CRM fields each list feeds — used for counting and renaming. */
+const _CRM_LIST_USAGE = {
+  crm_contact_types: [['people', 'contact_type']],
+  crm_org_types:     [['companies', 'contact_type']],
+  crm_field_types:   [['companies', 'field_type'], ['fields', 'field_type']],
+  crm_turf_products: [['people', 'turf_product'], ['companies', 'turf_product'],
+                      ['fields', 'turf_product'], ['opportunities', 'turf_product']],
+  crm_sources:       [['opportunities', 'source']],
+  crm_loss_reasons:  [['opportunities', 'loss_reason']],
+  employees:         [['people', 'lead_contact'], ['companies', 'lead_contact'],
+                      ['opportunities', 'lead_contact']],
+};
+
+function _crmListRows(which) {
+  if (which === 'people')        return crmPeople;
+  if (which === 'companies')     return crmCompanies;
+  if (which === 'fields')        return crmFields;
+  if (which === 'opportunities') return crmOpportunities;
+  return [];
+}
+
+function _crmCountListValue(key, val) {
+  let n = 0;
+  for (const [which, field] of (_CRM_LIST_USAGE[key] || [])) {
+    for (const row of _crmListRows(which)) if (row && row[field] === val) n++;
+  }
+  return n;
+}
+
+function _crmRewriteListValue(key, from, to) {
+  let n = 0;
+  const dirty = new Set();
+  for (const [which, field] of (_CRM_LIST_USAGE[key] || [])) {
+    for (const row of _crmListRows(which)) {
+      if (row && row[field] === from) { row[field] = to; n++; dirty.add(which); }
+    }
+  }
+  if (dirty.has('people'))        saveCrmPeople();
+  if (dirty.has('companies'))     saveCrmCompanies();
+  if (dirty.has('fields'))        saveCrmFields();
+  if (dirty.has('opportunities')) saveCrmOpportunities();
+  return n;
+}
+
+function renderCrmListsModal() {
+  const tabsEl = document.getElementById('crm-lists-tabs');
+  const bodyEl = document.getElementById('crm-lists-body');
+  if (!tabsEl || !bodyEl) return;
+
+  const tabs = [..._CRM_LISTS.map(l => ({ key: l.key, label: l.label })),
+                { key: _CRM_EMPLOYEE_LIST, label: 'Lead Contacts' }];
+
+  tabsEl.innerHTML = tabs.map(t =>
+    `<button class="modal-tab-btn${t.key === _crmListsTab ? ' active' : ''}"
+       onclick="_crmListsSetTab('${t.key}')">${esc(t.label)}</button>`).join('');
+
+  const def  = _crmListDef(_crmListsTab);
+  const vals = _crmListValues(_crmListsTab);
+  const hint = _crmListsTab === _CRM_EMPLOYEE_LIST
+    ? 'Your own people — who here knows the contact. Shared with the Employees list, so anyone added here shows up there too.'
+    : (def ? def.hint : '');
+  const where = _crmListsTab === _CRM_EMPLOYEE_LIST ? 'People, Companies, Opportunities' : (def ? def.for : '');
+
+  bodyEl.innerHTML = `
+    <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.15rem">${esc(hint)}</div>
+    <div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.85rem;opacity:0.8">
+      Used on: ${esc(where)} · ${vals.length} value${vals.length === 1 ? '' : 's'}
+    </div>
+    <div class="list-items">
+      ${vals.length ? vals.map((v, i) => {
+        const used = _crmCountListValue(_crmListsTab, v);
+        return `<div class="list-item">
+          <span style="flex:1;font-size:0.82rem;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(v)}</span>
+          <span style="font-size:0.68rem;color:var(--muted);white-space:nowrap">${used ? `${used} row${used === 1 ? '' : 's'}` : 'unused'}</span>
+          <button class="remove-item" title="Rename everywhere" onclick="crmListRenameItem(${i})"
+            style="color:var(--blue)">✎</button>
+          <button class="remove-item" title="Remove from the list" onclick="crmListRemoveItem(${i})">&#10005;</button>
+        </div>`;
+      }).join('') : `<div style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.8rem">
+          Nothing on this list yet — add the first value below.</div>`}
+    </div>
+    <div class="add-item-row" style="margin-top:0.75rem">
+      <input type="text" id="crm-list-new" placeholder="Add ${esc(_crmListLabel(_crmListsTab).toLowerCase())}…"
+        onkeydown="if(event.key==='Enter')crmListAddItem()" />
+      <button class="btn btn-green" onclick="crmListAddItem()">+ Add</button>
+    </div>`;
+  setTimeout(() => document.getElementById('crm-list-new')?.focus(), 20);
+}
+
+/** The toolbar button that opens it. */
+function _crmListsBtn(tab) {
+  return `<button class="btn" onclick="openCrmLists('${tab || ''}')" title="Edit the dropdown lists"
+    style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#9881; Lists</button>`;
+}
+
 /* ═══════════════════════════════════════════
    CRM — CSV Bulk Upload
 ═══════════════════════════════════════════ */
@@ -9736,11 +10111,20 @@ function _crmShowUploadModal(type, file) {
     const dataRows = raw.slice(1).filter(r => r.some(c => c.trim()));
 
     // Known enum options — matched case-insensitively so "warm" → "Warm", "closed won" → "Closed Won"
+    // The pick lists join the fixed enums here: an import that says
+    // "athletic director" lands on "Athletic Director" rather than founding a
+    // second spelling the dropdowns will then show as off-list.
     const ENUM_OPTS = {
       tag:      _CRM_TAG_OPTS.filter(Boolean),
       stage:    _CRM_STAGES.filter(Boolean),
       status:   _CRM_STATUSES.filter(Boolean),
       priority: _CRM_PRIORITIES.filter(Boolean),
+      contact_type: _crmListValues(type === 'companies' ? 'crm_org_types' : 'crm_contact_types'),
+      field_type:   _crmListValues('crm_field_types'),
+      turf_product: _crmListValues('crm_turf_products'),
+      source:       _crmListValues('crm_sources'),
+      loss_reason:  _crmListValues('crm_loss_reasons'),
+      lead_contact: _crmListValues(_CRM_EMPLOYEE_LIST),
     };
     const _matchEnum = (field, val) => {
       const opts = ENUM_OPTS[field];
@@ -12910,6 +13294,14 @@ const defaultLists = {
   suppliers:    [],
   infill_types: [],
   cost_codes:   [],   // [{value, description}] — the master list folder labels resolve against
+  // The CRM's own pick lists. Seeded once by _crmSeedLists() rather than
+  // here, so a list someone empties on purpose stays empty.
+  crm_contact_types: [],
+  crm_org_types:     [],
+  crm_field_types:   [],
+  crm_turf_products: [],
+  crm_sources:       [],
+  crm_loss_reasons:  [],
 };
 
 let lists = {};
@@ -12933,6 +13325,8 @@ async function loadLists() {
   // object only adds the description the document folders label themselves with.
   lists.cost_codes = (lists.cost_codes || []).map(c => typeof c === 'string'
     ? { value: c, description: '' } : { value: '', description: '', ...c });
+  // First run fills the CRM pick lists with a starting vocabulary.
+  if (typeof _crmSeedLists === 'function' && _crmSeedLists()) saveLists();
 }
 
 /**
@@ -15386,6 +15780,15 @@ document.getElementById('crm-people-root').addEventListener('change', e => {
   if (!id || !field) return;
   const person = crmPeople.find(p => p.id === id);
   if (!person) return;
+  // "＋ Add…" is a command, not a value — it must never be stored as one.
+  const picked = _crmListPick(el, person[field]);
+  if (picked) {
+    if (picked.cancelled) return;
+    person[field] = picked.value;
+    saveCrmPeople();
+    renderCrmPeopleTab();
+    return;
+  }
   person[field] = el.value;
   if (field === 'tag') {
     const c = _CRM_TAG_COLORS[el.value];
@@ -15427,6 +15830,14 @@ document.getElementById('crm-companies-root').addEventListener('change', e => {
   if (!id || !field) return;
   const co = crmCompanies.find(c => c.id === id);
   if (!co) return;
+  const picked = _crmListPick(el, co[field]);
+  if (picked) {
+    if (picked.cancelled) return;
+    co[field] = picked.value;
+    saveCrmCompanies();
+    renderCrmCompaniesTab();
+    return;
+  }
   co[field] = el.value;
   if (field === 'tag') {
     const c = _CRM_TAG_COLORS[el.value];
@@ -15466,6 +15877,15 @@ document.getElementById('crm-opportunities-root').addEventListener('change', e =
   if (!id || !field) return;
   const opp = crmOpportunities.find(o => o.id === id);
   if (!opp) return;
+
+  const picked = _crmListPick(el, opp[field]);
+  if (picked) {
+    if (picked.cancelled) return;
+    opp[field] = picked.value;
+    saveCrmOpportunities();
+    renderCrmOpportunitiesTab();
+    return;
+  }
 
   // Read the old value before the assignment — this is the only moment the
   // move is visible, and the Status Changes report is built from it.

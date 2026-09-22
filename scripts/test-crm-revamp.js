@@ -501,6 +501,100 @@ console.log('\nLucius \u2194 CRM');
     cold.company === null && cold.field === null);
 }
 
+/* ── 4g. The pick lists ──────────────────────────────────────────────────── */
+console.log('\nPick lists');
+{
+  // Lift the list object literal by brace, then the functions that read it.
+  const objStart = SRC.indexOf('const _CRM_LISTS = [');
+  let depth = 0, objEnd = -1;
+  for (let j = SRC.indexOf('[', objStart); j < SRC.length; j++) {
+    if (SRC[j] === '[') depth++;
+    else if (SRC[j] === ']' && --depth === 0) { objEnd = j + 1; break; }
+  }
+  const K = new Function([
+    'const esc = s => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");',
+    'let lists = {}; let saved = 0; function saveLists() { saved++; }',
+    SRC.slice(objStart, objEnd) + ';',
+    "const _CRM_EMPLOYEE_LIST = 'employees';",
+    extractFunction(SRC, '_crmListDef'),
+    extractFunction(SRC, '_crmListLabel'),
+    extractFunction(SRC, '_crmSeedLists'),
+    extractFunction(SRC, '_crmListValues'),
+    extractFunction(SRC, '_crmListAdd'),
+    extractFunction(SRC, '_crmListOptions'),
+    'return { _CRM_LISTS, _crmSeedLists, _crmListValues, _crmListAdd, _crmListOptions,',
+    '  reset: v => { lists = v; saved = 0; }, lists: () => lists, saves: () => saved };',
+  ].join('\n'))();
+
+  // Every list a dropdown names has to exist, or the cell renders empty with
+  // no way for anyone to work out why.
+  const keys = K._CRM_LISTS.map(l => l.key);
+  for (const k of ['crm_contact_types', 'crm_org_types', 'crm_field_types',
+                   'crm_turf_products', 'crm_sources', 'crm_loss_reasons']) {
+    assert(`${k} is defined`, keys.includes(k));
+    assert(`${k} is wired to a cell`, SRC.includes(`'${k}'`));
+  }
+
+  // First run seeds. defaultLists already hands over empty arrays, so seeding
+  // has to treat empty as unseeded on that one pass.
+  K.reset({ crm_contact_types: [], crm_sources: [], employees: [] });
+  assert('the first load seeds', K._crmSeedLists() === true);
+  assert('and fills a list',  K._crmListValues('crm_contact_types').length > 5);
+  assert('turf products are left empty on purpose',
+    K._crmListValues('crm_turf_products').length === 0);
+  assert('the marker is set', K.lists()._crm_lists_seeded === true);
+
+  // A list someone empties on purpose must stay empty across reloads.
+  const after = { ...K.lists(), crm_sources: [] };
+  K.reset(after);
+  assert('a second load does not reseed', K._crmSeedLists() === false);
+  assert('and an emptied list stays empty', K._crmListValues('crm_sources').length === 0);
+
+  // Employees are objects; the picker wants names, sorted.
+  K.reset({ employees: [{ name: 'Nate Brewer' }, { name: 'Ben Hudock' }, 'Old String Name'] });
+  assert('employees read as sorted names',
+    K._crmListValues('employees').join(',') === 'Ben Hudock,Nate Brewer,Old String Name',
+    K._crmListValues('employees').join(','));
+
+  // Adding.
+  K.reset({ crm_turf_products: [], employees: [] });
+  assert('a value is added',        K._crmListAdd('crm_turf_products', 'SuperBlade HD') === true);
+  assert('and persisted',           K.saves() === 1);
+  K._crmListAdd('crm_turf_products', 'SuperBlade HD');
+  assert('a duplicate is not added', K._crmListValues('crm_turf_products').length === 1);
+  assert('blank is refused',        K._crmListAdd('crm_turf_products', '   ') === false);
+  K._crmListAdd('employees', 'New Person');
+  assert('a new lead contact keeps the employee shape',
+    K.lists().employees[0] && K.lists().employees[0].name === 'New Person'
+      && K.lists().employees[0].job_class === '');
+
+  // The rule that protects existing data: a stored value not on the list is
+  // still offered, still selected, and marked — never silently blanked.
+  K.reset({ crm_contact_types: ['Athletic Director', 'Superintendent'] });
+  const off = K._crmListOptions('Athletic Dir.', 'crm_contact_types', 'type');
+  assert('an off-list value is still an option', off.includes('Athletic Dir.'));
+  assert('it is selected',  /Athletic Dir\.[^<]*<\/option>/.test(off) && off.includes('selected'));
+  assert('and marked as off-list', off.includes('(not on list)'));
+
+  const on = K._crmListOptions('Superintendent', 'crm_contact_types', 'type');
+  assert('an on-list value is selected once',
+    (on.match(/selected/g) || []).length === 1);
+  assert('an on-list value is not marked off-list', !on.includes('(not on list)'));
+  assert('every dropdown can be extended in place', on.includes('__crm_add__'));
+  assert('and has a blank option to clear it', on.includes('<option value="">'));
+
+  // The add sentinel must never be storable as a value.
+  assert('the add sentinel is intercepted before it is written',
+    SRC.includes("el.value !== '__crm_add__'") && SRC.includes('const picked = _crmListPick('));
+  assert('cancelling an add restores the previous value',
+    SRC.includes("el.value = previous || ''"));
+
+  // Renaming rewrites the rows; removing deliberately does not.
+  assert('renaming rewrites the rows that used it', SRC.includes('function _crmRewriteListValue('));
+  assert('removing warns how many rows keep the value', SRC.includes('function _crmCountListValue('));
+  assert('a CSV import snaps to the list', SRC.includes("contact_type: _crmListValues("));
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {
@@ -569,6 +663,20 @@ console.log('\nTab wiring and columns');
   assert('there is a not-in-CRM filter',            SRC.includes("_luciusFilter.crm === 'out'"));
   assert('and a bulk file-everything',              SRC.includes('function _luciusAddAllToCrm('));
   assert('a filed field links back to the map',     SRC.includes('Found by Lucius — see it on the map'));
+
+  // The pickers themselves, on every table that has one.
+  for (const [cell, field] of [
+    ['_crmListSel(p', 'contact_type'], ['_crmListSel(c', 'field_type'],
+    ['_crmListSel(o', 'source'],       ['_crmFieldListSel(f', 'turf_product'],
+  ]) {
+    assert(`${field} is a picker, not free text`,
+      new RegExp(`${cell.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, '${field}'`).test(SRC));
+  }
+  assert('lead contact picks from our own people',
+    (SRC.match(/_crmListSel\([pco], 'lead_contact', _CRM_EMPLOYEE_LIST/g) || []).length === 3);
+  assert('the lists are editable from the CRM', SRC.includes('function openCrmLists('));
+  assert('and reachable from a toolbar',        SRC.includes('function _crmListsBtn('));
+  assert('the superseded hard-coded field types are gone', !SRC.includes('_CRM_FIELD_TYPES'));
 
   for (const key of ['fct_crm_fields', 'fct_crm_news', 'fct_crm_status_log', 'fct_crm_touches']) {
     assert(`${key} is loaded on boot`, SRC.includes(`apiGet('${key}')`));
