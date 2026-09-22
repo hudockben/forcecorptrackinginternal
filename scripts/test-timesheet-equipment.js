@@ -92,6 +92,9 @@ function sandbox(opts = {}) {
     equipVals: opts.equipVals || { 0: true },
     equipUsed: opts.equipUsed || { 0: [] },
     equipmentNames: opts.names === undefined ? ['Excavator', 'Pickup Truck', 'Roller'] : opts.names,
+    // The same names split by the list each is kept on. null until the fetch
+    // lands, which is what every block falls back to the flat list for.
+    equipmentByDivision: opts.byDivision === undefined ? null : opts.byDivision,
     __el: el,
     MAX_EQUIP_PIECES: 6,
     blockOrder: () => opts.blocks || [0],
@@ -106,9 +109,16 @@ function sandbox(opts = {}) {
     equipmentNamesLoad: () => Promise.resolve(sb.equipmentNames),
     __els: els,
   };
+  // Each block's Division picker, since the machine list now follows it. An
+  // unset one reads as '' — no division chosen, nothing to narrow by — which
+  // is what every test written before the narrowing wants.
+  for (const [i, div] of Object.entries(opts.divisions || {})) {
+    el(i === '0' ? 'division' : `s${i}-division`).value = div;
+  }
   vm.createContext(sb);
   vm.runInContext(
     ['equipUsedClean', 'equipHrsId', 'equipSelId', 'equipOptionsHtml', 'fillEquipOptions',
+     'equipNamesFor', 'equipDivisionOf', 'applyEquipDivision',
      'parseTravelLeg', 'blockTravelHours', 'blockHours', 'renderEquipUsed', 'equipSlot',
      'writeEquipHours', 'equipIsPickup', 'equipAutoRemainder', 'refreshEquipPickupHours',
      'refreshEquipAutoHours', 'setEquipPiece', 'setEquipHours', 'commitEquipHours',
@@ -1181,7 +1191,215 @@ async function lateCompanyListChecks() {
 }
 
 
-lateCompanyListChecks().then(() => {
+// ── Each block offers ITS OWN division's machines ──────────────────────────
+// Turf, paving and kiewit each maintain an equipment list, and they are exactly
+// the three divisions whose approval prices a machine per piece. One picker
+// carrying all three meant a paving operator scrolled turf's mowers looking for
+// his paver — which is how the closest-looking thing gets picked, and how a
+// question added to stop the office guessing started feeding it a guess.
+const BY_DIV = {
+  turf:   ['Pickup Truck', 'Turf Machine'],
+  paving: ['Paver', 'Pickup Truck', 'Roller'],
+  kiewit: ['Excavator'],
+};
+const ALL = ['Excavator', 'Paver', 'Pickup Truck', 'Roller', 'Turf Machine'];
+
+async function divisionChecks() {
+  console.log('\n[a block offers its own division\u2019s machines]');
+  const divSb = (division, over = {}) => sandbox(Object.assign({
+    equipUsed:  { 0: [{ name: '', hours: '' }] },
+    names:      ALL,
+    byDivision: BY_DIV,
+    divisions:  { 0: division },
+  }, over));
+
+  // renderEquipUsed writes the whole line — picker and hours box — into the
+  // list's innerHTML, so that is where its options are. fillEquipOptions, by
+  // contrast, reaches for the picker itself and touches only its options; the
+  // tests below read whichever of the two the step under test actually wrote.
+  const renderedOpts = sb => { sb.renderEquipUsed(0); return sb.__el('equip-list').innerHTML; };
+
+  {
+    const sb = divSb('paving');
+    const opts = renderedOpts(sb);
+    assert('a paving block is offered paving\u2019s list',
+      /Paver/.test(opts) && /Roller/.test(opts), opts);
+    assert('  and not turf\u2019s mowers or kiewit\u2019s excavator',
+      !/Turf Machine/.test(opts) && !/Excavator/.test(opts), opts);
+    assert('  while a machine on both lists is still offered to both',
+      /Pickup Truck/.test(opts), opts);
+  }
+  {
+    const sb = divSb('turf');
+    const opts = renderedOpts(sb);
+    assert('a turf block is offered turf\u2019s',
+      /Turf Machine/.test(opts) && /Pickup Truck/.test(opts) && !/Paver/.test(opts), opts);
+  }
+
+  console.log('\n[the two ways it must NOT narrow]');
+  {
+    const opts = renderedOpts(divSb(''));
+    assert('before a division is picked there is nothing to narrow by',
+      ALL.every(n => opts.includes(n)), opts);
+  }
+  {
+    // Dust, trucking and quarry keep no equipment list, and a division that has
+    // simply never filled its own in is the same case. A picker holding only
+    // "— pick —" reads as "nothing to answer here", and then it isn't answered.
+    const optsDust  = renderedOpts(divSb('dust'));
+    const optsEmpty = renderedOpts(divSb('paving', { byDivision: { turf: BY_DIV.turf, paving: [] } }));
+    assert('a division with no list of its own falls back to the whole company',
+      ALL.every(n => optsDust.includes(n)), optsDust);
+    assert('  and so does one whose list is empty, rather than offering nothing',
+      ALL.every(n => optsEmpty.includes(n)), optsEmpty);
+  }
+  {
+    // An older server sends no `divisions` key at all. Every block then falls
+    // back to the flat list and the picker behaves as it did before narrowing.
+    const opts = renderedOpts(sandbox({ equipUsed: { 0: [{ name: '', hours: '' }] },
+                                       names: ALL, byDivision: {}, divisions: { 0: 'paving' } }));
+    assert('a server that sends no divisions narrows nothing',
+      ALL.every(n => opts.includes(n)), opts);
+  }
+
+  console.log('\n[changing the division re-offers the machines]');
+  {
+    const sb = divSb('paving', { equipUsed: { 0: [{ name: 'Paver', hours: '6', auto: false, touched: true }] } });
+    sb.renderEquipUsed(0);
+    const box = sb.__el(sb.equipHrsId(0, 0));
+    box.value = '6.';                       // mid-entry, as a thumb leaves it
+    sb.setEquipHours(0, 0, '6.');
+
+    sb.__el('division').value = 'turf';
+    await sb.applyEquipDivision(0);
+
+    const opts = sb.__el(sb.equipSelId(0, 0)).innerHTML;
+    assert('moving the block to turf offers turf\u2019s machines',
+      /Turf Machine/.test(opts), opts);
+    assert('  and takes away the ones only paving keeps',
+      !/Roller/.test(opts), opts);
+    assert('  but never the machine already picked, which would vanish silently',
+      /Paver/.test(opts) && sb.__el(sb.equipSelId(0, 0)).value === 'Paver', opts);
+    assert('  and the hours box he was typing into is not replaced',
+      sb.__el(sb.equipHrsId(0, 0)) === box && box.value === '6.',
+      box.value);
+  }
+  {
+    const sb = divSb('paving');
+    sb.renderEquipUsed(0);
+    sb.__el('division').value = '';
+    await sb.applyEquipDivision(0);
+    assert('clearing the division widens it back out rather than leaving paving\u2019s',
+      ALL.every(n => sb.__el(sb.equipSelId(0, 0)).innerHTML.includes(n)));
+  }
+
+  console.log('\n[the truck picker follows the same rule]');
+  {
+    const sb = divSb('paving');
+    sb.haulUnits = { 0: '' };
+    sb.setHaulUnit = () => {};
+    vm.runInContext(fnSource('haulUnitFill'), sb);
+    sb.haulUnitFill(0);
+    const opts = sb.__el('haul-unit').innerHTML;
+    assert('a haul on a paving job picks from paving\u2019s trucks',
+      /Pickup Truck/.test(opts) && !/Turf Machine/.test(opts), opts);
+  }
+
+  console.log('\n[wired where the division actually changes]');
+  assert('onDivisionChange re-offers the block\u2019s machines',
+    /applyEquipDivision\(i\);/.test(HTML));
+  assert('  above the early return for a blank division, so clearing it widens too',
+    HTML.indexOf('applyEquipDivision(i);') <
+    HTML.indexOf("jobSel.innerHTML = '<option value=\"\">— pick division first —</option>'"));
+  assert('  and it fills options twice, so a division picked before the fetch lands is not left narrow',
+    /equipmentNamesLoad\(\)\.then\(\(\) => fillEquipOptions\(i\)\);/.test(HTML));
+  assert('the hint tells the operator whose list it is, so a gap gets fixed in the right place',
+    /The list is your division's own equipment/.test(HTML) &&
+    /The list is this job's division\./.test(HTML));
+}
+
+// ── And the desk that codes his answer sees the same list ──────────────────
+// The approver's split modal offers a machine picker too, and an approver
+// coding a paving day against turf's mowers is the same wrong pick one step
+// later. Its cells are free text with a suggestion menu, so narrowing trims
+// what is OFFERED and can never drop what is already there — which is why the
+// modal can narrow per ROW, off the division that row's cost actually lands on.
+function payrollSplitChecks() {
+  console.log('\n[the approver is offered the same division\u2019s machines]');
+
+  const ctx = {
+    console,
+    splitEquipmentGlobal: ALL.slice(),
+    splitEquipmentByDivision: BY_DIV,
+    splitProjEquipment: [],
+    splitEntry: { division: 'paving', job_id: 'J1' },
+  };
+  vm.createContext(ctx);
+  for (const f of ['splitRowDivision', 'splitEquipNamesFor', 'splitEquipOptsFor']) {
+    vm.runInContext(requireFn(PAY, f, 'payroll.html'), ctx);
+  }
+
+  {
+    const opts = ctx.splitEquipOptsFor({});
+    eq('a row on a paving entry is offered paving\u2019s machines', opts, BY_DIV.paving);
+  }
+  {
+    // A row sent to another division is coded against THAT division's job, so
+    // it is that division's machines it should be offered — the rule
+    // splitRowCcList already follows for the cost codes beside them.
+    const opts = ctx.splitEquipOptsFor({ dest_division: 'kiewit', dest_job: 'K9' });
+    eq('a row sent to kiewit is offered kiewit\u2019s', opts, BY_DIV.kiewit);
+  }
+  {
+    ctx.splitProjEquipment = ['Site Van'];
+    const own  = ctx.splitEquipOptsFor({});
+    const sent = ctx.splitEquipOptsFor({ dest_division: 'kiewit', dest_job: 'K9' });
+    assert('the job\u2019s own assigned equipment still rides along',
+      own.includes('Site Van'), own.join(', '));
+    assert('  but not onto a row that is going somewhere else',
+      !sent.includes('Site Van'), sent.join(', '));
+    ctx.splitProjEquipment = [];
+  }
+  {
+    ctx.splitEntry = { division: 'dust', job_id: 'D1' };
+    const opts = ctx.splitEquipOptsFor({});
+    eq('a division that keeps no list falls back to the whole company', opts, ALL);
+    ctx.splitEntry = { division: 'paving', job_id: 'J1' };
+  }
+  {
+    ctx.splitEquipmentByDivision = {};
+    const opts = ctx.splitEquipOptsFor({});
+    eq('and a server that sends no divisions narrows nothing', opts, ALL);
+    ctx.splitEquipmentByDivision = BY_DIV;
+  }
+  {
+    ctx.splitEquipmentByDivision = { turf: BY_DIV.turf, paving: [] };
+    const opts = ctx.splitEquipOptsFor({});
+    eq('nor does an empty list, which would offer the approver nothing', opts, ALL);
+    ctx.splitEquipmentByDivision = BY_DIV;
+  }
+
+  console.log('\n[wired into the modal, and not at the cost of what is already coded]');
+  assert('the table reads the options per row, not once per modal',
+    /const eqOpts = eqOptsFor\(r\);/.test(PAY) && !/splitEquipmentList/.test(PAY));
+  assert('  and the loader hands its list back rather than parking it in module state',
+    /return merged\.sort\(\(a, b\) => a\.localeCompare\(b\)\);/.test(PAY));
+  assert('  and memoises them, so a table of rows does not re-sort the same list per row',
+    /if \(!_eqByDiv\.has\(key\)\) _eqByDiv\.set\(key, splitEquipOptsFor\(r\)\);/.test(PAY));
+  assert('the bulk card narrows on its own group\u2019s division too',
+    /const base      = splitEquipNamesFor\(division\);/.test(PAY) &&
+    /const merged = \[\.\.\.base\];/.test(PAY));
+  // The whole reason the modal may narrow per row where the timesheet could
+  // not: _cbHtml renders an <input>, not a <select>, and cbCommit writes what
+  // was typed. A machine off the list is shown, typeable and committed.
+  assert('the cells stay free text, so a machine off the list is never dropped',
+    /<input type="text" class="cb-input/.test(PAY) &&
+    /const value = String\(input\.value == null \? '' : input\.value\)\.trim\(\);/.test(PAY));
+  assert('the fetch buckets each machine under every division that keeps it',
+    /for \(const d of \(Array\.isArray\(e\.divisions\) \? e\.divisions : \[\]\)\)/.test(PAY));
+}
+
+lateCompanyListChecks().then(divisionChecks).then(payrollSplitChecks).then(() => {
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }).catch(err => { console.error(err); process.exit(1); });

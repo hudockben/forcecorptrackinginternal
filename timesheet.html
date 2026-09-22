@@ -713,7 +713,7 @@
           <button type="button" class="split-add equip-add" id="equip-add" onclick="addEquipPiece(0)">
             + Add another piece
           </button>
-          <div class="hint">Optional, and worth the ten seconds: the office codes the job's cost per machine off these hours, so what you put here saves it being guessed at later. Name every piece you ran, biggest first, and the hours you were on each. A pickup you used to get to the job counts too &mdash; name it and it opens on your travel time, because that is what it was doing, and the office books it to travel. If what you ran is not on the list, pick the closest and say which it was in Notes, or leave it blank and the office will fill it in.</div>
+          <div class="hint">Optional, and worth the ten seconds: the office codes the job's cost per machine off these hours, so what you put here saves it being guessed at later. Name every piece you ran, biggest first, and the hours you were on each. A pickup you used to get to the job counts too &mdash; name it and it opens on your travel time, because that is what it was doing, and the office books it to travel. The list is your division's own equipment, so it changes if you change the division above. If what you ran is not on it, pick the closest and say which it was in Notes, or leave it blank and the office will fill it in.</div>
         </div>
 
         <!-- ── The hauling question ──
@@ -1024,7 +1024,14 @@
     // Same list the payroll split modal offers, so what the driver picks is a
     // name the cost row already understands rather than something that has to
     // be translated.
+    //
+    // Every name in the company, and the same names split by the list each one
+    // is kept on. A block offers its OWN division's list: turf, paving and
+    // kiewit each maintain one, and a paving operator scrolling turf's mowers
+    // to find his paver is how the wrong machine gets picked. The flat list is
+    // what a block falls back to — see equipNamesFor.
     let equipmentNames        = null;
+    let equipmentByDivision   = null;   // division → names, or null until loaded
     let equipmentNamesPromise = null;
     function equipmentNamesLoad() {
       if (equipmentNames) return Promise.resolve(equipmentNames);
@@ -1038,12 +1045,23 @@
         equipmentNamesPromise = fetch('/api/equipment', { headers: authHeaders() })
           .then(r => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
           .then(j => {
-            const names = (j && Array.isArray(j.equipment) ? j.equipment : [])
-              .map(e => (e && e.name) || '')
-              .filter(Boolean)
-              .sort((a, b) => a.localeCompare(b));
-            equipmentNames = names;
-            return names;
+            const rows = (j && Array.isArray(j.equipment) ? j.equipment : [])
+              .filter(e => e && e.name)
+              .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            // Each row says which lists hold it, so one machine on two lists
+            // reaches both divisions' crews. An older server sends no
+            // `divisions` at all: that lands in no division bucket, every block
+            // falls back to the flat list, and the picker behaves exactly as it
+            // did before it was narrowed.
+            const byDiv = {};
+            for (const e of rows) {
+              for (const d of (Array.isArray(e.divisions) ? e.divisions : [])) {
+                (byDiv[d] || (byDiv[d] = [])).push(String(e.name));
+              }
+            }
+            equipmentByDivision = byDiv;
+            equipmentNames = rows.map(e => String(e.name));
+            return equipmentNames;
           })
           .catch(err => {
             console.error('[timesheet] equipment list failed to load:', err.message);
@@ -1054,14 +1072,46 @@
       return equipmentNamesPromise;
     }
 
+    // The machines ONE block may name, which is its division's list.
+    //
+    // Two deliberate fallbacks, both to the whole company rather than to
+    // nothing. A picker holding only "— pick —" is a worse failure than a long
+    // list: it reads as "there is nothing to answer here", and the answer is
+    // then not given at all.
+    //
+    //   no division picked yet  → nothing to narrow by
+    //   a division with no list of its own, or an empty one → dust, trucking
+    //       and quarry keep no equipment list, and a division that has simply
+    //       never filled its own in must not be left with an empty picker
+    //
+    // Only turf, paving and kiewit maintain a list, and those are exactly the
+    // divisions whose approval prices a machine per piece (AUTO_INJECT_DIVISIONS
+    // in api/timesheet-entries.js) — so narrowing costs nothing anywhere it
+    // would have mattered.
+    function equipNamesFor(div) {
+      const own = (div && equipmentByDivision) ? equipmentByDivision[div] : null;
+      return (own && own.length) ? own : (equipmentNames || []);
+    }
+
+    // The division one block is filed under, as its own picker holds it.
+    function equipDivisionOf(i) {
+      return ((bel(i, 'division') || {}).value) || '';
+    }
+
     // Fill one block's picker, keeping whatever is already selected — including
     // a name no longer on the list, so re-opening an old entry cannot silently
-    // drop the truck it was saved with.
+    // drop the truck it was saved with. That rule now does double duty: moving
+    // a block to another division re-offers that division's trucks, and the one
+    // already picked stays on the list rather than disappearing under a thumb.
+    //
+    // Narrowed to the block's division for the same reason the machine picker
+    // is: this question is only ever asked on turf, paving and kiewit
+    // (HAUL_UNIT_DIVISIONS), and each of the three keeps its own trucks.
     function haulUnitFill(i) {
       const sel = bel(i, 'haul-unit');
       if (!sel) return;
       const cur  = haulUnits[i] || '';
-      const opts = (equipmentNames || []).slice();
+      const opts = equipNamesFor(equipDivisionOf(i)).slice();
       if (cur && !opts.includes(cur)) opts.push(cur);
       sel.innerHTML = '<option value="">— pick —</option>' +
         opts.map(n => `<option value="${escapeHtml(n)}"${n === cur ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
@@ -1111,13 +1161,15 @@
     function equipHrsId(i, slot) { return `${i === 0 ? '' : 's' + i + '-'}equip-hrs-${slot}`; }
     function equipSelId(i, slot) { return `${i === 0 ? '' : 's' + i + '-'}equip-sel-${slot}`; }
 
-    // The machine picker's options, with `cur` selected. Kept in one place
-    // because two callers need them: the full redraw, and the late-arriving
-    // company list below. A name no longer on that list is appended rather than
-    // dropped, so re-opening an older entry cannot silently lose the machine it
-    // was saved with — the same rule haulUnitFill follows.
-    function equipOptionsHtml(cur) {
-      const names = (equipmentNames || []).slice();
+    // The machine picker's options for ONE block's division, with `cur`
+    // selected. Kept in one place because three callers need them: the full
+    // redraw, the late-arriving company list below, and a change of division. A
+    // name not on that division's list is appended rather than dropped, so
+    // neither re-opening an older entry nor re-filing a block under another
+    // division can silently lose the machine it was saved with — the same rule
+    // haulUnitFill follows.
+    function equipOptionsHtml(cur, div) {
+      const names = equipNamesFor(div).slice();
       if (cur && !names.includes(cur)) names.push(cur);
       return '<option value="">&mdash; pick &mdash;</option>' + names
         .map(n => `<option value="${escapeHtml(n)}"${n === cur ? ' selected' : ''}>${escapeHtml(n)}</option>`)
@@ -1136,13 +1188,27 @@
     // to add, so options are all it touches.
     function fillEquipOptions(i) {
       const slots = equipUsed[i] || [];
+      const div   = equipDivisionOf(i);
       for (let slot = 0; slot < slots.length; slot++) {
         const sel = document.getElementById(equipSelId(i, slot));
         if (!sel) continue;
         const cur = String((slots[slot] && slots[slot].name) || '');
-        sel.innerHTML = equipOptionsHtml(cur);
+        sel.innerHTML = equipOptionsHtml(cur, div);
         sel.value = cur;
       }
+    }
+
+    // Re-offer one block's machines after its DIVISION changed. Options only,
+    // for the reason fillEquipOptions is options-only: the hours box beside
+    // each picker may have a thumb on it, and a division change is no more
+    // entitled to take those keystrokes than a late fetch is.
+    //
+    // Runs twice on purpose — once now against whatever is loaded, once when
+    // the company list lands — because a division can be picked before the
+    // fetch returns, and nothing else would come back to fill it.
+    function applyEquipDivision(i) {
+      fillEquipOptions(i);
+      equipmentNamesLoad().then(() => fillEquipOptions(i));
     }
 
     // What this block records as DRIVING: the leg that got him to this job,
@@ -1177,10 +1243,11 @@
       // There is always a line to fill in: an empty list with a "+" under it
       // reads as "nothing to answer here".
       if (!slots.length) slots.push({ name: '', hours: '' });
+      const div = equipDivisionOf(i);
       list.innerHTML = slots.map((piece, slot) => {
         const cur  = String((piece && piece.name) || '');
         const hrs  = String((piece && piece.hours) || '');
-        const opts = equipOptionsHtml(cur);
+        const opts = equipOptionsHtml(cur, div);
         return `
           <div class="equip-piece">
             <select id="${equipSelId(i, slot)}" onchange="setEquipPiece(${i}, ${slot}, this.value)">${opts}</select>
@@ -1578,7 +1645,7 @@
             <button type="button" class="split-add equip-add" id="s${i}-equip-add" onclick="addEquipPiece(${i})">
               + Add another piece
             </button>
-            <div class="hint">Optional. Name every piece you ran on this job, biggest first, and the hours you were on it. Not on the list? Pick the closest and say which it was in Notes, or leave it blank.</div>
+            <div class="hint">Optional. Name every piece you ran on this job, biggest first, and the hours you were on it. The list is this job's division. Not on it? Pick the closest and say which it was in Notes, or leave it blank.</div>
           </div>
 
           <div class="row" id="s${i}-row-haul" style="display:none">
@@ -2266,7 +2333,15 @@
       // The truck picker is division-dependent too: moving a haul block onto a
       // division whose cost row has no equipment column must take it away
       // again, rather than leave a truck the approval has nowhere to put.
+      // applyHaulUnitVisibility refills it from the new division's list.
       applyHaulUnitVisibility(i);
+      // And so are the machines: each division keeps its own equipment list, so
+      // a block moved from turf to paving has to be re-offered paving's. Above
+      // the early return for a blank division, which is itself a change worth
+      // following — clearing the division widens the picker back to the whole
+      // company rather than leaving paving's list on a block filed under
+      // nothing.
+      applyEquipDivision(i);
       if (!div) {
         jobSel.innerHTML = '<option value="">— pick division first —</option>';
         jobSel.disabled = true;

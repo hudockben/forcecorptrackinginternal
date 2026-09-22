@@ -1,12 +1,16 @@
 'use strict';
 /**
- * GET    /api/equipment         — list all active equipment for the company
+ * GET    /api/equipment         — every machine in the company, as one list:
+ *                                  the equipment_list table unioned with the
+ *                                  paving and kiewit list blobs, which nothing
+ *                                  syncs into it. See api/lib/equipment.js.
  * PUT    /api/equipment         — full replace: sync entire equipment array
  * POST   /api/equipment         — create a single equipment item
  * DELETE /api/equipment?id=N    — hard-delete one item by id
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
+const { readEquipmentRoster } = require('./lib/equipment');
 
 module.exports = async (req, res) => {
   const payload = requireAuth(req, res);
@@ -18,13 +22,13 @@ module.exports = async (req, res) => {
   try {
     // ── GET ──────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
-      const rows = await sql`
-        SELECT id, name, unit_cost, sort_order
-        FROM   equipment_list
-        WHERE  company_code = ${companyCode} AND active = TRUE
-        ORDER  BY sort_order ASC, name ASC
-      `;
-      return res.json({ equipment: rows });
+      // The union of every equipment list in the company, deduplicated by name
+      // — see api/lib/equipment.js. The table alone is turf's list and nothing
+      // else, because only `fct_lists` is routed to sync-normalized.js, so a
+      // paving or kiewit machine was never in it and never reached the
+      // Timesheet picker that asks which one he ran.
+      const merged = await readEquipmentRoster(sql, companyCode);
+      return res.json({ equipment: merged });
     }
 
     // ── PUT (full replace) ────────────────────────────────────────────────

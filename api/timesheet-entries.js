@@ -137,6 +137,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess, payrollAccess } = require('./lib/auth');
 const { syncForKey } = require('./lib/sync-normalized');
+const { readEquipmentRoster } = require('./lib/equipment');
 // Identity + lifecycle rules for the Truck Tracking rows this file injects.
 // Shared with api/truck-division.js, which sweeps rows that outlived their
 // entry on read — see the header of that module for why they live in one place.
@@ -959,8 +960,9 @@ function validateSplit(rawSplit, entry) {
 //
 // The normalized employees/projects tables are NOT usable here:
 // sync-normalized.js drops prevailing_wage, prevailing_rate and
-// non_prevailing_rate on the way through. equipment_list does keep unit_cost,
-// so it serves as the fallback the payroll dropdown needs.
+// non_prevailing_rate on the way through. Equipment does keep its unit_cost,
+// so the company-wide equipment union serves as the fallback the payroll
+// dropdown needs.
 const _eqKey = s => String(s == null ? '' : s).trim().toLowerCase();
 
 async function buildCostResolver(sql, companyCode, division, equipmentNames) {
@@ -978,13 +980,17 @@ async function buildCostResolver(sql, companyCode, division, equipmentNames) {
   }
   // Only pay for the extra read when something needs it: a name the blob does
   // not know, or one it knows only at zero.
+  //
+  // The fallback is the company-wide union, not the equipment_list table on its
+  // own. The table holds turf's machines and nothing else (only `fct_lists` is
+  // routed to sync-normalized.js), and the Timesheet picker now offers every
+  // division's — so a turf day that names the paver a man actually ran would
+  // otherwise price at zero here, which is how a machine ends up costing the
+  // job nothing. See api/lib/equipment.js.
   const wanted = [...new Set((equipmentNames || []).filter(Boolean).map(_eqKey))];
   if (wanted.some(k => !(eqCostByName.get(k) > 0))) {
     try {
-      const eqRows = await sql`
-        SELECT name, unit_cost FROM equipment_list
-        WHERE company_code = ${companyCode} AND active = TRUE
-      `;
+      const eqRows = await readEquipmentRoster(sql, companyCode);
       for (const eq of eqRows) {
         // A real price beats a missing one and beats a zero — equipment priced
         // at 0 in one list and properly in the other is a gap in that list, not
@@ -994,7 +1000,7 @@ async function buildCostResolver(sql, companyCode, division, equipmentNames) {
         if (cost > 0 && !(eqCostByName.get(k) > 0)) eqCostByName.set(k, cost);
       }
     } catch (err) {
-      console.warn('[timesheet-entries] equipment_list cost lookup failed:', err.message);
+      console.warn('[timesheet-entries] equipment cost lookup failed:', err.message);
     }
   }
 

@@ -28,6 +28,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
 const { readEmployeeRoster } = require('../lib/roster');
+const { readEquipmentRoster } = require('../lib/equipment');
 
 // Same "live job" definition the Timesheet job picker uses; empty/missing
 // status is included so older jobs without a status still surface.
@@ -464,12 +465,14 @@ async function readTruckingBoards(sql, companyCode, todayStr) {
   return { jobs: [...jobs.values()].sort((a, b) => a.name.localeCompare(b.name)), assignments };
 }
 
+// Off the same union the Timesheet picker reads (api/lib/equipment.js), for
+// the reason readEmployees reads the shared roster: the board staffs turf,
+// paving and kiewit alike, and the equipment_list table holds only turf's
+// machines. Reading the table alone meant a paving job could never be given
+// the paver it runs on.
 async function readEquipment(sql, companyCode) {
   try {
-    const rows = await sql`
-      SELECT name FROM equipment_list
-      WHERE  company_code = ${companyCode} AND active = TRUE
-      ORDER  BY sort_order ASC, name ASC`;
+    const rows = await readEquipmentRoster(sql, companyCode);
     return rows.map(r => (r.name || '').trim()).filter(Boolean);
   } catch (err) { console.warn('[scheduler/board] equipment read failed:', err.message); return []; }
 }
