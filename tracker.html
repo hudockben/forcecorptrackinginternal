@@ -6852,8 +6852,11 @@ async function loadCrmPeople() {
 function saveCrmPeople() { apiPut('fct_crm_people', crmPeople); }
 
 function addCrmPerson() {
-  crmPeople.push({
-    id: uid(), tag: '', lead_contact: '', name: '', company: '',
+  const id = uid();
+  // Newest first: a row added to the bottom of six hundred contacts is a row
+  // you have to go looking for.
+  crmPeople.unshift({
+    id, tag: '', lead_contact: '', name: '', company: '',
     work_email: '', title: '', contact_type: '',
     work_phone: '', work_website: '',
     address: '', city: '', state: '', zip: '',
@@ -6861,6 +6864,7 @@ function addCrmPerson() {
   });
   saveCrmPeople();
   renderCrmPeopleTab();
+  _crmRevealRow('crm-people-root', id, 'name');
 }
 
 function deleteCrmPerson(id) {
@@ -7025,8 +7029,9 @@ async function loadCrmCompanies() {
 function saveCrmCompanies() { apiPut('fct_crm_companies', crmCompanies); }
 
 function addCrmCompany() {
-  crmCompanies.push({
-    id: uid(), tag: '', lead_contact: '', company_name: '', contact_type: '',
+  const id = uid();
+  crmCompanies.unshift({
+    id, tag: '', lead_contact: '', company_name: '', contact_type: '',
     work_phone: '', email_domain: '', work_website: '',
     address: '', city: '', state: '', zip: '',
     field_type: '', field_size: '',
@@ -7035,6 +7040,7 @@ function addCrmCompany() {
   saveCrmCompanies();
   _crmCompaniesView = 'companies';   // show the row that was just added
   renderCrmCompaniesTab();
+  _crmRevealRow('crm-companies-root', id, 'company_name');
 }
 
 function deleteCrmCompany(id) {
@@ -7165,8 +7171,9 @@ async function loadCrmOpportunities() {
 function saveCrmOpportunities() { apiPut('fct_crm_opportunities', crmOpportunities); }
 
 function addCrmOpportunity() {
-  crmOpportunities.push({
-    id: uid(), tag: '', lead_contact: '', name: '', company: '',
+  const id = uid();
+  crmOpportunities.unshift({
+    id, tag: '', lead_contact: '', name: '', company: '',
     stage: '', value: '', close_date: '',
     win_pct: '', status: '', loss_reason: '',
     priority: '', source: '',
@@ -7174,6 +7181,7 @@ function addCrmOpportunity() {
   });
   saveCrmOpportunities();
   renderCrmOpportunitiesTab();
+  _crmRevealRow('crm-opportunities-root', id, 'name');
 }
 
 function deleteCrmOpportunity(id) {
@@ -7797,6 +7805,29 @@ function _crmPrintReport(title, subtitle, cols, rows, table) {
   w.document.close();
 }
 
+/**
+ * Brings a row the user just made into view, and puts the cursor in it.
+ *
+ * New rows go to the top of their list, so usually it is already on screen
+ * and this only moves the cursor. It earns its place when a sort is active:
+ * a blank row sorts to the bottom under every column, and without this the
+ * row someone just asked for would be created somewhere they cannot see.
+ */
+function _crmRevealRow(rootId, id, field, idAttr) {
+  setTimeout(() => {
+    const root = document.getElementById(rootId);
+    if (!root) return;
+    const attr = idAttr || 'crm-id';
+    const el = root.querySelector(`[data-${attr}="${id}"][data-crm-field="${field}"]`)
+            || root.querySelector(`[data-${attr}="${id}"][data-crm-field-col="${field}"]`)
+            || root.querySelector(`[data-${attr}="${id}"]`);
+    if (!el) return;
+    const row = el.closest('tr');
+    if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+    if (typeof el.focus === 'function') el.focus();
+  }, 0);
+}
+
 /** The Export CSV / Print pair that sits in a tab's toolbar. */
 function _crmToolButtons(onCsv, onPrint) {
   return `<button class="btn" onclick="${onCsv}"
@@ -7866,8 +7897,9 @@ function saveCrmFields() { apiPut('fct_crm_fields', crmFields); }
 
 function addCrmField(companyId) {
   const co = companyId ? crmCompanies.find(c => c.id === companyId) : null;
-  crmFields.push({
-    id: uid(),
+  const id = uid();
+  crmFields.unshift({
+    id,
     company_id:   co ? co.id : '',
     company_name: co ? (co.company_name || '') : '',
     field_name: '', field_type: '', field_size: '',
@@ -7877,6 +7909,7 @@ function addCrmField(companyId) {
   saveCrmFields();
   _crmCompaniesView = 'fields';
   renderCrmCompaniesTab();
+  _crmRevealRow('crm-companies-root', id, 'field_name', 'crm-field-id');
 }
 
 function deleteCrmField(id) {
@@ -8476,7 +8509,7 @@ function _crmMakeOpportunity(seed) {
     turf_product:      seed.turf_product || '',
     description:       seed.description || '',
   };
-  crmOpportunities.push(opp);
+  crmOpportunities.unshift(opp);
   return opp;
 }
 
@@ -9563,7 +9596,7 @@ function crmFindAddSelected() {
     const co = crmCompanies.find(c => c.id === r.companyId);
     r.people.forEach((p, i) => {
       if (!_crmFind.selected.has(`${r.companyId}::${i}`)) return;
-      crmPeople.push({
+      crmPeople.unshift({
         id: uid(), tag: '',
         lead_contact: co ? (co.lead_contact || '') : '',
         name:         p.name,
@@ -10250,15 +10283,15 @@ function _crmCommitUpload(type) {
   _crmUploadPending = null;
   if (!rows || !rows.length) return;
   if (type === 'people') {
-    crmPeople = replace ? rows : [...crmPeople, ...rows];
+    crmPeople = replace ? rows : [...rows, ...crmPeople];
     saveCrmPeople();
     renderCrmPeopleTab();
   } else if (type === 'companies') {
-    crmCompanies = replace ? rows : [...crmCompanies, ...rows];
+    crmCompanies = replace ? rows : [...rows, ...crmCompanies];
     saveCrmCompanies();
     renderCrmCompaniesTab();
   } else {
-    crmOpportunities = replace ? rows : [...crmOpportunities, ...rows];
+    crmOpportunities = replace ? rows : [...rows, ...crmOpportunities];
     saveCrmOpportunities();
     renderCrmOpportunitiesTab();
   }
@@ -30539,7 +30572,7 @@ function _luciusAddToCrm(id, opts = {}) {
       personal_interest: '', turf_product: '',
       osm_id: key, osm_lat: f.lat, osm_lng: f.lng,
     };
-    crmCompanies.push(company);
+    crmCompanies.unshift(company);
     madeCompany = true;
   } else if (key && !company.osm_id) {
     company.osm_id = key; company.osm_lat = f.lat; company.osm_lng = f.lng;
@@ -30563,7 +30596,7 @@ function _luciusAddToCrm(id, opts = {}) {
       ].filter(Boolean).join(' · '),
       osm_id: key, osm_lat: f.lat, osm_lng: f.lng,
     };
-    crmFields.push(field);
+    crmFields.unshift(field);
     madeField = true;
   }
 

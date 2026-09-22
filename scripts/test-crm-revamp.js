@@ -652,7 +652,7 @@ console.log('\nTab wiring and columns');
 
   // The bridge: Lucius files a field as a company AND a field, links both by
   // osm_id, and never invents the one thing OSM cannot know.
-  assert('Lucius creates a CRM field, not just a company', SRC.includes('crmFields.push(field)'));
+  assert('Lucius creates a CRM field, not just a company', SRC.includes('crmFields.unshift(field)'));
   assert('both sides carry the osm link',
     SRC.includes('osm_id: key, osm_lat: f.lat, osm_lng: f.lng'));
   assert('a name-matched company adopts the link',  SRC.includes('company.osm_id = key'));
@@ -677,6 +677,28 @@ console.log('\nTab wiring and columns');
   assert('the lists are editable from the CRM', SRC.includes('function openCrmLists('));
   assert('and reachable from a toolbar',        SRC.includes('function _crmListsBtn('));
   assert('the superseded hard-coded field types are gone', !SRC.includes('_CRM_FIELD_TYPES'));
+
+  // Newest first. A row added to the end of six hundred contacts is a row you
+  // have to go looking for, so nothing appends any more.
+  for (const list of ['crmPeople', 'crmCompanies', 'crmOpportunities', 'crmFields']) {
+    assert(`${list} takes new rows at the front`, SRC.includes(`${list}.unshift(`));
+    assert(`${list} never appends one`,          !SRC.includes(`${list}.push(`));
+  }
+  for (const [root, field] of [['crm-people-root', 'name'], ['crm-companies-root', 'company_name'],
+                               ['crm-opportunities-root', 'name'], ['crm-companies-root', 'field_name']]) {
+    assert(`a new row in ${root} (${field}) is revealed and focused`,
+      SRC.includes(`_crmRevealRow('${root}', id, '${field}'`));
+  }
+  // A blank row sorts to the bottom under every column, so with a sort active
+  // the reveal is the only thing that puts it in front of the user.
+  assert('the reveal finds the row by id, not by position',
+    SRC.includes('root.querySelector(`[data-${attr}="${id}"]'));
+  assert('and scrolls it into view', SRC.includes("scrollIntoView({ block: 'nearest' })"));
+
+  // An import lands on top of what was already there too.
+  for (const list of ['crmPeople', 'crmCompanies', 'crmOpportunities']) {
+    assert(`an import prepends to ${list}`, SRC.includes(`${list} = replace ? rows : [...rows, ...${list}]`));
+  }
 
   for (const key of ['fct_crm_fields', 'fct_crm_news', 'fct_crm_status_log', 'fct_crm_touches']) {
     assert(`${key} is loaded on boot`, SRC.includes(`apiGet('${key}')`));
