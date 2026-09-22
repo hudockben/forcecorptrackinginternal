@@ -408,6 +408,99 @@ console.log('\nContact finder');
     /const DEADLINE_MS = 150000/.test(src));
 }
 
+/* ── 4f. The Lucius bridge ───────────────────────────────────────────────── */
+console.log('\nLucius \u2194 CRM');
+{
+  // _LUCIUS_SPORT_TO_FIELD is an object literal, so lift it by brace instead.
+  const objStart = SRC.indexOf('const _LUCIUS_SPORT_TO_FIELD = {');
+  let depth = 0, objEnd = -1;
+  for (let j = SRC.indexOf('{', objStart); j < SRC.length; j++) {
+    if (SRC[j] === '{') depth++;
+    else if (SRC[j] === '}' && --depth === 0) { objEnd = j + 1; break; }
+  }
+  const L = new Function([
+    SRC.slice(objStart, objEnd) + ';',
+    extractFunction(SRC, '_luciusOsmKey'),
+    extractFunction(SRC, '_luciusSplitAddr'),
+    extractFunction(SRC, '_luciusFieldType'),
+    'let crmCompanies = [], crmFields = [];',
+    extractFunction(SRC, '_luciusCrmLink'),
+    'return { _luciusOsmKey, _luciusSplitAddr, _luciusFieldType, _luciusCrmLink,',
+    '  seed: (c, f) => { crmCompanies = c; crmFields = f; } };',
+  ].join('\n'))();
+
+  // The link key is OSM's own identity — stable across reruns, and unchanged
+  // by anyone tidying up a company name.
+  assert('the osm key is type/id', L._luciusOsmKey({ osmType: 'way', osmId: '123' }) === 'way/123');
+  assert('a field with no osm identity has no key', L._luciusOsmKey({ name: 'x' }) === '');
+
+  // The address is joined "street, city, state, postcode" with parts missing,
+  // so a ZIP and a state are found by shape, not by position.
+  const full = L._luciusSplitAddr('110 Elm Street, McDonald, PA, 15057');
+  assert('a full address splits', full.address === '110 Elm Street' && full.city === 'McDonald'
+    && full.state === 'PA' && full.zip === '15057', JSON.stringify(full));
+
+  const noZip = L._luciusSplitAddr('McMillan Road, Canonsburg, PA');
+  assert('a missing zip does not shift the rest',
+    noZip.address === 'McMillan Road' && noZip.city === 'Canonsburg' && noZip.state === 'PA' && noZip.zip === '',
+    JSON.stringify(noZip));
+
+  const plus4 = L._luciusSplitAddr('1 Main St, Erie, PA, 16501-1234');
+  assert('a zip+4 is still a zip', plus4.zip === '16501-1234');
+
+  // One bare part is a town far more often than a street, unless it starts
+  // with a number.
+  assert('a lone town reads as a town', L._luciusSplitAddr('Boardman').city === 'Boardman');
+  assert('a lone street reads as a street', L._luciusSplitAddr('42 Oak Ave').address === '42 Oak Ave');
+  assert('an empty address is empty, not undefined',
+    JSON.stringify(L._luciusSplitAddr('')) === JSON.stringify({ address: '', city: '', state: '', zip: '' }));
+
+  // OSM sport tags arrive in the CRM's own vocabulary, or the Fields filters
+  // would be matching against raw tags nobody types.
+  assert('american_football becomes Football', L._luciusFieldType('american_football') === 'Football');
+  assert('soccer stays Soccer',                L._luciusFieldType('soccer') === 'Soccer');
+  assert('rugby folds into Multi-Sport',       L._luciusFieldType('rugby_union') === 'Multi-Sport');
+  assert('a multi-value tag takes the first',  L._luciusFieldType('soccer;lacrosse') === 'Soccer');
+  assert('an unknown tag is still readable',   L._luciusFieldType('ultimate_frisbee') === 'Ultimate frisbee');
+  assert('no sport is no type',                L._luciusFieldType('') === '');
+
+  // The link itself. This is what stops a rerun growing a second Fort Cherry.
+  const lucius = { id: 'way/7', name: 'Fort Cherry High School', osmType: 'way', osmId: '7' };
+
+  L.seed([], []);
+  assert('an unknown field links to nothing', !L._luciusCrmLink(lucius).company);
+
+  // A company typed by hand, before Lucius ever saw the place, is matched by
+  // name so it can adopt the key rather than be duplicated.
+  L.seed([{ id: 'c1', company_name: 'Fort Cherry High School' }], []);
+  assert('a hand-typed company is found by name', L._luciusCrmLink(lucius).company.id === 'c1');
+  L.seed([{ id: 'c1', company_name: '  fort cherry HIGH school ' }], []);
+  assert('and the name match ignores case and padding', !!L._luciusCrmLink(lucius).company);
+
+  // Once the key is on the row, the name no longer matters — which is the
+  // point: renaming a company must not orphan it.
+  L.seed([{ id: 'c1', company_name: 'Fort Cherry School District', osm_id: 'way/7' }], []);
+  assert('the key survives a rename', L._luciusCrmLink(lucius).company.id === 'c1');
+
+  // The field carries the key too, and reaches its company through it.
+  L.seed([{ id: 'c1', company_name: 'Anything At All' }],
+         [{ id: 'f1', company_id: 'c1', osm_id: 'way/7' }]);
+  const viaField = L._luciusCrmLink(lucius);
+  assert('a linked field is found',        viaField.field.id === 'f1');
+  assert('and leads back to its company',  viaField.company.id === 'c1');
+
+  // A different pitch at the same school must not collide with it.
+  assert('another osm id is a different field',
+    L._luciusCrmLink({ id: 'way/8', name: 'Somewhere Else', osmType: 'way', osmId: '8' }).field == null);
+
+  // Before the CRM blobs load there is nothing to match against, and the
+  // table renders anyway rather than throwing.
+  L.seed(null, null);
+  const cold = L._luciusCrmLink(lucius);
+  assert('an unloaded CRM links to nothing instead of throwing',
+    cold.company === null && cold.field === null);
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {
@@ -462,6 +555,20 @@ console.log('\nTab wiring and columns');
     SRC.includes('function crmFindAddSelected()') && SRC.includes("_crmFind.selected.has"));
   assert('an accepted contact carries where it came from',
     SRC.includes('Found by contact lookup'));
+
+  // The bridge: Lucius files a field as a company AND a field, links both by
+  // osm_id, and never invents the one thing OSM cannot know.
+  assert('Lucius creates a CRM field, not just a company', SRC.includes('crmFields.push(field)'));
+  assert('both sides carry the osm link',
+    SRC.includes('osm_id: key, osm_lat: f.lat, osm_lng: f.lng'));
+  assert('a name-matched company adopts the link',  SRC.includes('company.osm_id = key'));
+  assert('the install year is left blank on purpose',
+    /installed_year: '',[\s\S]{0,400}Found by Lucius/.test(SRC));
+  assert('filing a field marks it converted',       SRC.includes("_luciusSetFieldStatus(id, 'Converted')"));
+  assert('the table says what is already in the CRM', SRC.includes('function _luciusCrmCell('));
+  assert('there is a not-in-CRM filter',            SRC.includes("_luciusFilter.crm === 'out'"));
+  assert('and a bulk file-everything',              SRC.includes('function _luciusAddAllToCrm('));
+  assert('a filed field links back to the map',     SRC.includes('Found by Lucius — see it on the map'));
 
   for (const key of ['fct_crm_fields', 'fct_crm_news', 'fct_crm_status_log', 'fct_crm_touches']) {
     assert(`${key} is loaded on boot`, SRC.includes(`apiGet('${key}')`));

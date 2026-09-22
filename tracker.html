@@ -3142,9 +3142,16 @@
           <option value="Not Interested">Not Interested</option>
           <option value="Converted">Converted</option>
         </select>
+        <select class="lucius-filter-sel" id="lucius-f-crm" onchange="_luciusFilterChanged()">
+          <option value="all">CRM: all</option>
+          <option value="out">Not in CRM</option>
+          <option value="in">In CRM</option>
+        </select>
         <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer">
           <input type="checkbox" id="lucius-f-stale" checked onchange="_luciusFilterChanged()"> Show cached
         </label>
+        <button class="lucius-popup-crm-btn" style="font-size:0.68rem;padding:0.15rem 0.5rem"
+          onclick="_luciusAddAllToCrm()" title="Add every field shown that the CRM does not already have">+ All to CRM</button>
         <span id="lucius-filter-count" style="color:var(--muted);margin-left:auto;font-size:0.69rem"></span>
       </div>
 
@@ -7846,6 +7853,7 @@ function addCrmField(companyId) {
     company_name: co ? (co.company_name || '') : '',
     field_name: '', field_type: '', field_size: '',
     installed_year: '', turf_product: '', notes: '',
+    osm_id: '', osm_lat: null, osm_lng: null,
   });
   saveCrmFields();
   _crmCompaniesView = 'fields';
@@ -7924,7 +7932,16 @@ function _crmBucketCell(f) {
 const _CRM_FIELD_COLS = [
   { f: 'company_name',   label: 'Company',    w: 15,  cell: _crmFieldCompanySel,
     text: f => f.company_name || '' },
-  { f: 'field_name',     label: 'Field Name', w: 13,  cell: f => _crmFieldInp(f, 'field_name', 'Varsity Football') },
+  { f: 'field_name',     label: 'Field Name', w: 13,
+    // A field Lucius found can be looked at — the coordinates are the whole
+    // reason it is in here, and they are useless if nothing surfaces them.
+    cell: f => `<div style="display:flex;align-items:center;gap:3px;min-width:0">
+      ${_crmFieldInp(f, 'field_name', 'Varsity Football')}
+      ${f.osm_lat && f.osm_lng
+        ? `<a href="https://www.google.com/maps?q=${f.osm_lat},${f.osm_lng}" target="_blank" rel="noopener"
+             title="Found by Lucius — see it on the map"
+             style="color:var(--blue);font-size:0.75rem;flex-shrink:0;text-decoration:none">◎</a>` : ''}
+    </div>` },
   { f: 'field_type',     label: 'Field Type', w: 11,  cell: _crmFieldTypeSel },
   { f: 'field_size',     label: 'Field Size', w: 9,   cell: f => _crmFieldInp(f, 'field_size', 'sq ft') },
   { f: 'installed_year', label: 'Installed',  w: 7.5, cell: f => _crmFieldInp(f, 'installed_year', 'YYYY', 'number') },
@@ -29667,7 +29684,7 @@ let _luciusRadiusCircle   = null;
 let _luciusInitDone       = false;
 let _luciusAllFields      = [];       // full unfiltered field list
 let _luciusStaleIds       = new Set();
-let _luciusFilter         = { sport: '', surface: 'all', status: 'all', showStale: true };
+let _luciusFilter         = { sport: '', surface: 'all', status: 'all', showStale: true, crm: 'all' };
 let _luciusSortCol        = 'name';
 let _luciusSortAsc        = true;
 let _luciusView           = 'map';    // 'map' | 'split' | 'list'
@@ -29798,6 +29815,13 @@ function _luciusGetVisibleFields() {
     else
       fields = fields.filter(f => f.status === status);
   }
+  // "Not in CRM" is the working view after a rerun: the fields that are new
+  // to us, rather than the two hundred we already filed last month.
+  if (_luciusFilter.crm === 'out') {
+    fields = fields.filter(f => { const l = _luciusCrmLink(f); return !l.company && !l.field; });
+  } else if (_luciusFilter.crm === 'in') {
+    fields = fields.filter(f => { const l = _luciusCrmLink(f); return !!(l.company || l.field); });
+  }
   return fields;
 }
 
@@ -29806,6 +29830,7 @@ function _luciusFilterChanged() {
   _luciusFilter.surface  = document.getElementById('lucius-f-surface')?.value || 'all';
   _luciusFilter.status   = document.getElementById('lucius-f-status')?.value  || 'all';
   _luciusFilter.showStale= document.getElementById('lucius-f-stale')?.checked ?? true;
+  _luciusFilter.crm      = document.getElementById('lucius-f-crm')?.value    || 'all';
   _luciusRenderAll();
 }
 
@@ -29874,10 +29899,13 @@ function _luciusRenderTable() {
     { key: 'addr',      label: 'Address' },
     { key: 'operator',  label: 'Operator' },
     { key: 'firstSeen', label: 'First Seen' },
+    { key: '_crm',      label: 'In CRM' },
     { key: '_actions',  label: '' },
   ];
   head.innerHTML = cols.map(c => {
     if (c.key === '_actions') return `<th style="width:70px;cursor:default"></th>`;
+    // Sorting on a derived cell would compare the markup, not the answer.
+    if (c.key === '_crm')     return `<th style="width:120px;cursor:default">${c.label}</th>`;
     const arrow = _luciusSortCol === c.key ? (_luciusSortAsc ? ' ▲' : ' ▼') : '';
     return `<th onclick="_luciusTableSort('${c.key}')">${c.label}${arrow}</th>`;
   }).join('');
@@ -29912,11 +29940,10 @@ function _luciusRenderTable() {
       <td style="color:var(--muted);font-size:0.68rem">${e(f.addr)}</td>
       <td style="color:var(--muted)">${e(f.operator)}</td>
       <td style="color:var(--muted);white-space:nowrap">${date}</td>
+      <td style="white-space:nowrap">${_luciusCrmCell(f)}</td>
       <td style="white-space:nowrap">
         <button class="lucius-popup-crm-btn" style="font-size:9px;padding:0.12rem 0.3rem"
-          onclick="_luciusSendToCrm('${esc(f.id)}','company')" title="Add to CRM Companies">+Co</button>
-        <button class="lucius-popup-crm-btn" style="font-size:9px;padding:0.12rem 0.3rem;margin-left:2px"
-          onclick="_luciusSendToCrm('${esc(f.id)}','opportunity')" title="Add as CRM Opportunity">+Opp</button>
+          onclick="_luciusSendToCrm('${esc(f.id)}','opportunity')" title="Add to the CRM and raise an opportunity">+Opp</button>
       </td>
     </tr>`;
   }).join('');
@@ -29968,41 +29995,259 @@ async function _luciusRemoveStale() {
 }
 
 // ── Send to CRM ───────────────────────────────────────────────
-function _luciusSendToCrm(id, target) {
-  const f = _luciusAllFields.find(f => f.id === id);
-  if (!f) return;
-  if (target === 'company') {
-    if (!Array.isArray(crmCompanies)) { alert('CRM not loaded — open the CRM tab first.'); return; }
-    const exists = crmCompanies.find(c => c.company_name === f.name);
-    if (exists && !confirm(`"${f.name}" already exists in CRM Companies. Add anyway?`)) return;
-    crmCompanies.push({
-      id: uid(), tag: 'Prospect',
+/* ═══════════════════════════════════════════
+   Lucius ↔ CRM
+
+   Lucius already knew where every field in a radius was, what it was made of
+   and who ran it; the CRM already knew who to call. What sat between them was
+   a one-way push that created a Company and then threw the interesting part
+   away — the surface and the sport went into a `notes` key no column reads,
+   and no Field record was ever made, so a field Lucius had physically located
+   never reached the age buckets that decide what we sell it.
+
+   Worse, nothing was written down linking the two, so the only defence
+   against sending the same field twice was an exact name match and a confirm
+   box. Rerun the query next month and the CRM grows a second Fort Cherry.
+
+   So the link is now explicit. Both sides carry osm_id — OpenStreetMap's own
+   identity for that pitch, "way/12345" — which is stable across reruns, does
+   not change when someone tidies up a company name, and is the only thing
+   here that can honestly answer "have we already got this one?".
+═══════════════════════════════════════════ */
+
+/** OSM's identity for a field: stable, and the same on both sides of the link. */
+function _luciusOsmKey(f) {
+  return (f && f.osmType && f.osmId) ? `${f.osmType}/${f.osmId}` : '';
+}
+
+/**
+ * What the CRM already holds for a Lucius field.
+ *
+ * osm_id first because it is the real link; a name match is the fallback for
+ * rows that predate it, or that someone typed in by hand before Lucius found
+ * the same place.
+ */
+function _luciusCrmLink(f) {
+  if (!Array.isArray(crmCompanies) || !Array.isArray(crmFields)) return { company: null, field: null };
+  const key  = _luciusOsmKey(f);
+  const name = String(f && f.name || '').trim().toLowerCase();
+
+  const field = key ? crmFields.find(x => x.osm_id === key) || null : null;
+
+  let company = null;
+  if (field && field.company_id) company = crmCompanies.find(c => c.id === field.company_id) || null;
+  if (!company && key)  company = crmCompanies.find(c => c.osm_id === key) || null;
+  if (!company && name) company = crmCompanies.find(c =>
+    String(c.company_name || '').trim().toLowerCase() === name) || null;
+
+  return { company, field };
+}
+
+/**
+ * Splits the address Lucius assembled from OSM's addr:* tags.
+ *
+ * It is joined as "street, city, state, postcode" with any part possibly
+ * missing, so position alone cannot be trusted. A ZIP and a two-letter state
+ * are recognisable on sight, which is what makes the rest unambiguous.
+ */
+function _luciusSplitAddr(addr) {
+  const out   = { address: '', city: '', state: '', zip: '' };
+  const parts = String(addr || '').split(',').map(s => s.trim()).filter(Boolean);
+  const rest  = [];
+  for (const p of parts) {
+    if (!out.zip   && /^\d{5}(-\d{4})?$/.test(p)) out.zip = p;
+    else if (!out.state && /^[A-Z]{2}$/.test(p))  out.state = p;
+    else rest.push(p);
+  }
+  if (rest.length >= 2)      { out.address = rest[0]; out.city = rest[1]; }
+  else if (rest.length === 1) { if (/^\d/.test(rest[0])) out.address = rest[0]; else out.city = rest[0]; }
+  return out;
+}
+
+/* OSM's sport tags in the CRM's own words, so a field arrives with a type the
+   Fields list already knows rather than a raw tag nobody filters on. */
+const _LUCIUS_SPORT_TO_FIELD = {
+  american_football: 'Football', football: 'Football', soccer: 'Soccer',
+  baseball: 'Baseball', softball: 'Softball', lacrosse: 'Lacrosse',
+  field_hockey: 'Field Hockey', rugby: 'Multi-Sport', rugby_union: 'Multi-Sport',
+  rugby_league: 'Multi-Sport', multi: 'Multi-Sport',
+};
+
+function _luciusFieldType(sport) {
+  const s = String(sport || '').toLowerCase().split(/[;,]/)[0].trim();
+  if (!s) return '';
+  return _LUCIUS_SPORT_TO_FIELD[s] || (s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' '));
+}
+
+/**
+ * Puts a Lucius field into the CRM as a Company and a Field, and links both.
+ *
+ * Idempotent through osm_id: run it twice on the same pitch and the second
+ * run finds what the first one made and adds nothing. A company matched only
+ * by name adopts the osm_id on the way past, so the next rerun has the real
+ * link rather than the guess.
+ *
+ * installed_year is deliberately left blank. OSM knows the surface, never
+ * when it was laid, and a year invented here would flow straight into the age
+ * buckets and tell a rep to sell a replacement on the strength of a guess.
+ * Blank puts it in "no install year" on the dashboard, which is a question,
+ * which is the truth.
+ */
+function _luciusAddToCrm(id, opts = {}) {
+  const f = _luciusAllFields.find(x => x.id === id);
+  if (!f) return null;
+  if (!Array.isArray(crmCompanies) || !Array.isArray(crmFields)) {
+    alert('The CRM has not loaded yet — open a CRM tab once, then try again.');
+    return null;
+  }
+
+  const key  = _luciusOsmKey(f);
+  const link = _luciusCrmLink(f);
+  let { company, field } = link;
+  let madeCompany = false, madeField = false, adopted = false;
+
+  if (!company) {
+    const a = _luciusSplitAddr(f.addr);
+    company = {
+      id: uid(), tag: 'Prospect', lead_contact: '',
       company_name: f.name,
-      contact_type: f.sport || '',
+      contact_type: f.operator ? 'Operator' : '',
       work_phone: '', email_domain: '',
       work_website: f.website || '',
-      address: f.addr || '',
-      city: '', state: '', zip: '',
-      field_type: f.isTurf ? 'Turf' : 'Natural',
-      field_size: '',
-      notes: [f.operator, f.surface, `OSM: ${f.osmType}/${f.osmId}`].filter(Boolean).join(' · '),
-    });
-    saveCrmCompanies();
-    alert(`"${f.name}" added to CRM Companies.`);
-  } else {
-    if (!Array.isArray(crmOpportunities)) { alert('CRM not loaded — open the CRM tab first.'); return; }
-    crmOpportunities.push({
-      id: uid(), tag: '',
-      name: `Turf Install – ${f.name}`,
-      company: f.operator || f.name,
-      stage: 'Prospecting', value: '', close_date: '',
-      win_pct: '', status: 'Open', loss_reason: '',
-      priority: 'Medium', source: 'Lucius',
-      description: [f.addr, f.sport ? `Sport: ${f.sport}` : '', f.surface ? `Surface: ${f.surface}` : ''].filter(Boolean).join(' · '),
+      address: a.address, city: a.city, state: a.state, zip: a.zip,
+      field_type: '', field_size: '',
+      personal_interest: '', turf_product: '',
+      osm_id: key, osm_lat: f.lat, osm_lng: f.lng,
+    };
+    crmCompanies.push(company);
+    madeCompany = true;
+  } else if (key && !company.osm_id) {
+    company.osm_id = key; company.osm_lat = f.lat; company.osm_lng = f.lng;
+    adopted = true;
+  }
+
+  if (!field) {
+    field = {
+      id: uid(),
+      company_id:   company.id,
+      company_name: company.company_name || '',
+      field_name:   f.name,
+      field_type:   _luciusFieldType(f.sport),
+      field_size:   '',
+      installed_year: '',
+      turf_product: '',
+      notes: [
+        f.isTurf ? 'Synthetic turf (per OpenStreetMap)' : (f.surface ? `Surface: ${f.surface}` : 'Surface not recorded'),
+        f.operator ? `Operator: ${f.operator}` : '',
+        'Found by Lucius',
+      ].filter(Boolean).join(' · '),
+      osm_id: key, osm_lat: f.lat, osm_lng: f.lng,
+    };
+    crmFields.push(field);
+    madeField = true;
+  }
+
+  if (madeCompany || adopted) saveCrmCompanies();
+  if (madeField) saveCrmFields();
+
+  // A field that is in the CRM is no longer an untouched prospect, and the
+  // status is what the Lucius filters read.
+  if (!opts.quiet && f.status !== 'Converted') _luciusSetFieldStatus(id, 'Converted');
+  else if (opts.quiet && f.status !== 'Converted') f.status = 'Converted';
+
+  return { company, field, madeCompany, madeField, adopted };
+}
+
+/**
+ * The row buttons. "+CRM" files the field; "+Opp" files it and raises a deal.
+ *
+ * A natural-grass field is the bigger sale of the two — it is a whole install
+ * rather than grooming or an eventual replacement — so it opens at a higher
+ * priority. That is a starting point, not a judgement; the rep changes it.
+ */
+function _luciusSendToCrm(id, target) {
+  const r = _luciusAddToCrm(id);
+  if (!r) return;
+  const f = _luciusAllFields.find(x => x.id === id);
+
+  if (target === 'opportunity') {
+    if (!Array.isArray(crmOpportunities)) { alert('The CRM has not loaded yet.'); return; }
+    _crmMakeOpportunity({
+      name:     `${r.company.company_name} — ${f && f.isTurf ? 'turf' : 'new install'}`,
+      company:  r.company.company_name,
+      priority: f && f.isTurf ? 'Medium' : 'High',
+      source:   'Lucius',
+      turf_product: r.company.turf_product || '',
+      description: [
+        f && f.sport ? _luciusFieldType(f.sport) : '',
+        f && (f.isTurf ? 'existing synthetic turf' : `natural surface${f.surface ? ` (${f.surface})` : ''}`),
+        f && f.addr ? f.addr : '',
+        'Found by Lucius',
+      ].filter(Boolean).join(' · '),
     });
     saveCrmOpportunities();
-    alert(`Opportunity "Turf Install – ${f.name}" added to CRM.`);
   }
+
+  const made = [r.madeCompany && 'company', r.madeField && 'field',
+                target === 'opportunity' && 'opportunity'].filter(Boolean);
+  _luciusSetStatus(made.length
+    ? `${f ? f.name : 'Field'} → CRM (${made.join(' + ')} added)`
+    : `${f ? f.name : 'Field'} was already in the CRM.`);
+  _luciusRenderAll();
+}
+
+/** Every visible field that the CRM does not already hold. */
+function _luciusNotInCrm() {
+  if (!Array.isArray(crmCompanies)) return [];
+  return _luciusGetVisibleFields().filter(f => {
+    const l = _luciusCrmLink(f);
+    return !l.company && !l.field;
+  });
+}
+
+/** Files every visible field the CRM has not got, in one pass. */
+function _luciusAddAllToCrm() {
+  const missing = _luciusNotInCrm();
+  if (!missing.length) { _luciusSetStatus('Every field shown is already in the CRM.'); return; }
+  if (!confirm(`Add ${missing.length} field${missing.length === 1 ? '' : 's'} to the CRM as companies and fields? Install years are left blank for someone to fill in.`)) return;
+
+  let companies = 0, fields = 0;
+  for (const f of missing) {
+    // quiet: the status is set in the loop and the cache written once at the
+    // end, rather than a save and a re-render per field.
+    const r = _luciusAddToCrm(f.id, { quiet: true });
+    if (!r) continue;
+    if (r.madeCompany) companies++;
+    if (r.madeField)   fields++;
+  }
+  _luciusSaveCache(_luciusAllFields);
+  _luciusSetStatus(`Added ${companies} compan${companies === 1 ? 'y' : 'ies'} and ${fields} field${fields === 1 ? '' : 's'} to the CRM.`);
+  _luciusRenderAll();
+}
+
+/** Jump from a Lucius row to the company it made. */
+function _luciusOpenCrmCompany(companyId) {
+  const c = crmCompanies.find(x => x.id === companyId);
+  if (!c) return;
+  _crmCompanyFilter  = { company_name: c.company_name || '' };
+  _crmCompaniesView  = 'companies';
+  crmSwitchTab('companies');
+}
+
+/** The In-CRM cell: what we hold for this field, or the button to file it. */
+function _luciusCrmCell(f) {
+  const l = _luciusCrmLink(f);
+  if (l.company) {
+    const bits = [l.field ? 'field' : ''].filter(Boolean);
+    return `<button onclick="_luciusOpenCrmCompany('${esc(l.company.id)}')"
+      title="In the CRM — open the company"
+      style="background:#166534;border:1px solid #166534;color:#fff;border-radius:9px;
+             padding:0.08rem 0.4rem;font-size:9px;font-weight:700;cursor:pointer;
+             max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      ✓ ${escT(l.company.company_name || 'in CRM')}${bits.length ? '' : ' (no field)'}</button>`;
+  }
+  return `<button class="lucius-popup-crm-btn" style="font-size:9px;padding:0.12rem 0.3rem"
+    onclick="_luciusSendToCrm('${esc(f.id)}','company')" title="Add as a CRM company and field">+ CRM</button>`;
 }
 
 // ── Overpass query builder ────────────────────────────────────
