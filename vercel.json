@@ -38,6 +38,11 @@
       "memory": 1024,
       "maxDuration": 300
     },
+    "api/ai/crm-find-contacts.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 300
+    },
     "api/**/*.js": {
       "includeFiles": "api/**"
     }

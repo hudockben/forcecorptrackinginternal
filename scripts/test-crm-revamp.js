@@ -308,6 +308,106 @@ console.log('\nPer-region pulls');
   assert('the tab waits longer than the server takes', backstop > deadline, `${backstop}ms vs ${deadline}ms`);
 }
 
+/* ── 4d. The touch log ───────────────────────────────────────────────────── */
+console.log('\nTouch log');
+{
+  const code = [
+    'let crmTouches = [];',
+    'let _crmTouchLatest = { person: new Map(), opp: new Map(), company: new Map() };',
+    'const _CRM_COLD_DAYS = 60;',
+    extractFunction(SRC, '_crmReindexTouches'),
+    extractFunction(SRC, '_crmDaysSince'),
+    extractFunction(SRC, '_crmTouchForPerson'),
+    extractFunction(SRC, '_crmTouchForOpp'),
+    extractFunction(SRC, '_crmTouchText'),
+    'return { set: t => { crmTouches = t; _crmReindexTouches(); },',
+    '  _crmTouchForPerson, _crmTouchForOpp, _crmTouchText, _crmDaysSince };',
+  ].join('\n');
+  const T = new Function(code)();
+
+  const ago = n => new Date(Date.now() - n * 86400000).toISOString();
+  T.set([
+    { id: 'a', at: ago(30), person_id: 'p1', opp_id: '',   company: 'Fort Cherry SD', channel: 'Email' },
+    { id: 'b', at: ago(3),  person_id: 'p1', opp_id: '',   company: 'Fort Cherry SD', channel: 'Call'  },
+    { id: 'c', at: ago(10), person_id: '',   opp_id: 'o9', company: 'Peters Township', channel: 'Visit' },
+  ]);
+
+  // The newest touch wins, not the last one in the array.
+  assert('a person shows their most recent touch',
+    T._crmTouchForPerson({ id: 'p1', company: 'Fort Cherry SD' }).channel === 'Call');
+  assert('and it is measured in days',
+    T._crmDaysSince(T._crmTouchForPerson({ id: 'p1' }).at) === 3);
+
+  // A call to anyone at the company counts for a colleague at the same one —
+  // the company heard from us, which is the question being asked.
+  assert('a colleague at the same company inherits the touch',
+    T._crmTouchForPerson({ id: 'p2', company: 'Fort Cherry SD' }).channel === 'Call');
+  assert('company matching ignores case and padding',
+    T._crmTouchForPerson({ id: 'p3', company: '  fort cherry sd ' }).channel === 'Call');
+  assert('an unrelated company has no touch',
+    T._crmTouchForPerson({ id: 'p4', company: 'Somewhere Else' }) === null);
+
+  assert('an opportunity finds its own touch',
+    T._crmTouchForOpp({ id: 'o9', company: 'Peters Township' }).channel === 'Visit');
+  assert('an opportunity falls back to its company',
+    T._crmTouchForOpp({ id: 'o404', company: 'Fort Cherry SD' }).channel === 'Call');
+
+  // "Never" has to sort and export as the coldest thing there is, not as a
+  // blank that lands wherever the comparator happens to put it.
+  const never   = T._crmTouchText(null);
+  const recent  = T._crmTouchText({ at: ago(3) });
+  const old     = T._crmTouchText({ at: ago(120) });
+  assert('never sorts colder than a 120-day gap', Number(never) > Number(old), `${never} vs ${old}`);
+  assert('120 days sorts colder than 3',          Number(old) > Number(recent));
+  assert('days since is never negative',          T._crmDaysSince(new Date(Date.now() + 86400000).toISOString()) === 0);
+  assert('a missing timestamp reads as unknown',  T._crmDaysSince('') === null);
+}
+
+/* ── 4e. What the contact finder will stand behind ───────────────────────── */
+console.log('\nContact finder');
+{
+  const src = fs.readFileSync(path.join(ROOT, 'api', 'ai', 'crm-find-contacts.js'), 'utf8');
+  const { cleanPeople } = new Function(
+    'const MAX_PEOPLE = 6;\n' + extractFunction(src, 'cleanPeople') + '\nreturn { cleanPeople };')();
+
+  const out = cleanPeople([
+    { name: 'Greg Taranto', title: 'Superintendent', email: 'tarantog@cmsd.k12.pa.us',
+      phone: '724-746-2940', source_url: 'https://example.com/staff', confidence: 'high' },
+    { name: 'No Source Sam', title: 'AD', email: 'sam@x.com' },                 // unsourced
+    { name: '', title: 'AD', source_url: 'https://example.com/a' },             // nameless
+    { name: 'Bad Email Bob', source_url: 'https://example.com/b', email: 'bob(at)x.com' },
+    { name: 'No Email Ned',  source_url: 'https://example.com/c', title: 'Athletic Director' },
+  ]);
+
+  assert('an unsourced person is dropped',  !out.find(p => p.name === 'No Source Sam'));
+  assert('a nameless row is dropped',       out.every(p => p.name));
+  assert('a sourced person survives',       out[0].name === 'Greg Taranto');
+  assert('their address is kept',           out[0].email === 'tarantog@cmsd.k12.pa.us');
+
+  // A malformed address is a typo at best and a bounce at worst — the name is
+  // still worth having, the address is not.
+  const bob = out.find(p => p.name === 'Bad Email Bob');
+  assert('a malformed address is discarded, the person kept', bob && bob.email === '');
+
+  // Most of the work is finding out who to ask for; no printed address does
+  // not make the name useless.
+  const ned = out.find(p => p.name === 'No Email Ned');
+  assert('someone with no address is still returned', !!ned);
+  assert('and keeps their title',                     ned.title === 'Athletic Director');
+  assert('confidence defaults rather than being invented',
+    ned.confidence === 'medium' && out[0].confidence === 'high');
+
+  assert('the list is capped', cleanPeople(Array.from({ length: 20 }, (_, i) =>
+    ({ name: 'P' + i, source_url: 'https://example.com/' + i }))).length === 6);
+
+  // The lookup must never construct an address from a pattern — that is the
+  // instruction that keeps the sending domain out of trouble.
+  assert('the prompt forbids guessing an address',
+    /NEVER construct an email address from a pattern/.test(src));
+  assert('the lookup stops before the platform does',
+    /const DEADLINE_MS = 150000/.test(src));
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {
@@ -351,7 +451,19 @@ console.log('\nTab wiring and columns');
     SRC.includes("viewBtn('table'") && SRC.includes("_crmNewsView === 'feed'"));
   assert('the old filter-row handler is gone', !SRC.includes('data-crm-nf'));
 
-  for (const key of ['fct_crm_fields', 'fct_crm_news', 'fct_crm_status_log']) {
+  assert('a touch can be logged from a People row',        SRC.includes("_crmTouchBtn('person', p.id)"));
+  assert('and from an Opportunities row',                 SRC.includes("_crmTouchBtn('opportunity', o.id)"));
+  assert('and from the outreach call list',               SRC.includes("_crmTouchBtn('opportunity', r.id)"));
+  assert('People shows when it last heard from them',     SRC.includes("label: 'Last Touch'"));
+  assert('the outreach report can show only cold names',  SRC.includes('_crmOutreachColdOnly'));
+  assert('there is a contact activity report',            SRC.includes("tab('activity', 'Contact Activity')"));
+  assert('the finder lives beside Companies and Fields',  SRC.includes("btn('find',      'Find Contacts'"));
+  assert('found contacts are never written without a tick',
+    SRC.includes('function crmFindAddSelected()') && SRC.includes("_crmFind.selected.has"));
+  assert('an accepted contact carries where it came from',
+    SRC.includes('Found by contact lookup'));
+
+  for (const key of ['fct_crm_fields', 'fct_crm_news', 'fct_crm_status_log', 'fct_crm_touches']) {
     assert(`${key} is loaded on boot`, SRC.includes(`apiGet('${key}')`));
   }
   assert('stage and status moves are logged', SRC.includes('logCrmStatusChange(opp, field, before, el.value)'));
