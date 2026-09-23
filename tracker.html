@@ -124,7 +124,7 @@
     .crm-sub-bar {
       display: flex;
       align-items: stretch;
-      /* Seven tabs plus Lucius overflow a narrow window; scrolling the bar
+      /* Eight tabs plus Lucius overflow a narrow window; scrolling the bar
          keeps every tab reachable without wrapping the sticky header. */
       overflow-x: auto;
       scrollbar-width: thin;
@@ -3098,6 +3098,7 @@
     <button class="crm-sub-btn"        data-crm-tab="dashboard">CRM Dashboard</button>
     <button class="crm-sub-btn"        data-crm-tab="people">People</button>
     <button class="crm-sub-btn"        data-crm-tab="companies">Companies</button>
+    <button class="crm-sub-btn"        data-crm-tab="schools">Schools</button>
     <button class="crm-sub-btn"        data-crm-tab="opportunities">Opportunities</button>
     <button class="crm-sub-btn"        data-crm-tab="search">AI Search</button>
     <button class="crm-sub-btn"        data-crm-tab="reports">Reports</button>
@@ -3116,6 +3117,9 @@
   </div>
   <div class="crm-sub-panel" id="crm-panel-companies">
     <div id="crm-companies-root" style="padding:1.25rem 1rem"></div>
+  </div>
+  <div class="crm-sub-panel" id="crm-panel-schools">
+    <div id="crm-schools-root" style="padding:1.25rem 1rem"></div>
   </div>
   <div class="crm-sub-panel" id="crm-panel-opportunities">
     <div id="crm-opportunities-root" style="padding:1.25rem 1rem"></div>
@@ -4566,7 +4570,9 @@ function apiPut(key, value, opts = {}) {
     body: JSON.stringify({ value })
   };
   if (opts.keepalive) init.keepalive = true;
-  fetch(`${API_BASE}/data/${key}`, init).then(async r => {
+  // Returned so a caller that has to know when a save has landed can wait on
+  // it (saveCrmCompanies does). It never rejects — failures are shown here.
+  return fetch(`${API_BASE}/data/${key}`, init).then(async r => {
     if (r.ok) return;
     console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
     // 409 = backend bulk-wipe protection refused the request. Surface
@@ -4967,6 +4973,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 const _adminTabs = new Set(['supplier']);
 
 function crmSwitchTab(tab) {
+  _crmResetPaging();
   document.querySelectorAll('.crm-sub-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.crmTab === tab));
   document.querySelectorAll('.crm-sub-panel').forEach(p =>
@@ -4975,6 +4982,7 @@ function crmSwitchTab(tab) {
   if (tab === 'dashboard')     renderCrmDashboard();
   if (tab === 'people')        renderCrmPeopleTab();
   if (tab === 'companies')     renderCrmCompaniesTab();
+  if (tab === 'schools')       renderCrmSchoolsTab();
   if (tab === 'opportunities') renderCrmOpportunitiesTab();
   if (tab === 'search')        renderCrmSearchTab();
   if (tab === 'reports')       renderCrmReportsTab();
@@ -6898,6 +6906,7 @@ let _invBreakdownOpen = false;
 let crmPeople = [];
 let _crmPeopleFilter  = {};
 let _crmCompanyFilter = {};
+let _crmSchoolFilter  = {};
 let _crmOppFilter     = {};
 
 /* ═══════════════════════════════════════════
@@ -7000,7 +7009,10 @@ function _crmCloseFilter() {
 function _crmDrawFilterPop() {
   if (!_crmFilterPop) return;
   const { table, field } = _crmFilterPop;
-  const btn = document.querySelector(`[data-crm-filter-btn="${table}:${field}"]`);
+  // The Fields table can be drawn on both the Companies and Schools tabs, and
+  // a hidden panel keeps its markup — so look on the one on screen first.
+  const anchor = `[data-crm-filter-btn="${table}:${field}"]`;
+  const btn = document.querySelector(`.crm-sub-panel.active ${anchor}`) || document.querySelector(anchor);
   if (!btn) { _crmCloseFilter(); return; }
 
   const ctx = _CRM_FILTER_CTX[table] && _CRM_FILTER_CTX[table]();
@@ -7066,6 +7078,7 @@ function _crmFilterPopSearch(v) {
 function _crmSetFilterValues(table, field, values) {
   const ctx = _CRM_FILTER_CTX[table] && _CRM_FILTER_CTX[table]();
   if (!ctx) return;
+  _crmResetPaging(table);
   if (values.length) ctx.filter[field] = values;
   else delete ctx.filter[field];
   const fn = _CRM_RERENDER[table];
@@ -7177,14 +7190,36 @@ function _crmTagSel(p) {
            width:100%;min-width:0">${opts}</select>`;
 }
 
+/*
+ * The State cell is drawn holding only its own value, and fills with the
+ * other fifty as it opens. Fifty-one options on every row was a third of
+ * everything a 200-row Schools page drew — ten thousand option tags to show
+ * two letters — and every sort and filter click paid for it.
+ */
 function _crmStateSel(p) {
-  const opts = _CRM_US_STATES.map(s =>
-    `<option value="${s}" ${p.state === s ? 'selected' : ''}>${s || '—'}</option>`).join('');
-  return `<select data-crm-id="${p.id}" data-crm-field="state"
+  const cur = String(p.state || '');
+  return `<select data-crm-id="${p.id}" data-crm-field="state" data-crm-lazy-states="1"
     style="background:var(--surface2);border:1px solid var(--border);border-radius:3px;
            color:var(--text);font-size:0.8rem;outline:none;padding:0.1rem 0.2rem;
-           width:100%;min-width:0">${opts}</select>`;
+           width:100%;min-width:0"><option value="${esc(cur)}" selected>${esc(cur) || '—'}</option></select>`;
 }
+
+function _crmFillStateOptions(sel) {
+  if (!sel || sel.dataset.crmLazyStates !== '1') return;
+  sel.dataset.crmLazyStates = '2';
+  const cur  = sel.value;
+  // A value from an import that is not a state is kept, not blanked.
+  const list = _CRM_US_STATES.includes(cur) ? _CRM_US_STATES : [..._CRM_US_STATES, cur];
+  sel.innerHTML = list.map(v =>
+    `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(v) || '—'}</option>`).join('');
+}
+
+// On the press that opens it, and the focus a keyboard reaches it by —
+// captured, so it runs before the browser builds the open list.
+['mousedown', 'focusin'].forEach(ev => document.addEventListener(ev, e => {
+  const sel = e.target && e.target.closest && e.target.closest('select[data-crm-lazy-states="1"]');
+  if (sel) _crmFillStateOptions(sel);
+}, true));
 
 function _crmInp(p, field, ph = '') {
   return `<input type="text" value="${esc(p[field] || '')}"
@@ -7288,18 +7323,73 @@ function renderCrmPeopleTab() {
 }
 
 /* ═══════════════════════════════════════════
-   CRM — Companies
+   CRM — Companies and Schools
+
+   One list, two tabs. A school is kept in the same list as every other
+   company, because everything else in the CRM reads that list — AI Search,
+   Find Contacts, the field ages, Lucius, the outreach report — and a school
+   kept anywhere else would quietly drop out of every one of them.
+
+   What splits them is the Organisation Type. A row typed High School,
+   College / University, School District, or anything else that names a
+   school, is on Schools; everything else is on Companies. Changing a row's
+   type moves it across, which is the point: there is one place that says
+   what a row is, and it is the column you can see.
 ═══════════════════════════════════════════ */
 let crmCompanies = [];
+
+const _CRM_SCHOOL_TYPE_RE = /school|college|universit|academy|\bhs\b/i;
+
+/** Whether a company row belongs on the Schools tab. */
+function _crmIsSchool(c) { return !!c && _CRM_SCHOOL_TYPE_RE.test(String(c.contact_type || '')); }
+function _crmSideOf(c)   { return _crmIsSchool(c) ? 'schools' : 'companies'; }
+
+/** The rows one tab shows, before its filter. */
+function _crmOrgRows(side) {
+  const schools = side === 'schools';
+  return crmCompanies.filter(c => _crmIsSchool(c) === schools);
+}
+
+function _crmPanelActive(tab) {
+  return !!document.getElementById('crm-panel-' + tab)?.classList.contains('active');
+}
 
 async function loadCrmCompanies() {
   const saved = await apiGet('fct_crm_companies');
   crmCompanies = Array.isArray(saved) ? saved : [];
-  if (document.getElementById('crm-panel-companies')?.classList.contains('active'))  renderCrmCompaniesTab();
-  if (document.getElementById('crm-panel-dashboard')?.classList.contains('active'))  renderCrmDashboard();
+  if (_crmPanelActive('companies')) renderCrmCompaniesTab();
+  if (_crmPanelActive('schools'))   renderCrmSchoolsTab();
+  if (_crmPanelActive('dashboard')) renderCrmDashboard();
 }
 
-function saveCrmCompanies() { apiPut('fct_crm_companies', crmCompanies); }
+/*
+ * One save at a time, and always the newest.
+ *
+ * This list carries every school as well as every company — the best part of
+ * a megabyte — and a cell saves it on every keystroke. Sent a request per
+ * keystroke, they can land out of order, and an older copy landing last
+ * quietly undoes the newest edit. So a save waits for the one in flight, and
+ * whatever was typed meanwhile goes out after it as one current copy.
+ */
+const _crmCosSave = { busy: false, again: false, sent: 0 };
+
+function saveCrmCompanies() {
+  _crmDataVer++;
+  if (_crmCosSave.busy) { _crmCosSave.again = true; return; }
+  _crmCosSave.busy  = true;
+  _crmCosSave.again = false;
+  _crmCosSave.sent++;
+  Promise.resolve(apiPut('fct_crm_companies', crmCompanies)).finally(() => {
+    _crmCosSave.busy = false;
+    if (_crmCosSave.again) saveCrmCompanies();
+  });
+}
+
+// A save queued behind the one in flight has not left yet. Leaving now would
+// drop it, so say so the way the browser lets a page say so.
+window.addEventListener('beforeunload', e => {
+  if (_crmCosSave.busy || _crmCosSave.again) { e.preventDefault(); e.returnValue = ''; }
+});
 
 function addCrmCompany() {
   const id = uid();
@@ -7312,15 +7402,35 @@ function addCrmCompany() {
   });
   saveCrmCompanies();
   _crmCompaniesView = 'companies';   // show the row that was just added
+  _crmPinRow = id;
   renderCrmCompaniesTab();
   _crmRevealRow('crm-companies-root', id, 'company_name');
 }
 
+/** A new school starts typed as one, or it would be born on the other tab. */
+function addCrmSchool() {
+  const id = uid();
+  crmCompanies.unshift({
+    id, tag: '', lead_contact: '', company_name: '', contact_type: 'High School',
+    sector: '', athletics_level: '', enrollment: '', territory: '', miles_to_line: '',
+    work_phone: '', email_domain: '', work_website: '', athletics_url: '',
+    address: '', city: '', county: '', state: '', zip: '',
+    field_type: '', field_size: '',
+    personal_interest: '', turf_product: '', notes: '', nces_id: ''
+  });
+  saveCrmCompanies();
+  _crmSchoolsView = 'schools';
+  _crmPinRow = id;
+  renderCrmSchoolsTab();
+  _crmRevealRow('crm-schools-root', id, 'company_name');
+}
+
 function deleteCrmCompany(id) {
-  if (!confirm('Delete this company?')) return;
+  const side = _crmSideOf(crmCompanies.find(c => c.id === id));
+  if (!confirm(side === 'schools' ? 'Delete this school?' : 'Delete this company?')) return;
   crmCompanies = crmCompanies.filter(c => c.id !== id);
   saveCrmCompanies();
-  renderCrmCompaniesTab();
+  _crmRenderOrg(side);
 }
 
 const _CRM_COMPANY_COLS = [
@@ -7357,36 +7467,169 @@ const _CRM_COMPANY_COLS = [
     } },
 ];
 
-/** The fields belonging to a company — matched by id, or by name for imports. */
-function _crmFieldsFor(c) {
-  if (!c) return [];
-  const name = String(c.company_name || '').trim().toLowerCase();
-  return crmFields.filter(f =>
-    f.company_id === c.id || (name && String(f.company_name || '').trim().toLowerCase() === name));
+/* Territory is the line on the sales map. "Inside" is well inside it; "On/near
+   boundary" is within 25 miles of it either side, where whose school it is
+   still wants checking against the map before anyone calls. */
+const _CRM_TERRITORY_OPTS   = ['', 'Inside', 'On/near boundary'];
+const _CRM_TERRITORY_COLORS = {
+  'Inside':           { bg: '#166534', color: '#fff' },
+  'On/near boundary': { bg: '#b45309', color: '#fff' },
+};
+const _CRM_SECTOR_OPTS = ['', 'Public', 'Private'];
+
+/* Schools share every column a company has that means the same thing — the
+   same entry, not a copy of it, so a change to one is a change to both. */
+const _crmCompanyCol = (f, over) => ({ ..._CRM_COMPANY_COLS.find(c => c.f === f), ...over });
+
+const _CRM_SCHOOL_COLS = [
+  _crmCompanyCol('tag',          { w: 3.5 }),
+  _crmCompanyCol('lead_contact', { w: 4 }),
+  { f: 'company_name',    label: 'School',        w: 8,   cell: c => _crmInp(c, 'company_name',    'School name') },
+  _crmCompanyCol('contact_type', { label: 'Type', w: 5 }),
+  { f: 'sector',          label: 'Public / Private', w: 3.5, cell: c => _crmPillSel(c, 'sector', _CRM_SECTOR_OPTS, {}) },
+  { f: 'athletics_level', label: 'Athletics',     w: 4.5, cell: c => _crmInp(c, 'athletics_level', 'NCAA D-III…') },
+  { f: 'enrollment',      label: 'Enrollment',    w: 3,   cell: c => _crmInp(c, 'enrollment',      '0') },
+  { f: 'territory',       label: 'Territory',     w: 4.5, cell: c => _crmPillSel(c, 'territory', _CRM_TERRITORY_OPTS, _CRM_TERRITORY_COLORS) },
+  { f: 'miles_to_line',   label: 'Mi to Line',    w: 2.5, cell: c => _crmInp(c, 'miles_to_line',   'mi') },
+  _crmCompanyCol('city',         { w: 4 }),
+  { f: 'county',          label: 'County',        w: 4,   cell: c => _crmInp(c, 'county',          'County') },
+  _crmCompanyCol('state',        { w: 2.5 }),
+  _crmCompanyCol('zip',          { w: 3 }),
+  _crmCompanyCol('address',      { w: 4 }),
+  _crmCompanyCol('work_phone',   { label: 'Phone', w: 3.5 }),
+  _crmCompanyCol('email_domain', { w: 3.5 }),
+  _crmCompanyCol('work_website', { label: 'Website', w: 3.5 }),
+  { f: 'athletics_url',   label: 'Athletics Page', w: 3.5, cell: c => _crmLinkInp(c, 'athletics_url', 'MaxPreps / athletics URL') },
+  _crmCompanyCol('personal_interest', { w: 3 }),
+  _crmCompanyCol('turf_product', { w: 3.5 }),
+  // Kept for the rows that had them on Companies before Schools had a tab.
+  // Fields is where a field belongs now; these two are the company-level note.
+  _crmCompanyCol('field_type',   { w: 3.5 }),
+  _crmCompanyCol('field_size',   { w: 2.5 }),
+  _crmCompanyCol('_fields',      { w: 3 }),
+  { f: 'notes',           label: 'Notes',         w: 5,   cell: c => _crmInp(c, 'notes',           'Notes') },
+  { f: 'nces_id',         label: 'NCES ID',       w: 3,   cell: c => _crmInp(c, 'nces_id',         'NCES ID') },
+];
+
+/** What each tab is, so one renderer can draw either. */
+const _CRM_ORG_SIDES = {
+  companies: {
+    root: 'crm-companies-root', title: 'Companies', one: 'company', many: 'companies',
+    cols: () => _CRM_COMPANY_COLS, filter: () => _crmCompanyFilter,
+    view: () => _crmCompaniesView, setView: v => { _crmCompaniesView = v; },
+    add: 'addCrmCompany()', addLabel: '+ Add Company',
+    actionCols: [2.5, 3, 2.5], minWidth: 1650,
+  },
+  schools: {
+    root: 'crm-schools-root', title: 'Schools', one: 'school', many: 'schools',
+    cols: () => _CRM_SCHOOL_COLS, filter: () => _crmSchoolFilter,
+    view: () => _crmSchoolsView, setView: v => { _crmSchoolsView = v; },
+    add: 'addCrmSchool()', addLabel: '+ Add School',
+    actionCols: [2, 2.5, 2], minWidth: 2600,
+  },
+};
+
+/*
+ * Which fields belong to which company.
+ *
+ * By id first: a field that points at a company row belongs to that row and
+ * no other. By name only for a field with no row to point at — one imported,
+ * or typed, before its company existed — and only when a single company has
+ * that name. There are three McKinley High Schools in Ohio; a field at the
+ * Canton one must not show up as Niles's replacement job.
+ *
+ * Built once per change rather than per row: the Fields column asks for every
+ * row on the page, and with a thousand schools that is a million comparisons
+ * a redraw done the simple way. Every edit goes through a save, and the saves
+ * bump _crmDataVer, which is what marks this stale.
+ */
+let _crmDataVer = 0;
+let _crmFieldIdx = null;
+
+function _crmFieldIndex() {
+  const i = _crmFieldIdx;
+  if (i && i.cos === crmCompanies && i.fields === crmFields && i.ver === _crmDataVer) return i;
+  const norm  = v => String(v || '').trim().toLowerCase();
+  const ids   = new Set(crmCompanies.map(c => c.id));
+  const names = new Map(), byId = new Map(), byName = new Map();
+  const push  = (m, k, f) => { if (!m.has(k)) m.set(k, []); m.get(k).push(f); };
+  for (const c of crmCompanies) { const n = norm(c.company_name); if (n) names.set(n, (names.get(n) || 0) + 1); }
+  for (const f of crmFields) {
+    if (f.company_id && ids.has(f.company_id)) push(byId, f.company_id, f);
+    else if (norm(f.company_name)) push(byName, norm(f.company_name), f);
+  }
+  return (_crmFieldIdx = { cos: crmCompanies, fields: crmFields, ver: _crmDataVer, names, byId, byName });
 }
 
-/** Jump from a company row to that company's fields. */
+/** The fields belonging to a company — matched by id, or by an unshared name for imports. */
+function _crmFieldsFor(c) {
+  if (!c) return [];
+  const idx  = _crmFieldIndex();
+  const name = String(c.company_name || '').trim().toLowerCase();
+  const own  = idx.byId.get(c.id) || [];
+  const byName = name && idx.names.get(name) === 1 ? (idx.byName.get(name) || []) : [];
+  return byName.length ? own.concat(byName) : own;
+}
+
+/** Jump from a company or school row to its fields. */
 function _crmShowFieldsFor(companyId) {
   const c = crmCompanies.find(x => x.id === companyId);
   if (!c) return;
   if (!_crmFieldsFor(c).length) { addCrmField(companyId); return; }
-  _crmFieldFilter = { company_name: c.company_name || '' };
-  _crmCompaniesView = 'fields';
-  renderCrmCompaniesTab();
+  const side = _crmSideOf(c);
+  // By the company's id, not its name: a name filter would bring in the
+  // fields of every other school called the same.
+  _crmFieldFilter = { _company: c.id };
+  _CRM_ORG_SIDES[side].setView('fields');
+  _crmRenderOrg(side);
 }
 
-function renderCrmCompaniesTab() {
-  const root = document.getElementById('crm-companies-root');
+function renderCrmCompaniesTab() { _crmRenderOrgTab('companies'); }
+function renderCrmSchoolsTab()   { _crmRenderOrgTab('schools'); }
+
+function _crmRenderOrg(side) {
+  if (side === 'schools') renderCrmSchoolsTab();
+  else renderCrmCompaniesTab();
+}
+
+/** Redraws whichever of the two tabs is on screen — the one the user can see. */
+function _crmRenderOrgTabs() {
+  if (_crmPanelActive('schools'))   renderCrmSchoolsTab();
+  if (_crmPanelActive('companies')) renderCrmCompaniesTab();
+}
+
+function _crmOrgExport(side) {
+  const S = _CRM_ORG_SIDES[side];
+  _crmExportCsv('crm-' + side, S.cols(), _crmApplyFilter(_crmOrgRows(side), S.filter()), side);
+}
+
+function _crmOrgPrint(side) {
+  const S = _CRM_ORG_SIDES[side];
+  _crmPrintReport(S.title, 'CRM ' + S.many, S.cols(), _crmApplyFilter(_crmOrgRows(side), S.filter()), side);
+}
+
+function _crmRenderOrgTab(side) {
+  const S    = _CRM_ORG_SIDES[side];
+  const root = document.getElementById(S.root);
   if (!root) return;
 
   // Fields and Find Contacts both live in this tab, behind the toggle bar —
   // they are read as part of a company rather than instead of one.
-  if (_crmCompaniesView === 'fields') { renderCrmFieldsView(root); return; }
-  if (_crmCompaniesView === 'find')   { renderCrmFindView(root);   return; }
+  if (S.view() === 'fields') { renderCrmFieldsView(root, side); return; }
+  if (S.view() === 'find')   { renderCrmFindView(root, side);   return; }
 
-  const visible    = _crmApplyFilter(crmCompanies, _crmCompanyFilter);
-  const isFiltered = visible.length !== crmCompanies.length;
-  const anyFilter  = _crmFilterCount(_crmCompanyFilter) > 0;
+  const all        = _crmOrgRows(side);
+  const filter     = S.filter();
+  let   visible    = _crmApplyFilter(all, filter);
+  const isFiltered = visible.length !== all.length;
+  // A row just added is shown whatever the filter says: "+ Add School" under
+  // a Territory filter makes a blank row the filter would otherwise hide.
+  if (_crmPinRow && !visible.some(r => r.id === _crmPinRow)) {
+    const pinned = all.find(r => r.id === _crmPinRow);
+    if (pinned) visible = [pinned, ...visible];
+  }
+  const anyFilter  = _crmFilterCount(filter) > 0;
+  const noun       = n => `${n.toLocaleString()} ${n === 1 ? S.one : S.many}`;
 
   const actions = c => `
     <td style="padding:0.25rem 0.15rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
@@ -7395,7 +7638,7 @@ function renderCrmCompaniesTab() {
                border-radius:3px;font-size:0.72rem;padding:0.1rem 0.3rem;cursor:pointer">⌕</button>
     </td>
     <td style="padding:0.25rem 0.15rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
-      <button onclick="crmCompanyToOpportunity('${c.id}')" title="Create an opportunity from this company"
+      <button onclick="crmCompanyToOpportunity('${c.id}')" title="Create an opportunity from this ${S.one}"
         style="background:var(--surface2);border:1px solid var(--border);color:var(--blue);
                border-radius:3px;font-size:0.72rem;padding:0.1rem 0.3rem;cursor:pointer">→</button>
     </td>
@@ -7404,28 +7647,30 @@ function renderCrmCompaniesTab() {
     </td>`;
 
   root.innerHTML = `
-    ${_crmCompaniesViewBar()}
+    ${_crmOrgViewBar(side)}
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;gap:0.75rem;flex-wrap:wrap">
       <span style="font-size:0.82rem;color:var(--muted)">
-        ${isFiltered ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmCompanies.length} compan${crmCompanies.length !== 1 ? 'ies' : 'y'}
-        ${anyFilter ? `<button onclick="_crmClearFilter('companies')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
+        ${isFiltered ? `<strong style="color:var(--text)">${visible.length.toLocaleString()}</strong> of ` : ''}${noun(all.length)}
+        ${anyFilter ? `<button onclick="_crmClearFilter('${side}')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
-        ${_crmToolButtons(
-          `_crmExportCsv('crm-companies', _CRM_COMPANY_COLS, _crmApplyFilter(crmCompanies, _crmCompanyFilter), 'companies')`,
-          `_crmPrintReport('Companies','CRM companies', _CRM_COMPANY_COLS, _crmApplyFilter(crmCompanies, _crmCompanyFilter), 'companies')`)}
+        ${_crmToolButtons(`_crmOrgExport('${side}')`, `_crmOrgPrint('${side}')`)}
         ${_crmListsBtn('crm_org_types')}
-        <button class="btn" onclick="_crmTriggerUpload('companies')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
-        <button class="btn btn-green" onclick="addCrmCompany()">+ Add Company</button>
+        <button class="btn" onclick="_crmTriggerUpload('${side}')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
+        <button class="btn btn-green" onclick="${S.add}">${S.addLabel}</button>
       </div>
     </div>
+    ${_crmOrgNoteHTML(side)}
     ${_crmTable({
-      table: 'companies', cols: _CRM_COMPANY_COLS, rows: visible,
-      filter: _crmCompanyFilter,
-      actions, actionCols: [2.5, 3, 2.5], minWidth: 1650,
+      table: side, cols: S.cols(), rows: visible,
+      filter,
+      actions, actionCols: S.actionCols, minWidth: S.minWidth,
+      page: 200,
       empty: isFiltered
-        ? 'No companies match the current filters.'
-        : 'No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.',
+        ? `No ${S.many} match the current filters.`
+        : side === 'schools'
+          ? 'No schools yet — click <strong style="color:var(--text)">+ Add School</strong>, or <strong style="color:var(--text)">Upload CSV</strong> to bring in a list. A company typed High School, College / University or School District shows here too.'
+          : 'No companies yet — click <strong style="color:var(--text)">+ Add Company</strong> to start.',
     })}`;
 }
 
@@ -7691,12 +7936,18 @@ function renderCrmDashboard() {
 
   /* ── KPI row ── */
   const hotLeads    = crmPeople.filter(p => p.tag === 'Hot').length;
-  const hotCompanies= crmCompanies.filter(c => c.tag === 'Hot').length;
+  const orgCos      = _crmOrgRows('companies');
+  const orgSchools  = _crmOrgRows('schools');
+  const hotCompanies= orgCos.filter(c => c.tag === 'Hot').length;
+  const hotSchools  = orgSchools.filter(c => c.tag === 'Hot').length;
+  const inTerritory = orgSchools.filter(c => c.territory === 'Inside').length;
   const winColor    = winRate === null ? 'var(--muted)' : winRate >= 50 ? '#4ade80' : '#f87171';
   const kpiHTML = `
-    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0.7rem;margin-bottom:0.85rem">
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:0.7rem;margin-bottom:0.85rem">
       ${kpiCard('Contacts',       crmPeople.length,       hotLeads     ? hotLeads     + ' hot leads' : '')}
-      ${kpiCard('Companies',      crmCompanies.length,    hotCompanies ? hotCompanies + ' hot'       : '')}
+      ${kpiCard('Companies',      orgCos.length,          hotCompanies ? hotCompanies + ' hot'       : '')}
+      ${kpiCard('Schools',        orgSchools.length.toLocaleString(),
+          hotSchools ? hotSchools + ' hot' : inTerritory ? inTerritory.toLocaleString() + ' inside the territory' : '')}
       ${kpiCard('Open Pipeline',  fmt$(pipelineVal),      openOpps.length + ' open deals', '#60a5fa')}
       ${kpiCard('Weighted Value', fmt$(weightedVal),      'probability-adjusted',          '#a78bfa')}
       ${kpiCard('Won Revenue',    fmt$(wonVal),           wonOpps.length + ' deals won',   '#4ade80')}
@@ -7899,6 +8150,7 @@ const _crmSort = {};
 const _CRM_RERENDER = {};
 
 function _crmToggleSort(table, field) {
+  _crmResetPaging(table);
   const cur = _crmSort[table];
   if (cur && cur.field === field) cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';
   else _crmSort[table] = { field, dir: 'asc' };
@@ -7907,6 +8159,7 @@ function _crmToggleSort(table, field) {
 }
 
 function _crmClearSort(table) {
+  _crmResetPaging(table);
   delete _crmSort[table];
   const fn = _CRM_RERENDER[table];
   if (fn) fn();
@@ -7957,6 +8210,29 @@ const _CRM_TH_STYLE = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem
    overflow:hidden;text-overflow:ellipsis;
    border-bottom:1px solid var(--border);background:var(--surface2)`;
 
+/* How many rows a paged table is showing, by table key. A table of a thousand
+   schools is a thousand rows of inputs and dropdowns, redrawn on every sort
+   and filter click; drawing the first couple of hundred keeps those clicks
+   instant, and the filter row is how anyone finds a row further down. */
+const _crmShown = {};
+
+/* The row just added. It is drawn even when it falls past the page — a new
+   row is blank, and blank sorts last, which is exactly where a page cuts off. */
+let _crmPinRow = null;
+
+/** A new filter, sort or visit starts from the first page and the true order. */
+function _crmResetPaging(table) {
+  if (table) delete _crmShown[table];
+  else for (const k of Object.keys(_crmShown)) delete _crmShown[k];
+  _crmPinRow = null;
+}
+
+function _crmShowMore(table, n) {
+  _crmShown[table] = n < 0 ? Infinity : (_crmShown[table] || n) + n;
+  const fn = _CRM_RERENDER[table];
+  if (fn) fn();
+}
+
 /**
  * Builds a whole CRM table.
  *
@@ -7964,12 +8240,12 @@ const _CRM_TH_STYLE = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem
  *   cols       [{ f, label, w, cell(row), text(row), sortable, filter }]
  *   rows       already filtered
  *   filter     the filter object for this table (omit for no filter row)
- *   filterAttr the data-attribute the input handler watches (e.g. 'crm-pf')
  *   actions    row => extra <td>s, with actionCols giving their widths
  *   empty      message shown when rows is []
+ *   page       draw this many rows, with a "show more" row under them
  */
 function _crmTable(opts) {
-  const { table, cols, rows, filter, actions, actionCols = [], empty, minWidth } = opts;
+  const { table, cols, rows, filter, actions, actionCols = [], empty, minWidth, page } = opts;
   const st = _crmSort[table];
 
   const th = col => {
@@ -7991,8 +8267,23 @@ function _crmTable(opts) {
   const sorted = _crmSortRows(rows, table, cols);
   const span   = cols.length + actionCols.length;
 
-  const body = sorted.length
-    ? sorted.map(r => `<tr>${cols.map(c => td(c.cell ? c.cell(r) : esc(_crmCellText(c, r)))).join('')}${actions ? actions(r) : ''}</tr>`).join('')
+  const limit = page ? (_crmShown[table] || page) : Infinity;
+  let shown = sorted.length > limit ? sorted.slice(0, limit) : sorted;
+  if (shown !== sorted && _crmPinRow && !shown.some(r => r.id === _crmPinRow)) {
+    const pinned = sorted.find(r => r.id === _crmPinRow);
+    if (pinned) shown = [pinned, ...shown];
+  }
+  const hidden = sorted.length - shown.length;
+  const more = hidden > 0
+    ? `<tr><td colspan="${span}" style="padding:0.7rem;text-align:center;font-size:0.78rem;color:var(--muted);border-top:1px solid var(--border)">
+        Showing ${shown.length.toLocaleString()} of ${sorted.length.toLocaleString()} — filter a column to narrow it, or
+        <button onclick="_crmShowMore('${table}', ${page})" style="background:none;border:none;color:var(--blue);cursor:pointer;padding:0;font-size:0.78rem;text-decoration:underline">show ${Math.min(page, hidden)} more</button>
+        ${hidden > page ? `· <button onclick="_crmShowMore('${table}', -1)" style="background:none;border:none;color:var(--blue);cursor:pointer;padding:0;font-size:0.78rem;text-decoration:underline">show all</button>` : ''}
+      </td></tr>`
+    : '';
+
+  const body = shown.length
+    ? shown.map(r => `<tr>${cols.map(c => td(c.cell ? c.cell(r) : esc(_crmCellText(c, r)))).join('')}${actions ? actions(r) : ''}</tr>`).join('') + more
     : `<tr><td colspan="${span}" style="padding:2.5rem;text-align:center;color:var(--muted)">${empty || 'Nothing here yet.'}</td></tr>`;
 
   const colgroup = [...cols.map(c => c.w), ...actionCols]
@@ -8124,7 +8415,8 @@ function _crmProgressBar(id, label, deadlineMs) {
  * the two nodes that change.
  */
 function _crmTickProgress(id, startedAt) {
-  const el = document.getElementById(id);
+  // The panel on screen first: Find Contacts can be open on either of two tabs.
+  const el = document.querySelector(`.crm-sub-panel.active [id="${id}"]`) || document.getElementById(id);
   if (!el) return false;
   const deadline = Number(el.dataset.deadline) || 1;
   const ms   = Date.now() - startedAt;
@@ -8192,20 +8484,26 @@ function _crmBucketLabel(f) {
 ═══════════════════════════════════════════ */
 let crmFields        = [];
 let _crmFieldFilter  = {};
-let _crmCompaniesView = 'companies';   // 'companies' | 'fields'
+let _crmCompaniesView = 'companies';   // 'companies' | 'fields' | 'find'
+let _crmSchoolsView   = 'schools';     // 'schools'   | 'fields' | 'find'
 
 
 async function loadCrmFields() {
   const saved = await apiGet('fct_crm_fields');
   crmFields = Array.isArray(saved) ? saved : [];
-  if (document.getElementById('crm-panel-companies')?.classList.contains('active')) renderCrmCompaniesTab();
-  if (document.getElementById('crm-panel-dashboard')?.classList.contains('active')) renderCrmDashboard();
+  _crmRenderOrgTabs();
+  if (_crmPanelActive('dashboard')) renderCrmDashboard();
 }
 
-function saveCrmFields() { apiPut('fct_crm_fields', crmFields); }
+function saveCrmFields() { _crmDataVer++; apiPut('fct_crm_fields', crmFields); }
 
-function addCrmField(companyId) {
+/**
+ * Adds a field, on whichever tab asked: the company's own, when it came from
+ * a row, or the one the "+ Add Field" button sits on.
+ */
+function addCrmField(companyId, fromSide) {
   const co = companyId ? crmCompanies.find(c => c.id === companyId) : null;
+  const side = co ? _crmSideOf(co) : (fromSide || (_crmPanelActive('schools') ? 'schools' : 'companies'));
   const id = uid();
   crmFields.unshift({
     id,
@@ -8216,16 +8514,23 @@ function addCrmField(companyId) {
     osm_id: '', osm_lat: null, osm_lng: null,
   });
   saveCrmFields();
-  _crmCompaniesView = 'fields';
-  renderCrmCompaniesTab();
-  _crmRevealRow('crm-companies-root', id, 'field_name', 'crm-field-id');
+  _crmPinRow = id;
+  if (side === 'schools') {
+    _crmSchoolsView = 'fields';
+    renderCrmSchoolsTab();
+    _crmRevealRow('crm-schools-root', id, 'field_name', 'crm-field-id');
+  } else {
+    _crmCompaniesView = 'fields';
+    renderCrmCompaniesTab();
+    _crmRevealRow('crm-companies-root', id, 'field_name', 'crm-field-id');
+  }
 }
 
 function deleteCrmField(id) {
   if (!confirm('Delete this field?')) return;
   crmFields = crmFields.filter(f => f.id !== id);
   saveCrmFields();
-  renderCrmCompaniesTab();
+  _crmRenderOrgTabs();
 }
 
 /**
@@ -8240,26 +8545,74 @@ function _crmDashboardBucket(key) {
   crmSwitchTab('companies');
 }
 
-function _crmCompaniesSetView(v) {
-  _crmCompaniesView = v;
-  renderCrmCompaniesTab();
+function _crmOrgSetView(side, v) {
+  _CRM_ORG_SIDES[side].setView(v);
+  _crmRenderOrg(side);
 }
 
-/** Company picker on a field row — keeps company_name in step with the id. */
+/** How a company reads in a picker. Two schools can share a name — there are
+    three McKinley High Schools in Ohio — so a repeated name carries its town. */
+function _crmOrgLabel(c, dupes) {
+  const name = c.company_name || '(unnamed)';
+  if (!dupes || !dupes.has(String(c.company_name || '').trim().toLowerCase())) return name;
+  const where = [c.city, c.state].filter(Boolean).join(', ');
+  return where ? `${name} — ${where}` : name;
+}
+
+/**
+ * Company picker on a field row — keeps company_name in step with the id.
+ *
+ * It is drawn holding only the company it already has, and fills with the
+ * rest when someone opens it (_crmFillCompanyOptions). With the schools in
+ * the list there are well over a thousand companies, and a full list on every
+ * field row would be a thousand option tags a row, drawn on every redraw, to
+ * change a value almost nobody changes.
+ */
 function _crmFieldCompanySel(f) {
-  const names = crmCompanies.map(c => c.company_name || '').filter(Boolean);
-  const opts  = ['<option value="">— company —</option>']
-    .concat(crmCompanies.map(c =>
-      `<option value="${esc(c.id)}" ${f.company_id === c.id ? 'selected' : ''}>${esc(c.company_name || '(unnamed)')}</option>`));
-  // A field imported before its company existed — or left behind when its
-  // company row was deleted — keeps the name it was typed under visible.
-  const resolved = f.company_id && crmCompanies.some(c => c.id === f.company_id);
-  if (!resolved && f.company_name && !names.includes(f.company_name)) {
+  let co = f.company_id ? crmCompanies.find(c => c.id === f.company_id) : null;
+  // A field filed by name alone still reads as its company when exactly one
+  // row has that name — the Fields count on the company row already does.
+  if (!co && f.company_name) {
+    const n = String(f.company_name).trim().toLowerCase();
+    const named = crmCompanies.filter(c => String(c.company_name || '').trim().toLowerCase() === n);
+    if (named.length === 1) co = named[0];
+  }
+  const opts = ['<option value="">— company —</option>'];
+  if (co) {
+    opts.push(`<option value="${esc(co.id)}" selected>${esc(co.company_name || '(unnamed)')}</option>`);
+  } else if (f.company_name) {
+    // A field imported before its company existed — or left behind when its
+    // company row was deleted — keeps the name it was typed under visible.
     opts.push(`<option value="" selected>${esc(f.company_name)} (no company row)</option>`);
   }
-  return `<select data-crm-field-id="${f.id}" data-crm-field-col="company_id"
+  return `<select data-crm-field-id="${f.id}" data-crm-field-col="company_id" data-crm-lazy-cos="1"
     style="width:100%;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:3px;
            color:var(--text);font-size:0.78rem;outline:none;padding:0.1rem 0.2rem">${opts.join('')}</select>`;
+}
+
+/** Fills a field row's company picker with every company, once, as it opens. */
+function _crmFillCompanyOptions(sel) {
+  if (!sel || sel.dataset.crmLazyCos !== '1') return;
+  sel.dataset.crmLazyCos = '2';
+  const cur    = sel.value;
+  const orphan = [...sel.options].find(o => o.selected && !o.value && o.index > 0);
+
+  const seen = new Set(), dupes = new Set();
+  for (const c of crmCompanies) {
+    const n = String(c.company_name || '').trim().toLowerCase();
+    if (seen.has(n)) dupes.add(n); else seen.add(n);
+  }
+  const byName = (a, b) => String(a.company_name || '').localeCompare(String(b.company_name || ''),
+    undefined, { sensitivity: 'base', numeric: true });
+  const group = (label, rows) => rows.length
+    ? `<optgroup label="${label}">${rows.slice().sort(byName).map(c =>
+        `<option value="${esc(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(_crmOrgLabel(c, dupes))}</option>`).join('')}</optgroup>`
+    : '';
+
+  sel.innerHTML = '<option value="">— company —</option>'
+    + (orphan ? `<option value="" selected>${esc(orphan.textContent)}</option>` : '')
+    + group('Schools',   crmCompanies.filter(_crmIsSchool))
+    + group('Companies', crmCompanies.filter(c => !_crmIsSchool(c)));
 }
 
 function _crmFieldInp(f, col, ph = '', type = 'text') {
@@ -8310,6 +8663,10 @@ function _crmVisibleFields() {
   for (const [k, v] of Object.entries(_crmFieldFilter)) if (!k.startsWith('_')) textFilter[k] = v;
 
   let rows = _crmApplyFilter(crmFields, textFilter);
+  if (_crmFieldFilter._company) {
+    const mine = new Set(_crmFieldsFor(crmCompanies.find(c => c.id === _crmFieldFilter._company)).map(f => f.id));
+    rows = rows.filter(f => mine.has(f.id));
+  }
   if (_crmFieldFilter._bucket) {
     rows = rows.filter(f => {
       const b = _crmBucketForAge(_crmFieldAge(f));
@@ -8319,94 +8676,66 @@ function _crmVisibleFields() {
   return rows;
 }
 
-function renderCrmFieldsView(root) {
-  const visible = _crmVisibleFields();
+function renderCrmFieldsView(root, side) {
+  let visible = _crmVisibleFields();
   const bucket  = _CRM_AGE_BUCKETS.find(b => b.key === _crmFieldFilter._bucket);
-  const anyFilter = _crmFilterCount(_crmFieldFilter) > 0;
+  const forCo   = _crmFieldFilter._company ? crmCompanies.find(c => c.id === _crmFieldFilter._company) : null;
+  const anyFilter = _crmFilterCount(_crmFieldFilter) > 0 || !!forCo;
+  // A field just added is shown whatever the filter says, or "+ Add Field"
+  // under a filter would make a row nobody can see.
+  if (_crmPinRow && !visible.some(f => f.id === _crmPinRow)) {
+    const pinned = crmFields.find(f => f.id === _crmPinRow);
+    if (pinned) visible = [pinned, ...visible];
+  }
 
   const actions = f => `<td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
       <button class="del-btn" data-crm-fieldrow-id="${f.id}">✕</button>
     </td>`;
 
   root.innerHTML = `
-    ${_crmCompaniesViewBar()}
+    ${_crmOrgViewBar(side)}
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;gap:0.75rem;flex-wrap:wrap">
       <span style="font-size:0.82rem;color:var(--muted)">
         ${visible.length !== crmFields.length ? `<strong style="color:var(--text)">${visible.length}</strong> of ` : ''}${crmFields.length} field${crmFields.length !== 1 ? 's' : ''}
         ${bucket ? `<span style="background:${bucket.color};color:#fff;border-radius:10px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600;margin-left:0.4rem">${bucket.label} · ${bucket.range}</span>` : ''}
+        ${forCo ? `<span style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:0.1rem 0.5rem;font-size:0.7rem;font-weight:600;margin-left:0.4rem">${esc([forCo.company_name, forCo.city].filter(Boolean).join(' · '))}</span>` : ''}
         ${anyFilter ? `<button onclick="_crmClearFilter('fields')" style="margin-left:0.5rem;background:none;border:none;color:var(--blue);font-size:0.75rem;cursor:pointer;padding:0;text-decoration:underline">Clear filters</button>` : ''}
       </span>
       <div style="display:flex;gap:0.5rem;align-items:center">
         ${_crmToolButtons(`_crmExportCsv('crm-fields', _CRM_FIELD_COLS, _crmVisibleFields(), 'fields')`, '')}
         ${_crmListsBtn('crm_field_types')}
-        <button class="btn btn-green" onclick="addCrmField('')">+ Add Field</button>
+        <button class="btn btn-green" onclick="addCrmField('', '${side}')">+ Add Field</button>
       </div>
     </div>
     ${_crmTable({
       table: 'fields', cols: _CRM_FIELD_COLS, rows: visible,
       filter: _crmFieldFilter,
       actions, actionCols: [2.5], minWidth: 1100,
+      page: 200,
       empty: crmFields.length
         ? 'No fields match the current filters.'
         : 'No fields yet — add one to start tracking install years, and the dashboard buckets will fill in.',
     })}`;
 }
 
-/** The Companies / Fields switch that heads the Companies tab. */
-function _crmCompaniesViewBar() {
-  const btn = (v, label, count) => `<button onclick="_crmCompaniesSetView('${v}')"
-    style="background:${_crmCompaniesView === v ? 'var(--blue)' : 'var(--surface2)'};
-           color:${_crmCompaniesView === v ? '#fff' : 'var(--muted)'};
-           border:1px solid ${_crmCompaniesView === v ? 'var(--blue)' : 'var(--border)'};
+/** The list / Fields / Find Contacts switch that heads the Companies and
+    Schools tabs. Fields is the one list of every field, whichever tab it is
+    opened from; the other two count only their own tab's rows. */
+function _crmOrgViewBar(side) {
+  const S   = _CRM_ORG_SIDES[side];
+  const cur = S.view();
+  const btn = (v, label, count) => `<button onclick="_crmOrgSetView('${side}','${v}')"
+    style="background:${cur === v ? 'var(--blue)' : 'var(--surface2)'};
+           color:${cur === v ? '#fff' : 'var(--muted)'};
+           border:1px solid ${cur === v ? 'var(--blue)' : 'var(--border)'};
            border-radius:4px;padding:0.25rem 0.7rem;font-size:0.78rem;font-weight:600;cursor:pointer">
-    ${label} <span style="opacity:0.75;font-weight:400">${count}</span></button>`;
+    ${label} <span style="opacity:0.75;font-weight:400">${count.toLocaleString()}</span></button>`;
   return `<div style="display:flex;gap:0.4rem;margin-bottom:0.85rem">
-    ${btn('companies', 'Companies', crmCompanies.length)}
+    ${btn(side,        S.title,     _crmOrgRows(side).length)}
     ${btn('fields',    'Fields',    crmFields.length)}
-    ${btn('find',      'Find Contacts', _crmCompaniesMissingContacts().length)}
+    ${btn('find',      'Find Contacts', _crmMissingContacts(side).length)}
   </div>`;
 }
-
-/* Field rows edit through their own delegated handlers, because their data
-   attributes have to stay distinct from the company rows sharing this root. */
-document.getElementById('crm-companies-root').addEventListener('input', e => {
-  const el = e.target;
-  const id = el.dataset.crmFieldId, col = el.dataset.crmFieldCol;
-  if (!id || !col) return;
-  const f = crmFields.find(x => x.id === id);
-  if (!f) return;
-  f[col] = el.value;
-  saveCrmFields();
-});
-
-document.getElementById('crm-companies-root').addEventListener('change', e => {
-  const el = e.target;
-  const id = el.dataset.crmFieldId, col = el.dataset.crmFieldCol;
-  if (!id || !col) return;
-  const f = crmFields.find(x => x.id === id);
-  if (!f) return;
-  const picked = _crmListPick(el, f[col]);
-  if (picked) {
-    if (picked.cancelled) return;
-    f[col] = picked.value;
-    saveCrmFields();
-    renderCrmCompaniesTab();
-    return;
-  }
-  f[col] = el.value;
-  if (col === 'company_id') {
-    const co = crmCompanies.find(c => c.id === el.value);
-    f.company_name = co ? (co.company_name || '') : '';
-  }
-  saveCrmFields();
-  // Install year moving changes the bucket, so the row has to redraw.
-  if (col === 'installed_year' || col === 'company_id') renderCrmCompaniesTab();
-});
-
-document.getElementById('crm-companies-root').addEventListener('click', e => {
-  const del = e.target.closest('[data-crm-fieldrow-id]');
-  if (del) deleteCrmField(del.dataset.crmFieldrowId);
-});
 
 /* ═══════════════════════════════════════════
    CRM — News Center
@@ -8903,11 +9232,15 @@ function crmPersonToOpportunity(id) {
   crmSwitchTab('opportunities');
 }
 
-/** From a company row: the fields it owns tell you what the deal is. */
+/** From a company or school row: the fields it owns tell you what the deal is. */
 function crmCompanyToOpportunity(id) {
   const c = crmCompanies.find(x => x.id === id);
   if (!c) return;
-  const fields = crmFields.filter(f => f.company_id === c.id || (f.company_name && f.company_name === c.company_name));
+  // Named for the tab the deal came from. An install seeded before Schools
+  // existed has no such source on its list yet, so the first one adds it.
+  const source = _crmIsSchool(c) ? 'Schools' : 'Companies';
+  if (source === 'Schools' && !_crmListValues('crm_sources').includes(source)) _crmListAdd('crm_sources', source);
+  const fields = _crmFieldsFor(c);
   const oldest = fields.reduce((worst, f) => {
     const a = _crmFieldAge(f);
     return a != null && (worst == null || a > worst.age) ? { age: a, f } : worst;
@@ -8922,7 +9255,7 @@ function crmCompanyToOpportunity(id) {
     turf_product: c.turf_product || (oldest ? oldest.f.turf_product : '') || '',
     tag: c.tag || '',
     priority: bucket && bucket.key === 'replacement' ? 'High' : 'Medium',
-    source: 'Companies',
+    source,
     description: oldest
       ? `${oldest.f.field_name || oldest.f.field_type || 'Field'} installed ${oldest.f.installed_year} · ${oldest.age} yrs · ${bucket ? bucket.label : ''}`
       : [c.field_type, c.field_size].filter(Boolean).join(' · '),
@@ -9052,7 +9385,8 @@ function crmSearchPushSelected() {
       source:   m.kind === 'prospect' ? 'AI Search — prospect' : 'AI Search',
       description: [
         m.contact, m.phone, m.email,
-        [m.city, m.state].filter(Boolean).join(', '),
+        [m.city, m.county, m.state].filter(Boolean).join(', '),
+        m.territory ? `territory: ${m.territory}` : '',
         m.field_type, m.field_size,
         m.installed_year ? `installed ${m.installed_year}` : '',
         m.why, m.source_url,
@@ -9070,20 +9404,22 @@ const _CRM_SEARCH_COLS = [
       const prospect = m.kind === 'prospect';
       return `<span style="background:${prospect ? '#7c2d12' : 'var(--surface2)'};color:${prospect ? '#fff' : 'var(--muted)'};
         border-radius:10px;padding:0.1rem 0.45rem;font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(m.kind || '')}</span>`; } },
-  { f: 'name',           label: 'Name',        w: 12 },
-  { f: 'company',        label: 'Company',     w: 11 },
-  { f: 'contact',        label: 'Contact',     w: 8 },
-  { f: 'phone',          label: 'Phone',       w: 7 },
-  { f: 'email',          label: 'Email',       w: 9 },
+  { f: 'name',           label: 'Name',        w: 10 },
+  { f: 'company',        label: 'Company',     w: 10 },
+  { f: 'contact',        label: 'Contact',     w: 7 },
+  { f: 'phone',          label: 'Phone',       w: 6 },
+  { f: 'email',          label: 'Email',       w: 8 },
   { f: 'city',           label: 'City',        w: 6 },
+  { f: 'county',         label: 'County',      w: 6 },
   { f: 'state',          label: 'St',          w: 3 },
-  { f: 'field_type',     label: 'Field Type',  w: 7 },
+  { f: 'territory',      label: 'Territory',   w: 5 },
+  { f: 'field_type',     label: 'Field Type',  w: 6 },
   { f: 'installed_year', label: 'Installed',   w: 5 },
-  { f: 'age_bucket',     label: 'Bucket',      w: 9, cell: m => {
+  { f: 'age_bucket',     label: 'Bucket',      w: 8, cell: m => {
       const b = _CRM_AGE_BUCKETS.find(x => x.label === m.age_bucket);
       return b ? `<span style="background:${b.color};color:#fff;border-radius:10px;padding:0.1rem 0.45rem;
         font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(b.label)}</span>` : esc(m.age_bucket || ''); } },
-  { f: 'why',            label: 'Why',         w: 12 },
+  { f: 'why',            label: 'Why',         w: 9 },
   { f: 'source_url',     label: 'Source',      w: 4, sortable: false, cell: m => m.source_url
       ? `<a href="${esc(m.source_url)}" target="_blank" rel="noopener" style="color:var(--blue);font-size:0.78rem">↗</a>` : '' },
 ];
@@ -10306,7 +10642,8 @@ function renderCrmReportsTab() {
    with. Registered together so a new table cannot half-arrive. */
 Object.assign(_CRM_FILTER_CTX, {
   people:        () => ({ filter: _crmPeopleFilter,  rows: crmPeople,        cols: _CRM_PEOPLE_COLS }),
-  companies:     () => ({ filter: _crmCompanyFilter, rows: crmCompanies,     cols: _CRM_COMPANY_COLS }),
+  companies:     () => ({ filter: _crmCompanyFilter, rows: _crmOrgRows('companies'), cols: _CRM_COMPANY_COLS }),
+  schools:       () => ({ filter: _crmSchoolFilter,  rows: _crmOrgRows('schools'),   cols: _CRM_SCHOOL_COLS }),
   opportunities: () => ({ filter: _crmOppFilter,     rows: crmOpportunities, cols: _CRM_OPP_COLS }),
   fields:        () => ({ filter: _crmFieldFilter,   rows: crmFields,        cols: _CRM_FIELD_COLS }),
 });
@@ -10314,7 +10651,8 @@ Object.assign(_CRM_FILTER_CTX, {
 Object.assign(_CRM_RERENDER, {
   people:        () => renderCrmPeopleTab(),
   companies:     () => renderCrmCompaniesTab(),
-  fields:        () => renderCrmCompaniesTab(),
+  schools:       () => renderCrmSchoolsTab(),
+  fields:        () => _crmRenderOrgTabs(),
   opportunities: () => renderCrmOpportunitiesTab(),
   news:          () => renderCrmNewsTab(),
   search:        () => renderCrmSearchTab(),
@@ -10602,14 +10940,45 @@ let _crmFind = {
   note: '',
 };
 
-/** Companies with nobody attached — the ones this exists for. */
-function _crmCompaniesMissingContacts() {
-  const haveByCompany = new Set(
-    crmPeople.map(p => String(p.company || '').trim().toLowerCase()).filter(Boolean));
-  return crmCompanies.filter(c => {
-    const n = String(c.company_name || '').trim().toLowerCase();
-    return n && !haveByCompany.has(n);
+/**
+ * One tab's companies with nobody attached — the ones this exists for.
+ *
+ * People name their company in words, so that is the match. Where several
+ * companies share a name, a person counts for the one in their own town, and
+ * a person with no town counts for none of them: looking up a school that
+ * already has a contact costs a lookup, while skipping one that has none
+ * costs the contact.
+ */
+function _crmMissingContacts(side) {
+  const norm = v => String(v || '').trim().toLowerCase();
+  const names = new Map();
+  for (const c of crmCompanies) { const n = norm(c.company_name); if (n) names.set(n, (names.get(n) || 0) + 1); }
+  const towns = new Map();   // company name → the towns its people are in
+  for (const p of crmPeople) {
+    const n = norm(p.company);
+    if (!n) continue;
+    if (!towns.has(n)) towns.set(n, new Set());
+    towns.get(n).add(_crmCityKey(p.city));
+  }
+  return _crmOrgRows(side).filter(c => {
+    const n = norm(c.company_name);
+    if (!n) return false;
+    const t = towns.get(n);
+    if (!t) return true;
+    if (names.get(n) === 1) return false;
+    const town = _crmCityKey(c.city);
+    return !(town && t.has(town));
   });
+}
+
+/**
+ * What "Find for all" runs on: the tab's rows with nobody attached, narrowed
+ * by whatever the tab's list is filtered to. Over a thousand schools is a
+ * day of lookups, so the filter — a county, the territory, a state — is how
+ * a rep asks for this week's batch instead.
+ */
+function _crmFindTargets(side) {
+  return _crmApplyFilter(_crmMissingContacts(side), _CRM_ORG_SIDES[side].filter());
 }
 
 async function _crmFindOne(companyId) {
@@ -10635,23 +11004,40 @@ async function _crmFindOne(companyId) {
   }
 }
 
+/* A lookup takes a minute or two, and each step redraws what it changed —
+   the Find Contacts view, where it is open. Anywhere else a redraw would take
+   the cursor out of a cell someone is typing in, a minute at a time. */
+function _crmRenderFindViews() {
+  for (const side of ['companies', 'schools']) {
+    if (_crmPanelActive(side) && _CRM_ORG_SIDES[side].view() === 'find') _crmRenderOrg(side);
+  }
+}
+
 /** Looks up one company, from its row. */
 async function crmFindContactsFor(companyId) {
   if (_crmFind.running) return;
   const c = crmCompanies.find(x => x.id === companyId);
   if (!c) return;
-  _crmCompaniesView = 'find';
+  _CRM_ORG_SIDES[_crmSideOf(c)].setView('find');
   await _crmRunFind([c]);
 }
 
-/** Looks up every company that has nobody, in turn. */
-async function crmFindContactsBulk() {
+/** Looks up every company on one tab that has nobody, in turn. */
+async function crmFindContactsBulk(side = 'companies') {
   if (_crmFind.running) return;
-  const missing = _crmCompaniesMissingContacts();
-  if (!missing.length) return;
-  if (!confirm(`Look up contacts for ${missing.length} compan${missing.length === 1 ? 'y' : 'ies'}? This runs one at a time and can be stopped.`)) return;
-  _crmCompaniesView = 'find';
-  await _crmRunFind(missing);
+  const S       = _CRM_ORG_SIDES[side];
+  const targets = _crmFindTargets(side);
+  if (!targets.length) return;
+  const n = targets.length;
+  // Each lookup reads a school's staff pages and takes a minute or two. Say
+  // what a big batch costs in hours before anyone starts one by accident.
+  const hours = Math.round(n * 1.5 / 60);
+  const cost  = n > 40 ? ` At a minute or two each that is roughly ${hours} hour${hours === 1 ? '' : 's'}.` : '';
+  const hint  = n > 40 && !_crmFilterCount(S.filter())
+    ? `\n\nTo run a smaller batch, filter the ${S.title} list first — a county, a state, the territory — and Find Contacts will use the same filter.` : '';
+  if (!confirm(`Look up contacts for ${n.toLocaleString()} ${n === 1 ? S.one : S.many}? This runs one at a time and can be stopped.${cost}${hint}`)) return;
+  S.setView('find');
+  await _crmRunFind(targets);
 }
 
 function crmFindCancel() { _crmFind.cancel = true; }
@@ -10659,14 +11045,14 @@ function crmFindCancel() { _crmFind.cancel = true; }
 async function _crmRunFind(companies) {
   _crmFind = { ..._crmFind, running: true, cancel: false, done: 0, total: companies.length,
                current: '', results: [], selected: new Set(), note: '' };
-  renderCrmCompaniesTab();
+  _crmRenderFindViews();
 
   const failures = [];
   for (const c of companies) {
     if (_crmFind.cancel) break;
     _crmFind.current   = c.company_name || '';
     _crmFind.startedAt = Date.now();
-    renderCrmCompaniesTab();
+    _crmRenderFindViews();
     // The bar is redrawn by each render, so the tick is restarted with it.
     clearInterval(_crmFindTimer);
     _crmFindTimer = setInterval(() => {
@@ -10690,7 +11076,7 @@ async function _crmRunFind(companies) {
     }
     _crmFind.done++;
     clearInterval(_crmFindTimer);
-    renderCrmCompaniesTab();
+    _crmRenderFindViews();
   }
 
   const found = _crmFind.results.reduce((n, r) => n + r.people.length, 0);
@@ -10700,13 +11086,13 @@ async function _crmRunFind(companies) {
   _crmFind.note = _crmFind.cancel
     ? `Stopped after ${_crmFind.done} of ${_crmFind.total}. Found ${found} contact${found === 1 ? '' : 's'}.`
     : _crmNewsSummary(found, failures).replace('Pulled', 'Found').replace('new result', 'contact');
-  renderCrmCompaniesTab();
+  _crmRenderFindViews();
 }
 
 function _crmFindToggle(key) {
   if (_crmFind.selected.has(key)) _crmFind.selected.delete(key);
   else _crmFind.selected.add(key);
-  renderCrmCompaniesTab();
+  _crmRenderFindViews();
 }
 
 function _crmFindToggleAll() {
@@ -10714,7 +11100,7 @@ function _crmFindToggleAll() {
   _crmFind.results.forEach(r => r.people.forEach((_, i) => all.push(`${r.companyId}::${i}`)));
   if (_crmFind.selected.size === all.length) _crmFind.selected.clear();
   else all.forEach(k => _crmFind.selected.add(k));
-  renderCrmCompaniesTab();
+  _crmRenderFindViews();
 }
 
 /**
@@ -10763,14 +11149,17 @@ function crmFindAddSelected() {
   saveCrmPeople();
   _crmFind.selected.clear();
   _crmFind.note = `Added ${added} contact${added === 1 ? '' : 's'} to People. Check the addresses before you send anything.`;
-  renderCrmCompaniesTab();
+  _crmRenderFindViews();
 }
 
 const _CRM_CONFIDENCE_COLORS = { high: '#166534', medium: '#b45309', low: '#7f1d1d' };
 
-function renderCrmFindView(root) {
+function renderCrmFindView(root, side) {
+  const S       = _CRM_ORG_SIDES[side];
   const s       = _crmFind;
-  const missing = _crmCompaniesMissingContacts();
+  const missing = _crmMissingContacts(side);
+  const targets = _crmFindTargets(side);
+  const narrowed = _crmFilterCount(S.filter()) > 0;
   const total   = s.results.reduce((n, r) => n + r.people.length, 0);
   const allOn   = total > 0 && s.selected.size === total;
 
@@ -10812,7 +11201,7 @@ function renderCrmFindView(root) {
   };
 
   root.innerHTML = `
-    ${_crmCompaniesViewBar()}
+    ${_crmOrgViewBar(side)}
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:0.85rem">
       <div style="min-width:0">
         <div style="font-size:0.9rem;font-weight:600;color:var(--text)">Find Contacts</div>
@@ -10820,7 +11209,8 @@ function renderCrmFindView(root) {
           Looks up the athletic director, facilities lead and business manager on an organisation's own staff pages. Nothing is added to People until you tick it — and an address it could not find on a page is left blank rather than guessed.
         </div>
         <div style="font-size:0.75rem;color:var(--muted);margin-top:0.35rem">
-          <strong style="color:var(--text)">${missing.length}</strong> compan${missing.length === 1 ? 'y has' : 'ies have'} no contact
+          <strong style="color:var(--text)">${missing.length.toLocaleString()}</strong> ${missing.length === 1 ? `${S.one} has` : `${S.many} have`} no contact
+          ${narrowed ? ` · <strong style="color:var(--text)">${targets.length.toLocaleString()}</strong> in the ${S.title} filter` : ''}
           ${s.running ? ` · looking up ${esc(s.current)} (${s.done + 1} of ${s.total})` : ''}
         </div>
         ${s.note ? `<div style="font-size:0.75rem;color:${/fail|long|limit|expired/i.test(s.note) ? '#f87171' : 'var(--muted)'};margin-top:0.3rem;max-width:70ch">${esc(s.note)}</div>` : ''}
@@ -10829,8 +11219,9 @@ function renderCrmFindView(root) {
         ${s.running
           ? `<button class="btn" onclick="crmFindCancel()"
                style="background:var(--surface2);border:1px solid var(--border);color:var(--text)">Stop</button>`
-          : `<button class="btn btn-green" onclick="crmFindContactsBulk()" ${missing.length ? '' : 'disabled'}
-               style="${missing.length ? '' : 'opacity:0.5;cursor:not-allowed'}">⌕ Find for all ${missing.length || ''}</button>`}
+          : `<button class="btn btn-green" onclick="crmFindContactsBulk('${side}')" ${targets.length ? '' : 'disabled'}
+               title="${narrowed ? `Only the ${S.many} the ${S.title} filter shows` : `Every ${S.one} with no contact`}"
+               style="${targets.length ? '' : 'opacity:0.5;cursor:not-allowed'}">⌕ Find for ${narrowed ? '' : 'all '}${targets.length ? targets.length.toLocaleString() : ''}</button>`}
       </div>
     </div>
 
@@ -10853,7 +11244,7 @@ function renderCrmFindView(root) {
       ? s.results.map(card).join('')
       : `<div style="padding:3rem;text-align:center;color:var(--muted);font-size:0.85rem;
                      border:1px dashed var(--border);border-radius:7px">
-           ${s.running ? 'Looking…' : 'Press <strong style="color:var(--text)">Find for all</strong>, or use the ⌕ button on a company row.'}
+           ${s.running ? 'Looking…' : `Press <strong style="color:var(--text)">Find for all</strong>, or use the ⌕ button on a ${S.one} row.`}
          </div>`}
   `;
 }
@@ -10917,7 +11308,7 @@ const _CRM_LISTS = [
   { key: 'crm_sources', label: 'Opportunity Source', for: 'Opportunities',
     hint: 'Where the opportunity came from.',
     defaults: ['Referral', 'Trade Show', 'Website', 'Cold Call', 'Repeat Customer',
-               'Lucius', 'AI Search', 'People', 'Companies', 'Other'] },
+               'Lucius', 'AI Search', 'People', 'Companies', 'Schools', 'Other'] },
 
   { key: 'crm_loss_reasons', label: 'Loss Reason', for: 'Opportunities',
     hint: 'Why a deal was lost — the report only means something if these are consistent.',
@@ -11059,6 +11450,7 @@ function closeCrmLists() {
   const panel = document.querySelector('.crm-sub-panel.active')?.id;
   if (panel === 'crm-panel-people')        renderCrmPeopleTab();
   if (panel === 'crm-panel-companies')     renderCrmCompaniesTab();
+  if (panel === 'crm-panel-schools')       renderCrmSchoolsTab();
   if (panel === 'crm-panel-opportunities') renderCrmOpportunitiesTab();
 }
 
@@ -11284,12 +11676,13 @@ function _crmListsBtn(tab) {
 /* ═══════════════════════════════════════════
    CRM — CSV Bulk Upload
 ═══════════════════════════════════════════ */
-let _crmUploadPending = null;
+let _crmUploadPending = null;   // the parsed, tidied rows waiting on the Import button
 
 const _CRM_UPLOAD_FIELDS = {
   people:        ['tag','lead_contact','name','company','work_email','title','contact_type','work_phone','work_website','address','city','state','zip','linkedin','personal_interest','turf_product','description'],
   companies:     ['tag','lead_contact','company_name','contact_type','work_phone','email_domain','work_website','address','city','state','zip','field_type','field_size','personal_interest','turf_product'],
   opportunities: ['tag','lead_contact','name','company','stage','value','close_date','win_pct','status','loss_reason','priority','source','personal_interest','turf_product','description'],
+  schools:       ['tag','lead_contact','company_name','contact_type','sector','athletics_level','enrollment','territory','miles_to_line','city','county','state','zip','address','work_phone','email_domain','work_website','athletics_url','personal_interest','turf_product','notes','nces_id'],
 };
 
 function _crmParseCSV(text) {
@@ -11328,15 +11721,217 @@ function _crmDownloadTemplate(type) {
 function _crmTriggerUpload(type) {
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = '.csv,text/csv';
-  inp.onchange = () => { if (inp.files[0]) _crmShowUploadModal(type, inp.files[0]); };
+  inp.onchange = () => {
+    const f = inp.files[0];
+    if (!f) return;
+    // A workbook read as text is binary noise, and the error that comes back
+    // would not say why. Say what to do instead.
+    if (/\.xls[xmb]?$/i.test(f.name)) {
+      alert('That is an Excel workbook. In Excel use File → Save As → "CSV UTF-8", then upload the .csv.');
+      return;
+    }
+    _crmShowUploadModal(type, f);
+  };
   inp.click();
+}
+
+/* ── Schools: what an upload may call a column, and what a value means ──
+   A school list arrives from wherever it was researched, not from this page,
+   so the header it uses is whatever that source called it: "School",
+   "Public/Private", "Boundary status", "Institution ID". Each maps to the
+   column that means the same thing here. */
+const _CRM_SCHOOL_HDR_ALIAS = {
+  school: 'company_name', school_name: 'company_name', name: 'company_name', company: 'company_name',
+  type: 'contact_type', organisation_type: 'contact_type', organization_type: 'contact_type',
+  org_type: 'contact_type', level: 'contact_type',
+  public_private: 'sector', public_or_private: 'sector',
+  athletics: 'athletics_level', athletics_classification: 'athletics_level', classification: 'athletics_level',
+  boundary_status: 'territory',
+  miles_to_boundary: 'miles_to_line', mi_to_line: 'miles_to_line', miles: 'miles_to_line',
+  athletics_page: 'athletics_url', maxpreps: 'athletics_url', maxpreps_url: 'athletics_url',
+  institution_id: 'nces_id', nces: 'nces_id',
+  athletics_match_review: 'notes', review: 'notes',
+};
+
+/**
+ * Tidies one uploaded school row into the values the tab's columns use.
+ *
+ * Only what can be read one way: "public" is Public, a nine-digit ZIP is a
+ * ZIP+4, a four-digit ZIP is one Excel took the leading zero off. A value
+ * that is not recognisably one of those is kept exactly as it came.
+ */
+function _crmCleanSchoolRow(r) {
+  const s   = v => String(v == null ? '' : v).trim();
+  const out = { ...r };
+
+  const sector = s(r.sector).toLowerCase();
+  out.sector = /^pub/.test(sector) ? 'Public' : /^priv/.test(sector) ? 'Private' : s(r.sector);
+
+  const terr = s(r.territory).toLowerCase();
+  out.territory = !terr ? ''
+    : /^in(side)?\b/.test(terr) ? 'Inside'
+    : /near|boundary|\bline\b|^on\b/.test(terr) ? 'On/near boundary'
+    : s(r.territory);
+
+  const zip = s(r.zip).replace(/[\s-]/g, '');
+  out.zip = /^\d{8,9}$/.test(zip) ? `${zip.padStart(9, '0').slice(0, 5)}-${zip.padStart(9, '0').slice(5)}`
+          : /^\d{3,5}$/.test(zip) ? zip.padStart(5, '0')
+          : s(r.zip);
+
+  const miles = s(r.miles_to_line).replace(/,/g, '');
+  out.miles_to_line = /^\d+(\.\d+)?$/.test(miles) ? parseFloat(miles).toFixed(1) : s(r.miles_to_line);
+
+  const enrol = s(r.enrollment).replace(/,/g, '');
+  out.enrollment = /^\d+(\.\d+)?$/.test(enrol) ? String(Math.round(parseFloat(enrol))) : s(r.enrollment);
+
+  if (/^[a-z]{2}$/i.test(s(r.state))) out.state = s(r.state).toUpperCase();
+
+  // The Equity in Athletics download page is the same link for every college
+  // — it names a dataset, not this school — so it is no athletics page.
+  if (/ope\.ed\.gov\/athletics/i.test(s(r.athletics_url))) out.athletics_url = '';
+
+  // No type is not "a company": this is the Schools upload. The name tells a
+  // college from a high school well enough to start from.
+  if (!s(r.contact_type)) {
+    out.contact_type = /college|universit|institute of technology|seminary/i.test(s(r.company_name))
+      ? 'College / University' : 'High School';
+  }
+  return out;
+}
+
+/**
+ * A school's name reduced to what two spellings of it share, for matching an
+ * upload against rows already here. "Allegany High", "Allegany High School"
+ * and "ALLEGANY HS" are one school; "Allegany Middle School" is not.
+ */
+function _crmSchoolKey(name) {
+  return String(name || '').toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/['’`.]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\bsaint\b/g, 'st')
+    .replace(/\bmount\b/g, 'mt')
+    .replace(/\b(junior|jr) ?(senior|sr)\b/g, ' ')
+    .replace(/\b(senior|sr) high\b/g, 'high')
+    .replace(/\b(high school|high|hs|shs|jshs)\b/g, ' hs ')
+    .replace(/\bthe\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+function _crmCityKey(city) { return String(city || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+/**
+ * Works out what a school upload will do, before it does it.
+ *
+ *   add        rows that are new to the CRM
+ *   fill       [{ into, patch }] — rows already here, and the blank cells the
+ *              upload fills on them. Nothing a rep typed is ever overwritten.
+ *   same       rows already here with nothing blank the upload could fill
+ *   dupes      rows repeated inside the file itself, skipped
+ *   ambiguous  rows whose name matches a row here that cannot say which of
+ *              several same-named schools it is — no town, or no state when
+ *              the file has that name in more than one — added, and named,
+ *              so someone can check
+ *   moved      matched rows that were on Companies and move to Schools
+ *   notSchools new rows whose type does not name a school (they will show on
+ *              Companies)
+ *
+ * The NCES id decides first: it is the government's id for the school and
+ * never changes. Without one, the same name in the same state and town is
+ * the same school — three McKinley High Schools in three Ohio towns are three
+ * schools, and have to stay three.
+ *
+ * The type is the one cell a match may change, and only from blank or from
+ * Lucius's "Operator": a school list saying this is a school is what puts it
+ * on the Schools tab. A type a rep chose is theirs, and stays.
+ */
+function _crmPlanSchoolImport(rows, existing) {
+  const s = v => String(v == null ? '' : v).trim();
+  const plan = { add: [], fill: [], same: 0, dupes: 0, ambiguous: [], moved: 0, notSchools: 0, blank: 0 };
+
+  const byNces = new Map(), byName = new Map();
+  for (const c of existing) {
+    if (s(c.nces_id)) byNces.set(s(c.nces_id), c);
+    const k = _crmSchoolKey(c.company_name);
+    if (!k) continue;
+    if (!byName.has(k)) byName.set(k, []);
+    byName.get(k).push(c);
+  }
+
+  // How many rows in the file carry each name — per state, and over the whole
+  // file. A row here with no town can only be matched when the file offers it
+  // one candidate; with no state either, one candidate in the whole file.
+  const fileCount = new Map(), nameCount = new Map();
+  for (const r of rows) {
+    const n = _crmSchoolKey(r.company_name);
+    const k = `${s(r.state).toUpperCase()}|${n}`;
+    fileCount.set(k, (fileCount.get(k) || 0) + 1);
+    nameCount.set(n, (nameCount.get(n) || 0) + 1);
+  }
+
+  const seen = new Set(), claimed = new Set();
+  for (const r of rows) {
+    const name = _crmSchoolKey(r.company_name);
+    if (!name) { plan.blank++; continue; }
+    const id    = s(r.nces_id);
+    const state = s(r.state).toUpperCase();
+    const city  = _crmCityKey(r.city);
+
+    // A repeat inside the file: the same NCES id, or — for a row without one —
+    // the same name in the same state and town. Two different ids are two
+    // schools, however alike their names.
+    const selfKey = id ? `id:${id}` : `n:${state}|${name}|${city}`;
+    if (seen.has(selfKey)) { plan.dupes++; continue; }
+    seen.add(selfKey);
+
+    let into = id ? byNces.get(id) || null : null;
+    if (!into) {
+      const cands = (byName.get(name) || []).filter(c => {
+        const cs = s(c.state).toUpperCase();
+        return !cs || !state || cs === state;
+      });
+      into = cands.find(c => city && _crmCityKey(c.city) === city) || null;
+      if (!into) {
+        const loose = cands.filter(c => !_crmCityKey(c.city) || !city);
+        const only  = loose.length === 1 &&
+          (s(loose[0].state) ? fileCount.get(`${state}|${name}`) : nameCount.get(name)) === 1;
+        if (only) into = loose[0];
+        else if (loose.length) plan.ambiguous.push(r);
+      }
+    }
+    // Already taken by an earlier row of the file: this one is a second
+    // school of the same name, and someone should look at which is which.
+    if (into && claimed.has(into)) { plan.ambiguous.push(r); into = null; }
+
+    if (!into) {
+      if (!_crmIsSchool(r)) plan.notSchools++;
+      plan.add.push(r);
+      continue;
+    }
+
+    claimed.add(into);
+    const patch = {};
+    for (const [f, v] of Object.entries(r)) {
+      if (f === 'id' || !s(v)) continue;
+      if (f === 'contact_type') {
+        const was = s(into.contact_type);
+        if ((!was || was === 'Operator') && was !== s(v)) patch[f] = v;
+        continue;
+      }
+      if (!s(into[f])) patch[f] = v;
+    }
+    if (!Object.keys(patch).length) { plan.same++; continue; }
+    if (patch.contact_type && _crmIsSchool({ contact_type: patch.contact_type })) plan.moved++;
+    plan.fill.push({ into, patch });
+  }
+  return plan;
 }
 
 function _crmShowUploadModal(type, file) {
   const reader = new FileReader();
   reader.onload = ev => {
     // Strip BOM from the raw text before any parsing
-    const raw = _crmParseCSV(ev.target.result.replace(/^\uFEFF/, ''));
+    const raw = _crmParseCSV(ev.target.result.replace(/^﻿/, ''));
     if (raw.length < 2) { alert('CSV must have a header row and at least one data row.'); return; }
 
     // Normalize headers: lowercase, collapse any non-alphanumeric run to _, trim _
@@ -11344,7 +11939,10 @@ function _crmShowUploadModal(type, file) {
     const _HDR_ALIAS = { win: 'win_pct', win_pct: 'win_pct', win_percent: 'win_pct', win_percentage: 'win_pct',
       close_date: 'close_date', closing_date: 'close_date', closedate: 'close_date', expected_close: 'close_date',
       email: 'work_email', phone: 'work_phone', website: 'work_website' };
-    const headers = raw[0].map(h => { const n = _normHdr(h); return _HDR_ALIAS[n] || n; });
+    const headers = raw[0].map(h => {
+      const n = _normHdr(h);
+      return (type === 'schools' && _CRM_SCHOOL_HDR_ALIAS[n]) || _HDR_ALIAS[n] || n;
+    });
     const fields  = _CRM_UPLOAD_FIELDS[type];
     const dataRows = raw.slice(1).filter(r => r.some(c => c.trim()));
 
@@ -11357,7 +11955,7 @@ function _crmShowUploadModal(type, file) {
       stage:    _CRM_STAGES.filter(Boolean),
       status:   _CRM_STATUSES.filter(Boolean),
       priority: _CRM_PRIORITIES.filter(Boolean),
-      contact_type: _crmListValues(type === 'companies' ? 'crm_org_types' : 'crm_contact_types'),
+      contact_type: _crmListValues(type === 'people' ? 'crm_contact_types' : 'crm_org_types'),
       field_type:   _crmListValues('crm_field_types'),
       turf_product: _crmListValues('crm_turf_products'),
       source:       _crmListValues('crm_sources'),
@@ -11380,7 +11978,7 @@ function _crmShowUploadModal(type, file) {
       return v;
     };
 
-    _crmUploadPending = dataRows.map(row => {
+    let rows = dataRows.map(row => {
       const obj = { id: uid() };
       fields.forEach(f => {
         const idx = headers.indexOf(f);
@@ -11393,15 +11991,38 @@ function _crmShowUploadModal(type, file) {
       });
       return obj;
     });
+    // A school's type is matched against the list after it has been tidied,
+    // since tidying is what fills a blank one in.
+    if (type === 'schools') {
+      rows = rows.map(r => {
+        const c = _crmCleanSchoolRow(r);
+        c.contact_type = _matchEnum('contact_type', c.contact_type);
+        return c;
+      });
+    }
+    // The plan shown is worked out now, for the modal. The one applied is
+    // worked out again on Import, against the list as it is then — a poll can
+    // swap in a colleague's edits while this modal sits open.
+    const plan = type === 'schools' ? _crmPlanSchoolImport(rows, crmCompanies) : null;
+    _crmUploadPending = rows;
+    // Rows typed as schools in a Companies file are merged into Schools
+    // rather than added beside the schools already there.
+    const schoolRowsInFile = type === 'companies' ? rows.filter(_crmIsSchool).length : 0;
 
     const missing = fields.filter(f => !headers.includes(f));
     const previewFields = fields.slice(0, 5);
-    const previewRows   = _crmUploadPending.slice(0, 5);
+    const previewRows   = rows.slice(0, 5);
 
-    const noun     = type === 'people' ? 'contact' : type === 'companies' ? 'company' : 'opportunity';
-    const nounPlur = type === 'people' ? 'contacts' : type === 'companies' ? 'companies' : 'opportunities';
-    const existing = type === 'people' ? crmPeople.length : type === 'companies' ? crmCompanies.length : crmOpportunities.length;
-    const total    = _crmUploadPending.length;
+    const NOUNS    = { people: ['contact', 'contacts'], companies: ['company', 'companies'],
+                       schools: ['school', 'schools'], opportunities: ['opportunity', 'opportunities'] };
+    const [noun, nounPlur] = NOUNS[type] || NOUNS.opportunities;
+    const plural   = n => n === 1 ? noun : nounPlur;
+    // Companies and Schools share one list; each counts, and replaces, only its own.
+    const existing = type === 'people' ? crmPeople.length
+                   : type === 'companies' ? _crmOrgRows('companies').length
+                   : type === 'schools' ? _crmOrgRows('schools').length
+                   : crmOpportunities.length;
+    const total    = rows.length;
 
     const thS = `padding:0.35rem 0.55rem;font-size:0.63rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap;background:var(--surface2)`;
     const tdS = `padding:0.28rem 0.55rem;font-size:0.78rem;color:var(--text);border-bottom:1px solid rgba(255,255,255,0.05);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`;
@@ -11415,7 +12036,7 @@ function _crmShowUploadModal(type, file) {
           ).join('')}</tbody>
         </table>
       </div>
-      ${total > 5 ? `<p style="font-size:0.75rem;color:var(--muted);margin:-0.25rem 0 0.5rem">Showing 5 of ${total} rows.</p>` : ''}`;
+      ${total > 5 ? `<p style="font-size:0.75rem;color:var(--muted);margin:-0.25rem 0 0.5rem">Showing 5 of ${total.toLocaleString()} rows.</p>` : ''}`;
 
     // Show which fields mapped and which didn't — helps debug header mismatches
     const mappedHTML = `
@@ -11434,6 +12055,32 @@ function _crmShowUploadModal(type, file) {
          </div>`
       : '';
 
+    // Schools never replace: a school list is merged into what is here, since
+    // the rows already here are the ones with the fields, the people and the
+    // history on them.
+    const li = t => `<li style="margin:0.15rem 0">${t}</li>`;
+    const planHTML = plan ? `
+      <div style="margin-bottom:0.85rem;padding:0.6rem 0.85rem;background:var(--surface2);border:1px solid var(--border);border-radius:5px;font-size:0.8rem;color:var(--text)">
+        <ul style="margin:0;padding-left:1.1rem">
+          ${li(`<strong>${plan.add.length.toLocaleString()}</strong> new ${plural(plan.add.length)} will be added`)}
+          ${plan.fill.length ? li(`<strong>${plan.fill.length.toLocaleString()}</strong> already in the CRM get their blank cells filled in; nothing already typed is changed${plan.moved ? ` (${plan.moved} ${plan.moved === 1 ? 'moves' : 'move'} over from Companies — typed blank, or by Lucius)` : ''}`) : ''}
+          ${plan.same ? li(`${plan.same.toLocaleString()} already in the CRM with nothing new to add — left as they are`) : ''}
+          ${plan.dupes ? li(`${plan.dupes} repeated row${plan.dupes === 1 ? '' : 's'} in the file skipped`) : ''}
+          ${plan.blank ? li(`${plan.blank} row${plan.blank === 1 ? '' : 's'} with no school name skipped`) : ''}
+          ${plan.notSchools ? li(`<span style="color:#fbbf24">${plan.notSchools} row${plan.notSchools === 1 ? ' has a type' : 's have types'} that ${plan.notSchools === 1 ? 'is' : 'are'} not a school, and will show on Companies</span>`) : ''}
+          ${plan.ambiguous.length ? li(`<span style="color:#fbbf24">${plan.ambiguous.length} share${plan.ambiguous.length === 1 ? 's' : ''} a name with a CRM row that has no town, so could not be matched — added as new; worth a look:
+            ${plan.ambiguous.slice(0, 6).map(r => esc(`${r.company_name} (${[r.city, r.state].filter(Boolean).join(', ')})`)).join('; ')}${plan.ambiguous.length > 6 ? '…' : ''}</span>`) : ''}
+        </ul>
+      </div>` : '';
+
+    const commitN   = plan ? plan.add.length + plan.fill.length : total;
+    const commitLbl = plan
+      ? (plan.add.length && plan.fill.length ? `Import ${plan.add.length.toLocaleString()} new · update ${plan.fill.length.toLocaleString()}`
+         : plan.add.length ? `Import ${plan.add.length.toLocaleString()} ${plural(plan.add.length)}`
+         : plan.fill.length ? `Update ${plan.fill.length.toLocaleString()} ${plural(plan.fill.length)}`
+         : 'Nothing new to import')
+      : `Import ${total} ${plural(total)}`;
+
     const modal = document.createElement('div');
     modal.id = 'crm-upload-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem';
@@ -11443,21 +12090,26 @@ function _crmShowUploadModal(type, file) {
           Import ${type.charAt(0).toUpperCase() + type.slice(1)} from CSV
         </h3>
         <p style="margin:0 0 0.6rem;font-size:0.8rem;color:var(--muted)">
-          Found <strong style="color:var(--text)">${total}</strong> ${total === 1 ? noun : nounPlur} in
+          Found <strong style="color:var(--text)">${total.toLocaleString()}</strong> ${plural(total)} in
           <em>${esc(file.name)}</em>.
         </p>
         ${mappedHTML}
         ${warningHTML}
         ${previewTable}
-        ${existing ? `
+        ${planHTML}
+        ${schoolRowsInFile ? `
+        <div style="margin-bottom:0.85rem;padding:0.5rem 0.75rem;background:var(--surface2);border:1px solid var(--border);border-radius:5px;font-size:0.78rem;color:var(--text)">
+          ${schoolRowsInFile} row${schoolRowsInFile === 1 ? ' is' : 's are'} typed as a school, so ${schoolRowsInFile === 1 ? 'it goes' : 'they go'} to the Schools tab. On <em>Replace all</em>, a school already there is matched and filled in rather than added a second time.
+        </div>` : ''}
+        ${existing && !plan ? `
         <div style="display:flex;gap:0.5rem;margin-bottom:0.85rem;padding:0.6rem 0.75rem;background:var(--surface2);border:1px solid var(--border);border-radius:5px">
           <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text)">
             <input type="radio" name="crm-import-mode" value="append" checked style="accent-color:var(--blue)">
-            Append to existing <span style="color:var(--muted)">(${existing} ${existing === 1 ? noun : nounPlur} + ${total} new)</span>
+            Append to existing <span style="color:var(--muted)">(${existing} ${plural(existing)} + ${total} new)</span>
           </label>
           <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text);margin-left:1.25rem">
             <input type="radio" name="crm-import-mode" value="replace" style="accent-color:#ef4444">
-            Replace all <span style="color:#f87171">(deletes the ${existing} existing ${existing === 1 ? noun : nounPlur})</span>
+            Replace all <span style="color:#f87171">(deletes the ${existing} existing ${plural(existing)})</span>
           </label>
         </div>` : ''}
         <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.75rem">
@@ -11468,8 +12120,8 @@ function _crmShowUploadModal(type, file) {
           <div style="display:flex;gap:0.6rem">
             <button class="btn" onclick="document.getElementById('crm-upload-modal').remove()"
               style="background:var(--surface2);border:1px solid var(--border);color:var(--text)">Cancel</button>
-            <button class="btn btn-green" onclick="_crmCommitUpload('${type}')">
-              Import ${total} ${total === 1 ? noun : nounPlur}
+            <button class="btn btn-green" onclick="_crmCommitUpload('${type}')" ${commitN ? '' : 'disabled style="opacity:0.5;cursor:not-allowed"'}>
+              ${commitLbl}
             </button>
           </div>
         </div>
@@ -11480,22 +12132,74 @@ function _crmShowUploadModal(type, file) {
   reader.readAsText(file);
 }
 
+/* A line of what just happened, shown at the head of a tab until dismissed.
+   An import of a thousand rows needs to say what it did, and an alert() for
+   it would be one more thing to click through before looking. */
+const _crmOrgNote = { companies: '', schools: '' };
+
+function _crmOrgNoteHTML(side) {
+  const note = _crmOrgNote[side];
+  if (!note) return '';
+  return `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:0.75rem;margin-bottom:0.75rem;
+                      padding:0.55rem 0.8rem;background:rgba(22,101,52,0.18);border:1px solid #166534;border-radius:5px;
+                      font-size:0.8rem;color:var(--text)">
+    <span>${note}</span>
+    <button onclick="_crmOrgNote['${side}'] = ''; _crmRenderOrg('${side}')" title="Dismiss"
+      style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.9rem;padding:0;flex-shrink:0">✕</button>
+  </div>`;
+}
+
 function _crmCommitUpload(type) {
   const modeEl = document.querySelector('#crm-upload-modal input[name="crm-import-mode"]:checked');
   const replace = modeEl?.value === 'replace';
   document.getElementById('crm-upload-modal')?.remove();
-  const rows = _crmUploadPending;
+  const pending = _crmUploadPending;
   _crmUploadPending = null;
-  if (!rows || !rows.length) return;
+  if (!pending) return;
+
+  if (type === 'schools') {
+    const plan = _crmPlanSchoolImport(pending, crmCompanies);
+    if (!plan.add.length && !plan.fill.length) return;
+    for (const { into, patch } of plan.fill) Object.assign(into, patch);
+    crmCompanies = [...plan.add, ...crmCompanies];
+    saveCrmCompanies();
+    const flagged = [...plan.add, ...plan.fill.map(x => x.into)]
+      .filter(r => _crmIsSchool(r) && String(r.notes || '').trim()).length;
+    _crmOrgNote.schools = [
+      `Imported ${plan.add.length.toLocaleString()} new ${plan.add.length === 1 ? 'school' : 'schools'}`,
+      plan.fill.length ? ` and filled in blanks on ${plan.fill.length.toLocaleString()} already here` : '',
+      '.',
+      flagged ? ` ${flagged.toLocaleString()} carry a note worth reading before anyone calls — filter the Notes column to see them.` : '',
+      plan.notSchools ? ` ${plan.notSchools} not typed as a school are on Companies.` : '',
+    ].join('');
+    _crmSchoolsView = 'schools';
+    renderCrmSchoolsTab();
+    return;
+  }
+
+  const rows = pending;
+  if (!rows.length) return;
   if (type === 'people') {
     crmPeople = replace ? rows : [...rows, ...crmPeople];
     saveCrmPeople();
     renderCrmPeopleTab();
   } else if (type === 'companies') {
-    crmCompanies = replace ? rows : [...rows, ...crmCompanies];
+    if (replace) {
+      // Replacing Companies must not take the schools with it: they share the
+      // list, and the Replace option only ever counted — and warned about —
+      // the companies. A school the file brings back (an export from before
+      // Schools had its own tab carries them) is merged into the one already
+      // there, so running the same Replace twice gives the same list.
+      const kept = crmCompanies.filter(_crmIsSchool);
+      const plan = _crmPlanSchoolImport(rows.filter(_crmIsSchool), kept);
+      for (const { into, patch } of plan.fill) Object.assign(into, patch);
+      crmCompanies = [...rows.filter(r => !_crmIsSchool(r)), ...plan.add, ...kept];
+    } else {
+      crmCompanies = [...rows, ...crmCompanies];
+    }
     saveCrmCompanies();
     renderCrmCompaniesTab();
-  } else {
+  } else if (type === 'opportunities') {
     crmOpportunities = replace ? rows : [...rows, ...crmOpportunities];
     saveCrmOpportunities();
     renderCrmOpportunitiesTab();
@@ -16971,9 +17675,11 @@ document.getElementById('inventory-root').addEventListener('change', e => {
 });
 
 function _crmClearFilter(type) {
+  _crmResetPaging(type);
   if (type === 'people')        { _crmPeopleFilter  = {}; renderCrmPeopleTab(); }
   else if (type === 'companies'){ _crmCompanyFilter = {}; renderCrmCompaniesTab(); }
-  else if (type === 'fields')   { _crmFieldFilter   = {}; renderCrmCompaniesTab(); }
+  else if (type === 'schools')  { _crmSchoolFilter  = {}; renderCrmSchoolsTab(); }
+  else if (type === 'fields')   { _crmFieldFilter   = {}; _crmRenderOrgTabs(); }
   else if (type === 'news')     { _crmNewsFilter    = { region: [], level: [], sport: [], division: [], q: '' }; renderCrmNewsTab(); }
   else                          { _crmOppFilter     = {}; renderCrmOpportunitiesTab(); }
 }
@@ -17030,53 +17736,122 @@ document.getElementById('crm-people-root').addEventListener('click', e => {
   if (btn) deleteCrmPerson(btn.dataset.crmPersonId);
 });
 
-/* ── CRM Companies events ── */
-document.getElementById('crm-companies-root').addEventListener('input', e => {
-  const el = e.target;
-  const id = el.dataset.crmId, field = el.dataset.crmField;
-  if (!id || !field) return;
-  const co = crmCompanies.find(c => c.id === id);
-  if (!co) return;
-  co[field] = el.value;
+/* ── CRM Companies and Schools events ──
+   Both tabs draw rows out of crmCompanies, and the Fields view can sit in
+   either, so one set of handlers is bound to each root. A root only ever
+   holds its own rows, which is what lets the link-icon lookups below be
+   scoped to it rather than to the whole page. */
+const _CRM_ORG_COLOR_MAPS  = { tag: _CRM_TAG_COLORS, territory: _CRM_TERRITORY_COLORS };
+const _CRM_ORG_LINK_FIELDS = new Set(['work_website', 'athletics_url']);
 
-  if (field === 'work_website') {
-    const val = el.value.trim();
-    const href = val ? (val.match(/^https?:\/\//) ? val : `https://${val}`) : '';
-    const icon = document.getElementById(`crm-lnk-${id}-work_website`);
-    if (icon) { icon.href = href; icon.title = val; icon.style.display = val ? '' : 'none'; }
-    el.style.color = val ? 'var(--blue)' : 'var(--muted)';
-    el.style.textDecoration = val ? 'underline' : 'none';
-  }
-  saveCrmCompanies();
-});
+function _crmBindOrgRoot(side) {
+  const root = document.getElementById(_CRM_ORG_SIDES[side].root);
+  if (!root) return;
 
-document.getElementById('crm-companies-root').addEventListener('change', e => {
-  const el = e.target;
-  const id = el.dataset.crmId, field = el.dataset.crmField;
-  if (!id || !field) return;
-  const co = crmCompanies.find(c => c.id === id);
-  if (!co) return;
-  const picked = _crmListPick(el, co[field]);
-  if (picked) {
-    if (picked.cancelled) return;
-    co[field] = picked.value;
+  root.addEventListener('input', e => {
+    const el = e.target;
+    // A select fires input just before change. Its value is written by the
+    // change handler alone, which is the one that knows "＋ Add…" is a
+    // command — stored from here, a cancelled add would save the command.
+    if (el.tagName === 'SELECT') return;
+    // Field rows carry their own attributes; see below.
+    const fid = el.dataset.crmFieldId, col = el.dataset.crmFieldCol;
+    if (fid && col) {
+      const f = crmFields.find(x => x.id === fid);
+      if (!f) return;
+      f[col] = el.value;
+      saveCrmFields();
+      return;
+    }
+
+    const id = el.dataset.crmId, field = el.dataset.crmField;
+    if (!id || !field) return;
+    const co = crmCompanies.find(c => c.id === id);
+    if (!co) return;
+    co[field] = el.value;
+
+    if (_CRM_ORG_LINK_FIELDS.has(field)) {
+      const val = el.value.trim();
+      const href = val ? (val.match(/^https?:\/\//) ? val : `https://${val}`) : '';
+      const icon = root.querySelector(`[id="crm-lnk-${id}-${field}"]`);
+      if (icon) { icon.href = href; icon.title = val; icon.style.display = val ? '' : 'none'; }
+      el.style.color = val ? 'var(--blue)' : 'var(--muted)';
+      el.style.textDecoration = val ? 'underline' : 'none';
+    }
     saveCrmCompanies();
-    renderCrmCompaniesTab();
-    return;
-  }
-  co[field] = el.value;
-  if (field === 'tag') {
-    const c = _CRM_TAG_COLORS[el.value];
-    el.style.background = c ? c.bg    : 'var(--surface2)';
-    el.style.color      = c ? c.color : 'var(--muted)';
-  }
-  saveCrmCompanies();
-});
+  });
 
-document.getElementById('crm-companies-root').addEventListener('click', e => {
-  const btn = e.target.closest('[data-crm-company-id]');
-  if (btn) deleteCrmCompany(btn.dataset.crmCompanyId);
-});
+  root.addEventListener('change', e => {
+    const el = e.target;
+
+    const fid = el.dataset.crmFieldId, col = el.dataset.crmFieldCol;
+    if (fid && col) {
+      const f = crmFields.find(x => x.id === fid);
+      if (!f) return;
+      const picked = _crmListPick(el, f[col]);
+      if (picked) {
+        if (picked.cancelled) return;
+        f[col] = picked.value;
+        saveCrmFields();
+        _crmRenderOrg(side);
+        return;
+      }
+      f[col] = el.value;
+      if (col === 'company_id') {
+        const co = crmCompanies.find(c => c.id === el.value);
+        f.company_name = co ? (co.company_name || '') : '';
+      }
+      saveCrmFields();
+      // Install year moving changes the bucket, so the row has to redraw.
+      if (col === 'installed_year' || col === 'company_id') _crmRenderOrg(side);
+      return;
+    }
+
+    const id = el.dataset.crmId, field = el.dataset.crmField;
+    if (!id || !field) return;
+    const co = crmCompanies.find(c => c.id === id);
+    if (!co) return;
+    const picked = _crmListPick(el, co[field]);
+    if (picked) {
+      if (picked.cancelled) return;
+      co[field] = picked.value;
+      saveCrmCompanies();
+      _crmRenderOrg(side);
+      return;
+    }
+    const wasSide = _crmSideOf(co);
+    co[field] = el.value;
+    const colorMap = _CRM_ORG_COLOR_MAPS[field];
+    if (colorMap) {
+      const c = colorMap[el.value];
+      el.style.background = c ? c.bg    : 'var(--surface2)';
+      el.style.color      = c ? c.color : 'var(--muted)';
+    }
+    saveCrmCompanies();
+    // A new Organisation Type can move the row to the other tab. Redraw so it
+    // leaves this one, rather than sitting here until something else redraws.
+    if (field === 'contact_type' && _crmSideOf(co) !== wasSide) _crmRenderOrg(side);
+  });
+
+  root.addEventListener('click', e => {
+    const del = e.target.closest('[data-crm-company-id]');
+    if (del) { deleteCrmCompany(del.dataset.crmCompanyId); return; }
+    const delField = e.target.closest('[data-crm-fieldrow-id]');
+    if (delField) deleteCrmField(delField.dataset.crmFieldrowId);
+  });
+
+  // The field-row company picker fills itself as it opens: on the press that
+  // opens it, and on the focus that a keyboard user reaches it by.
+  const fill = e => {
+    const sel = e.target.closest && e.target.closest('select[data-crm-lazy-cos]');
+    if (sel) _crmFillCompanyOptions(sel);
+  };
+  root.addEventListener('mousedown', fill);
+  root.addEventListener('focusin',   fill);
+}
+
+_crmBindOrgRoot('companies');
+_crmBindOrgRoot('schools');
 
 /* ── CRM Opportunities events ── */
 const _CRM_COLOR_MAPS = {
@@ -27800,6 +28575,12 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollCrm() {
+    // Where this tab's company saves stood when the poll asked. A save sent
+    // after the GET was answered, and finished before the slowest of these
+    // six came back, is invisible by the time they return — and the snapshot
+    // it would then replace is older than it.
+    const cosSentAtAsk    = _crmCosSave.sent;
+    const cosPendingAtAsk = _crmCosSave.busy || _crmCosSave.again;
     const [pRes, cRes, oRes, fRes, nRes, tRes] = await Promise.allSettled([
       apiGet('fct_crm_people'),
       apiGet('fct_crm_companies'),
@@ -27820,7 +28601,12 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     let peopleChanged = false, cosChanged = false, oppsChanged = false,
         fieldsChanged = false, newsChanged = false, touchChanged = false;
     if (inPeople && JSON.stringify(inPeople) !== JSON.stringify(crmPeople))         { crmPeople        = inPeople;  peopleChanged = true; }
-    if (inCos    && JSON.stringify(inCos)    !== JSON.stringify(crmCompanies))      { crmCompanies     = inCos;     cosChanged    = true; }
+    // A save that overlapped this poll at any point means the snapshot may
+    // predate it. Taking it would put the old rows back on screen, and the
+    // next edit would then save them over the new ones — an import included.
+    // The next poll, with nothing in flight, reads the settled list.
+    const cosSaving = cosPendingAtAsk || _crmCosSave.busy || _crmCosSave.again || _crmCosSave.sent !== cosSentAtAsk;
+    if (inCos && !cosSaving && JSON.stringify(inCos) !== JSON.stringify(crmCompanies)) { crmCompanies = inCos; cosChanged = true; }
     if (inOpps   && JSON.stringify(inOpps)   !== JSON.stringify(crmOpportunities))  { crmOpportunities = inOpps;    oppsChanged   = true; }
     if (inFields && JSON.stringify(inFields) !== JSON.stringify(crmFields))         { crmFields        = inFields; fieldsChanged = true; }
     // The news hub is written by the overnight cron, so it arrives this way
@@ -27837,6 +28623,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     }
     if (cosChanged) {
       if (activePanel === 'crm-panel-companies') renderCrmCompaniesTab();
+      if (activePanel === 'crm-panel-schools')   renderCrmSchoolsTab();
       if (activePanel === 'crm-panel-dashboard') renderCrmDashboard();
     }
     if (oppsChanged) {
@@ -27846,6 +28633,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     }
     if (fieldsChanged) {
       if (activePanel === 'crm-panel-companies') renderCrmCompaniesTab();
+      if (activePanel === 'crm-panel-schools')   renderCrmSchoolsTab();
       if (activePanel === 'crm-panel-dashboard') renderCrmDashboard();
     }
     if (newsChanged && activePanel === 'crm-panel-news') renderCrmNewsTab();
@@ -31874,6 +32662,12 @@ function _luciusAddAllToCrm() {
 function _luciusOpenCrmCompany(companyId) {
   const c = crmCompanies.find(x => x.id === companyId);
   if (!c) return;
+  if (_crmIsSchool(c)) {
+    _crmSchoolFilter = { company_name: c.company_name || '' };
+    _crmSchoolsView  = 'schools';
+    crmSwitchTab('schools');
+    return;
+  }
   _crmCompanyFilter  = { company_name: c.company_name || '' };
   _crmCompaniesView  = 'companies';
   crmSwitchTab('companies');

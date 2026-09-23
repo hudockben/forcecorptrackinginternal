@@ -10,7 +10,8 @@
  * It searches for the roles that decide a turf purchase — athletic director,
  * facilities or buildings-and-grounds, business manager, superintendent — on
  * the school's own staff directory, and returns what it found with the page
- * it came from.
+ * it came from. A college gets a list of its own, because it is run by an
+ * athletics department and a physical plant rather than a superintendent.
  *
  * Three rules it holds to.
  *
@@ -50,7 +51,7 @@ const DEADLINE_MS = 150000;
 const SEARCH_TOOL       = { type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES };
 const SEARCH_TOOL_BASIC = { type: 'web_search_20250305', name: 'web_search', max_uses: MAX_SEARCHES };
 
-/** The people who decide, or influence, a field purchase. */
+/** The people who decide, or influence, a field purchase at a school district. */
 const ROLES = [
   'Athletic Director',
   'Director of Facilities / Buildings and Grounds',
@@ -60,6 +61,53 @@ const ROLES = [
   'Head Groundskeeper / Grounds Supervisor',
   'Head Football Coach',
 ];
+
+/**
+ * The same people at a college, which is organised differently.
+ *
+ * A college has no superintendent and no district business office. The
+ * athletics department owns its fields, one of the assistant ADs usually has
+ * facilities as a portfolio, the physical plant looks after the grounds, and
+ * the money goes through a finance office. Sending the K-12 list at a
+ * university has the model hunting for a superintendent who does not exist.
+ */
+const COLLEGE_ROLES = [
+  'Director of Athletics',
+  'Associate / Assistant AD for Facilities or Operations',
+  'Director of Facilities / Physical Plant',
+  'Head Football Coach',
+  'Business / Finance Officer',
+];
+
+// A college by its type alone. Athletics is a free-text cell a rep may well
+// fill in for a high school too ("PIAA 6A"), so it cannot be the test.
+function isCollege(company) {
+  return /college|universit/i.test(String(company.contact_type || ''));
+}
+
+const rolesFor = company => (isCollege(company) ? COLLEGE_ROLES : ROLES);
+
+/**
+ * The school's MaxPreps profile, when that is what athletics_url holds.
+ *
+ * For a high school the import stores the varsity profile there. The finder
+ * has web search, not a page fetch, so this is a lead rather than a page it
+ * opens: the profile's address and team name are what to search for, and
+ * what turns up the athletic director and the school's own athletics site. Anything that is not maxpreps.com — the federal
+ * athletics data page the colleges came from, a typo — is no help as a
+ * starting page and is left out.
+ */
+function maxprepsUrl(raw) {
+  const s = String(raw || '').trim();
+  try {
+    const u    = new URL(s);
+    const host = u.hostname.toLowerCase();
+    if (!/^https?:$/.test(u.protocol)) return '';
+    return host === 'maxpreps.com' || host.endsWith('.maxpreps.com') ? s : '';
+  } catch (_) {
+    return '';
+  }
+}
 
 async function readBlob(sql, companyCode, key) {
   try {
@@ -74,21 +122,37 @@ async function readBlob(sql, companyCode, key) {
 }
 
 function buildPrompt(company, known, fields) {
-  const where = [company.address, company.city, company.state, company.zip].filter(Boolean).join(', ');
+  // County as well as town: the same school name turns up in more than one
+  // county, and "McKinley High School" alone could be any of three.
+  const where    = [company.address, company.city, company.county, company.state, company.zip].filter(Boolean).join(', ');
+  const kind     = [company.sector, company.contact_type].filter(Boolean).join(' ');
+  const maxpreps = maxprepsUrl(company.athletics_url);
+  const college  = isCollege(company);
+  const roles    = college ? COLLEGE_ROLES : ROLES;
+
+  const about = [
+    `ORGANISATION: ${company.company_name}`,
+    kind                    && `TYPE: ${kind}`,
+    company.athletics_level && `ATHLETICS: ${company.athletics_level}`,
+    where                   && `LOCATION: ${where}`,
+    company.work_website    && `WEBSITE: ${company.work_website}`,
+    maxpreps                && `ATHLETICS PAGE: ${maxpreps} — the school's MaxPreps profile. Searching for that page, or for the school's team name on MaxPreps, tends to turn up the athletic director and the school's own athletics site; confirm any name there on the school's own site before returning it.`,
+    company.email_domain    && `EMAIL DOMAIN: ${company.email_domain}`,
+    fields.length > 0       && `FIELDS WE KNOW OF: ${fields.map(f => `${f.field_name || f.field_type || 'field'}${f.installed_year ? ` (installed ${f.installed_year})` : ''}`).join('; ')}`,
+  ].filter(Boolean).join('\n');
+
   return `Find the people we should contact at this organisation about its athletic fields.
 
-ORGANISATION: ${company.company_name}
-${where ? `LOCATION: ${where}` : ''}
-${company.work_website ? `WEBSITE: ${company.work_website}` : ''}
-${company.email_domain ? `EMAIL DOMAIN: ${company.email_domain}` : ''}
-${fields.length ? `FIELDS WE KNOW OF: ${fields.map(f => `${f.field_name || f.field_type || 'field'}${f.installed_year ? ` (installed ${f.installed_year})` : ''}`).join('; ')}` : ''}
+${about}
 
 ${known.length ? `WE ALREADY HAVE THESE PEOPLE — do not return them again:\n${known.map(p => `  - ${p.name}${p.title ? `, ${p.title}` : ''}`).join('\n')}` : 'We have no contacts here yet.'}
 
 Look for these roles, in this order of usefulness:
-${ROLES.map((r, i) => `  ${i + 1}. ${r}`).join('\n')}
+${roles.map((r, i) => `  ${i + 1}. ${r}`).join('\n')}
 
-Search the organisation's own site first — a staff directory, an athletics page, a district administration page. Those are the pages that carry real names and addresses.
+${college
+  ? `Search the college's own site first — the athletics department's staff directory, the facilities or physical plant page, the finance office. Those are the pages that carry real names and addresses.`
+  : `Search the organisation's own site first — a staff directory, an athletics page, a district administration page. Those are the pages that carry real names and addresses.`}
 
 Rules that matter more than coverage:
 - Return only what you found on a page you can cite. Put that page's URL in source_url.
@@ -248,8 +312,11 @@ module.exports = async (req, res) => {
   }
 };
 
-module.exports.cleanPeople = cleanPeople;
-module.exports.buildPrompt = buildPrompt;
-module.exports.ROLES       = ROLES;
-module.exports.MAX_PEOPLE  = MAX_PEOPLE;
-module.exports.DEADLINE_MS = DEADLINE_MS;
+module.exports.cleanPeople   = cleanPeople;
+module.exports.buildPrompt   = buildPrompt;
+module.exports.ROLES         = ROLES;
+module.exports.COLLEGE_ROLES = COLLEGE_ROLES;
+module.exports.rolesFor      = rolesFor;
+module.exports.maxprepsUrl   = maxprepsUrl;
+module.exports.MAX_PEOPLE    = MAX_PEOPLE;
+module.exports.DEADLINE_MS   = DEADLINE_MS;
