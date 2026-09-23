@@ -53,7 +53,29 @@ const MAX_QUERY_CHARS = 1000;
 
 // What the model is shown. Past this the prompt costs more than the answer is
 // worth, and the reply says plainly that it searched a capped slice.
-const CAPS = { people: 600, companies: 500, fields: 800, opportunities: 500 };
+//
+// Companies was 500 until the schools import put ~1,100 school rows in the
+// same blob. Measured on the 1,095-row import file, a school row is about 530
+// characters whole and about 230 compacted (compactRow, below), so all of
+// them come to ~251K characters — roughly 65-80K tokens, a little less than
+// the 500 whole rows the old cap sent. 1,500 holds every school and 400 of our
+// own companies besides. Past that the capped note still goes in, and what is
+// cut is the tail of unworked schools (prioritiseCompanies, below), never a
+// customer.
+const CAPS = { people: 600, companies: 1500, fields: 800, opportunities: 500 };
+
+/**
+ * Keys that cost tokens and answer no question anyone asks the search.
+ *
+ * Coordinates and OpenStreetMap ids are for the map link, the NCES id and the
+ * MaxPreps address are for the import and the contact finder, and a street
+ * address or a ZIP is not how anyone asks for a place — they say a town, a
+ * county or a state, and those stay. Keys starting with "_" are the page's own
+ * bookkeeping and were never data.
+ */
+const PROMPT_DROP_KEYS = new Set([
+  'osm_lat', 'osm_lng', 'osm_id', 'athletics_url', 'nces_id', 'address', 'zip',
+]);
 
 const SEARCH_TOOL       = { type: 'web_search_20260209', name: 'web_search', max_uses: 8 };
 const SEARCH_TOOL_BASIC = { type: 'web_search_20250305', name: 'web_search', max_uses: 8 };
@@ -77,10 +99,121 @@ async function readBlob(sql, companyCode, key) {
   }
 }
 
+/**
+ * One row as the model sees it: only the keys that hold something.
+ *
+ * A CRM row is mostly empty strings — a company added by hand starts life as
+ * sixteen keys, every one blank but the id — and each of those "": pairs was
+ * paid for on every search. With the schools in the blob that stopped being a
+ * rounding error. The id always survives, because a match the tab cannot find
+ * again by id is a match it cannot open.
+ */
+function compactRow(row) {
+  const out = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (k.startsWith('_') || PROMPT_DROP_KEYS.has(k)) continue;
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'string' && !v.trim()) continue;
+    if (Array.isArray(v) && !v.length) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// A null or a stray string in a blob is not a row, and there is nothing in it
+// to search.
+function compactRows(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter(r => r && typeof r === 'object' && !Array.isArray(r))
+    .map(compactRow);
+}
+
+const _norm = s => String(s == null ? '' : s).trim().toLowerCase();
+
+// The same test the page uses to put a row on its Schools tab (_crmIsSchool
+// in tracker.html): the Organisation Type names a school.
+const SCHOOL_TYPE_RE = /school|college|universit|academy|\bhs\b/i;
+
+/**
+ * Which companies come first when the list has to be capped.
+ *
+ * It used to be array order, and array order is upload order: the browser puts
+ * new rows at the front, so the day 1,095 schools were imported every customer
+ * we actually do business with fell off the end of AI Search. A company with a
+ * field, a person or an opportunity against it is one somebody has worked, and
+ * it keeps its place however many prospects are loaded on top of it.
+ *
+ * After those, the companies someone typed in by hand, and only then the
+ * schools nobody has touched yet — a bought list of prospects is the thing to
+ * cut first, because it is the thing that can be loaded again.
+ *
+ * Linked is the same test the page uses: a field by company_id or by name, a
+ * person or an opportunity by name, names compared trimmed and lowercased.
+ * Order inside each group is left alone, so nothing else moves.
+ */
+function prioritiseCompanies(companies, related) {
+  const { fields = [], people = [], opportunities = [] } = related || {};
+  const ids   = new Set();
+  const names = new Set();
+  for (const r of [...fields, ...people, ...opportunities]) {
+    if (!r || typeof r !== 'object') continue;
+    if (r.company_id) ids.add(r.company_id);
+    for (const n of [_norm(r.company_name), _norm(r.company)]) if (n) names.add(n);
+  }
+
+  const linked  = [];
+  const others  = [];
+  const schools = [];
+  for (const c of Array.isArray(companies) ? companies : []) {
+    const isLinked = !!c && ((c.id && ids.has(c.id)) || names.has(_norm(c.company_name)));
+    if (isLinked) linked.push(c);
+    else if (c && SCHOOL_TYPE_RE.test(String(c.contact_type || ''))) schools.push(c);
+    else others.push(c);
+  }
+  return linked.concat(others, schools);
+}
+
+/**
+ * The four blobs as they go in the prompt: companies put in order, each list
+ * capped, every row compacted. Returned with the notes on what was capped,
+ * which the prompt passes on and the reply repeats.
+ */
+function prepareData(raw = {}) {
+  const data      = {};
+  const truncated = [];
+  const ordered   = { ...raw, companies: prioritiseCompanies(raw.companies, raw) };
+  for (const name of Object.keys(KEYS)) {
+    const rows = Array.isArray(ordered[name]) ? ordered[name] : [];
+    if (rows.length > CAPS[name]) truncated.push(`${name} capped at ${CAPS[name]} of ${rows.length}`);
+    data[name] = compactRows(rows.slice(0, CAPS[name]));
+  }
+  return { data, truncated };
+}
+
+/**
+ * The prompt, as two blocks.
+ *
+ * The first is the CRM itself and is marked for caching. It is by far the
+ * largest thing sent, and it is sent more than once: every pause_turn from the
+ * web search sends the whole conversation back, up to six times a search, and
+ * without a cache each of those paid for the whole CRM again. Cached, the
+ * first request writes it once and the rest read it back at a fraction of the
+ * price — and so does the next search, if it comes within five minutes and the
+ * CRM has not changed in between.
+ *
+ * Caching is a prefix match, so everything that differs between searches is in
+ * the second block: today's date, the capped-list note, the web rules and the
+ * question. The first block depends on nothing but the rows. The search tool
+ * and the effort level are part of what the cache matches on too; each changes
+ * only on its fallback in runSearch, where a fresh entry is the right outcome
+ * anyway. Web search needs nothing extra — once a request caches, the API
+ * caches the search results behind it on its own. And a CRM too small to be
+ * worth caching (a few hundred tokens) is simply sent as before, no error.
+ */
 function buildPrompt(query, data, truncated, allowWeb) {
   const block = (label, rows) => `${label} (${rows.length}):\n${rows.length ? JSON.stringify(rows) : '  none'}`;
 
-  return `You are the search over a turf-installation company's CRM. Answer the user's question from the data below.
+  const crm = `You are the search over a turf-installation company's CRM. Answer the user's question from the data below.
 
 ${block('COMPANIES', data.companies)}
 
@@ -88,9 +221,16 @@ ${block('PEOPLE', data.people)}
 
 ${block('FIELDS', data.fields)}
 
-${block('OPPORTUNITIES', data.opportunities)}
-${truncated.length ? `\nNote: these lists were capped — ${truncated.join(', ')}. Say so in your answer if it affects the result.\n` : ''}
-A field's age decides what we sell it: 1-3 years old is Maintenance, 4-7 is Maintenance/Replacement, 8+ is Replacement. Today is ${new Date().toISOString().slice(0, 10)}.
+${block('OPPORTUNITIES', data.opportunities)}`;
+
+  const companiesCut = truncated.some(t => t.startsWith('companies'));
+  const capped = truncated.length
+    ? `Note: these lists were capped — ${truncated.join(', ')}.${companiesCut ? ' Companies with a field, a person or an opportunity against them were kept first, then our other companies, so the companies cut are schools nobody has worked yet.' : ''} Say so in your answer if it affects the result.\n\n`
+    : '';
+
+  const ask = `${capped}A field's age decides what we sell it: 1-3 years old is Maintenance, 4-7 is Maintenance/Replacement, 8+ is Replacement. Today is ${new Date().toISOString().slice(0, 10)}.
+
+Some companies are schools: contact_type "High School" or "College / University", sector "Public" or "Private", athletics_level the college's athletics classification (blank for high schools), enrollment a head count. territory places a school against our sales territory line: "Inside" is inside the territory and more than 25 miles from the line; "On/near boundary" is within 25 miles of the line on either side, so which territory it belongs to still needs checking. miles_to_line is the distance to that line. Answer location questions from city, county and state.
 ${allowWeb ? `
 The question may ask for prospects we have no row for yet. Where it does, you may web search for real schools, colleges and municipalities that fit, and return them as kind "prospect". Only return a prospect you actually found a source for — never invent a school, an address or a contact. Leave a field empty rather than guessing it.
 ` : `
@@ -112,7 +252,9 @@ Return ONLY a JSON object, no prose outside it:
       "email": "",
       "website": "",
       "city": "",
+      "county": "",
       "state": "",
+      "territory": "Inside" | "On/near boundary" | "",
       "field_type": "",
       "field_size": "",
       "installed_year": "",
@@ -126,6 +268,11 @@ Return ONLY a JSON object, no prose outside it:
 }
 
 Leave any field you do not know as an empty string. Do not pad the list — a precise five beats a vague fifty.`;
+
+  return [
+    { type: 'text', text: crm, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: ask },
+  ];
 }
 
 function textOf(message) {
@@ -167,6 +314,8 @@ async function runSearch(client, messages, allowWeb) {
       throw err;
     }
     if (message.stop_reason !== 'pause_turn') break;
+    // Appended, never rebuilt: the first message is sent back byte for byte,
+    // which is what lets the continuation read the CRM from the cache.
     messages.push({ role: 'assistant', content: message.content });
   }
 
@@ -202,13 +351,9 @@ module.exports = async (req, res) => {
 
   const sql = neon(process.env.DATABASE_URL);
 
-  const data      = {};
-  const truncated = [];
-  for (const [name, key] of Object.entries(KEYS)) {
-    const rows = await readBlob(sql, payload.companyCode, key);
-    if (rows.length > CAPS[name]) truncated.push(`${name} capped at ${CAPS[name]} of ${rows.length}`);
-    data[name] = rows.slice(0, CAPS[name]);
-  }
+  const raw = {};
+  for (const [name, key] of Object.entries(KEYS)) raw[name] = await readBlob(sql, payload.companyCode, key);
+  const { data, truncated } = prepareData(raw);
 
   const messages = [{ role: 'user', content: buildPrompt(query, data, truncated, allowWeb) }];
 
@@ -247,5 +392,12 @@ module.exports = async (req, res) => {
   }
 };
 
-module.exports.DEADLINE_MS = DEADLINE_MS;
-module.exports.EFFORT = EFFORT;
+module.exports.DEADLINE_MS         = DEADLINE_MS;
+module.exports.EFFORT              = EFFORT;
+module.exports.CAPS                = CAPS;
+module.exports.compactRow          = compactRow;
+module.exports.compactRows         = compactRows;
+module.exports.prioritiseCompanies = prioritiseCompanies;
+module.exports.prepareData         = prepareData;
+module.exports.buildPrompt         = buildPrompt;
+module.exports.runSearch           = runSearch;

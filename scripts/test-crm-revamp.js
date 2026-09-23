@@ -1134,16 +1134,171 @@ async function nextStepsEmail() {
     mail && /1-5$/.test(mail.schedule), mail && mail.schedule);
 }
 
+/* ── 4l. Schools: the tab split and the upload ───────────────────────────── */
+console.log('\nSchools');
+{
+  const reLine = SRC.slice(SRC.indexOf('const _CRM_SCHOOL_TYPE_RE'), SRC.indexOf('\n', SRC.indexOf('const _CRM_SCHOOL_TYPE_RE')));
+  const K = new Function([
+    'let crmCompanies = [];',
+    reLine,
+    extractFunction(SRC, '_crmIsSchool'),
+    extractFunction(SRC, '_crmOrgRows'),
+    extractFunction(SRC, '_crmSchoolKey'),
+    extractFunction(SRC, '_crmCityKey'),
+    extractFunction(SRC, '_crmCleanSchoolRow'),
+    extractFunction(SRC, '_crmPlanSchoolImport'),
+    'return { _crmIsSchool, _crmOrgRows, _crmSchoolKey, _crmCleanSchoolRow, _crmPlanSchoolImport,',
+    '  set: rows => { crmCompanies = rows; } };',
+  ].join('\n'))();
+
+  // The type is the whole test — it is the column a rep can see and change.
+  for (const t of ['High School', 'College / University', 'School District', 'Middle School',
+                   'Church / Private School', 'Private Academy', 'HS']) {
+    assert(`"${t}" is a school`, K._crmIsSchool({ contact_type: t }));
+  }
+  for (const t of ['', 'Municipality', 'Parks & Recreation', 'Contractor', 'Operator', 'Sports Complex']) {
+    assert(`"${t || '(blank)'}" is a company`, !K._crmIsSchool({ contact_type: t }));
+  }
+  // A school's name is not its type: a contractor called "Schoolhouse Turf"
+  // stays a company.
+  assert('the name does not decide', !K._crmIsSchool({ company_name: 'Schoolhouse Turf LLC', contact_type: 'Contractor' }));
+
+  K.set([{ id: 1, contact_type: 'High School' }, { id: 2, contact_type: '' }, { id: 3, contact_type: 'College / University' }]);
+  assert('each tab gets its own rows, and every row lands on one',
+    K._crmOrgRows('schools').map(r => r.id).join() === '1,3' && K._crmOrgRows('companies').map(r => r.id).join() === '2');
+
+  // Two spellings of one school match; two schools never do.
+  const same = (a, b) => K._crmSchoolKey(a) === K._crmSchoolKey(b);
+  assert('"Allegany High" is "Allegany High School"',  same('Allegany High', 'Allegany High School'));
+  assert('and "ALLEGANY HS"',                          same('Allegany High', 'ALLEGANY HS'));
+  assert('"Canon-McMillan SHS" is its Senior High School', same('Canon-McMillan SHS', 'Canon-McMillan Senior High School'));
+  assert('a Jr/Sr High is the High School',            same('Fort Cherry Jr/Sr High School', 'Fort Cherry High School'));
+  assert('"St. John\'s" is "Saint Johns"',             same("St. John's Catholic Prep", 'Saint Johns Catholic Prep'));
+  assert('"The Kiski School" is "Kiski School"',       same('The Kiski School', 'Kiski School'));
+  assert('a middle school is not the high school',     !same('Allegany Middle School', 'Allegany High School'));
+  assert('North is not South',                         !same('North High School', 'South High School'));
+  assert('a blank name has no key',                    K._crmSchoolKey('  ') === '');
+
+  // Tidying — each rule is one a real list breaks.
+  const clean = K._crmCleanSchoolRow({
+    company_name: 'Allegany College Of Maryland', contact_type: '', sector: 'public',
+    territory: 'on/near boundary', zip: '215022596', miles_to_line: '8.1999999999999993',
+    enrollment: '1,204', state: 'md', athletics_url: 'https://ope.ed.gov/athletics/#/datafile/list',
+  });
+  assert('a nine-digit ZIP becomes ZIP+4',       clean.zip === '21502-2596', clean.zip);
+  assert('sector reads as Public',               clean.sector === 'Public');
+  assert('territory reads as On/near boundary',  clean.territory === 'On/near boundary');
+  assert('miles lose their float noise',         clean.miles_to_line === '8.2', clean.miles_to_line);
+  assert('enrollment loses its comma',           clean.enrollment === '1204');
+  assert('state is upper-cased',                 clean.state === 'MD');
+  assert('the generic federal athletics page is dropped', clean.athletics_url === '');
+  assert('a blank type on a college name reads as College / University', clean.contact_type === 'College / University');
+  const hs = K._crmCleanSchoolRow({ company_name: 'Fort Hill High', zip: '2150', territory: 'Inside', sector: 'Private' });
+  assert('a blank type otherwise reads as High School', hs.contact_type === 'High School');
+  assert('a ZIP Excel took the zero off gets it back', hs.zip === '02150', hs.zip);
+  assert('Inside stays Inside',                  hs.territory === 'Inside');
+  assert('an eight-digit ZIP+4 gets its zero back',
+    K._crmCleanSchoolRow({ zip: '21502259' }).zip === '02150-2259');
+  assert('a typed type is left alone',
+    K._crmCleanSchoolRow({ company_name: 'X', contact_type: 'School District' }).contact_type === 'School District');
+  assert('a value it cannot read is kept as it came',
+    K._crmCleanSchoolRow({ territory: 'Region 4', zip: 'N/A' }).territory === 'Region 4');
+
+  // The plan: what an upload will do, before it does it.
+  const row = (name, city, state, over = {}) => ({ id: 'n' + name + city, company_name: name, city, state,
+    contact_type: 'High School', nces_id: '', notes: '', territory: 'Inside', ...over });
+
+  {
+    const existing = [
+      { id: 'e1', company_name: 'Fort Hill High School', city: 'Cumberland', state: 'MD', contact_type: 'High School',
+        tag: 'Hot', territory: '', nces_id: '' },
+      { id: 'e2', company_name: 'Somewhere Else', city: '', state: 'PA', contact_type: 'Contractor', nces_id: '240003000999' },
+    ];
+    const plan = K._crmPlanSchoolImport([
+      row('Fort Hill High', 'Cumberland', 'MD', { tag: 'Cold', territory: 'Inside' }),
+      row('Renamed By NCES', 'Nowhere', 'PA', { nces_id: '240003000999' }),
+      row('New School', 'Akron', 'OH'),
+    ], existing);
+    assert('a school already here is matched by name, state and town', plan.fill.some(x => x.into.id === 'e1'));
+    const e1 = plan.fill.find(x => x.into.id === 'e1');
+    assert('its blank cells are filled',            e1 && e1.patch.territory === 'Inside');
+    assert('and nothing a rep typed is overwritten', e1 && !('tag' in e1.patch));
+    assert('the NCES id matches whatever the name says', plan.fill.some(x => x.into.id === 'e2'));
+    assert('a matched company typed as something else moves to Schools',
+      plan.moved === 1 && plan.fill.find(x => x.into.id === 'e2').patch.contact_type === 'High School');
+    assert('only the new one is added', plan.add.length === 1 && plan.add[0].company_name === 'New School');
+    assert('the plan changes nothing by itself', existing[0].territory === '' && existing[1].contact_type === 'Contractor');
+  }
+
+  {
+    // Three McKinley High Schools in three Ohio towns are three schools.
+    const plan = K._crmPlanSchoolImport([
+      row('McKinley High School', 'Sebring', 'OH'),
+      row('McKinley High School', 'Canton', 'OH'),
+      row('McKinley High School', 'Niles', 'OH'),
+    ], []);
+    assert('same name, different towns: all three are added', plan.add.length === 3 && plan.dupes === 0);
+
+    // A row already here with no town cannot say which of the three it is.
+    const noTown = [{ id: 'm', company_name: 'McKinley HS', city: '', state: 'OH', contact_type: 'High School' }];
+    const amb = K._crmPlanSchoolImport([
+      row('McKinley High School', 'Sebring', 'OH'),
+      row('McKinley High School', 'Canton', 'OH'),
+    ], noTown);
+    assert('so it is matched to none of them', amb.fill.length === 0 && amb.add.length === 2);
+    assert('and they are named for someone to check', amb.ambiguous.length === 2);
+
+    // With only one in the file, the town-less row is that one.
+    const one = K._crmPlanSchoolImport([row('McKinley High School', 'Canton', 'OH')], noTown);
+    assert('one candidate each side is a match', one.fill.length === 1 && one.fill[0].into.id === 'm');
+    assert('and it gains the town', one.fill[0].patch.city === 'Canton');
+  }
+
+  {
+    const plan = K._crmPlanSchoolImport([
+      row('Twice High', 'Erie', 'PA', { nces_id: '42' }),
+      row('Twice High', 'Erie', 'PA', { nces_id: '42' }),
+      row('Other Name Same Id', 'Erie', 'PA', { nces_id: '42' }),
+      row('', 'Erie', 'PA'),
+      row('Water Authority', 'Erie', 'PA', { contact_type: 'Municipality' }),
+    ], []);
+    assert('a row repeated in the file is skipped', plan.add.length === 2 && plan.dupes === 2, JSON.stringify(plan.add.map(r => r.company_name)));
+    assert('a row with no name is skipped',          plan.blank === 1);
+    assert('a row typed as no school is counted, since it will show on Companies', plan.notSchools === 1);
+  }
+
+  {
+    // One row here is never claimed by two rows of the file.
+    const existing = [{ id: 'x', company_name: 'Central Catholic High School', city: '', state: '', contact_type: 'High School' }];
+    const plan = K._crmPlanSchoolImport([
+      row('Central Catholic High School', 'Pittsburgh', 'PA'),
+      row('Central Catholic High School', 'Toledo', 'OH'),
+    ], existing);
+    assert('a row here is matched at most once', plan.fill.length <= 1 && plan.add.length + plan.fill.length === 2);
+  }
+
+  {
+    // Uploading the same list twice changes nothing the second time.
+    const first = [row('Fort Hill High', 'Cumberland', 'MD', { nces_id: '1' }), row('Allegany High', 'Cumberland', 'MD', { nces_id: '2' })];
+    const again = K._crmPlanSchoolImport(first.map(r => ({ ...r, id: r.id + 'b' })), first);
+    assert('a second upload of the same list adds nothing',
+      again.add.length === 0 && again.fill.every(x => Object.keys(x.patch).length === 0));
+  }
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {
-  for (const t of ['news', 'dashboard', 'people', 'companies', 'opportunities', 'search', 'reports']) {
+  for (const t of ['news', 'dashboard', 'people', 'companies', 'schools', 'opportunities', 'search', 'reports']) {
     assert(`"${t}" has a sub-tab button`, SRC.includes(`data-crm-tab="${t}"`));
     assert(`"${t}" has a panel`,          SRC.includes(`id="crm-panel-${t}"`));
     assert(`"${t}" is routed`,            new RegExp(`tab === '${t}'\\)\\s*\\w*\\s*render`).test(SRC));
   }
   // Lucius predates the revamp and was not asked to go.
   assert('Lucius is still there', SRC.includes('data-crm-tab="lucius"'));
+  // Schools sits immediately right of Companies, which is where it was asked for.
+  assert('Schools is the tab right after Companies',
+    /data-crm-tab="companies">Companies<\/button>\s*<button[^>]*data-crm-tab="schools"/.test(SRC));
 
   // Lead Contact sits immediately right of Tag on all three tables, which is
   // what the layout asked for.
@@ -1157,11 +1312,24 @@ console.log('\nTab wiring and columns');
     }
   }
 
+  // Schools share Lead Contact, Personal Interest and Turf Product by being
+  // the same column entries as Companies, not copies of them.
+  {
+    const block = SRC.slice(SRC.indexOf('const _CRM_SCHOOL_COLS = ['), SRC.indexOf('const _CRM_SCHOOL_COLS = [') + 4000);
+    const tagAt  = block.indexOf("_crmCompanyCol('tag'");
+    const leadAt = block.indexOf("_crmCompanyCol('lead_contact'");
+    assert('_CRM_SCHOOL_COLS: lead contact follows tag', tagAt >= 0 && leadAt > tagAt);
+    for (const f of ['personal_interest', 'turf_product']) {
+      assert(`_CRM_SCHOOL_COLS: has ${f}`, block.includes(`_crmCompanyCol('${f}'`));
+    }
+  }
+
   // New columns have to reach the CSV importer too, or an export cannot be
-  // edited and uploaded back.
+  // edited and uploaded back. Four tables upload: people, companies, schools
+  // and opportunities.
   const uploads = SRC.slice(SRC.indexOf('const _CRM_UPLOAD_FIELDS'), SRC.indexOf('function _crmParseCSV'));
   for (const f of ['lead_contact', 'personal_interest', 'turf_product']) {
-    assert(`CSV upload map carries ${f}`, (uploads.match(new RegExp(`'${f}'`, 'g')) || []).length === 3);
+    assert(`CSV upload map carries ${f}`, (uploads.match(new RegExp(`'${f}'`, 'g')) || []).length === 4);
   }
 
   // The News Center asks for one region at a time; asking for all three in
@@ -1248,7 +1416,7 @@ console.log('\nTab wiring and columns');
   assert('opening one shows a value list',   SRC.includes('function _crmDrawFilterPop('));
   assert('values come with their counts',    SRC.includes('function _crmFilterValues('));
   assert('every table registers its data',
-    ['people', 'companies', 'opportunities', 'fields']
+    ['people', 'companies', 'schools', 'opportunities', 'fields']
       .every(t => new RegExp(`${t}:\\s*\\(\\) => \\(\\{ filter:`).test(SRC)));
   assert('the old text-filter plumbing is gone',
     !SRC.includes('_crmHandleFilterInput') && !SRC.includes('data-crm-pf'));
@@ -1264,7 +1432,9 @@ console.log('\nTab wiring and columns');
     assert(`${list} never appends one`,          !SRC.includes(`${list}.push(`));
   }
   for (const [root, field] of [['crm-people-root', 'name'], ['crm-companies-root', 'company_name'],
-                               ['crm-opportunities-root', 'name'], ['crm-companies-root', 'field_name']]) {
+                               ['crm-schools-root', 'company_name'],
+                               ['crm-opportunities-root', 'name'], ['crm-companies-root', 'field_name'],
+                               ['crm-schools-root', 'field_name']]) {
     assert(`a new row in ${root} (${field}) is revealed and focused`,
       SRC.includes(`_crmRevealRow('${root}', id, '${field}'`));
   }
@@ -1275,9 +1445,27 @@ console.log('\nTab wiring and columns');
   assert('and scrolls it into view', SRC.includes("scrollIntoView({ block: 'nearest' })"));
 
   // An import lands on top of what was already there too.
-  for (const list of ['crmPeople', 'crmCompanies', 'crmOpportunities']) {
+  for (const list of ['crmPeople', 'crmOpportunities']) {
     assert(`an import prepends to ${list}`, SRC.includes(`${list} = replace ? rows : [...rows, ...${list}]`));
   }
+  // Companies and Schools share crmCompanies, so "Replace all" on Companies
+  // replaces the companies and keeps the schools — it only ever counted, and
+  // warned about, the companies.
+  assert('an import prepends to crmCompanies, and Replace keeps the schools',
+    SRC.includes('crmCompanies = replace ? [...rows, ...crmCompanies.filter(_crmIsSchool)] : [...rows, ...crmCompanies]'));
+  assert('a school upload prepends what is new', SRC.includes('crmCompanies = [...plan.add, ...crmCompanies]'));
+
+  // Both tabs edit crmCompanies rows, so both roots are bound; a row drawn on
+  // Schools with nothing listening would look editable and save nothing.
+  assert('the Companies root is bound', SRC.includes("_crmBindOrgRoot('companies')"));
+  assert('and so is the Schools root',  SRC.includes("_crmBindOrgRoot('schools')"));
+  assert('a select saves on change only, so "＋ Add…" is never stored',
+    /addEventListener\('input'[\s\S]{0,400}if \(el\.tagName === 'SELECT'\) return;/.test(SRC));
+  assert('the old Companies-only handlers are gone',
+    !SRC.includes("document.getElementById('crm-companies-root').addEventListener"));
+  assert('Lucius opens a school on the Schools tab', /_luciusOpenCrmCompany[\s\S]{0,300}crmSwitchTab\('schools'\)/.test(SRC));
+  assert('the poll redraws Schools too',
+    (SRC.match(/activePanel === 'crm-panel-schools'\)\s+renderCrmSchoolsTab\(\)/g) || []).length === 2);
 
   for (const key of ['fct_crm_fields', 'fct_crm_news', 'fct_crm_status_log', 'fct_crm_touches']) {
     assert(`${key} is loaded on boot`, SRC.includes(`apiGet('${key}')`));
