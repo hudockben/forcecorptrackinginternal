@@ -153,6 +153,46 @@
     .crm-sub-btn.active { color: var(--green); border-bottom-color: var(--green); }
     .crm-sub-panel { display: none; }
 
+    /* ── CRM column filter popover ── */
+    .cfp {
+      position: fixed; z-index: 600; width: 230px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .cfp-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border);
+      font-size: 0.66rem; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .cfp-x { background: none; border: none; color: var(--muted); font-size: 15px; cursor: pointer; line-height: 1; }
+    .cfp-x:hover { color: var(--text); }
+    .cfp-search {
+      margin: 0.45rem 0.6rem 0; background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); border-radius: 3px; padding: 0.22rem 0.4rem;
+      font-size: 0.73rem; outline: none; font-family: inherit;
+    }
+    .cfp-actions { display: flex; gap: 0.4rem; padding: 0.45rem 0.6rem 0.35rem; }
+    .cfp-actions button {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      border-radius: 3px; padding: 0.18rem 0.3rem; font-size: 0.68rem; cursor: pointer; font-family: inherit;
+    }
+    .cfp-actions button:hover:not(:disabled) { border-color: #3b82f6; }
+    .cfp-actions button:disabled { opacity: 0.45; cursor: default; }
+    .cfp-list { max-height: 260px; overflow-y: auto; padding: 0 0.35rem 0.45rem; }
+    .cfp-item {
+      display: flex; align-items: center; gap: 0.4rem; cursor: pointer;
+      padding: 0.2rem 0.25rem; border-radius: 3px; font-size: 0.76rem; color: var(--text);
+    }
+    .cfp-item:hover { background: var(--surface2); }
+    .cfp-item.on { background: rgba(59,130,246,0.14); }
+    .cfp-item input { cursor: pointer; flex-shrink: 0; }
+    .cfp-v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cfp-v em { color: var(--muted); font-style: italic; }
+    .cfp-n { font-size: 0.66rem; color: var(--muted); flex-shrink: 0; }
+    .cfp-empty { padding: 0.9rem 0.6rem; font-size: 0.74rem; color: var(--muted); text-align: center; }
+
     /* ── News Center: the scoreboard feed ──
        The hub is read the way a scoreboard is read — glance, find your
        school, take the line. So it is cards and a ticker rather than a grid
@@ -6834,13 +6874,220 @@ let _crmPeopleFilter  = {};
 let _crmCompanyFilter = {};
 let _crmOppFilter     = {};
 
-function _crmApplyFilter(rows, filter) {
-  const active = Object.entries(filter).filter(([, v]) => v.trim());
-  if (!active.length) return rows;
-  return rows.filter(row =>
-    active.every(([f, v]) => String(row[f] || '').toLowerCase().includes(v.trim().toLowerCase()))
-  );
+/* ═══════════════════════════════════════════
+   CRM — column filters
+
+   A text box per column can only ask one question: does this cell contain
+   that string. The questions people actually have are unions — show me Hot
+   AND Followup, show me the athletic directors AND the facilities leads,
+   show me Washington and Allegheny counties — and a single box cannot say
+   "or" at all. Typing "Hot" hid the Followups; that was the whole filter row.
+
+   So each column filters by ticking values instead. Several ticks in one
+   column mean OR — any of these. Ticks across columns mean AND — all of
+   these. That is the combination a rep wants: Hot or Followup, in PA, whose
+   field is due for replacement.
+
+   The values offered are the ones actually in the column, counted, so the
+   list is always honest about what is there — including "(blank)", which is
+   how you find the rows somebody has not filled in yet.
+═══════════════════════════════════════════ */
+
+/** table key → the filter object, the unfiltered rows, and the columns. */
+const _CRM_FILTER_CTX = {};
+
+/** A filter entry as a list, whatever shape it was written in. */
+function _crmFilterSel(filter, field) {
+  const v = filter ? filter[field] : null;
+  if (Array.isArray(v)) return v;
+  const s = String(v == null ? '' : v).trim();
+  return s ? [s] : [];
 }
+
+/** How many columns are filtered — a bare [] must not read as "filtered". */
+function _crmFilterCount(filter) {
+  let n = 0;
+  for (const k of Object.keys(filter || {})) {
+    if (k.startsWith('_')) continue;
+    if (_crmFilterSel(filter, k).length) n++;
+  }
+  return n;
+}
+
+const _CRM_BLANK = '— blank —';
+
+/**
+ * Applies a filter.
+ *
+ * A list means "any of these", matched whole — ticking "Hot" must not also
+ * bring in a tag that merely contains it. A plain string is still a contains
+ * match, because the places that set one programmatically (a dashboard bucket
+ * click, a jump from a company row) mean it that way.
+ */
+function _crmApplyFilter(rows, filter) {
+  const active = Object.entries(filter || {})
+    .filter(([k, v]) => !k.startsWith('_') && (Array.isArray(v) ? v.length : String(v == null ? '' : v).trim()));
+  if (!active.length) return rows;
+
+  return rows.filter(row => active.every(([f, v]) => {
+    const cell = String(row[f] == null ? '' : row[f]).trim();
+    if (Array.isArray(v)) return v.includes(cell === '' ? _CRM_BLANK : cell);
+    return cell.toLowerCase().includes(String(v).trim().toLowerCase());
+  }));
+}
+
+/* ── The popover ────────────────────────────────────────────────────────── */
+
+let _crmFilterPop  = null;   // { table, field }
+let _crmFilterPopQ = '';
+
+function _crmFilterValues(table, field) {
+  const ctx = _CRM_FILTER_CTX[table] && _CRM_FILTER_CTX[table]();
+  if (!ctx) return [];
+  const col = (ctx.cols || []).find(c => c.f === field);
+  const counts = new Map();
+  for (const r of ctx.rows || []) {
+    const raw = col ? _crmCellText(col, r) : r[field];
+    const v = String(raw == null ? '' : raw).trim() || _CRM_BLANK;
+    counts.set(v, (counts.get(v) || 0) + 1);
+  }
+  // Blank last: it is a real choice, but never the first thing to look at.
+  return [...counts.entries()]
+    .sort((a, b) => a[0] === _CRM_BLANK ? 1 : b[0] === _CRM_BLANK ? -1
+      : a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+function _crmToggleFilterOpen(table, field, ev) {
+  if (ev) ev.stopPropagation();
+  if (_crmFilterPop && _crmFilterPop.table === table && _crmFilterPop.field === field) { _crmCloseFilter(); return; }
+  _crmFilterPop  = { table, field };
+  _crmFilterPopQ = '';
+  _crmDrawFilterPop();
+}
+
+function _crmCloseFilter() {
+  _crmFilterPop = null;
+  document.getElementById('crm-filter-pop')?.remove();
+}
+
+/** Re-anchors after the table behind it has been redrawn. */
+function _crmDrawFilterPop() {
+  if (!_crmFilterPop) return;
+  const { table, field } = _crmFilterPop;
+  const btn = document.querySelector(`[data-crm-filter-btn="${table}:${field}"]`);
+  if (!btn) { _crmCloseFilter(); return; }
+
+  const ctx = _CRM_FILTER_CTX[table] && _CRM_FILTER_CTX[table]();
+  if (!ctx) { _crmCloseFilter(); return; }
+  const col = (ctx.cols || []).find(c => c.f === field);
+  const sel = new Set(_crmFilterSel(ctx.filter, field));
+  const all = _crmFilterValues(table, field);
+  const q   = _crmFilterPopQ.trim().toLowerCase();
+  const shown = q ? all.filter(([v]) => v.toLowerCase().includes(q)) : all;
+
+  let pop = document.getElementById('crm-filter-pop');
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'crm-filter-pop';
+    pop.className = 'cfp';
+    pop.addEventListener('click', e => e.stopPropagation());
+    document.body.appendChild(pop);
+  }
+
+  pop.innerHTML = `
+    <div class="cfp-head">
+      <span>${esc(col ? col.label : field)}</span>
+      <button class="cfp-x" onclick="_crmCloseFilter()" title="Close">&times;</button>
+    </div>
+    ${all.length > 8 ? `<input class="cfp-search" type="text" value="${esc(_crmFilterPopQ)}" placeholder="Find a value…"
+      oninput="_crmFilterPopSearch(this.value)">` : ''}
+    <div class="cfp-actions">
+      <button onclick="_crmFilterSelectAll('${table}','${field}',true)">Select all${q ? ' shown' : ''}</button>
+      <button onclick="_crmFilterSelectAll('${table}','${field}',false)" ${sel.size ? '' : 'disabled'}>Clear</button>
+    </div>
+    <div class="cfp-list">
+      ${shown.length ? shown.map(([v, n]) => `
+        <label class="cfp-item${sel.has(v) ? ' on' : ''}">
+          <input type="checkbox" ${sel.has(v) ? 'checked' : ''}
+            onchange="_crmToggleFilterValue('${table}','${field}',this.dataset.v)" data-v="${esc(v)}">
+          <span class="cfp-v">${v === _CRM_BLANK ? `<em>${esc(v)}</em>` : esc(v)}</span>
+          <span class="cfp-n">${n}</span>
+        </label>`).join('')
+        : `<div class="cfp-empty">Nothing matches “${esc(_crmFilterPopQ)}”.</div>`}
+    </div>`;
+
+  // Anchored to the header cell, flipped left when it would run off the edge.
+  const r = btn.getBoundingClientRect();
+  pop.style.visibility = 'hidden';
+  pop.style.left = '0px'; pop.style.top = '0px';
+  const w = pop.offsetWidth || 220, h = pop.offsetHeight || 260;
+  let left = r.left, top = r.bottom + 4;
+  if (left + w > window.innerWidth - 8)  left = Math.max(8, window.innerWidth - w - 8);
+  if (top + h > window.innerHeight - 8)  top  = Math.max(8, r.top - h - 4);
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top  = `${Math.round(top)}px`;
+  pop.style.visibility = '';
+}
+
+function _crmFilterPopSearch(v) {
+  _crmFilterPopQ = v;
+  _crmDrawFilterPop();
+  const box = document.querySelector('#crm-filter-pop .cfp-search');
+  if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+}
+
+/** Writes the selection back and redraws the table under the popover. */
+function _crmSetFilterValues(table, field, values) {
+  const ctx = _CRM_FILTER_CTX[table] && _CRM_FILTER_CTX[table]();
+  if (!ctx) return;
+  if (values.length) ctx.filter[field] = values;
+  else delete ctx.filter[field];
+  const fn = _CRM_RERENDER[table];
+  if (fn) fn();
+  _crmDrawFilterPop();
+}
+
+function _crmToggleFilterValue(table, field, value) {
+  const ctx = _CRM_FILTER_CTX[table] && _CRM_FILTER_CTX[table]();
+  if (!ctx) return;
+  const sel = new Set(_crmFilterSel(ctx.filter, field));
+  if (sel.has(value)) sel.delete(value); else sel.add(value);
+  _crmSetFilterValues(table, field, [...sel]);
+}
+
+function _crmFilterSelectAll(table, field, on) {
+  if (!on) { _crmSetFilterValues(table, field, []); return; }
+  const q = _crmFilterPopQ.trim().toLowerCase();
+  const vals = _crmFilterValues(table, field)
+    .map(([v]) => v)
+    .filter(v => !q || v.toLowerCase().includes(q));
+  _crmSetFilterValues(table, field, vals);
+}
+
+/** The button that sits in the filter row, in place of the old text box. */
+function _crmFilterBtn(table, col, filter) {
+  const sel = _crmFilterSel(filter, col.f);
+  const on  = sel.length > 0;
+  const label = !on ? 'All'
+    : sel.length === 1 ? sel[0]
+    : `${sel.length} picked`;
+  return `<th style="padding:0.15rem 0.25rem;background:var(--surface2);border-bottom:2px solid var(--border)">
+    <button data-crm-filter-btn="${table}:${col.f}" onclick="_crmToggleFilterOpen('${table}','${col.f}',event)"
+      title="${on ? esc(sel.join(', ')) : 'Filter by ' + esc(col.label)}"
+      style="width:100%;box-sizing:border-box;text-align:left;cursor:pointer;
+             background:${on ? 'rgba(59,130,246,0.18)' : 'var(--bg)'};
+             border:1px solid ${on ? '#3b82f6' : 'var(--border)'};
+             color:${on ? 'var(--text)' : 'var(--muted)'};
+             font-size:0.67rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;
+             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:inherit">
+      ${esc(label)} <span style="float:right;opacity:0.7">▾</span></button>
+  </th>`;
+}
+
+// One popover at a time, and it closes the way every menu closes.
+document.addEventListener('click', () => { if (_crmFilterPop) _crmCloseFilter(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && _crmFilterPop) _crmCloseFilter(); });
+window.addEventListener('resize', () => { if (_crmFilterPop) _crmDrawFilterPop(); });
 
 async function loadCrmPeople() {
   const saved = await apiGet('fct_crm_people');
@@ -6976,7 +7223,7 @@ function renderCrmPeopleTab() {
 
   const visible    = _crmApplyFilter(crmPeople, _crmPeopleFilter);
   const isFiltered = visible.length !== crmPeople.length;
-  const anyFilter  = Object.values(_crmPeopleFilter).some(v => v);
+  const anyFilter  = _crmFilterCount(_crmPeopleFilter) > 0;
 
   const actions = p => `
     ${_crmTouchBtn('person', p.id)}
@@ -7006,7 +7253,7 @@ function renderCrmPeopleTab() {
     </div>
     ${_crmTable({
       table: 'people', cols: _CRM_PEOPLE_COLS, rows: visible,
-      filter: _crmPeopleFilter, filterAttr: 'crm-pf',
+      filter: _crmPeopleFilter,
       actions, actionCols: [2.5, 2.5, 2], minWidth: 1800,
       empty: isFiltered
         ? 'No contacts match the current filters.'
@@ -7113,7 +7360,7 @@ function renderCrmCompaniesTab() {
 
   const visible    = _crmApplyFilter(crmCompanies, _crmCompanyFilter);
   const isFiltered = visible.length !== crmCompanies.length;
-  const anyFilter  = Object.values(_crmCompanyFilter).some(v => v);
+  const anyFilter  = _crmFilterCount(_crmCompanyFilter) > 0;
 
   const actions = c => `
     <td style="padding:0.25rem 0.15rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
@@ -7148,7 +7395,7 @@ function renderCrmCompaniesTab() {
     </div>
     ${_crmTable({
       table: 'companies', cols: _CRM_COMPANY_COLS, rows: visible,
-      filter: _crmCompanyFilter, filterAttr: 'crm-cf',
+      filter: _crmCompanyFilter,
       actions, actionCols: [2.5, 3, 2.5], minWidth: 1650,
       empty: isFiltered
         ? 'No companies match the current filters.'
@@ -7277,7 +7524,7 @@ function renderCrmOpportunitiesTab() {
 
   const visible    = _crmApplyFilter(crmOpportunities, _crmOppFilter);
   const isFiltered = visible.length !== crmOpportunities.length;
-  const anyFilter  = Object.values(_crmOppFilter).some(v => v);
+  const anyFilter  = _crmFilterCount(_crmOppFilter) > 0;
 
   const actions = o => `
     ${_crmTouchBtn('opportunity', o.id)}
@@ -7302,7 +7549,7 @@ function renderCrmOpportunitiesTab() {
     </div>
     ${_crmTable({
       table: 'opportunities', cols: _CRM_OPP_COLS, rows: visible,
-      filter: _crmOppFilter, filterAttr: 'crm-of',
+      filter: _crmOppFilter,
       actions, actionCols: [2.5, 2.5], minWidth: 1700,
       empty: isFiltered
         ? 'No opportunities match the current filters.'
@@ -7693,7 +7940,7 @@ const _CRM_TH_STYLE = `padding:0.45rem 0.45rem;text-align:left;font-size:0.63rem
  *   empty      message shown when rows is []
  */
 function _crmTable(opts) {
-  const { table, cols, rows, filter, filterAttr, actions, actionCols = [], empty, minWidth } = opts;
+  const { table, cols, rows, filter, actions, actionCols = [], empty, minWidth } = opts;
   const st = _crmSort[table];
 
   const th = col => {
@@ -7704,18 +7951,9 @@ function _crmTable(opts) {
       onclick="_crmToggleSort('${table}','${col.f}')" title="Sort by ${esc(col.label)}">${col.label}${arrow}</th>`;
   };
 
-  const fi = col => {
-    if (!filter || col.filter === false) {
-      return `<th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>`;
-    }
-    const v = filter[col.f] || '';
-    return `<th style="padding:0.15rem 0.3rem;background:var(--surface2);border-bottom:2px solid var(--border)">
-      <input type="text" value="${esc(v)}" data-${filterAttr}="${col.f}" placeholder="…"
-        style="width:100%;background:${v ? 'rgba(59,130,246,0.12)' : 'var(--bg)'};
-               border:1px solid ${v ? '#3b82f6' : 'var(--border)'};color:var(--text);
-               font-size:0.68rem;border-radius:3px;padding:0.15rem 0.3rem;outline:none;min-width:0;box-sizing:border-box">
-    </th>`;
-  };
+  const fi = col => (!filter || col.filter === false)
+    ? `<th style="background:var(--surface2);border-bottom:2px solid var(--border)"></th>`
+    : _crmFilterBtn(table, col, filter);
 
   const td = content =>
     `<td style="padding:0.3rem 0.45rem;border-bottom:1px solid rgba(255,255,255,0.04);
@@ -8013,7 +8251,7 @@ function _crmVisibleFields() {
 function renderCrmFieldsView(root) {
   const visible = _crmVisibleFields();
   const bucket  = _CRM_AGE_BUCKETS.find(b => b.key === _crmFieldFilter._bucket);
-  const anyFilter = Object.values(_crmFieldFilter).some(v => v);
+  const anyFilter = _crmFilterCount(_crmFieldFilter) > 0;
 
   const actions = f => `<td style="padding:0.25rem 0.2rem;text-align:center;border-bottom:1px solid rgba(255,255,255,0.04)">
       <button class="del-btn" data-crm-fieldrow-id="${f.id}">✕</button>
@@ -8035,7 +8273,7 @@ function renderCrmFieldsView(root) {
     </div>
     ${_crmTable({
       table: 'fields', cols: _CRM_FIELD_COLS, rows: visible,
-      filter: _crmFieldFilter, filterAttr: 'crm-ff',
+      filter: _crmFieldFilter,
       actions, actionCols: [2.5], minWidth: 1100,
       empty: crmFields.length
         ? 'No fields match the current filters.'
@@ -8062,14 +8300,6 @@ function _crmCompaniesViewBar() {
    attributes have to stay distinct from the company rows sharing this root. */
 document.getElementById('crm-companies-root').addEventListener('input', e => {
   const el = e.target;
-  if (el.dataset.crmFf != null) {
-    _crmFieldFilter[el.dataset.crmFf] = el.value;
-    const at = el.selectionStart;
-    renderCrmCompaniesTab();
-    const again = document.querySelector(`#crm-companies-root [data-crm-ff="${el.dataset.crmFf}"]`);
-    if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch {} }
-    return;
-  }
   const id = el.dataset.crmFieldId, col = el.dataset.crmFieldCol;
   if (!id || !col) return;
   const f = crmFields.find(x => x.id === id);
@@ -8119,7 +8349,9 @@ document.getElementById('crm-companies-root').addEventListener('click', e => {
    can check it in one click before they send it.
 ═══════════════════════════════════════════ */
 let crmNews          = { pulled_at: null, regions: {}, items: [] };
-let _crmNewsFilter   = { region: '', level: '', sport: '', q: '' };
+// Lists, not single values: "Western PA and Eastern OH" is a question people
+// have, and one chip at a time cannot ask it.
+let _crmNewsFilter   = { region: [], level: [], sport: [], q: '' };
 let _crmNewsView     = 'feed';    // 'feed' | 'table'
 let _crmNewsBusy     = false;
 let _crmNewsNote     = '';
@@ -8289,19 +8521,26 @@ function crmCopyOpener(id) {
 function _crmNewsVisible() {
   const f = _crmNewsFilter;
   const q = String(f.q || '').trim().toLowerCase();
+  // Nothing ticked in a row of chips means that row asks nothing, not that it
+  // excludes everything.
+  const any = (key, val) => {
+    const sel = _crmFilterSel(f, key);
+    return !sel.length || sel.includes(val);
+  };
   return (crmNews.items || []).filter(i => {
-    if (f.region && i.region !== f.region) return false;
-    if (f.level  && i.level  !== f.level)  return false;
-    if (f.sport  && i.sport  !== f.sport)  return false;
+    if (!any('region', i.region)) return false;
+    if (!any('level',  i.level))  return false;
+    if (!any('sport',  i.sport))  return false;
     if (!q) return true;
     return `${i.school} ${i.opponent} ${i.winner} ${i.loser} ${i.sport} ${i.level} ${i.region} ${i.headline}`
       .toLowerCase().includes(q);
   });
 }
 
-/** Clicking the chip that is already on turns it off — no "All" needed. */
+/** Chips toggle independently, so several can be on at once. */
 function _crmNewsSetFilter(key, value) {
-  _crmNewsFilter[key] = _crmNewsFilter[key] === value ? '' : value;
+  const sel = _crmFilterSel(_crmNewsFilter, key);
+  _crmNewsFilter[key] = sel.includes(value) ? sel.filter(v => v !== value) : [...sel, value];
   renderCrmNewsTab();
 }
 
@@ -8404,7 +8643,8 @@ function renderCrmNewsTab() {
 
   const sports = [...new Set(all.map(i => i.sport).filter(Boolean))].sort();
   const chip   = (key, value, label) =>
-    `<button class="nc-filter ${f[key] === value ? 'on' : ''}" onclick="_crmNewsSetFilter('${key}','${esc(value)}')">${esc(label)}</button>`;
+    `<button class="nc-filter ${_crmFilterSel(f, key).includes(value) ? 'on' : ''}"
+       onclick="_crmNewsSetFilter('${key}','${esc(value)}')">${esc(label)}</button>`;
 
   const progress = _crmNewsProgress.length
     ? `<div class="nc-progress">${_crmNewsProgress.map(p =>
@@ -9192,6 +9432,16 @@ function renderCrmReportsTab() {
 /* Each table key maps to the function that redraws it, so a header click on
    any CRM table finds its way back to the right render without the sort
    helper needing to know what a tab is. */
+/* The popover needs three things per table: where the selection is stored,
+   the unfiltered rows to count values from, and the columns to read them
+   with. Registered together so a new table cannot half-arrive. */
+Object.assign(_CRM_FILTER_CTX, {
+  people:        () => ({ filter: _crmPeopleFilter,  rows: crmPeople,        cols: _CRM_PEOPLE_COLS }),
+  companies:     () => ({ filter: _crmCompanyFilter, rows: crmCompanies,     cols: _CRM_COMPANY_COLS }),
+  opportunities: () => ({ filter: _crmOppFilter,     rows: crmOpportunities, cols: _CRM_OPP_COLS }),
+  fields:        () => ({ filter: _crmFieldFilter,   rows: crmFields,        cols: _CRM_FIELD_COLS }),
+});
+
 Object.assign(_CRM_RERENDER, {
   people:        () => renderCrmPeopleTab(),
   companies:     () => renderCrmCompaniesTab(),
@@ -15835,25 +16085,13 @@ function _crmClearFilter(type) {
   if (type === 'people')        { _crmPeopleFilter  = {}; renderCrmPeopleTab(); }
   else if (type === 'companies'){ _crmCompanyFilter = {}; renderCrmCompaniesTab(); }
   else if (type === 'fields')   { _crmFieldFilter   = {}; renderCrmCompaniesTab(); }
-  else if (type === 'news')     { _crmNewsFilter    = { region: '', level: '', sport: '', q: '' }; renderCrmNewsTab(); }
+  else if (type === 'news')     { _crmNewsFilter    = { region: [], level: [], sport: [], q: '' }; renderCrmNewsTab(); }
   else                          { _crmOppFilter     = {}; renderCrmOpportunitiesTab(); }
-}
-
-function _crmHandleFilterInput(el, filterObj, renderFn, rootId) {
-  const f = el.dataset.crmPf || el.dataset.crmCf || el.dataset.crmOf;
-  if (!f) return false;
-  filterObj[f] = el.value;
-  renderFn();
-  // Restore focus + cursor after re-render
-  const restored = document.querySelector(`#${rootId} [data-crm-pf="${f}"],[data-crm-cf="${f}"],[data-crm-of="${f}"]`);
-  if (restored) { const l = restored.value.length; restored.focus(); restored.setSelectionRange(l, l); }
-  return true;
 }
 
 /* ── CRM People events ── */
 document.getElementById('crm-people-root').addEventListener('input', e => {
   const el = e.target;
-  if (_crmHandleFilterInput(el, _crmPeopleFilter, renderCrmPeopleTab, 'crm-people-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const person = crmPeople.find(p => p.id === id);
@@ -15906,7 +16144,6 @@ document.getElementById('crm-people-root').addEventListener('click', e => {
 /* ── CRM Companies events ── */
 document.getElementById('crm-companies-root').addEventListener('input', e => {
   const el = e.target;
-  if (_crmHandleFilterInput(el, _crmCompanyFilter, renderCrmCompaniesTab, 'crm-companies-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const co = crmCompanies.find(c => c.id === id);
@@ -15962,7 +16199,6 @@ const _CRM_COLOR_MAPS = {
 
 document.getElementById('crm-opportunities-root').addEventListener('input', e => {
   const el = e.target;
-  if (_crmHandleFilterInput(el, _crmOppFilter, renderCrmOpportunitiesTab, 'crm-opportunities-root')) return;
   const id = el.dataset.crmId, field = el.dataset.crmField;
   if (!id || !field) return;
   const opp = crmOpportunities.find(o => o.id === id);

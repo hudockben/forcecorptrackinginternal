@@ -600,6 +600,73 @@ console.log('\nPick lists');
   assert('a CSV import snaps to the list', SRC.includes("contact_type: _crmListValues("));
 }
 
+/* ── 4h. Column filters ──────────────────────────────────────────────────── */
+console.log('\nColumn filters');
+{
+  const F = new Function([
+    "const _CRM_BLANK = '\u2014 blank \u2014';",
+    extractFunction(SRC, '_crmFilterSel'),
+    extractFunction(SRC, '_crmFilterCount'),
+    extractFunction(SRC, '_crmApplyFilter'),
+    'return { _CRM_BLANK, _crmFilterSel, _crmFilterCount, _crmApplyFilter };',
+  ].join('\n'))();
+
+  const rows = [
+    { id: 1, tag: 'Hot',      type: 'Athletic Director',   state: 'PA' },
+    { id: 2, tag: 'Hot',      type: 'Facilities Director', state: 'PA' },
+    { id: 3, tag: 'Followup', type: 'Athletic Director',   state: 'PA' },
+    { id: 4, tag: 'Cold',     type: 'Athletic Director',   state: 'OH' },
+    { id: 5, tag: 'Hot',      type: '',                    state: 'OH' },
+  ];
+  const ids = f => F._crmApplyFilter(rows, f).map(r => r.id).join(',');
+
+  assert('no filter shows everything', ids({}) === '1,2,3,4,5');
+
+  // Several ticks in one column mean OR — the thing a text box could not say.
+  assert('one value narrows',        ids({ tag: ['Hot'] }) === '1,2,5');
+  assert('two values are a union',   ids({ tag: ['Hot', 'Followup'] }) === '1,2,3,5');
+
+  // Across columns it is AND, so the two compose into the real question.
+  assert('columns combine with AND',
+    ids({ tag: ['Hot', 'Followup'], type: ['Athletic Director'] }) === '1,3');
+  assert('widening the second column widens the result',
+    ids({ tag: ['Hot', 'Followup'], type: ['Athletic Director', 'Facilities Director'] }) === '1,2,3');
+  assert('a third column narrows again',
+    ids({ tag: ['Hot', 'Followup'], type: ['Athletic Director', 'Facilities Director'], state: ['PA'] }) === '1,2,3');
+  assert('and picking the other state excludes them',
+    ids({ tag: ['Hot'], state: ['OH'] }) === '5');
+
+  // Ticking a value must match it whole. A contains match would let "Hot"
+  // drag in anything merely containing it.
+  assert('a ticked value matches whole, not by substring',
+    F._crmApplyFilter([{ tag: 'Hot' }, { tag: 'Hotel' }], { tag: ['Hot'] }).length === 1);
+
+  // Blank is a real choice — it is how you find rows nobody has filled in.
+  assert('blank is selectable', ids({ type: [F._CRM_BLANK] }) === '5');
+
+  // An empty list asks nothing. Getting this wrong hides every row.
+  assert('an empty list is not a filter', ids({ tag: [] }) === '1,2,3,4,5');
+  assert('and does not count as filtered', F._crmFilterCount({ tag: [] }) === 0);
+  assert('a populated one does',           F._crmFilterCount({ tag: ['Hot'] }) === 1);
+  assert('two columns count as two',       F._crmFilterCount({ tag: ['Hot'], state: ['PA'] }) === 2);
+
+  // Internal keys are the caller's business, not a column's.
+  assert('underscore keys are skipped by the matcher', ids({ _bucket: 'replacement' }) === '1,2,3,4,5');
+  assert('and by the count',  F._crmFilterCount({ _bucket: 'replacement' }) === 0);
+
+  // A plain string still means "contains", because the dashboard bucket click
+  // and the company→fields jump set one that way.
+  assert('a string filter is still a contains match',
+    F._crmApplyFilter(rows, { type: 'athletic' }).map(r => r.id).join(',') === '1,3,4');
+  assert('a string filter counts as filtered', F._crmFilterCount({ type: 'athletic' }) === 1);
+
+  // Both shapes read back as a list, so the UI never has to care which it is.
+  assert('a string reads back as a list',  F._crmFilterSel({ a: 'x' }, 'a').join() === 'x');
+  assert('a list reads back unchanged',    F._crmFilterSel({ a: ['x', 'y'] }, 'a').join() === 'x,y');
+  assert('a blank string is no selection', F._crmFilterSel({ a: '  ' }, 'a').length === 0);
+  assert('a missing key is no selection',  F._crmFilterSel({}, 'a').length === 0);
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {
@@ -688,6 +755,18 @@ console.log('\nTab wiring and columns');
   assert('which is what keeps existing rows working',
     SRC.includes('function _crmLeadNamesInUse('));
   assert('the lists are editable from the CRM', SRC.includes('function openCrmLists('));
+
+  // Filters are ticked, not typed — so "Hot or Followup" is expressible.
+  assert('the filter row holds buttons',     SRC.includes('function _crmFilterBtn('));
+  assert('opening one shows a value list',   SRC.includes('function _crmDrawFilterPop('));
+  assert('values come with their counts',    SRC.includes('function _crmFilterValues('));
+  assert('every table registers its data',
+    ['people', 'companies', 'opportunities', 'fields']
+      .every(t => new RegExp(`${t}:\\s*\\(\\) => \\(\\{ filter:`).test(SRC)));
+  assert('the old text-filter plumbing is gone',
+    !SRC.includes('_crmHandleFilterInput') && !SRC.includes('data-crm-pf'));
+  assert('news chips toggle independently',
+    SRC.includes('sel.includes(value) ? sel.filter(v => v !== value) : [...sel, value]'));
   assert('and reachable from a toolbar',        SRC.includes('function _crmListsBtn('));
   assert('the superseded hard-coded field types are gone', !SRC.includes('_CRM_FIELD_TYPES'));
 
