@@ -122,7 +122,9 @@ function buildPrompt(region, today, lookbackDays) {
 
   ${region.detail}
 
-Find games played between ${isoDay(since)} and ${isoDay(today)}. Cover football, soccer, baseball, softball, field hockey, lacrosse, tennis and track — the outdoor sports a school competes in. Most are played on the fields we sell; tennis is on courts, but a tennis result opens an email just as well. Prefer schools big enough to have their own athletic field.
+Find games played between ${isoDay(since)} and ${isoDay(today)}. Cover football, soccer, baseball, softball, field hockey, lacrosse, tennis, volleyball, golf, cross country and track — the sports a school competes in. Most are played on the fields we sell; tennis is on courts, but a tennis result opens an email just as well. Prefer schools big enough to have their own athletic field.
+
+Spread the list across whatever is actually in season, and cover the girls' competitions as well as the boys'. A list of nothing but football is easy to find and half the use: the athletic director whose field hockey team just won is as good a person to open an email to, and there are fewer people already doing it.
 
 Use at most ${MAX_SEARCHES} searches, then write the answer from what you found. Return up to ${MAX_RESULTS} games — the best-sourced ones, and prefer breadth across schools over several games from the same one. For each one, write ONE plain sentence a salesperson could open an email with, modelled exactly on this: "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25." — and also break the result out into its parts, so it can be shown as a scoreboard.
 
@@ -139,6 +141,7 @@ Return ONLY a JSON object, no prose before or after, in exactly this shape:
       "date": "YYYY-MM-DD",
       "level": "High School" | "College",
       "sport": "Football",
+      "division": "Boys" | "Girls" | "",
       "winner": "Indiana",
       "winner_score": "30",
       "loser": "Fort Cherry",
@@ -150,6 +153,8 @@ Return ONLY a JSON object, no prose before or after, in exactly this shape:
     }
   ]
 }
+
+Put the sport in "sport" on its own — "Soccer", not "Girls Soccer" — and whose competition it was in "division". Leave "division" empty where it does not apply.
 
 If a game was a draw, put either side in "winner" and set "tie" to true.`;
 }
@@ -207,6 +212,54 @@ function stableId(item) {
   return 'news_' + (h >>> 0).toString(36);
 }
 
+/**
+ * One name per sport.
+ *
+ * The model writes whatever the source page called it, so the same sport
+ * arrives as "Soccer", "Boys Soccer" and "Girls Soccer" — and the tab, which
+ * builds its filter chips from the values actually present, then offers three
+ * chips for one sport and none of them shows all of it. Same drift the CRM
+ * pick lists exist to stop, arriving from outside instead.
+ *
+ * The gender is real information, so it is kept — just in its own field,
+ * where it can be filtered on separately instead of fragmenting the sport.
+ */
+const SPORT_CANON = {
+  'football': 'Football', 'american football': 'Football',
+  'soccer': 'Soccer', 'futbol': 'Soccer',
+  'baseball': 'Baseball', 'softball': 'Softball',
+  'field hockey': 'Field Hockey', 'fieldhockey': 'Field Hockey',
+  'lacrosse': 'Lacrosse', 'lax': 'Lacrosse',
+  'tennis': 'Tennis',
+  'track': 'Track', 'track and field': 'Track', 'track & field': 'Track',
+  'cross country': 'Cross Country', 'xc': 'Cross Country',
+  'volleyball': 'Volleyball', 'golf': 'Golf', 'rugby': 'Rugby',
+};
+
+/**
+ * Splits "Girls Soccer" into a sport and a division.
+ *
+ * The model is asked for the two separately, but it answers from pages that
+ * write them together, so the prefix is stripped here as well. Belt and
+ * braces on the one field the tab groups by.
+ */
+function splitSport(raw, divisionHint) {
+  let s = String(raw == null ? '' : raw).trim();
+  let division = String(divisionHint || '').trim();
+
+  const m = /^(boys'?|girls'?|men'?s|women'?s|mens|womens)\s+/i.exec(s);
+  if (m) {
+    if (!division) division = /^(boys|mens|men)/i.test(m[1]) ? 'Boys' : 'Girls';
+    s = s.slice(m[0].length).trim();
+  }
+  if (division) {
+    division = /^(b|m)/i.test(division) ? 'Boys' : /^(g|w)/i.test(division) ? 'Girls' : '';
+  }
+
+  const canon = SPORT_CANON[s.toLowerCase().replace(/\s+/g, ' ')];
+  return { sport: canon || (s ? s.charAt(0).toUpperCase() + s.slice(1) : ''), division };
+}
+
 const scoreOf = v => {
   const n = parseInt(String(v == null ? '' : v).replace(/[^\d-]/g, ''), 10);
   return Number.isFinite(n) ? String(n) : '';
@@ -233,7 +286,7 @@ function cleanItems(raw, today, regionLabel) {
       id:     '',
       date, region,
       level:  String(r.level || '').trim() || 'High School',
-      sport:  String(r.sport || '').trim(),
+      ...splitSport(r.sport, r.division),
       winner: String(r.winner || r.school   || '').trim(),
       loser:  String(r.loser  || r.opponent || '').trim(),
       winner_score: scoreOf(r.winner_score),
@@ -330,6 +383,7 @@ function mergeNews(existing, fresh, opts = {}) {
 }
 
 module.exports = {
+  splitSport, SPORT_CANON,
   REGIONS, REGION_LABELS, LOOKBACK_DAYS, MAX_ITEMS, RETAIN_DAYS,
   MAX_SEARCHES, MAX_RESULTS, EFFORT, MODEL,
   regionFor, buildPrompt, parseItems, cleanItems, mergeNews, pullNews, withDeadline,

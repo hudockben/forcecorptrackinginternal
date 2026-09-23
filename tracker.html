@@ -8419,7 +8419,7 @@ document.getElementById('crm-companies-root').addEventListener('click', e => {
 let crmNews          = { pulled_at: null, regions: {}, items: [] };
 // Lists, not single values: "Western PA and Eastern OH" is a question people
 // have, and one chip at a time cannot ask it.
-let _crmNewsFilter   = { region: [], level: [], sport: [], q: '' };
+let _crmNewsFilter   = { region: [], level: [], sport: [], division: [], q: '' };
 let _crmNewsView     = 'feed';    // 'feed' | 'table'
 let _crmNewsBusy     = false;
 let _crmNewsCancel   = false;
@@ -8438,6 +8438,42 @@ const _NC_REGIONS = [
   { key: 'md',  label: 'Maryland' },
 ];
 
+/* Mirrors SPORT_CANON in api/lib/crm-news.js. Items pulled before that
+   existed still carry "Boys Soccer" as their sport, so they are normalised on
+   the way in rather than left fragmenting the chips until the region they
+   came from happens to be pulled again. */
+const _NC_SPORT_CANON = {
+  'football': 'Football', 'american football': 'Football',
+  'soccer': 'Soccer', 'futbol': 'Soccer',
+  'baseball': 'Baseball', 'softball': 'Softball',
+  'field hockey': 'Field Hockey', 'fieldhockey': 'Field Hockey',
+  'lacrosse': 'Lacrosse', 'lax': 'Lacrosse',
+  'tennis': 'Tennis',
+  'track': 'Track', 'track and field': 'Track', 'track & field': 'Track',
+  'cross country': 'Cross Country', 'xc': 'Cross Country',
+  'volleyball': 'Volleyball', 'golf': 'Golf', 'rugby': 'Rugby',
+};
+
+function _ncSplitSport(raw, divisionHint) {
+  let v = String(raw == null ? '' : raw).trim();
+  let division = String(divisionHint || '').trim();
+  const m = /^(boys'?|girls'?|men'?s|women'?s|mens|womens)\s+/i.exec(v);
+  if (m) {
+    if (!division) division = /^(boys|mens|men)/i.test(m[1]) ? 'Boys' : 'Girls';
+    v = v.slice(m[0].length).trim();
+  }
+  if (division) division = /^(b|m)/i.test(division) ? 'Boys' : /^(g|w)/i.test(division) ? 'Girls' : '';
+  const canon = _NC_SPORT_CANON[v.toLowerCase().replace(/\s+/g, ' ')];
+  return { sport: canon || (v ? v.charAt(0).toUpperCase() + v.slice(1) : ''), division };
+}
+
+/** Applied wherever the hub arrives, so one sport is one chip. */
+function _ncNormalise(hub) {
+  if (!hub || !Array.isArray(hub.items)) return hub;
+  hub.items = hub.items.map(i => ({ ...i, ..._ncSplitSport(i.sport, i.division) }));
+  return hub;
+}
+
 const _NC_SPORT_ICON = {
   Football: '🏈', Soccer: '⚽', Baseball: '⚾', Softball: '🥎',
   Lacrosse: '🥍', 'Field Hockey': '🏑', Tennis: '🎾',
@@ -8446,7 +8482,7 @@ const _NC_SPORT_ICON = {
 
 async function loadCrmNews() {
   const saved = await apiGet('fct_crm_news');
-  if (saved && Array.isArray(saved.items)) crmNews = { regions: {}, ...saved };
+  if (saved && Array.isArray(saved.items)) crmNews = _ncNormalise({ regions: {}, ...saved });
   if (document.getElementById('crm-panel-news')?.classList.contains('active')) renderCrmNewsTab();
 }
 
@@ -8521,11 +8557,11 @@ async function refreshCrmNews(force) {
     try {
       const data = await _crmNewsPullRegion(p.key, force);
       if (Array.isArray(data.items)) {
-        crmNews = {
+        crmNews = _ncNormalise({
           pulled_at: data.pulled_at || crmNews.pulled_at,
           regions:   data.regions   || crmNews.regions,
           items:     data.items,
-        };
+        });
       }
       p.found = data.found || 0;
       found  += p.found;
@@ -8612,9 +8648,10 @@ function _crmNewsVisible() {
     return !sel.length || sel.includes(val);
   };
   return (crmNews.items || []).filter(i => {
-    if (!any('region', i.region)) return false;
-    if (!any('level',  i.level))  return false;
-    if (!any('sport',  i.sport))  return false;
+    if (!any('region',   i.region))   return false;
+    if (!any('level',    i.level))    return false;
+    if (!any('sport',    i.sport))    return false;
+    if (!any('division', i.division)) return false;
     if (!q) return true;
     return `${i.school} ${i.opponent} ${i.winner} ${i.loser} ${i.sport} ${i.level} ${i.region} ${i.headline}`
       .toLowerCase().includes(q);
@@ -8658,7 +8695,8 @@ function _ncTicker(items) {
     const line = (i.winner_score !== '' && i.loser_score !== '')
       ? `<b>${esc(i.winner)} ${esc(i.winner_score)}</b>, ${esc(i.loser)} ${esc(i.loser_score)}`
       : `<b>${esc(i.winner || i.school)}</b> v ${esc(i.loser || i.opponent)}`;
-    return `<span class="nc-tick"><span class="nc-tick-sport">${icon} ${esc((i.sport || '').toUpperCase())}</span>${line}</span>`;
+    const tag = [i.division, i.sport].filter(Boolean).join(' ').toUpperCase();
+    return `<span class="nc-tick"><span class="nc-tick-sport">${icon} ${esc(tag)}</span>${line}</span>`;
   }).join('');
   if (!runs) return '';
   return `<div class="nc-ticker">
@@ -8687,7 +8725,7 @@ function _ncCard(i) {
   return `<div class="nc-card">
       <div class="nc-card-top">
         <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          <span class="nc-sport">${icon} ${esc(i.sport || 'Game')}</span><span class="nc-level">${esc(i.level || '')}</span>
+          <span class="nc-sport">${icon} ${esc([i.division, i.sport || 'Game'].filter(Boolean).join(' '))}</span><span class="nc-level">${esc(i.level || '')}</span>
         </span>
         <span class="nc-region">${esc(i.region || '')}</span>
       </div>
@@ -8706,12 +8744,13 @@ const _CRM_NEWS_COLS = [
   { f: 'date',       label: 'Date',   w: 8 },
   { f: 'region',     label: 'Region', w: 8 },
   { f: 'level',      label: 'Level',  w: 8 },
-  { f: 'sport',      label: 'Sport',  w: 8 },
+  { f: 'sport',      label: 'Sport',  w: 6 },
+  { f: 'division',   label: 'Division', w: 5 },
   { f: 'winner',     label: 'Winner', w: 12, text: i => i.winner || i.school || '' },
   { f: 'winner_score', label: 'W',    w: 4 },
   { f: 'loser',      label: 'Loser',  w: 12, text: i => i.loser || i.opponent || '' },
   { f: 'loser_score', label: 'L',     w: 4 },
-  { f: 'headline',   label: 'Opener', w: 31 },
+  { f: 'headline',   label: 'Opener', w: 28 },
   { f: 'source_url', label: 'Source', w: 5, sortable: false, cell: i => i.source_url
       ? `<a href="${esc(i.source_url)}" target="_blank" rel="noopener" style="color:var(--blue);font-size:0.78rem">↗</a>` : '' },
 ];
@@ -8725,7 +8764,8 @@ function renderCrmNewsTab() {
   const pulled  = crmNews.pulled_at ? new Date(crmNews.pulled_at) : null;
   const f       = _crmNewsFilter;
 
-  const sports = [...new Set(all.map(i => i.sport).filter(Boolean))].sort();
+  const sports    = [...new Set(all.map(i => i.sport).filter(Boolean))].sort();
+  const divisions = [...new Set(all.map(i => i.division).filter(Boolean))].sort();
   const chip   = (key, value, label) =>
     `<button class="nc-filter ${_crmFilterSel(f, key).includes(value) ? 'on' : ''}"
        onclick="_crmNewsSetFilter('${key}','${esc(value)}')">${esc(label)}</button>`;
@@ -8792,6 +8832,7 @@ function renderCrmNewsTab() {
       ${_NC_REGIONS.map(r => chip('region', r.label, r.label)).join('')}
       <span class="nc-filter-sep"></span>
       ${chip('level', 'High School', 'High School')}${chip('level', 'College', 'College')}
+      ${divisions.length ? `<span class="nc-filter-sep"></span>${divisions.map(d => chip('division', d, d)).join('')}` : ''}
       ${sports.length ? `<span class="nc-filter-sep"></span>${sports.map(sp =>
         chip('sport', sp, `${_NC_SPORT_ICON[sp] || ''} ${sp}`.trim())).join('')}` : ''}
       <span style="flex:1"></span>
@@ -16224,7 +16265,7 @@ function _crmClearFilter(type) {
   if (type === 'people')        { _crmPeopleFilter  = {}; renderCrmPeopleTab(); }
   else if (type === 'companies'){ _crmCompanyFilter = {}; renderCrmCompaniesTab(); }
   else if (type === 'fields')   { _crmFieldFilter   = {}; renderCrmCompaniesTab(); }
-  else if (type === 'news')     { _crmNewsFilter    = { region: [], level: [], sport: [], q: '' }; renderCrmNewsTab(); }
+  else if (type === 'news')     { _crmNewsFilter    = { region: [], level: [], sport: [], division: [], q: '' }; renderCrmNewsTab(); }
   else                          { _crmOppFilter     = {}; renderCrmOpportunitiesTab(); }
 }
 
@@ -27075,7 +27116,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (inFields && JSON.stringify(inFields) !== JSON.stringify(crmFields))         { crmFields        = inFields; fieldsChanged = true; }
     // The news hub is written by the overnight cron, so it arrives this way
     // rather than from anything the user did.
-    if (inNews   && JSON.stringify(inNews)   !== JSON.stringify(crmNews))           { crmNews          = inNews;   newsChanged   = true; }
+    if (inNews   && JSON.stringify(inNews)   !== JSON.stringify(crmNews))           { crmNews = _ncNormalise(inNews); newsChanged = true; }
     // A colleague logging a call is exactly the kind of thing the rest of the
     // tab reads, so the index has to be rebuilt, not just the array swapped.
     if (inTouch  && JSON.stringify(inTouch)  !== JSON.stringify(crmTouches))        { crmTouches = inTouch; _crmReindexTouches(); touchChanged = true; }

@@ -284,6 +284,58 @@ console.log('\nPer-region pulls');
   assert('the score is kept',        tagged[0].winner_score === '30' && tagged[0].loser_score === '25');
   assert('school falls back to winner', tagged[0].school === 'Indiana');
 
+  // One sport, one name. The model answers from pages that write "Boys
+  // Soccer", "Girls Soccer" and "Soccer" for the same sport, and the tab
+  // builds its chips from the values present — so three chips, none of which
+  // shows all the soccer. The gender is real, so it moves to its own field
+  // rather than being thrown away.
+  for (const [raw, hint, sport, division] of [
+    ['Boys Soccer',        '', 'Soccer',      'Boys'],
+    ['Girls Soccer',       '', 'Soccer',      'Girls'],
+    ["Boys' Tennis",       '', 'Tennis',      'Boys'],
+    ['Girls Field Hockey', '', 'Field Hockey','Girls'],
+    ['Womens Lacrosse',    '', 'Lacrosse',    'Girls'],
+    ['soccer',             '', 'Soccer',      ''],
+    ['SOCCER',             '', 'Soccer',      ''],
+    ['american football',  '', 'Football',    ''],
+    ['Track and Field',    '', 'Track',       ''],
+    ['Soccer',        'Girls', 'Soccer',      'Girls'],
+    ['Soccer',            'B', 'Soccer',      'Boys'],
+    ['Ultimate',           '', 'Ultimate',    ''],
+    ['',                   '', '',            ''],
+  ]) {
+    const got = news.splitSport(raw, hint);
+    assert(`"${raw}"${hint ? ` + "${hint}"` : ''} reads as ${sport || 'nothing'}${division ? ' / ' + division : ''}`,
+      got.sport === sport && got.division === division, JSON.stringify(got));
+  }
+
+  // The whole point: the variants collapse to one value to group by.
+  const variants = ['Boys Soccer', 'Girls Soccer', 'soccer', 'SOCCER'].map(v => news.splitSport(v).sport);
+  assert('every soccer spelling groups together', new Set(variants).size === 1, variants.join(','));
+
+  // cleanItems has to apply it, or the blob keeps the raw label.
+  const split = news.cleanItems([{
+    date: '2026-09-19', sport: 'Girls Soccer', winner: 'A', loser: 'B',
+    headline: 'A beat B.', source_url: 'https://example.com/s',
+  }], today, 'Western PA');
+  assert('a stored item carries the canonical sport', split[0].sport === 'Soccer', split[0].sport);
+  assert('and its division alongside',               split[0].division === 'Girls');
+
+  // The tab normalises too, so items pulled before this existed stop
+  // fragmenting the chips without waiting to be re-pulled.
+  const uiMap = SRC.slice(SRC.indexOf('const _NC_SPORT_CANON = {'),
+                          SRC.indexOf('};', SRC.indexOf('const _NC_SPORT_CANON = {')));
+  const missing = Object.keys(news.SPORT_CANON).filter(k => !uiMap.includes(`'${k}'`));
+  assert('the tab knows the same sport names as the server', missing.length === 0, missing.join(', '));
+  assert('and normalises the stored hub on the way in', SRC.includes('function _ncNormalise('));
+  assert('gender stays filterable on its own',
+    SRC.includes("any('division', i.division)") && SRC.includes("chip('division', d, d)"));
+
+  // The pull is told to spread across sports, or it comes back all football.
+  assert('the prompt asks for a spread across sports', /Spread the list across whatever is actually in season/.test(prompt));
+  assert('and for the girls competitions too', /girls' competitions/.test(prompt));
+  assert('and asks for the division separately', prompt.includes('"division"'));
+
   // Scores arrive as whatever the model wrote them as.
   const messy = news.cleanItems([{
     date: '2026-09-19', winner: 'A', winner_score: ' 14 ', loser: 'B', loser_score: 'seven',
