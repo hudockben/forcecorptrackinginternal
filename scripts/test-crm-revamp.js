@@ -239,9 +239,17 @@ console.log('\nPer-region pulls');
   const cron = require(path.join(ROOT, 'api', 'cron', 'crm-news.js'));
   const today = new Date('2026-09-22T12:00:00Z');
 
-  assert('three regions, keyed', news.REGIONS.map(r => r.key).join(',') === 'wpa,eoh,wny');
+  assert('seven regions, keyed',
+    news.REGIONS.map(r => r.key).join(',') === 'wpa,cpa,epa,eoh,wv,wny,md',
+    news.REGIONS.map(r => r.key).join(','));
   assert('every region has a label and a detail',
     news.REGIONS.every(r => r.label && r.detail && r.detail.length > 20));
+  assert('no key is repeated',   new Set(news.REGIONS.map(r => r.key)).size === news.REGIONS.length);
+  assert('no label is repeated', new Set(news.REGION_LABELS).size === news.REGIONS.length);
+  // The region tag is written onto every row and filtered on by label, so a
+  // label that does not survive a round trip would orphan its own results.
+  assert('every label resolves back to its region',
+    news.REGIONS.every(r => news.regionFor(r.label) && news.regionFor(r.label).key === r.key));
   assert('a region resolves by key',   news.regionFor('eoh').label === 'Eastern OH');
   assert('a region resolves by label', news.regionFor('Western NY').key === 'wny');
   assert('an unknown region resolves to nothing', news.regionFor('texas') === null);
@@ -250,7 +258,11 @@ console.log('\nPer-region pulls');
   // the request that timed out.
   const prompt = news.buildPrompt(news.regionFor('wpa'), today, 14);
   assert('the prompt names its own region',   prompt.includes('Western Pennsylvania'));
-  assert('the prompt names no other region',  !prompt.includes('Eastern Ohio') && !prompt.includes('Western New York'));
+  // One region per prompt is what keeps a pull inside its budget; naming a
+  // second would quietly double the work the model is asked to do.
+  assert('the prompt names no other region',
+    ['Eastern Ohio', 'Western New York', 'Central Pennsylvania', 'Eastern Pennsylvania',
+     'West Virginia', 'Maryland'].every(r => !prompt.includes(r)));
   assert('the prompt asks for the score parts', prompt.includes('winner_score') && prompt.includes('loser_score'));
   assert('five searches per region', news.MAX_SEARCHES === 5);
   assert('twenty results per region', news.MAX_RESULTS === 20);
@@ -755,7 +767,27 @@ console.log('\nTab wiring and columns');
   // The News Center asks for one region at a time; asking for all three in
   // one request is what returned a 504.
   assert('the tab sends a region', SRC.includes("JSON.stringify({ region, force: !!force })"));
-  assert('the tab walks all three regions', /_NC_REGIONS\s*=\s*\[[\s\S]{0,200}wpa[\s\S]{0,200}eoh[\s\S]{0,200}wny/.test(SRC));
+  // The tab's list and the server's are two copies of one fact. Drift means
+  // a chip that filters nothing, or a region nobody can refresh.
+  {
+    const news = require(path.join(ROOT, 'api', 'lib', 'crm-news.js'));
+    const block = SRC.slice(SRC.indexOf('const _NC_REGIONS = ['),
+                            SRC.indexOf('];', SRC.indexOf('const _NC_REGIONS = [')));
+    const uiKeys = [...block.matchAll(/key:\s*'([a-z]+)'/g)].map(m => m[1]);
+    const uiLabels = [...block.matchAll(/label:\s*'([^']+)'/g)].map(m => m[1]);
+    assert('the tab lists the same regions as the server',
+      uiKeys.join(',') === news.REGIONS.map(r => r.key).join(','), uiKeys.join(','));
+    assert('with the same labels',
+      uiLabels.join(',') === news.REGION_LABELS.join(','), uiLabels.join(','));
+
+    // Every region has to be reachable from a company's state, or the outreach
+    // report can never offer that region's opener to anybody.
+    const mapBlock = SRC.slice(SRC.indexOf('const _CRM_STATE_REGIONS = {'),
+                               SRC.indexOf('};', SRC.indexOf('const _CRM_STATE_REGIONS = {')));
+    const missing = news.REGION_LABELS.filter(l => !mapBlock.includes(`'${l}'`));
+    assert('every region is reachable from some state', missing.length === 0, missing.join(', '));
+  }
+  assert('a long pull can be stopped', SRC.includes('function crmNewsCancel('));
   assert('the tab gives up before hanging forever', SRC.includes('new AbortController()'));
   assert('a gateway timeout is said in words', SRC.includes("'the search ran past the time limit'"));
   assert('the feed has a scoreboard card', SRC.includes('function _ncCard('));

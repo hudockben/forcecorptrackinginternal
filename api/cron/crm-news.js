@@ -9,12 +9,14 @@
  * separate search per tenant.
  *
  * It works through the regions until the clock runs out, and starts at a
- * different one each day. All three now fit comfortably in the budget, so the
- * rotation is insurance rather than the plan: a function killed at its
- * ceiling writes nothing at all, so this stops early on purpose, and if a
- * slow night ever does cut a region short, the one that got cut is the one
- * that goes first tomorrow. Items live for weeks and every write merges, so a
- * hub filled over two mornings is the same hub.
+ * different one each day. Seven regions no longer fit in one run — the budget
+ * holds four or five — so the rotation is the plan rather than insurance:
+ * each day starts one region further along, which over a week leaves every
+ * region pulled on most days and none of them ever starved. A function killed
+ * at its ceiling writes nothing at all, so stopping early is the point, and
+ * the region cut off tonight is nearer the front tomorrow. Items live for
+ * weeks and every write merges, so a hub filled over two mornings is the same
+ * hub.
  *
  * Idempotent by construction. Items carry an id derived from their date and
  * headline, and the write merges on that id, so a cron that fires twice, a

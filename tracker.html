@@ -8422,6 +8422,7 @@ let crmNews          = { pulled_at: null, regions: {}, items: [] };
 let _crmNewsFilter   = { region: [], level: [], sport: [], q: '' };
 let _crmNewsView     = 'feed';    // 'feed' | 'table'
 let _crmNewsBusy     = false;
+let _crmNewsCancel   = false;
 let _crmNewsNote     = '';
 let _crmNewsProgress = [];
 
@@ -8429,8 +8430,12 @@ let _crmNewsProgress = [];
    is what a row is tagged with and what the chips filter on. */
 const _NC_REGIONS = [
   { key: 'wpa', label: 'Western PA' },
+  { key: 'cpa', label: 'Central PA' },
+  { key: 'epa', label: 'Eastern PA' },
   { key: 'eoh', label: 'Eastern OH' },
+  { key: 'wv',  label: 'West Virginia' },
   { key: 'wny', label: 'Western NY' },
+  { key: 'md',  label: 'Maryland' },
 ];
 
 const _NC_SPORT_ICON = {
@@ -8500,6 +8505,7 @@ function _crmNewsErrorText(status, data) {
 async function refreshCrmNews(force) {
   if (_crmNewsBusy) return;
   _crmNewsBusy     = true;
+  _crmNewsCancel   = false;
   _crmNewsNote     = '';
   _crmNewsProgress = _NC_REGIONS.map(r => ({ ...r, state: 'idle', found: 0, msg: '' }));
   renderCrmNewsTab();
@@ -8508,6 +8514,7 @@ async function refreshCrmNews(force) {
   const failures = [];
 
   for (const p of _crmNewsProgress) {
+    if (_crmNewsCancel) { p.state = 'idle'; continue; }
     p.state = 'run';
     renderCrmNewsTab();
     try {
@@ -8532,7 +8539,12 @@ async function refreshCrmNews(force) {
   }
 
   _crmNewsBusy = false;
-  _crmNewsNote = _crmNewsSummary(found, failures);
+  const done = _crmNewsProgress.filter(p => p.state !== 'idle').length;
+  _crmNewsNote = _crmNewsCancel
+    ? `Stopped after ${done} of ${_crmNewsProgress.length} region${_crmNewsProgress.length === 1 ? '' : 's'}.`
+      + (found ? ` Pulled ${found} result${found === 1 ? '' : 's'}.` : '')
+    : _crmNewsSummary(found, failures);
+  _crmNewsCancel = false;
   renderCrmNewsTab();
 }
 
@@ -8562,6 +8574,9 @@ function _crmNewsSummary(found, failures) {
 }
 
 /** The opener, on the clipboard, ready to paste at the top of an email. */
+/** Seven regions in a row is a long wait; it has to be abandonable. */
+function crmNewsCancel() { _crmNewsCancel = true; }
+
 function crmCopyOpener(id) {
   const item = (crmNews.items || []).find(i => i.id === id);
   if (!item) return;
@@ -8750,7 +8765,7 @@ function renderCrmNewsTab() {
           <span style="font-size:1.05rem;font-weight:800;letter-spacing:0.02em;color:var(--text)">NEWS CENTER</span>
         </div>
         <div style="font-size:0.76rem;color:var(--muted);margin-top:0.3rem;max-width:64ch">
-          High school and college results from Western PA, Eastern OH and Western NY — pulled every morning, one line each for opening an outreach email.
+          High school and college results from across the territory — PA, eastern OH, West Virginia, western NY and Maryland. Pulled every morning, one line each for opening an outreach email.
         </div>
         <div style="font-size:0.73rem;color:var(--muted);margin-top:0.3rem">
           <strong style="color:var(--text)">${visible.length}</strong>${visible.length !== all.length ? ` of ${all.length}` : ''} result${all.length !== 1 ? 's' : ''}
@@ -8763,8 +8778,10 @@ function renderCrmNewsTab() {
         ${_crmToolButtons(
           `_crmExportCsv('crm-news', _CRM_NEWS_COLS, _crmNewsVisible(), 'news')`,
           `_crmPrintReport('News Center','Outreach openers', _CRM_NEWS_COLS, _crmNewsVisible(), 'news')`)}
-        <button class="btn btn-green" onclick="refreshCrmNews(true)" ${_crmNewsBusy ? 'disabled' : ''}
-          style="${_crmNewsBusy ? 'opacity:0.6;cursor:wait' : ''}">${_crmNewsBusy ? 'Pulling…' : '↻ Refresh'}</button>
+        ${_crmNewsBusy
+          ? `<button class="btn" onclick="crmNewsCancel()"
+               style="background:var(--surface2);border:1px solid var(--border);color:var(--text)">Stop</button>`
+          : `<button class="btn btn-green" onclick="refreshCrmNews(true)">↻ Refresh all ${_NC_REGIONS.length}</button>`}
       </div>
     </div>
 
@@ -9178,8 +9195,21 @@ function logCrmStatusChange(opp, field, from, to) {
 
 const _CRM_PRIORITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3, '': 4 };
 
-/** State → the News Center region that covers it. */
-const _CRM_STATE_REGION = { PA: 'Western PA', OH: 'Eastern OH', NY: 'Western NY' };
+/**
+ * State → the News Center regions that cover it.
+ *
+ * A list, because Pennsylvania is three regions. That makes the fallback
+ * below weaker there than it was: a Washington County school can be offered
+ * a Lehigh Valley result. The named-school match above it is the one that
+ * actually lands, and this only fills in behind it.
+ */
+const _CRM_STATE_REGIONS = {
+  PA: ['Western PA', 'Central PA', 'Eastern PA'],
+  OH: ['Eastern OH'],
+  NY: ['Western NY'],
+  WV: ['West Virginia'],
+  MD: ['Maryland'],
+};
 
 function _crmCompanyFor(name) {
   const n = String(name || '').trim().toLowerCase();
@@ -9231,9 +9261,9 @@ function _crmOpenerFor(companyName, company) {
     });
     if (named) return named.headline;
   }
-  const region = company ? _CRM_STATE_REGION[String(company.state || '').toUpperCase()] : '';
-  if (!region) return '';
-  const local = items.find(i => i.region === region);
+  const regions = company ? (_CRM_STATE_REGIONS[String(company.state || '').toUpperCase()] || []) : [];
+  if (!regions.length) return '';
+  const local = items.find(i => regions.includes(i.region));
   return local ? local.headline : '';
 }
 

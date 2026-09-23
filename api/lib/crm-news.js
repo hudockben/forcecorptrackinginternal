@@ -42,11 +42,19 @@
  */
 const REGIONS = [
   { key: 'wpa', label: 'Western PA',
-    detail: 'Western Pennsylvania — the Pittsburgh metro plus Washington, Westmoreland, Beaver, Butler, Indiana, Fayette, Greene, Armstrong, Somerset, Cambria, Lawrence and Mercer counties (WPIAL and PIAA District 6/7/10 schools)' },
+    detail: 'Western Pennsylvania — the Pittsburgh metro plus Washington, Westmoreland, Beaver, Butler, Indiana, Fayette, Greene, Armstrong, Somerset, Cambria and Lawrence counties (WPIAL and PIAA District 6 schools)' },
+  { key: 'cpa', label: 'Central PA',
+    detail: 'Central Pennsylvania — Harrisburg, State College, Altoona, Williamsport, Lancaster, York, Lebanon and Carlisle (PIAA District 3 and District 4 schools)' },
+  { key: 'epa', label: 'Eastern PA',
+    detail: 'Eastern Pennsylvania — the Philadelphia metro plus Allentown, Bethlehem, Easton, Reading, Scranton, Wilkes-Barre and the Poconos (PIAA Districts 1, 2, 11 and 12 schools)' },
   { key: 'eoh', label: 'Eastern OH',
-    detail: 'Eastern Ohio — Youngstown, Warren, Steubenville, East Liverpool, Canton and the Mahoning Valley (OHSAA District 5/7 schools)' },
+    detail: 'Eastern Ohio — Youngstown, Warren, Steubenville, East Liverpool, Canton and the Mahoning Valley (OHSAA District 5 and District 7 schools)' },
+  { key: 'wv',  label: 'West Virginia',
+    detail: 'West Virginia — Morgantown, Wheeling, Charleston, Huntington, Parkersburg, Fairmont, Clarksburg and Martinsburg (WVSSAC schools)' },
   { key: 'wny', label: 'Western NY',
-    detail: 'Western New York — Buffalo, Jamestown, Olean, Niagara Falls and the Southern Tier (Section VI schools)' },
+    detail: 'Western New York — Buffalo, Jamestown, Olean, Niagara Falls, Rochester and the Southern Tier (Section V and Section VI schools)' },
+  { key: 'md',  label: 'Maryland',
+    detail: 'Maryland — the Baltimore metro plus Frederick, Hagerstown, Annapolis, Cumberland, Salisbury and the Washington suburbs (MPSSAA schools)' },
 ];
 
 const REGION_LABELS = REGIONS.map(r => r.label);
