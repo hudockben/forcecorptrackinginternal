@@ -153,6 +153,32 @@
     .crm-sub-btn.active { color: var(--green); border-bottom-color: var(--green); }
     .crm-sub-panel { display: none; }
 
+    /* ── A long request, visibly alive ──
+       The fill is honest: it is time used out of time allowed, not progress
+       through the work, which a single non-streaming request cannot know.
+       The shimmer is what says "still going" during the seconds the fill
+       barely moves. */
+    .cpb-track {
+      height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden;
+    }
+    .cpb-fill {
+      height: 100%; width: 0; border-radius: 3px; position: relative; overflow: hidden;
+      background: linear-gradient(90deg, #2563eb, #60a5fa);
+      transition: width 0.3s linear;
+    }
+    .cpb-fill::after {
+      content: ''; position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+      animation: cpb-shim 1.3s linear infinite;
+    }
+    @keyframes cpb-shim { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+    @media (prefers-reduced-motion: reduce) { .cpb-fill::after { animation: none; } }
+    .cpb-meta {
+      display: flex; justify-content: space-between; gap: 1rem;
+      margin-top: 0.4rem; font-size: 0.73rem; color: var(--muted);
+    }
+    .cpb-meta b { color: var(--text); font-weight: 600; }
+
     /* ── CRM column filter popover ── */
     .cfp {
       position: fixed; z-index: 600; width: 230px;
@@ -8066,6 +8092,48 @@ function _crmRevealRow(rootId, id, field, idAttr) {
   }, 0);
 }
 
+/* ── Showing that a long request is still alive ──
+   A single non-streaming request cannot report progress through its work, so
+   this does not pretend to. The bar fills against the server's own deadline —
+   time used out of time allowed, which is true — and says what that deadline
+   is, so a wait has a known end rather than feeling like a hang. */
+
+function _crmMMSS(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function _crmProgressBar(id, label, deadlineMs) {
+  return `<div id="${id}" data-deadline="${deadlineMs}" style="margin:1.1rem 0;max-width:520px">
+    <div class="cpb-track"><div class="cpb-fill"></div></div>
+    <div class="cpb-meta">
+      <span>${esc(label)}</span>
+      <span><b class="cpb-time">0:00</b> · gives up at ${_crmMMSS(deadlineMs)}</span>
+    </div>
+  </div>`;
+}
+
+/**
+ * Ticks a bar without redrawing the tab around it.
+ *
+ * Re-rendering four times a second would take the cursor out of the question
+ * box and throw away a half-typed refinement, so the tick writes straight to
+ * the two nodes that change.
+ */
+function _crmTickProgress(id, startedAt) {
+  const el = document.getElementById(id);
+  if (!el) return false;
+  const deadline = Number(el.dataset.deadline) || 1;
+  const ms   = Date.now() - startedAt;
+  const fill = el.querySelector('.cpb-fill');
+  const time = el.querySelector('.cpb-time');
+  // Never quite full: the request can still come back, and a bar sitting at
+  // 100% while nothing happens is the thing this exists to avoid.
+  if (fill) fill.style.width = `${Math.min(98, (ms / deadline) * 100).toFixed(1)}%`;
+  if (time) time.textContent = _crmMMSS(ms);
+  return true;
+}
+
 /** The Export CSV / Print pair that sits in a tab's toolbar. */
 function _crmToolButtons(onCsv, onPrint) {
   return `<button class="btn" onclick="${onCsv}"
@@ -8815,8 +8883,14 @@ function crmCompanyToOpportunity(id) {
 let _crmSearch = {
   query: '', includeWeb: true, running: false,
   error: '', answer: '', matches: [], note: '',
-  selected: new Set(),
+  selected: new Set(), startedAt: 0,
 };
+
+// Matches DEADLINE_MS in api/ai/crm-search.js. The bar is drawn against the
+// server's limit, so the two have to agree or the bar lies.
+const _CRM_SEARCH_DEADLINE_MS = 210000;
+
+let _crmSearchTimer = null;
 
 const _CRM_SEARCH_EXAMPLES = [
   'All potential sports fields in Washington County with contact info and when the turf was last installed',
@@ -8830,27 +8904,43 @@ async function runCrmSearch() {
   const q   = (box ? box.value : _crmSearch.query).trim();
   if (!q || _crmSearch.running) return;
 
-  _crmSearch = { ..._crmSearch, query: q, running: true, error: '', answer: '', matches: [], note: '', selected: new Set() };
+  _crmSearch = { ..._crmSearch, query: q, running: true, error: '', answer: '', matches: [],
+                 note: '', selected: new Set(), startedAt: Date.now() };
   renderCrmSearchTab();
+  clearInterval(_crmSearchTimer);
+  _crmSearchTimer = setInterval(() => {
+    if (!_crmTickProgress('crm-search-progress', _crmSearch.startedAt)) clearInterval(_crmSearchTimer);
+  }, 250);
+
+  // The server answers by its own deadline, so this only fires if the
+  // response itself never arrives.
+  const ctl   = new AbortController();
+  const guard = setTimeout(() => ctl.abort(), _CRM_SEARCH_DEADLINE_MS + 30000);
 
   try {
     const r = await fetch(`${API_BASE}/ai/crm-search`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
       body:    JSON.stringify({ query: q, includeWeb: _crmSearch.includeWeb }),
+      signal:  ctl.signal,
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    if (!r.ok) throw new Error(_crmNewsErrorText(r.status, data));
 
     const matches = (Array.isArray(data.matches) ? data.matches : []).map((m, i) => ({ ...m, _row: `m${i}` }));
     const s = data.searched || {};
     _crmSearch.answer  = data.answer || '';
     _crmSearch.matches = matches;
-    _crmSearch.note    = `Searched ${s.companies || 0} companies, ${s.people || 0} people, ${s.fields || 0} fields, ${s.opportunities || 0} opportunities${s.web ? ' and the web' : ''}.`
+    if (data.warning) _crmSearch.error = data.warning;
+    _crmSearch.note    = `Searched ${s.companies || 0} companies, ${s.people || 0} people, ${s.fields || 0} fields, ${s.opportunities || 0} opportunities${s.web ? ' and the web' : ''}`
+      + ` in ${_crmMMSS(Date.now() - _crmSearch.startedAt)}.`
       + ((data.truncated || []).length ? ` (${data.truncated.join('; ')})` : '');
   } catch (err) {
-    _crmSearch.error = err.message;
+    _crmSearch.error = err.name === 'AbortError'
+      ? 'the search ran long and was given up on' : err.message;
   } finally {
+    clearInterval(_crmSearchTimer);
+    clearTimeout(guard);
     _crmSearch.running = false;
     renderCrmSearchTab();
   }
@@ -8988,6 +9078,10 @@ function renderCrmSearchTab() {
       ${s.note ? `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.45rem">${esc(s.note)}</div>` : ''}
     </div>` : ''}
 
+    ${s.running ? _crmProgressBar('crm-search-progress',
+        s.includeWeb ? 'Reading the CRM and searching the web…' : 'Reading the CRM…',
+        _CRM_SEARCH_DEADLINE_MS) : ''}
+
     ${s.matches.length ? `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;gap:0.75rem;flex-wrap:wrap">
         <span style="font-size:0.82rem;color:var(--muted)">
@@ -9009,8 +9103,7 @@ function renderCrmSearchTab() {
         actions: check, actionCols: [3], minWidth: 1250,
         empty: 'No matches.',
       })}
-    ` : (s.running
-        ? `<div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Reading the CRM${s.includeWeb ? ' and searching the web' : ''}…</div>`
+    ` : (s.running ? ''
         : (s.answer ? '' : `<div style="padding:2.5rem;text-align:center;color:var(--muted);font-size:0.85rem">Ask a question to begin.</div>`))}
   `;
 }
@@ -9716,8 +9809,12 @@ function _crmTouchBtn(kind, id) {
    Center, and for the same reason: a batch of lookups in one request is how
    you meet the function ceiling and get nothing back at all.
 ═══════════════════════════════════════════ */
+// Matches DEADLINE_MS in api/ai/crm-find-contacts.js.
+const _CRM_FIND_DEADLINE_MS = 150000;
+let _crmFindTimer = null;
+
 let _crmFind = {
-  running: false, cancel: false,
+  running: false, cancel: false, startedAt: 0,
   done: 0, total: 0, current: '',
   results: [],            // [{ companyId, company, summary, people:[...], warning }]
   selected: new Set(),    // "companyId::index"
@@ -9786,8 +9883,14 @@ async function _crmRunFind(companies) {
   const failures = [];
   for (const c of companies) {
     if (_crmFind.cancel) break;
-    _crmFind.current = c.company_name || '';
+    _crmFind.current   = c.company_name || '';
+    _crmFind.startedAt = Date.now();
     renderCrmCompaniesTab();
+    // The bar is redrawn by each render, so the tick is restarted with it.
+    clearInterval(_crmFindTimer);
+    _crmFindTimer = setInterval(() => {
+      if (!_crmTickProgress('crm-find-progress', _crmFind.startedAt)) clearInterval(_crmFindTimer);
+    }, 250);
     try {
       const data = await _crmFindOne(c.id);
       if (data.warning) failures.push({ label: c.company_name, reason: data.warning });
@@ -9805,10 +9908,12 @@ async function _crmRunFind(companies) {
       _crmFind.results.push({ companyId: c.id, company: c.company_name, summary: '', people: [], warning: err.message });
     }
     _crmFind.done++;
+    clearInterval(_crmFindTimer);
     renderCrmCompaniesTab();
   }
 
   const found = _crmFind.results.reduce((n, r) => n + r.people.length, 0);
+  clearInterval(_crmFindTimer);
   _crmFind.running = false;
   _crmFind.current = '';
   _crmFind.note = _crmFind.cancel
@@ -9947,6 +10052,9 @@ function renderCrmFindView(root) {
                style="${missing.length ? '' : 'opacity:0.5;cursor:not-allowed'}">⌕ Find for all ${missing.length || ''}</button>`}
       </div>
     </div>
+
+    ${s.running ? _crmProgressBar('crm-find-progress',
+        `Reading ${esc(s.current || 'the staff pages')}…`, _CRM_FIND_DEADLINE_MS) : ''}
 
     ${total ? `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;gap:0.75rem;flex-wrap:wrap">

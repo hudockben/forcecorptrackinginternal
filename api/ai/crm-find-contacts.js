@@ -33,6 +33,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { neon }  = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
+const { withDeadline } = require('../lib/deadline');
 
 const MODEL  = 'claude-opus-5';
 const EFFORT = 'medium';
@@ -59,16 +60,6 @@ const ROLES = [
   'Head Groundskeeper / Grounds Supervisor',
   'Head Football Coach',
 ];
-
-function withDeadline(promise, ms) {
-  let timer;
-  const bell = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(Object.assign(new Error('the lookup did not finish in the time the server allows'), { deadline: true })),
-      ms);
-  });
-  return Promise.race([promise, bell]).finally(() => clearTimeout(timer));
-}
 
 async function readBlob(sql, companyCode, key) {
   try {

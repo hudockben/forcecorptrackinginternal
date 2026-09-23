@@ -667,6 +667,61 @@ console.log('\nColumn filters');
   assert('a missing key is no selection',  F._crmFilterSel({}, 'a').length === 0);
 }
 
+/* ── 4i. Effort, deadlines and the progress bar ──────────────────────────── */
+console.log('\nAI Search effort and feedback');
+{
+  const search = fs.readFileSync(path.join(ROOT, 'api', 'ai', 'crm-search.js'), 'utf8');
+  const finder = fs.readFileSync(path.join(ROOT, 'api', 'ai', 'crm-find-contacts.js'), 'utf8');
+  const newsjs = fs.readFileSync(path.join(ROOT, 'api', 'lib', 'crm-news.js'), 'utf8');
+  const vercel = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));
+  const cap = f => (vercel.functions[f] || {}).maxDuration;
+
+  // AI Search does the reasoning; the other two read a page. Only the first
+  // earns max, and paying for it everywhere would just be slower.
+  assert('AI Search runs at max effort',      /const EFFORT = 'max'/.test(search));
+  assert('the contact finder stays at medium', /const EFFORT = 'medium'/.test(finder));
+  assert('the news pull stays at medium',      /const EFFORT = 'medium'/.test(newsjs));
+  assert('all three are on the same model',
+    [search, finder, newsjs].every(f => /const MODEL\s*=\s*'claude-opus-5'/.test(f)));
+
+  // Max effort without a deadline is how the 504 comes back: the function is
+  // killed mid-flight and the caller gets no body at all.
+  const deadline = Number((search.match(/const DEADLINE_MS = (\d+)/) || [])[1]);
+  assert('AI Search has a deadline of its own', deadline > 0);
+  assert('and it is under the function ceiling',
+    deadline < cap('api/ai/crm-search.js') * 1000, `${deadline}ms vs ${cap('api/ai/crm-search.js')}s`);
+  assert('an overrun answers 200 with words, not a gateway error',
+    /err && err\.deadline/.test(search) && /ran longer than the server allows/.test(search));
+  assert('effort is dropped before the search tool if either is rejected',
+    search.indexOf('effort) { effort = null;') < search.indexOf('tools[0] === SEARCH_TOOL) { tools'));
+
+  // One deadline helper, not one per file.
+  assert('the deadline helper is shared', fs.existsSync(path.join(ROOT, 'api', 'lib', 'deadline.js')));
+  for (const [name, src] of [['crm-search', search], ['crm-find-contacts', finder], ['crm-news', newsjs]]) {
+    assert(`${name} imports it`, /require\('\.\.?\/(lib\/)?deadline'\)/.test(src));
+    assert(`${name} has no private copy`, !/function withDeadline\(/.test(src));
+  }
+
+  // The bar is drawn against the server's limit, so the two must agree.
+  const uiDeadline = Number((SRC.match(/_CRM_SEARCH_DEADLINE_MS = (\d+)/) || [])[1]);
+  assert('the tab draws the bar against the server deadline', uiDeadline === deadline,
+    `ui ${uiDeadline} vs server ${deadline}`);
+  const findDeadline = Number((finder.match(/const DEADLINE_MS = (\d+)/) || [])[1]);
+  const uiFind = Number((SRC.match(/_CRM_FIND_DEADLINE_MS = (\d+)/) || [])[1]);
+  assert('and the finder bar matches its endpoint too', uiFind === findDeadline,
+    `ui ${uiFind} vs server ${findDeadline}`);
+
+  assert('there is a progress bar',        SRC.includes('function _crmProgressBar('));
+  assert('it ticks without redrawing the tab',
+    SRC.includes('function _crmTickProgress(') && SRC.includes("el.querySelector('.cpb-fill')"));
+  // A bar sitting at 100% while nothing happens is the thing it exists to avoid.
+  assert('it never reaches full',          SRC.includes('Math.min(98,'));
+  assert('and keeps moving when the fill does not', SRC.includes('cpb-shim'));
+  assert('which reduced-motion turns off', /prefers-reduced-motion[\s\S]{0,120}cpb-fill/.test(SRC));
+  assert('the interval is always cleared', (SRC.match(/clearInterval\(_crmSearchTimer\)/g) || []).length >= 2);
+  assert('a hung response is still given up on', SRC.includes('_CRM_SEARCH_DEADLINE_MS + 30000'));
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {

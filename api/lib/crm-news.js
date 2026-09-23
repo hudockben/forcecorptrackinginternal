@@ -100,29 +100,9 @@ const EFFORT = 'medium';
 const SEARCH_TOOL       = { type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES };
 const SEARCH_TOOL_BASIC = { type: 'web_search_20250305', name: 'web_search', max_uses: MAX_SEARCHES };
 
-function isoDay(d) { return new Date(d).toISOString().slice(0, 10); }
+const { withDeadline } = require('./deadline');
 
-/**
- * Gives a pull a deadline of our own, shorter than the platform's.
- *
- * Without this the only limit is the 60 seconds the function gets, and
- * overrunning it means the gateway kills the invocation mid-flight: the caller
- * receives a 504 with no body, the code after the call never runs, and there
- * is nowhere to say what happened. Losing the race on our own terms leaves the
- * handler alive to answer honestly and keep the stored hub on screen.
- *
- * The rejection carries `deadline: true` so a caller can tell "this took too
- * long" apart from "this failed", which are different things to tell a user.
- */
-function withDeadline(promise, ms) {
-  let timer;
-  const bell = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(Object.assign(new Error('the search did not finish in the time the server allows'), { deadline: true })),
-      ms);
-  });
-  return Promise.race([promise, bell]).finally(() => clearTimeout(timer));
-}
+function isoDay(d) { return new Date(d).toISOString().slice(0, 10); }
 
 function regionFor(key) {
   return REGIONS.find(r => r.key === key || r.label === key) || null;
