@@ -619,6 +619,7 @@
     kiewit_job_summary:   'Job Summary — Kiewit Pinetree',
     kiewit_construction_schedule: 'Construction Schedule — Kiewit Pinetree',
     dust_tracking_summary:'Dust Control Tracking Report',
+    crm_next_steps:       'Next Steps Due — CRM',
   };
 
   function openReportEmailModal(opts) {

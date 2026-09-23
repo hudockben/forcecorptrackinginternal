@@ -86,6 +86,9 @@ const REPORT_TYPES = {
   // The Scheduler tab's second board. Same division — it is the trucking
   // office's own labor board — so the same access check applies.
   trucking_labor_dispatch: { division: 'trucking', label: 'Labor Dispatch Schedule'           },
+  // The CRM lives in the Turf tab, so Turf access is what gates its reports.
+  // The scheduled copy goes out from api/cron/crm-next-steps-email.js.
+  crm_next_steps:       { division: 'turf',      label: 'Next Steps Due — CRM'                },
 };
 
 module.exports = async (req, res) => {

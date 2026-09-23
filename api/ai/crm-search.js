@@ -24,8 +24,30 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { neon }  = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
+const { withDeadline } = require('../lib/deadline');
 
 const MODEL = 'claude-opus-5';
+
+/**
+ * Maximum effort, deliberately.
+ *
+ * This is the one endpoint here doing real reasoning rather than extraction:
+ * it reads the whole CRM, works out what a vague question actually means,
+ * and decides which rows answer it. The News Center reads a scoreboard and
+ * the contact finder reads a staff page — those run at medium because more
+ * thinking would not make a box score truer. Here it would: a question like
+ * "schools whose turf is due and we have no open opportunity for" is a join
+ * and a judgement, and a missed row is a missed deal.
+ *
+ * It costs time, which is why this endpoint now has a deadline and the tab
+ * has a progress bar. A search that quietly ran for three minutes behind a
+ * spinner reads as broken however good the answer is.
+ */
+const EFFORT = 'max';
+
+// vercel.json gives this function 300s. Stop before that so an overrun comes
+// back as a sentence rather than a gateway error with no body.
+const DEADLINE_MS = 210000;
 
 const MAX_QUERY_CHARS = 1000;
 
@@ -118,6 +140,39 @@ function parseResult(text) {
   return JSON.parse(stripped.slice(start, end + 1));
 }
 
+/**
+ * One search, however many turns the server tools need.
+ *
+ * Effort and the dated search tool are each dropped on a flat 400, in that
+ * order: effort only changes how hard it thinks, the search tool decides
+ * whether there is anything outside the CRM to find at all.
+ */
+async function runSearch(client, messages, allowWeb) {
+  let tools  = allowWeb ? [SEARCH_TOOL] : undefined;
+  let effort = EFFORT;
+  let message;
+
+  for (let turn = 0; turn < 6; turn++) {
+    try {
+      message = await client.messages.create({
+        model:      MODEL,
+        max_tokens: 16000,
+        ...(effort ? { output_config: { effort } } : {}),
+        ...(tools ? { tools } : {}),
+        messages,
+      });
+    } catch (err) {
+      if (err && err.status === 400 && effort) { effort = null; continue; }
+      if (err && err.status === 400 && tools && tools[0] === SEARCH_TOOL) { tools = [SEARCH_TOOL_BASIC]; continue; }
+      throw err;
+    }
+    if (message.stop_reason !== 'pause_turn') break;
+    messages.push({ role: 'assistant', content: message.content });
+  }
+
+  return parseResult(textOf(message));
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -156,32 +211,12 @@ module.exports = async (req, res) => {
   }
 
   const messages = [{ role: 'user', content: buildPrompt(query, data, truncated, allowWeb) }];
-  let tools = allowWeb ? [SEARCH_TOOL] : undefined;
 
   try {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    let message;
-
-    for (let turn = 0; turn < 6; turn++) {
-      try {
-        message = await client.messages.create({
-          model:      MODEL,
-          max_tokens: 16000,
-          ...(tools ? { tools } : {}),
-          messages,
-        });
-      } catch (err) {
-        if (err && err.status === 400 && tools && tools[0] === SEARCH_TOOL) {
-          tools = [SEARCH_TOOL_BASIC];
-          continue;
-        }
-        throw err;
-      }
-      if (message.stop_reason !== 'pause_turn') break;
-      messages.push({ role: 'assistant', content: message.content });
-    }
-
-    const result  = parseResult(textOf(message));
+    const result = await withDeadline(
+      runSearch(client, messages, allowWeb), DEADLINE_MS,
+      'the search did not finish in the time the server allows');
     const matches = Array.isArray(result.matches) ? result.matches : [];
 
     return res.json({
@@ -198,7 +233,19 @@ module.exports = async (req, res) => {
     });
 
   } catch (err) {
+    // Running long is not a crash, and at max effort it is the likely way to
+    // fail. Answer 200 so the tab can say so in words.
+    if (err && err.deadline) {
+      console.warn('[ai/crm-search] deadline');
+      return res.json({
+        answer: '', matches: [], truncated,
+        warning: 'That search ran longer than the server allows. Narrowing it — one county, one question — usually gets it back in time.',
+      });
+    }
     console.error('[ai/crm-search] failed:', err.message);
     return res.status(500).json({ error: 'AI Search failed', detail: err.message });
   }
 };
+
+module.exports.DEADLINE_MS = DEADLINE_MS;
+module.exports.EFFORT = EFFORT;

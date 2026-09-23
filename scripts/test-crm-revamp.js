@@ -239,9 +239,17 @@ console.log('\nPer-region pulls');
   const cron = require(path.join(ROOT, 'api', 'cron', 'crm-news.js'));
   const today = new Date('2026-09-22T12:00:00Z');
 
-  assert('three regions, keyed', news.REGIONS.map(r => r.key).join(',') === 'wpa,eoh,wny');
+  assert('seven regions, keyed',
+    news.REGIONS.map(r => r.key).join(',') === 'wpa,cpa,epa,eoh,wv,wny,md',
+    news.REGIONS.map(r => r.key).join(','));
   assert('every region has a label and a detail',
     news.REGIONS.every(r => r.label && r.detail && r.detail.length > 20));
+  assert('no key is repeated',   new Set(news.REGIONS.map(r => r.key)).size === news.REGIONS.length);
+  assert('no label is repeated', new Set(news.REGION_LABELS).size === news.REGIONS.length);
+  // The region tag is written onto every row and filtered on by label, so a
+  // label that does not survive a round trip would orphan its own results.
+  assert('every label resolves back to its region',
+    news.REGIONS.every(r => news.regionFor(r.label) && news.regionFor(r.label).key === r.key));
   assert('a region resolves by key',   news.regionFor('eoh').label === 'Eastern OH');
   assert('a region resolves by label', news.regionFor('Western NY').key === 'wny');
   assert('an unknown region resolves to nothing', news.regionFor('texas') === null);
@@ -250,8 +258,16 @@ console.log('\nPer-region pulls');
   // the request that timed out.
   const prompt = news.buildPrompt(news.regionFor('wpa'), today, 14);
   assert('the prompt names its own region',   prompt.includes('Western Pennsylvania'));
-  assert('the prompt names no other region',  !prompt.includes('Eastern Ohio') && !prompt.includes('Western New York'));
+  // One region per prompt is what keeps a pull inside its budget; naming a
+  // second would quietly double the work the model is asked to do.
+  assert('the prompt names no other region',
+    ['Eastern Ohio', 'Western New York', 'Central Pennsylvania', 'Eastern Pennsylvania',
+     'West Virginia', 'Maryland'].every(r => !prompt.includes(r)));
   assert('the prompt asks for the score parts', prompt.includes('winner_score') && prompt.includes('loser_score'));
+  for (const sport of ['football', 'soccer', 'baseball', 'softball',
+                       'field hockey', 'lacrosse', 'tennis', 'track']) {
+    assert(`the pull covers ${sport}`, prompt.toLowerCase().includes(sport));
+  }
   assert('five searches per region', news.MAX_SEARCHES === 5);
   assert('twenty results per region', news.MAX_RESULTS === 20);
 
@@ -268,6 +284,58 @@ console.log('\nPer-region pulls');
   assert('the score is kept',        tagged[0].winner_score === '30' && tagged[0].loser_score === '25');
   assert('school falls back to winner', tagged[0].school === 'Indiana');
 
+  // One sport, one name. The model answers from pages that write "Boys
+  // Soccer", "Girls Soccer" and "Soccer" for the same sport, and the tab
+  // builds its chips from the values present — so three chips, none of which
+  // shows all the soccer. The gender is real, so it moves to its own field
+  // rather than being thrown away.
+  for (const [raw, hint, sport, division] of [
+    ['Boys Soccer',        '', 'Soccer',      'Boys'],
+    ['Girls Soccer',       '', 'Soccer',      'Girls'],
+    ["Boys' Tennis",       '', 'Tennis',      'Boys'],
+    ['Girls Field Hockey', '', 'Field Hockey','Girls'],
+    ['Womens Lacrosse',    '', 'Lacrosse',    'Girls'],
+    ['soccer',             '', 'Soccer',      ''],
+    ['SOCCER',             '', 'Soccer',      ''],
+    ['american football',  '', 'Football',    ''],
+    ['Track and Field',    '', 'Track',       ''],
+    ['Soccer',        'Girls', 'Soccer',      'Girls'],
+    ['Soccer',            'B', 'Soccer',      'Boys'],
+    ['Ultimate',           '', 'Ultimate',    ''],
+    ['',                   '', '',            ''],
+  ]) {
+    const got = news.splitSport(raw, hint);
+    assert(`"${raw}"${hint ? ` + "${hint}"` : ''} reads as ${sport || 'nothing'}${division ? ' / ' + division : ''}`,
+      got.sport === sport && got.division === division, JSON.stringify(got));
+  }
+
+  // The whole point: the variants collapse to one value to group by.
+  const variants = ['Boys Soccer', 'Girls Soccer', 'soccer', 'SOCCER'].map(v => news.splitSport(v).sport);
+  assert('every soccer spelling groups together', new Set(variants).size === 1, variants.join(','));
+
+  // cleanItems has to apply it, or the blob keeps the raw label.
+  const split = news.cleanItems([{
+    date: '2026-09-19', sport: 'Girls Soccer', winner: 'A', loser: 'B',
+    headline: 'A beat B.', source_url: 'https://example.com/s',
+  }], today, 'Western PA');
+  assert('a stored item carries the canonical sport', split[0].sport === 'Soccer', split[0].sport);
+  assert('and its division alongside',               split[0].division === 'Girls');
+
+  // The tab normalises too, so items pulled before this existed stop
+  // fragmenting the chips without waiting to be re-pulled.
+  const uiMap = SRC.slice(SRC.indexOf('const _NC_SPORT_CANON = {'),
+                          SRC.indexOf('};', SRC.indexOf('const _NC_SPORT_CANON = {')));
+  const missing = Object.keys(news.SPORT_CANON).filter(k => !uiMap.includes(`'${k}'`));
+  assert('the tab knows the same sport names as the server', missing.length === 0, missing.join(', '));
+  assert('and normalises the stored hub on the way in', SRC.includes('function _ncNormalise('));
+  assert('gender stays filterable on its own',
+    SRC.includes("any('division', i.division)") && SRC.includes("chip('division', d, d)"));
+
+  // The pull is told to spread across sports, or it comes back all football.
+  assert('the prompt asks for a spread across sports', /Spread the list across whatever is actually in season/.test(prompt));
+  assert('and for the girls competitions too', /girls' competitions/.test(prompt));
+  assert('and asks for the division separately', prompt.includes('"division"'));
+
   // Scores arrive as whatever the model wrote them as.
   const messy = news.cleanItems([{
     date: '2026-09-19', winner: 'A', winner_score: ' 14 ', loser: 'B', loser_score: 'seven',
@@ -276,14 +344,52 @@ console.log('\nPer-region pulls');
   assert('a padded score is cleaned',   messy[0].winner_score === '14');
   assert('an unparseable score is dropped, not guessed', messy[0].loser_score === '');
 
-  // The cron starts on a different region each day, so the one cut off by the
-  // clock yesterday goes first today.
-  const d1 = cron.dayIndex(new Date('2026-09-22T06:00:00Z'));
-  const d2 = cron.dayIndex(new Date('2026-09-23T06:00:00Z'));
-  assert('the day index advances by one a day', d2 === d1 + 1);
-  const starts = new Set([0, 1, 2].map(n =>
-    cron.dayIndex(new Date(Date.UTC(2026, 8, 22 + n))) % news.REGIONS.length));
-  assert('three consecutive days start on three different regions', starts.size === 3);
+  // Seven regions do not fit in one run, so the job fires twice a morning and
+  // orders stalest first. That ordering is the whole coordination mechanism:
+  // the second run picks up what the first did not reach, without either
+  // needing to know the other exists.
+  const keys = o => o.map(r => r.key).join(',');
+  const ago  = h => new Date(Date.now() - h * 3600000).toISOString();
+
+  assert('with no history, declared order stands',
+    keys(cron.orderByStaleness(news.REGIONS, {})) === keys(news.REGIONS));
+
+  // After a first run did four, the second must start on the fifth.
+  const afterFirst = { wpa: ago(1), cpa: ago(1), epa: ago(1), eoh: ago(1) };
+  assert('the second run starts where the first stopped',
+    keys(cron.orderByStaleness(news.REGIONS, afterFirst)).startsWith('wv,wny,md'),
+    keys(cron.orderByStaleness(news.REGIONS, afterFirst)));
+
+  // A region that failed leaves no timestamp, so it goes to the very front
+  // rather than waiting a full cycle for its turn to come round.
+  const allButOne = Object.fromEntries(news.REGIONS.map(r => [r.key, ago(1)]));
+  delete allButOne.md;
+  assert('a failed region is retried first',
+    keys(cron.orderByStaleness(news.REGIONS, allButOne)).startsWith('md'));
+
+  // Oldest before merely old.
+  const mixed = { wpa: ago(50), cpa: ago(2), epa: ago(30), eoh: ago(1), wv: ago(80), wny: ago(3), md: ago(10) };
+  assert('the stalest region leads', keys(cron.orderByStaleness(news.REGIONS, mixed)).startsWith('wv,wpa,epa'),
+    keys(cron.orderByStaleness(news.REGIONS, mixed)));
+  assert('and the freshest is last', keys(cron.orderByStaleness(news.REGIONS, mixed)).endsWith('eoh'));
+
+  // Ordering must not reorder the shared region list under everyone else.
+  const beforeOrder = keys(news.REGIONS);
+  cron.orderByStaleness(news.REGIONS, mixed);
+  assert('ordering leaves the region list alone', keys(news.REGIONS) === beforeOrder);
+
+  const newsCrons = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'))
+    .crons.filter(c => c.path.includes('crm-news'));
+  assert('the news job is scheduled twice', newsCrons.length === 2, JSON.stringify(newsCrons));
+  assert('on two paths, since Vercel keys a cron by its path',
+    new Set(newsCrons.map(c => c.path)).size === 2);
+  assert('at two different times', new Set(newsCrons.map(c => c.schedule)).size === 2);
+  assert('both before the working day',
+    newsCrons.every(c => Number(c.schedule.split(' ')[1]) < 13),
+    newsCrons.map(c => c.schedule).join(' | '));
+  assert('the second is the same handler, not a copy',
+    /require\('\.\/crm-news'\)/.test(
+      fs.readFileSync(path.join(ROOT, 'api', 'cron', 'crm-news-catchup.js'), 'utf8')));
   // The budget has to leave room for the region in flight to finish and be
   // written to every company, so it is well under the ceiling, not just under.
   const vercel = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));
@@ -530,7 +636,8 @@ console.log('\nPick lists');
   // no way for anyone to work out why.
   const keys = K._CRM_LISTS.map(l => l.key);
   for (const k of ['crm_contact_types', 'crm_org_types', 'crm_field_types',
-                   'crm_turf_products', 'crm_sources', 'crm_loss_reasons']) {
+                   'crm_turf_products', 'crm_sources', 'crm_loss_reasons',
+                   'crm_lead_contacts']) {
     assert(`${k} is defined`, keys.includes(k));
     assert(`${k} is wired to a cell`, SRC.includes(`'${k}'`));
   }
@@ -563,10 +670,14 @@ console.log('\nPick lists');
   K._crmListAdd('crm_turf_products', 'SuperBlade HD');
   assert('a duplicate is not added', K._crmListValues('crm_turf_products').length === 1);
   assert('blank is refused',        K._crmListAdd('crm_turf_products', '   ') === false);
-  K._crmListAdd('employees', 'New Person');
-  assert('a new lead contact keeps the employee shape',
-    K.lists().employees[0] && K.lists().employees[0].name === 'New Person'
-      && K.lists().employees[0].job_class === '');
+  // The roster is a payroll record with rates and a job class on it. The CRM
+  // reads it for names and must never write to it — naming a lead contact
+  // cannot quietly create someone for payroll to pay.
+  K.reset({ employees: [{ name: 'Ray Petrosky', non_prevailing_rate: 31, job_class: 'Laborer' }] });
+  assert('the CRM refuses to write to the payroll roster',
+    K._crmListAdd('employees', 'New Person') === false);
+  assert('and the roster is unchanged',
+    K.lists().employees.length === 1 && K.lists().employees[0].non_prevailing_rate === 31);
 
   // The rule that protects existing data: a stored value not on the list is
   // still offered, still selected, and marked — never silently blanked.
@@ -593,6 +704,434 @@ console.log('\nPick lists');
   assert('renaming rewrites the rows that used it', SRC.includes('function _crmRewriteListValue('));
   assert('removing warns how many rows keep the value', SRC.includes('function _crmCountListValue('));
   assert('a CSV import snaps to the list', SRC.includes("contact_type: _crmListValues("));
+}
+
+/* ── 4h. Column filters ──────────────────────────────────────────────────── */
+console.log('\nColumn filters');
+{
+  const F = new Function([
+    "const _CRM_BLANK = '\u2014 blank \u2014';",
+    extractFunction(SRC, '_crmFilterSel'),
+    extractFunction(SRC, '_crmFilterCount'),
+    extractFunction(SRC, '_crmApplyFilter'),
+    'return { _CRM_BLANK, _crmFilterSel, _crmFilterCount, _crmApplyFilter };',
+  ].join('\n'))();
+
+  const rows = [
+    { id: 1, tag: 'Hot',      type: 'Athletic Director',   state: 'PA' },
+    { id: 2, tag: 'Hot',      type: 'Facilities Director', state: 'PA' },
+    { id: 3, tag: 'Followup', type: 'Athletic Director',   state: 'PA' },
+    { id: 4, tag: 'Cold',     type: 'Athletic Director',   state: 'OH' },
+    { id: 5, tag: 'Hot',      type: '',                    state: 'OH' },
+  ];
+  const ids = f => F._crmApplyFilter(rows, f).map(r => r.id).join(',');
+
+  assert('no filter shows everything', ids({}) === '1,2,3,4,5');
+
+  // Several ticks in one column mean OR — the thing a text box could not say.
+  assert('one value narrows',        ids({ tag: ['Hot'] }) === '1,2,5');
+  assert('two values are a union',   ids({ tag: ['Hot', 'Followup'] }) === '1,2,3,5');
+
+  // Across columns it is AND, so the two compose into the real question.
+  assert('columns combine with AND',
+    ids({ tag: ['Hot', 'Followup'], type: ['Athletic Director'] }) === '1,3');
+  assert('widening the second column widens the result',
+    ids({ tag: ['Hot', 'Followup'], type: ['Athletic Director', 'Facilities Director'] }) === '1,2,3');
+  assert('a third column narrows again',
+    ids({ tag: ['Hot', 'Followup'], type: ['Athletic Director', 'Facilities Director'], state: ['PA'] }) === '1,2,3');
+  assert('and picking the other state excludes them',
+    ids({ tag: ['Hot'], state: ['OH'] }) === '5');
+
+  // Ticking a value must match it whole. A contains match would let "Hot"
+  // drag in anything merely containing it.
+  assert('a ticked value matches whole, not by substring',
+    F._crmApplyFilter([{ tag: 'Hot' }, { tag: 'Hotel' }], { tag: ['Hot'] }).length === 1);
+
+  // Blank is a real choice — it is how you find rows nobody has filled in.
+  assert('blank is selectable', ids({ type: [F._CRM_BLANK] }) === '5');
+
+  // An empty list asks nothing. Getting this wrong hides every row.
+  assert('an empty list is not a filter', ids({ tag: [] }) === '1,2,3,4,5');
+  assert('and does not count as filtered', F._crmFilterCount({ tag: [] }) === 0);
+  assert('a populated one does',           F._crmFilterCount({ tag: ['Hot'] }) === 1);
+  assert('two columns count as two',       F._crmFilterCount({ tag: ['Hot'], state: ['PA'] }) === 2);
+
+  // Internal keys are the caller's business, not a column's.
+  assert('underscore keys are skipped by the matcher', ids({ _bucket: 'replacement' }) === '1,2,3,4,5');
+  assert('and by the count',  F._crmFilterCount({ _bucket: 'replacement' }) === 0);
+
+  // A plain string still means "contains", because the dashboard bucket click
+  // and the company→fields jump set one that way.
+  assert('a string filter is still a contains match',
+    F._crmApplyFilter(rows, { type: 'athletic' }).map(r => r.id).join(',') === '1,3,4');
+  assert('a string filter counts as filtered', F._crmFilterCount({ type: 'athletic' }) === 1);
+
+  // Both shapes read back as a list, so the UI never has to care which it is.
+  assert('a string reads back as a list',  F._crmFilterSel({ a: 'x' }, 'a').join() === 'x');
+  assert('a list reads back unchanged',    F._crmFilterSel({ a: ['x', 'y'] }, 'a').join() === 'x,y');
+  assert('a blank string is no selection', F._crmFilterSel({ a: '  ' }, 'a').length === 0);
+  assert('a missing key is no selection',  F._crmFilterSel({}, 'a').length === 0);
+}
+
+/* ── 4i. Effort, deadlines and the progress bar ──────────────────────────── */
+console.log('\nAI Search effort and feedback');
+{
+  const search = fs.readFileSync(path.join(ROOT, 'api', 'ai', 'crm-search.js'), 'utf8');
+  const finder = fs.readFileSync(path.join(ROOT, 'api', 'ai', 'crm-find-contacts.js'), 'utf8');
+  const newsjs = fs.readFileSync(path.join(ROOT, 'api', 'lib', 'crm-news.js'), 'utf8');
+  const vercel = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));
+  const cap = f => (vercel.functions[f] || {}).maxDuration;
+
+  // AI Search does the reasoning; the other two read a page. Only the first
+  // earns max, and paying for it everywhere would just be slower.
+  assert('AI Search runs at max effort',      /const EFFORT = 'max'/.test(search));
+  assert('the contact finder stays at medium', /const EFFORT = 'medium'/.test(finder));
+  assert('the news pull stays at medium',      /const EFFORT = 'medium'/.test(newsjs));
+  assert('all three are on the same model',
+    [search, finder, newsjs].every(f => /const MODEL\s*=\s*'claude-opus-5'/.test(f)));
+
+  // Max effort without a deadline is how the 504 comes back: the function is
+  // killed mid-flight and the caller gets no body at all.
+  const deadline = Number((search.match(/const DEADLINE_MS = (\d+)/) || [])[1]);
+  assert('AI Search has a deadline of its own', deadline > 0);
+  assert('and it is under the function ceiling',
+    deadline < cap('api/ai/crm-search.js') * 1000, `${deadline}ms vs ${cap('api/ai/crm-search.js')}s`);
+  assert('an overrun answers 200 with words, not a gateway error',
+    /err && err\.deadline/.test(search) && /ran longer than the server allows/.test(search));
+  assert('effort is dropped before the search tool if either is rejected',
+    search.indexOf('effort) { effort = null;') < search.indexOf('tools[0] === SEARCH_TOOL) { tools'));
+
+  // One deadline helper, not one per file.
+  assert('the deadline helper is shared', fs.existsSync(path.join(ROOT, 'api', 'lib', 'deadline.js')));
+  for (const [name, src] of [['crm-search', search], ['crm-find-contacts', finder], ['crm-news', newsjs]]) {
+    assert(`${name} imports it`, /require\('\.\.?\/(lib\/)?deadline'\)/.test(src));
+    assert(`${name} has no private copy`, !/function withDeadline\(/.test(src));
+  }
+
+  // The bar is drawn against the server's limit, so the two must agree.
+  const uiDeadline = Number((SRC.match(/_CRM_SEARCH_DEADLINE_MS = (\d+)/) || [])[1]);
+  assert('the tab draws the bar against the server deadline', uiDeadline === deadline,
+    `ui ${uiDeadline} vs server ${deadline}`);
+  const findDeadline = Number((finder.match(/const DEADLINE_MS = (\d+)/) || [])[1]);
+  const uiFind = Number((SRC.match(/_CRM_FIND_DEADLINE_MS = (\d+)/) || [])[1]);
+  assert('and the finder bar matches its endpoint too', uiFind === findDeadline,
+    `ui ${uiFind} vs server ${findDeadline}`);
+
+  assert('there is a progress bar',        SRC.includes('function _crmProgressBar('));
+  assert('it ticks without redrawing the tab',
+    SRC.includes('function _crmTickProgress(') && SRC.includes("el.querySelector('.cpb-fill')"));
+  // A bar sitting at 100% while nothing happens is the thing it exists to avoid.
+  assert('it never reaches full',          SRC.includes('Math.min(98,'));
+  assert('and keeps moving when the fill does not', SRC.includes('cpb-shim'));
+  assert('which reduced-motion turns off', /prefers-reduced-motion[\s\S]{0,120}cpb-fill/.test(SRC));
+  assert('the interval is always cleared', (SRC.match(/clearInterval\(_crmSearchTimer\)/g) || []).length >= 2);
+  assert('a hung response is still given up on', SRC.includes('_CRM_SEARCH_DEADLINE_MS + 30000'));
+}
+
+/* ── 4j. The four reports built on data nothing was reading ─────────────── */
+console.log('\nReports');
+{
+  const R = new Function([
+    'let crmTouches = [], crmPeople = [], crmCompanies = [], crmFields = [], crmOpportunities = [], crmStatusLog = [];',
+    'let _crmStepScope = "open", _crmWinLossDim = "source", _crmStuckDays = 30;',
+    'const _CRM_COLD_DAYS = 60;',
+    extractConst(SRC, '_CRM_AGE_BUCKETS'),
+    extractFunction(SRC, '_crmMedian'),
+    extractFunction(SRC, '_crmFieldAge'),
+    extractFunction(SRC, '_crmBucketForAge'),
+    extractFunction(SRC, '_crmDaysSince'),
+    extractFunction(SRC, '_crmTouchWho'),
+    'const _crmToday = () => new Date().toISOString().slice(0, 10);',
+    // Stuck Deals shows a last-touch column; the touch index has its own
+    // tests, and stubbing it keeps this about stage movement.
+    'const _crmTouchForOpp = () => null;',
+    'const _CRM_REPLACE_AT = (_CRM_AGE_BUCKETS.find(b => b.key === "replacement") || { min: 8 }).min;',
+    extractFunction(SRC, '_crmOutstandingSteps'),
+    extractFunction(SRC, '_crmForecastRows'),
+    extractFunction(SRC, '_crmClosedOpps'),
+    extractFunction(SRC, '_crmWinLossRows'),
+    extractFunction(SRC, '_crmStuckRows'),
+    'return { _crmOutstandingSteps, _crmForecastRows, _crmWinLossRows, _crmStuckRows, _crmMedian,',
+    '  _CRM_REPLACE_AT, seed: d => { crmTouches = d.touches || []; crmPeople = d.people || [];',
+    '    crmCompanies = d.companies || []; crmFields = d.fields || []; crmOpportunities = d.opps || [];',
+    '    crmStatusLog = d.log || []; },',
+    '  scope: v => { _crmStepScope = v; }, dim: v => { _crmWinLossDim = v; }, stuckDays: v => { _crmStuckDays = v; } };',
+  ].join('\n'))();
+
+  const iso = d => new Date(Date.now() - d * 86400000).toISOString();
+  const day = d => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+
+  /* ── Next steps: which promise is still owed ── */
+  R.seed({
+    people: [{ id: 'p1', name: 'Dave', company: 'Fort Cherry' }],
+    opps:   [{ id: 'o1', name: 'Deal', company: 'Fort Cherry', status: 'Open' },
+             { id: 'o2', name: 'Done', company: 'Elsewhere',   status: 'Won' }],
+    touches: [
+      { id: 't1', at: iso(20), person_id: 'p1', company: 'Fort Cherry', next_step: 'Old promise',   next_step_date: day(15) },
+      { id: 't2', at: iso(5),  person_id: 'p1', company: 'Fort Cherry', next_step: 'Send the quote', next_step_date: day(3) },
+      { id: 't3', at: iso(1),  person_id: 'p1', company: 'Fort Cherry', next_step: '',               next_step_date: '' },
+      { id: 't4', at: iso(2),  opp_id: 'o2',    company: 'Elsewhere',   next_step: 'On a won deal',  next_step_date: day(1) },
+    ],
+  });
+  let steps = R._crmOutstandingSteps();
+  assert('the newest promise supersedes the older one',
+    steps.some(s => s.next_step === 'Send the quote') && !steps.some(s => s.next_step === 'Old promise'));
+  // The subtle one: saying nothing later is not the same as saying it is done.
+  assert('a later touch with no next step does not clear the promise',
+    steps.some(s => s.next_step === 'Send the quote'));
+  assert('a promise on a closed deal is not owed',
+    !steps.some(s => s.next_step === 'On a won deal'));
+  assert('an overdue promise is flagged', steps[0].overdue === true);
+  assert('and counted in days late',      steps[0].due_in === -3, String(steps[0].due_in));
+
+  R.scope('overdue');
+  assert('the overdue scope keeps it', R._crmOutstandingSteps().length === 1);
+  R.seed({ people: [{ id: 'p1', company: 'X' }], opps: [],
+           touches: [{ id: 't', at: iso(1), person_id: 'p1', next_step: 'Later', next_step_date: day(-30) }] });
+  assert('a future promise is not overdue', R._crmOutstandingSteps().length === 0);
+  R.scope('open');
+  assert('but is still outstanding', R._crmOutstandingSteps().length === 1);
+  assert('a step with no date sorts last',
+    (() => { R.seed({ people: [{ id: 'a' }, { id: 'b' }], opps: [], touches: [
+        { id: '1', at: iso(2), person_id: 'a', next_step: 'No date', next_step_date: '' },
+        { id: '2', at: iso(1), person_id: 'b', next_step: 'Dated',   next_step_date: day(-2) }] });
+      return R._crmOutstandingSteps()[1].next_step === 'No date'; })());
+
+  /* ── Forecast: the year a field comes due ── */
+  const thisYear = new Date().getFullYear();
+  R.seed({
+    companies: [{ id: 'c1', company_name: 'Fort Cherry', state: 'PA', lead_contact: 'Ben' }],
+    fields: [
+      { id: 'f1', company_id: 'c1', field_name: 'Varsity', installed_year: String(thisYear - 11) },
+      { id: 'f2', company_id: 'c1', field_name: 'Newer',   installed_year: String(thisYear - 4) },
+      { id: 'f3', company_id: 'c1', field_name: 'Undated', installed_year: '' },
+    ],
+    opps: [{ id: 'o1', company: 'Fort Cherry', status: 'Open' }],
+  });
+  const fc = R._crmForecastRows();
+  assert('a field with no install year is left out', fc.length === 2, String(fc.length));
+  assert(`due year is install + ${R._CRM_REPLACE_AT}`,
+    fc[0].due_year === thisYear - 11 + R._CRM_REPLACE_AT);
+  assert('a field already past it reads as due now', fc[0].overdue === true);
+  assert('a younger one carries a future year', fc[1].due_year === thisYear - 4 + R._CRM_REPLACE_AT);
+  assert('soonest first', fc[0].due_year < fc[1].due_year);
+  assert('an open deal on the company is noticed', fc[0].has_opp === true);
+
+  R.seed({ companies: [{ id: 'c1', company_name: 'Fort Cherry' }],
+           fields: [{ id: 'f1', company_id: 'c1', installed_year: String(thisYear - 11) }],
+           opps: [{ id: 'o1', company: 'Fort Cherry', status: 'Lost' }] });
+  assert('a closed deal does not count as working it', R._crmForecastRows()[0].has_opp === false);
+
+  /* ── Win / Loss ── */
+  R.seed({ opps: [
+    { id: '1', status: 'Won',  source: 'Referral', value: '100' },
+    { id: '2', status: 'Lost', source: 'Referral', value: '50',  loss_reason: 'Price' },
+    { id: '3', status: 'Lost', source: 'Website',  value: '25',  loss_reason: 'Price' },
+    { id: '4', status: 'Open', source: 'Referral', value: '999' },
+  ] });
+  R.dim('source');
+  const bySource = R._crmWinLossRows();
+  const referral = bySource.find(r => r.value === 'Referral');
+  assert('an open deal is not counted as closed', referral.total === 2);
+  assert('the split is right', referral.won === 1 && referral.lost === 1);
+  assert('and the rate',      referral.win_pct === 50);
+  assert('won value sums',    referral.won_value === 100);
+
+  // Only a lost deal carries a loss reason, so counting wins under it would
+  // pile every win into "not recorded".
+  R.dim('loss_reason');
+  const byReason = R._crmWinLossRows();
+  assert('the loss-reason view counts only losses',
+    byReason.every(r => r.won === 0) && byReason.find(r => r.value === 'Price').lost === 2);
+  assert('and no phantom "not recorded" row from the wins',
+    !byReason.some(r => r.value === '— not recorded —'));
+
+  /* ── Stuck deals ── */
+  R.seed({
+    opps: [
+      { id: 'o1', name: 'Moved long ago', status: 'Open', stage: 'Proposal' },
+      { id: 'o2', name: 'Brand new',      status: 'Open', stage: 'Prospecting', created_at: iso(3) },
+      { id: 'o3', name: 'Old and unmoved', status: 'Open', stage: 'Prospecting', created_at: iso(200) },
+      { id: 'o4', name: 'Closed',         status: 'Won',  stage: 'Closed Won' },
+    ],
+    log: [
+      { id: 'l1', at: iso(120), opp_id: 'o1', field: 'Stage',  from: 'Qualification', to: 'Proposal' },
+      // A status flip is not progress, so it must not reset the clock.
+      { id: 'l2', at: iso(1),   opp_id: 'o1', field: 'Status', from: 'Open', to: 'On Hold' },
+    ],
+  });
+  R.stuckDays(30);
+  const stuck = R._crmStuckRows();
+  assert('a closed deal is never stuck',      !stuck.some(r => r.name === 'Closed'));
+  assert('a new deal is not stuck',           !stuck.some(r => r.name === 'Brand new'));
+  assert('an old unmoved deal is',            stuck.some(r => r.name === 'Old and unmoved'));
+  const moved = stuck.find(r => r.name === 'Moved long ago');
+  assert('a long-ago stage move counts',      moved && moved.days === 120, moved && String(moved.days));
+  assert('a status flip does not reset it',   moved.basis === 'stage moved');
+  assert('and the fallback says what it measured from',
+    stuck.find(r => r.name === 'Old and unmoved').basis === 'created');
+  assert('longest first', stuck[0].days >= stuck[stuck.length - 1].days);
+
+  assert('the median helper handles both lengths',
+    R._crmMedian([1, 3, 5]) === 3 && R._crmMedian([1, 3]) === 2 && R._crmMedian([]) === null);
+}
+
+/* ── 4k. The scheduled email, and the two copies of one rule ────────────── */
+console.log('\nNext Steps email');
+{
+  const server = require(path.join(ROOT, 'api', 'lib', 'crm-next-steps.js'));
+  const cron   = require(path.join(ROOT, 'api', 'cron', 'crm-next-steps-email.js'));
+  const cronHorizon = cron.HORIZON_DAYS;
+
+  // The tab computes this in the browser; the cron computes it in Node. Two
+  // copies of one rule is a drift risk, so both are run over the same
+  // fixtures and compared. If someone changes one, this fails rather than
+  // Monday's email quietly disagreeing with the screen.
+  const client = new Function([
+    'let crmTouches = [], crmPeople = [], crmOpportunities = [];',
+    'let _crmStepScope = "open";',
+    'const _crmToday = () => new Date().toISOString().slice(0, 10);',
+    extractFunction(SRC, '_crmTouchWho'),
+    extractFunction(SRC, '_crmOutstandingSteps'),
+    'return { run: d => { crmTouches = d.touches || []; crmPeople = d.people || [];',
+    '  crmOpportunities = d.opportunities || []; return _crmOutstandingSteps(); } };',
+  ].join('\n'))();
+
+  const iso = d => new Date(Date.now() - d * 86400000).toISOString();
+  const day = d => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+
+  const FIXTURES = [
+    { name: 'a superseded promise and a silent later touch',
+      data: {
+        people: [{ id: 'p1', name: 'Dave', company: 'Fort Cherry', lead_contact: 'Ben', work_phone: '724-555-0111' }],
+        opportunities: [],
+        touches: [
+          { id: 't1', at: iso(20), person_id: 'p1', company: 'Fort Cherry', next_step: 'Old',   next_step_date: day(15), by: 'Ben' },
+          { id: 't2', at: iso(5),  person_id: 'p1', company: 'Fort Cherry', next_step: 'Quote', next_step_date: day(3),  by: 'Ben' },
+          { id: 't3', at: iso(1),  person_id: 'p1', company: 'Fort Cherry', next_step: '',      next_step_date: '' },
+        ] } },
+    { name: 'a promise on a deal that has since closed',
+      data: {
+        people: [], opportunities: [{ id: 'o1', name: 'Deal', company: 'X', status: 'Won', lead_contact: 'Nate' }],
+        touches: [{ id: 't', at: iso(2), opp_id: 'o1', company: 'X', next_step: 'Owed?', next_step_date: day(1) }] } },
+    { name: 'dated and undated together',
+      data: {
+        people: [{ id: 'a', name: 'A', company: 'CoA' }, { id: 'b', name: 'B', company: 'CoB' }],
+        opportunities: [],
+        touches: [
+          { id: '1', at: iso(2), person_id: 'a', company: 'CoA', next_step: 'No date', next_step_date: '' },
+          { id: '2', at: iso(1), person_id: 'b', company: 'CoB', next_step: 'Dated',   next_step_date: day(-2) },
+        ] } },
+    { name: 'a company-level promise with no person or deal',
+      data: { people: [], opportunities: [],
+        touches: [{ id: 'c1', at: iso(3), company: 'Loose Ends', next_step: 'Ring them', next_step_date: day(4) }] } },
+    { name: 'nothing at all', data: { people: [], opportunities: [], touches: [] } },
+  ];
+
+  const COMPARED = ['id', 'due', 'overdue', 'due_in', 'next_step', 'who', 'company', 'lead_contact', 'phone', 'by'];
+  const shape = rows => rows.map(r => COMPARED.map(k => `${k}=${r[k] == null ? '' : r[k]}`).join('|')).join(' /// ');
+
+  for (const f of FIXTURES) {
+    const a = shape(client.run(f.data));
+    const b = shape(server.outstandingSteps(f.data, new Date()));
+    assert(`the page and the cron agree — ${f.name}`, a === b, `\n  page:  ${a}\n  cron:  ${b}`);
+  }
+
+  /* ── The email body ── */
+  const rows = server.outstandingSteps(FIXTURES[0].data, new Date());
+  const html = server.buildStepsHtml(rows, { today: new Date(), horizonDays: 7 });
+  assert('the body names the owner',    /Ben/.test(html));
+  assert('and what was promised',       /Quote/.test(html));
+  assert('and not the superseded one',  !/>Old</.test(html));
+  assert('it is laid out as tables, for Outlook', /<table/.test(html) && !/display:\s*flex/.test(html));
+  assert('an overdue row is marked',    /b91c1c/.test(html));
+
+  // Nothing due must produce no body, so the cron can decline to send. A
+  // weekly email that is empty four weeks running is one people stop opening.
+  assert('nothing due yields no body',
+    server.buildStepsHtml([], { today: new Date() }) === '');
+  assert('a promise beyond the horizon is not in this week\'s mail',
+    server.buildStepsHtml(
+      [{ due: day(-30), overdue: false, due_in: 30, next_step: 'Later', who: 'W', company: 'C', lead_contact: 'L' }],
+      { today: new Date(), horizonDays: 7 }) === '');
+
+  const sum = server.buildStepsSummary(rows, { today: new Date(), horizonDays: 7 });
+  assert('the summary counts overdue', sum.find(m => m.label === 'Overdue').value === '1');
+  assert('and flags it as bad news',   sum.find(m => m.label === 'Overdue').tone === 'bad');
+
+  /* ── The body the page sends by hand, against the body the cron sends ──
+     The Email / Schedule button renders the mail in the browser, so there is
+     a second copy of the markup for the same reason there is a second copy of
+     the rule. Both are run over the same rows and compared, so the mail a rep
+     sends at 9am is the mail that went out at 7. */
+  const page = new Function([
+    extractFunction(SRC, '_crmStepsEsc'),
+    extractFunction(SRC, '_crmStepsEmailHtml'),
+    extractFunction(SRC, '_crmStepsEmailSummary'),
+    'return { html: _crmStepsEmailHtml, summary: _crmStepsEmailSummary };',
+  ].join('\n'))();
+
+  const when = { today: new Date(), horizonDays: 7 };
+  for (const f of FIXTURES) {
+    const r = server.outstandingSteps(f.data, when.today);
+    assert(`the sent mail and the scheduled mail match — ${f.name}`,
+      page.html(r, when) === server.buildStepsHtml(r, when));
+    assert(`and so do their key figures — ${f.name}`,
+      JSON.stringify(page.summary(r, when)) === JSON.stringify(server.buildStepsSummary(r, when)));
+  }
+
+  const pageHorizon = (SRC.match(/const _CRM_STEPS_HORIZON = (\d+);/) || [])[1];
+  assert('the page looks as far ahead as the cron does',
+    Number(pageHorizon) === cronHorizon, `page ${pageHorizon} vs cron ${cronHorizon}`);
+  assert('the button is on the report',
+    SRC.includes('_crmEmailSteps()') && /Email \/ Schedule/.test(SRC));
+  assert('the modal knows what to call this report',
+    fs.readFileSync(path.join(ROOT, 'report-email.js'), 'utf8').includes('crm_next_steps:'));
+  assert('and the send endpoint will accept it',
+    fs.readFileSync(path.join(ROOT, 'api', 'email', 'send-report.js'), 'utf8').includes('crm_next_steps:'));
+
+}
+
+/* ── 4k (continued). The cron itself, over a fake database ─────────────── */
+async function nextStepsEmail() {
+  console.log('\nNext Steps email — the cron');
+  const cron = require(path.join(ROOT, 'api', 'cron', 'crm-next-steps-email.js'));
+  const makeSql = ({ groups, touches }) => {
+    const fn = (strings) => {
+      const q = strings.join(' ');
+      if (/FROM companies/.test(q))                 return Promise.resolve([{ code: 'FCT', name: 'Force Corp' }]);
+      if (/report_recipient_groups/.test(q))        return Promise.resolve(groups);
+      if (/fct_crm_touches/.test(q) || /app_data/.test(q)) {
+        return Promise.resolve(touches ? [{ value: touches }] : []);
+      }
+      return Promise.resolve([]);
+    };
+    return fn;
+  };
+
+  // No group configured: nothing is sent, and it says why. It must never
+  // guess who should receive a list of somebody's unkept promises.
+  let out = await cron.runNextStepsEmail(makeSql({ groups: [] }), { today: new Date() });
+  assert('with no recipient group nothing is sent', out.sent === 0);
+  assert('and the reason is recorded',
+    out.skipped.some(s => s.why === 'no recipient group'), JSON.stringify(out.skipped));
+
+  // A group, but nothing owed: still nothing sent.
+  out = await cron.runNextStepsEmail(
+    makeSql({ groups: [{ name: 'Sales', emails: ['a@b.com'] }], touches: [] }), { today: new Date() });
+  assert('with nothing due nothing is sent', out.sent === 0);
+  assert('and that reason is recorded too',
+    out.skipped.some(s => s.why === 'nothing due'), JSON.stringify(out.skipped));
+
+  assert('a group can actually be created for this report',
+    fs.readFileSync(path.join(ROOT, 'api', 'email', 'recipient-groups.js'), 'utf8').includes("'crm_next_steps'"));
+  assert('the cron and the group agree on the type', cron.REPORT_TYPE === 'crm_next_steps');
+
+  const vc = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));
+  const mail = vc.crons.find(c => c.path.includes('next-steps-email'));
+  assert('it is scheduled', !!mail);
+  assert('on weekdays only, since a promise list on a Sunday is noise',
+    mail && /1-5$/.test(mail.schedule), mail && mail.schedule);
 }
 
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
@@ -628,7 +1167,27 @@ console.log('\nTab wiring and columns');
   // The News Center asks for one region at a time; asking for all three in
   // one request is what returned a 504.
   assert('the tab sends a region', SRC.includes("JSON.stringify({ region, force: !!force })"));
-  assert('the tab walks all three regions', /_NC_REGIONS\s*=\s*\[[\s\S]{0,200}wpa[\s\S]{0,200}eoh[\s\S]{0,200}wny/.test(SRC));
+  // The tab's list and the server's are two copies of one fact. Drift means
+  // a chip that filters nothing, or a region nobody can refresh.
+  {
+    const news = require(path.join(ROOT, 'api', 'lib', 'crm-news.js'));
+    const block = SRC.slice(SRC.indexOf('const _NC_REGIONS = ['),
+                            SRC.indexOf('];', SRC.indexOf('const _NC_REGIONS = [')));
+    const uiKeys = [...block.matchAll(/key:\s*'([a-z]+)'/g)].map(m => m[1]);
+    const uiLabels = [...block.matchAll(/label:\s*'([^']+)'/g)].map(m => m[1]);
+    assert('the tab lists the same regions as the server',
+      uiKeys.join(',') === news.REGIONS.map(r => r.key).join(','), uiKeys.join(','));
+    assert('with the same labels',
+      uiLabels.join(',') === news.REGION_LABELS.join(','), uiLabels.join(','));
+
+    // Every region has to be reachable from a company's state, or the outreach
+    // report can never offer that region's opener to anybody.
+    const mapBlock = SRC.slice(SRC.indexOf('const _CRM_STATE_REGIONS = {'),
+                               SRC.indexOf('};', SRC.indexOf('const _CRM_STATE_REGIONS = {')));
+    const missing = news.REGION_LABELS.filter(l => !mapBlock.includes(`'${l}'`));
+    assert('every region is reachable from some state', missing.length === 0, missing.join(', '));
+  }
+  assert('a long pull can be stopped', SRC.includes('function crmNewsCancel('));
   assert('the tab gives up before hanging forever', SRC.includes('new AbortController()'));
   assert('a gateway timeout is said in words', SRC.includes("'the search ran past the time limit'"));
   assert('the feed has a scoreboard card', SRC.includes('function _ncCard('));
@@ -672,9 +1231,29 @@ console.log('\nTab wiring and columns');
     assert(`${field} is a picker, not free text`,
       new RegExp(`${cell.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, '${field}'`).test(SRC));
   }
-  assert('lead contact picks from our own people',
-    (SRC.match(/_crmListSel\([pco], 'lead_contact', _CRM_EMPLOYEE_LIST/g) || []).length === 3);
+  // Lead Contact is its own short list, not the payroll roster: a dropdown of
+  // a hundred field crew is a worse question than no dropdown.
+  assert('lead contact is its own list, not the roster',
+    (SRC.match(/_crmListSel\([pco], 'lead_contact', 'crm_lead_contacts'/g) || []).length === 3);
+  assert('it seeds empty, since only they know who owns accounts',
+    /crm_lead_contacts'[\s\S]{0,300}defaults: \[\]/.test(SRC));
+  assert('a name can be copied off the roster',   SRC.includes('function crmListAddFromEmployee('));
+  assert('and names already on rows adopted',     SRC.includes('function crmListAddAllInUse('));
+  assert('which is what keeps existing rows working',
+    SRC.includes('function _crmLeadNamesInUse('));
   assert('the lists are editable from the CRM', SRC.includes('function openCrmLists('));
+
+  // Filters are ticked, not typed — so "Hot or Followup" is expressible.
+  assert('the filter row holds buttons',     SRC.includes('function _crmFilterBtn('));
+  assert('opening one shows a value list',   SRC.includes('function _crmDrawFilterPop('));
+  assert('values come with their counts',    SRC.includes('function _crmFilterValues('));
+  assert('every table registers its data',
+    ['people', 'companies', 'opportunities', 'fields']
+      .every(t => new RegExp(`${t}:\\s*\\(\\) => \\(\\{ filter:`).test(SRC)));
+  assert('the old text-filter plumbing is gone',
+    !SRC.includes('_crmHandleFilterInput') && !SRC.includes('data-crm-pf'));
+  assert('news chips toggle independently',
+    SRC.includes('sel.includes(value) ? sel.filter(v => v !== value) : [...sel, value]'));
   assert('and reachable from a toolbar',        SRC.includes('function _crmListsBtn('));
   assert('the superseded hard-coded field types are gone', !SRC.includes('_CRM_FIELD_TYPES'));
 
@@ -796,10 +1375,10 @@ async function latencyBudget() {
   }
 }
 
-latencyBudget().then(() => {
+latencyBudget().then(nextStepsEmail).then(() => {
   console.log(`\n${failed ? '✗' : '✓'} ${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
 }).catch(err => {
-  console.error('\n✗ the latency-budget checks threw:', err.message);
+  console.error('\n✗ the async checks threw:', err.message);
   process.exit(1);
 });
