@@ -976,6 +976,164 @@ console.log('\nReports');
     R._crmMedian([1, 3, 5]) === 3 && R._crmMedian([1, 3]) === 2 && R._crmMedian([]) === null);
 }
 
+/* ── 4k. The scheduled email, and the two copies of one rule ────────────── */
+console.log('\nNext Steps email');
+{
+  const server = require(path.join(ROOT, 'api', 'lib', 'crm-next-steps.js'));
+  const cron   = require(path.join(ROOT, 'api', 'cron', 'crm-next-steps-email.js'));
+  const cronHorizon = cron.HORIZON_DAYS;
+
+  // The tab computes this in the browser; the cron computes it in Node. Two
+  // copies of one rule is a drift risk, so both are run over the same
+  // fixtures and compared. If someone changes one, this fails rather than
+  // Monday's email quietly disagreeing with the screen.
+  const client = new Function([
+    'let crmTouches = [], crmPeople = [], crmOpportunities = [];',
+    'let _crmStepScope = "open";',
+    'const _crmToday = () => new Date().toISOString().slice(0, 10);',
+    extractFunction(SRC, '_crmTouchWho'),
+    extractFunction(SRC, '_crmOutstandingSteps'),
+    'return { run: d => { crmTouches = d.touches || []; crmPeople = d.people || [];',
+    '  crmOpportunities = d.opportunities || []; return _crmOutstandingSteps(); } };',
+  ].join('\n'))();
+
+  const iso = d => new Date(Date.now() - d * 86400000).toISOString();
+  const day = d => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+
+  const FIXTURES = [
+    { name: 'a superseded promise and a silent later touch',
+      data: {
+        people: [{ id: 'p1', name: 'Dave', company: 'Fort Cherry', lead_contact: 'Ben', work_phone: '724-555-0111' }],
+        opportunities: [],
+        touches: [
+          { id: 't1', at: iso(20), person_id: 'p1', company: 'Fort Cherry', next_step: 'Old',   next_step_date: day(15), by: 'Ben' },
+          { id: 't2', at: iso(5),  person_id: 'p1', company: 'Fort Cherry', next_step: 'Quote', next_step_date: day(3),  by: 'Ben' },
+          { id: 't3', at: iso(1),  person_id: 'p1', company: 'Fort Cherry', next_step: '',      next_step_date: '' },
+        ] } },
+    { name: 'a promise on a deal that has since closed',
+      data: {
+        people: [], opportunities: [{ id: 'o1', name: 'Deal', company: 'X', status: 'Won', lead_contact: 'Nate' }],
+        touches: [{ id: 't', at: iso(2), opp_id: 'o1', company: 'X', next_step: 'Owed?', next_step_date: day(1) }] } },
+    { name: 'dated and undated together',
+      data: {
+        people: [{ id: 'a', name: 'A', company: 'CoA' }, { id: 'b', name: 'B', company: 'CoB' }],
+        opportunities: [],
+        touches: [
+          { id: '1', at: iso(2), person_id: 'a', company: 'CoA', next_step: 'No date', next_step_date: '' },
+          { id: '2', at: iso(1), person_id: 'b', company: 'CoB', next_step: 'Dated',   next_step_date: day(-2) },
+        ] } },
+    { name: 'a company-level promise with no person or deal',
+      data: { people: [], opportunities: [],
+        touches: [{ id: 'c1', at: iso(3), company: 'Loose Ends', next_step: 'Ring them', next_step_date: day(4) }] } },
+    { name: 'nothing at all', data: { people: [], opportunities: [], touches: [] } },
+  ];
+
+  const COMPARED = ['id', 'due', 'overdue', 'due_in', 'next_step', 'who', 'company', 'lead_contact', 'phone', 'by'];
+  const shape = rows => rows.map(r => COMPARED.map(k => `${k}=${r[k] == null ? '' : r[k]}`).join('|')).join(' /// ');
+
+  for (const f of FIXTURES) {
+    const a = shape(client.run(f.data));
+    const b = shape(server.outstandingSteps(f.data, new Date()));
+    assert(`the page and the cron agree — ${f.name}`, a === b, `\n  page:  ${a}\n  cron:  ${b}`);
+  }
+
+  /* ── The email body ── */
+  const rows = server.outstandingSteps(FIXTURES[0].data, new Date());
+  const html = server.buildStepsHtml(rows, { today: new Date(), horizonDays: 7 });
+  assert('the body names the owner',    /Ben/.test(html));
+  assert('and what was promised',       /Quote/.test(html));
+  assert('and not the superseded one',  !/>Old</.test(html));
+  assert('it is laid out as tables, for Outlook', /<table/.test(html) && !/display:\s*flex/.test(html));
+  assert('an overdue row is marked',    /b91c1c/.test(html));
+
+  // Nothing due must produce no body, so the cron can decline to send. A
+  // weekly email that is empty four weeks running is one people stop opening.
+  assert('nothing due yields no body',
+    server.buildStepsHtml([], { today: new Date() }) === '');
+  assert('a promise beyond the horizon is not in this week\'s mail',
+    server.buildStepsHtml(
+      [{ due: day(-30), overdue: false, due_in: 30, next_step: 'Later', who: 'W', company: 'C', lead_contact: 'L' }],
+      { today: new Date(), horizonDays: 7 }) === '');
+
+  const sum = server.buildStepsSummary(rows, { today: new Date(), horizonDays: 7 });
+  assert('the summary counts overdue', sum.find(m => m.label === 'Overdue').value === '1');
+  assert('and flags it as bad news',   sum.find(m => m.label === 'Overdue').tone === 'bad');
+
+  /* ── The body the page sends by hand, against the body the cron sends ──
+     The Email / Schedule button renders the mail in the browser, so there is
+     a second copy of the markup for the same reason there is a second copy of
+     the rule. Both are run over the same rows and compared, so the mail a rep
+     sends at 9am is the mail that went out at 7. */
+  const page = new Function([
+    extractFunction(SRC, '_crmStepsEsc'),
+    extractFunction(SRC, '_crmStepsEmailHtml'),
+    extractFunction(SRC, '_crmStepsEmailSummary'),
+    'return { html: _crmStepsEmailHtml, summary: _crmStepsEmailSummary };',
+  ].join('\n'))();
+
+  const when = { today: new Date(), horizonDays: 7 };
+  for (const f of FIXTURES) {
+    const r = server.outstandingSteps(f.data, when.today);
+    assert(`the sent mail and the scheduled mail match — ${f.name}`,
+      page.html(r, when) === server.buildStepsHtml(r, when));
+    assert(`and so do their key figures — ${f.name}`,
+      JSON.stringify(page.summary(r, when)) === JSON.stringify(server.buildStepsSummary(r, when)));
+  }
+
+  const pageHorizon = (SRC.match(/const _CRM_STEPS_HORIZON = (\d+);/) || [])[1];
+  assert('the page looks as far ahead as the cron does',
+    Number(pageHorizon) === cronHorizon, `page ${pageHorizon} vs cron ${cronHorizon}`);
+  assert('the button is on the report',
+    SRC.includes('_crmEmailSteps()') && /Email \/ Schedule/.test(SRC));
+  assert('the modal knows what to call this report',
+    fs.readFileSync(path.join(ROOT, 'report-email.js'), 'utf8').includes('crm_next_steps:'));
+  assert('and the send endpoint will accept it',
+    fs.readFileSync(path.join(ROOT, 'api', 'email', 'send-report.js'), 'utf8').includes('crm_next_steps:'));
+
+}
+
+/* ── 4k (continued). The cron itself, over a fake database ─────────────── */
+async function nextStepsEmail() {
+  console.log('\nNext Steps email — the cron');
+  const cron = require(path.join(ROOT, 'api', 'cron', 'crm-next-steps-email.js'));
+  const makeSql = ({ groups, touches }) => {
+    const fn = (strings) => {
+      const q = strings.join(' ');
+      if (/FROM companies/.test(q))                 return Promise.resolve([{ code: 'FCT', name: 'Force Corp' }]);
+      if (/report_recipient_groups/.test(q))        return Promise.resolve(groups);
+      if (/fct_crm_touches/.test(q) || /app_data/.test(q)) {
+        return Promise.resolve(touches ? [{ value: touches }] : []);
+      }
+      return Promise.resolve([]);
+    };
+    return fn;
+  };
+
+  // No group configured: nothing is sent, and it says why. It must never
+  // guess who should receive a list of somebody's unkept promises.
+  let out = await cron.runNextStepsEmail(makeSql({ groups: [] }), { today: new Date() });
+  assert('with no recipient group nothing is sent', out.sent === 0);
+  assert('and the reason is recorded',
+    out.skipped.some(s => s.why === 'no recipient group'), JSON.stringify(out.skipped));
+
+  // A group, but nothing owed: still nothing sent.
+  out = await cron.runNextStepsEmail(
+    makeSql({ groups: [{ name: 'Sales', emails: ['a@b.com'] }], touches: [] }), { today: new Date() });
+  assert('with nothing due nothing is sent', out.sent === 0);
+  assert('and that reason is recorded too',
+    out.skipped.some(s => s.why === 'nothing due'), JSON.stringify(out.skipped));
+
+  assert('a group can actually be created for this report',
+    fs.readFileSync(path.join(ROOT, 'api', 'email', 'recipient-groups.js'), 'utf8').includes("'crm_next_steps'"));
+  assert('the cron and the group agree on the type', cron.REPORT_TYPE === 'crm_next_steps');
+
+  const vc = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));
+  const mail = vc.crons.find(c => c.path.includes('next-steps-email'));
+  assert('it is scheduled', !!mail);
+  assert('on weekdays only, since a promise list on a Sunday is noise',
+    mail && /1-5$/.test(mail.schedule), mail && mail.schedule);
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {
@@ -1217,10 +1375,10 @@ async function latencyBudget() {
   }
 }
 
-latencyBudget().then(() => {
+latencyBudget().then(nextStepsEmail).then(() => {
   console.log(`\n${failed ? '✗' : '✓'} ${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
 }).catch(err => {
-  console.error('\n✗ the latency-budget checks threw:', err.message);
+  console.error('\n✗ the async checks threw:', err.message);
   process.exit(1);
 });

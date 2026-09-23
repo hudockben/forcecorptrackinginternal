@@ -35,6 +35,7 @@ const VALID_REPORT_TYPES = new Set([
   'scheduler_dispatch',
   'trucking_dispatch',
   'trucking_labor_dispatch',
+  'crm_next_steps',
 ]);
 const MAX_NAME_LEN     = 120;
 const MAX_EMAILS       = 50;

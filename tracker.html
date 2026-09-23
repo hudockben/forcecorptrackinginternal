@@ -9871,6 +9871,133 @@ const _crmScopeBtn = (fn, cur, val, label) => `<button onclick="${fn}('${val}')"
          border:1px solid ${cur === val ? 'var(--blue)' : 'var(--border)'};
          border-radius:4px;padding:0.15rem 0.55rem;font-size:0.73rem;font-weight:600;cursor:pointer">${label}</button>`;
 
+/* ── Sending the Next Steps list, and scheduling it ──────────────────────
+   The same list goes out on a cron every weekday morning (api/cron/
+   crm-next-steps-email.js). The button here does two jobs: it sends the list
+   now, and — because the modal is where distribution groups are created — it
+   is how somebody sets up who the scheduled mail goes to. A group saved
+   against report type "crm_next_steps" is the address list the cron reads.
+
+   The body below is the server's buildStepsHtml written a second time,
+   because the cron cannot reach into the page and the page cannot require a
+   Node module. scripts/test-crm-revamp.js runs both over the same rows and
+   asserts the markup matches, so the mail someone sends by hand is the mail
+   the cron sends on Monday. Escaping is spelled out here rather than reusing
+   esc(), which only escapes quotes — an email body has to escape angle
+   brackets too or a company name with an "&" in it arrives broken. */
+
+function _crmStepsEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function _crmStepsEmailHtml(rows, opts) {
+  const o       = opts || {};
+  const esc     = _crmStepsEsc;
+  const horizon = o.horizonDays == null ? 7 : o.horizonDays;
+  const todayS  = (o.today || new Date()).toISOString().slice(0, 10);
+  const limit   = new Date(Date.parse(todayS) + horizon * 86400000).toISOString().slice(0, 10);
+
+  const due = rows.filter(r => r.due && r.due <= limit);
+  if (!due.length) return '';
+
+  const byOwner = new Map();
+  for (const r of due) {
+    const k = String(r.lead_contact || '').trim() || 'Unassigned';
+    if (!byOwner.has(k)) byOwner.set(k, []);
+    byOwner.get(k).push(r);
+  }
+
+  const section = (owner, list) => {
+    const rowsHtml = list.map(r => {
+      const late = r.overdue;
+      const when = late ? `${Math.abs(r.due_in)}d late` : r.due_in === 0 ? 'today' : `in ${r.due_in}d`;
+      return `<tr>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;white-space:nowrap;
+                   color:${late ? '#b91c1c' : '#374151'};font-weight:${late ? 700 : 400};font-size:12px">${esc(when)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#111">${esc(r.next_step)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#374151">${esc(r.who)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#374151">${esc(r.company)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#6b7280;white-space:nowrap">${esc(r.phone)}</td>
+      </tr>`;
+    }).join('');
+
+    const lateCount = list.filter(r => r.overdue).length;
+    return `<div style="margin-bottom:20px">
+      <div style="font-size:13px;font-weight:700;color:#111;margin-bottom:6px">
+        ${esc(owner)}
+        <span style="font-weight:400;color:#6b7280">— ${list.length} owed${lateCount ? `, ${lateCount} overdue` : ''}</span>
+      </div>
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">
+        <tr style="background:#f3f4f6">
+          <th align="left" style="padding:5px 8px;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280">Due</th>
+          <th align="left" style="padding:5px 8px;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280">Promised</th>
+          <th align="left" style="padding:5px 8px;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280">Who</th>
+          <th align="left" style="padding:5px 8px;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280">Company</th>
+          <th align="left" style="padding:5px 8px;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280">Phone</th>
+        </tr>
+        ${rowsHtml}
+      </table>
+    </div>`;
+  };
+
+  const owners = [...byOwner.entries()].sort((a, b) => {
+    const la = a[1].filter(r => r.overdue).length, lb = b[1].filter(r => r.overdue).length;
+    return lb - la || b[1].length - a[1].length || a[0].localeCompare(b[0]);
+  });
+
+  return owners.map(([owner, list]) => section(owner, list)).join('');
+}
+
+/** The figures across the top of the mail — the server's buildStepsSummary. */
+function _crmStepsEmailSummary(rows, opts) {
+  const o       = opts || {};
+  const horizon = o.horizonDays == null ? 7 : o.horizonDays;
+  const todayS  = (o.today || new Date()).toISOString().slice(0, 10);
+  const limit   = new Date(Date.parse(todayS) + horizon * 86400000).toISOString().slice(0, 10);
+
+  const overdue = rows.filter(r => r.overdue).length;
+  const dueToday = rows.filter(r => r.due === todayS).length;
+  const soon     = rows.filter(r => r.due && r.due > todayS && r.due <= limit).length;
+
+  return [
+    { label: 'Overdue',        value: String(overdue), tone: overdue ? 'bad' : 'good' },
+    { label: 'Due today',      value: String(dueToday) },
+    { label: `Next ${horizon} days`, value: String(soon) },
+    { label: 'Outstanding',    value: String(rows.length) },
+  ];
+}
+
+// How far ahead the mail looks — the cron's HORIZON_DAYS. Kept in step by a test.
+const _CRM_STEPS_HORIZON = 7;
+
+function _crmEmailSteps() {
+  if (!window.openReportEmailModal) {
+    alert('The email window has not finished loading. Give it a moment and try again.');
+    return;
+  }
+  const rows    = _crmAllOutstandingSteps();
+  const today   = new Date();
+  const body    = _crmStepsEmailHtml(rows, { today, horizonDays: _CRM_STEPS_HORIZON });
+  const overdue = rows.filter(r => r.overdue).length;
+
+  if (!body) {
+    alert('Nothing is due in the next ' + _CRM_STEPS_HORIZON + ' days, so there is nothing to send.\n\n'
+        + 'You can still set up who receives the scheduled mail — it goes out each weekday '
+        + 'morning and only when something is owed.');
+  }
+
+  window.openReportEmailModal({
+    reportType:     'crm_next_steps',
+    projectName:    'CRM',
+    defaultSubject: overdue ? `Next Steps Due — ${overdue} overdue` : 'Next Steps Due — this week',
+    getHTML:        () => body || '<p style="font-size:12px;color:#6b7280">Nothing due in the next '
+                            + _CRM_STEPS_HORIZON + ' days.</p>',
+    getSummary:     () => _crmStepsEmailSummary(rows, { today, horizonDays: _CRM_STEPS_HORIZON }),
+  });
+}
+
 function _crmRenderNextSteps() {
   const rows = _crmOutstandingSteps();
   const all  = _crmAllOutstandingSteps();
@@ -9885,7 +10012,9 @@ function _crmRenderNextSteps() {
        ${_crmScopeBtn('_crmSetStepScope', _crmStepScope, 'open',    'All outstanding')}
      </span>`,
     _crmToolButtons(`_crmExportCsv('next-steps-due', _CRM_STEP_COLS, _crmOutstandingSteps(), 'steps')`,
-      `_crmPrintReport('Next Steps Due','What was promised', _CRM_STEP_COLS, _crmOutstandingSteps(), 'steps')`))
+      `_crmPrintReport('Next Steps Due','What was promised', _CRM_STEP_COLS, _crmOutstandingSteps(), 'steps')`)
+    + `<button class="btn" onclick="_crmEmailSteps()" title="Send this list now, or set up who gets it each weekday morning"
+         style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#9993; Email / Schedule</button>`)
     + _crmTable({
         table: 'steps', cols: _CRM_STEP_COLS, rows,
         actions: r => _crmTouchBtn(r._kind, r._subject), actionCols: [2.5],
