@@ -8,15 +8,21 @@
  * list is written to each company's scoped key rather than paying for a
  * separate search per tenant.
  *
- * It works through the regions until the clock runs out, and starts at a
- * different one each day. Seven regions no longer fit in one run — the budget
- * holds four or five — so the rotation is the plan rather than insurance:
- * each day starts one region further along, which over a week leaves every
- * region pulled on most days and none of them ever starved. A function killed
- * at its ceiling writes nothing at all, so stopping early is the point, and
- * the region cut off tonight is nearer the front tomorrow. Items live for
- * weeks and every write merges, so a hub filled over two mornings is the same
- * hub.
+ * It works through the regions until the clock runs out, stalest first.
+ * Seven regions do not fit in one run — the budget holds four or five — so
+ * this fires twice a morning, and ordering by when each region was last
+ * pulled is what makes the second run pick up exactly what the first did not
+ * reach, without either run needing to know the other exists.
+ *
+ * That ordering also self-corrects. A region whose pull failed, timed out or
+ * was never tried has no timestamp, so it sorts to the very front of the next
+ * run rather than waiting for its turn to come round again. A fixed rotation
+ * could not do that: it would skip past the failure and leave a stale region
+ * stale for another full cycle.
+ *
+ * A function killed at its ceiling writes nothing at all, so stopping early
+ * is the point. Items live for weeks and every write merges, so a hub filled
+ * over two runs is the same hub.
  *
  * Idempotent by construction. Items carry an id derived from their date and
  * headline, and the write merges on that id, so a cron that fires twice, a
@@ -42,10 +48,41 @@ const TIME_BUDGET_MS = 240000;
 // Below this there is no point starting another region — see the loop.
 const MIN_REGION_MS = 45000;
 
-/** Day of the year — rotates which region the run starts with. */
-function dayIndex(today) {
-  const start = Date.UTC(today.getUTCFullYear(), 0, 0);
-  return Math.floor((Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()) - start) / 86400000);
+/**
+ * When each region was last pulled, from any one company's hub.
+ *
+ * Every company is written the same list in the same pass, so one of them is
+ * a faithful sample — and reading one row beats reading all of them to learn
+ * a fact they all agree on.
+ */
+async function lastPulledByRegion(sql) {
+  try {
+    const rows = await sql`
+      SELECT value FROM app_data
+      WHERE key LIKE ${'%:' + NEWS_KEY}
+      ORDER BY updated_at DESC
+      LIMIT 1`;
+    if (!rows.length) return {};
+    const v = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
+    return (v && v.regions) || {};
+  } catch (err) {
+    console.error('[crm-news] could not read pull times:', err.message);
+    return {};
+  }
+}
+
+/**
+ * Stalest first. A region with no timestamp — never pulled, or last attempt
+ * failed — sorts ahead of every dated one, which is what makes a failure
+ * retry immediately instead of waiting for a rotation to come round.
+ */
+function orderByStaleness(regions, lastPulled) {
+  return regions.slice().sort((a, b) => {
+    const ta = Date.parse(lastPulled[a.key] || '') || 0;
+    const tb = Date.parse(lastPulled[b.key] || '') || 0;
+    if (ta !== tb) return ta - tb;
+    return regions.indexOf(a) - regions.indexOf(b);   // stable, declared order
+  });
 }
 
 async function writeHub(sql, companies, items, today) {
@@ -92,8 +129,8 @@ async function runNewsPull(sql, client, opts = {}) {
   const started = Date.now();
   const budget  = opts.timeBudgetMs || TIME_BUDGET_MS;
 
-  const offset  = dayIndex(today) % news.REGIONS.length;
-  const ordered = news.REGIONS.slice(offset).concat(news.REGIONS.slice(0, offset));
+  const lastPulled = opts.lastPulled || await lastPulledByRegion(sql);
+  const ordered    = orderByStaleness(news.REGIONS, lastPulled);
 
   const result = { day: today.toISOString().slice(0, 10), found: 0, companies: 0, regions: [], skipped: [] };
   const gathered = { rows: [], regions: {} };
@@ -112,9 +149,12 @@ async function runNewsPull(sql, client, opts = {}) {
       const { items, searchError } = await news.withDeadline(
         news.pullNews(client, { region: region.key, today }), left);
       result.regions.push({ region: region.key, found: items.length, ...(searchError ? { searchError } : {}) });
+      // Stamped on any completed look, found or not. A quiet week in Maryland
+      // is not a failure, and treating it as one would park Maryland at the
+      // front of every run for ever.
+      gathered.regions[region.key] = new Date().toISOString();
       if (items.length) {
         gathered.rows.push(...items);
-        gathered.regions[region.key] = new Date().toISOString();
         result.found += items.length;
       }
     } catch (err) {
@@ -123,7 +163,7 @@ async function runNewsPull(sql, client, opts = {}) {
     }
   }
 
-  if (!gathered.rows.length) return result;
+  if (!gathered.rows.length && !Object.keys(gathered.regions).length) return result;
 
   const companies = await sql`SELECT code FROM companies ORDER BY code`;
   result.companies = await writeHub(sql, companies, gathered, today);
@@ -156,8 +196,9 @@ module.exports = async (req, res) => {
   }
 };
 
-module.exports.runNewsPull    = runNewsPull;
-module.exports.dayIndex       = dayIndex;
+module.exports.runNewsPull       = runNewsPull;
+module.exports.orderByStaleness  = orderByStaleness;
+module.exports.lastPulledByRegion = lastPulledByRegion;
 module.exports.NEWS_KEY       = NEWS_KEY;
 module.exports.TIME_BUDGET_MS = TIME_BUDGET_MS;
 module.exports.MIN_REGION_MS  = MIN_REGION_MS;

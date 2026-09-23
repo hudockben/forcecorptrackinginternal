@@ -122,7 +122,7 @@ function buildPrompt(region, today, lookbackDays) {
 
   ${region.detail}
 
-Find games played between ${isoDay(since)} and ${isoDay(today)}. Cover football, soccer, baseball, softball, field hockey, lacrosse and track — the sports played on a field. Prefer schools big enough to have their own athletic field.
+Find games played between ${isoDay(since)} and ${isoDay(today)}. Cover football, soccer, baseball, softball, field hockey, lacrosse, tennis and track — the outdoor sports a school competes in. Most are played on the fields we sell; tennis is on courts, but a tennis result opens an email just as well. Prefer schools big enough to have their own athletic field.
 
 Use at most ${MAX_SEARCHES} searches, then write the answer from what you found. Return up to ${MAX_RESULTS} games — the best-sourced ones, and prefer breadth across schools over several games from the same one. For each one, write ONE plain sentence a salesperson could open an email with, modelled exactly on this: "Indiana High School football defeated Fort Cherry this past Friday with a score of 30-25." — and also break the result out into its parts, so it can be shown as a scoreboard.
 

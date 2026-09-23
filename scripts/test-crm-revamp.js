@@ -264,6 +264,10 @@ console.log('\nPer-region pulls');
     ['Eastern Ohio', 'Western New York', 'Central Pennsylvania', 'Eastern Pennsylvania',
      'West Virginia', 'Maryland'].every(r => !prompt.includes(r)));
   assert('the prompt asks for the score parts', prompt.includes('winner_score') && prompt.includes('loser_score'));
+  for (const sport of ['football', 'soccer', 'baseball', 'softball',
+                       'field hockey', 'lacrosse', 'tennis', 'track']) {
+    assert(`the pull covers ${sport}`, prompt.toLowerCase().includes(sport));
+  }
   assert('five searches per region', news.MAX_SEARCHES === 5);
   assert('twenty results per region', news.MAX_RESULTS === 20);
 
@@ -288,14 +292,52 @@ console.log('\nPer-region pulls');
   assert('a padded score is cleaned',   messy[0].winner_score === '14');
   assert('an unparseable score is dropped, not guessed', messy[0].loser_score === '');
 
-  // The cron starts on a different region each day, so the one cut off by the
-  // clock yesterday goes first today.
-  const d1 = cron.dayIndex(new Date('2026-09-22T06:00:00Z'));
-  const d2 = cron.dayIndex(new Date('2026-09-23T06:00:00Z'));
-  assert('the day index advances by one a day', d2 === d1 + 1);
-  const starts = new Set([0, 1, 2].map(n =>
-    cron.dayIndex(new Date(Date.UTC(2026, 8, 22 + n))) % news.REGIONS.length));
-  assert('three consecutive days start on three different regions', starts.size === 3);
+  // Seven regions do not fit in one run, so the job fires twice a morning and
+  // orders stalest first. That ordering is the whole coordination mechanism:
+  // the second run picks up what the first did not reach, without either
+  // needing to know the other exists.
+  const keys = o => o.map(r => r.key).join(',');
+  const ago  = h => new Date(Date.now() - h * 3600000).toISOString();
+
+  assert('with no history, declared order stands',
+    keys(cron.orderByStaleness(news.REGIONS, {})) === keys(news.REGIONS));
+
+  // After a first run did four, the second must start on the fifth.
+  const afterFirst = { wpa: ago(1), cpa: ago(1), epa: ago(1), eoh: ago(1) };
+  assert('the second run starts where the first stopped',
+    keys(cron.orderByStaleness(news.REGIONS, afterFirst)).startsWith('wv,wny,md'),
+    keys(cron.orderByStaleness(news.REGIONS, afterFirst)));
+
+  // A region that failed leaves no timestamp, so it goes to the very front
+  // rather than waiting a full cycle for its turn to come round.
+  const allButOne = Object.fromEntries(news.REGIONS.map(r => [r.key, ago(1)]));
+  delete allButOne.md;
+  assert('a failed region is retried first',
+    keys(cron.orderByStaleness(news.REGIONS, allButOne)).startsWith('md'));
+
+  // Oldest before merely old.
+  const mixed = { wpa: ago(50), cpa: ago(2), epa: ago(30), eoh: ago(1), wv: ago(80), wny: ago(3), md: ago(10) };
+  assert('the stalest region leads', keys(cron.orderByStaleness(news.REGIONS, mixed)).startsWith('wv,wpa,epa'),
+    keys(cron.orderByStaleness(news.REGIONS, mixed)));
+  assert('and the freshest is last', keys(cron.orderByStaleness(news.REGIONS, mixed)).endsWith('eoh'));
+
+  // Ordering must not reorder the shared region list under everyone else.
+  const beforeOrder = keys(news.REGIONS);
+  cron.orderByStaleness(news.REGIONS, mixed);
+  assert('ordering leaves the region list alone', keys(news.REGIONS) === beforeOrder);
+
+  const newsCrons = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'))
+    .crons.filter(c => c.path.includes('crm-news'));
+  assert('the news job is scheduled twice', newsCrons.length === 2, JSON.stringify(newsCrons));
+  assert('on two paths, since Vercel keys a cron by its path',
+    new Set(newsCrons.map(c => c.path)).size === 2);
+  assert('at two different times', new Set(newsCrons.map(c => c.schedule)).size === 2);
+  assert('both before the working day',
+    newsCrons.every(c => Number(c.schedule.split(' ')[1]) < 13),
+    newsCrons.map(c => c.schedule).join(' | '));
+  assert('the second is the same handler, not a copy',
+    /require\('\.\/crm-news'\)/.test(
+      fs.readFileSync(path.join(ROOT, 'api', 'cron', 'crm-news-catchup.js'), 'utf8')));
   // The budget has to leave room for the region in flight to finish and be
   // written to every company, so it is well under the ceiling, not just under.
   const vercel = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));

@@ -38,6 +38,11 @@
       "memory": 1024,
       "maxDuration": 300
     },
+    "api/cron/crm-news-catchup.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 300
+    },
     "api/ai/crm-find-contacts.js": {
       "includeFiles": "api/**",
       "memory": 1024,
@@ -55,6 +60,10 @@
     {
       "path": "/api/cron/crm-news",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/crm-news-catchup",
+      "schedule": "30 11 * * *"
     }
   ],
   "headers": [
