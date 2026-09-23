@@ -1213,19 +1213,25 @@ console.log('\nSchools');
       { id: 'e1', company_name: 'Fort Hill High School', city: 'Cumberland', state: 'MD', contact_type: 'High School',
         tag: 'Hot', territory: '', nces_id: '' },
       { id: 'e2', company_name: 'Somewhere Else', city: '', state: 'PA', contact_type: 'Contractor', nces_id: '240003000999' },
+      { id: 'e3', company_name: 'Lucius Found HS', city: 'Erie', state: 'PA', contact_type: 'Operator', nces_id: '' },
     ];
     const plan = K._crmPlanSchoolImport([
       row('Fort Hill High', 'Cumberland', 'MD', { tag: 'Cold', territory: 'Inside' }),
       row('Renamed By NCES', 'Nowhere', 'PA', { nces_id: '240003000999' }),
       row('New School', 'Akron', 'OH'),
+      row('Lucius Found HS', 'Erie', 'PA'),
     ], existing);
     assert('a school already here is matched by name, state and town', plan.fill.some(x => x.into.id === 'e1'));
     const e1 = plan.fill.find(x => x.into.id === 'e1');
     assert('its blank cells are filled',            e1 && e1.patch.territory === 'Inside');
     assert('and nothing a rep typed is overwritten', e1 && !('tag' in e1.patch));
     assert('the NCES id matches whatever the name says', plan.fill.some(x => x.into.id === 'e2'));
-    assert('a matched company typed as something else moves to Schools',
-      plan.moved === 1 && plan.fill.find(x => x.into.id === 'e2').patch.contact_type === 'High School');
+    // A type a rep chose stays theirs. Blank, or Lucius's "Operator", is what
+    // a school list is allowed to correct — and that moves the row to Schools.
+    assert('a type a rep chose is not overwritten',
+      !('contact_type' in plan.fill.find(x => x.into.id === 'e2').patch));
+    assert('a Lucius "Operator" row becomes a school and moves over',
+      plan.moved === 1 && plan.fill.find(x => x.into.id === 'e3').patch.contact_type === 'High School');
     assert('only the new one is added', plan.add.length === 1 && plan.add[0].company_name === 'New School');
     assert('the plan changes nothing by itself', existing[0].territory === '' && existing[1].contact_type === 'Contractor');
   }
@@ -1268,21 +1274,91 @@ console.log('\nSchools');
   }
 
   {
-    // One row here is never claimed by two rows of the file.
-    const existing = [{ id: 'x', company_name: 'Central Catholic High School', city: '', state: '', contact_type: 'High School' }];
+    // A row here with no state or town, and a name the file has in three
+    // states, could be any of them — so it is none of them, and all three are
+    // named for someone to check. It used to be quietly given the first.
+    const existing = [{ id: 'x', company_name: 'Central Catholic High School', city: '', state: '', contact_type: 'High School', work_phone: '412-555-0100' }];
     const plan = K._crmPlanSchoolImport([
+      row('Central Catholic High School', 'Canton', 'OH'),
       row('Central Catholic High School', 'Pittsburgh', 'PA'),
-      row('Central Catholic High School', 'Toledo', 'OH'),
+      row('Central Catholic High School', 'Wheeling', 'WV'),
     ], existing);
-    assert('a row here is matched at most once', plan.fill.length <= 1 && plan.add.length + plan.fill.length === 2);
+    assert('a stateless row is not merged into one of several states', plan.fill.length === 0 && plan.add.length === 3);
+    assert('and every candidate is listed to check', plan.ambiguous.length === 3);
+
+    // With the name once in the whole file, the stateless row is that school.
+    const once = K._crmPlanSchoolImport([row('Central Catholic High School', 'Pittsburgh', 'PA')], existing);
+    assert('a name the file has once matches a stateless row', once.fill.length === 1 && once.fill[0].patch.state === 'PA');
   }
 
+  {
+    // One row here is never claimed by two rows of the file, and the second
+    // is flagged rather than added in silence.
+    const existing = [{ id: 'x', company_name: 'Fort Hill High School', city: 'Cumberland', state: 'MD', contact_type: 'High School', nces_id: '9' }];
+    const plan = K._crmPlanSchoolImport([
+      row('Fort Hill High School', 'Cumberland', 'MD', { nces_id: '9' }),
+      row('Fort Hill HS', 'Cumberland', 'MD', { nces_id: '10' }),
+    ], existing);
+    assert('a row here is matched at most once', plan.add.length === 1);
+    assert('and the second claimant is listed to check', plan.ambiguous.length === 1);
+  }
+
+
+  {
+    // Three McKinley High Schools: a field at one is not a field at the others.
+    const F = new Function([
+      'let crmCompanies = [], crmFields = [], crmPeople = [], _crmDataVer = 0, _crmFieldIdx = null;',
+      reLine,
+      extractFunction(SRC, '_crmIsSchool'),
+      extractFunction(SRC, '_crmOrgRows'),
+      extractFunction(SRC, '_crmCityKey'),
+      extractFunction(SRC, '_crmFieldIndex'),
+      extractFunction(SRC, '_crmFieldsFor'),
+      extractFunction(SRC, '_crmMissingContacts'),
+      'return { _crmFieldsFor, _crmMissingContacts,',
+      '  set: (c, f, p) => { crmCompanies = c; crmFields = f; crmPeople = p || []; },',
+      '  bump: () => { _crmDataVer++; } };',
+    ].join('\n'))();
+
+    const canton = { id: 'c', company_name: 'McKinley High School', city: 'Canton', contact_type: 'High School' };
+    const niles  = { id: 'n', company_name: 'McKinley High School', city: 'Niles',  contact_type: 'High School' };
+    const solo   = { id: 's', company_name: 'Fort Hill High School', city: 'Cumberland', contact_type: 'High School' };
+    const fields = [
+      { id: 'f1', company_id: 'c', company_name: 'McKinley High School', installed_year: '2012' },
+      { id: 'f2', company_id: '',  company_name: 'McKinley High School' },       // name only, name shared
+      { id: 'f3', company_id: '',  company_name: 'Fort Hill High School' },      // name only, name unique
+      { id: 'f4', company_id: 'gone', company_name: 'Fort Hill High School' },   // its row was deleted
+    ];
+    F.set([canton, niles, solo], fields);
+    assert("a field with a company id is that company's alone",
+      F._crmFieldsFor(canton).map(f => f.id).join() === 'f1' && F._crmFieldsFor(niles).length === 0,
+      F._crmFieldsFor(niles).map(f => f.id).join());
+    assert('a name-only field is not handed to every school of that name',
+      !F._crmFieldsFor(canton).some(f => f.id === 'f2'));
+    assert('a name-only field still finds a company whose name is its own',
+      F._crmFieldsFor(solo).map(f => f.id).sort().join() === 'f3,f4');
+
+    // The index is rebuilt when a save says the data moved.
+    fields[0].company_id = 'n';
+    F.bump();
+    assert('moving a field moves it, once the save has bumped the version',
+      F._crmFieldsFor(niles).map(f => f.id).join() === 'f1' && F._crmFieldsFor(canton).length === 0);
+
+    // A contact at the Canton McKinley does not stand for Niles too.
+    F.set([canton, niles, solo], [], [{ company: 'McKinley High School', city: 'Canton' }, { company: 'Fort Hill High School', city: '' }]);
+    const missing = F._crmMissingContacts('schools').map(c => c.id).join();
+    assert('a contact counts for the same-named school in their own town only', missing === 'n', missing);
+    F.set([canton, niles], [], [{ company: 'McKinley High School', city: '' }]);
+    assert('a contact with no town counts for none of several same-named schools',
+      F._crmMissingContacts('schools').length === 2);
+  }
   {
     // Uploading the same list twice changes nothing the second time.
     const first = [row('Fort Hill High', 'Cumberland', 'MD', { nces_id: '1' }), row('Allegany High', 'Cumberland', 'MD', { nces_id: '2' })];
     const again = K._crmPlanSchoolImport(first.map(r => ({ ...r, id: r.id + 'b' })), first);
-    assert('a second upload of the same list adds nothing',
-      again.add.length === 0 && again.fill.every(x => Object.keys(x.patch).length === 0));
+    assert('a second upload of the same list adds nothing', again.add.length === 0);
+    assert('and updates nothing — it says so rather than claiming 2 updates',
+      again.fill.length === 0 && again.same === 2);
   }
 }
 
@@ -1451,8 +1527,13 @@ console.log('\nTab wiring and columns');
   // Companies and Schools share crmCompanies, so "Replace all" on Companies
   // replaces the companies and keeps the schools — it only ever counted, and
   // warned about, the companies.
-  assert('an import prepends to crmCompanies, and Replace keeps the schools',
-    SRC.includes('crmCompanies = replace ? [...rows, ...crmCompanies.filter(_crmIsSchool)] : [...rows, ...crmCompanies]'));
+  assert('an import prepends to crmCompanies', SRC.includes('crmCompanies = [...rows, ...crmCompanies]'));
+  assert('Replace keeps the schools, merging any the file brings back',
+    SRC.includes('crmCompanies = [...rows.filter(r => !_crmIsSchool(r)), ...plan.add, ...kept]'));
+  assert('a school upload is planned again at Import, against the list as it is then',
+    SRC.includes('const plan = _crmPlanSchoolImport(pending, crmCompanies)'));
+  assert('a poll overlapping a company save does not swap the list',
+    SRC.includes('_crmCosSave.sent !== cosSentAtAsk') && SRC.indexOf('const cosSentAtAsk') < SRC.indexOf("apiGet('fct_crm_people'),\n      apiGet('fct_crm_companies')"));
   assert('a school upload prepends what is new', SRC.includes('crmCompanies = [...plan.add, ...crmCompanies]'));
 
   // Both tabs edit crmCompanies rows, so both roots are bound; a row drawn on

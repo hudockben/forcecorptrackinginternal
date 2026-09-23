@@ -92,9 +92,20 @@ console.log('\nCompaction');
   assert('territory and miles to the line are kept',
     out.territory === 'Inside' && out.miles_to_line === '44.9');
 
-  for (const k of ['osm_lat', 'osm_lng', 'osm_id', 'athletics_url', 'nces_id', 'address', 'zip']) {
+  for (const k of ['osm_id', 'athletics_url', 'nces_id']) {
     assert(`${k} is not sent`, !(k in out));
   }
+  // Location is how people ask. A ZIP stays on every row, and a Lucius field
+  // may have nothing but coordinates — so those stay too, cut to 3 decimals.
+  assert('the ZIP is kept', out.zip === '21502');
+  assert('coordinates are kept, rounded', out.osm_lat === 39.6 && out.osm_lng === -78.7);
+  assert('coordinates lose their noise',
+    search.compactRow({ id: 'x', osm_lat: 40.1234567, osm_lng: -80.9876543 }).osm_lat === 40.123);
+  // A school's street address is the one location key dropped: it carries its
+  // town, county and ZIP, and a thousand streets are the bulk of what is left.
+  assert("a company's street address is kept", out.address === '500 Greenway Ave');
+  assert("a school's street address is not",
+    !('address' in search.compactRow({ id: 's', contact_type: 'High School', address: '1 Main St', zip: '15317' })));
   assert('underscore keys are not sent', !('_dirty' in out) && !('_bucket' in out));
   assert('the row itself is left alone', row.tag === '' && row.osm_id === 'way/123');
 
@@ -195,7 +206,7 @@ console.log('\nCaps');
     truncated.includes(`people capped at ${CAPS.people} of 700`), truncated.join(' | '));
   assert('an uncapped list is not reported', !truncated.some(t => t.startsWith('fields')));
   assert('rows are compacted on the way in',
-    data.companies.every(c => !Object.values(c).some(v => v === '')) && !('zip' in data.companies[20]));
+    data.companies.every(c => !Object.values(c).some(v => v === '')) && !('nces_id' in data.companies[20]));
 
   const small = search.prepareData({ companies: [school(1)] });
   assert('a small CRM is not reported as capped', small.truncated.length === 0);
@@ -227,7 +238,9 @@ console.log('\nAI Search prompt');
     !/web search/i.test(a[0].text) && /web search/i.test(a[1].text) && /Do not invent rows/.test(b[1].text));
 
   const ask = a[1].text;
-  assert('it explains the school types', /"High School" or "College \/ University"/.test(ask));
+  assert('it explains the school types', /High School, College \/ University, School District/.test(ask));
+  assert('it bounds the list and asks for a total', ask.includes(`at most ${search.MAX_MATCHES} matches`));
+  assert('and asks for empty keys to be left out', ask.includes('Leave out any key you have no value for'));
   assert('and sector, athletics level and enrollment',
     /sector/.test(ask) && /athletics_level/.test(ask) && /enrollment/.test(ask));
   assert('it says what Inside means',
@@ -340,6 +353,45 @@ console.log('\nContact finder brief');
 }
 
 /* ── 7. Continuations read the CRM back from the cache ───────────────────── */
+let CUT_REPLY = '';
+
+/* ── 6. A reply that ran out of room ─────────────────────────────────────── */
+console.log('\nCut-off replies');
+{
+  const cut = '{"answer":"Found 278 \\"high schools\\"","matches":[' +
+    '{"kind":"company","id":"a","why":"a } in a string"},' +
+    '{"kind":"company","id":"b","nested":{"x":1}},' +
+    '{"kind":"company","id":"c","why":"cut here';
+  const r = search.salvageResult(cut);
+  assert('the answer survives, quotes and all', r.answer === 'Found 278 "high schools"', r.answer);
+  assert('every whole match is kept', r.matches.map(m => m.id).join() === 'a,b', JSON.stringify(r.matches));
+  assert('a brace inside a string does not end a match', r.matches[0].why === 'a } in a string');
+  assert('the half-written match is dropped, not guessed at', !r.matches.some(m => m.id === 'c'));
+  assert('nothing to salvage is an empty list, not a throw',
+    search.salvageResult('no json at all').matches.length === 0);
+
+  CUT_REPLY = cut;
+}
+
+// runSearch hands a max_tokens stop to the salvage instead of the parser.
+async function cutOffSearch() {
+  const client = { messages: { create: async () => ({ stop_reason: 'max_tokens', content: [{ type: 'text', text: CUT_REPLY }] }) } };
+  const res = await search.runSearch(client, [{ role: 'user', content: 'q' }], false);
+  assert('a max_tokens stop comes back as the matches it has, marked cut off',
+    res.cutOff === true && res.matches.length === 2, JSON.stringify(res));
+}
+
+/* ── 7. A worked school outranks an unworked company ─────────────────────── */
+console.log('\nWorked schools');
+{
+  const out = search.prioritiseCompanies([
+    { id: 'own', company_name: 'Acme Turf', contact_type: 'Contractor' },
+    { id: 'sch', company_name: 'Fort Hill High', contact_type: 'High School' },
+    { id: 'hot', company_name: 'Allegany High', contact_type: 'High School' },
+  ], { opportunities: [{ company: 'Allegany High' }] }).map(c => c.id).join();
+  assert('a school with a deal comes first, then our companies, then the rest', out === 'hot,own,sch', out);
+}
+
 async function continuations() {
   console.log('\nAI Search continuations');
 
@@ -396,7 +448,7 @@ async function continuations() {
   }
 }
 
-continuations().then(() => {
+continuations().then(cutOffSearch).then(() => {
   console.log(`\n${failed ? '✗' : '✓'} ${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
 }).catch(err => {

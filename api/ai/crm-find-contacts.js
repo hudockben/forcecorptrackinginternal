@@ -90,9 +90,10 @@ const rolesFor = company => (isCollege(company) ? COLLEGE_ROLES : ROLES);
 /**
  * The school's MaxPreps profile, when that is what athletics_url holds.
  *
- * For a high school the import stores the varsity profile there, and it is the
- * best first page there is: it usually names the athletic director and links
- * the school's own site. Anything that is not maxpreps.com — the federal
+ * For a high school the import stores the varsity profile there. The finder
+ * has web search, not a page fetch, so this is a lead rather than a page it
+ * opens: the profile's address and team name are what to search for, and
+ * what turns up the athletic director and the school's own athletics site. Anything that is not maxpreps.com — the federal
  * athletics data page the colleges came from, a typo — is no help as a
  * starting page and is left out.
  */
@@ -135,7 +136,7 @@ function buildPrompt(company, known, fields) {
     company.athletics_level && `ATHLETICS: ${company.athletics_level}`,
     where                   && `LOCATION: ${where}`,
     company.work_website    && `WEBSITE: ${company.work_website}`,
-    maxpreps                && `ATHLETICS PAGE: ${maxpreps} — the school's MaxPreps profile. It usually names the athletic director and links the school's own site, so it is a good first page; confirm names on the school's own site where they are printed there too.`,
+    maxpreps                && `ATHLETICS PAGE: ${maxpreps} — the school's MaxPreps profile. Searching for that page, or for the school's team name on MaxPreps, tends to turn up the athletic director and the school's own athletics site; confirm any name there on the school's own site before returning it.`,
     company.email_domain    && `EMAIL DOMAIN: ${company.email_domain}`,
     fields.length > 0       && `FIELDS WE KNOW OF: ${fields.map(f => `${f.field_name || f.field_type || 'field'}${f.installed_year ? ` (installed ${f.installed_year})` : ''}`).join('; ')}`,
   ].filter(Boolean).join('\n');

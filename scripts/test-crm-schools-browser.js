@@ -24,6 +24,21 @@
  * is answered after a short delay, the way a megabyte of JSON is in real life
  * — without it the save-coalescing check would measure nothing.
  *
+ * What it drives, in order, on one page: the empty tab; a seeded CRM (a
+ * contractor, a school typed High School, a Lucius "Operator" row named like a
+ * school on the list, one field); the upload modal and its merge plan; the
+ * saved blob (NCES ids, ZIP+4s, filled blanks, nothing typed overwritten);
+ * paging; the Territory filter popover; cell edits, a Type change moving a row
+ * between tabs, a cancelled "＋ Add…"; save coalescing; the lazy company
+ * picker on a field row; Find Contacts under a filter (its confirm is always
+ * dismissed, and the endpoint is mocked regardless); the dashboard cards; a
+ * second upload of the same file; "Replace all" on Companies. Then two fresh
+ * pages put the 60-second background poll against an import.
+ *
+ * Render timings are printed, not asserted against a number — a headless
+ * browser with no GPU paints far slower than a laptop. What is asserted is
+ * that the 200-row page limit actually bounds the work.
+ *
  * Harness traps (see test-haul-browser.js for the first two):
  *   - Served over HTTP, not file://, or /api fetches never leave.
  *   - fct_division must be 'turf' or tracker.html bounces to divisions.html.
@@ -69,7 +84,7 @@ const HEADERS = ['Tag','Lead Contact','School','Type','Public / Private','Athlet
 /** A quoted-field CSV reader for the oracle — independent of the page's own. */
 function parseCsv(text) {
   const out = []; let row = [], cell = '', q = false;
-  text = text.replace(/^﻿/, '');
+  text = text.replace(/^\uFEFF/, '');
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (q) {
@@ -112,7 +127,7 @@ function syntheticCsv() {
       i % 23 === 0 ? 'Check the MaxPreps profile - its name does not match the school' : '',
       college ? String(100000 + i) : priv ? '0' + String(1000000 + i) : String(390000000000 + i)]);
   }
-  return '﻿' + [HEADERS, ...rows].map(r => r.map(q).join(',')).join('\r\n') + '\r\n';
+  return '\uFEFF' + [HEADERS, ...rows].map(r => r.map(q).join(',')).join('\r\n') + '\r\n';
 }
 
 const CSV_PATH = (() => {
@@ -127,11 +142,15 @@ const CSV_ROWS = parseCsv(fs.readFileSync(CSV_PATH, 'utf8'));
 // ── The in-memory server ─────────────────────────────────────────────────────
 let STORE = {};              // key → value
 let PUTS  = [];              // { key, value, raw, seq, at }
-let CALLS = [];              // every other /api request, by path
 let FIND_CALLS = 0;
-const inflight = {};         // key → PUTs answered but not yet returned
+const inflight = {};         // key → PUTs received but not yet answered
+const maxInflight = {};      // key → the most ever in flight at once
 let putSeq = 0;
 const PUT_DELAY_MS = { fct_crm_companies: 250 };
+// A GET that reads the store when it arrives and answers late — the server
+// read the row before a write landed, and the response took its time.
+let SLOW_GET = null;         // { key, ms } while a scenario wants one
+let GETS_SEEN = {};          // key → GETs received
 
 function mockApi(page) {
   return page.route('**/api/**', async route => {
@@ -148,7 +167,12 @@ function mockApi(page) {
     if (p === '/api/data/_keys') return json({ keys: [] });
     if (p.startsWith('/api/data/')) {
       const key = decodeURIComponent(p.slice('/api/data/'.length));
-      if (m === 'GET') return json({ value: key in STORE ? STORE[key] : null });
+      if (m === 'GET') {
+        GETS_SEEN[key] = (GETS_SEEN[key] || 0) + 1;
+        const body = JSON.stringify({ value: key in STORE ? STORE[key] : null });
+        if (SLOW_GET && SLOW_GET.key === key) await sleep(SLOW_GET.ms);
+        return route.fulfill({ status: 200, contentType: 'application/json', body });
+      }
       if (m === 'PUT') {
         const raw = req.postData() || '{}';
         let value = null;
@@ -156,6 +180,7 @@ function mockApi(page) {
         const rec = { key, value, raw, seq: ++putSeq, at: Date.now() };
         PUTS.push(rec);
         inflight[key] = (inflight[key] || 0) + 1;
+        maxInflight[key] = Math.max(maxInflight[key] || 0, inflight[key]);
         const delay = PUT_DELAY_MS[key] || 0;
         if (delay) await new Promise(r => setTimeout(r, delay));
         STORE[key] = value;
@@ -165,7 +190,6 @@ function mockApi(page) {
       if (m === 'PATCH') return json({ ok: true });
       return json({ ok: true });
     }
-    CALLS.push(m + ' ' + p);
     if (p === '/api/ai/crm-find-contacts') { FIND_CALLS++; return json({ people: [], summary: 'mock' }); }
     if (p === '/api/purchase-orders') return json({ purchaseOrders: [] });
     if (p === '/api/trucking')        return json({ truckingEntries: [] });
@@ -287,7 +311,7 @@ const SEED_FIELD = { id: 'fld-forthill', company_id: 'co-forthill', company_name
     fct_crm_companies: [SEED.acme, SEED.forthill, SEED.lucius],
     fct_crm_fields:    [SEED_FIELD],
   };
-  PUTS = []; CALLS = []; FIND_CALLS = 0;
+  PUTS = []; FIND_CALLS = 0;
   const { page, errors, dialogs } = await boot(browser);
 
   console.log('\n[2 — one list, two tabs]');
@@ -338,7 +362,7 @@ const SEED_FIELD = { id: 'fld-forthill', company_id: 'co-forthill', company_name
     ok(`  the plan adds ${fmt(expectAdd)} new schools`,
       modal.plan.some(l => l.startsWith(`${fmt(expectAdd)} new schools will be added`)), modal.plan.join(' | '));
     ok('  and says 2 are already in the CRM, 1 moving over from Companies',
-      modal.plan.some(l => /^2 already in the CRM/.test(l) && /\(1 move over from Companies\)/.test(l)), modal.plan.join(' | '));
+      modal.plan.some(l => /^2 already in the CRM/.test(l) && /\(1 moves over from Companies/.test(l)), modal.plan.join(' | '));
     ok('  nothing ambiguous, repeated or non-school',
       !modal.plan.some(l => /could not be matched|repeated|not a school/.test(l)), modal.plan.join(' | '));
     ok('  schools never offer Replace all', modal.radios === 0, String(modal.radios));
@@ -502,25 +526,62 @@ const SEED_FIELD = { id: 'fld-forthill', company_id: 'co-forthill', company_name
   // ── 7. Save coalescing ────────────────────────────────────────────────
   console.log('\n[7 — ten quick keystrokes, one blob]');
   {
+    // Two ways in. Real keystrokes, where how many PUTs go out depends on how
+    // fast the browser can take keys: the rule is one in flight and the newest
+    // after it, so the count is bounded by typing time over the server's round
+    // trip — never by the number of keys. Then the same ten characters as one
+    // burst of input events, which pins the count exactly.
+    const RTT = PUT_DELAY_MS.fct_crm_companies;
     await settle('fct_crm_companies');
     const ids = await page.$$eval('#crm-schools-root input[data-crm-field="athletics_level"]', els => els.map(e => e.dataset.crmId));
     const id = ids[4];
     const cell = page.locator(`#crm-schools-root input[data-crm-id="${id}"][data-crm-field="athletics_level"]`);
     await cell.fill('');
     await settle('fct_crm_companies');
-    const before = putsFor('fct_crm_companies').length;
+    await page.evaluate(() => {
+      window.__crmKeyTimes = [];
+      document.getElementById('crm-schools-root').addEventListener('input', () => window.__crmKeyTimes.push(performance.now()), true);
+    });
+    maxInflight.fct_crm_companies = 0;
     const seqBefore = putSeq;
-    await cell.pressSequentially('NCAA D-III', { delay: 15 });
+    await cell.pressSequentially('NCAA D-III', { delay: 0 });
     await settle('fct_crm_companies', 600);
+    const keyTimes = await page.evaluate(() => window.__crmKeyTimes);
+    const typingMs = keyTimes.length > 1 ? keyTimes[keyTimes.length - 1] - keyTimes[0] : 0;
     const burst = PUTS.filter(x => x.key === 'fct_crm_companies' && x.seq > seqBefore);
     const last = burst[burst.length - 1];
     const lastVal = last && (last.value.find(r => r.id === id) || {}).athletics_level;
-    ok(`10 keystrokes send well under 10 PUTs (${burst.length})`, burst.length >= 1 && burst.length <= 3, String(burst.length));
-    ok('  and the last to arrive carries the whole word', lastVal === 'NCAA D-III', JSON.stringify(lastVal));
+    // At most one PUT per round trip, plus the first and the trailing one. Only
+    // when keys come slower than a round trip is there nothing to coalesce.
+    const bound = 2 + Math.floor(typingMs / RTT);
+    ok(`10 real keystrokes send ${burst.length} PUT(s) — no more than typing time allows (≤ ${bound}) and under 10`,
+      keyTimes.length === 10 && burst.length >= 1 && burst.length <= bound
+      && (burst.length < 10 || typingMs / 9 >= RTT),
+      `${burst.length} PUTs over ${typingMs.toFixed(0)} ms of typing`);
+    ok('  never two in flight at once', maxInflight.fct_crm_companies === 1, String(maxInflight.fct_crm_companies));
+    ok('  the last to arrive carries the whole word', lastVal === 'NCAA D-III', JSON.stringify(lastVal));
     ok('  which is what the server now holds',
       (STORE.fct_crm_companies.find(r => r.id === id) || {}).athletics_level === 'NCAA D-III');
-    ok('  never two in flight at once', burst.every((x, i) => i === 0 || true) && Math.max(0, ...Object.values(inflight)) === 0);
-    note(`${putsFor('fct_crm_companies').length - before} PUT(s) for 10 keystrokes with a ${PUT_DELAY_MS.fct_crm_companies} ms server`);
+    note(`${keyTimes.length} keys over ${typingMs.toFixed(0)} ms (≈${(typingMs / 9).toFixed(0)} ms a key on this machine) → ${burst.length} PUTs against a ${RTT} ms server`);
+
+    // The same ten characters with no frame between them.
+    await cell.fill('');
+    await settle('fct_crm_companies');
+    maxInflight.fct_crm_companies = 0;
+    const seq2 = putSeq;
+    await page.evaluate(id => {
+      const el = document.querySelector(`#crm-schools-root input[data-crm-id="${id}"][data-crm-field="athletics_level"]`);
+      for (const ch of 'NAIA Div I') { el.value += ch; el.dispatchEvent(new Event('input', { bubbles: true })); }
+    }, id);
+    await settle('fct_crm_companies', 600);
+    const burst2 = PUTS.filter(x => x.key === 'fct_crm_companies' && x.seq > seq2);
+    const last2 = burst2[burst2.length - 1];
+    ok('10 input events in one burst send exactly 2 PUTs — the first, then the newest',
+      burst2.length === 2, String(burst2.length));
+    ok('  and the second carries all ten characters',
+      last2 && (last2.value.find(r => r.id === id) || {}).athletics_level === 'NAIA Div I',
+      last2 ? JSON.stringify((last2.value.find(r => r.id === id) || {}).athletics_level) : 'none');
+    await page.locator('#crm-schools-root').click({ position: { x: 5, y: 5 } });
   }
 
   // ── 8. Fields ─────────────────────────────────────────────────────────
@@ -570,6 +631,14 @@ const SEED_FIELD = { id: 'fld-forthill', company_id: 'co-forthill', company_name
       !!saved && saved.company_id === 'co-acme' && saved.company_name === 'Acme Turf',
       JSON.stringify(saved && { id: saved.company_id, name: saved.company_name }));
     ok('  the field list grew by one', fp && fp.value.length === fieldsBefore + 1, fp ? String(fp.value.length) : 'no put');
+    // The keyboard way in: focus alone fills a picker too.
+    const fhSel = '#crm-schools-root select[data-crm-field-id="fld-forthill"][data-crm-field-col="company_id"]';
+    const fh0 = await page.$eval(fhSel, s => s.options.length);
+    await page.focus(fhSel);
+    const fh1 = await page.$eval(fhSel, s => ({ n: s.options.length, value: s.value }));
+    ok('focusing another field\'s picker fills it the same way, keeping its company',
+      fh0 <= 3 && fh1.n > 1000 && fh1.value === 'co-forthill', JSON.stringify({ before: fh0, after: fh1 }));
+    await page.locator('#crm-schools-root').click({ position: { x: 5, y: 5 } });
     // Back to the school list.
     await page.evaluate(() => _crmOrgSetView('schools', 'schools'));
   }
@@ -626,6 +695,7 @@ const SEED_FIELD = { id: 'fld-forthill', company_id: 'co-forthill', company_name
   {
     await openCrm(page, 'schools');
     const rowsBefore = STORE.fct_crm_companies.length;
+    const snapBefore = new Map(STORE.fct_crm_companies.map(r => [r.id, JSON.stringify(r)]));
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'),
       page.locator('#crm-schools-root button', { hasText: 'Upload CSV' }).click()]);
     await chooser.setFiles(CSV_PATH);
@@ -635,19 +705,25 @@ const SEED_FIELD = { id: 'fld-forthill', company_id: 'co-forthill', company_name
       return { plan: [...m.querySelectorAll('ul li')].map(li => li.textContent.replace(/\s+/g, ' ').trim()),
                commit: m.querySelector('button.btn-green').textContent.replace(/\s+/g, ' ').trim() };
     });
-    // One of the file's schools was retyped Contractor in [6]; the NCES id still finds it.
+    // One of the file's schools was retyped Contractor in [6]; the NCES id still
+    // finds it, and a type a rep chose is theirs — so nothing is left to do.
     ok('the plan adds 0 new schools', modal.plan.some(l => l.startsWith('0 new schools will be added')), modal.plan.join(' | '));
-    ok(`  and finds all ${fmt(N)} already in the CRM`,
-      modal.plan.some(l => l.startsWith(`${fmt(N)} already in the CRM`)), modal.plan.join(' | '));
+    ok(`  and finds all ${fmt(N)} already in the CRM, with nothing new to add`,
+      modal.plan.some(l => l.startsWith(`${fmt(N)} already in the CRM with nothing new to add`)), modal.plan.join(' | '));
+    note('plan: ' + modal.plan.join(' | '));
     note('commit button: ' + modal.commit);
-    await page.locator('#crm-upload-modal button.btn-green').click();
-    await settle('fct_crm_companies');
-    const st = await orgState(page, 'schools');
-    ok('committing leaves the row count where it was', STORE.fct_crm_companies.length === rowsBefore,
-      `${rowsBefore} → ${STORE.fct_crm_companies.length}`);
-    note('schools header after re-import: ' + st.head + ' · note: ' + (st.text.match(/Imported[^.]*\./) || [''])[0]);
-    ok('  the school count is back to the full list (the retyped school came back)',
-      st.head.startsWith(`${fmt(schoolsNow)} schools`) || st.head.startsWith(`${fmt(schoolsNow + 1)} schools`), st.head);
+    const disabled = await page.locator('#crm-upload-modal button.btn-green').isDisabled();
+    ok('  and the button says there is nothing to import, and cannot be pressed',
+      disabled && /Nothing new to import/.test(modal.commit), modal.commit);
+    ok(`  it never offers to "Update ${fmt(N)}" when nothing would change`, !modal.commit.includes('Update'), modal.commit);
+    await page.locator('#crm-upload-modal button', { hasText: 'Cancel' }).click();
+    await page.waitForTimeout(300);
+    const changed = STORE.fct_crm_companies.filter(r => snapBefore.get(r.id) !== JSON.stringify(r));
+    ok('nothing in the store changed', STORE.fct_crm_companies.length === rowsBefore && changed.length === 0,
+      `${rowsBefore} → ${STORE.fct_crm_companies.length}, ${changed.length} changed`);
+    const moved = STORE.fct_crm_companies.find(r => r.id === movedId);
+    ok('  and the school a rep retyped Contractor in [6] is still Contractor', moved && moved.contact_type === 'Contractor',
+      moved && moved.contact_type);
     schoolsNow = (await page.evaluate(() => _crmOrgRows('schools').length));
   }
 
@@ -662,7 +738,7 @@ const SEED_FIELD = { id: 'fld-forthill', company_id: 'co-forthill', company_name
     await page.waitForSelector('#crm-upload-modal');
     const warn = await page.$eval('#crm-upload-modal', m => m.textContent.replace(/\s+/g, ' '));
     const cosBefore = await page.evaluate(() => _crmOrgRows('companies').length);
-    ok(`the Replace option warns about the ${cosBefore} companies only`,
+    ok(`the Replace option counts only the ${cosBefore} ${cosBefore === 1 ? 'company' : 'companies'}, not the schools`,
       warn.includes(`deletes the ${cosBefore} existing ${cosBefore === 1 ? 'company' : 'companies'}`), warn.slice(0, 400));
     await page.check('#crm-upload-modal input[name="crm-import-mode"][value="replace"]');
     await page.locator('#crm-upload-modal button.btn-green').click();
@@ -678,29 +754,136 @@ const SEED_FIELD = { id: 'fld-forthill', company_id: 'co-forthill', company_name
 
   // ── 13. Timing ────────────────────────────────────────────────────────
   console.log('\n[13 — how long the full list takes to draw]');
+  // Reported, not asserted against a number: the absolute figures depend on
+  // the machine (a headless browser with no GPU paints slowly). What is
+  // asserted is that the page limit actually bounds the work.
   {
     const t = await page.evaluate(() => {
       const time = fn => { const t0 = performance.now(); fn(); void document.body.offsetHeight; return performance.now() - t0; };
       const med = a => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
+      const S = _CRM_ORG_SIDES.schools;
       delete _crmShown.schools;
+      renderCrmSchoolsTab();
+      const root = document.getElementById('crm-schools-root');
+      const shape = { nodes: root.getElementsByTagName('*').length, selects: root.getElementsByTagName('select').length,
+                      options: root.getElementsByTagName('option').length, kb: Math.round(root.innerHTML.length / 1024) };
+      const t0 = performance.now();
+      _crmTable({ table: 'schools', cols: S.cols(), rows: _crmOrgRows('schools'), filter: S.filter(), page: 200 });
+      const stringMs = performance.now() - t0;
       const paged = med([0, 1, 2, 3, 4].map(() => time(renderCrmSchoolsTab)));
       _crmShown.schools = Infinity;
       const all = med([0, 1, 2].map(() => time(renderCrmSchoolsTab)));
       delete _crmShown.schools;
       renderCrmSchoolsTab();
-      return { paged, all, rows: _crmOrgRows('schools').length };
+      return { paged, all, stringMs, shape, rows: _crmOrgRows('schools').length };
     });
-    note(`renderCrmSchoolsTab(), first page of 200: ${t.paged.toFixed(1)} ms (median of 5, incl. layout)`);
-    note(`renderCrmSchoolsTab(), all ${fmt(t.rows)} rows: ${t.all.toFixed(1)} ms (median of 3, incl. layout)`);
-    note(`Territory "Inside" tick in [5] (render + popover redraw + layout): ${filterClickMs.toFixed(1)} ms`);
-    ok('a paged redraw stays under 250 ms', t.paged < 250, t.paged.toFixed(1) + ' ms');
-    ok('a filter click stays under 250 ms', filterClickMs < 250, filterClickMs.toFixed(1) + ' ms');
+    // A filter tick after "show all": the page size is remembered for the
+    // session, so this is what every later click on the tab costs.
+    const tickAll = await page.evaluate(() => {
+      _crmShown.schools = Infinity; renderCrmSchoolsTab();
+      document.querySelector('#crm-schools-root [data-crm-filter-btn="schools:territory"]').click();
+      const cb = [...document.querySelectorAll('#crm-filter-pop .cfp-item input')].find(i => i.dataset.v === 'Inside');
+      const t0 = performance.now(); cb.click(); void document.body.offsetHeight; const ms = performance.now() - t0;
+      const rows = document.querySelectorAll('#crm-schools-root tbody tr').length;
+      _crmCloseFilter(); delete _crmShown.schools; _crmClearFilter('schools');
+      return { ms, rows };
+    });
+    note(`first page of 200 rows: ${fmt(t.shape.nodes)} elements, ${t.shape.selects} <select>s holding ${fmt(t.shape.options)} <option>s, ${fmt(t.shape.kb)} KB of markup (building the string: ${t.stringMs.toFixed(0)} ms)`);
+    note(`renderCrmSchoolsTab(), first page of 200: ${t.paged.toFixed(0)} ms (median of 5, incl. layout)`);
+    note(`renderCrmSchoolsTab(), all ${fmt(t.rows)} rows: ${t.all.toFixed(0)} ms (median of 3, incl. layout)`);
+    note(`Territory "Inside" tick in [5] (redraw + popover + layout): ${filterClickMs.toFixed(0)} ms`);
+    note(`the same tick after "show all" (${fmt(tickAll.rows)} rows drawn): ${tickAll.ms.toFixed(0)} ms`);
+    ok('the page limit bounds the work — a paged redraw is at least 3× cheaper than drawing every row',
+      t.paged * 3 < t.all, `${t.paged.toFixed(0)} ms vs ${t.all.toFixed(0)} ms`);
   }
 
   ok('no uncaught page error across the whole run', errors.length === 0, errors.slice(0, 3).join(' | '));
   ok('no request went to the contact finder', FIND_CALLS === 0, String(FIND_CALLS));
-
   await page.close();
+
+  // ── 14, 15: the background poll against an import ─────────────────────
+  // Every 60 s the page re-reads fct_crm_companies and, unless a save is
+  // running at that moment, swaps in what the server holds. The import is the
+  // one big write a user makes with nothing focused (so the "is editing"
+  // guard does not hold the poll off), which makes these the two ways the
+  // poll and an import can meet. The poll is started here the way the page
+  // starts one when a tab comes back into view.
+  const freshSeed = () => {
+    STORE = { fct_crm_companies: JSON.parse(JSON.stringify([SEED.acme, SEED.forthill, SEED.lucius])),
+              fct_crm_fields: [JSON.parse(JSON.stringify(SEED_FIELD))] };
+    PUTS = []; GETS_SEEN = {}; SLOW_GET = null;
+  };
+  const openSchoolUpload = async pg => {
+    await openCrm(pg, 'schools');
+    const [chooser] = await Promise.all([pg.waitForEvent('filechooser'),
+      pg.locator('#crm-schools-root button', { hasText: 'Upload CSV' }).click()]);
+    await chooser.setFiles(CSV_PATH);
+    await pg.waitForSelector('#crm-upload-modal');
+  };
+  const pollNow = pg => pg.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
+  console.log('\n[14 — a colleague\'s edit polled in while the import modal is open]');
+  {
+    freshSeed();
+    const { page: pg, errors: errs } = await boot(browser);
+    await openSchoolUpload(pg);
+    // Someone else changes Acme's phone; this page picks it up on its next poll.
+    STORE.fct_crm_companies = STORE.fct_crm_companies.map(c => c.id === 'co-acme' ? { ...c, work_phone: '724-555-0199' } : c);
+    await pollNow(pg);
+    await pg.waitForFunction(() => (crmCompanies.find(c => c.id === 'co-acme') || {}).work_phone === '724-555-0199', null, { timeout: 5000 })
+      .catch(() => {});
+    const polled = await pg.evaluate(() => (crmCompanies.find(c => c.id === 'co-acme') || {}).work_phone);
+    ok('(harness) the poll brought the colleague\'s edit in while the modal was open', polled === '724-555-0199', polled);
+    await pg.locator('#crm-upload-modal button.btn-green').click();
+    await settle('fct_crm_companies');
+    const saved = STORE.fct_crm_companies;
+    const fh = saved.find(r => r.id === 'co-forthill') || {};
+    const lu = saved.find(r => r.id === 'co-lucius') || {};
+    ok('the colleague\'s edit survives the import', (saved.find(r => r.id === 'co-acme') || {}).work_phone === '724-555-0199');
+    ok('Fort Hill still gets its blank cells filled', !!fh.nces_id && fh.territory === 'Inside',
+      JSON.stringify({ nces_id: fh.nces_id, territory: fh.territory, county: fh.county }));
+    ok('  and the Lucius row still moves over to Schools', lu.contact_type === 'High School',
+      JSON.stringify({ contact_type: lu.contact_type, nces_id: lu.nces_id }));
+    const shown = await pg.evaluate(() => _crmOrgRows('schools').length);
+    ok(`  so Schools shows ${fmt(expectSchools)}, as the modal promised`, shown === expectSchools, fmt(shown));
+    ok('no uncaught page error', errs.length === 0, errs.slice(0, 3).join(' | '));
+    await pg.close();
+  }
+
+  console.log('\n[15 — a poll that started before the import lands after its save]');
+  {
+    freshSeed();
+    const { page: pg, errors: errs } = await boot(browser);
+    await openSchoolUpload(pg);
+    // The server reads the 3-row list for the poll, then takes 1.5 s to answer.
+    SLOW_GET = { key: 'fct_crm_companies', ms: 1500 };
+    const seen = GETS_SEEN.fct_crm_companies || 0;
+    await pollNow(pg);
+    while ((GETS_SEEN.fct_crm_companies || 0) === seen) await sleep(20);
+    // The user commits while that answer is still on its way.
+    await pg.locator('#crm-upload-modal button.btn-green').click();
+    await settle('fct_crm_companies', 300);
+    const savedRows = STORE.fct_crm_companies.length;
+    await sleep(1800);                 // the stale answer arrives
+    SLOW_GET = null;
+    const after = await pg.evaluate(() => ({ all: crmCompanies.length, schools: _crmOrgRows('schools').length }));
+    ok(`(harness) the import's save landed first — the server holds ${fmt(savedRows)} rows`, savedRows === expectSchools + 1, fmt(savedRows));
+    ok('the late poll answer does not put the pre-import list back on screen',
+      after.all === expectSchools + 1 && after.schools === expectSchools,
+      `page now holds ${after.all} rows, ${after.schools} schools`);
+    // What that costs if the user carries on: the next edit saves the list on screen.
+    await openCrm(pg, 'companies');
+    const acme = pg.locator('#crm-companies-root input[data-crm-id="co-acme"][data-crm-field="work_phone"]');
+    if (await acme.count()) {
+      await acme.fill('412-555-0101');
+      await settle('fct_crm_companies');
+    }
+    ok('  and the user\'s next edit does not save the import away',
+      STORE.fct_crm_companies.length === expectSchools + 1, `server now holds ${STORE.fct_crm_companies.length} rows`);
+    ok('no uncaught page error', errs.length === 0, errs.slice(0, 3).join(' | '));
+    await pg.close();
+  }
+
   await browser.close();
   server.close();
   if (!process.argv[2] && !process.env.CRM_SCHOOLS_CSV) { try { fs.unlinkSync(CSV_PATH); } catch {} }

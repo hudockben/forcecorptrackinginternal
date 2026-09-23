@@ -51,6 +51,11 @@ const DEADLINE_MS = 210000;
 
 const MAX_QUERY_CHARS = 1000;
 
+// How long a list of matches the model is asked for. A match is ~100 tokens
+// written out, thinking shares max_tokens with the answer, and past a few
+// dozen rows a list is better read in the tab's own Schools filter anyway.
+const MAX_MATCHES = 60;
+
 // What the model is shown. Past this the prompt costs more than the answer is
 // worth, and the reply says plainly that it searched a capped slice.
 //
@@ -67,15 +72,19 @@ const CAPS = { people: 600, companies: 1500, fields: 800, opportunities: 500 };
 /**
  * Keys that cost tokens and answer no question anyone asks the search.
  *
- * Coordinates and OpenStreetMap ids are for the map link, the NCES id and the
- * MaxPreps address are for the import and the contact finder, and a street
- * address or a ZIP is not how anyone asks for a place — they say a town, a
- * county or a state, and those stay. Keys starting with "_" are the page's own
- * bookkeeping and were never data.
+ * The OpenStreetMap id, the NCES id and the MaxPreps address are for the map
+ * link, the import and the contact finder. Keys starting with "_" are the
+ * page's own bookkeeping and were never data.
+ *
+ * Location stays. A ZIP is short and is how people ask ("anything in 15317"),
+ * and a field Lucius found often has nothing but its coordinates to say where
+ * it is — so those go in too, cut to three decimals (a hundred metres, which
+ * is plenty to name a county). The one thing dropped is a school's street
+ * address: a school carries its town, county and ZIP already, and across a
+ * thousand of them the street is the largest thing left that no search asks.
  */
-const PROMPT_DROP_KEYS = new Set([
-  'osm_lat', 'osm_lng', 'osm_id', 'athletics_url', 'nces_id', 'address', 'zip',
-]);
+const PROMPT_DROP_KEYS = new Set(['osm_id', 'athletics_url', 'nces_id']);
+const SCHOOL_DROP_KEYS = new Set(['address']);
 
 const SEARCH_TOOL       = { type: 'web_search_20260209', name: 'web_search', max_uses: 8 };
 const SEARCH_TOOL_BASIC = { type: 'web_search_20250305', name: 'web_search', max_uses: 8 };
@@ -109,12 +118,15 @@ async function readBlob(sql, companyCode, key) {
  * again by id is a match it cannot open.
  */
 function compactRow(row) {
+  const school = SCHOOL_TYPE_RE.test(String(row.contact_type || ''));
   const out = {};
   for (const [k, v] of Object.entries(row)) {
     if (k.startsWith('_') || PROMPT_DROP_KEYS.has(k)) continue;
+    if (school && SCHOOL_DROP_KEYS.has(k)) continue;
     if (v === null || v === undefined) continue;
     if (typeof v === 'string' && !v.trim()) continue;
     if (Array.isArray(v) && !v.length) continue;
+    if ((k === 'osm_lat' || k === 'osm_lng') && Number.isFinite(Number(v))) { out[k] = Math.round(Number(v) * 1000) / 1000; continue; }
     out[k] = v;
   }
   return out;
@@ -230,7 +242,7 @@ ${block('OPPORTUNITIES', data.opportunities)}`;
 
   const ask = `${capped}A field's age decides what we sell it: 1-3 years old is Maintenance, 4-7 is Maintenance/Replacement, 8+ is Replacement. Today is ${new Date().toISOString().slice(0, 10)}.
 
-Some companies are schools: contact_type "High School" or "College / University", sector "Public" or "Private", athletics_level the college's athletics classification (blank for high schools), enrollment a head count. territory places a school against our sales territory line: "Inside" is inside the territory and more than 25 miles from the line; "On/near boundary" is within 25 miles of the line on either side, so which territory it belongs to still needs checking. miles_to_line is the distance to that line. Answer location questions from city, county and state.
+Some companies are schools — any contact_type that names one: High School, College / University, School District, Middle School, a private or church school. sector is "Public" or "Private", athletics_level the college's athletics classification, enrollment a head count. territory places a school against our sales territory line: "Inside" is inside the territory and more than 25 miles from the line; "On/near boundary" is within 25 miles of the line on either side, so which territory it belongs to still needs checking. miles_to_line is the distance to that line. Answer location questions from city, county, state and zip; osm_lat/osm_lng place a row that has none of those.
 ${allowWeb ? `
 The question may ask for prospects we have no row for yet. Where it does, you may web search for real schools, colleges and municipalities that fit, and return them as kind "prospect". Only return a prospect you actually found a source for — never invent a school, an address or a contact. Leave a field empty rather than guessing it.
 ` : `
@@ -267,7 +279,7 @@ Return ONLY a JSON object, no prose outside it:
   ]
 }
 
-Leave any field you do not know as an empty string. Do not pad the list — a precise five beats a vague fifty.`;
+Leave out any key you have no value for. Do not pad the list — a precise five beats a vague fifty. Return at most ${MAX_MATCHES} matches, best first; if more rows fit the question, say how many in "answer" and suggest how to narrow it (a county, a territory, a type).`;
 
   return [
     { type: 'text', text: crm, cache_control: { type: 'ephemeral' } },
@@ -285,6 +297,49 @@ function parseResult(text) {
   const end   = stripped.lastIndexOf('}');
   if (start === -1 || end === -1) throw new Error('No JSON in model response');
   return JSON.parse(stripped.slice(start, end + 1));
+}
+
+/**
+ * What can be saved from a reply that ran out of room mid-list.
+ *
+ * With every school in the prompt, "high schools in Ohio" has a few hundred
+ * honest answers, and a reply that lists them stops at max_tokens partway
+ * through a match. That used to reach parseResult as JSON with no closing
+ * brackets and come back as a 500 after minutes of work. The matches written
+ * before the cut are complete and true, so they are kept — each one is read
+ * whole or not at all, by walking the braces outside of strings.
+ */
+function salvageResult(text) {
+  const src = String(text || '');
+  const answerM = src.match(/"answer"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  let answer = '';
+  if (answerM) { try { answer = JSON.parse(`"${answerM[1]}"`); } catch (_) { answer = ''; } }
+
+  const matches = [];
+  const at = src.indexOf('"matches"');
+  const open = at === -1 ? -1 : src.indexOf('[', at);
+  if (open !== -1) {
+    let depth = 0, inStr = false, esc = false, objStart = -1;
+    for (let i = open + 1; i < src.length; i++) {
+      const ch = src[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') { if (depth === 0) objStart = i; depth++; }
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0 && objStart !== -1) {
+          try { matches.push(JSON.parse(src.slice(objStart, i + 1))); } catch (_) { /* a broken one is skipped */ }
+          objStart = -1;
+        }
+      } else if (ch === ']' && depth === 0) break;
+    }
+  }
+  return { answer, matches };
 }
 
 /**
@@ -319,6 +374,10 @@ async function runSearch(client, messages, allowWeb) {
     messages.push({ role: 'assistant', content: message.content });
   }
 
+  if (message && message.stop_reason === 'max_tokens') {
+    const partial = salvageResult(textOf(message));
+    return { ...partial, cutOff: true };
+  }
   return parseResult(textOf(message));
 }
 
@@ -375,6 +434,9 @@ module.exports = async (req, res) => {
         web:           allowWeb,
       },
       truncated,
+      ...(result.cutOff ? {
+        warning: `The answer ran out of room after ${matches.length} match${matches.length === 1 ? '' : 'es'}, so the list below is not the whole of it. Narrowing the question — one county, inside the territory, one type — gets the rest.`,
+      } : {}),
     });
 
   } catch (err) {
@@ -400,4 +462,6 @@ module.exports.compactRows         = compactRows;
 module.exports.prioritiseCompanies = prioritiseCompanies;
 module.exports.prepareData         = prepareData;
 module.exports.buildPrompt         = buildPrompt;
+module.exports.salvageResult       = salvageResult;
+module.exports.MAX_MATCHES         = MAX_MATCHES;
 module.exports.runSearch           = runSearch;
