@@ -6947,7 +6947,7 @@ function _crmLinkInp(p, field, ph = '', isEmail = false) {
    new field is one entry here rather than five edits that must agree. */
 const _CRM_PEOPLE_COLS = [
   { f: 'tag',               label: 'Tag',               w: 5,   cell: p => _crmTagSel(p) },
-  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: p => _crmListSel(p, 'lead_contact', _CRM_EMPLOYEE_LIST, 'who') },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: p => _crmListSel(p, 'lead_contact', 'crm_lead_contacts', 'who') },
   { f: 'name',              label: 'Name',              w: 6,   cell: p => _crmInp(p, 'name',              'Name') },
   { f: 'company',           label: 'Company',           w: 6.5, cell: p => _crmInp(p, 'company',           'Company') },
   // Not editable — it is the log talking. Sorts and exports as a day count so
@@ -6999,7 +6999,7 @@ function renderCrmPeopleTab() {
         ${_crmToolButtons(
           `_crmExportCsv('crm-people', _CRM_PEOPLE_COLS, _crmApplyFilter(crmPeople, _crmPeopleFilter), 'people')`,
           `_crmPrintReport('People','CRM contacts', _CRM_PEOPLE_COLS, _crmApplyFilter(crmPeople, _crmPeopleFilter), 'people')`)}
-        ${_crmListsBtn('crm_contact_types')}
+        ${_crmListsBtn('crm_lead_contacts')}
         <button class="btn" onclick="_crmTriggerUpload('people')" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">&#8593; Upload CSV</button>
         <button class="btn btn-green" onclick="addCrmPerson()">+ Add Person</button>
       </div>
@@ -7052,7 +7052,7 @@ function deleteCrmCompany(id) {
 
 const _CRM_COMPANY_COLS = [
   { f: 'tag',               label: 'Tag',               w: 5,   cell: c => _crmTagSel(c) },
-  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: c => _crmListSel(c, 'lead_contact', _CRM_EMPLOYEE_LIST, 'who') },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: c => _crmListSel(c, 'lead_contact', 'crm_lead_contacts', 'who') },
   { f: 'company_name',      label: 'Company Name',      w: 10,  cell: c => _crmInp(c, 'company_name',      'Company Name') },
   { f: 'contact_type',      label: 'Contact Type',      w: 5.5, cell: c => _crmListSel(c, 'contact_type', 'crm_org_types', 'type') },
   { f: 'work_phone',        label: 'Work Phone',        w: 6,   cell: c => _crmInp(c, 'work_phone',        'Phone') },
@@ -7248,7 +7248,7 @@ function _crmDateInp(o, field) {
 
 const _CRM_OPP_COLS = [
   { f: 'tag',               label: 'Tag',               w: 5.5, cell: o => _crmTagSel(o) },
-  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: o => _crmListSel(o, 'lead_contact', _CRM_EMPLOYEE_LIST, 'who') },
+  { f: 'lead_contact',      label: 'Lead Contact',      w: 6,   cell: o => _crmListSel(o, 'lead_contact', 'crm_lead_contacts', 'who') },
   { f: 'name',              label: 'Name',              w: 7,   cell: o => _crmInp(o, 'name',              'Opportunity name') },
   { f: 'company',           label: 'Company',           w: 7.5, cell: o => _crmInp(o, 'company',           'Company') },
   { f: '_last_touch',       label: 'Last Touch',        w: 5,   filter: false,
@@ -9784,6 +9784,15 @@ const _CRM_LISTS = [
     hint: 'Why a deal was lost — the report only means something if these are consistent.',
     defaults: ['Price', 'Timing', 'No Budget', 'Competitor', 'No Response',
                'Scope Changed', 'Lost Bid', 'Other'] },
+
+  // Not the employee roster. Everyone on the payroll appears there, and a
+  // dropdown of a hundred field crew to answer "which of us knows this
+  // athletic director" is a worse question than no dropdown. This is the few
+  // people who actually carry accounts, typed once or pulled in by name from
+  // the roster, and it seeds empty because only you know who they are.
+  { key: 'crm_lead_contacts', label: 'Lead Contact', for: 'People, Companies, Opportunities',
+    hint: 'The handful of people here who own relationships — not the whole payroll.',
+    defaults: [] },
 ];
 
 /** The employee list doubles as the Lead Contact picker — it is our own people. */
@@ -9837,16 +9846,12 @@ function _crmListValues(key) {
 function _crmListAdd(key, value) {
   const val = String(value || '').trim();
   if (!val) return false;
-  if (key === _CRM_EMPLOYEE_LIST) {
-    lists.employees = lists.employees || [];
-    if (!lists.employees.some(e => ((typeof e === 'string' ? e : e && e.name) || '') === val)) {
-      // Same shape the Employees list itself writes, so payroll reads it too.
-      lists.employees.push({ name: val, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' });
-    }
-  } else {
-    if (!Array.isArray(lists[key])) lists[key] = [];
-    if (!lists[key].includes(val)) lists[key].push(val);
-  }
+  // The employee roster is a payroll record with rates and a job class on it.
+  // The CRM reads it to offer names and never writes to it — a lead contact
+  // added here must not quietly create someone for payroll to pay.
+  if (key === _CRM_EMPLOYEE_LIST) return false;
+  if (!Array.isArray(lists[key])) lists[key] = [];
+  if (!lists[key].includes(val)) lists[key].push(val);
   saveLists();
   return true;
 }
@@ -9940,14 +9945,9 @@ function crmListRenameItem(idx) {
   const to = (prompt(`Rename "${from}" to:`, from) || '').trim();
   if (!to || to === from) return;
 
-  if (_crmListsTab === _CRM_EMPLOYEE_LIST) {
-    const emp = (lists.employees || []).find(e => ((typeof e === 'string' ? e : e && e.name) || '') === from);
-    if (emp && typeof emp === 'object') emp.name = to;
-  } else {
-    const arr = lists[_crmListsTab] || [];
-    const at  = arr.indexOf(from);
-    if (at >= 0) arr[at] = to;
-  }
+  const arr = lists[_crmListsTab] || [];
+  const at  = arr.indexOf(from);
+  if (at >= 0) arr[at] = to;
 
   const moved = _crmRewriteListValue(_crmListsTab, from, to);
   saveLists();
@@ -9971,12 +9971,7 @@ function crmListRemoveItem(idx) {
     : `Remove "${val}" from the list?`;
   if (!confirm(msg)) return;
 
-  if (_crmListsTab === _CRM_EMPLOYEE_LIST) {
-    lists.employees = (lists.employees || [])
-      .filter(e => ((typeof e === 'string' ? e : e && e.name) || '') !== val);
-  } else {
-    lists[_crmListsTab] = (lists[_crmListsTab] || []).filter(v => v !== val);
-  }
+  lists[_crmListsTab] = (lists[_crmListsTab] || []).filter(v => v !== val);
   saveLists();
   renderCrmListsModal();
 }
@@ -9990,7 +9985,7 @@ const _CRM_LIST_USAGE = {
                       ['fields', 'turf_product'], ['opportunities', 'turf_product']],
   crm_sources:       [['opportunities', 'source']],
   crm_loss_reasons:  [['opportunities', 'loss_reason']],
-  employees:         [['people', 'lead_contact'], ['companies', 'lead_contact'],
+  crm_lead_contacts: [['people', 'lead_contact'], ['companies', 'lead_contact'],
                       ['opportunities', 'lead_contact']],
 };
 
@@ -10025,13 +10020,47 @@ function _crmRewriteListValue(key, from, to) {
   return n;
 }
 
+/**
+ * Lead-contact names already sitting on CRM rows but not on the list.
+ *
+ * This is what makes the switch away from the employee roster safe: rows keep
+ * whatever they had, the dropdown marks those values off-list, and one click
+ * here adopts them all rather than making someone retype names the CRM is
+ * already using.
+ */
+function _crmLeadNamesInUse() {
+  const already = new Set(_crmListValues('crm_lead_contacts'));
+  const found   = new Set();
+  for (const [which, field] of (_CRM_LIST_USAGE.crm_lead_contacts || [])) {
+    for (const row of _crmListRows(which)) {
+      const v = String((row && row[field]) || '').trim();
+      if (v && !already.has(v)) found.add(v);
+    }
+  }
+  return [...found].sort((a, b) => a.localeCompare(b));
+}
+
+/** Pulls a name off the payroll roster without copying anything else from it. */
+function crmListAddFromEmployee(name) {
+  if (!name) return;
+  _crmListAdd('crm_lead_contacts', name);
+  renderCrmListsModal();
+}
+
+function crmListAddAllInUse() {
+  const names = _crmLeadNamesInUse();
+  if (!names.length) return;
+  if (!confirm(`Add ${names.length} name${names.length === 1 ? '' : 's'} already used on CRM rows?\n\n${names.join(', ')}`)) return;
+  for (const n of names) _crmListAdd('crm_lead_contacts', n);
+  renderCrmListsModal();
+}
+
 function renderCrmListsModal() {
   const tabsEl = document.getElementById('crm-lists-tabs');
   const bodyEl = document.getElementById('crm-lists-body');
   if (!tabsEl || !bodyEl) return;
 
-  const tabs = [..._CRM_LISTS.map(l => ({ key: l.key, label: l.label })),
-                { key: _CRM_EMPLOYEE_LIST, label: 'Lead Contacts' }];
+  const tabs = _CRM_LISTS.map(l => ({ key: l.key, label: l.label }));
 
   tabsEl.innerHTML = tabs.map(t =>
     `<button class="modal-tab-btn${t.key === _crmListsTab ? ' active' : ''}"
@@ -10039,10 +10068,8 @@ function renderCrmListsModal() {
 
   const def  = _crmListDef(_crmListsTab);
   const vals = _crmListValues(_crmListsTab);
-  const hint = _crmListsTab === _CRM_EMPLOYEE_LIST
-    ? 'Your own people — who here knows the contact. Shared with the Employees list, so anyone added here shows up there too.'
-    : (def ? def.hint : '');
-  const where = _crmListsTab === _CRM_EMPLOYEE_LIST ? 'People, Companies, Opportunities' : (def ? def.for : '');
+  const hint  = def ? def.hint : '';
+  const where = def ? def.for  : '';
 
   bodyEl.innerHTML = `
     <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.15rem">${esc(hint)}</div>
@@ -10066,8 +10093,47 @@ function renderCrmListsModal() {
       <input type="text" id="crm-list-new" placeholder="Add ${esc(_crmListLabel(_crmListsTab).toLowerCase())}…"
         onkeydown="if(event.key==='Enter')crmListAddItem()" />
       <button class="btn btn-green" onclick="crmListAddItem()">+ Add</button>
-    </div>`;
+    </div>
+    ${_crmListsTab === 'crm_lead_contacts' ? _crmLeadContactHelpers() : ''}`;
   setTimeout(() => document.getElementById('crm-list-new')?.focus(), 20);
+}
+
+/**
+ * The two shortcuts on the Lead Contact tab.
+ *
+ * Typing names that already exist elsewhere is how spellings drift, so both
+ * routes copy an existing name rather than asking for a new one: one from the
+ * payroll roster, one from the CRM rows themselves.
+ */
+function _crmLeadContactHelpers() {
+  const on      = new Set(_crmListValues('crm_lead_contacts'));
+  const roster  = _crmListValues(_CRM_EMPLOYEE_LIST).filter(n => !on.has(n));
+  const inUse   = _crmLeadNamesInUse();
+
+  return `<div style="margin-top:1rem;border-top:1px solid var(--border);padding-top:0.8rem">
+    <div style="font-size:0.63rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.5rem">
+      Or copy a name you already have
+    </div>
+    <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+      ${roster.length ? `<select onchange="crmListAddFromEmployee(this.value);this.selectedIndex=0"
+        style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;
+               padding:0.3rem 0.45rem;font-size:0.8rem;outline:none;max-width:240px;cursor:pointer">
+        <option value="">＋ From the employee roster…</option>
+        ${roster.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+      </select>` : `<span style="font-size:0.75rem;color:var(--muted)">Everyone on the employee roster is already here.</span>`}
+
+      ${inUse.length ? `<button class="btn" onclick="crmListAddAllInUse()"
+        style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:0.8rem">
+        + Adopt ${inUse.length} already in use</button>` : ''}
+    </div>
+    ${inUse.length ? `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.45rem;line-height:1.5">
+      ${esc(inUse.slice(0, 8).join(', '))}${inUse.length > 8 ? ` and ${inUse.length - 8} more` : ''}
+      — on CRM rows but not on this list, so they show as “not on list” until added.
+    </div>` : ''}
+    <div style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem;opacity:0.85">
+      Adding someone here does not add them to payroll — it only copies the name.
+    </div>
+  </div>`;
 }
 
 /** The toolbar button that opens it. */
@@ -13335,6 +13401,7 @@ const defaultLists = {
   crm_turf_products: [],
   crm_sources:       [],
   crm_loss_reasons:  [],
+  crm_lead_contacts: [],
 };
 
 let lists = {};

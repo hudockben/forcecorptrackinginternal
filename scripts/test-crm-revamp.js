@@ -530,7 +530,8 @@ console.log('\nPick lists');
   // no way for anyone to work out why.
   const keys = K._CRM_LISTS.map(l => l.key);
   for (const k of ['crm_contact_types', 'crm_org_types', 'crm_field_types',
-                   'crm_turf_products', 'crm_sources', 'crm_loss_reasons']) {
+                   'crm_turf_products', 'crm_sources', 'crm_loss_reasons',
+                   'crm_lead_contacts']) {
     assert(`${k} is defined`, keys.includes(k));
     assert(`${k} is wired to a cell`, SRC.includes(`'${k}'`));
   }
@@ -563,10 +564,14 @@ console.log('\nPick lists');
   K._crmListAdd('crm_turf_products', 'SuperBlade HD');
   assert('a duplicate is not added', K._crmListValues('crm_turf_products').length === 1);
   assert('blank is refused',        K._crmListAdd('crm_turf_products', '   ') === false);
-  K._crmListAdd('employees', 'New Person');
-  assert('a new lead contact keeps the employee shape',
-    K.lists().employees[0] && K.lists().employees[0].name === 'New Person'
-      && K.lists().employees[0].job_class === '');
+  // The roster is a payroll record with rates and a job class on it. The CRM
+  // reads it for names and must never write to it — naming a lead contact
+  // cannot quietly create someone for payroll to pay.
+  K.reset({ employees: [{ name: 'Ray Petrosky', non_prevailing_rate: 31, job_class: 'Laborer' }] });
+  assert('the CRM refuses to write to the payroll roster',
+    K._crmListAdd('employees', 'New Person') === false);
+  assert('and the roster is unchanged',
+    K.lists().employees.length === 1 && K.lists().employees[0].non_prevailing_rate === 31);
 
   // The rule that protects existing data: a stored value not on the list is
   // still offered, still selected, and marked — never silently blanked.
@@ -672,8 +677,16 @@ console.log('\nTab wiring and columns');
     assert(`${field} is a picker, not free text`,
       new RegExp(`${cell.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, '${field}'`).test(SRC));
   }
-  assert('lead contact picks from our own people',
-    (SRC.match(/_crmListSel\([pco], 'lead_contact', _CRM_EMPLOYEE_LIST/g) || []).length === 3);
+  // Lead Contact is its own short list, not the payroll roster: a dropdown of
+  // a hundred field crew is a worse question than no dropdown.
+  assert('lead contact is its own list, not the roster',
+    (SRC.match(/_crmListSel\([pco], 'lead_contact', 'crm_lead_contacts'/g) || []).length === 3);
+  assert('it seeds empty, since only they know who owns accounts',
+    /crm_lead_contacts'[\s\S]{0,300}defaults: \[\]/.test(SRC));
+  assert('a name can be copied off the roster',   SRC.includes('function crmListAddFromEmployee('));
+  assert('and names already on rows adopted',     SRC.includes('function crmListAddAllInUse('));
+  assert('which is what keeps existing rows working',
+    SRC.includes('function _crmLeadNamesInUse('));
   assert('the lists are editable from the CRM', SRC.includes('function openCrmLists('));
   assert('and reachable from a toolbar',        SRC.includes('function _crmListsBtn('));
   assert('the superseded hard-coded field types are gone', !SRC.includes('_CRM_FIELD_TYPES'));
